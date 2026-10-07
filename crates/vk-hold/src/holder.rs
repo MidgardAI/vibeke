@@ -32,6 +32,11 @@ const KEY_CONN_BASE: usize = 16;
 /// re-attach from its last processed offset.
 const MAX_WBUF: usize = 32 * 1024 * 1024;
 const QUEUED_QUERY_MAX_AGE: Duration = Duration::from_secs(5);
+/// After the foreground process group changes, its leader's argv is re-read on output for this
+/// long: the group often changes between `fork` and `exec` (the shell hands the terminal over
+/// first), and a status taken then shows the shell, or an empty argv mid-`exec` (Linux
+/// `/proc/<pid>/cmdline`), with no later group change to correct it.
+const FG_SETTLE: Duration = Duration::from_secs(2);
 
 struct Conn {
     stream: UnixStream,
@@ -89,6 +94,9 @@ pub struct Holder {
     queued: Vec<(Instant, u64, Vec<u8>)>,
     modes: Modes,
     last_fg: Option<u32>,
+    /// Until when, and with which argv, the new foreground leader is re-checked
+    /// ([`FG_SETTLE`]).
+    fg_settle: Option<(Instant, Vec<String>)>,
     started_at_ms: i64,
     should_exit: bool,
 }
@@ -235,6 +243,7 @@ impl Holder {
                 kitty: vec![],
             },
             last_fg: None,
+            fg_settle: None,
             started_at_ms: now_ms(),
             should_exit: false,
         })
@@ -912,11 +921,25 @@ impl Holder {
             return;
         }
         let fg = self.fg();
-        if fg != self.last_fg {
+        let changed = if fg != self.last_fg {
             self.last_fg = fg;
-            if let Some(k) = self.attached_key() {
-                self.send(k, &FromHolder::FgChanged);
+            self.fg_settle = fg.map(|p| (Instant::now() + FG_SETTLE, procinfo::argv(p)));
+            true
+        } else if let (Some(p), Some((until, seen))) = (fg, &mut self.fg_settle) {
+            if Instant::now() > *until {
+                self.fg_settle = None;
+                false
+            } else {
+                let argv = procinfo::argv(p);
+                let exec = argv != *seen;
+                *seen = argv;
+                exec
             }
+        } else {
+            false
+        };
+        if changed && let Some(k) = self.attached_key() {
+            self.send(k, &FromHolder::FgChanged);
         }
     }
 
