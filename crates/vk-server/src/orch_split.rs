@@ -159,6 +159,7 @@ pub async fn split(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
             changes: changes.clone(),
             recovery_ref: format!("{}/<id>", sp::RECOVERY_NS),
             recovery_commit: String::new(),
+            recovery_index_commit: String::new(),
             digest: String::new(),
             captured_at_ms: 0,
         };
@@ -277,6 +278,7 @@ pub async fn split(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         .map_err(internal)?;
     let result = match res {
         Ok(r) => r,
+        // Failed before the source was touched: the destination was rolled back and goes.
         Err(e) => {
             abandon(server.clone(), task_id.clone()).await;
             return Err(err(
@@ -286,6 +288,31 @@ pub async fn split(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
             .details(json!({"recovery_ref": cap.recovery_ref})));
         }
     };
+    if let Some(why) = &result.revert_error {
+        // Reverting the source failed part-way: never delete the destination (it holds the
+        // complete, verified selection). Nothing is resumed; the recovery ref stays.
+        orch::emit(
+            server,
+            "task.split_incomplete",
+            json!({"task": task_id}),
+            json!({"source": root, "destination": dest, "recovery_ref": result.recovery_ref, "error": why}),
+        );
+        return Err(err(
+            ErrorKind::Conflict,
+            format!(
+                "split incomplete: {why}. The new worktree {} (task {task_id}) has every selected change; finish reverting the source by hand or discard the new task.",
+                dest.display()
+            ),
+        )
+        .details(json!({
+            "reason": "revert_incomplete",
+            "task": task_id,
+            "destination": dest,
+            "recovery_ref": result.recovery_ref,
+            "recovery_index": format!("{}^2", result.recovery_ref),
+            "recover": format!("git stash apply --index {}", result.recovery_ref),
+        })));
+    }
 
     // 6. Resume or hand off the moved agents in the new worktree.
     let pane = created["panes"][0]["id"].as_str().unwrap_or("").to_string();

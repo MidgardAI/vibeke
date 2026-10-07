@@ -9,7 +9,11 @@
 //!    the runs and waits for `idle`, this function refuses while anything may still write).
 //! 2. **Capture** the full state ([`capture`]): staged, unstaged and untracked paths, plus a
 //!    recovery commit under `refs/vibeke/split/<id>` that is never applied to the tree, and a
-//!    digest of every changed path.
+//!    digest of every changed path. The recovery commit is stash-shaped: its tree is the
+//!    working tree (untracked files included), its first parent `HEAD` and its second parent
+//!    a commit of the index, so the staged and the unstaged version of every path are kept
+//!    separately (`git stash apply --index refs/vibeke/split/<id>`, or
+//!    `git checkout refs/vibeke/split/<id>^2 -- <path>` for the staged version).
 //! 3. **Select** the paths to move ([`select`]): an explicit list (attribution only
 //!    pre-selects); refuses when the source changed since the capture.
 //! 4. **Validate** applicability in the new worktree ([`validate`]: `git apply --check`)
@@ -20,7 +24,12 @@
 //! 6. Resuming the agent in the new cwd is the server's job.
 //!
 //! Nothing here deletes data that is not in the recovery commit. [`execute`] runs steps 3-5 and
-//! rolls the destination back on any failure, leaving the source exactly as it was.
+//! rolls the destination back on any failure before the source is touched, leaving the source
+//! exactly as it was. Once reverting the source has begun the destination is never removed:
+//! a failure part-way is reported as [`SplitResult::source_reverted`] `= false` with
+//! [`SplitResult::revert_error`] — the destination holds the complete selection (verified),
+//! the source holds whatever was not reverted yet, and the recovery ref holds both versions
+//! of everything.
 
 use crate::{Error, Result, gitx, now_ms};
 use serde::{Deserialize, Serialize};
@@ -47,6 +56,9 @@ pub struct Captured {
     pub changes: Vec<FileChange>,
     pub recovery_ref: String,
     pub recovery_commit: String,
+    /// The index (staged versions) at capture time: the recovery commit's second parent.
+    #[serde(default)]
+    pub recovery_index_commit: String,
     /// State digest over every changed path at capture time.
     pub digest: String,
     pub captured_at_ms: i64,
@@ -210,7 +222,35 @@ fn git_path(dir: &Path, name: &str) -> Result<PathBuf> {
 /// A commit holding the whole current state (tracked, staged and untracked non-ignored files)
 /// on top of `HEAD`, kept under `refs/vibeke/split/<id>`. Built with a scratch index, so the
 /// source's index, working tree and branch are untouched.
-fn recovery_commit(source: &Path, id: &str) -> Result<(String, String)> {
+/// The stash-shaped recovery commit: `(ref, working-tree commit, index commit)`.
+fn recovery_commit(source: &Path, id: &str) -> Result<(String, String, String)> {
+    let commit_tree = |tree: &str, parents: &[&str], msg: &str, env: &[(&str, &str)]| {
+        let mut args = vec![
+            "-c",
+            "user.name=Vibeke",
+            "-c",
+            "user.email=vibeke@localhost",
+            "-c",
+            "commit.gpgsign=false",
+            "commit-tree",
+            tree,
+        ];
+        for p in parents {
+            args.push("-p");
+            args.push(p);
+        }
+        args.push("-m");
+        args.push(msg);
+        gitx::run_env(source, &args, env)
+    };
+    // The index as it is (staged versions), without touching it.
+    let index_tree = gitx::run(source, &["write-tree"])?;
+    let index_commit = commit_tree(
+        &index_tree,
+        &["HEAD"],
+        &format!("index on vibeke split recovery point {id}"),
+        &[],
+    )?;
     let idx = git_path(source, &format!("vibeke-split-{id}.idx"))?;
     let idx_s = idx.to_string_lossy().into_owned();
     let env = [("GIT_INDEX_FILE", idx_s.as_str())];
@@ -218,22 +258,10 @@ fn recovery_commit(source: &Path, id: &str) -> Result<(String, String)> {
         gitx::run_env(source, &["read-tree", "HEAD"], &env)?;
         gitx::run_env(source, &["add", "-A"], &env)?;
         let tree = gitx::run_env(source, &["write-tree"], &env)?;
-        gitx::run_env(
-            source,
-            &[
-                "-c",
-                "user.name=Vibeke",
-                "-c",
-                "user.email=vibeke@localhost",
-                "-c",
-                "commit.gpgsign=false",
-                "commit-tree",
-                &tree,
-                "-p",
-                "HEAD",
-                "-m",
-                &format!("vibeke split recovery point {id}"),
-            ],
+        commit_tree(
+            &tree,
+            &["HEAD", &index_commit],
+            &format!("vibeke split recovery point {id}"),
             &env,
         )
     };
@@ -242,7 +270,7 @@ fn recovery_commit(source: &Path, id: &str) -> Result<(String, String)> {
     let commit = commit?;
     let r = format!("{RECOVERY_NS}/{id}");
     gitx::run(source, &["update-ref", &r, &commit])?;
-    Ok((r, commit))
+    Ok((r, commit, index_commit))
 }
 
 /// Step 2. `id` names the recovery ref; the digest covers every changed path.
@@ -264,7 +292,7 @@ pub fn capture(source: &Path, id: &str) -> Result<Captured> {
     let branch = gitx::run(source, &["symbolic-ref", "--short", "-q", "HEAD"]).ok();
     let paths: Vec<String> = changes.iter().map(|c| c.path.clone()).collect();
     let digest = state_digest(source, &paths)?;
-    let (recovery_ref, recovery_commit) = recovery_commit(source, id)?;
+    let (recovery_ref, recovery_commit, recovery_index_commit) = recovery_commit(source, id)?;
     Ok(Captured {
         id: id.to_string(),
         head,
@@ -272,6 +300,7 @@ pub fn capture(source: &Path, id: &str) -> Result<Captured> {
         changes,
         recovery_ref,
         recovery_commit,
+        recovery_index_commit,
         digest,
         captured_at_ms: now_ms(),
     })
@@ -525,12 +554,23 @@ pub fn verify(dest: &Path, sel: &Selection) -> Result<()> {
 /// Step 5c: restore the selected paths in the source to `HEAD` (index and working tree) and
 /// delete the moved untracked files. Refuses when the selected state changed since step 3.
 pub fn revert_source(source: &Path, cap: &Captured, sel: &Selection) -> Result<()> {
+    revert_source_with(source, cap, sel, &mut |_| Ok(()))
+}
+
+/// [`revert_source`] with a hook called before each path is reverted (tests inject failures).
+pub fn revert_source_with(
+    source: &Path,
+    cap: &Captured,
+    sel: &Selection,
+    before: &mut dyn FnMut(&str) -> Result<()>,
+) -> Result<()> {
     if state_digest(source, &sel.paths)? != sel.digest {
         return Err(Error::Refused(
             "the source changed since the selection; it was not reverted".into(),
         ));
     }
     for c in cap.changes.iter().filter(|c| sel.paths.contains(&c.path)) {
+        before(&c.path)?;
         if c.untracked {
             std::fs::remove_file(source.join(&c.path))?;
             // Remove emptied parent directories the untracked file lived in (never the root).
@@ -581,13 +621,30 @@ pub struct SplitResult {
     pub moved: Vec<String>,
     pub recovery_ref: String,
     pub source_reverted: bool,
+    /// Reverting the source failed part-way (`source_reverted` is false): the destination is
+    /// kept with the complete selection, the source keeps the paths not reverted yet, and the
+    /// recovery ref holds the staged (`<ref>^2`) and working-tree (`<ref>`) versions of all.
+    #[serde(default)]
+    pub revert_error: Option<String>,
 }
 
 /// Steps 4-5: validate, apply, verify, then revert the source. Any failure before the revert
-/// leaves the source exactly as it was and the destination rolled back. A failure of the
-/// revert itself keeps the destination (the work exists in both places and in the recovery
-/// ref) and is reported as an error naming that state.
+/// leaves the source exactly as it was and the destination rolled back (`Err`). Once the
+/// revert has begun the destination is never removed: a failure of the revert itself is
+/// `Ok` with `source_reverted: false` and the reason in `revert_error` — the work then exists
+/// in the destination, partly still in the source, and wholly in the recovery ref.
 pub fn execute(source: &Path, dest: &Path, cap: &Captured, sel: &Selection) -> Result<SplitResult> {
+    execute_with(source, dest, cap, sel, &mut |_| Ok(()))
+}
+
+/// [`execute`] with a hook before each source path is reverted (tests inject failures).
+pub fn execute_with(
+    source: &Path,
+    dest: &Path,
+    cap: &Captured,
+    sel: &Selection,
+    before_revert: &mut dyn FnMut(&str) -> Result<()>,
+) -> Result<SplitResult> {
     validate(source, dest, cap, sel)?;
     apply(source, dest, cap, sel)?;
     if let Err(e) = verify(dest, sel) {
@@ -601,16 +658,19 @@ pub fn execute(source: &Path, dest: &Path, cap: &Captured, sel: &Selection) -> R
         }
         return Err(e);
     }
-    revert_source(source, cap, sel).map_err(|e| {
-        Error::Refused(format!(
-            "{e}; the changes are applied in the new worktree and also still in the source (recovery: {})",
-            cap.recovery_ref
-        ))
-    })?;
+    let revert_error = revert_source_with(source, cap, sel, before_revert)
+        .err()
+        .map(|e| {
+            format!(
+                "{e}; the changes are applied in the new worktree, paths not reverted yet are still in the source, and {} keeps both the staged and the working-tree version of every path (`git stash apply --index {}`)",
+                cap.recovery_ref, cap.recovery_ref
+            )
+        });
     Ok(SplitResult {
         moved: sel.paths.clone(),
         recovery_ref: cap.recovery_ref.clone(),
-        source_reverted: true,
+        source_reverted: revert_error.is_none(),
+        revert_error,
     })
 }
 
@@ -795,10 +855,11 @@ mod tests {
     #[test]
     fn capture_makes_a_recovery_commit_without_touching_the_tree() {
         let (r, _wt) = setup();
-        let before = gitx::run(&r.root, &["status", "--porcelain"]).unwrap();
+        let before =
+            gitx::run(&r.root, &["status", "--porcelain", "--untracked-files=all"]).unwrap();
         let cap = capture(&r.root, "s1").unwrap();
         assert_eq!(
-            gitx::run(&r.root, &["status", "--porcelain"]).unwrap(),
+            gitx::run(&r.root, &["status", "--porcelain", "--untracked-files=all"]).unwrap(),
             before
         );
         assert_eq!(cap.changes.len(), 7, "{:?}", cap.changes);
@@ -815,6 +876,28 @@ mod tests {
             .is_err()
         );
         assert_eq!(recovery_refs(&r.root).unwrap().len(), 1);
+        // Stash-shaped: the second parent is the index (the staged versions).
+        let staged = |p: &str| {
+            gitx::run(&r.root, &["show", &format!("{}^2:{p}", cap.recovery_ref)]).unwrap()
+        };
+        assert_eq!(staged("c.txt"), "c1\nc-staged");
+        assert_eq!(staged("a.txt"), "a1\nSTAGED\na3");
+        assert!(
+            gitx::run(
+                &r.root,
+                &[
+                    "cat-file",
+                    "-e",
+                    &format!("{}^2:dir/untracked.txt", cap.recovery_ref)
+                ]
+            )
+            .is_err(),
+            "untracked files are not in the index commit"
+        );
+        assert_eq!(
+            gitx::rev_parse(&r.root, &format!("{}^2", cap.recovery_ref)).unwrap(),
+            cap.recovery_index_commit
+        );
         // No stray scratch index.
         let idx = git_path(&r.root, "vibeke-split-s1.idx").unwrap();
         assert!(!idx.exists());
@@ -831,7 +914,7 @@ mod tests {
         let res = execute(&r.root, &wt, &cap, &sel).unwrap();
         assert!(res.source_reverted);
         // Destination has the staged/unstaged split preserved.
-        let st = gitx::run(&wt, &["status", "--porcelain"]).unwrap();
+        let st = gitx::run(&wt, &["status", "--porcelain", "--untracked-files=all"]).unwrap();
         assert!(st.contains("M  a.txt"), "{st}");
         assert!(st.contains(" M b.txt"), "{st}");
         assert!(st.contains("MM c.txt"), "{st}");
@@ -850,13 +933,76 @@ mod tests {
             "u1\nu2\n"
         );
         // Source is clean again.
-        assert_eq!(gitx::run(&r.root, &["status", "--porcelain"]).unwrap(), "");
+        assert_eq!(
+            gitx::run(&r.root, &["status", "--porcelain", "--untracked-files=all"]).unwrap(),
+            ""
+        );
         assert!(!r.root.join("dir").exists(), "emptied directory removed");
         // The recovery ref still holds the original state until dropped.
         assert_eq!(recovery_refs(&r.root).unwrap().len(), 1);
         drop_recovery(&r.root, "s1").unwrap();
         assert!(recovery_refs(&r.root).unwrap().is_empty());
         drop_recovery(&r.root, "s1").unwrap();
+    }
+
+    /// Final review P1 8: the source revert fails after its first path was reverted. The
+    /// destination is kept with the whole selection (staged and unstaged state intact), and
+    /// both versions of every path stay recoverable from the recovery ref, also for the path
+    /// already reverted in the source.
+    #[test]
+    fn a_partial_source_revert_keeps_the_destination_and_both_versions() {
+        let (r, wt) = setup();
+        let cap = capture(&r.root, "p1").unwrap();
+        let sel = select(&r.root, &cap, None).unwrap();
+        let mut seen = vec![];
+        let res = execute_with(&r.root, &wt, &cap, &sel, &mut |p| {
+            seen.push(p.to_string());
+            if seen.len() == 2 {
+                Err(Error::Refused(format!("injected failure before {p}")))
+            } else {
+                Ok(())
+            }
+        })
+        .unwrap();
+        assert!(!res.source_reverted);
+        let why = res.revert_error.clone().unwrap();
+        assert!(why.contains("injected failure"), "{why}");
+        assert!(why.contains(&cap.recovery_ref), "{why}");
+        // The first path is reverted in the source, the rest are not.
+        let first = &seen[0];
+        let src = gitx::run(&r.root, &["status", "--porcelain", "--untracked-files=all"]).unwrap();
+        assert!(!src.contains(first.as_str()), "{first} reverted: {src}");
+        assert!(src.contains("c.txt"), "{src}");
+        // The destination still holds everything, staged and unstaged apart.
+        let st = gitx::run(&wt, &["status", "--porcelain", "--untracked-files=all"]).unwrap();
+        assert!(st.contains("M  a.txt") && st.contains("MM c.txt"), "{st}");
+        assert!(st.contains("?? dir/untracked.txt"), "{st}");
+        verify(&wt, &sel).unwrap();
+        // Both versions of the reverted path come back from the recovery ref.
+        let show =
+            |rev: &str, p: &str| gitx::run(&r.root, &["show", &format!("{rev}:{p}")]).unwrap();
+        assert_eq!(
+            show(&format!("{}^2", cap.recovery_ref), "a.txt"),
+            "a1\nSTAGED\na3"
+        );
+        assert_eq!(
+            show(&format!("{}^2", cap.recovery_ref), "c.txt"),
+            "c1\nc-staged"
+        );
+        assert_eq!(show(&cap.recovery_ref, "c.txt"), "c1\nc-staged\nc-unstaged");
+        // `git stash apply --index` restores the documented state onto a clean checkout.
+        let w2 = worktree(&r, "split/recover");
+        sh(&w2, &["stash", "apply", "--index", &cap.recovery_ref]);
+        let st2 = gitx::run(&w2, &["status", "--porcelain", "--untracked-files=all"]).unwrap();
+        assert!(
+            st2.contains("M  a.txt") && st2.contains("MM c.txt"),
+            "{st2}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(w2.join("c.txt")).unwrap(),
+            "c1\nc-staged\nc-unstaged\n"
+        );
+        assert_eq!(recovery_refs(&r.root).unwrap().len(), 1);
     }
 
     #[test]
@@ -870,13 +1016,13 @@ mod tests {
         )
         .unwrap();
         execute(&r.root, &wt, &cap, &sel).unwrap();
-        let st = gitx::run(&wt, &["status", "--porcelain"]).unwrap();
+        let st = gitx::run(&wt, &["status", "--porcelain", "--untracked-files=all"]).unwrap();
         assert!(
             st.contains(" M b.txt") && st.contains("?? dir/untracked.txt"),
             "{st}"
         );
         assert!(!st.contains("a.txt") && !st.contains("c.txt"));
-        let src = gitx::run(&r.root, &["status", "--porcelain"]).unwrap();
+        let src = gitx::run(&r.root, &["status", "--porcelain", "--untracked-files=all"]).unwrap();
         assert!(
             src.contains("a.txt") && src.contains("c.txt") && src.contains("top-untracked.txt"),
             "{src}"
@@ -921,10 +1067,11 @@ mod tests {
                 .contains("HEAD")
         );
         // Failed execute leaves the source untouched.
-        let before = gitx::run(&r.root, &["status", "--porcelain"]).unwrap();
+        let before =
+            gitx::run(&r.root, &["status", "--porcelain", "--untracked-files=all"]).unwrap();
         assert!(execute(&r.root, &wt, &cap, &sel).is_err());
         assert_eq!(
-            gitx::run(&r.root, &["status", "--porcelain"]).unwrap(),
+            gitx::run(&r.root, &["status", "--porcelain", "--untracked-files=all"]).unwrap(),
             before
         );
     }
@@ -954,7 +1101,7 @@ mod tests {
         std::fs::create_dir_all(wt.join("dir/untracked.txt")).unwrap();
         let e = apply(&r.root, &wt, &cap, &sel);
         assert!(e.is_err());
-        let st = gitx::run(&wt, &["status", "--porcelain"]).unwrap();
+        let st = gitx::run(&wt, &["status", "--porcelain", "--untracked-files=all"]).unwrap();
         assert!(!st.contains("a.txt"), "tracked part rolled back: {st}");
     }
 
