@@ -46,6 +46,7 @@ pub fn method_tables() -> Vec<(&'static str, &'static [(&'static str, bool)])> {
         ("config_api", config_api::METHODS),
         ("blob_api", blob_api::METHODS),
         ("blob_store", blob_store::METHODS),
+        ("browse_api", browse_api::METHODS),
         ("hardening", hardening::METHODS),
         ("machines", machines::METHODS),
         ("items", items::METHODS),
@@ -663,6 +664,8 @@ fs.read :: {pane?: Target, path: string} => {path: string, text?: string, binary
 git.status :: {pane?: Target, path?: string} => {repo_root: string, branch?: string|null, upstream?: string|null, ahead: int, behind: int, clean: bool, truncated: bool, files: [{path: string, orig_path?: string|null, x: string, y: string, kind: string, staged: bool, adds?: int|null, dels?: int|null, binary: bool, secret: bool}]}
 git.diff :: {pane?: Target, path?: string, file: string, staged?: bool} => {file: string, diff: string, truncated: bool, binary: bool, untracked: bool, secret?: bool}
 git.log :: {pane?: Target, path?: string, base?: string, limit?: int = 50} => {commits: [{sha: string, short: string, author: string, ts: int, subject: string}], truncated: bool}
+fs.browse :: {path?: string = '~', prefix?: string} => {path: string, parent: string|null, git_repo: bool, entries: [{name: string, git_repo: bool}], truncated: bool}
+repo.candidates :: {origin: string} => {repos: [{path: string, remote: string}]}
 
 # --- previews ---
 preview.list :: {machine?: string, task?: Target, pane?: Target, status?: suggested|declared|up|down|gone|all, all?: bool} => {previews: [Preview], machine?: string}

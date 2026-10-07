@@ -87,6 +87,8 @@ const SERVER_READ_ONLY: &[&str] = &[
     "preview.url",
     "preview.status",
     "worktree.list",
+    "fs.browse",
+    "repo.candidates",
 ];
 
 /// Minimum scope per method; `None` = unknown method.
@@ -125,13 +127,16 @@ pub fn required_scope(method: &str) -> Option<Scope> {
         | "handoff.discard" | "handoff.begin" | "handoff.write" | "handoff.finish"
         | "task.check.run" | "preview.open" | "preview.promote" | "preview.forget"
         | "tab.rename" | "tab.close" | "tab.focus" => Full,
+        // Host-wide directory browsing for path pickers: read-only, but sees all of $HOME.
+        "fs.browse" | "repo.candidates" => Full,
         _ => return None,
     })
 }
 
 pub fn is_mutating(method: &str) -> bool {
     // Chunk reads have no side effect; caching them would hold whole bundles in memory.
-    method != "handoff.read" && matches!(required_scope(method), Some(Scope::Approve | Scope::Full))
+    !matches!(method, "handoff.read" | "fs.browse" | "repo.candidates")
+        && matches!(required_scope(method), Some(Scope::Approve | Scope::Full))
         || matches!(
             method,
             "push.subscribe" | "push.unsubscribe" | "push.test" | "prefs.set"
@@ -337,7 +342,12 @@ pub fn kind_allows(kind: &str, method: &str) -> bool {
                 || method.starts_with("tab.") && method != "tab.create"
                 || matches!(
                     method,
-                    "stt.transcribe" | "task.check.run" | "attention.update" | "preview.status"
+                    "stt.transcribe"
+                        | "task.check.run"
+                        | "attention.update"
+                        | "preview.status"
+                        | "fs.browse"
+                        | "repo.candidates"
                 ))
         }
         _ => true,
@@ -493,7 +503,7 @@ impl Call<'_> {
                     self.check_selectors(allowed, item).await?;
                 }
             }
-            "worktree.list" => {
+            "worktree.list" | "fs.browse" | "repo.candidates" => {
                 // The list covers the whole repository (sibling checkouts, paths, branches), so
                 // limited devices can't call it at all.
                 return Err(deny());
@@ -1093,6 +1103,11 @@ impl Call<'_> {
             "worktree.list" => {
                 let cwd = self.worktree_dir(&p).await?;
                 self.server(method, json!({"cwd": cwd})).await
+            }
+            "fs.browse" => self.server(method, pick(&p, &["path", "prefix"])).await,
+            "repo.candidates" => {
+                req(&p, "origin")?;
+                self.server(method, pick(&p, &["origin"])).await
             }
             "tab.rename" => {
                 req(&p, "tab")?;
@@ -1721,6 +1736,18 @@ mod workspace_tests {
         }
         assert!(kind_allows("share", "tab.create"));
         assert!(kind_allows("share", "fs.read"));
+    }
+
+    #[test]
+    fn path_picker_methods_are_full_scope_reads_never_shared() {
+        for m in ["fs.browse", "repo.candidates"] {
+            assert_eq!(required_scope(m), Some(Scope::Full), "{m}");
+            assert!(!is_mutating(m), "{m}");
+            assert!(SERVER_READ_ONLY.contains(&m), "{m}");
+            assert!(!kind_allows("share", m), "{m}");
+            assert!(!kind_allows("handoff", m), "{m}");
+            assert!(kind_allows("device", m), "{m}");
+        }
     }
 
     #[test]
