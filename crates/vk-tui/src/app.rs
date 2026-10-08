@@ -340,6 +340,9 @@ pub enum Popup {
     Handoffs,
     /// Hand the focused pane off to a paired host; state in `App::ux.handoff.send`.
     HandoffSend,
+    /// Sharing & handoff (16 §15.3–§15.5): peers, invitations, pasting an invitation, invited
+    /// devices; a full pane-area view, state in `App::ux.sharing`.
+    Sharing,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1935,6 +1938,10 @@ impl App {
                 crate::handoff::on_paste(self, &text);
                 return;
             }
+            Mode::Popup(Popup::Sharing) => {
+                crate::sharing::on_paste(self, &text);
+                return;
+            }
             Mode::Popup(_) => {
                 // Editors in the drafts, desk and assist views.
                 crate::drafts::on_paste(self, &text);
@@ -2021,10 +2028,19 @@ impl App {
         let (x, y) = (me.column, me.row);
         // Sidebar clicks.
         if crate::chrome::in_sidebar(self, x) {
-            if let MouseEventKind::Down(CtButton::Left) = me.kind
-                && let Some((mi, pane)) = draw::sidebar_hit(self, y)
-            {
-                self.focus_pane(mi, &pane);
+            match me.kind {
+                MouseEventKind::Down(CtButton::Left) => {
+                    if let Some((mi, pane)) = draw::sidebar_hit(self, y) {
+                        self.focus_pane(mi, &pane);
+                    }
+                }
+                // The pane's context menu (08 §2): its handoff actions.
+                MouseEventKind::Down(CtButton::Right) => {
+                    if let Some((mi, pane)) = draw::sidebar_hit(self, y) {
+                        crate::handoff::pane_menu(self, mi, &pane);
+                    }
+                }
+                _ => {}
             }
             return;
         }

@@ -26,6 +26,8 @@ serde_json = { workspace = true }
 serde = { workspace = true }
 regex = { workspace = true }
 libc = { workspace = true }
+# QR codes for invitation links in the Sharing & handoff view (same version as vk-gateway).
+qrcode = { version = "0.14", default-features = false }
 
 [dev-dependencies]
 tempfile = { workspace = true }

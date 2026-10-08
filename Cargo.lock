@@ -3825,6 +3825,7 @@ dependencies = [
  "crossterm",
  "futures",
  "libc",
+ "qrcode",
  "regex",
  "serde",
  "serde_json",
