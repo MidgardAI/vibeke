@@ -1,5 +1,6 @@
 //! Server security end to end (09), through the real binary: runtime-dir checks and
-//! `umask 077`, `auth.elevate` from inside a pane approved outside it, `pane revoke-token`,
+//! `umask 077`, `auth.elevate` from inside a pane approved outside it, `vibeke handoff send` from
+//! a shell pane approved (or denied) outside it (`auth.approve`), `pane revoke-token`,
 //! `policy add|list|test|remove|trust --allow-policy-grants`, the audit log and
 //! `doctor --audit`, integration tamper detection (`integration.doctor`) against temp harness
 //! dirs, and `debug bundle`. In-pane commands write their output to files in the session dir,
@@ -13,7 +14,7 @@ use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
-use support::Session;
+use support::{Rpc, Session};
 
 /// `vibeke` with the session's dirs, harness configs redirected into the session dir (never the
 /// user's real ones) and a known umask (022) for the server it may spawn.
@@ -388,4 +389,138 @@ fn elevation_revocation_policy_audit_integrity_and_bundle() {
         "{}",
         String::from_utf8_lossy(&out.stdout)
     );
+}
+
+fn git(dir: &Path, args: &[&str]) {
+    let ok = Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_AUTHOR_NAME", "t")
+        .env("GIT_AUTHOR_EMAIL", "t@example.com")
+        .env("GIT_COMMITTER_NAME", "t")
+        .env("GIT_COMMITTER_EMAIL", "t@example.com")
+        .status()
+        .unwrap()
+        .success();
+    assert!(ok, "git {args:?} in {}", dir.display());
+}
+
+/// Start `vibeke handoff send laptop` in `pane` (it waits for the decision) and return the
+/// request it opened, as `auth list` shows it.
+fn send_from_pane(s: &Session, pane: &str, tag: &str) -> Value {
+    let d = s.dir.path();
+    json(
+        s,
+        &[
+            "pane",
+            "run",
+            pane,
+            &format!(
+                "$VIBEKE_BIN handoff send laptop > {0}/{tag}.out 2>&1; echo $? > {0}/{tag}.rc.tmp && mv {0}/{tag}.rc.tmp {0}/{tag}.rc",
+                d.display()
+            ),
+        ],
+    );
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let l = json(s, &["auth", "list"]);
+        if let Some(r) = l["approvals"]
+            .as_array()
+            .and_then(|a| a.iter().find(|r| r["pane"] == pane))
+        {
+            return r.clone();
+        }
+        assert!(Instant::now() < deadline, "no approval request from {pane}");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[test]
+fn handoff_send_from_a_shell_pane_waits_for_approval_outside_it() {
+    let s = Session::new();
+    let d = s.dir.path().canonicalize().unwrap();
+    let repo = d.join("app");
+    std::fs::create_dir_all(&repo).unwrap();
+    git(&repo, &["init", "-q", "-b", "main"]);
+    std::fs::write(repo.join("a.txt"), "a\n").unwrap();
+    git(&repo, &["add", "a.txt"]);
+    git(&repo, &["commit", "-q", "-m", "a"]);
+    let ws = json(
+        &s,
+        &["workspace", "create", "--cwd", repo.to_str().unwrap()],
+    );
+    let p = ws["root_pane"]["id"].as_str().unwrap().to_string();
+    wait_shell(&s, &p);
+    // The host's gateway publishes the peers it can deliver to.
+    let mut gw = Rpc::connect(&s.socket());
+    gw.call(
+        "client.hello",
+        serde_json::json!({"client": "test-gateway", "version": "0", "api": "vibeke/1", "kind": "gateway"}),
+    )
+    .unwrap();
+    gw.call(
+        "handoff.peers.set",
+        serde_json::json!({"peers": [{"id": "pr1", "name": "laptop", "owner": "self",
+                                      "added_at": 1, "expires_at": null, "expired": false}]}),
+    )
+    .unwrap();
+
+    // The shell pane asks; the user approves outside it; the job appears.
+    let req = send_from_pane(&s, &p, "hs");
+    let summary = req["summary"].as_str().unwrap();
+    assert!(
+        summary.starts_with("Send pane ")
+            && summary.contains("repo app, branch main")
+            && summary.contains("agent: none")
+            && summary.ends_with("to laptop (your host)"),
+        "{summary}"
+    );
+    let id = req["request"].as_str().unwrap().to_string();
+    let dec = json(&s, &["auth", "approval", &id, "approve"]);
+    assert_eq!(dec["decision"], "approved", "{dec}");
+    assert_eq!(dec["ok"], true, "{dec}");
+    assert_eq!(wait_file(&d.join("hs.rc"), 30).trim(), "0");
+    let out = std::fs::read_to_string(d.join("hs.out")).unwrap();
+    assert!(out.contains("Waiting for approval in Vibeke"), "{out}");
+    assert!(out.contains("queued"), "{out}");
+    let jobs = json(&s, &["handoff", "jobs"]);
+    let job = &jobs["jobs"][0];
+    assert_eq!(job["pane"], p.as_str(), "{jobs}");
+    assert_eq!(job["peer"], "pr1");
+    assert_eq!(job["by"], format!("pane:{p}"));
+    assert_eq!(job["expect"]["request"], id.as_str());
+    // Free the pane again (one handoff per pane at a time).
+    json(&s, &["handoff", "cancel", job["id"].as_str().unwrap()]);
+
+    // Denied: the CLI exits non-zero and says so.
+    let req = send_from_pane(&s, &p, "hs2");
+    let id = req["request"].as_str().unwrap().to_string();
+    let dec = json(&s, &["auth", "approval", &id, "deny"]);
+    assert_eq!(dec["decision"], "denied");
+    assert_ne!(wait_file(&d.join("hs2.rc"), 30).trim(), "0");
+    let out = std::fs::read_to_string(d.join("hs2.out")).unwrap();
+    assert!(out.contains("denied"), "{out}");
+    assert_eq!(
+        json(&s, &["handoff", "jobs"])["jobs"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+
+    let tail = json(&s, &["audit", "tail", "--limit", "200"]);
+    let types: Vec<&str> = tail["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["type"].as_str().unwrap())
+        .collect();
+    for t in [
+        "auth.approval_requested",
+        "auth.approval_granted",
+        "auth.approval_denied",
+    ] {
+        assert!(types.contains(&t), "{t} not audited: {types:?}");
+    }
 }
