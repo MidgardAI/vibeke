@@ -28,7 +28,8 @@ pub struct MenuKeys {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Row {
-    /// Stable id: the label's slug (never a display digit).
+    /// Stable id (never a display digit), see [`assign_ids`]: the label's slug, plus a hash of
+    /// the row's stable facts in a scrolling list.
     pub id: String,
     pub label: String,
     pub description: Option<String>,
@@ -58,9 +59,10 @@ pub struct Picker {
     pub scrolls: bool,
     pub adjust: Option<Adjust>,
     pub keys: MenuKeys,
-    /// Hash of what identifies this picker (name, title, footer and, for lists that do not
-    /// scroll, the row labels). Pointer, checkbox and adjuster state are left out: they change
-    /// while the picker is being answered.
+    /// Hash of what the picker asks: name, title, body, footer, a search filter and, for lists
+    /// that do not scroll, the row labels and descriptions. Only navigation state is left out
+    /// (pointer, checkboxes, adjuster value, the scroll window): it changes while the picker is
+    /// being answered. A changed signature is a different picker (a new interaction).
     pub signature: String,
 }
 
@@ -408,22 +410,16 @@ fn scan_list(lines: &[&str], end: usize) -> Option<ListScan> {
         }
     }
     let pointer = pointer?;
-    let mut seen = std::collections::HashMap::<String, usize>::new();
-    let rows = rows
+    let mut rows: Vec<Row> = rows
         .into_iter()
-        .map(|(label, description, checked)| {
-            let base = slug(&label);
-            let n = seen.entry(base.clone()).or_insert(0);
-            *n += 1;
-            let id = if *n == 1 { base } else { format!("{base}-{n}") };
-            Row {
-                id,
-                label,
-                description,
-                checked,
-            }
+        .map(|(label, description, checked)| Row {
+            id: String::new(),
+            label,
+            description,
+            checked,
         })
         .collect();
+    assign_ids(&mut rows, scrolls, |r| r.description.clone());
     Some(ListScan {
         rows,
         pointer,
@@ -431,6 +427,37 @@ fn scan_list(lines: &[&str], end: usize) -> Option<ListScan> {
         first,
         last,
     })
+}
+
+/// Give rows their option ids.
+///
+/// A fully visible list: the label's slug, numbered for repeated labels (`fix-2`); the whole
+/// list is on screen and in the signature, so a position names the same row every time.
+///
+/// A scrolling list: the slug plus a hash of the row's stable facts (`facts`, e.g. its
+/// description), so an id names the same row in every scroll window and filter. Rows that read
+/// the same still get distinct (numbered) ids, but they cannot be told apart on screen: the
+/// walker refuses to pick one (see [`twin`]).
+fn assign_ids(rows: &mut [Row], scrolls: bool, facts: impl Fn(&Row) -> Option<String>) {
+    let mut seen = std::collections::HashMap::<String, usize>::new();
+    for r in rows.iter_mut() {
+        let base = match facts(r).filter(|f| scrolls && !f.is_empty()) {
+            Some(f) => format!("{}~{:06x}", slug(&r.label), fnv(&f) & 0xff_ffff),
+            None => slug(&r.label),
+        };
+        let n = seen.entry(base.clone()).or_insert(0);
+        *n += 1;
+        r.id = if *n == 1 { base } else { format!("{base}-{n}") };
+    }
+}
+
+/// Does row `i` read the same as another visible row (label and description)? Such rows
+/// cannot be told apart, so answering one of them is refused rather than guessed.
+pub fn twin(rows: &[Row], i: usize) -> bool {
+    let r = &rows[i];
+    rows.iter()
+        .enumerate()
+        .any(|(j, o)| j != i && o.label == r.label && o.description == r.description)
 }
 
 /// The title block above the list: the nearest paragraph (after a modal edge, if any).
@@ -475,16 +502,38 @@ fn classify(title: &str) -> &'static str {
     }
 }
 
-fn signature(name: &str, title: &str, footer: &str, rows: Option<&[Row]>) -> String {
-    let labels = rows
+/// The picker's semantic content: what it asks (`title`, `body`, a search `filter`), what it
+/// offers (`rows`: labels and descriptions, for a list that shows all of them) and how it is
+/// answered (`footer`). Navigation state never goes in.
+fn signature(
+    name: &str,
+    title: &str,
+    body: Option<&str>,
+    filter: Option<&str>,
+    footer: &str,
+    rows: Option<&[Row]>,
+) -> String {
+    let rows = rows
         .map(|r| {
             r.iter()
-                .map(|x| x.label.as_str())
+                .map(|x| {
+                    format!(
+                        "{}\u{1f}{}",
+                        x.label,
+                        x.description.as_deref().unwrap_or("")
+                    )
+                })
                 .collect::<Vec<_>>()
-                .join("|")
+                .join("\u{1e}")
         })
         .unwrap_or_default();
-    format!("{:x}", fnv(&format!("{name}|{title}|{footer}|{labels}")))
+    let (body, filter) = (body.unwrap_or(""), filter.unwrap_or(""));
+    format!(
+        "{:x}",
+        fnv(&format!(
+            "{name}\u{1d}{title}\u{1d}{body}\u{1d}{filter}\u{1d}{footer}\u{1d}{rows}"
+        ))
+    )
 }
 
 /// The generic menu: a key-hint footer at the bottom, a pointer-marked list above it and a
@@ -517,7 +566,7 @@ pub fn generic_menu(lines: &[&str]) -> Option<Picker> {
     }
     let name = classify(&title).to_string();
     let rows_for_sig = (!list.scrolls).then_some(list.rows.as_slice());
-    let signature = signature(&name, &title, &ftext, rows_for_sig);
+    let signature = signature(&name, &title, body.as_deref(), None, &ftext, rows_for_sig);
     let mut rows = list.rows;
     if !multi {
         for r in &mut rows {
@@ -634,7 +683,8 @@ fn claude_effort(lines: &[&str]) -> Option<Picker> {
         .collect();
     let pointer = vals.iter().position(|v| *v == current);
     let name = "effort".to_string();
-    let signature = signature(&name, &title, &ftext, None);
+    // The values are fixed by `CLAUDE_EFFORTS`; the marker position is navigation state.
+    let signature = signature(&name, &title, None, None, &ftext, None);
     Some(Picker {
         name,
         title,
@@ -668,11 +718,12 @@ fn claude_resume(lines: &[&str]) -> Option<Picker> {
     let edge = lines[..fstart]
         .iter()
         .rposition(|l| is_edge(l) && l.contains('▔'))?;
-    let title = lines[edge + 1..fstart]
-        .iter()
-        .map(|l| l.trim())
-        .find(|l| !l.is_empty())?
-        .to_string();
+    let title_at = edge
+        + 1
+        + lines[edge + 1..fstart]
+            .iter()
+            .position(|l| !l.trim().is_empty())?;
+    let title = lines[title_at].trim().to_string();
     if !title.starts_with("Resume session") {
         return None;
     }
@@ -681,7 +732,8 @@ fn claude_resume(lines: &[&str]) -> Option<Picker> {
         .iter()
         .rposition(|l| l.trim_start().starts_with('╰'))
         .map(|i| edge + 1 + i + 1)
-        .unwrap_or(edge + 2);
+        .unwrap_or(title_at + 1)
+        .max(title_at + 1);
     let mut blocks: Vec<Vec<&str>> = Vec::new();
     let mut cur: Vec<&str> = Vec::new();
     for l in &lines[boxed_end..fstart] {
@@ -701,9 +753,15 @@ fn claude_resume(lines: &[&str]) -> Option<Picker> {
     if sessions.is_empty() || blocks.iter().any(|b| b.len() > 2) {
         return None;
     }
+    // The search box's text: a different filter is a different list.
+    let filter = lines[title_at + 1..boxed_end]
+        .iter()
+        .map(|l| strip_box(l))
+        .filter(|l| !l.is_empty() && !is_border_only(l))
+        .collect::<Vec<_>>()
+        .join(" ");
     let mut rows = Vec::new();
     let mut pointer = None;
-    let mut seen = std::collections::HashMap::<String, usize>::new();
     for b in &sessions {
         let head = b[0].trim();
         let mut ch = head.chars();
@@ -724,19 +782,24 @@ fn claude_resume(lines: &[&str]) -> Option<Picker> {
             }
             pointer = Some(rows.len());
         }
-        let base = slug(label);
-        let n = seen.entry(base.clone()).or_insert(0);
-        *n += 1;
         rows.push(Row {
-            id: if *n == 1 { base } else { format!("{base}-{n}") },
+            id: String::new(),
             label: label.to_string(),
             description: Some(b[1].trim().to_string()),
             checked: None,
         });
     }
     let pointer = pointer?;
+    // A session's identity: its title plus the facts after the age (branch, size, link). The
+    // age (`1 second ago`) ticks while the list is open, so it stays out.
+    assign_ids(&mut rows, true, |r| {
+        r.description
+            .as_deref()
+            .map(|d| d.split_once(" · ").map_or("", |(_, rest)| rest).to_string())
+    });
     let name = "resume".to_string();
-    let signature = signature(&name, "Resume session", &ftext, None);
+    // The title's `(1 of 23)` is the pointer position: navigation state, left out.
+    let signature = signature(&name, "Resume session", None, Some(&filter), &ftext, None);
     Some(Picker {
         name,
         title,
@@ -907,6 +970,12 @@ pub fn next_step(p: &Picker, goal: &Goal, order: &[String]) -> Step {
     let walk_to = |want: &str| -> Option<Step> {
         let cur = p.pointer?;
         let pos = p.rows.iter().position(|r| r.id == want);
+        // Rows that read the same cannot be told apart: never guess which one was meant.
+        if pos.is_some_and(|t| twin(&p.rows, t)) {
+            return Some(Step::Fail(format!(
+                "picker_changed: option {want} reads the same as another row on screen"
+            )));
+        }
         let dir = match pos {
             Some(t) if t == cur => return None,
             Some(t) => t > cur,
@@ -928,6 +997,12 @@ pub fn next_step(p: &Picker, goal: &Goal, order: &[String]) -> Step {
     if let Some(want) = &goal.checked {
         if !p.multi {
             return Step::Fail("not a multi-select picker".into());
+        }
+        if let Some(r) = (0..p.rows.len()).find(|&i| twin(&p.rows, i)) {
+            return Step::Fail(format!(
+                "picker_changed: option {} reads the same as another row on screen",
+                p.rows[r].id
+            ));
         }
         if let Some(r) = p
             .rows

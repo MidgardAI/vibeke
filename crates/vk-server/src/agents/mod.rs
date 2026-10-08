@@ -551,8 +551,10 @@ impl Agents {
                 .find(|i| i.pane == pane && i.status == InteractionStatus::Open)
                 .cloned()
         });
-        // A screen picker that changed (another picker replaced it) is resolved and the new one
-        // opens below; one that only moved its pointer, checks or adjuster is updated in place.
+        // A screen picker whose signature changed (another picker, or the same title asking
+        // something else: body, options, descriptions, filter) is resolved and the new one opens
+        // below, so an answer never confirms content the card did not show. Only navigation
+        // (pointer, checks, adjuster, a scrolling list's window) is updated in place.
         let open_screen = match (&m.dialog, open_screen) {
             (Some(d), Some(it))
                 if it.source == StateSource::Screen
@@ -712,7 +714,7 @@ impl Agents {
 }
 
 /// Update an open screen picker's pointer, checks, adjuster and (for a scrolled list) visible
-/// rows in place.
+/// rows in place. Called only while the signature is unchanged, so title and body still hold.
 fn refresh_picker(server: &Server, it: &Interaction, d: &screen::Dialog) {
     let questions = d.options_as_question();
     let info = d.picker.as_ref().map(screen::picker_info);

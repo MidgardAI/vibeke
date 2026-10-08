@@ -21,8 +21,23 @@ fn labels(p: &Picker) -> Vec<&str> {
     p.rows.iter().map(|r| r.label.as_str()).collect()
 }
 
+/// The pointed row's id without the stable-facts hash a scrolling list adds (`opus-5-5~1a2b3c`).
 fn pointed(p: &Picker) -> &str {
-    &p.rows[p.pointer.unwrap()].id
+    base(&p.rows[p.pointer.unwrap()].id)
+}
+
+fn base(id: &str) -> &str {
+    id.split('~').next().unwrap()
+}
+
+/// The option id of the row labelled `label`.
+fn id_of(p: &Picker, label: &str) -> String {
+    p.rows
+        .iter()
+        .find(|r| r.label == label)
+        .unwrap_or_else(|| panic!("no row {label}"))
+        .id
+        .clone()
 }
 
 // ---- Claude ---------------------------------------------------------------------------------------
@@ -347,38 +362,40 @@ fn planning_single_select_walks_then_commits_session_only() {
         target: Some(t.into()),
         ..Default::default()
     };
-    assert_eq!(step(&p, &g("sonnet-5-5")), Step::Key("down".into()));
-    assert_eq!(step(&p, &g("default-recommended")), Step::Key("up".into()));
+    let id = |l: &str| id_of(&p, l);
+    assert_eq!(step(&p, &g(&id("Sonnet 5.5"))), Step::Key("down".into()));
+    assert_eq!(
+        step(&p, &g(&id("Default (recommended)"))),
+        Step::Key("up".into())
+    );
     // On the target: commit with the session-only key, never Enter (which persists a default).
-    assert_eq!(step(&p, &g("opus-5-5")), Step::Commit("s".into()));
+    assert_eq!(step(&p, &g(&id("Opus 5.5"))), Step::Commit("s".into()));
     let persist = Goal {
         persist: true,
-        ..g("opus-5-5")
+        ..g(&id("Opus 5.5"))
     };
     assert_eq!(step(&p, &persist), Step::Commit("enter".into()));
     // Never a digit.
-    for t in ["fable-5-1", "haiku-4-5", "sonnet-5"] {
-        assert!(matches!(step(&p, &g(t)), Step::Key(k) if k == "down"));
+    for t in ["Fable 5.1", "Haiku 4.5", "Sonnet 5"] {
+        assert!(matches!(step(&p, &g(&id(t))), Step::Key(k) if k == "down"));
     }
 }
 
 #[test]
 fn planning_uses_the_recorded_order_for_rows_scrolled_out_of_view() {
     let p = picker(Harness::Claude, "claude/2.1.295/model-scrolled.txt").unwrap();
-    let order: Vec<String> = [
-        "default-recommended",
-        "opus-5-5",
-        "fable-5-1",
-        "sonnet-5-5",
-        "haiku-5-5",
-        "haiku-4-5",
-        "sonnet-5",
-        "opus-5",
-    ]
-    .map(String::from)
-    .to_vec();
+    let top = picker(Harness::Claude, "claude/2.1.295/model.txt").unwrap();
+    // The order recorded when the interaction opened (the top of the list), then the rows
+    // scrolled into view since: one id per row in every window.
+    let mut order: Vec<String> = top.rows.iter().map(|r| r.id.clone()).collect();
+    for r in &p.rows {
+        if !order.contains(&r.id) {
+            order.push(r.id.clone());
+        }
+    }
+    assert_eq!(order.len(), 8, "{order:?}");
     let g = Goal {
-        target: Some("default-recommended".into()),
+        target: Some(id_of(&top, "Default (recommended)")),
         ..Default::default()
     };
     assert_eq!(next_step(&p, &g, &order), Step::Key("up".into()));
@@ -409,13 +426,13 @@ fn planning_adjuster() {
     // The model picker: walk the pointer first, then the adjuster.
     let m = picker(Harness::Claude, "claude/2.1.295/model.txt").unwrap();
     let both = Goal {
-        target: Some("fable-5-1".into()),
+        target: Some(id_of(&m, "Fable 5.1")),
         adjust: Some("high".into()),
         ..Default::default()
     };
     assert_eq!(step(&m, &both), Step::Key("down".into()));
     let here = Goal {
-        target: Some("opus-5-5".into()),
+        target: Some(id_of(&m, "Opus 5.5")),
         adjust: Some("high".into()),
         ..Default::default()
     };
@@ -511,4 +528,161 @@ fn json_shape_of_a_picker_interaction() {
         .remove("selected");
     let back: Interaction = serde_json::from_value(old).unwrap();
     assert!(back.picker.is_none());
+}
+
+// ---- review findings: option identity and signatures ------------------------------------------
+
+/// Review finding: in a scrolling list an option id names the same row in every scroll window
+/// (old ids were label slugs numbered per window: `hello-2` became `hello` after a scroll).
+#[test]
+fn scrolling_list_ids_survive_scrolling() {
+    let top = picker(Harness::Claude, "claude/2.1.295/model.txt").unwrap();
+    let down = picker(Harness::Claude, "claude/2.1.295/model-scrolled.txt").unwrap();
+    for l in ["Opus 5.5", "Fable 5.1", "Sonnet 5"] {
+        assert_eq!(id_of(&top, l), id_of(&down, l), "{l}");
+    }
+    let w1 = generic_menu(&[
+        "Pick a session",
+        "",
+        "❯ hello  main · 2KB",
+        "  hello  dev · 9KB",
+        "  ↓ 3 more",
+        "",
+        "↑/↓ to move · Enter to select · Esc to cancel",
+    ])
+    .unwrap();
+    let w2 = generic_menu(&[
+        "Pick a session",
+        "",
+        "↑ hello  dev · 9KB",
+        "❯ zeta  dev · 1KB",
+        "  ↓ 2 more",
+        "",
+        "↑/↓ to move · Enter to select · Esc to cancel",
+    ])
+    .unwrap();
+    assert!(w1.scrolls && w2.scrolls);
+    assert_eq!(w1.signature, w2.signature, "scrolling is navigation");
+    let dev = w1.rows[1].id.clone();
+    assert_ne!(dev, w1.rows[0].id);
+    assert_eq!(w2.rows[0].id, dev, "the same row keeps its id");
+    // An answer for `main · 2KB` (scrolled out of view) never commits the `dev` row.
+    let g = Goal {
+        target: Some(w1.rows[0].id.clone()),
+        ..Default::default()
+    };
+    let order: Vec<String> = w1
+        .rows
+        .iter()
+        .chain(&w2.rows[1..])
+        .map(|r| r.id.clone())
+        .collect();
+    assert_eq!(next_step(&w2, &g, &order), Step::Key("up".into()));
+}
+
+/// Review finding: rows that read the same (label and description) cannot be told apart on
+/// screen, so answering one of them is refused, never guessed.
+#[test]
+fn twin_rows_are_refused() {
+    let p = generic_menu(&[
+        "Pick a session",
+        "",
+        "  hello  main · 2KB",
+        "❯ hello  main · 2KB",
+        "  other  dev · 1KB",
+        "  ↓ 3 more",
+        "",
+        "↑/↓ to move · Enter to select · Esc to cancel",
+    ])
+    .unwrap();
+    assert_ne!(p.rows[0].id, p.rows[1].id, "option ids stay unique");
+    for i in [0, 1] {
+        let g = Goal {
+            target: Some(p.rows[i].id.clone()),
+            ..Default::default()
+        };
+        assert!(
+            matches!(step(&p, &g), Step::Fail(r) if r.starts_with("picker_changed")),
+            "row {i}"
+        );
+    }
+    let other = Goal {
+        target: Some(p.rows[2].id.clone()),
+        ..Default::default()
+    };
+    assert_eq!(step(&p, &other), Step::Key("down".into()));
+}
+
+/// Review finding: a resume row's id holds its stable facts (branch, size) but not its ticking
+/// age, and the search filter is part of the signature.
+#[test]
+fn resume_ids_ignore_the_age_and_the_filter_changes_the_signature() {
+    let text = rec("claude/2.1.295/resume.txt");
+    let p = screen::evaluate(Harness::Claude, &text)
+        .dialog
+        .and_then(|d| d.picker)
+        .unwrap();
+    let later = text.replace("1 second ago", "9 seconds ago");
+    let q = screen::evaluate(Harness::Claude, &later)
+        .dialog
+        .and_then(|d| d.picker)
+        .unwrap();
+    assert_eq!(p.rows[0].id, q.rows[0].id);
+    assert_eq!(p.signature, q.signature);
+    assert!(p.rows[0].id.starts_with("fix-flaky-upload-test~"));
+    let filtered = text.replace("⌕ Search…", "⌕ fix");
+    let f = screen::evaluate(Harness::Claude, &filtered)
+        .dialog
+        .and_then(|d| d.picker)
+        .unwrap();
+    assert_ne!(
+        p.signature, f.signature,
+        "a filtered list is a different list"
+    );
+}
+
+/// Review finding: two confirmations with the same title and options but a different body or
+/// option description are different pickers; moving the pointer is not.
+#[test]
+fn signature_covers_body_and_descriptions_but_not_navigation() {
+    let confirm = |body: &str, yes: &str, at_no: bool| {
+        let (y, n) = if at_no {
+            ("  ", "❯ ")
+        } else {
+            ("❯ ", "  ")
+        };
+        let lines = [
+            "Delete the branch?".to_string(),
+            body.to_string(),
+            String::new(),
+            format!("{y}Yes  {yes}"),
+            format!("{n}No"),
+            String::new(),
+            "Enter to confirm · Esc to cancel".to_string(),
+        ];
+        let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+        generic_menu(&refs).unwrap()
+    };
+    let a = confirm("Removes feature/a from the remote.", "delete it", false);
+    let b = confirm("Removes main from the remote.", "delete it", false);
+    let c = confirm(
+        "Removes feature/a from the remote.",
+        "force-delete it",
+        false,
+    );
+    let moved = confirm("Removes feature/a from the remote.", "delete it", true);
+    assert_eq!(
+        a.body.as_deref(),
+        Some("Removes feature/a from the remote.")
+    );
+    assert_ne!(a.signature, b.signature, "body");
+    assert_ne!(a.signature, c.signature, "option description");
+    assert_eq!(a.signature, moved.signature, "pointer");
+    // Checkbox state is navigation too.
+    let mut m = MULTI.to_vec();
+    m[3] = "  [x] Unit tests";
+    assert_eq!(
+        generic_menu(MULTI).unwrap().signature,
+        generic_menu(&m).unwrap().signature
+    );
 }
