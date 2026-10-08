@@ -111,10 +111,10 @@ pub fn parse_link(s: &str) -> Result<Invite, String> {
     let field = |k: &str| v.get(k).and_then(Value::as_str);
     if ["relay", "host", "pid", "name"]
         .iter()
-        .any(|k| field(*k).is_none())
+        .any(|k| field(k).is_none())
         || ["hk", "psk"]
             .iter()
-            .any(|k| field(*k).and_then(b64).is_none_or(|b| b.len() != 32))
+            .any(|k| field(k).and_then(b64).is_none_or(|b| b.len() != 32))
     {
         return Err(NOT_A_LINK.into());
     }

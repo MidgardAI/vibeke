@@ -7,7 +7,6 @@
 
 use super::*;
 use crate::drafts::tests::{ch, commands, ctl, fleet, named, reply, screen, typ};
-use base64::Engine as _;
 use tokio::sync::mpsc::UnboundedReceiver;
 use vk_proto::render::{ClientFrame, ServerFrame};
 
