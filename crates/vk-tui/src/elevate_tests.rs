@@ -41,6 +41,7 @@ fn open_armed(app: &mut App) {
     app.action("elevation_requests", None);
     assert!(matches!(app.mode, Mode::Popup(Popup::Elevate)));
     app.ux.elevate.view.as_mut().unwrap().opened_at = Instant::now() - ARM_DELAY * 2;
+    app.ux.elevate.view.as_ref().unwrap().shown_armed.set(true);
 }
 
 #[test]
@@ -120,6 +121,7 @@ fn keys_within_the_arm_delay_and_modified_keys_never_decide() {
     assert!(matches!(app.mode, Mode::Popup(Popup::Elevate)));
     assert!(commands(&mut rx[0]).is_empty(), "never auto-approved");
     app.ux.elevate.view.as_mut().unwrap().opened_at = Instant::now() - ARM_DELAY * 2;
+    app.ux.elevate.view.as_ref().unwrap().shown_armed.set(true);
     for m in [
         Mods::CTRL,
         Mods::ALT,
@@ -313,6 +315,7 @@ fn focus_shell(app: &mut App, fg: &[&str]) {
 
 fn arm(app: &mut App) {
     app.ux.elevate.view.as_mut().unwrap().opened_at = Instant::now() - ARM_DELAY * 2;
+    app.ux.elevate.view.as_ref().unwrap().shown_armed.set(true);
 }
 
 fn with_kind(mut e: KeyEvent, k: KeyKind) -> KeyEvent {
@@ -440,6 +443,7 @@ fn repeats_releases_and_keys_held_since_before_arming_never_decide() {
     assert!(commands(&mut rx[0]).is_empty(), "a release never decides");
     // Pressed while not armed and still held when the delay ends.
     app.ux.elevate.view.as_mut().unwrap().opened_at = Instant::now();
+    app.ux.elevate.view.as_ref().unwrap().shown_armed.set(false);
     app.on_key(ch('a'));
     arm(&mut app);
     app.on_key(with_kind(ch('a'), KeyKind::Repeat));
@@ -655,4 +659,30 @@ fn scoped_client_cannot_decide_an_approval_and_errors_are_explained() {
     let (req, _) = only(&commands(&mut rx[0]), "auth.approve.decide");
     reply_err(&mut app, 0, req, "conflict", json!({}));
     assert!(app.ux.elevate.requests.is_empty());
+}
+
+#[test]
+fn the_arm_deadline_repaints_and_keys_decide_only_after_the_armed_frame() {
+    let (mut app, mut rx) = fleet();
+    app.ux.elevate.scoped_override = Some(false);
+    approval(&mut app, 0, "ap-1", "p2", "handoff.send", true);
+    open_armed(&mut app);
+    // Time has passed but no frame showed the keys live yet: the deadline is still due and a
+    // key decides nothing.
+    let v = app.ux.elevate.view.as_ref().unwrap();
+    v.shown_armed.set(false);
+    let now = Instant::now();
+    assert!(app.deadlines(now).redraw_due(now));
+    app.on_key(ch('y'));
+    assert!(
+        !commands(&mut rx[0])
+            .iter()
+            .any(|(_, m, _)| m == "auth.approve.decide")
+    );
+    // Drawing it armed clears the deadline and makes the keys live.
+    let _ = screen(&app);
+    assert!(!app.deadlines(now).redraw_due(now));
+    app.on_key(ch('y'));
+    let (_, p) = only(&commands(&mut rx[0]), "auth.approve.decide");
+    assert_eq!(p, json!({"request": "ap-1", "decision": "approve"}));
 }

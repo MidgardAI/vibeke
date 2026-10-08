@@ -176,6 +176,8 @@ pub async fn export_bundle(
     if let Some(e) = expect {
         e.check(&root.display().to_string(), branch.as_deref(), &head)?;
     }
+    // Every checkout appends to HEAD's reflog, even one that later returns to `head`.
+    let head_log = head_log_len(&root).await;
     let origin = git_line(&root, &["remote", "get-url", "origin"]).await;
     let has_remotes = git_line(&root, &["remote"]).await.is_some();
 
@@ -301,7 +303,16 @@ pub async fn export_bundle(
     }
     // The working-tree diff and untracked files were read live: HEAD and the branch must not
     // have moved while they were.
-    if let Err(e) = still_at(&root, manifest.branch.as_deref(), &manifest.head).await {
+    // A checkout to elsewhere and back leaves HEAD as it was, but not its reflog.
+    let moved = match still_at(&root, manifest.branch.as_deref(), &manifest.head).await {
+        Err(e) => Some(e),
+        Ok(()) if head_log_len(&root).await != head_log => Some(err(
+            "conflict",
+            "repo_moved: the repository was checked out during the export; nothing was sent, try again",
+        )),
+        Ok(()) => None,
+    };
+    if let Some(e) = moved {
         let _ = std::fs::remove_file(&out_path);
         return Err(e);
     }
@@ -477,6 +488,12 @@ async fn tracked_changes(root: &Path, head: &str) -> Result<Vec<u8>, ApiError> {
     .map_err(ApiError::from)
 }
 
+/// The length of HEAD's reflog (`None` without one, e.g. `core.logAllRefUpdates=false`).
+async fn head_log_len(root: &Path) -> Option<u64> {
+    let rel = git_line(root, &["rev-parse", "--git-path", "logs/HEAD"]).await?;
+    std::fs::metadata(root.join(rel)).ok().map(|m| m.len())
+}
+
 /// `repo_moved` unless the repository is still on `branch` at `head`.
 async fn still_at(root: &Path, branch: Option<&str>, head: &str) -> Result<(), ApiError> {
     let now = git_line(root, &["rev-parse", "HEAD"])
@@ -624,6 +641,19 @@ mod tests {
         sh(&repo, &["checkout", "-q", "--detach", &a]);
         assert!(still_at(&repo, Some("other"), &a).await.is_err());
         assert!(still_at(&repo, None, &a).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn a_checkout_elsewhere_and_back_changes_the_head_reflog() {
+        let t = tempfile::tempdir().unwrap();
+        let (repo, _a, b) = setup(t.path());
+        let before = head_log_len(&repo).await;
+        assert!(before.is_some());
+        assert_eq!(head_log_len(&repo).await, before);
+        sh(&repo, &["checkout", "-q", "main"]);
+        sh(&repo, &["checkout", "-q", "feature"]);
+        assert!(still_at(&repo, Some("feature"), &b).await.is_ok());
+        assert_ne!(head_log_len(&repo).await, before);
     }
 
     #[test]

@@ -125,6 +125,9 @@ pub struct View {
     pub sel: Option<(usize, String)>,
     /// When the view opened or the selection last changed: keys count only [`ARM_DELAY`] later.
     pub opened_at: Instant,
+    /// The view was drawn with the keys live for the current selection; only then do y/a/n
+    /// decide (the user saw what they decide on, armed). Reset with `opened_at`.
+    pub shown_armed: std::cell::Cell<bool>,
     pub notice: Option<String>,
     /// Kitty keyboard protocol: keys seen pressed while not armed, or repeating, and not seen
     /// released since. Their next press does not decide.
@@ -240,6 +243,7 @@ fn select(app: &mut App, i: Option<usize>) {
     if let Some(v) = app.ux.elevate.view.as_mut() {
         if v.sel != sel {
             v.opened_at = Instant::now();
+            v.shown_armed.set(false);
         }
         v.sel = sel;
         v.notice = None;
@@ -260,6 +264,7 @@ fn reconcile(app: &mut App) {
     if gone && let Some(v) = app.ux.elevate.view.as_mut() {
         v.sel = None;
         v.opened_at = Instant::now();
+        v.shown_armed.set(false);
         v.notice = Some(
             "that request is gone (decided, withdrawn or expired): select one with j/k".into(),
         );
@@ -478,11 +483,11 @@ pub fn deadlines(app: &App, d: &mut crate::deadline::Deadlines) {
         d.at("elevate.expire", Instant::now() + Duration::from_millis(ms));
     }
     // The arm delay ends: redraw so the key hint shows as live.
-    if let Some(v) = &app.ux.elevate.view {
-        let armed = v.opened_at + ARM_DELAY;
-        if armed > Instant::now() {
-            d.redraw("elevate.arm", armed);
-        }
+    // Kept until a frame showed the keys live, so the wakeup at the deadline still repaints.
+    if let Some(v) = &app.ux.elevate.view
+        && !v.shown_armed.get()
+    {
+        d.redraw("elevate.arm", v.opened_at + ARM_DELAY);
     }
 }
 
@@ -555,6 +560,7 @@ pub fn open(app: &mut App) {
     app.ux.elevate.view = Some(View {
         sel: Some((r.machine, r.id.clone())),
         opened_at: Instant::now(),
+        shown_armed: std::cell::Cell::new(false),
         notice: None,
         held: HashSet::new(),
     });
@@ -636,7 +642,13 @@ fn decide(app: &mut App, decision: Decision) {
 
 pub fn key(app: &mut App, ev: KeyEvent) {
     let keep = |app: &mut App| app.mode = Mode::Popup(Popup::Elevate);
-    let Some(opened) = app.ux.elevate.view.as_ref().map(|v| v.opened_at) else {
+    let Some((opened, shown)) = app
+        .ux
+        .elevate
+        .view
+        .as_ref()
+        .map(|v| (v.opened_at, v.shown_armed.get()))
+    else {
         return;
     };
     if ev.kind == KeyKind::Release {
@@ -651,7 +663,7 @@ pub fn key(app: &mut App, ev: KeyEvent) {
         app.ux.elevate.view = None;
         return;
     }
-    let armed = opened.elapsed() >= ARM_DELAY;
+    let armed = opened.elapsed() >= ARM_DELAY && shown;
     let kitty = app.kitty;
     let was_held = match app.ux.elevate.view.as_mut() {
         Some(v) => {
@@ -914,6 +926,9 @@ pub fn draw(app: &App, g: &mut Grid) {
         );
     }
     let armed = v.opened_at.elapsed() >= ARM_DELAY;
+    if armed {
+        v.shown_armed.set(true);
+    }
     let deciding = app.ux.elevate.deciding.contains(&(r.machine, r.id.clone()));
     let keys = if deciding {
         "deciding…".to_string()
