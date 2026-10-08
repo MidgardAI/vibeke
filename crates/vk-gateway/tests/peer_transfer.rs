@@ -452,12 +452,20 @@ async fn offer_write_resume_commit() {
     // As B's connection would when it closes: the request future is dropped.
     let peer_dev = b.devices().into_iter().find(|d| d.kind == "peer").unwrap();
     let params = json!({"id": sid});
-    let gave_up = tokio::time::timeout(
-        Duration::from_millis(300),
-        vk_gateway::handoff_peer::dispatch(&b, &peer_dev, "handoff.commit", &params),
-    )
-    .await;
-    assert!(gave_up.is_err(), "the commit answered too early");
+    // One poll starts the commit (the server takes 1.5 s to answer), then the request is
+    // dropped. A wall-clock timeout here raced the server's answer on loaded runners.
+    let mut commit = Box::pin(vk_gateway::handoff_peer::dispatch(
+        &b,
+        &peer_dev,
+        "handoff.commit",
+        &params,
+    ));
+    let first = futures::poll!(commit.as_mut());
+    assert!(
+        first.is_pending(),
+        "the commit answered too early: {first:?}"
+    );
+    drop(commit);
     let mut st = Value::Null;
     for _ in 0..200 {
         st = conn
