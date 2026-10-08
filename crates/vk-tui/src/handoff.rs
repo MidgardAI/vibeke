@@ -405,9 +405,23 @@ pub enum Reply {
     Send,
     Cancel,
     /// Auto-pairing for a send: `gateway.call peer.invite` on the destination machine.
-    PairInvite,
+    PairInvite {
+        op: PairOp,
+    },
+    /// Then `gateway.call peer.list` on the source: is the invitation's host (by id) already
+    /// one of its own peers?
+    PairList {
+        op: PairOp,
+        link: String,
+        /// The invitation's pairing id on the destination (revoked when it goes unused).
+        pid: Option<String>,
+        /// The destination host's id, from the link.
+        host: String,
+    },
     /// Then `gateway.call peer.redeem` on the source.
-    PairRedeem,
+    PairRedeem {
+        op: PairOp,
+    },
 }
 
 fn pend(r: Reply) -> Pending {
@@ -1873,6 +1887,7 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
                 if let Some(f) = app.ux.handoff.send.as_mut() {
                     f.busy = false;
                     f.pairing = None;
+                    f.pair_op = None;
                     f.error = Some(e.message);
                 } else {
                     app.toast(format!("✗ {}", e.message));
@@ -1889,8 +1904,14 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
             }
             Err(e) => app.toast(format!("✗ {}", e.message)),
         },
-        Reply::PairInvite => on_pair_invite(app, mi, res),
-        Reply::PairRedeem => on_pair_redeem(app, res),
+        Reply::PairInvite { op } => on_pair_invite(app, mi, op, res),
+        Reply::PairList {
+            op,
+            link,
+            pid,
+            host,
+        } => on_pair_list(app, op, link, pid, host, res),
+        Reply::PairRedeem { op } => on_pair_redeem(app, op, res),
     }
     app.dirty = true;
 }
@@ -2286,8 +2307,26 @@ pub struct SendForm {
     pub busy: bool,
     /// Auto-pairing step in progress, as the summary shows it.
     pub pairing: Option<String>,
+    /// The auto-pairing in flight: its replies are acted on only while this is it.
+    pub pair_op: Option<PairOp>,
     pub error: Option<String>,
 }
+
+/// One auto-pairing run for a send, frozen when it starts: a reply that arrives after Esc (or
+/// for another form) carries a different one and is ignored.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PairOp {
+    /// Unique per run.
+    pub id: u64,
+    /// The source machine and the pane being handed off.
+    pub src: usize,
+    pub pane: String,
+    /// The destination machine (where the invitation is made) and its name.
+    pub dest_mi: usize,
+    pub dest_name: String,
+}
+
+static NEXT_PAIR_OP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 impl SendForm {
     /// The source's peers (server order: own hosts first), then the user's machines that are not
@@ -2297,7 +2336,14 @@ impl SendForm {
         v.extend(
             self.machines
                 .iter()
-                .filter(|d| !self.peers.iter().any(|p| same_host(&p.name, d.name())))
+                // Listing only: a teammate's host of the same name never hides your machine,
+                // and the destination is resolved by host id when pairing.
+                .filter(|d| {
+                    !self
+                        .peers
+                        .iter()
+                        .any(|p| p.owner == "self" && same_host(&p.name, d.name()))
+                })
                 .cloned(),
         );
         v
@@ -2353,6 +2399,7 @@ pub fn open_send(app: &mut App) {
         interrupt: false,
         busy: false,
         pairing: None,
+        pair_op: None,
         error: None,
     });
     app.mode = Mode::Popup(Popup::HandoffSend);
@@ -2367,6 +2414,7 @@ fn start_send(app: &mut App, peer: &str) {
     f.busy = true;
     f.error = None;
     f.pairing = None;
+    f.pair_op = None;
     let p = json!({"pane": f.pane, "peer": peer, "interrupt": f.interrupt});
     let mi = f.mi;
     app.command_on(mi, "handoff.send", p, pend(Reply::Send));
@@ -2388,6 +2436,13 @@ fn submit_send(app: &mut App) {
                 .get(f.mi)
                 .map(|m| m.label.clone())
                 .unwrap_or_default();
+            let op = PairOp {
+                id: NEXT_PAIR_OP.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+                src: f.mi,
+                pane: f.pane.clone(),
+                dest_mi: dmi,
+                dest_name: dest.name().to_string(),
+            };
             f.busy = true;
             f.error = None;
             f.pairing = Some(format!(
@@ -2395,12 +2450,13 @@ fn submit_send(app: &mut App) {
                 dest.name(),
                 dest.name()
             ));
+            f.pair_op = Some(op.clone());
             crate::handoff::call_long_pending(
                 app,
                 dmi,
                 "gateway.call",
                 json!({"method": "peer.invite", "params": {}}),
-                pend(Reply::PairInvite),
+                pend(Reply::PairInvite { op }),
             );
         }
         Plan::Unavailable(why) => {
@@ -2418,23 +2474,49 @@ fn pair_failed(app: &mut App, msg: String) {
     if let Some(f) = app.ux.handoff.send.as_mut() {
         f.busy = false;
         f.pairing = None;
+        f.pair_op = None;
         f.error = Some(msg);
     } else {
         app.toast(format!("✗ {msg}"));
     }
 }
 
-/// `peer.invite` answered on the destination machine `dmi`: redeem it on the source, unless the
-/// source already has a peer of that name (the machine's label differs from its host name).
-fn on_pair_invite(app: &mut App, dmi: usize, res: Result<Value, RpcErr>) {
-    let Some(f) = app.ux.handoff.send.as_ref().filter(|f| f.pairing.is_some()) else {
-        return;
-    };
-    let name = f
-        .chosen
+/// Whether `op` is the auto-pairing the open send form is waiting on (same run, same source
+/// pane): anything else is a late reply for a form that is gone.
+fn is_current(app: &App, op: &PairOp) -> bool {
+    app.ux.handoff.send.as_ref().is_some_and(|f| {
+        f.busy && f.pair_op.as_ref() == Some(op) && f.mi == op.src && f.pane == op.pane
+    })
+}
+
+/// An invitation made for a pairing that is not used: cancel it on the machine that made it.
+fn revoke_invitation(app: &mut App, dmi: usize, pid: Option<&str>) {
+    if let Some(pid) = pid.filter(|p| !p.is_empty())
+        && app.machines.get(dmi).is_some_and(|m| m.connected())
+    {
+        call_long_pending(
+            app,
+            dmi,
+            "gateway.call",
+            json!({"method": "share.revoke", "params": {"id": pid}}),
+            Pending::Ignore,
+        );
+    }
+}
+
+/// `peer.invite` answered on the destination machine `dmi`: ask the source whether it is
+/// already paired with that host (by host id, never by name), else redeem it there.
+fn on_pair_invite(app: &mut App, dmi: usize, op: PairOp, res: Result<Value, RpcErr>) {
+    let pid = res
         .as_ref()
-        .map(|d| d.name().to_string())
-        .unwrap_or_default();
+        .ok()
+        .and_then(|v| v["pid"].as_str())
+        .map(str::to_string);
+    if !is_current(app, &op) || dmi != op.dest_mi {
+        // Esc (or another form) since: the invitation is not going to be used.
+        return revoke_invitation(app, dmi, pid.as_deref());
+    }
+    let name = op.dest_name.clone();
     let v = match res {
         Ok(v) => v,
         Err(e) => {
@@ -2452,54 +2534,88 @@ fn on_pair_invite(app: &mut App, dmi: usize, res: Result<Value, RpcErr>) {
             format!("pairing failed: {name} returned no invitation"),
         );
     };
-    let now = now_ms();
-    let known = crate::sharing::parse_link(&link).ok().and_then(|inv| {
-        f.peers
-            .iter()
-            .find(|p| p.name == inv.host_name && !p.is_expired(now))
-            .cloned()
-    });
-    let src = f.mi;
-    if let Some(p) = known {
-        // Already paired after all: the unused invitation goes, the work goes to that peer.
-        if let Some(pid) = v["pid"].as_str() {
-            crate::handoff::call_long_pending(
-                app,
-                dmi,
-                "gateway.call",
-                json!({"method": "share.revoke", "params": {"id": pid}}),
-                Pending::Ignore,
-            );
-        }
-        if let Some(f) = app.ux.handoff.send.as_mut() {
-            f.chosen = Some(Dest::Peer(p.clone()));
-        }
-        return start_send(app, &p.id);
+    let host = crate::sharing::parse_link(&link)
+        .ok()
+        .map(|inv| inv.host)
+        .filter(|h| !h.is_empty());
+    let Some(host) = host else {
+        // No host id to match on: pair (the gateway checks the link).
+        return redeem(app, op, link);
+    };
+    if let Some(f) = app.ux.handoff.send.as_mut() {
+        f.pairing = Some(format!("pairing with {name}: checking the peers here…"));
     }
+    let src = op.src;
+    call_long_pending(
+        app,
+        src,
+        "gateway.call",
+        json!({"method": "peer.list", "params": {}}),
+        pend(Reply::PairList {
+            op,
+            link,
+            pid,
+            host,
+        }),
+    );
+}
+
+/// `peer.list` answered on the source: an own, unexpired peer with the invitation's host id is
+/// the destination (the invitation is revoked); otherwise the invitation is redeemed.
+fn on_pair_list(
+    app: &mut App,
+    op: PairOp,
+    link: String,
+    pid: Option<String>,
+    host: String,
+    res: Result<Value, RpcErr>,
+) {
+    if !is_current(app, &op) {
+        return revoke_invitation(app, op.dest_mi, pid.as_deref());
+    }
+    let now = now_ms();
+    let known = res.ok().and_then(|v| {
+        v["peers"].as_array().and_then(|a| {
+            a.iter()
+                .filter(|x| x["host"].as_str() == Some(host.as_str()))
+                .filter_map(Peer::from_value)
+                .find(|p| p.owner == "self" && !p.is_expired(now))
+        })
+    });
+    let Some(p) = known else {
+        return redeem(app, op, link);
+    };
+    // Already paired with that very host: the unused invitation goes, the work goes there.
+    revoke_invitation(app, op.dest_mi, pid.as_deref());
+    if let Some(f) = app.ux.handoff.send.as_mut() {
+        f.chosen = Some(Dest::Peer(p.clone()));
+    }
+    start_send(app, &p.id);
+}
+
+/// Accept the invitation on the source.
+fn redeem(app: &mut App, op: PairOp, link: String) {
     if let Some(f) = app.ux.handoff.send.as_mut() {
         f.pairing = Some(format!(
-            "pairing with {name}: accepting the invitation here…"
+            "pairing with {}: accepting the invitation here…",
+            op.dest_name
         ));
     }
+    let src = op.src;
     call_long_pending(
         app,
         src,
         "gateway.call",
         json!({"method": "peer.redeem", "params": {"link": link, "share_user": false},
                "timeout_ms": crate::sharing::REDEEM_TIMEOUT_MS}),
-        pend(Reply::PairRedeem),
+        pend(Reply::PairRedeem { op }),
     );
 }
 
 /// `peer.redeem` answered on the source: the new peer is the destination.
-fn on_pair_redeem(app: &mut App, res: Result<Value, RpcErr>) {
-    if !app
-        .ux
-        .handoff
-        .send
-        .as_ref()
-        .is_some_and(|f| f.pairing.is_some())
-    {
+fn on_pair_redeem(app: &mut App, op: PairOp, res: Result<Value, RpcErr>) {
+    if !is_current(app, &op) {
+        // The pairing (if it was made) stays; nothing is sent for a form that is gone.
         return;
     }
     let v = match res {
