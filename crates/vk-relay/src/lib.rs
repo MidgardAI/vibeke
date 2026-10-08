@@ -185,7 +185,38 @@ struct HostEntry {
     public: [u8; 32],
     tx: mpsc::Sender<Outbound>,
     announces: limits::Bucket,
-    revoked: Revoked,
+}
+
+/// Most hosts whose revocations are remembered; the least recently revoking host is forgotten
+/// first.
+const MAX_REVOKING_HOSTS: usize = 4096;
+
+/// Revoked ticket subjects per host id. Kept outside the registration so a host that drops and
+/// reconnects (same key, same id) does not lose them; tickets last up to 30 days.
+#[derive(Default)]
+struct Revocations {
+    by_host: HashMap<String, Revoked>,
+    order: VecDeque<String>,
+}
+
+impl Revocations {
+    fn insert(&mut self, host: &str, sub: String) {
+        if !self.by_host.contains_key(host) {
+            self.order.push_back(host.to_string());
+            if self.order.len() > MAX_REVOKING_HOSTS
+                && let Some(old) = self.order.pop_front()
+            {
+                self.by_host.remove(&old);
+            }
+        }
+        self.by_host
+            .entry(host.to_string())
+            .or_default()
+            .insert(sub);
+    }
+    fn contains(&self, host: &str, sub: &str) -> bool {
+        self.by_host.get(host).is_some_and(|r| r.contains(sub))
+    }
 }
 
 enum Outbound {
@@ -204,6 +235,7 @@ pub struct Relay {
     cfg: Config,
     auth: Box<dyn Authorizer>,
     hosts: Mutex<HashMap<String, HostEntry>>,
+    revoked: std::sync::Mutex<Revocations>,
     pending: Mutex<HashMap<String, Pending>>,
     next_gen: AtomicU64,
     ip_rate: RateMap,
@@ -243,6 +275,7 @@ impl Relay {
             },
             auth,
             hosts: Mutex::new(HashMap::new()),
+            revoked: std::sync::Mutex::new(Revocations::default()),
             pending: Mutex::new(HashMap::new()),
             next_gen: AtomicU64::new(1),
             ip_rate,
@@ -359,13 +392,9 @@ impl Relay {
         self.auth.usage(host, up, down);
     }
 
-    /// Whether the online host `host` revoked ticket subject `sub`.
-    pub(crate) async fn is_revoked(&self, host: &str, sub: &str) -> bool {
-        self.hosts
-            .lock()
-            .await
-            .get(host)
-            .is_some_and(|h| h.revoked.contains(sub))
+    /// Whether `host` revoked ticket subject `sub`.
+    pub(crate) fn is_revoked(&self, host: &str, sub: &str) -> bool {
+        self.revoked.lock().unwrap().contains(host, sub)
     }
 
     /// Bound an authorizer check by `auth_timeout`.
@@ -567,16 +596,13 @@ async fn host_session(
             relay.auth.host_disconnect(&host);
             return close_ws(ws, close::RATE_LIMITED, "relay full").await;
         }
-        let mut entry = HostEntry {
+        let entry = HostEntry {
             generation,
             public,
             tx: tx.clone(),
             announces: limits::Bucket::per_minute(relay.cfg.limits.host_announces_per_min),
-            revoked: Revoked::default(),
         };
-        // A replacement is the same key (host id = hash of it): keep its revocations.
         if let Some(old) = hosts.remove(&host) {
-            entry.revoked = old.revoked;
             let _ = old
                 .tx
                 .try_send(Outbound::Close(close::REPLACED, "replaced"));
@@ -654,9 +680,7 @@ async fn revoke(relay: &Shared, host: &str, sub: String) {
     if !valid_ticket_subject(&sub) {
         return;
     }
-    if let Some(h) = relay.hosts.lock().await.get_mut(host) {
-        h.revoked.insert(sub.clone());
-    }
+    relay.revoked.lock().unwrap().insert(host, sub.clone());
     tracing::info!(host = &host[..8], "ticket subject revoked");
     let _ = relay.revocations.send((host.to_string(), sub));
 }
@@ -744,14 +768,10 @@ async fn check_client(
         .and_then(|t| parse_ticket(t).ok())
         .map(|(t, _)| t.sub);
     let rx = claimed.as_ref().map(|_| relay.revocations.subscribe());
-    let (public, revoked) = {
-        let hosts = relay.hosts.lock().await;
-        let h = hosts.get(host)?;
-        (
-            h.public,
-            claimed.as_deref().is_some_and(|s| h.revoked.contains(s)),
-        )
-    };
+    let public = relay.hosts.lock().await.get(host)?.public;
+    let revoked = claimed
+        .as_deref()
+        .is_some_and(|s| relay.is_revoked(host, s));
     let deny = |reason| Some((Err((close::UNAUTHORIZED, reason)), None));
     let verified = match ticket.map(|t| verify_ticket(&public, host, t, unix_now())) {
         Some(Err(e)) => return deny(e.reason()),

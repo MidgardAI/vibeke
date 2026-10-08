@@ -52,7 +52,7 @@ pub struct TokenSource {
     static_token: Option<String>,
     account: Option<vk_account::Account>,
     cached: Option<Cached>,
-    /// The relay's last `/v1/status` answer: requires tickets?
+    /// The relay's last `/v1/status` answer: needs an account token?
     tickets: Option<(Instant, bool)>,
     /// The relay asked for an account token even though its status did not say so.
     force_account: bool,
@@ -127,8 +127,9 @@ impl TokenSource {
         }
         match crate::account::relay_auth(relay, host_id).await {
             Ok(a) => {
-                self.tickets = Some((Instant::now(), a.tickets));
-                a.tickets
+                let needs = a.needs_account();
+                self.tickets = Some((Instant::now(), needs));
+                needs
             }
             Err(e) => {
                 tracing::debug!("relay status: {e:#}");

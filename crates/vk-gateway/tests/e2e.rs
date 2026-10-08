@@ -31,6 +31,8 @@ async fn start_relay_with(
             public_origins: vec![format!("http://{addr}")],
             log_ip_raw: true,
             require_tickets,
+            // Requiring tickets alone needs no account; naming an account server does.
+            account_url: require_tickets.then(|| "http://accounts.test".to_string()),
             ..Default::default()
         },
         auth,

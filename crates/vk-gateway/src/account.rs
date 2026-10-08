@@ -19,6 +19,14 @@ pub struct RelayAuth {
     pub account_url: Option<String>,
 }
 
+impl RelayAuth {
+    /// Hosts need an account token: the relay names an account server. A relay that only
+    /// requires tickets (`--require-tickets` without `--account-url`) needs none.
+    pub fn needs_account(&self) -> bool {
+        self.account_url.is_some()
+    }
+}
+
 /// The relay's canonical `http(s)://` origin.
 pub fn relay_origin(relay: &str) -> Result<String> {
     Ok(vk_e2e::relay::canonical_origin(

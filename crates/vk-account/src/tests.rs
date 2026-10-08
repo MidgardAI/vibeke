@@ -17,6 +17,7 @@ fn cred(server: &str, refresh: &str, access: Option<(&str, u64)>) -> Credential 
         refresh_token: refresh.into(),
         access_token: access.map(|a| a.0.to_string()),
         access_exp: access.map(|a| a.1),
+        saved_at: 0,
     }
 }
 

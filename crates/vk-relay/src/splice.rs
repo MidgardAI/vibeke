@@ -111,7 +111,7 @@ async fn revoked(relay: &Shared, host: &str, watch: Watch) {
             Ok((h, s)) if h == host && s == sub => return,
             Ok(_) => {}
             // Missed some: fall back to the host's revoked set.
-            Err(RecvError::Lagged(_)) if relay.is_revoked(host, &sub).await => return,
+            Err(RecvError::Lagged(_)) if relay.is_revoked(host, &sub) => return,
             Err(RecvError::Lagged(_)) => {}
             Err(RecvError::Closed) => return std::future::pending().await,
         }

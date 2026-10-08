@@ -165,11 +165,15 @@ pub struct Credential {
     /// Unix seconds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub access_exp: Option<u64>,
+    /// Unix seconds when this copy was written; the newest copy wins when two stores disagree.
+    #[serde(default)]
+    pub saved_at: u64,
 }
 
 impl Credential {
     fn from_tokens(server: &str, t: Tokens) -> Credential {
         Credential {
+            saved_at: now_s(),
             server: server.to_string(),
             login: t.login,
             refresh_token: t.refresh_token,
@@ -483,17 +487,22 @@ fn store_err(e: KeychainError) -> Error {
 impl CredentialStore for KeychainStore {
     fn load(&self, server: &str) -> Result<Option<Credential>> {
         let account = keychain_account(server);
+        let mut best: Option<Credential> = None;
         if let Some(k) = &self.primary {
             match k.get(SERVICE, &account) {
-                Ok(Some(raw)) => return Self::decode(&raw).map(Some),
+                Ok(Some(raw)) => best = Some(Self::decode(&raw)?),
                 Ok(None) => {}
                 Err(e) => tracing::debug!("account credential: {e}; trying the file"),
             }
         }
-        match self.file().get(SERVICE, &account).map_err(store_err)? {
-            Some(raw) => Self::decode(&raw).map(Some),
-            None => Ok(None),
+        // Another process may only have had the file (a headless gateway): the newest copy wins.
+        if let Some(raw) = self.file().get(SERVICE, &account).map_err(store_err)? {
+            let c = Self::decode(&raw)?;
+            if best.as_ref().is_none_or(|b| c.saved_at > b.saved_at) {
+                best = Some(c);
+            }
         }
+        Ok(best)
     }
 
     fn save(&self, c: &Credential) -> Result<()> {
@@ -601,8 +610,24 @@ impl Account {
             r => r?,
         };
         let fresh = Credential::from_tokens(self.server(), t);
-        self.store.save(&fresh)?;
-        Ok(fresh.access_token.clone().unwrap_or_default())
+        // Save only if the credential we refreshed is still the stored one. A `logout` that
+        // finished meanwhile must stay a logout, and a newer login must not be overwritten.
+        match self.credential()? {
+            Some(stored) if stored.refresh_token == cred.refresh_token => {
+                self.store.save(&fresh)?;
+                Ok(fresh.access_token.clone().unwrap_or_default())
+            }
+            stored => {
+                let _ = self.client.logout(&fresh.refresh_token).await;
+                match stored {
+                    Some(newer) => match newer.access_at(now_s()) {
+                        Some(t) => Ok(t.to_string()),
+                        None => Err(Error::LoginRequired),
+                    },
+                    None => Err(Error::LoginRequired),
+                }
+            }
+        }
     }
 
     /// A relay host token. A refused access token is refreshed once; refused again →
