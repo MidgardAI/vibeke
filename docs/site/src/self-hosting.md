@@ -1,6 +1,6 @@
 # Self-host the app and relay
 
-The public services are [app.vibeke.dev](https://app.vibeke.dev) and `https://relay.vibeke.dev`.
+The public services are [app.vibeke.dev](https://app.vibeke.dev), the account-based relay `https://cloud.vibeke.dev`, and the open relay `https://relay.vibeke.dev`.
 Use this guide if you want to operate your own services or develop them locally.
 
 The app serves the interface and holds device keys. The relay forwards encrypted traffic.

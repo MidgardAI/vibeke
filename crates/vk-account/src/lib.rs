@@ -16,7 +16,7 @@ use vk_e2e::b64;
 use vk_store::keychain::{Keychain, KeychainError, SERVICE};
 
 /// The hosted relay, and its control plane, when nothing else is configured.
-pub const DEFAULT_SERVER: &str = "https://relay.vibeke.dev";
+pub const DEFAULT_SERVER: &str = "https://cloud.vibeke.dev";
 /// `client` sent with `/v1/device/code`.
 pub const CLIENT_ID: &str = "vibeke-cli";
 /// A cached access token is used only while it has at least this long left.

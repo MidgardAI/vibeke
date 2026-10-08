@@ -145,7 +145,7 @@ mod tests {
     #[test]
     fn servers_and_prompt() {
         let mut cfg = Config::default();
-        assert_eq!(account_server(&cfg), "https://relay.vibeke.dev");
+        assert_eq!(account_server(&cfg), "https://cloud.vibeke.dev");
         cfg.relay = Some("wss://relay.example/".into());
         assert_eq!(account_server(&cfg), "https://relay.example");
         cfg.account_url = Some("https://accounts.example".into());
