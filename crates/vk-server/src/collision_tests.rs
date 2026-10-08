@@ -1515,16 +1515,16 @@ async fn pre_tool_claims_deny_foreign_edits_when_enforced() {
 }
 
 #[tokio::test]
-async fn adapter_gate_needs_a_pane_token_and_passes_plain_signals_through() {
+async fn adapter_gate_needs_a_pane_token_and_passes_plain_pre_tool_calls_through() {
     let f = fx("gatebasics");
     let _a = add_run(&f, "ra", "pa", "claude", Execution::Working);
-    let p = json!({"harness": "claude", "event": "PostToolUse", "payload": {}});
+    let p = json!({"harness": "claude", "event": "PreToolUse", "payload": {"tool_name": "Edit"}});
     let r = dispatch(&f.s, &user(), "adapter.gate", &p).await;
     assert!(
         matches!(&r, Err(e) if e.code == ErrorKind::PermissionDenied.code()),
         "{r:?}"
     );
-    // An event that asks nothing opens no interaction and leaves the harness to decide.
+    // A plain pre-tool call asks nothing: no interaction opens and the harness decides.
     let r = ok(&f.s, &pane_ctx("pa"), "adapter.gate", p).await;
     assert_eq!(r, json!({"decision": null}));
 }

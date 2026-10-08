@@ -580,11 +580,14 @@ command = ["sh", "-c", "herdr agent view-clear > \"$HERDR_PLUGIN_STATE_DIR/clear
         s_.run("acme.view", name);
         s_.settle("acme.view");
     };
+    // Assert on the snapshot a step saw: a later read can find the agent lapsed again.
+    let seen = std::cell::RefCell::new(Vec::new());
     attempt("set", &|| {
         act("set");
-        views(&s_).len() == 1
+        *seen.borrow_mut() = views(&s_);
+        seen.borrow().len() == 1
     });
-    let v = views(&s_);
+    let v = seen.borrow().clone();
     assert_eq!(v[0]["plugin_id"], "acme.view");
     assert_eq!(v[0]["text"], "building");
     assert_eq!(v[0]["detail"], "step 2 of 5");
@@ -594,12 +597,13 @@ command = ["sh", "-c", "herdr agent view-clear > \"$HERDR_PLUGIN_STATE_DIR/clear
     // Size limits and validation.
     attempt("long", &|| {
         act("long");
-        views(&s_)
+        *seen.borrow_mut() = views(&s_);
+        seen.borrow()
             .first()
             .is_some_and(|v| v["text"].as_str().unwrap().starts_with("xxxx"))
     });
     assert_eq!(
-        views(&s_)[0]["text"].as_str().unwrap().chars().count(),
+        seen.borrow()[0]["text"].as_str().unwrap().chars().count(),
         80,
         "text is cut to 80"
     );

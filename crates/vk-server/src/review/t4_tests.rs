@@ -177,6 +177,7 @@ async fn snapshot_refuses_a_changing_or_clean_checkout() {
         "nothing_to_snapshot"
     );
     // A writer changes the checkout during every capture attempt.
+    std::fs::write(e.repo.join("busy.txt"), "start\n").unwrap();
     let (n, repo) = (
         Arc::new(std::sync::atomic::AtomicU64::new(0)),
         e.repo.clone(),
