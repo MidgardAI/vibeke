@@ -2897,8 +2897,50 @@ pub fn pretty(method: &str, v: &Value) -> String {
                 .unwrap_or_else(|| format!("localhost:{}", v["local_port"])),
             v["warning"].as_str().unwrap_or("")
         ),
+        "server.status" => {
+            // The gateway moves from the JSON dump to its own `gateway  …` line.
+            let mut rest = v.clone();
+            let gw = rest.as_object_mut().and_then(|o| o.remove("gateway"));
+            let mut out = serde_json::to_string_pretty(&rest).unwrap_or_default();
+            if let Some(line) = gw.as_ref().and_then(gateway_line) {
+                out.push_str("\n");
+                out.push_str(&line);
+            }
+            out
+        }
         _ => serde_json::to_string_pretty(v).unwrap_or_default(),
     }
+}
+
+/// The `gateway  …` line of `vibeke server status` from a `GatewayStatus` object; `None` for
+/// null or absent (no line).
+pub fn gateway_line(g: &Value) -> Option<String> {
+    let state = g.get("state")?.as_str()?;
+    let mut parts = vec![state.to_string()];
+    if state == "online" {
+        let n = g["devices"].as_u64().unwrap_or(0);
+        parts.push(format!("{n} device{}", if n == 1 { "" } else { "s" }));
+    }
+    if let Some(r) = g["relay"].as_str() {
+        parts.push(format!("relay {r}"));
+    }
+    if let Some(pid) = g["pid"].as_u64() {
+        parts.push(format!("pid {pid}"));
+    }
+    let mut line = format!("gateway  {}", parts.join(" \u{b7} "));
+    if state == "crashed" {
+        let n = g["restarts"].as_u64().unwrap_or(0);
+        line = format!("gateway  crashed (restarts {n})");
+        if let Some(e) = g["last_error"].as_str() {
+            line.push_str(&format!(": {e}"));
+        }
+        line.push_str(" \u{2014} vibeke gateway logs");
+    } else if state == "offline"
+        && let Some(e) = g["last_error"].as_str()
+    {
+        line.push_str(&format!(" ({e})"));
+    }
+    Some(line)
 }
 
 /// Run one API command. Returns the process exit code.
@@ -3586,6 +3628,29 @@ mod tests {
         ] {
             assert!(lookup("collision", verb).is_some(), "{verb}");
         }
+    }
+
+    #[test]
+    fn server_status_gateway_line() {
+        let on = json!({"state": "online", "devices": 2, "relay": "wss://r.example", "pid": 123});
+        assert_eq!(
+            gateway_line(&on).as_deref(),
+            Some("gateway  online \u{b7} 2 devices \u{b7} relay wss://r.example \u{b7} pid 123")
+        );
+        assert_eq!(
+            gateway_line(&json!({"state": "off"})).as_deref(),
+            Some("gateway  off")
+        );
+        let crashed = json!({"state": "crashed", "restarts": 10});
+        assert_eq!(
+            gateway_line(&crashed).as_deref(),
+            Some("gateway  crashed (restarts 10) \u{2014} vibeke gateway logs")
+        );
+        assert_eq!(gateway_line(&Value::Null), None);
+        let with = pretty("server.status", &json!({"pid": 1, "gateway": on}));
+        assert!(with.contains("\ngateway  online") && !with.contains("\"gateway\""));
+        let without = pretty("server.status", &json!({"pid": 1, "gateway": null}));
+        assert!(!without.contains("gateway"));
     }
 
     #[test]

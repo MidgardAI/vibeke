@@ -327,6 +327,21 @@ pub fn segment(app: &App, id: &str, d: &Value) -> (String, Style) {
             Some(l) => (format!("load {l:.2}"), t.dim()),
             None => (String::new(), t.dim()),
         },
+        "gateway" => match crate::gw_indicator::get(app, app.cur) {
+            Some(g) => match g.render() {
+                Some(text) => (
+                    text,
+                    t.s(match g.tone() {
+                        crate::gw_indicator::Tone::Ok => t.green,
+                        crate::gw_indicator::Tone::Warn => t.yellow,
+                        crate::gw_indicator::Tone::Error => t.red,
+                        crate::gw_indicator::Tone::Neutral => t.muted,
+                    }),
+                ),
+                None => (String::new(), t.dim()),
+            },
+            None => (String::new(), t.dim()),
+        },
         "clock" => (clock(now_ms()), t.text()),
         "prefix_indicator" => match app.mode {
             Mode::Prefix(_) => ("PREFIX".into(), t.rev()),
@@ -394,7 +409,19 @@ fn layout(app: &App) -> Vec<Placed> {
     left.extend(crate::plugin_ui::segments(app, "left"));
     let mut pr = crate::plugin_ui::segments(app, "right");
     pr.append(&mut right);
-    let right = pr;
+    let mut right = pr;
+    // The gateway indicator is on by default (right side, ahead of the configured segments);
+    // listing `gateway` in any `[ui.status_bar]` list places it there instead.
+    let listed = [&cfg.left, &cfg.center, &cfg.right]
+        .iter()
+        .any(|l| l.iter().any(|s| s == "gateway"));
+    if !listed {
+        let (text, st) = segment(app, "gateway", &d);
+        if !text.is_empty() {
+            right.insert(0, ("gateway".into(), text, st));
+        }
+    }
+    let right = right;
     let mut out = Vec::new();
     let place = |segs: Vec<(String, String, Style)>, start: u16, out: &mut Vec<Placed>| {
         let mut x = start;
