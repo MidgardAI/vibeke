@@ -156,7 +156,8 @@ try {
   await delay(2500)
   // Use a sample host label before rendering; never publish the capture machine's hostname.
   const machineName = hostname().split('.')[0]!
-  const ansi = tmux('capture-pane', '-p', '-e', '-t', 'capture').replaceAll(machineName, 'demo-laptop')
+  const sampleName = 'demo-laptop'.padEnd(machineName.length, ' ')
+  const ansi = tmux('capture-pane', '-p', '-e', '-t', 'capture').replaceAll(machineName, sampleName)
   if (!ansi.includes('demo-laptop') || !ansi.includes('Ready for review.')) {
     console.error(ansi)
     throw new Error('TUI capture did not contain the sample host and conversation')

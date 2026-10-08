@@ -4,7 +4,7 @@
   "electron": "Actual Electron renderer, 1440x870 at 2x",
   "web": "Actual PWA paired through a local encrypted relay, 430x860 at 2x",
   "tui": "Live TUI in a 140x42 PTY; hostname replaced with demo-laptop before rendering ANSI with original colors",
-  "tuiCapturedAt": "2026-10-08T17:10:18.946Z",
+  "tuiCapturedAt": "2026-10-08T17:21:52.000Z",
   "refreshed": [
     "tui"
   ]
