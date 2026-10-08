@@ -6,6 +6,7 @@ fn gi(state: &str, autostart: bool, devices: Option<u32>) -> GatewayIndicator {
         state: state.into(),
         autostart,
         devices,
+        last_error: None,
     }
 }
 
@@ -49,4 +50,22 @@ fn render_and_tone_per_state() {
         assert_eq!(g.render().as_deref(), Some(text), "{state}");
         assert_eq!(g.tone(), tone, "{state}");
     }
+}
+
+#[test]
+fn login_required_parses_and_asks_for_a_sign_in() {
+    let st = json!({"state": "login_required", "autostart": true, "devices": null,
+                    "last_error": "the relay needs a signed-in account"});
+    let g = GatewayIndicator::parse(&st).unwrap();
+    assert_eq!(g.state, "login_required");
+    assert_eq!(
+        g.last_error.as_deref(),
+        Some("the relay needs a signed-in account")
+    );
+    assert_eq!(g.tone(), Tone::Warn);
+    assert_eq!(g.render().as_deref(), Some("! gw sign in"));
+    // Visible even without autostart: the gateway is set up, it just can't connect.
+    let g = GatewayIndicator::parse(&json!({"state": "login_required"})).unwrap();
+    assert_eq!(g.last_error, None);
+    assert!(g.render().is_some());
 }

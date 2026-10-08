@@ -747,31 +747,15 @@ fn connection(c: &Config) -> [&Option<String>; 5] {
 /// `pair` on a relay that requires accounts and without a stored login: run the device-code
 /// login inline (same output as `vibeke login`). A private relay's static token needs none.
 async fn ensure_login(state: &StateDir, cfg: &Config) -> Result<()> {
-    let Some(relay) = cfg.relay.as_deref() else {
-        return Ok(());
-    };
-    if cfg.relay_token.is_some() {
+    if cfg.relay.is_none() || cfg.relay_token.is_some() {
         return Ok(());
     }
     let host = state.host_keys()?.host_id();
-    match crate::account::relay_auth(relay, &host).await {
-        Ok(a) if a.needs_account() => {}
-        Ok(_) => return Ok(()),
-        Err(e) => {
-            tracing::debug!("relay status: {e:#}");
-            return Ok(());
-        }
-    }
-    let acct = crate::account::account(&crate::account::account_server(cfg), &state.dir)?;
-    let has = {
-        let a = acct.clone();
-        tokio::task::spawn_blocking(move || a.credential())
-            .await??
-            .is_some()
-    };
-    if has {
+    let need = crate::account::login_needed(cfg, &state.dir, &host).await?;
+    if !need.needs_account || need.logged_in {
         return Ok(());
     }
+    let acct = crate::account::account(&crate::account::account_server(cfg), &state.dir)?;
     println!("This relay needs a Vibeke account. Log in first.\n");
     crate::account::login_interactive(&acct, Some(&host), true).await?;
     println!();

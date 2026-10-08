@@ -323,7 +323,7 @@ FloatingPane = TypedDict("FloatingPane", {
 })
 
 GatewayStatus = TypedDict("GatewayStatus", {
-    "state": Literal["off", "starting", "connecting", "online", "offline", "local_only", "external", "crashed"],
+    "state": Literal["off", "starting", "connecting", "online", "offline", "local_only", "login_required", "external", "crashed"],
     "autostart": bool,
     "supervised": bool,
     "pid": Optional[int],
@@ -3639,7 +3639,7 @@ GatewayStatusParams = TypedDict("GatewayStatusParams", {
 GatewayStatusResult = TypedDict("GatewayStatusResult", {
     "connected": bool,
     "configured": bool,
-    "state": NotRequired[Literal["off", "starting", "connecting", "online", "offline", "local_only", "external", "crashed"]],
+    "state": NotRequired[Literal["off", "starting", "connecting", "online", "offline", "local_only", "login_required", "external", "crashed"]],
     "autostart": NotRequired[bool],
     "supervised": NotRequired[bool],
     "pid": NotRequired[Optional[int]],

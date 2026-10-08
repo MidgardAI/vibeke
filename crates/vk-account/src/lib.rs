@@ -640,17 +640,28 @@ impl Account {
         self.store.load(self.server())
     }
 
-    /// Store a credential from [`Client::login`].
+    /// Store a credential from [`Client::login`]. Blocks on the credential lock: call it from
+    /// `spawn_blocking` inside async code.
     pub fn save(&self, c: &Credential) -> Result<()> {
         let _lock = self.store.lock(self.server())?;
         self.store.save(c)
+    }
+
+    /// The credential lock, taken on the blocking pool so a waiting `flock` never parks a
+    /// runtime worker (two overlapping callers on one worker would otherwise deadlock).
+    async fn lock_async(&self) -> Result<Box<dyn std::any::Any + Send>> {
+        let store = self.store.clone();
+        let server = self.server().to_string();
+        tokio::task::spawn_blocking(move || store.lock(&server))
+            .await
+            .map_err(|e| Error::Store(format!("lock task: {e}")))?
     }
 
     /// A valid access token: the cached one, or a refreshed one (`force`: always refresh).
     pub async fn access_token(&self, force: bool) -> Result<String> {
         // Held across the refresh so a concurrent login or logout in another process cannot
         // interleave between our read and our write.
-        let _lock = self.store.lock(self.server())?;
+        let _lock = self.lock_async().await?;
         let cred = self.credential()?.ok_or(Error::LoginRequired)?;
         if !force && let Some(t) = cred.access_at(now_s()) {
             return Ok(t.to_string());
@@ -729,7 +740,7 @@ impl Account {
     /// Revoke the session on the server (best effort) and delete the credential. Returns whether
     /// a credential was stored.
     pub async fn logout(&self) -> Result<bool> {
-        let _lock = self.store.lock(self.server())?;
+        let _lock = self.lock_async().await?;
         let Some(cred) = self.credential()? else {
             return Ok(false);
         };

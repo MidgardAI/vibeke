@@ -217,12 +217,17 @@ fn methods_outside_the_allow_list_are_refused() {
         .unwrap_err();
         assert_eq!(kind(&e), "invalid_params", "{method}: {e}");
     }
-    // Device management and pairing pass the check (and then find no gateway).
+    // Device management, pairing and account login pass the check (and then find no gateway).
     for method in [
         "devices.list",
         "devices.revoke",
         "pair.create",
         "pair.status",
+        "account.status",
+        "account.login.start",
+        "account.login.status",
+        "account.login.cancel",
+        "account.logout",
     ] {
         let e = api(&s, "gateway.call", json!({"method": method, "params": {}})).unwrap_err();
         assert_eq!(kind(&e), "remote_unavailable", "{method}: {e}");

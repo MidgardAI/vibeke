@@ -164,10 +164,11 @@ impl TokenSource {
         }
     }
 
-    /// Wait up to `max` for a new credential (`vibeke login` in another process).
-    async fn wait_for_login(&self, max: Duration) {
+    /// Wait up to `max` for a new credential (`vibeke login` in another process), or until
+    /// `done` says a login from the TUI finished.
+    async fn wait_for_login(&self, max: Duration, done: &tokio::sync::Notify) {
         let Some(acct) = self.account.clone() else {
-            tokio::time::sleep(max).await;
+            let _ = tokio::time::timeout(max, done.notified()).await;
             return;
         };
         let load = |a: vk_account::Account| async move {
@@ -180,7 +181,11 @@ impl TokenSource {
         let before = load(acct.clone()).await;
         let until = Instant::now() + max;
         while Instant::now() < until {
-            tokio::time::sleep(LOGIN_POLL.min(until - Instant::now())).await;
+            let poll = LOGIN_POLL.min(until - Instant::now());
+            if tokio::time::timeout(poll, done.notified()).await.is_ok() {
+                tracing::info!("account login finished; reconnecting");
+                return;
+            }
             let now = load(acct.clone()).await;
             if now.is_some() && now != before {
                 tracing::info!("found a new account login; reconnecting");
@@ -329,7 +334,7 @@ pub async fn run(gw: Arc<Gateway>, relay: &str) -> Result<()> {
                 tracing::warn!("the relay requires an account for this host: run `vibeke login`");
                 gw.status
                     .set_state("login_required", Some("run: vibeke login".into()));
-                tokens.wait_for_login(LOGIN_RETRY).await;
+                tokens.wait_for_login(LOGIN_RETRY, &gw.logins.done).await;
                 continue;
             }
             Err(e) => {
