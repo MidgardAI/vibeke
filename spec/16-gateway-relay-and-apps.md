@@ -4,7 +4,7 @@ How a phone (PWA), a desktop app (Electron) and, later, teammates reach a Vibeke
 
 This section makes the Phase 2 row "Vibeke Gateway + mobile/web app" of [12](12-phase-2-outlook.md) concrete. It changes no Phase 1 requirement. The gateway is an API client of the server ([07](07-api-cli-plugins.md)); the only server changes are **additive** methods listed in §7.7 (new read-only git methods and an answer actor label). The TUI and CLI are not modified.
 
-Reviewed by Codex on 2026-10-06 (design review); resolutions are folded in and summarized in §14.
+Reviewed by Codex on 2026-10-06; resolutions are folded in and summarized in §14.
 
 Crates and packages:
 
@@ -506,7 +506,7 @@ The gateway side of X3, X5 and X8 (calling the new methods) is done by the gatew
 
 ## 14. Resolutions of the Codex reviews
 
-### 14.1 Implementation review (design review)
+### 14.1 Implementation review (2026-10-06)
 
 | Finding | Resolution |
 |---|---|
@@ -531,7 +531,7 @@ The gateway side of X3, X5 and X8 (calling the new methods) is done by the gatew
 | P2 markdown recursion | Nesting and work bounded; error boundary |
 | P3 legacy idempotency fallback | Only for records without `answer_key` |
 
-### 14.2 Share/handoff review (design review)
+### 14.2 Share/handoff review (round 2)
 
 | Finding | Resolution |
 |---|---|

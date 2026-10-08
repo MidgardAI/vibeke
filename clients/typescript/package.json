@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "description": "Typed client for the Vibeke control API (vibeke/1) over the local socket",
   "type": "module",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "private": true,
   "main": "./src/index.ts",
   "types": "./src/index.ts",

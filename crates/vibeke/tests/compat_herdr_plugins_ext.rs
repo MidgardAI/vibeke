@@ -795,7 +795,7 @@ fn restricted_mode_refuses_where_no_sandbox_works() {
     );
 }
 
-// ---- review fixes (reviews/2026-10-06-codex-leftovers-review.md) ----------------------------
+// ---- review fixes ----------------------------
 
 #[cfg(target_os = "macos")]
 fn sandbox_available() -> bool {

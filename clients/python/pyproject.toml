@@ -7,7 +7,7 @@ name = "vibeke-client"
 version = "0.1.0"
 description = "Typed client for the Vibeke control API (vibeke/1) over the local socket"
 requires-python = ">=3.11"
-license = { text = "MIT" }
+license = { text = "Apache-2.0" }
 dependencies = []
 
 [tool.setuptools]

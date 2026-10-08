@@ -1,31 +1,76 @@
 # Vibeke
 
-A terminal workspace that understands agents **structurally** (hooks, extensions, RPC) instead of by reading their screens, keeps every process alive through server crashes and upgrades, isolates agents in task workspaces, and makes remote dev servers, previews and screenshots feel local.
+<p align="center">
+  <img src="web/apps/site/public/brand/duck-256.png" alt="Vibeke" width="120" />
+</p>
 
-**Status:** specification, Phase 1 (terminal runtime). Phase 2 (mobile/web supervision) follows.
+<p align="center">
+  <a href="https://vibeke.dev">vibeke.dev</a> · <a href="#install">install</a> · <a href="https://vibeke.dev/docs/quickstart">quickstart</a> · <a href="https://vibeke.dev/docs">docs</a> · <a href="spec/">design specs</a>
+</p>
 
-**Language:** Rust on the latest stable toolchain (edition 2024), single static binary. The terminal engine is Ghostty's libghostty-vt, vendored and statically linked (built with Zig 0.16, pinned in `mise.toml`). Apart from that, the only non-Rust code is the in-agent integration glue that must live in each harness's ecosystem (e.g. the TypeScript extension for pi/omp, hook config templates).
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-5b4b8a?labelColor=2b2b3a" alt="Apache 2.0 license" /></a>
+  <img src="https://img.shields.io/badge/status-pre--1.0-5b4b8a?labelColor=2b2b3a" alt="status: pre-1.0" />
+  <img src="https://img.shields.io/badge/platforms-macOS%20%C2%B7%20Linux-5b4b8a?labelColor=2b2b3a" alt="macOS and Linux" />
+  <img src="https://img.shields.io/badge/rust-single%20binary-5b4b8a?labelColor=2b2b3a&logo=rust" alt="single Rust binary" />
+</p>
 
-## Spec
+---
 
-| # | Section |
-|---|---|
-| 00 | [Vision and scope](spec/00-vision-and-scope.md) — landscape and design bets, differentiation, alternatives considered, success metrics, goals, non-goals |
-| 01 | [Architecture](spec/01-architecture.md) — processes (server, per-pane holders, clients), protocols, crates, key decisions |
-| 02 | [Data model and event log](spec/02-data-model-and-event-log.md) — entities, AgentState, Interaction, events, SQLite, policy |
-| 03 | [Terminal engine and TUI](spec/03-terminal-engine-and-tui.md) — VtEngine, M0 engine spike, render stream, input fidelity, graphics, copy mode |
-| 04 | [Harness adapters](spec/04-harness-adapters.md) — Claude Code, Codex, pi, omp, OpenCode, Gemini, ACP, custom harness manifests, detection, approvals |
-| 05 | [Tasks, isolation and worktrees](spec/05-tasks-isolation-and-worktrees.md) — task workspaces, ports, setup, collision tracking, best-of-N |
-| 06 | [Remote and preview](spec/06-remote-and-preview.md) — machines, SSH/QUIC bridge, port forwarding, preview proxy, remote screenshots |
-| 07 | [API, CLI and plugins](spec/07-api-cli-plugins.md) — JSON-RPC catalog, CLI, holder protocol, plugins, full versioned Herdr plugin/automation compatibility |
-| 08 | [UX, config and keybindings](spec/08-ux-config-and-keybindings.md) — sidebar, peek-and-reply, interaction overlay, **canonical config reference** |
-| 09 | [Security and privacy](spec/09-security-and-privacy.md) — threat model, agent containment, plugins, previews, updates |
-| 10 | [Quality, performance and testing](spec/10-quality-performance-testing.md) — budgets, chaos, keyboard matrix, golden tests, release |
-| 11 | [Milestones](spec/11-milestones.md) — value proof first: M0 spikes → M1 supervision slice → M2 safe yolo → M3 remote + preview → M4 VMs + parity → M5 compat + plugins → M6 1.0 |
-| 12 | [Phase 2 outlook](spec/12-phase-2-outlook.md) — EvidenceRecord, inbox, merge, mobile; what Phase 1 must provide |
-| 13 | [Sandboxes and VMs](spec/13-sandboxes-and-vms.md) — host / OS sandbox / container / VM execution, safe yolo, egress proxy, credentials, git boundary |
-| 14 | [LLM assistance](spec/14-llm-assistance.md) — optional genai integration, provider/model selection, grounded briefings, context/privacy boundaries and staged rollout |
-| 15 | [Task outcomes, review and attention](spec/15-task-outcomes-review-and-attention.md) — optional tracking for normally launched CLIs, explicit success criteria, evidence-backed review and a ranked decision inbox; proposed slice after Goal 01 |
-| 16 | [Gateway, relay and apps](spec/16-gateway-relay-and-apps.md) — no-Tailscale E2E relay, QR pairing (Noise), gateway, PWA/Electron apps with inbox, quick approvals and push; staged SaaS, share/handoff and zero-knowledge services |
+**A terminal workspace for supervising coding agents, on your laptop or a devbox.**
 
-Also: [integrations/pi-extension/DESIGN.md](integrations/pi-extension/DESIGN.md) · design review · design review
+- **Knows what each agent is doing.** Vibeke reads Claude Code, Codex, pi and omp through their hooks, extensions and RPC streams instead of guessing from the screen. Terminal output is only the fallback, and every state says where it came from. [Agents and interactions →](https://vibeke.dev/docs/agents)
+- **Answer without hunting for the pane.** Permission requests, questions and plan reviews are real objects. Approve or reply from the sidebar, the inbox or your phone, and the answer goes back through the agent's own channel.
+- **Agents outlive the server.** Each pane runs under its own holder process, so a server crash, restart or upgrade doesn't stop running agents. [Process durability →](https://vibeke.dev/docs/holders)
+- **One task, one workspace.** `vibeke task new` gives an agent its own worktree, branch and port range, then collects the diff, checks and transcript evidence for review. [Tasks and review →](https://vibeke.dev/docs/tasks)
+- **Remote work that feels local.** Connect SSH machines, forward dev servers, and open previews, screenshots and a real browser pane from the devbox in your local terminal. [Remote and previews →](https://vibeke.dev/docs/previews)
+- **Isolation when you want it.** Run a task on the host, in an OS sandbox, a container or a VM. If the provider you picked isn't available, the task doesn't start. [Execution and isolation →](https://vibeke.dev/docs/sandboxes)
+- **Your phone in the loop.** Pair the web or desktop app with a QR code. Traffic goes through an end-to-end encrypted relay, so the dev host needs no open ports. [Mobile and desktop →](https://vibeke.dev/docs/mobile)
+- **Bring your own harness.** Claude Code, Codex, pi, omp, OpenCode, Gemini CLI, any ACP agent, or your own wrapper described in a TOML manifest.
+- **Built to be scripted.** A versioned JSON-RPC API (`vibeke/1`), a CLI on top of it, and an MCP server for agents. [Control API →](https://vibeke.dev/docs/api)
+- **Plugins.** Native plugins with declared capabilities. Coming from Herdr? Import your config and layouts and keep your plugins. [Moving from Herdr →](https://vibeke.dev/docs/migrating-from-herdr)
+- **One Rust binary.** Ghostty's VT engine inside, and it runs in the terminal you already use.
+
+---
+
+## Install
+
+Vibeke runs on macOS (Apple silicon) and Linux (x86_64, aarch64).
+
+```sh
+curl -fsSL https://github.com/MidgardAI/vibeke/releases/latest/download/install.sh | sh
+```
+
+The installer writes only inside `$HOME` and verifies the release signature and checksums before it installs anything. While the repository is private, download the release with `gh` first; see [installation](https://vibeke.dev/docs/install).
+
+Then start it in your project:
+
+```sh
+vibeke
+```
+
+Run your agents, split panes and step away; `vibeke` reattaches to the same session. Start with the [quickstart](https://vibeke.dev/docs/quickstart).
+
+## Docs
+
+Everything is at [vibeke.dev/docs](https://vibeke.dev/docs): [introduction](https://vibeke.dev/docs/introduction) · [installation](https://vibeke.dev/docs/install) · [your first workspace](https://vibeke.dev/docs/quickstart) · [workspaces and panes](https://vibeke.dev/docs/layout) · [agents and interactions](https://vibeke.dev/docs/agents) · [process durability](https://vibeke.dev/docs/holders) · [tasks and review](https://vibeke.dev/docs/tasks) · [remote and previews](https://vibeke.dev/docs/previews) · [execution and isolation](https://vibeke.dev/docs/sandboxes) · [mobile and desktop](https://vibeke.dev/docs/mobile) · [transfers and shared access](https://vibeke.dev/docs/handoff) · [CLI](https://vibeke.dev/docs/cli) · [configuration](https://vibeke.dev/docs/config) · [control API](https://vibeke.dev/docs/api) · [security model](https://vibeke.dev/docs/security)
+
+The design specs live in [`spec/`](spec/), starting with [vision and scope](spec/00-vision-and-scope.md) and [architecture](spec/01-architecture.md).
+
+## Development
+
+[mise](https://mise.jdx.dev/) pins every toolchain (Rust, Zig for the vendored VT engine, bun for the web apps and the pi extension).
+
+```sh
+git clone https://github.com/MidgardAI/vibeke
+cd vibeke
+mise install
+
+mise run build   # debug build of the workspace
+mise run test    # all tests (cargo nextest)
+mise run ci      # formatting, lints and tests, as CI runs them
+```
+
+## License
+
+Vibeke is licensed under the [Apache License 2.0](LICENSE).
