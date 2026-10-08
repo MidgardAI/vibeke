@@ -26,6 +26,12 @@ describe('push payload (vk-gateway notify.rs shape)', () => {
     expect(planNotification('plain text', ASSETS).options.body).toBe('plain text');
     expect(planNotification({ title: 5, tag: '' }, ASSETS)).toMatchObject({ title: 'Vibeke', options: { tag: 'vibeke' } });
   });
+  test('an approval request push opens the review screen and carries no action', () => {
+    const p = planNotification({ title: 'A pane asks to send a handoff', body: 'devbox', tag: 'vibeke:h1', url: '#/approve/h1/01JAPPROVE', host: 'h1', count: 1, renotify: true }, ASSETS);
+    expect(p.options.data.url).toBe('#/approve/h1/01JAPPROVE');
+    expect('actions' in p.options).toBe(false);
+  });
+
   test('only in-app hash routes are accepted as targets', () => {
     expect(safeHashUrl('#/r/h1/run_2')).toBe('#/r/h1/run_2');
     expect(safeHashUrl('#/i/h1/x?do=allow')).toBe('#/i/h1/x?do=allow');

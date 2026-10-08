@@ -9,9 +9,9 @@ const ev = (type: string, extra: Partial<AppEvent> = {}): AppEvent => ({ seq: 7,
 
 describe('host event forwarding (main → renderer)', () => {
   test('only the types the UI needs cross the bridge', () => {
-    for (const t of ['agent.turn_started', 'agent.state_changed', 'agent.usage', 'interaction.opened', 'notification.created', 'task.updated', 'preview.up', 'tab.created', 'pane.closed', 'handoff.job', 'handoff.incoming', 'handoff.updated', 'handoff.expired'])
+    for (const t of ['agent.turn_started', 'agent.state_changed', 'agent.usage', 'interaction.opened', 'notification.created', 'task.updated', 'preview.up', 'tab.created', 'pane.closed', 'handoff.job', 'handoff.incoming', 'handoff.updated', 'handoff.expired', 'auth.approval_requested', 'auth.approval_granted', 'auth.approval_denied', 'auth.approval_withdrawn'])
       expect(isForwardedEventType(t)).toBe(true);
-    for (const t of ['notification.read', 'session.started', 'workspace.created', 'device.revoked', 'push.sent', 'agent', '', 'Agent.x', 'agent.<script>', 1, null])
+    for (const t of ['auth.elevate_requested', 'auth.elevate_granted', 'auth.revoked', 'notification.read', 'session.started', 'workspace.created', 'device.revoked', 'push.sent', 'agent', '', 'Agent.x', 'agent.<script>', 1, null])
       expect(isForwardedEventType(t)).toBe(false);
   });
 
@@ -116,6 +116,15 @@ describe('renderer method allow-list', () => {
       expect(RENDERER_METHODS).toContain(m);
       expect(v.method(m)).toBe(m);
     }
+  });
+
+  test('approval review methods pass the bridge validator', () => {
+    for (const m of ['auth.list', 'auth.approve.decide'] as const) {
+      expect(RENDERER_METHODS).toContain(m);
+      expect(v.method(m)).toBe(m);
+    }
+    // A pane's own side of the protocol and elevation never cross the bridge.
+    for (const m of ['auth.approve', 'auth.approve.withdraw', 'auth.elevate.decide']) expect(() => v.method(m)).toThrow(v.IpcValidationError);
   });
 
   test('the retired courier methods are refused', () => {

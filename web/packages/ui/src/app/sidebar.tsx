@@ -30,6 +30,7 @@ import { t } from '../i18n';
 import { keyLabel } from '../lib/shortcuts';
 import type { WorkspaceGroupId, WorkspaceRow } from '../lib/workspaces';
 import { navigate, workspaceRoute, type Route } from '../router';
+import { useApprovalCount } from './approval-stores';
 import { useIncoming, useIncomingCount } from './handoff-stores';
 import { useApp, useHosts, useInboxItems, usePrefs } from './hooks';
 import { emitUi, isMacLike } from './keyboard';
@@ -57,6 +58,7 @@ export function Sidebar({ route, mode }: { route: Route; mode: 'inline' | 'drawe
   const items = useInboxItems();
   const incoming = useIncoming();
   const handoffs = useIncomingCount();
+  const approvals = useApprovalCount();
   const anyHandoffs = [...incoming.values()].some((h) => h.list.length > 0);
   const mac = isMacLike(app.platform.mac);
   const [query, setQuery] = useState('');
@@ -170,8 +172,8 @@ export function Sidebar({ route, mode }: { route: Route; mode: 'inline' | 'drawe
         </Row>
         <Row
           leading={<Inbox className="size-4" />}
-          active={route.name === 'inbox' || route.name === 'interaction'}
-          trailing={<Badge n={items.length} />}
+          active={route.name === 'inbox' || route.name === 'interaction' || route.name === 'approve'}
+          trailing={<Badge n={items.length + approvals} />}
           onClick={() => go({ name: 'inbox' })}
           title={`${t.sidebar.inbox} (${keyLabel(mac, 'mod+1')})`}
         >

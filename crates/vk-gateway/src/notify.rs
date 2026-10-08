@@ -93,15 +93,38 @@ pub async fn run(gw: Arc<Gateway>) {
                             _ => {}
                         }
                     }
+                    // A pane asks the user to approve one call (09 §3.2 "Approved calls"): the
+                    // push opens the app's review screen for it. It carries no approve action;
+                    // deciding needs a full-scope device and an explicit tap in the app. Share
+                    // devices never see it (no pane on the item).
+                    "auth.approval_requested" => {
+                        let Some(id) = subject.get("request").and_then(|i| i.as_str()) else { continue };
+                        let method = data.get("method").and_then(|m| m.as_str()).unwrap_or("");
+                        let title = format!("A pane asks to {}", approval_verb(method));
+                        open.items.insert(format!("approval:{id}"), Item { title, url: format!("#/approve/{}/{id}", gw.keys.host_id()), urgent: true, pane: None });
+                        send(&gw, &open, false).await;
+                    }
+                    "auth.approval_granted" | "auth.approval_denied" | "auth.approval_withdrawn" => {
+                        if let Some(id) = subject.get("request").and_then(|i| i.as_str()) {
+                            open.items.remove(&format!("approval:{id}"));
+                        }
+                    }
                     "notification.created" => {
                         let urgency = data.get("urgency").and_then(|u| u.as_str()).unwrap_or("normal");
                         let kind = data.get("kind").and_then(|u| u.as_str()).unwrap_or("");
                         // Interactions already produce their own push.
                         if urgency == "low" || kind.starts_with("interaction") || kind.contains("approval") { continue; }
+                        // An approval request pushes from its own event (above).
+                        if kind == "auth.approve" && urgency == "high" { continue; }
                         let title = data.get("title").and_then(|t| t.as_str()).unwrap_or("Vibeke").to_string();
                         let id = data.get("id").and_then(|i| i.as_str()).unwrap_or("n").to_string();
                         // Incoming handoffs open the host's handoff list in the app.
-                        let url = if kind == "handoff" { format!("#/handoffs/{}", gw.keys.host_id()) } else { "#/inbox".into() };
+                        let url = match kind {
+                            "handoff" => format!("#/handoffs/{}", gw.keys.host_id()),
+                            // A standing approval was used: the host's approvals screen.
+                            "auth.approve" => format!("#/approve/{}", gw.keys.host_id()),
+                            _ => "#/inbox".into(),
+                        };
                         open.items.insert(format!("note:{id}"), Item { title, url, urgent: false, pane: subject.get("pane").and_then(|p| p.as_str()).map(str::to_string) });
                         send(&gw, &open, false).await;
                         open.items.remove(&format!("note:{id}"));
@@ -186,6 +209,16 @@ async fn describe_interaction(gw: &Gateway, id: &str) -> String {
         _ => "needs you".into(),
     };
     format!("{who} {what}")
+}
+
+/// What an approved call does (`auth.approval_requested` data.method), for the push title.
+fn approval_verb(method: &str) -> &'static str {
+    match method {
+        "handoff.send" => "send a handoff",
+        "handoff.cancel" => "cancel a handoff",
+        "gateway.call" => "redeem a peer invitation",
+        _ => "run a call",
+    }
 }
 
 fn truncate(s: &str, n: usize) -> String {

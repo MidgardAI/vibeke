@@ -14,6 +14,8 @@ import { CrewScreen, IdleLockOverlay, InteractionRoute, RunRoute, Tour, useIdleL
 import { PairScreen } from '../screens/pair';
 import { SettingsScreen } from '../screens/settings';
 import { QuickScreen } from '../screens/quick';
+import { ApprovalScreen } from '../screens/approve';
+import { useApprovalCount, useApprovalStores } from './approval-stores';
 import { useHandoffStores } from './handoff-stores';
 import { AppContext, useApp, useHosts, useInboxItems, usePrefs } from './hooks';
 import { KeyboardLayer, type Surface } from './keyboard';
@@ -128,6 +130,9 @@ function Main() {
   useIdleLock();
   // Incoming handoffs (nav badge) and outgoing jobs (toasts when a sheet closed early).
   useHandoffStores();
+  // Approval requests from panes (inbox cards, the review screen).
+  useApprovalStores();
+  const approvals = useApprovalCount();
 
   // Notification taps routed into the running app.
   useEffect(() => app.platform.notifications?.onOpen((url) => navigate(hashFromUrl(url))), [app]);
@@ -143,8 +148,8 @@ function Main() {
     if (!ready && !decided.current) return;
     decided.current = true;
     const top = mostUrgent(rows);
-    navigate(items.length || !top ? { name: 'inbox' } : workspaceRoute(top.host, top.workspace.id), { replace: true });
-  }, [route.name, hosts.length, ready, items.length, rows]);
+    navigate(items.length || approvals || !top ? { name: 'inbox' } : workspaceRoute(top.host, top.workspace.id), { replace: true });
+  }, [route.name, hosts.length, ready, items.length, approvals, rows]);
 
   // Old routes (Panes, Focus, Changes tabs; pane links) → their workspace.
   const routeKey = formatRoute(route);
@@ -205,6 +210,12 @@ function Screen({ route }: { route: Route }) {
           <IncomingScreen host={route.host} id={route.id} />
         </Framed>
       );
+    case 'approve':
+      return (
+        <Framed title={t.approve.screenTitle} width="narrow">
+          <ApprovalScreen host={route.host} id={route.id} />
+        </Framed>
+      );
     case 'crew':
       return (
         <Framed title={t.crew.title} width="narrow">
@@ -252,7 +263,8 @@ function PaneRouteFallback({ host }: { host: string }) {
 
 function InboxSub() {
   const items = useInboxItems();
-  return <>{t.quick.needYou(items.length)}</>;
+  const approvals = useApprovalCount();
+  return <>{t.quick.needYou(items.length + approvals)}</>;
 }
 
 /**

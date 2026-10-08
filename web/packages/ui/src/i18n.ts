@@ -438,6 +438,38 @@ export const en = {
     declineConfirm: 'Tap again to decline',
   },
 
+  approve: {
+    screenTitle: 'Approval requests',
+    /** "Pane w1:p2 asks to send a handoff". */
+    title: (pane: string, what: string) => `Pane ${pane} asks to ${what}`,
+    verbs: {
+      'handoff.send': 'send a handoff',
+      'handoff.cancel': 'cancel a handoff',
+      'gateway.call': 'redeem a peer invitation',
+      other: 'run a call',
+    } as Record<string, string>,
+    what: 'What will happen (worked out by the host from its own facts)',
+    reason: 'Reason given by the pane — unverified',
+    noReason: 'No reason given',
+    asked: (when: string, host: string) => `asked ${when} · ${host}`,
+    approve: 'Approve',
+    approveOnce: 'Approve once',
+    always: 'Always for this pane',
+    alwaysHint: (peer: string | null) =>
+      `Always also runs the same call from this pane${peer ? ` to ${peer}` : ''} without asking, until the pane's process restarts.`,
+    onceOnly: 'This call can only be approved once.',
+    deny: 'Deny',
+    review: 'Review',
+    approved: (always: boolean, what: string | null) => `Approved${always ? ' (always for this pane)' : ''}${what ? `: ${what}` : ''}`,
+    denied: 'Denied',
+    failed: (why: string) => `Approved, but the call failed: ${why}`,
+    gone: 'This request was decided elsewhere, withdrawn or expired',
+    empty: 'No approval requests',
+    emptyHint: 'A command typed in a shell pane, like vibeke handoff send, asks here before it runs.',
+    readOnly: 'Only a device with full access can decide',
+    hostOffline: 'Host offline — decisions are disabled',
+  },
+
   crew: {
     title: 'Hosts',
     needYou: (n: number) => `${n} need you`,

@@ -1,6 +1,7 @@
 // The gateway's push payload (crates/vk-gateway/src/notify.rs):
 //   {title, body, tag, url, host, count, renotify}
-// `url` is a hash route (`#/i/<host>/<interaction>`, `#/r/<host>/<run>`, `#/inbox`, `#/`).
+// `url` is a hash route (`#/i/<host>/<interaction>`, `#/r/<host>/<run>`, `#/approve/<host>/<request>`,
+// `#/inbox`, `#/`). Notifications never carry actions: approving needs an explicit tap in the app.
 // Shared by the service worker and its tests; no DOM.
 
 export interface PushPayload {

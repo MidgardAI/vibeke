@@ -1,6 +1,7 @@
 // Hash routes (spec 16 §9.3): `#/inbox`, workspaces `#/w/<host>/<workspace>[/t/<pane>]` with
 // `?panel=changes|files|off&file=…&commit=…&base=…&view=diff&show=term|conversation|preview:<id>`, push deep links from the gateway
-// (`#/i/<host>/<interaction>`, `#/r/<host>/<run>`, `#/inbox`) and the pairing link `#/pair?d=…`.
+// (`#/i/<host>/<interaction>`, `#/r/<host>/<run>`, `#/inbox`, `#/approve/<host>[/<request>]`) and the
+// pairing link `#/pair?d=…`.
 // Older links (`#/h/<host>/p/<pane>[/history|/changes]`, `#/panes`, `#/focus`, `#/changes`) still
 // parse; the app redirects them to a workspace once it knows the dashboard (app/selection.ts).
 
@@ -38,6 +39,8 @@ export type Route =
   | { name: 'crew' }
   /** Incoming handoffs: every host's list, one host's, or one handoff's accept view. */
   | { name: 'handoffs'; host: string | null; id: string | null }
+  /** Approval requests from panes: every host's, one host's, or one request's review. */
+  | { name: 'approve'; host: string | null; id: string | null }
   | { name: 'settings'; section?: string }
   | { name: 'pair'; d: string | null }
   | WorkspaceRoute
@@ -78,6 +81,8 @@ export function parseRoute(hash: string): Route {
       return { name: 'crew' };
     case 'handoffs':
       return { name: 'handoffs', host: b || null, id: (b && c) || null };
+    case 'approve':
+      return { name: 'approve', host: b || null, id: (b && c) || null };
     case 'settings':
       return b ? { name: 'settings', section: b } : { name: 'settings' };
     case 'pair': {
@@ -144,6 +149,8 @@ export function formatRoute(r: Route): string {
       return r.section ? `#/settings/${enc(r.section)}` : '#/settings';
     case 'handoffs':
       return r.host ? `#/handoffs/${enc(r.host)}${r.id ? `/${enc(r.id)}` : ''}` : '#/handoffs';
+    case 'approve':
+      return r.host ? `#/approve/${enc(r.host)}${r.id ? `/${enc(r.id)}` : ''}` : '#/approve';
     case 'pair':
       return r.d ? `#/pair?d=${r.d}` : '#/pair';
     case 'workspace': {

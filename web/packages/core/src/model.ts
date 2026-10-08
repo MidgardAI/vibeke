@@ -534,6 +534,47 @@ export interface HandoffPeer {
   expired?: boolean;
 }
 
+/**
+ * A pane asks the user to run one specific call it may not make itself (spec 09 §3.2 "Approved
+ * calls", `auth.approve`): `handoff.send`, `handoff.cancel` of its own jobs, or
+ * `gateway.call {method: "peer.redeem"}`. The user decides outside the pane (`auth.approve.decide`).
+ */
+export interface ApprovalRequest {
+  request: string;
+  kind: 'approval';
+  /** The asking pane (id, handle) and its workspace. */
+  pane: string;
+  pane_handle: string;
+  workspace: string;
+  method: string;
+  /** The frozen params (an invitation link shows as `(hidden)`). */
+  params: Record<string, unknown>;
+  /** What will happen, computed by the host from its own facts (never from the pane's text). */
+  summary: string;
+  facts: Record<string, unknown>;
+  /** The pane's own words: unverified. */
+  reason: string;
+  reason_verified: false;
+  peer: { id: string; name: string; owner: PeerOwner | string } | null;
+  /** Whether `always` may be chosen (never for peer.redeem). */
+  always_allowed: boolean;
+  created_at_ms: number;
+  status: 'pending' | 'running' | string;
+}
+
+/** A standing grant (`always`): the same call from that pane to that peer runs without asking until the pane restarts. */
+export interface ApprovalGrant {
+  pane: string;
+  method: string;
+  target: string | null;
+  peer: string;
+  peer_name: string;
+  request: string;
+  created_at_ms: number;
+}
+
+export type ApprovalDecision = 'approve' | 'always' | 'deny';
+
 /** A pending invitation on this host (`share.list`). */
 export interface InvitationInfo {
   /** Pairing id; `share.revoke {id}` cancels it. */
@@ -792,6 +833,25 @@ export interface AppApi {
   'handoff.cancel': { params: { id: string }; result: { job: HandoffJob } };
   /** The hosts `handoff.send` can deliver to, as this host's gateway last published them. */
   'handoff.peers': { params: Record<string, never>; result: { peers: HandoffPeer[]; updated_at: number | null } };
+  /** Open approval requests from panes and the standing grants (the gateway passes only these parts of the host's `auth.list`). */
+  'auth.list': { params: Record<string, never>; result: { approvals?: ApprovalRequest[]; grants?: ApprovalGrant[] } };
+  /**
+   * Decide a pane's request (full-scope devices): `approve` runs the frozen call once as the user,
+   * `always` also allows the same call from that pane to that peer until the pane restarts (only
+   * when `always_allowed`), `deny` refuses. `ok`/`result`/`error` are the approved call's outcome.
+   */
+  'auth.approve.decide': {
+    params: { request: string; decision: ApprovalDecision };
+    result: {
+      request: string;
+      pane: string;
+      decision: 'approved' | 'denied';
+      grant: 'once' | 'always' | null;
+      ok: boolean;
+      result: unknown;
+      error: { code?: number; message?: string; data?: { kind?: string } } | null;
+    };
+  };
 }
 
 export type AppMethod = keyof AppApi;
@@ -832,6 +892,7 @@ export const MUTATING_METHODS: ReadonlySet<string> = new Set([
   'handoff.prefs',
   'handoff.send',
   'handoff.cancel',
+  'auth.approve.decide',
 ]);
 
 // ---- normalization ------------------------------------------------------------------------

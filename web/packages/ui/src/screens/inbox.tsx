@@ -1,12 +1,14 @@
 import { useMemo, useRef, type ReactNode } from 'react';
 import { Inbox as InboxIcon } from 'lucide-react';
 import { groupBatches, type Batch } from '@vibeke/core';
+import { useApprovalCount } from '../app/approval-stores';
 import { useAnswers, useApp, useHosts, useInboxItems, useNow } from '../app/hooks';
 import { BatchCard } from '../components/batch-card';
 import { InteractionCard } from '../components/interaction-card';
 import { Empty } from '../components/ui';
 import { t } from '../i18n';
 import { InboxRetainer, itemKey, type RetainedEntry } from '../lib/retain';
+import { InboxApprovals } from './approve';
 
 export function InboxScreen() {
   const app = useApp();
@@ -16,6 +18,8 @@ export function InboxScreen() {
   const now = useNow(500);
   const retainer = useRef(new InboxRetainer());
   const showHost = hosts.length > 1;
+  // Approval requests from panes (spec 09 §3.2) come first: a pane waits on each one.
+  const approvals = useApprovalCount();
 
   const entries = retainer.current.update(
     items,
@@ -42,11 +46,12 @@ export function InboxScreen() {
     rows.push({ key: e.key, node: <EntryCard entry={e} showHost={showHost} /> });
   }
 
-  if (rows.length === 0) {
+  if (rows.length === 0 && approvals === 0) {
     return <Empty icon={<InboxIcon className="size-10" />} title={t.inbox.empty} hint={t.inbox.emptyHint} />;
   }
   return (
     <div className="space-y-3 px-3 pb-6 pt-2 sm:px-4" data-nav-list>
+      <InboxApprovals showHost={showHost} />
       {rows.map((r) => (
         <div key={r.key}>{r.node}</div>
       ))}

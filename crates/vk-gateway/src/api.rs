@@ -159,6 +159,8 @@ pub fn required_scope(method: &str) -> Option<Scope> {
         // Host-to-host trust and invitation management (spec 16 §15.3–§15.4, peers.rs).
         "peer.invite" | "peer.redeem" | "peer.list" | "peer.remove" | "share.list"
         | "share.revoke" => Full,
+        // Approved calls (09 §3.2): a pane asks, the owner's apps review and decide.
+        "auth.list" | "auth.approve.decide" => Full,
         _ => return None,
     })
 }
@@ -174,6 +176,7 @@ const FULL_READ_ONLY: &[&str] = &[
     "share.list",
     "fs.browse",
     "repo.candidates",
+    "auth.list",
 ];
 
 pub fn is_mutating(method: &str) -> bool {
@@ -384,6 +387,7 @@ pub fn kind_allows(kind: &str, method: &str) -> bool {
                 || method.starts_with("share.")
                 || method.starts_with("peer.")
                 || method.starts_with("handoff.")
+                || method.starts_with("auth.")
                 || method.starts_with("tab.") && method != "tab.create"
                 || matches!(
                     method,
@@ -1294,6 +1298,21 @@ impl Call<'_> {
                 self.server(method, pick(&p, &["id"])).await
             }
             "handoff.jobs" | "handoff.peers" => self.server(method, json!({})).await,
+            // Approved calls (09 §3.2): only the approval requests and standing grants, never
+            // the elevation tokens and revocations `auth.list` also returns.
+            "auth.list" => {
+                let r = self.server(method, json!({})).await?;
+                Ok(json!({
+                    "approvals": r.get("approvals").cloned().unwrap_or_else(|| json!([])),
+                    "grants": r.get("grants").cloned().unwrap_or_else(|| json!([])),
+                }))
+            }
+            "auth.approve.decide" => {
+                req(&p, "request")?;
+                req(&p, "decision")?;
+                self.server(method, pick(&p, &["request", "decision"]))
+                    .await
+            }
             // Delivery from another host.
             "handoff.offer" | "handoff.status" | "handoff.write" | "handoff.commit"
             | "handoff.discard" => {
@@ -1718,6 +1737,14 @@ mod share_tests {
         assert!(is_mutating("handoff.offer") && is_mutating("handoff.commit"));
         assert!(!is_mutating("handoff.jobs") && !is_mutating("handoff.status"));
         assert!(is_mutating("peer.redeem") && is_mutating("share.revoke"));
+        // Approved calls: the owner's full-scope apps decide; share devices never see them.
+        for m in ["auth.list", "auth.approve.decide"] {
+            assert_eq!(required_scope(m), Some(Scope::Full), "{m}");
+            assert!(!kind_allows("share", m) && !kind_allows("peer", m), "{m}");
+            assert!(kind_allows("device", m), "{m}");
+        }
+        assert!(is_mutating("auth.approve.decide") && !is_mutating("auth.list"));
+        assert_eq!(required_scope("auth.elevate.decide"), None);
         assert!(!is_mutating("peer.list") && !is_mutating("share.list"));
         assert!(!kind_allows("from-the-future", "ping"));
     }
