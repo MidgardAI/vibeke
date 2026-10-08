@@ -79,7 +79,7 @@ The installer creates links at `~/.local/share/vibeke/current` and `~/.local/bin
 To select a version, set the variable on the shell that runs the installer:
 
 ```sh
-curl -fsSL https://vibeke.dev/install.sh | VIBEKE_VERSION=0.1.0 sh
+curl -fsSL https://vibeke.dev/install.sh | VIBEKE_VERSION=0.2.0 sh
 ```
 
 For mirrors, offline installation, signatures, and development builds, see [release verification](reference/releases.md).
