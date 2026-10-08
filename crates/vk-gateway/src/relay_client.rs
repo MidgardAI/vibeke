@@ -88,8 +88,7 @@ impl TokenSource {
     pub async fn token(
         &mut self,
         tickets: bool,
-        host_id: &str,
-        relay_pub: &[u8; 32],
+        keys: &vk_e2e::HostKeys,
         name: &str,
     ) -> vk_account::Result<Option<String>> {
         self.last_account = false;
@@ -109,7 +108,7 @@ impl TokenSource {
         {
             return Ok(Some(c.token.clone()));
         }
-        let t = acct.host_token(host_id, relay_pub, name).await?;
+        let t = acct.host_token(keys, name).await?;
         self.cached = Some(Cached {
             token: t.token.clone(),
             issued: now,
@@ -147,8 +146,7 @@ impl TokenSource {
         let host = gw.keys.host_id();
         let tickets = self.static_token.is_none()
             && (self.force_account || self.relay_tickets(relay, &host).await);
-        self.token(tickets, &host, &gw.keys.relay_public(), &gw.host_name)
-            .await
+        self.token(tickets, &gw.keys, &gw.host_name).await
     }
 
     /// The relay refused us with `reason`: drop the cached token and look at its status again.
@@ -678,18 +676,18 @@ mod tests {
         store.save(&cred).unwrap();
         let acct = Account::new(client, store.clone());
         let mut src = TokenSource::new(None, Some(acct));
-        let pk = [3u8; 32];
+        let keys = vk_e2e::HostKeys::generate();
 
         // Open relay: no token at all.
-        assert_eq!(src.token(false, "h", &pk, "box").await.unwrap(), None);
+        assert_eq!(src.token(false, &keys, "box").await.unwrap(), None);
         assert!(!src.uses_account());
         // Tickets: a host token, then the cached one.
         assert_eq!(
-            src.token(true, "h", &pk, "box").await.unwrap().as_deref(),
+            src.token(true, &keys, "box").await.unwrap().as_deref(),
             Some("h1")
         );
         assert_eq!(
-            src.token(true, "h", &pk, "box").await.unwrap().as_deref(),
+            src.token(true, &keys, "box").await.unwrap().as_deref(),
             Some("h1")
         );
         assert!(src.uses_account());
@@ -699,7 +697,7 @@ mod tests {
         let c = src.cached.as_mut().unwrap();
         (c.issued, c.exp) = (now - 3500, now + 100);
         assert_eq!(
-            src.token(true, "h", &pk, "box").await.unwrap().as_deref(),
+            src.token(true, &keys, "box").await.unwrap().as_deref(),
             Some("h2")
         );
         // Refused by the relay (4401): dropped and fetched again; the account token is refreshed
@@ -708,7 +706,7 @@ mod tests {
         f.with(|s| s.access = Some("rotated-elsewhere".into()));
         f.with(|s| s.refresh = Some("r1".into()));
         assert_eq!(
-            src.token(false, "h", &pk, "box").await.unwrap().as_deref(),
+            src.token(false, &keys, "box").await.unwrap().as_deref(),
             Some("h3")
         );
         assert_eq!(f.with(|s| s.refresh_calls), 1);
@@ -720,14 +718,14 @@ mod tests {
             s.refresh = None;
         });
         assert_eq!(
-            src.token(true, "h", &pk, "box").await.unwrap_err(),
+            src.token(true, &keys, "box").await.unwrap_err(),
             vk_account::Error::LoginRequired
         );
         assert!(store.load(&f.url).unwrap().is_none());
         // A static relay token always wins.
         let mut st = TokenSource::new(Some("t1".into()), None);
         assert_eq!(
-            st.token(true, "h", &pk, "box").await.unwrap().as_deref(),
+            st.token(true, &keys, "box").await.unwrap().as_deref(),
             Some("t1")
         );
         assert!(!st.uses_account());

@@ -189,8 +189,27 @@ async fn host_token(
         return err(StatusCode::UNAUTHORIZED, "invalid_token");
     }
     let b = body(&b);
-    if id.is_empty() || b["relay_pub"].as_str().is_none_or(|p| p.len() != 43) {
-        return err(StatusCode::BAD_REQUEST, "invalid_request");
+    let Some(relay_pub) = b["relay_pub"]
+        .as_str()
+        .and_then(|p| vk_e2e::b64::decode_array::<32>(p).ok())
+    else {
+        return err(StatusCode::BAD_REQUEST, "invalid_relay_pub");
+    };
+    if id != vk_e2e::host_id(&relay_pub) {
+        return err(StatusCode::BAD_REQUEST, "host_id_mismatch");
+    }
+    let ts = b["ts"].as_u64().unwrap_or(0);
+    if ts.abs_diff(now_s()) > 300 {
+        return err(StatusCode::BAD_REQUEST, "stale_timestamp");
+    }
+    let ok = b["sig"]
+        .as_str()
+        .and_then(|s| vk_e2e::b64::decode_array::<64>(s).ok())
+        .is_some_and(|sig| {
+            vk_e2e::keys::verify(&relay_pub, &crate::host_claim_message(&id, ts), &sig)
+        });
+    if !ok {
+        return err(StatusCode::BAD_REQUEST, "invalid_signature");
     }
     let t = format!("h{}", st.host_tokens.len() + 1);
     st.host_tokens.push(t.clone());

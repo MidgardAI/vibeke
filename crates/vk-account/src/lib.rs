@@ -124,6 +124,21 @@ pub enum Poll {
     Done(Tokens),
 }
 
+/// Bytes a host signs with its relay key to claim its host id on the control plane:
+/// `"vibeke-cloud/1 host-claim\0" ‖ host_id ‖ "\0" ‖ ts` (unix seconds, decimal). The server accepts
+/// `ts` within five minutes of its clock.
+pub fn host_claim_message(host_id: &str, ts: u64) -> Vec<u8> {
+    [
+        HOST_CLAIM.as_bytes(),
+        host_id.as_bytes(),
+        b"\0",
+        ts.to_string().as_bytes(),
+    ]
+    .concat()
+}
+
+const HOST_CLAIM: &str = "vibeke-cloud/1 host-claim\0";
+
 /// A relay host token (`/v1/hosts/{id}/token`).
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct HostToken {
@@ -345,25 +360,28 @@ impl Client {
         }
     }
 
-    /// A relay token for this host (`/v1/hosts/{id}/token`), about an hour long.
+    /// A relay token for this host (`/v1/hosts/{id}/token`), about an hour long. The request
+    /// carries a [`host_claim_message`] signature by the host's relay key, which proves the caller
+    /// owns the host id it claims.
     pub async fn host_token(
         &self,
         access: &str,
-        host_id: &str,
-        relay_pub: &[u8; 32],
+        keys: &vk_e2e::HostKeys,
         name: &str,
     ) -> Result<HostToken> {
-        if !host_id
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-        {
-            return Err(Error::Protocol("bad host id".into()));
-        }
+        let host_id = keys.host_id();
+        let ts = now_s();
+        let sig = keys.sign(&host_claim_message(&host_id, ts));
         match self
             .post(
                 &format!("/v1/hosts/{host_id}/token"),
                 Some(access),
-                json!({"relay_pub": b64::encode(relay_pub), "name": name}),
+                json!({
+                    "relay_pub": b64::encode(keys.relay_public()),
+                    "name": name,
+                    "ts": ts,
+                    "sig": b64::encode(sig),
+                }),
             )
             .await?
         {
@@ -589,22 +607,13 @@ impl Account {
 
     /// A relay host token. A refused access token is refreshed once; refused again →
     /// [`Error::LoginRequired`].
-    pub async fn host_token(
-        &self,
-        host_id: &str,
-        relay_pub: &[u8; 32],
-        name: &str,
-    ) -> Result<HostToken> {
+    pub async fn host_token(&self, keys: &vk_e2e::HostKeys, name: &str) -> Result<HostToken> {
         let access = self.access_token(false).await?;
-        match self
-            .client
-            .host_token(&access, host_id, relay_pub, name)
-            .await
-        {
+        match self.client.host_token(&access, keys, name).await {
             Err(Error::Unauthorized) => {
                 let access = self.access_token(true).await?;
                 self.client
-                    .host_token(&access, host_id, relay_pub, name)
+                    .host_token(&access, keys, name)
                     .await
                     .map_err(|e| match e {
                         Error::Unauthorized => Error::LoginRequired,

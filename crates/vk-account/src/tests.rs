@@ -137,7 +137,10 @@ async fn host_token_refreshes_once_on_401() {
         .save(&cred(&f.url, "r1", Some(("revoked", now_s() + 3000))))
         .unwrap();
     let acct = Account::new(c, store.clone());
-    let t = acct.host_token("host1", &[7; 32], "devbox").await.unwrap();
+    let t = acct
+        .host_token(&vk_e2e::HostKeys::generate(), "devbox")
+        .await
+        .unwrap();
     assert_eq!(t.token, "h1");
     assert!(t.expires_at > now_s());
     assert_eq!(f.with(|s| (s.host_token_calls, s.refresh_calls)), (2, 1));
@@ -155,7 +158,7 @@ async fn invalid_grant_means_login_required_and_forgets_the_credential() {
     store.save(&cred(&f.url, "gone", None)).unwrap();
     let acct = Account::new(client(&f).await, store.clone());
     assert_eq!(
-        acct.host_token("host1", &[7; 32], "devbox")
+        acct.host_token(&vk_e2e::HostKeys::generate(), "devbox")
             .await
             .unwrap_err(),
         Error::LoginRequired
@@ -199,4 +202,27 @@ fn file_store_roundtrip() {
     assert!(store.load("https://other.example").unwrap().is_none());
     assert!(store.delete(&c.server).unwrap());
     assert!(store.load(&c.server).unwrap().is_none());
+}
+
+#[test]
+fn host_claim_vector() {
+    // Shared with the control plane's `tokens::tests::host_claim_vector`.
+    let keys = vk_e2e::HostKeys {
+        noise_private: [0u8; 32],
+        relay_seed: [1u8; 32],
+    };
+    assert_eq!(
+        b64::encode(keys.relay_public()),
+        "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w"
+    );
+    assert_eq!(keys.host_id(), "qnlbvwzzr7mh7dt63azrx7zpzm");
+    let msg = host_claim_message(&keys.host_id(), 1_700_000_000);
+    assert_eq!(
+        b64::encode(&msg),
+        "dmliZWtlLWNsb3VkLzEgaG9zdC1jbGFpbQBxbmxidnd6enI3bWg3ZHQ2M2F6cng3enB6bQAxNzAwMDAwMDAw"
+    );
+    assert_eq!(
+        b64::encode(keys.sign(&msg)),
+        "i98KX-X7f2HOQWDkpoO-k0G1wRQA32x6RAIrjSpa0TN_HD_aPIzpGVr53IbWl2mW36jXCoKWhu62-o29Y1gJAA"
+    );
 }
