@@ -797,6 +797,43 @@ export const en = {
     previews: 'Previews',
   },
 
+  picker: {
+    label: 'Agent dialog',
+    multiHint: 'Choose any number, then confirm',
+    confirm: 'Confirm',
+    current: 'Current',
+    selected: 'Selected',
+    cancel: 'Cancel',
+    openTerminal: 'Open terminal',
+    changed: 'The dialog changed. Review the options and choose again.',
+    adjust: (verb: string) => `${verb} with left and right`,
+    adjustLabel: (verb: string) => verb,
+    unknownTitle: 'The agent is showing a dialog',
+    unknownBody: 'Vibeke cannot display this dialog. Cancel it, or open the terminal to answer it there.',
+    noCancel: 'This dialog cannot be dismissed from here.',
+    lockedHint: 'Answer the dialog above to keep typing.',
+    dialogOpen: 'A dialog is open. Answer it first; your message is kept.',
+    sent: 'Sent',
+  },
+
+  slash: {
+    label: 'Slash commands',
+    tapAgain: 'Tap again to run',
+    opensPicker: 'Opens a menu',
+    none: 'No matching commands',
+    noArg: 'Takes an argument',
+  },
+
+  modelSwitch: {
+    title: 'Model',
+    button: 'Switch model',
+    loading: 'Loading models…',
+    current: 'Current',
+    failed: 'Could not load models',
+    switched: (m: string) => `Model: ${m}`,
+    picker: 'Opened the agent’s model menu',
+  },
+
   composer2: {
     placeholder: 'Message the agent, tag @files, or use /commands',
     placeholderShort: 'Message, @files, /commands',
