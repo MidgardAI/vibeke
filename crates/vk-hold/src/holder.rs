@@ -1317,13 +1317,44 @@ fn become_subreaper() {
 #[cfg(not(target_os = "linux"))]
 fn become_subreaper() {}
 
+/// Children reaped per pass of [`reap_adopted`] before yielding to the event loop.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+const REAP_BATCH: usize = 1024;
+
+/// One pass of [`reap_adopted`]: `peek` names the next waitable child without reaping it,
+/// `reap` reaps that pid (false if it could not). Stops when nothing is waitable, at the pane's
+/// unclaimed child (whose own SIGCHLD brings another pass once `Child::try_wait` claims it), or
+/// on a failed reap. Returns true when it stopped at `cap` with children possibly still
+/// waitable.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn reap_pass(
+    child_pid: u32,
+    child_reaped: bool,
+    cap: usize,
+    mut peek: impl FnMut() -> Option<u32>,
+    mut reap: impl FnMut(u32) -> bool,
+) -> bool {
+    for _ in 0..cap {
+        let Some(pid) = peek() else { return false };
+        if pid == child_pid && !child_reaped {
+            return false;
+        }
+        if !reap(pid) {
+            return false;
+        }
+    }
+    true
+}
+
 /// Reap exited orphans this holder adopted as child subreaper (Linux), never the pane's own
 /// child while its status is still unclaimed (`child_reaped == false`): that one belongs to
 /// `Child::try_wait`. Each ready child is peeked with `WNOWAIT` first and reaped by pid only
-/// when it is not the pane child.
+/// when it is not the pane child. A pass that hits [`REAP_BATCH`] schedules another one (a
+/// SIGCHLD to itself, through the event loop's signal pipe) rather than leaving zombies until
+/// the next child exits.
 #[cfg(target_os = "linux")]
 pub(crate) fn reap_adopted(child_pid: u32, child_reaped: bool) {
-    for _ in 0..1024 {
+    let peek = || {
         // SAFETY: zeroed siginfo is a valid out-param for waitid.
         let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
         // SAFETY: waitid writes into `info`; WNOWAIT leaves the child waitable.
@@ -1336,19 +1367,22 @@ pub(crate) fn reap_adopted(child_pid: u32, child_reaped: bool) {
             )
         };
         if r != 0 {
-            return;
+            return None;
         }
         // SAFETY: waitid filled a SIGCHLD siginfo (si_pid 0 = nothing ready).
         let pid = unsafe { info.si_pid() };
-        if pid <= 0 {
-            return;
-        }
-        if pid as u32 == child_pid && !child_reaped {
-            return;
-        }
+        (pid > 0).then_some(pid as u32)
+    };
+    let reap = |pid: u32| {
         let mut status = 0;
         // SAFETY: reaps exactly `pid`, which is a zombie child of this process.
-        unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
+        unsafe {
+            libc::waitpid(pid as libc::pid_t, &mut status, libc::WNOHANG) == pid as libc::pid_t
+        }
+    };
+    if reap_pass(child_pid, child_reaped, REAP_BATCH, peek, reap) {
+        // SAFETY: raise(3) with SIGCHLD, whose handler (signal_hook's pipe writer) is installed.
+        unsafe { libc::raise(libc::SIGCHLD) };
     }
 }
 
@@ -1377,5 +1411,55 @@ pub fn write_spec(path: &Path, spec: &SpawnSpec) -> Result<()> {
 impl AsFd for Holder {
     fn as_fd(&self) -> rustix::fd::BorrowedFd<'_> {
         self.listener.as_fd()
+    }
+}
+
+#[cfg(test)]
+mod reap_tests {
+    use super::reap_pass;
+    use std::collections::VecDeque;
+
+    /// Runs passes over a fake set of waitable children; returns (reaped, passes).
+    fn drain(ready: &[u32], child: u32, child_reaped: bool, cap: usize) -> (Vec<u32>, usize) {
+        let ready = std::cell::RefCell::new(ready.iter().copied().collect::<VecDeque<u32>>());
+        let mut reaped = vec![];
+        let mut passes = 0;
+        loop {
+            passes += 1;
+            let more = reap_pass(
+                child,
+                child_reaped,
+                cap,
+                || ready.borrow().front().copied(),
+                |pid| {
+                    ready.borrow_mut().pop_front();
+                    reaped.push(pid);
+                    true
+                },
+            );
+            if !more {
+                return (reaped, passes);
+            }
+        }
+    }
+
+    #[test]
+    fn a_full_batch_asks_for_another_pass() {
+        let all: Vec<u32> = (100..110).collect();
+        let (reaped, passes) = drain(&all, 1, false, 4);
+        assert_eq!(reaped, all, "every adopted zombie is reaped");
+        assert_eq!(passes, 3);
+        let (reaped, passes) = drain(&all, 1, false, 1024);
+        assert_eq!((reaped.len(), passes), (10, 1));
+    }
+
+    #[test]
+    fn never_reaps_the_unclaimed_pane_child() {
+        let (reaped, _) = drain(&[100, 7, 101], 7, false, 1024);
+        assert_eq!(reaped, vec![100]);
+        let (reaped, _) = drain(&[100, 7, 101], 7, true, 1024);
+        assert_eq!(reaped, vec![100, 7, 101]);
+        // A failed reap ends the pass (no busy loop).
+        assert!(!reap_pass(7, false, 4, || Some(100), |_| false));
     }
 }

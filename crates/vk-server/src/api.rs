@@ -1242,7 +1242,10 @@ pub async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) 
                     Some(rev0),
                 )
                 .await?;
-                let text = read_text(server, &pane.id, "recent", 50);
+                let mut text = read_text(server, &pane.id, "recent", 50);
+                if ctx.remote {
+                    text = crate::privacy::redact_text(server, &text);
+                }
                 return Ok(json!({"output_tail": text}));
             }
             Ok(json!({}))
@@ -1251,16 +1254,21 @@ pub async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) 
             let pane = resolve_pane(server, ctx, s(p, "pane"))?;
             let source = s(p, "source").unwrap_or("visible");
             let lines = u(p, "lines").unwrap_or(200) as usize;
-            if matches!(source, "last-command" | "last_command") {
-                return read_last_command(server, &pane.id, lines);
+            let mut v = if matches!(source, "last-command" | "last_command") {
+                read_last_command(server, &pane.id, lines)?
+            } else {
+                let text = read_text(server, &pane.id, source, lines);
+                let rev = server.pane_rt(&pane.id).map(|r| r.rev()).unwrap_or(0);
+                json!({"text": text, "revision": rev, "source": source})
+            };
+            // A remote client (the gateway's relayed devices) gets secrets redacted, whatever
+            // the source.
+            if ctx.remote
+                && let Some(t) = v["text"].as_str()
+            {
+                v["text"] = json!(crate::privacy::redact_text(server, t));
             }
-            let mut text = read_text(server, &pane.id, source, lines);
-            // A remote client (the gateway's relayed devices) gets secrets redacted.
-            if ctx.remote {
-                text = crate::privacy::redact_text(server, &text);
-            }
-            let rev = server.pane_rt(&pane.id).map(|r| r.rev()).unwrap_or(0);
-            Ok(json!({"text": text, "revision": rev, "source": source}))
+            Ok(v)
         }
         "pane.wait_output" => {
             let pane = resolve_pane(server, ctx, s(p, "pane"))?;

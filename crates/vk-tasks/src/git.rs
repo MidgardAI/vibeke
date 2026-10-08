@@ -225,51 +225,10 @@ pub(crate) fn exec(dir: &Path, args: &[&str], timeout: Option<Duration>) -> Resu
     let mut child = cmd.spawn()?;
     let out = match timeout {
         None => child.wait_with_output()?,
-        Some(t) => {
-            // The child stays owned (and unreaped) here until it exits or is killed, so the
-            // kill can never hit a recycled pid: `Child::kill` only signals an unwaited child.
-            let drain = |r: Option<Box<dyn std::io::Read + Send>>| {
-                thread::spawn(move || {
-                    let mut buf = Vec::new();
-                    if let Some(mut r) = r {
-                        let _ = r.read_to_end(&mut buf);
-                    }
-                    buf
-                })
-            };
-            let so = drain(
-                child
-                    .stdout
-                    .take()
-                    .map(|x| Box::new(x) as Box<dyn std::io::Read + Send>),
-            );
-            let se = drain(
-                child
-                    .stderr
-                    .take()
-                    .map(|x| Box::new(x) as Box<dyn std::io::Read + Send>),
-            );
-            let deadline = std::time::Instant::now() + t;
-            let status = loop {
-                if let Some(st) = child.try_wait()? {
-                    break st;
-                }
-                if std::time::Instant::now() >= deadline {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err(Error::Timeout {
-                        args: args.join(" "),
-                        secs: t.as_secs_f32(),
-                    });
-                }
-                thread::sleep(Duration::from_millis(10));
-            };
-            Output {
-                status,
-                stdout: so.join().unwrap_or_default(),
-                stderr: se.join().unwrap_or_default(),
-            }
-        }
+        Some(t) => wait_bounded(&mut child, t)?.ok_or_else(|| Error::Timeout {
+            args: args.join(" "),
+            secs: t.as_secs_f32(),
+        })?,
     };
     if out.status.success() {
         Ok(out)
@@ -280,6 +239,69 @@ pub(crate) fn exec(dir: &Path, args: &[&str], timeout: Option<Duration>) -> Resu
             stderr: String::from_utf8_lossy(&out.stderr).trim().to_string(),
         })
     }
+}
+
+/// Wait for `child` and collect its piped stdout and stderr, all within `t`. `None` on timeout.
+///
+/// The child stays owned (and unreaped) here until it exits or is killed, so the kill can never
+/// hit a recycled pid: `Child::kill` only signals an unwaited child. The deadline also covers
+/// output collection: a background descendant that inherited stdout/stderr can hold the pipes
+/// open after the child exits; the reader threads are then left behind and end when the pipes
+/// close.
+fn wait_bounded(child: &mut std::process::Child, t: Duration) -> std::io::Result<Option<Output>> {
+    let deadline = std::time::Instant::now() + t;
+    let (tx, rx) = std::sync::mpsc::channel::<(bool, Vec<u8>)>();
+    let drain = |r: Option<Box<dyn std::io::Read + Send>>, is_err: bool| {
+        let tx = tx.clone();
+        thread::spawn(move || {
+            let mut buf = Vec::new();
+            if let Some(mut r) = r {
+                let _ = r.read_to_end(&mut buf);
+            }
+            let _ = tx.send((is_err, buf));
+        });
+    };
+    drain(
+        child
+            .stdout
+            .take()
+            .map(|x| Box::new(x) as Box<dyn std::io::Read + Send>),
+        false,
+    );
+    drain(
+        child
+            .stderr
+            .take()
+            .map(|x| Box::new(x) as Box<dyn std::io::Read + Send>),
+        true,
+    );
+    drop(tx);
+    let status = loop {
+        if let Some(st) = child.try_wait()? {
+            break st;
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Ok(None);
+        }
+        thread::sleep(Duration::from_millis(10));
+    };
+    let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
+    for _ in 0..2 {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        match rx.recv_timeout(left) {
+            Ok((false, b)) => stdout = b,
+            Ok((true, b)) => stderr = b,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => return Ok(None),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    Ok(Some(Output {
+        status,
+        stdout,
+        stderr,
+    }))
 }
 
 /// Run git, return stdout with trailing newline(s) trimmed.
@@ -313,6 +335,35 @@ pub(crate) fn same_path(a: &Path, b: &Path) -> bool {
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn bounded_wait_collects_output_and_times_out_on_held_pipes() {
+        let spawn = |script: &str| {
+            Command::new("sh")
+                .args(["-c", script])
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap()
+        };
+        let mut c = spawn("echo out; echo err >&2");
+        let o = wait_bounded(&mut c, Duration::from_secs(10))
+            .unwrap()
+            .unwrap();
+        assert!(o.status.success());
+        assert_eq!(o.stdout, b"out\n");
+        assert_eq!(o.stderr, b"err\n");
+        // The child exits at once, but a background descendant keeps its pipes open.
+        let mut c = spawn("sleep 5 & echo hi");
+        let t0 = std::time::Instant::now();
+        assert!(
+            wait_bounded(&mut c, Duration::from_millis(300))
+                .unwrap()
+                .is_none()
+        );
+        assert!(t0.elapsed() < Duration::from_secs(3), "{:?}", t0.elapsed());
+    }
 
     fn g(dir: &Path, args: &[&str]) {
         let out = Command::new("git")

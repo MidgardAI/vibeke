@@ -34,20 +34,10 @@ fn cli_layer() -> &'static Mutex<BTreeMap<String, toml::Value>> {
         if let Ok(v) = std::env::var(CONFIG_OVERRIDE_ENV)
             && let Ok(pairs) = parse_override_list(&v)
         {
-            m.extend(pairs.into_iter().filter(|(k, _)| env_override_allowed(k)));
+            m.extend(pairs);
         }
         Mutex::new(m)
     })
-}
-
-/// Keys an inherited `VIBEKE_CONFIG_OVERRIDE` may not set: isolation and the container runtime
-/// decide how agents are contained, and anything that can set a process's environment (a
-/// pane's child, a repo script) must not loosen them. They stay settable in `config.toml` and
-/// with this process's own `--config-override`.
-pub fn env_override_allowed(key: &str) -> bool {
-    let k = key.trim();
-    let under = |p: &str| k == p || k.strip_prefix(p).is_some_and(|r| r.starts_with('.'));
-    !(under("isolation") || under("container.runtime"))
 }
 
 /// Parse one `key=value` override.
@@ -219,16 +209,6 @@ pub fn reset_keys_text(src: &str, all: bool) -> Result<(String, Vec<String>), St
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn env_overrides_cannot_touch_isolation() {
-        assert!(!env_override_allowed("isolation.default"));
-        assert!(!env_override_allowed("isolation"));
-        assert!(!env_override_allowed("container.runtime"));
-        assert!(env_override_allowed("container.image"));
-        assert!(env_override_allowed("isolationist.x"));
-        assert!(env_override_allowed("ui.animate"));
-    }
 
     #[test]
     fn overrides_parse_toml_values_with_a_string_fallback() {

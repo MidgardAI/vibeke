@@ -14,10 +14,10 @@
 //!
 //! `import` restores entries whose id is not registered yet and copies config/state files that
 //! do not exist yet; everything already present is a reported conflict and left alone. Imported
-//! managed checkouts get a new immutable path, so Herdr legacy grants (bound to the root) need
-//! a new review; native consents do not carry over (the foreign registry is not trusted: consent
-//! is dropped, tree digests are recomputed from the imported files, and the plugin must be
-//! consented again). Plugin ids from the export are validated before any path is built. Links are imported only when their directory
+//! managed checkouts get a new immutable path. Neither Herdr legacy grants nor native consents
+//! carry over (the foreign registry is not trusted: grants, consent and build state are dropped,
+//! native tree digests are recomputed from the imported files, and every imported plugin needs a
+//! new review). Plugin ids from the export are validated before any path is built. Links are imported only when their directory
 //! exists. Import never touches Herdr's own data.
 
 use std::path::{Path, PathBuf};
@@ -237,10 +237,12 @@ pub fn import(dirs: &PluginDirs, from: &Path, dry_run: bool) -> Result<Report, R
     for mut e in herdr {
         if e.managed {
             e.root = place(&e.id, &e.root)?;
-            if e.trust.is_some() {
-                rep.needs_review.push(e.id.clone());
-            }
         }
+        // The export's legacy grant and build state are not trusted (a forged entry could carry
+        // grant hashes computed for any directory): review and build again.
+        e.trust = None;
+        e.built = false;
+        rep.needs_review.push(e.id.clone());
         placed_h.push(e);
     }
     let mut placed_n = vec![];
@@ -358,6 +360,43 @@ mod tests {
         let again = import(&b, &out, false).unwrap();
         assert!(again.plugins.is_empty());
         assert_eq!(again.conflicts.len(), 1);
+    }
+
+    /// A Herdr entry's legacy grant (here a genuine one for a linked directory that exists on
+    /// the importing machine, exactly what a forged export could carry) is not imported: the
+    /// plugin is untrusted until reviewed again.
+    #[test]
+    fn import_drops_herdr_grants() {
+        use crate::herdr::registry::Status;
+        let t = tempfile::tempdir().unwrap();
+        let a = dirs(&t.path().join("a"));
+        let src = t.path().join("acme.hd");
+        std::fs::create_dir_all(src.join("bin")).unwrap();
+        std::fs::write(
+            src.join(crate::herdr::MANIFEST_FILE),
+            "id = \"acme.hd\"\nversion = \"1.0.0\"\n[[actions]]\nid = \"go\"\ntitle = \"Go\"\ncommand = [\"bin/go\"]\n",
+        )
+        .unwrap();
+        std::fs::write(src.join("bin/go"), "#!/bin/sh\necho go\n").unwrap();
+        Registry::update(&a, |r| {
+            r.link(&src)?;
+            r.trust("acme.hd").map(|_| ())
+        })
+        .unwrap();
+        assert_eq!(
+            Registry::load(&a).unwrap().status("acme.hd").unwrap().0,
+            Status::Active
+        );
+        let out = t.path().join("export");
+        export(&a, &out).unwrap();
+        let b = dirs(&t.path().join("b"));
+        let rep = import(&b, &out, false).unwrap();
+        assert_eq!(rep.plugins, vec!["acme.hd"]);
+        assert_eq!(rep.needs_review, vec!["acme.hd"]);
+        let reg = Registry::load(&b).unwrap();
+        let e = reg.get("acme.hd").unwrap();
+        assert!(e.trust.is_none() && !e.built);
+        assert_eq!(reg.status("acme.hd").unwrap().0, Status::Untrusted);
     }
 
     #[test]

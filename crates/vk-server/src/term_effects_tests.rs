@@ -101,11 +101,15 @@ impl Env {
     }
 
     async fn call(&self, method: &str, params: Value) -> Value {
+        self.call_as(false, method, params).await
+    }
+
+    async fn call_as(&self, remote: bool, method: &str, params: Value) -> Value {
         let ctx = Ctx {
             client_id: "c-user".into(),
             kind: "cli".into(),
             pane_scope: None,
-            remote: false,
+            remote,
         };
         let line = json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": params});
         serde_json::from_str(&crate::api::handle_line(&self.server, &ctx, &line.to_string()).await)
@@ -211,6 +215,30 @@ async fn pane_get_and_read_last_command() {
     assert_eq!(r["result"]["text"], "error: boom");
     let r = e.call("pane.get", json!({"pane": "P1"})).await;
     assert_eq!(r["result"]["live"]["last_exit"]["code"], 2, "{r}");
+}
+
+/// Code review: a remote client gets secrets redacted from every `pane.read` source,
+/// including both spellings of `last-command`; a local client reads the screen as shown.
+#[tokio::test(flavor = "multi_thread")]
+async fn pane_read_redacts_every_source_for_remote_clients() {
+    const AWS: &str = "AKIAABCD1234EFGH5678";
+    let e = env();
+    let (rt, _rx) = e.pane("P1");
+    e.output(
+        &rt,
+        format!("\x1b]133;A\x07$ \x1b]133;B\x07env\r\n\x1b]133;C\x07k={AWS}\r\n\x1b]133;D;0\x07\x1b]133;A\x07$ \x1b]133;B\x07")
+            .as_bytes(),
+    );
+    for source in ["last-command", "last_command", "visible", "recent"] {
+        let p = json!({"pane": "P1", "source": source});
+        let local = e.call_as(false, "pane.read", p.clone()).await;
+        let text = local["result"]["text"].as_str().unwrap_or_default();
+        assert!(text.contains(AWS), "{source}: {local}");
+        let remote = e.call_as(true, "pane.read", p).await;
+        let text = remote["result"]["text"].as_str().unwrap_or_default();
+        assert!(text.contains("k="), "{source}: {remote}");
+        assert!(!text.contains(AWS), "{source}: {remote}");
+    }
 }
 
 /// OSC 52 read over a real render stream: the query reaches the client showing the pane, a

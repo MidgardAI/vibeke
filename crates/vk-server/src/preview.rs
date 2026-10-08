@@ -960,8 +960,17 @@ fn on_found_url(server: &Arc<Server>, cfg: &PreviewConfig, pane: &str, f: scan::
             p.url = normalize_url(&f);
             p.scheme = f.scheme.clone();
             p.label = f.label.clone();
+            // A printed URL proves nothing about who listens: promote only when the listener
+            // is in this pane's own process tree, otherwise leave a suggestion.
             if promote {
-                p.status = PreviewStatus::Up;
+                let (s2, port) = (srv.clone(), f.port);
+                let owner = tokio::task::spawn_blocking(move || listener_pane(&s2, port))
+                    .await
+                    .ok()
+                    .flatten();
+                if owner.as_deref() == Some(pane.as_str()) {
+                    p.status = PreviewStatus::Up;
+                }
             }
             create_previews(&srv, vec![(p, "preview.discovered")]);
         }
@@ -1360,7 +1369,7 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
             find_local(server, &t)
                 .map(|x| json!({"preview": server.with_core(|c| preview_json(c, &x))}))
         }
-        "preview.promote" => promote(server, p).await,
+        "preview.promote" => promote(server, ctx, p).await,
         "preview.forget" | "preview.dismiss" => forget(server, p).await,
         "preview.url" => {
             let t = match s(p, "preview") {
@@ -1508,6 +1517,77 @@ fn remember_port(server: &Server, pane: &str, child_pid: Option<u32>, port: u16)
         *e = (child_pid, HashSet::new());
     }
     e.1.insert(port);
+}
+
+/// What a pane-scoped caller can show for a port ([`pane_port_claim`]).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum PortClaim {
+    /// Its own process tree (or that of a pane it created; with `task_peers`, of a pane in its
+    /// task) listens there, or the user approved the port for the pane's process.
+    Verified,
+    /// Another pane's process listens there.
+    Foreign,
+    /// No pane's process listens there and the user has not approved it.
+    Unattributed,
+}
+
+/// The verified claim of pane `caller` on `port` (06 B5): from the listener's process tree or a
+/// user approval, never from which pane printed a URL. Blocking (procinfo walk).
+pub(crate) fn pane_port_claim(
+    server: &Server,
+    caller: &str,
+    port: u16,
+    task_peers: bool,
+) -> PortClaim {
+    if let Some(l) = listener_pane(server, port) {
+        let ok = server.with_core(|c| {
+            let task = task_of_pane(c, caller);
+            l == caller
+                || c.pane(&l)
+                    .is_some_and(|q| q.created_by == format!("agent:{caller}"))
+                || (task_peers && task.is_some() && task_of_pane(c, &l) == task)
+        });
+        return if ok {
+            PortClaim::Verified
+        } else {
+            PortClaim::Foreign
+        };
+    }
+    if port_approved(server, caller, port) {
+        PortClaim::Verified
+    } else {
+        PortClaim::Unattributed
+    }
+}
+
+/// Promote the local suggestion `x` (Suggested → Up) on behalf of `ctx`, committing the change.
+/// From a pane, confirming a suggestion needs a verified claim on its port: a URL the pane
+/// printed attributes the suggestion to it, but whatever listens there may be another program.
+pub(crate) fn promote_for(server: &Server, ctx: &Ctx, x: &mut Preview) -> Result<bool, RpcError> {
+    if x.status != PreviewStatus::Suggested {
+        return Ok(false);
+    }
+    if let Some(caller) = &ctx.pane_scope {
+        match pane_port_claim(server, caller, x.port, true) {
+            PortClaim::Verified => {}
+            PortClaim::Foreign => {
+                return Err(err(
+                    ErrorKind::PermissionDenied,
+                    format!(
+                        "confirming the suggestion on port {} is not allowed from a pane (the port is not your listener)",
+                        x.port
+                    ),
+                )
+                .details(json!({"scope": "pane", "reason": "foreign_preview", "port": x.port})));
+            }
+            PortClaim::Unattributed => return Err(confirmation_required(x.port)),
+        }
+    }
+    let changed = lifecycle::promote(x);
+    if changed {
+        commit_previews(server, vec![(x.clone(), Some("preview.up"))]);
+    }
+    Ok(changed)
 }
 
 /// `preview.declare` for synchronous callers: a pane-scoped declare that needs the user's
@@ -1716,7 +1796,21 @@ fn declare_with(
         if !owns_existing && !unowned {
             return refuse("the preview on that port belongs to another pane or task");
         }
-        if !owns_existing {
+        if owns_existing {
+            // Output discovery attributes a printed URL to the printing pane, which proves
+            // nothing about who listens there: ownership counts only with the caller's own
+            // listener, the user's approval of the port, or a preview already confirmed as
+            // declared (by a previous declare or by the user).
+            let confirmed = existing.as_ref().is_some_and(|x| {
+                x.source == PreviewSource::Declared && x.status != PreviewStatus::Suggested
+            });
+            match pane_port_claim(server, caller, port, true) {
+                PortClaim::Verified => {}
+                PortClaim::Foreign => return refuse("the port is not your listener"),
+                PortClaim::Unattributed if confirmed || unattributed == Unattributed::Leased => {}
+                PortClaim::Unattributed => return Ok(Declared::NeedsConfirmation),
+            }
+        } else {
             // A new or machine-level preview: never on another pane's listener, and an
             // existing machine-level one only on the caller's own.
             let listener = listener_pane(server, port);
@@ -1842,16 +1936,14 @@ async fn list(server: &Arc<Server>, p: &Value) -> R {
     }))
 }
 
-async fn promote(server: &Arc<Server>, p: &Value) -> R {
+async fn promote(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     let t = s(p, "preview").ok_or_else(|| invalid("missing param `preview`"))?;
     let (m, t) = split_target(server, p, t);
     if !m.is_empty() {
         return remote_call(server, &m, "preview.promote", json!({"preview": t})).await;
     }
     let mut x = find_local(server, &t)?;
-    if lifecycle::promote(&mut x) {
-        commit_previews(server, vec![(x.clone(), Some("preview.up"))]);
-    }
+    promote_for(server, ctx, &mut x)?;
     Ok(json!({"preview": server.with_core(|c| preview_json(c, &x))}))
 }
 
@@ -1911,9 +2003,7 @@ pub(crate) async fn open(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         let (m, t) = split_target(server, p, t);
         let pv = if m.is_empty() {
             let mut x = find_local(server, &t)?;
-            if lifecycle::promote(&mut x) {
-                commit_previews(server, vec![(x.clone(), Some("preview.up"))]);
-            }
+            promote_for(server, ctx, &mut x)?;
             x
         } else {
             let v = remote_call(server, &m, "preview.promote", json!({"preview": t})).await?;

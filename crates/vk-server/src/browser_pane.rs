@@ -2387,9 +2387,7 @@ pub fn create_pane(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         ),
         Some(t) => {
             let mut pv = preview::find_local(server, t)?;
-            if vk_preview::lifecycle::promote(&mut pv) {
-                preview::commit_previews(server, vec![(pv.clone(), Some("preview.up"))]);
-            }
+            preview::promote_for(server, ctx, &mut pv)?;
             (
                 preview::open_url_of(&pv),
                 Some(pv.id.clone()),

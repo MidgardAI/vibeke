@@ -1568,3 +1568,62 @@ async fn unattributed_port_needs_the_users_confirmation() {
         .unwrap();
     assert_eq!(v["preview"]["port"], 6404);
 }
+
+/// Code review: a pane that prints `http://localhost:<port>` gets an existing suggestion on an
+/// unrelated local service attributed to it by output discovery. That attribution alone must
+/// not let it declare without confirmation, promote the suggestion, or have `browser.open`
+/// promote it; its own verified listener does.
+#[tokio::test(flavor = "multi_thread")]
+async fn printed_url_attribution_is_not_ownership() {
+    let e = Env::new();
+    let a = ctx_pane("pane-a");
+    let dispatch = async |ctx: &Ctx, method: &str, p: Value| {
+        crate::api::dispatch(&e.server, ctx, method, &p).await
+    };
+    // Another program (this test process, outside every pane) listens on the port.
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = l.local_addr().unwrap().port();
+    e.put_preview("v7", port);
+    e.server.with_core(|c| {
+        for p in c.model.previews.iter_mut().filter(|p| p.handle == "v7") {
+            p.status = PreviewStatus::Suggested;
+            p.source = PreviewSource::OutputUrl;
+        }
+    });
+    let status = || {
+        e.server.with_core(|c| {
+            c.model
+                .previews
+                .iter()
+                .find(|p| p.handle == "v7")
+                .map(|p| p.status)
+        })
+    };
+
+    let r = dispatch(&a, "preview.declare", json!({"port": port, "wait": false}))
+        .await
+        .unwrap();
+    assert_eq!(r["status"], "pending", "{r}");
+    let err = dispatch(&a, "preview.promote", json!({"preview": "v7"}))
+        .await
+        .unwrap_err();
+    assert_eq!(err.data.details["reason"], "confirmation_required");
+    let err = e
+        .call(&a, "browser.open", json!({"preview": "v7"}))
+        .await
+        .unwrap_err();
+    assert_eq!(err.data.details["reason"], "confirmation_required");
+    assert_eq!(status(), Some(PreviewStatus::Suggested));
+
+    // Its own verified listener: promotion works.
+    e.server.with_core(|c| {
+        for p in c.model.panes.iter_mut().filter(|p| p.id == "pane-a") {
+            p.child_pid = Some(std::process::id());
+        }
+    });
+    dispatch(&a, "preview.promote", json!({"preview": "v7"}))
+        .await
+        .unwrap();
+    assert_eq!(status(), Some(PreviewStatus::Up));
+    drop(l);
+}
