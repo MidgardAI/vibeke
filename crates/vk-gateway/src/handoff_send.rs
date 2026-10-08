@@ -29,7 +29,7 @@ use tokio::sync::broadcast::error::RecvError;
 use crate::Gateway;
 use crate::api::ApiError;
 use crate::events::Fanout;
-use crate::handoff::{Exported, blocking, export_bundle};
+use crate::handoff::{Expected, Exported, blocking, export_bundle};
 use crate::handoff_peer::CHUNK;
 use crate::peer_client::{Backoff, Conn, PeerClient, is_refusal};
 use crate::state::PeerRecord;
@@ -303,6 +303,9 @@ async fn send(
     let interrupt = job.get("interrupt").and_then(|v| v.as_bool()) == Some(true);
     rep.update(json!({"state": "exporting"})).await?;
     let rec = find_peer(gw, peer)?;
+    // A send approved from a pane (`auth.approve`): deliver only what the user approved. The
+    // export is pinned to the approved commit and re-checks HEAD and the branch after packing.
+    let expect = job.get("expect").and_then(Expected::from_json);
     let ex = export_bundle(
         gw,
         &format!("gateway:handoff {id}"),
@@ -311,12 +314,12 @@ async fn send(
         interrupt,
         false,
         Some(id),
+        expect.as_ref(),
     )
     .await?;
     let _cleanup = Cleanup(ex.path.clone());
-    // A send approved from a pane (`auth.approve`): deliver only what the user approved.
-    if let Some(expect) = job.get("expect").filter(|e| e.is_object()) {
-        check_expected(expect, &ex.manifest)?;
+    if let Some(e) = &expect {
+        check_expected(e, &ex.manifest)?;
     }
     if cancel.load(Ordering::SeqCst) {
         return Err(cancelled());
@@ -328,25 +331,8 @@ async fn send(
 
 /// The export of an approved send must come from the repository, branch and commit the user
 /// approved (recorded when the pane asked); otherwise the job fails and nothing is sent.
-fn check_expected(expect: &Value, m: &vk_handoff::Manifest) -> Result<(), ApiError> {
-    let root = s(expect, "repo_root").unwrap_or_default();
-    let branch = s(expect, "branch");
-    let head = s(expect, "head").unwrap_or_default();
-    if root == m.source_root && branch == m.branch.as_deref() && head == m.head {
-        return Ok(());
-    }
-    let short = |h: &str| h.chars().take(12).collect::<String>();
-    let at = |r: &str, b: Option<&str>, h: &str| {
-        format!("{r} on {} at {}", b.unwrap_or("a detached HEAD"), short(h))
-    };
-    Err(ApiError::new(
-        "conflict",
-        format!(
-            "repo_moved: the pane's repository changed since the handoff was approved (approved: {}; now: {}); ask again",
-            at(root, branch, head),
-            at(&m.source_root, m.branch.as_deref(), &m.head)
-        ),
-    ))
+fn check_expected(expect: &Expected, m: &vk_handoff::Manifest) -> Result<(), ApiError> {
+    expect.check(&m.source_root, m.branch.as_deref(), &m.head)
 }
 
 /// What one step of the transfer did.
@@ -582,7 +568,9 @@ mod tests {
         };
         let expect = json!({"repo_root": "/src/app", "branch": "main", "head": "a".repeat(40),
                             "request": "ap-1", "requested_by": "p1", "approved_by": "tui"});
-        assert!(check_expected(&expect, &m).is_ok());
+        let exp = |v: &Value| Expected::from_json(v).expect("an expect object");
+        assert!(check_expected(&exp(&expect), &m).is_ok());
+        assert!(Expected::from_json(&Value::Null).is_none());
         for (k, v) in [
             ("repo_root", json!("/src/other")),
             ("branch", json!("feature")),
@@ -591,7 +579,7 @@ mod tests {
         ] {
             let mut e = expect.clone();
             e[k] = v;
-            let err = check_expected(&e, &m).unwrap_err();
+            let err = check_expected(&exp(&e), &m).unwrap_err();
             assert_eq!(err.kind, "conflict");
             assert!(err.message.starts_with("repo_moved"), "{}", err.message);
         }
