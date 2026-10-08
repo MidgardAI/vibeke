@@ -71,6 +71,37 @@ export function openApprovals(list: readonly ApprovalRequest[]): ApprovalRequest
   return list.filter((r) => (r.status ?? 'pending') === 'pending').sort((a, b) => a.created_at_ms - b.created_at_ms || a.request.localeCompare(b.request));
 }
 
+/**
+ * Apply an `auth.list` snapshot issued at version `issued`: the snapshot's open requests, minus
+ * every request seen ending (whenever), plus the requests events added after `issued` that the
+ * snapshot doesn't have yet. Bookkeeping the snapshot settles is pruned.
+ */
+export function reconcileSnapshot(
+  cur: readonly ApprovalRequest[],
+  snapshot: readonly ApprovalRequest[],
+  issued: number,
+  removed: Map<string, number>,
+  added: Map<string, number>,
+): ApprovalRequest[] {
+  const listed = new Set(snapshot.map((r) => r.request));
+  let list = openApprovals(snapshot).filter((r) => !removed.has(r.request));
+  for (const r of cur) {
+    const at = added.get(r.request);
+    if (at !== undefined && at > issued && !removed.has(r.request)) list = applyApproval(list, { k: 'upsert', request: r });
+  }
+  // Ended before the snapshot was issued and absent from it: the host agrees, forget it.
+  for (const [id, at] of removed) if (at <= issued && !listed.has(id)) removed.delete(id);
+  // Added before the snapshot was issued: the snapshot is the truth for it now.
+  for (const [id, at] of added) if (at <= issued) added.delete(id);
+  return openApprovals(list);
+}
+
+/** A running approved call may take a while (a peer redeem waits up to 60 s on the host). */
+const DECIDE_TIMEOUT_MS = 90_000;
+
+/** An older host without approved calls: nothing there. */
+const unknownMethod = (e: unknown): boolean => e instanceof RpcError && (e.kind === 'method_not_found' || e.code === -32601);
+
 /** The decisions offered for a request: `always` only when the host allows it (never for peer.redeem). */
 export function decisionsFor(r: ApprovalRequest): ApprovalDecision[] {
   return r.always_allowed ? ['approve', 'always', 'deny'] : ['approve', 'deny'];

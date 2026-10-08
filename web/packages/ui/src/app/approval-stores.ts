@@ -1,11 +1,18 @@
 // Approval requests from panes (spec 09 §3.2 "Approved calls") on every own full-access host,
 // kept live from `auth.approval_*` events and `auth.list` after every (re)connect. The inbox and
 // the review screen read them; deciding goes through `decide` here so both show the same result.
+//
+// Snapshots and events race: an `auth.list` answer reflects the host when it was served, while
+// events keep arriving. Refreshes of one host are serialized (one in flight, later calls coalesce
+// into one follow-up, like `HostConnection.refresh`), every event bumps the host's version, and a
+// snapshot is reconciled against the events seen since it was issued: a request that ended
+// (granted, denied, withdrawn, or decided here) is never brought back by a snapshot, and a
+// request an event added after the snapshot was issued is kept although the snapshot lacks it.
 
 import { useEffect } from 'react';
 import { RpcError, type AppEvent, type ApprovalDecision, type ApprovalRequest } from '@vibeke/core';
 import { errorMessage } from '../lib/answer';
-import { applyApproval, approvalChange, decideOutcome, decideParams, openApprovals, type DecideResult } from '../lib/approvals';
+import { applyApproval, approvalChange, decideOutcome, decideParams, openApprovals, reconcileSnapshot, type ApprovalChange, type DecideResult } from '../lib/approvals';
 import { isOwnFullHost } from '../lib/handoff-send';
 import { ValueStore, useStore } from '../lib/store';
 import { useApp } from './hooks';
@@ -19,17 +26,25 @@ export interface HostApprovals {
 
 const EMPTY: HostApprovals = { list: [], loaded: false, error: null };
 
-/** A running approved call may take a while (a peer redeem waits up to 60 s on the host). */
-const DECIDE_TIMEOUT_MS = 90_000;
-
-/** An older host without approved calls: nothing there. */
-const unknownMethod = (e: unknown): boolean => e instanceof RpcError && (e.kind === 'method_not_found' || e.code === -32601);
+/** Per-host bookkeeping that reconciles `auth.list` snapshots with events (see the top). */
+interface HostSync {
+  /** The refresh loop in flight, and whether a call asked for another fetch meanwhile. */
+  running: Promise<void> | null;
+  again: boolean;
+  /** Bumped by every approval change seen (event or decision): the version a snapshot is issued at. */
+  version: number;
+  /** Ended requests → the version they ended at. A snapshot never resurrects them. */
+  removed: Map<string, number>;
+  /** Requests added by an event → the version they arrived at. */
+  added: Map<string, number>;
+}
 
 export class ApprovalStores {
   readonly hosts = new ValueStore<ReadonlyMap<string, HostApprovals>>(new Map());
   /** `host:request` being decided from this window. */
   readonly deciding = new ValueStore<ReadonlySet<string>>(new Set());
   private subs = new Map<string, { off: () => void; online: boolean }>();
+  private syncs = new Map<string, HostSync>();
   private refs = 0;
   private offManager: (() => void) | null = null;
 
@@ -71,6 +86,8 @@ export class ApprovalStores {
       if (seen.has(id)) continue;
       s.off();
       this.subs.delete(id);
+      // A refresh still in flight for it is ignored when it lands (its HostSync is gone).
+      this.syncs.delete(id);
       this.hosts.update((m) => {
         if (!m.has(id)) return m;
         const next = new Map(m);
@@ -80,13 +97,47 @@ export class ApprovalStores {
     }
   }
 
-  async refresh(hostId: string): Promise<void> {
+  private hostSync(hostId: string): HostSync {
+    let s = this.syncs.get(hostId);
+    if (!s) this.syncs.set(hostId, (s = { running: null, again: false, version: 0, removed: new Map(), added: new Map() }));
+    return s;
+  }
+
+  /**
+   * Fetch `auth.list` for one host. At most one request per host is in flight: a call while one
+   * runs asks for one more fetch after it and resolves when a fetch issued after the call has
+   * landed, so answers never overtake each other and an event's refresh is never lost.
+   */
+  refresh(hostId: string): Promise<void> {
+    const s = this.hostSync(hostId);
+    if (s.running) {
+      s.again = true;
+      return s.running;
+    }
+    const loop = (async () => {
+      try {
+        do {
+          s.again = false;
+          await this.fetchList(hostId, s);
+        } while (s.again && this.syncs.get(hostId) === s);
+      } finally {
+        s.running = null;
+      }
+    })();
+    s.running = loop;
+    return loop;
+  }
+
+  private async fetchList(hostId: string, s: HostSync): Promise<void> {
     const conn = this.app.conn(hostId);
     if (!conn) return;
+    const issued = s.version;
     try {
       const r = await conn.request('auth.list', {});
-      this.set(hostId, () => ({ list: openApprovals(r.approvals ?? []), loaded: true, error: null }));
+      if (this.syncs.get(hostId) !== s) return;
+      this.set(hostId, (cur) => ({ list: reconcileSnapshot(cur.list, r.approvals ?? [], issued, s.removed, s.added), loaded: true, error: null }));
     } catch (e) {
+      if (this.syncs.get(hostId) !== s) return;
       this.set(hostId, (cur) => ({ ...cur, loaded: true, error: unknownMethod(e) ? null : errorMessage(e) }));
     }
   }
@@ -128,7 +179,20 @@ export class ApprovalStores {
   }
 
   private drop(hostId: string, request: string): void {
+    this.track(hostId, { k: 'remove', id: request });
     this.set(hostId, (cur) => ({ ...cur, list: applyApproval(cur.list, { k: 'remove', id: request }) }));
+  }
+
+  /** Record a change at the host's next version, for reconciling snapshots in flight. */
+  private track(hostId: string, c: ApprovalChange): void {
+    const s = this.hostSync(hostId);
+    const v = ++s.version;
+    if (c.k === 'remove') {
+      s.removed.set(c.id, v);
+      s.added.delete(c.id);
+    } else if (!s.removed.has(c.request.request)) {
+      s.added.set(c.request.request, v);
+    }
   }
 
   private set(hostId: string, f: (cur: HostApprovals) => HostApprovals): void {
@@ -143,6 +207,9 @@ export class ApprovalStores {
     if (!e.type.startsWith('auth.approval_')) return;
     const c = approvalChange(e);
     if (!c) return;
+    this.track(hostId, c);
+    // An upsert for a request already seen ending (a late or replayed event) changes nothing.
+    if (c.k === 'upsert' && this.hostSync(hostId).removed.has(c.request.request)) return;
     this.set(hostId, (cur) => ({ ...cur, list: openApprovals(applyApproval(cur.list, c)) }));
     // The event has the peer's id only; the listing has the full record (handle, peer name).
     if (c.k === 'upsert') void this.refresh(hostId);
