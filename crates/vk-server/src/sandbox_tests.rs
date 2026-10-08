@@ -80,6 +80,7 @@ impl Env {
                 ("AWS_SECRET_ACCESS_KEY".into(), "FAKE-aws".into()),
             ],
             shims: false,
+            gateway: None,
         };
         let server = Server::new(paths, opts).unwrap();
         let home = root.join("home");

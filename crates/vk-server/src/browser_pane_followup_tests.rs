@@ -59,6 +59,7 @@ impl Env {
             default_shell: None,
             env: vec![],
             shims: false,
+            gateway: None,
         };
         let server = Server::new(paths, opts).unwrap();
         let e = Env { _dir: dir, server };

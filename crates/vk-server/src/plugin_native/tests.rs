@@ -26,6 +26,7 @@ fn server() -> (tempfile::TempDir, Arc<Server>) {
         default_shell: None,
         env: vec![],
         shims: false,
+        gateway: None,
     };
     let s = Server::new(paths, opts).unwrap();
     set_dirs(

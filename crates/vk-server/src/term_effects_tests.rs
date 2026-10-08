@@ -36,6 +36,7 @@ fn env() -> Env {
         default_shell: None,
         env: vec![],
         shims: false,
+        gateway: None,
     };
     Env {
         _dir: dir,

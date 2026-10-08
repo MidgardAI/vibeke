@@ -324,6 +324,8 @@ fn send(server: &Server, ctx: &Ctx, p: &Value) -> R {
 pub(crate) fn send_job(server: &Server, ctx: &Ctx, p: &Value, expect: Option<Expect>) -> R {
     let (pane, peer) = check_send(server, ctx, p)?;
     let want = req(p, "peer")?;
+    // The gateway runs the job: start it if it is set up but not running.
+    crate::gateway_supervisor::ensure_running(server);
     let now = now_s();
     let by = match &expect {
         Some(e) => format!("pane:{}", e.requested_by),

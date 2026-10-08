@@ -3056,6 +3056,7 @@ mod tests {
             default_shell: None,
             env: vec![],
             shims: false,
+            gateway: None,
         };
         let server = Server::new(paths, opts).unwrap();
         server.browser.set_profiles_root(root.join("profiles"));

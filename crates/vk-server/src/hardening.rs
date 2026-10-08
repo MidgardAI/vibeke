@@ -275,6 +275,7 @@ pub(crate) mod testkit {
             default_shell: None,
             env: vec![],
             shims: false,
+            gateway: None,
         };
         Server::new(paths, opts).unwrap()
     }

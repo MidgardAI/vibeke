@@ -22,6 +22,8 @@ pub struct State {
     devices: Mutex<HashMap<String, Vec<Value>>>,
     /// Requests waiting for the gateway, and the gateways connected (`gateway.call`).
     pub(crate) bridge: crate::gateway_bridge::Bridge,
+    /// The supervised gateway process (`gateway.start` / `gateway.stop`).
+    pub(crate) supervisor: crate::gateway_supervisor::State,
 }
 
 fn state(server: &Server) -> &State {

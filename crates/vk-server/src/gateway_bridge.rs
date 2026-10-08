@@ -8,7 +8,8 @@
 //!   kinds `handoff` and `peer`.
 //! - `gateway.reply {id, result | error: {kind, message, details?}}` is the gateway's answer
 //!   (gateway clients only, like `handoff.job.update`).
-//! - `gateway.status {}` says whether a gateway is connected.
+//! - `gateway.status {}` says whether a gateway is connected, plus the supervised gateway's
+//!   status (`crate::gateway_supervisor`).
 //!
 //! `gateway.request` is a transient event (seq 0, never stored or replayed). It is delivered
 //! only to the one gateway event subscription the request was addressed to, because its
@@ -315,7 +316,10 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
             call(server, m, params, Duration::from_millis(ms)).await
         }
         "gateway.reply" => gateway_only(ctx, method).and_then(|()| reply(server, p)),
-        "gateway.status" => Ok(json!({"connected": connected(server)})),
+        "gateway.status" => Ok(crate::gateway_supervisor::status_method(
+            server,
+            connected(server),
+        )),
         _ => return None,
     })
 }
@@ -327,8 +331,9 @@ pub const SHAPES: &str = r##"
 gateway.call :: {method: string, params?: object, timeout_ms?: int = 30000} => any
 # gateway clients only: the answer to a gateway.request event (result or error, not both)
 gateway.reply :: {id: string, result?: any, error?: {kind: string, message: string, details?: any}} => {}
-# whether a gateway holds an event stream open
-gateway.status :: {} => {connected: bool}
+# whether a gateway holds an event stream open (connected), whether this server manages one (configured) and, when it does, the supervisor's GatewayStatus fields
+gateway.status :: {}
+  => {connected: bool, configured: bool, state?: off|starting|connecting|online|offline|local_only|external|crashed, autostart?: bool, supervised?: bool, pid?: int|null, restarts?: int, relay?: string|null, devices?: int|null, since_ms?: int|null, last_error?: string|null, log?: string}
 "##;
 
 pub const EVENTS: &str = r##"

@@ -21,6 +21,7 @@ pub mod drafts;
 pub mod fs_api;
 pub mod gateway_api;
 pub mod gateway_bridge;
+pub mod gateway_supervisor;
 pub mod git_api;
 pub mod handoff;
 pub mod handoff_out;
@@ -118,7 +119,11 @@ pub struct ServerOpts {
     pub default_shell: Option<String>,
     pub env: Vec<(String, String)>,
     pub shims: bool,
+    /// The phone gateway this server supervises (`None`: it never starts one).
+    pub gateway: Option<GatewayLaunch>,
 }
+
+pub use gateway_supervisor::GatewayLaunch;
 
 /// Out-of-band UI events for attached render clients.
 #[derive(Debug, Clone)]

@@ -77,6 +77,7 @@ impl Env {
             default_shell: None,
             env: vec![],
             shims: false,
+            gateway: None,
         };
         let server = Server::new(paths, opts).unwrap();
         // Never the machine-wide default port (a user's real proxy may hold it; parallel

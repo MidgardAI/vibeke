@@ -444,6 +444,7 @@ pub fn pane_scope_of(method: &str) -> PaneScope {
         || crate::browse_api::PANE_FORBIDDEN.contains(&method)
         || crate::handoff_out::PANE_FORBIDDEN.contains(&method)
         || crate::gateway_bridge::PANE_FORBIDDEN.contains(&method)
+        || crate::gateway_supervisor::PANE_FORBIDDEN.contains(&method)
         || crate::hardening::PANE_FORBIDDEN.contains(&method)
         || crate::machines::PANE_FORBIDDEN.contains(&method)
         || crate::items::PANE_FORBIDDEN.contains(&method)
@@ -633,6 +634,9 @@ pub async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) 
     if let Some(r) = crate::gateway_bridge::api(server, ctx, method, p).await {
         return r;
     }
+    if let Some(r) = crate::gateway_supervisor::api(server, ctx, method, p).await {
+        return r;
+    }
     // Incoming handoffs (16 §15.2).
     if method.starts_with("handoff.")
         && let Some(r) = Box::pin(crate::handoff::api(server, ctx, method, p)).await
@@ -749,6 +753,7 @@ pub async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) 
                 "ephemeral": server.hardening.ephemeral(),
                 "preview": crate::preview::status_json(server),
                 "timers": crate::timers::status_json(server),
+                "gateway": crate::gateway_supervisor::status_json(server),
             }))
         }
         "server.stop" => {
@@ -773,6 +778,7 @@ pub async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) 
             tokio::spawn(async move {
                 tokio::time::sleep(Duration::from_millis(200)).await;
                 srv.housekeeping();
+                crate::gateway_supervisor::shutdown(&srv).await;
                 crate::machines::stopped(&srv, "api");
                 srv.shutdown.notify_waiters();
                 let _ = srv

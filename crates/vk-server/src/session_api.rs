@@ -299,6 +299,9 @@ fn server_restart(server: &Arc<Server>, p: &Value) -> R {
         // Let the response and the pane snapshots go out first.
         tokio::time::sleep(Duration::from_millis(300)).await;
         srv.housekeeping();
+        // The new image starts its own gateway; a child of this image would outlive its
+        // supervisor.
+        let gateway_wanted = crate::gateway_supervisor::shutdown(&srv).await;
         tracing::info!(binary = %exe.display(), "server.restart: exec");
         use std::os::unix::process::CommandExt;
         // Every descriptor of the server is close-on-exec (the listener, the state lock, the
@@ -308,6 +311,7 @@ fn server_restart(server: &Arc<Server>, p: &Value) -> R {
             .exec();
         tracing::error!(error = %e, "server.restart: exec failed; still running the old server");
         *srv.restart_error.lock().unwrap() = Some(format!("exec {}: {e}", exe.display()));
+        crate::gateway_supervisor::resume(&srv, gateway_wanted);
     });
     Ok(json!({"new_pid": std::process::id(), "binary": bin}))
 }

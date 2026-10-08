@@ -90,6 +90,7 @@ impl Env {
             default_shell: None,
             env: vec![],
             shims: false,
+            gateway: None,
         };
         let server = Server::new(paths, opts).unwrap();
         let fake: Arc<Mutex<Option<Arc<FakeState>>>> = Arc::default();
