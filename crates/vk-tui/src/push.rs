@@ -38,13 +38,10 @@ pub const TYPES: &[&str] = &[
     "auth.elevate_*",
     "auth.approval_*",
     "pane.scroll_requested",
-<<<<<<< HEAD
     // Incoming handoffs and sends (16 §15.2).
     "handoff.*",
-=======
     // Gateway autostart: the supervised gateway's state for the status bar.
     "gateway.status",
->>>>>>> 24bef74 (WIP gateway indicator)
 ];
 
 #[derive(Debug, Default, Clone)]
