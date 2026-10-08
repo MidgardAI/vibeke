@@ -34,8 +34,9 @@ pub const TYPES: &[&str] = &[
     "plugin.registry_changed",
     "plugin.agent_view_changed",
     "ui.contributions_changed",
-    // v1 TUI: elevation requests (09 §3.2) and scroll requests (07 §2.6).
+    // v1 TUI: elevation and approved-call requests (09 §3.2) and scroll requests (07 §2.6).
     "auth.elevate_*",
+    "auth.approval_*",
     "pane.scroll_requested",
     // Incoming handoffs and sends (16 §15.2).
     "handoff.*",
@@ -139,7 +140,7 @@ pub fn on_events(app: &mut App, i: usize, events: Vec<PushedEvent>, lagged: bool
             || k == "ui.contributions_changed"
         {
             crate::plugins::on_registry_event(app, i);
-        } else if k.starts_with("auth.elevate_") {
+        } else if k.starts_with("auth.elevate_") || k.starts_with("auth.approval_") {
             crate::elevate::on_event(app, i, k, &v);
         } else if k == "pane.scroll_requested" {
             crate::scroll_req::on_event(app, i, &v);

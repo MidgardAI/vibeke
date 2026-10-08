@@ -16,7 +16,8 @@
 //!
 //! v1 remainder (spec 08, 09 §3.2):
 //!
-//! - [`crate::elevate`]: the elevation approval view (`auth.elevate` requests, y/n).
+//! - [`crate::elevate`]: the request review view (`auth.elevate` requests, y/n; `auth.approve`
+//!   approved calls, y/a/n).
 //! - [`crate::scroll_req`]: `pane.scroll_requested` moves this client's view.
 //! - [`crate::tabbar`] `tab_renumber`; [`crate::groups`] group drag reorder.
 //! - [`crate::nav`] goto previews and machines; [`crate::scrollback`] `editor_include_ansi`.

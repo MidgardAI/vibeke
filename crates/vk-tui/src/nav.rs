@@ -542,7 +542,7 @@ pub const ACTION_INFO: &[(&str, &str)] = &[
     ),
     (
         "elevation_requests",
-        "Review a pane's request for elevated access (approve/deny)",
+        "Review a pane's request: elevated access or one approved call (approve/deny)",
     ),
     ("tab_renumber", "Renumber this workspace's tabs 1..n"),
     (
