@@ -14,6 +14,8 @@
 //! | `item/tool/requestUserInput`, `mcpServer/elicitation/request` | question |
 //! | `serverRequest/resolved` | resolved by the harness |
 //! | `agent.interrupt` | `turn/interrupt` |
+//! | `agent.models` | `model/list` (current: the thread's model from `thread/start`/`thread/resume`, `thread/settings/updated` or the last `turn/start {model}`) |
+//! | `agent.set_model` | `turn/start {model}` on every later turn ("this turn and subsequent turns"); `scope: default` also `config/value/write {keyPath: "model"}` |
 //!
 //! Reconcile after a restart: `thread/read` (a turn the journal shows running but the thread
 //! reports idle is completed), `thread/resume` when the thread is no longer loaded.
@@ -40,6 +42,10 @@ pub struct Codex {
     identified: bool,
     /// The last rate-limit snapshot had a window at 100 %.
     limited: bool,
+    /// The thread's current model, as the app-server reported it.
+    model: Option<String>,
+    /// Chosen through `agent.set_model`: sent with every `turn/start` (persisted in the record).
+    model_override: Option<String>,
 }
 
 fn id_str(id: &Value) -> String {
@@ -68,7 +74,59 @@ impl Codex {
             last_msg: None,
             identified: est,
             limited: false,
+            model: rec.model.clone(),
+            model_override: rec.model.clone(),
         }
+    }
+
+    /// Write a request and return its id.
+    fn request_id(&mut self, cx: &mut Cx, method: &str, params: Value) -> u64 {
+        let id = self.next;
+        self.next += 1;
+        cx.write(json!({"id": id, "method": method, "params": params}));
+        id
+    }
+
+    /// `model/list` result → `{models: [{id, label, description?, current}]}`. A model is
+    /// addressed by its `model` slug (what `turn/start {model}` takes).
+    fn models_result(&self, r: &Value) -> Value {
+        let data = r
+            .get("data")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let current = self.model.as_deref();
+        let any_current = data.iter().any(|m| {
+            let slug = m.get("model").or(m.get("id")).and_then(Value::as_str);
+            current.is_some() && slug == current
+        });
+        let models: Vec<Value> = data
+            .iter()
+            .filter(|m| m.get("hidden").and_then(Value::as_bool) != Some(true))
+            .filter_map(|m| {
+                let id = m.get("model").or(m.get("id")).and_then(Value::as_str)?;
+                let label = m
+                    .get("displayName")
+                    .and_then(Value::as_str)
+                    .filter(|l| !l.is_empty())
+                    .unwrap_or(id);
+                let is_current = if any_current {
+                    current == Some(id)
+                } else {
+                    m.get("isDefault").and_then(Value::as_bool) == Some(true)
+                };
+                let mut v = json!({"id": id, "label": label, "current": is_current});
+                if let Some(d) = m
+                    .get("description")
+                    .and_then(Value::as_str)
+                    .filter(|d| !d.is_empty())
+                {
+                    v["description"] = json!(d);
+                }
+                Some(v)
+            })
+            .collect();
+        json!({"models": models})
     }
 
     fn request(&mut self, cx: &mut Cx, method: &str, params: Value) {
@@ -298,6 +356,10 @@ impl Adapter for Codex {
                 };
                 if let Some(e) = v.get("error") {
                     let msg = e.get("message").and_then(Value::as_str).unwrap_or("error");
+                    if matches!(m.as_str(), "model/list" | "config/value/write") {
+                        cx.reply(id_str(id), Err(format!("{m}: {msg}")));
+                        return;
+                    }
                     cx.render(format!("! {m}: {msg}\n"));
                     if m == "turn/start" {
                         self.busy = false;
@@ -321,7 +383,14 @@ impl Adapter for Codex {
                             self.open_thread(cx);
                         }
                     }
+                    "model/list" => cx.reply(id_str(id), Ok(self.models_result(&r))),
+                    "config/value/write" => {
+                        cx.reply(id_str(id), Ok(json!({"default_changed": true})))
+                    }
                     "thread/start" | "thread/resume" => {
+                        if let Some(m) = r.get("model").and_then(Value::as_str) {
+                            self.model = Some(m.to_string());
+                        }
                         if let Some(t) = r.pointer("/thread/id").and_then(Value::as_str) {
                             self.thread = Some(t.to_string());
                             cx.session(t);
@@ -389,6 +458,12 @@ impl Adapter for Codex {
                         {
                             self.thread = Some(t.to_string());
                             cx.session(t);
+                        }
+                    }
+                    "thread/settings/updated" => {
+                        if let Some(m) = p.pointer("/threadSettings/model").and_then(Value::as_str)
+                        {
+                            self.model = Some(m.to_string());
                         }
                     }
                     "turn/started" => {
@@ -566,6 +641,11 @@ impl Adapter for Codex {
                             .join("\n")
                     })
                     .unwrap_or_default();
+                if m == "turn/start"
+                    && let Some(model) = v.pointer("/params/model").and_then(Value::as_str)
+                {
+                    self.model = Some(model.to_string());
+                }
                 match m {
                     "turn/start" => {
                         self.busy = true;
@@ -615,11 +695,42 @@ impl Adapter for Codex {
         }
         let id = self.next;
         self.next += 1;
+        let mut params = json!({"threadId": thread, "input": input});
+        if let Some(m) = &self.model_override {
+            params["model"] = json!(m);
+        }
         cx.write_prompt(
-            json!({"id": id, "method": "turn/start", "params": {"threadId": thread, "input": input}}),
+            json!({"id": id, "method": "turn/start", "params": params}),
             text,
         );
         Ok(())
+    }
+
+    fn models(&mut self, cx: &mut Cx) -> Result<Reply, String> {
+        if !self.initialized {
+            return Err("the Codex app-server is not initialized yet".into());
+        }
+        let id = self.request_id(cx, "model/list", json!({"limit": 100}));
+        Ok(Reply::Later(id.to_string()))
+    }
+
+    fn set_model(&mut self, cx: &mut Cx, model: &str, default: bool) -> Result<Reply, String> {
+        if !self.initialized {
+            return Err("the Codex app-server is not initialized yet".into());
+        }
+        // The app-server takes the model per turn and keeps it for later turns; Vibeke sends
+        // it with each turn so a restarted app-server (resumed thread) keeps the choice too.
+        self.model_override = Some(model.to_string());
+        cx.persist_model(model);
+        if default {
+            let id = self.request_id(
+                cx,
+                "config/value/write",
+                json!({"keyPath": "model", "value": model, "mergeStrategy": "replace"}),
+            );
+            return Ok(Reply::Later(id.to_string()));
+        }
+        Ok(Reply::Now(json!({"default_changed": false})))
     }
 
     fn interrupt(&mut self, cx: &mut Cx) {

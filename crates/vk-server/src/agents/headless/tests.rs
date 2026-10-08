@@ -19,6 +19,7 @@ fn rec(kind: Kind, session: Option<&str>) -> Record {
         auto_done: vec![],
         isolated: false,
         terminals: vec![],
+        model: None,
     }
 }
 
@@ -712,6 +713,7 @@ mod sessions {
                 auto_done: vec![],
                 isolated: false,
                 terminals: vec![],
+                model: None,
             };
             rec.persist(&server, &pane);
             T {
@@ -1348,6 +1350,244 @@ mod sessions {
         assert!(text.contains("+new"), "{text:?}");
         let acts = s.on_keys(&t.server, b"\x0f");
         assert!(!act_text(&acts).contains("+new"));
+    }
+
+    // ---- structured model control (agent.models / agent.set_model) ---------------------------
+
+    fn model_cmd(
+        t: &T,
+        s: &mut Session,
+        op: ModelOp,
+    ) -> (Vec<(u64, Value)>, oneshot::Receiver<Result<Value, String>>) {
+        let (tx, rx) = oneshot::channel();
+        let acts = s.on_cmd(&t.server, Cmd::Model { op, ack: tx });
+        (act_writes(&acts), rx)
+    }
+
+    /// Codex: `model/list` lists, `agent.set_model` rides on every later `turn/start {model}`
+    /// (persisted, so a restarted server keeps it) and `scope: default` writes the config key.
+    #[tokio::test]
+    async fn codex_models_list_and_switch_over_app_server() {
+        let mut t = T::new("codex", Kind::AppServer);
+        let mut s = t.session();
+
+        let (w, mut rx) = model_cmd(&t, &mut s, ModelOp::List);
+        assert_eq!(w.len(), 1);
+        assert_eq!(w[0].1["method"], "model/list");
+        let rid = w[0].1["id"].clone();
+        t.land(&mut s, w[0].0, &w[0].1);
+        assert!(rx.try_recv().is_err(), "waits for the response");
+        t.feed(
+            &mut s,
+            Stream::Stdout,
+            &json!({"id": rid, "result": {"data": [
+                {"id": "gpt-a", "model": "gpt-a", "displayName": "GPT A", "description": "Fast", "isDefault": true, "hidden": false},
+                {"id": "gpt-b", "model": "gpt-b", "displayName": "GPT B", "description": "", "isDefault": false, "hidden": false},
+                {"id": "old", "model": "old", "displayName": "Old", "description": "", "isDefault": false, "hidden": true}
+            ], "nextCursor": null}}),
+        );
+        assert_eq!(
+            rx.try_recv().unwrap().unwrap(),
+            json!({"models": [
+                {"id": "gpt-a", "label": "GPT A", "description": "Fast", "current": true},
+                {"id": "gpt-b", "label": "GPT B", "current": false}
+            ]})
+        );
+
+        // Session scope: nothing to write now; the next turn carries the model.
+        let (w, mut rx) = model_cmd(
+            &t,
+            &mut s,
+            ModelOp::Set {
+                model: "gpt-b".into(),
+                default: false,
+            },
+        );
+        assert!(w.is_empty(), "{w:?}");
+        assert_eq!(
+            rx.try_recv().unwrap().unwrap(),
+            json!({"default_changed": false})
+        );
+        assert_eq!(
+            Record::load(&t.server, &t.pane).unwrap().model.as_deref(),
+            Some("gpt-b")
+        );
+        let acts = s.on_cmd(
+            &t.server,
+            Cmd::Prompt {
+                text: "go".into(),
+                mode: PromptMode::Send,
+                ack: None,
+            },
+        );
+        let w = act_writes(&acts);
+        assert_eq!(w[0].1["method"], "turn/start");
+        assert_eq!(w[0].1["params"]["model"], "gpt-b");
+        t.land(&mut s, w[0].0, &w[0].1);
+        // The current model follows the turn's override.
+        let (w, mut rx) = model_cmd(&t, &mut s, ModelOp::List);
+        let rid = w[0].1["id"].clone();
+        t.land(&mut s, w[0].0, &w[0].1);
+        t.feed(
+            &mut s,
+            Stream::Stdout,
+            &json!({"id": rid, "result": {"data": [
+                {"id": "gpt-a", "model": "gpt-a", "displayName": "GPT A", "description": "", "isDefault": true, "hidden": false},
+                {"id": "gpt-b", "model": "gpt-b", "displayName": "GPT B", "description": "", "isDefault": false, "hidden": false}
+            ]}}),
+        );
+        let v = rx.try_recv().unwrap().unwrap();
+        assert_eq!(v["models"][0]["current"], false);
+        assert_eq!(v["models"][1]["current"], true);
+
+        // Default scope: `config/value/write {keyPath: "model"}`.
+        let (w, mut rx) = model_cmd(
+            &t,
+            &mut s,
+            ModelOp::Set {
+                model: "gpt-a".into(),
+                default: true,
+            },
+        );
+        assert_eq!(w[0].1["method"], "config/value/write");
+        assert_eq!(
+            w[0].1["params"],
+            json!({"keyPath": "model", "value": "gpt-a", "mergeStrategy": "replace"})
+        );
+        let rid = w[0].1["id"].clone();
+        t.land(&mut s, w[0].0, &w[0].1);
+        t.feed(
+            &mut s,
+            Stream::Stdout,
+            &json!({"id": rid, "result": {"status": "ok", "version": "1", "filePath": "/x/config.toml"}}),
+        );
+        assert_eq!(
+            rx.try_recv().unwrap().unwrap(),
+            json!({"default_changed": true})
+        );
+
+        // A protocol error reaches the caller.
+        let (w, mut rx) = model_cmd(&t, &mut s, ModelOp::List);
+        let rid = w[0].1["id"].clone();
+        t.land(&mut s, w[0].0, &w[0].1);
+        t.feed(
+            &mut s,
+            Stream::Stdout,
+            &json!({"id": rid, "error": {"code": -32603, "message": "catalog unavailable"}}),
+        );
+        let e = rx.try_recv().unwrap().unwrap_err();
+        assert!(e.contains("catalog unavailable"), "{e}");
+
+        // A restarted server keeps sending the chosen model.
+        let (mut s2, _) = t.restart(None);
+        let acts = s2.on_cmd(
+            &t.server,
+            Cmd::Prompt {
+                text: "again".into(),
+                mode: PromptMode::Send,
+                ack: None,
+            },
+        );
+        let w = act_writes(&acts);
+        let turn = w.iter().find(|(_, v)| v["method"] == "turn/start").unwrap();
+        assert_eq!(turn.1["params"]["model"], "gpt-a");
+    }
+
+    /// pi (`--mode rpc`): `get_available_models` / `set_model {provider, modelId}`; pi saves the
+    /// switch as its default, omp keeps it to the session and refuses `default`.
+    #[tokio::test]
+    async fn pi_models_list_and_switch_over_rpc() {
+        let mut t = T::new("pi", Kind::Rpc);
+        let mut s = t.session();
+        let (w, mut rx) = model_cmd(
+            &t,
+            &mut s,
+            ModelOp::Set {
+                model: "openrouter/vendor/m-2".into(),
+                default: false,
+            },
+        );
+        assert_eq!(w[0].1["type"], "set_model");
+        assert_eq!(w[0].1["provider"], "openrouter");
+        assert_eq!(w[0].1["modelId"], "vendor/m-2");
+        let rid = w[0].1["id"].clone();
+        t.land(&mut s, w[0].0, &w[0].1);
+        t.feed(
+            &mut s,
+            Stream::Stdout,
+            &json!({"type": "response", "id": rid, "command": "set_model", "success": true,
+                    "data": {"id": "vendor/m-2", "name": "M 2", "provider": "openrouter"}}),
+        );
+        assert_eq!(
+            rx.try_recv().unwrap().unwrap(),
+            json!({"default_changed": true})
+        );
+
+        let (w, mut rx) = model_cmd(&t, &mut s, ModelOp::List);
+        assert_eq!(w[0].1["type"], "get_available_models");
+        let rid = w[0].1["id"].clone();
+        t.land(&mut s, w[0].0, &w[0].1);
+        t.feed(
+            &mut s,
+            Stream::Stdout,
+            &json!({"type": "response", "id": rid, "command": "get_available_models", "success": true,
+                    "data": {"models": [
+                        {"id": "m-1", "name": "M 1", "provider": "anthropic"},
+                        {"id": "vendor/m-2", "name": "M 2", "provider": "openrouter"}
+                    ]}}),
+        );
+        assert_eq!(
+            rx.try_recv().unwrap().unwrap(),
+            json!({"models": [
+                {"id": "anthropic/m-1", "label": "M 1", "description": "anthropic", "current": false},
+                {"id": "openrouter/vendor/m-2", "label": "M 2", "description": "openrouter", "current": true}
+            ]})
+        );
+
+        let (w, mut rx) = model_cmd(
+            &t,
+            &mut s,
+            ModelOp::Set {
+                model: "nope/x".into(),
+                default: false,
+            },
+        );
+        let rid = w[0].1["id"].clone();
+        t.land(&mut s, w[0].0, &w[0].1);
+        t.feed(
+            &mut s,
+            Stream::Stdout,
+            &json!({"type": "response", "id": rid, "command": "set_model", "success": false, "error": "Model not found: nope/x"}),
+        );
+        assert!(
+            rx.try_recv()
+                .unwrap()
+                .unwrap_err()
+                .contains("Model not found")
+        );
+
+        let t2 = T::new("omp", Kind::Rpc);
+        let mut s2 = t2.session();
+        let (w, mut rx) = model_cmd(
+            &t2,
+            &mut s2,
+            ModelOp::Set {
+                model: "anthropic/m-1".into(),
+                default: true,
+            },
+        );
+        assert!(w.is_empty());
+        assert!(rx.try_recv().unwrap().is_err());
+    }
+
+    /// Adapters without structured model control answer `unsupported` at once.
+    #[tokio::test]
+    async fn stream_json_has_no_model_control() {
+        let t = T::new("claude", Kind::StreamJson);
+        let mut s = t.session();
+        let (w, mut rx) = model_cmd(&t, &mut s, ModelOp::List);
+        assert!(w.is_empty());
+        assert_eq!(rx.try_recv().unwrap().unwrap_err(), UNSUPPORTED);
     }
 }
 

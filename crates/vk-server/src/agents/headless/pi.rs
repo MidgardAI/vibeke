@@ -13,6 +13,8 @@
 //! | `compaction_start` / `_end` | `PreCompact` / `PostCompact` |
 //! | `extension_ui_request` `confirm` / `select` / `input` / `editor` | approval / question, answered with `extension_ui_response` |
 //! | `agent.interrupt` | `abort` |
+//! | `agent.models` | `get_available_models` (current: `get_state` / `set_model` model) |
+//! | `agent.set_model` | `set_model {provider, modelId}` (pi also saves it as its default model; omp keeps it to the session) |
 //! | omp `tool_approval_requested {toolCallId, toolName, reason}` / `_resolved {approved}` | binds the approval dialog to the tool call; resolved by the harness |
 //!
 //! There is no Vibeke approval gate for pi (04 §6.3): what is answered here are the dialogs a
@@ -43,6 +45,17 @@ pub struct Pi {
     approvals: Vec<(String, String, Value)>,
     /// Dialog id → (toolCallId, tool, input) it approves.
     dialog_tool: HashMap<String, (String, String, Value)>,
+    /// Current model as `provider/id`.
+    model: Option<String>,
+}
+
+/// `provider/id` of an RPC `Model` object.
+fn model_key(m: &Value) -> Option<String> {
+    let id = m.get("id").and_then(Value::as_str)?;
+    Some(match m.get("provider").and_then(Value::as_str) {
+        Some(p) if !p.is_empty() => format!("{p}/{id}"),
+        _ => id.to_string(),
+    })
 }
 
 fn tool_name(t: &str) -> String {
@@ -73,7 +86,15 @@ impl Pi {
             omp: Harness::from_id(&rec.harness).is_some_and(|h| h.base() == Harness::Omp),
             approvals: vec![],
             dialog_tool: HashMap::new(),
+            model: None,
         }
+    }
+
+    /// Write a command and return its id.
+    fn command_id(&mut self, cx: &mut Cx, ty: &str, extra: Value) -> String {
+        let id = format!("vk-{}", self.next);
+        self.command(cx, ty, extra);
+        id
     }
 
     /// The tool call an omp dialog approves: named by `toolCallId`, else the oldest approval
@@ -250,7 +271,46 @@ impl Adapter for Pi {
             "response" => {
                 let id = v.get("id").and_then(Value::as_str).unwrap_or("");
                 let cmd = self.inflight.remove(id).unwrap_or_default();
-                if v.get("success").and_then(Value::as_bool) == Some(false) {
+                let failed = v.get("success").and_then(Value::as_bool) == Some(false);
+                if matches!(cmd.as_str(), "get_available_models" | "set_model") {
+                    let d = v.get("data").cloned().unwrap_or(Value::Null);
+                    let r = if failed {
+                        let e = v.get("error").and_then(Value::as_str).unwrap_or("error");
+                        Err(format!("{cmd}: {e}"))
+                    } else if cmd == "set_model" {
+                        self.model = model_key(&d).or(self.model.take());
+                        // pi's `set_model` saves the default model too; omp's keeps it to the
+                        // session.
+                        Ok(json!({"default_changed": !self.omp}))
+                    } else {
+                        let models: Vec<Value> = d
+                            .get("models")
+                            .and_then(Value::as_array)
+                            .map(|a| {
+                                a.iter()
+                                    .filter_map(|m| {
+                                        let key = model_key(m)?;
+                                        let label = m
+                                            .get("name")
+                                            .and_then(Value::as_str)
+                                            .filter(|n| !n.is_empty())
+                                            .unwrap_or(&key)
+                                            .to_string();
+                                        let mut o = json!({"id": key, "label": label, "current": self.model.as_deref() == Some(key.as_str())});
+                                        if let Some(p) = m.get("provider").and_then(Value::as_str) {
+                                            o["description"] = json!(p);
+                                        }
+                                        Some(o)
+                                    })
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        Ok(json!({"models": models}))
+                    };
+                    cx.reply(id.to_string(), r);
+                    return;
+                }
+                if failed {
                     if cmd == "get_session_stats" {
                         // Older pi/omp builds lack it; per-turn usage stays.
                         return;
@@ -287,6 +347,9 @@ impl Adapter for Pi {
                 }
                 if cmd == "get_state" {
                     let d = v.get("data").cloned().unwrap_or(Value::Null);
+                    if let Some(m) = d.get("model").and_then(model_key) {
+                        self.model = Some(m);
+                    }
                     let sid = d
                         .get("sessionId")
                         .and_then(Value::as_str)
@@ -557,6 +620,28 @@ impl Adapter for Pi {
         self.next += 1;
         cx.write_prompt(json!({"id": id, "type": ty, "message": text}), text);
         Ok(())
+    }
+
+    fn models(&mut self, cx: &mut Cx) -> Result<Reply, String> {
+        Ok(Reply::Later(self.command_id(
+            cx,
+            "get_available_models",
+            json!({}),
+        )))
+    }
+
+    fn set_model(&mut self, cx: &mut Cx, model: &str, default: bool) -> Result<Reply, String> {
+        if default && self.omp {
+            return Err("oh-my-pi keeps no default model through RPC".into());
+        }
+        let Some((provider, id)) = model.split_once('/') else {
+            return Err(format!("{model}: expected provider/model"));
+        };
+        Ok(Reply::Later(self.command_id(
+            cx,
+            "set_model",
+            json!({"provider": provider, "modelId": id}),
+        )))
     }
 
     fn interrupt(&mut self, cx: &mut Cx) {
