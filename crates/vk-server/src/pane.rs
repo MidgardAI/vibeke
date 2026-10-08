@@ -16,7 +16,20 @@ use vk_proto::holder::*;
 use vk_store::archive::ArchivedRow;
 use vk_term::{Effect, Engine};
 
+/// Default and bounds for `terminal.scrollback_lines` (lines kept in each pane's engine).
 pub const SCROLLBACK: usize = 10_000;
+const SCROLLBACK_MIN: usize = 100;
+const SCROLLBACK_MAX: usize = 1_000_000;
+
+/// `terminal.scrollback_lines` from the current config, clamped to sane bounds. Applies to
+/// engines created or restored from now on.
+fn scrollback_lines() -> usize {
+    clamp_scrollback(crate::config_api::current().terminal.scrollback_lines)
+}
+
+fn clamp_scrollback(lines: u32) -> usize {
+    (lines as usize).clamp(SCROLLBACK_MIN, SCROLLBACK_MAX)
+}
 
 /// First argv word that asks [`crate::Server`]'s pane spawn for a pipe-mode holder (01 §1.2):
 /// headless harnesses get stdio pipes instead of a PTY. Stripped before the spawn, so it never
@@ -35,7 +48,7 @@ pub fn holder_mode(argv: &[String]) -> (Mode, &[String]) {
 /// with the `[graphics]` limits and `terminal.allow_passthrough` of the current config.
 fn new_engine(cols: u16, rows: u16) -> Engine {
     let cfg = graphics_config();
-    let mut e = Engine::new(cols, rows, SCROLLBACK);
+    let mut e = Engine::new(cols, rows, scrollback_lines());
     e.set_allow_passthrough(cfg);
     crate::theme::apply_query_palette(&mut e);
     e
@@ -506,7 +519,7 @@ async fn run_inner(
             && in_ring(s.offset)
             && let Ok(e) = {
                 let _ = graphics_config();
-                Engine::restore(&s.blob, SCROLLBACK)
+                Engine::restore(&s.blob, scrollback_lines())
             }
         {
             let mut sc = rt.screen.lock().unwrap();
@@ -1250,5 +1263,16 @@ impl PaneLoop {
             self.snapshot_armed = false;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod scrollback_tests {
+    #[test]
+    fn scrollback_setting_is_clamped() {
+        assert_eq!(super::clamp_scrollback(10_000), 10_000);
+        assert_eq!(super::clamp_scrollback(1_500), 1_500);
+        assert_eq!(super::clamp_scrollback(0), super::SCROLLBACK_MIN);
+        assert_eq!(super::clamp_scrollback(u32::MAX), super::SCROLLBACK_MAX);
     }
 }
