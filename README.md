@@ -10,7 +10,6 @@
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-5b4b8a?labelColor=2b2b3a" alt="Apache 2.0 license" /></a>
-  <img src="https://img.shields.io/badge/status-pre--1.0-5b4b8a?labelColor=2b2b3a" alt="status: pre-1.0" />
   <img src="https://img.shields.io/badge/platforms-macOS%20%C2%B7%20Linux-5b4b8a?labelColor=2b2b3a" alt="macOS and Linux" />
   <img src="https://img.shields.io/badge/rust-single%20binary-5b4b8a?labelColor=2b2b3a&logo=rust" alt="single Rust binary" />
 </p>

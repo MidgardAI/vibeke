@@ -13,7 +13,7 @@ export function Header() {
   useEffect(() => { setOpen(false) }, [pathname])
   return <header className="site-header sticky top-0 z-40 border-b border-line bg-base/95 backdrop-blur-md">
     <div className="page-width flex h-[76px] items-center gap-6">
-      <Brand /><span className="hidden border border-line px-2 py-0.5 font-mono text-[9px] uppercase tracking-wider text-muted sm:inline">pre-1.0</span>
+      <Brand />
       <nav aria-label="Main navigation" className="ml-7 hidden items-center gap-7 text-xs md:flex">
         <Link to="/" activeOptions={{ exact: true }} activeProps={{ className: 'text-cream' }} className="nav-link">Overview</Link>
         <Link to="/docs" activeProps={{ className: 'text-cream' }} className="nav-link">Documentation</Link>
@@ -31,7 +31,7 @@ export function Footer() {
       <div><Brand /><p className="mt-3 font-mono text-[10px] text-muted">Terminal workspaces for coding agents.</p></div>
       <div className="flex flex-wrap gap-x-7 gap-y-4 text-xs text-muted"><Link to="/docs" className="hover:text-cream">Documentation</Link><Link to="/compare" className="hover:text-cream">Compare</Link><Link to="/docs/$slug" params={{ slug: 'security' }} className="hover:text-cream">Security</Link><a href="https://github.com/MidgardAI/vibeke" className="flex items-center gap-1 hover:text-cream">GitHub <ArrowUpRight size={12} /></a></div>
     </div>
-    <div className="page-width flex flex-wrap justify-between gap-3 border-t border-line py-5 font-mono text-[10px] text-muted"><span>Rust · macOS · Linux</span><span>Apache-2.0 · Pre-release software</span></div>
+    <div className="page-width flex flex-wrap justify-between gap-3 border-t border-line py-5 font-mono text-[10px] text-muted"><span>Rust · macOS · Linux</span><span>Apache-2.0</span></div>
   </footer>
 }
 

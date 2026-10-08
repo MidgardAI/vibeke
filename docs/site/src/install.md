@@ -1,7 +1,7 @@
 # Installation
 
 Install the terminal CLI, download the desktop app, or open the [browser app](https://app.vibeke.dev).
-Vibeke is pre-1.0 software. Public releases do not require a GitHub account.
+Public releases do not require a GitHub account.
 
 ## Terminal CLI
 

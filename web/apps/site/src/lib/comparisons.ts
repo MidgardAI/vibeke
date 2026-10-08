@@ -6,7 +6,7 @@ export const products = [
     "name": "Vibeke",
     "kind": "terminal",
     "source": "/docs/introduction",
-    "note": "Pre-1.0"
+    "note": "Terminal workspace"
   },
   {
     "id": "herdr",

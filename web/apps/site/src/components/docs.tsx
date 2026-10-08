@@ -10,6 +10,7 @@ import { docs } from 'virtual:vibeke-docs'
 import type { Doc } from '../../content/manifest'
 import { ApiReference } from './api-reference'
 import { CopyButton, Eyebrow } from './ui'
+import { latestRelease } from '../lib/release'
 
 export function DocsNav({ current }: { current?: string }) {
   const groups = [...new Set(docs.map(doc => doc.group))]
@@ -20,7 +21,7 @@ export function DocsLayout({ current, children, headings = [] }: { current?: str
   const [mobileOpen, setMobileOpen] = useState(false)
   return <main id="main" className="page-width">
     <div className="border-b border-line py-4 lg:hidden"><button type="button" aria-expanded={mobileOpen} aria-controls="docs-mobile-menu" className="flex w-full items-center justify-between text-xs text-muted" onClick={() => setMobileOpen(!mobileOpen)}><span className="flex items-center gap-2"><BookOpen size={15} />Documentation menu</span><ChevronDown size={15} /></button>{mobileOpen && <div id="docs-mobile-menu" className="pt-7" onClick={event => { if ((event.target as HTMLElement).closest('a')) setMobileOpen(false) }}><DocsNav {...(current ? { current } : {})} /></div>}</div>
-    <div className="grid min-w-0 gap-12 lg:grid-cols-[185px_minmax(0,1fr)] xl:grid-cols-[185px_minmax(0,1fr)_150px] xl:gap-12"><aside className="sticky top-[108px] hidden max-h-[calc(100vh-132px)] overflow-y-auto self-start pr-2 pb-6 lg:mt-10 lg:block"><DocsNav {...(current ? { current } : {})} /></aside><div className="min-w-0 py-10 sm:py-12">{children}</div><aside className="sticky top-[120px] mt-12 hidden max-h-[calc(100vh-150px)] overflow-y-auto self-start pb-6 xl:block">{headings.length > 0 && <nav aria-label="On this page"><Eyebrow>On this page</Eyebrow><ul className="mt-4 space-y-3">{headings.map(heading => <li key={heading.id}><a href={`#${heading.id}`} className={`block text-[11px] leading-5 text-muted hover:text-accent ${heading.depth === 3 ? 'pl-3' : ''}`}>{heading.text}</a></li>)}</ul></nav>}<div className="mt-8 border-t border-line pt-5 font-mono text-[10px] leading-5 text-muted">Pre-release software<br /><span className="text-green">v0.1 · pre-1.0</span></div></aside></div>
+    <div className="grid min-w-0 gap-12 lg:grid-cols-[185px_minmax(0,1fr)] xl:grid-cols-[185px_minmax(0,1fr)_150px] xl:gap-12"><aside className="sticky top-[108px] hidden max-h-[calc(100vh-132px)] overflow-y-auto self-start pr-2 pb-6 lg:mt-10 lg:block"><DocsNav {...(current ? { current } : {})} /></aside><div className="min-w-0 py-10 sm:py-12">{children}</div><aside className="sticky top-[120px] mt-12 hidden max-h-[calc(100vh-150px)] overflow-y-auto self-start pb-6 xl:block">{headings.length > 0 && <nav aria-label="On this page"><Eyebrow>On this page</Eyebrow><ul className="mt-4 space-y-3">{headings.map(heading => <li key={heading.id}><a href={`#${heading.id}`} className={`block text-[11px] leading-5 text-muted hover:text-accent ${heading.depth === 3 ? 'pl-3' : ''}`}>{heading.text}</a></li>)}</ul></nav>}<div className="mt-8 border-t border-line pt-5 font-mono text-[10px] leading-5 text-muted"><a href={latestRelease.url} className="text-green hover:text-accent">v{latestRelease.version}</a></div></aside></div>
   </main>
 }
 
