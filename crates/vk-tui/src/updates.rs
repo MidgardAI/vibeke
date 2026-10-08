@@ -14,6 +14,9 @@ pub struct State {
     pub busy: bool,
     pub automatic: bool,
     pub confirm: bool,
+    installing: bool,
+    background: bool,
+    check_error: Option<String>,
     next: Option<Instant>,
     worker: Option<Worker>,
     prefs: Option<PathBuf>,
@@ -53,6 +56,9 @@ pub fn init(app: &mut App, args: Option<Vec<String>>, inc: mpsc::UnboundedSender
     if status["current_version"] != vk_proto::VERSION {
         status = Value::Null;
     }
+    if let Some(v) = status.as_object_mut() {
+        v.remove("server_version");
+    }
     app.ux.updates = State {
         status,
         automatic,
@@ -86,7 +92,7 @@ fn save(app: &App, checked: bool) {
     }
 }
 
-fn start(app: &mut App, install: bool) {
+fn start(app: &mut App, install: bool, background: bool) {
     let u = &mut app.ux.updates;
     if u.busy {
         return;
@@ -111,8 +117,13 @@ fn start(app: &mut App, install: bool) {
     let exe = w.exe.clone();
     let inc = w.inc.clone();
     u.busy = true;
+    u.installing = install;
+    u.background = background;
+    u.check_error = None;
     u.confirm = false;
-    u.status = json!({"state": if install { "downloading" } else { "checking" }, "message": if install { "Downloading update…" } else { "Checking for updates…" }});
+    if !background {
+        u.status = json!({"state": if install { "downloading" } else { "checking" }, "message": if install { "Downloading update…" } else { "Checking for updates…" }});
+    }
     app.dirty = true;
     tokio::spawn(async move {
         let result = worker(exe, args, &inc).await;
@@ -169,12 +180,23 @@ async fn worker(
 
 pub fn on_event(app: &mut App, event: Event) {
     match event {
-        Event::Progress(v) => app.ux.updates.status = v,
+        Event::Progress(v) => {
+            if !app.ux.updates.background {
+                app.ux.updates.status = v;
+            }
+        }
         Event::Finished(result) => {
             let u = &mut app.ux.updates;
             u.busy = false;
+            u.installing = false;
             u.next = u.automatic.then(|| Instant::now() + INTERVAL);
-            u.status = result.unwrap_or_else(|e| json!({"state":"error", "message": e}));
+            match result {
+                Ok(v) => u.status = v,
+                Err(e) if u.background => {
+                    u.check_error = Some(format!("Could not check for updates: {e}"))
+                }
+                Err(e) => u.status = json!({"state":"error", "message":e}),
+            }
             if u.status["state"] == "installed" {
                 let binary = u.status["binary"].as_str().unwrap_or("");
                 if !binary.is_empty() {
@@ -209,7 +231,7 @@ pub fn action(app: &mut App, action: &str) -> bool {
     }
     app.mode = Mode::Popup(Popup::Updates);
     if action == "check_updates" || app.ux.updates.status.is_null() {
-        start(app, false);
+        start(app, false, false);
     }
     true
 }
@@ -223,7 +245,7 @@ pub fn key(app: &mut App, ev: &KeyEvent) {
             app.ux.updates.confirm = false;
             app.mode = Mode::Normal;
         }
-        Key::Char('r') if !app.ux.updates.busy => start(app, false),
+        Key::Char('r') if !app.ux.updates.busy => start(app, false, false),
         Key::Char('b') => {
             app.ux.updates.automatic = !app.ux.updates.automatic;
             app.ux.updates.next = app.ux.updates.automatic.then(Instant::now);
@@ -233,7 +255,7 @@ pub fn key(app: &mut App, ev: &KeyEvent) {
             if app.ux.updates.status["state"] == "available" && !app.ux.updates.busy =>
         {
             if app.ux.updates.confirm {
-                start(app, true);
+                start(app, true, false);
             } else {
                 app.ux.updates.confirm = true;
             }
@@ -257,8 +279,18 @@ pub fn tick(app: &mut App) {
     }
     let u = &app.ux.updates;
     if u.worker.is_some() && u.automatic && !u.busy && u.next.is_some_and(|t| t <= Instant::now()) {
-        start(app, false);
+        start(app, false, true);
     }
+}
+/// The worker can be changing symlinks or restarting the server. A normal TUI quit must
+/// not drop it partway through; checks alone are safe to cancel.
+pub fn prevent_quit(app: &mut App) -> bool {
+    if !app.ux.updates.installing {
+        return false;
+    }
+    app.toast("Wait for the update to finish before closing Vibeke");
+    app.mode = Mode::Popup(Popup::Updates);
+    true
 }
 pub fn deadlines(app: &App, d: &mut crate::deadline::Deadlines) {
     let u = &app.ux.updates;
@@ -315,6 +347,9 @@ pub fn draw(app: &App, g: &mut Grid) {
     if let Some(url) = u.status["release_url"].as_str() {
         a.line(&crate::plugins::sanitize(url, 180), t.text());
     }
+    if let Some(error) = &u.check_error {
+        a.line(&crate::plugins::sanitize(error, 400), t.text());
+    }
     a.line("", t.text());
     if u.confirm {
         a.line("Install this update and reopen the TUI?", t.bold(t.yellow));
@@ -349,6 +384,20 @@ pub fn draw(app: &App, g: &mut Grid) {
 mod tests {
     use super::*;
     use crate::drafts::tests::{commands, fleet, named, screen};
+    #[test]
+    fn background_failures_preserve_available_badge_and_install_guards_quit() {
+        let (mut app, _) = fleet();
+        app.ux.updates.background = true;
+        app.ux.updates.status = json!({"state":"available","version":"0.3.0"});
+        on_event(&mut app, Event::Finished(Err("offline".into())));
+        assert!(badge(&app).unwrap().contains("0.3.0"));
+        assert!(app.ux.updates.check_error.is_some());
+        app.ux.updates.installing = true;
+        assert!(prevent_quit(&mut app));
+        assert!(matches!(app.mode, Mode::Popup(Popup::Updates)));
+        app.ux.updates.installing = false;
+        assert!(!prevent_quit(&mut app));
+    }
     #[test]
     fn checks_never_steal_focus_or_send_pane_input() {
         let (mut app, mut rxs) = fleet();

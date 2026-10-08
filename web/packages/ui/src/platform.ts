@@ -63,7 +63,7 @@ export interface BuildInfo {
 }
 
 export interface UpdateState {
-  status: 'idle' | 'checking' | 'up-to-date' | 'available' | 'downloading' | 'ready' | 'error';
+  status: 'idle' | 'checking' | 'up-to-date' | 'available' | 'downloading' | 'ready' | 'error' | 'unsupported';
   currentVersion: string;
   version?: string;
   progress?: number;

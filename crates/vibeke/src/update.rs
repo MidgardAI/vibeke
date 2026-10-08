@@ -207,7 +207,11 @@ async fn fetch(url: &str, dest: &Path, limit: u64, progress: Option<&Reporter>) 
             "--connect-timeout",
             "10",
             "--max-time",
-            if progress.is_some() { "300" } else { "30" },
+            if progress.is_some() { "3600" } else { "30" },
+            "--speed-limit",
+            "1024",
+            "--speed-time",
+            "60",
             "--max-filesize",
             &limit.to_string(),
             "--user-agent",
@@ -254,12 +258,40 @@ async fn fetch(url: &str, dest: &Path, limit: u64, progress: Option<&Reporter>) 
     Ok(())
 }
 
+// Private transport seam for hermetic signed-release tests. Production always uses the
+// fixed public endpoints and embedded keys; there is no environment or CLI trust override.
+trait Source {
+    async fn fetch(
+        &self,
+        url: &str,
+        dest: &Path,
+        limit: u64,
+        progress: Option<&Reporter>,
+    ) -> Result<()>;
+    fn keys(&self) -> Vec<String> {
+        bootstrap::trusted_keys()
+    }
+}
+struct PublicRelease;
+impl Source for PublicRelease {
+    async fn fetch(
+        &self,
+        url: &str,
+        dest: &Path,
+        limit: u64,
+        progress: Option<&Reporter>,
+    ) -> Result<()> {
+        fetch(url, dest, limit, progress).await
+    }
+}
+
 fn verify_manifest(
+    keys: &[String],
     release: &Release,
     data: &[u8],
     sig: &str,
 ) -> Result<bootstrap::ManifestArtifact> {
-    let m = bootstrap::verify_manifest(data, sig).map_err(anyhow::Error::msg)?;
+    let m = bootstrap::verify_manifest_with(keys, data, sig).map_err(anyhow::Error::msg)?;
     if m.version != release.version {
         bail!("signed manifest version does not match the release tag");
     }
@@ -279,8 +311,18 @@ async fn online(
     o: &Options,
     r: &Reporter,
 ) -> Result<()> {
+    online_with(g, layout, o, r, &PublicRelease).await
+}
+
+async fn online_with(
+    g: &Global,
+    layout: &crate::doctor::Layout,
+    o: &Options,
+    r: &Reporter,
+    source: &impl Source,
+) -> Result<()> {
     r.emit("checking", "Checking for updates…", json!({}));
-    let cache = vk_server::paths::data_root().join("update-downloads");
+    let cache = layout.data.join("update-downloads");
     std::fs::create_dir_all(&cache)?;
     let temp = tempfile::tempdir_in(cache)?;
     let api = match &o.version {
@@ -288,7 +330,7 @@ async fn online(
         None => format!("{API}/latest"),
     };
     let meta = temp.path().join("release.json");
-    fetch(&api, &meta, META_LIMIT, None).await?;
+    source.fetch(&api, &meta, META_LIMIT, None).await?;
     let release = Release::parse(
         &serde_json::from_slice(&std::fs::read(meta)?)?,
         o.version.as_deref(),
@@ -298,10 +340,11 @@ async fn online(
     let manifest_url = format!("{}/manifest.json", release.base);
     let signature_url = format!("{}/manifest.json.minisig", release.base);
     tokio::try_join!(
-        fetch(&manifest_url, &manifest, META_LIMIT, None),
-        fetch(&signature_url, &sig, 4096, None)
+        source.fetch(&manifest_url, &manifest, META_LIMIT, None),
+        source.fetch(&signature_url, &sig, 4096, None)
     )?;
     let artifact = verify_manifest(
+        &source.keys(),
         &release,
         &std::fs::read(manifest)?,
         &std::fs::read_to_string(sig)?,
@@ -344,7 +387,9 @@ async fn online(
         detail.clone(),
     );
     let binary = temp.path().join("vibeke");
-    fetch(&artifact.url, &binary, BINARY_LIMIT, Some(r)).await?;
+    source
+        .fetch(&artifact.url, &binary, BINARY_LIMIT, Some(r))
+        .await?;
     r.emit("verifying", "Verifying update…", detail.clone());
     if bootstrap::sha256_file(&binary)? != artifact.sha256 {
         bail!("download checksum does not match the signed manifest; nothing installed");
@@ -358,43 +403,53 @@ async fn online(
         "Installing update and restarting the local session…",
         detail,
     );
+    // Refuse a live-but-unreachable session before changing the installation. A dead
+    // socket left by a crashed process is equivalent to no running session.
+    connect_running(g).await?;
     let dest = crate::doctor::install_version(layout, &release.version, &binary)?;
     let previous = crate::doctor::switch_current(layout, &release.version)?;
     match restart(g, &dest).await {
         Ok((before, after)) => {
-            if let (Some(b), Some(a)) = (before, after)
-                && a.0 < b.0
-            {
-                bail!(
-                    "new server started but pane count fell from {} to {}; inspect the session before continuing",
-                    b.0,
-                    a.0
-                );
+            if let Some(warning) = pane_warning(before, after) {
+                r.emit("warning", &warning, json!({}));
             }
             r.emit("installed", &format!("Installed v{}. {}", release.version, if before.is_some() { "Local session restarted; other sessions update on their next restart." } else { "The next session will use it." }),
                 json!({"version": release.version, "binary": dest, "server_restarted": before.is_some(), "session": g.session}));
             Ok(())
         }
         Err(e) => {
-            if let Some(prev) = previous {
-                crate::doctor::switch_current(layout, &prev)
-                    .context("restore previous installation after restart failure")?;
-                let recovery = restart(g, &layout.version_bin(&prev)).await;
+            if let Some(prev) =
+                recover_exec_failure(layout, previous.as_deref(), &release.version, &e)?
+            {
                 bail!(
-                    "restart failed: {e}; restored v{prev}; recovery: {}",
-                    match recovery {
-                        Ok(_) => "previous server available".into(),
-                        Err(e) => e,
-                    }
+                    "restart exec failed: {e}; restored installation v{prev}; the existing server is still running"
                 );
             }
+            // No old-image exec here: a timeout can mean the replacement has already
+            // migrated state.db and is still starting. Downgrading could corrupt it.
             bail!(
-                "installed v{} but restart failed: {e}; retry `vibeke server restart --binary {}`",
+                "installed v{}; could not confirm the session restart: {e:#}. The new server may still be starting. The installation remains v{}; check `vibeke server status` before taking further action",
                 release.version,
-                dest.display()
+                release.version
             );
         }
     }
+}
+
+fn recover_exec_failure(
+    layout: &crate::doctor::Layout,
+    previous: Option<&str>,
+    version: &str,
+    error: &anyhow::Error,
+) -> Result<Option<String>> {
+    if error.downcast_ref::<ExecFailure>().is_some()
+        && let Some(prev) = previous.filter(|v| *v != version)
+    {
+        crate::doctor::switch_current(layout, prev)
+            .context("restore previous installation after exec failure")?;
+        return Ok(Some(prev.into()));
+    }
+    Ok(None)
 }
 
 async fn binary_version(bin: &Path) -> Result<String> {
@@ -431,22 +486,67 @@ async fn server_version(g: &Global) -> Option<String> {
 }
 
 type Counts = Option<(u64, u64)>;
+
+#[derive(Debug)]
+struct ExecFailure(String);
+impl std::fmt::Display for ExecFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+impl std::error::Error for ExecFailure {}
+
+fn pane_warning(before: Counts, after: Counts) -> Option<String> {
+    match (before, after) {
+        (Some(b), Some(a)) if a.0 < b.0 => Some(format!(
+            "Server restarted; pane count changed from {} to {}. A pane may have exited during the restart.",
+            b.0, a.0
+        )),
+        _ => None,
+    }
+}
+
+async fn connect_running(g: &Global) -> Result<Option<Client<tokio::net::UnixStream>>> {
+    let socket = client::socket_path(&g.session, g.socket.as_deref());
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            match client::connect(&socket).await {
+                Ok(stream) => {
+                    let mut c = Client::new(stream);
+                    c.hello("cli").await?;
+                    return Ok(Some(c));
+                }
+                Err(e) => {
+                    let absent = e.downcast_ref::<std::io::Error>().is_some_and(|e| {
+                        matches!(
+                            e.kind(),
+                            std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+                        )
+                    });
+                    if !absent {
+                        return Err(e).context("connect to the local session");
+                    }
+                    if !client::server_alive(&g.session) {
+                        return Ok(None);
+                    }
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .context("local server is alive but not accepting connections; try again when it is ready")?
+}
+
 /// Explicit binary, same socket/session, fresh boot id AND the requested version. No stop/spawn
 /// fallback: that loses custom server options and can interrupt a client launched in the TUI.
-pub(crate) async fn restart(
-    g: &Global,
-    bin: &Path,
-) -> std::result::Result<(Counts, Counts), String> {
+pub(crate) async fn restart(g: &Global, bin: &Path) -> Result<(Counts, Counts)> {
     async fn go(g: &Global, bin: &Path) -> Result<(Counts, Counts)> {
         let socket = client::socket_path(&g.session, g.socket.as_deref());
-        let stream = match client::connect(&socket).await {
-            Ok(s) => s,
-            Err(_) if !socket.exists() => return Ok((None, None)),
-            Err(e) => return Err(e).context("connect to the local session"),
+        let Some(mut c) = connect_running(g).await? else {
+            return Ok((None, None));
         };
         let want = binary_version(bin).await?;
-        let mut c = Client::new(stream);
-        c.hello("cli").await?;
         let before = c.call("server.status", json!({})).await?;
         c.call("server.restart", json!({"binary": bin})).await?;
         drop(c);
@@ -463,8 +563,10 @@ pub(crate) async fn restart(
                 if c.hello("cli").await.is_ok()
                     && let Ok(st) = c.call("server.status", json!({})).await
                 {
-                    if let Some(e) = st["restart_error"].as_str() {
-                        bail!("{e}");
+                    if st["boot_id"] == before["boot_id"]
+                        && let Some(e) = st["restart_error"].as_str()
+                    {
+                        return Err(ExecFailure(e.into()).into());
                     }
                     if st["boot_id"] != before["boot_id"] && st["version"] == want {
                         return Ok((counts(&before), counts(&st)));
@@ -478,8 +580,8 @@ pub(crate) async fn restart(
         }
     }
     match tokio::time::timeout(Duration::from_secs(30), go(g, bin)).await {
-        Ok(r) => r.map_err(|e| format!("{e:#}")),
-        Err(_) => Err("server restart timed out".into()),
+        Ok(r) => r,
+        Err(_) => bail!("server restart timed out"),
     }
 }
 
@@ -500,6 +602,123 @@ mod tests {
         .map(|n| json!({"name":n,"browser_download_url":format!("{base}/{n}")}))
         .collect::<Vec<_>>();
         json!({"tag_name":"v0.3.0", "draft":false, "prerelease":false, "assets": assets})
+    }
+    struct Fixture {
+        files: std::collections::HashMap<String, Vec<u8>>,
+    }
+    impl Source for Fixture {
+        async fn fetch(
+            &self,
+            url: &str,
+            dest: &Path,
+            limit: u64,
+            _: Option<&Reporter>,
+        ) -> Result<()> {
+            let bytes = self.files.get(url).context("unexpected fixture URL")?;
+            anyhow::ensure!(bytes.len() as u64 <= limit, "size limit");
+            std::fs::write(dest, bytes)?;
+            Ok(())
+        }
+        fn keys(&self) -> Vec<String> {
+            vec![vk_remote::minisign::testing::public_key_b64()]
+        }
+    }
+    fn fixture(dir: &Path) -> Fixture {
+        let base = format!("{REPO}/releases/download/v0.3.0");
+        let binary = b"#!/bin/sh\necho 'vibeke 0.3.0'\n".to_vec();
+        let sample = dir.join("sample");
+        std::fs::write(&sample, &binary).unwrap();
+        let url = format!("{base}/vibeke-{}", crate::doctor::platform_target());
+        let manifest = serde_json::to_vec(&json!({"version":"0.3.0", "artifacts":[{
+            "target": crate::doctor::platform_target(), "url":url, "sha256":bootstrap::sha256_file(&sample).unwrap()
+        }]})).unwrap();
+        let sig = vk_remote::minisign::testing::sign(&manifest, "version:0.3.0");
+        Fixture {
+            files: [
+                (
+                    format!("{API}/latest"),
+                    serde_json::to_vec(&release()).unwrap(),
+                ),
+                (format!("{base}/manifest.json"), manifest),
+                (format!("{base}/manifest.json.minisig"), sig.into_bytes()),
+                (url, binary),
+            ]
+            .into(),
+        }
+    }
+    #[tokio::test]
+    async fn signed_online_install_handles_a_stale_socket_and_rejects_tampering() {
+        let d = tempfile::tempdir().unwrap();
+        let layout = crate::doctor::Layout {
+            data: d.path().join("data"),
+            bin: d.path().join("bin"),
+        };
+        let socket = d.path().join("dead.sock");
+        drop(std::os::unix::net::UnixListener::bind(&socket).unwrap());
+        let g = Global {
+            session: format!("update-test-{}", std::process::id()),
+            socket: Some(socket),
+            ..Default::default()
+        };
+        let mut f = fixture(d.path());
+        let binary_url = format!(
+            "{REPO}/releases/download/v0.3.0/vibeke-{}",
+            crate::doctor::platform_target()
+        );
+        let binary = f.files[&binary_url].clone();
+        f.files.insert(binary_url.clone(), b"corrupted".to_vec());
+        let error = online_with(&g, &layout, &Options::default(), &Reporter(false), &f)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("checksum"));
+        assert!(layout.current_version().is_none());
+        f.files.insert(binary_url, binary);
+        online_with(&g, &layout, &Options::default(), &Reporter(false), &f)
+            .await
+            .unwrap();
+        assert_eq!(layout.current_version().as_deref(), Some("0.3.0"));
+        assert_eq!(
+            binary_version(&layout.bin.join("vibeke")).await.unwrap(),
+            "0.3.0"
+        );
+    }
+    #[test]
+    fn timeout_keeps_new_image_selected_but_explicit_exec_failure_restores_previous() {
+        let d = tempfile::tempdir().unwrap();
+        let layout = crate::doctor::Layout {
+            data: d.path().join("data"),
+            bin: d.path().join("bin"),
+        };
+        let bin = d.path().join("candidate");
+        std::fs::write(&bin, b"test").unwrap();
+        for v in ["0.2.0", "0.3.0"] {
+            crate::doctor::install_version(&layout, v, &bin).unwrap();
+            crate::doctor::switch_current(&layout, v).unwrap();
+        }
+        assert!(
+            recover_exec_failure(
+                &layout,
+                Some("0.2.0"),
+                "0.3.0",
+                &anyhow::anyhow!("restart timed out")
+            )
+            .unwrap()
+            .is_none()
+        );
+        assert_eq!(layout.current_version().as_deref(), Some("0.3.0"));
+        assert_eq!(
+            recover_exec_failure(
+                &layout,
+                Some("0.2.0"),
+                "0.3.0",
+                &ExecFailure("exec failed".into()).into()
+            )
+            .unwrap()
+            .as_deref(),
+            Some("0.2.0")
+        );
+        assert_eq!(layout.current_version().as_deref(), Some("0.2.0"));
+        assert!(pane_warning(Some((2, 2)), Some((1, 1))).is_some());
     }
     #[test]
     fn rejects_partial_prerelease_and_mismatched_releases() {
@@ -542,6 +761,14 @@ mod tests {
     #[test]
     fn unsigned_metadata_is_never_accepted() {
         let r = Release::parse(&release(), None).unwrap();
-        assert!(verify_manifest(&r, br#"{"version":"0.3.0","artifacts":[]}"#, "").is_err());
+        assert!(
+            verify_manifest(
+                &bootstrap::trusted_keys(),
+                &r,
+                br#"{"version":"0.3.0","artifacts":[]}"#,
+                ""
+            )
+            .is_err()
+        );
     }
 }

@@ -38,6 +38,7 @@ import { AppTray } from './tray';
 import { startUpdates, type Updates } from './updater';
 import { externalUrl, isTrustedUrl } from './validate';
 import { Vault } from './vault';
+import { DraftStore } from './drafts';
 import { Windows } from './windows';
 
 declare const __APP_VERSION__: string;
@@ -98,7 +99,7 @@ let settings: DesktopSettings = loadSettings(settingsFile);
 let updates: Updates;
 
 const vault = new Vault(userData, safeStorage);
-const drafts = new Vault(join(userData, 'drafts'), safeStorage);
+const drafts = new DraftStore(join(userData, 'drafts'), safeStorage);
 
 const visible = new Set<() => void>();
 const hidden = new Set<() => void>();
@@ -191,6 +192,10 @@ const notifier = new Notifier(
 );
 
 engine.onPatch((patch) => {
+  void drafts.retainHosts(patch.order).catch((e) => log(`draft cleanup: ${(e as Error).message}`));
+  for (const s of patch.changed) if (s.status === 'online' && s.dashboard) {
+    void drafts.retainPanes(s.record.host_id, s.dashboard.panes.filter((p) => !p.exited).map((p) => p.id)).catch((e) => log(`draft cleanup: ${(e as Error).message}`));
+  }
   let open = 0;
   for (const s of engine.snapshot()) open += s.dashboard?.interactions.filter((i) => i.status === 'open').length ?? 0;
   tray.setCount(open);
@@ -463,7 +468,7 @@ app.whenReady().then(() => {
   const controller = startUpdates(
     (state) => { for (const w of windows.all()) w.webContents.send(EVENT.updates, { ...state, automatic: settings.automaticUpdates }); },
     () => { windows.prepareUpdate(); windows.quitting = true; },
-    () => { windows.quitting = false; },
+    () => { windows.cancelUpdate(); },
   );
   updates = { ...controller, snapshot: () => ({ ...controller.snapshot(), automatic: settings.automaticUpdates }) };
   registerIpc({
@@ -527,7 +532,20 @@ app.whenReady().then(() => {
 });
 
 app.on('activate', () => windows.showMain());
-app.on('before-quit', () => {
+let flushingQuit = false;
+app.on('before-quit', (event) => {
+  if (drafts.hasPending()) {
+    event.preventDefault();
+    if (!flushingQuit) {
+      flushingQuit = true;
+      void drafts.flush().then(() => { flushingQuit = false; app.quit(); }, (error) => {
+        flushingQuit = false;
+        windows.cancelUpdate();
+        dialog.showErrorBox('Drafts could not be saved', `Copy or send your conversation drafts before quitting. ${(error as Error).message}`);
+      });
+    }
+    return;
+  }
   windows.quitting = true;
 });
 app.on('will-quit', () => {

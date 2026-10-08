@@ -711,7 +711,9 @@ async fn run_inner(
                 last_draw = Instant::now();
             }
         }
-        if let Some(r) = app.quit.take() {
+        if let Some(r) = app.quit.take()
+            && !crate::updates::prevent_quit(&mut app)
+        {
             return Ok(r);
         }
         // Edit-scrollback's editor: suspend the TUI (stop reading input, restore the host

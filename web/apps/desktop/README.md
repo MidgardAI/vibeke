@@ -204,7 +204,9 @@ in the background. Unconfigured/unsigned Mac packages and Linux DEBs offer manua
 `update-release.ts` verifies the signed checksum list, version and exact channel bytes before
 `update-info.ts` parses them. The lazy updater bundle receives only authenticated, version-pinned
 metadata. Every update IPC action validates the sender and accepts no URL or executable path.
-Composer text is saved in a separate encrypted vault; update restart waits for its writes.
+Conversation drafts use a separate encrypted store with batched asynchronous writes; update
+restart and normal quit flush pending edits. Terminal composer text stays in memory. Drafts
+are limited to 1 MiB total and pruned when panes close, hosts are removed, or after 30 days.
 
 Run `bun scripts/verify-update-feed.ts dist --platform mac` (or `linux` / `windows`) after
 packaging. The release workflow retains channel YAML and blockmaps; the local release signer

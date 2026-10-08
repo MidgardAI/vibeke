@@ -8,12 +8,12 @@ import { EVENT, INVOKE, type ChooseVibekeResult, type DesktopSettings, type Loca
 import { toWire, type Engine } from './engine';
 import * as v from './validate';
 import type { Updates } from './updater';
-import type { Vault } from './vault';
+import type { DraftStore } from './drafts';
 import type { Windows } from './windows';
 
 export interface IpcDeps {
   updates: Updates;
-  drafts: Vault;
+  drafts: DraftStore;
   engine: Engine;
   /** A window starts / stops receiving one host's events. */
   setHostEvents(wc: WebContents, hostId: string, on: boolean): void;
@@ -50,28 +50,26 @@ export function registerIpc(d: IpcDeps): void {
     });
   };
 
-  const unsavedDrafts = new Set<string>();
   const draftKey = (host: unknown, pane: unknown) => {
     if (typeof host !== 'string' || typeof pane !== 'string' || !/^[a-zA-Z0-9_.:-]{1,160}$/.test(host) || !/^[a-zA-Z0-9_.:-]{1,160}$/.test(pane)) throw new Error('Invalid draft scope');
     return JSON.stringify([host, pane]);
   };
   handle(INVOKE.draftGet, async (_e, host, pane) => {
-    try { const bytes = await d.drafts.keystore.get(draftKey(host, pane)); return ok(bytes ? new TextDecoder().decode(bytes) : ''); } catch (e) { return err(e); }
+    try { draftKey(host, pane); return ok(await d.drafts.get(host as string, pane as string)); } catch (e) { return err(e); }
   });
   handle(INVOKE.draftSet, async (_e, host, pane, text) => {
-    const key = draftKey(host, pane);
+    draftKey(host, pane);
     try {
-      if (typeof text !== 'string' || Buffer.byteLength(text) > 262144) throw new Error('Draft is too large');
-      if (text) await d.drafts.keystore.set(key, new TextEncoder().encode(text)); else await d.drafts.keystore.delete(key);
-      unsavedDrafts.delete(key);
+      if (typeof text !== 'string') throw new Error('Draft is too large');
+      await d.drafts.set(host as string, pane as string, text);
       return ok(null);
-    } catch (e) { unsavedDrafts.add(key); return err(e); }
+    } catch (e) { return err(e); }
   });
   for (const [channel, action] of [
     [INVOKE.updatesGet, () => d.updates.snapshot()],
     [INVOKE.updatesCheck, () => d.updates.check()],
     [INVOKE.updatesDownload, () => d.updates.download()],
-    [INVOKE.updatesInstall, async () => { await d.drafts.flush(); if (unsavedDrafts.size) throw new Error('Some composer drafts could not be saved. Copy or clear them before restarting.'); d.updates.install(); }],
+    [INVOKE.updatesInstall, async () => { await d.drafts.flush(); d.updates.install(); }],
   ] as const) {
     handle(channel, async (_e, ...args) => {
       if (args.length) throw new Error('Update actions take no arguments');
@@ -119,7 +117,9 @@ export function registerIpc(d: IpcDeps): void {
 
   handle(INVOKE.remove, async (_e, host) => {
     try {
-      await d.engine.remove(v.hostId(host));
+      const id = v.hostId(host);
+      await d.drafts.removeHost(id);
+      await d.engine.remove(id);
       return ok(null);
     } catch (e) {
       return err(e);

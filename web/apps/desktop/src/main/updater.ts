@@ -1,10 +1,10 @@
 // One updater in main; renderers can request actions but cannot choose feeds or executables.
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { app } from 'electron';
+import { app, net } from 'electron';
 import type { UpdateState } from '@vibeke/ui';
 import { packagedFeed } from './updater-feed';
-import { UPDATE_FEED, discoverRelease, fetchBytes } from './update-release';
+import { UPDATE_FEED, discoverRelease, createFetcher } from './update-release';
 import { UpdateController } from './update-controller';
 
 declare const __RELEASE_KEYS__: string[];
@@ -28,7 +28,7 @@ export function startUpdates(changed: (state: UpdateState) => void, beforeInstal
     : process.platform === 'darwin' && !macSigned ? 'This Mac build requires a manual installation.'
     : process.platform === 'linux' && !process.env.APPIMAGE ? 'Install the new DEB with your package manager, or download an AppImage.' : null;
   const controller = new UpdateController({ version: app.getVersion(), manualReason,
-    discover: () => discoverRelease(process.platform, process.arch, __RELEASE_KEYS__, fetchBytes, process.platform === 'linux' && !process.env.APPIMAGE), changed, beforeInstall, installFailed,
+    discover: () => discoverRelease(process.platform, process.arch, __RELEASE_KEYS__, createFetcher((url, init) => net.fetch(url, init)), process.platform === 'linux' && !process.env.APPIMAGE), changed, beforeInstall, installFailed,
     installer: () => {
       const impl = require(join(app.getAppPath(), 'out/main/updater-impl.cjs')) as typeof import('./updater-impl');
       return impl.createInstaller();
@@ -42,8 +42,8 @@ export function startUpdates(changed: (state: UpdateState) => void, beforeInstal
     automatic(enabled) {
       stop();
       if (!enabled || !app.isPackaged) return;
-      first = setTimeout(() => void controller.check(), 10_000);
-      interval = setInterval(() => void controller.check(), 6 * 60 * 60 * 1000);
+      first = setTimeout(() => void controller.check(true), 10_000);
+      interval = setInterval(() => void controller.check(true), 6 * 60 * 60 * 1000);
       first.unref(); interval.unref();
     },
   };

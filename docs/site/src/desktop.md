@@ -35,11 +35,11 @@ The host and gateway must remain running to receive live requests.
 Use **Check for Updates…** in the application menu or **Settings → About**. When a new
 release is available, a button above the sidebar footer opens its details and release notes.
 Choose **Download update**, then **Restart and update** when ready. The app restores your
-last view and encrypted unsent composer text, then reconnects to your hosts.
+last view and encrypted unsent conversation drafts, then reconnects to your hosts.
 
 Background checks run every six hours and can be turned off in the update settings.
-Downloading and restarting require an explicit action. On macOS, a downloaded update also
-installs when you next quit the app.
+Downloading and restarting require an explicit action. Terminal composer text stays in memory
+and is not restored after restarting.
 
 In-app installation supports Windows EXE, Linux AppImage, and properly signed and notarized
 Mac packages. Mac builds without publisher signing and Linux DEB installations show

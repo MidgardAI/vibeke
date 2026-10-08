@@ -40,7 +40,7 @@ export function UpdateControls() {
   const busy = s.status === 'checking' || s.status === 'downloading';
   return <div className="space-y-3" data-testid="desktop-updates">
     <p className="text-sm">Desktop app · v{s.currentVersion}</p>
-    <p className="text-sm" role="status">{s.status === 'checking' ? 'Checking for updates…' : s.status === 'up-to-date' ? 'You’re up to date.' : updateLabel(s) ?? 'Check for a new desktop release.'}</p>
+    <p className="text-sm" role="status">{s.status === 'checking' ? 'Checking for updates…' : s.status === 'up-to-date' ? 'You’re up to date.' : s.status === 'unsupported' ? 'Updates are unavailable for this platform.' : updateLabel(s) ?? 'Check for a new desktop release.'}</p>
     {(error || s.message) && <Notice>{error || s.message}</Notice>}
     {s.manualReason && s.status === 'available' && <p className="text-xs text-muted">{s.manualReason}</p>}
     {s.status === 'downloading' && <progress className="w-full" aria-label="Update download" max={100} value={s.progress ?? 0} />}
@@ -49,10 +49,10 @@ export function UpdateControls() {
         ? <Button onClick={() => s.downloadUrl && app.platform.openExternal(s.downloadUrl)}>Download installer</Button>
         : <Button onClick={() => run(u.download)}>Download update</Button>)}
       {s.status === 'ready' && <Button onClick={() => run(u.install)}>Restart and update</Button>}
-      {!busy && s.status !== 'ready' && <Button variant="outline" onClick={() => run(u.check)}>{s.status === 'error' ? 'Retry' : 'Check for updates'}</Button>}
+      {!busy && s.status !== 'ready' && s.status !== 'unsupported' && <Button variant="outline" onClick={() => run(u.check)}>{s.status === 'error' ? 'Retry' : 'Check for updates'}</Button>}
       {s.releaseUrl && <Button variant="ghost" onClick={() => app.platform.openExternal(s.releaseUrl!)}>Release notes</Button>}
     </div>
-    {s.status === 'ready' && <p className="text-xs text-muted">Vibeke will reopen and reconnect to your hosts. On macOS, a downloaded update also installs when you next quit the app.</p>}
+    {s.status === 'ready' && <p className="text-xs text-muted">Vibeke will reopen and reconnect to your hosts.</p>}
     <div className="flex items-center justify-between gap-3 text-sm"><span>Check automatically</span><Toggle label="Check for updates automatically" checked={s.automatic !== false} onChange={(value) => run(() => u.setAutomatic(value))} /></div>
     <p className="text-xs text-muted">This updates the desktop app. Update a host’s CLI from its terminal interface.</p>
   </div>;

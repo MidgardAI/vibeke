@@ -393,14 +393,10 @@ async fn run_server(g: &Global) -> i32 {
     }
 }
 
-/// Prefer the stable symlink `~/.local/bin/vibeke` (hooks and holders reference it so upgrades
-/// don't break them, 04 §11 rule 6) when it points at this binary.
+/// Pin the server and holder executable to the running version. Hooks installed in user
+/// shells still use the stable CLI link; holders must match their server's protocol.
 fn stable_bin(bin: &Path) -> PathBuf {
-    let stable = vk_server::paths::home().join(".local/bin/vibeke");
-    match (std::fs::canonicalize(&stable), std::fs::canonicalize(bin)) {
-        (Ok(a), Ok(b)) if a == b => stable,
-        _ => bin.to_path_buf(),
-    }
+    std::fs::canonicalize(bin).unwrap_or_else(|_| bin.to_path_buf())
 }
 
 // ---- notify -----------------------------------------------------------------------------------

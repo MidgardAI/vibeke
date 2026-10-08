@@ -1633,13 +1633,15 @@ pub fn install_version(l: &Layout, v: &str, src: &Path) -> std::io::Result<PathB
 }
 
 /// Point `current` at `versions/<v>` atomically, remember the previous version, link
-/// `~/.local/bin/vibeke`, and prune everything but current + previous.
+/// `~/.local/bin/vibeke`. Keep older images: other sessions can still be running them.
 pub fn switch_current(l: &Layout, v: &str) -> std::io::Result<Option<String>> {
     let prev = l.current_version();
-    atomic_symlink(&PathBuf::from("versions").join(v), &l.current())?;
     if let Some(p) = prev.as_ref().filter(|p| p.as_str() != v) {
-        std::fs::write(l.data.join("previous"), format!("{p}\n"))?;
+        let tmp = l.data.join("previous.tmp");
+        std::fs::write(&tmp, format!("{p}\n"))?;
+        std::fs::rename(tmp, l.data.join("previous"))?;
     }
+    atomic_symlink(&PathBuf::from("versions").join(v), &l.current())?;
     std::fs::create_dir_all(&l.bin)?;
     let link = l.bin.join("vibeke");
     if let Ok(m) = std::fs::symlink_metadata(&link)
@@ -1649,18 +1651,6 @@ pub fn switch_current(l: &Layout, v: &str) -> std::io::Result<Option<String>> {
         std::fs::rename(&link, l.bin.join("vibeke.old"))?;
     }
     atomic_symlink(&l.current().join("vibeke"), &link)?;
-    let keep: Vec<String> = [Some(v.to_string()), l.previous_version()]
-        .into_iter()
-        .flatten()
-        .collect();
-    if let Ok(rd) = std::fs::read_dir(l.data.join("versions")) {
-        for e in rd.flatten() {
-            let n = e.file_name().to_string_lossy().into_owned();
-            if !keep.contains(&n) {
-                let _ = std::fs::remove_dir_all(e.path());
-            }
-        }
-    }
     Ok(prev)
 }
 
@@ -1695,7 +1685,9 @@ type Counts = Option<(u64, u64)>;
 /// Exec the replacement through the server's restart API. Its holders and session options
 /// survive; a failed exec leaves the old server serving and reports `restart_error`.
 async fn restart_server(g: &Global, bin: &Path) -> Result<(Counts, Counts), String> {
-    crate::update::restart(g, bin).await
+    crate::update::restart(g, bin)
+        .await
+        .map_err(|e| format!("{e:#}"))
 }
 
 fn report_restart(before: Counts, after: Counts) -> i32 {
@@ -1711,8 +1703,11 @@ fn report_restart(before: Counts, after: Counts) -> i32 {
                 println!("server restarted; no panes lost");
                 EXIT_OK
             } else {
-                eprintln!("warning: pane count dropped from {} to {}", b.0, a.0);
-                EXIT_API
+                eprintln!(
+                    "warning: pane count dropped from {} to {}; a pane may have exited during restart",
+                    b.0, a.0
+                );
+                EXIT_OK
             }
         }
         (Some(_), None) => EXIT_API,
@@ -2148,7 +2143,10 @@ mod tests {
         assert_eq!(l.current_version().as_deref(), Some("0.3.0"));
         assert_eq!(l.previous_version().as_deref(), Some("0.2.0"));
         assert!(l.version_bin("0.2.0").exists());
-        assert!(!l.version_bin("0.1.0").exists(), "older versions pruned");
+        assert!(
+            l.version_bin("0.1.0").exists(),
+            "older sessions retain their executable"
+        );
         assert!(l.bin.join("vibeke").exists());
         // Rollback swaps current and previous.
         switch_current(&l, "0.2.0").unwrap();

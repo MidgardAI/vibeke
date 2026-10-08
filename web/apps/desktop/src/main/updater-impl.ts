@@ -1,4 +1,5 @@
 // Lazy bundle: native installation is loaded only after the user chooses to download.
+import { app } from 'electron';
 import { autoUpdater } from 'electron-updater';
 import { Provider, resolveFiles, type ProviderRuntimeOptions } from 'electron-updater/out/providers/Provider';
 import type { Installer } from './update-controller';
@@ -34,6 +35,15 @@ export function createInstaller(): Installer {
         await autoUpdater.downloadUpdate();
       } finally { autoUpdater.removeListener('download-progress', onProgress); }
     },
-    install(onError) { installError = onError; autoUpdater.quitAndInstall(false, true); },
+    install(onError) {
+      const releasesLock = process.platform === 'linux' && !!process.env.APPIMAGE;
+      installError = (error) => {
+        if (releasesLock && !app.requestSingleInstanceLock()) app.quit();
+        onError(error);
+      };
+      // AppImageUpdater spawns the replacement before the old process exits.
+      if (releasesLock) app.releaseSingleInstanceLock();
+      try { autoUpdater.quitAndInstall(true, true); } catch (error) { installError(error as Error); }
+    },
   };
 }

@@ -1,5 +1,5 @@
 import type { UpdateState } from '@vibeke/ui';
-import { newer, type DesktopRelease } from './update-release';
+import { UnsupportedUpdatePlatform, newer, type DesktopRelease } from './update-release';
 
 export interface Installer {
   download(release: DesktopRelease, progress: (percent: number) => void): Promise<void>;
@@ -27,21 +27,32 @@ export class UpdateController {
   constructor(private readonly d: UpdateDeps) { this.state = { status: 'idle', currentVersion: d.version }; }
   snapshot(): UpdateState { return { ...this.state }; }
   private set(patch: Partial<UpdateState>): void { this.state = { ...this.state, ...patch, revision: (this.state.revision ?? 0) + 1 }; this.d.changed(this.snapshot()); }
-  check(): Promise<void> {
+  check(background = false): Promise<void> {
     if (this.checking) return this.checking;
     if (this.downloading || this.state.status === 'ready' || this.installing) return Promise.resolve();
-    this.checking = this.doCheck().finally(() => { this.checking = null; });
+    this.checking = this.doCheck(background).finally(() => { this.checking = null; });
     return this.checking;
   }
-  private async doCheck(): Promise<void> {
-    this.set({ status: 'checking', message: undefined });
+  private async doCheck(background: boolean): Promise<void> {
+    const previous = this.snapshot();
+    if (!background) this.set({ status: 'checking', message: undefined });
     try {
       const r = await this.d.discover();
       this.release = r;
-      this.set({ status: newer(r.version, this.d.version) ? 'available' : 'up-to-date', version: r.version,
+      this.set({ status: newer(r.version, this.d.version) ? 'available' : 'up-to-date', version: r.version, message: undefined,
         releaseUrl: r.releaseUrl, downloadUrl: r.downloadUrl,
         manualReason: this.d.manualReason ?? (r.channel ? undefined : 'This release requires a manual installation.') });
-    } catch (e) { this.release = null; this.set({ status: 'error', message: (e as Error).message, version: undefined, releaseUrl: undefined, downloadUrl: undefined }); }
+    } catch (e) {
+      if (e instanceof UnsupportedUpdatePlatform) {
+        this.release = null;
+        this.set({ status: 'unsupported', message: e.message, version: undefined, releaseUrl: undefined, downloadUrl: undefined });
+      } else if (background) {
+        this.set({ ...previous, message: `Could not check for updates: ${(e as Error).message}` });
+      } else {
+        this.release = null;
+        this.set({ status: 'error', message: (e as Error).message, version: undefined, releaseUrl: undefined, downloadUrl: undefined });
+      }
+    }
   }
   async download(): Promise<void> {
     if (this.downloading || this.checking || this.state.status === 'ready') return;

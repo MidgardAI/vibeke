@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { createHash, generateKeyPairSync, sign } from 'node:crypto';
 import { UpdateController } from '../src/main/update-controller';
-import { RELEASE_API, RELEASE_REPO, discoverRelease, newer, verifyMinisign, verifiedSums, type DesktopRelease } from '../src/main/update-release';
+import { UnsupportedUpdatePlatform, RELEASE_API, RELEASE_REPO, discoverRelease, newer, verifyMinisign, verifiedSums, type DesktopRelease } from '../src/main/update-release';
 import { checkedInfo } from '../src/main/update-info';
 import { updateLabel } from '../../../packages/ui/src/components/updates';
 
@@ -131,6 +131,23 @@ describe('update lifecycle', () => {
     expect(c.snapshot().status).toBe('error'); expect(c.snapshot().message).toBe('Permission denied');
     expect(restored).toBe(1);
     await c.check(); expect(c.snapshot().status).toBe('available');
+  });
+  test('background offline failures preserve an available release and do not show an error badge', async () => {
+    let fail = false;
+    const { c } = controller({ discover: async () => { if (fail) throw new Error('offline'); return release; } });
+    await c.check(); fail = true; await c.check(true);
+    expect(c.snapshot().status).toBe('available');
+    expect(updateLabel(c.snapshot())).toContain('Update available');
+    expect(c.snapshot().message).toContain('offline');
+    await c.download(); expect(c.snapshot().status).toBe('ready');
+    const quiet = controller({ discover: async () => { throw new Error('offline'); } }).c;
+    await quiet.check(true); expect(quiet.snapshot().status).toBe('idle');
+    expect(updateLabel(quiet.snapshot())).toBeNull();
+  });
+  test('unsupported desktop platforms have an explanation without a failed-update badge', async () => {
+    const { c } = controller({ discover: async () => { throw new UnsupportedUpdatePlatform('unsupported'); } });
+    await c.check(); expect(c.snapshot().status).toBe('unsupported');
+    expect(updateLabel(c.snapshot())).toBeNull();
   });
   test('sidebar reflects the actual operation', () => {
     expect(updateLabel({ status: 'up-to-date', currentVersion: '0.2.0' })).toBeNull();

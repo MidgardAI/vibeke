@@ -1,6 +1,9 @@
 // Public release discovery and minisign verification, independent of Electron. The exact
 // channel bytes are authenticated BEFORE electron-updater parses or uses them.
 import { createHash, createPublicKey, verify } from 'node:crypto';
+import { blake2b } from '@noble/hashes/blake2.js';
+
+export class UnsupportedUpdatePlatform extends Error {}
 
 export const RELEASE_REPO = 'https://github.com/MidgardAI/vibeke';
 export const UPDATE_FEED = `${RELEASE_REPO}/releases/latest/download`;
@@ -44,7 +47,7 @@ export function verifyMinisign(data: Buffer, signature: string, keys: readonly s
   if (!publicKey) throw new Error('Release signature uses an untrusted key');
   const key = createPublicKey({ key: Buffer.concat([Buffer.from('302a300506032b6570032100', 'hex'), publicKey.subarray(10)]), format: 'der', type: 'spki' });
   const sig = raw.subarray(10), comment = lines[1]!.slice('trusted comment: '.length);
-  if (!verify(null, alg === 'ED' ? createHash('blake2b512').update(data).digest() : data, key, sig)
+  if (!verify(null, alg === 'ED' ? blake2b(data) : data, key, sig)
       || !verify(null, Buffer.concat([sig, Buffer.from(comment)]), key, global)) throw new Error('Release signature verification failed');
   return comment;
 }
@@ -59,12 +62,13 @@ export function verifiedSums(data: Buffer, signature: string, keys: readonly str
   return sums;
 }
 
-export const fetchBytes: FetchBytes = async (url, limit = 2 * 1024 * 1024) => {
+export function createFetcher(request: (url: string, init: RequestInit) => Promise<Response>): FetchBytes {
+  return async (url, limit = 2 * 1024 * 1024) => {
   let target = new URL(url);
   const signal = AbortSignal.timeout(30_000);
   for (let hop = 0; hop < 6; hop++) {
     if (target.protocol !== 'https:' || target.username || target.password) throw new Error('Update downloads require HTTPS');
-    const response = await fetch(target, { redirect: 'manual', signal, headers: { 'User-Agent': 'Vibeke-Updater', Accept: target.hostname === 'api.github.com' ? 'application/vnd.github+json' : 'application/octet-stream' } });
+    const response = await request(target.toString(), { redirect: 'manual', signal, headers: { 'User-Agent': 'Vibeke-Updater', Accept: target.hostname === 'api.github.com' ? 'application/vnd.github+json' : 'application/octet-stream' } });
     if ([301, 302, 303, 307, 308].includes(response.status)) {
       const location = response.headers.get('location');
       await response.body?.cancel();
@@ -87,9 +91,14 @@ export const fetchBytes: FetchBytes = async (url, limit = 2 * 1024 * 1024) => {
     } finally { await reader.cancel(); }
   }
   throw new Error('Too many update redirects');
-};
+  };
+}
+export const fetchBytes = createFetcher((url, init) => fetch(url, init));
 
 export async function discoverRelease(platform: string, arch: string, keys: readonly string[], get: FetchBytes = fetchBytes, linuxDeb = false): Promise<DesktopRelease> {
+  if (!(platform === 'darwin' && ['arm64', 'x64'].includes(arch)) && !(['win32', 'linux'].includes(platform) && arch === 'x64')) {
+    throw new UnsupportedUpdatePlatform('Desktop updates are not available for this platform.');
+  }
   const release = JSON.parse((await get(RELEASE_API)).toString());
   if (release.draft !== false || release.prerelease !== false || !Array.isArray(release.assets)) throw new Error('No published stable release');
   const version = typeof release.tag_name === 'string' && release.tag_name.startsWith('v') ? release.tag_name.slice(1) : '';

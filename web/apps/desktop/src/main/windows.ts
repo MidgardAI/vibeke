@@ -184,6 +184,12 @@ export class Windows {
     writeJson(this.o.stateFile, this.state);
   }
 
+  cancelUpdate(): void {
+    delete this.state.updateRoute;
+    writeJson(this.o.stateFile, this.state);
+    this.quitting = false;
+  }
+
   showMain(hash?: string): void {
     if (!hash && this.state.updateRoute) {
       hash = this.state.updateRoute;

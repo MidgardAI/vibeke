@@ -373,7 +373,7 @@ function PaneBody({
   // The terminal types into the pane (`pane.send_text` + Enter), even when an agent runs there:
   // the user is talking to the agent's own interface, not prompting it through the host.
   const actions = useMemo<PaneActions>(() => (term ? { ...paneActions, text: (s, o) => paneActions.text(s, { ...o, raw: true }) } : paneActions), [paneActions, term]);
-  const [text, setText] = useComposerDraft(hostId, row.pane.id);
+  const [text, setText] = useComposerDraft(hostId, row.pane.id, !term);
   const [belt, setBelt] = useState<BeltTab | null>(null);
   const [noEcho, setNoEcho] = useState(false);
   const cards = inbox.filter((it) => it.host_id === hostId && it.interaction.pane === row.pane.id);
