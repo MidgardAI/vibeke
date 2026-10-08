@@ -478,7 +478,7 @@ mod tests {
             role: BindingRole::Implementation,
             start_turn: start,
             end_turn: end,
-            actor: Actor::user("demo"),
+            actor: Actor::user("alice"),
         }
     }
     const OK: IdentityEvidence = IdentityEvidence {
@@ -528,7 +528,7 @@ mod tests {
             "b",
             BindingRole::Implementation,
             TurnPosition::Running { turn: 3 },
-            Actor::user("demo"),
+            Actor::user("alice"),
             10,
         );
         let SwitchPlan::Pending(p) = plan else {
@@ -557,7 +557,7 @@ mod tests {
             "b",
             BindingRole::Implementation,
             TurnPosition::Idle { next_turn: 6 },
-            Actor::user("demo"),
+            Actor::user("alice"),
             1,
         ) else {
             panic!()
@@ -587,7 +587,7 @@ mod tests {
         let s = suspend(&a, 7);
         assert_eq!(s.state, BindingState::Suspended);
         assert!(s.covers(6) && !s.covers(7));
-        let c = continue_after_boundary(&s, "conv2", 7, Actor::user("demo"), 2);
+        let c = continue_after_boundary(&s, "conv2", 7, Actor::user("alice"), 2);
         assert_eq!(c.native_conversation_id, "conv2");
         assert_eq!(c.task_id, "a");
         assert_eq!(

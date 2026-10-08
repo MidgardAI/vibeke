@@ -16,16 +16,16 @@ use vk_proto::render::{
 };
 
 const LINES: &[&str] = &[
-    "demo@devbox ~/code/vibeke (main) $ cargo test -p vk-remote",
-    "   Compiling vk-proto v0.1.0 (/home/demo/code/vibeke/crates/vk-proto)",
+    "alice@devbox ~/code/vibeke (main) $ cargo test -p vk-remote",
+    "   Compiling vk-proto v0.1.0 (/home/alice/code/vibeke/crates/vk-proto)",
     "    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.21s",
     "     Running unittests src/lib.rs (target/debug/deps/vk_remote-3f9a1c0b2e7d)",
     "test result: ok. 42 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out",
     "error[E0308]: mismatched types",
     "  --> src/main.rs:12:5",
     "warning: unused variable: `x`",
-    "drwxr-xr-x  12 demo  staff   384 Oct  6 20:49 .",
-    "-rw-r--r--   1 demo  staff  4096 Oct  6 20:49 Cargo.toml",
+    "drwxr-xr-x  12 alice  staff   384 Oct  6 20:49 .",
+    "-rw-r--r--   1 alice  staff  4096 Oct  6 20:49 Cargo.toml",
     "⏺ I'll read the file first and then make the change.",
     "✻ Thinking… (esc to interrupt)",
     "⎿  Read 120 lines",

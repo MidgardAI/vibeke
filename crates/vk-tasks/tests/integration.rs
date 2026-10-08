@@ -46,7 +46,7 @@ fn cfg(root: WorktreeRoot) -> WorktreeConfig {
     WorktreeConfig {
         root,
         fetch_before_create: false,
-        user: Some("demo".into()),
+        user: Some("alice".into()),
         ..Default::default()
     }
 }
@@ -68,7 +68,7 @@ fn slugs() {
     assert!(s.len() <= 20 && !s.ends_with('-'), "{s}");
     let taken: HashSet<&str> = ["x", "x-2"].into();
     assert_eq!(unique_slug("x", |c| taken.contains(c)), "x-3");
-    assert_eq!(render_branch("{user}/{slug}", "demo", "fix"), "demo/fix");
+    assert_eq!(render_branch("{user}/{slug}", "alice", "fix"), "alice/fix");
 }
 
 #[test]
@@ -88,7 +88,7 @@ fn detect_repo_and_linked_worktree() {
     assert!(linfo.is_linked_worktree);
     assert_eq!(linfo.root, repo);
     assert_eq!(linfo.worktree_root, co.path);
-    assert_eq!(linfo.current_branch.as_deref(), Some("demo/linked"));
+    assert_eq!(linfo.current_branch.as_deref(), Some("alice/linked"));
 
     let none = tmp.path().join("plain");
     fs::create_dir(&none).unwrap();
@@ -105,11 +105,11 @@ fn create_in_dir_root_dedupes_and_lists() {
     let b = create_worktree(&req(&repo, "Fix Login"), &c).unwrap();
     let root = root.canonicalize().unwrap();
     assert_eq!(a.path, root.join("myrepo/fix-login"));
-    assert_eq!(a.branch.as_deref(), Some("demo/fix-login"));
+    assert_eq!(a.branch.as_deref(), Some("alice/fix-login"));
     assert!(a.created_branch);
     assert_eq!(a.base_ref.as_deref(), Some("main"));
     assert_eq!(b.path, root.join("myrepo/fix-login-2"));
-    assert_eq!(b.branch.as_deref(), Some("demo/fix-login-2"));
+    assert_eq!(b.branch.as_deref(), Some("alice/fix-login-2"));
     assert!(a.path.join("a.txt").exists());
 
     let list = list_worktrees(&repo).unwrap();
@@ -117,7 +117,7 @@ fn create_in_dir_root_dedupes_and_lists() {
     assert!(list[0].is_main && list[0].path == repo);
     assert_eq!(list[0].branch.as_deref(), Some("main"));
     let la = list.iter().find(|w| w.path == a.path).unwrap();
-    assert_eq!(la.branch.as_deref(), Some("demo/fix-login"));
+    assert_eq!(la.branch.as_deref(), Some("alice/fix-login"));
     assert!(!la.locked && !la.prunable && la.head.is_some());
 
     // open existing
@@ -184,9 +184,9 @@ fn create_sibling_root_and_explicit_branch() {
     assert_eq!(co3.branch.as_deref(), Some("free-branch"));
 
     // branch name collision gets deduped when derived from template
-    git(&repo, &["branch", "demo/dup"]);
+    git(&repo, &["branch", "alice/dup"]);
     let co4 = create_worktree(&req(&repo, "dup"), &c).unwrap();
-    assert_eq!(co4.branch.as_deref(), Some("demo/dup-2"));
+    assert_eq!(co4.branch.as_deref(), Some("alice/dup-2"));
 }
 
 #[test]
@@ -598,7 +598,7 @@ fn branch_status_counts() {
     )
     .unwrap();
     let s = branch_status(&co.path, Some("main")).unwrap();
-    assert_eq!(s.branch.as_deref(), Some("demo/status"));
+    assert_eq!(s.branch.as_deref(), Some("alice/status"));
     assert_eq!((s.ahead, s.behind, s.dirty_files), (0, 0, 0));
 
     fs::write(co.path.join("new.txt"), "x").unwrap(); // untracked
@@ -622,7 +622,7 @@ fn branch_status_counts() {
     let ds = diff_stat(&co.path, Some("main")).unwrap();
     assert_eq!(ds.files, 1);
     assert!(is_merged(&repo, "main", "main").unwrap());
-    assert!(!is_merged(&repo, "demo/status", "main").unwrap());
+    assert!(!is_merged(&repo, "alice/status", "main").unwrap());
 }
 
 #[test]
@@ -671,7 +671,7 @@ fn async_removal_dirty_refused_then_force() {
     assert!(!co.path.exists());
     assert_eq!(fs::read_dir(&trash).unwrap().count(), 0);
     assert_eq!(list_worktrees(&repo).unwrap().len(), 1);
-    assert!(git(&repo, &["branch", "--list", "demo/rm-me"]).is_empty());
+    assert!(git(&repo, &["branch", "--list", "alice/rm-me"]).is_empty());
 }
 
 #[test]
@@ -707,10 +707,10 @@ fn removal_clean_and_unpushed_protection() {
     );
     assert_eq!(job.wait(), RemovalState::Done);
     assert!(!co.path.exists());
-    assert!(!git(&repo, &["branch", "--list", "demo/work"]).is_empty());
+    assert!(!git(&repo, &["branch", "--list", "alice/work"]).is_empty());
 
     // restore from branch
-    let back = restore_worktree(&repo, "demo/work", "work", &c).unwrap();
+    let back = restore_worktree(&repo, "alice/work", "work", &c).unwrap();
     assert!(back.path.join("w.txt").exists());
 
     // main worktree can never be removed

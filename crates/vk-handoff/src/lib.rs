@@ -473,17 +473,17 @@ mod tests {
     #[test]
     fn remotes_compare() {
         assert!(same_remote(
-            "git@github.com:demo/vibeke.git",
-            "https://github.com/MidgardAI/vibeke"
+            "git@github.com:acme/vibeke.git",
+            "https://github.com/acme/vibeke"
         ));
         assert!(same_remote(
-            "https://GitHub.com/demo/vibeke/",
-            "ssh://git@github.com/MidgardAI/vibeke.git"
+            "https://GitHub.com/acme/vibeke/",
+            "ssh://git@github.com/acme/vibeke.git"
         ));
         assert!(
             !same_remote(
-                "https://github.com/the maintainer/vibeke",
-                "https://github.com/MidgardAI/vibeke"
+                "https://github.com/Acme/vibeke",
+                "https://github.com/acme/vibeke"
             ),
             "paths are case-sensitive"
         );
@@ -492,8 +492,8 @@ mod tests {
             "git@github.com:org/repo.git"
         ));
         assert!(!same_remote(
-            "git@github.com:demo/vibeke.git",
-            "git@github.com:demo/other.git"
+            "git@github.com:acme/vibeke.git",
+            "git@github.com:acme/other.git"
         ));
     }
 
@@ -502,12 +502,12 @@ mod tests {
         assert!(same_remote("/srv/git/repo.git", "file:///srv/git/repo"));
         assert!(!same_remote("/srv/git/repo", "/srv/git/other"));
         assert!(!same_remote(
-            "https://github.com/the maintainer/vibeke",
-            "https://github.com/MidgardAI/vibeke"
+            "https://github.com/Acme/vibeke",
+            "https://github.com/acme/vibeke"
         ));
         assert!(same_remote(
-            "https://GitHub.com/demo/vibeke/",
-            "git@github.com:demo/vibeke.git"
+            "https://GitHub.com/acme/vibeke/",
+            "git@github.com:acme/vibeke.git"
         ));
         assert!(!same_remote(
             "https://evil.example/path@github.com/org/repo",
@@ -518,8 +518,8 @@ mod tests {
     #[test]
     fn claude_dirs() {
         assert_eq!(
-            claude_project_dir(Path::new("/Users/demo/code/vibeke")),
-            "-Users-demo-code-vibeke"
+            claude_project_dir(Path::new("/Users/alice/code/vibeke")),
+            "-Users-alice-code-vibeke"
         );
         assert_eq!(claude_project_dir(Path::new("/a/b.c")), "-a-b-c");
         assert_eq!(

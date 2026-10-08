@@ -141,7 +141,7 @@ impl Server {
         }
     }
 
-    /// Call on behalf of `actor` (e.g. `gateway:the maintainer's iPhone`): gateway clients must name one on
+    /// Call on behalf of `actor` (e.g. `gateway:Alice's iPhone`): gateway clients must name one on
     /// every mutation (server X4), and the server audits it as `client.action`.
     pub async fn call_as(
         &self,

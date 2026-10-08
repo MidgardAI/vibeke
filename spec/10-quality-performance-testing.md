@@ -365,7 +365,7 @@ Nightly: each target 1 CPU-hour; crashes auto-filed as private issues. M6: submi
 
 ## 9. Dogfooding plan
 
-- **From M1**: the core team runs Vibeke as their primary multiplexer. **The previous setup stays installed** as the fallback during dogfooding, and every fall-back use is logged with a reason; uninstalling them is not a quality metric. The two-week baseline for §1.7 is recorded before switching. the maintainer's setup is the reference workload: 5+ workspaces (samplehub, dashboard, backend, storefront, home), Claude Code + Codex side by side, sibling `*-todo` worktrees → migrated to `vibeke task`.
+- **From M1**: the core team runs Vibeke as their primary multiplexer. **The previous setup stays installed** as the fallback during dogfooding, and every fall-back use is logged with a reason; uninstalling them is not a quality metric. The two-week baseline for §1.7 is recorded before switching. The maintainer's setup is the reference workload: 5+ workspaces (samplehub, dashboard, backend, storefront, home), Claude Code + Codex side by side, sibling `*-todo` worktrees → migrated to `vibeke task`.
 - **From M1**: pi and omp with custom extensions are daily drivers next to Claude and Codex on at least one machine (validates "bring your own harness").
 - **From M2**: yolo runs default to `sandbox`/`container` in at least two repos; custom manifests (`espi`, Hermes) in daily use.
 - **From M3**: laptop + Linux devbox; at least half of agent work runs remotely; previews used for all web work (samplehub, storefront).

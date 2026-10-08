@@ -35,7 +35,7 @@ Crates: `vk-remote` (machines, bootstrap, bridge, transports, forwarding) and `v
 ### A2. Saved machines
 
 ```
-vibeke machine add devbox demo@devbox.tail1234.ts.net [--port 22] [--identity ~/.ssh/id_ed25519]
+vibeke machine add devbox alice@devbox.tail1234.ts.net [--port 22] [--identity ~/.ssh/id_ed25519]
                   [--jump bastion] [--session default] [--transport ssh|quic] [--auto-connect]
 vibeke machine list | show devbox | connect devbox | disconnect devbox | rm devbox
 vibeke machine upgrade devbox        # install/upgrade remote vibeke to the local version
@@ -199,7 +199,7 @@ emit agent.item{kind:user_message, attachments:[blob]}
 #### A11.3 Rewrite and delivery
 - The paste is held (status line: `⇡ uploading Screenshot…png 2.1 MB`) and delivered as one bracketed paste once all files have arrived; `esc` cancels and sends the original text instead. Small files feel instant.
 - Each path is replaced by its in-namespace path, **re-escaped in the same style as the original** (backslash-escaped stays backslash-escaped, quoted stays quoted), keeping the original basename so the agent sees a meaningful name:
-  `/Users/demo/Desktop/Screenshot\ 2026-10-05\ at\ 20.49.03.png` → `/home/demo/.local/state/vibeke/inbox/3f9a1c0b2e7d/Screenshot\ 2026-10-05\ at\ 20.49.03.png`
+  `/Users/alice/Desktop/Screenshot\ 2026-10-05\ at\ 20.49.03.png` → `/home/alice/.local/state/vibeke/inbox/3f9a1c0b2e7d/Screenshot\ 2026-10-05\ at\ 20.49.03.png`
 - TUI harnesses (Claude Code, Codex, pi, omp) recognise image paths in pasted text and attach the image. For headless runs (pi/omp RPC, Codex app-server, ACP), images are additionally offered as native image content in the next prompt (A10).
 - Event: `paste.translated {pane, files:[{blob, bytes, local_name}], target_namespace}` (no local paths in the event — only basenames; 09 §9).
   *As built (lane 1E):* the client's transfer task calls the new `paste.translated` API method after the last file landed (full-scope only; pane-scoped callers are refused); the server reduces every `local_name` to a basename and commits the event with the pane subject, `files[].dir` for directories and `target_namespace` = `ssh:<machine>` (or `local` for a contained local pane). Browser-page drops (B3.2) are not pastes and record nothing.
@@ -224,7 +224,7 @@ emit agent.item{kind:user_message, attachments:[blob]}
 - Works whenever the Vibeke client runs locally and attaches to the remote (`vibeke --machine devbox`, or the unified multi-machine view). If the user instead runs `ssh devbox` and starts `vibeke` *on the remote*, no local process sees the drop. Fallbacks: `vibeke ssh devbox` (a thin wrapper that runs the local client against the remote server, recommended in docs and `doctor`), or terminal-specific features (iTerm2 shell-integration scp upload) which Vibeke does not depend on.
 
 #### A11.7 Alternative considered: mounting local files on the remote
-A reverse mount (`/vibeke/local/Users/demo/...` via FUSE/9p, fetched lazily) keeps paths nearly unchanged and handles big folders, but breaks when disconnected, needs FUSE on the remote, and gives the remote a live window into the laptop. Rejected as default; possible post-1.0 opt-in for directories only.
+A reverse mount (`/vibeke/local/Users/alice/...` via FUSE/9p, fetched lazily) keeps paths nearly unchanged and handles big folders, but breaks when disconnected, needs FUSE on the remote, and gives the remote a live window into the laptop. Rejected as default; possible post-1.0 opt-in for directories only.
 
 ---
 
@@ -582,7 +582,7 @@ Canonical schema: [08](08-ux-config-and-keybindings.md) §11. Keys used by this 
 ```toml
 [[remote.machine]]
 label       = "devbox"
-address     = "demo@devbox.tail1234.ts.net"
+address     = "alice@devbox.tail1234.ts.net"
 transport   = "ssh"            # ssh | quic (post-1.0)
 keybindings = "local"
 auto_connect = true

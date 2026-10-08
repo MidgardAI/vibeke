@@ -1,7 +1,7 @@
 //! The native plugin manifest, `vibeke-plugin.toml` (07 §7.1):
 //!
 //! ```toml
-//! id = "demo.phone-bridge"        # reverse-DNS-ish, unique
+//! id = "acme.phone-bridge"        # reverse-DNS-ish, unique
 //! name = "Phone bridge"
 //! version = "0.3.0"
 //! min_vibeke = "1.0.0"
@@ -417,7 +417,7 @@ mod tests {
     use super::*;
 
     const FULL: &str = r#"
-id = "demo.phone-bridge"
+id = "acme.phone-bridge"
 name = "Phone bridge"
 version = "0.3.0"
 min_vibeke = "0.1.0"
@@ -464,7 +464,7 @@ storage = true
     #[test]
     fn parses_the_spec_example() {
         let m = Manifest::parse(FULL).unwrap();
-        assert_eq!(m.id, "demo.phone-bridge");
+        assert_eq!(m.id, "acme.phone-bridge");
         assert_eq!(m.kind(), "process");
         assert_eq!(m.process.as_ref().unwrap().restart, Restart::Always);
         assert!(

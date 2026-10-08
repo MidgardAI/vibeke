@@ -1780,7 +1780,7 @@ async fn answer(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     };
     let by = format!("{}:{}", ctx.kind, ctx.client_id);
     let idem = s(p, "idempotency_key");
-    // A display label for the answerer (e.g. "gateway:the maintainer's phone"); full-scope clients only.
+    // A display label for the answerer (e.g. "gateway:Alice's phone"); full-scope clients only.
     let actor = s(p, "actor").filter(|_| ctx.pane_scope.is_none());
     let expected = p
         .get("expected_decision_rev")

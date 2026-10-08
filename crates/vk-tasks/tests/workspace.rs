@@ -34,7 +34,7 @@ fn cfg(root: WorktreeRoot) -> WorktreeConfig {
     WorktreeConfig {
         root,
         fetch_before_create: false,
-        user: Some("demo".into()),
+        user: Some("alice".into()),
         ..Default::default()
     }
 }

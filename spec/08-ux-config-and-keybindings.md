@@ -628,7 +628,7 @@ inline_thumbnails = true              # kitty-graphics thumbnails in the TUI whe
 [remote]                              # see 06
 [[remote.machine]]
 label   = "devbox"
-address = "demo@devbox.tailnet"
+address = "alice@devbox.tailnet"
 transport = "ssh"                     # ssh (quic: post-1.0)
 keybindings = "local"                 # local | server
 auto_connect = true

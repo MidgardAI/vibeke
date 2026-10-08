@@ -1620,7 +1620,7 @@ mod tests {
         ));
         // Agents can't grant.
         assert!(grant_per_candidate(&def, &s1, Actor::agent("run1"), 0).is_err());
-        let g = grant_per_candidate(&def, &s1, Actor::user("demo"), 0).unwrap();
+        let g = grant_per_candidate(&def, &s1, Actor::user("alice"), 0).unwrap();
         assert!(matches!(
             authorization_required(&def, &s1, std::slice::from_ref(&g)),
             AuthRequirement::Authorized { .. }
@@ -1750,7 +1750,7 @@ mod tests {
         let mut sp = spec(cmd);
         sp.timeout_ms = timeout_ms;
         let def = resolve_definition_at(s, &sp).unwrap();
-        let g = grant_per_candidate(&def, s, Actor::user("demo"), 0).unwrap();
+        let g = grant_per_candidate(&def, s, Actor::user("alice"), 0).unwrap();
         let logs = r.dir.path().join(".vk-logs");
         run_in_disposable_checkout(r.root(), s, &def, &g, &logs, cancel, &opts).unwrap()
     }
@@ -1903,7 +1903,7 @@ mod tests {
         let (r, s) = committed_repo("#!/bin/sh\nexit 0\n");
         let def = resolve_definition_at(&s, &spec(argv("./ci/check.sh"))).unwrap();
         let other = subj("zzz", SubjectKind::Committed);
-        let g = grant_per_candidate(&def, &other, Actor::user("demo"), 0).unwrap();
+        let g = grant_per_candidate(&def, &other, Actor::user("alice"), 0).unwrap();
         let logs = r.dir.path().join(".vk-logs");
         assert!(matches!(
             run_in_disposable_checkout(
@@ -1920,7 +1920,7 @@ mod tests {
         // A definition digest computed from a different tree than the subject's is refused.
         let mut forged = def.clone();
         forged.definition_digest = "forged".into();
-        let g = grant_per_candidate(&forged, &s, Actor::user("demo"), 0).unwrap();
+        let g = grant_per_candidate(&forged, &s, Actor::user("alice"), 0).unwrap();
         assert!(matches!(
             run_in_disposable_checkout(
                 r.root(),

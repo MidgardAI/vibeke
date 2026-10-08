@@ -563,7 +563,7 @@ mod tests {
     fn device(kind: &str, owner: Option<&str>) -> Device {
         Device {
             id: format!("d-{kind}"),
-            name: "the maintainer's laptop".into(),
+            name: "Alice's laptop".into(),
             platform: "host".into(),
             public: "k".into(),
             scope: Scope::Full,
@@ -579,7 +579,7 @@ mod tests {
                 owner: o.into(),
                 host_name: Some("marvin".into()),
                 user: Some(GitUser {
-                    name: Some("the maintainer".into()),
+                    name: Some("Alice".into()),
                     email: None,
                 }),
             }),
@@ -607,7 +607,7 @@ mod tests {
         let own = sender_of(&device("peer", Some("self")));
         assert_eq!(own["owner"], "self");
         assert_eq!(own["host"], "marvin");
-        assert_eq!(own["user"]["name"], "the maintainer");
+        assert_eq!(own["user"]["name"], "Alice");
         assert_eq!(
             sender_of(&device("peer", Some("teammate")))["owner"],
             "teammate"
@@ -615,7 +615,7 @@ mod tests {
         assert_eq!(sender_of(&device("peer", None))["owner"], "teammate");
         let app = sender_of(&device("device", None));
         assert_eq!(app["owner"], "self");
-        assert_eq!(app["host"], "the maintainer's laptop");
+        assert_eq!(app["host"], "Alice's laptop");
         assert!(app.get("user").is_none());
     }
 }

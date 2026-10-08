@@ -379,7 +379,7 @@ mod tests {
     use super::*;
 
     fn user() -> Actor {
-        Actor::user("demo")
+        Actor::user("alice")
     }
 
     fn quoted(conv: &str) -> SourceRef {

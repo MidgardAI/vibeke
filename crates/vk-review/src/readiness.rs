@@ -1388,7 +1388,7 @@ mod tests {
             source_refs: vec![],
             source_excerpt: None,
             source_excerpt_truncated: false,
-            confirmed_by: Actor::user("demo"),
+            confirmed_by: Actor::user("alice"),
             confirmed_at_ms: 0,
         }
     }
@@ -1432,7 +1432,7 @@ mod tests {
             environment_digest: Some(ENV.into()),
             subject_id: Some(subject.id.clone()),
             criterion_ids: vec![],
-            actor: Some(Actor::user("demo")),
+            actor: Some(Actor::user("alice")),
             observed_at_ms: 1,
             summary: None,
         }
@@ -1518,7 +1518,7 @@ mod tests {
             environment_digest: None,
             subject_id: Some(s.id.clone()),
             criterion_ids: vec!["judge".into()],
-            actor: Some(Actor::user("demo")),
+            actor: Some(Actor::user("alice")),
             observed_at_ms: 4,
             summary: None,
         });
@@ -1897,7 +1897,7 @@ mod tests {
             environment_digest: None,
             subject_id: Some(s.id.clone()),
             criterion_ids: vec!["judge".into()],
-            actor: Some(Actor::user("demo")),
+            actor: Some(Actor::user("alice")),
             observed_at_ms: 2,
             summary: None,
         });
@@ -1937,7 +1937,7 @@ mod tests {
             expected_package_revision: 7,
             expected_subject_id: s.id.clone(),
             exceptions,
-            actor: Actor::user("demo"),
+            actor: Actor::user("alice"),
             idempotency_key: "k1".into(),
         }
     }

@@ -353,7 +353,7 @@ pub fn inbox_name(hash_hex: &str, basename: &str) -> String {
 mod tests {
     use super::*;
 
-    const INBOX: &str = "/home/demo/.local/state/vibeke/inbox/3f9a1c0b2e7d";
+    const INBOX: &str = "/home/alice/.local/state/vibeke/inbox/3f9a1c0b2e7d";
 
     fn rep(name: &str) -> String {
         format!("{INBOX}/{name}")
@@ -370,14 +370,14 @@ mod tests {
 
     #[test]
     fn canonical_example() {
-        let text = r"/Users/demo/Desktop/Screenshot\ 2026-10-05\ at\ 20.49.03.png";
+        let text = r"/Users/alice/Desktop/Screenshot\ 2026-10-05\ at\ 20.49.03.png";
         let p = parse_paste(text).unwrap();
         assert_eq!(p.mode, PasteMode::PathsOnly);
         assert_eq!(p.tokens.len(), 1);
         assert_eq!(p.tokens[0].style, Quote::BackslashEscaped);
         assert_eq!(
             p.tokens[0].path,
-            "/Users/demo/Desktop/Screenshot 2026-10-05 at 20.49.03.png"
+            "/Users/alice/Desktop/Screenshot 2026-10-05 at 20.49.03.png"
         );
         assert_eq!(p.tokens[0].span, 0..text.len());
         assert_eq!(
@@ -387,7 +387,7 @@ mod tests {
         let out = rewrite(text, &p, &[rep("Screenshot 2026-10-05 at 20.49.03.png")]);
         assert_eq!(
             out,
-            r"/home/demo/.local/state/vibeke/inbox/3f9a1c0b2e7d/Screenshot\ 2026-10-05\ at\ 20.49.03.png"
+            r"/home/alice/.local/state/vibeke/inbox/3f9a1c0b2e7d/Screenshot\ 2026-10-05\ at\ 20.49.03.png"
         );
     }
 
@@ -494,11 +494,11 @@ mod tests {
     #[test]
     fn non_ascii_names() {
         let text =
-            r"/Users/demo/Desktop/Skjermbilde\ 2026-10-05\ kl.\ 20.49.03.png /Users/e/æøå.txt";
+            r"/Users/alice/Desktop/Skjermbilde\ 2026-10-05\ kl.\ 20.49.03.png /Users/e/æøå.txt";
         let p = parse_paste(text).unwrap();
         assert_eq!(
             p.tokens[0].path,
-            "/Users/demo/Desktop/Skjermbilde 2026-10-05 kl. 20.49.03.png"
+            "/Users/alice/Desktop/Skjermbilde 2026-10-05 kl. 20.49.03.png"
         );
         assert_eq!(p.tokens[1].path, "/Users/e/æøå.txt");
         assert_eq!(p.tokens[1].style, Quote::Bare);

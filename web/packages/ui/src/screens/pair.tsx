@@ -217,7 +217,7 @@ export function PairScreen({ d }: { d: string | null }) {
   );
 }
 
-/** "the maintainer's devbox shared samplehub with you · view-only · until 16:00" / handoff invitation. */
+/** "Alice's devbox shared samplehub with you · view-only · until 16:00" / handoff invitation. */
 function ShareHeader({ link }: { link: PairingLink }) {
   const app = useApp();
   const s = link.share!;

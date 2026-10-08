@@ -51,7 +51,7 @@ describe('composer send / stop', () => {
 
 describe('no-echo detection', () => {
   test('password prompts on the last non-empty line', () => {
-    expect(isNoEchoPrompt('$ sudo ls\n[sudo] password for demo: \n\n')).toBe(true);
+    expect(isNoEchoPrompt('$ sudo ls\n[sudo] password for alice: \n\n')).toBe(true);
     expect(isNoEchoPrompt('Enter passphrase for key /k:')).toBe(true);
     expect(isNoEchoPrompt('Password:')).toBe(true);
     expect(isNoEchoPrompt('password: hunter2 accepted\n$ ')).toBe(false);
@@ -180,8 +180,8 @@ describe('format', () => {
     expect(shortDuration(2000)).toBe('now');
     expect(shortDuration(90_000)).toBe('1m');
     expect(shortDuration(3 * 3600_000)).toBe('3h');
-    expect(shortPath('/Users/demo/code/vibeke/web')).toBe('…/vibeke/web');
-    expect(shortPath('/Users/demo/x')).toBe('~/x');
+    expect(shortPath('/Users/alice/code/vibeke/web')).toBe('…/vibeke/web');
+    expect(shortPath('/Users/alice/x')).toBe('~/x');
   });
 });
 

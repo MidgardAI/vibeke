@@ -204,8 +204,8 @@ mod tests {
 
     #[test]
     fn parse_and_quote() {
-        let t = Target::parse("devbox", "demo@devbox:2222");
-        assert_eq!(t.address, "demo@devbox");
+        let t = Target::parse("devbox", "alice@devbox:2222");
+        assert_eq!(t.address, "alice@devbox");
         assert_eq!(t.port, Some(2222));
         assert_eq!(Target::parse("x", "host").port, None);
         assert_eq!(

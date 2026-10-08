@@ -95,7 +95,7 @@ Gateway state dir: `$VIBEKE_GATEWAY_DIR`, else `<config dir>/vibeke/gateway/` (`
 
 ### 4.1 The link
 
-`vibeke-gateway pair [--name "the maintainer's phone"] [--scope full|approve|view] [--no-confirm]` creates a pending pairing, prints a QR code plus the URL, then **waits** for the claim (§4.3):
+`vibeke-gateway pair [--name "Alice's phone"] [--scope full|approve|view] [--no-confirm]` creates a pending pairing, prints a QR code plus the URL, then **waits** for the claim (§4.3):
 
 ```
 <app origin>/#/pair?d=<base64url(json)>
@@ -117,7 +117,7 @@ The payload is in the URL **fragment**, never sent to the app origin's server. `
 A photographed QR must not silently grant durable access, so a valid claim is not yet authorization:
 
 1. The gateway marks the pairing `claimed {device_pub fingerprint, name, platform}` and replies `pair.pending {fingerprint}`. The app shows the same fingerprint (`abcd-efgh`, blake3 of the device static key).
-2. The waiting `vibeke-gateway pair` prints `Pair "the maintainer's iPhone" (iOS) fingerprint abcd-efgh? [y/N]`. Only on `y` does the gateway **atomically** consume the pairing, recheck expiry, and persist the device to `devices.json`, then sends `pair.done {device_id, host_name, scope}`.
+2. The waiting `vibeke-gateway pair` prints `Pair "Alice's iPhone" (iOS) fingerprint abcd-efgh? [y/N]`. Only on `y` does the gateway **atomically** consume the pairing, recheck expiry, and persist the device to `devices.json`, then sends `pair.done {device_id, host_name, scope}`.
 3. `N`, timeout (2 min) or closing the pair command → `pair.rejected`; the pairing stays usable until its own expiry so a hijacked claim does not lock the owner out.
 4. `--no-confirm` skips step 2 and makes the QR an explicit **bearer invitation** (documented as such; useful for scripted setups).
 
@@ -498,7 +498,7 @@ The gateway, relay and web apps live in new crates and `web/`. What they still n
 | X3 | server | `client.list` reports per-client `last_input_ms` and focus (TUI attached, active in the last N s) | Presence-aware push: no phone pushes while the user is typing in the TUI (spec 12 attention inbox) |
 | X4 | server | `client.hello {kind: "gateway"}` recognised in 09 §3.2 with full capabilities, and events/audit attributed `gateway:<device>` for all mutating calls (an optional `actor` param on `pane.send_*`, `agent.prompt`, `agent.interrupt`, like `interaction.answer`) | Audit trail shows which phone did what |
 | X5 | server + TUI | A generic out-of-band confirmation: `client.confirm {title, body, options, timeout_ms}` shown as a TUI overlay (not in a PTY), answered by the user at the terminal | The gateway's pairing fingerprint confirmation (§4.3) and future share invitations without a second terminal running `vibeke-gateway pair` |
-| X6 | TUI | Interaction overlay, inbox and sidebar show `answered_by` (e.g. "answered on the maintainer's iPhone"); a small indicator of connected devices | Visible remote activity |
+| X6 | TUI | Interaction overlay, inbox and sidebar show `answered_by` (e.g. "answered on Alice's iPhone"); a small indicator of connected devices | Visible remote activity |
 | X7 | CLI | `vibeke gateway …` and `vibeke relay …` wired to the new crates (thin wrappers), `vibeke doctor` gateway section (relay reachable, devices, push) | One binary (§ intro) |
 | X8 | server | `attention.list` (spec 15) consumable by the gateway; the app's inbox ranking switches to it when present, falling back to client ranking | One ranking across TUI and phone |
 
@@ -589,7 +589,7 @@ Both reuse pairing and the app API; no relay or server changes are needed.
 A share is a **scoped, expiring pairing invitation** for someone else (or another device of yours):
 
 - `share.create {kind: "share", scope: view|approve, ttl_s, workspace?, pane?, name?, op_id}` (full scope) → `{link, pid, expires_at}`; CLI `vibeke-gateway share [--scope view|approve] [--ttl 2h] [--workspace W | --pane P]`.
-- The link is a pairing link (§4.1) with `share: {scope, until, label}` in its payload so the app can say "the maintainer shared *samplehub* with you, view-only, until 16:00". It is a **bearer invitation** (no fingerprint confirmation; the owner created it deliberately), single use, and must be opened within 15 min.
+- The link is a pairing link (§4.1) with `share: {scope, until, label}` in its payload so the app can say "Alice shared *samplehub* with you, view-only, until 16:00". It is a **bearer invitation** (no fingerprint confirmation; the owner created it deliberately), single use, and must be opened within 15 min.
 - The resulting device record carries `kind: "share"`, `expires_at` and `limit {workspace?, pane?}`. The gateway enforces the limit on every call: `dashboard.get`, `interaction.list`, `notification.list`, `attention.list` and `preview.list` are filtered; any method naming a pane, run, interaction, task (by its workspace; pane-only shares see no tasks), check run (by its task), tab or preview (by its pane) outside the limit returns `forbidden`; a `machine` selector is refused (handles resolve on the local machine only); `worktree.list` (repository-wide: sibling checkouts) and `task.check.run`, `attention.update`, `preview.status` and `tab.rename/close/focus` are never available to share devices; events are forwarded only when their subject's pane/workspace is inside it; `tab.create`/`agent.start` only inside the limited workspace; `devices.*`, `share.*` and `handoff.*` are never available to share devices. Expired devices are refused at the handshake and disconnected within 5 s.
 - Shares are listed and revoked like devices (`devices.list` shows `kind`, `expires_at`, `limit`).
 

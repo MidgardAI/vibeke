@@ -34,7 +34,7 @@ export interface PairOptions {
   devicePrivate: Uint8Array;
   /** Keystore name of `devicePrivate` when it is an invitation's own key (kept on the record). */
   keyName?: string;
-  /** Device display name, e.g. "the maintainer's iPhone". */
+  /** Device display name, e.g. "Alice's iPhone". */
   deviceName: string;
   /** Device VAPID public key (base64url), if push is set up already. */
   vapidPublic?: string;

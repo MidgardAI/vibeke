@@ -165,7 +165,7 @@ mod tests {
         t: &str,
         d: &str,
     ) -> Result<DependencyEdge, DependencyError> {
-        let e = add_edge(v, t, d, DependencyKind::Blocks, Actor::user("demo"), 1)?;
+        let e = add_edge(v, t, d, DependencyKind::Blocks, Actor::user("alice"), 1)?;
         v.push(e.clone());
         Ok(e)
     }

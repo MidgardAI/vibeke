@@ -40,7 +40,7 @@ Each item alone can be copied; the bet is the combination, shipped open source a
 | Option | For | Against | Decision |
 |---|---|---|---|
 | **Sidecar on an existing multiplexer** (a daemon using its socket API + agent hooks) | Fastest path to the supervision layer; the multiplexer keeps carrying terminal fidelity | Inherits screen-scraped state as ground truth for anything the sidecar doesn't see; can't own process durability, execution isolation, or the pane environment (PATH shims, sandbox spawn) | **Fallback.** If the M1 supervision-slice gate fails (see metrics), we pivot to a sidecar and keep adapters/interaction/policy crates |
-| **Greenfield (chosen)** | Architecture fits the differentiators; one coherent API for Phase 2 | Large scope; must reach daily-usable quickly | **Chosen by the maintainer.** Mitigated by a narrow M1 and ruthless deferral (11) |
+| **Greenfield (chosen)** | Architecture fits the differentiators; one coherent API for Phase 2 | Large scope; must reach daily-usable quickly | **Chosen.** Mitigated by a narrow M1 and ruthless deferral (11) |
 
 ## Goals (Phase 1)
 
@@ -82,7 +82,7 @@ The basic M1 interaction list is specified in 08. [15](15-task-outcomes-review-a
 
 ## Users
 
-- **Primary**: a developer running 3–15 agent sessions across several repos on one or more machines (laptop + devbox), mixing vendors (Claude Code + Codex) and custom harnesses (pi/omp with personal extensions). the maintainer's current setup is the reference: a tmux-style multiplexer, samplehub/dashboard/backend/storefront workspaces, Claude + Codex side by side, sibling `*-todo` worktree directories created by hand.
+- **Primary**: a developer running 3–15 agent sessions across several repos on one or more machines (laptop + devbox), mixing vendors (Claude Code + Codex) and custom harnesses (pi/omp with personal extensions). The maintainer's current setup is the reference: a tmux-style multiplexer, samplehub/dashboard/backend/storefront workspaces, Claude + Codex side by side, sibling `*-todo` worktree directories created by hand.
 - **Secondary**: harness authors who want their agent to integrate deeply (documented adapter protocol, ~50 lines to integrate).
 - **Tertiary**: plugin authors.
 

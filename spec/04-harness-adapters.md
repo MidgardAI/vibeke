@@ -448,7 +448,7 @@ slash_commands_from = "transcript"                    # Phase 2 quick-actions so
 ```toml
 schema = 1
 id = "espi"
-name = "pi (the maintainer)"
+name = "pi (custom)"
 extends = "pi"                          # inherits identity, transcript, extension integration, screen manifest
 [detect]
 priority = 200

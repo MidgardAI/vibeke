@@ -236,7 +236,7 @@ Every item emits one `agent.item {kind, summary, item, turn, seq, payload_ref}` 
 |---|---|
 | `interaction.list` | `{status?: open, run?, workspace?, kind?}` → `{interactions}` — sorted by `opened_at` in Phase 1. Phase 2 adds ranking |
 | `interaction.get` | `{interaction}` → `{interaction}` |
-| `interaction.answer` | `{interaction, decision?: allow|allow_always|deny, choices?: {qid: [oid]}, text?, scope?: once|session|rule, rule?: PolicyRule, idempotency_key?, actor?, expected_decision_rev?}` → `{interaction, delivery: {state, channel: native|keystrokes}}` — `state` per the delivery state machine in 02/04. Repeating the same `idempotency_key` with the same answer returns the recorded state (`duplicate: true`) and never delivers again. A different answer under that key is a `conflict`. `actor` (full-scope callers only) labels `answered_by`, e.g. `gateway:the maintainer's phone` (16 §7.7). The key is kept separately as `answer_key`. `expected_decision_rev` makes the answer a compare-and-set: if the interaction moved on, the call fails with `conflict` (`stale: …`). The server returns `permission_denied:self_answer_forbidden` for tokens from the run's own pane or any descendant pane or run. This call grants authorization (09 §5.1.1). |
+| `interaction.answer` | `{interaction, decision?: allow|allow_always|deny, choices?: {qid: [oid]}, text?, scope?: once|session|rule, rule?: PolicyRule, idempotency_key?, actor?, expected_decision_rev?}` → `{interaction, delivery: {state, channel: native|keystrokes}}` — `state` per the delivery state machine in 02/04. Repeating the same `idempotency_key` with the same answer returns the recorded state (`duplicate: true`) and never delivers again. A different answer under that key is a `conflict`. `actor` (full-scope callers only) labels `answered_by`, e.g. `gateway:Alice's phone` (16 §7.7). The key is kept separately as `answer_key`. `expected_decision_rev` makes the answer a compare-and-set: if the interaction moved on, the call fails with `conflict` (`stale: …`). The server returns `permission_denied:self_answer_forbidden` for tokens from the run's own pane or any descendant pane or run. This call grants authorization (09 §5.1.1). |
 | `interaction.cancel` | `{interaction}` → `{interaction}` (user dismisses. Adapter delivers deny/escape) |
 | `adapter.interaction.open` | adapter-only `{pane, run?, kind, …payload}` → `{interaction}` |
 | `adapter.interaction.await` | adapter-only `{interaction, timeout_ms}` → `{answer}` or `timeout` — long-poll used by blocking hooks/extensions. *Retrieving* a decision for the caller's own pane is allowed (09 §5.1.1) |
@@ -935,7 +935,7 @@ The skill is tested: CI runs a scripted agent (Claude Code headless) through the
 `vibeke-plugin.toml` at the plugin root (Herdr's `herdr-plugin.toml` is also accepted — §7.6):
 
 ```toml
-id = "demo.phone-bridge"        # reverse-DNS-ish, unique
+id = "acme.phone-bridge"        # reverse-DNS-ish, unique
 name = "Phone bridge"
 version = "0.3.0"
 min_vibeke = "1.0.0"

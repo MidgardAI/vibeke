@@ -191,7 +191,7 @@ mod tests {
 
     #[test]
     fn basenames_only() {
-        assert_eq!(basename("/Users/demo/Desktop/Shot 1.png"), "Shot 1.png");
+        assert_eq!(basename("/Users/alice/Desktop/Shot 1.png"), "Shot 1.png");
         assert_eq!(basename("C:\\x\\y.txt"), "y.txt");
         assert_eq!(basename("plain"), "plain");
     }

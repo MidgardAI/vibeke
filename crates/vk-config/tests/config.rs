@@ -85,7 +85,7 @@ port_pool = "30000-30999"
 stale_after = "36h"
 [[remote.machine]]
 label = "devbox"
-address = "demo@devbox.tailnet"
+address = "alice@devbox.tailnet"
 bootstrap = "remote-download"
 [agents.harness.pi]
 enabled = false

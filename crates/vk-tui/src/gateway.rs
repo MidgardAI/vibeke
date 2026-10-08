@@ -852,12 +852,12 @@ mod tests {
         );
         assert_eq!(answered_text("tui:abc"), None);
         let mut it = crate::app::test_interaction("i1", "p1", "Run rm", 0);
-        it.answered_by = Some("gateway:the maintainer's iPhone".into());
+        it.answered_by = Some("gateway:Alice's iPhone".into());
         assert_eq!(interaction_answered_text(&it), None, "still open");
         it.status = InteractionStatus::Answered;
         assert_eq!(
             interaction_answered_text(&it).as_deref(),
-            Some("answered on the maintainer's iPhone")
+            Some("answered on Alice's iPhone")
         );
         // Toast once.
         let (mut app, _rxs) = test_app(1);
@@ -868,7 +868,7 @@ mod tests {
         let n = app
             .toasts
             .iter()
-            .filter(|t| t.text.contains("answered on the maintainer's iPhone"))
+            .filter(|t| t.text.contains("answered on Alice's iPhone"))
             .count();
         assert_eq!(n, 1);
     }
@@ -880,7 +880,7 @@ mod tests {
         // Two gateway connections but the devices list decides (a gateway is not a device).
         let list = json!({"clients": [
             {"id": "a", "kind": "tui"}, {"id": "b", "kind": "gateway"}, {"id": "c", "kind": "gateway"}
-        ], "devices": [{"name": "the maintainer's iPhone"}, {"name": "iPad"}]});
+        ], "devices": [{"name": "Alice's iPhone"}, {"name": "iPad"}]});
         on_reply(&mut app, 0, Reply::List, Ok(list));
         assert_eq!(app.gateway.devices(0), 2);
         assert_eq!(devices_label(&app).as_deref(), Some("📱2"));

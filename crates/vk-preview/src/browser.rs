@@ -427,7 +427,7 @@ mod tests {
         for bad in ["", ".", "..", "a/b", "a b", &"x".repeat(65)] {
             assert!(!valid_profile_name(bad), "{bad:?}");
         }
-        assert_eq!(profile_name("demo@devbox.ts.net"), "demo-devbox.ts.net");
+        assert_eq!(profile_name("alice@devbox.ts.net"), "alice-devbox.ts.net");
         assert_eq!(profile_name("../x"), "..-x");
         assert!(valid_profile_name(&profile_name("../x")));
         assert_eq!(profile_name(""), "default");

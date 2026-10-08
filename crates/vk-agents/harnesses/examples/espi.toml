@@ -3,7 +3,7 @@
 # `pi --models anthropic/*,openai/* -e ~/pi-ext/review.ts "$@"`.
 schema = 1
 id = "espi"
-name = "pi (the maintainer)"
+name = "pi (custom)"
 extends = "pi"                          # inherits transports, capabilities, screen rules
 
 [detect]

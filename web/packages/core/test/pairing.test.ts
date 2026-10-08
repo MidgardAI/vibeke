@@ -46,13 +46,13 @@ describe('pair()', () => {
       link: link(),
       platform,
       devicePrivate: DEV,
-      deviceName: "the maintainer's phone",
+      deviceName: "Alice's phone",
       vapidPublic: 'BPk',
       onPending: (fp) => (shown = fp),
       store: { list: async () => stored, put: async (r) => void stored.push(r), remove: async () => {} },
     });
     expect(platform.urls).toEqual(['wss://relay.example/v1/connect?host=hostid']);
-    expect(claim).toEqual({ name: "the maintainer's phone", platform: 'test', vapid_public: 'BPk' });
+    expect(claim).toEqual({ name: "Alice's phone", platform: 'test', vapid_public: 'BPk' });
     expect(shown).toBe(fingerprint(x25519Public(DEV)));
     expect(rec).toMatchObject({ host_id: 'hostid', relay: 'wss://relay.example', device_id: 'd1', name: 'devbox.local', scope: 'approve' });
     expect(stored).toEqual([rec]);

@@ -964,7 +964,7 @@ mod tests {
             assert!(safe_volume_name(ok), "{ok}");
         }
         for bad in [
-            "/Users/demo",
+            "/Users/alice",
             "/var/run/docker.sock",
             "./data",
             "../x",

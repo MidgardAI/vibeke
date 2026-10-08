@@ -668,7 +668,7 @@ async fn retention_by_age_and_count_keeps_referenced_screenshots() {
             head_sha: head,
             checks: vec![],
             exceptions: vec![],
-            actor: vk_review::Actor::user("demo"),
+            actor: vk_review::Actor::user("alice"),
             accepted_at_ms: now,
             idempotency_key: "k".into(),
         };

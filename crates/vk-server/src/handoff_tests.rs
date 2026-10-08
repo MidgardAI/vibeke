@@ -260,8 +260,8 @@ fn the_auto_import_policy_matrix() {
 #[test]
 fn origins_share_a_placement_key() {
     assert_eq!(
-        origin_key("git@github.com:demo/vibeke.git"),
-        origin_key("https://github.com/MidgardAI/vibeke")
+        origin_key("git@github.com:acme/vibeke.git"),
+        origin_key("https://github.com/acme/vibeke")
     );
     assert_eq!(origin_key("/srv/repo.git"), origin_key("file:///srv/repo"));
 }

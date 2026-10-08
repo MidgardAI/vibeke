@@ -38,8 +38,8 @@ If the VM type is unavailable, it stops. It does not select a more expensive typ
 In a worktree, point to the original dotenv file. There is no need to copy it:
 
 ```sh
-python3 scripts/deploy-scaleway.py plan --env-file /Users/demo/code/vibeke/.env.local
-python3 scripts/deploy-scaleway.py deploy --env-file /Users/demo/code/vibeke/.env.local
+python3 scripts/deploy-scaleway.py plan --env-file .env.local
+python3 scripts/deploy-scaleway.py deploy --env-file .env.local
 ```
 
 Process environment variables override file values. The standard `SCW_ACCESS_KEY`,
