@@ -625,7 +625,8 @@ agent.get :: {target: Target} => {run: AgentRun, pane: Pane, open_interactions: 
 agent.harnesses :: {} => {harnesses: [{id: string, display?: string, version_detected?: string|null, integration_installed?: bool, capabilities?: [string]}]}
 agent.start :: {pane?: Target, harness: string, name?: string, mode?: tui|headless = tui, args?: [string], env?: {*: string}, model?: string, task?: Target, ready_timeout_ms?: int = 30000} => {run: AgentRun}
 agent.spawn :: {harness: string, name?: string, where?: object, prompt?: string, args?: [string], focus?: bool = false} => {pane: Pane, run: AgentRun}
-# refused with conflict, details {reason: dialog_open, interaction} while a picker or unreadable dialog is open; a slash command never fails agent_prompt_stalled
+# refused with conflict, details {reason: dialog_open, interaction} while a picker or unreadable dialog is open; a slash command never fails agent_prompt_stalled,
+# and with wait it returns at once when it opened a picker (interaction) or started no turn (turn_started: false)
 agent.prompt :: {target: Target, text: string, images?: [string], mode?: send|steer|follow_up = send, wait?: bool, until?: [string], timeout_ms?: int} => {run: AgentRun, turn?: any, turn_started?: bool, interaction?: string}
 agent.read :: {target: Target, source?: visible|recent|transcript = visible, lines?: int, format?: text|ansi|cells} => {text?: string, turns?: [any], rows?: int, revision?: int, truncated?: bool}
 agent.wait :: {target: Target, until?: [string], timeout_ms?: int} => {run: AgentRun, state: string, interaction?: Interaction}

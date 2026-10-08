@@ -1,5 +1,5 @@
-//! In-process tests for `agent.commands`, `agent.models`, `agent.set_model` and the extension
-//! control channel (`adapter.control`), against a real `Server` with runs created directly. The
+//! In-process tests for `agent.commands`, `agent.models`, `agent.set_model`, slash-command
+//! prompts and the extension control channel (`adapter.control`), against a real `Server` with runs created directly. The
 //! extension side is played by the test: it polls with the pane's scope and replies. Headless
 //! protocol paths are covered in `headless/tests.rs`.
 
@@ -473,4 +473,59 @@ async fn control_channel_is_pane_bound() {
     let p = json!({"target": other.id, "model": "a/b"});
     assert!(crate::api::authorize(&e.server, &pane_ctx(&run.pane), "agent.set_model", &p).is_err());
     assert!(crate::api::authorize(&e.server, &pane_ctx(&run.pane), "agent.models", &p).is_ok());
+}
+
+/// Review finding: a slash command that starts no turn and opens no dialog returns once its
+/// observation window ends, even with `wait: true` (no waiting for a turn that never comes).
+#[tokio::test]
+async fn slash_command_without_a_turn_returns_with_wait() {
+    let e = env();
+    let run = add_run(&e, "claude", "hooks");
+    let t = Instant::now();
+    let v = call(
+        &e,
+        &user(),
+        "agent.prompt",
+        json!({"target": run.id, "text": "/status", "wait": true, "timeout_ms": 30000}),
+    )
+    .await
+    .unwrap();
+    assert!(t.elapsed() < Duration::from_secs(10), "{:?}", t.elapsed());
+    assert_eq!(v["turn_started"], false);
+    assert!(v.get("interaction").is_none());
+}
+
+/// A slash command that opens a picker returns with the interaction at once, even with
+/// `wait: true`.
+#[tokio::test]
+async fn slash_command_that_opens_a_picker_returns_the_interaction_with_wait() {
+    let e = env();
+    let run = add_run(&e, "claude", "hooks");
+    let server = e.server.clone();
+    let (rid, pane) = (run.id.clone(), run.pane.clone());
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let mut it = harness_tests_blank();
+        it.id = "i-picker".into();
+        it.kind = InteractionKind::Picker;
+        it.run = rid;
+        it.pane = pane;
+        it.opened_at_ms = now_ms();
+        let mut c = server.core.lock().unwrap();
+        let mut tx = Tx::new();
+        tx.interaction(it);
+        server.commit(&mut c, tx).unwrap();
+    });
+    let t = Instant::now();
+    let v = call(
+        &e,
+        &user(),
+        "agent.prompt",
+        json!({"target": run.id, "text": "/model", "wait": true, "timeout_ms": 30000}),
+    )
+    .await
+    .unwrap();
+    assert!(t.elapsed() < Duration::from_secs(3), "{:?}", t.elapsed());
+    assert_eq!(v["interaction"], "i-picker");
+    assert_eq!(v["turn_started"], false);
 }

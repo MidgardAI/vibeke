@@ -2454,6 +2454,12 @@ async fn prompt(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         let r = server.with_core(|c| c.run(&run.id).map(|r| run_json(c, r)));
         return Ok(json!({"run": r, "turn_started": started, "interaction": id}));
     }
+    // A slash command that neither started a turn nor opened a dialog (it printed something or
+    // changed a setting) is done: `wait` has no turn to wait for.
+    if slash && !started {
+        let r = server.with_core(|c| c.run(&run.id).map(|r| run_json(c, r)));
+        return Ok(json!({"run": r, "turn_started": false}));
+    }
     if p.get("wait").and_then(Value::as_bool).unwrap_or(false) {
         let until = vec![
             "idle".to_string(),
