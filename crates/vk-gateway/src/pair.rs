@@ -75,6 +75,14 @@ pub async fn claim(
         .collect();
     // A host redeeming a peer or handoff invitation introduces itself (spec 16 §15.3).
     let sender = p.get("peer").filter(|v| v.is_object()).map(peer_identity);
+    // A handoff invitation is claimed by one of the claimer's own hosts, never by an app: the
+    // work lands on a host, and an app device would only be a courier.
+    if pairing.share.as_ref().is_some_and(|s| s.kind == "handoff")
+        && (sender.is_none() || platform != "host")
+    {
+        out.send(json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32003, "message": "this is a handoff invitation; open it on one of your hosts", "data": {"kind": "forbidden"}}})).await;
+        return;
+    }
     let fingerprint = keys::fingerprint(&remote);
 
     // Reserve atomically under the registry lock: still pending and unexpired, else refuse.
@@ -309,8 +317,8 @@ fn peer_identity(v: &Value) -> PeerInfo {
 }
 
 /// The device kind a claim produces: a `peer` invitation makes one of the owner's own hosts; a
-/// handoff invitation redeemed by a host (it sent `peer`) makes a teammate's host; anything else
-/// keeps the invitation's kind (or `device` for a plain pairing).
+/// handoff invitation (only a host may claim one) makes a teammate's host; anything else keeps the
+/// invitation's kind (or `device` for a plain pairing).
 pub fn device_kind_for(
     share: Option<&crate::state::ShareSpec>,
     sender: Option<PeerInfo>,
@@ -326,7 +334,7 @@ pub fn device_kind_for(
             };
             ("peer".into(), Some(info))
         }
-        Some("handoff") if sender.is_some() => {
+        Some("handoff") => {
             let info = PeerInfo {
                 owner: "teammate".into(),
                 ..sender.unwrap_or_default()

@@ -589,7 +589,7 @@ async fn offer_write_resume_commit() {
         "handoff.send",
         "handoff.jobs",
         "handoff.peers",
-        "handoff.export",
+        "handoff.accept",
     ] {
         let e = conn.call(m, json!({})).await.unwrap_err();
         assert_eq!(e.kind, "forbidden", "{m}: {e:?}");

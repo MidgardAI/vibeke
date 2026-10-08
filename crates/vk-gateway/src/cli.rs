@@ -549,7 +549,6 @@ fn owner_text(d: &crate::state::Device) -> String {
                 None => p.owner.clone(),
             }
         }
-        (None, "handoff") => "teammate".into(),
         (None, "device") => "self".into(),
         _ => "-".into(),
     }
@@ -756,7 +755,12 @@ mod tests {
             host_name: Some("laptop".into()),
             user: None,
         });
-        let handoff = device("h1", "handoff", Some(now + 3600), None);
+        let mut handoff = device("h1", "peer", Some(now + 3600), None);
+        handoff.peer = Some(PeerInfo {
+            owner: "teammate".into(),
+            host_name: None,
+            user: None,
+        });
         let out = format_invites(&pending, &[&peer, &handoff], now);
         assert!(
             out.contains("abcdefghijkl") && out.contains("handoff") && out.contains("for Kari")

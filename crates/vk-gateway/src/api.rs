@@ -137,12 +137,6 @@ pub fn required_scope(method: &str) -> Option<Scope> {
         | "stt.transcribe"
         | "devices.revoke"
         | "share.create"
-        | "handoff.export"
-        | "handoff.read"
-        | "handoff.discard"
-        | "handoff.begin"
-        | "handoff.write"
-        | "handoff.finish"
         | "handoff.incoming.list"
         | "handoff.incoming.get"
         | "handoff.accept"
@@ -171,7 +165,6 @@ pub fn required_scope(method: &str) -> Option<Scope> {
 
 /// Full-scope methods without side effects (no op_id needed).
 const FULL_READ_ONLY: &[&str] = &[
-    "handoff.read",
     "handoff.status",
     "handoff.jobs",
     "handoff.peers",
@@ -372,19 +365,9 @@ impl Allowed {
     }
 }
 
-/// Methods never available to share devices; handoff devices get only the allowlist.
+/// Methods never available to share devices.
 pub fn kind_allows(kind: &str, method: &str) -> bool {
     match kind {
-        "handoff" => matches!(
-            method,
-            "hello"
-                | "ping"
-                | "client.visibility"
-                | "handoff.begin"
-                | "handoff.write"
-                | "handoff.finish"
-                | "handoff.discard"
-        ),
         // Another Vibeke host (spec 16 §15.3): delivers handoffs, nothing else.
         "peer" => matches!(
             method,
@@ -395,8 +378,6 @@ pub fn kind_allows(kind: &str, method: &str) -> bool {
                 | "handoff.write"
                 | "handoff.commit"
                 | "handoff.discard"
-                | "handoff.begin"
-                | "handoff.finish"
         ),
         "share" => {
             !(method.starts_with("devices.")
@@ -1313,19 +1294,14 @@ impl Call<'_> {
                 self.server(method, pick(&p, &["id"])).await
             }
             "handoff.jobs" | "handoff.peers" => self.server(method, json!({})).await,
-            // Delivery from another host (or an app using the same protocol).
-            "handoff.offer" | "handoff.status" | "handoff.commit" => {
+            // Delivery from another host.
+            "handoff.offer" | "handoff.status" | "handoff.write" | "handoff.commit"
+            | "handoff.discard" => {
                 crate::handoff_peer::dispatch(self.gw, self.device, method, &p).await
             }
-            "handoff.write" | "handoff.discard"
-                if s(&p, "id").is_some_and(crate::handoff_peer::owns) =>
-            {
-                crate::handoff_peer::dispatch(self.gw, self.device, method, &p).await
-            }
+            // This host's own incoming handoffs (full-scope devices; the server decides).
             m if m.starts_with("handoff.") => {
-                // A teammate's host has exactly a handoff invitation's rights there.
-                let dev = teammate_as_handoff(self.device);
-                crate::handoff::dispatch(self.gw, &dev, m, &p).await
+                crate::handoff::dispatch(self.gw, self.device, m, &p).await
             }
             _ => Err(ApiError::new(
                 "method_not_found",
@@ -1425,16 +1401,6 @@ fn snap_tab_of(pane: &str, tabs: &[Value]) -> Option<String> {
                 .is_some_and(|l| l.to_string().contains(&format!("\"{pane}\"")))
         })
         .and_then(|t| s(t, "id").map(str::to_string))
-}
-
-/// A teammate's `peer` device seen as a `handoff` device, so every teammate restriction of the
-/// handoff code (no `repo_path`, no agent start before the receiver accepts) applies to it too.
-pub fn teammate_as_handoff(d: &Device) -> Device {
-    let mut d = d.clone();
-    if d.kind == "peer" && d.peer.as_ref().is_none_or(|p| p.owner != "self") {
-        d.kind = "handoff".into();
-    }
-    d
 }
 
 pub fn internal(e: anyhow::Error) -> ApiError {
@@ -1675,13 +1641,21 @@ mod share_tests {
 
     #[test]
     fn device_kinds() {
-        assert!(kind_allows("handoff", "handoff.write"));
-        assert!(!kind_allows("handoff", "dashboard.get"));
+        // The retired courier kind gets nothing.
+        assert!(!kind_allows("handoff", "handoff.write"));
+        assert!(!kind_allows("handoff", "hello"));
         assert!(!kind_allows("share", "devices.revoke"));
         assert!(!kind_allows("share", "share.create"));
-        assert!(!kind_allows("share", "handoff.export"));
+        assert!(!kind_allows("share", "handoff.status"));
         assert!(kind_allows("share", "pane.read"));
-        assert!(!is_mutating("handoff.read"));
+        for m in [
+            "handoff.export",
+            "handoff.read",
+            "handoff.begin",
+            "handoff.finish",
+        ] {
+            assert_eq!(required_scope(m), None, "{m}");
+        }
         // Peers (another host) only deliver handoffs.
         for m in [
             "hello",
@@ -1691,8 +1665,6 @@ mod share_tests {
             "handoff.write",
             "handoff.commit",
             "handoff.discard",
-            "handoff.begin",
-            "handoff.finish",
         ] {
             assert!(kind_allows("peer", m), "{m}");
         }
@@ -1700,8 +1672,8 @@ mod share_tests {
             "devices.list",
             "dashboard.get",
             "events.subscribe",
-            "handoff.export",
-            "handoff.read",
+            "handoff.accept",
+            "handoff.send",
             "peer.invite",
             "share.list",
             "pane.send_text",
@@ -1743,34 +1715,6 @@ mod share_tests {
         assert!(is_mutating("peer.redeem") && is_mutating("share.revoke"));
         assert!(!is_mutating("peer.list") && !is_mutating("share.list"));
         assert!(!kind_allows("from-the-future", "ping"));
-    }
-
-    #[test]
-    fn teammate_peers_get_handoff_rights() {
-        let mut d = Device {
-            id: "p".into(),
-            name: "laptop".into(),
-            platform: "host".into(),
-            public: "k".into(),
-            scope: Scope::Full,
-            paired_at: 0,
-            vapid_private: None,
-            push: vec![],
-            prefs: Default::default(),
-            push_failures: 0,
-            kind: "peer".into(),
-            expires_at: None,
-            limit: None,
-            peer: Some(crate::state::PeerInfo {
-                owner: "teammate".into(),
-                ..Default::default()
-            }),
-        };
-        assert_eq!(teammate_as_handoff(&d).kind, "handoff");
-        d.peer.as_mut().unwrap().owner = "self".into();
-        assert_eq!(teammate_as_handoff(&d).kind, "peer");
-        d.peer = None;
-        assert_eq!(teammate_as_handoff(&d).kind, "handoff");
     }
 }
 

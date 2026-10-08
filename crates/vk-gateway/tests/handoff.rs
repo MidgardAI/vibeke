@@ -1,15 +1,30 @@
-//! Handoff end to end (spec 16 §15.2): export from one clone, carry the bundle, deliver it to the
-//! destination's server as an incoming handoff, import it into another clone of the same origin
-//! and check the (fake) Claude session would resume there.
+//! Handoff end to end (spec 16 §15.2): the source gateway's worker exports a real repository and
+//! sends it to a peer host, whose gateway delivers it to its (fake) server as an incoming handoff;
+//! the server's copy imports into another clone of the same origin and the (fake) Claude session
+//! would resume there. Also: a teammate's host only delivers (nothing is placed or started), and
+//! an app cannot claim a handoff invitation.
+//!
+//! Its own test binary: pairing handshakes share a per-process budget (4/min, spec 16 §6.4).
 
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
+use futures::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::UnixListener;
-use vk_gateway::state::{Device, Scope, StateDir};
-use vk_gateway::{Gateway, handoff, server};
+use tokio::net::{TcpStream, UnixListener};
+use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
+use vk_e2e::{DeviceKey, Hello, Initiator, PairingLink, Session};
+use vk_gateway::api::Call;
+use vk_gateway::peer_client::PeerClient;
+use vk_gateway::state::{Device, PairingStatus, PeerRecord, Scope, StateDir};
+use vk_gateway::{Gateway, server};
+
+type Handler = Arc<dyn Fn(&str, &Value) -> Value + Send + Sync>;
+type Calls = Arc<Mutex<Vec<(String, Value)>>>;
 
 fn git(dir: &Path, args: &[&str]) {
     let ok = std::process::Command::new("git")
@@ -26,55 +41,54 @@ fn git(dir: &Path, args: &[&str]) {
     assert!(ok, "git {args:?} in {}", dir.display());
 }
 
-type Calls = Arc<Mutex<Vec<(String, Value)>>>;
+async fn start_relay() -> SocketAddr {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let relay = vk_relay::Relay::new(
+        vk_relay::Config {
+            public_origins: vec![format!("http://{addr}")],
+            app_dir: None,
+            trust_proxy: false,
+            log_ip_raw: true,
+            limits: Default::default(),
+        },
+        Box::new(vk_relay::Open),
+    )
+    .unwrap();
+    let app = relay
+        .router()
+        .into_make_service_with_connect_info::<SocketAddr>();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    addr
+}
 
-/// Fake server: answers the calls handoff makes and records every call. `handoff.incoming.add`
-/// keeps a copy of the bundle (as the real server does) at `<root>/received-<n>.tar.zst`.
-fn fake_server(path: PathBuf, root: PathBuf, src: PathBuf, transcript: PathBuf, calls: Calls) {
+/// A fake Vibeke server: `client.hello` and `events.subscribe` answered, everything else by
+/// `handle` (`{}` by default); every call is recorded.
+fn fake_server(path: PathBuf, handle: Handler, calls: Calls) {
     let listener = UnixListener::bind(&path).unwrap();
     tokio::spawn(async move {
         loop {
             let (stream, _) = listener.accept().await.unwrap();
-            let (root, src, transcript, calls) =
-                (root.clone(), src.clone(), transcript.clone(), calls.clone());
+            let (handle, calls) = (handle.clone(), calls.clone());
             tokio::spawn(async move {
                 let (r, mut w) = stream.into_split();
                 let mut lines = BufReader::new(r).lines();
                 while let Ok(Some(line)) = lines.next_line().await {
                     let req: Value = serde_json::from_str(&line).unwrap();
-                    let p = req["params"].clone();
                     let method = req["method"].as_str().unwrap().to_string();
-                    let n = {
-                        let mut c = calls.lock().unwrap();
-                        c.push((method.clone(), p.clone()));
-                        c.len()
-                    };
+                    calls
+                        .lock()
+                        .unwrap()
+                        .push((method.clone(), req["params"].clone()));
                     let result = match method.as_str() {
-                        "client.hello" => json!({"capabilities": ["*"]}),
-                        "pane.get" => {
-                            json!({"pane": {"id": "p1", "workspace": "w1"}, "cwd": src.join("app"),
-                            "run": {"id": "r1", "harness": "claude", "execution": {"value": "Idle"},
-                                    "harness_session_id": "sess1", "transcript_path": transcript,
-                                    "resume_argv": ["claude", "--resume", "sess1"], "last_message": "done"}})
-                        }
-                        "handoff.incoming.add" => {
-                            assert!(p.get("actor").is_some(), "gateway mutations carry an actor");
-                            let from = PathBuf::from(p["path"].as_str().unwrap());
-                            std::fs::copy(&from, root.join(format!("received-{n}.tar.zst")))
-                                .unwrap();
-                            json!({"incoming": {"id": format!("in{n}"), "state": "pending", "result": null}})
-                        }
-                        "handoff.accept" => {
-                            assert!(p.get("actor").is_some(), "gateway mutations carry an actor");
-                            json!({"incoming": {"id": p["id"], "state": "imported",
-                                   "result": {"worktree": "/x/repo-handoff-feature", "branch": "handoff/feature"}}})
-                        }
-                        _ => json!({}),
+                        "client.hello" => json!({"server_version": "test", "capabilities": ["*"]}),
+                        "events.subscribe" => json!({"subscription_id": "s", "at": {"seq": 1}}),
+                        m => handle(m, &req["params"]),
                     };
-                    let out = json!({"jsonrpc": "2.0", "id": req["id"], "result": result})
+                    let line = json!({"jsonrpc": "2.0", "id": req["id"], "result": result})
                         .to_string()
                         + "\n";
-                    if w.write_all(out.as_bytes()).await.is_err() {
+                    if w.write_all(line.as_bytes()).await.is_err() {
                         return;
                     }
                 }
@@ -83,65 +97,90 @@ fn fake_server(path: PathBuf, root: PathBuf, src: PathBuf, transcript: PathBuf, 
     });
 }
 
-fn device(id: &str, name: &str, kind: &str) -> Device {
-    Device {
-        id: id.into(),
-        name: name.into(),
+async fn online(addr: SocketAddr, host: &str) -> bool {
+    use tokio::io::AsyncReadExt;
+    let Ok(mut s) = TcpStream::connect(addr).await else {
+        return false;
+    };
+    let req =
+        format!("GET /v1/status?host={host} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n");
+    s.write_all(req.as_bytes()).await.unwrap();
+    let mut buf = String::new();
+    s.read_to_string(&mut buf).await.unwrap();
+    buf.contains("\"online\":true")
+}
+
+/// A running gateway named `name` on `relay` with a fake server, plus the owner's own device.
+async fn gateway(
+    root: &Path,
+    name: &str,
+    relay: SocketAddr,
+    handle: Handler,
+) -> (Arc<Gateway>, Device, Calls) {
+    let calls: Calls = Arc::default();
+    let sock = root.join(format!("{name}.sock"));
+    fake_server(sock.clone(), handle, calls.clone());
+    let state = StateDir::open(root.join(name)).unwrap();
+    let mut cfg = state.config().unwrap();
+    cfg.relay = Some(format!("http://{relay}"));
+    cfg.app_url = Some("http://app.example".into());
+    cfg.host_name = Some(name.into());
+    cfg.local_socket = false;
+    state.save_config(&cfg).unwrap();
+    let gw = Gateway::new(state, server::Server::new(sock)).unwrap();
+    let owner = Device {
+        id: format!("own-{name}"),
+        name: "owner's laptop".into(),
         platform: "test".into(),
-        public: format!("k-{id}"),
+        public: format!("pub-{name}"),
         scope: Scope::Full,
         paired_at: 0,
         vapid_private: None,
         push: vec![],
         prefs: Default::default(),
         push_failures: 0,
-        kind: kind.into(),
+        kind: "device".into(),
         expires_at: None,
         limit: None,
         peer: None,
+    };
+    gw.add_device(owner.clone()).unwrap();
+    tokio::spawn(vk_gateway::run(gw.clone()));
+    let host = gw.keys.host_id();
+    for _ in 0..200 {
+        if online(relay, &host).await {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
     }
+    assert!(online(relay, &host).await, "{name} never came online");
+    (gw, owner, calls)
 }
 
-/// Export the pane and carry the bundle to `to` in chunks, as the app does. Returns the export and
-/// the destination's handoff id.
-async fn carry(gw: &Arc<Gateway>, from: &Device, to: &Device) -> (Value, Value) {
-    let ex = handoff::dispatch(gw, from, "handoff.export", &json!({"pane": "p1"}))
+/// B invites (a `peer` invitation for the owner's own hosts, or a teammate's `handoff` one), A
+/// redeems: A's record for B.
+async fn pair(a: (&Arc<Gateway>, &Device), b: (&Arc<Gateway>, &Device), kind: &str) -> PeerRecord {
+    let on_a = Call {
+        gw: a.0,
+        device: a.1,
+    };
+    let on_b = Call {
+        gw: b.0,
+        device: b.1,
+    };
+    let inv = match kind {
+        "peer" => on_b.dispatch("peer.invite", json!({})).await.unwrap(),
+        _ => on_b
+            .dispatch("share.create", json!({"kind": "handoff", "ttl_s": 3600}))
+            .await
+            .unwrap(),
+    };
+    on_a.dispatch("peer.redeem", json!({"link": inv["link"]}))
         .await
         .unwrap();
-    let size = ex["size"].as_u64().unwrap();
-    let begin = handoff::dispatch(
-        gw,
-        to,
-        "handoff.begin",
-        &json!({"manifest": ex["manifest"], "size": size, "sha256": ex["sha256"]}),
-    )
-    .await
-    .unwrap();
-    let mut offset = 0u64;
-    while offset < size {
-        let chunk = handoff::dispatch(
-            gw,
-            from,
-            "handoff.read",
-            &json!({"id": ex["id"], "offset": offset, "len": 1000}),
-        )
-        .await
-        .unwrap();
-        let data = chunk["data_b64"].as_str().unwrap().to_string();
-        let n = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &data)
-            .unwrap()
-            .len() as u64;
-        handoff::dispatch(
-            gw,
-            to,
-            "handoff.write",
-            &json!({"id": begin["id"], "offset": offset, "data_b64": data}),
-        )
-        .await
-        .unwrap();
-        offset += n;
-    }
-    (ex, begin["id"].clone())
+    let rec = a.0.state.peers().unwrap().remove(0);
+    assert_eq!(rec.owner, if kind == "peer" { "self" } else { "teammate" });
+    rec
 }
 
 fn calls_of(calls: &Calls, method: &str) -> Vec<Value> {
@@ -154,8 +193,87 @@ fn calls_of(calls: &Calls, method: &str) -> Vec<Value> {
         .collect()
 }
 
+/// What the source host's server does for a job: one pane in `cwd` running `run`, one job whose
+/// state follows the gateway's `handoff.job.update` calls.
+struct JobServer {
+    job: Mutex<Value>,
+    updates: Mutex<Vec<Value>>,
+}
+
+impl JobServer {
+    fn new() -> Arc<Self> {
+        Arc::new(JobServer {
+            job: Mutex::new(Value::Null),
+            updates: Mutex::default(),
+        })
+    }
+
+    fn handler(self: &Arc<Self>, cwd: PathBuf, run: Value) -> Handler {
+        let js = self.clone();
+        Arc::new(move |m: &str, p: &Value| match m {
+            "pane.get" => json!({"pane": {"id": "p1", "workspace": "w1"}, "cwd": cwd, "run": run}),
+            "handoff.jobs" => {
+                let job = js.job.lock().unwrap().clone();
+                json!({"jobs": if job.is_null() { vec![] } else { vec![job] }})
+            }
+            "handoff.job.update" => {
+                js.updates.lock().unwrap().push(p.clone());
+                let mut job = js.job.lock().unwrap();
+                for (k, v) in p.as_object().unwrap() {
+                    job[k] = v.clone();
+                }
+                json!({"job": job.clone()})
+            }
+            "handoff.peers.set" => json!({"peers": 1, "changed": true}),
+            _ => json!({}),
+        })
+    }
+
+    /// The server announces a queued job to the gateway's worker and waits for its outcome.
+    async fn run(&self, a: &Arc<Gateway>, peer: &PeerRecord) -> Vec<Value> {
+        let job = json!({"id": "job1", "pane": "p1", "peer": peer.id, "peer_name": peer.name,
+                         "interrupt": false, "state": "queued", "sent": 0, "total": 0,
+                         "created_at": 1, "updated_at": 1});
+        *self.job.lock().unwrap() = job.clone();
+        a.hub.push(
+            json!({"seq": 1_000_000, "type": "handoff.job", "subject": {"job": "job1"},
+                          "data": job}),
+        );
+        let mut state = String::new();
+        for _ in 0..600 {
+            state = self.job.lock().unwrap()["state"]
+                .as_str()
+                .unwrap_or("")
+                .to_string();
+            if matches!(state.as_str(), "delivered" | "failed") {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        let updates = self.updates.lock().unwrap().clone();
+        assert_eq!(state, "delivered", "{updates:#?}");
+        updates
+    }
+}
+
+/// The receiving host's server: `handoff.incoming.add` keeps a copy of the bundle (as the real
+/// server does) at `<root>/received-<n>.tar.zst` and leaves the handoff pending.
+fn receiving_server(root: PathBuf) -> Handler {
+    let n = Mutex::new(0usize);
+    Arc::new(move |m: &str, p: &Value| match m {
+        "handoff.incoming.add" => {
+            let mut n = n.lock().unwrap();
+            *n += 1;
+            let from = PathBuf::from(p["path"].as_str().unwrap());
+            std::fs::copy(&from, root.join(format!("received-{n}.tar.zst"))).unwrap();
+            json!({"incoming": {"id": format!("in{n}"), "state": "pending", "result": null}})
+        }
+        _ => json!({}),
+    })
+}
+
 #[tokio::test(flavor = "multi_thread")]
-async fn export_carry_deliver_import_resume() {
+async fn export_send_deliver_import_resume() {
     let t = tempfile::tempdir().unwrap();
     let root = t.path().canonicalize().unwrap();
     let origin = root.join("origin.git");
@@ -196,32 +314,36 @@ async fn export_carry_deliver_import_resume() {
     )
     .unwrap();
     let claude_dst = root.join("claude-dst");
-    // SAFETY: single-threaded setup before the gateway runs; only this test reads it.
+    // SAFETY: set before the gateways run; only this test reads it.
     unsafe { std::env::set_var("CLAUDE_CONFIG_DIR", &claude_dst) };
 
-    let sock = root.join("s.sock");
-    let calls: Calls = Arc::new(Mutex::new(Vec::new()));
-    fake_server(
-        sock.clone(),
-        root.clone(),
-        src.clone(),
-        transcript.clone(),
-        calls.clone(),
-    );
-    let gw = Gateway::new(
-        StateDir::open(root.join("gw")).unwrap(),
-        server::Server::new(sock),
-    )
-    .unwrap();
-    let dev = device("d1", "phone", "device");
-    gw.add_device(dev.clone()).unwrap();
+    let relay = start_relay().await;
+    let js = JobServer::new();
+    let run = json!({"id": "r1", "harness": "claude", "execution": {"value": "Idle"},
+                     "harness_session_id": "sess1", "transcript_path": transcript,
+                     "resume_argv": ["claude", "--resume", "sess1"], "last_message": "done"});
+    let (a, own_a, _) = gateway(&root, "alpha", relay, js.handler(src.join("app"), run)).await;
+    let (b, own_b, b_calls) = gateway(&root, "beta", relay, receiving_server(root.clone())).await;
+    let rec = pair((&a, &own_a), (&b, &own_b), "peer").await;
 
-    // Export, carry, finish: the bundle is delivered to the server as a pending incoming handoff.
-    let (ex, dest_id) = carry(&gw, &dev, &dev).await;
-    let m = &ex["manifest"];
+    let updates = js.run(&a, &rec).await;
+    let states: Vec<&str> = updates.iter().filter_map(|u| u["state"].as_str()).collect();
+    assert_eq!(
+        states,
+        ["exporting", "sending", "delivered"],
+        "{updates:#?}"
+    );
+    assert_eq!(updates.last().unwrap()["incoming_state"], "pending");
+
+    // The bundle reached B's server as a pending incoming handoff from one of the owner's hosts.
+    let adds = calls_of(&b_calls, "handoff.incoming.add");
+    assert_eq!(adds.len(), 1);
+    let add = &adds[0];
+    let m = &add["manifest"];
     assert_eq!(m["branch"], "feature");
     assert_eq!(m["bundle"], "thin");
     assert_eq!(m["cwd_rel"], "app");
+    assert_eq!(m["source_job"], "job1");
     assert_eq!(m["untracked"], json!(["app/notes.md"]));
     assert!(
         m["skipped"]
@@ -231,43 +353,27 @@ async fn export_carry_deliver_import_resume() {
             .any(|s| s["path"] == ".env" && s["reason"] == "secret")
     );
     assert_eq!(m["redactions"], 1);
-    let r = handoff::dispatch(&gw, &dev, "handoff.finish", &json!({"id": dest_id}))
-        .await
-        .unwrap();
-    assert_eq!(r["state"], "pending");
-    let incoming = r["incoming"].as_str().unwrap().to_string();
-    let adds = calls_of(&calls, "handoff.incoming.add");
-    assert_eq!(adds.len(), 1);
-    let add = &adds[0];
-    assert_eq!(add["sha256"], ex["sha256"]);
-    assert_eq!(&add["manifest"], m);
     assert_eq!(add["from"]["owner"], "self");
-    assert_eq!(add["from"]["host"], m["source_host"]);
+    assert_eq!(add["from"]["host"], "alpha");
+    let peer_dev = b.devices().into_iter().find(|d| d.kind == "peer").unwrap();
     assert_eq!(
         add["from"]["device"],
-        dev.id.as_str(),
-        "quota keyed by the device"
+        peer_dev.id.as_str(),
+        "quota keyed by the authenticated device"
     );
-    assert_eq!(add["actor"], "gateway:phone");
+    assert_eq!(add["actor"], "gateway:alpha");
     assert!(
         !Path::new(add["path"].as_str().unwrap()).exists(),
         "the gateway drops its copy once the server has the bundle"
     );
-    assert!(calls_of(&calls, "handoff.accept").is_empty());
+    assert!(calls_of(&b_calls, "handoff.accept").is_empty());
     assert!(
-        calls_of(&calls, "agent.start").is_empty(),
-        "the gateway no longer imports or starts agents"
-    );
-    // The finished transfer is gone.
-    assert!(
-        handoff::dispatch(&gw, &dev, "handoff.finish", &json!({"id": dest_id}))
-            .await
-            .is_err()
+        calls_of(&b_calls, "agent.start").is_empty(),
+        "the gateway never imports or starts agents"
     );
 
     // The server's copy imports into the destination clone (what `handoff.accept` runs).
-    let n: usize = incoming.trim_start_matches("in").parse().unwrap();
-    let received = root.join(format!("received-{n}.tar.zst"));
+    let received = root.join("received-1.tar.zst");
     let work = root.join("work");
     std::fs::create_dir(&work).unwrap();
     let packed = vk_handoff::unpack(&received, &work).unwrap();
@@ -297,7 +403,7 @@ async fn export_carry_deliver_import_resume() {
     let new_cwd = wt.join("app");
     let installed = claude_dst
         .join("projects")
-        .join(handoff::claude_project_dir(&new_cwd))
+        .join(vk_gateway::handoff::claude_project_dir(&new_cwd))
         .join("sess1.jsonl");
     let text = std::fs::read_to_string(&installed).unwrap();
     assert!(text.contains(&new_cwd.display().to_string()));
@@ -312,7 +418,7 @@ async fn export_carry_deliver_import_resume() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn teammates_deliver_and_own_devices_may_place() {
+async fn a_teammates_host_only_delivers() {
     let t = tempfile::tempdir().unwrap();
     let root = t.path().canonicalize().unwrap();
     let src = root.join("src");
@@ -321,91 +427,142 @@ async fn teammates_deliver_and_own_devices_may_place() {
     std::fs::write(src.join("app/a.txt"), "a\n").unwrap();
     git(&src, &["add", "-A"]);
     git(&src, &["commit", "-qm", "base"]);
-    let dst = root.join("dst");
-    std::fs::create_dir(&dst).unwrap();
 
-    let sock = root.join("s.sock");
-    let calls: Calls = Arc::new(Mutex::new(Vec::new()));
-    fake_server(
-        sock.clone(),
-        root.clone(),
-        src.clone(),
-        root.join("no-transcript.jsonl"),
-        calls.clone(),
+    let relay = start_relay().await;
+    let js = JobServer::new();
+    let (a, own_a, _) = gateway(
+        &root,
+        "alpha",
+        relay,
+        js.handler(src.join("app"), Value::Null),
+    )
+    .await;
+    let (b, own_b, b_calls) = gateway(&root, "beta", relay, receiving_server(root.clone())).await;
+    let rec = pair((&a, &own_a), (&b, &own_b), "handoff").await;
+
+    // Delivered as a teammate's handoff: it waits as pending on B; nothing is placed or started.
+    js.run(&a, &rec).await;
+    let adds = calls_of(&b_calls, "handoff.incoming.add");
+    assert_eq!(adds.len(), 1);
+    assert_eq!(adds[0]["from"]["owner"], "teammate");
+    assert_eq!(adds[0]["from"]["host"], "alpha");
+    let peer_dev = b.devices().into_iter().find(|d| d.kind == "peer").unwrap();
+    assert_eq!(adds[0]["from"]["device"], peer_dev.id.as_str());
+    assert_eq!(adds[0]["actor"], "gateway:alpha");
+    assert!(calls_of(&b_calls, "handoff.accept").is_empty());
+    assert!(calls_of(&b_calls, "agent.start").is_empty());
+
+    // The teammate's host reaches nothing else on B: not the receiver's decisions, not the owner's
+    // job API, not the retired courier methods.
+    let mut conn = PeerClient::connect(&rec).await.unwrap();
+    for m in [
+        "handoff.accept",
+        "handoff.incoming.list",
+        "handoff.send",
+        "handoff.jobs",
+        "handoff.peers",
+        "handoff.export",
+        "handoff.begin",
+        "handoff.finish",
+    ] {
+        let e = conn.call(m, json!({})).await.unwrap_err();
+        assert_eq!(e.kind, "forbidden", "{m}: {e:?}");
+    }
+    conn.close().await;
+    assert!(calls_of(&b_calls, "handoff.accept").is_empty());
+}
+
+struct Client {
+    ws: WebSocketStream<MaybeTlsStream<TcpStream>>,
+    session: Session,
+}
+
+impl Client {
+    async fn open(relay: SocketAddr, link: &PairingLink) -> Client {
+        let (mut ws, _) = connect_async(format!("ws://{relay}/v1/connect?host={}", link.host))
+            .await
+            .unwrap();
+        let hb = Hello::pair(&link.pid).to_bytes();
+        ws.send(Message::Text(String::from_utf8(hb.clone()).unwrap().into()))
+            .await
+            .unwrap();
+        let dev = DeviceKey::generate();
+        let (hk, psk) = (link.host_key().unwrap(), link.psk_bytes().unwrap());
+        let mut i = Initiator::new(&hb, &dev.private, &hk, Some(&psk)).unwrap();
+        ws.send(Message::Binary(i.write_first(b"").unwrap().into()))
+            .await
+            .unwrap();
+        let Some(Ok(Message::Binary(m2))) = tokio::time::timeout(Duration::from_secs(5), ws.next())
+            .await
+            .unwrap()
+        else {
+            panic!("no handshake answer");
+        };
+        let (_, session) = i.read_second(&m2).unwrap();
+        Client { ws, session }
+    }
+
+    async fn call(&mut self, method: &str, params: Value) -> Value {
+        let req = json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": params});
+        for f in self.session.encrypt(req.to_string().as_bytes()).unwrap() {
+            self.ws.send(Message::Binary(f.into())).await.unwrap();
+        }
+        loop {
+            match tokio::time::timeout(Duration::from_secs(10), self.ws.next())
+                .await
+                .expect("recv timeout")
+            {
+                Some(Ok(Message::Binary(b))) => {
+                    if let Some(m) = self.session.decrypt(&b).unwrap() {
+                        return serde_json::from_slice(&m).unwrap();
+                    }
+                }
+                Some(Ok(Message::Ping(_) | Message::Pong(_))) => {}
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_app_cannot_claim_a_handoff_invitation() {
+    let t = tempfile::tempdir().unwrap();
+    let root = t.path().canonicalize().unwrap();
+    let relay = start_relay().await;
+    let (b, own_b, _) = gateway(
+        &root,
+        "beta",
+        relay,
+        Arc::new(|_: &str, _: &Value| json!({})),
+    )
+    .await;
+    let on_b = Call {
+        gw: &b,
+        device: &own_b,
+    };
+    let inv = on_b
+        .dispatch("share.create", json!({"kind": "handoff", "ttl_s": 3600}))
+        .await
+        .unwrap();
+    let link = PairingLink::parse(inv["link"].as_str().unwrap()).unwrap();
+
+    // An app (anything but a host introducing itself) is told to open it on one of its hosts.
+    let mut c = Client::open(relay, &link).await;
+    let r = c
+        .call("pair.claim", json!({"name": "phone", "platform": "ios"}))
+        .await;
+    assert_eq!(r["error"]["data"]["kind"], "forbidden", "{r}");
+    assert!(
+        r["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("one of your hosts"),
+        "{r}"
     );
-    let gw = Gateway::new(
-        StateDir::open(root.join("gw")).unwrap(),
-        server::Server::new(sock),
-    )
-    .unwrap();
-    let me = device("d1", "laptop", "device");
-    let mate = device("d2", "invite", "handoff");
-    gw.add_device(me.clone()).unwrap();
-    gw.add_device(mate.clone()).unwrap();
-
-    // A teammate's invitation never chooses where work lands, and never needs to: the handoff
-    // waits as pending on this host.
-    let (_, id) = carry(&gw, &me, &mate).await;
-    let e = handoff::dispatch(
-        &gw,
-        &mate,
-        "handoff.finish",
-        &json!({"id": id, "repo_path": dst}),
-    )
-    .await
-    .unwrap_err();
-    assert_eq!(e.kind, "forbidden");
-    let r = handoff::dispatch(&gw, &mate, "handoff.finish", &json!({"id": id}))
-        .await
-        .unwrap();
-    assert_eq!(r["state"], "pending");
-    let adds = calls_of(&calls, "handoff.incoming.add");
-    assert_eq!(adds.last().unwrap()["from"]["owner"], "teammate");
-    assert_eq!(adds.last().unwrap()["from"]["device"], mate.id.as_str());
-    assert_eq!(adds.last().unwrap()["actor"], "gateway:invite");
-    assert!(calls_of(&calls, "handoff.accept").is_empty());
-
-    // The owner's own device may still place it right away: the gateway accepts on its behalf.
-    let (_, id) = carry(&gw, &me, &me).await;
-    let r = handoff::dispatch(
-        &gw,
-        &me,
-        "handoff.finish",
-        &json!({"id": id, "repo_path": dst, "branch": "me/topic", "start_agent": false}),
-    )
-    .await
-    .unwrap();
-    assert_eq!(r["state"], "imported");
-    assert_eq!(r["result"]["branch"], "handoff/feature");
-    let accepts = calls_of(&calls, "handoff.accept");
-    assert_eq!(accepts.len(), 1);
-    let a = &accepts[0];
-    assert_eq!(a["id"], r["incoming"]);
-    assert_eq!(a["repo"]["path"], json!(dst));
-    assert_eq!(a["branch"], "me/topic");
-    assert_eq!(a["start_agent"], false);
-    assert_eq!(a["actor"], "gateway:laptop");
-
-    // Incoming handoffs are forwarded to the server for full devices.
-    handoff::dispatch(&gw, &me, "handoff.incoming.list", &json!({"junk": 1}))
-        .await
-        .unwrap();
-    handoff::dispatch(
-        &gw,
-        &me,
-        "handoff.decline",
-        &json!({"id": "in9", "extra": true}),
-    )
-    .await
-    .unwrap();
-    let lists = calls_of(&calls, "handoff.incoming.list");
     assert_eq!(
-        lists.last().unwrap(),
-        &json!({}),
-        "only known params travel"
+        b.state.pairing(&link.pid).unwrap().unwrap().status,
+        PairingStatus::Pending,
+        "the invitation is not burned"
     );
-    let declines = calls_of(&calls, "handoff.decline");
-    assert_eq!(declines[0]["id"], "in9");
-    assert!(declines[0].get("extra").is_none());
-    assert_eq!(declines[0]["actor"], "gateway:laptop");
+    assert_eq!(b.devices().len(), 1, "no device was added");
 }

@@ -155,8 +155,7 @@ pub fn device_json(d: &Device) -> Value {
         "name": d.name,
         "scope": d.scope,
         "paired_at": d.paired_at,
-        "owner": d.peer.as_ref().map(|p| p.owner.clone())
-            .or_else(|| (d.kind == "handoff").then(|| "teammate".to_string())),
+        "owner": d.peer.as_ref().map(|p| p.owner.clone()),
         "sender": d.peer.as_ref().map(|p| json!({"host_name": p.host_name, "user": p.user})),
         "expires_at": d.expires_at,
         "limit": d.limit,
@@ -335,18 +334,15 @@ mod tests {
         let info = info.unwrap();
         assert_eq!(info.owner, "self");
         assert_eq!(info.host_name.as_deref(), Some("laptop"));
-        // A handoff invitation redeemed by a host makes a teammate peer; by an app, a handoff
-        // device as before.
+        // A handoff invitation redeemed by a host makes a teammate peer (an app cannot claim one).
         let (k, info) = device_kind_for(Some(&spec("handoff", None)), Some(sender));
         assert_eq!(
             (k.as_str(), info.unwrap().owner.as_str()),
             ("peer", "teammate")
         );
-        for kind in ["handoff", "share"] {
-            let (k, info) = device_kind_for(Some(&spec(kind, None)), None);
-            assert_eq!(k, kind);
-            assert!(info.is_none());
-        }
+        let (k, info) = device_kind_for(Some(&spec("share", None)), None);
+        assert_eq!(k, "share");
+        assert!(info.is_none());
     }
 
     #[test]

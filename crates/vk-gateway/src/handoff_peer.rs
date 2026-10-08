@@ -15,9 +15,9 @@
 //!   encrypted message, after the JSON request and one NUL byte ([`split_payload`]); no base64 in
 //!   the channel. `data_b64` is accepted as well (simple clients, tests). `offset` may be at most
 //!   `received`: a lower offset truncates there and rewrites, so a retried chunk is harmless.
-//! - `handoff.commit {id}` → `{incoming: <id>, state, result}` from the server's record (as the
-//!   courier's `handoff.finish`), after checking size and sha256. Committing again returns the
-//!   same. The commit runs to the end even when the request is dropped. The server's quota
+//! - `handoff.commit {id}` → `{incoming: <id>, state, result}` from the server's record, after
+//!   checking size and sha256. Committing again returns the same.
+//!   The commit runs to the end even when the request is dropped. The server's quota
 //!   (`rate_limited`) reads "the recipient has too many waiting handoffs".
 //! - `handoff.discard {id}`.
 //!
@@ -125,12 +125,6 @@ fn with_uploads<T>(f: impl FnOnce(&mut Uploads) -> T) -> T {
     r
 }
 
-/// Whether `id` names a peer upload, so `handoff.write` and `handoff.discard` come here rather
-/// than to the courier flow (`handoff.rs`).
-pub fn owns(id: &str) -> bool {
-    with_uploads(|u| u.live.contains_key(id) || u.done.contains_key(id))
-}
-
 fn err(kind: &str, m: impl Into<String>) -> ApiError {
     ApiError::new(kind, m)
 }
@@ -169,7 +163,7 @@ pub fn sender_of(dev: &Device) -> Value {
     from
 }
 
-/// What `handoff.commit` and the courier's `handoff.finish` answer, from the server's record:
+/// What `handoff.commit` answers, from the server's record:
 /// `{incoming: <id>, state, result}` (`result` is null until imported).
 pub fn outcome(rec: &Value) -> Value {
     json!({"incoming": rec.get("id"), "state": rec.get("state"), "result": rec.get("result")})
@@ -194,8 +188,7 @@ pub fn add_error(e: ApiError) -> ApiError {
 
 /// Hand a received bundle to the server as an incoming handoff. The server keeps the bundle (it
 /// moves or copies `path` into its own state) and runs the auto-import policy or leaves it
-/// pending for the receiver. Returns the server's record. Shared by the courier's
-/// `handoff.finish` and the peer's `handoff.commit`.
+/// pending for the receiver. Returns the server's record, for the peer's `handoff.commit`.
 pub async fn deliver_to_server(
     gw: &Gateway,
     actor: &str,
@@ -620,7 +613,6 @@ mod tests {
             "teammate"
         );
         assert_eq!(sender_of(&device("peer", None))["owner"], "teammate");
-        assert_eq!(sender_of(&device("handoff", None))["owner"], "teammate");
         let app = sender_of(&device("device", None));
         assert_eq!(app["owner"], "self");
         assert_eq!(app["host"], "the maintainer's laptop");

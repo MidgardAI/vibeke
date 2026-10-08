@@ -189,7 +189,7 @@ async fn peers_pair_call_list_and_revoke() {
         "dashboard.get",
         "peer.invite",
         "share.list",
-        "handoff.export",
+        "handoff.accept",
     ] {
         let e = conn.call(m, json!({})).await.unwrap_err();
         assert_eq!(e.kind, "forbidden", "{m}: {e:?}");

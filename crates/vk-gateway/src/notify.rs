@@ -275,12 +275,7 @@ async fn send(gw: &Arc<Gateway>, open: &Open, is_done: bool) {
     // Pane → workspace, fetched only if a limited (share) device needs it.
     let mut pane_ws: Option<Vec<(String, Option<String>)>> = None;
     for d in gw.devices() {
-        if d.push.is_empty()
-            || d.vapid_private.is_none()
-            || gw.is_visible(&d.id)
-            || d.expired()
-            || d.kind == "handoff"
-        {
+        if d.push.is_empty() || d.vapid_private.is_none() || gw.is_visible(&d.id) || d.expired() {
             continue;
         }
         let visible = match crate::api::Allowed::of(&d) {
