@@ -3,7 +3,7 @@
 // state after answering.
 
 import { useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
-import { AlertTriangle, Check, CircleHelp, ClipboardList, ExternalLink, FileText, Loader2, RefreshCw, ShieldAlert, X } from 'lucide-react';
+import { AlertTriangle, Check, CircleHelp, ClipboardList, ExternalLink, FileText, ListChecks, Loader2, RefreshCw, ShieldAlert, X } from 'lucide-react';
 import { displayName, interactionRisk, paneTitle, swipeAllowed, type Decision, type InboxItem, type Interaction } from '@vibeke/core';
 import { useAnswers, useApp, useHost, useNow } from '../app/hooks';
 import { t } from '../i18n';
@@ -11,6 +11,7 @@ import { deliveryView, needsPane, type DeliveryView } from '../lib/answer';
 import { shortDuration } from '../lib/format';
 import { harnessLabel } from '../lib/harness';
 import { navigate } from '../router';
+import { PickerBody } from './picker-card';
 import { DiffView } from './diff';
 import { Markdown } from './markdown';
 import { Button, Card, Notice, RiskBadge, Sheet, cx } from './ui';
@@ -69,6 +70,7 @@ function KindIcon({ kind }: { kind: Interaction['kind'] }) {
   if (kind === 'question') return <CircleHelp className={c} />;
   if (kind === 'plan_review') return <ClipboardList className={c} />;
   if (kind === 'notice') return <FileText className={c} />;
+  if (kind === 'picker') return <ListChecks className={c} />;
   return <ShieldAlert className={c} />;
 }
 
@@ -171,6 +173,7 @@ export function InteractionCard({
   preselect = null,
   leaving = false,
   variant = 'default',
+  onOpenTerminal,
 }: {
   item: InboxItem;
   showHost?: boolean;
@@ -178,6 +181,8 @@ export function InteractionCard({
   leaving?: boolean;
   /** `compact`: inline in a conversation (smaller type, no "open pane" link: it is open). */
   variant?: 'default' | 'compact';
+  /** Switch to the pane's terminal tab (the unknown-dialog card); default: open the pane's terminal view. */
+  onOpenTerminal?(): void;
 }) {
   const compact = variant === 'compact';
   const app = useApp();
@@ -191,7 +196,7 @@ export function InteractionCard({
   const disabled = !ctx.canAnswer || locked;
   const [confirm, setConfirm] = useState<Decision | null>(null);
 
-  const send = (params: { decision?: Decision; choices?: Record<string, string[]>; text?: string }, label: string) => {
+  const send = (params: { decision?: Decision; choices?: Record<string, string[]>; text?: string; expected_signature?: string }, label: string) => {
     app.haptic('tap');
     void app.answer(item.host_id, it, params, label);
   };
@@ -201,6 +206,7 @@ export function InteractionCard({
     else send({ decision: d }, d);
   };
   const openPane = () => item.pane && navigate({ name: 'pane', host: item.host_id, pane: item.pane.id, view: 'term' });
+  const openTerminal = onOpenTerminal ?? openPane;
   const refresh = () => {
     app.resetAnswer(item.host_id, it.id);
     void app.conn(item.host_id)?.refresh().catch(() => {});
@@ -242,7 +248,7 @@ export function InteractionCard({
   };
 
   return (
-    <div className={cx('relative', leaving && 'animate-leave')} data-nav-item={key} tabIndex={-1} aria-label={it.title}>
+    <div className={cx('relative', leaving && 'animate-leave')} data-nav-item={key} data-interaction={it.id} data-kind={it.kind} tabIndex={-1} aria-label={it.title}>
       {dx !== 0 && (
         <div
           className={cx(
@@ -267,6 +273,7 @@ export function InteractionCard({
           {it.kind === 'approval' && <ActionPreview it={it} />}
           {it.kind === 'question' && <QuestionBody it={it} disabled={disabled} locked={locked} onSubmit={(c, tx) => send({ ...(c ? { choices: c } : {}), ...(tx ? { text: tx } : {}) }, 'answer')} />}
           {it.kind === 'plan_review' && <PlanBody it={it} disabled={disabled} locked={locked} onApprove={() => send({ decision: 'allow' }, 'approve')} onChanges={(tx) => send({ decision: 'deny', text: tx }, 'changes')} />}
+          {it.kind === 'picker' && <PickerBody it={it} disabled={disabled} locked={locked} onAnswer={send} onOpenTerminal={openTerminal} />}
           {it.kind === 'notice' && it.body_md && <Markdown text={it.body_md} className="text-sm" />}
 
           {preselect && !locked && <Notice tone="info">{t.inbox.preselected(preselect === 'allow' ? t.inbox.allow : t.inbox.deny)}</Notice>}
