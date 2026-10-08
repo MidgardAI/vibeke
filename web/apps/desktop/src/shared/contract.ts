@@ -1,11 +1,18 @@
 // The IPC contract between the renderer (preload bridge) and the main process (spec 16 §16.1).
 // Kept small and explicit: every channel here has a validator in main/validate.ts.
 
+import type { UpdateState } from '@vibeke/ui';
 import type { AppMethod, HostRecord, HostState } from '@vibeke/core';
 
 /** Renderer → main (ipcRenderer.invoke / ipcMain.handle). */
 export const INVOKE = {
   boot: 'vk:boot',
+  draftGet: 'vk:draft.get',
+  draftSet: 'vk:draft.set',
+  updatesGet: 'vk:updates.get',
+  updatesCheck: 'vk:updates.check',
+  updatesDownload: 'vk:updates.download',
+  updatesInstall: 'vk:updates.install',
   engineStart: 'vk:engine.start',
   request: 'vk:host.request',
   refresh: 'vk:host.refresh',
@@ -35,6 +42,7 @@ export const INVOKE = {
 
 /** Main → renderer (webContents.send). */
 export const EVENT = {
+  updates: 'vk:updates',
   hosts: 'vk:hosts',
   pairPending: 'vk:pair.pending',
   nav: 'vk:nav',
@@ -133,6 +141,7 @@ export type WireResult<T> = { ok: true; value: T } | { ok: false; error: WireErr
 
 /** Static facts the renderer needs before it renders (one fast round trip). */
 export interface BootInfo {
+  updates?: UpdateState;
   platform: string;
   platformName: string;
   deviceName: string;
@@ -165,10 +174,11 @@ export interface DesktopSettings {
    */
   vibekePath: string;
   notifications: boolean;
+  automaticUpdates: boolean;
 }
 
 /** The settings a renderer may change through `settingsSet`. */
-export type RendererSettingsPatch = Partial<Pick<DesktopSettings, 'shortcut' | 'openAtLogin' | 'showDock' | 'notifications'>>;
+export type RendererSettingsPatch = Partial<Pick<DesktopSettings, 'shortcut' | 'openAtLogin' | 'showDock' | 'notifications' | 'automaticUpdates'>>;
 
 export const DEFAULT_SETTINGS: DesktopSettings = {
   shortcut: 'Alt+CommandOrControl+V',
@@ -176,6 +186,7 @@ export const DEFAULT_SETTINGS: DesktopSettings = {
   showDock: true,
   vibekePath: '',
   notifications: true,
+  automaticUpdates: true,
 };
 
 export type LocalConnectResult =

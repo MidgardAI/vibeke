@@ -35,9 +35,11 @@ import { APP_ORIGIN, CSP, handleAppProtocol, registerScheme } from './protocol';
 import { loadSettings, writeJson } from './store';
 import { connectNode } from './transport';
 import { AppTray } from './tray';
-import { startUpdates } from './updater';
+import { startUpdates, type Updates } from './updater';
 import { externalUrl, isTrustedUrl } from './validate';
 import { Vault } from './vault';
+import { DraftStore } from './drafts';
+import { syncDraftHosts } from './draft-lifecycle';
 import { Windows } from './windows';
 
 declare const __APP_VERSION__: string;
@@ -95,8 +97,10 @@ const userData = app.getPath('userData');
 const outDir = join(app.getAppPath(), 'out');
 const settingsFile = join(userData, 'settings.json');
 let settings: DesktopSettings = loadSettings(settingsFile);
+let updates: Updates;
 
 const vault = new Vault(userData, safeStorage);
+const drafts = new DraftStore(join(userData, 'drafts'), safeStorage);
 
 const visible = new Set<() => void>();
 const hidden = new Set<() => void>();
@@ -189,6 +193,10 @@ const notifier = new Notifier(
 );
 
 engine.onPatch((patch) => {
+  void syncDraftHosts(engine, drafts).catch((e) => log(`draft cleanup: ${(e as Error).message}`));
+  for (const s of patch.changed) if (s.status === 'online' && s.dashboard) {
+    void drafts.retainPanes(s.record.host_id, s.dashboard.panes.filter((p) => !p.exited).map((p) => p.id)).catch((e) => log(`draft cleanup: ${(e as Error).message}`));
+  }
   let open = 0;
   for (const s of engine.snapshot()) open += s.dashboard?.interactions.filter((i) => i.status === 'open').length ?? 0;
   tray.setCount(open);
@@ -268,7 +276,12 @@ function updateSettings(patch: Partial<DesktopSettings>): DesktopSettings {
     }
     throw e;
   }
+  const updateChecksChanged = settings.automaticUpdates !== next.automaticUpdates;
   settings = next;
+  if (updates && updateChecksChanged) {
+    updates.automatic(settings.automaticUpdates);
+    for (const w of windows.all()) w.webContents.send(EVENT.updates, updates.snapshot());
+  }
   writeJson(settingsFile, settings);
   for (const w of windows.all()) w.webContents.send(EVENT.settings, settings);
   return settings;
@@ -284,6 +297,7 @@ const menu = () =>
     openMain: (hash) => windows.showMain(hash),
     toggleQuick: () => windows.toggleQuick(),
     connectLocal: () => windows.showMain('#/pair'),
+    checkUpdates: () => { windows.showMain('#/settings'); void updates.check(); },
     shortcut: () => settings.shortcut,
     devTools: !app.isPackaged,
   });
@@ -452,7 +466,15 @@ app.whenReady().then(() => {
   if (!devServer) handleAppProtocol(join(outDir, 'renderer'));
   secureSession();
 
+  const controller = startUpdates(
+    (state) => { for (const w of windows.all()) w.webContents.send(EVENT.updates, { ...state, automatic: settings.automaticUpdates }); },
+    () => { windows.prepareUpdate(); windows.quitting = true; },
+    () => { windows.cancelUpdate(); },
+  );
+  updates = { ...controller, snapshot: () => ({ ...controller.snapshot(), automatic: settings.automaticUpdates }) };
   registerIpc({
+    drafts,
+    updates,
     engine,
     setHostEvents: (wc, hostId, on) => eventSubs.set(wc, hostId, on),
     windows,
@@ -472,6 +494,7 @@ app.whenReady().then(() => {
   ipcMain.handle(INVOKE.boot, (e) => {
     if (!isTrustedUrl(e.senderFrame?.url, trustedOrigins()) || !windows.isOurs(e.sender)) throw new Error('forbidden');
     const info: BootInfo = {
+      updates: updates.snapshot(),
       platform: process.platform,
       platformName,
       deviceName: deviceName(),
@@ -498,7 +521,7 @@ app.whenReady().then(() => {
     () => notifier.start(),
     (e) => log(`engine: ${(e as Error).message}`),
   );
-  startUpdates(log);
+  updates.automatic(settings.automaticUpdates);
 
   const hiddenStart = process.argv.includes('--hidden') || (process.platform === 'darwin' && app.getLoginItemSettings().wasOpenedAtLogin);
   ready = true;
@@ -510,10 +533,29 @@ app.whenReady().then(() => {
 });
 
 app.on('activate', () => windows.showMain());
-app.on('before-quit', () => {
+let flushingQuit = false;
+let discardDraftsOnQuit = false;
+app.on('before-quit', (event) => {
+  if (!discardDraftsOnQuit && drafts.hasPending()) {
+    event.preventDefault();
+    if (!flushingQuit) {
+      flushingQuit = true;
+      void drafts.flush().then(() => { flushingQuit = false; app.quit(); }, async (error) => {
+        windows.cancelUpdate();
+        const { response } = await dialog.showMessageBox({ type: 'warning', title: 'Drafts could not be saved',
+          message: 'Some conversation drafts could not be saved.', detail: `Copy or send them before quitting to keep your edits. ${(error as Error).message}`,
+          buttons: ['Retry', 'Quit without saving', 'Cancel'], defaultId: 2, cancelId: 2 });
+        flushingQuit = false;
+        if (response === 1) { discardDraftsOnQuit = true; app.quit(); }
+        else if (response === 0) app.quit();
+      });
+    }
+    return;
+  }
   windows.quitting = true;
 });
 app.on('will-quit', () => {
+  updates?.stop();
   globalShortcut.unregisterAll();
   notifier.stop();
   engine.stop();

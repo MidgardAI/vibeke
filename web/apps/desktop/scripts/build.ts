@@ -3,7 +3,7 @@
 //   bun scripts/build.ts            everything
 //   bun scripts/build.ts --native   main + preload only (dev: the renderer comes from vite dev)
 
-import { cpSync, mkdirSync, rmSync } from 'node:fs';
+import { cpSync, mkdirSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { appVersion, buildHash } from './meta';
 
@@ -11,7 +11,11 @@ const root = fileURLToPath(new URL('..', import.meta.url));
 const nativeOnly = process.argv.includes('--native');
 const dev = process.argv.includes('--dev');
 
+const bootstrap = readFileSync(new URL('../../../../crates/vk-remote/src/bootstrap.rs', import.meta.url), 'utf8');
+const releaseKeys = [...bootstrap.matchAll(/pub const KEY_(?:CURRENT|NEXT): &str = "([^"]+)";/g)].map((m) => m[1]!);
+if (releaseKeys.length !== 2) throw new Error('Release public keys are missing');
 const define = {
+  __RELEASE_KEYS__: JSON.stringify(releaseKeys),
   __APP_VERSION__: JSON.stringify(appVersion()),
   __BUILD_HASH__: JSON.stringify(buildHash()),
   'process.env.NODE_ENV': JSON.stringify(dev ? 'development' : 'production'),
@@ -41,6 +45,9 @@ rmSync(`${root}out/preload`, { recursive: true, force: true });
 await bundle('src/main/index.ts', 'out/main', 'node');
 // electron-updater on its own: required at run time only when a packaged feed enables updates.
 await bundle('src/main/updater-impl.ts', 'out/main', 'node');
+const realIdentity = !!(process.env.CSC_LINK || process.env.CSC_NAME || process.env.VIBEKE_MAC_SIGN);
+const notarized = !!(process.env.APPLE_API_KEY || process.env.APPLE_ID || process.env.APPLE_KEYCHAIN_PROFILE);
+writeFileSync(`${root}out/main/update-policy.json`, JSON.stringify({ macSigned: process.env.VIBEKE_MAC_UPDATE_SUPPORTED === 'true' || (realIdentity && notarized) }));
 await bundle('src/preload/index.ts', 'out/preload', 'browser');
 mkdirSync(`${root}out/main/assets`, { recursive: true });
 cpSync(`${root}build/tray`, `${root}out/main/assets`, { recursive: true });

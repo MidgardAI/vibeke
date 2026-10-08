@@ -79,9 +79,15 @@ pub struct Req {
     pub params: Value,
 }
 
-/// Starts a terminal's command: `(cwd, argv, title)` → the pane id.
+/// A retained runtime keeps a fast command's final output readable after its pane closes.
+pub struct Spawned {
+    pub pane: String,
+    pub rt: Option<Arc<crate::pane::PaneRt>>,
+}
+
+/// Starts a terminal's command: `(cwd, argv, title)` → its pane and retained runtime.
 pub type Spawn<'a> =
-    dyn FnMut(&std::path::Path, Vec<String>, String) -> Result<String, String> + 'a;
+    dyn FnMut(&std::path::Path, Vec<String>, String) -> Result<Spawned, String> + 'a;
 
 /// What a request needs from the session.
 pub struct Ctx<'a> {
@@ -323,7 +329,7 @@ fn create_new(cx: &mut Ctx, native_ref: &str, r: &Req) -> Option<Value> {
     }
     // Subscribed before the pane exists: a command that exits at once is still seen exiting.
     let events = cx.server.events.subscribe();
-    let pane = match (cx.spawn)(&dir, argv, format!("acp: {label}")) {
+    let Spawned { pane, rt } = match (cx.spawn)(&dir, argv, format!("acp: {label}")) {
         Ok(p) => p,
         Err(e) => {
             // Nothing started: the intent goes.
@@ -351,7 +357,7 @@ fn create_new(cx: &mut Ctx, native_ref: &str, r: &Req) -> Option<Value> {
             ..Term::default()
         },
     );
-    watch(cx.server, &id, &pane, cx.owner, cx.terms, Some(events));
+    watch(cx.server, &id, &pane, cx.owner, cx.terms, rt, Some(events));
     Some(ok(&r.id, json!({"terminalId": id})))
 }
 
@@ -371,8 +377,8 @@ pub fn rewatch(server: &Arc<Server>, owner: &str, saved: &[Saved], terms: &Terms
                 ..Term::default()
             },
         );
-        if server.pane_rt(&s.pane).is_some() {
-            watch(server, &s.id, &s.pane, owner, terms, None);
+        if let Some(rt) = server.pane_rt(&s.pane) {
+            watch(server, &s.id, &s.pane, owner, terms, Some(rt), None);
         } else if let Some(t) = terms.lock().unwrap().get_mut(&s.id) {
             t.exit = Some(Exit {
                 code: None,
@@ -441,6 +447,7 @@ fn watch(
     pane: &str,
     owner: &str,
     terms: &Terms,
+    runtime: Option<Arc<crate::pane::PaneRt>>,
     events: Option<tokio::sync::broadcast::Receiver<Arc<vk_store::Event>>>,
 ) {
     // In-process unit tests have no runtime: nothing to watch.
@@ -456,7 +463,7 @@ fn watch(
     );
     let mut events = events.unwrap_or_else(|| server.events.subscribe());
     tokio::spawn(async move {
-        let exit = match server.pane_rt(&pane) {
+        let exit = match runtime {
             None => Exit {
                 code: None,
                 signal: None,

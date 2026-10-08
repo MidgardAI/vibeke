@@ -14,7 +14,7 @@ test('launches to the pairing screen and quits cleanly', async () => {
   // An empty gateway dir and a missing CLI: nothing local to connect to.
   const gw = shortTmp('vkgw-');
   const t0 = Date.now();
-  const a = await launchApp({ VIBEKE_GATEWAY_DIR: gw, VIBEKE_BIN: '/nonexistent/vibeke', PATH: '/usr/bin:/bin' });
+  const a = await launchApp({ HOME: gw, VIBEKE_GATEWAY_DIR: gw, VIBEKE_BIN: '/nonexistent/vibeke', PATH: '/usr/bin:/bin' });
   try {
     const { page, app } = a;
     await expect(page.getByText('Pair with a host')).toBeVisible();
@@ -81,7 +81,7 @@ test('launches to the pairing screen and quits cleanly', async () => {
 
 test('a deep link opened at launch is delivered after the renderer is ready', async () => {
   const gw = shortTmp('vkgw-');
-  const a = await launchApp({ VIBEKE_GATEWAY_DIR: gw, VIBEKE_BIN: '/nonexistent/vibeke', PATH: '/usr/bin:/bin' }, ['vibeke://inbox']);
+  const a = await launchApp({ HOME: gw, VIBEKE_GATEWAY_DIR: gw, VIBEKE_BIN: '/nonexistent/vibeke', PATH: '/usr/bin:/bin' }, ['vibeke://inbox']);
   try {
     await expect(a.page).toHaveURL(/#\/inbox$/, { timeout: 15_000 });
   } finally {

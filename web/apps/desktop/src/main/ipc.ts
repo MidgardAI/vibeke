@@ -7,9 +7,13 @@ import { parseLink, type HostRecord } from '@vibeke/core';
 import { EVENT, INVOKE, type ChooseVibekeResult, type DesktopSettings, type LocalConnectResult, type RendererSettingsPatch, type WireResult } from '../shared/contract';
 import { toWire, type Engine } from './engine';
 import * as v from './validate';
+import type { Updates } from './updater';
+import type { DraftStore } from './drafts';
 import type { Windows } from './windows';
 
 export interface IpcDeps {
+  updates: Updates;
+  drafts: DraftStore;
   engine: Engine;
   /** A window starts / stops receiving one host's events. */
   setHostEvents(wc: WebContents, hostId: string, on: boolean): void;
@@ -45,6 +49,33 @@ export function registerIpc(d: IpcDeps): void {
       return f(e, ...args);
     });
   };
+
+  const draftKey = (host: unknown, pane: unknown) => {
+    if (typeof host !== 'string' || typeof pane !== 'string' || !/^[a-zA-Z0-9_.:-]{1,160}$/.test(host) || !/^[a-zA-Z0-9_.:-]{1,160}$/.test(pane)) throw new Error('Invalid draft scope');
+    return JSON.stringify([host, pane]);
+  };
+  handle(INVOKE.draftGet, async (_e, host, pane) => {
+    try { draftKey(host, pane); return ok(await d.drafts.get(host as string, pane as string)); } catch (e) { return err(e); }
+  });
+  handle(INVOKE.draftSet, async (_e, host, pane, text) => {
+    draftKey(host, pane);
+    try {
+      if (typeof text !== 'string') throw new Error('Draft is too large');
+      await d.drafts.set(host as string, pane as string, text);
+      return ok(null);
+    } catch (e) { return err(e); }
+  });
+  for (const [channel, action] of [
+    [INVOKE.updatesGet, () => d.updates.snapshot()],
+    [INVOKE.updatesCheck, () => d.updates.check()],
+    [INVOKE.updatesDownload, () => d.updates.download()],
+    [INVOKE.updatesInstall, async () => { await d.drafts.flush(); d.updates.install(); }],
+  ] as const) {
+    handle(channel, async (_e, ...args) => {
+      if (args.length) throw new Error('Update actions take no arguments');
+      try { return ok((await action()) ?? null); } catch (e) { return err(e); }
+    });
+  }
 
   handle(INVOKE.engineStart, async () => {
     try {
@@ -86,7 +117,9 @@ export function registerIpc(d: IpcDeps): void {
 
   handle(INVOKE.remove, async (_e, host) => {
     try {
-      await d.engine.remove(v.hostId(host));
+      const id = v.hostId(host);
+      await d.engine.remove(id);
+      await d.drafts.removeHost(id).catch((e) => console.warn('Draft cleanup after host removal failed', e));
       return ok(null);
     } catch (e) {
       return err(e);

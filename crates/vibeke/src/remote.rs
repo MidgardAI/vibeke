@@ -289,6 +289,7 @@ pub async fn ssh(g: &Global, args: &[String]) -> i32 {
     let remote_index = specs.len();
     specs.push(spec_for(link));
     let opts = vk_tui::app::Opts {
+        update_args: None,
         session: g.session.clone(),
         config: cfg,
         initial_machine: remote_index,

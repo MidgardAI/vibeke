@@ -119,7 +119,7 @@ main process (Node)                                    renderer (sandboxed, per 
 - **Settings → Desktop**: quick-approvals shortcut, notifications, open at login (menu bar only,
   no window), show in Dock (macOS), `vibeke` command (Choose… opens the native picker).
 - **Updates**: `electron-updater` with a generic feed baked in at packaging time
-  (`VIBEKE_UPDATE_URL`, https only → `Contents/Resources/app-update.yml`). Packaged builds without
+  (fixed public GitHub release endpoint → `Contents/Resources/app-update.yml`). Packaged builds without
   that file never load the updater (it is a separate bundle, `out/main/updater-impl.cjs`);
   nothing at run time can change the feed.
 
@@ -133,7 +133,7 @@ Secrets come from the environment only:
 | macOS signing | `CSC_LINK` (+ `CSC_KEY_PASSWORD`), or `CSC_NAME` / `VIBEKE_MAC_SIGN=1` for a keychain identity |
 | Notarization | `APPLE_API_KEY` + `APPLE_API_KEY_ID` + `APPLE_API_ISSUER`, or `APPLE_ID` + `APPLE_APP_SPECIFIC_PASSWORD` + `APPLE_TEAM_ID`, or `APPLE_KEYCHAIN_PROFILE` |
 | Windows signing | `WIN_CSC_LINK` (+ `WIN_CSC_KEY_PASSWORD`) |
-| Update feed | `VIBEKE_UPDATE_URL` |
+| Update feed | Fixed public GitHub release assets, authenticated with the embedded minisign keys |
 
 Without a signing identity the macOS app is signed ad hoc (Apple silicon refuses unsigned code, and
 applying fuses invalidates Electron's own signature) and the hardened runtime is off; such a build
@@ -193,3 +193,22 @@ runs on the machine that built it.
 
 - `vault.bin`, `settings.json`, `window-state.json`, `logs/` in the user-data dir
   (`~/Library/Application Support/Vibeke` on macOS). `VIBEKE_USER_DATA` overrides it.
+
+### Updating from the app
+
+The native menu and Settings → About offer update checks; the sidebar shows available,
+downloading, ready and failed states. Checks run after startup and every six hours unless
+turned off. Downloads and restart require a user action. Development builds never check
+in the background. Unconfigured/unsigned Mac packages and Linux DEBs offer manual downloads.
+
+`update-release.ts` verifies the signed checksum list, version and exact channel bytes before
+`update-info.ts` parses them. The lazy updater bundle receives only authenticated, version-pinned
+metadata. Every update IPC action validates the sender and accepts no URL or executable path.
+Conversation drafts use a separate encrypted store with batched asynchronous writes; update
+restart and normal quit flush pending edits. Terminal composer text stays in memory. Drafts
+are limited to 1 MiB total and pruned when panes close, hosts are removed, or after 30 days.
+
+Run `bun scripts/verify-update-feed.ts dist --platform mac` (or `linux` / `windows`) after
+packaging. The release workflow retains channel YAML and blockmaps; the local release signer
+includes them in the signed checksum list. See `docs/releases.md` for publication and upgrade
+rehearsal requirements.

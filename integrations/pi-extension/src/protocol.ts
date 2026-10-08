@@ -148,6 +148,9 @@ export class VibekeClient {
     s.unref();
     s.setNoDelay?.(true);
     s.on("error", () => {});
+    // EOF ends this JSON-RPC transport. Some runtimes delay close while writes are
+    // buffered; destroy explicitly so a server restart always triggers reconnection.
+    s.on("end", () => s.destroy());
     s.on(
       "data",
       lineReader((line) => {
@@ -375,6 +378,7 @@ export class VibekeClient {
       s = sock;
       sock.unref();
       sock.on("error", () => {});
+      sock.on("end", () => sock.destroy());
       sock.on("close", () => {
         if (s === sock) s = null;
         retry(); // no-op once settled

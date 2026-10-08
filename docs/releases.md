@@ -27,7 +27,8 @@ Every release path requires a valid signature by the current or the next key. Th
 | `scripts/install.sh` | `SHA256SUMS.minisig` over `SHA256SUMS` with the `minisign` tool (`brew install minisign`), then the binary against its `SHA256SUMS` entry. |
 | `vibeke ssh`, `vibeke machine upgrade` (`bootstrap = "push"`) | A cached or `VIBEKE_ARTIFACT_DIR` binary: its `SHA256SUMS` entry and the signature, before upload. The remote re-checks the sha256 before the switch. |
 | `bootstrap = "remote-download"` | The laptop downloads and verifies `manifest.json` and `manifest.json.minisig`. The signature must name `version:<v>` in its trusted comment and `<v>` must be this build's version. The remote then downloads the file and checks the manifest's sha256. |
-| `vibeke update` | A cached or `--from` binary: checksum and signature before it is executed. |
+| `vibeke update` | The latest stable release is resolved once; its signed `manifest.json` binds the version, artifact URL and SHA-256. Verification precedes execution. `--from` and `--cached` retain offline checksum/signature verification. |
+| Desktop updates | The embedded release public keys verify `SHA256SUMS.minisig` and its version. The signed list covers the exact Electron channel metadata; authenticated metadata binds artifact SHA-512 hashes. Native publisher checks also apply. |
 | `vibeke integration update` (manifest channel) | `index.json.minisig` over the index, by the same two keys. The channel has no key of its own. |
 
 ### Unsigned development builds
@@ -37,6 +38,7 @@ Every release path requires a valid signature by the current or the next key. Th
 - The expected checksum must come from `SHA256SUMS` or a `<binary>.sha256` file next to the binary.
 - A missing checksum file or a mismatch is always refused.
 - The installer accepts the opt-in the same way, with `SHA256SUMS` from the download.
+- Online CLI and desktop updates have no unsigned mode. The CLI development opt-in applies only to explicit offline artifacts.
 - `remote-download` has no unsigned mode, because there is no local file to checksum.
 - The manifest channel keeps its separate development opt-in `VIBEKE_ALLOW_UNSIGNED_MANIFESTS=1`. The sha256 and serial checks still apply.
 
@@ -80,19 +82,19 @@ A target whose toolchain is missing is skipped with a notice. Use `mise exec -- 
 
 Linux binaries use static musl linking. Zig 0.16 provides the C toolchain for libghostty-vt and linking. `mise.toml` selects the Zig version.
 
-`mise run dist` (`scripts/dist.sh`) is the development variant. It also copies the files to `~/.cache/vibeke/releases/<version>/`, which SSH installation and `vibeke update` read. Set `VIBEKE_RELEASES_DIR` to use another cache directory. Its output is unsigned, so using it needs `VIBEKE_ALLOW_UNSIGNED=1` or a signed `SHA256SUMS`.
+`mise run dist` (`scripts/dist.sh`) is the development variant. It also copies the files to `~/.cache/vibeke/releases/<version>/`, which SSH installation and `vibeke update --cached` read. Set `VIBEKE_RELEASES_DIR` to use another cache directory. Its output is unsigned, so using it needs `VIBEKE_ALLOW_UNSIGNED=1` or a signed `SHA256SUMS`.
 
 ## Desktop release files
 
 The tag workflow also packages the Electron client: macOS DMG and ZIP for arm64 and x64, Linux AppImage and DEB for x64, and Windows NSIS for x64. These are named `Vibeke-<version>-<os>-<arch>.<extension>` and attached to the same draft release. The desktop package version must match the tag. Each packaged app is checked for the required Electron fuses and ASAR layout; macOS bundles also pass `codesign --verify --deep --strict`.
 
-`release-sign.sh` includes these downloads in the signed `SHA256SUMS`. The remote-bootstrap `manifest.json` continues to list only host runtime binaries. The desktop app does not bundle the host CLI. Apple Developer ID signing/notarization and Windows publisher signing are not configured in the workflow, and there is no automatic desktop update feed.
+`release-sign.sh` includes these downloads and the update metadata in the signed `SHA256SUMS`. The remote-bootstrap `manifest.json` continues to list only host runtime binaries. The desktop app does not bundle the host CLI. Publisher signing is configured separately from minisign; see the desktop update feed requirements below.
 
 ## Release steps
 
 For a packaging check before tagging, run `gh workflow run release.yml --ref main`. This builds and verifies the CLI and desktop artifacts and retains them as Actions artifacts; a manual run never creates or publishes a release. Add `-f component=desktop` or `-f component=cli` to check only that package family.
 
-Signing happens locally. CI never holds a signing secret.
+Minisign release signing happens locally. CI never holds the minisign secret key.
 
 1. Update the workspace version in `Cargo.toml`, commit it, and push it to `main`.
 2. Wait for the `ci` workflow (which runs `mise run ci`) to pass on that commit. The [hardening guide](hardening.md) describes the separate fuzz, performance and reproducibility checks.
@@ -106,6 +108,43 @@ Signing happens locally. CI never holds a signing secret.
 10. Smoke test: run `scripts/install.sh` with `VIBEKE_VERSION=<version>` (private forks can also set `GITHUB_TOKEN`) on a clean `HOME`.
 
 `manifest.json` lists `{version, artifacts: [{target, sha256, url}]}`. Its signature carries the trusted comment `vibeke v<version> version:<version>`, so an old manifest cannot be replayed under a new version.
+
+## Desktop update feed
+
+The packaged generic HTTPS feed is the public GitHub release download endpoint. Runtime
+settings and renderer messages cannot change it. Discovery resolves one published stable
+release, then reads its version-pinned files. Prereleases and drafts are excluded.
+
+The release workflow retains `latest.yml`, `latest-mac.yml`, `latest-linux.yml`, and generated
+`Vibeke-*.blockmap` files with the installers. Both Mac ZIP architectures must appear in the
+Mac channel. Before signing the assembled draft, install the frozen web dependencies and run:
+
+```sh
+cd web
+bun install --frozen-lockfile
+bun apps/desktop/scripts/verify-update-feed.ts ../dist/<version>
+```
+
+This verifies metadata versions, payload sizes and SHA-512 hashes, required blockmaps, and
+both Mac ZIPs. `scripts/release-sign.sh` includes the channel files and blockmaps in
+`SHA256SUMS`. Upload all verified files to the draft and publish only after both signatures
+and all payloads have been verified in a fresh download. Do not publish channel metadata
+that points to unfinished or replaced artifacts.
+
+macOS native updating requires a Developer ID signing identity and notarization. The desktop
+workflow accepts optional `MAC_CSC_LINK`, `MAC_CSC_KEY_PASSWORD`, `APPLE_API_KEY_P8`,
+`APPLE_API_KEY_ID`, and `APPLE_API_ISSUER` repository secrets. The workflow writes the P8 secret to a private temporary file
+and provides its path to the notarization tool. Windows accepts `WIN_CSC_LINK` and `WIN_CSC_KEY_PASSWORD`. None of these
+replace local minisign release signing. Without Mac publisher signing, the app offers a
+manual download. Linux DEB also uses manual installation; AppImage and Windows NSIS use
+the native updater after authenticated discovery.
+
+Before enabling a platform for a release, rehearse an installed version N → N+1 upgrade,
+including app relaunch, restored drafts/navigation and host reconnection. Check interrupted
+downloads, invalid signatures, offline checks, and same/older-version responses. CLI rehearsal
+must keep a terminal process alive through installation and verify both its PID and the new
+server's version. Unit tests and unpacked-app smoke tests do not replace installed upgrade
+validation. Existing v0.1.0 desktop installations need one manual upgrade to enable the feed.
 
 ## Key rotation
 

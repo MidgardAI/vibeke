@@ -353,6 +353,19 @@ pub fn draw_rail(app: &App, g: &mut Grid) {
 }
 
 pub fn on_mouse(app: &mut App, me: &MouseEvent) -> bool {
+    if let Some(sx) = crate::chrome::sidebar_x(app) {
+        let w = app.sidebar_w;
+        if crate::updates::badge(app).is_some()
+            && me.row == app.size.1.saturating_sub(1)
+            && me.column >= sx
+            && me.column < sx + w
+        {
+            if matches!(me.kind, MouseEventKind::Down(CtButton::Left)) {
+                crate::updates::action(app, "update");
+            }
+            return true;
+        }
+    }
     // Rail clicks.
     if rail_w(app) > 0 {
         let x = rail_x(app);

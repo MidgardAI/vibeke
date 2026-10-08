@@ -1594,7 +1594,7 @@ impl Layout {
             bin: paths::home().join(".local/bin"),
         }
     }
-    fn version_bin(&self, v: &str) -> PathBuf {
+    pub(crate) fn version_bin(&self, v: &str) -> PathBuf {
         self.data.join("versions").join(v).join("vibeke")
     }
     fn current(&self) -> PathBuf {
@@ -1607,6 +1607,53 @@ impl Layout {
     pub fn previous_version(&self) -> Option<String> {
         let s = std::fs::read_to_string(self.data.join("previous")).ok()?;
         Some(s.trim().to_string()).filter(|s| !s.is_empty())
+    }
+}
+
+/// Keep current, previous and every image used by a process. If process enumeration is
+/// unavailable or incomplete, retain the cache rather than break another session.
+pub(crate) async fn prune_unused_versions(l: &Layout) {
+    let mut cmd = tokio::process::Command::new("lsof");
+    // SAFETY: geteuid has no preconditions and returns this process's user id.
+    let uid = unsafe { libc::geteuid() }.to_string();
+    cmd.args(["-Fn", "-a", "-u", &uid, "-d", "txt"])
+        .kill_on_drop(true);
+    let Ok(Ok(output)) = tokio::time::timeout(Duration::from_secs(5), cmd.output()).await else {
+        return;
+    };
+    if !output.status.success() || !output.stderr.is_empty() {
+        return;
+    }
+    let paths: std::collections::HashSet<PathBuf> = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| line.strip_prefix('n'))
+        .map(|path| PathBuf::from(path.strip_suffix(" (deleted)").unwrap_or(path)))
+        .collect();
+    if paths.is_empty() {
+        return;
+    }
+    prune_with_active_images(l, &paths);
+}
+
+fn prune_with_active_images(l: &Layout, active: &std::collections::HashSet<PathBuf>) {
+    let keep = [l.current_version(), l.previous_version()];
+    let Ok(entries) = std::fs::read_dir(l.data.join("versions")) else {
+        return;
+    };
+    for e in entries.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        if keep.iter().flatten().any(|v| v == &name)
+            || semver::Version::parse(&name).is_err()
+            || !e.file_type().is_ok_and(|t| t.is_dir())
+        {
+            continue;
+        }
+        let binary = e.path().join("vibeke");
+        if let Ok(real) = std::fs::canonicalize(&binary)
+            && !active.contains(&real)
+        {
+            let _ = std::fs::remove_dir_all(e.path());
+        }
     }
 }
 
@@ -1633,13 +1680,15 @@ pub fn install_version(l: &Layout, v: &str, src: &Path) -> std::io::Result<PathB
 }
 
 /// Point `current` at `versions/<v>` atomically, remember the previous version, link
-/// `~/.local/bin/vibeke`, and prune everything but current + previous.
+/// `~/.local/bin/vibeke`. Keep older images: other sessions can still be running them.
 pub fn switch_current(l: &Layout, v: &str) -> std::io::Result<Option<String>> {
     let prev = l.current_version();
-    atomic_symlink(&PathBuf::from("versions").join(v), &l.current())?;
     if let Some(p) = prev.as_ref().filter(|p| p.as_str() != v) {
-        std::fs::write(l.data.join("previous"), format!("{p}\n"))?;
+        let tmp = l.data.join("previous.tmp");
+        std::fs::write(&tmp, format!("{p}\n"))?;
+        std::fs::rename(tmp, l.data.join("previous"))?;
     }
+    atomic_symlink(&PathBuf::from("versions").join(v), &l.current())?;
     std::fs::create_dir_all(&l.bin)?;
     let link = l.bin.join("vibeke");
     if let Ok(m) = std::fs::symlink_metadata(&link)
@@ -1649,18 +1698,6 @@ pub fn switch_current(l: &Layout, v: &str) -> std::io::Result<Option<String>> {
         std::fs::rename(&link, l.bin.join("vibeke.old"))?;
     }
     atomic_symlink(&l.current().join("vibeke"), &link)?;
-    let keep: Vec<String> = [Some(v.to_string()), l.previous_version()]
-        .into_iter()
-        .flatten()
-        .collect();
-    if let Ok(rd) = std::fs::read_dir(l.data.join("versions")) {
-        for e in rd.flatten() {
-            let n = e.file_name().to_string_lossy().into_owned();
-            if !keep.contains(&n) {
-                let _ = std::fs::remove_dir_all(e.path());
-            }
-        }
-    }
     Ok(prev)
 }
 
@@ -1690,94 +1727,14 @@ fn resolve_from(p: &Path) -> PathBuf {
     }
 }
 
-async fn pane_counts(g: &Global) -> Option<(u64, u64)> {
-    let socket = client::socket_path(&g.session, g.socket.as_deref());
-    match probe_server(&socket).await {
-        ServerProbe::Up(v) => Some((
-            v.get("panes").and_then(Value::as_u64).unwrap_or(0),
-            v.pointer("/holders/live")
-                .and_then(Value::as_u64)
-                .unwrap_or(0),
-        )),
-        _ => None,
-    }
-}
-
-fn spawn_server_with(bin: &Path, session: &str) -> anyhow::Result<()> {
-    use std::os::unix::process::CommandExt;
-    let paths = Paths::new(session);
-    paths.ensure()?;
-    let log = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(paths.logs().join("server.log"))?;
-    let mut cmd = std::process::Command::new(bin);
-    cmd.args(["server", "--session", session])
-        .stdin(std::process::Stdio::null())
-        .stdout(log.try_clone()?)
-        .stderr(log);
-    for k in vk_server::run::PANE_IDENTITY_ENV {
-        cmd.env_remove(k);
-    }
-    // SAFETY: setsid between fork and exec is async-signal-safe.
-    unsafe {
-        cmd.pre_exec(|| {
-            libc::setsid();
-            Ok(())
-        });
-    }
-    cmd.spawn()?;
-    Ok(())
-}
-
 type Counts = Option<(u64, u64)>;
 
-/// Stop the session server over the API (holders keep the panes) and start `bin` in its place.
-/// Returns the pane/holder counts seen before and after.
+/// Exec the replacement through the server's restart API. Its holders and session options
+/// survive; a failed exec leaves the old server serving and reports `restart_error`.
 async fn restart_server(g: &Global, bin: &Path) -> Result<(Counts, Counts), String> {
-    let socket = client::socket_path(&g.session, g.socket.as_deref());
-    let before = pane_counts(g).await;
-    if before.is_none() {
-        return Ok((None, None));
-    }
-    let s = client::connect(&socket)
+    crate::update::restart(g, bin)
         .await
-        .map_err(|e| format!("{e:#}"))?;
-    let mut c = Client::new(s);
-    c.hello("cli").await.map_err(|e| e.to_string())?;
-    match tokio::time::timeout(Duration::from_secs(10), c.call("server.stop", json!({}))).await {
-        Ok(Ok(_)) | Ok(Err(client::CallError::Io(_))) => {}
-        Ok(Err(e)) => return Err(format!("server.stop: {e}")),
-        Err(_) => return Err("server.stop timed out".into()),
-    }
-    drop(c);
-    let mut gone = false;
-    for _ in 0..100 {
-        if tokio::net::UnixStream::connect(&socket).await.is_err() {
-            gone = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    if !gone {
-        return Err("old server did not exit within 5 s".into());
-    }
-    spawn_server_with(bin, &g.session).map_err(|e| format!("spawn server: {e:#}"))?;
-    let mut after = None;
-    for _ in 0..250 {
-        if let Some(a) = pane_counts(g).await {
-            after = Some(a);
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    if after.is_none() {
-        return Err(format!(
-            "new server did not come up within 5 s (see {})",
-            Paths::new(&g.session).logs().join("server.log").display()
-        ));
-    }
-    Ok((before, after))
+        .map_err(|e| format!("{e:#}"))
 }
 
 fn report_restart(before: Counts, after: Counts) -> i32 {
@@ -1793,8 +1750,11 @@ fn report_restart(before: Counts, after: Counts) -> i32 {
                 println!("server restarted; no panes lost");
                 EXIT_OK
             } else {
-                eprintln!("warning: pane count dropped from {} to {}", b.0, a.0);
-                EXIT_API
+                eprintln!(
+                    "warning: pane count dropped from {} to {}; a pane may have exited during restart",
+                    b.0, a.0
+                );
+                EXIT_OK
             }
         }
         (Some(_), None) => EXIT_API,
@@ -1859,6 +1819,11 @@ pub async fn update(g: &Global, args: &[String]) -> i32 {
             eprintln!("previous version {prev} is no longer installed");
             return EXIT_API;
         }
+        if let Err(e) = crate::update::ensure_schema_compatible(g, &layout.version_bin(&prev)).await
+        {
+            eprintln!("{e:#}");
+            return EXIT_API;
+        }
         if let Err(e) = switch_current(&layout, &prev) {
             eprintln!("switch to {prev}: {e}");
             return EXIT_API;
@@ -1920,7 +1885,12 @@ pub async fn update(g: &Global, args: &[String]) -> i32 {
         eprintln!("{e:#}");
         return EXIT_API;
     }
-    let ord = cmp_semver(&cand_version, vk_proto::VERSION);
+    let installed = layout.current_version();
+    let newest = installed
+        .as_deref()
+        .filter(|v| cmp_semver(v, vk_proto::VERSION) == Ordering::Greater)
+        .unwrap_or(vk_proto::VERSION);
+    let ord = cmp_semver(&cand_version, newest);
     if check {
         println!("current: vibeke {}", vk_proto::VERSION);
         match ord {
@@ -1945,8 +1915,14 @@ pub async fn update(g: &Global, args: &[String]) -> i32 {
         );
         return EXIT_OK;
     }
-    if let Err(msg) = downgrade_allowed(&cand_version, vk_proto::VERSION, allow_downgrade) {
+    if let Err(msg) = downgrade_allowed(&cand_version, newest, allow_downgrade) {
         eprintln!("{msg}");
+        return EXIT_API;
+    }
+    if ord == Ordering::Less
+        && let Err(e) = crate::update::ensure_schema_compatible(g, &cand_path).await
+    {
+        eprintln!("{e:#}");
         return EXIT_API;
     }
     if let Err(e) = install_version(&layout, &cand_version, &cand_path) {
@@ -2000,10 +1976,13 @@ fn verify_candidate(p: &Path) -> Result<(vk_remote::bootstrap::Trust, Option<Str
 
 async fn finish_restart(g: &Global, layout: &Layout) -> i32 {
     match restart_server(g, &restart_bin(layout)).await {
-        Ok((b, a)) => report_restart(b, a),
+        Ok((b, a)) => {
+            prune_unused_versions(layout).await;
+            report_restart(b, a)
+        }
         Err(e) => {
             eprintln!(
-                "restart failed: {e}\nthe new binary is installed; retry with `vibeke server restart`"
+                "restart failed: {e}\nthe selected binary is installed; check `vibeke server status` before retrying"
             );
             EXIT_API
         }
@@ -2012,6 +1991,26 @@ async fn finish_restart(g: &Global, layout: &Layout) -> i32 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn version_gc_preserves_current_previous_and_running_images() {
+        let d = tempfile::tempdir().unwrap();
+        let layout = Layout {
+            data: d.path().join("data"),
+            bin: d.path().join("bin"),
+        };
+        let src = d.path().join("src");
+        std::fs::write(&src, "image").unwrap();
+        for v in ["0.1.0", "0.2.0", "0.3.0", "0.4.0"] {
+            install_version(&layout, v, &src).unwrap();
+            switch_current(&layout, v).unwrap();
+        }
+        let running = std::fs::canonicalize(layout.version_bin("0.1.0")).unwrap();
+        prune_with_active_images(&layout, &[running].into());
+        assert!(layout.version_bin("0.1.0").exists());
+        assert!(!layout.version_bin("0.2.0").exists());
+        assert!(layout.version_bin("0.3.0").exists());
+        assert!(layout.version_bin("0.4.0").exists());
+    }
     #[test]
     fn port_pool_problems_are_warnings_and_a_healthy_pool_is_not() {
         let pool = vk_tasks::PortPool::parse("20000-20029", 10).unwrap();
@@ -2230,7 +2229,10 @@ mod tests {
         assert_eq!(l.current_version().as_deref(), Some("0.3.0"));
         assert_eq!(l.previous_version().as_deref(), Some("0.2.0"));
         assert!(l.version_bin("0.2.0").exists());
-        assert!(!l.version_bin("0.1.0").exists(), "older versions pruned");
+        assert!(
+            l.version_bin("0.1.0").exists(),
+            "older sessions retain their executable"
+        );
         assert!(l.bin.join("vibeke").exists());
         // Rollback swaps current and previous.
         switch_current(&l, "0.2.0").unwrap();

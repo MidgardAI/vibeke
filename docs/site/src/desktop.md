@@ -32,5 +32,20 @@ The connection uses the public relay. The remote host needs no inbound port.
 Configure alerts in the app settings. Allow notifications when your operating system asks.
 The host and gateway must remain running to receive live requests.
 
-To update the desktop app, download the new release and install it.
+Use **Check for Updates…** in the application menu or **Settings → About**. When a new
+release is available, a button above the sidebar footer opens its details and release notes.
+Choose **Download update**, then **Restart and update** when ready. The app restores your
+last view and encrypted unsent conversation drafts, then reconnects to your hosts.
+
+Background checks run every six hours and can be turned off in the update settings.
+Downloading and restarting require an explicit action. Terminal composer text stays in memory
+and is not restored after restarting.
+
+In-app installation supports Windows EXE, Linux AppImage, and properly signed and notarized
+Mac packages. Mac builds without publisher signing and Linux DEB installations show
+**Download installer** instead. Install that package using the usual OS installation steps.
+Users of v0.1.0 must manually install an update-enabled release once.
+
+Desktop updates are separate from host CLI updates. Update each host from its terminal
+interface or with `vibeke update`.
 For host connection problems, run `vibeke gateway status` and `vibeke doctor` on the host.

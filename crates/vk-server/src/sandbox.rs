@@ -579,6 +579,7 @@ pub async fn prepare_box_opts(
     let (runner, provider) = match req.level {
         IsolationLevel::Sandbox => {
             let mut extra_read = vec![paths::Paths::inbox(), paths::Paths::shims()];
+            extra_read.extend(vk_agents::install::hook_paths(&server.opts.bin, &home));
             extra_read.extend(cfg.sandbox.read.iter().map(|r| expand(&home, r)));
             // Paths the harness manifests declare (`[sandbox] read/write`, 13 §5).
             let (_, m_read, m_write) = extras::manifest_needs(&home, &req.harnesses);

@@ -6,6 +6,8 @@ export { useApp, useHosts, useAllHosts, useInboxItems, usePrefs } from './app/ho
 export { emitUi, isMacLike, type Surface } from './app/keyboard';
 export type {
   UiPlatform,
+  UpdateState,
+  UpdatesCapability,
   NotificationsCapability,
   InstallCapability,
   SpeechCapability,

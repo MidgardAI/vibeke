@@ -28,6 +28,28 @@ use serde_json::Value;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// Highest state schema this binary can safely open.
+pub const SCHEMA_VERSION: usize = MIGRATIONS.len();
+
+/// Inspect an existing database without migrating it or initializing application state.
+pub fn database_schema_version(path: &Path) -> Result<Option<u64>> {
+    if !path.try_exists()? {
+        return Ok(None);
+    }
+    let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    conn.busy_timeout(std::time::Duration::from_secs(5))?;
+    let version: i64 = conn.query_row(
+        "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+        [],
+        |r| r.get(0),
+    )?;
+    Ok(Some(
+        version
+            .try_into()
+            .context("invalid database schema version")?,
+    ))
+}
+
 pub fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -492,6 +514,11 @@ impl Store {
             [],
             |r| r.get(0),
         )?;
+        anyhow::ensure!(
+            have >= 0 && have as usize <= MIGRATIONS.len(),
+            "state database schema {have} is newer than this binary supports ({}); run the newer Vibeke binary",
+            MIGRATIONS.len()
+        );
         // A forward-only migration is never run without a way back (02 §3): an existing
         // database that is about to change schema is copied first, and a failed copy stops the
         // migration instead of running it unprotected.
@@ -1259,6 +1286,36 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    #[test]
+    fn newer_schema_is_refused_without_migrating_or_writing_state() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("state.db");
+        drop(Store::open(&path).unwrap());
+        let conn = Connection::open(&path).unwrap();
+        let future = MIGRATIONS.len() as i64 + 1;
+        conn.execute("INSERT INTO schema_migrations VALUES (?1, 0)", [future])
+            .unwrap();
+        conn.execute_batch(
+            "CREATE TABLE future_state (value TEXT); INSERT INTO future_state VALUES ('preserve');",
+        )
+        .unwrap();
+        let error = Store::open(&path)
+            .err()
+            .expect("future schema must be refused");
+        assert!(error.to_string().contains("newer than this binary"));
+        assert_eq!(
+            conn.query_row("SELECT value FROM future_state", [], |r| r
+                .get::<_, String>(0))
+                .unwrap(),
+            "preserve"
+        );
+        assert_eq!(
+            conn.query_row("SELECT MAX(version) FROM schema_migrations", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            future
+        );
+    }
     #[test]
     fn outbox_is_transactional_and_ordered() {
         let d = tempfile::tempdir().unwrap();

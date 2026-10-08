@@ -1106,6 +1106,31 @@ impl Server {
         focus_client: Option<&str>,
         created_by: &str,
     ) -> Result<Pane> {
+        self.split_pane_with_runtime(
+            target,
+            dir,
+            ratio,
+            cwd,
+            command,
+            title,
+            focus_client,
+            created_by,
+        )
+        .map(|(pane, _)| pane)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn split_pane_with_runtime(
+        self: &Arc<Self>,
+        target: &str,
+        dir: Direction,
+        ratio: f32,
+        cwd: Option<&str>,
+        command: Option<Vec<String>>,
+        title: Option<String>,
+        focus_client: Option<&str>,
+        created_by: &str,
+    ) -> Result<(Pane, Arc<PaneRt>)> {
         // Resolve the cwd before taking `core` (pane_cwd may lock it; lock order: core → clients,
         // never re-entrant).
         let target_id = self
@@ -1137,11 +1162,14 @@ impl Server {
         tx.event("tab.layout_changed", json!({"tab": tab.id}), json!({}));
         tx.tab(tab);
         self.commit(&mut c, tx)?;
+        // Retain the runtime while core is still locked: pane_exited cannot finish
+        // and remove a fast command before its caller has captured the final screen.
+        let rt = self.pane_rt(&pane.id).context("pane runtime")?;
         drop(c);
         if let Some(client) = focus_client {
             self.focus_pane(client, &pane.id);
         }
-        Ok(pane)
+        Ok((pane, rt))
     }
 
     /// Current cwd of a pane (03 §8): OSC 7 if reported, else the foreground process's cwd

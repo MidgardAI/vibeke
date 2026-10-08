@@ -744,19 +744,23 @@ fn acp_headless_terminals_run_as_panes() {
         (r["harness_session_id"] == "term-1" && r["execution"]["value"] == "Idle").then_some(())
     });
     assert_eq!(s.log_count("caps:terminal=True"), 1, "{}", s.log_text());
-    s.api(
-        "agent.prompt",
-        json!({"target": run_id, "text": "use a terminal", "wait": true, "timeout_ms": 30000}),
-    )
-    .unwrap();
-    assert_eq!(s.log_count("outside:-32002"), 1, "{}", s.log_text());
-    let r = s.run(&run_id);
-    assert_eq!(
-        r["last_message"],
-        "exit=3 out=True",
-        "{r}\n{}",
-        s.log_text()
-    );
+    // Immediate exits must retain both the final screen and status, even when the
+    // watcher is scheduled after the pane has already left the runtime map.
+    for turn in 1..=10 {
+        s.api(
+            "agent.prompt",
+            json!({"target": run_id, "text": "use a terminal", "wait": true, "timeout_ms": 30000}),
+        )
+        .unwrap();
+        assert_eq!(s.log_count("outside:-32002"), turn, "{}", s.log_text());
+        let r = s.run(&run_id);
+        assert_eq!(
+            r["last_message"],
+            "exit=3 out=True",
+            "{r}\n{}",
+            s.log_text()
+        );
+    }
 }
 
 /// `agents.harness.codex.headless_shared = true` (04 §6.2): two headless Codex runs share one

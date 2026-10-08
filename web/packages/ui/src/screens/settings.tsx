@@ -28,6 +28,7 @@ import { DEFAULT_QUICK_REPLIES } from '../lib/harness';
 import { useStore } from '../lib/store';
 import { navigate } from '../router';
 import { ReceiveHandoff } from './share';
+import { UpdateControls } from '../components/updates';
 
 function Row({ label, hint, children }: { label: ReactNode; hint?: ReactNode; children?: ReactNode }) {
   return (
@@ -718,6 +719,7 @@ function About() {
   const b = app.platform.build;
   return (
     <Group title={t.settings.about}>
+      {app.platform.updates && <div className="px-4 py-3"><UpdateControls /></div>}
       {inst?.canPrompt() && (
         <Row label={t.install.title} hint={t.install.body}>
           <Button size="sm" variant="primary" icon={<Download className="size-4" />} onClick={() => void inst.prompt()}>

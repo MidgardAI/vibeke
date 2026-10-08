@@ -9,6 +9,7 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { extractFile } from '@electron/asar';
 import { FuseV1Options, getCurrentFuseWire } from '@electron/fuses';
 
 const root = resolve(import.meta.dir, '..');
@@ -86,9 +87,17 @@ async function verify(t: Target): Promise<string[]> {
       try {
         execFileSync('codesign', ['--verify', '--deep', '--strict', '--verbose=2', t.app], { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8' });
         console.log('  ok  codesign --verify --deep --strict');
+        const policy = JSON.parse(extractFile(join(t.resources, 'app.asar'), 'out/main/update-policy.json').toString());
+        if (policy.macSigned) {
+          // Require the stapled notarization ticket and Gatekeeper assessment, not just
+          // the build-time environment flag.
+          execFileSync('xcrun', ['stapler', 'validate', t.app], { stdio: ['ignore', 'pipe', 'pipe'] });
+          execFileSync('spctl', ['--assess', '--type', 'execute', '--verbose=2', t.app], { stdio: ['ignore', 'pipe', 'pipe'] });
+          console.log('  ok  notarization ticket and Gatekeeper assessment');
+        }
       } catch (e) {
         const err = e as { stderr?: string; message: string };
-        errors.push(`codesign --verify --deep --strict failed: ${(err.stderr || err.message).trim()}`);
+        errors.push(`macOS package signature/notarization verification failed: ${(err.stderr || err.message).trim()}`);
       }
     }
   }

@@ -37,8 +37,11 @@ crossterm.workspace = true
 rustix.workspace = true
 vk-term = { workspace = true }
 vk-assist = { workspace = true }
+tempfile.workspace = true
+semver = "1"
 
 [dev-dependencies]
+vk-remote = { workspace = true, features = ["testing"] }
 tempfile.workspace = true
 rusqlite.workspace = true
 # api_schema_live: validate live results with a real JSON Schema 2020-12 validator (no network resolvers).

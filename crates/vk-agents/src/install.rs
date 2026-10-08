@@ -273,6 +273,19 @@ pub fn hook_bin(exe: &Path, home: &Path) -> PathBuf {
     .unwrap_or_else(|| exe.to_path_buf())
 }
 
+/// Executable paths a sandbox must expose: the pinned server image, stable hook command,
+/// and its symlink target (which may be newer while another session stays on the old image).
+pub fn hook_paths(exe: &Path, home: &Path) -> Vec<PathBuf> {
+    let hook = hook_bin(exe, home);
+    let mut paths = vec![exe.to_path_buf(), hook.clone()];
+    if let Ok(target) = fs::canonicalize(hook) {
+        paths.push(target);
+    }
+    paths.sort();
+    paths.dedup();
+    paths
+}
+
 /// A cargo build output (`…/target/[<triple>/]{debug,release}/…`): not a stable hook path.
 pub fn is_build_output(p: &Path) -> bool {
     let parts: Vec<_> = p.components().map(|c| c.as_os_str()).collect();
@@ -1370,6 +1383,24 @@ mod tests {
         fs::create_dir_all(local.parent().unwrap()).unwrap();
         std::os::unix::fs::symlink(&current, &local).unwrap();
         assert_eq!(hook_bin(&exe, home), local);
+    }
+
+    #[test]
+    fn sandbox_hook_paths_keep_stable_alias_and_both_running_and_installed_images() {
+        let t = tempfile::tempdir().unwrap();
+        let running = t.path().join("versions/0.1.0/vibeke");
+        let installed = t.path().join("versions/0.2.0/vibeke");
+        let alias = t.path().join(".local/bin/vibeke");
+        for p in [&running, &installed] {
+            fs::create_dir_all(p.parent().unwrap()).unwrap();
+            fs::write(p, "image").unwrap();
+        }
+        fs::create_dir_all(alias.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&installed, &alias).unwrap();
+        let paths = hook_paths(&running, t.path());
+        assert!(paths.contains(&running));
+        assert!(paths.contains(&alias));
+        assert!(paths.contains(&fs::canonicalize(installed).unwrap()));
     }
 
     #[test]

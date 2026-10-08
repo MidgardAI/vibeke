@@ -65,11 +65,29 @@ Continue with the [desktop connection guide](desktop.md).
 
 Open [app.vibeke.dev](https://app.vibeke.dev). Pair it with your host using the [phone and browser guide](mobile.md).
 
-## Upgrade
+## Update Vibeke
 
-Run the installation command again to install the latest CLI release. Reconnect with `vibeke` afterward.
+In the terminal interface, open the command palette with **Ctrl+B**, then **:** and choose
+**Check for updates** or **Update Vibeke…**. When a release is available, the sidebar shows
+its version. Review it and confirm installation; Vibeke reopens the same session and pane.
+Background checks run every six hours and can be turned off in the update view.
 
-For the desktop app, download and install the new release. Automatic desktop updates are not configured.
+You can also update from the shell:
+
+```sh
+vibeke update --check
+vibeke update
+```
+
+The updater verifies the signed release manifest and binary checksum. Running terminal
+processes survive the local session's restart. Other sessions use the installed version
+on their next restart; remote hosts are updated separately. Use `vibeke update --rollback`
+to return to the previous installed version when it can read your session databases.
+A rollback is refused if the target cannot confirm database compatibility or a newer schema
+is in use; restore a compatible backup offline before downgrading.
+
+For desktop updates, use **Check for Updates…** in the app menu. See the
+[desktop guide](desktop.md) for in-app installation and manual download options.
 
 ## Advanced installation
 

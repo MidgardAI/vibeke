@@ -6,6 +6,7 @@ import { CommandPalette, useEntityItems, type PaletteItem } from '../components/
 import { dialogOpen } from '../components/dialog';
 import { NewSheet } from '../components/new-sheet';
 import { Sheet } from '../components/ui';
+import { UpdateSheet } from '../components/updates';
 import { t } from '../i18n';
 import { agentViewCommands, type AgentView } from '../lib/agent-view';
 import { listNav, type NavAct } from '../lib/list-nav';
@@ -76,6 +77,7 @@ export function KeyboardLayer({ surface }: { surface: Surface }) {
   const mac = isMacLike(app.platform.mac);
   const [palette, setPalette] = useState(false);
   const [help, setHelp] = useState(false);
+  const [updates, setUpdates] = useState(false);
   const [sheet, setSheet] = useState<SheetState>(null);
   const routeKey = formatRoute(route);
   const rows = useWorkspaceRows();
@@ -200,6 +202,8 @@ export function KeyboardLayer({ surface }: { surface: Surface }) {
   useEffect(() => {
     const handle = (cmd: UiCommand) => {
         switch (cmd) {
+          case 'updates':
+            return setUpdates(true);
           case 'palette':
             return setPalette(true);
           case 'shortcuts':
@@ -266,6 +270,7 @@ export function KeyboardLayer({ surface }: { surface: Surface }) {
       c('shortcuts', t.palette.shortcuts, () => setHelp(true), '?', 'keys help'),
       c('theme', t.palette.theme(prefs.theme === 'dark' ? 'light' : 'dark'), () => app.prefs.patch({ theme: prefs.theme === 'dark' ? 'light' : 'dark' }), undefined, 'dark light appearance'),
     ];
+    if (app.platform.updates) out.push(c('updates', 'Check for updates…', () => { setUpdates(true); void app.platform.updates!.check(); }, undefined, 'update upgrade release'));
     // Lock pauses polling until "Resume": only the main window has that overlay.
     if (surface === 'full') out.push(c('lock', t.palette.lock, () => app.locked.set(true)));
     if (paneRow) {
@@ -294,6 +299,7 @@ export function KeyboardLayer({ surface }: { surface: Surface }) {
   }
   return (
     <>
+      <UpdateSheet open={updates} onClose={() => setUpdates(false)} />
       <CommandPalette open={palette} onClose={() => setPalette(false)} items={surface === 'full' ? [...commands, ...entities] : commands} />
       <CheatSheet open={help} onClose={() => setHelp(false)} mac={mac} />
       <NewSheet open={sheet?.kind === 'new'} onClose={() => setSheet(null)} />

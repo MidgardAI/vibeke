@@ -32,6 +32,7 @@ const isMac = process.platform === 'darwin';
 const bg = (): string => (nativeTheme.shouldUseDarkColors ? '#0f1012' : '#f6f6f4');
 
 interface SavedState {
+  updateRoute?: string;
   main?: Bounds;
   panes?: Record<string, Bounds>;
 }
@@ -177,7 +178,24 @@ export class Windows {
     return win;
   }
 
+  prepareUpdate(): void {
+    const url = this.main?.webContents.getURL();
+    this.state.updateRoute = url ? new URL(url).hash : undefined;
+    writeJson(this.o.stateFile, this.state);
+  }
+
+  cancelUpdate(): void {
+    delete this.state.updateRoute;
+    writeJson(this.o.stateFile, this.state);
+    this.quitting = false;
+  }
+
   showMain(hash?: string): void {
+    if (!hash && this.state.updateRoute) {
+      hash = this.state.updateRoute;
+      delete this.state.updateRoute;
+      writeJson(this.o.stateFile, this.state);
+    }
     const fresh = !this.main || this.main.isDestroyed();
     const win = this.createMain(false);
     const reveal = () => {

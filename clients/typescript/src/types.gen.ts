@@ -8415,6 +8415,7 @@ export type AgentUsageData = {
   cache_read: number;
   cache_write: number;
   cost_usd: number | null;
+  model?: string | null;
   source: string;
 };
 

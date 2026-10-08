@@ -40,6 +40,7 @@ use vk_proto::input::KeyEvent;
 
 #[derive(Default)]
 pub struct State {
+    pub updates: crate::updates::State,
     pub onboarding: Option<crate::onboarding::Flow>,
     pub batch: Option<crate::batch::View>,
     pub fleet: Option<crate::fleet::View>,
@@ -100,7 +101,8 @@ pub fn on_connected(app: &mut App, mi: usize) {
 
 /// Palette / key actions owned by 2B modules.
 pub fn action(app: &mut App, action: &str) -> bool {
-    crate::onboarding::action(app, action)
+    crate::updates::action(app, action)
+        || crate::onboarding::action(app, action)
         || crate::trust::action(app, action)
         || crate::batch::action(app, action)
         || crate::fleet::action(app, action)
@@ -196,6 +198,7 @@ pub fn on_tick(app: &mut App) {
     crate::collision::tick(app, now);
     crate::handoff::tick(app);
     crate::devices::tick(app);
+    crate::updates::tick(app);
 }
 
 pub fn deadlines(app: &App, now: Instant, d: &mut crate::deadline::Deadlines) {
@@ -206,6 +209,7 @@ pub fn deadlines(app: &App, now: Instant, d: &mut crate::deadline::Deadlines) {
     crate::taskbadge::deadlines(app, d);
     crate::collision::deadlines(app, d);
     crate::devices::deadlines(app, now, d);
+    crate::updates::deadlines(app, d);
 }
 
 /// Navigate-mode keys added by 2B (true when handled).
