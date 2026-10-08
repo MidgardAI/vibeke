@@ -261,8 +261,7 @@ fn reconcile(app: &mut App) {
         v.sel = None;
         v.opened_at = Instant::now();
         v.notice = Some(
-            "the request you were reviewing is gone (decided, withdrawn or expired): select one with j/k"
-                .into(),
+            "that request is gone (decided, withdrawn or expired): select one with j/k".into(),
         );
     }
 }
@@ -666,10 +665,16 @@ pub fn key(app: &mut App, ev: KeyEvent) {
         }
         None => false,
     };
-    if !armed || ev.kind != KeyKind::Press || !ev.mods.is_empty() {
+    if ev.kind != KeyKind::Press || !ev.mods.is_empty() {
         return keep(app);
     }
-    if was_held {
+    // Moving around never decides (and a new selection re-arms), so it needs no arming; a
+    // decision needs the arm delay and a key not held since before it.
+    let decides = matches!(ev.key, Key::Char('y' | 'a' | 'n'));
+    if decides && !armed {
+        return keep(app);
+    }
+    if decides && was_held {
         // Pressed again without a release we saw: this press does not count, the next one does.
         if let Some(v) = app.ux.elevate.view.as_mut() {
             v.held.remove(&ev.key);

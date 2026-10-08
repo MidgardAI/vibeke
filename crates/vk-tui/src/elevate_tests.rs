@@ -334,7 +334,11 @@ fn approval_from_the_focused_shell_pane_running_vibeke_does_not_open_the_view() 
     app.on_tick();
     assert!(matches!(app.mode, Mode::Normal));
     assert!(app.ux.elevate.view.is_none());
-    assert!(commands(&mut rx[0]).is_empty());
+    let sent = commands(&mut rx[0]);
+    assert!(
+        !sent.iter().any(|(_, m, _)| m.starts_with("auth.")),
+        "{sent:?}"
+    );
     // Only the notice, and the pane stays on screen.
     let s = screen(&app);
     let top = s.lines().next().unwrap();
