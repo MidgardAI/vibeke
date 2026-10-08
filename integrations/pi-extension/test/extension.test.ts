@@ -628,3 +628,91 @@ describe("uiContext wrapper", () => {
     expect(a.ui.confirm).toBe(orig);
   });
 });
+
+describe("control channel", () => {
+  const models = [
+    { id: "claude-x", name: "Claude X", provider: "anthropic" },
+    { id: "gpt-y", name: "GPT Y", provider: "openai" },
+  ];
+  function ctxWithModels(over: Record<string, unknown> = {}) {
+    return makeCtx({
+      model: models[0],
+      modelRegistry: {
+        getAvailable: () => models,
+        find: (p: string, id: string) => models.find((m) => m.provider === p && m.id === id),
+      },
+      ...over,
+    });
+  }
+  const replies = () => server.calls("adapter.control").map((m) => m.msg.params.reply).filter(Boolean);
+
+  test("lists and switches models, lists commands, refuses unknown models", async () => {
+    server.control = [];
+    const { pi } = setup(server, "pi", { control: true });
+    const set: any[] = [];
+    (pi as any).setModel = async (m: any) => {
+      set.push(m);
+      return true;
+    };
+    (pi as any).getCommands = () => [{ name: "review-pr", description: "Prompt template", source: "prompt" }];
+    await pi.emit("session_start", {}, ctxWithModels());
+    await waitFor(() => server.calls("adapter.control").length >= 1, 3000, "first poll");
+    const first = server.calls("adapter.control")[0].msg.params;
+    expect(first.ops).toEqual(["models", "set_model", "commands"]);
+    expect(server.hello(server.calls("adapter.control")[0].conn).token).toBe("tok");
+
+    server.pushControl({ id: "c1", op: "models", params: {} });
+    await waitFor(() => replies().length >= 1, 3000, "models reply");
+    expect(replies()[0]).toEqual({
+      id: "c1",
+      ok: true,
+      result: {
+        models: [
+          { id: "anthropic/claude-x", label: "Claude X", description: "anthropic", current: true },
+          { id: "openai/gpt-y", label: "GPT Y", description: "openai", current: false },
+        ],
+      },
+    });
+
+    server.pushControl({ id: "c2", op: "set_model", params: { model: "openai/gpt-y", scope: "session" } });
+    await waitFor(() => replies().length >= 2, 3000, "set_model reply");
+    expect(replies()[1]).toEqual({ id: "c2", ok: true, result: { model: "openai/gpt-y", default_changed: true } });
+    expect(set.map((m) => m.id)).toEqual(["gpt-y"]);
+
+    server.pushControl({ id: "c3", op: "models", params: {} });
+    await waitFor(() => replies().length >= 3, 3000, "models after switch");
+    expect(replies()[2].result.models.find((m: any) => m.current).id).toBe("openai/gpt-y");
+
+    server.pushControl({ id: "c4", op: "set_model", params: { model: "nope/none" } });
+    await waitFor(() => replies().length >= 4, 3000, "refusal");
+    expect(replies()[3]).toMatchObject({ id: "c4", ok: false });
+    expect(replies()[3].error).toContain("unknown model");
+
+    server.pushControl({ id: "c5", op: "commands", params: {} });
+    await waitFor(() => replies().length >= 5, 3000, "commands");
+    expect(replies()[4].result).toEqual({ commands: [{ name: "review-pr", description: "Prompt template" }] });
+  });
+
+  test("omp keeps the switch to the session and refuses scope default", async () => {
+    server.control = [];
+    const { pi } = setup(server, "omp", { control: true });
+    (pi as any).setModel = async () => true;
+    await pi.emit("session_start", {}, ctxWithModels());
+    server.pushControl({ id: "c1", op: "set_model", params: { model: "openai/gpt-y", scope: "default" } });
+    server.pushControl({ id: "c2", op: "set_model", params: { model: "openai/gpt-y", scope: "session" } });
+    await waitFor(() => replies().length >= 2, 3000, "replies");
+    expect(replies()[0]).toMatchObject({ id: "c1", ok: false });
+    expect(replies()[1]).toEqual({ id: "c2", ok: true, result: { model: "openai/gpt-y", default_changed: false } });
+  });
+
+  test("a server without the channel ends the loop; non-TUI modes never poll", async () => {
+    const { pi } = setup(server, "pi", { control: true });
+    await pi.emit("session_start", {}, ctxWithModels({ mode: "rpc" }));
+    await sleep(100);
+    expect(server.calls("adapter.control").length).toBe(0);
+    await pi.emit("session_switch", {}, ctxWithModels());
+    await waitFor(() => server.calls("adapter.control").length >= 1, 3000, "poll");
+    await sleep(300);
+    expect(server.calls("adapter.control").length).toBe(1);
+  });
+});

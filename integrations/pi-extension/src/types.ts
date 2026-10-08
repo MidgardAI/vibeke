@@ -19,11 +19,22 @@ export interface HostContext {
   cwd?: string;
   mode?: string;
   ui?: UiContext;
-  model?: { id?: string } | null;
+  model?: HostModel | null;
+  modelRegistry?: {
+    getAvailable?: () => HostModel[] | Promise<HostModel[]>;
+    find?: (provider: string, id: string) => HostModel | undefined;
+  };
   sessionManager?: {
     getSessionFile?: () => string | undefined;
     getSessionId?: () => string | undefined;
   };
+  [k: string]: unknown;
+}
+
+export interface HostModel {
+  id?: string;
+  name?: string;
+  provider?: string;
   [k: string]: unknown;
 }
 
@@ -32,5 +43,8 @@ export type Handler = (event: any, ctx: HostContext) => unknown;
 export interface HostApi {
   on(event: string, handler: Handler): unknown;
   version?: string;
+  /** pi / omp: switch the session's model; false when the provider has no credentials. */
+  setModel?: (model: HostModel) => Promise<boolean>;
+  getCommands?: () => { name?: string; description?: string }[];
   [k: string]: unknown;
 }

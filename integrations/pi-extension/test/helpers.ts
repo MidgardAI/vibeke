@@ -29,6 +29,9 @@ export class FakeServer {
   gates: { conn: number; id: number; params: any }[] = [];
   /** Methods the fake leaves unanswered (to exercise client-side retries). */
   noReply = new Set<string>();
+  /** `adapter.control`: null = answer `{}` (a server without the channel); else queued requests. */
+  control: any[] | null = null;
+  private parkedControl: ((req: any) => void) | null = null;
   private server: net.Server | null = null;
 
   async listen(): Promise<void> {
@@ -48,6 +51,12 @@ export class FakeServer {
           const msg = JSON.parse(line);
           this.msgs.push({ conn, msg });
           if (msg.method === "adapter.gate") this.gates.push({ conn, id: msg.id, params: msg.params });
+          else if (msg.method === "adapter.control" && this.control) {
+            const answer = (req: any) => sock.write(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: { request: req } }) + "\n");
+            const next = this.control.shift();
+            if (next) answer(next);
+            else this.parkedControl = answer;
+          }
           else if (!this.noReply.has(msg.method))
             sock.write(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: {} }) + "\n");
         }
@@ -71,6 +80,14 @@ export class FakeServer {
   /** Drop one gate's connection (as a server restart or network blip would). */
   dropGate(index: number): void {
     this.conns[this.gates[index].conn].destroy();
+  }
+
+  /** Hand a control request to the parked poll (or queue it for the next one). */
+  pushControl(req: any): void {
+    const p = this.parkedControl;
+    this.parkedControl = null;
+    if (p) p(req);
+    else this.control!.push(req);
   }
 
   /** Messages of `method`, with the connection they arrived on. */
@@ -146,6 +163,7 @@ export function setup(server: FakeServer, host: "pi" | "omp", extra: Partial<Opt
     env: activeEnv(server),
     host,
     clientOverrides: { backoffMinMs: 10, backoffMaxMs: 40, ...extra.clientOverrides },
+    control: false,
     ...extra,
   }) as Handle;
   return { pi, h };

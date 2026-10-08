@@ -54,3 +54,21 @@ The server parks the request until a decision exists. Reply: `{decision: {value:
 - `decision: null` or an invalid value: keep waiting for the native dialog.
 - The native dialog answering first: the extension closes the gate connection (the server must treat that as "resolved elsewhere") and sends `DialogResolved`.
 - Server unreachable: native dialog only (fail-open).
+
+## Control channel (TUI mode only)
+
+Model listing and switching for `agent.models` / `agent.set_model`, and the session's own commands for `agent.commands`. Started on the first event whose context has `mode: "tui"` (never with `VIBEKE_HEADLESS_OWNER=1`, where the server speaks pi's RPC directly).
+
+On its own connection (pane-token hello) the extension long-polls
+
+`adapter.control {harness, ops: ["models", "set_model", "commands"], reply?}` -> `{request: {id, op, params} | null}`
+
+`ops` lists what the host offers (`ctx.modelRegistry.getAvailable`, `pi.setModel`, `pi.getCommands`). The server parks the poll for up to 25 s; `request: null` means "poll again". The result of a request goes out with the next poll as `reply: {id, ok: true, result}` or `{id, ok: false, error}`.
+
+| op | params | result |
+|---|---|---|
+| `models` | `{}` | `{models: [{id: "provider/id", label, description?: provider, current}]}` |
+| `set_model` | `{model: "provider/id", scope: "session"\|"default"}` | `{model, default_changed}` via `pi.setModel(model)`; pi saves every switch as its default (`default_changed: true`); omp keeps it to the session and refuses `scope: "default"` |
+| `commands` | `{}` | `{commands: [{name, description}]}` from `pi.getCommands()` |
+
+A response that is an error or has no `request` member (a server without the channel) ends the loop for good; a dropped connection reconnects with backoff.

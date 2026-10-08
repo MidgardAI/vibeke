@@ -34,6 +34,9 @@ export interface GateHandle {
 
 const MAX_PENDING_ACKS = 100;
 
+/** Carries out one control request (`models`, `set_model`, `commands`); throws to refuse it. */
+export type ControlHandler = (op: string, params: Record<string, unknown>) => Promise<unknown>;
+
 function lineReader(onLine: (line: string) => void): (chunk: Buffer | string) => void {
   let buf = "";
   const dec = new StringDecoder("utf8"); // a UTF-8 sequence may span chunks
@@ -68,6 +71,10 @@ export class VibekeClient {
   connects = 0;
   /** Gate connections re-established after a drop (diagnostics/tests). */
   gateReconnects = 0;
+  /** Control requests carried out (diagnostics/tests). */
+  controlHandled = 0;
+  private controlStarted = false;
+  private controlSock: net.Socket | null = null;
 
   private readonly cap: number;
   private readonly minMs: number;
@@ -312,9 +319,120 @@ export class VibekeClient {
     this.queue.length = 0;
     try {
       this.sock?.destroy();
+      this.controlSock?.destroy();
     } catch {
       /* ignore */
     }
+  }
+
+  /**
+   * Control channel (PROTOCOL.md): long-poll `adapter.control {ops}` on its own connection and
+   * answer each request with the next poll's `reply`. Idempotent. A server that does not know
+   * the method (an error, or a result without `request`) ends the loop for good; a dropped
+   * connection reconnects with backoff.
+   */
+  control(ops: string[], handle: ControlHandler): void {
+    if (this.controlStarted || this.closed || ops.length === 0) return;
+    this.controlStarted = true;
+    let tries = 0;
+    let reply: Record<string, unknown> | undefined;
+    const retry = () => {
+      if (this.closed) return;
+      const delay = Math.min(this.minMs * 2 ** Math.min(tries, 16), this.maxMs);
+      tries++;
+      const t = setTimeout(connect, delay);
+      t.unref?.();
+    };
+    const connect = () => {
+      if (this.closed) return;
+      let sock: net.Socket;
+      try {
+        sock = net.createConnection(this.o.socketPath);
+      } catch {
+        retry();
+        return;
+      }
+      this.controlSock = sock;
+      sock.unref();
+      sock.on("error", () => {});
+      let id = 1;
+      let sentAt = 0;
+      let stopped = false;
+      const poll = () => {
+        if (this.closed || sock.destroyed) return;
+        id++;
+        sentAt = Date.now();
+        const params: Record<string, unknown> = { harness: this.harness, ops };
+        if (reply) params.reply = reply;
+        reply = undefined;
+        try {
+          sock.write(JSON.stringify({ jsonrpc: "2.0", id, method: "adapter.control", params }) + "\n");
+        } catch {
+          sock.destroy();
+        }
+      };
+      sock.on(
+        "data",
+        lineReader((line) => {
+          let m: any;
+          try {
+            m = JSON.parse(line);
+          } catch {
+            return;
+          }
+          if (m?.id !== id) return;
+          const r = m.result;
+          if (m.error || !r || typeof r !== "object" || !("request" in r)) {
+            stopped = true; // this server has no control channel
+            sock.destroy();
+            return;
+          }
+          tries = 0;
+          const req = r.request;
+          if (req && typeof req === "object" && typeof req.id === "string") {
+            const params = req.params && typeof req.params === "object" ? req.params : {};
+            Promise.resolve()
+              .then(() => handle(String(req.op), params))
+              .then(
+                (result) => ({ id: req.id, ok: true, result: result ?? null }),
+                (e) => ({ id: req.id, ok: false, error: String(e?.message ?? e).slice(0, 500) }),
+              )
+              .then((rep) => {
+                this.controlHandled++;
+                reply = rep;
+                poll();
+              });
+          } else if (Date.now() - sentAt < 1000) {
+            // An empty answer that came back at once: do not spin.
+            const t = setTimeout(poll, 1000);
+            t.unref?.();
+          } else {
+            poll();
+          }
+        }),
+      );
+      sock.on("connect", () => {
+        try {
+          sock.write(
+            JSON.stringify({
+              jsonrpc: "2.0",
+              id: 1,
+              method: "client.hello",
+              params: { client: "vibeke-pi-extension", kind: "agent", token: this.o.token, version: this.o.version },
+            }) + "\n",
+          );
+        } catch {
+          sock.destroy();
+          return;
+        }
+        poll();
+      });
+      sock.on("close", () => {
+        if (this.controlSock === sock) this.controlSock = null;
+        if (!stopped) retry();
+      });
+    };
+    connect();
   }
 
   /**
