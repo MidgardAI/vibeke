@@ -2471,8 +2471,8 @@ mod dsl_tests {
         assert_eq!(l.evaluate_snapshot(&s, 0, None).state.unwrap().0, "working");
         // Right colour but not bold: no.
         let mut s2 = s.clone();
-        for i in 2..5 {
-            s2.styles[0][i].bold = false;
+        for c in &mut s2.styles[0][2..5] {
+            c.bold = false;
         }
         assert!(l.evaluate_snapshot(&s2, 0, None).state.is_none());
         let bad = Manifest {

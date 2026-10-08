@@ -299,11 +299,11 @@ class VibekeClient {
   }
   flush(timeoutMs) {
     const deadline = Date.now() + timeoutMs;
-    return new Promise((resolve) => {
+    return new Promise((resolve2) => {
       const tick = () => {
         const drained = this.ready && this.queue.length === 0 && (this.sock?.writableLength ?? 0) === 0;
         if (drained || Date.now() >= deadline || this.closed)
-          return resolve();
+          return resolve2();
         setTimeout(tick, 5);
       };
       tick();
@@ -839,7 +839,7 @@ function vibekeExtension(pi) {
   } catch {}
 }
 export {
-  EXTENSION_VERSION,
+  vibekeExtension as default,
   createExtension,
-  vibekeExtension as default
+  EXTENSION_VERSION
 };

@@ -62,7 +62,8 @@ jobs:
         name: Check the committed pi extension bundle is current
         working-directory: .
         run: |
-          mise run pi-extension
+          # Rebuild only: the extension's tests run in the harness suites.
+          cd integrations/pi-extension && bun install --frozen-lockfile && bun run build && cd ../..
           git diff --exit-code -- integrations/pi-extension/dist/
   desktop:
     # Real-gateway Electron tests and packaging (spec 16 §16.3); macOS runners have a display.
