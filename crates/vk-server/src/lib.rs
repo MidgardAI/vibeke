@@ -8,6 +8,7 @@ pub mod agents;
 pub mod api;
 pub mod api_schema;
 pub mod assist;
+pub mod autoname;
 pub mod blob_api;
 pub mod blob_store;
 pub mod browse_api;
@@ -932,10 +933,7 @@ impl Server {
         let mut c = self.core.lock().unwrap();
         let id = ulid();
         let handle = c.next_ws_handle();
-        let auto = std::path::Path::new(cwd)
-            .file_name()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_else(|| cwd.to_string());
+        let auto = autoname::auto_name(cwd);
         let order = c
             .model
             .workspaces
@@ -1338,10 +1336,48 @@ impl Server {
         tx.ephemeral = true;
         let _ = self.commit(&mut c, tx);
         drop(c);
+        self.refresh_auto_name(&p.id);
         if prev.as_deref() != Some(&p.id) {
             self.agents.on_focus(self, &p.id);
         }
         self.bump_model();
+    }
+
+    /// Re-derive the automatic name of the workspace holding `pane` from its focused pane's
+    /// cwd (the most recently active client's focus there, else the first tab's focus).
+    /// Commits only when the name actually changes.
+    pub fn refresh_auto_name(&self, pane: &str) {
+        let Some(ws_id) = self.with_core(|c| c.pane(pane).map(|p| p.workspace.clone())) else {
+            return;
+        };
+        let client_pane = {
+            let clients = self.clients.lock().unwrap();
+            clients
+                .values()
+                .filter(|s| s.kind == "tui" && s.focus.workspace.as_deref() == Some(&ws_id))
+                .max_by_key(|s| s.last_active)
+                .and_then(|s| s.focus.pane.clone())
+        };
+        let mut c = self.core.lock().unwrap();
+        let Some(mut ws) = c.ws(&ws_id).cloned() else {
+            return;
+        };
+        let focused = client_pane.or_else(|| {
+            let mut tabs = c.tabs_of(&ws.id);
+            tabs.sort_by(|a, b| a.order.total_cmp(&b.order));
+            tabs.first().and_then(|t| t.focused_pane.clone())
+        });
+        let Some(cwd) = focused.and_then(|id| c.pane(&id).and_then(|p| p.cwd.clone())) else {
+            return;
+        };
+        let name = autoname::auto_name(&cwd);
+        if name == ws.auto_name {
+            return;
+        }
+        ws.auto_name = name;
+        let mut tx = Tx::new();
+        tx.ws(ws);
+        let _ = self.commit(&mut c, tx);
     }
 
     pub fn client_focus(&self, client: &str) -> ClientFocus {
@@ -1520,6 +1556,8 @@ impl Server {
                     tx.pane(p);
                     let _ = self.commit(&mut c, tx);
                 }
+                drop(c);
+                self.refresh_auto_name(pane);
             }
             Effect::TitleChanged => self.bump_model(),
             // Terminal effects (03 §8); none of them are replayed after a restart.

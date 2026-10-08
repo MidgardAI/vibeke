@@ -368,10 +368,7 @@ pub fn apply(server: &Arc<Server>, ctx: &Ctx, spec: &LayoutSpec, target: Target,
                 .map(|x| expand(&x, None))
                 .or_else(|| spec.cwd.as_deref().map(|x| expand(x, None)))
                 .unwrap_or_else(|| paths::home().to_string_lossy().into_owned());
-            let auto = std::path::Path::new(&root)
-                .file_name()
-                .map(|s| s.to_string_lossy().into_owned())
-                .unwrap_or_else(|| root.clone());
+            let auto = crate::autoname::auto_name(&root);
             let order = c
                 .model
                 .workspaces
