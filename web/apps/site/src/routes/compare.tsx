@@ -36,7 +36,6 @@ function Compare() {
       </div>
       <ComparisonTable products={selected} category={category} />
       <div className="mt-5 grid gap-3 text-xs leading-6 text-muted md:grid-cols-2 md:gap-12">
-        <p>The table compares built-in features. Some entries name external tools or required setup.</p>
         <p>Agent support and isolation depend on your setup. A transfer between hosts copies work and conversation data. It does not move a live process.</p>
       </div>
       <div className="mt-10 flex flex-wrap gap-6 border-t border-line pt-6"><Link to="/docs/$slug" params={{ slug: 'install' }} className="text-link text-xs">Install Vibeke <ArrowRight size={14} /></Link><Link to="/docs/$slug" params={{ slug: 'handoff' }} className="text-link text-xs">Transfer and share work <ArrowRight size={14} /></Link></div>

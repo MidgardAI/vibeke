@@ -4,7 +4,6 @@ The public services are [app.vibeke.dev](https://app.vibeke.dev) and `https://re
 Use this guide if you want to operate your own services or develop them locally.
 
 The app serves the interface and holds device keys. The relay forwards encrypted traffic.
-They can run on separate domains. Hosting a relay does not require hosting the app.
 
 ## Use your own relay
 

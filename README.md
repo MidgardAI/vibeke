@@ -40,7 +40,7 @@ Vibeke runs on macOS (Apple silicon) and Linux (x86_64, aarch64).
 curl -fsSL https://vibeke.dev/install.sh | sh
 ```
 
-Install `minisign` first (`brew install minisign` on macOS, or your Linux package manager). The installer writes only inside `$HOME` and verifies the release signature and checksums. See [installation](https://vibeke.dev/docs/install).
+Install `minisign` first (`brew install minisign` on macOS, or your Linux package manager). The installer verifies the release signature and checksums. See [installation](https://vibeke.dev/docs/install).
 
 [Download the desktop app](https://github.com/MidgardAI/vibeke/releases/latest) for macOS, Linux, or Windows, or open the [browser app](https://app.vibeke.dev). The desktop app connects to a host; local use also requires the CLI.
 

@@ -1,7 +1,6 @@
 # Your first workspace
 
 Install [Vibeke](install.md) and your preferred agent CLI. Authenticate the agent with its provider before starting.
-Vibeke provides the workspace. Your agent uses its own provider account.
 
 ## Start in your project
 
@@ -21,7 +20,7 @@ The setup screen checks your terminal and offers agent integrations, notificatio
 Select the integrations you use, review their changes, and confirm installation.
 Save the configuration when you finish. You can reopen **Setup** from the command palette at any time.
 
-Integrations report structured agent state and deliver supported answers. You can also use an ordinary shell without them.
+Integrations report structured agent state and deliver supported answers.
 
 ## Start your agent
 
@@ -32,7 +31,7 @@ claude
 ```
 
 Or run `codex`, `pi`, `omp`, or another installed agent CLI.
-Keep using the agent as you normally would. The sidebar shows agent state when an integration or terminal detection is available.
+The sidebar shows agent state when an integration or terminal detection is available.
 
 ## Find your way around
 

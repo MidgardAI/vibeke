@@ -1,7 +1,5 @@
 # Security model
 
-This page summarizes the security design in `spec/09-security-and-privacy.md`.
-
 ## Host execution
 
 Agents in host mode use your user permissions. Pane tokens, scopes, rate limits, and audit records limit misuse through the Vibeke API.

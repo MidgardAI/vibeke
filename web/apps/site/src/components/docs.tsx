@@ -1,5 +1,5 @@
 import { Link } from '@tanstack/react-router'
-import { ArrowLeft, ArrowRight, ArrowUpRight, BookOpen, Check, ChevronDown } from 'lucide-react'
+import { ArrowLeft, ArrowRight, ArrowUpRight, BookOpen, ChevronDown } from 'lucide-react'
 import { Children, isValidElement, useState } from 'react'
 import type { ReactNode } from 'react'
 import Markdown from 'react-markdown'
@@ -36,13 +36,12 @@ export function DocArticle({ doc }: { doc: Doc }) {
   return <DocsLayout key={doc.slug} current={doc.slug} headings={doc.headings}>
     <div className="mb-4 flex items-center gap-2 font-mono text-[10px] text-muted"><Link to="/docs" className="hover:text-accent">docs</Link><span>/</span><span>{doc.group.toLowerCase()}</span></div>
     <div className="flex items-start justify-between gap-3"><h1 className="text-4xl leading-tight font-medium tracking-[-0.045em] sm:text-[42px]">{doc.title}</h1><CopyButton text={`# ${doc.title}\n\n${doc.body}`} label="Copy page as Markdown" /></div><p className="mt-4 text-base leading-7 text-muted">{doc.description}</p>
-    {['cli', 'config'].includes(doc.slug) && <div className="mt-6 flex items-start gap-2 border border-green/20 bg-green/5 px-4 py-3 text-xs leading-6 text-muted"><Check size={14} className="mt-1 shrink-0 text-green" /><span>The build generates this reference from the source. Automated checks detect differences.</span></div>}
     <article className="doc-prose mt-8"><Markdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeSlug, [rehypeHighlight, { detect: false }]]} components={{
       pre: ({ children }) => <div className="relative my-6 overflow-hidden border border-line bg-panel"><CopyButton className="absolute top-2 right-2 bg-panel" text={textContent(children).replace(/\n$/, '')} label="Copy code" /><pre>{children}</pre></div>,
       table: ({ children }) => <div className="my-6 overflow-x-auto border border-line" tabIndex={0} role="region" aria-label="Reference table"><table>{children}</table></div>,
       a: ({ href, children }) => href?.startsWith('/docs/') && !href.includes('#') ? <Link to="/docs/$slug" params={{ slug: href.slice('/docs/'.length) }}>{children}</Link> : <a href={href}>{children}</a>,
     }}>{doc.slug === 'api' ? doc.body.split('## Methods')[0] : doc.body}</Markdown>{doc.slug === 'api' && <ApiReference />}</article>
-    <div className="mt-12 flex flex-wrap items-center justify-between gap-4 border-t border-line pt-6 text-[11px] text-muted"><a href={`https://github.com/MidgardAI/vibeke/blob/main/docs/site/src/${doc.file}`} className="inline-flex items-center gap-1 hover:text-accent">View page source <ArrowUpRight size={12} /></a><span className="font-mono text-[10px]">Documentation from this build</span></div>
+    <div className="mt-12 flex flex-wrap items-center justify-between gap-4 border-t border-line pt-6 text-[11px] text-muted"><a href={`https://github.com/MidgardAI/vibeke/blob/main/docs/site/src/${doc.file}`} className="inline-flex items-center gap-1 hover:text-accent">View page source <ArrowUpRight size={12} /></a></div>
     <nav aria-label="Previous and next pages" className="mt-8 grid grid-cols-2 gap-4">{previous ? <Link to="/docs/$slug" params={{ slug: previous.slug }} className="border border-line p-4 hover:border-muted"><span className="flex items-center gap-1 font-mono text-[9px] text-muted"><ArrowLeft size={11} /> PREVIOUS</span><span className="mt-2 block text-xs">{previous.title}</span></Link> : <span />}{next && <Link to="/docs/$slug" params={{ slug: next.slug }} className="border border-line p-4 text-right hover:border-muted"><span className="flex items-center justify-end gap-1 font-mono text-[9px] text-muted">NEXT <ArrowRight size={11} /></span><span className="mt-2 block text-xs">{next.title}</span></Link>}</nav>
   </DocsLayout>
 }

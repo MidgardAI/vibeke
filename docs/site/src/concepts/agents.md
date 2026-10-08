@@ -17,7 +17,7 @@ An **interaction** is a permission request, question, or plan review from an age
 3. Select or enter your answer.
 4. Send the answer.
 
-You do not need to open the agent pane. The integration sends your answer through the agent's native interface when available.
+The integration sends your answer through the agent's native interface when available.
 
 Vibeke stores the decision, delivery attempt, and acknowledgment. The request and delivery state remain after a server restart. Repeated answer IDs do not send the answer twice.
 

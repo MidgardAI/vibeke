@@ -4,7 +4,6 @@ Open [app.vibeke.dev](https://app.vibeke.dev) on your phone or computer.
 The browser app connects to your Vibeke host through `relay.vibeke.dev`.
 The relay carries encrypted traffic. Your host makes an outbound connection and needs no inbound port.
 
-The browser app and relay are separate services. You do not need to build either one to use the public service.
 For local desktop access, use the [desktop connection guide](desktop.md).
 
 ## Pair your device
@@ -25,14 +24,18 @@ For local desktop access, use the [desktop connection guide](desktop.md).
 4. Compare the device fingerprint with the fingerprint shown by the pairing command.
 5. Confirm pairing on the device and in the terminal when prompted.
 
-After the first setup, create another invitation with:
+After the first setup, pair another device from the TUI or the shell.
+
+In the TUI, press `prefix` then `alt+d`, or run **Pair a phone** from the command palette.
+Choose the access level and press `enter`.
+Scan the QR code, then confirm the fingerprint in the prompt that appears in the TUI.
+Press `c` to copy the link, or `esc` to cancel it.
+
+From a shell:
 
 ```sh
 vibeke gateway pair
 ```
-
-Pairing starts from this command in v0.1.0. The TUI does not yet have a device-pairing action.
-You do not need to start a separate gateway process.
 
 For limited access, use `vibeke gateway pair --scope approve` or `vibeke gateway pair --scope view`.
 Each invitation is temporary and can be used once.
@@ -46,6 +49,12 @@ The TUI status bar shows gateway state after setup.
 The host must remain awake and online. Closing the terminal client does not stop the server or its panes.
 
 ## Manage devices
+
+In the TUI, press `prefix` then `alt+d` to list your paired devices.
+Select one and press `x`, then `y`, to revoke it. Press `n` to pair a new one.
+The 📱 count in the status bar shows how many devices are connected.
+
+From a shell:
 
 ```sh
 vibeke gateway devices
@@ -61,7 +70,6 @@ vibeke gateway off
 ```
 
 Use `vibeke gateway on` to enable it again.
-Before setup, the gateway stays off and opens no connection.
 
 ## Install on your phone
 
@@ -81,6 +89,5 @@ Configure notifications separately on each device.
 
 The browser stores pairing keys for each origin. Changing domains creates a separate device.
 The app origin is trusted with keys and decrypted content. Check it before opening a pairing link.
-Build information is available in **Settings → About**.
 
 For your own relay or app hosting, see [self-hosting](self-hosting.md).

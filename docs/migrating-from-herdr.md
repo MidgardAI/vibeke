@@ -7,7 +7,7 @@ Vibeke uses separate configuration, sockets, and state. The importer reads Herdr
 Follow the [installation guide](site/src/install.md) to install the published CLI.
 First-run setup offers to import an existing Herdr configuration. Use the commands below for a detailed migration.
 
-The installer does not use `sudo`. It creates `~/.local/bin/vibeke`. Add that directory to `PATH` if necessary.
+The installer creates `~/.local/bin/vibeke`. Add that directory to `PATH` if necessary.
 
 Check the installation:
 
@@ -133,8 +133,6 @@ Unsupported features are `agent.view.set/clear`, key bindings from plugin manife
 Set `[compat.herdr] enabled = true` to expose a Herdr-compatible socket for existing socket clients.
 
 The default session uses `$RUNTIME/herdr-compat/herdr.sock`. Named sessions use `$RUNTIME/herdr-compat/sessions/<name>/herdr.sock`.
-
-These paths are inside Vibeke's runtime directory. They do not use `~/.config/herdr`.
 
 ## Terminal controls
 

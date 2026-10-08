@@ -1,7 +1,6 @@
 # Installation
 
 Install the terminal CLI, download the desktop app, or open the [browser app](https://app.vibeke.dev).
-Public releases do not require a GitHub account.
 
 ## Terminal CLI
 
@@ -27,7 +26,6 @@ curl -fsSL https://vibeke.dev/install.sh | sh
 ```
 
 The installer downloads the latest published release installer from GitHub. It verifies the signature and binary checksum before installing.
-It installs inside your home directory without `sudo`.
 
 Check your installation:
 
@@ -59,19 +57,17 @@ For local use on a supported Mac or Linux computer, install the CLI too.
 Windows and Intel Macs can connect to a supported remote host. This release has no host CLI for those platforms.
 
 The macOS app is ad-hoc signed and is not notarized. The Windows installer is not publisher-signed.
-Operating-system security checks can require approval. Desktop downloads are included in the signed release checksums.
+Operating-system security checks can require approval.
 
 Continue with the [desktop connection guide](desktop.md).
 
 ## Browser and phone
 
 Open [app.vibeke.dev](https://app.vibeke.dev). Pair it with your host using the [phone and browser guide](mobile.md).
-You do not need to build the app or run a relay.
 
 ## Upgrade
 
 Run the installation command again to install the latest CLI release. Reconnect with `vibeke` afterward.
-See [process durability](concepts/holders.md) for what survives a server restart.
 
 For the desktop app, download and install the new release. Automatic desktop updates are not configured.
 

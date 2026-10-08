@@ -1,6 +1,5 @@
 # Build from source
 
-Use the [published releases](install.md) for normal installation.
 Build from source when contributing or testing unreleased changes.
 
 ## Build the CLI

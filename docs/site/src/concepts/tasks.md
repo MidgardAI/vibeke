@@ -32,8 +32,6 @@ After you confirm the request, use `task reviewer-start` to start the review age
 
 Use `task depend` to add a blocking or related task link. Vibeke rejects cyclic dependencies. The attention list orders tasks that need a decision.
 
-Dependency links do not merge branches or deploy results automatically.
-
 ## Agents sharing one checkout
 
 When several agents work in one directory, Vibeke shows it instead of forbidding it. The collision tracker is advisory: it warns, and it never blocks, reverts, or reassigns a change.

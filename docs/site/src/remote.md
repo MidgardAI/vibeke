@@ -23,9 +23,7 @@ vibeke ssh devbox
 Vibeke downloads and verifies the signed release manifest on your computer.
 The remote host downloads the matching binary and checks its checksum before installation.
 The host needs `curl` and outbound access to GitHub release downloads.
-Public releases need no GitHub token or unsigned-build flag.
 
-Vibeke installs inside the remote user's home directory without `sudo`.
 For an existing installation that needs an upgrade, review the version change and run `vibeke ssh devbox --upgrade`.
 
 ## Use a local release cache

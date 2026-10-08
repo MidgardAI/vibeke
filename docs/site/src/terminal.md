@@ -58,7 +58,6 @@ See [agents and interactions](concepts/agents.md).
 ## Phone and desktop access
 
 The desktop app has a **Connect to this Mac/computer** flow.
-Phone and browser pairing currently starts with `vibeke gateway pair`; it is not a command-palette action.
-After setup, the server manages the gateway and the terminal status bar shows its state.
+**Devices** (`prefix` then `alt+d`, or **Pair a phone** in the command palette) pairs a phone or browser and lists and revokes paired devices.
 
 See [desktop access](desktop.md) and [phone and browser access](mobile.md).

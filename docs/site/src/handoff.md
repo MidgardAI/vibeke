@@ -6,7 +6,7 @@ The browser and desktop apps provide both features through the gateway.
 
 ## Requirements
 
-[Pair the app](mobile.md) with a gateway first. After setup, the server runs the gateway for you. You do not start it by hand. Both hosts must be online for a transfer. Offline delivery is unavailable. The app only starts a transfer: the source host sends the work to the destination itself, so you can close the app while it runs.
+[Pair the app](mobile.md) with a gateway first. Both hosts must be online for a transfer. Offline delivery is unavailable. The app only starts a transfer: the source host sends the work to the destination itself, so you can close the app while it runs.
 
 The destination needs the agent CLI and its own agent login. It does not need a checkout in advance: the recipient can choose an existing clone or clone the repository when accepting.
 
@@ -224,8 +224,7 @@ pane it asks for your approval first.
 
 In the terminal client, **Sharing & handoff** does the same: `n` then `h` (**Pair another of my
 hosts**) on the destination shows the invitation, and `p` on the source pastes and accepts it.
-When the terminal client is attached to both hosts, you don't need either: choosing the other
-host under **Your machines (will pair)** when handing off pairs them for you.
+When the terminal client is attached to both hosts, choosing the other host under **Your machines (will pair)** when handing off pairs them for you.
 
 A peer invitation pairs one of your own hosts and never expires. A teammate's handoff invitation can also be redeemed this way; that pairing expires with the invitation. A paired host can only deliver handoffs: it can't see panes, the inbox or other devices.
 
@@ -251,7 +250,7 @@ vibeke gateway invites        # unused invitation links, and the share and peer 
 vibeke gateway revoke <id>    # cancel an unused invitation, or revoke a device
 ```
 
-Both list the kind, expiry, limit and owner of each entry. Every cancellation and revocation is recorded in the gateway's audit log. When you accept a share in the app, the app pairs with a separate key for it, so it never replaces your own pairing with that host.
+Both list the kind, expiry, limit and owner of each entry. When you accept a share in the app, the app pairs with a separate key for it, so it never replaces your own pairing with that host.
 
 ## Recover from a connection failure
 
