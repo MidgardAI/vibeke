@@ -3344,7 +3344,10 @@ fn collect(server: &Server, now_ms: i64) -> Collected {
         it.interaction = Some(att::InteractionFacts {
             kind: match i.kind {
                 InteractionKind::Approval => att::InteractionKind::Approval,
-                InteractionKind::Question => att::InteractionKind::Question,
+                // A picker waits for the user like a question does.
+                InteractionKind::Question | InteractionKind::Picker => {
+                    att::InteractionKind::Question
+                }
                 InteractionKind::PlanReview => att::InteractionKind::PlanReview,
                 InteractionKind::Notice => att::InteractionKind::Notice,
             },

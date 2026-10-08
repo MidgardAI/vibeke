@@ -3,6 +3,8 @@
 //! structured transport (§2.5 rule 3).
 
 use super::Harness;
+pub use super::screen_picker::Picker;
+use super::screen_picker::{self, Row};
 use regex::Regex;
 use std::sync::LazyLock;
 use vk_agents::manifest::{HoldTracker, Snapshot};
@@ -21,10 +23,37 @@ pub struct Dialog {
     pub confidence: f32,
     /// Manifest screen rule that matched (manifest-driven harnesses; empty for code-backed).
     pub rule: String,
+    /// Set when `kind` is [`InteractionKind::Picker`].
+    pub picker: Option<Picker>,
 }
 
 impl Dialog {
+    /// A picker as a screen dialog: its signature is the fingerprint.
+    pub fn of_picker(p: Picker) -> Dialog {
+        Dialog {
+            kind: InteractionKind::Picker,
+            title: p.title.clone(),
+            tool: None,
+            command: None,
+            options: vec![],
+            pointer: None,
+            fingerprint: p.signature.clone(),
+            confidence: if p.is_unknown() {
+                0.5
+            } else if p.name == "menu" {
+                0.7
+            } else {
+                0.85
+            },
+            rule: format!("picker:{}", p.name),
+            picker: Some(p),
+        }
+    }
+
     pub fn options_as_question(&self) -> Vec<Question> {
+        if let Some(p) = &self.picker {
+            return picker_questions(p);
+        }
         if self.kind != InteractionKind::Question {
             return vec![];
         }
@@ -40,6 +69,7 @@ impl Dialog {
                     id: n.to_string(),
                     label: l.clone(),
                     description: None,
+                    selected: false,
                 })
                 .collect(),
             allow_free_text: false,
@@ -86,16 +116,33 @@ pub fn evaluate_snapshot(
         return evaluate_manifest(base, snap, now_ms, hold);
     }
     let mut m = evaluate_code(base, snap);
+    let lines: Vec<&str> = snap.lines.iter().map(String::as_str).collect();
+    let quiet = |m: &ScreenMatch| {
+        m.dialog.is_none() && m.state.as_ref().is_none_or(|s| s.0 == Execution::Idle)
+    };
+    // Pickers and key-hint menus (model, effort, resume, confirmations).
+    if quiet(&m)
+        && let Some(p) = screen_picker::detect(base, &lines)
+    {
+        m.state = None;
+        m.dialog = Some(Dialog::of_picker(p));
+    }
     // 04 §9.2: a boxed, numbered, pointer-marked list that matches no rule is a provisional
     // question rather than a silent `idle`.
     let heuristic = base.manifest().is_none_or(|l| l.m.screen.unknown_dialog);
-    if heuristic && m.dialog.is_none() && m.state.as_ref().is_none_or(|s| s.0 == Execution::Idle) {
-        let lines: Vec<&str> = snap.lines.iter().map(String::as_str).collect();
+    if heuristic && quiet(&m) {
         let start = lines.len().saturating_sub(40);
         if let Some(d) = vk_agents::manifest::unknown_dialog_in(&lines[start..]) {
             m.state = None;
             m.dialog = Some(dialog_of(d));
         }
+    }
+    // A modal no grammar recognises, with the input box hidden: the unknown-dialog picker.
+    if quiet(&m)
+        && let Some(p) = screen_picker::detect_unknown(base, &lines)
+    {
+        m.state = None;
+        m.dialog = Some(Dialog::of_picker(p));
     }
     (m, None)
 }
@@ -207,6 +254,7 @@ fn evaluate_code(h: Harness, snap: &Snapshot) -> ScreenMatch {
                 fingerprint,
                 confidence: 0.9,
                 rule: String::new(),
+                picker: None,
             });
         }
     }
@@ -322,6 +370,55 @@ fn dialog_of(d: vk_agents::manifest::DialogMatch) -> Dialog {
         fingerprint,
         confidence: d.confidence,
         rule: d.rule_id,
+        picker: None,
+    }
+}
+
+/// `questions[0]` of a picker interaction: its rows, the pointed (or checked) ones selected.
+pub fn picker_questions(p: &Picker) -> Vec<Question> {
+    if p.rows.is_empty() {
+        return vec![];
+    }
+    vec![Question {
+        id: "q0".into(),
+        prompt: p.title.clone(),
+        header: None,
+        multi: p.multi,
+        options: p
+            .rows
+            .iter()
+            .enumerate()
+            .map(|(i, r): (usize, &Row)| QuestionOption {
+                id: r.id.clone(),
+                label: r.label.clone(),
+                description: r.description.clone(),
+                selected: if p.multi {
+                    r.checked.unwrap_or(false)
+                } else {
+                    p.pointer == Some(i)
+                },
+            })
+            .collect(),
+        allow_free_text: false,
+    }]
+}
+
+/// The interaction's `picker` field for a screen picker.
+pub fn picker_info(p: &Picker) -> PickerInfo {
+    PickerInfo {
+        name: p.name.clone(),
+        cancel_key: p.keys.cancel.as_deref().map(|k| match k {
+            "escape" => "Escape".to_string(),
+            other => other.to_string(),
+        }),
+        up_down: p.keys.up.is_some() && !p.rows.is_empty() && p.name != "effort",
+        left_right: p.adjust.as_ref().map(|a| PickerAdjust {
+            verb: a.verb.clone(),
+            values: a.values.clone(),
+            current: a.current.clone(),
+        }),
+        source: "screen".into(),
+        signature: p.signature.clone(),
     }
 }
 
@@ -353,21 +450,26 @@ fn evaluate_manifest(
         m.state = None;
         m.dialog = Some(dialog_of(d));
     }
+    // The generic key-hint menu applies to every harness (it fails closed).
+    if m.dialog.is_none() && m.state.as_ref().is_none_or(|s| s.0 == Execution::Idle) {
+        let lines: Vec<&str> = snap.lines.iter().map(String::as_str).collect();
+        if let Some(p) = screen_picker::detect(h, &lines) {
+            m.state = None;
+            m.dialog = Some(Dialog::of_picker(p));
+        }
+    }
     (m, pending)
 }
 
-fn fnv(s: &str) -> u64 {
-    let mut h: u64 = 0xcbf29ce484222325;
-    for b in s.bytes() {
-        h ^= b as u64;
-        h = h.wrapping_mul(0x100000001b3);
-    }
-    h
-}
+use screen_picker::fnv;
 
 /// Keys that select the option matching `answer` (accelerators preferred: atomic, 04 §8 step 3).
 pub fn keys_for(h: Harness, d: &Dialog, it: &Interaction, answer: &Answer) -> Option<Vec<String>> {
     let h = h.base();
+    // Pickers are walked and verified step by step (`super::walk`), never planned up front.
+    if d.picker.is_some() || it.kind == InteractionKind::Picker {
+        return None;
+    }
     if !matches!(
         h,
         Harness::Claude | Harness::Codex | Harness::Pi | Harness::Omp
@@ -376,6 +478,7 @@ pub fn keys_for(h: Harness, d: &Dialog, it: &Interaction, answer: &Answer) -> Op
         let l = screen_manifest(h)?;
         let spec = l.dialog_spec(&d.rule).cloned().unwrap_or_default();
         let intent = match (it.kind, answer.decision) {
+            (_, Some(Decision::Cancel)) => return None,
             (InteractionKind::Question, _) => {
                 KeyIntent::Option(answer.choices.first().and_then(|(_, o)| o.first())?.clone())
             }
@@ -401,6 +504,7 @@ pub fn keys_for(h: Harness, d: &Dialog, it: &Interaction, answer: &Answer) -> Op
             .cloned()
     };
     let opt = match (it.kind, answer.decision) {
+        (_, Some(Decision::Cancel)) => return None,
         (InteractionKind::Question, _) => {
             let want = answer.choices.first().and_then(|(_, o)| o.first())?;
             d.options

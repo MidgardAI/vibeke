@@ -1,0 +1,11 @@
+# Recorded picker screens (not synthetic). Each `<harness>/<version>/` directory holds plain-text
+# captures of the installed CLI at that version, rendered by a terminal multiplexer at 100x34
+# (`model-80x24.txt`: read from a Vibeke pane at 80x24).
+# Only pickers were opened (slash commands that start no model turn) and dismissed with Escape;
+# no option was committed. Session titles, tool names and paths were replaced with neutral
+# sample text after capture; layout and glyphs are unchanged.
+synthetic = false
+[recorded_versions]
+claude = "2.1.295"
+codex = "0.161.0"
+omp = "17.2.12"

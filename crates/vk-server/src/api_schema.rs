@@ -470,8 +470,9 @@ Facet = {value: string, since_ms: int, source: string, confidence: number, detai
 RunUsage = {input_tokens: int, output_tokens: int, cache_read_tokens: int, cache_write_tokens: int, cost_usd: number|null, model: string|null, source: string, updated_at_ms: int}
 RateLimitInfo = {limited: bool, resets_at_ms: int|null, scope: string|null, used_percent: number|null, message: string|null, observed_at_ms: int}
 AgentRun = {id: string, handle: string, name: string|null, pane: string, harness: string, harness_version: string|null, integration: string, harness_session_id: string|null, transcript_path: string|null, resume_argv: [string], cwd: string|null, model: string|null, task: string|null, execution: Facet, health: string, yolo: bool, permission_mode: string|null, last_message: string|null, last_tool: string|null, turns_completed: int, done_rev: int, started_at_ms: int, ended_at_ms: int|null, capabilities: [string], usage?: RunUsage, rate_limit?: RateLimitInfo|null}
-Answer = {decision: allow|allow_always|deny|string|null, choices?: [any], text?: string|null}
-Interaction = {id: string, handle: string, run: string, pane: string, kind: string, status: string, title: string, body_md: string|null, action: object|null, questions: [object], plan_md: string|null, answer_channel: string, native_ref: string|null, source: string, confidence: number, answerable: bool, gate: bool, decision_rev: int, delivery: string, delivery_error: string|null, answer: Answer|null, answered_by: string|null, answer_key?: string|null, opened_at_ms: int, answered_at_ms: int|null}
+Answer = {decision: allow|allow_always|deny|cancel|string|null, choices?: [any], text?: string|null}
+Interaction = {id: string, handle: string, run: string, pane: string, kind: string, status: string, title: string, body_md: string|null, action: object|null, questions: [object], plan_md: string|null, answer_channel: string, native_ref: string|null, source: string, confidence: number, answerable: bool, gate: bool, decision_rev: int, delivery: string, delivery_error: string|null, answer: Answer|null, answered_by: string|null, answer_key?: string|null, opened_at_ms: int, answered_at_ms: int|null, picker?: PickerInfo|null}
+PickerInfo = {name: model|effort|resume|permissions|confirm|menu|unknown|string, cancel_key: string|null, up_down: bool, left_right: {verb: string, values: [string], current: string|null}|null, source: screen|protocol|string, signature: string}
 PolicyRule = object
 Notification = {id: string, kind: string, pane: string|null, title: string, body: string, urgency: string, created_at_ms: int, read: bool, channels?: [string]}
 MaterializedFile = {path: string, outcome: copied|linked|cloned|missing|exists|rejected|failed, method?: string|null, hash?: string|null, error?: string|null}
@@ -624,7 +625,8 @@ agent.get :: {target: Target} => {run: AgentRun, pane: Pane, open_interactions: 
 agent.harnesses :: {} => {harnesses: [{id: string, display?: string, version_detected?: string|null, integration_installed?: bool, capabilities?: [string]}]}
 agent.start :: {pane?: Target, harness: string, name?: string, mode?: tui|headless = tui, args?: [string], env?: {*: string}, model?: string, task?: Target, ready_timeout_ms?: int = 30000} => {run: AgentRun}
 agent.spawn :: {harness: string, name?: string, where?: object, prompt?: string, args?: [string], focus?: bool = false} => {pane: Pane, run: AgentRun}
-agent.prompt :: {target: Target, text: string, images?: [string], mode?: send|steer|follow_up = send, wait?: bool, until?: [string], timeout_ms?: int} => {run: AgentRun, turn?: any}
+# refused with conflict, details {reason: dialog_open, interaction} while a picker or unreadable dialog is open; a slash command never fails agent_prompt_stalled
+agent.prompt :: {target: Target, text: string, images?: [string], mode?: send|steer|follow_up = send, wait?: bool, until?: [string], timeout_ms?: int} => {run: AgentRun, turn?: any, turn_started?: bool, interaction?: string}
 agent.read :: {target: Target, source?: visible|recent|transcript = visible, lines?: int, format?: text|ansi|cells} => {text?: string, turns?: [any], rows?: int, revision?: int, truncated?: bool}
 agent.wait :: {target: Target, until?: [string], timeout_ms?: int} => {run: AgentRun, state: string, interaction?: Interaction}
 agent.interrupt :: {target: Target} => {run: AgentRun}
@@ -636,7 +638,9 @@ agent.resume :: {pane?: Target, run: Target, mode?: string} => {run: AgentRun}
 # --- interactions ---
 interaction.list :: {status?: open|string, run?: Target, workspace?: Target, kind?: string} => {interactions: [Interaction]}
 interaction.get :: {interaction: Target} => {interaction: Interaction}
-interaction.answer :: {interaction: Target, decision?: allow|allow_always|deny, choices?: {*: [string]}, text?: string, scope?: once|session|rule, rule?: PolicyRule, idempotency_key?: string, actor?: string, expected_decision_rev?: int}
+# pickers: choices {q0: [option id]} (multi-select: the full checked set), {adjust: [left_right value]}, {scope: [session|default]};
+# decision cancel sends the picker's cancel key; a stale expected_signature fails with conflict, details {reason: picker_changed, interaction}
+interaction.answer :: {interaction: Target, decision?: allow|allow_always|deny|cancel, choices?: {*: [string]}, expected_signature?: string, text?: string, scope?: once|session|rule, rule?: PolicyRule, idempotency_key?: string, actor?: string, expected_decision_rev?: int}
   => {interaction: Interaction, delivery: {state: string, channel?: native|keystrokes|none|string}, duplicate?: bool}
 interaction.cancel :: {interaction: Target} => {interaction: Interaction}
 

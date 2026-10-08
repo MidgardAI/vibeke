@@ -1,0 +1,34 @@
+
+ ▐▛███▛█   Claude Code v2.1.295
+▝▜██████▀  Opus 5.5 · Claude Max
+ ▝▝   ▝▝   ~/src/app
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  ❯ /model                                  Set the AI model for Claude Code (currently Opus 5.5)
+    /auto-mode-setup                        Teach auto mode about your environment, plus optional
+                                            rule tweaks
+    /code-review                            3 free /ultrareview · Review the current diff, or a PR
+                                            number/branch/path target, for correctness bugs (plus…
+────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ /model
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle)

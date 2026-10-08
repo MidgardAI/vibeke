@@ -555,11 +555,13 @@ fn in_pane_answers_map_lines_to_decisions_and_options() {
                     id: "a".into(),
                     label: "A".into(),
                     description: None,
+                    selected: false,
                 },
                 QuestionOption {
                     id: "b".into(),
                     label: "B".into(),
                     description: None,
+                    selected: false,
                 },
             ],
             allow_free_text: false,

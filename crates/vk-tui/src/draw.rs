@@ -93,7 +93,10 @@ pub fn run_state(
             i.source == StateSource::Screen,
         );
     }
-    if let Some(i) = open.iter().find(|i| i.kind == InteractionKind::Question) {
+    if let Some(i) = open
+        .iter()
+        .find(|i| matches!(i.kind, InteractionKind::Question | InteractionKind::Picker))
+    {
         let q = i
             .questions
             .first()

@@ -383,6 +383,7 @@ async fn global_scope_needs_the_config_and_the_choice() {
         answer_key: None,
         opened_at_ms: 0,
         answered_at_ms: None,
+        picker: None,
     };
     assert_eq!(decision_of(&it, true), AskDecision::AllowTask);
     it.answer.as_mut().unwrap().text = Some("always".into());

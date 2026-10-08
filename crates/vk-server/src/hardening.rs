@@ -364,6 +364,7 @@ pub(crate) mod testkit {
             answer_key: None,
             opened_at_ms: 0,
             answered_at_ms: None,
+            picker: None,
         }
     }
 

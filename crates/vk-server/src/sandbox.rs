@@ -1309,6 +1309,7 @@ fn open_egress_interaction(
             answer_key: None,
             opened_at_ms: vk_store::now_ms(),
             answered_at_ms: None,
+            picker: None,
         };
         let mut t = Tx::new();
         t.counters = true;

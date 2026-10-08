@@ -1,0 +1,34 @@
+
+  >_ OpenAI Codex (v0.161.0)
+     ~/src/app
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+› /model  choose what model and reasoning effort to use
+
+› /model
+
+  GPT-6-Astra xhigh · ~/src/app
+  tab to queue message

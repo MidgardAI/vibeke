@@ -281,6 +281,7 @@ async fn request(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
             answer_key: None,
             opened_at_ms: vk_store::now_ms(),
             answered_at_ms: None,
+            picker: None,
         };
         let mut t = Tx::new();
         t.counters = true;

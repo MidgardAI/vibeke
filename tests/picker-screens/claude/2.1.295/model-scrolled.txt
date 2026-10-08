@@ -1,0 +1,34 @@
+
+ ▐▛███▛█   Claude Code v2.1.295
+▝▜██████▀  Opus 5.5 · Claude Max
+ ▝▝   ▝▝   ~/src/app
+
+
+
+
+
+
+
+
+
+
+
+ tmux focus-events off · add 'set -g focus-events on' to ~/.tmux.conf and reattach for focus trac… ▔
+   Select model
+   Switch between Claude models. Your pick becomes the default for new sessions. For
+   other/previous model names, specify with --model.
+
+   ↑ 2.  Opus 5.5 ✔             For complex work and everyday tasks
+     3.  Fable 5.1              For your toughest challenges
+     4.  Sonnet 5.5             Most efficient for simpler tasks
+     5.  Haiku 5.5              Fastest for quick answers
+     6.  Haiku 4.5              Fastest for quick answers
+     7.  Sonnet 5               Efficient for routine tasks
+   ❯ 8.  Opus 5                 Best for everyday, complex tasks
+      … +5 models
+
+   ◉ xHigh effort ←/→ to adjust
+
+   Use /fast to turn on Fast mode (Opus 5.5).
+
+   Enter to set as default · s to use this session only · Esc to cancel

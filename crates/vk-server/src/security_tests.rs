@@ -376,6 +376,7 @@ effect = "allow"
         answer_key: None,
         opened_at_ms: 0,
         answered_at_ms: None,
+        picker: None,
     };
     assert_eq!(
         crate::policy_api::match_interaction(&e.server, &it),

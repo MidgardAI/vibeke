@@ -493,6 +493,7 @@ async fn failed_check_never_ready_then_red_green_and_flake() {
         answer_key: None,
         opened_at_ms: now(),
         answered_at_ms: None,
+        picker: None,
     };
     {
         let mut c = e.server.core.lock().unwrap();
@@ -1105,6 +1106,7 @@ fn put_interaction(e: &Env, id: &str, run: &str, opened: i64) {
         answer_key: None,
         opened_at_ms: opened,
         answered_at_ms: None,
+        picker: None,
     };
     let mut c = e.server.core.lock().unwrap();
     let mut tx = Tx::new();

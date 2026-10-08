@@ -22,7 +22,9 @@ use serde::{Deserialize, Serialize};
 ///   `ServerFrame::Image` / `PaneImages` (inbound kitty graphics, 03 §9).
 /// - 5: `ImagePlace.virt` (virtual placements a program shows through its own unicode
 ///   placeholder cells, 03 §9).
-pub const PROTOCOL: u32 = 5;
+/// - 6: picker interactions: `InteractionKind::Picker`, `Decision::Cancel`,
+///   `QuestionOption.selected`, `Interaction.picker`.
+pub const PROTOCOL: u32 = 6;
 
 /// `render.attach` error kind when client and server speak different render protocols.
 pub const VERSION_MISMATCH: &str = "version_mismatch";
