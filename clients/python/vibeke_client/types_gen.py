@@ -8557,6 +8557,7 @@ AgentUsageData = TypedDict("AgentUsageData", {
     "cache_read": int,
     "cache_write": int,
     "cost_usd": Optional[float],
+    "model": NotRequired[Optional[str]],
     "source": str,
 })
 
