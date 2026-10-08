@@ -1215,3 +1215,40 @@ fn a_late_pairing_reply_after_esc_never_drives_a_new_send_form() {
     assert_eq!(f.chosen.as_ref().map(Dest::name), Some("m1"));
     assert!(f.busy && f.pairing.is_some());
 }
+
+#[test]
+fn a_late_send_reply_never_clears_or_fails_a_newer_form() {
+    let (mut app, mut rxs) = fleet();
+    let open = |app: &mut App, rxs: &mut Vec<UnboundedReceiver<ClientFrame>>| {
+        commands(&mut rxs[0]);
+        app.action("handoff_send", None);
+        let (req, _) = only(&commands(&mut rxs[0]), "handoff.peers");
+        reply(
+            app,
+            0,
+            req,
+            json!({"peers": [{"id": "pr1", "name": "marvin", "owner": "self"}]}),
+        );
+    };
+    // Form A sends to marvin, then Esc before the reply.
+    open(&mut app, &mut rxs);
+    app.on_key(named(NamedKey::Enter));
+    app.on_key(named(NamedKey::Enter));
+    let (send_a, _) = only(&commands(&mut rxs[0]), "handoff.send");
+    app.on_key(named(NamedKey::Escape));
+    assert!(app.ux.handoff.send.is_none());
+    // Form B is open; A's failure only toasts.
+    open(&mut app, &mut rxs);
+    reply_err(&mut app, 0, send_a, "conflict", json!({}));
+    let f = app.ux.handoff.send.as_ref().unwrap();
+    assert!(f.error.is_none() && !f.busy);
+    assert!(matches!(app.mode, Mode::Popup(Popup::HandoffSend)));
+    // B sends; A's (late) success would not close B either: only B's own reply does.
+    app.on_key(named(NamedKey::Enter));
+    app.on_key(named(NamedKey::Enter));
+    let (send_b, _) = only(&commands(&mut rxs[0]), "handoff.send");
+    reply(&mut app, 0, send_a, json!({}));
+    assert!(app.ux.handoff.send.as_ref().is_some_and(|f| f.busy));
+    reply(&mut app, 0, send_b, json!({}));
+    assert!(app.ux.handoff.send.is_none());
+}

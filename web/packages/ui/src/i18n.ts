@@ -284,10 +284,6 @@ export const en = {
     join: 'Join',
     accept: 'Accept invitation',
     doneShare: (host: string) => `You can now follow ${host}`,
-    legacyHandoffHosts: (n: number) =>
-      n === 1
-        ? 'A teammate’s handoff invitation was removed from this app. Accept it on one of your hosts instead.'
-        : `${n} teammate handoff invitations were removed from this app. Accept them on one of your hosts instead.`,
     replacesOwn: 'You already have full access to this host as your own device, so this invitation is not needed.',
     localOnly: 'This link is for the Vibeke desktop app on the same computer as the host.',
     thisComputer: 'This computer (local socket)',

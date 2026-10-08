@@ -7,7 +7,7 @@ use crate::screen::Grid;
 use serde_json::{Value, json};
 use std::collections::{HashSet, VecDeque};
 use std::time::{Duration, Instant};
-use vk_proto::input::{Key, KeyEvent, KeyKind, Mods, NamedKey};
+use vk_proto::input::{Key, KeyEvent, KeyKind, NamedKey};
 use vk_proto::model::{Interaction, InteractionStatus};
 
 /// Presence ping interval while the user is active (X3).
@@ -140,13 +140,30 @@ impl State {
 
     /// Answered elsewhere or timed out on the server.
     pub fn resolve(&mut self, machine: usize, id: &str) {
-        self.queue.retain(|q| !(q.machine == machine && q.id == id));
+        self.retain(|q| !(q.machine == machine && q.id == id), Instant::now());
+    }
+
+    /// Keep the cards `keep` accepts; a card that became the front one is armed afresh.
+    pub fn retain(&mut self, keep: impl FnMut(&Confirm) -> bool, now: Instant) {
+        let front = self.queue.front().map(|c| (c.machine, c.id.clone()));
+        self.queue.retain(keep);
+        if self.queue.front().map(|c| (c.machine, c.id.clone())) != front {
+            self.rearm_front(now);
+        }
+    }
+
+    /// The card now in front was under another one: keys count only `ARM_DELAY` from now, so
+    /// a key meant for the card that went away never answers this one.
+    fn rearm_front(&mut self, now: Instant) {
+        if let Some(c) = self.queue.front_mut() {
+            c.shown_at = c.shown_at.max(now);
+        }
     }
 
     /// Drop requests whose countdown ran out; true when something changed.
     pub fn expire(&mut self, now: Instant) -> bool {
         let n = self.queue.len();
-        self.queue.retain(|q| q.deadline > now);
+        self.retain(|q| q.deadline > now, now);
         self.queue.len() != n
     }
 
@@ -154,11 +171,10 @@ impl State {
         let Some(c) = self.queue.front_mut() else {
             return KeyOutcome::None;
         };
-        if ev.kind == KeyKind::Release
+        // Only a fresh press with no modifier at all, once the front card was armed.
+        if ev.kind != KeyKind::Press
+            || !ev.mods.is_empty()
             || now.saturating_duration_since(c.shown_at) < ARM_DELAY
-            || ev.mods.contains(Mods::CTRL)
-            || ev.mods.contains(Mods::ALT)
-            || ev.mods.contains(Mods::SUPER)
         {
             return KeyOutcome::None;
         }
@@ -167,6 +183,7 @@ impl State {
             Key::Named(NamedKey::Escape) => {
                 let c = self.queue.pop_front().unwrap();
                 self.dismissed.insert((c.machine, c.id));
+                self.rearm_front(now);
                 return KeyOutcome::Dismissed;
             }
             Key::Named(NamedKey::Left | NamedKey::Up) => {
@@ -194,6 +211,7 @@ impl State {
                 let c = self.queue.pop_front().unwrap();
                 let choice = c.options[i].0.clone();
                 self.dismissed.insert((c.machine, c.id.clone()));
+                self.rearm_front(now);
                 KeyOutcome::Answer {
                     machine: c.machine,
                     id: c.id,
@@ -286,7 +304,7 @@ pub fn on_input(app: &mut App) {
 // ---- polling ------------------------------------------------------------------------------
 
 pub fn on_connected(app: &mut App, i: usize) {
-    app.gateway.queue.retain(|q| q.machine != i);
+    app.gateway.retain(|q| q.machine != i, Instant::now());
     *app.gateway.per(i) = Per::default();
 }
 
@@ -618,6 +636,7 @@ mod tests {
     use super::*;
     use crate::app::test_app;
     use crate::tasks::grid_text;
+    use vk_proto::input::Mods;
 
     fn kev(k: Key) -> KeyEvent {
         KeyEvent::new(k, Mods::empty())
@@ -709,9 +728,16 @@ mod tests {
             assert_eq!(s.handle_key(&kev(Key::Char(ch)), later), KeyOutcome::None);
         }
         assert_eq!(s.queue.len(), 2);
-        // Ctrl+1 is not "1".
-        let ctrl = KeyEvent::new(Key::Char('1'), Mods::CTRL);
-        assert_eq!(s.handle_key(&ctrl, later), KeyOutcome::None);
+        // Ctrl+1 is not "1", nor is any other modifier, a repeat or a release.
+        for m in [Mods::CTRL, Mods::SHIFT, Mods::HYPER, Mods::META] {
+            let k = KeyEvent::new(Key::Char('1'), m);
+            assert_eq!(s.handle_key(&k, later), KeyOutcome::None);
+        }
+        for kind in [KeyKind::Repeat, KeyKind::Release] {
+            let mut k = kev(Key::Char('1'));
+            k.kind = kind;
+            assert_eq!(s.handle_key(&k, later), KeyOutcome::None);
+        }
         // Move highlight then Enter answers the highlighted button.
         s.handle_key(&kev(Key::Named(NamedKey::Right)), later);
         assert_eq!(
@@ -722,7 +748,9 @@ mod tests {
                 choice: "cancel".into()
             }
         );
-        // Next in queue: letter picks by label initial.
+        // Next in queue: armed afresh once it is in front, then a letter picks by label initial.
+        assert_eq!(s.handle_key(&kev(Key::Char('A')), later), KeyOutcome::None);
+        let later = later + ARM_DELAY;
         assert_eq!(
             s.handle_key(&kev(Key::Char('A')), later),
             KeyOutcome::Answer {

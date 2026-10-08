@@ -403,34 +403,25 @@ impl StateDir {
     }
 
     /// Remove expired share/peer devices from `devices.json` (they are refused at the handshake
-    /// already; this keeps the registry from growing), and the retired `handoff` devices an app
-    /// got by redeeming a teammate invitation before handoffs went host to host. The caller holds
-    /// the registry lock. Returns the remaining devices and the ids removed.
+    /// already; this keeps the registry from growing). The caller holds the registry lock.
+    /// Returns the remaining devices and the ids removed.
     pub fn prune_expired_devices(
         &self,
         _lock: &RegistryLock,
     ) -> Result<(Vec<Device>, Vec<String>)> {
         let mut all = self.devices()?;
-        let legacy: Vec<String> = all
-            .iter()
-            .filter(|d| d.kind == "handoff")
-            .map(|d| d.id.clone())
-            .collect();
         let gone: Vec<String> = all
             .iter()
-            .filter(|d| d.expired() || legacy.contains(&d.id))
+            .filter(|d| d.expired())
             .map(|d| d.id.clone())
             .collect();
         if !gone.is_empty() {
             all.retain(|d| !gone.contains(&d.id));
             self.save_devices(&all)?;
             for id in &gone {
-                self.audit(&if legacy.contains(id) {
-                    serde_json::json!({"ts": now_s(), "event": "device.pruned", "device": id,
-                                       "reason": "legacy_handoff_device"})
-                } else {
-                    serde_json::json!({"ts": now_s(), "event": "device.expired", "device": id})
-                });
+                self.audit(
+                    &serde_json::json!({"ts": now_s(), "event": "device.expired", "device": id}),
+                );
             }
         }
         Ok((all, gone))
@@ -658,23 +649,6 @@ mod tests {
         assert_eq!(s.devices().unwrap().len(), 2);
         let audit = fs::read_to_string(t.path().join("gw/audit.log")).unwrap();
         assert!(audit.contains("device.expired") && audit.contains("\"old\""));
-    }
-
-    #[test]
-    fn legacy_handoff_devices_are_pruned() {
-        let t = tempfile::tempdir().unwrap();
-        let s = StateDir::open(t.path().join("gw")).unwrap();
-        let mut old = device("courier", Some(now_s() + 3600));
-        old.kind = "handoff".into();
-        s.save_devices(&[old, device("live", Some(now_s() + 3600))])
-            .unwrap();
-        let lock = s.lock().unwrap();
-        let (left, gone) = s.prune_expired_devices(&lock).unwrap();
-        assert_eq!(gone, ["courier"]);
-        assert_eq!(left.len(), 1);
-        assert_eq!(s.devices().unwrap().len(), 1);
-        let audit = fs::read_to_string(t.path().join("gw/audit.log")).unwrap();
-        assert!(audit.contains("device.pruned") && audit.contains("legacy_handoff_device"));
     }
 
     #[test]

@@ -20,7 +20,6 @@ import {
   type Interaction,
   type PairingLink,
 } from '@vibeke/core';
-import { t } from '../i18n';
 import { AnswerStore, classifyError, errorMessage, staleInteraction } from '../lib/answer';
 import { badgeCount, staleTags } from '../lib/notify';
 import { PrefsStore } from '../lib/prefs';
@@ -106,7 +105,6 @@ export class AppModel {
           store: p.hostStore,
           devicePrivate: this.devicePrivate,
           client: p.client,
-          onLegacyHandoffHosts: (names) => this.toast(t.pair.legacyHandoffHosts(names.length), 'warn', 10_000),
         });
         this._manager = manager;
         await manager.start();

@@ -412,22 +412,6 @@ describe('HostManager', () => {
     mgr.stop();
   });
 
-  test('stored records of the retired handoff kind are dropped on start, once', async () => {
-    const { platform } = harness();
-    const rec = record;
-    const removed: string[] = [];
-    const legacy: HostRecord = { ...rec, host_id: 'old', name: 'kari-box', kind: 'handoff' as never, until: 2_000_000_000 };
-    const store: HostStore = { list: async () => [legacy, rec], put: async () => {}, remove: async (id) => void removed.push(id) };
-    const names: string[][] = [];
-    const mgr = new HostManager({ platform, store, devicePrivate: DEV, client: { client: 'test', version: '0' }, onLegacyHandoffHosts: (n) => names.push(n) });
-    await mgr.start();
-    expect(removed).toEqual(['old']);
-    expect(names).toEqual([['kari-box']]);
-    expect(mgr.get('old')).toBeUndefined();
-    expect(mgr.get(rec.host_id)).toBeDefined();
-    mgr.stop();
-  });
-
   test('share hosts go expired at `until` and are not reconnected', async () => {
     const { mgr, h, platform } = harness({ ...record, kind: 'share', until: 1_800_000_010 }); // FakeClock starts at 1_800_000_000_000
     await mgr.start();

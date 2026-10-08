@@ -575,12 +575,6 @@ export interface HostManagerApi {
 
 export interface HostManagerOptions extends ConnectionOptions {
   store: HostStore;
-  /**
-   * Records of the retired `handoff` kind (an app paired with a teammate's handoff invitation)
-   * are dropped on start; this gets their host names, once, so the app can say invitations are
-   * now accepted on a host.
-   */
-  onLegacyHandoffHosts?(names: string[]): void;
 }
 
 /** All paired hosts. `getSnapshot` returns a stable array until something changes. */
@@ -596,14 +590,7 @@ export class HostManager implements HostManagerApi {
   constructor(private readonly o: HostManagerOptions) {}
 
   async start(): Promise<void> {
-    const legacy: string[] = [];
-    for (const r of await this.o.store.list()) {
-      if ((r.kind as string | undefined) === 'handoff') {
-        legacy.push(r.name);
-        await this.o.store.remove(r.host_id);
-      } else this.attach(r);
-    }
-    if (legacy.length) this.o.onLegacyHandoffHosts?.(legacy);
+    for (const r of await this.o.store.list()) this.attach(r);
     const lc = this.o.platform.lifecycle;
     this.lifecycleOff = [
       lc.onVisible(() => this.conns.forEach((c) => c.setVisible(true))),

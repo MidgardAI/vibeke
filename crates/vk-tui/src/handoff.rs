@@ -402,7 +402,10 @@ pub enum Reply {
         id: String,
     },
     Peers,
-    Send,
+    /// `handoff.send` of the form whose `send_op` is `op` (a later form ignores it).
+    Send {
+        op: u64,
+    },
     Cancel,
     /// Auto-pairing for a send: `gateway.call peer.invite` on the destination machine.
     PairInvite {
@@ -1864,36 +1867,49 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
                 }
             }
         }
-        Reply::Send => match res {
-            Ok(v) => {
-                let name = app
-                    .ux
-                    .handoff
-                    .send
-                    .as_ref()
-                    .and_then(|f| f.chosen.as_ref())
-                    .map(|d| d.name().to_string());
-                if let Some(j) = Job::from_value(&v["job"]) {
-                    let who = name.unwrap_or_else(|| j.name().to_string());
-                    upsert_job(app, mi, j);
-                    app.toast(format!("⇢ handing off to {who}…"));
+        Reply::Send { op } => {
+            // Only the form that sent it: a reply after Esc and a new form leaves that one be.
+            let current = app
+                .ux
+                .handoff
+                .send
+                .as_ref()
+                .is_some_and(|f| f.send_op == Some(op));
+            match res {
+                Ok(v) => {
+                    let name = app
+                        .ux
+                        .handoff
+                        .send
+                        .as_ref()
+                        .filter(|_| current)
+                        .and_then(|f| f.chosen.as_ref())
+                        .map(|d| d.name().to_string());
+                    if let Some(j) = Job::from_value(&v["job"]) {
+                        let who = name.unwrap_or_else(|| j.name().to_string());
+                        upsert_job(app, mi, j);
+                        app.toast(format!("⇢ handing off to {who}…"));
+                    }
+                    if current {
+                        app.ux.handoff.send = None;
+                        if matches!(app.mode, Mode::Popup(Popup::HandoffSend)) {
+                            app.mode = Mode::Normal;
+                        }
+                    }
                 }
-                app.ux.handoff.send = None;
-                if matches!(app.mode, Mode::Popup(Popup::HandoffSend)) {
-                    app.mode = Mode::Normal;
+                Err(e) => {
+                    if let Some(f) = app.ux.handoff.send.as_mut().filter(|_| current) {
+                        f.send_op = None;
+                        f.busy = false;
+                        f.pairing = None;
+                        f.pair_op = None;
+                        f.error = Some(e.message);
+                    } else {
+                        app.toast(format!("✗ {}", e.message));
+                    }
                 }
             }
-            Err(e) => {
-                if let Some(f) = app.ux.handoff.send.as_mut() {
-                    f.busy = false;
-                    f.pairing = None;
-                    f.pair_op = None;
-                    f.error = Some(e.message);
-                } else {
-                    app.toast(format!("✗ {}", e.message));
-                }
-            }
-        },
+        }
         Reply::Cancel => match res {
             Ok(v) => {
                 if let Some(j) = Job::from_value(v.get("job").unwrap_or(&v)) {
@@ -2309,6 +2325,8 @@ pub struct SendForm {
     pub pairing: Option<String>,
     /// The auto-pairing in flight: its replies are acted on only while this is it.
     pub pair_op: Option<PairOp>,
+    /// The `handoff.send` in flight for this form.
+    pub send_op: Option<u64>,
     pub error: Option<String>,
 }
 
@@ -2400,6 +2418,7 @@ pub fn open_send(app: &mut App) {
         busy: false,
         pairing: None,
         pair_op: None,
+        send_op: None,
         error: None,
     });
     app.mode = Mode::Popup(Popup::HandoffSend);
@@ -2415,9 +2434,11 @@ fn start_send(app: &mut App, peer: &str) {
     f.error = None;
     f.pairing = None;
     f.pair_op = None;
+    let op = NEXT_PAIR_OP.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    f.send_op = Some(op);
     let p = json!({"pane": f.pane, "peer": peer, "interrupt": f.interrupt});
     let mi = f.mi;
-    app.command_on(mi, "handoff.send", p, pend(Reply::Send));
+    app.command_on(mi, "handoff.send", p, pend(Reply::Send { op }));
 }
 
 /// The chosen destination, by the `planSend` rules.
