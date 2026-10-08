@@ -90,6 +90,8 @@ The tag workflow also packages the Electron client: macOS DMG and ZIP for arm64 
 
 ## Release steps
 
+For a packaging check before tagging, run `gh workflow run release.yml --ref main`. This builds and verifies the CLI and desktop artifacts and retains them as Actions artifacts; a manual run never creates or publishes a release.
+
 Signing happens locally. CI never holds a signing secret.
 
 1. Update the workspace version in `Cargo.toml` and commit it.
