@@ -4,6 +4,58 @@ id = "omp"
 name = "oh-my-pi"
 extends = "pi"
 
+# Built-in slash commands (`agent.commands`). Source: oh-my-pi 17.2.12: top-level built-ins of src/slash-commands/builtin-*.ts in the installed package
+# (subcommands left out).
+# takes_arg: accepts text after the name; opens_picker: typed bare it opens a picker or menu;
+# dangerous: discards or replaces the conversation, signs out or ends the session.
+commands = [
+  { name = "add-dir", description = "Add a workspace directory to this session (multi-root)", takes_arg = true, opens_picker = false, dangerous = false },
+  { name = "advisor", description = "Toggle the advisor (a second model that reviews each turn and injects notes)", takes_arg = true, opens_picker = false, dangerous = false },
+  { name = "agents", description = "Open Agent Control Center dashboard", takes_arg = false, opens_picker = true, dangerous = false },
+  { name = "branch", description = "Create a new branch from a previous message", takes_arg = false, opens_picker = true, dangerous = false },
+  { name = "btw", description = "Ask an ephemeral side question using the current session context", takes_arg = true, opens_picker = false, dangerous = false },
+  { name = "changelog", description = "Show changelog entries", takes_arg = true, opens_picker = false, dangerous = false },
+  { name = "clear", description = "Clear the conversation context in place, keeping the session", takes_arg = false, opens_picker = false, dangerous = true },
+  { name = "compact", description = "Manually compact the session context", takes_arg = true, opens_picker = false, dangerous = false },
+  { name = "context", description = "Show estimated context usage breakdown", takes_arg = false, opens_picker = false, dangerous = false },
+  { name = "copy", description = "Pick text or code from the conversation to copy", takes_arg = false, opens_picker = true, dangerous = false },
+  { name = "debug", description = "Open debug tools selector", takes_arg = false, opens_picker = true, dangerous = false },
+  { name = "dirs", description = "List this session's workspace directories", takes_arg = false, opens_picker = false, dangerous = false },
+  { name = "drop", description = "Delete the current session and start a new one", takes_arg = false, opens_picker = false, dangerous = true },
+  { name = "exit", description = "Exit the application", takes_arg = false, opens_picker = false, dangerous = true },
+  { name = "export", description = "Export session to HTML file", takes_arg = true, opens_picker = false, dangerous = false },
+  { name = "extensions", description = "Open Extension Control Center dashboard", takes_arg = false, opens_picker = true, dangerous = false },
+  { name = "fast", description = "Toggle priority service tier", takes_arg = true, opens_picker = false, dangerous = false },
+  { name = "fork", description = "Create a new fork from a previous message", takes_arg = false, opens_picker = true, dangerous = false },
+  { name = "goal", description = "Toggle goal mode (persistent autonomous objective for this session)", takes_arg = true, opens_picker = false, dangerous = false },
+  { name = "handoff", description = "Hand off session context to a new session", takes_arg = true, opens_picker = false, dangerous = false },
+  { name = "help", description = "Show help message", takes_arg = false, opens_picker = false, dangerous = false },
+  { name = "hotkeys", description = "Show all keyboard shortcuts", takes_arg = false, opens_picker = false, dangerous = false },
+  { name = "login", description = "Login with OAuth provider", takes_arg = true, opens_picker = true, dangerous = false },
+  { name = "logout", description = "Logout from OAuth provider", takes_arg = true, opens_picker = true, dangerous = true },
+  { name = "loop", description = "Toggle loop mode: the next prompt re-submits after every yield", takes_arg = true, opens_picker = false, dangerous = false },
+  { name = "mcp", description = "Manage MCP servers (add, list, remove, test)", takes_arg = true, opens_picker = false, dangerous = false },
+  { name = "memory", description = "Inspect and operate memory maintenance", takes_arg = true, opens_picker = false, dangerous = false },
+  { name = "model", description = "Switch model for this session", takes_arg = false, opens_picker = true, dangerous = false },
+  { name = "move", description = "Move the current session to a different directory", takes_arg = true, opens_picker = false, dangerous = false },
+  { name = "new", description = "Start a new session", takes_arg = false, opens_picker = false, dangerous = true },
+  { name = "plan", description = "Toggle plan mode (agent plans before executing)", takes_arg = true, opens_picker = false, dangerous = false },
+  { name = "plugins", description = "View and manage installed plugins", takes_arg = true, opens_picker = false, dangerous = false },
+  { name = "providers", description = "Configure sign-in and web search providers", takes_arg = false, opens_picker = true, dangerous = false },
+  { name = "queue", description = "Queue a message for after the agent yields", takes_arg = true, opens_picker = false, dangerous = false },
+  { name = "quit", description = "Quit the application", takes_arg = false, opens_picker = false, dangerous = true },
+  { name = "rename", description = "Rename the current session", takes_arg = true, opens_picker = false, dangerous = false },
+  { name = "resume", description = "Resume a different session", takes_arg = true, opens_picker = true, dangerous = false },
+  { name = "retry", description = "Retry the last failed agent turn", takes_arg = false, opens_picker = false, dangerous = false },
+  { name = "session", description = "Session management commands", takes_arg = true, opens_picker = false, dangerous = false },
+  { name = "settings", description = "Open settings menu", takes_arg = false, opens_picker = true, dangerous = false },
+  { name = "share", description = "Share session via an encrypted link", takes_arg = false, opens_picker = false, dangerous = false },
+  { name = "todo", description = "View or modify the agent's todo list", takes_arg = true, opens_picker = false, dangerous = false },
+  { name = "tools", description = "Show tools currently visible to the agent", takes_arg = false, opens_picker = false, dangerous = false },
+  { name = "tree", description = "Navigate session tree (switch branches)", takes_arg = false, opens_picker = true, dangerous = false },
+  { name = "usage", description = "Show provider usage and limits", takes_arg = true, opens_picker = false, dangerous = false },
+]
+
 [detect]
 priority = 100
 [[detect.process]]

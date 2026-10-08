@@ -121,6 +121,9 @@ pub struct Manifest {
     pub screen: Screen,
     pub yolo: Yolo,
     pub ui: Ui,
+    /// `[[commands]]`: the harness's built-in slash commands (`agent.commands`). Arrays replace
+    /// on merge, so a manifest that `extends` another inherits its list unless it declares one.
+    pub commands: Vec<SlashCommand>,
     pub identity: Identity,
     pub transcript: Transcript,
     pub answer: Answer,
@@ -507,6 +510,29 @@ pub struct Ui {
     pub slash_commands_from: String,
 }
 
+/// One `[[commands]]` entry: a slash command the harness understands when typed at its prompt.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+#[serde(default)]
+pub struct SlashCommand {
+    /// Without the leading `/` (`model`, `clear`).
+    pub name: String,
+    pub description: String,
+    /// Accepts text after the name (`/rename <name>`).
+    pub takes_arg: bool,
+    /// Typed without an argument it opens an interactive picker or menu in the pane.
+    pub opens_picker: bool,
+    /// Discards or replaces the conversation, signs out or ends the session.
+    pub dangerous: bool,
+}
+
+/// A valid slash command name: non-empty, no leading `/`, no whitespace, at most 64 bytes.
+pub fn valid_command_name(n: &str) -> bool {
+    !n.is_empty()
+        && n.len() <= 64
+        && !n.starts_with('/')
+        && n.chars().all(|c| !c.is_whitespace() && !c.is_control())
+}
+
 // ---------------------------------------------------------------------------------------------
 // Loaded manifest: resolved (extends merged), validated, regexes compiled
 // ---------------------------------------------------------------------------------------------
@@ -630,6 +656,11 @@ impl Loaded {
         for n in &m.screen.normalize {
             if !NORMALIZERS.contains(&n.as_str()) {
                 bail!("{} screen.normalize: unknown normalizer {n:?}", m.id);
+            }
+        }
+        for (i, c) in m.commands.iter().enumerate() {
+            if !valid_command_name(&c.name) {
+                bail!("{} commands[{i}]: invalid name {:?}", m.id, c.name);
             }
         }
         for row in &m.capabilities {
@@ -2145,6 +2176,47 @@ mod tests {
 
     fn a(v: &[&str]) -> Vec<String> {
         v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn builtin_slash_command_catalogs() {
+        let set = load(&Sources::default());
+        let cmds = |id: &str| set.get(id).unwrap().m.commands.clone();
+        for id in ["claude", "codex", "pi", "omp"] {
+            let c = cmds(id);
+            assert!(c.len() >= 10, "{id}: {} commands", c.len());
+            let mut names: Vec<&str> = c.iter().map(|c| c.name.as_str()).collect();
+            names.sort();
+            names.dedup();
+            assert_eq!(names.len(), c.len(), "{id}: duplicate command names");
+            let model = c.iter().find(|c| c.name == "model").expect("model");
+            assert!(model.opens_picker, "{id}: /model opens a picker");
+            assert!(c.iter().all(|c| !c.description.is_empty()), "{id}");
+        }
+        let claude = cmds("claude");
+        for (n, picker) in [("effort", true), ("resume", true), ("permissions", true)] {
+            assert_eq!(
+                claude.iter().find(|c| c.name == n).unwrap().opens_picker,
+                picker
+            );
+        }
+        assert!(claude.iter().find(|c| c.name == "clear").unwrap().dangerous);
+        assert!(!claude.iter().find(|c| c.name == "model").unwrap().dangerous);
+        // omp extends pi but declares its own table (arrays replace on merge).
+        assert_ne!(cmds("omp"), cmds("pi"));
+        // Screen-only manifests declare none.
+        assert!(cmds("aider").is_empty());
+    }
+
+    #[test]
+    fn invalid_command_names_are_rejected() {
+        let t = "schema = 1\nid = \"t\"\ncommands = [{ name = \"/model\" }]\n";
+        let raw = parse_raw(t, Source::Builtin).unwrap();
+        let m: Manifest = toml::Value::Table(raw.table).try_into().unwrap();
+        assert!(Loaded::new(m, Source::Builtin, "t".into()).is_err());
+        assert!(valid_command_name("scoped-models"));
+        assert!(!valid_command_name("two words"));
+        assert!(!valid_command_name(""));
     }
 
     #[test]

@@ -3,6 +3,54 @@ schema = 1
 id = "codex"
 name = "Codex CLI"
 
+# Built-in slash commands (`agent.commands`). Source: Codex 0.161.0: the TUI's slash-command table and its welcome/help text in the installed binary
+# (platform-only and debug commands left out).
+# takes_arg: accepts text after the name; opens_picker: typed bare it opens a picker or menu;
+# dangerous: discards or replaces the conversation, signs out or ends the session.
+commands = [
+  { name = "apps", description = "Manage apps", takes_arg = false, opens_picker = true, dangerous = false },
+  { name = "archive", description = "Archive this session", takes_arg = false, opens_picker = false, dangerous = true },
+  { name = "cd", description = "Change the current working directory", takes_arg = true, opens_picker = false, dangerous = false },
+  { name = "clear", description = "Clear the terminal and start a new chat", takes_arg = false, opens_picker = false, dangerous = true },
+  { name = "compact", description = "Summarize conversation to prevent hitting the context limit", takes_arg = false, opens_picker = false, dangerous = false },
+  { name = "copy", description = "Copy the last response or part of it", takes_arg = false, opens_picker = false, dangerous = false },
+  { name = "delete", description = "Permanently delete this session", takes_arg = false, opens_picker = false, dangerous = true },
+  { name = "diff", description = "Show git diff (including untracked files)", takes_arg = false, opens_picker = false, dangerous = false },
+  { name = "exit", description = "Exit Codex", takes_arg = false, opens_picker = false, dangerous = true },
+  { name = "experimental", description = "Toggle experimental features", takes_arg = false, opens_picker = true, dangerous = false },
+  { name = "export", description = "Export the conversation as markdown", takes_arg = false, opens_picker = false, dangerous = false },
+  { name = "feedback", description = "Send logs to maintainers", takes_arg = false, opens_picker = false, dangerous = false },
+  { name = "fork", description = "Fork the current chat", takes_arg = false, opens_picker = false, dangerous = false },
+  { name = "goal", description = "Set or view the goal for a long-running task", takes_arg = true, opens_picker = false, dangerous = false },
+  { name = "hooks", description = "View and manage lifecycle hooks", takes_arg = false, opens_picker = true, dangerous = false },
+  { name = "ide", description = "Include current selection, open files, and other context from your IDE", takes_arg = false, opens_picker = false, dangerous = false },
+  { name = "init", description = "Create an AGENTS.md file with instructions for Codex", takes_arg = false, opens_picker = false, dangerous = false },
+  { name = "keymap", description = "Remap TUI shortcuts", takes_arg = false, opens_picker = true, dangerous = false },
+  { name = "logout", description = "Log out of Codex", takes_arg = false, opens_picker = false, dangerous = true },
+  { name = "mcp", description = "List MCP tools", takes_arg = true, opens_picker = false, dangerous = false },
+  { name = "mention", description = "Mention a file", takes_arg = true, opens_picker = true, dangerous = false },
+  { name = "model", description = "Choose what model and reasoning effort to use", takes_arg = false, opens_picker = true, dangerous = false },
+  { name = "new", description = "Start a new chat during a conversation", takes_arg = false, opens_picker = false, dangerous = true },
+  { name = "permissions", description = "Choose what Codex is allowed to do", takes_arg = false, opens_picker = true, dangerous = false },
+  { name = "plugins", description = "Browse plugins", takes_arg = false, opens_picker = true, dangerous = false },
+  { name = "ps", description = "List background terminals", takes_arg = false, opens_picker = false, dangerous = false },
+  { name = "pwd", description = "Show the current working directory", takes_arg = false, opens_picker = false, dangerous = false },
+  { name = "quit", description = "Exit Codex", takes_arg = false, opens_picker = false, dangerous = true },
+  { name = "recap", description = "Summarize the current conversation now", takes_arg = false, opens_picker = false, dangerous = false },
+  { name = "rename", description = "Rename the current thread", takes_arg = true, opens_picker = false, dangerous = false },
+  { name = "resume", description = "Resume a saved chat", takes_arg = false, opens_picker = true, dangerous = false },
+  { name = "review", description = "Review my current changes and find issues", takes_arg = true, opens_picker = true, dangerous = false },
+  { name = "side", description = "Start a side conversation in an ephemeral fork", takes_arg = true, opens_picker = false, dangerous = false },
+  { name = "skills", description = "Use skills to improve how Codex performs specific tasks", takes_arg = false, opens_picker = true, dangerous = false },
+  { name = "status", description = "Show current session configuration and token usage", takes_arg = false, opens_picker = false, dangerous = false },
+  { name = "statusline", description = "Configure which items appear in the status line", takes_arg = false, opens_picker = true, dangerous = false },
+  { name = "stop", description = "Stop all background terminals", takes_arg = false, opens_picker = false, dangerous = false },
+  { name = "theme", description = "Choose a syntax highlighting theme", takes_arg = false, opens_picker = true, dangerous = false },
+  { name = "usage", description = "View account usage or use a usage limit reset", takes_arg = false, opens_picker = false, dangerous = false },
+  { name = "vim", description = "Toggle Vim mode for the composer", takes_arg = false, opens_picker = false, dangerous = false },
+  { name = "worktree", description = "Start or continue a conversation in a new worktree", takes_arg = true, opens_picker = false, dangerous = false },
+]
+
 [detect]
 priority = 100
 remote_loop = "codex_daemon"

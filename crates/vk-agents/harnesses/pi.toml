@@ -3,6 +3,34 @@ schema = 1
 id = "pi"
 name = "pi"
 
+# Built-in slash commands (`agent.commands`). Source: pi 0.84.1: BUILTIN_SLASH_COMMANDS (dist/core/slash-commands.js) of the installed package.
+# takes_arg: accepts text after the name; opens_picker: typed bare it opens a picker or menu;
+# dangerous: discards or replaces the conversation, signs out or ends the session.
+commands = [
+  { name = "changelog", description = "Show changelog entries", takes_arg = false, opens_picker = false, dangerous = false },
+  { name = "clone", description = "Duplicate the current session at the current position", takes_arg = false, opens_picker = false, dangerous = false },
+  { name = "compact", description = "Manually compact the session context", takes_arg = true, opens_picker = false, dangerous = false },
+  { name = "copy", description = "Copy last agent message to clipboard", takes_arg = false, opens_picker = false, dangerous = false },
+  { name = "export", description = "Export session (HTML default, or specify path: .html/.jsonl)", takes_arg = true, opens_picker = false, dangerous = false },
+  { name = "fork", description = "Create a new fork from a previous user message", takes_arg = false, opens_picker = true, dangerous = false },
+  { name = "hotkeys", description = "Show all keyboard shortcuts", takes_arg = false, opens_picker = false, dangerous = false },
+  { name = "import", description = "Import and resume a session from a JSONL file", takes_arg = true, opens_picker = false, dangerous = false },
+  { name = "login", description = "Configure provider authentication", takes_arg = true, opens_picker = true, dangerous = false },
+  { name = "logout", description = "Remove provider authentication", takes_arg = false, opens_picker = true, dangerous = true },
+  { name = "model", description = "Select model (opens selector UI)", takes_arg = true, opens_picker = true, dangerous = false },
+  { name = "name", description = "Set session display name", takes_arg = true, opens_picker = false, dangerous = false },
+  { name = "new", description = "Start a new session", takes_arg = false, opens_picker = false, dangerous = true },
+  { name = "quit", description = "Quit pi", takes_arg = false, opens_picker = false, dangerous = true },
+  { name = "reload", description = "Reload keybindings, extensions, skills, prompts, themes, and context files", takes_arg = false, opens_picker = false, dangerous = false },
+  { name = "resume", description = "Resume a different session", takes_arg = false, opens_picker = true, dangerous = false },
+  { name = "scoped-models", description = "Enable/disable models for Ctrl+P cycling", takes_arg = false, opens_picker = true, dangerous = false },
+  { name = "session", description = "Show session info and stats", takes_arg = false, opens_picker = false, dangerous = false },
+  { name = "settings", description = "Open settings menu", takes_arg = false, opens_picker = true, dangerous = false },
+  { name = "share", description = "Share session as a secret GitHub gist", takes_arg = false, opens_picker = false, dangerous = false },
+  { name = "tree", description = "Navigate session tree (switch branches)", takes_arg = false, opens_picker = true, dangerous = false },
+  { name = "trust", description = "Save project trust decision for future sessions", takes_arg = false, opens_picker = false, dangerous = false },
+]
+
 [detect]
 priority = 100
 [[detect.process]]
