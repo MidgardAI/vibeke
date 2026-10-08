@@ -213,7 +213,10 @@ test('public install endpoint redirects to the release installer', async ({ requ
   expect(response.headers().location).toBe('https://github.com/MidgardAI/vibeke/releases/latest/download/install.sh')
 })
 
+// Prerendered pages are static files: `vite preview` serves them without Nitro's route-rule
+// headers, while the Vercel output applies the rules to them. Check the deployed site only.
 test('pages carry the baseline security headers', async ({ request }) => {
+  test.skip(!process.env.PLAYWRIGHT_BASE_URL, 'headers are applied by the Vercel output, not the preview server')
   const response = await request.get('/')
   const headers = response.headers()
   expect(headers['x-frame-options']).toBe('DENY')
