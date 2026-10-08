@@ -15,6 +15,8 @@ Use `--json` to print JSON. Non-terminal output also uses JSON.
 - `vibeke update --check`: check the latest published stable release.
 - `vibeke update [--version VERSION]`: download and verify a signed stable release, install it, and restart the selected local session. Other sessions and remote hosts keep their running versions. `--json` emits newline-delimited progress objects for online checks and updates.
 - `vibeke update --rollback`: restore the previous installed version. `--from PATH` installs a verified local artifact; `--cached` selects the newest cached artifact. Use `--pretty` for these offline operations. `--force` reinstalls; `--allow-downgrade` explicitly permits an older version.
+- `vibeke login [--server URL] [--no-browser]`: sign in to the account server of the hosted relay with a device code. The terminal prints a URL and a short code; open the URL on any device, sign in with GitHub, confirm the code. No browser is needed on this host.
+- `vibeke logout` and `vibeke whoami`: forget the stored credential, or print the signed-in account.
 - `vibeke doctor`: check the installation.
 - `vibeke doctor --rebuild-index`: rebuild the scrollback search index. Stop the server first.
 - `vibeke doctor --list-backups` and `vibeke doctor --restore-backup NAME`: list the pre-migration copies of the state database (the last three) and restore one. Stop the server first. Restoring rotates the event-log epoch and keeps the replaced database as `state.db.pre-restore`.
