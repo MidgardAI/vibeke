@@ -5,7 +5,6 @@
 pub mod acp;
 pub mod arbiter;
 pub mod channel;
-pub mod enforce;
 mod gemini;
 #[cfg(test)]
 mod golden;
@@ -71,7 +70,6 @@ pub const METHODS: &[(&str, bool)] = &[
     ("agent.drift", false),
     ("agent.manifests_check", true),
     ("agent.manifest_pin", true),
-    ("policy.suggest", false),
 ];
 
 /// Gate timeout (04 §7.2): after this the hook returns no decision and the native dialog shows.
@@ -1480,13 +1478,6 @@ fn last_assistant_message(p: &Value) -> Option<String> {
 /// `adapter.gate`: open an interaction and either answer by policy, hold until a client
 /// decides (gate mode), or return at once so the native dialog shows (observe mode).
 async fn gate(server: &Arc<Server>, pane: &str, h: Harness, event: &str, p: &Value) -> R {
-    // A pre-tool hook of a yolo run is enforcement only Vibeke provides (04 §2.7): policy deny
-    // and ask rules, answered at once. AskUserQuestion keeps the interaction path below.
-    if event == "PreToolUse"
-        && p.get("tool_name").and_then(Value::as_str) != Some("AskUserQuestion")
-    {
-        return enforce::pre_tool(server, pane, h, p).await;
-    }
     let run = bound_run(server, pane, h);
     let Some(mut it) = harness::interaction_from_hook(h, event, p) else {
         return Ok(json!({"decision": null}));

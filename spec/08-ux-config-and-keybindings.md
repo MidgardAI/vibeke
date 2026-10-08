@@ -819,13 +819,6 @@ check_timeout = "10m"
 enabled = false
 quiet_for = "3s"
 resume = false
-[orchestrate.learned_policy] # 04 §7.7
-enabled = false
-min_approvals = 5
-max_denials = 0
-window = "30d"
-suggest_deny = false
-allow_risk = ["low", "medium"]
 [orchestrate.merge]          # 12
 enabled = false
 predict_every = "30s"

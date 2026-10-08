@@ -308,12 +308,8 @@ Clients must accept new fields and event types. The API can change before versio
 | `plugin.restart` | Write | Full |
 | `plugin.surface.close` | Write | Full |
 | `policy.add` | Write | Full |
-| `policy.learned.accept` | Write | Full |
-| `policy.learned.dismiss` | Write | Full |
-| `policy.learned.list` | Read | Full |
 | `policy.list` | Read | Full |
 | `policy.remove` | Write | Full |
-| `policy.suggest` | Read | Full |
 | `policy.test` | Read | Full |
 | `policy.trust` | Write | Full |
 | `preview.declare` | Write | Pane |

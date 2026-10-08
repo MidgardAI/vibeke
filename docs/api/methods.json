@@ -8,7 +8,7 @@
     "proto": 2,
     "min": 1
   },
-  "method_count": 421,
+  "method_count": 417,
   "methods": [
     {
       "name": "adapter.delivery_ack",
@@ -3728,48 +3728,6 @@
       "result": "{rule: PolicyRuleInfo}"
     },
     {
-      "name": "policy.learned.accept",
-      "mutating": true,
-      "scope": "full",
-      "pane_scope": "forbidden",
-      "gateway": "actor_required",
-      "tables": [
-        "orch"
-      ],
-      "milestone": null,
-      "spec": null,
-      "params": "{id: string, target?: user|repo = user}",
-      "result": "{accepted: object, result: object}"
-    },
-    {
-      "name": "policy.learned.dismiss",
-      "mutating": true,
-      "scope": "full",
-      "pane_scope": "forbidden",
-      "gateway": "actor_required",
-      "tables": [
-        "orch"
-      ],
-      "milestone": null,
-      "spec": null,
-      "params": "{id: string}",
-      "result": "{dismissed: string, total: int}"
-    },
-    {
-      "name": "policy.learned.list",
-      "mutating": false,
-      "scope": "full",
-      "pane_scope": "forbidden",
-      "gateway": "open",
-      "tables": [
-        "orch"
-      ],
-      "milestone": null,
-      "spec": null,
-      "params": "{repo?: string}",
-      "result": "{suggestions: [{id: string, effect: allow|deny, harness: string, tool: string, workspace: string, pattern: string, rule: object, toml: string, approvals: int, denials: int, first_at_ms: int, last_at_ms: int, max_risk: string, samples: [string], reason: string}], stats: {decisions: int, fingerprints: int, min_approvals: int, max_denials: int, window_ms: int, suggest_deny: bool, dismissed: int}}"
-    },
-    {
       "name": "policy.list",
       "mutating": false,
       "scope": "full",
@@ -3796,20 +3754,6 @@
       "spec": "`{rule_id}` → `{}`",
       "params": "{rule_id: string}",
       "result": "{removed: bool, rule: PolicyRuleInfo}"
-    },
-    {
-      "name": "policy.suggest",
-      "mutating": false,
-      "scope": "full",
-      "pane_scope": "forbidden",
-      "gateway": "open",
-      "tables": [
-        "agents"
-      ],
-      "milestone": null,
-      "spec": null,
-      "params": "{min_count?: int = 3, max_denials?: int = 0, limit?: int = 50, harness?: string, include_covered?: bool = false}",
-      "result": "{suggestions: [{fingerprint: string, harness: string, tool: string, subject: string, workspace: string, approvals: int, denials: int, last_at_ms: int, risk: low|medium|high|unknown, rule: object|null, toml: string|null, blocked: string|null, covered: bool}], min_count: int, max_denials: int, samples: int}"
     },
     {
       "name": "policy.test",

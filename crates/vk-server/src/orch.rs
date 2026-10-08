@@ -9,14 +9,13 @@
 //! |---|---|
 //! | `orch_family` | best-of-N: `task.best_of_n`, `task.compare`, `task.pick`, `family.*` (05 §12) |
 //! | `orch_split` | `task.split` (05 §11) |
-//! | `orch_learn` | `policy.learned.*` (04 §7.7, 12) |
 //! | `orch_merge` | claims, `merge.predict`, `merge.queue.*` (12, 05 §10) |
 //! | `orch_goal` | `goal.*` planner, approval gate, briefing (12) |
 //! | `orch_quota` | `quota.*` scheduling (12) |
 //! | `orch_vm` | `vm.*` and the `vm` isolation level (13 §2.1, §9) |
 //!
 //! State lives in store entities (`orch_family`, `orch_goal`, `orch_claim`, `orch_queue`) and
-//! two kv scopes (`orch.counters`, `orch.learned`, `orch.quota`), so it survives restarts and
+//! two kv scopes (`orch.counters`, `orch.quota`), so it survives restarts and
 //! needs no model changes. Mutating methods are full scope only; claims are the one thing a
 //! pane may do (for its own task).
 
@@ -42,10 +41,6 @@ pub const METHODS: &[(&str, bool)] = &[
     ("task.pick", true),
     // split into task (05 §11)
     ("task.split", true),
-    // learned policy
-    ("policy.learned.list", false),
-    ("policy.learned.accept", true),
-    ("policy.learned.dismiss", true),
     // merge orchestration
     ("task.claim", true),
     ("task.claim.list", false),
@@ -91,15 +86,12 @@ pub const METHODS: &[(&str, bool)] = &[
 ];
 
 /// Methods a pane token may never call: every mutation except claims (which an agent makes for
-/// its own task), and the learned-policy list (it quotes command history).
+/// its own task).
 pub const PANE_FORBIDDEN: &[&str] = &[
     "family.check",
     "task.best_of_n",
     "task.pick",
     "task.split",
-    "policy.learned.list",
-    "policy.learned.accept",
-    "policy.learned.dismiss",
     "merge.queue.add",
     "merge.queue.cancel",
     "merge.queue.requeue",
@@ -289,9 +281,6 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
     }
     if method == "task.split" {
         return Some(crate::orch_split::split(server, ctx, p).await);
-    }
-    if method.starts_with("policy.learned.") {
-        return crate::orch_learn::api(server, ctx, method, p).await;
     }
     if method.starts_with("task.claim") || method.starts_with("merge.") {
         return crate::orch_merge::api(server, ctx, method, p).await;

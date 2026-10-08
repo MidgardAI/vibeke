@@ -1,6 +1,6 @@
 [package]
 name = "vk-orchestrate"
-description = "Orchestration above single tasks (spec 12): best-of-N families, split-into-task, learned policy suggestions, merge orchestration, goal planner, quota scheduling"
+description = "Orchestration above single tasks (spec 12): best-of-N families, split-into-task, merge orchestration, goal planner, quota scheduling"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

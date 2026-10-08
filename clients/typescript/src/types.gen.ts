@@ -4934,60 +4934,6 @@ export type PolicyAddResult = {
   cursor?: Cursor;
 };
 
-export type PolicyLearnedAcceptParams = {
-  id: string;
-  target?: "user" | "repo";
-};
-
-export type PolicyLearnedAcceptResult = {
-  accepted: Record<string, unknown>;
-  result: Record<string, unknown>;
-  cursor?: Cursor;
-};
-
-export type PolicyLearnedDismissParams = {
-  id: string;
-};
-
-export type PolicyLearnedDismissResult = {
-  dismissed: string;
-  total: number;
-  cursor?: Cursor;
-};
-
-export type PolicyLearnedListParams = {
-  repo?: string;
-};
-
-export type PolicyLearnedListResult = {
-  suggestions: {
-    id: string;
-    effect: "allow" | "deny";
-    harness: string;
-    tool: string;
-    workspace: string;
-    pattern: string;
-    rule: Record<string, unknown>;
-    toml: string;
-    approvals: number;
-    denials: number;
-    first_at_ms: number;
-    last_at_ms: number;
-    max_risk: string;
-    samples: string[];
-    reason: string;
-  }[];
-  stats: {
-    decisions: number;
-    fingerprints: number;
-    min_approvals: number;
-    max_denials: number;
-    window_ms: number;
-    suggest_deny: boolean;
-    dismissed: number;
-  };
-};
-
 export type PolicyListParams = {
   scope?: PolicyScope;
 };
@@ -5005,35 +4951,6 @@ export type PolicyRemoveResult = {
   removed: boolean;
   rule: PolicyRuleInfo;
   cursor?: Cursor;
-};
-
-export type PolicySuggestParams = {
-  min_count?: number;
-  max_denials?: number;
-  limit?: number;
-  harness?: string;
-  include_covered?: boolean;
-};
-
-export type PolicySuggestResult = {
-  suggestions: {
-    fingerprint: string;
-    harness: string;
-    tool: string;
-    subject: string;
-    workspace: string;
-    approvals: number;
-    denials: number;
-    last_at_ms: number;
-    risk: "low" | "medium" | "high" | "unknown";
-    rule: Record<string, unknown> | null;
-    toml: string | null;
-    blocked: string | null;
-    covered: boolean;
-  }[];
-  min_count: number;
-  max_denials: number;
-  samples: number;
 };
 
 export type PolicyTestParams = {
@@ -7678,12 +7595,8 @@ export interface Methods {
   "plugin.restart": { params: PluginRestartParams; result: PluginRestartResult };
   "plugin.surface.close": { params: PluginSurfaceCloseParams; result: PluginSurfaceCloseResult };
   "policy.add": { params: PolicyAddParams; result: PolicyAddResult };
-  "policy.learned.accept": { params: PolicyLearnedAcceptParams; result: PolicyLearnedAcceptResult };
-  "policy.learned.dismiss": { params: PolicyLearnedDismissParams; result: PolicyLearnedDismissResult };
-  "policy.learned.list": { params: PolicyLearnedListParams; result: PolicyLearnedListResult };
   "policy.list": { params: PolicyListParams; result: PolicyListResult };
   "policy.remove": { params: PolicyRemoveParams; result: PolicyRemoveResult };
-  "policy.suggest": { params: PolicySuggestParams; result: PolicySuggestResult };
   "policy.test": { params: PolicyTestParams; result: PolicyTestResult };
   "policy.trust": { params: PolicyTrustParams; result: PolicyTrustResult };
   "preview.declare": { params: PreviewDeclareParams; result: PreviewDeclareResult };
@@ -8105,12 +8018,8 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "plugin.restart": { mutating: true, scope: "full", paneScope: "forbidden" },
   "plugin.surface.close": { mutating: true, scope: "full", paneScope: "forbidden" },
   "policy.add": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "policy.learned.accept": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "policy.learned.dismiss": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "policy.learned.list": { mutating: false, scope: "full", paneScope: "forbidden" },
   "policy.list": { mutating: false, scope: "full", paneScope: "forbidden" },
   "policy.remove": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "policy.suggest": { mutating: false, scope: "full", paneScope: "forbidden" },
   "policy.test": { mutating: false, scope: "full", paneScope: "forbidden" },
   "policy.trust": { mutating: true, scope: "full", paneScope: "forbidden" },
   "preview.declare": { mutating: true, scope: "pane", paneScope: "open" },
@@ -8454,18 +8363,6 @@ export type AgentSubagentStartedSubject = {
 export type AgentSubagentStartedData = {
   agent_id: string | null;
   agent_type: string;
-};
-
-export type AgentToolBlockedSubject = {
-  run: string;
-  pane: string;
-};
-
-export type AgentToolBlockedData = {
-  tool: string;
-  effect: string;
-  rule: string | null;
-  command: string | null;
 };
 
 export type AgentTurnCompletedSubject = {
@@ -9725,24 +9622,6 @@ export type PluginUnlinkedData = {
   kind: string;
 };
 
-export type PolicyLearnedAcceptedSubject = {
-  suggestion: string;
-};
-
-export type PolicyLearnedAcceptedData = {
-  target: string;
-  effect: string;
-  pattern: string;
-  workspace: string;
-  approvals: number;
-};
-
-export type PolicyLearnedDismissedSubject = {
-  suggestion: string;
-};
-
-export type PolicyLearnedDismissedData = unknown;
-
 export type PolicyRepoTrustedSubject = Record<string, unknown>;
 
 export type PolicyRepoTrustedData = {
@@ -10976,7 +10855,6 @@ export interface EventMap {
   "agent.state_changed": { subject: AgentStateChangedSubject; data: AgentStateChangedData };
   "agent.subagent_finished": { subject: AgentSubagentFinishedSubject; data: AgentSubagentFinishedData };
   "agent.subagent_started": { subject: AgentSubagentStartedSubject; data: AgentSubagentStartedData };
-  "agent.tool_blocked": { subject: AgentToolBlockedSubject; data: AgentToolBlockedData };
   "agent.turn_completed": { subject: AgentTurnCompletedSubject; data: AgentTurnCompletedData };
   "agent.turn_started": { subject: AgentTurnStartedSubject; data: AgentTurnStartedData };
   "agent.turn_usage": { subject: AgentTurnUsageSubject; data: AgentTurnUsageData };
@@ -11106,8 +10984,6 @@ export interface EventMap {
   "plugin.trust_changed": { subject: PluginTrustChangedSubject; data: PluginTrustChangedData };
   "plugin.uninstalled": { subject: PluginUninstalledSubject; data: PluginUninstalledData };
   "plugin.unlinked": { subject: PluginUnlinkedSubject; data: PluginUnlinkedData };
-  "policy.learned_accepted": { subject: PolicyLearnedAcceptedSubject; data: PolicyLearnedAcceptedData };
-  "policy.learned_dismissed": { subject: PolicyLearnedDismissedSubject; data: PolicyLearnedDismissedData };
   "policy.repo_trusted": { subject: PolicyRepoTrustedSubject; data: PolicyRepoTrustedData };
   "policy.rule_added": { subject: PolicyRuleAddedSubject; data: PolicyRuleAddedData };
   "policy.rule_matched": { subject: PolicyRuleMatchedSubject; data: PolicyRuleMatchedData };

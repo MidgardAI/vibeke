@@ -1015,10 +1015,6 @@ task.ports.re_lease :: {task: Target}
 /// Adapter polish (04 §7.7, §10, §12.3, §13; `crate::agents::polish`).
 const ADAPTER_POLISH_SHAPES: &str = r##"
 # --- 2F adapter polish ---
-# fingerprints approved at least min_count times with at most max_denials denials, as ready-to-paste
-# rules (04 §7.7); `rule` is null (and `blocked` says why) for risky or compound commands
-policy.suggest :: {min_count?: int = 3, max_denials?: int = 0, limit?: int = 50, harness?: string, include_covered?: bool = false}
-  => {suggestions: [{fingerprint: string, harness: string, tool: string, subject: string, workspace: string, approvals: int, denials: int, last_at_ms: int, risk: low|medium|high|unknown, rule: object|null, toml: string|null, blocked: string|null, covered: bool}], min_count: int, max_denials: int, samples: int}
 # compact per-turn records written by the transcript tailer (04 §10); cost_source: harness|price_table|subscription|none
 agent.turn_usage :: {run?: Target, target?: Target, limit?: int = 200}
   => {run: string, turns: [{id: string, run: string, harness: string, n: int, native_id: string, model: string|null, input: int, output: int, cache_read: int, cache_write: int, cost_usd: number|null, cost_source: string, stop: string|null, ended_at_ms: int|null, source: string}], turn_count: int, totals: {input: int, output: int, cache_read: int, cache_write: int, cost_usd: number|null}, usage: any}
@@ -1137,7 +1133,6 @@ agent.session_ended :: {run: string, pane: string} => {reason: string}
 agent.harness_version_unvalidated :: {run: string, pane: string} => {harness: string, version: any}
 agent.turn_usage :: {run: string, pane: string} => {turn: int, native_id: string, model: string|null, input: int, output: int, cache_read: int, cache_write: int, cost_usd: number|null, cost_source: string, source: string}
 agent.cwd_changed :: {run: string, pane: string} => {cwd: string, old_cwd: string|null}
-agent.tool_blocked :: {run: string, pane: string} => {tool: string, effect: string, rule: string|null, command: string|null}
 agent.drift_detected :: {run: string, pane: string} => {harness: string, version: string, observations: int, disagreements: int, unknown_resolutions: int, answer_failures: int, rate: number}
 harness.manifest_loaded :: {manifest: string} => {id: string, version: string, source: string, serial: int, verified: string}
 agent.exited :: {run: string, pane: string} => {reason: string, harness: string}

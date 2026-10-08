@@ -598,10 +598,6 @@ pub struct Agents {
     pub shims: bool,
     pub resume_on_restart: ResumeOnRestart,
     pub name_from_task: bool,
-    /// Vibeke-only enforcement fails closed (04 §2.7): with the server unreachable, a pre-tool
-    /// hook of a run under a policy deny rule escalates to the harness's own prompt (`ask`)
-    /// instead of letting the tool run. `false` restores fail-open.
-    pub fail_closed: bool,
     /// `[agents.approvals.<harness>]` (04 §6.1.1).
     pub approvals: AgentApprovals,
     /// `[agents.harness.<id>]`; defaults for claude, pi and codex are filled in.
@@ -614,7 +610,6 @@ impl Default for Agents {
             shims: true,
             resume_on_restart: ResumeOnRestart::Ask,
             name_from_task: true,
-            fail_closed: true,
             approvals: AgentApprovals::default(),
             harness: default_harnesses(),
         }

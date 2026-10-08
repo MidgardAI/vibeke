@@ -809,23 +809,11 @@ class Api:
     async def policy_add(self, params: "Optional[t.PolicyAddParams]" = None) -> "t.PolicyAddResult":
         return await self.call("policy.add", params or {})  # type: ignore[arg-type, return-value]
 
-    async def policy_learned_accept(self, params: "t.PolicyLearnedAcceptParams") -> "t.PolicyLearnedAcceptResult":
-        return await self.call("policy.learned.accept", params)  # type: ignore[arg-type, return-value]
-
-    async def policy_learned_dismiss(self, params: "t.PolicyLearnedDismissParams") -> "t.PolicyLearnedDismissResult":
-        return await self.call("policy.learned.dismiss", params)  # type: ignore[arg-type, return-value]
-
-    async def policy_learned_list(self, params: "Optional[t.PolicyLearnedListParams]" = None) -> "t.PolicyLearnedListResult":
-        return await self.call("policy.learned.list", params or {})  # type: ignore[arg-type, return-value]
-
     async def policy_list(self, params: "Optional[t.PolicyListParams]" = None) -> "t.PolicyListResult":
         return await self.call("policy.list", params or {})  # type: ignore[arg-type, return-value]
 
     async def policy_remove(self, params: "t.PolicyRemoveParams") -> "t.PolicyRemoveResult":
         return await self.call("policy.remove", params)  # type: ignore[arg-type, return-value]
-
-    async def policy_suggest(self, params: "Optional[t.PolicySuggestParams]" = None) -> "t.PolicySuggestResult":
-        return await self.call("policy.suggest", params or {})  # type: ignore[arg-type, return-value]
 
     async def policy_test(self, params: "t.PolicyTestParams") -> "t.PolicyTestResult":
         return await self.call("policy.test", params)  # type: ignore[arg-type, return-value]

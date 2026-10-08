@@ -300,14 +300,10 @@ Use `--json` to print JSON. Non-terminal output also uses JSON.
 
 | Verb | Positionals | Method | Description |
 |---|---|---|---|
-| `learned` | - | `policy.learned.list` | [--repo path]: rule suggestions learned from repeated approvals (orchestrate.learned_policy) |
-| `learned-accept` | `<id>` | `policy.learned.accept` | <id> [--target user\|repo] |
-| `learned-dismiss` | `<id>` | `policy.learned.dismiss` |  |
 | `trust` | `<path>` | `policy.trust` | Trust repository automation at its current digest. Print the setup script. |
 | `list` | - | `policy.list` | [--scope dir] — merged rules: config.toml, added with `policy add`, trusted repositories |
 | `add` | - | `policy.add` | --effect allow\|deny\|ask [--tool T] [--command-regex RE] [--path-glob G] [--url-glob G] [--scope dir] [--note text] |
 | `remove` | `<rule_id>` | `policy.remove` | <rule> — only rules added with `policy add` (p-…) |
-| `suggest` | - | `policy.suggest` | [--min-count 3] [--max-denials 0] [--harness h] [--include-covered] — approvals repeated often enough to become rules, ready to paste into config.toml |
 | `test` | - | `policy.test` | --tool T [--command C] [--path P] [--url U] [--scope dir] — what an approval would get (dry run) |
 
 ## `vibeke sandbox`

@@ -1333,21 +1333,6 @@
       "scope": "full",
       "pane_scope": "forbidden"
     },
-    "policy.learned.accept": {
-      "mutating": true,
-      "scope": "full",
-      "pane_scope": "forbidden"
-    },
-    "policy.learned.dismiss": {
-      "mutating": true,
-      "scope": "full",
-      "pane_scope": "forbidden"
-    },
-    "policy.learned.list": {
-      "mutating": false,
-      "scope": "full",
-      "pane_scope": "forbidden"
-    },
     "policy.list": {
       "mutating": false,
       "scope": "full",
@@ -1355,11 +1340,6 @@
     },
     "policy.remove": {
       "mutating": true,
-      "scope": "full",
-      "pane_scope": "forbidden"
-    },
-    "policy.suggest": {
-      "mutating": false,
       "scope": "full",
       "pane_scope": "forbidden"
     },

@@ -3,14 +3,9 @@
 //!
 //! Failure policy (04 §2.7):
 //! - observation (state signals, `observe`-mode interactions): fail open, print nothing;
-//! - enforcement the harness backs (`PermissionRequest` in gate mode): print nothing, so the
-//!   harness's own dialog appears;
-//! - enforcement only Vibeke provides (policy deny rules on **yolo** runs, via the pre-tool
-//!   hook): **fail closed**. With the server unreachable, timed out or answering garbage, the
-//!   shim prints `permissionDecision: "ask"` (Claude: its own prompt appears even in bypass
-//!   mode) or `"deny"` (Codex, which cannot prompt from a hook) with the reason "Vibeke
-//!   unavailable — approve locally?". Never a silent allow. `[agents] fail_closed = false`
-//!   (env `VIBEKE_ENFORCE` unset) restores fail-open.
+//! - gate-capable interactions (`PermissionRequest`, `AskUserQuestion`, `Elicitation`,
+//!   OpenCode `permission.ask`): print nothing on failure, so the harness's own dialog appears.
+//!   Permission enforcement itself is left to the harness.
 //!
 //! A gate request whose connection drops is retried once on a fresh connection (the server
 //! re-attaches by `native_ref` and returns an already recorded decision instead of reopening).
@@ -21,10 +16,6 @@ use std::os::unix::net::UnixStream;
 use std::time::Duration;
 
 const MAX_STDIN: u64 = 4 << 20;
-/// Reason shown when enforcement cannot reach the server.
-pub const UNAVAILABLE: &str = "Vibeke unavailable — approve locally?";
-/// How long an enforcement decision may take before the shim fails closed.
-const ENFORCE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Events whose hook may block for a decision (gate-capable, 04 §6.1/§6.2).
 fn gate_capable(harness: &str, event: &str, payload: &Value) -> bool {
@@ -43,58 +34,6 @@ fn gate_capable(harness: &str, event: &str, payload: &Value) -> bool {
         }
         _ => false,
     }
-}
-
-/// Is this a pre-tool hook of a yolo run in a pane that asked for fail-closed enforcement?
-/// `Some("ask" | "deny")` is the decision to print when Vibeke cannot be reached.
-pub fn enforce_mode(
-    harness: &str,
-    event: &str,
-    payload: &Value,
-    env: Option<&str>,
-) -> Option<&'static str> {
-    if event != "PreToolUse" || !matches!(harness, "claude" | "codex") {
-        return None;
-    }
-    let env = env?;
-    if env.is_empty() || env == "0" {
-        return None;
-    }
-    // Only runs without a permission system of their own need Vibeke's boundary.
-    let yolo = payload
-        .get("permission_mode")
-        .and_then(Value::as_str)
-        .is_some_and(|m| {
-            matches!(
-                m,
-                "bypassPermissions" | "yolo" | "dangerously-bypass" | "never"
-            )
-        })
-        || payload
-            .get("approval_policy")
-            .and_then(Value::as_str)
-            .is_some_and(|p| p == "never");
-    if !yolo {
-        return None;
-    }
-    // A tool the gate path already owns (AskUserQuestion) is not enforcement.
-    if gate_capable(harness, event, payload) {
-        return None;
-    }
-    Some(if env == "deny" || harness == "codex" {
-        "deny"
-    } else {
-        "ask"
-    })
-}
-
-/// The JSON printed when enforcement cannot reach the server.
-pub fn fail_closed_json(mode: &str) -> Value {
-    json!({"hookSpecificOutput": {
-        "hookEventName": "PreToolUse",
-        "permissionDecision": if mode == "deny" { "deny" } else { "ask" },
-        "permissionDecisionReason": UNAVAILABLE,
-    }})
 }
 
 fn call(
@@ -135,8 +74,6 @@ struct Req<'a> {
     harness: &'a str,
     event: &'a str,
     payload: &'a Value,
-    /// A pre-tool enforcement call (short timeout) rather than an interaction gate.
-    enforce: bool,
 }
 
 /// One connect → hello → signal/gate → (print decision → ack) exchange.
@@ -150,7 +87,7 @@ fn exchange(r: &Req) -> Result<(), Failure> {
         return Err(Failure::Retry);
     }
     let params = json!({"harness": r.harness, "event": r.event, "payload": r.payload, "pid": std::os::unix::process::parent_id()});
-    if !r.enforce && !gate_capable(r.harness, r.event, r.payload) {
+    if !gate_capable(r.harness, r.event, r.payload) {
         // The reply may carry a `hook_output` for the harness (collision tracker: queued
         // steering context, an enforced claim's deny). Observation otherwise stays silent.
         if let Some(out) = call(&mut stream, &mut rd, 2, "adapter.signal", params)
@@ -166,13 +103,8 @@ fn exchange(r: &Req) -> Result<(), Failure> {
         }
         return Ok(());
     }
-    // Gate: may wait up to the hook timeout for a decision (or a release on focus); an
-    // enforcement decision is immediate or fails closed.
-    let wait = if r.enforce {
-        ENFORCE_TIMEOUT
-    } else {
-        Duration::from_secs(1800)
-    };
+    // Gate: may wait up to the hook timeout for a decision (or a release on focus).
+    let wait = Duration::from_secs(1800);
     let _ = rd.get_ref().set_read_timeout(Some(wait));
     let Some(result) = call(&mut stream, &mut rd, 2, "adapter.gate", params) else {
         return Err(Failure::Retry);
@@ -237,40 +169,23 @@ pub fn main(args: &[String]) -> i32 {
             let _ = writeln!(f, "{}", json!({"event": event, "payload": payload}));
         }
     }
-    let enforce = enforce_mode(
-        harness,
-        event,
-        &payload,
-        std::env::var("VIBEKE_ENFORCE").ok().as_deref(),
-    );
     let req = Req {
         socket: &socket,
         token: &token,
         harness,
         event,
         payload: &payload,
-        enforce: enforce.is_some(),
     };
-    let gate = enforce.is_some() || gate_capable(harness, event, &payload);
+    let gate = gate_capable(harness, event, &payload);
     // Gate requests are retried once on a fresh connection; signals are not worth it.
     let attempts = if gate { 2 } else { 1 };
-    let mut outcome = Err(Failure::Retry);
     for n in 0..attempts {
-        outcome = exchange(&req);
-        match outcome {
+        match exchange(&req) {
             Err(Failure::Retry) if n + 1 < attempts => {
                 std::thread::sleep(Duration::from_millis(150));
             }
             _ => break,
         }
-    }
-    if outcome.is_err()
-        && let Some(mode) = enforce
-    {
-        // Enforcement only Vibeke provides: never a silent allow (04 §2.7).
-        let mut stdout = std::io::stdout();
-        let _ = writeln!(stdout, "{}", fail_closed_json(mode));
-        let _ = stdout.flush();
     }
     0
 }
@@ -278,80 +193,6 @@ pub fn main(args: &[String]) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn pre(mode: &str) -> Value {
-        json!({"tool_name": "Bash", "tool_input": {"command": "rm -rf /"}, "permission_mode": mode})
-    }
-
-    #[test]
-    fn enforcement_applies_to_yolo_pre_tool_hooks_only() {
-        assert_eq!(
-            enforce_mode("claude", "PreToolUse", &pre("bypassPermissions"), Some("1")),
-            Some("ask")
-        );
-        assert_eq!(
-            enforce_mode(
-                "claude",
-                "PreToolUse",
-                &pre("bypassPermissions"),
-                Some("deny")
-            ),
-            Some("deny")
-        );
-        // Codex cannot prompt from a hook: deny.
-        assert_eq!(
-            enforce_mode(
-                "codex",
-                "PreToolUse",
-                &json!({"approval_policy": "never"}),
-                Some("1")
-            ),
-            Some("deny")
-        );
-        // A run with its own permission system keeps failing open to the harness's dialog.
-        assert_eq!(
-            enforce_mode("claude", "PreToolUse", &pre("default"), Some("1")),
-            None
-        );
-        // Not enforcement: other events, other harnesses, no opt-in, the question gate.
-        assert_eq!(
-            enforce_mode(
-                "claude",
-                "PostToolUse",
-                &pre("bypassPermissions"),
-                Some("1")
-            ),
-            None
-        );
-        assert_eq!(
-            enforce_mode("gemini", "PreToolUse", &pre("bypassPermissions"), Some("1")),
-            None
-        );
-        assert_eq!(
-            enforce_mode("claude", "PreToolUse", &pre("bypassPermissions"), None),
-            None
-        );
-        assert_eq!(
-            enforce_mode("claude", "PreToolUse", &pre("bypassPermissions"), Some("0")),
-            None
-        );
-        let q = json!({"tool_name": "AskUserQuestion", "permission_mode": "bypassPermissions"});
-        assert_eq!(enforce_mode("claude", "PreToolUse", &q, Some("1")), None);
-    }
-
-    #[test]
-    fn fail_closed_json_is_a_pretooluse_ask_or_deny_with_the_reason() {
-        let v = fail_closed_json("ask");
-        let o = &v["hookSpecificOutput"];
-        assert_eq!(o["hookEventName"], "PreToolUse");
-        assert_eq!(o["permissionDecision"], "ask");
-        assert_eq!(o["permissionDecisionReason"], UNAVAILABLE);
-        assert_eq!(
-            fail_closed_json("deny")["hookSpecificOutput"]["permissionDecision"],
-            "deny"
-        );
-        assert!(UNAVAILABLE.contains("approve locally"));
-    }
 
     #[test]
     fn elicitation_is_gate_capable() {
@@ -367,9 +208,8 @@ mod tests {
             socket: "/nonexistent/vibeke.sock",
             token: "t",
             harness: "claude",
-            event: "PreToolUse",
+            event: "PermissionRequest",
             payload: &payload,
-            enforce: true,
         };
         assert_eq!(exchange(&r), Err(Failure::Retry));
     }

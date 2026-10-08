@@ -22,12 +22,6 @@ task.pick :: {family: string, child: string, merge?: bool, discard?: bool, force
 task.split :: {run?: string, pane?: Target, workspace?: Target, paths?: [string], title?: string, slug?: string, dry_run?: bool = false, resume?: bool, keep_recovery?: bool}
   => {dry_run?: bool, source: string, changes?: [{path: string, staged: bool, unstaged: bool, untracked: bool, deleted: bool}], steps?: [{step: string, detail: string}], blocked_by?: [string]|null, runs: [object], task?: Task|null, moved?: [string], recovery_ref?: string, recovery_kept?: bool}
 
-# --- learned policy (04 §7.7): needs [orchestrate.learned_policy] enabled; full scope only ---
-policy.learned.list :: {repo?: string}
-  => {suggestions: [{id: string, effect: allow|deny, harness: string, tool: string, workspace: string, pattern: string, rule: object, toml: string, approvals: int, denials: int, first_at_ms: int, last_at_ms: int, max_risk: string, samples: [string], reason: string}], stats: {decisions: int, fingerprints: int, min_approvals: int, max_denials: int, window_ms: int, suggest_deny: bool, dismissed: int}}
-policy.learned.accept :: {id: string, target?: user|repo = user} => {accepted: object, result: object}
-policy.learned.dismiss :: {id: string} => {dismissed: string, total: int}
-
 # --- merge orchestration (12): needs [orchestrate.merge] enabled; a pane may claim for its own task ---
 task.claim :: {task?: Target, run?: Target, glob: string, note?: string, root?: string} => {claim: {id: string, task: string|null, glob: string, note: string|null, created_at_ms: int, run?: string, root?: string, kind?: run|task}, conflicts: [object], label?: string}
 task.claim.list :: {task?: Target} => {claims: [object]}
@@ -84,8 +78,6 @@ family.created :: {family: string} => {title: string, children: [{handle: string
 family.checked :: {family: string, child: string} => {ok: bool, exit_code: int|null, timed_out: bool, duration_ms: int}
 family.picked :: {family: string} => {picked: string, discarded: int}
 task.split :: {task: string} => {source: string, moved: int, recovery_ref: string, recovery_kept: bool, runs: int}
-policy.learned_accepted :: {suggestion: string} => {target: string, effect: string, pattern: string, workspace: string, approvals: int}
-policy.learned_dismissed :: {suggestion: string} => any
 task.claim_added :: {task: string, claim: string} => {glob: string, note: string|null}
 task.claim_removed :: {task: string, claim: string} => {glob: string}
 merge.conflict_predicted :: {a: string, b: string} => {a: string, b: string, kind: string, severity: string, paths: [string], detail: string}

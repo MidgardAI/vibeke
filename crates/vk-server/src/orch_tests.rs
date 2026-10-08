@@ -1,5 +1,5 @@
 //! In-process tests of the Batch 4 orchestration API (`orch*.rs`): gating, pane scope, claims,
-//! conflict prediction, the merge queue (real git repositories in temp dirs), learned policy,
+//! conflict prediction, the merge queue (real git repositories in temp dirs),
 //! quota scheduling, the goal planner and the VM API on the fake backend. The server is built
 //! with `/bin/false` as its binary, so no holder, harness or VM is ever started. Flows that need
 //! `task.create` (best-of-N, split, goal fan-out, `--isolate vm`) run end to end in
@@ -70,8 +70,6 @@ fn enable_all(srv: &Server) {
     let mut c = OrchestrateConfig::default();
     c.best_of_n.enabled = true;
     c.split.enabled = true;
-    c.learned_policy.enabled = true;
-    c.learned_policy.min_approvals = 3;
     c.merge.enabled = true;
     c.planner.enabled = true;
     c.quota.enabled = true;
@@ -216,21 +214,6 @@ async fn every_feature_is_off_by_default_and_names_its_flag() {
             "orchestrate.best_of_n.enabled",
         ),
         ("task.split", json!({}), "orchestrate.split.enabled"),
-        (
-            "policy.learned.list",
-            json!({}),
-            "orchestrate.learned_policy.enabled",
-        ),
-        (
-            "policy.learned.accept",
-            json!({"id": "x"}),
-            "orchestrate.learned_policy.enabled",
-        ),
-        (
-            "policy.learned.dismiss",
-            json!({"id": "x"}),
-            "orchestrate.learned_policy.enabled",
-        ),
         ("merge.predict", json!({}), "orchestrate.merge.enabled"),
         ("merge.queue.list", json!({}), "orchestrate.merge.enabled"),
         ("merge.queue.run", json!({}), "orchestrate.merge.enabled"),
@@ -544,57 +527,7 @@ async fn claims_prediction_and_the_queue_work_on_real_worktrees() {
     assert_eq!(events(&srv, "merge.queued").len(), 2);
 }
 
-// ---- learned policy ----------------------------------------------------------------------------
-
-fn approval(
-    id: &str,
-    run: &str,
-    pane: &str,
-    command: &str,
-    decision: Decision,
-    risk: Risk,
-    at: i64,
-) -> Interaction {
-    Interaction {
-        id: id.into(),
-        handle: format!("h{id}"),
-        run: run.into(),
-        pane: pane.into(),
-        kind: InteractionKind::Approval,
-        status: InteractionStatus::Answered,
-        title: "run".into(),
-        body_md: None,
-        action: Some(ActionInfo {
-            tool: "Bash".into(),
-            summary: command.into(),
-            command: Some(command.into()),
-            paths: vec![],
-            diff: None,
-            risk,
-            risk_reasons: vec![],
-        }),
-        questions: vec![],
-        plan_md: None,
-        answer_channel: AnswerChannel::Native,
-        native_ref: None,
-        source: StateSource::Structured,
-        confidence: 1.0,
-        answerable: true,
-        gate: true,
-        decision_rev: 1,
-        delivery: DeliveryState::Delivered,
-        delivery_error: None,
-        answer: Some(Answer {
-            decision: Some(decision),
-            choices: vec![],
-            text: None,
-        }),
-        answered_by: Some("user".into()),
-        answer_key: None,
-        opened_at_ms: at,
-        answered_at_ms: Some(at),
-    }
-}
+// ---- helpers -----------------------------------------------------------------------------------
 
 fn seed_run(srv: &Server, id: &str, pane: &str, harness: &str, cwd: &str) {
     let t = vk_store::now_ms();
@@ -636,214 +569,6 @@ fn seed_run(srv: &Server, id: &str, pane: &str, harness: &str, cwd: &str) {
     let mut tx = Tx::new();
     tx.run(r);
     srv.commit(&mut c, tx).unwrap();
-}
-
-/// Run `body` on its own runtime thread and fail (instead of hanging) if it does not finish in
-/// `limit`: a core-lock re-entry deadlocks a std mutex, which no async timeout can interrupt.
-fn with_deadline<F: std::future::Future<Output = ()> + Send + 'static>(
-    limit: std::time::Duration,
-    body: F,
-) {
-    use std::sync::mpsc::{RecvTimeoutError, channel};
-    let (done, rx) = channel::<()>();
-    let h = std::thread::spawn(move || {
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap()
-            .block_on(body);
-        let _ = done.send(());
-    });
-    match rx.recv_timeout(limit) {
-        Ok(()) => h.join().unwrap(),
-        Err(RecvTimeoutError::Disconnected) => {
-            if let Err(p) = h.join() {
-                std::panic::resume_unwind(p);
-            }
-        }
-        Err(RecvTimeoutError::Timeout) => panic!("did not finish within {limit:?} (deadlock?)"),
-    }
-}
-
-#[test]
-fn learned_policy_suggests_accepts_and_dismisses() {
-    with_deadline(
-        std::time::Duration::from_secs(60),
-        learned_policy_suggests_accepts_and_dismisses_body(),
-    );
-}
-
-async fn learned_policy_suggests_accepts_and_dismisses_body() {
-    let (d, srv) = server();
-    enable_all(&srv);
-    let ws = d.path().join("app");
-    std::fs::create_dir_all(&ws).unwrap();
-    let wsp = ws.to_string_lossy().into_owned();
-    seed_run(&srv, "r1", "p1", "claude", &wsp);
-    let now = vk_store::now_ms();
-    {
-        let mut c = srv.core.lock().unwrap();
-        let mut tx = Tx::new();
-        for i in 0..4 {
-            tx.interaction(approval(
-                &format!("i{i}"),
-                "r1",
-                "p1",
-                "npm test --watch",
-                Decision::Allow,
-                Risk::Low,
-                now - 1000 + i,
-            ));
-        }
-        for i in 0..4 {
-            tx.interaction(approval(
-                &format!("d{i}"),
-                "r1",
-                "p1",
-                "rm -rf build",
-                Decision::Allow,
-                Risk::High,
-                now - 900 + i,
-            ));
-        }
-        for i in 0..4 {
-            tx.interaction(approval(
-                &format!("m{i}"),
-                "r1",
-                "p1",
-                "cargo build",
-                Decision::Allow,
-                Risk::Low,
-                now - 800 + i,
-            ));
-        }
-        tx.interaction(approval(
-            "mdeny",
-            "r1",
-            "p1",
-            "cargo build",
-            Decision::Deny,
-            Risk::Low,
-            now - 700,
-        ));
-        srv.commit(&mut c, tx).unwrap();
-    }
-    let l = ok(&srv, "policy.learned.list", json!({})).await;
-    let sug = l["suggestions"].as_array().unwrap();
-    assert_eq!(sug.len(), 1, "{l}");
-    assert_eq!(sug[0]["effect"], "allow");
-    assert!(sug[0]["pattern"].as_str().unwrap().contains("npm test"));
-    assert_eq!(sug[0]["approvals"], 4);
-    assert!(
-        sug[0]["toml"]
-            .as_str()
-            .unwrap()
-            .starts_with("[[policy.rule]]")
-    );
-    assert_eq!(l["stats"]["decisions"], 13);
-    let id = sug[0]["id"].as_str().unwrap().to_string();
-    // Accepting writes a policy rule through policy.add...
-    let acc = ok(&srv, "policy.learned.accept", json!({"id": id})).await;
-    assert_eq!(acc["result"]["target"], "user");
-    let rules = ok(&srv, "policy.list", json!({})).await;
-    assert!(
-        rules["rules"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|r| r["match"]["tool"] == "Bash" && r["effect"] == "allow"),
-        "{rules}"
-    );
-    // ...and the action is now decided, so it is no longer suggested.
-    assert!(
-        ok(&srv, "policy.learned.list", json!({})).await["suggestions"]
-            .as_array()
-            .unwrap()
-            .is_empty()
-    );
-    assert_eq!(
-        kind(&fail(&srv, "policy.learned.accept", json!({"id": id})).await),
-        "not_found"
-    );
-    // Dismissal hides a suggestion for good; the repo target writes a reviewable file.
-    {
-        let mut c = srv.core.lock().unwrap();
-        let mut tx = Tx::new();
-        for i in 0..4 {
-            tx.interaction(approval(
-                &format!("j{i}"),
-                "r1",
-                "p1",
-                "pnpm lint",
-                Decision::Allow,
-                Risk::Low,
-                now - 500 + i,
-            ));
-            tx.interaction(approval(
-                &format!("k{i}"),
-                "r1",
-                "p1",
-                "make build",
-                Decision::Allow,
-                Risk::Low,
-                now - 400 + i,
-            ));
-        }
-        srv.commit(&mut c, tx).unwrap();
-    }
-    let l = ok(&srv, "policy.learned.list", json!({"repo": wsp})).await;
-    let sug = l["suggestions"].as_array().unwrap().clone();
-    assert_eq!(sug.len(), 2, "{l}");
-    let lint = sug
-        .iter()
-        .find(|s| s["pattern"].as_str().unwrap().contains("pnpm lint"))
-        .unwrap()["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    let make = sug
-        .iter()
-        .find(|s| s["pattern"].as_str().unwrap().contains("make build"))
-        .unwrap()["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    ok(&srv, "policy.learned.dismiss", json!({"id": lint})).await;
-    let r = ok(
-        &srv,
-        "policy.learned.accept",
-        json!({"id": make, "target": "repo"}),
-    )
-    .await;
-    assert_eq!(r["result"]["target"], "repo");
-    let file = ws.join(".vibeke/policy.toml");
-    let text = std::fs::read_to_string(&file).unwrap();
-    assert!(
-        text.contains("[[rule]]") && text.contains("make build"),
-        "{text}"
-    );
-    let l = ok(&srv, "policy.learned.list", json!({})).await;
-    assert!(
-        l["suggestions"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|s| s["id"] != json!(lint))
-    );
-    assert_eq!(l["stats"]["dismissed"], 1);
-    assert_eq!(
-        kind(
-            &fail(
-                &srv,
-                "policy.learned.accept",
-                json!({"id": "x", "target": "nowhere"})
-            )
-            .await
-        ),
-        "not_found"
-    );
-    assert_eq!(events(&srv, "policy.learned_accepted").len(), 2);
-    assert_eq!(events(&srv, "policy.learned_dismissed").len(), 1);
 }
 
 // ---- quota -----------------------------------------------------------------------------------

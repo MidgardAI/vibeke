@@ -5291,64 +5291,6 @@ PolicyAddResult = TypedDict("PolicyAddResult", {
     "cursor": NotRequired["Cursor"],
 })
 
-PolicyLearnedAcceptParams = TypedDict("PolicyLearnedAcceptParams", {
-    "id": str,
-    "target": NotRequired[Literal["user", "repo"]],
-})
-
-PolicyLearnedAcceptResult = TypedDict("PolicyLearnedAcceptResult", {
-    "accepted": Dict[str, Any],
-    "result": Dict[str, Any],
-    "cursor": NotRequired["Cursor"],
-})
-
-PolicyLearnedDismissParams = TypedDict("PolicyLearnedDismissParams", {
-    "id": str,
-})
-
-PolicyLearnedDismissResult = TypedDict("PolicyLearnedDismissResult", {
-    "dismissed": str,
-    "total": int,
-    "cursor": NotRequired["Cursor"],
-})
-
-PolicyLearnedListParams = TypedDict("PolicyLearnedListParams", {
-    "repo": NotRequired[str],
-})
-
-PolicyLearnedListResultSuggestionsItem = TypedDict("PolicyLearnedListResultSuggestionsItem", {
-    "id": str,
-    "effect": Literal["allow", "deny"],
-    "harness": str,
-    "tool": str,
-    "workspace": str,
-    "pattern": str,
-    "rule": Dict[str, Any],
-    "toml": str,
-    "approvals": int,
-    "denials": int,
-    "first_at_ms": int,
-    "last_at_ms": int,
-    "max_risk": str,
-    "samples": List[str],
-    "reason": str,
-})
-
-PolicyLearnedListResultStats = TypedDict("PolicyLearnedListResultStats", {
-    "decisions": int,
-    "fingerprints": int,
-    "min_approvals": int,
-    "max_denials": int,
-    "window_ms": int,
-    "suggest_deny": bool,
-    "dismissed": int,
-})
-
-PolicyLearnedListResult = TypedDict("PolicyLearnedListResult", {
-    "suggestions": List["PolicyLearnedListResultSuggestionsItem"],
-    "stats": "PolicyLearnedListResultStats",
-})
-
 PolicyListParams = TypedDict("PolicyListParams", {
     "scope": NotRequired["PolicyScope"],
 })
@@ -5366,37 +5308,6 @@ PolicyRemoveResult = TypedDict("PolicyRemoveResult", {
     "removed": bool,
     "rule": "PolicyRuleInfo",
     "cursor": NotRequired["Cursor"],
-})
-
-PolicySuggestParams = TypedDict("PolicySuggestParams", {
-    "min_count": NotRequired[int],
-    "max_denials": NotRequired[int],
-    "limit": NotRequired[int],
-    "harness": NotRequired[str],
-    "include_covered": NotRequired[bool],
-})
-
-PolicySuggestResultSuggestionsItem = TypedDict("PolicySuggestResultSuggestionsItem", {
-    "fingerprint": str,
-    "harness": str,
-    "tool": str,
-    "subject": str,
-    "workspace": str,
-    "approvals": int,
-    "denials": int,
-    "last_at_ms": int,
-    "risk": Literal["low", "medium", "high", "unknown"],
-    "rule": Optional[Dict[str, Any]],
-    "toml": Optional[str],
-    "blocked": Optional[str],
-    "covered": bool,
-})
-
-PolicySuggestResult = TypedDict("PolicySuggestResult", {
-    "suggestions": List["PolicySuggestResultSuggestionsItem"],
-    "min_count": int,
-    "max_denials": int,
-    "samples": int,
 })
 
 PolicyTestParamsAction = TypedDict("PolicyTestParamsAction", {
@@ -8247,12 +8158,8 @@ METHODS: Dict[str, Dict[str, Any]] = {
     "plugin.restart": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "plugin.surface.close": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "policy.add": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "policy.learned.accept": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "policy.learned.dismiss": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "policy.learned.list": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
     "policy.list": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
     "policy.remove": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "policy.suggest": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
     "policy.test": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
     "policy.trust": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "preview.declare": {"mutating": True, "scope": "pane", "pane_scope": "open"},
@@ -8596,18 +8503,6 @@ AgentSubagentStartedSubject = TypedDict("AgentSubagentStartedSubject", {
 AgentSubagentStartedData = TypedDict("AgentSubagentStartedData", {
     "agent_id": Optional[str],
     "agent_type": str,
-})
-
-AgentToolBlockedSubject = TypedDict("AgentToolBlockedSubject", {
-    "run": str,
-    "pane": str,
-})
-
-AgentToolBlockedData = TypedDict("AgentToolBlockedData", {
-    "tool": str,
-    "effect": str,
-    "rule": Optional[str],
-    "command": Optional[str],
 })
 
 AgentTurnCompletedSubject = TypedDict("AgentTurnCompletedSubject", {
@@ -9875,24 +9770,6 @@ PluginUnlinkedData = TypedDict("PluginUnlinkedData", {
     "kind": str,
 })
 
-PolicyLearnedAcceptedSubject = TypedDict("PolicyLearnedAcceptedSubject", {
-    "suggestion": str,
-})
-
-PolicyLearnedAcceptedData = TypedDict("PolicyLearnedAcceptedData", {
-    "target": str,
-    "effect": str,
-    "pattern": str,
-    "workspace": str,
-    "approvals": int,
-})
-
-PolicyLearnedDismissedSubject = TypedDict("PolicyLearnedDismissedSubject", {
-    "suggestion": str,
-})
-
-PolicyLearnedDismissedData: TypeAlias = Any
-
 PolicyRepoTrustedSubject: TypeAlias = Dict[str, Any]
 
 PolicyRepoTrustedData = TypedDict("PolicyRepoTrustedData", {
@@ -11132,7 +11009,6 @@ EVENT_TYPES = (
     "agent.state_changed",
     "agent.subagent_finished",
     "agent.subagent_started",
-    "agent.tool_blocked",
     "agent.turn_completed",
     "agent.turn_started",
     "agent.turn_usage",
@@ -11262,8 +11138,6 @@ EVENT_TYPES = (
     "plugin.trust_changed",
     "plugin.uninstalled",
     "plugin.unlinked",
-    "policy.learned_accepted",
-    "policy.learned_dismissed",
     "policy.repo_trusted",
     "policy.rule_added",
     "policy.rule_matched",

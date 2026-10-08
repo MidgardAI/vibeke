@@ -36,7 +36,6 @@ pub mod notify;
 pub mod orch;
 pub mod orch_family;
 pub mod orch_goal;
-pub mod orch_learn;
 pub mod orch_merge;
 pub mod orch_quota;
 pub mod orch_shapes;
@@ -760,13 +759,6 @@ impl Server {
             self.opts.bin.to_string_lossy().into_owned(),
         );
         set(&mut env, "VIBEKE_PANE_TOKEN", self.token_for(pane_id));
-        // Vibeke-only enforcement fails closed in the pre-tool hook of a yolo run (04 §2.7).
-        if vk_config::Config::load(vk_config::config_path())
-            .map(|(c, _)| c.agents.fail_closed)
-            .unwrap_or(true)
-        {
-            set(&mut env, "VIBEKE_ENFORCE", "1".into());
-        }
         theme::pane_env(self, &mut env);
         // `HERDR_*` aliases when `compat.herdr_env` and the compat listener are on (07 §8.2).
         compat::extend_pane_env(self, &mut env, handle, tab_handle, ws_handle);

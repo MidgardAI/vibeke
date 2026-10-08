@@ -10,7 +10,6 @@
 //! |---|---|---|
 //! | [`family`] | 05 §12 | best-of-N task families: agent spec parsing, child plans, per-run prompt suffix, compare, ranking |
 //! | [`split`] | 05 §11 | "split into task": quiesce check, atomic capture, recovery ref, selection, validate, apply, verify, revert source |
-//! | [`learn`] | 04 §7.7, 12 | learned policy: decision records, fingerprints, rule suggestions, repo policy snippets |
 //! | [`merge`] | 12, 05 §10 | claims, conflict prediction across live worktrees, merge queue, integration merges |
 //! | [`plan`] | 12 | goal to plan to tasks: plan model and validation, heuristic and scripted planners, routing, approval gate, briefings |
 //! | [`quota`] | 12 | quota and cost scheduling: pause low-priority work near limits, resume after reset, account routing, price table |
@@ -18,7 +17,6 @@
 pub mod config;
 pub mod family;
 pub mod gitx;
-pub mod learn;
 pub mod merge;
 pub mod plan;
 pub mod quota;

@@ -14,14 +14,6 @@
 //! quiet_for = "3s"                 # no file changes in the source for this long (writers quiesced)
 //! resume = false                   # try the harness resume handle in the new cwd (else hand-off prompt)
 //!
-//! [orchestrate.learned_policy]     # 04 §7.7, 12 "Learned policy"
-//! enabled = false                  # policy.learned.* suggestions from the decision history
-//! min_approvals = 5
-//! max_denials = 0
-//! window = "30d"
-//! suggest_deny = false             # also suggest deny rules for always-denied fingerprints
-//! allow_risk = ["low", "medium"]   # highest risk class a suggested allow rule may cover
-//!
 //! [orchestrate.merge]              # 12 "Merge orchestration"
 //! enabled = false                  # claims, conflict prediction, merge queue
 //! predict_every = "30s"            # background conflict prediction while 2+ tasks are live
@@ -65,7 +57,6 @@ use std::time::Duration;
 pub struct OrchestrateConfig {
     pub best_of_n: BestOfNConfig,
     pub split: SplitConfig,
-    pub learned_policy: LearnedPolicyConfig,
     pub merge: MergeConfig,
     pub planner: PlannerConfig,
     pub quota: QuotaConfig,
@@ -129,34 +120,6 @@ impl Default for SplitConfig {
 impl SplitConfig {
     pub fn quiet_for(&self) -> Duration {
         parse_duration(&self.quiet_for).unwrap_or(Duration::from_secs(3))
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct LearnedPolicyConfig {
-    pub enabled: bool,
-    pub min_approvals: u32,
-    pub max_denials: u32,
-    pub window: String,
-    pub suggest_deny: bool,
-    pub allow_risk: Vec<String>,
-}
-impl Default for LearnedPolicyConfig {
-    fn default() -> Self {
-        LearnedPolicyConfig {
-            enabled: false,
-            min_approvals: 5,
-            max_denials: 0,
-            window: "30d".into(),
-            suggest_deny: false,
-            allow_risk: vec!["low".into(), "medium".into()],
-        }
-    }
-}
-impl LearnedPolicyConfig {
-    pub fn window(&self) -> Duration {
-        parse_duration(&self.window).unwrap_or(Duration::from_secs(30 * 86400))
     }
 }
 
@@ -292,7 +255,6 @@ mod tests {
         assert!(e.is_none());
         assert!(!c.best_of_n.enabled);
         assert!(!c.split.enabled);
-        assert!(!c.learned_policy.enabled);
         assert!(!c.merge.enabled);
         assert!(!c.planner.enabled);
         assert!(!c.quota.enabled);

@@ -309,9 +309,7 @@ pub const PANE_FORBIDDEN: &[&str] = &[
     "worktree.remove",
     "render.attach",
     "policy.trust",
-    // 2F: the approval history behind `policy.suggest`, and the manifest channel (network fetch,
-    // pins), are the user's.
-    "policy.suggest",
+    // 2F: the manifest channel (network fetch, pins) is the user's.
     "agent.manifests_check",
     "agent.manifest_pin",
     // 15 §11: agents can report observations but not confirm intent, bind, send, accept,
