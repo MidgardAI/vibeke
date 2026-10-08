@@ -95,7 +95,9 @@ impl Codex {
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
-        let current = self.model.as_deref();
+        // A chosen model rides on the next `turn/start`: it is current from the moment it is
+        // chosen, so the list never keeps marking the model the user just left.
+        let current = self.model_override.as_deref().or(self.model.as_deref());
         let any_current = data.iter().any(|m| {
             let slug = m.get("model").or(m.get("id")).and_then(Value::as_str);
             current.is_some() && slug == current

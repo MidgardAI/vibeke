@@ -1495,6 +1495,45 @@ mod sessions {
         assert_eq!(turn.1["params"]["model"], "gpt-a");
     }
 
+    /// Review finding: after switching A→B and before the next turn, `agent.models` marks B
+    /// current (not A), so switching back to A is offered.
+    #[tokio::test]
+    async fn codex_models_mark_a_pending_switch_current_before_the_next_turn() {
+        let mut t = T::new("codex", Kind::AppServer);
+        let mut s = t.session();
+        let list = |t: &mut T, s: &mut Session| {
+            let (w, mut rx) = model_cmd(t, s, ModelOp::List);
+            let rid = w[0].1["id"].clone();
+            t.land(s, w[0].0, &w[0].1);
+            t.feed(
+                s,
+                Stream::Stdout,
+                &json!({"id": rid, "result": {"data": [
+                    {"id": "gpt-a", "model": "gpt-a", "displayName": "GPT A", "description": "", "isDefault": true, "hidden": false},
+                    {"id": "gpt-b", "model": "gpt-b", "displayName": "GPT B", "description": "", "isDefault": false, "hidden": false}
+                ]}}),
+            );
+            let v = rx.try_recv().unwrap().unwrap();
+            (
+                v["models"][0]["current"] == true,
+                v["models"][1]["current"] == true,
+            )
+        };
+        assert_eq!(list(&mut t, &mut s), (true, false));
+        for (m, want) in [("gpt-b", (false, true)), ("gpt-a", (true, false))] {
+            let (_, mut rx) = model_cmd(
+                &t,
+                &mut s,
+                ModelOp::Set {
+                    model: m.into(),
+                    default: false,
+                },
+            );
+            rx.try_recv().unwrap().unwrap();
+            assert_eq!(list(&mut t, &mut s), want, "after switching to {m}");
+        }
+    }
+
     /// pi (`--mode rpc`): `get_available_models` / `set_model {provider, modelId}`; pi saves the
     /// switch as its default (so it refuses a session-only switch), omp keeps it to the session
     /// and refuses `default`.
