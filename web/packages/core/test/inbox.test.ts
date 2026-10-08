@@ -209,3 +209,16 @@ describe('answer params carry decision_rev', () => {
     expect(() => batchAnswerParams({ ...batch!, items: [a, item(ix({ run: 'r3', decision_rev: null as unknown as number }), run('r3', 'working'))] }, 'allow')).toThrow();
   });
 });
+
+describe('picker answers (core)', () => {
+  test('expected_signature rides along with the revision; cancel is a decision', () => {
+    const it = { id: 'pk', decision_rev: 2 } as never;
+    expect(answerParams(it, { decision: 'cancel', expected_signature: 's1' })).toEqual({ interaction: 'pk', decision: 'cancel', expected_signature: 's1', decision_rev: 2 });
+    expect(answerParams(it, { choices: { q0: ['a'] } })).toEqual({ interaction: 'pk', choices: { q0: ['a'] }, decision_rev: 2 });
+  });
+  test('setting a model is a mutating call', async () => {
+    const { MUTATING_METHODS } = await import('../src/model');
+    expect(MUTATING_METHODS.has('agent.set_model')).toBe(true);
+    expect(MUTATING_METHODS.has('agent.models')).toBe(false);
+  });
+});

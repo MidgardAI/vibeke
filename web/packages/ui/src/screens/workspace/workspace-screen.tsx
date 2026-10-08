@@ -369,7 +369,20 @@ function PaneBody({
     burstRef.current?.();
     setRefreshKey((k) => k + 1);
   }, []);
-  const paneActions = usePaneActions(hostId, row.pane.id, run, scope, onSent);
+  const dialogsRef = useRef<HTMLDivElement>(null);
+  /** Point at a dialog card (a failed send because one is open, or a slash command that opened one). */
+  const focusDialog = useCallback((id: string | null) => {
+    // The card may arrive with the next dashboard refresh: try now and once more shortly.
+    const go = () => {
+      const root = dialogsRef.current ?? document;
+      const el = (id ? root.querySelector<HTMLElement>(`[data-interaction="${CSS.escape(id)}"]`) : null) ?? root.querySelector<HTMLElement>('[data-kind="picker"]');
+      el?.scrollIntoView?.({ block: 'nearest' });
+      el?.focus({ preventScroll: true });
+      return !!el;
+    };
+    if (!go()) setTimeout(go, 400);
+  }, []);
+  const paneActions = usePaneActions(hostId, row.pane.id, run, scope, onSent, focusDialog);
   // The terminal types into the pane (`pane.send_text` + Enter), even when an agent runs there:
   // the user is talking to the agent's own interface, not prompting it through the host.
   const actions = useMemo<PaneActions>(() => (term ? { ...paneActions, text: (s, o) => paneActions.text(s, { ...o, raw: true }) } : paneActions), [paneActions, term]);
@@ -377,6 +390,10 @@ function PaneBody({
   const [belt, setBelt] = useState<BeltTab | null>(null);
   const [noEcho, setNoEcho] = useState(false);
   const cards = inbox.filter((it) => it.host_id === hostId && it.interaction.pane === row.pane.id);
+  // In the conversation, an open picker / unknown dialog sits above the composer (which pauses);
+  // in the terminal it stays in the dock with the other cards.
+  const dialogs = !term ? cards.filter((c) => c.interaction.kind === 'picker') : [];
+  const otherCards = !term ? cards.filter((c) => c.interaction.kind !== 'picker') : cards;
 
   // Viewing a finished run marks it seen.
   useEffect(() => {
@@ -419,7 +436,7 @@ function PaneBody({
           cwd={run.cwd ?? row.pane.cwd}
           refreshKey={refreshKey}
           onOpenTerminal={onOpenTerminal}
-          tail={cards.length > 0 ? <Approvals items={cards} /> : null}
+          tail={otherCards.length > 0 ? <Approvals items={otherCards} onOpenTerminal={onOpenTerminal} /> : null}
         />
       ) : (
         <>
@@ -433,10 +450,15 @@ function PaneBody({
             burstRef={burstRef}
             onActivate={canType ? focusComposer : undefined}
           />
-          {cards.length > 0 && <ApprovalDock items={cards} />}
+          {cards.length > 0 && <ApprovalDock items={cards} onOpenTerminal={onOpenTerminal} />}
         </>
       )}
       <div className="shrink-0 pb-safe">
+        {dialogs.length > 0 && (
+          <div ref={dialogsRef} className="mx-auto max-h-[55vh] w-full max-w-[780px] overflow-y-auto px-3 pb-2 sm:px-4" data-dialogs>
+            <Approvals items={dialogs} onOpenTerminal={onOpenTerminal} />
+          </div>
+        )}
         <div className="mx-auto w-full max-w-[780px] space-y-1 px-3 empty:hidden sm:px-4">
           {term && noEcho && canType && <Notice tone="warn">{t.composer.password}</Notice>}
           {!online && <Notice tone="warn">{t.composer.offline}</Notice>}
@@ -470,6 +492,7 @@ function PaneBody({
               run={run}
               interactions={host?.dashboard?.interactions}
               more={term ? undefined : beltEl}
+              locked={dialogs.length > 0}
             />
           </div>
         )}
@@ -479,7 +502,7 @@ function PaneBody({
 }
 
 /** Approvals under the terminal: a collapsible dock, so they are never lost behind the screen. */
-function ApprovalDock({ items }: { items: InboxItem[] }) {
+function ApprovalDock({ items, onOpenTerminal }: { items: InboxItem[]; onOpenTerminal?(): void }) {
   const [open, setOpen] = useState(true);
   return (
     <div className="shrink-0 border-t border-border bg-bg" data-approval-dock>
@@ -491,7 +514,7 @@ function ApprovalDock({ items }: { items: InboxItem[] }) {
       </button>
       {open && (
         <div className="max-h-[40vh] overflow-y-auto px-3 pb-2">
-          <Approvals items={items} />
+          <Approvals items={items} onOpenTerminal={onOpenTerminal} />
         </div>
       )}
     </div>
@@ -499,7 +522,7 @@ function ApprovalDock({ items }: { items: InboxItem[] }) {
 }
 
 /** Open approvals of the pane: one compact card each, or a batch card for identical requests. */
-function Approvals({ items }: { items: InboxItem[] }) {
+function Approvals({ items, onOpenTerminal }: { items: InboxItem[]; onOpenTerminal?(): void }) {
   const batches = groupBatches(items);
   const inBatch = new Set(batches.flatMap((b) => b.items.map((i) => i.interaction.id)));
   return (
@@ -510,7 +533,7 @@ function Approvals({ items }: { items: InboxItem[] }) {
       {items
         .filter((i) => !inBatch.has(i.interaction.id))
         .map((c) => (
-          <InteractionCard key={c.interaction.id} item={c} variant="compact" />
+          <InteractionCard key={c.interaction.id} item={c} variant="compact" onOpenTerminal={onOpenTerminal} />
         ))}
     </div>
   );

@@ -4,19 +4,23 @@
 // destructive second-tap guard, attachments (#N chips) and voice (consent first; a transcript
 // is never auto-sent).
 
-import { useEffect, useRef, useState, type ClipboardEvent, type Dispatch, type ReactNode, type SetStateAction } from 'react';
+import { useEffect, useMemo, useRef, useState, type ClipboardEvent, type Dispatch, type ReactNode, type SetStateAction } from 'react';
 import { ArrowUp, Camera, Loader2, Mic, MoreHorizontal, Paperclip, Plus, RotateCcw, ShieldCheck, ShieldOff, Square, X } from 'lucide-react';
-import type { AgentRun } from '@vibeke/core';
+import type { AgentCommand, AgentRun } from '@vibeke/core';
 import { useApp, usePrefs } from '../../app/hooks';
-import { Button, HarnessIcon, IconButton, Notice, Sheet, cx } from '../../components/ui';
+import { Button, IconButton, Notice, Sheet, cx } from '../../components/ui';
 import { MenuButton } from '../workspace/menu';
 import { useMediaQuery } from '../../app/shell';
 import { t } from '../../i18n';
 import { errorMessage } from '../../lib/answer';
 import { base64Std } from '../../lib/format';
 import { composerShowsStop, destructiveReason } from '../../lib/guards';
-import { harnessLabel } from '../../lib/harness';
+import { CommandCache, commandTap, fallbackCommands, filterCommands, slashQuery } from '../../lib/pickers';
 import type { PaneActions } from './actions';
+import { ModelSwitcher } from './model-switcher';
+
+/** Slash commands per host/run: loaded once, falling back to the built-in palette. */
+const commandCache = new CommandCache();
 
 interface Attachment {
   n: number;
@@ -39,6 +43,7 @@ export function Composer({
   more,
   onSent,
   placeholder,
+  locked = false,
 }: {
   hostId: string;
   actions: PaneActions;
@@ -55,6 +60,8 @@ export function Composer({
   onSent?: () => void;
   /** Overrides the agent / shell placeholder (e.g. typing into an agent's own terminal). */
   placeholder?: string;
+  /** A picker or unknown dialog is open on the agent: typing is paused until it is answered. */
+  locked?: boolean;
 }) {
   const [moreOpen, setMoreOpen] = useState(false);
   const roomy = useMediaQuery('(min-width: 640px)');
@@ -82,8 +89,43 @@ export function Composer({
   }, [text]);
   useEffect(() => () => cancelRef.current?.(), []);
 
-  const send = async () => {
-    const body = text.trim();
+  // ---- slash commands ----
+  const [cmds, setCmds] = useState<AgentCommand[]>([]);
+  const [active, setActive] = useState(0);
+  const [slashArmed, setSlashArmed] = useState<string | null>(null);
+  const [dismissed, setDismissed] = useState<string | null>(null);
+  const cmdKey = run ? `${hostId}/${run.id}` : null;
+  const wantsSlash = isAgent && !locked && !!run && slashQuery(text) !== null;
+  useEffect(() => {
+    if (!wantsSlash || !run || !cmdKey) return;
+    const cached = commandCache.peek(cmdKey);
+    if (cached) return setCmds(cached);
+    setCmds(fallbackCommands(run.harness));
+    let live = true;
+    void commandCache.load(cmdKey, app.conn(hostId), run.id, run.harness).then((l) => live && setCmds(l));
+    return () => {
+      live = false;
+    };
+  }, [wantsSlash, cmdKey]);
+  const matches = useMemo(() => (wantsSlash && dismissed !== text ? filterCommands(cmds, text) : []), [wantsSlash, cmds, text, dismissed]);
+  useEffect(() => {
+    setActive(0);
+    setSlashArmed(null);
+  }, [text]);
+
+  const pickCommand = (c: AgentCommand) => {
+    const r = commandTap(c, slashArmed);
+    app.haptic(r.do === 'arm' ? 'warning' : 'tap');
+    if (r.do === 'insert') {
+      setText(r.text);
+      taRef.current?.focus();
+    } else if (r.do === 'arm') setSlashArmed(c.name);
+    else void send(r.text);
+  };
+
+  const send = async (override?: string) => {
+    if (locked) return;
+    const body = (override ?? text).trim();
     if (!body || sending) return;
     const why = destructiveReason(body);
     if (why && armed !== body) {
@@ -214,6 +256,27 @@ export function Composer({
             </button>
           </div>
         )}
+        {locked && <Notice className="mb-1.5">{t.picker.lockedHint}</Notice>}
+        {matches.length > 0 && (
+          <div id="slash-list" role="listbox" aria-label={t.slash.label} className="mb-1.5 max-h-56 overflow-y-auto rounded-xl border border-border bg-surface py-1">
+            {matches.map((c, i) => (
+              <button
+                key={c.name}
+                id={`slash-${i}`}
+                type="button"
+                role="option"
+                aria-selected={i === active}
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => pickCommand(c)}
+                className={cx('flex w-full items-center gap-2 px-3 py-1.5 text-left pointer-coarse:py-2.5', i === active ? 'bg-surface-2' : 'active:bg-surface-2')}
+              >
+                <span className={cx('font-mono text-sm', c.dangerous ? 'text-danger' : 'text-accent')}>{c.name}</span>
+                <span className="min-w-0 flex-1 truncate text-xs text-muted">{slashArmed === c.name ? t.slash.tapAgain : c.description}</span>
+                {c.opens_picker && <span className="shrink-0 text-2xs text-faint">{t.slash.opensPicker}</span>}
+              </button>
+            ))}
+          </div>
+        )}
         {why && <Notice tone="danger" className="mb-1.5">{t.composer.reallySend(why)} — {t.composer.tapAgain}</Notice>}
         {moreOpen && more && (
           <div className="mb-1.5 overflow-hidden rounded-xl border border-border bg-surface" role="region" aria-label={t.composer2.more}>
@@ -250,10 +313,32 @@ export function Composer({
             ref={taRef}
             value={text}
             rows={1}
+            disabled={locked}
+            role={matches.length > 0 ? 'combobox' : undefined}
+            aria-expanded={matches.length > 0 ? true : undefined}
+            aria-controls={matches.length > 0 ? 'slash-list' : undefined}
+            aria-activedescendant={matches.length > 0 ? `slash-${Math.min(active, matches.length - 1)}` : undefined}
             aria-label={placeholder ?? (isAgent ? t.composer2.placeholder : t.composer2.placeholderShell)}
             onChange={(e) => setText(e.target.value)}
             onPaste={onPaste}
             onKeyDown={(e) => {
+              if (matches.length > 0) {
+                if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                  e.preventDefault();
+                  setActive((a) => (a + (e.key === 'ArrowDown' ? 1 : -1) + matches.length) % matches.length);
+                  return;
+                }
+                if ((e.key === 'Enter' && !e.metaKey && !e.ctrlKey && !e.shiftKey) || e.key === 'Tab') {
+                  e.preventDefault();
+                  pickCommand(matches[Math.min(active, matches.length - 1)]!);
+                  return;
+                }
+                if (e.key === 'Escape') {
+                  e.preventDefault();
+                  setDismissed(text);
+                  return;
+                }
+              }
               if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
                 e.preventDefault();
                 void send();
@@ -276,15 +361,7 @@ export function Composer({
                 { label: t.composer.photo, icon: <Camera />, onSelect: () => photoRef.current?.click() },
               ]}
             />
-            {run && (
-              <span className="inline-flex h-7 min-w-0 items-center gap-1.5 rounded-md px-1.5 text-xs text-muted" title={t.composer2.model}>
-                <HarnessIcon harness={run.harness} />
-                <span className="truncate">
-                  {harnessLabel(run.harness)}
-                  {run.model && <span className="text-faint"> · {run.model}</span>}
-                </span>
-              </span>
-            )}
+            {run && <ModelSwitcher hostId={hostId} run={run} actions={actions} disabled={locked || !isAgent || !!run.ended_at_ms} />}
             {modeLabel && (
               <span className={cx('hidden h-7 shrink-0 items-center gap-1 rounded-md px-1.5 text-xs sm:inline-flex', open ? 'text-need' : 'text-muted')} title={t.composer2.mode}>
                 {open ? <ShieldOff className="size-3.5" /> : <ShieldCheck className="size-3.5" />}
@@ -331,7 +408,7 @@ export function Composer({
                 type="button"
                 aria-label={t.send}
                 title={t.send}
-                disabled={!text.trim() || sending}
+                disabled={!text.trim() || sending || locked}
                 onClick={() => void send()}
                 className={cx(
                   'vk-focus inline-flex size-7 shrink-0 items-center justify-center rounded-full disabled:bg-surface-3 disabled:text-faint pointer-coarse:size-9',

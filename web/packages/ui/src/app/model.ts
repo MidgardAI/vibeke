@@ -20,6 +20,8 @@ import {
   type Interaction,
   type PairingLink,
 } from '@vibeke/core';
+import { t } from '../i18n';
+import { isPickerChanged } from '../lib/pickers';
 import { AnswerStore, classifyError, errorMessage, staleInteraction } from '../lib/answer';
 import { badgeCount, staleTags } from '../lib/notify';
 import { PrefsStore } from '../lib/prefs';
@@ -43,6 +45,7 @@ export interface AnswerParams {
   decision?: Decision;
   choices?: Record<string, string[]>;
   text?: string;
+  expected_signature?: string;
 }
 
 export class AppModel {
@@ -239,7 +242,12 @@ export class AppModel {
     } catch (e) {
       const cls = classifyError(e);
       this.haptic('error');
-      if (cls === 'stale') {
+      if (isPickerChanged(e)) {
+        // The dialog moved on under the card: show the fresh one and say so, no error state.
+        this.answers.set(key, null);
+        this.toast(t.picker.changed, 'info', 4000);
+        void conn?.refresh().catch(() => {});
+      } else if (cls === 'stale') {
         this.answers.set(key, { phase: 'stale', label, at: now(), error: errorMessage(e) });
         const fresh = staleInteraction(e);
         void conn?.refresh().catch(() => {});
