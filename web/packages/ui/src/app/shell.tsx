@@ -29,7 +29,7 @@ export function ConnectionBanner() {
       : b.level === 'amber'
         ? t.conn.reconnecting
         : fatalOnly
-          ? `${b.fatal.join(', ')}: ${t.conn.revoked}`
+          ? `${b.fatal.join(', ')}: ${hosts.every((h) => h.status === 'online' || h.status === 'idle' || h.status === 'ticket_expired') ? t.conn.ticketExpired : t.conn.revoked}`
           : t.conn.offline(b.down.join(', '));
   return (
     <div role="status" className={cx('flex min-h-8 shrink-0 items-center gap-2 border-b px-3 py-1 text-xs', tone)}>

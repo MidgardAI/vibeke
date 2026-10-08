@@ -20,6 +20,14 @@ describe('transport selection', () => {
     expect(transportOf(`local:${sock}`)).toBe('local');
   });
 
+  test('tickets pass the local path validator and the relay URL', () => {
+    const sock = '/tmp/vibeke/gateway.sock';
+    const t = parseConnectUrl(relayConnectUrl(`local:${sock}`, 'abc', 'abc.def'));
+    expect(t).toEqual({ kind: 'local', socketPath: sock, path: '/v1/connect?host=abc&ticket=abc.def' });
+    const r = parseConnectUrl(relayConnectUrl('wss://relay.example.com', 'abc', 'e30_-.sig_-'));
+    expect(r).toEqual({ kind: 'relay', url: 'wss://relay.example.com/v1/connect?host=abc&ticket=e30_-.sig_-' });
+  });
+
   test('rejects other schemes and malformed local paths', () => {
     for (const bad of ['http://x/v1/connect', 'file:///tmp/x', 'local:relative/x.sock/v1/connect', 'local:/v1/connect', 'wss://u:p@relay/x', 'nonsense']) {
       expect(() => parseConnectUrl(bad)).toThrow();

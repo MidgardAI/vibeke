@@ -28,6 +28,8 @@ pub const PAIR_TIMEOUT: Duration = Duration::from_secs(150);
 /// WebSocket frame/message cap: the channel splits messages into ≤ 64 KiB Noise frames, as the
 /// gateway's own sockets expect (local.rs).
 const MAX_WS: usize = 128 * 1024;
+/// Renew a peer's relay ticket once less than this is left (spec 16 §6.6).
+pub const TICKET_RENEW_BEFORE: Duration = Duration::from_secs(7 * 24 * 3600);
 
 /// How this host introduces itself when it redeems an invitation.
 #[derive(Debug, Clone, Default)]
@@ -85,6 +87,7 @@ impl PeerClient {
         let mut c = Conn::open(
             &link.relay,
             &link.host,
+            link.tk.as_deref(),
             Hello::pair(&link.pid),
             &key,
             &hk,
@@ -127,6 +130,12 @@ impl PeerClient {
                 .filter(|u| *u > 0),
             _ => None,
         };
+        // Our admission ticket on the other host's relay (spec 16 §6.6); older hosts send none.
+        let ticket = done
+            .get("ticket")
+            .and_then(|t| t.as_str())
+            .map(str::to_string);
+        let ticket_exp = done.get("ticket_exp").and_then(|t| t.as_u64());
         c.close().await;
         Ok(PeerRecord {
             id: ulid::Ulid::new().to_string().to_lowercase(),
@@ -139,6 +148,8 @@ impl PeerClient {
             owner: owner.into(),
             added_at: now_s(),
             expires_at,
+            ticket,
+            ticket_exp,
         })
     }
 
@@ -151,7 +162,35 @@ impl PeerClient {
             private: b64::decode_array(&rec.device_key).context("peer key")?,
         };
         let hk = b64::decode_array(&rec.host_key).context("peer host key")?;
-        Conn::open(&rec.relay, &rec.host, Hello::device(), &key, &hk, None).await
+        let ticket = rec
+            .ticket
+            .as_deref()
+            .filter(|_| rec.ticket_exp.is_none_or(|e| e > now_s()));
+        Conn::open(
+            &rec.relay,
+            &rec.host,
+            ticket,
+            Hello::device(),
+            &key,
+            &hk,
+            None,
+        )
+        .await
+    }
+
+    /// After a successful [`connect`](Self::connect): a new ticket from the peer when ours is
+    /// missing or has less than [`TICKET_RENEW_BEFORE`] left (`relay.ticket`). `None` when no
+    /// renewal is due, for local links, or when the peer predates tickets.
+    pub async fn renew_ticket(conn: &mut Conn, rec: &PeerRecord) -> Option<(String, u64)> {
+        let due = rec
+            .ticket_exp
+            .is_none_or(|e| e < now_s() + TICKET_RENEW_BEFORE.as_secs());
+        if !due || local_socket(&rec.relay).is_some() {
+            return None;
+        }
+        let r = conn.call_raw("relay.ticket", json!({})).await.ok()?;
+        let ticket = r.get("ticket")?.as_str()?.to_string();
+        Some((ticket, r.get("exp")?.as_u64()?))
     }
 
     /// [`connect`](Self::connect) with retries (full-jitter exponential backoff) until `deadline`
@@ -311,7 +350,7 @@ fn is_loopback_authority(authority: &str) -> bool {
             .is_ok_and(|ip| ip.is_loopback())
 }
 
-async fn dial(relay: &str, host: &str) -> Result<Box<dyn Ws>> {
+async fn dial(relay: &str, host: &str, ticket: Option<&str>) -> Result<Box<dyn Ws>> {
     if let Some(path) = local_socket(relay) {
         let stream = tokio::net::UnixStream::connect(&path)
             .await
@@ -327,10 +366,14 @@ async fn dial(relay: &str, host: &str) -> Result<Box<dyn Ws>> {
     if relay.starts_with("local") {
         bail!("local transport link without a socket path");
     }
-    let url = format!(
+    let mut url = format!(
         "{}/v1/connect?host={host}",
         crate::relay_client::ws_base(relay)
     );
+    if let Some(t) = ticket {
+        // Tickets are base64url and `.`: query-safe as they are.
+        url.push_str(&format!("&ticket={t}"));
+    }
     let (ws, _) =
         tokio_tungstenite::connect_async_with_config(url.as_str(), Some(ws_config()), false)
             .await
@@ -342,6 +385,7 @@ impl Conn {
     async fn open(
         relay: &str,
         host: &str,
+        ticket: Option<&str>,
         hello: Hello,
         key: &DeviceKey,
         hk: &[u8; 32],
@@ -349,7 +393,7 @@ impl Conn {
     ) -> Result<Conn> {
         tokio::time::timeout(
             HANDSHAKE_TIMEOUT,
-            Self::handshake(relay, host, hello, key, hk, psk),
+            Self::handshake(relay, host, ticket, hello, key, hk, psk),
         )
         .await
         .context("handshake timed out")?
@@ -358,17 +402,33 @@ impl Conn {
     async fn handshake(
         relay: &str,
         host: &str,
+        ticket: Option<&str>,
         hello: Hello,
         key: &DeviceKey,
         hk: &[u8; 32],
         psk: Option<&[u8; 32]>,
     ) -> Result<Conn> {
-        let mut ws = dial(relay, host).await?;
+        let mut ws = dial(relay, host, ticket).await?;
         let hb = hello.to_bytes();
-        ws.send(Message::Text(String::from_utf8(hb.clone())?.into()))
-            .await?;
         let mut i = Initiator::new(&hb, &key.private, hk, psk)?;
-        ws.send(Message::Binary(i.write_first(b"")?.into())).await?;
+        let first = i.write_first(b"")?;
+        // The relay may refuse (a ticket problem) and close before our first frames land: its
+        // plaintext refusal is still readable, and is the better error.
+        let sent = async {
+            ws.send(Message::Text(String::from_utf8(hb.clone())?.into()))
+                .await?;
+            ws.send(Message::Binary(first.into())).await?;
+            anyhow::Ok(())
+        }
+        .await;
+        if let Err(e) = sent {
+            if let Ok(Some(Ok(Message::Text(t)))) =
+                tokio::time::timeout(Duration::from_secs(2), ws.next()).await
+            {
+                bail!("refused: {}", t.as_str());
+            }
+            return Err(e);
+        }
         loop {
             match ws.next().await {
                 Some(Ok(Message::Binary(m2))) => {
@@ -607,6 +667,7 @@ mod tests {
             exp: now_s() + 60,
             name: "x".into(),
             share: Some(json!({"kind": "share", "scope": "view", "until": 1})),
+            tk: None,
         };
         let e = PeerClient::pair(&link, &Identity::default())
             .await

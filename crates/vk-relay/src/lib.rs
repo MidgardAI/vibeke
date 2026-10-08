@@ -8,12 +8,12 @@ pub mod cli;
 mod limits;
 mod splice;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use axum::Router;
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
@@ -21,29 +21,80 @@ use axum::extract::{ConnectInfo, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
+use futures::future::BoxFuture;
 use rand::RngCore;
 use serde_json::json;
-use tokio::sync::{Mutex, mpsc, oneshot};
-use vk_e2e::relay::{Ctrl, accept_message, canonical_origin, close, host_auth_message};
+use tokio::sync::{Mutex, broadcast, mpsc, oneshot};
+use vk_e2e::relay::{
+    Ctrl, Ticket, accept_message, canonical_origin, close, host_auth_message, parse_ticket,
+    valid_ticket_subject, verify_ticket,
+};
 use vk_e2e::{b64, keys};
 
 pub use limits::Limits;
 use limits::RateMap;
 
-/// Decides who may use the relay. G1: open or static tokens; accounts later (spec 16 §6.6).
-pub trait Authorizer: Send + Sync + 'static {
-    fn host_connect(&self, host_id: &str, token: Option<&str>) -> bool;
-    fn client_connect(&self, _host_id: &str, _ticket: Option<&str>, _ip: IpAddr) -> bool {
-        true
+/// Outcome of an [`Authorizer`] check (spec 16 §6.6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Decision {
+    Allow,
+    /// Refuse with a WebSocket close `code` (e.g. [`close::UNAUTHORIZED`]) and a short machine
+    /// `reason` (`token_invalid`, `account_required`, …) that the peer sees before the close.
+    Deny {
+        code: u16,
+        reason: &'static str,
+    },
+}
+
+impl Decision {
+    pub fn deny(code: u16, reason: &'static str) -> Decision {
+        Decision::Deny { code, reason }
     }
+}
+
+/// A host that proved ownership of `public` on `/v1/host` (signature already verified).
+#[derive(Debug, Clone, Copy)]
+pub struct HostConnect<'a> {
+    pub host_id: &'a str,
+    pub public: &'a [u8; 32],
+    /// `?token=` from the request, if any.
+    pub token: Option<&'a str>,
+    pub ip: IpAddr,
+}
+
+/// A device dialing an online host on `/v1/connect`.
+#[derive(Debug, Clone, Copy)]
+pub struct ClientConnect<'a> {
+    pub host_id: &'a str,
+    /// The device's ticket, already verified against the host's key, unexpired and not revoked.
+    /// `None` when the device sent no ticket (only possible without `require_tickets`).
+    pub ticket: Option<&'a Ticket>,
+    pub ip: IpAddr,
+}
+
+/// Decides who may use the relay (spec 16 §6.6): open, static host tokens, or accounts (implemented
+/// outside this crate). Checks are bounded by `Limits::auth_timeout`; a slow check is denied with
+/// `4503 auth_unavailable`.
+pub trait Authorizer: Send + Sync + 'static {
+    /// Called after the host's ownership signature checks out, before it is registered.
+    fn host_connect<'a>(&'a self, c: HostConnect<'a>) -> BoxFuture<'a, Decision>;
+    /// Called after ticket checks, before admission to the host's queue.
+    fn client_connect<'a>(&'a self, _c: ClientConnect<'a>) -> BoxFuture<'a, Decision> {
+        Box::pin(async { Decision::Allow })
+    }
+    /// Bytes forwarded by one finished splice (device → host, host → device).
     fn usage(&self, _host_id: &str, _bytes_in: u64, _bytes_out: u64) {}
+    /// The host's registration ended (socket closed, failed, refused for capacity after an
+    /// `Allow`, or drained). Not called when a newer registration of the same host replaces it, so
+    /// calls do not pair one-to-one with `host_connect`; after this call the host is offline.
+    fn host_disconnect(&self, _host_id: &str) {}
 }
 
 /// Anyone may register a host; only limits apply.
 pub struct Open;
 impl Authorizer for Open {
-    fn host_connect(&self, _: &str, _: Option<&str>) -> bool {
-        true
+    fn host_connect<'a>(&'a self, _: HostConnect<'a>) -> BoxFuture<'a, Decision> {
+        Box::pin(async { Decision::Allow })
     }
 }
 
@@ -51,11 +102,18 @@ impl Authorizer for Open {
 /// `?token=` query parameter is still accepted for older gateways).
 pub struct StaticTokens(pub Vec<String>);
 impl Authorizer for StaticTokens {
-    fn host_connect(&self, _: &str, token: Option<&str>) -> bool {
-        token.is_some_and(|t| {
+    fn host_connect<'a>(&'a self, c: HostConnect<'a>) -> BoxFuture<'a, Decision> {
+        let ok = c.token.is_some_and(|t| {
             self.0
                 .iter()
                 .any(|k| constant_eq(k.as_bytes(), t.as_bytes()))
+        });
+        Box::pin(async move {
+            if ok {
+                Decision::Allow
+            } else {
+                Decision::deny(close::UNAUTHORIZED, "token_invalid")
+            }
         })
     }
 }
@@ -73,6 +131,53 @@ pub struct Config {
     /// Log raw client IPs instead of daily-keyed hashes.
     pub log_ip_raw: bool,
     pub limits: Limits,
+    /// Refuse `/v1/connect` without a host-signed ticket (spec 16 §6.6). Tickets that are present
+    /// are always verified.
+    pub require_tickets: bool,
+    /// Where users create an account for this relay; advertised on `/v1/status`.
+    pub account_url: Option<String>,
+}
+
+impl Default for Config {
+    /// No public origins (set at least one), no app, defaults for everything else.
+    fn default() -> Self {
+        Config {
+            public_origins: Vec::new(),
+            app_dir: None,
+            trust_proxy: false,
+            log_ip_raw: false,
+            limits: Limits::default(),
+            require_tickets: false,
+            account_url: None,
+        }
+    }
+}
+
+/// Most revoked subjects remembered per host; the oldest is forgotten first.
+const MAX_REVOKED: usize = 1024;
+
+/// Ticket subjects the host revoked (`Ctrl::Revoke`), bounded FIFO.
+#[derive(Default)]
+struct Revoked {
+    set: HashSet<String>,
+    order: VecDeque<String>,
+}
+
+impl Revoked {
+    fn insert(&mut self, sub: String) {
+        if !self.set.insert(sub.clone()) {
+            return;
+        }
+        self.order.push_back(sub);
+        if self.order.len() > MAX_REVOKED
+            && let Some(old) = self.order.pop_front()
+        {
+            self.set.remove(&old);
+        }
+    }
+    fn contains(&self, sub: &str) -> bool {
+        self.set.contains(sub)
+    }
 }
 
 struct HostEntry {
@@ -80,6 +185,38 @@ struct HostEntry {
     public: [u8; 32],
     tx: mpsc::Sender<Outbound>,
     announces: limits::Bucket,
+}
+
+/// Most hosts whose revocations are remembered; the least recently revoking host is forgotten
+/// first.
+const MAX_REVOKING_HOSTS: usize = 4096;
+
+/// Revoked ticket subjects per host id. Kept outside the registration so a host that drops and
+/// reconnects (same key, same id) does not lose them; tickets last up to 30 days.
+#[derive(Default)]
+struct Revocations {
+    by_host: HashMap<String, Revoked>,
+    order: VecDeque<String>,
+}
+
+impl Revocations {
+    fn insert(&mut self, host: &str, sub: String) {
+        if !self.by_host.contains_key(host) {
+            self.order.push_back(host.to_string());
+            if self.order.len() > MAX_REVOKING_HOSTS
+                && let Some(old) = self.order.pop_front()
+            {
+                self.by_host.remove(&old);
+            }
+        }
+        self.by_host
+            .entry(host.to_string())
+            .or_default()
+            .insert(sub);
+    }
+    fn contains(&self, host: &str, sub: &str) -> bool {
+        self.by_host.get(host).is_some_and(|r| r.contains(sub))
+    }
 }
 
 enum Outbound {
@@ -98,6 +235,7 @@ pub struct Relay {
     cfg: Config,
     auth: Box<dyn Authorizer>,
     hosts: Mutex<HashMap<String, HostEntry>>,
+    revoked: std::sync::Mutex<Revocations>,
     pending: Mutex<HashMap<String, Pending>>,
     next_gen: AtomicU64,
     ip_rate: RateMap,
@@ -109,6 +247,8 @@ pub struct Relay {
     ip_unauth: std::sync::Mutex<HashMap<IpAddr, usize>>,
     pub(crate) per_host: std::sync::Mutex<HashMap<String, usize>>,
     pub(crate) spliced: AtomicUsize,
+    /// `(host, sub)` revocations, so live splices for that subject can close (spec 16 §6.6).
+    pub(crate) revocations: broadcast::Sender<(String, String)>,
     draining: AtomicBool,
     ip_salt: [u8; 32],
     started: Instant,
@@ -135,6 +275,7 @@ impl Relay {
             },
             auth,
             hosts: Mutex::new(HashMap::new()),
+            revoked: std::sync::Mutex::new(Revocations::default()),
             pending: Mutex::new(HashMap::new()),
             next_gen: AtomicU64::new(1),
             ip_rate,
@@ -143,6 +284,7 @@ impl Relay {
             ip_unauth: std::sync::Mutex::new(HashMap::new()),
             per_host: std::sync::Mutex::new(HashMap::new()),
             spliced: AtomicUsize::new(0),
+            revocations: broadcast::channel(1024).0,
             draining: AtomicBool::new(false),
             ip_salt: keys::random_bytes(),
             started: Instant::now(),
@@ -169,8 +311,10 @@ impl Relay {
     /// Stop accepting, tell hosts to reconnect elsewhere, wait for splices to finish (≤ `grace`).
     pub async fn drain(&self, grace: Duration) {
         self.draining.store(true, Ordering::SeqCst);
-        for (_, h) in self.hosts.lock().await.drain() {
+        let drained: Vec<_> = self.hosts.lock().await.drain().collect();
+        for (host, h) in drained {
             let _ = h.tx.try_send(Outbound::Close(close::DRAINING, "draining"));
+            self.auth.host_disconnect(&host);
         }
         let deadline = Instant::now() + grace;
         while self.spliced.load(Ordering::SeqCst) > 0 && Instant::now() < deadline {
@@ -248,6 +392,18 @@ impl Relay {
         self.auth.usage(host, up, down);
     }
 
+    /// Whether `host` revoked ticket subject `sub`.
+    pub(crate) fn is_revoked(&self, host: &str, sub: &str) -> bool {
+        self.revoked.lock().unwrap().contains(host, sub)
+    }
+
+    /// Bound an authorizer check by `auth_timeout`.
+    async fn check(&self, f: BoxFuture<'_, Decision>) -> Decision {
+        tokio::time::timeout(self.cfg.limits.auth_timeout, f)
+            .await
+            .unwrap_or(Decision::deny(close::DRAINING, "auth_unavailable"))
+    }
+
     pub fn origin_ok(&self, origin: &str) -> bool {
         self.cfg.public_origins.iter().any(|o| o == origin)
     }
@@ -316,6 +472,20 @@ async fn read_text(ws: &mut WebSocket, wait: Duration) -> Option<String> {
             _ => return None,
         }
     }
+}
+
+/// Refuse a device visibly: browsers ignore close codes, so send
+/// `{"error":"unauthorized","reason":…}` as plaintext first, then close with `code`.
+async fn deny_client(mut ws: WebSocket, code: u16, reason: &'static str) {
+    let body = json!({ "error": "unauthorized", "reason": reason }).to_string();
+    let _ = ws.send(Message::Text(body.into())).await;
+    close_ws(ws, code, reason).await;
+}
+
+fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
 }
 
 fn random_id() -> String {
@@ -400,8 +570,21 @@ async fn host_session(
         Some(h) => h,
         None => return close_ws(ws, close::UNAUTHORIZED, "bad auth").await,
     };
-    if !relay.auth.host_connect(&host, token.as_deref()) {
-        return close_ws(ws, close::UNAUTHORIZED, "not allowed").await;
+    let decision = relay
+        .check(relay.auth.host_connect(HostConnect {
+            host_id: &host,
+            public: &public,
+            token: token.as_deref(),
+            ip,
+        }))
+        .await;
+    if let Decision::Deny { code, reason } = decision {
+        let err = Ctrl::Error {
+            code,
+            reason: reason.into(),
+        };
+        let _ = ws.send(Message::Text(err.to_text().into())).await;
+        return close_ws(ws, code, reason).await;
     }
     drop(unauth);
     let generation = relay.next_gen.fetch_add(1, Ordering::SeqCst);
@@ -410,6 +593,7 @@ async fn host_session(
         let mut hosts = relay.hosts.lock().await;
         if !hosts.contains_key(&host) && hosts.len() >= relay.cfg.limits.max_hosts {
             drop(hosts);
+            relay.auth.host_disconnect(&host);
             return close_ws(ws, close::RATE_LIMITED, "relay full").await;
         }
         let entry = HostEntry {
@@ -418,11 +602,12 @@ async fn host_session(
             tx: tx.clone(),
             announces: limits::Bucket::per_minute(relay.cfg.limits.host_announces_per_min),
         };
-        if let Some(old) = hosts.insert(host.clone(), entry) {
+        if let Some(old) = hosts.remove(&host) {
             let _ = old
                 .tx
                 .try_send(Outbound::Close(close::REPLACED, "replaced"));
         }
+        hosts.insert(host.clone(), entry);
     }
     // Re-announce connections still waiting for this host (a replaced control may have dropped them).
     {
@@ -465,7 +650,12 @@ async fn host_session(
             },
             msg = ws.recv() => match msg {
                 Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
-                Some(Ok(_)) => {} // hosts send nothing else on the control socket; pings are answered by axum
+                Some(Ok(Message::Text(t))) => {
+                    if let Ok(Ctrl::Revoke { sub }) = Ctrl::parse(&t) {
+                        revoke(&relay, &host, sub).await;
+                    }
+                }
+                Some(Ok(_)) => {} // pings are answered by axum
             },
         }
     }
@@ -474,11 +664,25 @@ async fn host_session(
 
 /// Remove the registration only if it is still ours (generation fence, spec 16 §6.2).
 async fn unregister(relay: &Shared, host: &str, generation: u64) {
-    let mut hosts = relay.hosts.lock().await;
-    if hosts.get(host).is_some_and(|h| h.generation == generation) {
-        hosts.remove(host);
+    let removed = {
+        let mut hosts = relay.hosts.lock().await;
+        let ours = hosts.get(host).is_some_and(|h| h.generation == generation);
+        ours && hosts.remove(host).is_some()
+    };
+    if removed {
         tracing::info!(host = &host[..8], generation, "host unregistered");
+        relay.auth.host_disconnect(host);
     }
+}
+
+/// `Ctrl::Revoke`: refuse further tickets for `sub` and close its live splices (spec 16 §6.6).
+async fn revoke(relay: &Shared, host: &str, sub: String) {
+    if !valid_ticket_subject(&sub) {
+        return;
+    }
+    relay.revoked.lock().unwrap().insert(host, sub.clone());
+    tracing::info!(host = &host[..8], "ticket subject revoked");
+    let _ = relay.revocations.send((host.to_string(), sub));
 }
 
 fn verify_host_auth(relay: &Relay, text: &str, nonce: &[u8; 32]) -> Option<(String, [u8; 32])> {
@@ -524,13 +728,11 @@ async fn connect_ws(
     {
         return reject(StatusCode::BAD_REQUEST);
     }
-    if !relay.auth.client_connect(&q.host, q.ticket.as_deref(), ip) {
-        return reject(StatusCode::UNAUTHORIZED);
-    }
     // Each announce makes the host dial back and wait for a handshake: bound them per address.
     if !relay.announce_rate.allow((ip, q.host.clone())) {
         return reject(StatusCode::TOO_MANY_REQUESTS);
     }
+    // Admission first so ticket checks cannot be used to burn CPU without limits.
     let guard = match relay.admit(ip) {
         Ok(g) => g,
         Err(c) => return reject(c),
@@ -538,11 +740,61 @@ async fn connect_ws(
     let limits = relay.cfg.limits.clone();
     upgrade(ws, &limits).on_upgrade(move |socket| async move {
         let _guard = guard;
-        client_session(relay, socket, q.host).await;
+        let ConnectQuery { host, ticket } = q;
+        let Some((ticket, watch)) = check_client(&relay, &host, ticket.as_deref(), ip).await else {
+            return close_ws(socket, close::HOST_OFFLINE, "host offline").await;
+        };
+        match ticket {
+            Ok(_) => client_session(relay, socket, host, watch).await,
+            Err((code, reason)) => deny_client(socket, code, reason).await,
+        }
     })
 }
 
-async fn client_session(relay: Shared, ws: WebSocket, host: String) {
+/// A splice's subject and its revocation feed (subscribed before the revoked check, so no
+/// revocation is missed in between).
+pub(crate) type Watch = Option<(String, broadcast::Receiver<(String, String)>)>;
+
+type Admitted = Result<(), (u16, &'static str)>;
+
+/// Ticket and authorizer checks for `/v1/connect` (spec 16 §6.6). `None`: host offline.
+async fn check_client(
+    relay: &Shared,
+    host: &str,
+    ticket: Option<&str>,
+    ip: IpAddr,
+) -> Option<(Admitted, Watch)> {
+    let claimed = ticket
+        .and_then(|t| parse_ticket(t).ok())
+        .map(|(t, _)| t.sub);
+    let rx = claimed.as_ref().map(|_| relay.revocations.subscribe());
+    let public = relay.hosts.lock().await.get(host)?.public;
+    let revoked = claimed
+        .as_deref()
+        .is_some_and(|s| relay.is_revoked(host, s));
+    let deny = |reason| Some((Err((close::UNAUTHORIZED, reason)), None));
+    let verified = match ticket.map(|t| verify_ticket(&public, host, t, unix_now())) {
+        Some(Err(e)) => return deny(e.reason()),
+        Some(Ok(_)) if revoked => return deny("ticket_revoked"),
+        Some(Ok(t)) => Some(t),
+        None if relay.cfg.require_tickets => return deny("ticket_missing"),
+        None => None,
+    };
+    let decision = relay
+        .check(relay.auth.client_connect(ClientConnect {
+            host_id: host,
+            ticket: verified.as_ref(),
+            ip,
+        }))
+        .await;
+    if let Decision::Deny { code, reason } = decision {
+        return Some((Err((code, reason)), None));
+    }
+    let watch = verified.zip(rx).map(|(t, rx)| (t.sub, rx));
+    Some((Ok(()), watch))
+}
+
+async fn client_session(relay: Shared, ws: WebSocket, host: String, watch: Watch) {
     let conn = random_id();
     let (deliver, delivered) = oneshot::channel();
     // Register pending and announce under the hosts lock so a concurrent replacement sees it.
@@ -591,7 +843,7 @@ async fn client_session(relay: Shared, ws: WebSocket, host: String) {
         Ok(Ok((host_ws, host_guard, slot))) => {
             // The host's accept socket keeps its admission slot for the life of the splice.
             let _host_guard = host_guard;
-            splice::run(relay.clone(), ws, host_ws, host, slot).await;
+            splice::run(relay.clone(), ws, host_ws, host, slot, watch).await;
         }
         _ => {
             // Expire atomically: a racing accept either took the entry (and owns the splice) or finds nothing.
@@ -698,7 +950,11 @@ async fn status(
             ("access-control-allow-origin", "*"),
             ("cache-control", "no-store"),
         ],
-        axum::Json(json!({ "online": online })),
+        axum::Json(json!({
+            "online": online,
+            "auth": if relay.cfg.require_tickets { "tickets" } else { "open" },
+            "account_url": relay.cfg.account_url,
+        })),
     )
         .into_response()
 }

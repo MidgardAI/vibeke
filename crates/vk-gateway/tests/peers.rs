@@ -23,10 +23,8 @@ async fn start_relay() -> SocketAddr {
     let relay = vk_relay::Relay::new(
         vk_relay::Config {
             public_origins: vec![format!("http://{addr}")],
-            app_dir: None,
-            trust_proxy: false,
             log_ip_raw: true,
-            limits: Default::default(),
+            ..Default::default()
         },
         Box::new(vk_relay::Open),
     )

@@ -30,6 +30,7 @@ vk-config = { path = "crates/vk-config" }
 vk-e2e = { path = "crates/vk-e2e" }
 vk-gateway = { path = "crates/vk-gateway" }
 vk-relay = { path = "crates/vk-relay" }
+vk-account = { path = "crates/vk-account" }
 vk-sandbox = { path = "crates/vk-sandbox" }
 vk-assist = { path = "crates/vk-assist" }
 vk-orchestrate = { path = "crates/vk-orchestrate" }

@@ -116,6 +116,27 @@ pub async fn redeem(
     Ok(rec)
 }
 
+/// Keep a renewed relay ticket for peer `id` (spec 16 §6.6).
+pub fn save_ticket(state: &StateDir, id: &str, ticket: String, exp: u64) -> Result<()> {
+    let _lock = state.lock()?;
+    let mut all = state.peers()?;
+    if let Some(p) = all.iter_mut().find(|p| p.id == id) {
+        p.ticket = Some(ticket);
+        p.ticket_exp = Some(exp);
+        state.save_peers(&all)?;
+    }
+    Ok(())
+}
+
+/// [`PeerClient::renew_ticket`] and [`save_ticket`] after a successful connect.
+pub async fn renew_ticket(state: &StateDir, rec: &PeerRecord, conn: &mut crate::peer_client::Conn) {
+    if let Some((t, exp)) = PeerClient::renew_ticket(conn, rec).await
+        && let Err(e) = save_ticket(state, &rec.id, t, exp)
+    {
+        tracing::warn!(peer = %rec.name, "saving the renewed relay ticket: {e:#}");
+    }
+}
+
 /// Forget a peer by id or name. Returns the ids removed.
 pub fn remove(state: &StateDir, id_or_name: &str) -> Result<Vec<String>> {
     let _lock = state.lock()?;
@@ -412,6 +433,8 @@ mod tests {
             owner: "self".into(),
             added_at: 0,
             expires_at: None,
+            ticket: None,
+            ticket_exp: None,
         };
         st.save_peers(&[rec("a", "devbox"), rec("b", "laptop")])
             .unwrap();

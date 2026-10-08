@@ -2,6 +2,7 @@
 //! to the relay, terminates the end-to-end channel for each device, serves the app API and sends
 //! Web Push.
 
+pub mod account;
 pub mod api;
 pub mod bridge;
 pub mod cli;
@@ -64,6 +65,8 @@ pub struct Gateway {
     pub dialing: std::sync::atomic::AtomicUsize,
     pub limits: GatewayLimits,
     pub status: state::StatusWriter,
+    /// Messages for the live relay control socket (`Ctrl::Revoke`); `None` while offline.
+    relay_ctl: Mutex<Option<mpsc::UnboundedSender<vk_e2e::relay::Ctrl>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -136,6 +139,7 @@ impl Gateway {
             push_slots: tokio::sync::Semaphore::new(8),
             limits: GatewayLimits::default(),
             status,
+            relay_ctl: Mutex::new(None),
         }))
     }
 
@@ -156,6 +160,7 @@ impl Gateway {
         *self.devices.write().unwrap() = fresh;
         for id in gone {
             self.disconnect(&id);
+            self.revoke_ticket(&id);
         }
         Ok(())
     }
@@ -230,8 +235,38 @@ impl Gateway {
             self.state
                 .audit(&json!({"ts": state::now_s(), "event": "device.revoked", "device": r}));
             self.disconnect(r);
+            self.revoke_ticket(r);
         }
         Ok(())
+    }
+
+    /// Install (or clear) the sender for the live relay control socket.
+    pub(crate) fn set_relay_ctl(&self, tx: Option<mpsc::UnboundedSender<vk_e2e::relay::Ctrl>>) {
+        *self.relay_ctl.lock().unwrap() = tx;
+    }
+
+    /// Tell the relay to stop admitting this device's tickets (spec 16 §6.6). Without a live
+    /// control socket the ticket stays valid at the relay until it expires; the gateway still
+    /// refuses the device at the handshake.
+    pub fn revoke_ticket(&self, device_id: &str) {
+        let sub = format!("dev:{device_id}");
+        let sent = self
+            .relay_ctl
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|tx| tx.send(vk_e2e::relay::Ctrl::Revoke { sub }).is_ok());
+        if !sent && self.cfg.relay.is_some() {
+            tracing::debug!(
+                device = device_id,
+                "relay offline; its ticket lapses on expiry"
+            );
+        }
+    }
+
+    /// A fresh relay ticket for `device` (`relay.ticket`, `pair.done`).
+    pub fn device_ticket(&self, device: &Device) -> (String, u64) {
+        pair::device_ticket(&self.keys, &device.id, device.expires_at)
     }
 
     fn disconnect(&self, id: &str) {

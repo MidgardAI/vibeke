@@ -13,13 +13,13 @@ export interface BannerState {
   level: BannerLevel;
   /** Hosts currently down (names). */
   down: string[];
-  /** Down hosts that are revoked/incompatible (no point retrying). */
+  /** Down hosts that are revoked/incompatible/ticket-expired (no point retrying). */
   fatal: string[];
 }
 
 // An expired share is not an outage; Settings shows it (and offers Forget).
 const isDown = (h: HostState) => h.status !== 'online' && h.status !== 'idle' && h.status !== 'expired';
-const isFatal = (h: HostState) => h.status === 'revoked' || h.status === 'incompatible';
+const isFatal = (h: HostState) => h.status === 'revoked' || h.status === 'incompatible' || h.status === 'ticket_expired';
 
 export class BannerTracker {
   private downSince = new Map<string, number>();

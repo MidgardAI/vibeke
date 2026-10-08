@@ -25,6 +25,10 @@ pub struct PairingLink {
     /// Present on share/handoff invitations (spec 16 §15): `{kind, scope, until, label}`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub share: Option<serde_json::Value>,
+    /// Relay admission ticket for the pairing connection (`pid:<pid>` subject, see
+    /// [`crate::relay::Ticket`]). Absent for relays that do not require tickets.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tk: Option<String>,
 }
 
 impl PairingLink {
@@ -73,11 +77,19 @@ mod tests {
             exp: 99,
             name: "devbox".into(),
             share: None,
+            tk: None,
         };
         let url = l.to_url("https://r.example/");
         assert!(url.starts_with("https://r.example/#/pair?d="));
         assert_eq!(PairingLink::parse(&url).unwrap(), l);
         let d = url.split("d=").nth(1).unwrap();
         assert_eq!(PairingLink::parse(d).unwrap(), l);
+        let with_ticket = PairingLink {
+            tk: Some("a.b".into()),
+            ..l.clone()
+        };
+        let url = with_ticket.to_url("https://r.example");
+        assert_eq!(PairingLink::parse(&url).unwrap(), with_ticket);
+        assert!(!l.to_url("https://r.example").contains("tk"));
     }
 }

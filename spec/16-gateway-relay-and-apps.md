@@ -1,6 +1,6 @@
 # 16 — Gateway, relay and the phone/desktop apps
 
-How a phone (PWA), a desktop app (Electron) and, later, teammates reach a Vibeke host **without Tailscale and without an inbound port**, end-to-end encrypted so that the relay sees ciphertext and routing metadata only. Appendix A records the staged SaaS shape (accounts, rate limits, native push, sync, teams, share/handoff, preview links, direct paths) as non-binding design notes so the first slices stay compatible with it.
+How a phone (PWA), a desktop app (Electron) and, later, teammates reach a Vibeke host **without Tailscale and without an inbound port**, end-to-end encrypted so that the relay sees ciphertext and routing metadata only.
 
 This section makes the Phase 2 row "Vibeke Gateway + mobile/web app" of [12](12-phase-2-outlook.md) concrete. It changes no Phase 1 requirement. The gateway is an API client of the server ([07](07-api-cli-plugins.md)); the only server changes are **additive** methods listed in §7.7 (new read-only git methods and an answer actor label). The TUI and CLI are not modified.
 
@@ -26,19 +26,18 @@ When the gateway proves itself, `vibeke-gateway` and `vibeke-relay` fold into th
 
 | Stage | Contents | Status |
 |---|---|---|
-| **G1 relay** | `vibeke-relay`: host registration by key, client→host splice, limits, health, optional static app hosting. **No accounts.** | build now |
+| **G1 relay** | `vibeke-relay`: host registration by key, client→host splice, limits, health, optional static app hosting. Open by default; optional host tokens and device tickets (§6.6). | build now |
 | **G2 gateway** | `vibeke-gateway`: host keys, QR pairing with host confirmation, Noise channel, device registry/revocation, app API, events, Web Push; server additions §7.7 | build now |
 | **G3 PWA** | React PWA with interaction inbox, quick actions, batch approvals, push | build now |
 | **G4 desktop** | §16: Electron app over the shared packages; local transport, menu-bar quick approvals, native notifications, shortcuts, deep links | build now |
 | **G6 share + handoff** | §15: scoped expiring share invitations; turn-boundary handoff via the app between hosts or to a teammate | build now |
-| G5, G7, G8 | accounts/SaaS, zero-knowledge services, direct paths | design notes only (Appendix A) |
-| — | Hosted runners, Slack/Teams integrations | **not built**; design notes only (A.6) |
+| G5 accounts | hosted relay requires an account: `vibeke login`, host tokens, device tickets (§6.6) | built |
 
 ---
 
 ## 1. Principles and invariants
 
-1. **No inbound port on the host.** The gateway only makes outbound connections (relay, push services). A LAN listener is opt-in and later (A.5).
+1. **No inbound port on the host.** The gateway only makes outbound connections (relay, push services). A LAN listener is opt-in and later.
 2. **The relay learns no content.** It sees ciphertext and routing metadata (host id, connection times, byte counts, client IP). Never keys, terminal content, prompts, code or answers.
 3. **Two separate trusts.** *Transport trust* (the relay) is zero: a malicious relay can drop or delay traffic, nothing more. *App-publisher trust* (whoever serves the web app's JavaScript) is real: that code holds the device key. The two are separated (§9.4) and the UI says which origin it trusts.
 4. **Keys live on endpoints and are pinned out-of-band.** Host keys on the host, device keys on the device. Pairing pins the host key from the QR; the host confirms the device key fingerprint.
@@ -68,7 +67,7 @@ When the gateway proves itself, `vibeke-gateway` and `vibeke-relay` fold into th
 
 ### 2.1 Where the relay runs
 
-Anything with a public IP and TLS: a small VPS (Hetzner, DigitalOcean), Fly.io, or a container behind Caddy. It keeps only in-memory routing state; a restart drops live connections and hosts reconnect with backoff. The default will be a Vibeke-hosted instance; self-hosting is one binary. The relay never runs on the dev host itself (a host that accepts inbound connections uses a direct path, A.5).
+Anything with a public IP and TLS: a small VPS (Hetzner, DigitalOcean), Fly.io, or a container behind Caddy. It keeps only in-memory routing state; a restart drops live connections and hosts reconnect with backoff. The default is the Vibeke-hosted instance, which requires an account; self-hosting is one binary. The relay never runs on the dev host itself.
 
 ---
 
@@ -195,7 +194,7 @@ Defaults, all configurable:
 | Queues | each forwarding direction is a bounded channel (64 messages); a slow reader back-pressures the sender's socket instead of buffering; a writer blocked > 30 s closes the pair |
 | Global | `--max-hosts` 10 000, `--max-conns` 50 000 |
 
-The relay only splices a client with the host that authenticated for that host id, so it is not an open tunnel; byte budgets keep abuse cheap. Self-generated host keys do not stop someone from running their own host as a free tunnel endpoint; accounts (A.1) address that for the hosted relay.
+The relay only splices a client with the host that authenticated for that host id, so it is not an open tunnel; byte budgets keep abuse cheap. Self-generated host keys do not stop someone from running their own host as a free tunnel endpoint; the hosted relay requires an account (§6.6).
 
 The **gateway** also limits independently of the relay: ≤ 16 concurrent devices connections, ≤ 32 in-flight RPCs per connection, ≤ 4 pairing handshakes/min, and it only accepts `incoming` announcements at ≤ 60/min.
 
@@ -203,9 +202,37 @@ The **gateway** also limits independently of the relay: ≤ 16 concurrent device
 
 Nothing on disk. Logs: host id prefix (8 chars), event, byte totals and close code. Client IPs only as a keyed hash rotated daily (`--log-ip raw` for self-hosters). Never message contents.
 
-### 6.6 Extension point for accounts
+### 6.6 Accounts, host tokens and device tickets
 
-`trait Authorizer { host_connect(host_id, token) -> Decision; client_connect(host_id, ticket, ip) -> Decision; usage(host_id, bytes_in, bytes_out) }`. G1 ships `Open` (limits only) and `StaticTokens` (`--host-token`, for private self-hosted relays). Accounts later (A.1).
+The relay delegates admission to a trait:
+
+```rust
+trait Authorizer {
+    fn host_connect(&self, c: HostConnect) -> Decision;
+    fn client_connect(&self, c: ClientConnect) -> Decision;
+    fn usage(&self, host_id: &str, bytes_in: u64, bytes_out: u64);
+    fn host_disconnect(&self, host_id: &str);
+}
+```
+
+`HostConnect` carries the host id, the presented token and the client IP; `ClientConnect` carries the host id, the presented ticket and the client IP. `Decision` is allow or deny with a reason. The binary ships open admission (limits only) and `--host-token` (static tokens, for private relays); an embedding service supplies its own `Authorizer`.
+
+**Host tokens.** A host presents an opaque account token on `/v1/host?token=`. The relay treats it as a bearer string and asks the `Authorizer`. A denied host receives `{"t":"error","code":4401,"reason":"token_expired|token_invalid|account_required"}` and the socket closes with 4401. The token only decides who may register hosts; it never grants access to a host.
+
+**Device tickets.** With `--require-tickets`, a device presents a ticket signed by the host on `/v1/connect?ticket=`:
+
+```
+ticket = base64url(json{"v":1,"host","sub","exp"}) "." base64url(ed25519 signature)
+signed bytes = "vibeke-relay/1 ticket\0" ‖ host ‖ "\0" ‖ sub ‖ "\0" ‖ exp
+```
+
+The signature uses the host's relay key, so the relay verifies it against the key the host authenticated with and needs no per-device state. `sub` is `dev:<device id>` for a paired device or `pid:<pairing id>` for a pairing in progress; pairing links carry the ticket in a `tk` field. Device tickets last 30 days; the device refreshes them through the gateway method `relay.ticket`. A host revokes a subject by sending `{"t":"revoke","sub":…}` on its control socket; the relay then refuses that subject's tickets. A denied device receives a plaintext `{"error":"unauthorized","reason":"ticket_missing|ticket_invalid|ticket_expired|ticket_revoked"}` frame and the socket closes with 4401.
+
+**Status.** `/v1/status` reports `"auth": "open" | "tickets"` and `account_url`, the page where a user creates an account. `--account-url` sets it. In `gateway.toml`, `account_url` defaults to the relay origin and `relay_token` holds the token for a private relay.
+
+**Login.** `vibeke login [--server <url>] [--no-browser]` uses an OAuth device code: it prints a URL and a short code, the user opens the URL on any device, signs in with GitHub and confirms the code, and the terminal finishes by itself. No browser is needed on the host, so SSH sessions work. `vibeke logout` removes the stored credential and `vibeke whoami` shows the signed-in account. `vibeke gateway pair` runs the login flow when the relay requires an account and no credential is stored.
+
+Account tokens decide who may use a relay; the end-to-end device keys and host-signed tickets decide which device may reach which host. Neither gives the relay access to content.
 
 ### 6.7 Deployment
 
@@ -477,7 +504,7 @@ The JavaScript that runs the app holds the device key and sees plaintext, so who
 | Piece | State |
 |---|---|
 | `vk-e2e` | Noise IK/IKpsk2 over `snow`, framing, hello, link, relay messages; fixed-key vectors in `tests/vectors.json` (incl. fingerprint and host id) replayed byte-for-byte by `@vibeke/core` |
-| `vk-relay` / `vibeke-relay` | §6 complete without accounts: challenge + origin-bound signatures, generations, fenced replacement, atomic accept, limits, static app dir, drain. Integration tests over real WebSockets |
+| `vk-relay` / `vibeke-relay` | §6 complete, including the `Authorizer` hook: challenge + origin-bound signatures, generations, fenced replacement, atomic accept, limits, static app dir, drain. Integration tests over real WebSockets |
 | `vk-gateway` / `vibeke-gateway` | §4, §7, §8: pairing with host confirmation, device scopes, op_id cache, normalization, event ring, push triggers, RFC 8291/8292 Web Push in pure Rust (RFC test vector), SSRF guard, revocation; `examples/devclient.rs` is a CLI device for testing. End-to-end test with relay + fake server; smoke-tested against a real server |
 | Server additions | `git.status` / `git.diff` (hostile-config test proves fsmonitor/external diff/textconv never run), `interaction.answer {actor}` with `answer_key`, and retried answers no longer re-deliver |
 | `@vibeke/core` | Noise, channel, RPC, pairing, multi-host manager, inbox ranking/grouping |
@@ -576,7 +603,7 @@ The gateway side of X3, X5 and X8 (calling the new methods) is done by the gatew
 | P2-17 platform boundaries | §9.3 injection, sanitization, Electron IPC/navigation/safeStorage rules |
 | P2-18 speech privacy | §8.4 consent, bounded local command, no auto-send |
 | P2-19 acceptance | §11 adversarial and race cases |
-| P3-20 consistency | intro states additive server changes; socket precedence; `jsonrpc` envelope; per-host tags; DND host-wide vs device prefs; G5–G8 moved to Appendix A |
+| P3-20 consistency | intro states additive server changes; socket precedence; `jsonrpc` envelope; per-host tags; DND host-wide vs device prefs; G5–G8 removed from this spec |
 
 ---
 
@@ -693,38 +720,3 @@ A gateway can pair with another gateway as a client (`vk-gateway/src/peer_client
 - Cold start to interactive < 1 s on Apple silicon (measured 2.2–3.4 s including Playwright attach; not yet met); memory with three hosts connected < 250 MB **physical footprint** (Activity Monitor's figure; measured ~170 MB with the main window, ~200 MB with the popover too, 80 MB with only the menu-bar item) — working set counts shared framework pages per process and sits at 300–400 MB for any Electron app; no work while hidden beyond open sockets and the event stream (display timers pause; hidden popovers are destroyed after 60 s and the main renderer after 10 min closed).
 - Accessibility: full keyboard reachability, focus rings, VoiceOver labels on all controls, reduced-motion respected.
 - Tests: unit tests for the platform layer (IPC validation, key storage, transports), a Playwright-for-Electron smoke test (launch → pair over the local socket against a real gateway → inbox → approve) and `electron-builder --dir` packaging in CI.
-
-## Appendix A — Design notes (non-binding)
-
-### A.1 Accounts and the SaaS (G5)
-
-- **Separation:** account auth decides who may use a relay and how much; end-to-end device keys decide which device may talk to which host. The relay never sees the second.
-- **Flow:** `vibeke login` (OAuth device-code; refresh token in the OS keychain) → the gateway registers its relay public key under the account → short-lived host tokens for `/v1/host`. Devices need no account: at pairing the host issues a **device ticket** `{host, device_pub, scope, exp}` signed by the host relay key; the relay verifies it on `/v1/connect` and bills the host's account. Revocation: tickets expire in 24 h and the host pushes a revocation list.
-- **Metering:** per account hosts, devices, concurrent connections, bytes/s and GB/month, native pushes/day; counters batched to a control plane (Postgres + Stripe), never on the frame path.
-- **Tiers (sketch):** Free (self-hosted or tight hosted limits) · Pro (limits, native push, preview links, sync) · Team (shared inbox, SSO, audit) · usage add-ons.
-
-### A.2 Native push proxy
-
-Native apps receive pushes only via the vendor's APNs/FCM credentials, so the service runs a proxy: the host posts `{device push handle, padded ciphertext}`; the app's Notification Service Extension decrypts with the device key. The proxy sees "wake device X" and a padded length.
-
-### A.3 Share and handoff
-
-Specified and built in §15. Later: offline delivery through an encrypted relay mailbox (HPKE to the recipient host key) when the destination is not online.
-
-### A.4 Zero-knowledge services (G7)
-
-- Key hierarchy: user key wrapped to each device; teams as MLS groups (RFC 9420, `openmls`); key directory with fingerprint verification or admin-signed member keys; recovery via printed key or passkey-PRF wrapping.
-- Sync/history: client-side encrypted, keyed-hash-addressed blobs; search and dashboards on clients.
-- Team inbox: MLS-encrypted interaction events; host is the authority on the first valid signed answer.
-- Audit: device-signed hash chain stored opaquely.
-- Preview links: `https://p.<domain>/<id>#k=<key>` with a service worker tunnelling requests end-to-end to the host; the fragment never reaches the server.
-- Exceptions are labelled and opt-in.
-
-### A.5 Direct paths (G8)
-
-LAN (mDNS for Electron, remembered LAN URL for the PWA) and hole punching: both sides learn their public address from the relay, exchange candidates over it, and send simultaneously so each NAT treats the other's packet as a reply; symmetric NATs fall back to the relay. Browsers via WebRTC data channels, native via QUIC (iroh). The same Noise channel runs over every path.
-
-### A.6 Not built here
-
-- **Integrations (Slack/Teams/GitHub):** would run from the host with the user's own tokens; inbound buttons carry a host-MAC'd token so the service cannot forge an approval; the third party sees what is sent to it.
-- **Hosted runners:** BYO cloud account, confidential VMs with attestation, or an explicit "runner sees your code" label.

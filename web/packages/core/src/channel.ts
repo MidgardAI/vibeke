@@ -44,6 +44,11 @@ export class ChannelError extends Error {
   get closeCode(): number | undefined {
     return this.opts.closeCode;
   }
+  /** Plaintext `reason` of an `unauthorized` frame (e.g. `ticket_expired`); unauthenticated. */
+  get reason(): string | undefined {
+    const r = this.opts.remote?.reason;
+    return typeof r === 'string' ? r : undefined;
+  }
   get authenticated(): boolean {
     return this.opts.authenticated ?? false;
   }
