@@ -61,16 +61,16 @@ async function connect(path: string) {
 }
 
 try {
-  const statusUrl = new URL('/v1/status', origin);
+  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+  const publicBytes = publicKey.export({ format: 'der', type: 'spki' }).subarray(-32);
+  const host = hostId(publicBytes);
+  const statusUrl = new URL(`/v1/status?host=${host}`, origin);
   try {
     const st = (await (await fetch(statusUrl)).json()) as { auth?: unknown };
     console.log(`relay auth: ${JSON.stringify(st.auth ?? null)}`);
   } catch (e) {
     console.log(`relay auth: unavailable (${(e as Error).message})`);
   }
-  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
-  const publicBytes = publicKey.export({ format: 'der', type: 'spki' }).subarray(-32);
-  const host = hostId(publicBytes);
   const control = await connect(process.env.VIBEKE_HOST_TOKEN ? `/v1/host?token=${encodeURIComponent(process.env.VIBEKE_HOST_TOKEN)}` : '/v1/host');
   const challenge = await control.json();
   assert.equal(challenge.t, 'challenge');
