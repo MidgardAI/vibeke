@@ -483,9 +483,15 @@ async fn run_inner(
         // Output between the last snapshot of this holder and the ring's start was never seen
         // by any server: it is gone. A ring that merely wrapped while a server was attached
         // lost nothing (that output was archived).
-        let gap = snap.as_ref().is_some_and(|s| {
-            s.incarnation.as_deref() == Some(incarnation.as_str()) && s.offset < ring.start_offset
-        });
+        // No snapshot at all means no server ever processed this holder's output past its
+        // first idle moment (one is taken at least every 30 s while attached).
+        let gap = match &snap {
+            Some(s) if s.incarnation.as_deref() == Some(incarnation.as_str()) => {
+                s.offset < ring.start_offset
+            }
+            Some(_) => false,
+            None => ring.start_offset > 0,
+        };
         // A snapshot is only valid for the holder incarnation it was taken from, at an
         // offset that this holder's ring can continue from.
         if let Some(s) = snap
@@ -754,6 +760,8 @@ impl PaneLoop {
             FromHolder::Status(st) => {
                 self.server.pane_status(&self.rt.id, &st);
                 *self.rt.status.lock().unwrap() = Some(st);
+                // A `cd` in a shell without OSC 7 shows up only in the live process cwd.
+                self.server.refresh_auto_name(&self.rt.id);
             }
             FromHolder::FgChanged => {
                 self.send(&ToHolder::StatusQuery).await?;

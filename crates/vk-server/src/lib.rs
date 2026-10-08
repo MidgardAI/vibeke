@@ -409,14 +409,19 @@ impl Server {
     /// spawned: a server that dies right after the spawn must leave its successor able to
     /// authenticate that pane's hooks (09 §3.2). `held` is the core when the caller holds it.
     fn persist_tokens_now(&self, held: Option<&mut Core>) -> Result<()> {
+        // Serialize the map under the core lock: a snapshot taken before waiting for the lock
+        // could overwrite a newer token another launch committed meanwhile.
+        let mut guard;
+        let c = match held {
+            Some(c) => c,
+            None => {
+                guard = self.core.lock().unwrap();
+                &mut *guard
+            }
+        };
         let mut tx = Tx::new();
         self.persist_tokens(&mut tx);
-        match held {
-            Some(c) => self.commit(c, tx),
-            None => self.commit(&mut self.core.lock().unwrap(), tx),
-        }
-        .map(|_| ())
-        .context("persist pane token")
+        self.commit(c, tx).map(|_| ()).context("persist pane token")
     }
 
     // ---- startup / recovery ---------------------------------------------------------------
@@ -1374,19 +1379,22 @@ impl Server {
                 .max_by_key(|s| s.last_active)
                 .and_then(|s| s.focus.pane.clone())
         };
+        let focused = client_pane.or_else(|| {
+            self.with_core(|c| {
+                let mut tabs = c.tabs_of(&ws_id);
+                tabs.sort_by(|a, b| a.order.total_cmp(&b.order));
+                tabs.first().and_then(|t| t.focused_pane.clone())
+            })
+        });
+        // OSC 7 when the shell reports it, else the live process cwd (shells without OSC 7).
+        let Some(cwd) = focused.and_then(|id| self.pane_cwd(&id)) else {
+            return;
+        };
+        let name = autoname::auto_name(&cwd);
         let mut c = self.core.lock().unwrap();
         let Some(mut ws) = c.ws(&ws_id).cloned() else {
             return;
         };
-        let focused = client_pane.or_else(|| {
-            let mut tabs = c.tabs_of(&ws.id);
-            tabs.sort_by(|a, b| a.order.total_cmp(&b.order));
-            tabs.first().and_then(|t| t.focused_pane.clone())
-        });
-        let Some(cwd) = focused.and_then(|id| c.pane(&id).and_then(|p| p.cwd.clone())) else {
-            return;
-        };
-        let name = autoname::auto_name(&cwd);
         if name == ws.auto_name {
             return;
         }

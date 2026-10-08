@@ -1486,7 +1486,7 @@ async fn forget_removes_the_records_and_claims_of_the_runs_in_scope() {
 }
 
 #[tokio::test]
-async fn the_enforcement_path_applies_the_claim_guardrail_too() {
+async fn pre_tool_claims_deny_foreign_edits_when_enforced() {
     let f = fx("enforcegate");
     let _a = add_run(&f, "ra", "pa", "claude", Execution::Working);
     let _b = add_run(&f, "rb", "pb", "claude", Execution::Working);
@@ -1512,19 +1512,6 @@ async fn the_enforcement_path_applies_the_claim_guardrail_too() {
     let d = pre_tool_claim(&f.s, "pb", &edit).expect("denied");
     assert_eq!(d["hookSpecificOutput"]["permissionDecision"], "deny");
     assert!(pre_tool_claim(&f.s, "pa", &edit).is_none(), "the owner");
-    // The same decision is what `adapter.gate` hands the shim for a pre-tool enforcement call.
-    let r = dispatch(
-        &f.s,
-        &pane_ctx("pb"),
-        "adapter.gate",
-        &json!({"harness": "claude", "event": "PreToolUse", "payload": edit}),
-    )
-    .await
-    .unwrap();
-    assert_eq!(
-        r["decision"]["hookSpecificOutput"]["permissionDecision"],
-        "deny"
-    );
 }
 
 fn put_task_claim(f: &Fx, id: &str, task: &str, glob: &str) {

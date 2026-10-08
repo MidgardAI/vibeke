@@ -221,16 +221,23 @@ pub async fn connect_or_spawn(session: &str, socket: &Path, no_spawn: bool) -> R
     // A server holding the session's state lock is alive but not accepting right now
     // (starting, recovering, re-exec'ing on `server restart`, or a full accept backlog): wait
     // for it. Spawning another would at best fail on the lock and at worst replace it.
-    let alive = server_alive(session);
+    let mut alive = server_alive(session);
     if !alive {
         spawn_server(session)?;
     }
     let wait = Duration::from_secs(if alive { 10 } else { 5 });
-    let deadline = Instant::now() + wait;
+    let mut deadline = Instant::now() + wait;
     loop {
         check_socket_trust(socket)?;
         if let Ok(s) = UnixStream::connect(socket).await {
             return Ok(s);
+        }
+        // The lock holder went away without a server answering (it died, or it was an offline
+        // `doctor --rebuild-index`): start one now instead of waiting out the deadline.
+        if alive && !server_alive(session) {
+            alive = false;
+            spawn_server(session)?;
+            deadline = Instant::now() + Duration::from_secs(5);
         }
         if Instant::now() > deadline {
             let log = Paths::new(session).logs().join("server.log");

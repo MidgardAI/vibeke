@@ -296,16 +296,6 @@ Use `--json` to print JSON. Non-terminal output also uses JSON.
 | `template-build` | - | `vm.template.build` |  |
 | `template-delete` | `<key>` | `vm.template.delete` |  |
 
-## `vibeke policy`
-
-| Verb | Positionals | Method | Description |
-|---|---|---|---|
-| `trust` | `<path>` | `policy.trust` | Trust repository automation at its current digest. Print the setup script. |
-| `list` | - | `policy.list` | [--scope dir] — merged rules: config.toml, added with `policy add`, trusted repositories |
-| `add` | - | `policy.add` | --effect allow\|deny\|ask [--tool T] [--command-regex RE] [--path-glob G] [--url-glob G] [--scope dir] [--note text] |
-| `remove` | `<rule_id>` | `policy.remove` | <rule> — only rules added with `policy add` (p-…) |
-| `test` | - | `policy.test` | --tool T [--command C] [--path P] [--url U] [--scope dir] — what an approval would get (dry run) |
-
 ## `vibeke sandbox`
 
 | Verb | Positionals | Method | Description |
@@ -325,6 +315,16 @@ Use `--json` to print JSON. Non-terminal output also uses JSON.
 | `copy-out` | `<task>` `<path>` | `sandbox.copy_out` | <task> <path>: copy one file out of the box into the host outbox |
 | `request` | `<kind>` | `sandbox.request` | push\|copy_out [--path p] [--remote r]: from inside a box, ask the host for a boundary action |
 | `setup-token` | - | `sandbox.setup_token` | store `claude setup-token` output read from stdin (projected as CLAUDE_CODE_OAUTH_TOKEN) |
+
+## `vibeke policy`
+
+| Verb | Positionals | Method | Description |
+|---|---|---|---|
+| `trust` | `<path>` | `policy.trust` | Trust repository automation at its current digest. Print the setup script. |
+| `list` | - | `policy.list` | [--scope dir] — merged rules: config.toml, added with `policy add`, trusted repositories |
+| `add` | - | `policy.add` | --effect allow\|deny\|ask [--tool T] [--command-regex RE] [--path-glob G] [--url-glob G] [--scope dir] [--note text] |
+| `remove` | `<rule_id>` | `policy.remove` | <rule> — only rules added with `policy add` (p-…) |
+| `test` | - | `policy.test` | --tool T [--command C] [--path P] [--url U] [--scope dir] — what an approval would get (dry run) |
 
 ## `vibeke collision`
 
