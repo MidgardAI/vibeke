@@ -374,7 +374,27 @@ async fn dispatch(g: Global, args: Vec<String>) -> i32 {
             })
             .await
         }
-        // Receiving handoffs (16 §15.2): `vibeke handoff incoming|accept|decline|resume|prefs`.
+        // `vibeke handoff redeem <link>` outside panes pairs this host directly, as
+        // `vibeke gateway peer add <link>` does (inside a pane it asks through auth.approve).
+        Some("handoff")
+            if args.get(1).map(String::as_str) == Some("redeem") && !vk_cli::handoff::in_pane() =>
+        {
+            match vk_cli::handoff::redeem_as_peer_add(&args[1..]) {
+                Some(peer_add) => match vk_gateway::cli::run_as("vibeke gateway", peer_add).await {
+                    Ok(()) => EXIT_OK,
+                    Err(e) => {
+                        eprintln!("vibeke handoff redeem: {e:#}");
+                        1
+                    }
+                },
+                None => {
+                    eprintln!("{}", vk_cli::handoff::USAGE);
+                    EXIT_USAGE
+                }
+            }
+        }
+        // Receiving handoffs (16 §15.2): `vibeke handoff incoming|accept|decline|resume|prefs`,
+        // and inside a pane `send|cancel|redeem` through auth.approve.
         Some("handoff") if vk_cli::handoff::handles(args.get(1).map(String::as_str)) => {
             let gr = &g;
             let rest = &args[1..];

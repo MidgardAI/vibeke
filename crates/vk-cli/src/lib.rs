@@ -1943,10 +1943,17 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
     ),
     (
         "auth",
+        "approval",
+        "auth.approve.decide",
+        &["request", "decision"],
+        "<request> approve|always|deny — Decide a pane's request to run one call (`vibeke handoff send|cancel|redeem` in a pane). Approve runs it once; always also allows the same call for that pane and peer until the pane restarts. Run outside any pane.",
+    ),
+    (
+        "auth",
         "list",
         "auth.list",
         &[],
-        "pending elevation requests, live elevations, revoked panes",
+        "pending elevation requests, live elevations, revoked panes, open approval requests, standing grants",
     ),
     (
         "audit",
@@ -1977,7 +1984,7 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         "send",
         "handoff.send",
         &["peer"],
-        "<peer> [--pane p] [--interrupt] — hand this pane's work (default: the pane you run it in) to another host; the gateway exports and delivers it. Run outside panes or elevated (`vibeke auth elevate`).",
+        "<peer> [--pane p] [--interrupt] — hand this pane's work (default: the pane you run it in) to another host; the gateway exports and delivers it. Inside a pane it asks for your approval in Vibeke first ([--no-wait] [--reason text]).",
     ),
     (
         "handoff",
@@ -1991,7 +1998,7 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         "cancel",
         "handoff.cancel",
         &["id"],
-        "<job> — stop an outgoing handoff; the destination drops what it received",
+        "<job> — stop an outgoing handoff; the destination drops what it received (inside a pane: only its own, after your approval)",
     ),
     (
         "handoff",

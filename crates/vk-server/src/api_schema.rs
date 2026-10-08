@@ -131,6 +131,7 @@ fn build() -> Result<Registry, Vec<String>> {
         .chain(BATCH_3F_DEFS.lines())
         .chain(BATCH_3A_DEFS.lines())
         .chain(crate::handoff::DEFS.lines())
+        .chain(crate::approve::DEFS.lines())
     {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
@@ -193,6 +194,7 @@ fn build() -> Result<Registry, Vec<String>> {
             crate::handoff::EVENTS,
             crate::handoff_out::EVENTS,
             crate::gateway_bridge::EVENTS,
+            crate::approve::EVENTS,
         ],
         "event",
         &mut errs,
@@ -513,6 +515,7 @@ pub const METHOD_SHAPES: &[&str] = &[
     BATCH_3F_SHAPES,
     BATCH_3A_SHAPES,
     crate::handoff::SHAPES,
+    crate::approve::SHAPES,
 ];
 
 /// Lane 3E (09 §9.1–9.3): `state.forget` and state encryption.
@@ -1050,7 +1053,8 @@ auth.elevate :: {reason?: string, timeout_ms?: int = 120000, request?: string, w
   => {request: string, token: string, expires_at_ms: int, ttl_s: int, env: string} | ElevationRequest
 # full scope only, never from a pane or an elevated connection
 auth.elevate.decide :: {request: string, decision: approve|deny} => {request: string, pane: string, decision: approved|denied, expires_at_ms: int|null}
-auth.list :: {} => {pending: [ElevationRequest], elevated: [{pane: string, request: string, expires_at_ms: int}], revoked: [{pane: string}]}
+# `approvals`: open approval requests (auth.approve); `grants`: standing grants (decision `always`) until the pane restarts
+auth.list :: {} => {pending: [ElevationRequest], elevated: [{pane: string, request: string, expires_at_ms: int}], revoked: [{pane: string}], approvals: [ApprovalRequest], grants: [ApprovalGrant]}
 # --- audit.* (09 §11); full scope only ---
 audit.tail :: {limit?: int = 50, types?: [string]|string} => {entries: [AuditEntry], path: string}
 audit.search :: {query?: string, types?: [string]|string, since_ms?: int, limit?: int = 200} => {entries: [AuditEntry], path: string}

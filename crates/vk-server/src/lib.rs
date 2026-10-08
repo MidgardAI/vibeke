@@ -64,6 +64,7 @@ pub mod theme;
 pub mod timers;
 pub mod tracking;
 // Server security (09): audit log, auth, policy, integration tamper detection, debug bundle.
+pub mod approve;
 pub mod audit;
 pub mod auth;
 pub mod debug_bundle;

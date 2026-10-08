@@ -22,6 +22,8 @@ Use `--json` to print JSON. Non-terminal output also uses JSON.
 - `vibeke handoff decline <id>`: delete an incoming handoff without importing it.
 - `vibeke handoff resume <id>`: start the agent of an imported handoff again.
 - `vibeke handoff prefs [--always-ask on|off]`: show the remembered placements, or set whether handoffs from your own hosts always wait to be accepted.
+- `vibeke handoff redeem <link> [--share-user]`: pair this host with the host that made a peer or handoff invitation (like `vibeke gateway peer add`).
+- Inside a pane, `vibeke handoff send|cancel|redeem` ask for your approval through `auth.approve` and wait: approve, always or deny in Vibeke (prefix+shift+e) or with `vibeke auth approval <request> approve|always|deny` outside the pane. `--no-wait` prints the request id; Ctrl-C withdraws the request.
 - `vibeke --skill`: print the agent instructions.
 - `vibeke --default-config`: print the configuration template.
 - `vibeke --version`: print the version.
@@ -554,7 +556,8 @@ Use `--json` to print JSON. Non-terminal output also uses JSON.
 | `revoke-token` | `<pane>` | `auth.revoke_token` | <pane> — same as `pane revoke-token` |
 | `elevate` | `<reason>` | `auth.elevate` | [reason] [--timeout-ms 120000] — From a pane: ask the user for 10 minutes of full API access. Prints the token for VIBEKE_ELEVATED_TOKEN. |
 | `decide` | `<request>` `<decision>` | `auth.elevate.decide` | <request> approve\|deny — Decide an elevation request. Run outside any pane. |
-| `list` | - | `auth.list` | pending elevation requests, live elevations, revoked panes |
+| `approval` | `<request>` `<decision>` | `auth.approve.decide` | <request> approve\|always\|deny — Decide a pane's request to run one call (`vibeke handoff send\|cancel\|redeem` in a pane). Approve runs it once; always also allows the same call for that pane and peer until the pane restarts. Run outside any pane. |
+| `list` | - | `auth.list` | pending elevation requests, live elevations, revoked panes, open approval requests, standing grants |
 
 ## `vibeke audit`
 
@@ -568,9 +571,9 @@ Use `--json` to print JSON. Non-terminal output also uses JSON.
 
 | Verb | Positionals | Method | Description |
 |---|---|---|---|
-| `send` | `<peer>` | `handoff.send` | <peer> [--pane p] [--interrupt] — hand this pane's work (default: the pane you run it in) to another host; the gateway exports and delivers it. Run outside panes or elevated (`vibeke auth elevate`). |
+| `send` | `<peer>` | `handoff.send` | <peer> [--pane p] [--interrupt] — hand this pane's work (default: the pane you run it in) to another host; the gateway exports and delivers it. Inside a pane it asks for your approval in Vibeke first ([--no-wait] [--reason text]). |
 | `jobs` | - | `handoff.jobs` | outgoing handoffs: state, progress, the destination's answer |
-| `cancel` | `<id>` | `handoff.cancel` | <job> — stop an outgoing handoff; the destination drops what it received |
+| `cancel` | `<id>` | `handoff.cancel` | <job> — stop an outgoing handoff; the destination drops what it received (inside a pane: only its own, after your approval) |
 | `peers` | - | `handoff.peers` | hosts this one can hand work to (add one with `vibeke gateway peer add <link>`) |
 
 ## `vibeke security`

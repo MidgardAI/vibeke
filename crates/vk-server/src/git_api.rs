@@ -378,6 +378,22 @@ async fn load_status(dir: &Path) -> Result<(PathBuf, Status), RpcError> {
     Ok((root, parse_status(&out)))
 }
 
+/// What `auth.approve` shows for a handoff of `dir` and records for the export to re-check: the
+/// repository root, its branch (`None` when detached), HEAD, and how many files have changes
+/// (untracked ones included).
+pub(crate) async fn repo_facts(
+    dir: &Path,
+) -> Result<(PathBuf, Option<String>, String, usize), RpcError> {
+    let (root, st) = load_status(dir).await?;
+    let head = git(&root, &["rev-parse", "--verify", "HEAD"])
+        .await
+        .map(|o| String::from_utf8_lossy(&o).trim().to_string())
+        .ok()
+        .filter(|h| !h.is_empty())
+        .ok_or_else(|| err(ErrorKind::Conflict, "repository has no commits"))?;
+    Ok((root, st.branch, head, st.files.len()))
+}
+
 async fn status(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     let dir = target_dir(server, ctx, p)?;
     let (root, st) = load_status(&dir).await?;

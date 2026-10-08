@@ -1,6 +1,13 @@
 //! Receiving handoffs from the command line (16 §15.2): `vibeke handoff incoming`, `accept`,
 //! `decline`, `resume` and `prefs` over the server's incoming-handoff API.
 //!
+//! Inside a pane (a pane token and no elevated token), `send`, `cancel` and `redeem` ask the
+//! user through `auth.approve` (09 §3.2 "Approved calls") and wait for the decision, which is
+//! made outside the pane; Ctrl-C closes the connection, which withdraws the request, and
+//! `--no-wait` prints the request id. `send` defaults to the CLI's own pane and offers the
+//! workspace's only agent pane when its own pane has no agent. Outside panes `send` and `cancel`
+//! are plain API commands and `redeem` is `vibeke gateway peer add`.
+//!
 //! `accept` without `--repo` / `--clone-to` takes the clone `handoff.incoming.get` suggests (and
 //! its worktree path); with a repository given, the server places the worktree next to it unless
 //! `--worktree` says otherwise. Relative paths are made absolute here when the command talks to
@@ -13,17 +20,54 @@ use std::io::IsTerminal;
 use std::path::Path;
 
 /// The verbs this module runs.
-pub const VERBS: &[&str] = &["incoming", "accept", "decline", "resume", "prefs"];
+pub const VERBS: &[&str] = &["incoming", "accept", "decline", "resume", "prefs", "redeem"];
+/// Verbs that ask the user through `auth.approve` when run inside a pane.
+pub const APPROVED_VERBS: &[&str] = &["send", "cancel", "redeem"];
 
 pub const USAGE: &str = "vibeke handoff incoming\n\
 vibeke handoff accept <id> [--repo PATH | --clone-to PATH] [--worktree PATH] [--branch NAME] [--no-resume] [--trust mise,direnv]\n\
 vibeke handoff decline <id>\n\
 vibeke handoff resume <id>\n\
-vibeke handoff prefs [--always-ask on|off]";
+vibeke handoff prefs [--always-ask on|off]\n\
+vibeke handoff send <peer> [--pane P] [--interrupt] [--no-wait] [--reason TEXT] [--timeout-ms MS]\n\
+vibeke handoff cancel <job> [--no-wait] [--reason TEXT] [--timeout-ms MS]\n\
+vibeke handoff redeem <link> [--share-user] [--no-wait] [--reason TEXT] [--timeout-ms MS]";
 
-/// Whether `vibeke handoff <verb>` is one of [`VERBS`].
+/// The message the CLI prints while it waits for the user's decision.
+pub const WAITING: &str =
+    "Waiting for approval in Vibeke (prefix+shift+e, or the notice in the tab bar)…";
+
+/// Inside a pane without an elevation: privileged handoff verbs go through `auth.approve`.
+pub fn in_pane() -> bool {
+    let set = |k: &str| std::env::var(k).ok().is_some_and(|v| !v.is_empty());
+    set("VIBEKE_PANE_TOKEN") && !set("VIBEKE_ELEVATED_TOKEN")
+}
+
+/// Whether `vibeke handoff <verb>` runs here: one of [`VERBS`], and inside a pane also the
+/// [`APPROVED_VERBS`].
 pub fn handles(verb: Option<&str>) -> bool {
-    verb.is_some_and(|v| VERBS.contains(&v))
+    handles_in(verb, in_pane())
+}
+
+pub fn handles_in(verb: Option<&str>, in_pane: bool) -> bool {
+    verb.is_some_and(|v| VERBS.contains(&v) || (in_pane && APPROVED_VERBS.contains(&v)))
+}
+
+/// `vibeke handoff redeem <link> [--share-user]` outside panes: the arguments of the
+/// equivalent `vibeke gateway peer add`, or `None` when the arguments are not that.
+pub fn redeem_as_peer_add(args: &[String]) -> Option<Vec<String>> {
+    match parse(args).ok()? {
+        Cmd::Redeem {
+            link, share_user, ..
+        } => {
+            let mut v = vec!["peer".to_string(), "add".to_string(), link];
+            if share_user {
+                v.push("--share-user".into());
+            }
+            Some(v)
+        }
+        _ => None,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,13 +86,38 @@ pub struct AcceptArgs {
     pub trust: Vec<String>,
 }
 
+/// How an approved verb asks (`auth.approve`).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Ask {
+    pub no_wait: bool,
+    pub reason: Option<String>,
+    pub timeout_ms: Option<u64>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Cmd {
     Incoming,
     Accept(AcceptArgs),
     Decline(String),
     Resume(String),
-    Prefs { always_ask: Option<bool> },
+    Prefs {
+        always_ask: Option<bool>,
+    },
+    Send {
+        peer: String,
+        pane: Option<String>,
+        interrupt: bool,
+        ask: Ask,
+    },
+    Cancel {
+        id: String,
+        ask: Ask,
+    },
+    Redeem {
+        link: String,
+        share_user: bool,
+        ask: Ask,
+    },
 }
 
 /// `--flag value` / `--flag=value` / bare flags and positionals.
@@ -65,6 +134,9 @@ const VALUED: &[&str] = &[
     "branch",
     "trust",
     "always-ask",
+    "pane",
+    "reason",
+    "timeout-ms",
 ];
 
 fn split(args: &[String]) -> Result<Args, String> {
@@ -109,11 +181,41 @@ fn split(args: &[String]) -> Result<Args, String> {
 }
 
 fn one_id(verb: &str, a: &Args) -> Result<String, String> {
+    one_pos(verb, a, "the handoff id")
+}
+
+fn one_pos(verb: &str, a: &Args, what: &str) -> Result<String, String> {
     match a.pos.as_slice() {
         [id] if !id.is_empty() => Ok(id.clone()),
-        [] => Err(format!("vibeke handoff {verb} needs the handoff id")),
+        [] => Err(format!("vibeke handoff {verb} needs {what}")),
         _ => Err(format!("unexpected argument `{}`", a.pos[1])),
     }
+}
+
+/// The `auth.approve` flags of an approved verb; `other` takes the verb's own flags.
+fn ask_flags(
+    a: &Args,
+    mut other: impl FnMut(&str, &Option<String>) -> Result<bool, String>,
+) -> Result<Ask, String> {
+    let mut ask = Ask::default();
+    for (n, v) in &a.flags {
+        match (n.as_str(), v) {
+            ("no-wait", None) => ask.no_wait = true,
+            ("reason", Some(v)) => ask.reason = Some(v.clone()),
+            ("timeout-ms", Some(v)) => {
+                ask.timeout_ms = Some(
+                    v.parse()
+                        .map_err(|_| format!("--timeout-ms takes milliseconds, not `{v}`"))?,
+                );
+            }
+            _ => {
+                if !other(n, v)? {
+                    return Err(format!("unknown flag --{n}"));
+                }
+            }
+        }
+    }
+    Ok(ask)
 }
 
 fn no_flags(a: &Args) -> Result<(), String> {
@@ -207,6 +309,52 @@ pub fn parse(args: &[String]) -> Result<Cmd, String> {
                 }
             }
             Ok(Cmd::Accept(out))
+        }
+        "send" => {
+            let peer = one_pos(verb, &a, "the peer (`vibeke handoff peers` lists them)")?;
+            let (mut pane, mut interrupt) = (None, false);
+            let ask = ask_flags(&a, |n, v| {
+                Ok(match (n, v) {
+                    ("pane", Some(v)) => {
+                        pane = Some(v.clone());
+                        true
+                    }
+                    ("interrupt", None) => {
+                        interrupt = true;
+                        true
+                    }
+                    _ => false,
+                })
+            })?;
+            Ok(Cmd::Send {
+                peer,
+                pane,
+                interrupt,
+                ask,
+            })
+        }
+        "cancel" => {
+            let id = one_pos(verb, &a, "the job id (`vibeke handoff jobs` lists them)")?;
+            let ask = ask_flags(&a, |_, _| Ok(false))?;
+            Ok(Cmd::Cancel { id, ask })
+        }
+        "redeem" => {
+            let link = one_pos(verb, &a, "the invitation link")?;
+            let mut share_user = false;
+            let ask = ask_flags(&a, |n, v| {
+                Ok(match (n, v) {
+                    ("share-user", None) => {
+                        share_user = true;
+                        true
+                    }
+                    _ => false,
+                })
+            })?;
+            Ok(Cmd::Redeem {
+                link,
+                share_user,
+                ask,
+            })
         }
         other => Err(format!("unknown verb `{other}`")),
     }
@@ -414,6 +562,164 @@ fn fail(e: &CallError) -> i32 {
     exit_code_for(e)
 }
 
+/// The pane `send` hands over by default: the CLI's own pane, or (asked on the terminal) the
+/// workspace's only agent pane when the own pane has no agent.
+async fn pick_pane<S>(client: &mut Client<S>) -> Result<String, CallError>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let me = client.call("pane.get", json!({"pane": "@current"})).await?;
+    let id = me["pane"]["id"].as_str().unwrap_or("@current").to_string();
+    if !me["run"].is_null() || !std::io::stdin().is_terminal() {
+        return Ok(id);
+    }
+    let Some(ws) = me["pane"]["workspace"].as_str() else {
+        return Ok(id);
+    };
+    let agents = client
+        .call("pane.list", json!({"workspace": ws, "has_agent": true}))
+        .await?;
+    let panes = agents["panes"].as_array().cloned().unwrap_or_default();
+    let [other] = panes.as_slice() else {
+        return Ok(id);
+    };
+    let (Some(oid), handle) = (other["id"].as_str(), other["handle"].as_str()) else {
+        return Ok(id);
+    };
+    if oid == id {
+        return Ok(id);
+    }
+    eprint!(
+        "This pane has no agent. Send the agent pane {} instead? [Y/n] ",
+        handle.unwrap_or(oid)
+    );
+    let mut answer = String::new();
+    let _ = std::io::stdin().read_line(&mut answer);
+    Ok(if yes(&answer) { oid.to_string() } else { id })
+}
+
+/// A `[Y/n]` answer: empty means yes.
+pub fn yes(answer: &str) -> bool {
+    matches!(
+        answer.trim().to_ascii_lowercase().as_str(),
+        "" | "y" | "yes"
+    )
+}
+
+/// `handoff.send` / `handoff.cancel` results, for people.
+pub fn job_line(v: &Value) -> String {
+    let j = &v["job"];
+    format!(
+        "{} handoff {} of pane {} to {}",
+        j["state"].as_str().unwrap_or("?"),
+        j["id"].as_str().unwrap_or("?"),
+        j["pane"].as_str().unwrap_or("?"),
+        j["peer_name"].as_str().unwrap_or("?")
+    )
+}
+
+/// `peer.redeem` results, for people.
+pub fn paired_line(v: &Value) -> String {
+    let p = &v["peer"];
+    format!(
+        "Paired with {} ({}). Peer id {}.",
+        p["name"].as_str().unwrap_or("?"),
+        if p["owner"] == "self" {
+            "your host"
+        } else {
+            "teammate"
+        },
+        p["id"].as_str().unwrap_or("?")
+    )
+}
+
+/// Ask the user for `method params` through `auth.approve` and wait for the decision (or with
+/// `--no-wait`, print the request id). The waiting call returns the method's own result.
+async fn approved<S>(
+    client: &mut Client<S>,
+    g: &Global,
+    method: &str,
+    params: Value,
+    ask: &Ask,
+    human: fn(&Value) -> String,
+) -> i32
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    if !in_pane() {
+        eprintln!(
+            "`vibeke handoff` asks for approval only inside a pane; run `vibeke {}` directly",
+            match method {
+                "handoff.send" => "handoff send <peer> --pane <pane>",
+                "handoff.cancel" => "handoff cancel <job>",
+                _ => "gateway peer add <link>",
+            }
+        );
+        return EXIT_USAGE;
+    }
+    let mut p = json!({"method": method, "params": params});
+    if let Some(r) = &ask.reason {
+        p["reason"] = json!(r);
+    }
+    if let Some(t) = ask.timeout_ms {
+        p["timeout_ms"] = json!(t);
+    }
+    if ask.no_wait {
+        p["wait"] = json!(false);
+        return match client.call("auth.approve", p).await {
+            // A standing grant ran it at once.
+            Ok(v) if v.get("status").is_none() => {
+                print(g, &v, human);
+                EXIT_OK
+            }
+            Ok(v) => {
+                print(g, &v, |v| {
+                    format!(
+                        "{}
+{}",
+                        v["request"].as_str().unwrap_or_default(),
+                        v["summary"].as_str().unwrap_or_default()
+                    )
+                });
+                EXIT_OK
+            }
+            Err(e) => fail(&e),
+        };
+    }
+    if !g.quiet {
+        eprintln!("{WAITING}");
+    }
+    // Ctrl-C ends the process and with it the connection, which withdraws the request.
+    let r = tokio::select! {
+        r = client.call("auth.approve", p) => r,
+        _ = tokio::signal::ctrl_c() => {
+            eprintln!("\nwithdrawn");
+            return 130;
+        }
+    };
+    match r {
+        Ok(v) => {
+            print(g, &v, human);
+            EXIT_OK
+        }
+        Err(e) => {
+            if let CallError::Rpc(r) = &e {
+                if r.message.starts_with("approval_denied") {
+                    eprintln!("denied: the request was not approved");
+                } else if r.data.kind == "timeout"
+                    && let Some(id) = r.data.details["request"].as_str()
+                {
+                    let _ = client
+                        .call("auth.approve.withdraw", json!({"request": id}))
+                        .await;
+                    eprintln!("no decision in time; request {id} withdrawn");
+                }
+            }
+            fail(&e)
+        }
+    }
+}
+
 /// `vibeke handoff <verb> …` (`args` starts at the verb).
 pub async fn run<S>(client: &mut Client<S>, g: &Global, args: &[String]) -> i32
 where
@@ -429,6 +735,44 @@ where
     if let Err(e) = client.hello("cli").await {
         return fail(&e);
     }
+    match &cmd {
+        Cmd::Send {
+            peer,
+            pane,
+            interrupt,
+            ask,
+        } => {
+            let pane = match pane {
+                Some(p) => p.clone(),
+                None => match pick_pane(client).await {
+                    Ok(p) => p,
+                    Err(e) => return fail(&e),
+                },
+            };
+            let params = json!({"pane": pane, "peer": peer, "interrupt": interrupt});
+            return approved(client, g, "handoff.send", params, ask, job_line).await;
+        }
+        Cmd::Cancel { id, ask } => {
+            return approved(
+                client,
+                g,
+                "handoff.cancel",
+                json!({"id": id}),
+                ask,
+                job_line,
+            )
+            .await;
+        }
+        Cmd::Redeem {
+            link,
+            share_user,
+            ask,
+        } => {
+            let params = json!({"method": "peer.redeem", "params": {"link": link, "share_user": share_user}});
+            return approved(client, g, "gateway.call", params, ask, paired_line).await;
+        }
+        _ => {}
+    }
     let (method, params) = match &cmd {
         Cmd::Incoming => ("handoff.incoming.list", json!({})),
         Cmd::Decline(id) => ("handoff.decline", json!({"id": id})),
@@ -440,6 +784,7 @@ where
                 None => json!({}),
             },
         ),
+        Cmd::Send { .. } | Cmd::Cancel { .. } | Cmd::Redeem { .. } => unreachable!("handled above"),
         Cmd::Accept(a) => {
             let suggested = if a.repo.is_none() {
                 match client
@@ -475,6 +820,7 @@ where
         Cmd::Incoming => print(g, &v, |v| incoming_table(v, now_ms())),
         Cmd::Accept(_) | Cmd::Resume(_) => print(g, &v, accept_summary),
         Cmd::Decline(id) => print(g, &v, |_| format!("declined {id}")),
+        Cmd::Send { .. } | Cmd::Cancel { .. } | Cmd::Redeem { .. } => {}
         Cmd::Prefs { .. } => print(g, &v, |v| {
             let n = v["placement"].as_object().map_or(0, |o| o.len());
             format!(
@@ -571,7 +917,13 @@ mod tests {
             ("prefs --always-ask maybe", "takes on or off"),
             ("prefs extra", "unexpected argument"),
             ("incoming h1", "unexpected argument"),
-            ("send h1", "unknown verb"),
+            ("send", "needs the peer"),
+            ("send a b", "unexpected argument `b`"),
+            ("send a --timeout-ms soon", "takes milliseconds"),
+            ("cancel j1 --pane p", "unknown flag --pane"),
+            ("redeem", "needs the invitation link"),
+            ("redeem l --interrupt", "unknown flag --interrupt"),
+            ("transmit h1", "unknown verb"),
         ] {
             let e = parse(&args(a)).unwrap_err();
             assert!(e.contains(want), "{a}: {e}");
@@ -580,13 +932,89 @@ mod tests {
     }
 
     #[test]
+    fn parses_the_approved_verbs() {
+        assert_eq!(
+            parse(&args("send marvin")),
+            Ok(Cmd::Send {
+                peer: "marvin".into(),
+                pane: None,
+                interrupt: false,
+                ask: Ask::default(),
+            })
+        );
+        assert_eq!(
+            parse(&args(
+                "send marvin --pane p2 --interrupt --no-wait --reason=ship --timeout-ms 500"
+            )),
+            Ok(Cmd::Send {
+                peer: "marvin".into(),
+                pane: Some("p2".into()),
+                interrupt: true,
+                ask: Ask {
+                    no_wait: true,
+                    reason: Some("ship".into()),
+                    timeout_ms: Some(500),
+                },
+            })
+        );
+        assert_eq!(
+            parse(&args("cancel j1 --no-wait")),
+            Ok(Cmd::Cancel {
+                id: "j1".into(),
+                ask: Ask {
+                    no_wait: true,
+                    ..Ask::default()
+                },
+            })
+        );
+        assert_eq!(
+            parse(&args("redeem vibeke://x --share-user")),
+            Ok(Cmd::Redeem {
+                link: "vibeke://x".into(),
+                share_user: true,
+                ask: Ask::default(),
+            })
+        );
+        // Outside panes `redeem` is `vibeke gateway peer add`.
+        assert_eq!(
+            redeem_as_peer_add(&args("redeem vibeke://x --share-user")).unwrap(),
+            args("peer add vibeke://x --share-user")
+        );
+        assert_eq!(redeem_as_peer_add(&args("send x")), None);
+        for (a, y) in [
+            ("", true),
+            ("y\n", true),
+            ("Yes", true),
+            ("n", false),
+            ("no\n", false),
+        ] {
+            assert_eq!(yes(a), y, "{a:?}");
+        }
+        let job =
+            json!({"job": {"id": "j1", "state": "queued", "pane": "p1", "peer_name": "marvin"}});
+        assert_eq!(job_line(&job), "queued handoff j1 of pane p1 to marvin");
+        let peer = json!({"peer": {"id": "pr1", "name": "marvin", "owner": "self"}});
+        assert_eq!(
+            paired_line(&peer),
+            "Paired with marvin (your host). Peer id pr1."
+        );
+    }
+
+    #[test]
     fn handles_only_its_verbs() {
         for v in VERBS {
-            assert!(handles(Some(v)), "{v}");
+            assert!(handles_in(Some(v), false), "{v}");
         }
-        // `send`, `jobs`, `cancel` and `peers` belong to the sending side.
-        assert!(!handles(Some("send")));
-        assert!(!handles(None));
+        // `send` and `cancel` are plain API commands outside panes and ask for approval inside
+        // one; `jobs` and `peers` are always plain API commands.
+        for v in ["send", "cancel"] {
+            assert!(!handles_in(Some(v), false), "{v}");
+            assert!(handles_in(Some(v), true), "{v}");
+        }
+        for v in ["jobs", "peers"] {
+            assert!(!handles_in(Some(v), true), "{v}");
+        }
+        assert!(!handles_in(None, true));
         let tree = crate::verbs::command_tree();
         for v in VERBS {
             assert!(tree["handoff"].contains(&v.to_string()), "{v}");

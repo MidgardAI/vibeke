@@ -19,6 +19,9 @@ pub const METHODS: &[(&str, bool)] = &[
     ("auth.revoke_token", true),
     ("auth.elevate", true),
     ("auth.elevate.decide", true),
+    ("auth.approve", true),
+    ("auth.approve.decide", true),
+    ("auth.approve.withdraw", true),
     ("auth.list", false),
     ("audit.tail", false),
     ("audit.search", false),
@@ -27,7 +30,8 @@ pub const METHODS: &[(&str, bool)] = &[
 ];
 
 /// Methods of this module a pane-scoped caller may never call (09 §5.2: `policy.*`,
-/// `integration.*`, revocation, the audit log). `auth.elevate` is meant for panes.
+/// `integration.*`, revocation, the audit log). `auth.elevate`, `auth.approve` and
+/// `auth.approve.withdraw` are meant for panes; their decisions never are.
 pub const PANE_FORBIDDEN: &[&str] = &[
     "policy.list",
     "policy.add",
@@ -35,6 +39,7 @@ pub const PANE_FORBIDDEN: &[&str] = &[
     "policy.test",
     "auth.revoke_token",
     "auth.elevate.decide",
+    "auth.approve.decide",
     "auth.list",
     "audit.tail",
     "audit.search",
@@ -46,6 +51,7 @@ pub const PANE_FORBIDDEN: &[&str] = &[
 pub struct State {
     pub audit: crate::audit::State,
     pub auth: crate::auth::State,
+    pub approve: crate::approve::State,
     pub integrity: crate::integrity::State,
 }
 
@@ -109,6 +115,9 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
     let prefix = method.split('.').next().unwrap_or("");
     match prefix {
         "policy" => crate::policy_api::api(server, ctx, method, p),
+        "auth" if method.starts_with("auth.approve") => {
+            crate::approve::api(server, ctx, method, p).await
+        }
         "auth" => crate::auth::api(server, ctx, method, p).await,
         "audit" => crate::audit::api(server, ctx, method, p),
         "integration" => crate::integrity::api(server, ctx, method, p),
