@@ -5,7 +5,7 @@
 // open requests in the inbox (Approve / Deny) and on a review screen (the push opens it). Pure:
 // app/approval-stores.ts and screens/approve.tsx build on it.
 
-import type { AppApi, AppEvent, ApprovalDecision, ApprovalRequest } from '@vibeke/core';
+import { RpcError, type AppApi, type AppEvent, type ApprovalDecision, type ApprovalRequest } from '@vibeke/core';
 import { t } from '../i18n';
 
 export type DecideParams = AppApi['auth.approve.decide']['params'];
@@ -97,10 +97,10 @@ export function reconcileSnapshot(
 }
 
 /** A running approved call may take a while (a peer redeem waits up to 60 s on the host). */
-const DECIDE_TIMEOUT_MS = 90_000;
+export const DECIDE_TIMEOUT_MS = 90_000;
 
 /** An older host without approved calls: nothing there. */
-const unknownMethod = (e: unknown): boolean => e instanceof RpcError && (e.kind === 'method_not_found' || e.code === -32601);
+export const unknownMethod = (e: unknown): boolean => e instanceof RpcError && (e.kind === 'method_not_found' || e.code === -32601);
 
 /** The decisions offered for a request: `always` only when the host allows it (never for peer.redeem). */
 export function decisionsFor(r: ApprovalRequest): ApprovalDecision[] {

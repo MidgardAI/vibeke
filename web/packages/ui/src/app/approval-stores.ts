@@ -12,7 +12,7 @@
 import { useEffect } from 'react';
 import { RpcError, type AppEvent, type ApprovalDecision, type ApprovalRequest } from '@vibeke/core';
 import { errorMessage } from '../lib/answer';
-import { applyApproval, approvalChange, decideOutcome, decideParams, openApprovals, reconcileSnapshot, type ApprovalChange, type DecideResult } from '../lib/approvals';
+import { DECIDE_TIMEOUT_MS, applyApproval, approvalChange, decideOutcome, decideParams, openApprovals, reconcileSnapshot, unknownMethod, type ApprovalChange, type DecideResult } from '../lib/approvals';
 import { isOwnFullHost } from '../lib/handoff-send';
 import { ValueStore, useStore } from '../lib/store';
 import { useApp } from './hooks';
