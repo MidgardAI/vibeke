@@ -47,8 +47,55 @@ jobs:
           path: dist/${{ env.VERSION }}/vibeke-*
           if-no-files-found: error
 
+  desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            platform: mac
+            args: --mac --arm64 --x64
+          - os: ubuntu-latest
+            platform: linux
+            args: --linux --x64
+          - os: windows-latest
+            platform: windows
+            args: --win --x64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+        working-directory: web
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.14"
+      - name: Tag must match the desktop version
+        run: |
+          version=$(bun -p 'require("./apps/desktop/package.json").version')
+          test "v$version" = "$GITHUB_REF_NAME"
+      - run: bun install --frozen-lockfile
+      - name: Build desktop installers without publishing
+        run: bun run --cwd apps/desktop dist -- ${{ matrix.args }} --publish never
+      - name: Verify packaged fuses, ASAR and macOS code signatures
+        run: bun run --cwd apps/desktop verify:package
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.platform }}
+          path: |
+            web/apps/desktop/dist/Vibeke-*.dmg
+            web/apps/desktop/dist/Vibeke-*.zip
+            web/apps/desktop/dist/Vibeke-*.AppImage
+            web/apps/desktop/dist/Vibeke-*.deb
+            web/apps/desktop/dist/Vibeke-*.exe
+          if-no-files-found: error
+
   draft:
-    needs: build
+    needs: [build, desktop]
     runs-on: ubuntu-latest
     permissions:
       contents: write # create the draft release and upload files; nothing else
@@ -74,4 +121,4 @@ jobs:
           gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft \
             --title "Vibeke ${GITHUB_REF_NAME#v}" \
             --notes "Unsigned draft. The maintainer signs SHA256SUMS and manifest.json locally (scripts/release-sign.sh) and uploads the .minisig files before publishing." \
-            dist/vibeke-* dist/install.sh
+            dist/vibeke-* dist/Vibeke-* dist/install.sh

@@ -21,6 +21,7 @@ if (feed && !/^https:\/\/[^/@\s]+(\/\S*)?$/.test(feed)) throw new Error('VIBEKE_
 module.exports = {
   appId: 'dev.vibeke.desktop',
   productName: 'Vibeke',
+  artifactName: 'Vibeke-${version}-${os}-${arch}.${ext}',
   copyright: 'Copyright © Vibeke',
   directories: { output: 'dist', buildResources: 'build' },
   // Main, preload and renderer are fully bundled into out/: no node_modules ship.

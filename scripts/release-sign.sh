@@ -84,9 +84,18 @@ for f in "$DIST"/vibeke-*; do
 done
 [ -n "$ARTIFACTS" ] || die "no vibeke-* artifacts in $DIST"
 
+# Desktop downloads share the signed checksum list, but are not remote runtime targets.
+DESKTOP_ARTIFACTS=
+for f in "$DIST"/Vibeke-*; do
+  [ -f "$f" ] || continue
+  case "$f" in
+    *.dmg|*.zip|*.AppImage|*.deb|*.exe) DESKTOP_ARTIFACTS="$DESKTOP_ARTIFACTS $(basename "$f")" ;;
+  esac
+done
+
 cd "$DIST"
 rm -f SHA256SUMS SHA256SUMS.minisig manifest.json manifest.json.minisig
-for a in $ARTIFACTS; do echo "$(sha256 "$a")  $a"; done > SHA256SUMS
+for a in $ARTIFACTS $DESKTOP_ARTIFACTS; do echo "$(sha256 "$a")  $a"; done > SHA256SUMS
 
 # manifest.json: what `bootstrap = "remote-download"` trusts. target = file name without "vibeke-".
 {

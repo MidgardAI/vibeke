@@ -4,9 +4,10 @@
 //   bun scripts/build.ts --native   main + preload only (dev: the renderer comes from vite dev)
 
 import { cpSync, mkdirSync, rmSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { appVersion, buildHash } from './meta';
 
-const root = new URL('..', import.meta.url).pathname;
+const root = fileURLToPath(new URL('..', import.meta.url));
 const nativeOnly = process.argv.includes('--native');
 const dev = process.argv.includes('--dev');
 

@@ -44,7 +44,8 @@ Check the [release files](https://github.com/MidgardAI/vibeke/releases). While t
 ```sh
 gh auth login
 release_dir=$(mktemp -d)
-gh release download v0.1.0 --repo MidgardAI/vibeke --dir "$release_dir"
+gh release download v0.1.0 --repo MidgardAI/vibeke --dir "$release_dir" \
+  --pattern 'vibeke-*' --pattern 'SHA256SUMS*' --pattern 'install.sh'
 VIBEKE_INSTALL_FROM="$release_dir" sh "$release_dir/install.sh"
 ```
 
@@ -67,6 +68,23 @@ For online installation from an already downloaded installer while the repositor
 | `GITHUB_TOKEN`, `VIBEKE_GITHUB_TOKEN` | Read a private release repository. Not needed for public releases. |
 | `VIBEKE_ALLOW_UNSIGNED` | Set to `1` to accept an unsigned release for development. The checksum must still match. |
 | `VIBEKE_INSTALL_FROM` | Use a local directory for offline installation. |
+
+## Desktop app
+
+Download the desktop installer from the [release page](https://github.com/MidgardAI/vibeke/releases) while signed into GitHub with repository access:
+
+| Platform | Download |
+| --- | --- |
+| macOS, Apple silicon | `Vibeke-<version>-mac-arm64.dmg` |
+| macOS, Intel | `Vibeke-<version>-mac-x64.dmg` |
+| Linux, x86_64 | `Vibeke-<version>-linux-x64.AppImage` or `.deb` |
+| Windows, x86_64 | `Vibeke-<version>-win-x64.exe` |
+
+On macOS, open the DMG and drag Vibeke into Applications. ZIP downloads are also available.
+
+The desktop app connects to a Vibeke host; it does not bundle the host CLI. To use your own Mac or Linux machine as a host, install the CLI above as well. Intel Macs and Windows can use the desktop app to connect to a supported remote host; this release does not include a host binary for those platforms.
+
+Desktop downloads are included in the signed `SHA256SUMS`. The macOS app is ad-hoc signed, without Apple Developer ID signing or notarization; the Windows installer is not publisher-signed. Operating-system security checks may require explicit approval. Automatic desktop updates are not configured; download a new release to upgrade.
 
 ## Check the installation
 

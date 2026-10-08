@@ -82,6 +82,12 @@ Linux binaries use static musl linking. Zig 0.16 provides the C toolchain for li
 
 `mise run dist` (`scripts/dist.sh`) is the development variant. It also copies the files to `~/.cache/vibeke/releases/<version>/`, which SSH installation and `vibeke update` read. Set `VIBEKE_RELEASES_DIR` to use another cache directory. Its output is unsigned, so using it needs `VIBEKE_ALLOW_UNSIGNED=1` or a signed `SHA256SUMS`.
 
+## Desktop release files
+
+The tag workflow also packages the Electron client: macOS DMG and ZIP for arm64 and x64, Linux AppImage and DEB for x64, and Windows NSIS for x64. These are named `Vibeke-<version>-<os>-<arch>.<extension>` and attached to the same draft release. The desktop package version must match the tag. Each packaged app is checked for the required Electron fuses and ASAR layout; macOS bundles also pass `codesign --verify --deep --strict`.
+
+`release-sign.sh` includes these downloads in the signed `SHA256SUMS`. The remote-bootstrap `manifest.json` continues to list only host runtime binaries. The desktop app does not bundle the host CLI. Apple Developer ID signing/notarization and Windows publisher signing are not configured in the workflow, and there is no automatic desktop update feed.
+
 ## Release steps
 
 Signing happens locally. CI never holds a signing secret.
