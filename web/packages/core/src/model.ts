@@ -4,7 +4,7 @@
 // still in serde's PascalCase (e.g. AgentRun facets), so the UI only ever sees one form.
 
 export type Risk = 'low' | 'medium' | 'high' | 'unknown';
-export type InteractionKind = 'approval' | 'question' | 'plan_review' | 'notice';
+export type InteractionKind = 'approval' | 'question' | 'plan_review' | 'notice' | 'picker';
 export type InteractionStatus = 'open' | 'answered' | 'resolved_elsewhere' | 'expired' | 'cancelled';
 export type DeliveryState =
   | 'none'
@@ -16,11 +16,37 @@ export type DeliveryState =
   | 'superseded'
   | 'resolved_elsewhere';
 export type AnswerChannel = 'native' | 'keystrokes' | 'none';
-export type Decision = 'allow' | 'allow_always' | 'deny';
+export type Decision = 'allow' | 'allow_always' | 'deny' | 'cancel';
 export type StateSource = 'structured' | 'self_report' | 'screen' | 'process' | 'user';
 export type Execution = 'starting' | 'working' | 'idle' | 'error' | 'rate_limited' | 'exited' | 'unknown';
 export type AdapterHealth = 'healthy' | 'degraded' | 'disconnected' | 'unvalidated_version';
 export type Scope = 'full' | 'approve' | 'view';
+
+export interface AgentCommand {
+  /** With the leading slash, e.g. `/model`. */
+  name: string;
+  description: string;
+  takes_arg: boolean;
+  opens_picker: boolean;
+  dangerous: boolean;
+}
+
+export interface AgentCommands {
+  commands: AgentCommand[];
+  source: 'catalog' | 'protocol';
+}
+
+export interface AgentModel {
+  id: string;
+  label: string;
+  description?: string | null;
+  current: boolean;
+}
+
+export interface AgentModels {
+  models: AgentModel[];
+  source: 'protocol' | 'screen';
+}
 
 export interface ActionInfo {
   tool: string;
@@ -36,6 +62,8 @@ export interface QuestionOption {
   id: string;
   label: string;
   description: string | null;
+  /** Pickers: the row the agent points at, or a checked box in a multi-select. */
+  selected?: boolean;
 }
 
 export interface Question {
@@ -52,6 +80,26 @@ export interface Answer {
   /** [question id, chosen option ids] pairs (serde tuple form). */
   choices: [string, string[]][];
   text: string | null;
+}
+
+/** A left/right adjuster of a picker (e.g. an effort slider). */
+export interface PickerAdjust {
+  verb: string;
+  values: string[];
+  current?: string | null;
+}
+
+/** Present on `kind: "picker"` interactions. `name` is `unknown` for a dialog the host cannot parse. */
+export interface PickerInfo {
+  name: string;
+  /** Key that dismisses it; null = cannot be dismissed safely. */
+  cancel_key?: string | null;
+  up_down?: boolean;
+  left_right?: PickerAdjust | null;
+  /** `screen` (parsed from the pane) or `protocol` (the agent's structured API). */
+  source: string;
+  /** Echoed back as `expected_signature` so a changed screen is refused. */
+  signature: string;
 }
 
 export interface Interaction {
@@ -77,6 +125,7 @@ export interface Interaction {
   delivery_error: string | null;
   answer: Answer | null;
   answered_by: string | null;
+  picker?: PickerInfo | null;
   opened_at_ms: number;
   answered_at_ms: number | null;
   /** Added by the gateway (batch grouping, §7.6). */
@@ -710,7 +759,11 @@ export interface AppApi {
   'pane.rename': { params: { pane: string; title: string | null }; result: { pane: Pane } };
   'pane.close': { params: { pane: string }; result: unknown };
   'pane.focus': { params: { pane: string }; result: unknown };
-  'agent.prompt': { params: { target: string; text: string }; result: Record<string, never> };
+  /** `turn_started` is false for slash commands that open a picker or act locally; `interaction` is the picker they opened. */
+  'agent.prompt': { params: { target: string; text: string }; result: { turn_started?: boolean; interaction?: string } };
+  'agent.commands': { params: { target: string }; result: AgentCommands };
+  'agent.models': { params: { target: string }; result: AgentModels };
+  'agent.set_model': { params: { target: string; model: string; scope?: 'session' | 'default' }; result: { run: AgentRun } };
   'agent.interrupt': { params: { target: string }; result: Record<string, never> };
   'agent.transcript': {
     /** `limit` ≤ 200; `before` = a page's `next_before` (turns with n < before). */
@@ -738,6 +791,8 @@ export interface AppApi {
       /** Map of question id → chosen option ids (the server's `interaction.answer` form). */
       choices?: Record<string, string[]>;
       text?: string;
+      /** Pickers: the signature the card was rendered from; a changed screen is refused (`picker_changed`). */
+      expected_signature?: string;
     };
     /** `delivery` is `{channel: native|keystrokes|recorded}`; the state is `interaction.delivery`. */
     result: { interaction: Interaction; delivery: { channel?: string } | DeliveryState; duplicate?: boolean };
@@ -864,6 +919,7 @@ export const MUTATING_METHODS: ReadonlySet<string> = new Set([
   'pane.close',
   'pane.focus',
   'agent.prompt',
+  'agent.set_model',
   'agent.interrupt',
   'agent.start',
   'tab.create',

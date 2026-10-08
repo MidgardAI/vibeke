@@ -181,16 +181,18 @@ export interface AnswerFields {
   decision?: Decision;
   choices?: Record<string, string[]>;
   text?: string;
+  expected_signature?: string;
 }
 
 /** Params for `interaction.answer`: always carries the `decision_rev` of the card the user saw. */
 export function answerParams(it: Interaction, fields: AnswerFields) {
-  const { decision, choices, text } = fields;
+  const { decision, choices, text, expected_signature } = fields;
   return {
     interaction: it.id,
     ...(decision !== undefined ? { decision } : {}),
     ...(choices !== undefined ? { choices } : {}),
     ...(text !== undefined ? { text } : {}),
+    ...(expected_signature !== undefined ? { expected_signature } : {}),
     decision_rev: decisionRev(it),
   };
 }
