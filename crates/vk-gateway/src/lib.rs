@@ -60,6 +60,7 @@ pub struct Gateway {
     /// Accepted relay connections still before their handshake completes.
     pub dialing: std::sync::atomic::AtomicUsize,
     pub limits: GatewayLimits,
+    pub status: state::StatusWriter,
 }
 
 #[derive(Debug, Clone)]
@@ -88,6 +89,7 @@ impl Gateway {
             state.prune_expired_devices(&lock)?.0
         };
         let host_name = cfg.host_name.clone().unwrap_or_else(hostname);
+        let status = state::StatusWriter::new(state.dir.clone());
         let push = push::Sender::new(cfg.push_allowed_hosts.clone(), cfg.push_subject.clone())?;
         Ok(Arc::new(Gateway {
             state,
@@ -105,6 +107,7 @@ impl Gateway {
             push_throttle: Mutex::new(HashMap::new()),
             push_slots: tokio::sync::Semaphore::new(8),
             limits: GatewayLimits::default(),
+            status,
         }))
     }
 
@@ -412,12 +415,16 @@ pub async fn run(gw: Arc<Gateway>) -> Result<()> {
                 tokio::time::sleep(Duration::from_secs(5)).await;
                 gw.state.sweep_pairings();
                 let _ = gw.reload_devices();
+                gw.status.set_devices(gw.devices().len());
             }
         }
     });
     match relay {
         Some(relay) => relay_client::run(gw, &relay).await,
         // Local-only (desktop on this machine): nothing else to do.
-        None => std::future::pending().await,
+        None => {
+            gw.status.set_state("local_only", None);
+            std::future::pending().await
+        }
     }
 }

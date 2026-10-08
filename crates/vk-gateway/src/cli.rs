@@ -3,10 +3,11 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use crate::state::{Scope, StateDir};
+use crate::state::{Config, RunLock, Scope, StateDir};
 use crate::{Gateway, pair, relay_client, server};
 use anyhow::{Result, bail};
 use clap::{Parser, Subcommand};
+use serde_json::{Value, json};
 
 #[derive(Parser)]
 #[command(
@@ -43,6 +44,23 @@ enum Cmd {
         /// Display name for this host (saved).
         #[arg(long)]
         name: Option<String>,
+        /// Launched by the Vibeke server: exit 4 unless autostart is enabled for `--session`, and
+        /// exit 0 when the server is gone.
+        #[arg(long, hide = true)]
+        autostart: bool,
+    },
+    /// Turn autostart on: the Vibeke server keeps the gateway running.
+    On,
+    /// Turn autostart off and stop the gateway the server started.
+    Off,
+    /// Show the supervised gateway's log.
+    Logs {
+        /// Keep printing new lines.
+        #[arg(short, long)]
+        follow: bool,
+        /// Lines to show first.
+        #[arg(short = 'n', long, default_value_t = 100)]
+        lines: usize,
     },
     /// Pair a phone or browser: shows a QR code, then asks you to confirm the device.
     Pair {
@@ -61,6 +79,15 @@ enum Cmd {
         /// JSON; no confirmation (same user as this command).
         #[arg(long)]
         local: bool,
+        /// Relay URL to save when none is set yet (asked on a terminal otherwise).
+        #[arg(long)]
+        relay: Option<String>,
+        /// Origin that serves the web app (see `run --app-url`). Saved.
+        #[arg(long)]
+        app_url: Option<String>,
+        /// Self-hosting: use the relay's own origin as the app origin.
+        #[arg(long, conflicts_with = "app_url")]
+        app_from_relay: bool,
     },
     /// Share a pane or workspace with someone: an expiring, scoped invitation link (spec 16 §15.1).
     /// With --handoff, an invitation that lets a teammate hand work to this host instead.
@@ -148,8 +175,25 @@ pub async fn run_as<I: IntoIterator<Item = String>>(prog: &'static str, args: I)
             session,
             socket,
             name,
+            autostart,
         } => {
             let mut cfg = state.config()?;
+            if autostart {
+                let want = session.clone().unwrap_or_else(|| "default".into());
+                if !(cfg.autostart_enabled() && cfg.session_name() == want) {
+                    eprintln!("gateway autostart is not enabled for session {want}");
+                    std::process::exit(4);
+                }
+            }
+            // Held until the process ends.
+            let _run_lock = match RunLock::acquire(&state.dir)? {
+                Ok(l) => l,
+                Err(pid) => {
+                    eprintln!("gateway already running (pid {pid})");
+                    std::process::exit(3);
+                }
+            };
+            let set_relay = relay.is_some();
             let app_url = match (app_from_relay, app_url) {
                 (true, _) => {
                     let r = relay
@@ -176,24 +220,84 @@ pub async fn run_as<I: IntoIterator<Item = String>>(prog: &'static str, args: I)
                 cfg.socket = socket;
                 changed = true;
             }
+            if set_relay && cfg.autostart != Some(true) {
+                cfg.autostart = Some(true);
+                changed = true;
+            }
             if changed {
                 state.save_config(&cfg)?;
             }
-            let path = server::socket_path(
-                cfg.socket.clone(),
-                cfg.session.as_deref().unwrap_or("default"),
-            );
+            let ppid = unsafe { libc::getppid() };
+            let path = server::socket_path(cfg.socket.clone(), cfg.session_name());
             let gw = Gateway::new(state, server::Server::new(path))?;
-            crate::run(gw).await
+            gw.status.enable(
+                if gw.cfg.relay.is_some() {
+                    "connecting"
+                } else {
+                    "local_only"
+                },
+                gw.cfg.relay.clone(),
+                gw.devices().len(),
+            );
+            let r = tokio::select! {
+                r = crate::run(gw.clone()) => r,
+                _ = shutdown_signal() => Ok(()),
+                _ = parent_gone(ppid, autostart) => Ok(()),
+            };
+            gw.status.clear();
+            r
         }
+        Cmd::On => {
+            let mut cfg = state.config()?;
+            cfg.autostart = Some(true);
+            state.save_config(&cfg)?;
+            let st = start_gateway(&cfg).await?;
+            println!("Autostart is on.");
+            print_gateway_status(&st);
+            Ok(())
+        }
+        Cmd::Off => {
+            let mut cfg = state.config()?;
+            cfg.autostart = Some(false);
+            state.save_config(&cfg)?;
+            let srv =
+                server::Server::new(server::socket_path(cfg.socket.clone(), cfg.session_name()));
+            match srv.call("gateway.stop", json!({})).await {
+                Ok(_) => println!("Autostart is off. Gateway stopped."),
+                Err(e) if e.kind == "unavailable" => {
+                    println!("Autostart is off. (The Vibeke server isn't running.)")
+                }
+                Err(e) => println!(
+                    "Autostart is off. Could not stop the gateway: {}",
+                    e.message
+                ),
+            }
+            // The child needs a moment to exit; whatever still holds the lock was started by hand.
+            for _ in 0..10 {
+                if RunLock::holder(&state.dir).is_none() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(300)).await;
+            }
+            if let Some(pid) = RunLock::holder(&state.dir) {
+                println!(
+                    "A gateway is still running (pid {pid}); it was started by hand. Stop it with Ctrl-C or `kill {pid}`."
+                );
+            }
+            Ok(())
+        }
+        Cmd::Logs { follow, lines } => logs(&state.dir.join("gateway.log"), follow, lines).await,
         Cmd::Pair {
             scope,
             no_confirm,
             ttl,
             no_qr,
             local,
+            relay: relay_arg,
+            app_url: app_url_arg,
+            app_from_relay,
         } => {
-            let cfg = state.config()?;
+            let mut cfg = state.config()?;
             if local {
                 let probe = crate::local::socket_path(&state.dir);
                 if std::os::unix::net::UnixStream::connect(&probe).is_err() {
@@ -219,6 +323,46 @@ pub async fn run_as<I: IntoIterator<Item = String>>(prog: &'static str, args: I)
                 let out = serde_json::json!({"link": link, "d": vk_e2e::b64::encode(serde_json::to_vec(&link)?), "pid": p.pid, "socket": sock});
                 println!("{out}");
                 return Ok(());
+            }
+            // One-command setup: save the relay, switch autostart on, start the gateway.
+            if cfg.relay.is_none() && relay_arg.is_none() {
+                use std::io::IsTerminal;
+                if !std::io::stdin().is_terminal() {
+                    bail!(
+                        "no relay set. Pass --relay <url> (and --app-url <origin> or --app-from-relay), \
+                         or run `vibeke gateway pair` on a terminal"
+                    );
+                }
+                eprint!("Relay URL: ");
+                let mut line = String::new();
+                std::io::stdin().read_line(&mut line)?;
+                let line = line.trim();
+                if line.is_empty() {
+                    bail!("no relay given");
+                }
+                cfg.relay = Some(line.to_string());
+            } else if let Some(r) = relay_arg {
+                cfg.relay = Some(r);
+            }
+            if app_from_relay {
+                let r = cfg.relay.clone().expect("relay set above");
+                cfg.app_url = Some(relay_client::ws_base(&r).replacen("ws", "http", 1));
+            } else if app_url_arg.is_some() {
+                cfg.app_url = app_url_arg;
+            }
+            if cfg.app_url.is_none() {
+                bail!(
+                    "no app origin set. Pass --app-url <origin that serves the Vibeke web app> to `pair`, \
+                     or --app-from-relay if you serve the app from your own relay (it is trusted with device keys)"
+                );
+            }
+            cfg.autostart = Some(true);
+            state.save_config(&cfg)?;
+            match start_gateway(&cfg).await {
+                Ok(_) => wait_ready(&state.dir).await,
+                Err(e) => eprintln!(
+                    "Could not start the gateway through the server: {e:#}\nStart it yourself with `vibeke gateway run`."
+                ),
             }
             let Some(relay) = cfg.relay.clone() else {
                 bail!("run `vibeke-gateway run --relay <url>` once first")
@@ -423,6 +567,7 @@ pub async fn run_as<I: IntoIterator<Item = String>>(prog: &'static str, args: I)
             }
             PeerCmd::Add { link, share_user } => {
                 let cfg = state.config()?;
+                start_if_enabled(&state, &cfg).await;
                 let us = crate::peer_client::Identity {
                     host_name: cfg
                         .host_name
@@ -487,8 +632,236 @@ pub async fn run_as<I: IntoIterator<Item = String>>(prog: &'static str, args: I)
                     .unwrap_or("(not set — pairing disabled)")
             );
             println!("devices      {}", state.devices()?.len());
+            println!(
+                "autostart    {}",
+                if cfg.autostart_enabled() { "on" } else { "off" }
+            );
+            println!("running      {}", running_text(&state.dir));
             println!("state dir    {}", state.dir.display());
             Ok(())
+        }
+    }
+}
+
+/// SIGTERM or SIGINT.
+async fn shutdown_signal() {
+    use tokio::signal::unix::{SignalKind, signal};
+    let (Ok(mut term), Ok(mut int)) = (
+        signal(SignalKind::terminate()),
+        signal(SignalKind::interrupt()),
+    ) else {
+        return std::future::pending().await;
+    };
+    tokio::select! { _ = term.recv() => {}, _ = int.recv() => {} }
+}
+
+/// With `--autostart`: resolves once the process that launched us is gone (checked every 5 s), so a
+/// crashed server never leaves an orphan. Otherwise never.
+async fn parent_gone(ppid: i32, enabled: bool) {
+    if !enabled {
+        return std::future::pending().await;
+    }
+    loop {
+        // SAFETY: getppid has no preconditions.
+        let now = unsafe { libc::getppid() };
+        if now != ppid || now == 1 {
+            tracing::info!("parent process is gone; exiting");
+            return;
+        }
+        tokio::time::sleep(Duration::from_secs(5)).await;
+    }
+}
+
+/// Ask the session's server to start the gateway, starting the server first if it isn't running.
+async fn start_gateway(cfg: &Config) -> Result<Value> {
+    let srv = server::Server::new(server::socket_path(cfg.socket.clone(), cfg.session_name()));
+    match srv.call("gateway.start", json!({})).await {
+        Ok(v) => return Ok(v),
+        Err(e) if e.kind == "unavailable" => {}
+        Err(e) => bail!("{}: {}", e.kind, e.message),
+    }
+    spawn_server(cfg.session_name())?;
+    let deadline = std::time::Instant::now() + Duration::from_secs(8);
+    loop {
+        match srv.call("gateway.start", json!({})).await {
+            Ok(v) => return Ok(v),
+            Err(e) if e.kind == "unavailable" && std::time::Instant::now() < deadline => {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            Err(e) => bail!("{}: {}", e.kind, e.message),
+        }
+    }
+}
+
+/// Start `vibeke server --session <s>` detached (own session, stdio to /dev/null).
+fn spawn_server(session: &str) -> Result<()> {
+    use std::os::unix::process::CommandExt;
+    use std::process::{Command, Stdio};
+    let exe = std::env::current_exe()?;
+    if exe.file_name().is_some_and(|n| n == "vibeke-gateway") {
+        bail!("the Vibeke server isn't running; start it with `vibeke server`");
+    }
+    let mut cmd = Command::new(exe);
+    cmd.args(["server", "--session", session])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    // SAFETY: setsid between fork and exec is async-signal-safe.
+    unsafe {
+        cmd.pre_exec(|| {
+            libc::setsid();
+            Ok(())
+        });
+    }
+    cmd.spawn()?;
+    Ok(())
+}
+
+/// `peer add`: when set up but not running, have the server start the gateway first.
+async fn start_if_enabled(state: &StateDir, cfg: &Config) {
+    if cfg.autostart_enabled()
+        && RunLock::holder(&state.dir).is_none()
+        && let Err(e) = start_gateway(cfg).await
+    {
+        tracing::warn!("could not start the gateway: {e:#}");
+    }
+}
+
+fn print_gateway_status(st: &Value) {
+    let s = |k: &str| {
+        st.get(k)
+            .and_then(|v| v.as_str())
+            .unwrap_or("-")
+            .to_string()
+    };
+    println!("gateway      {}", s("state"));
+    if let Some(pid) = st.get("pid").and_then(|v| v.as_u64()) {
+        println!("pid          {pid}");
+    }
+    if let Some(e) = st.get("last_error").and_then(|v| v.as_str()) {
+        println!("last error   {e}");
+    }
+    println!("log          {}", s("log"));
+}
+
+/// Wait up to 15 s for our gateway to report `online` / `local_only`.
+async fn wait_ready(dir: &std::path::Path) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    let mut shown = String::new();
+    let mut last_error = None;
+    println!("Starting the gateway…");
+    while std::time::Instant::now() < deadline {
+        if let (Some(st), Some(pid)) = (crate::state::read_status(dir), RunLock::holder(dir))
+            && st.pid == pid
+        {
+            if st.state != shown {
+                println!("  {}", st.state);
+                shown = st.state.clone();
+            }
+            if st.state == "online" || st.state == "local_only" {
+                return;
+            }
+            last_error = st.last_error;
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+    println!(
+        "The gateway isn't online yet{}. See `vibeke gateway logs`. Continuing.",
+        last_error.map(|e| format!(" ({e})")).unwrap_or_default()
+    );
+}
+
+fn ago_text(now_ms: u64, since_ms: u64) -> String {
+    let s = now_ms.saturating_sub(since_ms) / 1000;
+    if s < 60 {
+        format!("{s}s")
+    } else if s < 3600 {
+        format!("{}m", s / 60)
+    } else if s < 86400 {
+        format!("{}h {:02}m", s / 3600, s % 3600 / 60)
+    } else {
+        format!("{}d {}h", s / 86400, s % 86400 / 3600)
+    }
+}
+
+/// The `running` line of `status`.
+fn running_text(dir: &std::path::Path) -> String {
+    let Some(pid) = RunLock::holder(dir) else {
+        return "no".into();
+    };
+    match crate::state::read_status(dir).filter(|s| s.pid == pid) {
+        Some(s) => {
+            let mut t = format!(
+                "{} · pid {pid} · for {} · {} device{}",
+                s.state,
+                ago_text(crate::state::now_ms(), s.since_ms),
+                s.devices,
+                if s.devices == 1 { "" } else { "s" }
+            );
+            if let Some(e) = s.last_error {
+                t.push_str(&format!(" · last error: {e}"));
+            }
+            t
+        }
+        None => format!("yes · pid {pid}"),
+    }
+}
+
+/// Print the last `n` lines of `path`; with `follow`, keep printing, surviving rotation.
+async fn logs(path: &std::path::Path, follow: bool, n: usize) -> Result<()> {
+    use std::io::{Read, Seek, SeekFrom, Write};
+    use std::os::unix::fs::MetadataExt;
+    let mut file = match std::fs::File::open(path) {
+        Ok(f) => Some(f),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(e.into()),
+    };
+    let mut offset = 0u64;
+    let mut ino = 0u64;
+    match file.as_mut() {
+        Some(f) => {
+            let mut text = Vec::new();
+            f.read_to_end(&mut text)?;
+            offset = text.len() as u64;
+            ino = f.metadata()?.ino();
+            let text = String::from_utf8_lossy(&text);
+            let all: Vec<&str> = text.lines().collect();
+            for l in &all[all.len().saturating_sub(n)..] {
+                println!("{l}");
+            }
+        }
+        None if !follow => {
+            println!("No gateway log yet ({}).", path.display());
+            return Ok(());
+        }
+        None => {}
+    }
+    if !follow {
+        return Ok(());
+    }
+    loop {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let Ok(md) = std::fs::metadata(path) else {
+            continue;
+        };
+        // Rotated (renamed to .1, new file) or truncated: start over on the new file.
+        if md.ino() != ino || md.len() < offset {
+            file = None;
+            offset = 0;
+            ino = md.ino();
+        }
+        if file.is_none() {
+            file = std::fs::File::open(path).ok();
+        }
+        let Some(f) = file.as_mut() else { continue };
+        if md.len() > offset {
+            f.seek(SeekFrom::Start(offset))?;
+            let mut buf = Vec::new();
+            f.read_to_end(&mut buf)?;
+            offset += buf.len() as u64;
+            let mut out = std::io::stdout().lock();
+            out.write_all(&buf)?;
+            out.flush()?;
         }
     }
 }
@@ -680,6 +1053,13 @@ mod tests {
             limit,
             peer: None,
         }
+    }
+
+    #[test]
+    fn ago_text_units() {
+        assert_eq!(ago_text(10_000, 4_000), "6s");
+        assert_eq!(ago_text(400_000, 0), "6m");
+        assert_eq!(ago_text(3_900_000, 0), "1h 05m");
     }
 
     #[test]

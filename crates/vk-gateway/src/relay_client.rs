@@ -32,9 +32,17 @@ pub async fn run(gw: Arc<Gateway>, relay: &str) -> Result<()> {
     let mut backoff = Duration::from_secs(1);
     loop {
         let started = Instant::now();
+        gw.status.set_state("connecting", None);
         match control(&gw, &base).await {
-            Ok(()) => tracing::info!("relay control closed"),
-            Err(e) => tracing::warn!("relay: {e:#}"),
+            Ok(()) => {
+                tracing::info!("relay control closed");
+                gw.status
+                    .set_state("offline", Some("relay closed the connection".into()));
+            }
+            Err(e) => {
+                tracing::warn!("relay: {e:#}");
+                gw.status.set_state("offline", Some(format!("{e:#}")));
+            }
         }
         if started.elapsed() > Duration::from_secs(60) {
             backoff = Duration::from_secs(1);
@@ -92,6 +100,7 @@ async fn control(gw: &Arc<Gateway>, base: &str) -> Result<()> {
         bail!("relay refused registration")
     };
     tracing::info!(host = %gw.keys.host_id(), generation, "online at {base}");
+    gw.status.set_state("online", None);
     let mut announces = Bucket::new(60);
     let mut ping = tokio::time::interval(Duration::from_secs(30));
     loop {
