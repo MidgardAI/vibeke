@@ -12,13 +12,17 @@
 //!   without keys or addresses) at start and whenever it changes.
 //!
 //! Every change emits `handoff.job` with the whole record. Finished jobs are listed for 7 days.
-//! Starting, cancelling and publishing are never available to panes.
+//! Starting, cancelling and publishing are never available to panes. A pane may only *ask* for a
+//! send or a cancel of its own jobs through `auth.approve` (`crate::approve`, 09 §3.2 "Approved
+//! calls"); an approved send carries `expect`, the repository facts the user approved, and the
+//! gateway refuses to deliver an export that doesn't match them.
 
 use crate::Server;
 use crate::api::{Ctx, R, b, err, internal, invalid, not_found, req, s, u};
 use crate::core::Tx;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use vk_proto::model::Pane;
 use vk_proto::rpc::{ErrorKind, RpcError};
 
 pub const K_JOB: &str = "handoff_job";
@@ -85,9 +89,28 @@ pub struct Job {
     /// Unix seconds.
     pub created_at: u64,
     pub updated_at: u64,
-    /// Who started it (`gateway:<device>` for apps, else the client kind).
+    /// Who started it (`gateway:<device>` for apps, `pane:<id>` for a send approved from a
+    /// pane, else the client kind).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub by: Option<String>,
+    /// For a send approved from a pane (`auth.approve`): what the user approved, re-checked by
+    /// the gateway against the export.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expect: Option<Expect>,
+}
+
+/// The repository facts an approved `handoff.send` was approved for, recorded when the pane
+/// asked. The gateway compares them with the export's manifest (`source_root`, `branch`, `head`)
+/// and fails the job when the pane's repository moved in between.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Expect {
+    pub repo_root: String,
+    pub branch: Option<String>,
+    pub head: String,
+    /// The approval request, the pane that asked and who approved (a client kind).
+    pub request: String,
+    pub requested_by: String,
+    pub approved_by: String,
 }
 
 pub fn terminal(state: &str) -> bool {
@@ -240,7 +263,10 @@ fn set_peers(server: &Server, p: &Value) -> R {
     Ok(json!({"peers": n, "changed": changed}))
 }
 
-fn send(server: &Server, ctx: &Ctx, p: &Value) -> R {
+/// The pane and peer `handoff.send {pane, peer}` would use, refused as `handoff.send` refuses
+/// them: no such peer, expired access, a handoff of that pane already under way. `auth.approve`
+/// validates a pane's request with it before asking the user.
+pub(crate) fn check_send(server: &Server, ctx: &Ctx, p: &Value) -> Result<(Pane, Value), RpcError> {
     let pane = crate::api::resolve_pane(server, ctx, s(p, "pane"))?;
     let want = req(p, "peer")?;
     let (peers, _) = peer_list(server);
@@ -274,12 +300,42 @@ fn send(server: &Server, ctx: &Ctx, p: &Value) -> R {
             format!("access to {want} has expired"),
         ));
     }
+    let jobs = server
+        .with_core(|c| c.store.load::<Job>(K_JOB))
+        .map_err(internal)?;
+    if let Some(busy) = jobs
+        .iter()
+        .find(|j| j.pane == pane.id && !terminal(&j.state))
+    {
+        return Err(conflict(
+            "a handoff of this pane is already under way; cancel it first",
+            busy,
+        ));
+    }
+    Ok((pane, peer.clone()))
+}
+
+fn send(server: &Server, ctx: &Ctx, p: &Value) -> R {
+    send_job(server, ctx, p, None)
+}
+
+/// `handoff.send`; `expect` is set for a send a pane asked for and the user approved
+/// (`auth.approve`).
+pub(crate) fn send_job(server: &Server, ctx: &Ctx, p: &Value, expect: Option<Expect>) -> R {
+    let (pane, peer) = check_send(server, ctx, p)?;
+    let want = req(p, "peer")?;
     let now = now_s();
+    let by = match &expect {
+        Some(e) => format!("pane:{}", e.requested_by),
+        None => s(p, "actor")
+            .map(str::to_string)
+            .unwrap_or_else(|| ctx.kind.clone()),
+    };
     let job = Job {
         id: crate::core::ulid(),
         pane: pane.id.clone(),
-        peer: s(peer, "id").unwrap_or(want).to_string(),
-        peer_name: s(peer, "name").unwrap_or(want).to_string(),
+        peer: s(&peer, "id").unwrap_or(want).to_string(),
+        peer_name: s(&peer, "name").unwrap_or(want).to_string(),
         interrupt: b(p, "interrupt").unwrap_or(false),
         state: "queued".into(),
         sent: 0,
@@ -289,11 +345,8 @@ fn send(server: &Server, ctx: &Ctx, p: &Value) -> R {
         error: None,
         created_at: now,
         updated_at: now,
-        by: Some(
-            s(p, "actor")
-                .map(str::to_string)
-                .unwrap_or_else(|| ctx.kind.clone()),
-        ),
+        by: Some(by),
+        expect,
     };
     let mut c = server.core.lock().unwrap();
     let jobs = c.store.load::<Job>(K_JOB).map_err(internal)?;
@@ -337,7 +390,15 @@ fn modify(server: &Server, id: &str, f: impl FnOnce(&mut Job) -> Result<bool, Rp
     Ok(json!({"job": job_json(&job)}))
 }
 
-fn cancel(server: &Server, p: &Value) -> R {
+/// One job record (`auth.approve` checks a pane's cancel against it).
+pub(crate) fn get(server: &Server, id: &str) -> Result<Job, RpcError> {
+    server
+        .with_core(|c| c.store.get::<Job>(K_JOB, id))
+        .map_err(internal)?
+        .ok_or_else(|| not_found("handoff job", id))
+}
+
+pub(crate) fn cancel(server: &Server, p: &Value) -> R {
     let id = req(p, "id")?;
     modify(server, id, |job| match job.state.as_str() {
         "cancelled" => Ok(false),
@@ -394,17 +455,17 @@ fn update(server: &Server, p: &Value) -> R {
 
 /// Schema registry entries (`api_schema` loads them next to its own tables).
 pub const SHAPES: &str = r##"
-# --- outgoing handoffs (spec 16 §15.2): jobs the host's gateway runs; full scope, never from a pane ---
+# --- outgoing handoffs (spec 16 §15.2): jobs the host's gateway runs; full scope, never from a pane (a pane asks with auth.approve) ---
 handoff.send :: {pane?: Target, peer: string, interrupt?: bool = false}
-  => {job: {id: string, pane: string, peer: string, peer_name: string, interrupt: bool, state: queued|exporting|sending|delivered|failed|cancelled, sent: int, total: int, incoming?: string, incoming_state?: string, error?: string, created_at: int, updated_at: int, by?: string}}
+  => {job: {id: string, pane: string, peer: string, peer_name: string, interrupt: bool, state: queued|exporting|sending|delivered|failed|cancelled, sent: int, total: int, incoming?: string, incoming_state?: string, error?: string, created_at: int, updated_at: int, by?: string, expect?: {repo_root: string, branch: string|null, head: string, request: string, requested_by: string, approved_by: string}}}
 # newest first; finished jobs for 7 days
 handoff.jobs :: {}
-  => {jobs: [{id: string, pane: string, peer: string, peer_name: string, interrupt: bool, state: queued|exporting|sending|delivered|failed|cancelled, sent: int, total: int, incoming?: string, incoming_state?: string, error?: string, created_at: int, updated_at: int, by?: string}]}
+  => {jobs: [{id: string, pane: string, peer: string, peer_name: string, interrupt: bool, state: queued|exporting|sending|delivered|failed|cancelled, sent: int, total: int, incoming?: string, incoming_state?: string, error?: string, created_at: int, updated_at: int, by?: string, expect?: {repo_root: string, branch: string|null, head: string, request: string, requested_by: string, approved_by: string}}]}
 handoff.cancel :: {id: string}
-  => {job: {id: string, pane: string, peer: string, peer_name: string, interrupt: bool, state: queued|exporting|sending|delivered|failed|cancelled, sent: int, total: int, incoming?: string, incoming_state?: string, error?: string, created_at: int, updated_at: int, by?: string}}
+  => {job: {id: string, pane: string, peer: string, peer_name: string, interrupt: bool, state: queued|exporting|sending|delivered|failed|cancelled, sent: int, total: int, incoming?: string, incoming_state?: string, error?: string, created_at: int, updated_at: int, by?: string, expect?: {repo_root: string, branch: string|null, head: string, request: string, requested_by: string, approved_by: string}}}
 # gateway clients only: progress and outcome; a finished or cancelled job refuses updates (conflict)
 handoff.job.update :: {id: string, state?: queued|exporting|sending|delivered|failed|cancelled, sent?: int, total?: int, incoming?: string, incoming_state?: string, error?: string}
-  => {job: {id: string, pane: string, peer: string, peer_name: string, interrupt: bool, state: queued|exporting|sending|delivered|failed|cancelled, sent: int, total: int, incoming?: string, incoming_state?: string, error?: string, created_at: int, updated_at: int, by?: string}}
+  => {job: {id: string, pane: string, peer: string, peer_name: string, interrupt: bool, state: queued|exporting|sending|delivered|failed|cancelled, sent: int, total: int, incoming?: string, incoming_state?: string, error?: string, created_at: int, updated_at: int, by?: string, expect?: {repo_root: string, branch: string|null, head: string, request: string, requested_by: string, approved_by: string}}}
 # the hosts handoff.send can deliver to, as the gateway last published them
 handoff.peers :: {} => {peers: [{id: string, name: string, owner: self|teammate, added_at: int|null, expires_at: int|null, expired: bool}], updated_at: int|null}
 # gateway clients only
@@ -412,7 +473,7 @@ handoff.peers.set :: {peers: [{id: string, name: string, owner?: string, added_a
 "##;
 
 pub const EVENTS: &str = r##"
-handoff.job :: {job: string} => {id: string, pane: string, peer: string, peer_name: string, interrupt: bool, state: queued|exporting|sending|delivered|failed|cancelled, sent: int, total: int, incoming?: string, incoming_state?: string, error?: string, created_at: int, updated_at: int, by?: string}
+handoff.job :: {job: string} => {id: string, pane: string, peer: string, peer_name: string, interrupt: bool, state: queued|exporting|sending|delivered|failed|cancelled, sent: int, total: int, incoming?: string, incoming_state?: string, error?: string, created_at: int, updated_at: int, by?: string, expect?: {repo_root: string, branch: string|null, head: string, request: string, requested_by: string, approved_by: string}}
 handoff.peers_changed :: {} => {peers: int}
 "##;
 

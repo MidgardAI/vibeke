@@ -314,6 +314,8 @@ impl Drop for ConnGuard {
         let ids = std::mem::take(&mut *self.client_ids.lock().unwrap());
         for id in ids {
             crate::agent_browser::client_gone(&self.server, &id);
+            // A pane's CLI waiting on an approval request withdraws it (Ctrl-C).
+            crate::approve::client_gone(&self.server, &id);
         }
     }
 }

@@ -12,6 +12,8 @@
 //!   separate 256-bit token valid for 10 minutes; presenting it in `client.hello {token}` (the
 //!   CLI sends `VIBEKE_ELEVATED_TOKEN`) from that pane's process tree gives full scope until it
 //!   expires. Only its hash is kept, in memory: a server restart ends every elevation.
+//! - Approved calls (`auth.approve`, one specific call instead of full scope) live in
+//!   `crate::approve`; revocation withdraws their requests and ends their standing grants too.
 
 use crate::Server;
 use crate::api::{Ctx, R, err, invalid, not_found, req, s, u};
@@ -30,6 +32,8 @@ pub const ELEVATION_TTL_MS: i64 = 10 * 60 * 1000;
 const DEFAULT_WAIT_MS: u64 = 120_000;
 /// Prefix of `Ctx::kind` for elevated connections: `elevated:<token hash prefix>`.
 pub const ELEVATED_KIND: &str = "elevated:";
+/// Open requests a pane may have at once, per kind (elevation, approved calls).
+pub const MAX_OPEN_PER_PANE: usize = 3;
 
 pub struct State {
     inner: Mutex<Inner>,
@@ -162,10 +166,10 @@ pub fn authorize(server: &Server, ctx: &Ctx, method: &str) -> Result<(), RpcErro
                 "elevation_expired: the elevated token expired or was revoked",
             ));
         }
-        if matches!(method, "auth.elevate.decide") {
+        if matches!(method, "auth.elevate.decide" | "auth.approve.decide") {
             return Err(err(
                 ErrorKind::PermissionDenied,
-                "an elevated connection cannot decide elevation requests",
+                "an elevated connection cannot decide elevation or approval requests",
             ));
         }
     }
@@ -214,6 +218,9 @@ fn revoke(server: &Server, ctx: &Ctx, p: &Value) -> R {
         g.elevated.retain(|_, gr| gr.pane != pane.id);
         before - g.elevated.len()
     };
+    // Its approval requests are withdrawn and its standing grants end.
+    let (approvals_withdrawn, grants_removed) =
+        crate::approve::clear_pane(server, &pane.id, crate::audit::actor_of(ctx));
     let revoked_json = {
         let g = server.security.auth.inner.lock().unwrap();
         serde_json::to_string(g.revoked.as_ref().unwrap_or(&HashMap::new())).unwrap_or_default()
@@ -238,7 +245,8 @@ fn revoke(server: &Server, ctx: &Ctx, p: &Value) -> R {
         "auth.token_revoked",
         crate::audit::actor_of(ctx),
         json!({"pane": pane.id}),
-        json!({"tokens_removed": removed, "elevations_removed": elevated_removed}),
+        json!({"tokens_removed": removed, "elevations_removed": elevated_removed,
+               "approvals_withdrawn": approvals_withdrawn, "grants_removed": grants_removed}),
     );
     Ok(
         json!({"pane": pane.id, "revoked": true, "tokens_removed": removed, "elevations_removed": elevated_removed}),
@@ -275,7 +283,7 @@ async fn elevate(server: &Server, ctx: &Ctx, p: &Value) -> R {
                 (r.id.clone(), r.decision.subscribe())
             }
             None => {
-                if g.requests.values().filter(|r| r.pane == pane).count() >= 3 {
+                if g.requests.values().filter(|r| r.pane == pane).count() >= MAX_OPEN_PER_PANE {
                     return Err(err(
                         ErrorKind::RateLimited,
                         "too many open elevation requests from this pane",
@@ -468,6 +476,7 @@ fn prune(server: &Server) {
 
 fn list(server: &Server) -> R {
     prune(server);
+    let (approvals, grants) = crate::approve::list_json(server);
     let now = now_ms();
     let revoked: Vec<String> = {
         let mut g = server.security.auth.inner.lock().unwrap();
@@ -498,7 +507,9 @@ fn list(server: &Server) -> R {
             |gr| json!({"pane": gr.pane, "request": gr.request, "expires_at_ms": gr.expires_at_ms}),
         )
         .collect();
-    Ok(json!({"pending": pending, "elevated": elevated, "revoked": revoked}))
+    Ok(
+        json!({"pending": pending, "elevated": elevated, "revoked": revoked, "approvals": approvals, "grants": grants}),
+    )
 }
 
 pub async fn api(server: &Server, ctx: &Ctx, method: &str, p: &Value) -> Option<R> {

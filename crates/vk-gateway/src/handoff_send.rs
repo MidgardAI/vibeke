@@ -314,12 +314,39 @@ async fn send(
     )
     .await?;
     let _cleanup = Cleanup(ex.path.clone());
+    // A send approved from a pane (`auth.approve`): deliver only what the user approved.
+    if let Some(expect) = job.get("expect").filter(|e| e.is_object()) {
+        check_expected(expect, &ex.manifest)?;
+    }
     if cancel.load(Ordering::SeqCst) {
         return Err(cancelled());
     }
     rep.update(json!({"state": "sending", "sent": 0, "total": ex.size}))
         .await?;
     transfer(&rec, &ex, cancel, rep).await
+}
+
+/// The export of an approved send must come from the repository, branch and commit the user
+/// approved (recorded when the pane asked); otherwise the job fails and nothing is sent.
+fn check_expected(expect: &Value, m: &vk_handoff::Manifest) -> Result<(), ApiError> {
+    let root = s(expect, "repo_root").unwrap_or_default();
+    let branch = s(expect, "branch");
+    let head = s(expect, "head").unwrap_or_default();
+    if root == m.source_root && branch == m.branch.as_deref() && head == m.head {
+        return Ok(());
+    }
+    let short = |h: &str| h.chars().take(12).collect::<String>();
+    let at = |r: &str, b: Option<&str>, h: &str| {
+        format!("{r} on {} at {}", b.unwrap_or("a detached HEAD"), short(h))
+    };
+    Err(ApiError::new(
+        "conflict",
+        format!(
+            "repo_moved: the pane's repository changed since the handoff was approved (approved: {}; now: {}); ask again",
+            at(root, branch, head),
+            at(&m.source_root, m.branch.as_deref(), &m.head)
+        ),
+    ))
 }
 
 /// What one step of the transfer did.
@@ -538,5 +565,35 @@ async fn step(c: &mut Conn, ex: &Exported, up: &mut Upload) -> Result<Step, ApiE
             Ok(Step::Again)
         }
         Err(e) => Err(e),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_approved_send_delivers_only_what_was_approved() {
+        let m = vk_handoff::Manifest {
+            source_root: "/src/app".into(),
+            branch: Some("main".into()),
+            head: "a".repeat(40),
+            ..Default::default()
+        };
+        let expect = json!({"repo_root": "/src/app", "branch": "main", "head": "a".repeat(40),
+                            "request": "ap-1", "requested_by": "p1", "approved_by": "tui"});
+        assert!(check_expected(&expect, &m).is_ok());
+        for (k, v) in [
+            ("repo_root", json!("/src/other")),
+            ("branch", json!("feature")),
+            ("branch", Value::Null),
+            ("head", json!("b".repeat(40))),
+        ] {
+            let mut e = expect.clone();
+            e[k] = v;
+            let err = check_expected(&e, &m).unwrap_err();
+            assert_eq!(err.kind, "conflict");
+            assert!(err.message.starts_with("repo_moved"), "{}", err.message);
+        }
     }
 }

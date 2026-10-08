@@ -920,3 +920,519 @@ fn debug_bundle_has_no_secrets_and_scrubs_printed_tokens() {
         0o600
     );
 }
+
+// --- Approved calls (09 §3.2): a pane asks for one call, the user decides outside it. ---
+
+fn gateway_ctx() -> Ctx {
+    Ctx {
+        client_id: "c-gw".into(),
+        kind: "gateway".into(),
+        pane_scope: None,
+        remote: false,
+    }
+}
+
+fn git(dir: &Path, args: &[&str]) {
+    let ok = std::process::Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_AUTHOR_NAME", "t")
+        .env("GIT_AUTHOR_EMAIL", "t@example.com")
+        .env("GIT_COMMITTER_NAME", "t")
+        .env("GIT_COMMITTER_EMAIL", "t@example.com")
+        .status()
+        .unwrap()
+        .success();
+    assert!(ok, "git {args:?} in {}", dir.display());
+}
+
+/// Panes `pane-a` and `pane-b` (one workspace) in a repository `app` on `main` with one commit
+/// and one untracked file, and the peers the gateway published: `laptop` and `desk` (own hosts).
+async fn approval_env() -> (Env, PathBuf) {
+    let e = Env::new();
+    let repo = e.root().join("app");
+    std::fs::create_dir_all(repo.join("sub")).unwrap();
+    git(&repo, &["init", "-q", "-b", "main"]);
+    std::fs::write(repo.join("a.txt"), "a\n").unwrap();
+    git(&repo, &["add", "a.txt"]);
+    git(&repo, &["commit", "-q", "-m", "a"]);
+    std::fs::write(repo.join("sub/new.txt"), "new\n").unwrap();
+    e.put_pane(pane("pane-a", Some(&repo), Some(4242)));
+    e.put_pane(pane("pane-b", Some(&repo), Some(4343)));
+    e.call(
+        &gateway_ctx(),
+        "handoff.peers.set",
+        json!({"peers": [
+            {"id": "pr1", "name": "laptop", "owner": "self", "added_at": 1, "expires_at": null, "expired": false},
+            {"id": "pr2", "name": "desk", "owner": "self", "added_at": 1, "expires_at": null, "expired": false},
+        ]}),
+    )
+    .await
+    .unwrap();
+    (e, repo)
+}
+
+fn send_ask(peer: &str) -> Value {
+    json!({"method": "handoff.send", "params": {"peer": peer}})
+}
+
+/// The open approval requests of `pane`, waiting up to 4 s for at least `n`.
+async fn approvals_of(e: &Env, pane: &str, n: usize) -> Vec<Value> {
+    for _ in 0..200 {
+        let l = e.ok("auth.list", json!({})).await;
+        let mine: Vec<Value> = l["approvals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|r| r["pane"] == pane)
+            .cloned()
+            .collect();
+        if mine.len() >= n {
+            return mine;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("no {n} approval requests from {pane}");
+}
+
+fn jobs_of(e: &Env, pane: &str) -> Vec<crate::handoff_out::Job> {
+    crate::handoff_out::list(&e.server)
+        .into_iter()
+        .filter(|j| j.pane == pane)
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn approved_calls_run_once_as_the_user_after_a_decision_outside_the_pane() {
+    let (e, repo) = approval_env().await;
+    // Full-scope callers call the method themselves.
+    let r = e.call(&user(), "auth.approve", send_ask("laptop")).await;
+    assert_eq!(kind(&r.unwrap_err()), ErrorKind::InvalidParams);
+    // Only the allow-listed calls can be asked for, validated as the method would.
+    for bad in [
+        json!({"method": "policy.add", "params": {}}),
+        json!({"method": "gateway.call", "params": {"method": "peer.invite", "params": {}}}),
+        json!({"method": "gateway.call", "params": {"method": "peer.redeem", "params": {}}}),
+    ] {
+        let r = e
+            .call(&pane_ctx("pane-a"), "auth.approve", bad.clone())
+            .await;
+        assert_eq!(kind(&r.unwrap_err()), ErrorKind::InvalidParams, "{bad}");
+    }
+    let r = e
+        .call(&pane_ctx("pane-a"), "auth.approve", send_ask("nowhere"))
+        .await;
+    assert_eq!(kind(&r.unwrap_err()), ErrorKind::NotFound);
+
+    // The pane asks and waits.
+    let srv = e.server.clone();
+    let waiter = tokio::spawn(async move {
+        let mut p = send_ask("laptop");
+        p["reason"] = json!("ship it");
+        p["timeout_ms"] = json!(15000);
+        dispatch(&srv, &pane_ctx("pane-a"), "auth.approve", &p).await
+    });
+    let req = approvals_of(&e, "pane-a", 1).await.remove(0);
+    // The summary is the server's, from server facts; the reason is separate and unverified.
+    assert_eq!(
+        req["summary"],
+        "Send pane pane-a (repo app, branch main, 1 changed file, agent: none) to laptop (your host)"
+    );
+    assert_eq!(req["reason"], "ship it");
+    assert_eq!(req["reason_verified"], false);
+    assert_eq!(req["method"], "handoff.send");
+    assert_eq!(req["status"], "pending");
+    assert_eq!(req["always_allowed"], true);
+    assert_eq!(req["peer"]["id"], "pr1");
+    assert_eq!(req["facts"]["branch"], "main");
+    let id = req["request"].as_str().unwrap().to_string();
+
+    // Neither the pane nor another pane nor an elevated connection can decide.
+    for p in ["pane-a", "pane-b"] {
+        let r = e
+            .call(
+                &pane_ctx(p),
+                "auth.approve.decide",
+                json!({"request": id, "decision": "approve"}),
+            )
+            .await;
+        assert_eq!(kind(&r.unwrap_err()), ErrorKind::PermissionDenied);
+    }
+    let elevated = Ctx {
+        client_id: "c-el".into(),
+        kind: format!("{}0123456789abcdef", crate::auth::ELEVATED_KIND),
+        pane_scope: None,
+        remote: false,
+    };
+    let r = e
+        .call(
+            &elevated,
+            "auth.approve.decide",
+            json!({"request": id, "decision": "approve"}),
+        )
+        .await;
+    assert_eq!(kind(&r.unwrap_err()), ErrorKind::PermissionDenied);
+
+    // The pane moves within the same repository: the frozen call still runs.
+    e.put_pane(pane("pane-a", Some(&repo.join("sub")), Some(4242)));
+    let d = e
+        .ok(
+            "auth.approve.decide",
+            json!({"request": id, "decision": "approve"}),
+        )
+        .await;
+    assert_eq!(d["decision"], "approved");
+    assert_eq!(d["grant"], "once");
+    assert_eq!(d["ok"], true, "{d}");
+    let job = &d["result"]["job"];
+    assert_eq!(job["state"], "queued");
+    assert_eq!(job["pane"], "pane-a");
+    assert_eq!(job["peer"], "pr1");
+    assert_eq!(job["by"], "pane:pane-a");
+    assert_eq!(job["expect"]["request"], id.as_str());
+    assert_eq!(job["expect"]["branch"], "main");
+    // The waiting call returns the method's own result.
+    let got = waiter.await.unwrap().unwrap();
+    assert_eq!(got["job"]["id"], job["id"]);
+    assert!(
+        crate::api_schema::validate_result("auth.approve", &got).is_empty(),
+        "{got}"
+    );
+    // Exactly once.
+    let r = e
+        .call(
+            &user(),
+            "auth.approve.decide",
+            json!({"request": id, "decision": "approve"}),
+        )
+        .await;
+    assert!(r.is_err());
+    assert_eq!(jobs_of(&e, "pane-a").len(), 1);
+    assert!(
+        e.ok("auth.list", json!({})).await["approvals"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+
+    // A pane may only ask to cancel its own pane's handoffs.
+    let job_id = job["id"].as_str().unwrap().to_string();
+    let r = e
+        .call(
+            &pane_ctx("pane-b"),
+            "auth.approve",
+            json!({"method": "handoff.cancel", "params": {"id": job_id}}),
+        )
+        .await;
+    assert_eq!(kind(&r.unwrap_err()), ErrorKind::PermissionDenied);
+    let ask = e
+        .call(
+            &pane_ctx("pane-a"),
+            "auth.approve",
+            json!({"method": "handoff.cancel", "params": {"id": job_id}, "wait": false}),
+        )
+        .await
+        .unwrap();
+    assert!(
+        ask["summary"]
+            .as_str()
+            .unwrap()
+            .starts_with("Cancel the handoff of pane pane-a to laptop")
+    );
+    let d = e
+        .ok(
+            "auth.approve.decide",
+            json!({"request": ask["request"], "decision": "approve"}),
+        )
+        .await;
+    assert_eq!(d["result"]["job"]["state"], "cancelled");
+
+    // Announced, audited, and the user was notified out of band.
+    assert_eq!(e.events("auth.approval_requested").len(), 2);
+    assert_eq!(e.events("auth.approval_granted").len(), 2);
+    let types = e.audit_types();
+    for t in ["auth.approval_requested", "auth.approval_granted"] {
+        assert!(types.iter().any(|x| x == t), "{t}: {types:?}");
+    }
+    assert!(e.server.with_core(|c| {
+        c.notifications.iter().any(|n| {
+            n.kind == "auth.approve" && n.pane.as_deref() == Some("pane-a") && n.urgency == "high"
+        })
+    }));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_approved_send_fails_clearly_when_the_repository_moved() {
+    let (e, repo) = approval_env().await;
+    let mut p = send_ask("laptop");
+    p["wait"] = json!(false);
+    let ask = e
+        .call(&pane_ctx("pane-b"), "auth.approve", p)
+        .await
+        .unwrap();
+    assert!(
+        crate::api_schema::validate_result("auth.approve", &ask).is_empty(),
+        "{ask}"
+    );
+    assert_eq!(ask["status"], "pending");
+    let id = ask["request"].as_str().unwrap().to_string();
+    // The pane's repository moves to another branch before the user decides.
+    git(&repo, &["checkout", "-q", "-b", "other"]);
+    let d = e
+        .ok(
+            "auth.approve.decide",
+            json!({"request": id, "decision": "approve"}),
+        )
+        .await;
+    assert_eq!(d["decision"], "approved");
+    assert_eq!(d["ok"], false);
+    let msg = d["error"]["message"].as_str().unwrap();
+    assert!(msg.starts_with("repo_moved"), "{msg}");
+    assert!(msg.contains("on main") && msg.contains("on other"), "{msg}");
+    assert!(jobs_of(&e, "pane-b").is_empty(), "nothing was sent");
+    // The pane collects the same clear failure.
+    let r = e
+        .call(&pane_ctx("pane-b"), "auth.approve", json!({"request": id}))
+        .await;
+    let err = r.unwrap_err();
+    assert_eq!(kind(&err), ErrorKind::Conflict);
+    assert!(err.message.starts_with("repo_moved"), "{}", err.message);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn always_covers_the_same_call_until_the_pane_restarts() {
+    let (e, _repo) = approval_env().await;
+    let ask = |peer: &str| {
+        let mut p = send_ask(peer);
+        p["wait"] = json!(false);
+        p
+    };
+    let cancel_all = |e: &Env| {
+        for j in crate::handoff_out::list(&e.server) {
+            if !crate::handoff_out::terminal(&j.state) {
+                crate::handoff_out::cancel(&e.server, &json!({"id": j.id})).unwrap();
+            }
+        }
+    };
+    let first = e
+        .call(&pane_ctx("pane-a"), "auth.approve", ask("laptop"))
+        .await
+        .unwrap();
+    let d = e
+        .ok(
+            "auth.approve.decide",
+            json!({"request": first["request"], "decision": "always"}),
+        )
+        .await;
+    assert_eq!(d["grant"], "always");
+    assert_eq!(d["ok"], true);
+    cancel_all(&e);
+    let grants = e.ok("auth.list", json!({})).await["grants"].clone();
+    assert_eq!(grants.as_array().unwrap().len(), 1, "{grants}");
+    assert_eq!(grants[0]["pane"], "pane-a");
+    assert_eq!(grants[0]["method"], "handoff.send");
+    assert_eq!(grants[0]["peer"], "pr1");
+
+    // The same call runs at once, announced as a standing grant.
+    let got = e
+        .call(&pane_ctx("pane-a"), "auth.approve", send_ask("laptop"))
+        .await
+        .unwrap();
+    assert_eq!(got["job"]["state"], "queued", "{got}");
+    assert!(
+        e.events("auth.approval_granted")
+            .iter()
+            .any(|ev| ev.data["grant"] == "standing")
+    );
+    cancel_all(&e);
+    // Another peer, another pane: asked again.
+    let other = e
+        .call(&pane_ctx("pane-a"), "auth.approve", ask("desk"))
+        .await
+        .unwrap();
+    assert_eq!(other["status"], "pending");
+    let b = e
+        .call(&pane_ctx("pane-b"), "auth.approve", ask("laptop"))
+        .await
+        .unwrap();
+    assert_eq!(b["status"], "pending");
+    // Only the asking pane withdraws its request.
+    let r = e
+        .call(
+            &pane_ctx("pane-b"),
+            "auth.approve.withdraw",
+            json!({"request": other["request"]}),
+        )
+        .await;
+    assert_eq!(kind(&r.unwrap_err()), ErrorKind::NotFound);
+    let w = e
+        .call(
+            &pane_ctx("pane-a"),
+            "auth.approve.withdraw",
+            json!({"request": other["request"]}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(w["withdrawn"], true);
+    assert!(
+        e.events("auth.approval_withdrawn")
+            .iter()
+            .any(|ev| ev.data["reason"] == "withdrawn")
+    );
+    e.ok(
+        "auth.approve.decide",
+        json!({"request": b["request"], "decision": "deny"}),
+    )
+    .await;
+
+    // A restarted pane (a new process) has no grant any more.
+    e.put_pane(pane("pane-a", Some(&e.root().join("app")), Some(5151)));
+    let again = e
+        .call(&pane_ctx("pane-a"), "auth.approve", ask("laptop"))
+        .await
+        .unwrap();
+    assert_eq!(again["status"], "pending");
+    assert_eq!(crate::approve::grants_of(&e.server, "pane-a"), 0);
+
+    // Redeeming an invitation can only be approved once; the link is never listed.
+    let redeem = e
+        .call(
+            &pane_ctx("pane-a"),
+            "auth.approve",
+            json!({"method": "gateway.call", "wait": false,
+                   "params": {"method": "peer.redeem", "params": {"link": "vibeke://pair#secret"}}}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(redeem["always_allowed"], false);
+    assert_eq!(redeem["params"]["params"]["link"], "(hidden)");
+    let r = e
+        .call(
+            &user(),
+            "auth.approve.decide",
+            json!({"request": redeem["request"], "decision": "always"}),
+        )
+        .await;
+    assert_eq!(kind(&r.unwrap_err()), ErrorKind::InvalidParams);
+    let d = e
+        .ok(
+            "auth.approve.decide",
+            json!({"request": redeem["request"], "decision": "deny"}),
+        )
+        .await;
+    assert_eq!(d["decision"], "denied");
+    let r = e
+        .call(
+            &pane_ctx("pane-a"),
+            "auth.approve",
+            json!({"request": redeem["request"]}),
+        )
+        .await;
+    let err = r.unwrap_err();
+    assert_eq!(kind(&err), ErrorKind::PermissionDenied);
+    assert!(
+        err.message.starts_with("approval_denied"),
+        "{}",
+        err.message
+    );
+    assert!(!e.events("auth.approval_denied").is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn revocation_and_disconnects_end_approval_requests_and_grants() {
+    let (e, _repo) = approval_env().await;
+    // A waiter whose connection closes withdraws its request (the CLI's Ctrl-C).
+    let srv = e.server.clone();
+    let waiter = tokio::spawn(async move {
+        dispatch(
+            &srv,
+            &pane_ctx("pane-b"),
+            "auth.approve",
+            &json!({"method": "handoff.send", "params": {"peer": "laptop"}, "timeout_ms": 15000}),
+        )
+        .await
+    });
+    approvals_of(&e, "pane-b", 1).await;
+    for _ in 0..200 {
+        crate::approve::client_gone(&e.server, "c-pane-b");
+        let l = e.ok("auth.list", json!({})).await;
+        if l["approvals"].as_array().unwrap().is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let err = waiter.await.unwrap().unwrap_err();
+    assert!(err.message.contains("disconnected"), "{}", err.message);
+    // A request nobody waits on (`wait: false`) stays.
+    let mut p = send_ask("laptop");
+    p["wait"] = json!(false);
+    for _ in 0..3 {
+        e.call(&pane_ctx("pane-b"), "auth.approve", p.clone())
+            .await
+            .unwrap();
+    }
+    crate::approve::client_gone(&e.server, "c-pane-b");
+    assert_eq!(approvals_of(&e, "pane-b", 3).await.len(), 3);
+    // At most three open requests per pane.
+    let r = e.call(&pane_ctx("pane-b"), "auth.approve", p.clone()).await;
+    assert_eq!(kind(&r.unwrap_err()), ErrorKind::RateLimited);
+
+    // pane-a: a standing grant and a waiting request; revocation ends both.
+    let first = e
+        .call(&pane_ctx("pane-a"), "auth.approve", {
+            let mut p = send_ask("desk");
+            p["wait"] = json!(false);
+            p
+        })
+        .await
+        .unwrap();
+    e.ok(
+        "auth.approve.decide",
+        json!({"request": first["request"], "decision": "always"}),
+    )
+    .await;
+    for j in crate::handoff_out::list(&e.server) {
+        if !crate::handoff_out::terminal(&j.state) {
+            crate::handoff_out::cancel(&e.server, &json!({"id": j.id})).unwrap();
+        }
+    }
+    let srv = e.server.clone();
+    let waiter = tokio::spawn(async move {
+        dispatch(
+            &srv,
+            &pane_ctx("pane-a"),
+            "auth.approve",
+            &json!({"method": "handoff.send", "params": {"peer": "laptop"}, "timeout_ms": 15000}),
+        )
+        .await
+    });
+    approvals_of(&e, "pane-a", 1).await;
+    assert_eq!(crate::approve::grants_of(&e.server, "pane-a"), 1);
+    e.ok("auth.revoke_token", json!({"pane": "pane-a"})).await;
+    let err = waiter.await.unwrap().unwrap_err();
+    assert_eq!(kind(&err), ErrorKind::PermissionDenied);
+    assert!(err.message.contains("revoked"), "{}", err.message);
+    assert_eq!(crate::approve::grants_of(&e.server, "pane-a"), 0);
+    let l = e.ok("auth.list", json!({})).await;
+    assert!(
+        !l["approvals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["pane"] == "pane-a")
+    );
+    // The revoked pane can't ask any more.
+    let r = e
+        .call(&pane_ctx("pane-a"), "auth.approve", send_ask("laptop"))
+        .await;
+    assert!(r.unwrap_err().message.starts_with("token_revoked"));
+    let reasons: Vec<String> = e
+        .events("auth.approval_withdrawn")
+        .iter()
+        .map(|ev| ev.data["reason"].as_str().unwrap_or("").to_string())
+        .collect();
+    assert!(reasons.contains(&"revoked".to_string()), "{reasons:?}");
+    assert!(reasons.contains(&"disconnected".to_string()), "{reasons:?}");
+}
