@@ -34,7 +34,6 @@ plugin.registry.notify
 plugin.surface.close
 preview.dismiss
 preview.profile.list
-preview.promote
 sandbox.remove
 tab.focus
 tab.move
