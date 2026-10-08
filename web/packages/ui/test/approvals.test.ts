@@ -1,7 +1,9 @@
 import { describe, expect, test } from 'bun:test';
 import { MUTATING_METHODS, type AppEvent, type ApprovalRequest } from '@vibeke/core';
-import { applyApproval, approvalChange, approvalTitle, decideOutcome, decideParams, decisionsFor, openApprovals } from '../src/lib/approvals';
+import { ApprovalStores } from '../src/app/approval-stores';
+import { applyApproval, approvalChange, approvalTitle, decideOutcome, decideParams, decisionsFor, openApprovals, reconcileSnapshot } from '../src/lib/approvals';
 import { formatRoute, parseRoute } from '../src/router';
+import { host } from './fixtures';
 
 const SUMMARY = 'Send pane w1:p2 (repo api, branch main, 3 changed files, agent: none) to marvin (your host)';
 
@@ -94,5 +96,70 @@ describe('approved calls (spec 09 §3.2)', () => {
     expect(formatRoute({ name: 'approve', host: 'h1', id: '01JAPPROVE' })).toBe('#/approve/h1/01JAPPROVE');
     expect(formatRoute({ name: 'approve', host: 'h1', id: null })).toBe('#/approve/h1');
     expect(formatRoute({ name: 'approve', host: null, id: null })).toBe('#/approve');
+  });
+
+  test('a snapshot never resurrects a request seen ending and keeps requests added after it was issued', () => {
+    const removed = new Map<string, number>([['gone', 2]]);
+    const added = new Map<string, number>([['old', 1], ['new', 3]]);
+    const cur = [request({ request: 'old', pane_handle: '' }), request({ request: 'new', pane_handle: '', created_at_ms: 300 })];
+    // Issued at version 1: 'gone' ended (v2) and 'new' arrived (v3) while it was out.
+    const out = reconcileSnapshot(cur, [request({ request: 'gone' }), request({ request: 'listed', created_at_ms: 50 })], 1, removed, added);
+    expect(out.map((r) => r.request)).toEqual(['listed', 'new']);
+    // 'old' (added at v1, before the snapshot was issued) is gone on the host: dropped, settled.
+    expect(added.has('old')).toBe(false);
+    expect(added.has('new')).toBe(true);
+    // 'gone' ended after the snapshot was issued: still remembered for the next one.
+    expect(removed.has('gone')).toBe(true);
+    // A snapshot issued after both settles them: the full record replaces the event's copy.
+    const next = reconcileSnapshot(out, [request({ request: 'new', created_at_ms: 300 })], 3, removed, added);
+    expect(next.map((r) => r.request)).toEqual(['new']);
+    expect(next[0]!.pane_handle).toBe('w1:p2');
+    expect(removed.size).toBe(0);
+    expect(added.size).toBe(0);
+  });
+
+  test('refreshes are serialized and coalesced; a withdrawal seen while one is out wins', async () => {
+    const calls: { method: string; resolve: (v: unknown) => void }[] = [];
+    const h = host('h1', null);
+    const conn = {
+      getSnapshot: () => h,
+      request: (method: string) => new Promise((resolve) => calls.push({ method, resolve })),
+    };
+    let onEvent: ((e: AppEvent) => void) | null = null;
+    const manager = {
+      getSnapshot: () => [h],
+      subscribe: () => () => {},
+      subscribeEvents: (_id: string, cb: (e: AppEvent) => void) => {
+        onEvent = cb;
+        return () => {};
+      },
+    };
+    const app = { manager, conn: () => conn, haptic: () => {}, toast: () => {} };
+    const stores = new ApprovalStores(app as never);
+    const stop = stores.start();
+    const flush = () => new Promise((r) => setTimeout(r, 0));
+    const ids = () => (stores.hosts.get().get('h1')?.list ?? []).map((r) => r.request);
+    const emit = (type: string, id: string) => onEvent!(event(type, { method: 'handoff.send', summary: SUMMARY, peer: 'pe-1', always_allowed: true }, id));
+    // The connect refresh is out; events arrive meanwhile.
+    expect(calls.map((c) => c.method)).toEqual(['auth.list']);
+    emit('auth.approval_requested', 'ap-1');
+    emit('auth.approval_requested', 'ap-2');
+    // Coalesced: no second auth.list while the first is in flight.
+    expect(calls).toHaveLength(1);
+    expect(ids()).toEqual(['ap-1', 'ap-2']);
+    emit('auth.approval_withdrawn', 'ap-1');
+    expect(ids()).toEqual(['ap-2']);
+    // The older snapshot still lists ap-1 and lacks ap-2.
+    calls[0]!.resolve({ approvals: [request({ request: 'ap-1' })], grants: [] });
+    await flush();
+    expect(ids()).toEqual(['ap-2']);
+    // One follow-up for both events, issued after the first answer landed.
+    expect(calls).toHaveLength(2);
+    calls[1]!.resolve({ approvals: [request({ request: 'ap-2' })], grants: [] });
+    await flush();
+    expect(ids()).toEqual(['ap-2']);
+    expect(stores.hosts.get().get('h1')!.list[0]!.pane_handle).toBe('w1:p2');
+    expect(calls).toHaveLength(2);
+    stop();
   });
 });
