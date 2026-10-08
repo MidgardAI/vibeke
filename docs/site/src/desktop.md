@@ -1,8 +1,11 @@
 # Desktop app
 
 The desktop app gives you native notifications, menu-bar approvals, and separate pane windows.
-Download it from the [latest release](https://github.com/MidgardAI/vibeke/releases/latest).
-See [installation](install.md#desktop-app) for supported platforms and signing details.
+Choose the download for your operating system and processor.
+
+{{#include ../../desktop-downloads.md}}
+
+See [installation](install.md#desktop-app) for installation steps, signing details, and host requirements.
 
 ## Connect to this computer
 

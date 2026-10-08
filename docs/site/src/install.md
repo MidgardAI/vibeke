@@ -46,16 +46,13 @@ Continue with [your first workspace](quickstart.md).
 
 ## Desktop app
 
-Download the installer for your computer from the [latest release](https://github.com/MidgardAI/vibeke/releases/latest).
+{{#include ../../desktop-downloads.md}}
 
-| Platform | Download |
-| --- | --- |
-| macOS, Apple silicon | `Vibeke-<version>-mac-arm64.dmg` |
-| macOS, Intel | `Vibeke-<version>-mac-x64.dmg` |
-| Linux, x86_64 | `Vibeke-<version>-linux-x86_64.AppImage` or `Vibeke-<version>-linux-amd64.deb` |
-| Windows, x86_64 | `Vibeke-<version>-win-x64.exe` |
+See [all release files and notes](https://github.com/MidgardAI/vibeke/releases/latest).
 
-On macOS, open the DMG and drag Vibeke into Applications. ZIP downloads are also available.
+On macOS, open the DMG and drag Vibeke into Applications. On Windows, run the EXE installer.
+On Linux, choose the DEB for Debian-based systems or the AppImage for other distributions.
+The Linux desktop app requires an available Secret Service/keyring backend.
 
 The desktop app connects to a Vibeke host. It does not bundle the host CLI.
 For local use on a supported Mac or Linux computer, install the CLI too.
