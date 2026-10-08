@@ -27,6 +27,8 @@ fn ring_overflow_while_server_is_down_recovers_lost() {
         let s = Session::new();
         let pane = s.workspace("/bin/sh");
         let child = s.pane(&pane)["child_pid"].as_i64().unwrap();
+        // Let the idle snapshot land: output past it that the ring no longer holds is lost.
+        std::thread::sleep(Duration::from_secs(3));
         // 20 MB of output, over the 16 MiB ring; the shell prints it whether or not a server
         // is attached.
         s.json(&[
@@ -70,11 +72,7 @@ fn ring_overflow_while_server_is_down_recovers_lost() {
             .iter()
             .filter_map(|e| e["data"]["method"].as_str())
             .collect();
-        assert_eq!(
-            methods,
-            ["lost"],
-            "round {round}: pane.recovered events"
-        );
+        assert_eq!(methods, ["lost"], "round {round}: pane.recovered events");
         // Usable: the shell finished its burst and takes new input.
         let deadline = Instant::now() + Duration::from_secs(30);
         loop {

@@ -480,6 +480,12 @@ async fn run_inner(
             .with_core(|c| c.store.snapshot_for(&rt.id))
             .ok()
             .flatten();
+        // Output between the last snapshot of this holder and the ring's start was never seen
+        // by any server: it is gone. A ring that merely wrapped while a server was attached
+        // lost nothing (that output was archived).
+        let gap = snap.as_ref().is_some_and(|s| {
+            s.incarnation.as_deref() == Some(incarnation.as_str()) && s.offset < ring.start_offset
+        });
         // A snapshot is only valid for the holder incarnation it was taken from, at an
         // offset that this holder's ring can continue from.
         if let Some(s) = snap
@@ -505,9 +511,7 @@ async fn run_inner(
         sc.archived_upto = server.archive_last_line(&rt.id).map(|l| l + 1).unwrap_or(0);
         if method == "ring_only" {
             from = ring.start_offset;
-            // The ring no longer starts at the beginning of the pane's output: what scrolled
-            // out of it while the server was away is gone.
-            if ring.start_offset > 0 {
+            if gap {
                 method = "lost";
             }
         }
