@@ -287,12 +287,38 @@ pub struct Config {
     pub relay_token: Option<String>,
     pub session: Option<String>,
     pub socket: Option<PathBuf>,
+    /// Whether the server starts the gateway for you. `None` = on when a relay is saved.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub autostart: Option<bool>,
     /// VAPID `sub` claim.
     pub push_subject: String,
     pub push_allowed_hosts: Vec<String>,
     pub stt: Option<Stt>,
     /// Serve the channel on `<state dir>/gateway.sock` for desktop apps on this machine.
     pub local_socket: bool,
+}
+
+impl Config {
+    /// The gateway is set up for autostart. `local_socket` defaults to true, so it never counts.
+    pub fn autostart_enabled(&self) -> bool {
+        self.autostart == Some(true) || (self.autostart.is_none() && self.relay.is_some())
+    }
+
+    pub fn session_name(&self) -> &str {
+        self.session.as_deref().unwrap_or("default")
+    }
+}
+
+/// True when the gateway in `dir` is set up for autostart for `session` (the enabled rule, and the
+/// `gateway.toml` session — default "default" — equals `session`). Missing dir/file → false.
+pub fn autostart_for_session(dir: &Path, session: &str) -> bool {
+    let Ok(text) = fs::read_to_string(dir.join("gateway.toml")) else {
+        return false;
+    };
+    let Ok(cfg) = toml::from_str::<Config>(&text) else {
+        return false;
+    };
+    cfg.autostart_enabled() && cfg.session_name() == session
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -310,6 +336,7 @@ impl Default for Config {
             relay_token: None,
             session: None,
             socket: None,
+            autostart: None,
             push_subject: "mailto:vibeke@localhost".into(),
             push_allowed_hosts: crate::push::DEFAULT_ALLOWED
                 .iter()
@@ -524,6 +551,157 @@ impl StateDir {
     }
 }
 
+/// `status.json`: what `gateway run` is doing right now (read by the server and the CLI).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StatusFile {
+    pub pid: u32,
+    /// `connecting` | `online` | `offline` | `local_only`
+    pub state: String,
+    pub relay: Option<String>,
+    pub devices: u32,
+    /// Unix ms of the last state change.
+    pub since_ms: u64,
+    pub last_error: Option<String>,
+}
+
+pub fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+pub fn status_path(dir: &Path) -> PathBuf {
+    dir.join("status.json")
+}
+
+pub fn read_status(dir: &Path) -> Option<StatusFile> {
+    serde_json::from_slice(&fs::read(status_path(dir)).ok()?).ok()
+}
+
+/// Publishes [`StatusFile`] on every state change. Inert until `enable` (tests, one-shot commands).
+pub struct StatusWriter {
+    dir: PathBuf,
+    cur: std::sync::Mutex<Option<StatusFile>>,
+}
+
+impl StatusWriter {
+    pub fn new(dir: PathBuf) -> Self {
+        StatusWriter {
+            dir,
+            cur: std::sync::Mutex::new(None),
+        }
+    }
+
+    pub fn enable(&self, state: &str, relay: Option<String>, devices: usize) {
+        let mut cur = self.cur.lock().unwrap();
+        *cur = Some(StatusFile {
+            pid: std::process::id(),
+            state: state.into(),
+            relay,
+            devices: devices as u32,
+            since_ms: now_ms(),
+            last_error: None,
+        });
+        self.flush(cur.as_ref());
+    }
+
+    /// Change state. `error` replaces `last_error`; reaching `online` clears it.
+    pub fn set_state(&self, state: &str, error: Option<String>) {
+        let mut cur = self.cur.lock().unwrap();
+        let Some(s) = cur.as_mut() else { return };
+        if s.state == state && error.is_none() {
+            return;
+        }
+        s.state = state.into();
+        s.since_ms = now_ms();
+        if error.is_some() || state == "online" {
+            s.last_error = error;
+        }
+        self.flush(cur.as_ref());
+    }
+
+    pub fn set_devices(&self, devices: usize) {
+        let mut cur = self.cur.lock().unwrap();
+        let Some(s) = cur.as_mut() else { return };
+        if s.devices == devices as u32 {
+            return;
+        }
+        s.devices = devices as u32;
+        self.flush(cur.as_ref());
+    }
+
+    fn flush(&self, s: Option<&StatusFile>) {
+        if let Some(s) = s
+            && let Err(e) = write_json(&status_path(&self.dir), s)
+        {
+            tracing::warn!("status.json: {e}");
+        }
+    }
+
+    /// Clean exit: remove the file.
+    pub fn clear(&self) {
+        *self.cur.lock().unwrap() = None;
+        let _ = fs::remove_file(status_path(&self.dir));
+    }
+}
+
+/// Exclusive flock on `run.lock`, held for the life of `gateway run`.
+pub struct RunLock {
+    _f: fs::File,
+}
+
+impl RunLock {
+    /// `Ok(Ok(lock))` when acquired (our pid is written into the file), `Ok(Err(pid))` when another
+    /// gateway holds it (`pid` 0 if unreadable).
+    pub fn acquire(dir: &Path) -> Result<std::result::Result<RunLock, u32>> {
+        Self::acquire_inner(dir, true)
+    }
+
+    fn acquire_inner(dir: &Path, write_pid: bool) -> Result<std::result::Result<RunLock, u32>> {
+        let p = dir.join("run.lock");
+        let mut f = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .mode(0o600)
+            .open(&p)?;
+        // SAFETY: flock on an owned, open descriptor.
+        let r = unsafe {
+            libc::flock(
+                std::os::fd::AsRawFd::as_raw_fd(&f),
+                libc::LOCK_EX | libc::LOCK_NB,
+            )
+        };
+        if r != 0 {
+            let err = std::io::Error::last_os_error();
+            if err.kind() == std::io::ErrorKind::WouldBlock {
+                let pid = fs::read_to_string(&p)
+                    .ok()
+                    .and_then(|t| t.trim().parse().ok())
+                    .unwrap_or(0);
+                return Ok(Err(pid));
+            }
+            bail!("lock {}: {err}", p.display());
+        }
+        if write_pid {
+            f.set_len(0)?;
+            write!(f, "{}", std::process::id())?;
+            f.sync_all()?;
+        }
+        Ok(Ok(RunLock { _f: f }))
+    }
+
+    /// Pid of the gateway running from `dir`, if any (probes the lock; never keeps it).
+    pub fn holder(dir: &Path) -> Option<u32> {
+        match Self::acquire_inner(dir, false) {
+            Ok(Err(pid)) => Some(pid),
+            _ => None,
+        }
+    }
+}
+
 fn check_owned(p: &Path) -> Result<()> {
     let md = fs::symlink_metadata(p)?;
     if md.file_type().is_symlink() {
@@ -610,6 +788,84 @@ mod tests {
         assert_eq!(back.status, p.status);
         assert!(s.pairing("../x").is_err());
         assert_eq!(s.pairings().len(), 1);
+    }
+
+    fn write_cfg(dir: &Path, text: &str) {
+        fs::write(dir.join("gateway.toml"), text).unwrap();
+    }
+
+    #[test]
+    fn autostart_rule() {
+        let t = tempfile::tempdir().unwrap();
+        let d = t.path();
+        // Missing file and missing dir.
+        assert!(!autostart_for_session(d, "default"));
+        assert!(!autostart_for_session(&d.join("nope"), "default"));
+        // local_socket defaults to true but never counts.
+        write_cfg(d, "");
+        assert!(!autostart_for_session(d, "default"));
+        write_cfg(d, "local_socket = true\n");
+        assert!(!autostart_for_session(d, "default"));
+        // A saved relay enables it; an explicit false overrides.
+        write_cfg(d, "relay = \"wss://r.example\"\n");
+        assert!(autostart_for_session(d, "default"));
+        write_cfg(d, "relay = \"wss://r.example\"\nautostart = false\n");
+        assert!(!autostart_for_session(d, "default"));
+        // Explicit true without a relay.
+        write_cfg(d, "autostart = true\n");
+        assert!(autostart_for_session(d, "default"));
+        // Session mismatch.
+        write_cfg(d, "autostart = true\nsession = \"work\"\n");
+        assert!(autostart_for_session(d, "work"));
+        assert!(!autostart_for_session(d, "default"));
+        // Garbage never errors.
+        write_cfg(d, "not toml {{{");
+        assert!(!autostart_for_session(d, "default"));
+    }
+
+    #[test]
+    fn config_autostart_roundtrip() {
+        let t = tempfile::tempdir().unwrap();
+        let s = StateDir::open(t.path().join("gw")).unwrap();
+        let mut c = s.config().unwrap();
+        assert_eq!(c.autostart, None);
+        c.autostart = Some(true);
+        s.save_config(&c).unwrap();
+        assert_eq!(s.config().unwrap().autostart, Some(true));
+    }
+
+    #[test]
+    fn status_file_roundtrip() {
+        let t = tempfile::tempdir().unwrap();
+        let w = StatusWriter::new(t.path().to_path_buf());
+        w.set_state("online", None);
+        assert!(read_status(t.path()).is_none(), "inert until enabled");
+        w.enable("connecting", Some("wss://r.example".into()), 2);
+        let s = read_status(t.path()).unwrap();
+        assert_eq!(s.pid, std::process::id());
+        assert_eq!(s.state, "connecting");
+        assert_eq!(s.devices, 2);
+        w.set_state("offline", Some("boom".into()));
+        let s = read_status(t.path()).unwrap();
+        assert_eq!(
+            (s.state.as_str(), s.last_error.as_deref()),
+            ("offline", Some("boom"))
+        );
+        w.set_state("online", None);
+        assert_eq!(read_status(t.path()).unwrap().last_error, None);
+        w.clear();
+        assert!(read_status(t.path()).is_none());
+    }
+
+    #[test]
+    fn run_lock_is_exclusive() {
+        let t = tempfile::tempdir().unwrap();
+        let first = RunLock::acquire(t.path()).unwrap().ok().unwrap();
+        // flock is per open file description, so a second open in-process is refused.
+        let second = RunLock::acquire(t.path()).unwrap();
+        assert_eq!(second.err(), Some(std::process::id()));
+        drop(first);
+        assert!(RunLock::acquire(t.path()).unwrap().is_ok());
     }
 
     fn device(id: &str, expires_at: Option<u64>) -> Device {
