@@ -37,6 +37,9 @@ After the first setup, pair another device from the TUI or the shell.
 
 In the TUI, press `prefix` then `alt+d`, or run **Pair a phone** from the command palette.
 Choose the access level and press `enter`.
+When the relay needs a Vibeke account and you are not signed in, the view first shows a sign-in code with a QR code.
+Open the link on any device, sign in with GitHub and confirm the code; the pairing link follows by itself.
+The list also shows the signed-in account, and `s` starts the sign-in on its own.
 Scan the QR code, then confirm the fingerprint in the prompt that appears in the TUI.
 Press `c` to copy the link, or `esc` to cancel it.
 
