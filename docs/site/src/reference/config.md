@@ -150,6 +150,7 @@ Vibeke reloads the file after a change. If parsing fails, it keeps the previous 
 # handoffs                 = "prefix+shift+h" # incoming handoffs and the ones being sent (accept, decline, cancel)
 # handoff_send             = "prefix+alt+h"   # hand off the focused pane to another host
 # sharing                  = ""               # Sharing & handoff: peers, invitations, paste an invitation, invited devices
+# devices                  = "prefix+alt+d"   # Devices: your paired phones — pair, list, revoke
 
 # [keys.copy_mode]
 # mode = "vi"                           # vi | emacs
