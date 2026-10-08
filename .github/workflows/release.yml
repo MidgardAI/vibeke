@@ -26,6 +26,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: jdx/mise-action@v2
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/zig
+            ~/Library/Caches/zig
+          key: zig-${{ runner.os }}-${{ hashFiles('vendor/libghostty-vt.vendor.json', 'crates/vk-term/build.rs') }}
       - name: Tag must match the workspace version
         run: |
           version="${GITHUB_REF_NAME#v}"
@@ -46,6 +53,7 @@ jobs:
     permissions:
       contents: write # create the draft release and upload files; nothing else
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           path: dist
@@ -54,8 +62,16 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          version="${GITHUB_REF_NAME#v}"
+          for target in macos-aarch64 linux-x86_64 linux-aarch64; do
+            test -s "dist/vibeke-$target"
+            (cd dist && sha256sum -c "vibeke-$target.sha256")
+          done
+          # Bind the installer to this release even after the workspace version is bumped.
+          sed "s/^VERSION=.*/VERSION=\"\${VIBEKE_VERSION:-$version}\"/" scripts/install.sh > dist/install.sh
+          sh -n dist/install.sh
           ls -l dist
           gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft \
             --title "Vibeke ${GITHUB_REF_NAME#v}" \
             --notes "Unsigned draft. The maintainer signs SHA256SUMS and manifest.json locally (scripts/release-sign.sh) and uploads the .minisig files before publishing." \
-            dist/vibeke-*
+            dist/vibeke-* dist/install.sh

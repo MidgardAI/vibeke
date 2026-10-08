@@ -2,7 +2,7 @@
 
 Vibeke supports macOS on Apple silicon and Linux on x86_64 or aarch64. Linux release binaries use static musl linking. Windows support is planned.
 
-Vibeke is pre-release software. Build from source to use the current code. Published releases contain the available installation files.
+Vibeke is pre-1.0 software. Install a tagged release for a fixed version, or build from source to use the current code.
 
 ## Build from source
 
@@ -39,18 +39,26 @@ See [releases and reproducible builds](reference/releases.md).
 
 ## Install a published release
 
-1. Check the [release files](https://github.com/MidgardAI/vibeke/releases).
-2. If the release includes `install.sh`, run the installer:
+Check the [release files](https://github.com/MidgardAI/vibeke/releases). While the repository is private, use an authenticated GitHub CLI to download the release, then install the verified local files:
 
-   ```sh
-   curl -fsSL https://github.com/MidgardAI/vibeke/releases/latest/download/install.sh | sh
-   ```
+```sh
+gh auth login
+release_dir=$(mktemp -d)
+gh release download v0.1.0 --repo MidgardAI/vibeke --dir "$release_dir"
+VIBEKE_INSTALL_FROM="$release_dir" sh "$release_dir/install.sh"
+```
+
+Once the repository is public, the same installer can be downloaded without authentication:
+
+```sh
+curl -fsSL https://github.com/MidgardAI/vibeke/releases/latest/download/install.sh | sh
+```
 
 The installer writes the binary to `~/.local/share/vibeke/versions/<v>/vibeke`. It creates links at `~/.local/share/vibeke/current` and `~/.local/bin/vibeke`.
 
 The installer does not use `sudo`. It writes only inside `$HOME`. It verifies the minisign signature of `SHA256SUMS` against the embedded release keys, then checks the binary against `SHA256SUMS`, before it installs anything. This needs the `minisign` tool (`brew install minisign`). The release keys and their key ids are listed in [release verification](reference/releases.md).
 
-While the release repository is private, set `GITHUB_TOKEN` (or `VIBEKE_GITHUB_TOKEN`) to a token with read access. The installer then downloads through the GitHub API and never prints the token. Public releases need no token.
+For online installation from an already downloaded installer while the repository is private, set `GITHUB_TOKEN` (or `VIBEKE_GITHUB_TOKEN`) to a token with read access. The installer then downloads through the GitHub API and never prints the token. This does not authenticate the initial `curl` that fetches the installer; use the GitHub CLI flow above. Public releases need no token.
 
 | Variable | Purpose |
 | --- | --- |

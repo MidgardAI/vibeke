@@ -89,10 +89,10 @@ Signing happens locally. CI never holds a signing secret.
 1. Update the workspace version in `Cargo.toml` and commit it.
 2. Run `mise run ci`, then `mise run repro-check` (see the [hardening guide](hardening.md)).
 3. Tag and push: `git tag v<version> && git push origin v<version>`.
-4. The `release` workflow (`.github/workflows/release.yml`) builds the macOS and Linux artifacts and creates a **draft** release `v<version>` with the unsigned binaries and `.sha256` files. It needs no secret beyond the repository's own `GITHUB_TOKEN`.
+4. The `release` workflow (`.github/workflows/release.yml`) builds the macOS and Linux artifacts, verifies that all three binaries match their `.sha256` files, and creates a **draft** release `v<version>` with those files and an `install.sh` pinned to the tag's version. It needs no secret beyond the repository's own `GITHUB_TOKEN`.
 5. Download the draft's files into one directory, for example with `gh release download v<version> --dir dist/<version>` (a private repository needs `gh auth login`). Alternatively build locally with `scripts/release-build.sh <version>` and use `dist/<version>/`. If you built both, compare the sha256 of the files first: they should be identical.
 6. Sign: `scripts/release-sign.sh dist/<version>`. The script writes `SHA256SUMS` and `manifest.json`, then runs minisign twice (`minisign -S -s ~/.vibeke-release-keys/vibeke-2026.key -m <file> -t "vibeke v<version>"`). Enter the key password when minisign asks. The script finishes by verifying both signatures with the public key embedded in the binary, and fails if they do not verify.
-7. Upload the four signing outputs to the draft: `gh release upload v<version> dist/<version>/SHA256SUMS dist/<version>/SHA256SUMS.minisig dist/<version>/manifest.json dist/<version>/manifest.json.minisig`. Also upload `scripts/install.sh` if the release should carry the installer.
+7. Upload the four signing outputs to the draft: `gh release upload v<version> dist/<version>/SHA256SUMS dist/<version>/SHA256SUMS.minisig dist/<version>/manifest.json dist/<version>/manifest.json.minisig`. The workflow already includes the version-pinned installer.
 8. Check the result with a fresh checkout of the files: `minisign -V -P <public key> -m SHA256SUMS`.
 9. Publish the draft (`gh release edit v<version> --draft=false`).
 10. Smoke test: run `scripts/install.sh` with `VIBEKE_VERSION=<version>` (and `GITHUB_TOKEN` while the repository is private) on a clean `HOME`.

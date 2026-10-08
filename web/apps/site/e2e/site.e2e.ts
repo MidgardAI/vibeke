@@ -128,7 +128,8 @@ test('one comparison table filters features and links every product to its sourc
   await table.getByRole('button', { name: 'Details: Transfer work to a teammate', exact: true }).click()
   await table.getByRole('link', { name: 'Vibeke source: Transfer work to a teammate' }).click()
   await expect(page).toHaveURL('/docs/handoff')
-  await expect(page.locator('article')).toContainText('does not start an agent automatically')
+  await expect(page.locator('article')).toContainText('is never imported automatically')
+  await expect(page.locator('article')).toContainText('decides whether to resume the agent')
 })
 
 test('all documentation routes render directly without broken local links or overflow', async ({ page }, info) => {

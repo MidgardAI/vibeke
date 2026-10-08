@@ -95,7 +95,7 @@ fn without_a_gateway_the_call_is_unavailable() {
     let e = api(&s, "gateway.call", json!({"method": "peer.list"})).unwrap_err();
     assert_eq!(kind(&e), "remote_unavailable", "{e}");
     let msg = e.pointer("/error/message").and_then(Value::as_str).unwrap();
-    assert!(msg.contains("vibeke gateway run"), "{e}");
+    assert!(msg.contains("vibeke gateway on"), "{e}");
 }
 
 #[test]
