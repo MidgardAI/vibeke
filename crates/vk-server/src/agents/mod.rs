@@ -100,12 +100,16 @@ struct Inner {
     /// Panes whose input is locked while a verified keystroke sequence runs (04 §8).
     locks: HashMap<String, Instant>,
     screen_eval: HashMap<String, Instant>,
+    /// Panes with a trailing screen evaluation scheduled (see `on_screen`).
+    screen_trailing: std::collections::HashSet<String>,
     /// Per pane: since when each `hold_ms` screen rule has matched (04 §9.1).
     holds: HashMap<String, vk_agents::manifest::HoldTracker>,
     resume_mode: String,
 }
 
 const SCREEN_GRACE: Duration = Duration::from_secs(2);
+/// How long an unrecognised modal must stay on screen before it opens as an unknown dialog.
+const UNKNOWN_DIALOG_SETTLE: Duration = Duration::from_millis(400);
 
 #[derive(Default)]
 pub struct Agents {
@@ -433,6 +437,21 @@ impl Agents {
                 .entry(pane.to_string())
                 .or_insert_with(|| Instant::now() - Duration::from_secs(1));
             if last.elapsed() < Duration::from_millis(100) {
+                // Rate limited: look once more after the window so the last frame of a burst
+                // (a picker finishing its first draw) is never missed.
+                if i.screen_trailing.insert(pane.to_string()) {
+                    let (srv, pane2) = (server.clone(), pane.to_string());
+                    tokio::spawn(async move {
+                        tokio::time::sleep(Duration::from_millis(120)).await;
+                        srv.agents
+                            .inner
+                            .lock()
+                            .unwrap()
+                            .screen_trailing
+                            .remove(&pane2);
+                        srv.agents.on_screen(&srv, &pane2);
+                    });
+                }
                 return;
             }
             *last = Instant::now();
@@ -549,22 +568,34 @@ impl Agents {
             (_, o) => o,
         };
         let is_picker = m.dialog.as_ref().is_some_and(|d| d.picker.is_some());
+        let unknown = m
+            .dialog
+            .as_ref()
+            .and_then(|d| d.picker.as_ref())
+            .is_some_and(|p| p.is_unknown());
         // §2.5 rule 3: with a healthy structured transport, a screen dialog only becomes an
         // interaction if the transport hasn't reported one within the grace period. Pickers are
-        // never reported by a transport, so they open at once.
-        if structured
-            && !is_picker
+        // never reported by a transport, so they open at once, except the unknown-dialog
+        // fallback, which must hold briefly (a picker's first frames can be partial).
+        let grace = if unknown {
+            Some(UNKNOWN_DIALOG_SETTLE)
+        } else if structured && !is_picker {
+            Some(SCREEN_GRACE)
+        } else {
+            None
+        };
+        if let Some(grace) = grace
             && let (Some(d), None) = (&m.dialog, &open_screen)
         {
             let mut i = self.inner.lock().unwrap();
             let fresh = match i.screen_grace.get(pane) {
-                Some((fp, at)) if *fp == d.fingerprint => at.elapsed() < SCREEN_GRACE,
+                Some((fp, at)) if *fp == d.fingerprint => at.elapsed() < grace,
                 _ => {
                     i.screen_grace
                         .insert(pane.to_string(), (d.fingerprint.clone(), Instant::now()));
                     let (srv, pane2) = (server.clone(), pane.to_string());
                     tokio::spawn(async move {
-                        tokio::time::sleep(SCREEN_GRACE + Duration::from_millis(150)).await;
+                        tokio::time::sleep(grace + Duration::from_millis(150)).await;
                         srv.agents.on_screen(&srv, &pane2);
                     });
                     true

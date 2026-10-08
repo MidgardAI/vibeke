@@ -82,6 +82,18 @@ fn claude_model_signature_survives_pointer_moves_and_scrolling() {
 }
 
 #[test]
+fn claude_model_picker_in_a_small_pane() {
+    // As a Vibeke pane renders it at 80x24: two rows and `… +11 models`.
+    let p = picker(Harness::Claude, "claude/2.1.295/model-80x24.txt").expect("model picker");
+    assert_eq!(p.name, "model");
+    assert_eq!(p.title, "Select model");
+    assert_eq!(labels(&p), ["Default (recommended)", "Opus 5.5"]);
+    assert_eq!(pointed(&p), "opus-5-5");
+    assert!(p.scrolls);
+    assert_eq!(p.adjust.unwrap().current.as_deref(), Some("medium"));
+}
+
+#[test]
 fn claude_effort_slider() {
     let p = picker(Harness::Claude, "claude/2.1.295/effort.txt").expect("effort picker");
     assert_eq!(p.name, "effort");
