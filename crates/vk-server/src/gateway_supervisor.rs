@@ -10,9 +10,19 @@
 //!   group, without the pane identity of whatever started the server.
 //! - Exit codes: 0 is a clean stop and 4 means "not set up" (neither is restarted); 3 means
 //!   another gateway holds `run.lock` (shown as `external`; while ours is wanted the supervisor
-//!   looks again every 30 s and takes over once it is gone). Anything else is a crash: restarted after 1 s, 2 s, 4 s … capped at
-//!   60 s, the schedule reset by a run of 60 s; the 10th crash within 10 minutes latches
-//!   `crashed` until `gateway.start`.
+//!   looks again every 30 s and takes over once it is gone). Anything else is a crash:
+//!   restarted after 1 s, 2 s, 4 s … capped at 60 s, the schedule reset by a run of 60 s; the
+//!   10th crash within 10 minutes latches `crashed` until `gateway.start`.
+//! - Whether some other gateway runs is decided by `run.lock` alone (probed with a
+//!   non-blocking flock that is released at once); `status.json` only adds detail, so a stale
+//!   file whose pid was reused never holds a start back.
+//! - Once the gateway (the process group leader) has exited, cleanly or not, and on stop, the
+//!   rest of its process group is SIGKILLed (right after the leader is reaped: the group id
+//!   can't be reused while members remain).
+//! - `gateway.start {restart: true}` stops our child first and starts a fresh one (new
+//!   connection settings); a hand-run gateway holding `run.lock` is reported as a `conflict`.
+//!   `gateway.start` / `gateway.stop` / `gateway.status` take the caller's gateway `dir` and
+//!   answer `conflict` when it isn't the dir this server supervises.
 //! - While a child runs, the gateway's `status.json` is read every 2 s. An idle supervisor
 //!   never wakes: `gateway.status` / `server.status` read the file on demand.
 //! - `gateway.stop` latches "don't restart until `gateway.start`". Server stop, a signal and
@@ -123,10 +133,16 @@ struct Snap {
     since_ms: Option<u64>,
 }
 
+type StartReply = oneshot::Sender<Result<GatewayStatus, String>>;
+
 enum Cmd {
-    /// `gateway.start` (with a reply) or a start kick (`handoff.send`).
-    Start(Option<oneshot::Sender<GatewayStatus>>),
-    Stop(oneshot::Sender<GatewayStatus>),
+    /// `gateway.start` (with a reply; `restart`: replace a running child) or a start kick
+    /// (`handoff.send`).
+    Start {
+        reply: Option<StartReply>,
+        restart: bool,
+    },
+    Stop(StartReply),
     /// The server is going away: terminate the child, spawn nothing until `Resume`. Replies
     /// whether the gateway was wanted.
     Shutdown(oneshot::Sender<bool>),
@@ -245,19 +261,49 @@ fn read_status_file(dir: &Path) -> Option<StatusFile> {
         .and_then(|b| parse_status_file(&b))
 }
 
-/// Whether a process `pid` exists (it may belong to another user: EPERM counts as alive).
-fn pid_alive(pid: u32) -> bool {
-    let Ok(p) = i32::try_from(pid) else {
-        return false;
-    };
-    if p <= 0 {
-        return false;
+pub const RUN_LOCK_FILE: &str = "run.lock";
+
+/// Whether a gateway runs from `dir`: `Some(pid)` when `run.lock` is held (`pid` is what the
+/// holder wrote into it, 0 if unreadable). Probes with a non-blocking exclusive flock that is
+/// released at once; a missing file means nobody holds it.
+pub fn run_lock_holder(dir: &Path) -> Option<u32> {
+    use std::os::fd::AsRawFd;
+    let p = dir.join(RUN_LOCK_FILE);
+    let f = std::fs::OpenOptions::new().read(true).open(&p).ok()?;
+    // SAFETY: flock on an owned, open descriptor; closing it (drop) releases the lock.
+    let r = unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if r == 0 {
+        // SAFETY: as above.
+        unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_UN) };
+        return None;
     }
-    // SAFETY: signal 0 only checks for existence and permission.
-    if unsafe { libc::kill(p, 0) } == 0 {
-        return true;
+    if std::io::Error::last_os_error().kind() != std::io::ErrorKind::WouldBlock {
+        return None;
     }
-    std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+    Some(
+        std::fs::read_to_string(&p)
+            .ok()
+            .and_then(|t| t.trim().parse().ok())
+            .unwrap_or(0),
+    )
+}
+
+/// Paths compare equal when they name the same directory (canonicalized when they exist).
+pub fn same_dir(a: &Path, b: &Path) -> bool {
+    let canon = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    canon(a) == canon(b)
+}
+
+/// `gateway.start` / `stop` / `status` with the caller's gateway `dir`: `Err(message)` when it
+/// isn't `ours`.
+pub fn check_dir(ours: &Path, p: &Value) -> Result<(), String> {
+    match p.get("dir").and_then(Value::as_str) {
+        Some(d) if !same_dir(Path::new(d), ours) => Err(format!(
+            "this server supervises the gateway in {}, not {d}; stop the server (`vibeke server stop`) and run the command again to use that directory",
+            ours.display()
+        )),
+        _ => Ok(()),
+    }
 }
 
 const RUNNING_STATES: &[&str] = &["connecting", "online", "offline", "local_only"];
@@ -270,11 +316,12 @@ fn running_state(s: &str) -> String {
     }
 }
 
-/// The status from the supervisor's facts and `status.json`.
+/// The status from the supervisor's facts, `status.json` and the `run.lock` holder (`external`:
+/// `Some(pid)` when the lock is held; only consulted without a child of ours).
 fn derive(
     snap: &Snap,
     file: Option<&StatusFile>,
-    alive: impl Fn(u32) -> bool,
+    external: Option<u32>,
     log: &Path,
 ) -> GatewayStatus {
     let mut st = GatewayStatus {
@@ -310,10 +357,19 @@ fn derive(
         }
         return st;
     }
-    if let Some(f) = file.filter(|f| alive(f.pid)) {
+    if let Some(holder) = external {
         st.state = "external".into();
-        st.pid = Some(f.pid);
-        from_file(&mut st, f);
+        // The file only adds detail, and only when it is the lock holder's.
+        let f = file.filter(|f| holder == 0 || f.pid == holder);
+        st.pid = match (holder, f) {
+            (0, Some(f)) => Some(f.pid),
+            (0, None) => None,
+            (p, _) => Some(p),
+        };
+        st.last_error = None;
+        if let Some(f) = f {
+            from_file(&mut st, f);
+        }
         return st;
     }
     st.state = if snap.crashed {
@@ -343,10 +399,15 @@ pub fn status(server: &Server) -> Option<GatewayStatus> {
         ..snap
     };
     let file = read_status_file(&l.dir);
+    let external = if snap.child.is_some() {
+        None
+    } else {
+        run_lock_holder(&l.dir)
+    };
     Some(derive(
         &snap,
         file.as_ref(),
-        pid_alive,
+        external,
         &l.dir.join(LOG_FILE),
     ))
 }
@@ -380,7 +441,19 @@ fn send(server: &Server, cmd: Cmd) -> bool {
         .is_some_and(|tx| tx.send(cmd).is_ok())
 }
 
-pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, _p: &Value) -> Option<R> {
+/// The `dir` check for `gateway.status` (no launch facts: nothing to compare).
+pub fn check_status_dir(server: &Server, p: &Value) -> Result<(), vk_proto::rpc::RpcError> {
+    match launch(server) {
+        Some(l) => check_dir(&l.dir, p).map_err(dir_conflict),
+        None => Ok(()),
+    }
+}
+
+fn dir_conflict(msg: String) -> vk_proto::rpc::RpcError {
+    err(ErrorKind::Conflict, msg).details(json!({"reason": "gateway_dir"}))
+}
+
+pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Option<R> {
     if !matches!(method, "gateway.start" | "gateway.stop") {
         return None;
     }
@@ -390,16 +463,23 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, _p: &Value) -> O
             format!("{method} is not allowed from a pane token"),
         )));
     }
-    if launch(server).is_none() {
+    let Some(l) = launch(server) else {
         return Some(Err(err(
             ErrorKind::NotFound,
             "this server does not manage a gateway",
         )
         .details(json!({"object": "gateway"}))));
+    };
+    if let Err(m) = check_dir(&l.dir, p) {
+        return Some(Err(dir_conflict(m)));
     }
+    let restart = p.get("restart").and_then(Value::as_bool).unwrap_or(false);
     let (tx, rx) = oneshot::channel();
     let cmd = if method == "gateway.start" {
-        Cmd::Start(Some(tx))
+        Cmd::Start {
+            reply: Some(tx),
+            restart,
+        }
     } else {
         Cmd::Stop(tx)
     };
@@ -410,7 +490,8 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, _p: &Value) -> O
         )));
     }
     Some(match tokio::time::timeout(API_WAIT, rx).await {
-        Ok(Ok(st)) => serde_json::to_value(st).map_err(crate::api::internal),
+        Ok(Ok(Ok(st))) => serde_json::to_value(st).map_err(crate::api::internal),
+        Ok(Ok(Err(m))) => Err(err(ErrorKind::Conflict, m).details(json!({"reason": "external"}))),
         Ok(Err(_)) => Err(err(
             ErrorKind::RemoteUnavailable,
             "the gateway supervisor stopped",
@@ -437,7 +518,13 @@ pub fn ensure_running(server: &Server) {
     if !l.dir.join(CONFIG_FILE).exists() {
         return;
     }
-    send(server, Cmd::Start(None));
+    send(
+        server,
+        Cmd::Start {
+            reply: None,
+            restart: false,
+        },
+    );
 }
 
 // ---- lifecycle ----------------------------------------------------------------------------
@@ -577,10 +664,12 @@ impl Sup {
         }
     }
 
-    fn external_alive(&self) -> bool {
-        read_status_file(&self.launch.dir).is_some_and(|f| {
-            Some(f.pid) != self.child_pid && f.pid != std::process::id() && pid_alive(f.pid)
-        })
+    /// Another gateway holds `run.lock` (we have no child: ours would hold it too).
+    fn external(&self) -> Option<u32> {
+        if self.child.is_some() {
+            return None;
+        }
+        run_lock_holder(&self.launch.dir)
     }
 
     /// Spawn unless our child runs; while another gateway holds the lock, look again later
@@ -589,7 +678,7 @@ impl Sup {
         if self.child.is_some() {
             return;
         }
-        if self.external_alive() {
+        if self.external().is_some() {
             self.restart_at = Some(tokio::time::Instant::now() + EXTERNAL_RETRY);
             return;
         }
@@ -612,7 +701,7 @@ impl Sup {
 
     fn current(&self) -> GatewayStatus {
         let file = read_status_file(&self.launch.dir);
-        derive(&self.snap(), file.as_ref(), pid_alive, &self.log)
+        derive(&self.snap(), file.as_ref(), self.external(), &self.log)
     }
 
     /// Store the facts for status reads and emit `gateway.status` when the status changed.
@@ -641,7 +730,8 @@ impl Sup {
 
     async fn on_cmd(&mut self, c: Cmd) {
         match c {
-            Cmd::Start(reply) => {
+            Cmd::Start { reply, restart } => {
+                let mut res = Ok(());
                 if !self.closing {
                     self.want = true;
                     if self.crashed {
@@ -650,10 +740,28 @@ impl Sup {
                         self.backoff.reset();
                         self.mark();
                     }
+                    if restart && self.child.is_some() {
+                        tracing::info!("gateway: restarting for new settings");
+                        self.terminate().await;
+                        self.restart_at = None;
+                        self.backoff.reset();
+                        self.error = None;
+                        self.mark();
+                    }
+                    if restart && let Some(pid) = self.external() {
+                        let who = if pid > 0 {
+                            format!(" (pid {pid})")
+                        } else {
+                            String::new()
+                        };
+                        res = Err(format!(
+                            "a gateway started by hand is running{who}, so the new settings can't be applied; stop it, then run `vibeke gateway on`"
+                        ));
+                    }
                     self.try_start();
                 }
                 if let Some(r) = reply {
-                    let _ = r.send(self.current());
+                    let _ = r.send(res.map(|()| self.current()));
                 }
             }
             Cmd::Stop(reply) => {
@@ -665,7 +773,7 @@ impl Sup {
                 self.error = None;
                 self.terminate().await;
                 self.mark();
-                let _ = reply.send(self.current());
+                let _ = reply.send(Ok(self.current()));
             }
             Cmd::Shutdown(reply) => {
                 let wanted = self.want;
@@ -685,6 +793,9 @@ impl Sup {
     }
 
     fn on_exit(&mut self, r: std::io::Result<std::process::ExitStatus>) {
+        // The leader is reaped; whatever is left of its group (e.g. a transcription process
+        // that ignored SIGTERM) goes too.
+        kill_group(self.child_pid);
         let ran = self.child_started.map(|t| t.elapsed()).unwrap_or_default();
         self.child = None;
         self.child_pid = None;
@@ -796,6 +907,8 @@ impl Sup {
         // Talk to exactly this server.
         .env("VIBEKE_SESSION", &opts.session)
         .env("VIBEKE_SOCKET", self.server.paths.socket())
+        // Exactly the dir this supervisor watches.
+        .env("VIBEKE_GATEWAY_DIR", &self.launch.dir)
         .stdin(std::process::Stdio::null())
         .stdout(out)
         .stderr(errf)
@@ -809,31 +922,40 @@ impl Sup {
         cmd.spawn()
     }
 
-    /// SIGTERM the child's process group, SIGKILL after [`STOP_GRACE`].
+    /// SIGTERM the child's process group, SIGKILL the group after [`STOP_GRACE`] or as soon as
+    /// the leader has exited (descendants that ignored SIGTERM).
     async fn terminate(&mut self) {
         let Some(mut child) = self.child.take() else {
             return;
         };
-        let pid = self.child_pid.take().and_then(|p| i32::try_from(p).ok());
+        let pid = self.child_pid.take();
         self.child_started = None;
         self.child_since_ms = None;
-        if let Some(p) = pid.filter(|p| *p > 0) {
-            // SAFETY: plain signal delivery to the child's own process group.
-            unsafe { libc::killpg(p, libc::SIGTERM) };
-        }
+        signal_group(pid, libc::SIGTERM);
         if tokio::time::timeout(STOP_GRACE, child.wait())
             .await
             .is_err()
         {
-            if let Some(p) = pid.filter(|p| *p > 0) {
-                // SAFETY: as above.
-                unsafe { libc::killpg(p, libc::SIGKILL) };
-            }
+            kill_group(pid);
             let _ = child.start_kill();
             let _ = tokio::time::timeout(Duration::from_secs(1), child.wait()).await;
         }
+        // The leader is reaped (or lost): the group can't be reused while members remain.
+        kill_group(pid);
         tracing::info!("gateway: stopped");
     }
+}
+
+/// Signal the process group we created for our child (its pgid is the child's pid).
+fn signal_group(pgid: Option<u32>, sig: i32) {
+    if let Some(p) = pgid.and_then(|p| i32::try_from(p).ok()).filter(|p| *p > 1) {
+        // SAFETY: plain signal delivery to the child's own process group.
+        unsafe { libc::killpg(p, sig) };
+    }
+}
+
+fn kill_group(pgid: Option<u32>) {
+    signal_group(pgid, libc::SIGKILL);
 }
 
 fn emit(server: &Server, st: &GatewayStatus) {
@@ -855,10 +977,10 @@ GatewayStatus = {state: off|starting|connecting|online|offline|local_only|extern
 
 pub const SHAPES: &str = r##"
 # --- the gateway supervisor: the server runs the set-up gateway as its child; full scope, never from a pane ---
-# spawn the gateway unless it runs (idempotent); clears a crashed or stopped latch; not_found when this server doesn't manage a gateway
-gateway.start :: {} => GatewayStatus
-# stop the supervised gateway; it is not restarted until gateway.start
-gateway.stop :: {} => GatewayStatus
+# spawn the gateway unless it runs (idempotent); clears a crashed or stopped latch; restart: stop our running gateway first and start a fresh one (conflict when a hand-run gateway holds the lock); dir: the caller's gateway dir, conflict when this server supervises another; not_found when this server doesn't manage a gateway
+gateway.start :: {restart?: bool = false, dir?: string} => GatewayStatus
+# stop the supervised gateway; it is not restarted until gateway.start; dir as for gateway.start
+gateway.stop :: {dir?: string} => GatewayStatus
 "##;
 
 pub const EVENTS: &str = r##"
@@ -950,41 +1072,56 @@ mod tests {
             ..Default::default()
         };
         // No status.json yet: starting.
-        let st = derive(&snap, None, |_| true, &log());
+        let st = derive(&snap, None, None, &log());
         assert_eq!(st.state, "starting");
         assert!(st.supervised && st.autostart);
         assert_eq!((st.pid, st.since_ms, st.restarts), (Some(42), Some(10), 1));
         assert_eq!(st.log, "/x/gateway.log");
         // A stale file of an earlier pid: still starting.
-        let st = derive(&snap, Some(&file(41, "online")), |_| false, &log());
+        let st = derive(&snap, Some(&file(41, "online")), None, &log());
         assert_eq!(st.state, "starting");
         // Our child's file: copied.
-        let st = derive(&snap, Some(&file(42, "online")), |_| true, &log());
+        let st = derive(&snap, Some(&file(42, "online")), Some(99), &log());
         assert_eq!(st.state, "online");
         assert_eq!(st.devices, Some(2));
         assert_eq!(st.since_ms, Some(1234));
         assert_eq!(st.relay.as_deref(), Some("wss://relay.example"));
-        let st = derive(&snap, Some(&file(42, "local_only")), |_| true, &log());
+        let st = derive(&snap, Some(&file(42, "local_only")), None, &log());
         assert_eq!(st.state, "local_only");
         // Unknown states read as connecting.
-        let st = derive(&snap, Some(&file(42, "warming")), |_| true, &log());
+        let st = derive(&snap, Some(&file(42, "warming")), None, &log());
         assert_eq!(st.state, "connecting");
     }
 
     #[test]
     fn status_without_child() {
         let snap = Snap::default();
-        let st = derive(&snap, None, |_| true, &log());
+        let st = derive(&snap, None, None, &log());
         assert_eq!(st.state, "off");
         assert!(!st.supervised && !st.autostart);
         assert_eq!((st.pid, st.devices), (None, None));
-        // A live hand-run gateway.
-        let st = derive(&snap, Some(&file(77, "online")), |p| p == 77, &log());
+        // A hand-run gateway holds run.lock: external, with its file's detail.
+        let st = derive(&snap, Some(&file(77, "online")), Some(77), &log());
         assert_eq!(st.state, "external");
         assert_eq!(st.pid, Some(77));
+        assert_eq!(st.devices, Some(2));
         assert!(!st.supervised);
-        // A stale file of a dead gateway.
-        let st = derive(&snap, Some(&file(77, "online")), |_| false, &log());
+        // The lock holder wrote no pid: the file's pid stands in.
+        let st = derive(&snap, Some(&file(77, "online")), Some(0), &log());
+        assert_eq!((st.state.as_str(), st.pid), ("external", Some(77)));
+        // A file of another process: external without its detail.
+        let st = derive(&snap, Some(&file(77, "online")), Some(78), &log());
+        assert_eq!(
+            (st.state.as_str(), st.pid, st.devices),
+            ("external", Some(78), None)
+        );
+        // A stale file (its pid may even be alive, reused) but run.lock is free: off.
+        let st = derive(
+            &snap,
+            Some(&file(std::process::id(), "online")),
+            None,
+            &log(),
+        );
         assert_eq!(st.state, "off");
         let crashed = Snap {
             crashed: true,
@@ -992,7 +1129,7 @@ mod tests {
             restarts: 9,
             ..Default::default()
         };
-        let st = derive(&crashed, Some(&file(77, "online")), |_| false, &log());
+        let st = derive(&crashed, Some(&file(77, "online")), None, &log());
         assert_eq!(st.state, "crashed");
         assert_eq!(st.last_error.as_deref(), Some("boom"));
         assert_eq!(st.restarts, 9);
@@ -1001,7 +1138,7 @@ mod tests {
             want: true,
             ..Default::default()
         };
-        assert_eq!(derive(&pending, None, |_| true, &log()).state, "starting");
+        assert_eq!(derive(&pending, None, None, &log()).state, "starting");
     }
 
     #[test]
@@ -1040,10 +1177,68 @@ mod tests {
         );
     }
 
+    /// Hold `run.lock` the way `gateway run` does (a separate open file description).
+    fn hold_lock(dir: &Path, pid: &str) -> std::fs::File {
+        use std::os::fd::AsRawFd;
+        let p = dir.join(RUN_LOCK_FILE);
+        std::fs::write(&p, pid).unwrap();
+        let f = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&p)
+            .unwrap();
+        // SAFETY: flock on an owned, open descriptor.
+        assert_eq!(
+            unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+            0
+        );
+        f
+    }
+
     #[test]
-    fn pid_liveness() {
-        assert!(pid_alive(std::process::id()));
-        assert!(!pid_alive(0));
-        assert!(!pid_alive(u32::MAX));
+    fn run_lock_is_the_authority() {
+        let dir = tempfile::tempdir().unwrap();
+        // No lock file: nobody runs.
+        assert_eq!(run_lock_holder(dir.path()), None);
+        // A stale status.json naming a live pid (ours, as if reused) and a free lock: nobody.
+        std::fs::write(
+            dir.path().join(STATUS_FILE),
+            format!(r#"{{"pid": {}, "state": "online"}}"#, std::process::id()),
+        )
+        .unwrap();
+        std::fs::write(dir.path().join(RUN_LOCK_FILE), "123").unwrap();
+        assert_eq!(run_lock_holder(dir.path()), None);
+        // Probing doesn't keep the lock: probing twice still finds it free.
+        assert_eq!(run_lock_holder(dir.path()), None);
+        // Held: the holder's pid from the file.
+        let held = hold_lock(dir.path(), "4242");
+        assert_eq!(run_lock_holder(dir.path()), Some(4242));
+        drop(held);
+        assert_eq!(run_lock_holder(dir.path()), None);
+        let held = hold_lock(dir.path(), "garbage");
+        assert_eq!(run_lock_holder(dir.path()), Some(0));
+        drop(held);
+    }
+
+    #[test]
+    fn dir_param_must_match() {
+        let dir = tempfile::tempdir().unwrap();
+        let ours = dir.path().join("gw");
+        std::fs::create_dir_all(&ours).unwrap();
+        assert!(check_dir(&ours, &json!({})).is_ok());
+        assert!(check_dir(&ours, &json!({"dir": ours})).is_ok());
+        // Another spelling of the same dir.
+        let dotted = dir.path().join("gw/../gw");
+        assert!(check_dir(&ours, &json!({"dir": dotted})).is_ok());
+        let other = dir.path().join("other");
+        let e = check_dir(&ours, &json!({"dir": other})).unwrap_err();
+        assert!(
+            e.contains(&ours.display().to_string()) && e.contains("other"),
+            "{e}"
+        );
+        // Neither exists: compared as given.
+        let a = dir.path().join("a");
+        assert!(check_dir(&a, &json!({"dir": a})).is_ok());
+        assert!(check_dir(&a, &json!({"dir": dir.path().join("b")})).is_err());
     }
 }

@@ -2137,7 +2137,7 @@
       ],
       "milestone": null,
       "spec": null,
-      "params": "{}",
+      "params": "{restart?: bool = false, dir?: string}",
       "result": "GatewayStatus"
     },
     {
@@ -2151,7 +2151,7 @@
       ],
       "milestone": null,
       "spec": null,
-      "params": "{}",
+      "params": "{dir?: string}",
       "result": "{connected: bool, configured: bool, state?: off|starting|connecting|online|offline|local_only|external|crashed, autostart?: bool, supervised?: bool, pid?: int|null, restarts?: int, relay?: string|null, devices?: int|null, since_ms?: int|null, last_error?: string|null, log?: string}"
     },
     {
@@ -2165,7 +2165,7 @@
       ],
       "milestone": null,
       "spec": null,
-      "params": "{}",
+      "params": "{dir?: string}",
       "result": "GatewayStatus"
     },
     {

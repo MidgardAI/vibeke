@@ -997,7 +997,7 @@ fn pairing_failures_and_unavailable_destinations_stay_in_the_summary() {
     app.on_key(named(NamedKey::Enter));
     let (req, _) = only(&commands(&mut rxs[1]), "gateway.call");
     let json = json!({"jsonrpc": "2.0", "id": req, "error": {"code": -32000,
-        "message": "the gateway isn't running: start it with `vibeke gateway run`",
+        "message": "the gateway isn't running: start it with `vibeke gateway on`",
         "data": {"kind": "remote_unavailable", "details": null}}})
     .to_string();
     app.on_frame(

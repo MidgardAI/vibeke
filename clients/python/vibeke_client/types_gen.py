@@ -3537,11 +3537,16 @@ GatewayReplyResult = TypedDict("GatewayReplyResult", {
     "cursor": NotRequired["Cursor"],
 })
 
-GatewayStartParams: TypeAlias = Dict[str, Any]
+GatewayStartParams = TypedDict("GatewayStartParams", {
+    "restart": NotRequired[bool],
+    "dir": NotRequired[str],
+})
 
 GatewayStartResult: TypeAlias = "GatewayStatus"
 
-GatewayStatusParams: TypeAlias = Dict[str, Any]
+GatewayStatusParams = TypedDict("GatewayStatusParams", {
+    "dir": NotRequired[str],
+})
 
 GatewayStatusResult = TypedDict("GatewayStatusResult", {
     "connected": bool,
@@ -3558,7 +3563,9 @@ GatewayStatusResult = TypedDict("GatewayStatusResult", {
     "log": NotRequired[str],
 })
 
-GatewayStopParams: TypeAlias = Dict[str, Any]
+GatewayStopParams = TypedDict("GatewayStopParams", {
+    "dir": NotRequired[str],
+})
 
 GatewayStopResult: TypeAlias = "GatewayStatus"
 

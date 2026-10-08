@@ -3138,6 +3138,7 @@ mod pending_tests {
                             | "plugin.link_handler.list"
                             | "compat.ui.state"
                             | "auth.list"
+                            | "gateway.status"
                     )
                 ) {
                     v.push((req, c));

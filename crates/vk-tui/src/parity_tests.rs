@@ -901,7 +901,9 @@ fn appearance_reports_once_and_switches_theme() {
     );
     assert!(commands(&mut rx[0]).is_empty());
     crate::parity::on_connected(&mut app, 0);
-    assert_eq!(commands(&mut rx[0]).len(), 1);
+    let c = commands(&mut rx[0]);
+    let appearance = c.iter().filter(|(_, v)| v["method"] == "client.appearance");
+    assert_eq!(appearance.count(), 1);
     // Flip to dark.
     on_detect(
         &mut app,

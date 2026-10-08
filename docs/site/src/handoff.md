@@ -242,7 +242,7 @@ In the terminal client, **Sharing & handoff** (`sharing` in the command palette)
 sections for the host it is attached to (`m` switches machine): **Peers**, **Invitations** and
 **Invited devices**, where `x` removes, cancels or revokes the selected entry after a
 confirmation. It reaches the gateway through the host's server; when the gateway isn't running
-it says so ("start it with `vibeke gateway run`").
+it says so ("start it with `vibeke gateway on`").
 
 From a terminal:
 

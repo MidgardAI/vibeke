@@ -18,7 +18,7 @@
 //!
 //! Without a connected gateway, on a timeout, or when the gateway goes away first, the call
 //! fails with `remote_unavailable`: "the gateway isn't running: start it with `vibeke
-//! gateway run`".
+//! gateway on`".
 
 use crate::Server;
 use crate::api::{Ctx, R, err, invalid, req, s};
@@ -57,7 +57,7 @@ const MIN_TIMEOUT_MS: u64 = 100;
 const MAX_TIMEOUT_MS: u64 = 120_000;
 const MAX_PENDING: usize = 64;
 
-pub const NOT_RUNNING: &str = "the gateway isn't running: start it with `vibeke gateway run`";
+pub const NOT_RUNNING: &str = "the gateway isn't running: start it with `vibeke gateway on`";
 
 type Answer = Result<Value, RpcError>;
 
@@ -316,10 +316,8 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
             call(server, m, params, Duration::from_millis(ms)).await
         }
         "gateway.reply" => gateway_only(ctx, method).and_then(|()| reply(server, p)),
-        "gateway.status" => Ok(crate::gateway_supervisor::status_method(
-            server,
-            connected(server),
-        )),
+        "gateway.status" => crate::gateway_supervisor::check_status_dir(server, p)
+            .map(|()| crate::gateway_supervisor::status_method(server, connected(server))),
         _ => return None,
     })
 }
@@ -331,8 +329,8 @@ pub const SHAPES: &str = r##"
 gateway.call :: {method: string, params?: object, timeout_ms?: int = 30000} => any
 # gateway clients only: the answer to a gateway.request event (result or error, not both)
 gateway.reply :: {id: string, result?: any, error?: {kind: string, message: string, details?: any}} => {}
-# whether a gateway holds an event stream open (connected), whether this server manages one (configured) and, when it does, the supervisor's GatewayStatus fields
-gateway.status :: {}
+# whether a gateway holds an event stream open (connected), whether this server manages one (configured) and, when it does, the supervisor's GatewayStatus fields; dir: the caller's gateway dir, conflict when this server supervises another
+gateway.status :: {dir?: string}
   => {connected: bool, configured: bool, state?: off|starting|connecting|online|offline|local_only|external|crashed, autostart?: bool, supervised?: bool, pid?: int|null, restarts?: int, relay?: string|null, devices?: int|null, since_ms?: int|null, last_error?: string|null, log?: string}
 "##;
 

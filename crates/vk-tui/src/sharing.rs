@@ -22,7 +22,7 @@
 //! Plus **Always ask before importing handoffs** (`a`, `handoff.prefs {always_ask}`).
 //!
 //! Without a gateway the server answers `remote_unavailable` ("the gateway isn't running: start
-//! it with `vibeke gateway run`"); the view shows that message at the top.
+//! it with `vibeke gateway on`"); the view shows that message at the top.
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -198,7 +198,7 @@ pub fn render_qr(text: &str) -> Option<String> {
 }
 
 /// What a failed `gateway.call` says: the server's message (`remote_unavailable` carries "the
-/// gateway isn't running: start it with `vibeke gateway run`"), or that the server is too old.
+/// gateway isn't running: start it with `vibeke gateway on`"), or that the server is too old.
 pub fn bridge_error(e: &RpcErr) -> String {
     if e.is_method_not_found() {
         "this machine's vibeke has no gateway bridge (update it)".into()

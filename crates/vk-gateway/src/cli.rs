@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use crate::state::{Config, RunLock, Scope, StateDir};
+use crate::state::{Config, RunLock, Scope, StateDir, StatusFile};
 use crate::{Gateway, pair, relay_client, server};
 use anyhow::{Result, bail};
 use clap::{Parser, Subcommand};
@@ -177,8 +177,8 @@ pub async fn run_as<I: IntoIterator<Item = String>>(prog: &'static str, args: I)
             name,
             autostart,
         } => {
-            let mut cfg = state.config()?;
             if autostart {
+                let cfg = state.config()?;
                 let want = session.clone().unwrap_or_else(|| "default".into());
                 if !(cfg.autostart_enabled() && cfg.session_name() == want) {
                     eprintln!("gateway autostart is not enabled for session {want}");
@@ -193,42 +193,57 @@ pub async fn run_as<I: IntoIterator<Item = String>>(prog: &'static str, args: I)
                     std::process::exit(3);
                 }
             };
-            let set_relay = relay.is_some();
-            let app_url = match (app_from_relay, app_url) {
-                (true, _) => {
-                    let r = relay
-                        .clone()
-                        .or(cfg.relay.clone())
-                        .ok_or_else(|| anyhow::anyhow!("--app-from-relay needs --relay"))?;
-                    Some(relay_client::ws_base(&r).replacen("ws", "http", 1))
-                }
-                (false, u) => u,
+            // Launched by the server: never write gateway.toml (a concurrent `off` must win); the
+            // session and socket are the supervising server's, as runtime overrides.
+            let cfg = if autostart {
+                state.config()?
+            } else {
+                let socket = socket.clone();
+                let session = session.clone();
+                update_config(&state, |cfg| {
+                    let set_relay = relay.is_some();
+                    let app_url = match (app_from_relay, app_url) {
+                        (true, _) => {
+                            let r = relay
+                                .clone()
+                                .or(cfg.relay.clone())
+                                .ok_or_else(|| anyhow::anyhow!("--app-from-relay needs --relay"))?;
+                            Some(relay_client::ws_base(&r).replacen("ws", "http", 1))
+                        }
+                        (false, u) => u,
+                    };
+                    for (slot, v) in [
+                        (&mut cfg.relay, relay),
+                        (&mut cfg.app_url, app_url),
+                        (&mut cfg.session, session),
+                        (&mut cfg.host_name, name),
+                    ] {
+                        if v.is_some() {
+                            *slot = v;
+                        }
+                    }
+                    if socket.is_some() {
+                        cfg.socket = socket;
+                    }
+                    if set_relay {
+                        cfg.autostart = Some(true);
+                    }
+                    Ok(())
+                })?
+                .1
             };
-            let mut changed = false;
-            for (slot, v) in [
-                (&mut cfg.relay, relay),
-                (&mut cfg.app_url, app_url),
-                (&mut cfg.session, session),
-                (&mut cfg.host_name, name),
-            ] {
-                if v.is_some() && *slot != v {
-                    *slot = v;
-                    changed = true;
-                }
-            }
-            if socket.is_some() && cfg.socket != socket {
-                cfg.socket = socket;
-                changed = true;
-            }
-            if set_relay && cfg.autostart != Some(true) {
-                cfg.autostart = Some(true);
-                changed = true;
-            }
-            if changed {
-                state.save_config(&cfg)?;
-            }
+            let session_name = match (autostart, &session) {
+                (true, Some(s)) => s.clone(),
+                _ => cfg.session_name().to_string(),
+            };
             let ppid = unsafe { libc::getppid() };
-            let path = server::socket_path(cfg.socket.clone(), cfg.session_name());
+            let path = run_socket(
+                autostart,
+                socket,
+                cfg.socket.clone(),
+                std::env::var_os("VIBEKE_SOCKET").map(PathBuf::from),
+                &session_name,
+            );
             let gw = Gateway::new(state, server::Server::new(path))?;
             gw.status.enable(
                 if gw.cfg.relay.is_some() {
@@ -248,21 +263,30 @@ pub async fn run_as<I: IntoIterator<Item = String>>(prog: &'static str, args: I)
             r
         }
         Cmd::On => {
-            let mut cfg = state.config()?;
-            cfg.autostart = Some(true);
-            state.save_config(&cfg)?;
-            let st = start_gateway(&cfg).await?;
+            let (before, cfg) = update_config(&state, |cfg| {
+                cfg.autostart = Some(true);
+                Ok(())
+            })?;
+            let restart = needs_restart(&before, &cfg, running_status(&state.dir).as_ref());
+            let st = start_gateway(&cfg, &state.dir, restart).await?;
             println!("Autostart is on.");
             print_gateway_status(&st);
             Ok(())
         }
         Cmd::Off => {
-            let mut cfg = state.config()?;
-            cfg.autostart = Some(false);
-            state.save_config(&cfg)?;
+            let (_, cfg) = update_config(&state, |cfg| {
+                cfg.autostart = Some(false);
+                Ok(())
+            })?;
             let srv =
                 server::Server::new(server::socket_path(cfg.socket.clone(), cfg.session_name()));
-            match srv.call("gateway.stop", json!({})).await {
+            match srv
+                .call(
+                    "gateway.stop",
+                    json!({"dir": state.dir.display().to_string()}),
+                )
+                .await
+            {
                 Ok(_) => println!("Autostart is off. Gateway stopped."),
                 Err(e) if e.kind == "unavailable" => {
                     println!("Autostart is off. (The Vibeke server isn't running.)")
@@ -297,12 +321,12 @@ pub async fn run_as<I: IntoIterator<Item = String>>(prog: &'static str, args: I)
             app_url: app_url_arg,
             app_from_relay,
         } => {
-            let mut cfg = state.config()?;
+            let cfg = state.config()?;
             if local {
                 let probe = crate::local::socket_path(&state.dir);
                 if std::os::unix::net::UnixStream::connect(&probe).is_err() {
                     bail!(
-                        "the gateway isn't running here (no {}); start it with `vibeke gateway run`",
+                        "the gateway isn't running here (no {}); start it with `vibeke gateway on`",
                         probe.display()
                     );
                 }
@@ -325,6 +349,7 @@ pub async fn run_as<I: IntoIterator<Item = String>>(prog: &'static str, args: I)
                 return Ok(());
             }
             // One-command setup: save the relay, switch autostart on, start the gateway.
+            let mut relay_arg = relay_arg;
             if cfg.relay.is_none() && relay_arg.is_none() {
                 use std::io::IsTerminal;
                 if !std::io::stdin().is_terminal() {
@@ -340,26 +365,33 @@ pub async fn run_as<I: IntoIterator<Item = String>>(prog: &'static str, args: I)
                 if line.is_empty() {
                     bail!("no relay given");
                 }
-                cfg.relay = Some(line.to_string());
-            } else if let Some(r) = relay_arg {
-                cfg.relay = Some(r);
+                relay_arg = Some(line.to_string());
             }
-            if app_from_relay {
-                let r = cfg.relay.clone().expect("relay set above");
-                cfg.app_url = Some(relay_client::ws_base(&r).replacen("ws", "http", 1));
-            } else if app_url_arg.is_some() {
-                cfg.app_url = app_url_arg;
-            }
-            if cfg.app_url.is_none() {
-                bail!(
-                    "no app origin set. Pass --app-url <origin that serves the Vibeke web app> to `pair`, \
-                     or --app-from-relay if you serve the app from your own relay (it is trusted with device keys)"
-                );
-            }
-            cfg.autostart = Some(true);
-            state.save_config(&cfg)?;
-            match start_gateway(&cfg).await {
-                Ok(_) => wait_ready(&state.dir).await,
+            let (before, cfg) = update_config(&state, |cfg| {
+                if let Some(r) = relay_arg {
+                    cfg.relay = Some(r);
+                }
+                if app_from_relay {
+                    let Some(r) = cfg.relay.clone() else {
+                        bail!("--app-from-relay needs a relay (--relay <url>)");
+                    };
+                    cfg.app_url = Some(relay_client::ws_base(&r).replacen("ws", "http", 1));
+                } else if app_url_arg.is_some() {
+                    cfg.app_url = app_url_arg;
+                }
+                if cfg.app_url.is_none() {
+                    bail!(
+                        "no app origin set. Pass --app-url <origin that serves the Vibeke web app> to `pair`, \
+                         or --app-from-relay if you serve the app from your own relay (it is trusted with device keys)"
+                    );
+                }
+                cfg.autostart = Some(true);
+                Ok(())
+            })?;
+            // New connection settings reach a running gateway only through a restart.
+            let restart = needs_restart(&before, &cfg, running_status(&state.dir).as_ref());
+            match start_gateway(&cfg, &state.dir, restart).await {
+                Ok(_) => wait_ready(&state.dir, cfg.relay.as_deref()).await,
                 Err(e) => eprintln!(
                     "Could not start the gateway through the server: {e:#}\nStart it yourself with `vibeke gateway run`."
                 ),
@@ -672,18 +704,70 @@ async fn parent_gone(ppid: i32, enabled: bool) {
     }
 }
 
-/// Ask the session's server to start the gateway, starting the server first if it isn't running.
-async fn start_gateway(cfg: &Config) -> Result<Value> {
+/// Read-modify-write `gateway.toml` under the state dir's lock, so concurrent `on` / `off` /
+/// `pair` / `run --relay` don't lose each other's change. Returns the config before and after;
+/// nothing is saved when `f` fails.
+fn update_config(
+    state: &StateDir,
+    f: impl FnOnce(&mut Config) -> Result<()>,
+) -> Result<(Config, Config)> {
+    let _lock = state.lock()?;
+    let before = state.config()?;
+    let mut cfg = before.clone();
+    f(&mut cfg)?;
+    state.save_config(&cfg)?;
+    Ok((before, cfg))
+}
+
+/// The settings a running gateway connects with (read once at its start).
+fn connection(c: &Config) -> [&Option<String>; 4] {
+    [&c.relay, &c.app_url, &c.relay_token, &c.host_name]
+}
+
+/// Whether `gateway.start` must replace a running gateway: the connection settings changed, or
+/// the running one (`running`: its `status.json`) reports another relay than the saved one.
+fn needs_restart(before: &Config, after: &Config, running: Option<&StatusFile>) -> bool {
+    connection(before) != connection(after) || running.is_some_and(|s| s.relay != after.relay)
+}
+
+/// The `status.json` of the gateway holding `run.lock`, if one runs.
+fn running_status(dir: &std::path::Path) -> Option<StatusFile> {
+    let pid = RunLock::holder(dir)?;
+    crate::state::read_status(dir).filter(|s| s.pid == pid)
+}
+
+/// The server socket `run` talks to. Launched by the server (`autostart`): the supervising
+/// server's (`--socket`, else `$VIBEKE_SOCKET` it sets), never the saved one. By hand: `--socket`,
+/// the saved socket, then the session's default.
+fn run_socket(
+    autostart: bool,
+    arg: Option<PathBuf>,
+    saved: Option<PathBuf>,
+    env_socket: Option<PathBuf>,
+    session: &str,
+) -> PathBuf {
+    if autostart {
+        return arg
+            .or(env_socket)
+            .unwrap_or_else(|| server::socket_path(None, session));
+    }
+    server::socket_path(arg.or(saved), session)
+}
+
+/// Ask the session's server to start the gateway in `dir` (`restart`: replace a running one),
+/// starting the server first if it isn't running (supervising `dir`).
+async fn start_gateway(cfg: &Config, dir: &std::path::Path, restart: bool) -> Result<Value> {
     let srv = server::Server::new(server::socket_path(cfg.socket.clone(), cfg.session_name()));
-    match srv.call("gateway.start", json!({})).await {
+    let params = json!({"dir": dir.display().to_string(), "restart": restart});
+    match srv.call("gateway.start", params.clone()).await {
         Ok(v) => return Ok(v),
         Err(e) if e.kind == "unavailable" => {}
         Err(e) => bail!("{}: {}", e.kind, e.message),
     }
-    spawn_server(cfg.session_name())?;
+    spawn_server(cfg.session_name(), dir)?;
     let deadline = std::time::Instant::now() + Duration::from_secs(8);
     loop {
-        match srv.call("gateway.start", json!({})).await {
+        match srv.call("gateway.start", params.clone()).await {
             Ok(v) => return Ok(v),
             Err(e) if e.kind == "unavailable" && std::time::Instant::now() < deadline => {
                 tokio::time::sleep(Duration::from_millis(100)).await;
@@ -693,8 +777,9 @@ async fn start_gateway(cfg: &Config) -> Result<Value> {
     }
 }
 
-/// Start `vibeke server --session <s>` detached (own session, stdio to /dev/null).
-fn spawn_server(session: &str) -> Result<()> {
+/// Start `vibeke server --session <s>` detached (own session, stdio to /dev/null), supervising
+/// the gateway in `dir`.
+fn spawn_server(session: &str, dir: &std::path::Path) -> Result<()> {
     use std::os::unix::process::CommandExt;
     use std::process::{Command, Stdio};
     let exe = std::env::current_exe()?;
@@ -703,6 +788,7 @@ fn spawn_server(session: &str) -> Result<()> {
     }
     let mut cmd = Command::new(exe);
     cmd.args(["server", "--session", session])
+        .env("VIBEKE_GATEWAY_DIR", dir)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -721,7 +807,7 @@ fn spawn_server(session: &str) -> Result<()> {
 async fn start_if_enabled(state: &StateDir, cfg: &Config) {
     if cfg.autostart_enabled()
         && RunLock::holder(&state.dir).is_none()
-        && let Err(e) = start_gateway(cfg).await
+        && let Err(e) = start_gateway(cfg, &state.dir, false).await
     {
         tracing::warn!("could not start the gateway: {e:#}");
     }
@@ -744,21 +830,34 @@ fn print_gateway_status(st: &Value) {
     println!("log          {}", s("log"));
 }
 
-/// Wait up to 15 s for our gateway to report `online` / `local_only`.
-async fn wait_ready(dir: &std::path::Path) {
+/// Whether the gateway is ready for pairing: `st` is the lock holder's (`holder`), and it is
+/// `online` on the configured `relay` — or `local_only` when no relay is configured.
+fn is_ready(st: &StatusFile, holder: Option<u32>, relay: Option<&str>) -> bool {
+    if holder != Some(st.pid) {
+        return false;
+    }
+    match relay {
+        None => st.state == "local_only",
+        Some(r) => st.state == "online" && st.relay.as_deref() == Some(r),
+    }
+}
+
+/// Wait up to 15 s for our gateway to be ready ([`is_ready`]).
+async fn wait_ready(dir: &std::path::Path, relay: Option<&str>) {
     let deadline = std::time::Instant::now() + Duration::from_secs(15);
     let mut shown = String::new();
     let mut last_error = None;
     println!("Starting the gateway…");
     while std::time::Instant::now() < deadline {
-        if let (Some(st), Some(pid)) = (crate::state::read_status(dir), RunLock::holder(dir))
-            && st.pid == pid
+        let holder = RunLock::holder(dir);
+        if let Some(st) = crate::state::read_status(dir)
+            && holder == Some(st.pid)
         {
             if st.state != shown {
                 println!("  {}", st.state);
                 shown = st.state.clone();
             }
-            if st.state == "online" || st.state == "local_only" {
+            if is_ready(&st, holder, relay) {
                 return;
             }
             last_error = st.last_error;
@@ -1053,6 +1152,149 @@ mod tests {
             limit,
             peer: None,
         }
+    }
+
+    fn status(pid: u32, state: &str, relay: Option<&str>) -> StatusFile {
+        StatusFile {
+            pid,
+            state: state.into(),
+            relay: relay.map(Into::into),
+            devices: 0,
+            since_ms: 0,
+            last_error: None,
+        }
+    }
+
+    #[test]
+    fn ready_needs_the_configured_relay() {
+        let r = Some("wss://new.example");
+        // No relay configured: local_only is ready.
+        assert!(is_ready(&status(5, "local_only", None), Some(5), None));
+        // A relay configured: local_only (the old gateway) is not.
+        assert!(!is_ready(&status(5, "local_only", None), Some(5), r));
+        // Online, but on another relay: not ready.
+        assert!(!is_ready(
+            &status(5, "online", Some("wss://old.example")),
+            Some(5),
+            r
+        ));
+        assert!(!is_ready(
+            &status(5, "connecting", Some("wss://new.example")),
+            Some(5),
+            r
+        ));
+        assert!(is_ready(
+            &status(5, "online", Some("wss://new.example")),
+            Some(5),
+            r
+        ));
+        // Not the lock holder's file (stale, or nobody runs): never ready.
+        assert!(!is_ready(
+            &status(5, "online", Some("wss://new.example")),
+            Some(6),
+            r
+        ));
+        assert!(!is_ready(&status(5, "local_only", None), None, None));
+    }
+
+    #[test]
+    fn restart_when_connection_settings_change() {
+        let before = Config::default();
+        let mut after = before.clone();
+        after.autostart = Some(true);
+        // Only autostart changed, nothing runs: no restart.
+        assert!(!needs_restart(&before, &after, None));
+        // A running local-only gateway and still no relay: no restart.
+        assert!(!needs_restart(
+            &before,
+            &after,
+            Some(&status(1, "local_only", None))
+        ));
+        for change in [
+            |c: &mut Config| c.relay = Some("wss://r".into()),
+            |c: &mut Config| c.app_url = Some("https://app".into()),
+            |c: &mut Config| c.relay_token = Some("t".into()),
+            |c: &mut Config| c.host_name = Some("mini".into()),
+        ] {
+            let mut a = after.clone();
+            change(&mut a);
+            assert!(needs_restart(&before, &a, None));
+        }
+        // Nothing changed now, but the running gateway is on another relay (`on` after an edit).
+        let saved = Config {
+            relay: Some("wss://new".into()),
+            ..Default::default()
+        };
+        assert!(needs_restart(
+            &saved,
+            &saved,
+            Some(&status(1, "online", Some("wss://old")))
+        ));
+        assert!(!needs_restart(
+            &saved,
+            &saved,
+            Some(&status(1, "online", Some("wss://new")))
+        ));
+    }
+
+    #[test]
+    fn autostart_socket_is_the_supervisors() {
+        let saved = Some(PathBuf::from("/old/vibeke.sock"));
+        let env = Some(PathBuf::from("/sup/vibeke.sock"));
+        // Launched by the server: its socket, never the saved one.
+        assert_eq!(
+            run_socket(true, None, saved.clone(), env.clone(), "default"),
+            PathBuf::from("/sup/vibeke.sock")
+        );
+        assert_eq!(
+            run_socket(
+                true,
+                Some("/arg.sock".into()),
+                saved.clone(),
+                env.clone(),
+                "default"
+            ),
+            PathBuf::from("/arg.sock")
+        );
+        // By hand: --socket, then the saved one.
+        assert_eq!(
+            run_socket(false, None, saved.clone(), env.clone(), "default"),
+            PathBuf::from("/old/vibeke.sock")
+        );
+        assert_eq!(
+            run_socket(false, Some("/arg.sock".into()), saved, env, "default"),
+            PathBuf::from("/arg.sock")
+        );
+    }
+
+    #[test]
+    fn config_updates_are_read_modify_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = StateDir::open(dir.path().join("gw")).unwrap();
+        let (before, after) = update_config(&state, |c| {
+            c.relay = Some("wss://r".into());
+            Ok(())
+        })
+        .unwrap();
+        assert!(before.relay.is_none() && after.relay.is_some());
+        // A later update starts from what is saved now, not from an older read.
+        let (before, after) = update_config(&state, |c| {
+            c.autostart = Some(false);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(before.relay.as_deref(), Some("wss://r"));
+        assert_eq!(after.autostart, Some(false));
+        assert_eq!(state.config().unwrap().relay.as_deref(), Some("wss://r"));
+        // A failing update saves nothing.
+        assert!(
+            update_config(&state, |c| {
+                c.relay = None;
+                bail!("no")
+            })
+            .is_err()
+        );
+        assert_eq!(state.config().unwrap().relay.as_deref(), Some("wss://r"));
     }
 
     #[test]

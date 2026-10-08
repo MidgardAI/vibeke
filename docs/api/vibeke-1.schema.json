@@ -13778,7 +13778,16 @@
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
-        "type": "object"
+        "type": "object",
+        "properties": {
+          "restart": {
+            "type": "boolean",
+            "default": false
+          },
+          "dir": {
+            "type": "string"
+          }
+        }
       },
       "result": {
         "$ref": "#/$defs/GatewayStatus"
@@ -13789,7 +13798,12 @@
       "scope": "pane",
       "pane_scope": "open",
       "params": {
-        "type": "object"
+        "type": "object",
+        "properties": {
+          "dir": {
+            "type": "string"
+          }
+        }
       },
       "result": {
         "type": "object",
@@ -13887,7 +13901,12 @@
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
-        "type": "object"
+        "type": "object",
+        "properties": {
+          "dir": {
+            "type": "string"
+          }
+        }
       },
       "result": {
         "$ref": "#/$defs/GatewayStatus"

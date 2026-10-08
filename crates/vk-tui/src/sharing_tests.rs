@@ -10,7 +10,7 @@ use crate::drafts::tests::{ch, commands, ctl, fleet, named, reply, screen, typ};
 use tokio::sync::mpsc::UnboundedReceiver;
 use vk_proto::render::{ClientFrame, ServerFrame};
 
-const NOT_RUNNING: &str = "the gateway isn't running: start it with `vibeke gateway run`";
+const NOT_RUNNING: &str = "the gateway isn't running: start it with `vibeke gateway on`";
 
 fn now_s() -> i64 {
     now_ms() / 1000

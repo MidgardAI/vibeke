@@ -3300,11 +3300,16 @@ export type GatewayReplyResult = {
   cursor?: Cursor;
 };
 
-export type GatewayStartParams = Record<string, unknown>;
+export type GatewayStartParams = {
+  restart?: boolean;
+  dir?: string;
+};
 
 export type GatewayStartResult = GatewayStatus;
 
-export type GatewayStatusParams = Record<string, unknown>;
+export type GatewayStatusParams = {
+  dir?: string;
+};
 
 export type GatewayStatusResult = {
   connected: boolean;
@@ -3321,7 +3326,9 @@ export type GatewayStatusResult = {
   log?: string;
 };
 
-export type GatewayStopParams = Record<string, unknown>;
+export type GatewayStopParams = {
+  dir?: string;
+};
 
 export type GatewayStopResult = GatewayStatus;
 
