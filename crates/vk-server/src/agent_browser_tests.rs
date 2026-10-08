@@ -1503,6 +1503,23 @@ async fn unattributed_port_needs_the_users_confirmation() {
             }
         })
     };
+    // The declare's background probe writes the preview back once it settles (up or down);
+    // let it finish first, or it would resurrect the preview this test marks gone.
+    for _ in 0..200 {
+        let settled = e.server.with_core(|c| {
+            c.model.previews.iter().any(|p| {
+                p.port == 6400
+                    && matches!(
+                        p.status,
+                        vk_proto::model::PreviewStatus::Up | vk_proto::model::PreviewStatus::Down
+                    )
+            })
+        });
+        if settled {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
     gone();
     let v = dispatch(&a, "preview.declare", json!({"port": 6400}))
         .await

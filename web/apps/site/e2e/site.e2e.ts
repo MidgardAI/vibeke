@@ -149,8 +149,11 @@ test('all documentation routes render directly without broken local links or ove
 test('copy controls and mobile navigation work', async ({ page }, info) => {
   await page.context().grantPermissions(['clipboard-read', 'clipboard-write'])
   await page.goto('/docs/quickstart')
-  await page.getByRole('button', { name: 'Copy code', exact: true }).first().click()
-  await expect(page.getByRole('button', { name: 'Copied', exact: true })).toBeVisible()
+  // The page is prerendered: a click before hydration hits a button without its handler yet.
+  await expect(async () => {
+    await page.getByRole('button', { name: 'Copy code', exact: true }).first().click()
+    await expect(page.getByRole('button', { name: 'Copied', exact: true })).toBeVisible({ timeout: 1000 })
+  }).toPass({ timeout: 15_000 })
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe('cd your-project\nvibeke')
   if (info.project.name === 'mobile') {
     await page.getByRole('button', { name: 'Documentation menu' }).click()
