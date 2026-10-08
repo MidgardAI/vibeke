@@ -309,6 +309,19 @@ export type FloatingPane = {
   z: number;
 };
 
+export type GatewayStatus = {
+  state: "off" | "starting" | "connecting" | "online" | "offline" | "local_only" | "external" | "crashed";
+  autostart: boolean;
+  supervised: boolean;
+  pid: number | null;
+  restarts: number;
+  relay: string | null;
+  devices: number | null;
+  since_ms: number | null;
+  last_error: string | null;
+  log: string;
+};
+
 export type Group = {
   id: string;
   handle: string;
@@ -3287,11 +3300,30 @@ export type GatewayReplyResult = {
   cursor?: Cursor;
 };
 
+export type GatewayStartParams = Record<string, unknown>;
+
+export type GatewayStartResult = GatewayStatus;
+
 export type GatewayStatusParams = Record<string, unknown>;
 
 export type GatewayStatusResult = {
   connected: boolean;
+  configured: boolean;
+  state?: "off" | "starting" | "connecting" | "online" | "offline" | "local_only" | "external" | "crashed";
+  autostart?: boolean;
+  supervised?: boolean;
+  pid?: number | null;
+  restarts?: number;
+  relay?: string | null;
+  devices?: number | null;
+  since_ms?: number | null;
+  last_error?: string | null;
+  log?: string;
 };
+
+export type GatewayStopParams = Record<string, unknown>;
+
+export type GatewayStopResult = GatewayStatus;
 
 export type GitDiffParams = {
   pane?: Target;
@@ -5781,6 +5813,7 @@ export type ServerStatusResult = {
   ephemeral?: number;
   preview?: Record<string, unknown>;
   timers?: Record<string, unknown>;
+  gateway?: GatewayStatus | null;
   db_size?: number;
   rss?: number;
 };
@@ -7524,7 +7557,9 @@ export interface Methods {
   "fs.read": { params: FsReadParams; result: FsReadResult };
   "gateway.call": { params: GatewayCallParams; result: GatewayCallResult };
   "gateway.reply": { params: GatewayReplyParams; result: GatewayReplyResult };
+  "gateway.start": { params: GatewayStartParams; result: GatewayStartResult };
   "gateway.status": { params: GatewayStatusParams; result: GatewayStatusResult };
+  "gateway.stop": { params: GatewayStopParams; result: GatewayStopResult };
   "git.diff": { params: GitDiffParams; result: GitDiffResult };
   "git.log": { params: GitLogParams; result: GitLogResult };
   "git.status": { params: GitStatusParams; result: GitStatusResult };
@@ -7949,7 +7984,9 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "fs.read": { mutating: false, scope: "pane", paneScope: "open" },
   "gateway.call": { mutating: true, scope: "full", paneScope: "forbidden" },
   "gateway.reply": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "gateway.start": { mutating: true, scope: "full", paneScope: "forbidden" },
   "gateway.status": { mutating: false, scope: "pane", paneScope: "open" },
+  "gateway.stop": { mutating: true, scope: "full", paneScope: "forbidden" },
   "git.diff": { mutating: false, scope: "pane", paneScope: "open" },
   "git.log": { mutating: false, scope: "pane", paneScope: "open" },
   "git.status": { mutating: false, scope: "pane", paneScope: "open" },
@@ -8870,6 +8907,10 @@ export type GatewayRequestData = {
   params: Record<string, unknown>;
   client: string;
 };
+
+export type GatewayStatusSubject = Record<string, unknown>;
+
+export type GatewayStatusData = GatewayStatus;
 
 export type GoalApprovedSubject = {
   goal: string;
@@ -10976,6 +11017,7 @@ export interface EventMap {
   "family.created": { subject: FamilyCreatedSubject; data: FamilyCreatedData };
   "family.picked": { subject: FamilyPickedSubject; data: FamilyPickedData };
   "gateway.request": { subject: GatewayRequestSubject; data: GatewayRequestData };
+  "gateway.status": { subject: GatewayStatusSubject; data: GatewayStatusData };
   "goal.approved": { subject: GoalApprovedSubject; data: GoalApprovedData };
   "goal.cancelled": { subject: GoalCancelledSubject; data: GoalCancelledData };
   "goal.created": { subject: GoalCreatedSubject; data: GoalCreatedData };

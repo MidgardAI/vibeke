@@ -467,8 +467,14 @@ class Api:
     async def gateway_reply(self, params: "t.GatewayReplyParams") -> "t.GatewayReplyResult":
         return await self.call("gateway.reply", params)  # type: ignore[arg-type, return-value]
 
+    async def gateway_start(self, params: "Optional[t.GatewayStartParams]" = None) -> "t.GatewayStartResult":
+        return await self.call("gateway.start", params or {})  # type: ignore[arg-type, return-value]
+
     async def gateway_status(self, params: "Optional[t.GatewayStatusParams]" = None) -> "t.GatewayStatusResult":
         return await self.call("gateway.status", params or {})  # type: ignore[arg-type, return-value]
+
+    async def gateway_stop(self, params: "Optional[t.GatewayStopParams]" = None) -> "t.GatewayStopResult":
+        return await self.call("gateway.stop", params or {})  # type: ignore[arg-type, return-value]
 
     async def git_diff(self, params: "t.GitDiffParams") -> "t.GitDiffResult":
         return await self.call("git.diff", params)  # type: ignore[arg-type, return-value]

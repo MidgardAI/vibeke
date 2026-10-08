@@ -322,6 +322,19 @@ FloatingPane = TypedDict("FloatingPane", {
     "z": int,
 })
 
+GatewayStatus = TypedDict("GatewayStatus", {
+    "state": Literal["off", "starting", "connecting", "online", "offline", "local_only", "external", "crashed"],
+    "autostart": bool,
+    "supervised": bool,
+    "pid": Optional[int],
+    "restarts": int,
+    "relay": Optional[str],
+    "devices": Optional[int],
+    "since_ms": Optional[int],
+    "last_error": Optional[str],
+    "log": str,
+})
+
 Group = TypedDict("Group", {
     "id": str,
     "handle": str,
@@ -3524,11 +3537,30 @@ GatewayReplyResult = TypedDict("GatewayReplyResult", {
     "cursor": NotRequired["Cursor"],
 })
 
+GatewayStartParams: TypeAlias = Dict[str, Any]
+
+GatewayStartResult: TypeAlias = "GatewayStatus"
+
 GatewayStatusParams: TypeAlias = Dict[str, Any]
 
 GatewayStatusResult = TypedDict("GatewayStatusResult", {
     "connected": bool,
+    "configured": bool,
+    "state": NotRequired[Literal["off", "starting", "connecting", "online", "offline", "local_only", "external", "crashed"]],
+    "autostart": NotRequired[bool],
+    "supervised": NotRequired[bool],
+    "pid": NotRequired[Optional[int]],
+    "restarts": NotRequired[int],
+    "relay": NotRequired[Optional[str]],
+    "devices": NotRequired[Optional[int]],
+    "since_ms": NotRequired[Optional[int]],
+    "last_error": NotRequired[Optional[str]],
+    "log": NotRequired[str],
 })
+
+GatewayStopParams: TypeAlias = Dict[str, Any]
+
+GatewayStopResult: TypeAlias = "GatewayStatus"
 
 GitDiffParams = TypedDict("GitDiffParams", {
     "pane": NotRequired["Target"],
@@ -6216,6 +6248,7 @@ ServerStatusResult = TypedDict("ServerStatusResult", {
     "ephemeral": NotRequired[int],
     "preview": NotRequired[Dict[str, Any]],
     "timers": NotRequired[Dict[str, Any]],
+    "gateway": NotRequired[Optional["GatewayStatus"]],
     "db_size": NotRequired[int],
     "rss": NotRequired[int],
 })
@@ -8093,7 +8126,9 @@ METHODS: Dict[str, Dict[str, Any]] = {
     "fs.read": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "gateway.call": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "gateway.reply": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "gateway.start": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "gateway.status": {"mutating": False, "scope": "pane", "pane_scope": "open"},
+    "gateway.stop": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "git.diff": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "git.log": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "git.status": {"mutating": False, "scope": "pane", "pane_scope": "open"},
@@ -9018,6 +9053,10 @@ GatewayRequestData = TypedDict("GatewayRequestData", {
     "params": Dict[str, Any],
     "client": str,
 })
+
+GatewayStatusSubject: TypeAlias = Dict[str, Any]
+
+GatewayStatusData: TypeAlias = "GatewayStatus"
 
 GoalApprovedSubject = TypedDict("GoalApprovedSubject", {
     "goal": str,
@@ -11134,6 +11173,7 @@ EVENT_TYPES = (
     "family.created",
     "family.picked",
     "gateway.request",
+    "gateway.status",
     "goal.approved",
     "goal.cancelled",
     "goal.created",

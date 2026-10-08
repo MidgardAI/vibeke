@@ -2903,7 +2903,7 @@ pub fn pretty(method: &str, v: &Value) -> String {
             let gw = rest.as_object_mut().and_then(|o| o.remove("gateway"));
             let mut out = serde_json::to_string_pretty(&rest).unwrap_or_default();
             if let Some(line) = gw.as_ref().and_then(gateway_line) {
-                out.push_str("\n");
+                out.push('\n');
                 out.push_str(&line);
             }
             out

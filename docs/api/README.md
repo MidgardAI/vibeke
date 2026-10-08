@@ -194,7 +194,9 @@ Clients must accept new fields and event types. The API can change before versio
 | `fs.read` | Read | Pane |
 | `gateway.call` | Write | Full |
 | `gateway.reply` | Write | Full |
+| `gateway.start` | Write | Full |
 | `gateway.status` | Read | Pane |
+| `gateway.stop` | Write | Full |
 | `git.diff` | Read | Pane |
 | `git.log` | Read | Pane |
 | `git.status` | Read | Pane |

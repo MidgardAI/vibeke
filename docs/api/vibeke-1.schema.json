@@ -1436,6 +1436,98 @@
         "z"
       ]
     },
+    "GatewayStatus": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "type": "string",
+          "enum": [
+            "off",
+            "starting",
+            "connecting",
+            "online",
+            "offline",
+            "local_only",
+            "external",
+            "crashed"
+          ]
+        },
+        "autostart": {
+          "type": "boolean"
+        },
+        "supervised": {
+          "type": "boolean"
+        },
+        "pid": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "restarts": {
+          "type": "integer"
+        },
+        "relay": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "devices": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "since_ms": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "last_error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "log": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "state",
+        "autostart",
+        "supervised",
+        "pid",
+        "restarts",
+        "relay",
+        "devices",
+        "since_ms",
+        "last_error",
+        "log"
+      ]
+    },
     "Group": {
       "type": "object",
       "properties": {
@@ -13681,6 +13773,17 @@
         }
       }
     },
+    "gateway.start": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "$ref": "#/$defs/GatewayStatus"
+      }
+    },
     "gateway.status": {
       "mutating": false,
       "scope": "pane",
@@ -13693,11 +13796,101 @@
         "properties": {
           "connected": {
             "type": "boolean"
+          },
+          "configured": {
+            "type": "boolean"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "off",
+              "starting",
+              "connecting",
+              "online",
+              "offline",
+              "local_only",
+              "external",
+              "crashed"
+            ]
+          },
+          "autostart": {
+            "type": "boolean"
+          },
+          "supervised": {
+            "type": "boolean"
+          },
+          "pid": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "restarts": {
+            "type": "integer"
+          },
+          "relay": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "devices": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "since_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "last_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "log": {
+            "type": "string"
           }
         },
         "required": [
-          "connected"
+          "connected",
+          "configured"
         ]
+      }
+    },
+    "gateway.stop": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "$ref": "#/$defs/GatewayStatus"
       }
     },
     "git.diff": {
@@ -23333,6 +23526,16 @@
           "timers": {
             "type": "object"
           },
+          "gateway": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/GatewayStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "db_size": {
             "type": "integer"
           },
@@ -31845,6 +32048,14 @@
           "params",
           "client"
         ]
+      }
+    },
+    "gateway.status": {
+      "subject": {
+        "type": "object"
+      },
+      "data": {
+        "$ref": "#/$defs/GatewayStatus"
       }
     },
     "goal.approved": {
