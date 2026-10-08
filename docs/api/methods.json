@@ -8,7 +8,7 @@
     "proto": 2,
     "min": 1
   },
-  "method_count": 413,
+  "method_count": 419,
   "methods": [
     {
       "name": "adapter.delivery_ack",
@@ -697,6 +697,48 @@
       "result": "{ok: bool, exists: bool, entries: int, last_seq: int, last_hash: string, problems: [string], discontinuities: [int], head_seq: int|null, path: string, segments: [string]}"
     },
     {
+      "name": "auth.approve",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "security"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{method?: \"handoff.send\"|\"handoff.cancel\"|\"gateway.call\", params?: object, reason?: string, wait?: bool = true, timeout_ms?: int = 120000, request?: string}",
+      "result": "ApprovalRequest | object"
+    },
+    {
+      "name": "auth.approve.decide",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "security"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{request: string, decision: approve|always|deny}",
+      "result": "{request: string, pane: string, decision: approved|denied, grant: once|always|null, ok: bool, result: any, error: RpcError|null}"
+    },
+    {
+      "name": "auth.approve.withdraw",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "security"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{request: string}",
+      "result": "{request: string, withdrawn: bool}"
+    },
+    {
       "name": "auth.elevate",
       "mutating": true,
       "scope": "pane",
@@ -736,7 +778,7 @@
       "milestone": null,
       "spec": null,
       "params": "{}",
-      "result": "{pending: [ElevationRequest], elevated: [{pane: string, request: string, expires_at_ms: int}], revoked: [{pane: string}]}"
+      "result": "{pending: [ElevationRequest], elevated: [{pane: string, request: string, expires_at_ms: int}], revoked: [{pane: string}], approvals: [ApprovalRequest], grants: [ApprovalGrant]}"
     },
     {
       "name": "auth.revoke_token",
@@ -2057,6 +2099,48 @@
       "result": "{path: string, text?: string, binary: bool, truncated: bool, size: int, secret: bool}"
     },
     {
+      "name": "gateway.call",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "gateway_bridge"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{method: string, params?: object, timeout_ms?: int = 30000}",
+      "result": "any"
+    },
+    {
+      "name": "gateway.reply",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "gateway_bridge"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{id: string, result?: any, error?: {kind: string, message: string, details?: any}}",
+      "result": "{}"
+    },
+    {
+      "name": "gateway.status",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "gateway_bridge"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{}",
+      "result": "{connected: bool}"
+    },
+    {
       "name": "git.diff",
       "mutating": false,
       "scope": "pane",
@@ -2376,7 +2460,7 @@
       "milestone": null,
       "spec": null,
       "params": "{id: string}",
-      "result": "{job: {id: string, pane: string, peer: string, peer_name: string, interrupt: bool, state: queued|exporting|sending|delivered|failed|cancelled, sent: int, total: int, incoming?: string, incoming_state?: string, error?: string, created_at: int, updated_at: int, by?: string}}"
+      "result": "{job: {id: string, pane: string, peer: string, peer_name: string, interrupt: bool, state: queued|exporting|sending|delivered|failed|cancelled, sent: int, total: int, incoming?: string, incoming_state?: string, error?: string, created_at: int, updated_at: int, by?: string, expect?: {repo_root: string, branch: string|null, head: string, request: string, requested_by: string, approved_by: string}}}"
     },
     {
       "name": "handoff.decline",
@@ -2446,7 +2530,7 @@
       "milestone": null,
       "spec": null,
       "params": "{id: string, state?: queued|exporting|sending|delivered|failed|cancelled, sent?: int, total?: int, incoming?: string, incoming_state?: string, error?: string}",
-      "result": "{job: {id: string, pane: string, peer: string, peer_name: string, interrupt: bool, state: queued|exporting|sending|delivered|failed|cancelled, sent: int, total: int, incoming?: string, incoming_state?: string, error?: string, created_at: int, updated_at: int, by?: string}}"
+      "result": "{job: {id: string, pane: string, peer: string, peer_name: string, interrupt: bool, state: queued|exporting|sending|delivered|failed|cancelled, sent: int, total: int, incoming?: string, incoming_state?: string, error?: string, created_at: int, updated_at: int, by?: string, expect?: {repo_root: string, branch: string|null, head: string, request: string, requested_by: string, approved_by: string}}}"
     },
     {
       "name": "handoff.jobs",
@@ -2460,7 +2544,7 @@
       "milestone": null,
       "spec": null,
       "params": "{}",
-      "result": "{jobs: [{id: string, pane: string, peer: string, peer_name: string, interrupt: bool, state: queued|exporting|sending|delivered|failed|cancelled, sent: int, total: int, incoming?: string, incoming_state?: string, error?: string, created_at: int, updated_at: int, by?: string}]}"
+      "result": "{jobs: [{id: string, pane: string, peer: string, peer_name: string, interrupt: bool, state: queued|exporting|sending|delivered|failed|cancelled, sent: int, total: int, incoming?: string, incoming_state?: string, error?: string, created_at: int, updated_at: int, by?: string, expect?: {repo_root: string, branch: string|null, head: string, request: string, requested_by: string, approved_by: string}}]}"
     },
     {
       "name": "handoff.peers",
@@ -2530,7 +2614,7 @@
       "milestone": null,
       "spec": null,
       "params": "{pane?: Target, peer: string, interrupt?: bool = false}",
-      "result": "{job: {id: string, pane: string, peer: string, peer_name: string, interrupt: bool, state: queued|exporting|sending|delivered|failed|cancelled, sent: int, total: int, incoming?: string, incoming_state?: string, error?: string, created_at: int, updated_at: int, by?: string}}"
+      "result": "{job: {id: string, pane: string, peer: string, peer_name: string, interrupt: bool, state: queued|exporting|sending|delivered|failed|cancelled, sent: int, total: int, incoming?: string, incoming_state?: string, error?: string, created_at: int, updated_at: int, by?: string, expect?: {repo_root: string, branch: string|null, head: string, request: string, requested_by: string, approved_by: string}}}"
     },
     {
       "name": "image.upload",

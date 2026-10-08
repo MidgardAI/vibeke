@@ -92,6 +92,9 @@ Clients must accept new fields and event types. The API can change before versio
 | `audit.search` | Read | Full |
 | `audit.tail` | Read | Full |
 | `audit.verify` | Read | Full |
+| `auth.approve` | Write | Pane |
+| `auth.approve.decide` | Write | Full |
+| `auth.approve.withdraw` | Write | Pane |
 | `auth.elevate` | Write | Pane |
 | `auth.elevate.decide` | Write | Full |
 | `auth.list` | Read | Full |
@@ -189,6 +192,9 @@ Clients must accept new fields and event types. The API can change before versio
 | `fs.browse` | Read | Full |
 | `fs.list` | Read | Pane |
 | `fs.read` | Read | Pane |
+| `gateway.call` | Write | Full |
+| `gateway.reply` | Write | Full |
+| `gateway.status` | Read | Pane |
 | `git.diff` | Read | Pane |
 | `git.log` | Read | Pane |
 | `git.status` | Read | Pane |
