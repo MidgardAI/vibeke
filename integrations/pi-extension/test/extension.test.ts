@@ -679,7 +679,7 @@ describe("control channel", () => {
       },
     });
 
-    server.pushControl({ id: "c2", op: "set_model", params: { model: "openai/gpt-y", scope: "session" } });
+    server.pushControl({ id: "c2", op: "set_model", params: { model: "openai/gpt-y", scope: "default" } });
     await waitFor(() => replies().length >= 2, 3000, "set_model reply");
     expect(replies()[1]).toEqual({ id: "c2", ok: true, result: { model: "openai/gpt-y", default_changed: true } });
     expect(set.map((m) => m.id)).toEqual(["gpt-y"]);
@@ -688,7 +688,7 @@ describe("control channel", () => {
     await waitFor(() => replies().length >= 3, 3000, "models after switch");
     expect(replies()[2].result.models.find((m: any) => m.current).id).toBe("openai/gpt-y");
 
-    server.pushControl({ id: "c4", op: "set_model", params: { model: "nope/none" } });
+    server.pushControl({ id: "c4", op: "set_model", params: { model: "nope/none", scope: "default" } });
     await waitFor(() => replies().length >= 4, 3000, "refusal");
     expect(replies()[3]).toMatchObject({ id: "c4", ok: false });
     expect(replies()[3].error).toContain("unknown model");
@@ -696,6 +696,24 @@ describe("control channel", () => {
     server.pushControl({ id: "c5", op: "commands", params: {} });
     await waitFor(() => replies().length >= 5, 3000, "commands");
     expect(replies()[4].result).toEqual({ commands: [{ name: "review-pr", description: "Prompt template" }] });
+  });
+
+  test("pi refuses a session-only switch, which would also save its default model", async () => {
+    server.control = [];
+    const { pi } = setup(server, "pi", { control: true });
+    const set: any[] = [];
+    (pi as any).setModel = async (m: any) => {
+      set.push(m);
+      return true;
+    };
+    await pi.emit("session_start", {}, ctxWithModels());
+    server.pushControl({ id: "c1", op: "set_model", params: { model: "openai/gpt-y", scope: "session" } });
+    server.pushControl({ id: "c2", op: "set_model", params: { model: "openai/gpt-y" } });
+    await waitFor(() => replies().length >= 2, 3000, "replies");
+    expect(replies()[0]).toMatchObject({ id: "c1", ok: false });
+    expect(replies()[0].error).toContain("persists_default");
+    expect(replies()[1]).toMatchObject({ id: "c2", ok: false });
+    expect(set).toEqual([]);
   });
 
   test("omp keeps the switch to the session and refuses scope default", async () => {

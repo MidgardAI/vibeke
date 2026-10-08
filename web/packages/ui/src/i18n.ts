@@ -832,6 +832,9 @@ export const en = {
     failed: 'Could not load models',
     switched: (m: string) => `Model: ${m}`,
     picker: 'Opened the agent’s model menu',
+    persistsDefault: (harness: string, model: string) => `This also changes ${harness}’s default model to ${model}, for new sessions too.`,
+    confirmDefault: 'Switch and save as default',
+    cancel: 'Cancel',
   },
 
   composer2: {

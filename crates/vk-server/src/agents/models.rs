@@ -7,6 +7,10 @@
 //! | headless Codex (`codex app-server`) | `model/list`; `turn/start {model}` on later turns; `scope: default` also `config/value/write` |
 //! | headless pi / omp (`--mode rpc`) | `get_available_models`; `set_model` |
 //! | interactive pi / omp with the Vibeke extension | `adapter.control` → `ctx.modelRegistry.getAvailable()`; `pi.setModel()` |
+//!
+//! pi saves every switch as its default model, so a pi switch needs `scope: default`; the
+//! default `scope: session` is refused with `conflict` `reason: "persists_default"` and nothing
+//! changes. omp keeps a switch to the session and refuses `scope: default`.
 //! | everything else (Claude Code, interactive Codex, screen-only harnesses) | `unsupported`: clients send `/model` and answer the picker |
 //!
 //! **Control channel.** The extension long-polls `adapter.control {ops}` on its own connection
@@ -95,10 +99,21 @@ async fn commands(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
 
 /// How a run's model can be controlled.
 enum Route {
-    /// The headless adapter speaks the protocol (`default`: it can persist a default).
-    Headless { default: bool },
-    /// The pi extension's control channel (`default`: setting a model persists a default).
-    Extension { default: bool },
+    /// The headless adapter speaks the protocol.
+    Headless(Defaults),
+    /// The pi extension's control channel.
+    Extension(Defaults),
+}
+
+/// How a harness's model switch relates to its saved default model.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Defaults {
+    /// A switch stays in the session; `scope: default` saves the default separately (Codex).
+    Separate,
+    /// Every switch also saves the default: no session-only switch exists (pi).
+    Always,
+    /// A switch stays in the session; no default can be saved (omp).
+    Never,
 }
 
 fn unsupported(run: &AgentRun, reason: &str) -> vk_proto::rpc::RpcError {
@@ -125,9 +140,10 @@ fn route(run: &AgentRun, op: &str) -> Result<Route, vk_proto::rpc::RpcError> {
     let omp = h.is_some_and(|h| h.family() == harness::Family::Omp);
     if headless::is_headless(run) {
         return match run.integration.as_str() {
-            // `config/value/write` (Codex), pi's `set_model` saves the default; omp's does not.
-            "headless:app-server" => Ok(Route::Headless { default: true }),
-            "headless:rpc" => Ok(Route::Headless { default: !omp }),
+            // Codex saves a default with `config/value/write`; pi's `set_model` always saves
+            // one; omp's never does.
+            "headless:app-server" => Ok(Route::Headless(Defaults::Separate)),
+            "headless:rpc" => Ok(Route::Headless(pi_defaults(omp))),
             _ => Err(unsupported(run, "harness")),
         };
     }
@@ -135,16 +151,24 @@ fn route(run: &AgentRun, op: &str) -> Result<Route, vk_proto::rpc::RpcError> {
         if !reachable(&run.pane) || !supports(&run.pane, op) {
             return Err(unsupported(run, "extension_unavailable"));
         }
-        return Ok(Route::Extension { default: !omp });
+        return Ok(Route::Extension(pi_defaults(omp)));
     }
     Err(unsupported(run, "harness"))
+}
+
+fn pi_defaults(omp: bool) -> Defaults {
+    if omp {
+        Defaults::Never
+    } else {
+        Defaults::Always
+    }
 }
 
 async fn models(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     let run = resolve_run(server, ctx, s(p, "target"))?;
     let mut v = match route(&run, "models")? {
-        Route::Headless { .. } => headless::model_op(server, &run, headless::ModelOp::List).await?,
-        Route::Extension { .. } => {
+        Route::Headless(_) => headless::model_op(server, &run, headless::ModelOp::List).await?,
+        Route::Extension(_) => {
             request(&run.pane, "models", json!({}), Duration::from_secs(5)).await?
         }
     };
@@ -195,18 +219,30 @@ async fn set_model(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         _ => return Err(invalid("scope: session|default")),
     };
     let route = route(&run, "set_model")?;
-    let can_default = match route {
-        Route::Headless { default } | Route::Extension { default } => default,
+    let defaults = match route {
+        Route::Headless(d) | Route::Extension(d) => d,
     };
-    if default && !can_default {
+    if default && defaults == Defaults::Never {
         return Err(invalid(format!(
             "scope default: {} has no structured way to save a default model",
             run.harness
         ))
         .details(json!({"reason": "default_unsupported"})));
     }
+    // A harness whose every switch saves its default cannot switch for the session only: refuse
+    // without touching it, so the client can ask the user and resend with `scope: default`.
+    if !default && defaults == Defaults::Always {
+        return Err(err(
+            ErrorKind::Conflict,
+            format!(
+                "{} saves every model switch as its default model; resend with scope: default to switch anyway",
+                run.harness
+            ),
+        )
+        .details(json!({"reason": "persists_default", "harness": run.harness})));
+    }
     let v = match route {
-        Route::Headless { .. } => {
+        Route::Headless(_) => {
             headless::model_op(
                 server,
                 &run,
@@ -217,7 +253,7 @@ async fn set_model(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
             )
             .await?
         }
-        Route::Extension { .. } => {
+        Route::Extension(_) => {
             request(
                 &run.pane,
                 "set_model",

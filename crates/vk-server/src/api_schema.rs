@@ -638,7 +638,8 @@ agent.resume :: {pane?: Target, run: Target, mode?: string} => {run: AgentRun}
 agent.commands :: {target: Target} => {commands: [{name: string, description: string, takes_arg: bool, opens_picker: bool, dangerous: bool}], source: catalog|protocol}
 # unsupported (details.fallback "/model") when the harness offers no structured way: send /model and answer the picker
 agent.models :: {target: Target} => {models: [{id: string, label: string, description?: string, current: bool}], source: protocol|screen}
-# scope default only where the harness can save a default (Codex, pi), else invalid_params; default_changed: pi saves every switch as its default
+# scope default only where the harness can save a default (Codex, pi), else invalid_params; pi saves every switch as its default, so a pi switch
+# with scope session is refused with conflict, details {reason: persists_default, harness} and nothing changes: confirm with the user, resend with scope default
 agent.set_model :: {target: Target, model: string, scope?: session|default = session} => {run: AgentRun, default_changed: bool}
 
 # --- interactions ---

@@ -264,6 +264,9 @@ export function createExtension(pi: HostApi, opts: Options = {}): Handle | undef
     if (op === "set_model") {
       const want = String(params.model ?? "");
       if (params.scope === "default" && host === "omp") throw new Error("oh-my-pi switches models for the session only");
+      // pi saves every switch as its default model: it has no session-only switch, so only an
+      // explicit `scope: "default"` may switch (the server asks the user first).
+      if (params.scope !== "default" && host === "pi") throw new Error("persists_default: pi saves every model switch as its default model");
       if (typeof pi.setModel !== "function") throw new Error("the host cannot switch models");
       const list = await available();
       const slash = want.indexOf("/");
@@ -276,7 +279,7 @@ export function createExtension(pi: HostApi, opts: Options = {}): Handle | undef
       if (ok === false) throw new Error(`no credentials for ${m.provider ?? "this provider"}`);
       currentModel = m;
       if (typeof m.id === "string") model = m.id;
-      // pi saves every switch as its default model; omp keeps it to the session.
+      // pi saved the switch as its default model; omp keeps it to the session.
       return { model: modelKey(m), default_changed: host === "pi" };
     }
     if (op === "commands") {

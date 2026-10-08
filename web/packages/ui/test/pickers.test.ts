@@ -237,4 +237,25 @@ describe('model switcher', () => {
     expect(sent).toEqual(['/model']);
     await expect(switchModel({ request: async () => { throw err('forbidden'); } } as never, send, 'r1', 'b')).rejects.toBeInstanceOf(RpcError);
   });
+  test('a switch that would also save the default asks first, then resends with scope default', async () => {
+    const calls: unknown[] = [];
+    const sent: string[] = [];
+    const send = async (t: string) => (sent.push(t), true);
+    const conn = {
+      request: async (m: string, p: { scope?: string }) => {
+        calls.push([m, p]);
+        if (p.scope === 'session') throw err('conflict', { reason: 'persists_default', harness: 'pi' });
+        return { run: {}, default_changed: true };
+      },
+    } as never;
+    expect(await switchModel(conn, send, 'r1', 'b')).toBe('confirm_default');
+    expect(await switchModel(conn, send, 'r1', 'b', 'default')).toBe('set');
+    expect(calls).toEqual([
+      ['agent.set_model', { target: 'r1', model: 'b', scope: 'session' }],
+      ['agent.set_model', { target: 'r1', model: 'b', scope: 'default' }],
+    ]);
+    expect(sent).toEqual([]);
+    // Other conflicts are not mistaken for it.
+    await expect(switchModel({ request: async () => { throw err('conflict', { reason: 'other' }); } } as never, send, 'r1', 'b')).rejects.toBeInstanceOf(RpcError);
+  });
 });

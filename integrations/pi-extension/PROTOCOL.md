@@ -68,7 +68,7 @@ On its own connection (pane-token hello) the extension long-polls
 | op | params | result |
 |---|---|---|
 | `models` | `{}` | `{models: [{id: "provider/id", label, description?: provider, current}]}` |
-| `set_model` | `{model: "provider/id", scope: "session"\|"default"}` | `{model, default_changed}` via `pi.setModel(model)`; pi saves every switch as its default (`default_changed: true`); omp keeps it to the session and refuses `scope: "default"` |
+| `set_model` | `{model: "provider/id", scope: "session"\|"default"}` | `{model, default_changed}` via `pi.setModel(model)`. pi saves every switch as its default, so it switches only for `scope: "default"` (`default_changed: true`) and refuses any other scope without switching; the server refuses such a request first (`conflict`, `reason: "persists_default"`) so the client can ask the user. omp keeps a switch to the session and refuses `scope: "default"` |
 | `commands` | `{}` | `{commands: [{name, description}]}` from `pi.getCommands()` |
 
 A response that is an error or has no `request` member (a server without the channel) ends the loop for good; a dropped connection reconnects with backoff.

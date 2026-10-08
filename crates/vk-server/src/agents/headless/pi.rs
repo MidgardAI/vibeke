@@ -635,6 +635,10 @@ impl Adapter for Pi {
         if default && self.omp {
             return Err("oh-my-pi keeps no default model through RPC".into());
         }
+        // pi's `set_model` also saves the default model: never for a session-only switch.
+        if !default && !self.omp {
+            return Err("pi saves every model switch as its default model".into());
+        }
         let Some((provider, id)) = model.split_once('/') else {
             return Err(format!("{model}: expected provider/model"));
         };

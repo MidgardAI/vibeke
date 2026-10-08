@@ -750,6 +750,8 @@ function createExtension(pi, opts = {}) {
       const want = String(params.model ?? "");
       if (params.scope === "default" && host === "omp")
         throw new Error("oh-my-pi switches models for the session only");
+      if (params.scope !== "default" && host === "pi")
+        throw new Error("persists_default: pi saves every model switch as its default model");
       if (typeof pi.setModel !== "function")
         throw new Error("the host cannot switch models");
       const list = await available();

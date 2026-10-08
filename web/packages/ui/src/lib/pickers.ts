@@ -199,12 +199,28 @@ export async function loadModels(conn: Req, run: string): Promise<ModelList> {
   }
 }
 
-/** `agent.set_model` for this session; unsupported falls back to the native `/model` picker. */
-export async function switchModel(conn: Req, send: (text: string) => Promise<boolean>, run: string, model: string): Promise<'set' | 'picker' | 'failed'> {
+/** `agent.set_model` refused because the harness saves every switch as its default model (pi). */
+export function isPersistsDefault(e: unknown): boolean {
+  return e instanceof RpcError && e.kind === 'conflict' && detailsOf(e)?.reason === 'persists_default';
+}
+
+/**
+ * `agent.set_model` (for this session unless `scope` says otherwise); unsupported falls back to
+ * the native `/model` picker. `confirm_default`: nothing changed because this harness would also
+ * save the model as its default; ask the user and call again with `scope: 'default'`.
+ */
+export async function switchModel(
+  conn: Req,
+  send: (text: string) => Promise<boolean>,
+  run: string,
+  model: string,
+  scope: 'session' | 'default' = 'session',
+): Promise<'set' | 'picker' | 'failed' | 'confirm_default'> {
   try {
-    await conn.request('agent.set_model', { target: run, model, scope: 'session' });
+    await conn.request('agent.set_model', { target: run, model, scope });
     return 'set';
   } catch (e) {
+    if (scope === 'session' && isPersistsDefault(e)) return 'confirm_default';
     if (isUnsupportedCall(e)) return (await send('/model')) ? 'picker' : 'failed';
     throw e;
   }

@@ -6,7 +6,7 @@ import { useEffect, useState } from 'react';
 import { Check } from 'lucide-react';
 import type { AgentModel, AgentRun } from '@vibeke/core';
 import { useApp } from '../../app/hooks';
-import { HarnessIcon, Notice, Sheet, Spinner, cx } from '../../components/ui';
+import { Button, HarnessIcon, Notice, Sheet, Spinner, cx } from '../../components/ui';
 import { t } from '../../i18n';
 import { errorMessage } from '../../lib/answer';
 import { harnessLabel } from '../../lib/harness';
@@ -21,6 +21,8 @@ export function ModelSwitcher({ hostId, run, actions, disabled }: { hostId: stri
   const [open, setOpen] = useState(false);
   const [state, setState] = useState<{ phase: 'loading' } | { phase: 'ready'; models: AgentModel[] } | { phase: 'error'; message: string }>({ phase: 'loading' });
   const [busy, setBusy] = useState<string | null>(null);
+  /** A model whose switch would also save the harness's default: asks before switching. */
+  const [confirm, setConfirm] = useState<AgentModel | null>(null);
   const memo = `${hostId}/${run.harness}`;
 
   const slash = async () => {
@@ -50,20 +52,24 @@ export function ModelSwitcher({ hostId, run, actions, disabled }: { hostId: stri
   };
 
   useEffect(() => {
+    setConfirm(null);
     if (open) void load();
   }, [open]);
 
-  const choose = async (m: AgentModel) => {
+  const choose = async (m: AgentModel, scope: 'session' | 'default' = 'session') => {
     const conn = app.conn(hostId);
     if (!conn || busy) return;
     if (m.current) return setOpen(false);
     setBusy(m.id);
     try {
-      const r = await switchModel(conn, actions.text, run.id, m.id);
+      const r = await switchModel(conn, actions.text, run.id, m.id, scope);
+      // Nothing changed yet: the switch would also save the default; ask first.
+      if (r === 'confirm_default') return setConfirm(m);
       if (r === 'set') {
         app.toast(t.modelSwitch.switched(m.label), 'ok');
         void conn.refresh().catch(() => {});
       } else if (r === 'picker') noStructured.add(memo);
+      setConfirm(null);
       setOpen(false);
     } catch (e) {
       app.toast(errorMessage(e), 'error');
@@ -96,6 +102,24 @@ export function ModelSwitcher({ hostId, run, actions, disabled }: { hostId: stri
           </div>
         )}
         {state.phase === 'error' && <Notice tone="warn">{state.message}</Notice>}
+        {state.phase === 'ready' && confirm && (
+          <Notice
+            tone="warn"
+            className="mb-2"
+            action={
+              <div className="flex gap-2">
+                <Button size="sm" variant="ghost" disabled={!!busy} onClick={() => setConfirm(null)}>
+                  {t.modelSwitch.cancel}
+                </Button>
+                <Button size="sm" variant="primary" busy={busy === confirm.id} onClick={() => void choose(confirm, 'default')}>
+                  {t.modelSwitch.confirmDefault}
+                </Button>
+              </div>
+            }
+          >
+            {t.modelSwitch.persistsDefault(harnessLabel(run.harness), confirm.label)}
+          </Notice>
+        )}
         {state.phase === 'ready' && (
           <div role="radiogroup" aria-label={t.modelSwitch.title} className="flex flex-col gap-1.5">
             {state.models.map((m) => (

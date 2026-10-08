@@ -222,6 +222,77 @@ async fn set_model_validates_params_and_scope() {
     poller.abort();
 }
 
+/// Review finding: pi saves every switch as its default model, so a session-scoped switch (the
+/// default scope) must be refused before anything reaches pi; omp keeps session switching.
+#[tokio::test]
+async fn pi_session_switch_is_refused_because_it_persists_a_default() {
+    let e = env();
+    let run = add_run(&e, "pi", "extension");
+    let poller = parked(&e, &run.pane).await;
+    for p in [
+        json!({"target": run.id, "model": "openai/m-2"}),
+        json!({"target": run.id, "model": "openai/m-2", "scope": "session"}),
+    ] {
+        let err = call(&e, &user(), "agent.set_model", p.clone())
+            .await
+            .unwrap_err();
+        assert_eq!(err.data.kind, "conflict", "{p}");
+        assert_eq!(err.data.details["reason"], "persists_default");
+        assert_eq!(err.data.details["harness"], "pi");
+    }
+    // Nothing was sent to the extension and the run's model is untouched.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(!poller.is_finished(), "no request reached the extension");
+    poller.abort();
+    assert_eq!(
+        e.server
+            .with_core(|c| c.run(&run.id).and_then(|r| r.model.clone())),
+        run.model
+    );
+
+    // Headless pi: the same refusal, before the adapter is asked.
+    let hl = add_run(&e, "pi", "headless:rpc");
+    let err = call(
+        &e,
+        &user(),
+        "agent.set_model",
+        json!({"target": hl.id, "model": "openai/m-2"}),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.data.details["reason"], "persists_default");
+
+    // omp switches for the session only: the request goes through.
+    let omp = add_run(&e, "omp", "extension");
+    let poller = parked(&e, &omp.pane).await;
+    let server = e.server.clone();
+    let rid = omp.id.clone();
+    let caller = tokio::spawn(async move {
+        super::api(
+            &server,
+            &user(),
+            "agent.set_model",
+            &json!({"target": rid, "model": "openai/m-2"}),
+        )
+        .await
+        .unwrap()
+    });
+    let req = poller.await.unwrap()["request"].clone();
+    assert_eq!(
+        req["params"],
+        json!({"model": "openai/m-2", "scope": "session"})
+    );
+    poll(
+        &e,
+        &omp.pane,
+        Some(json!({"id": req["id"], "ok": true, "result": {"model": "openai/m-2", "default_changed": false}})),
+        20,
+    )
+    .await;
+    let v = caller.await.unwrap().unwrap();
+    assert_eq!(v["default_changed"], false);
+}
+
 #[tokio::test]
 async fn extension_channel_lists_and_switches_models() {
     let e = env();
@@ -269,7 +340,7 @@ async fn extension_channel_lists_and_switches_models() {
             &server,
             &user(),
             "agent.set_model",
-            &json!({"target": rid, "model": "openai/m-2"}),
+            &json!({"target": rid, "model": "openai/m-2", "scope": "default"}),
         )
         .await
         .unwrap()
@@ -278,7 +349,7 @@ async fn extension_channel_lists_and_switches_models() {
     assert_eq!(req["op"], "set_model");
     assert_eq!(
         req["params"],
-        json!({"model": "openai/m-2", "scope": "session"})
+        json!({"model": "openai/m-2", "scope": "default"})
     );
     poll(
         &e,

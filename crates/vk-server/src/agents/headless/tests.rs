@@ -1496,17 +1496,29 @@ mod sessions {
     }
 
     /// pi (`--mode rpc`): `get_available_models` / `set_model {provider, modelId}`; pi saves the
-    /// switch as its default, omp keeps it to the session and refuses `default`.
+    /// switch as its default (so it refuses a session-only switch), omp keeps it to the session
+    /// and refuses `default`.
     #[tokio::test]
     async fn pi_models_list_and_switch_over_rpc() {
         let mut t = T::new("pi", Kind::Rpc);
         let mut s = t.session();
+        // Review finding: a session-only switch would still save pi's default; refused unsent.
         let (w, mut rx) = model_cmd(
             &t,
             &mut s,
             ModelOp::Set {
                 model: "openrouter/vendor/m-2".into(),
                 default: false,
+            },
+        );
+        assert!(w.is_empty(), "{w:?}");
+        assert!(rx.try_recv().unwrap().is_err());
+        let (w, mut rx) = model_cmd(
+            &t,
+            &mut s,
+            ModelOp::Set {
+                model: "openrouter/vendor/m-2".into(),
+                default: true,
             },
         );
         assert_eq!(w[0].1["type"], "set_model");
@@ -1551,7 +1563,7 @@ mod sessions {
             &mut s,
             ModelOp::Set {
                 model: "nope/x".into(),
-                default: false,
+                default: true,
             },
         );
         let rid = w[0].1["id"].clone();
@@ -1580,6 +1592,16 @@ mod sessions {
         );
         assert!(w.is_empty());
         assert!(rx.try_recv().unwrap().is_err());
+        // omp keeps session switching.
+        let (w, _rx) = model_cmd(
+            &t2,
+            &mut s2,
+            ModelOp::Set {
+                model: "anthropic/m-1".into(),
+                default: false,
+            },
+        );
+        assert_eq!(w[0].1["type"], "set_model");
     }
 
     /// Adapters without structured model control answer `unsupported` at once.
