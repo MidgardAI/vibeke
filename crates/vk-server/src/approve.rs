@@ -74,12 +74,15 @@ fn conn_open() -> bool {
         .unwrap_or(true)
 }
 
+#[cfg(test)]
+type PrepareHook = Box<dyn FnOnce(&Server) + Send>;
+
 #[derive(Default)]
 pub struct State {
     inner: Mutex<Inner>,
     /// Tests: run once between preparing a request and registering it.
     #[cfg(test)]
-    after_prepare: Mutex<Option<Box<dyn FnOnce(&Server) + Send>>>,
+    after_prepare: Mutex<Option<PrepareHook>>,
 }
 
 #[derive(Default)]
@@ -799,7 +802,7 @@ async fn approve(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     {
         let hook = state(server).after_prepare.lock().unwrap().take();
         if let Some(hook) = hook {
-            hook(&**server);
+            hook(server);
         }
     }
     // Under the request table's lock: still the same authorization, and still a caller.
@@ -842,7 +845,7 @@ async fn approve(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     // A standing grant for exactly this (pane, method, target, peer) runs it now.
     let standing = {
         let g = state(server).inner.lock().unwrap();
-        still_valid(&*g)?;
+        still_valid(&g)?;
         g.grants
             .iter()
             .find(|gr| {
@@ -871,7 +874,7 @@ async fn approve(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     }
     {
         let mut g = state(server).inner.lock().unwrap();
-        still_valid(&*g)?;
+        still_valid(&g)?;
         let open = g
             .requests
             .values()

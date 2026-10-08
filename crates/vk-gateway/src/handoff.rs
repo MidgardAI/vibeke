@@ -117,6 +117,7 @@ pub struct Exported {
 /// the user approved, which must be the one checked out), never a later `HEAD`; the working-tree
 /// changes and untracked files are live by nature, so after packing HEAD and the branch are read
 /// again and the export fails with `repo_moved` if they changed meanwhile.
+#[allow(clippy::too_many_arguments)]
 pub async fn export_bundle(
     gw: &Arc<Gateway>,
     actor: &str,
