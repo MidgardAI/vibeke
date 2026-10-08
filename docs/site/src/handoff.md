@@ -29,6 +29,35 @@ if needed and press `enter`. The tab bar shows the progress ("⇢ marvin 42%"), 
 when the work was delivered or imported. Cancel a send from **Incoming handoffs** (`x`). Pairing
 with a teammate's invitation happens on the command line (`vibeke gateway peer add <link>`).
 
+### From a shell pane
+
+Inside a pane, `vibeke handoff send <peer>` asks for your approval first, so an agent in a pane
+can never move code to another host without you knowing:
+
+```sh
+vibeke handoff send marvin            # the pane you run it in
+vibeke handoff send marvin --pane <pane>  # another pane of the same workspace
+vibeke handoff send marvin --no-wait  # print the request id and return
+```
+
+The command prints `Waiting for approval in Vibeke (prefix+shift+e, or the notice in the tab bar)…`
+and waits. Vibeke shows what will be sent, worked out by Vibeke itself: the pane, its repository,
+branch, number of changed files, its agent (or none) and the destination host. Text the command
+passed with `--reason` is shown separately, as unverified. Approve once, approve **always** (the
+same pane may send to the same host again without asking until its process restarts), or deny.
+You can also decide outside any pane with `vibeke auth approval <request> approve|always|deny`;
+`vibeke auth list` shows open requests and standing approvals. Once approved, the command prints
+the queued job as if you had sent it yourself; a denial exits with an error that says "denied",
+and Ctrl-C withdraws the request.
+
+When the pane you run it in has no agent and its workspace has exactly one agent pane, the
+command asks whether to send that agent pane instead. A shell pane without an agent sends its
+repository with no conversation. If the pane switches to another branch, commit or repository
+before the transfer starts, the transfer fails with `repo_moved` and nothing is sent; ask again.
+`vibeke handoff cancel <job>` and `vibeke handoff redeem <link>` ask the same way inside a pane.
+Revoking the pane's access (`vibeke pane revoke-token`) withdraws its requests and ends its
+standing approvals.
+
 The destination keeps the work as an **incoming handoff**. Vibeke imports it right away when the
 destination already has a clone of the repository and remembers where the last handoff for that
 repository went (and **always ask** is off). Otherwise the destination shows a notification,
@@ -170,6 +199,9 @@ vibeke gateway peer add '<invitation link>'   # add --share-user to show your gi
 vibeke gateway peer list
 vibeke gateway peer remove <id or name>
 ```
+
+`vibeke handoff redeem '<invitation link>'` does the same as `vibeke gateway peer add`; inside a
+pane it asks for your approval first.
 
 A peer invitation pairs one of your own hosts and never expires. A teammate's handoff invitation can also be redeemed this way; that pairing expires with the invitation. A paired host can only deliver handoffs: it can't see panes, the inbox or other devices.
 
