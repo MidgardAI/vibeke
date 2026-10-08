@@ -514,6 +514,47 @@ async fn audit_log_is_chained_searchable_and_verified() {
     assert_eq!(kind(&r.unwrap_err()), ErrorKind::PermissionDenied);
 }
 
+fn stored_token_hashes(e: &Env) -> Vec<String> {
+    e.server
+        .with_core(|c| c.store.kv_get("server", "pane_token_hashes"))
+        .unwrap()
+        .and_then(|s| serde_json::from_str::<serde_json::Map<String, Value>>(&s).ok())
+        .map(|m| m.keys().cloned().collect())
+        .unwrap_or_default()
+}
+
+/// A respawned pane's token is committed before its process is spawned: a server that dies
+/// right after the spawn leaves its successor able to authenticate the pane's hooks.
+#[tokio::test(flavor = "multi_thread")]
+async fn respawned_pane_token_is_durable_before_spawn() {
+    let e = Env::new();
+    // Holders spawn `/bin/false` here, so the respawn's launch fails after the token was minted.
+    let srv = e.server.clone();
+    tokio::task::spawn_blocking(move || srv.holder_lost("pane-a"))
+        .await
+        .unwrap();
+    let mem = e.server.tokens.lock().unwrap().clone();
+    assert!(mem.values().any(|p| p == "pane-a"), "{mem:?}");
+    let stored = stored_token_hashes(&e);
+    for h in mem.keys() {
+        assert!(
+            stored.contains(h),
+            "token hash {h} not persisted: {stored:?}"
+        );
+    }
+    // The host-pane env path (sandboxed launches) persists too.
+    let env = e
+        .server
+        .pane_env_for("pane-b", "pane-b", "tab-a", "ws-a", &[]);
+    let tok = &env
+        .iter()
+        .find(|(k, _)| k == "VIBEKE_PANE_TOKEN")
+        .unwrap()
+        .1;
+    let stored = stored_token_hashes(&e);
+    assert!(stored.contains(&crate::token_hash(tok)));
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn revoked_pane_loses_api_access_until_restart() {
     let e = Env::new();

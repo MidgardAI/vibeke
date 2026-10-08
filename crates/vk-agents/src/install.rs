@@ -257,6 +257,55 @@ fn shell_quote(s: &str) -> String {
     }
 }
 
+/// The `vibeke` that harness hook commands should call (04 §11 rule 6: stable command paths).
+/// The installed layout wins over the running binary: `~/.local/bin/vibeke`, then
+/// `~/.local/share/vibeke/current/vibeke` (`scripts/install.sh`, the remote bootstrap). Only
+/// without an install does it fall back to `exe`, which for a developer is often a cargo build
+/// output that is rewritten on every build (macOS kills a process whose binary changes under
+/// it, so a hook pointing there fails while another session rebuilds).
+pub fn hook_bin(exe: &Path, home: &Path) -> PathBuf {
+    [
+        home.join(".local/bin/vibeke"),
+        home.join(".local/share/vibeke/current/vibeke"),
+    ]
+    .into_iter()
+    .find(|p| p.is_file())
+    .unwrap_or_else(|| exe.to_path_buf())
+}
+
+/// A cargo build output (`…/target/[<triple>/]{debug,release}/…`): not a stable hook path.
+pub fn is_build_output(p: &Path) -> bool {
+    let parts: Vec<_> = p.components().map(|c| c.as_os_str()).collect();
+    parts.iter().enumerate().any(|(i, c)| {
+        *c == "target"
+            && parts
+                .get(i + 1..parts.len().saturating_sub(1))
+                .unwrap_or(&[])
+                .iter()
+                .take(2)
+                .any(|x| *x == "debug" || *x == "release")
+    })
+}
+
+/// The binary a managed hook command runs (`<bin> hook <harness> <Event>`).
+fn command_bin(cmd: &str) -> Option<PathBuf> {
+    let (bin, _) = cmd.split_once(" hook ")?;
+    let bin = bin.trim();
+    let bin = match bin.strip_prefix('\'').and_then(|b| b.strip_suffix('\'')) {
+        Some(q) => q.replace(r"'\''", "'"),
+        None => bin.to_string(),
+    };
+    Some(PathBuf::from(bin))
+}
+
+/// Managed hooks call a cargo build output or a binary that no longer exists: re-running
+/// `vibeke integration install` / `vibeke setup` rewrites them to [`hook_bin`].
+pub fn stale_command(st: &Status) -> bool {
+    st.hooks
+        .iter()
+        .any(|hs| command_bin(&hs.command).is_some_and(|b| is_build_output(&b) || !b.exists()))
+}
+
 /// `<bin> hook <harness> <Event>`. No version in it: Codex trust is keyed on
 /// the exact definition.
 fn command_for(h: Harness, bin: &Path, event: &str) -> String {
@@ -947,6 +996,18 @@ pub fn status(h: Harness, dirs: &Dirs) -> Status {
                 .push("config.toml sets features.hooks = false".to_string());
         }
     }
+    if let Some(b) = st
+        .hooks
+        .iter()
+        .find_map(|hs| command_bin(&hs.command))
+        .filter(|_| stale_command(&st))
+    {
+        st.todo.push(format!(
+            "hooks call {} (a build output or missing binary); rerun `vibeke integration install {} --yes` to use the installed vibeke",
+            b.display(),
+            h.id()
+        ));
+    }
     st
 }
 
@@ -1283,6 +1344,66 @@ mod tests {
         fs::create_dir_all(&d.claude).unwrap();
         fs::create_dir_all(&d.codex).unwrap();
         d
+    }
+
+    #[test]
+    fn hook_bin_prefers_the_installed_layout_over_a_build_output() {
+        let t = tempfile::tempdir().unwrap();
+        let home = t.path();
+        let exe = home.join("code/vibeke/target/release/vibeke");
+        assert!(is_build_output(&exe));
+        assert!(is_build_output(Path::new(
+            "/x/target/aarch64-apple-darwin/debug/vibeke"
+        )));
+        assert!(!is_build_output(Path::new(
+            "/home/u/.local/share/vibeke/current/vibeke"
+        )));
+        assert!(!is_build_output(Path::new("/srv/target")));
+        assert!(!is_build_output(Path::new("/srv/target/bin/vibeke")));
+        // Nothing installed: the running binary is all there is.
+        assert_eq!(hook_bin(&exe, home), exe);
+        let current = home.join(".local/share/vibeke/current/vibeke");
+        fs::create_dir_all(current.parent().unwrap()).unwrap();
+        fs::write(&current, "").unwrap();
+        assert_eq!(hook_bin(&exe, home), current);
+        let local = home.join(".local/bin/vibeke");
+        fs::create_dir_all(local.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&current, &local).unwrap();
+        assert_eq!(hook_bin(&exe, home), local);
+    }
+
+    #[test]
+    fn reinstall_rewrites_a_build_output_hook_path() {
+        let t = tempfile::tempdir().unwrap();
+        let d = dirs(&t);
+        let dev = t.path().join("code/vibeke/target/release/vibeke");
+        let stable = t.path().join(".local/bin/vibeke");
+        for p in [&dev, &stable] {
+            fs::create_dir_all(p.parent().unwrap()).unwrap();
+            fs::write(p, "").unwrap();
+        }
+        for h in [Harness::Claude, Harness::Codex] {
+            apply(&plan_install(h, &d, &dev).unwrap()).unwrap();
+            let st = status(h, &d);
+            assert_eq!(st.state, InstallState::Installed);
+            assert!(stale_command(&st), "{h:?}");
+            assert!(
+                st.todo.iter().any(|x| x.contains("build output")),
+                "{:?}",
+                st.todo
+            );
+            let plan = plan_install(h, &d, &stable).unwrap();
+            assert!(plan.changed(), "{h:?}: a stale path must be rewritten");
+            apply(&plan).unwrap();
+            let st = status(h, &d);
+            assert!(!stale_command(&st), "{h:?}");
+            let want = stable.to_string_lossy().into_owned();
+            assert!(
+                st.hooks.iter().all(|x| x.command.starts_with(&want)),
+                "{:?}",
+                st.hooks
+            );
+        }
     }
 
     /// Re-render a fixture the way the installer would, so byte-identity

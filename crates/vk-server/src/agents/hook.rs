@@ -7,15 +7,24 @@
 //!   OpenCode `permission.ask`): print nothing on failure, so the harness's own dialog appears.
 //!   Permission enforcement itself is left to the harness.
 //!
-//! A gate request whose connection drops is retried once on a fresh connection (the server
+//! A gate request whose connection fails or drops is retried on a fresh connection with short
+//! backoff for up to [`RESTART_WINDOW`], so it rides out a server restart (the server
 //! re-attaches by `native_ref` and returns an already recorded decision instead of reopening).
+//! Signals are a single attempt.
 
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const MAX_STDIN: u64 = 4 << 20;
+/// How long a gate request keeps retrying while the server is absent or restarting.
+const RESTART_WINDOW: Duration = Duration::from_secs(5);
+
+/// Pauses between gate attempts: 50 ms doubling to 500 ms.
+fn backoff(attempt: u32) -> Duration {
+    Duration::from_millis(50u64 << attempt.min(4)).min(Duration::from_millis(500))
+}
 
 /// Events whose hook may block for a decision (gate-capable, 04 §6.1/§6.2).
 fn gate_capable(harness: &str, event: &str, payload: &Value) -> bool {
@@ -177,15 +186,16 @@ pub fn main(args: &[String]) -> i32 {
         payload: &payload,
     };
     let gate = gate_capable(harness, event, &payload);
-    // Gate requests are retried once on a fresh connection; signals are not worth it.
-    let attempts = if gate { 2 } else { 1 };
-    for n in 0..attempts {
-        match exchange(&req) {
-            Err(Failure::Retry) if n + 1 < attempts => {
-                std::thread::sleep(Duration::from_millis(150));
-            }
-            _ => break,
-        }
+    // Gate requests retry on a fresh connection until the restart window closes; signals are
+    // not worth waiting for. The window starts at the first failure: a gate that waited long
+    // for a decision before its connection dropped still gets the whole window.
+    let mut outcome = exchange(&req);
+    let deadline = Instant::now() + RESTART_WINDOW;
+    let mut n = 0;
+    while gate && outcome == Err(Failure::Retry) && Instant::now() + backoff(n) < deadline {
+        std::thread::sleep(backoff(n));
+        n += 1;
+        outcome = exchange(&req);
     }
     0
 }
@@ -193,6 +203,22 @@ pub fn main(args: &[String]) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gate_retries_span_a_restart_window() {
+        assert_eq!(backoff(0), Duration::from_millis(50));
+        assert_eq!(backoff(3), Duration::from_millis(400));
+        assert_eq!(backoff(9), Duration::from_millis(500));
+        // Instant failures (socket absent): roughly a dozen attempts within the window.
+        let mut t = Duration::ZERO;
+        let mut n = 0;
+        while t + backoff(n) < RESTART_WINDOW {
+            t += backoff(n);
+            n += 1;
+        }
+        assert!((10..=16).contains(&n), "{n}");
+        assert!(t > Duration::from_secs(4), "{t:?}");
+    }
 
     #[test]
     fn elicitation_is_gate_capable() {

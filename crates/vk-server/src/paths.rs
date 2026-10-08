@@ -22,6 +22,27 @@ pub struct StateLock {
     _file: std::fs::File,
 }
 
+/// `flock(LOCK_EX | LOCK_NB)` on `path` (created in `dir`); `Ok(None)` when held elsewhere.
+fn try_flock(dir: &Path, path: &Path) -> std::io::Result<Option<StateLock>> {
+    use std::os::fd::AsRawFd;
+    std::fs::create_dir_all(dir)?;
+    let f = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(path)?;
+    // SAFETY: flock on a descriptor we own; the lock lives as long as the file is open.
+    if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+        return Ok(Some(StateLock { _file: f }));
+    }
+    let e = std::io::Error::last_os_error();
+    if e.raw_os_error() == Some(libc::EWOULDBLOCK) {
+        Ok(None)
+    } else {
+        Err(e)
+    }
+}
+
 pub fn home() -> PathBuf {
     std::env::var_os("HOME")
         .map(PathBuf::from)
@@ -104,22 +125,26 @@ impl Paths {
     /// Take the state dir's exclusive-writer lock without waiting; `Ok(None)` when another
     /// process holds it.
     pub fn try_lock_state(&self) -> std::io::Result<Option<StateLock>> {
-        use std::os::fd::AsRawFd;
-        std::fs::create_dir_all(&self.state)?;
-        let f = std::fs::OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .open(self.state_lock())?;
-        // SAFETY: flock on a descriptor we own; the lock lives as long as the file is open.
-        if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
-            return Ok(Some(StateLock { _file: f }));
-        }
-        let e = std::io::Error::last_os_error();
-        if e.raw_os_error() == Some(libc::EWOULDBLOCK) {
-            Ok(None)
-        } else {
-            Err(e)
+        try_flock(&self.state, &self.state_lock())
+    }
+    /// The control socket's lock: `<runtime>/server.lock`, held by a serving server for its
+    /// whole life. The state lock already keeps two servers off one state dir; this one keeps
+    /// two servers off one socket even when their state dirs differ (an environment with
+    /// another `XDG_STATE_HOME`), so a server never unlinks a live server's socket.
+    pub fn runtime_lock(&self) -> PathBuf {
+        self.runtime.join("server.lock")
+    }
+    /// [`Paths::runtime_lock`], retrying for up to `wait`; `Ok(None)` when another process holds it.
+    pub fn lock_runtime(&self, wait: std::time::Duration) -> std::io::Result<Option<StateLock>> {
+        let t0 = std::time::Instant::now();
+        loop {
+            if let Some(l) = try_flock(&self.runtime, &self.runtime_lock())? {
+                return Ok(Some(l));
+            }
+            if t0.elapsed() >= wait {
+                return Ok(None);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
         }
     }
     /// [`Paths::try_lock_state`], retrying for up to `wait`.
@@ -345,6 +370,24 @@ mod tests {
                 .unwrap()
                 .is_some()
         );
+    }
+
+    /// The socket lock is independent of the state lock: two servers with different state dirs
+    /// still cannot share a socket.
+    #[test]
+    fn runtime_lock_is_exclusive_across_state_dirs() {
+        let d = tempfile::tempdir().unwrap();
+        let p = |state: &str| Paths {
+            session: "t".into(),
+            runtime: d.path().join("run"),
+            state: d.path().join(state),
+        };
+        let (a, b) = (p("state-a"), p("state-b"));
+        let _sa = a.try_lock_state().unwrap().expect("free");
+        let _sb = b.try_lock_state().unwrap().expect("other state dir");
+        let held = a.lock_runtime(std::time::Duration::ZERO).unwrap();
+        assert!(held.is_some());
+        assert!(b.lock_runtime(std::time::Duration::ZERO).unwrap().is_none());
     }
 
     /// A holder socket under the longest macOS `$TMPDIR` shape fits `sun_path` (104 bytes).

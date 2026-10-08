@@ -352,6 +352,23 @@ async fn run_server(g: &Global) -> i32 {
             return EXIT_API;
         }
     };
+    // One server per socket too (state dirs can differ between environments): `bind` may
+    // unlink a socket that does not answer, which is only safe while we hold this lock.
+    let _socket_lock = match paths.lock_runtime(std::time::Duration::from_secs(10)) {
+        Ok(Some(l)) => l,
+        Ok(None) => {
+            eprintln!(
+                "server: another vibeke server is serving {} ({} is locked)",
+                paths.socket().display(),
+                paths.runtime_lock().display()
+            );
+            return EXIT_API;
+        }
+        Err(e) => {
+            eprintln!("server: lock {}: {e}", paths.runtime_lock().display());
+            return EXIT_API;
+        }
+    };
     let listener = match vk_server::run::bind(&paths.socket()) {
         Ok(l) => l,
         Err(e) => {

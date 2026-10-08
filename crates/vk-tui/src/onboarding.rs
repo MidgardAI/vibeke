@@ -156,12 +156,8 @@ pub fn vibeke_bin() -> PathBuf {
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
         .unwrap_or_default();
-    let stable = home.join(".local/bin/vibeke");
-    if stable.exists() {
-        stable
-    } else {
-        std::env::current_exe().unwrap_or(stable)
-    }
+    let exe = std::env::current_exe().unwrap_or_else(|_| home.join(".local/bin/vibeke"));
+    vk_agents::hook_bin(&exe, &home)
 }
 
 /// Every known harness: binary on `PATH`, integration state in `dirs`, and the install plan's
@@ -171,7 +167,11 @@ pub fn detect_harnesses(dirs: &Dirs, bin: &Path) -> Vec<HarnessRow> {
         .iter()
         .map(|&h| {
             let binary = on_path(harness_bin(h));
-            let state = vk_agents::status(h, dirs).state;
+            let st = vk_agents::status(h, dirs);
+            // Hooks pointing at a build output / missing binary are refreshed like a partial
+            // install.
+            let state = st.state;
+            let stale = vk_agents::stale_command(&st);
             let (diff, files) = match vk_agents::plan_install(h, dirs, bin) {
                 Ok(p) => {
                     let changed: Vec<_> = p.files.iter().filter(|f| f.changed()).collect();
@@ -188,7 +188,9 @@ pub fn detect_harnesses(dirs: &Dirs, bin: &Path) -> Vec<HarnessRow> {
             };
             HarnessRow {
                 harness: h,
-                selected: binary.is_some() && state != InstallState::Installed && !files.is_empty(),
+                selected: binary.is_some()
+                    && (state != InstallState::Installed || stale)
+                    && !files.is_empty(),
                 binary,
                 state,
                 diff,

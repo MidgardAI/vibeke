@@ -218,8 +218,15 @@ pub async fn connect_or_spawn(session: &str, socket: &Path, no_spawn: bool) -> R
     if no_spawn {
         bail!("server not running (session {session})");
     }
-    spawn_server(session)?;
-    let deadline = Instant::now() + Duration::from_secs(5);
+    // A server holding the session's state lock is alive but not accepting right now
+    // (starting, recovering, re-exec'ing on `server restart`, or a full accept backlog): wait
+    // for it. Spawning another would at best fail on the lock and at worst replace it.
+    let alive = server_alive(session);
+    if !alive {
+        spawn_server(session)?;
+    }
+    let wait = Duration::from_secs(if alive { 10 } else { 5 });
+    let deadline = Instant::now() + wait;
     loop {
         check_socket_trust(socket)?;
         if let Ok(s) = UnixStream::connect(socket).await {
@@ -227,10 +234,25 @@ pub async fn connect_or_spawn(session: &str, socket: &Path, no_spawn: bool) -> R
         }
         if Instant::now() > deadline {
             let log = Paths::new(session).logs().join("server.log");
+            if alive {
+                bail!(
+                    "the server of session {session} is running but not answering on {} (see {})",
+                    socket.display(),
+                    log.display()
+                );
+            }
             bail!("server did not start within 5 s (see {})", log.display());
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+}
+
+/// Is a server (or `doctor --rebuild-index`) holding the session's state lock? Probing takes
+/// the lock for an instant when it is free; a starting server retries it, so that is harmless.
+pub fn server_alive(session: &str) -> bool {
+    let p = Paths::new(session);
+    // No lock file yet: no server ever ran here (and nothing gets created by probing).
+    p.state_lock().exists() && matches!(p.try_lock_state(), Ok(None))
 }
 
 /// Start `vibeke server --session <s>` detached (own session, stdio to the server log).

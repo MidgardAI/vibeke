@@ -405,6 +405,20 @@ impl Server {
         );
     }
 
+    /// Commit the token hashes now, before the process that holds a freshly minted token is
+    /// spawned: a server that dies right after the spawn must leave its successor able to
+    /// authenticate that pane's hooks (09 §3.2). `held` is the core when the caller holds it.
+    fn persist_tokens_now(&self, held: Option<&mut Core>) -> Result<()> {
+        let mut tx = Tx::new();
+        self.persist_tokens(&mut tx);
+        match held {
+            Some(c) => self.commit(c, tx),
+            None => self.commit(&mut self.core.lock().unwrap(), tx),
+        }
+        .map(|_| ())
+        .context("persist pane token")
+    }
+
     // ---- startup / recovery ---------------------------------------------------------------
 
     /// Reattach to every live holder; panes whose holder is gone are recreated (reboot) or
@@ -576,6 +590,7 @@ impl Server {
             old.rows,
             ws_task.as_deref(),
             task_env,
+            None,
         )?;
         let mut c = self.core.lock().unwrap();
         let mut p = old.clone();
@@ -615,6 +630,7 @@ impl Server {
         rows: u16,
         ws_task: Option<&str>,
         task_env: Vec<(String, String)>,
+        held: Option<&mut Core>,
     ) -> Result<(u32, u32, String, Vec<u8>, Isolation)> {
         let socket = self
             .paths
@@ -623,6 +639,7 @@ impl Server {
             .into_owned();
         let key: Vec<u8> = (0..32).map(|_| rand::random::<u8>()).collect();
         let env = self.pane_env(pane_id, handle, tab_handle, ws_handle, &task_env);
+        self.persist_tokens_now(held)?;
         let cwd = if std::path::Path::new(cwd).is_dir() {
             cwd.to_string()
         } else {
@@ -677,7 +694,12 @@ impl Server {
         ws_handle: &str,
         task_env: &[(String, String)],
     ) -> Vec<(String, String)> {
-        self.pane_env(pane_id, handle, tab_handle, ws_handle, task_env)
+        let env = self.pane_env(pane_id, handle, tab_handle, ws_handle, task_env);
+        // The caller spawns with this env next: commit the new token hash first.
+        if let Err(e) = self.persist_tokens_now(None) {
+            tracing::warn!(pane = %pane_id, error = %format!("{e:#}"), "pane token not persisted");
+        }
+        env
     }
 
     /// Leased-port env for panes of task `ws_task` (empty for non-task workspaces).
@@ -852,6 +874,7 @@ impl Server {
         let handle = c.next_pane_handle(&ws.handle);
         let (cols, rows) = (80, 24);
         let argv = command.unwrap_or_else(|| shell_argv(&self.opts));
+        let task_env = self.task_env_for(c, ws.task.as_deref());
         let (holder_pid, child_pid, socket, key, isolation) = self.spawn_holder(
             &id,
             &handle,
@@ -862,7 +885,8 @@ impl Server {
             cols,
             rows,
             ws.task.as_deref(),
-            self.task_env_for(c, ws.task.as_deref()),
+            task_env,
+            Some(&mut *c),
         )?;
         let pane = Pane {
             id: id.clone(),

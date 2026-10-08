@@ -26,12 +26,9 @@ fn harnesses(arg: Option<&str>) -> Option<Vec<Harness>> {
 }
 
 fn stable_bin() -> std::path::PathBuf {
-    let stable = vk_server::paths::home().join(".local/bin/vibeke");
-    if stable.exists() {
-        stable
-    } else {
-        std::env::current_exe().unwrap_or(stable)
-    }
+    let home = vk_server::paths::home();
+    let exe = std::env::current_exe().unwrap_or_else(|_| home.join(".local/bin/vibeke"));
+    vk_agents::hook_bin(&exe, &home)
 }
 
 fn manifests() -> manifest::Set {
