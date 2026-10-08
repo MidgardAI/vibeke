@@ -1,0 +1,34 @@
+
+ ▐▛███▛█   Claude Code v2.1.295
+▝▜██████▀  Opus 5.5 · Claude Max
+ ▝▝   ▝▝   ~/src/app
+
+
+❯ /model
+  ⎿  Kept model as Opus 5.5
+
+❯ /effort
+  ⎿  Cancelled
+
+❯ /resume
+  ⎿  Resume cancelled
+▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔ ◐ medium · /effort ▔
+   Permissions  Recently denied   Allow   Ask   Deny   Auto mode   Workspace
+
+   Claude Code won't ask before using allowed tools.
+   ╭───────────────────────────────────────────────╮
+   │ ⌕ Search…                                     │
+   ╰───────────────────────────────────────────────╯
+
+     1.  Add a new rule…
+     2.  Bash(npm run test:*)
+     3.  Bash(npm run lint)
+     4.  Bash(git status)
+     5.  Bash(git diff:*)
+     6.  Bash(ls:*)
+     7.  Read(./docs/**)
+     8.  WebFetch(domain:example.com)
+     9.  Bash(cargo check:*)
+   ↓ 10. Bash(make build)
+
+   ←/→ to switch · ↓ to select · Esc to cancel

@@ -1,0 +1,34 @@
+
+
+❯ /model
+  ⎿  Kept model as Opus 5.5
+
+❯ /effort
+  ⎿  Cancelled
+▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔ ◐ medium · /effort ▔
+   Resume session (1 of 23)
+   ╭────────────────────────────────────────────────────────────────────────────────────────────╮
+   │ ⌕ Search…                                                                                  │
+   ╰────────────────────────────────────────────────────────────────────────────────────────────╯
+     app
+
+   ❯ fix-flaky-upload-test
+     1 second ago · main · 2.8MB · example/app#4
+
+     Review the parser
+     3 seconds ago · main · 2.2MB
+
+     Release checklist
+     1 minute ago · main · 4.6MB
+
+     Explain the build cache
+     10 minutes ago · main · 298.3KB
+
+     hello
+     38 minutes ago · main · 291.8KB
+
+   ↓ Rename the settings page
+     3 hours ago · main · 1.5MB
+
+     Ctrl+A to show all projects · Ctrl+B to only show current branch · Ctrl+W to show all
+     worktrees · Space to preview · Ctrl+R to rename · Type to search · Esc to cancel

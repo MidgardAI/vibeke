@@ -1,0 +1,34 @@
+
+  ⎿  Resume cancelled
+▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔ ◐ medium · /effort ▔
+   Settings  Status   Config   Usage   Stats
+
+   ╭────────────────────────────────────────────────────────────────────────────────────────────╮
+   │ ⌕ Search settings…                                                                         │
+   ╰────────────────────────────────────────────────────────────────────────────────────────────╯
+
+   ❯ Auto-compact                                true
+     Continue automatically at usage limit       true
+     Switch models when a message is flagged     Not asked yet ›
+     Show tips                                   true
+     Claude-drafted feedback                     notify
+     Reduce motion                               false
+     Thinking mode                               true
+     Thinking can't be turned off for Opus 5.5
+     Fast mode (Opus 5.5)                        false
+     Prompt suggestions                          true
+     Session recap                               true
+     Rewind code (checkpoints)                   true
+     Dynamic workflows                           true
+     Ultracode keyword trigger                   true
+     Dynamic workflow size                       medium (default)
+     Artifacts                                   true
+     Verbose output                              false
+     Terminal progress bar                       true
+     Show turn duration                          true
+     Precompute compaction                       true
+     Time format                                 auto ›
+     Default permission mode                     Manual
+     ↓ 26 more
+
+   Type to filter · Enter/↓ to select · ↑ to tabs · Esc to clear

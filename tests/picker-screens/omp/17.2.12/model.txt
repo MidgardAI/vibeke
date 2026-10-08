@@ -1,0 +1,34 @@
+╭─ Models ───────────────────┬─────────────────────────────────────────────────────────────────────╮
+│   ✦ Roles             4/10 │  All available models                                               │
+│ ❯ ⬢ All models           3 │  🔍 >                                                               │
+│ ────────────────────────── │                                                                     │
+│   ● llama.cpp            0 │   openai-codex/gpt-5.6-sol                        272k ◫     $5/30  │
+│   ● lm-studio            0 │   openai-codex/gpt-5.6-luna                       272k ◫  $0.2/1.2  │
+│   ● ollama               0 │   ──────────────────────────────────────────────────────────────    │
+│   ● openai-codex         3 │   openai-codex/gpt-5.6-terra                      272k ◫     $2/12  │
+│ ────────────────────────── │                                                                     │
+│   ○ aiand                  │                                                                     │
+│   ○ aimlapi                │                                                                     │
+│   ○ alibaba-coding-plan    │                                                                     │
+│   ○ alibaba-token-plan     │                                                                     │
+│   ○ amazon-bedrock         │                                                                     │
+│   ○ anthropic              │                                                                     │
+│   ○ azure                  │                                                                     │
+│   ○ baseten                │                                                                     │
+│   ○ bedrock-mantle         │                                                                     │
+│   ○ cerebras               │                                                                     │
+│   ○ cloudflare-ai-gateway  │                                                                     │
+│   ○ coreweave              │                                                                     │
+│   ○ cursor                 │                                                                     │
+│   ○ deepseek               │                                                                     │
+│   ○ devin                  │                                                                     │
+│   ○ firepass               │                                                                     │
+│   ○ fireworks              │                                                                     │
+│   ○ github-copilot         │                                                                     │
+│   ○ gitlab-duo             │                                                                     │
+│   ○ gitlab-duo-agent       │                                                                     │
+│   ○ gmi-cloud              │   GPT-5.6-Sol · 272k ctx · 128k out · $5/30 per M · reasoning · vi… │
+│   ○ google                 │   ● default ◑ · ○ slow ◑ · ○ designer ◑ · ○ advisor                 │
+├────────────────────────────┴─────────────────────────────────────────────────────────────────────┤
+│ Enter assign roles · ↑/↓ providers · → models · type to search · Esc close                       │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯

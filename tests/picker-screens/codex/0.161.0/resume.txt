@@ -1,0 +1,34 @@
+ Resume a previous session
+
+ Filter:  Cwd  All    Status:  Active  Archived    Sort:  Updated  Created
+
+ Type to search
+
+  › 1m ago      Plan the sync refactor
+    3h ago      Review setup scripts
+    3h ago      Document the CLI flags
+    3h ago      Audit the test suite
+    3h ago      Update the getting started guide
+    4h ago      Review the installer
+    7h ago      Build the product page
+    1d ago      Fix the parser
+    2d ago      Calculate 5+5
+    2d ago      Calculate 5+5
+    2d ago      Review open issues
+    2d ago      Review specs
+    2d ago      Explain the plugin API
+    2d ago      Explore cache ideas
+
+
+
+
+
+
+
+
+
+
+──────────────────────────────────────────────────────────────────────────────────── 1 / 14 · 100% ─
+ enter resume   ⌃a archive   esc exit   ⌃c exit   tab focus   ←/→ option
+ ⌃o comfy   ⌃t preview   ⌃e exp   ↑/↓ browse
+
