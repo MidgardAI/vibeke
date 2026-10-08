@@ -298,3 +298,49 @@ async fn pending_connections_count_against_the_global_cap() {
     let mut second = ws(addr, &format!("/v1/connect?host={id}")).await;
     assert_eq!(close_code(&mut second).await, 4429);
 }
+
+#[tokio::test]
+async fn announces_are_bounded_per_ip_and_host() {
+    let limits = Limits {
+        ip_host_announces_per_min: 2,
+        ..Limits::default()
+    };
+    let addr = start(limits).await;
+    let a = HostKeys::generate().host_id();
+    let b = HostKeys::generate().host_id();
+    for _ in 0..2 {
+        let mut c = ws(addr, &format!("/v1/connect?host={a}")).await;
+        assert_eq!(close_code(&mut c).await, 4404);
+    }
+    // The third announce for the same host from this address is refused before the upgrade.
+    assert!(
+        connect_async(format!("ws://{addr}/v1/connect?host={a}"))
+            .await
+            .is_err()
+    );
+    // Another host is unaffected.
+    let mut c = ws(addr, &format!("/v1/connect?host={b}")).await;
+    assert_eq!(close_code(&mut c).await, 4404);
+}
+
+#[tokio::test]
+async fn unauthenticated_sockets_are_bounded_per_ip() {
+    let limits = Limits {
+        ip_unauthenticated: 2,
+        ..Limits::default()
+    };
+    let addr = start(limits).await;
+    let _a = ws(addr, "/v1/accept").await;
+    let _b = ws(addr, "/v1/host").await;
+    assert!(
+        connect_async(format!("ws://{addr}/v1/accept"))
+            .await
+            .is_err()
+    );
+    // Authenticating frees the slot.
+    drop(_a);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let host = register(addr, HostKeys::generate()).await;
+    let _c = ws(addr, "/v1/accept").await;
+    drop(host);
+}

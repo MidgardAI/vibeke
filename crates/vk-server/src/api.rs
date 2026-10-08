@@ -513,6 +513,15 @@ pub fn authorize(server: &Server, ctx: &Ctx, method: &str, p: &Value) -> Result<
         }
         return deny("forbidden for pane scope");
     }
+    // 13 §3: the one-time host-yolo confirmation is the user's; an agent must not grant it to
+    // itself (`task.create`, `agent.start`/`agent.run`, best-of-N all read this param).
+    if p.get("confirm_host_yolo").and_then(Value::as_bool) == Some(true) {
+        return Err(err(
+            ErrorKind::PermissionDenied,
+            "confirm_host_yolo: a pane cannot confirm yolo on the host; the user confirms with --confirm-host-yolo",
+        )
+        .details(json!({"scope": "pane"})));
+    }
     crate::preview::authorize_pane_machine(server, ctx, method, p)?;
     let owns = |pane: &Pane| &pane.id == scope || pane.created_by == format!("agent:{scope}");
     let pane_targeted = is_pane_targeted(method);
@@ -581,7 +590,7 @@ pub async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) 
         return r;
     }
     // Batch 2A API surface: one hook per module.
-    if let Some(r) = crate::config_api::api(server, method, p).await {
+    if let Some(r) = crate::config_api::api(server, ctx, method, p).await {
         return r;
     }
     if let Some(r) = crate::session_api::api(server, ctx, method, p).await {
@@ -1245,7 +1254,11 @@ pub async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) 
             if matches!(source, "last-command" | "last_command") {
                 return read_last_command(server, &pane.id, lines);
             }
-            let text = read_text(server, &pane.id, source, lines);
+            let mut text = read_text(server, &pane.id, source, lines);
+            // A remote client (the gateway's relayed devices) gets secrets redacted.
+            if ctx.remote {
+                text = crate::privacy::redact_text(server, &text);
+            }
             let rev = server.pane_rt(&pane.id).map(|r| r.rev()).unwrap_or(0);
             Ok(json!({"text": text, "revision": rev, "source": source}))
         }
@@ -1427,7 +1440,7 @@ pub async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) 
         ))),
 
         // ---- blobs (search and layouts: parity.rs) --------------------------------------
-        "blob.put" | "image.upload" => blob_put(server, p).inspect(|v| {
+        "blob.put" | "image.upload" => blob_put(server, ctx, p).inspect(|v| {
             if let Some(h) = v["hash"].as_str() {
                 crate::blob_api::record_owner(server, ctx, h);
             }
@@ -1632,16 +1645,24 @@ pub async fn wait_idle(
 
 /// Store an uploaded file (base64) under the pane inbox (06 A11.4) and return its path on this
 /// machine. Content-addressed: `<blake3-12>/<basename>`.
-pub fn blob_put(server: &Server, p: &Value) -> R {
+///
+/// `path` (a file on this machine, read by the server) is for full-scope callers only: a pane
+/// would otherwise read any file the server can. It must be a regular file (not a symlink) no
+/// larger than the blob limit.
+pub fn blob_put(server: &Server, ctx: &Ctx, p: &Value) -> R {
     use base64::Engine;
     let _ = server;
     let data = match (s(p, "data_b64"), s(p, "path")) {
         (Some(d), _) => base64::engine::general_purpose::STANDARD
             .decode(d)
             .map_err(|e| invalid(e.to_string()))?,
-        (None, Some(path)) => {
-            std::fs::read(path).map_err(|e| invalid(format!("read {path}: {e}")))?
+        (None, Some(_)) if ctx.pane_scope.is_some() => {
+            return Err(err(
+                ErrorKind::PermissionDenied,
+                "blob.put {path} needs a user client; send the content as data_b64",
+            ));
         }
+        (None, Some(path)) => read_blob_file(std::path::Path::new(path), blob_limit())?,
         _ => return Err(invalid("data_b64 or path required")),
     };
     let hash = blake3::hash(&data).to_hex().to_string();
@@ -1661,6 +1682,35 @@ pub fn blob_put(server: &Server, p: &Value) -> R {
     write_private(&dir, &name, &data).map_err(internal)?;
     let path = dir.join(&name);
     Ok(json!({"hash": hash, "size": data.len(), "path_on_machine": path, "path": path}))
+}
+
+/// Read a regular file of at most `limit` bytes for `blob.put {path}`.
+fn read_blob_file(path: &std::path::Path, limit: u64) -> Result<Vec<u8>, RpcError> {
+    use std::io::Read;
+    let shown = path.display();
+    let meta =
+        std::fs::symlink_metadata(path).map_err(|e| invalid(format!("read {shown}: {e}")))?;
+    if !meta.is_file() {
+        return Err(invalid(format!("read {shown}: not a regular file")));
+    }
+    if meta.len() > limit {
+        return Err(invalid(format!(
+            "read {shown}: {} bytes exceeds the {limit}-byte blob limit",
+            meta.len()
+        )));
+    }
+    let f = std::fs::File::open(path).map_err(|e| invalid(format!("read {shown}: {e}")))?;
+    let mut data = Vec::with_capacity(meta.len() as usize);
+    // Bounded even if the file grows (or was swapped) after the check.
+    f.take(limit + 1)
+        .read_to_end(&mut data)
+        .map_err(|e| invalid(format!("read {shown}: {e}")))?;
+    if data.len() as u64 > limit {
+        return Err(invalid(format!(
+            "read {shown}: exceeds the {limit}-byte blob limit"
+        )));
+    }
+    Ok(data)
 }
 
 // ---- chunked uploads (06 A11): blob.begin / blob.append / blob.commit / blob.abort ----------

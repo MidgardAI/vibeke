@@ -212,3 +212,12 @@ test('public install endpoint redirects to the release installer', async ({ requ
   expect(response.status()).toBe(302)
   expect(response.headers().location).toBe('https://github.com/MidgardAI/vibeke/releases/latest/download/install.sh')
 })
+
+test('pages carry the baseline security headers', async ({ request }) => {
+  const response = await request.get('/')
+  const headers = response.headers()
+  expect(headers['x-frame-options']).toBe('DENY')
+  expect(headers['content-security-policy']).toContain("frame-ancestors 'none'")
+  expect(headers['x-content-type-options']).toBe('nosniff')
+  expect(headers['referrer-policy']).toBe('strict-origin-when-cross-origin')
+})

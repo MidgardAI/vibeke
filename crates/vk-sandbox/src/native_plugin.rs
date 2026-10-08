@@ -202,6 +202,7 @@ impl NativeBox {
             },
             allow_bind_localhost: false,
             protected: vec![],
+            control_dir: Some(self.profile_dir.clone()),
         }
     }
 

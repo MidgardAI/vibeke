@@ -707,7 +707,7 @@
       ],
       "milestone": null,
       "spec": null,
-      "params": "{method?: \"handoff.send\"|\"handoff.cancel\"|\"gateway.call\", params?: object, reason?: string, wait?: bool = true, timeout_ms?: int = 120000, request?: string}",
+      "params": "{method?: \"handoff.send\"|\"handoff.cancel\"|\"gateway.call\"|\"preview.declare\", params?: object, reason?: string, wait?: bool = true, timeout_ms?: int = 120000, request?: string}",
       "result": "ApprovalRequest | object"
     },
     {
@@ -3794,8 +3794,8 @@
       ],
       "milestone": "M3",
       "spec": "`{port, host?: 127.0.0.1, scheme?: http, path?, label?, pane?, task?}` → `{preview}`",
-      "params": "{port: int|string, path?: string = '/', scheme?: http|https = http, label?: string, pane?: Target, task?: Target, tls_origin?: bool}",
-      "result": "{preview: Preview}"
+      "params": "{port: int|string, path?: string = '/', scheme?: http|https = http, label?: string, pane?: Target, task?: Target, tls_origin?: bool, reason?: string, wait?: bool = true, timeout_ms?: int = 120000, request?: string}",
+      "result": "{preview: Preview} | ApprovalRequest"
     },
     {
       "name": "preview.dismiss",

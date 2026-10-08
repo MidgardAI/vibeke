@@ -8,11 +8,34 @@ use serde_json::{Value, json};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::mpsc;
 use vk_proto::model::Task;
 use vk_proto::rpc::{ErrorKind, Request, Response};
+
+/// Longest request line on the control socket (`api.schema` `max_line_bytes`); a longer one
+/// ends the connection.
+pub const MAX_CONTROL_LINE: usize = 16 * 1024 * 1024;
+
+/// `read_line` that refuses lines longer than `max` bytes (excluding the newline): an error
+/// ends the caller's connection instead of buffering without bound. Like `read_line`, partial
+/// input stays in `line` when the future is dropped (`select!`), and the limit counts it.
+pub(crate) async fn read_line_capped<R: AsyncBufRead + Unpin>(
+    rd: &mut R,
+    line: &mut String,
+    max: usize,
+) -> std::io::Result<usize> {
+    let room = (max + 1).saturating_sub(line.len()) as u64;
+    let n = (&mut *rd).take(room).read_line(line).await?;
+    if line.len() > max && !line.ends_with('\n') {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("request line longer than {max} bytes"),
+        ));
+    }
+    Ok(n)
+}
 
 fn peer_uid_ok(s: &UnixStream) -> bool {
     match s.peer_cred() {
@@ -114,7 +137,15 @@ pub async fn serve(server: Arc<Server>, listener: UnixListener) -> Result<()> {
         std::process::exit(0);
     });
     loop {
-        let (stream, _) = listener.accept().await?;
+        let stream = match listener.accept().await {
+            Ok((stream, _)) => stream,
+            Err(e) => {
+                // EMFILE/ENFILE and the like are transient: keep serving, retry shortly.
+                tracing::warn!(error = %e, "control socket accept failed; retrying");
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                continue;
+            }
+        };
         if !peer_uid_ok(&stream) {
             continue;
         }
@@ -133,14 +164,39 @@ pub async fn serve(server: Arc<Server>, listener: UnixListener) -> Result<()> {
 /// The pane whose process tree contains `pid`, if any (09 §3.2): a process running inside a
 /// pane gets pane scope whether or not it presents its token.
 pub fn ancestry_pane(server: &Server, pid: Option<i32>) -> Option<String> {
-    let mut pid = pid? as u32;
-    let roots: Vec<(u32, String)> = server.with_core(|c| {
+    let pid = pid? as u32;
+    let mut roots: Vec<(u32, String)> = server.with_core(|c| {
         c.model
             .panes
             .iter()
             .filter_map(|p| p.child_pid.map(|cp| (cp, p.id.clone())))
             .collect()
     });
+    // Linux: the holder is the child subreaper of its pane (vk-hold), so a daemonized
+    // descendant of the pane reparents to the holder rather than to init. Reaching a pane's
+    // holder therefore also counts as that pane.
+    if cfg!(target_os = "linux") {
+        let holders = server.with_core(|c| c.store.holders()).unwrap_or_default();
+        roots.extend(
+            holders
+                .into_iter()
+                .filter_map(|h| h.holder_pid.filter(|p| *p > 1).map(|hp| (hp, h.pane))),
+        );
+    }
+    ancestry_match(&roots, pid, std::process::id(), |p| {
+        vk_hold::procinfo::info(p).map(|i| i.ppid)
+    })
+}
+
+/// The pane of `roots` (`(pid, pane)`) that `pid` or one of its ancestors is, walking parents
+/// with `ppid_of`. The walk stops at init and at `own` (this server: a server started from a
+/// pane is not inside it for its own helpers).
+fn ancestry_match(
+    roots: &[(u32, String)],
+    mut pid: u32,
+    own: u32,
+    ppid_of: impl Fn(u32) -> Option<u32>,
+) -> Option<String> {
     if roots.is_empty() {
         return None;
     }
@@ -148,11 +204,14 @@ pub fn ancestry_pane(server: &Server, pid: Option<i32>) -> Option<String> {
         if let Some((_, pane)) = roots.iter().find(|(cp, _)| *cp == pid) {
             return Some(pane.clone());
         }
-        let info = vk_hold::procinfo::info(pid)?;
-        if info.ppid <= 1 || info.ppid == pid {
+        if pid == own {
             return None;
         }
-        pid = info.ppid;
+        let ppid = ppid_of(pid)?;
+        if ppid <= 1 || ppid == pid {
+            return None;
+        }
+        pid = ppid;
     }
     None
 }
@@ -267,6 +326,23 @@ pub const PANE_IDENTITY_ENV: &[&str] = &[
     "VIBEKE_TAB_ID",
 ];
 
+/// The client id a `client.hello {client_id}` binds the connection to. A pane-scoped caller's
+/// id is namespaced by its pane: it cannot take a user client's id, whose disconnect would
+/// then withdraw that client's pending approvals or end its screencasts.
+fn bound_client_id(pane_scope: Option<&str>, asked: &str) -> String {
+    match pane_scope {
+        Some(p) => format!("pane:{p}:{asked}"),
+        None => asked.to_string(),
+    }
+}
+
+/// Whether the connection is remote, decided by the server: a gateway (which relays phones
+/// and browsers) always is. `client.hello {remote: true}` may mark any connection remote
+/// (it only narrows what the caller sees), never clear it.
+fn hello_remote(ctx: &Ctx, p: &Value) -> bool {
+    ctx.remote || ctx.kind == "gateway" || p.get("remote").and_then(Value::as_bool) == Some(true)
+}
+
 /// Refusal for a connection from a pane of another session that presented no token of ours.
 fn foreign_refusal(method: &str) -> vk_proto::rpc::RpcError {
     err(
@@ -380,7 +456,7 @@ where
                     break None;
                 }
             }
-            n = rd.read_line(&mut line) => {
+            n = read_line_capped(&mut rd, &mut line, MAX_CONTROL_LINE) => {
                 if n? == 0 { break None }
                 let l = std::mem::take(&mut line);
                 let l = l.trim_end_matches(['\n', '\r']);
@@ -444,10 +520,11 @@ where
                         }
                         if let Some(k) = req.params.get("kind").and_then(Value::as_str).filter(|_| !ctx.kind.starts_with(crate::auth::ELEVATED_KIND) && !crate::plugin_native::is_plugin_kind(&ctx.kind)) { ctx.kind = k.into(); }
                         if let Some(c) = req.params.get("client_id").and_then(Value::as_str) {
-                            ctx.client_id = c.into();
-                            guard.client_ids.lock().unwrap().push(c.into());
+                            let c = bound_client_id(ctx.pane_scope.as_deref(), c);
+                            ctx.client_id = c.clone();
+                            guard.client_ids.lock().unwrap().push(c);
                         }
-                        ctx.remote = req.params.get("remote").and_then(Value::as_bool).unwrap_or(false);
+                        ctx.remote = hello_remote(&ctx, &req.params);
                         readonly |= req.params.get("readonly").and_then(Value::as_bool) == Some(true);
                         crate::notify::record_host(&server, &ctx.client_id, req.params.get("host"));
                         let _ = out_tx.send(api::handle_line(&server, &ctx, l).await);

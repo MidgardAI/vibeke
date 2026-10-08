@@ -27,13 +27,6 @@
 # Keys: keys/vibeke-2026.pub, keys/vibeke-next.pub in the repo.
 set -eu
 
-ALLOW_DOWNGRADE="${VIBEKE_ALLOW_DOWNGRADE:-}"
-for arg in "$@"; do
-  case "$arg" in
-    --allow-downgrade) ALLOW_DOWNGRADE=1 ;;
-    *) echo "vibeke install: unknown option $arg" >&2; exit 2 ;;
-  esac
-done
 
 # Release public keys (keep in sync with crates/vk-remote/src/bootstrap.rs; a test checks this).
 KEY_CURRENT="RWQ0X1WPxwluX2gFO4vO586PSTdpSfJqrb+xsQnZ2ctND/VDw7VCWx5z"   # 5F6E09C78F555F34
@@ -45,13 +38,6 @@ API_URL="${VIBEKE_GITHUB_API_URL:-https://api.github.com}"
 TOKEN="${VIBEKE_GITHUB_TOKEN:-${GITHUB_TOKEN:-}}"
 
 die() { echo "vibeke install: $*" >&2; exit 1; }
-
-[ -n "${HOME:-}" ] || die "HOME is not set"
-case "$VERSION" in
-  ""|*[!0-9A-Za-z.+-]*) die "invalid version '$VERSION'" ;;
-esac
-DATA="$HOME/.local/share/vibeke"
-BIN="$HOME/.local/bin"
 
 # version_lt A B: A is older than B (numeric dotted parts; a pre-release sorts before its release).
 version_lt() {
@@ -71,41 +57,17 @@ version_lt() {
     BEGIN { exit (cmp(a, b) < 0) ? 0 : 1 }'
 }
 
-# The installed version (the `current` link), if any.
-INSTALLED=
-if [ -L "$DATA/current" ]; then INSTALLED=$(basename "$(readlink "$DATA/current")"); fi
 refuse_downgrade() { # <version>
   if [ -n "$INSTALLED" ] && version_lt "$1" "$INSTALLED" && [ "$ALLOW_DOWNGRADE" != 1 ]; then
     die "refusing to downgrade from $INSTALLED to $1; nothing installed (pass --allow-downgrade or set VIBEKE_ALLOW_DOWNGRADE=1 to install an older version on purpose)"
   fi
 }
-refuse_downgrade "$VERSION"
-[ "$(id -u)" -ne 0 ] || echo "vibeke install: running as root; installing for root's HOME ($HOME)" >&2
-
-case "$(uname -s)" in
-  Darwin) OS=macos ;;
-  Linux) OS=linux ;;
-  *) die "unsupported OS $(uname -s) (macOS and Linux only)" ;;
-esac
-case "$(uname -m)" in
-  arm64|aarch64) ARCH=aarch64 ;;
-  x86_64|amd64) ARCH=x86_64 ;;
-  *) die "unsupported architecture $(uname -m)" ;;
-esac
-NAME="vibeke-$OS-$ARCH"
-case "$NAME" in
-  vibeke-macos-aarch64|vibeke-linux-aarch64|vibeke-linux-x86_64) ;;
-  *) die "no release build for $OS/$ARCH" ;;
-esac
 
 sha256() {
   if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1
   elif command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1" | cut -d' ' -f1
   else die "need sha256sum or shasum to verify the download"; fi
 }
-
-TMP=$(mktemp -d "${TMPDIR:-/tmp}/vibeke-install.XXXXXX")
-trap 'rm -rf "$TMP"' EXIT INT TERM
 
 # The token goes only to the configured API base or GitHub's own hosts, matched up to the first
 # `/` after the host (so `api.github.com.attacker.example` and `api.github.com@attacker.example`
@@ -152,12 +114,15 @@ fetch() { # <name>
       curl_auth "application/octet-stream" "$url" "$TMP/$1" || die "download failed: $1 (via the GitHub API; check the token)"
     else
       # Not a github.com release URL (a mirror): the token is not sent there.
-      curl -fsSL "$BASE_URL/$1" -o "$TMP/$1" || die "download failed: $BASE_URL/$1"
+      curl -fsSL --proto "$(download_proto "$BASE_URL/$1")" --proto-redir '=https' "$BASE_URL/$1" -o "$TMP/$1" || die "download failed: $BASE_URL/$1"
     fi
   elif command -v curl >/dev/null 2>&1; then
-    curl -fsSL "$BASE_URL/$1" -o "$TMP/$1" || die "download failed: $BASE_URL/$1 (a private release needs GITHUB_TOKEN or VIBEKE_GITHUB_TOKEN)"
+    curl -fsSL --proto "$(download_proto "$BASE_URL/$1")" --proto-redir '=https' "$BASE_URL/$1" -o "$TMP/$1" || die "download failed: $BASE_URL/$1 (a private release needs GITHUB_TOKEN or VIBEKE_GITHUB_TOKEN)"
   elif command -v wget >/dev/null 2>&1; then
-    wget -q "$BASE_URL/$1" -O "$TMP/$1" || die "download failed: $BASE_URL/$1 (a private release needs GITHUB_TOKEN or VIBEKE_GITHUB_TOKEN)"
+    case "$(download_proto "$BASE_URL/$1")" in
+      '=https') wget -q --https-only "$BASE_URL/$1" -O "$TMP/$1" ;;
+      *) wget -q "$BASE_URL/$1" -O "$TMP/$1" ;;
+    esac || die "download failed: $BASE_URL/$1 (a private release needs GITHUB_TOKEN or VIBEKE_GITHUB_TOKEN)"
   else
     die "need curl or wget"
   fi
@@ -179,82 +144,135 @@ verify_signature() {
   return 3
 }
 
-echo "vibeke install: $NAME $VERSION"
-fetch "$NAME"
-fetch SHA256SUMS
-( fetch SHA256SUMS.minisig ) 2>/dev/null || rm -f "$TMP/SHA256SUMS.minisig"  # a missing file is reported below
-EXPECTED="release key 5F6E09C78F555F34 (current) or 69536A23D04E2C7C (next)"
-rc=0; verify_signature || rc=$?
-case $rc in
-  0)
-    # The signature must be for the requested version: release-sign.sh signs SHA256SUMS with the
-    # trusted comment `vibeke v<version>`. An older release's valid signature is refused here.
-    case "$TRUSTED" in
-      "vibeke v$VERSION"|"vibeke v$VERSION "*) ;;
-      *) die "SHA256SUMS is signed for '$TRUSTED', not vibeke v$VERSION (an older or different release served under this version?); nothing installed" ;;
+# Transport restriction for unauthenticated downloads: HTTPS only, except local test servers.
+download_proto() { # <url>
+  case "$1" in
+    http://127.0.0.1[:/]*|http://localhost[:/]*) echo '=http,https' ;;
+    *) echo '=https' ;;
+  esac
+}
+
+# Everything executable lives in main, called on the last line: a truncated download runs nothing.
+main() {
+  ALLOW_DOWNGRADE="${VIBEKE_ALLOW_DOWNGRADE:-}"
+  for arg in "$@"; do
+    case "$arg" in
+      --allow-downgrade) ALLOW_DOWNGRADE=1 ;;
+      *) echo "vibeke install: unknown option $arg" >&2; exit 2 ;;
     esac
-    echo "vibeke install: SHA256SUMS signature verified (vibeke v$VERSION)" ;;
-  *)
-    case $rc in
-      1) why="SHA256SUMS.minisig is missing from the release" ;;
-      2) why="minisign is not installed (brew install minisign, or your package manager)" ;;
-      *) why="the signature does not verify" ;;
-    esac
-    if [ "${VIBEKE_ALLOW_UNSIGNED:-}" = 1 ]; then
-      echo "vibeke install: WARNING: VIBEKE_ALLOW_UNSIGNED=1: continuing without a verified signature ($why); only the checksum protects this install" >&2
-    else
-      die "cannot verify the release: $why; expected a signature by $EXPECTED. Nothing installed. (VIBEKE_ALLOW_UNSIGNED=1 accepts an unsigned release for development)"
-    fi
-    ;;
-esac
+  done
 
-WANT=$(awk -v n="$NAME" '$2 == n || $2 == "*" n { print $1; exit }' "$TMP/SHA256SUMS")
-[ -n "$WANT" ] || die "$NAME is not listed in SHA256SUMS"
-GOT=$(sha256 "$TMP/$NAME")
-[ "$WANT" = "$GOT" ] || die "checksum mismatch for $NAME (expected $WANT, got $GOT); nothing installed"
-echo "vibeke install: sha256 verified"
+  [ -n "${HOME:-}" ] || die "HOME is not set"
+  case "$VERSION" in
+    ""|*[!0-9A-Za-z.+-]*) die "invalid version '$VERSION'" ;;
+  esac
+  DATA="$HOME/.local/share/vibeke"
+  BIN="$HOME/.local/bin"
 
-chmod 755 "$TMP/$NAME"
-# The binary must report the requested version (it is never taken from the download instead).
-REPORTED=$("$TMP/$NAME" --version 2>/dev/null | head -n 1 | sed 's/^vibeke //') || true
-[ -n "$REPORTED" ] || die "downloaded binary does not run on this machine"
-[ "$REPORTED" = "$VERSION" ] || die "downloaded binary reports vibeke $REPORTED, not the requested $VERSION; nothing installed"
-refuse_downgrade "$VERSION"
+  # The installed version (the `current` link), if any.
+  INSTALLED=
+  if [ -L "$DATA/current" ]; then INSTALLED=$(basename "$(readlink "$DATA/current")"); fi
+  refuse_downgrade "$VERSION"
+  [ "$(id -u)" -ne 0 ] || echo "vibeke install: running as root; installing for root's HOME ($HOME)" >&2
 
-DIR="$DATA/versions/$VERSION"
-mkdir -p "$DIR" "$BIN"
-chmod 700 "$DATA"
-cp "$TMP/$NAME" "$DIR/vibeke.tmp"
-chmod 755 "$DIR/vibeke.tmp"
-mv -f "$DIR/vibeke.tmp" "$DIR/vibeke"
+  case "$(uname -s)" in
+    Darwin) OS=macos ;;
+    Linux) OS=linux ;;
+    *) die "unsupported OS $(uname -s) (macOS and Linux only)" ;;
+  esac
+  case "$(uname -m)" in
+    arm64|aarch64) ARCH=aarch64 ;;
+    x86_64|amd64) ARCH=x86_64 ;;
+    *) die "unsupported architecture $(uname -m)" ;;
+  esac
+  NAME="vibeke-$OS-$ARCH"
+  case "$NAME" in
+    vibeke-macos-aarch64|vibeke-linux-aarch64|vibeke-linux-x86_64) ;;
+    *) die "no release build for $OS/$ARCH" ;;
+  esac
 
-# Remember the previous version for `vibeke update --rollback`.
-if [ -L "$DATA/current" ]; then
-  PREV=$(basename "$(readlink "$DATA/current")")
-  [ "$PREV" = "$VERSION" ] || echo "$PREV" > "$DATA/previous"
-fi
-ln -sfn "versions/$VERSION" "$DATA/current.tmp"
-# Replace the link itself, never move into the directory it points at: GNU `mv -T`, BSD `mv -h`.
-mv -fT "$DATA/current.tmp" "$DATA/current" 2>/dev/null \
-  || mv -fh "$DATA/current.tmp" "$DATA/current" 2>/dev/null \
-  || { rm -f "$DATA/current"; mv "$DATA/current.tmp" "$DATA/current"; }
-[ "$(readlink "$DATA/current")" = "versions/$VERSION" ] || die "could not switch $DATA/current to $VERSION"
+  TMP=$(mktemp -d "${TMPDIR:-/tmp}/vibeke-install.XXXXXX")
+  trap 'rm -rf "$TMP"' EXIT INT TERM
 
-if [ -e "$BIN/vibeke" ] && [ ! -L "$BIN/vibeke" ]; then
-  mv "$BIN/vibeke" "$BIN/vibeke.old"
-  echo "vibeke install: existing $BIN/vibeke kept as vibeke.old"
-fi
-ln -sfn "$DATA/current/vibeke" "$BIN/vibeke.tmp"
-mv -f "$BIN/vibeke.tmp" "$BIN/vibeke"
+  echo "vibeke install: $NAME $VERSION"
+  fetch "$NAME"
+  fetch SHA256SUMS
+  ( fetch SHA256SUMS.minisig ) 2>/dev/null || rm -f "$TMP/SHA256SUMS.minisig"  # a missing file is reported below
+  EXPECTED="release key 5F6E09C78F555F34 (current) or 69536A23D04E2C7C (next)"
+  rc=0; verify_signature || rc=$?
+  case $rc in
+    0)
+      # The signature must be for the requested version: release-sign.sh signs SHA256SUMS with the
+      # trusted comment `vibeke v<version>`. An older release's valid signature is refused here.
+      case "$TRUSTED" in
+        "vibeke v$VERSION"|"vibeke v$VERSION "*) ;;
+        *) die "SHA256SUMS is signed for '$TRUSTED', not vibeke v$VERSION (an older or different release served under this version?); nothing installed" ;;
+      esac
+      echo "vibeke install: SHA256SUMS signature verified (vibeke v$VERSION)" ;;
+    *)
+      case $rc in
+        1) why="SHA256SUMS.minisig is missing from the release" ;;
+        2) why="minisign is not installed (brew install minisign, or your package manager)" ;;
+        *) why="the signature does not verify" ;;
+      esac
+      if [ "${VIBEKE_ALLOW_UNSIGNED:-}" = 1 ]; then
+        echo "vibeke install: WARNING: VIBEKE_ALLOW_UNSIGNED=1: continuing without a verified signature ($why); only the checksum protects this install" >&2
+      else
+        die "cannot verify the release: $why; expected a signature by $EXPECTED. Nothing installed. (VIBEKE_ALLOW_UNSIGNED=1 accepts an unsigned release for development)"
+      fi
+      ;;
+  esac
 
-echo "vibeke install: installed $("$BIN/vibeke" --version) at $BIN/vibeke"
-case ":$PATH:" in
-  *":$BIN:"*) ;;
-  *)
-    echo
-    echo "$BIN is not on your PATH. Add this to your shell profile:"
-    echo "  export PATH=\"\$HOME/.local/bin:\$PATH\""
-    ;;
-esac
-echo
-echo "Next: vibeke doctor"
+  WANT=$(awk -v n="$NAME" '$2 == n || $2 == "*" n { print $1; exit }' "$TMP/SHA256SUMS")
+  [ -n "$WANT" ] || die "$NAME is not listed in SHA256SUMS"
+  GOT=$(sha256 "$TMP/$NAME")
+  [ "$WANT" = "$GOT" ] || die "checksum mismatch for $NAME (expected $WANT, got $GOT); nothing installed"
+  echo "vibeke install: sha256 verified"
+
+  chmod 755 "$TMP/$NAME"
+  # The binary must report the requested version (it is never taken from the download instead).
+  REPORTED=$("$TMP/$NAME" --version 2>/dev/null | head -n 1 | sed 's/^vibeke //') || true
+  [ -n "$REPORTED" ] || die "downloaded binary does not run on this machine"
+  [ "$REPORTED" = "$VERSION" ] || die "downloaded binary reports vibeke $REPORTED, not the requested $VERSION; nothing installed"
+  refuse_downgrade "$VERSION"
+
+  DIR="$DATA/versions/$VERSION"
+  mkdir -p "$DIR" "$BIN"
+  chmod 700 "$DATA"
+  cp "$TMP/$NAME" "$DIR/vibeke.tmp"
+  chmod 755 "$DIR/vibeke.tmp"
+  mv -f "$DIR/vibeke.tmp" "$DIR/vibeke"
+
+  # Remember the previous version for `vibeke update --rollback`.
+  if [ -L "$DATA/current" ]; then
+    PREV=$(basename "$(readlink "$DATA/current")")
+    [ "$PREV" = "$VERSION" ] || echo "$PREV" > "$DATA/previous"
+  fi
+  ln -sfn "versions/$VERSION" "$DATA/current.tmp"
+  # Replace the link itself, never move into the directory it points at: GNU `mv -T`, BSD `mv -h`.
+  mv -fT "$DATA/current.tmp" "$DATA/current" 2>/dev/null \
+    || mv -fh "$DATA/current.tmp" "$DATA/current" 2>/dev/null \
+    || { rm -f "$DATA/current"; mv "$DATA/current.tmp" "$DATA/current"; }
+  [ "$(readlink "$DATA/current")" = "versions/$VERSION" ] || die "could not switch $DATA/current to $VERSION"
+
+  if [ -e "$BIN/vibeke" ] && [ ! -L "$BIN/vibeke" ]; then
+    mv "$BIN/vibeke" "$BIN/vibeke.old"
+    echo "vibeke install: existing $BIN/vibeke kept as vibeke.old"
+  fi
+  ln -sfn "$DATA/current/vibeke" "$BIN/vibeke.tmp"
+  mv -f "$BIN/vibeke.tmp" "$BIN/vibeke"
+
+  echo "vibeke install: installed $("$BIN/vibeke" --version) at $BIN/vibeke"
+  case ":$PATH:" in
+    *":$BIN:"*) ;;
+    *)
+      echo
+      echo "$BIN is not on your PATH. Add this to your shell profile:"
+      echo "  export PATH=\"\$HOME/.local/bin:\$PATH\""
+      ;;
+  esac
+  echo
+  echo "Next: vibeke doctor"
+}
+
+main "$@"

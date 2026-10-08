@@ -269,6 +269,15 @@ pub(crate) fn from_orch(e: vk_orchestrate::Error) -> vk_proto::rpc::RpcError {
 pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Option<R> {
     // `task.create` with a string `agents` list (`--agents claude:2,codex:1`) is best-of-N.
     if method == "task.create" && p.get("agents").is_some_and(Value::is_string) {
+        // The same refusal as `task.best_of_n` itself (PANE_FORBIDDEN): this alias must not
+        // let a pane start a family.
+        if ctx.pane_scope.is_some() {
+            return Some(Err(err(
+                ErrorKind::PermissionDenied,
+                "task.create {agents} (best-of-N) is not allowed from a pane (forbidden for pane scope)",
+            )
+            .details(serde_json::json!({"scope": "pane"}))));
+        }
         return Some(crate::orch_family::best_of_n(server, ctx, p).await);
     }
     if !METHODS.iter().any(|(m, _)| *m == method) {

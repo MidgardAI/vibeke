@@ -341,6 +341,12 @@ pub async fn run(
 
 /// `pane.input_unconfirmed` (01 §1.2): inputs that may or may not have reached the program.
 /// They are never replayed automatically.
+/// Whether `pid` is still the process that had start time `started` (from
+/// `vk_hold::procinfo`). Unknown identity (`None`) or a gone/reused pid: false.
+pub(crate) fn same_process(pid: u32, started: Option<u64>) -> bool {
+    pid > 1 && started.is_some_and(|s| vk_hold::procinfo::info(pid).is_some_and(|i| i.start == s))
+}
+
 pub(crate) fn report_unconfirmed(server: &Server, pane: &str, ids: &[u64], reason: &str) {
     if ids.is_empty() {
         return;
@@ -1159,11 +1165,18 @@ impl PaneLoop {
                 })
                 .await?;
                 let pid = self.child_pid;
+                // The child's identity now (pid + start time): the escalation below must not
+                // hit an unrelated process that reused the pid after the child exited.
+                let started = (pid > 1)
+                    .then(|| vk_hold::procinfo::info(pid).map(|i| i.start))
+                    .flatten();
                 // Escalate if the child ignores SIGHUP.
                 tokio::spawn(async move {
                     tokio::time::sleep(Duration::from_secs(3)).await;
-                    // SAFETY: plain kill(2); the pid belongs to our holder's child.
-                    unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+                    if same_process(pid, started) {
+                        // SAFETY: plain kill(2) of our holder's child, re-identified above.
+                        unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+                    }
                 });
             }
             PaneCmd::Snapshot => self.maybe_snapshot(true).await?,

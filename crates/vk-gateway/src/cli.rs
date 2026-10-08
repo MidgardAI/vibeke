@@ -138,6 +138,9 @@ enum PeerCmd {
         /// Show your git user.name/email to the other host.
         #[arg(long)]
         share_user: bool,
+        /// Redeem an invitation that uses a different relay than this host's (wss:// only).
+        #[arg(long)]
+        allow_other_relay: bool,
     },
     /// List the hosts this one can hand work to.
     List,
@@ -597,7 +600,11 @@ pub async fn run_as<I: IntoIterator<Item = String>>(prog: &'static str, args: I)
                 println!("Anyone with this link can pair a host with this one until it's used.");
                 Ok(())
             }
-            PeerCmd::Add { link, share_user } => {
+            PeerCmd::Add {
+                link,
+                share_user,
+                allow_other_relay,
+            } => {
                 let cfg = state.config()?;
                 start_if_enabled(&state, &cfg).await;
                 let us = crate::peer_client::Identity {
@@ -612,7 +619,8 @@ pub async fn run_as<I: IntoIterator<Item = String>>(prog: &'static str, args: I)
                     },
                 };
                 let host_id = state.host_keys()?.host_id();
-                let rec = crate::peers::redeem(&state, &host_id, &us, &link).await?;
+                let rec =
+                    crate::peers::redeem(&state, &host_id, &us, &link, allow_other_relay).await?;
                 let until = rec
                     .expires_at
                     .map(|t| format!(", expires {}", until_text(Some(t), crate::state::now_s())))

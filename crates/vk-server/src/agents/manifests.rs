@@ -298,8 +298,12 @@ pub fn set_plugin_root(root: &Path, on: bool) {
     let had = r.sources.trusted_repos.iter().any(|x| x == root);
     if on && !had {
         r.sources.trusted_repos.push(root.to_path_buf());
+        // Loaded with plugin restrictions: nothing that runs commands (vk_agents
+        // `sanitize_plugin`).
+        r.sources.plugin_roots.push(root.to_path_buf());
     } else if !on && had {
         r.sources.trusted_repos.retain(|x| x != root);
+        r.sources.plugin_roots.retain(|x| x != root);
     } else if !on {
         return;
     }

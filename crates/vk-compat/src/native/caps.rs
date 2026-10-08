@@ -241,7 +241,17 @@ impl Capabilities {
             );
         }
         for u in &self.ui {
-            push(format!("ui:{u}"), "show this kind of UI", Risk::Low);
+            // A harness contribution defines how agents are detected, launched and parsed:
+            // it decides what runs in your panes.
+            if u == "harness" {
+                push(
+                    format!("ui:{u}"),
+                    "add agent harnesses: how agents are detected, launched and read",
+                    Risk::High,
+                );
+            } else {
+                push(format!("ui:{u}"), "show this kind of UI", Risk::Low);
+            }
         }
         if self.storage {
             push(
@@ -593,6 +603,15 @@ mod tests {
         assert_eq!(risk("network:example.com"), Risk::Medium);
         assert_eq!(c.max_risk(), Risk::High);
         assert_eq!(caps().max_risk(), Risk::Medium);
+        // A harness contribution decides what agents run and how they are read.
+        let h = Capabilities {
+            ui: vec!["harness".into(), "palette".into()],
+            ..Default::default()
+        };
+        let items = h.items();
+        let risk = |n: &str| items.iter().find(|i| i.name == n).unwrap().risk;
+        assert_eq!(risk("ui:harness"), Risk::High);
+        assert_eq!(risk("ui:palette"), Risk::Low);
     }
 
     #[test]

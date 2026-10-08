@@ -823,3 +823,86 @@ fn pipe_mode_keeps_journaling_while_no_server_is_attached() {
             .any(|e| matches!(e, Ev::Mark(MarkerKind::Resize { .. })))
     );
 }
+
+#[test]
+fn status_query_needs_an_acquired_lease() {
+    let (_d, dir) = tmp();
+    let (sp, _l) = launch(&dir, &["/bin/sh", "-c", "sleep 30"]);
+    let mut s = UnixStream::connect(&sp.socket).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    write_frame(
+        &mut s,
+        &ToHolder::Hello {
+            proto_min: 1,
+            proto_max: PROTO,
+            server_pid: 1,
+            server_boot_id: "t".into(),
+        },
+    )
+    .unwrap();
+    let FromHolder::HelloOk { .. } = read_frame(&mut s).unwrap() else {
+        panic!()
+    };
+    write_frame(&mut s, &ToHolder::StatusQuery).unwrap();
+    assert!(matches!(
+        read_frame::<_, FromHolder>(&mut s).unwrap(),
+        FromHolder::Rejected { .. }
+    ));
+    // The lease holder still gets its status.
+    let mut a = connect(&sp, 1);
+    write_frame(&mut a.s, &ToHolder::StatusQuery).unwrap();
+    loop {
+        if let FromHolder::Status(_) = read_frame(&mut a.s).unwrap() {
+            break;
+        }
+    }
+}
+
+/// Linux: the holder is the pane's child subreaper, so a daemonized descendant reparents to
+/// the holder (the server's ancestry walk then still finds the pane), and the holder reaps it.
+#[cfg(target_os = "linux")]
+#[test]
+fn daemonized_descendants_reparent_to_the_holder() {
+    let (_d, dir) = tmp();
+    let (sp, l) = launch(
+        &dir,
+        &[
+            "/bin/sh",
+            "-c",
+            "sh -c 'sleep 30 >/dev/null 2>&1 & echo bg:$!:end'; sleep 30",
+        ],
+    );
+    let mut a = connect(&sp, 1);
+    let (replayed, _) = a.attach(0);
+    let mut acc = replayed;
+    a.read_until(":end", &mut acc);
+    let text = String::from_utf8_lossy(&acc).into_owned();
+    let pid: u32 = text
+        .split("bg:")
+        .nth(1)
+        .and_then(|r| r.split(':').next())
+        .and_then(|p| p.trim().parse().ok())
+        .expect("background pid");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let ppid = vk_hold::procinfo::info(pid).map(|i| i.ppid);
+        if ppid == Some(l.holder_pid) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "orphan {pid} has parent {ppid:?}, not the holder {}",
+            l.holder_pid
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    // The adopted orphan is reaped when it exits (no zombie left behind), and the pane's
+    // child is unaffected.
+    unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while vk_hold::procinfo::info(pid).is_some() {
+        assert!(Instant::now() < deadline, "adopted orphan {pid} not reaped");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(unsafe { libc::kill(l.child_pid as i32, 0) }, 0);
+}

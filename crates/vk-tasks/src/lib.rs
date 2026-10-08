@@ -124,5 +124,5 @@ pub use taskfile::{
 pub use worktree::{
     Checkout, CreateRequest, FetchOutcome, WorktreeConfig, WorktreeEntry, WorktreeRoot,
     create_worktree, default_base, find_worktree, find_worktree_by_branch, list_worktrees,
-    open_worktree, restore_worktree, worktree_path,
+    open_worktree, restore_worktree, validate_base, validate_slug, worktree_path,
 };

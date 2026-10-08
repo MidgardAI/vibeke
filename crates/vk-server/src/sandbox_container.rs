@@ -135,6 +135,69 @@ fn literal_env(env: &[(String, String)], warnings: &mut Vec<String>) -> Vec<(Str
         .collect()
 }
 
+/// Is a devcontainer `containerEnv`/`remoteEnv` key one the repository may not set? Loader,
+/// search-path, identity, proxy, TLS-trust, git and agent/provider variables would let a
+/// repository redirect the agent's traffic, credentials or executables (13 §9).
+fn denied_dc_env_key(k: &str) -> bool {
+    let u = k.to_ascii_uppercase();
+    matches!(
+        u.as_str(),
+        "PATH"
+            | "HOME"
+            | "USER"
+            | "SHELL"
+            | "LD_PRELOAD"
+            | "LD_LIBRARY_PATH"
+            | "LD_AUDIT"
+            | "SSL_CERT_FILE"
+            | "SSL_CERT_DIR"
+            | "NODE_OPTIONS"
+            | "NODE_EXTRA_CA_CERTS"
+            | "REQUESTS_CA_BUNDLE"
+            | "CURL_CA_BUNDLE"
+    ) || u.ends_with("_PROXY")
+        || [
+            "DYLD_",
+            "GIT_",
+            "VIBEKE_",
+            "CLAUDE_",
+            "CODEX_",
+            "ANTHROPIC_",
+            "OPENAI_",
+        ]
+        .iter()
+        .any(|p| u.starts_with(p))
+}
+
+/// Drop devcontainer env entries the repository may not set ([`denied_dc_env_key`]) or that
+/// Vibeke sets itself (`reserved`). Dropped keys (never values) are logged and reported.
+fn police_dc_env(
+    field: &str,
+    entries: Vec<(String, String)>,
+    reserved: &[&str],
+    warnings: &mut Vec<String>,
+) -> Vec<(String, String)> {
+    let mut dropped = Vec::new();
+    let kept = entries
+        .into_iter()
+        .filter(|(k, _)| {
+            let deny = denied_dc_env_key(k) || reserved.contains(&k.as_str());
+            if deny && !dropped.contains(k) {
+                dropped.push(k.clone());
+            }
+            !deny
+        })
+        .collect();
+    if !dropped.is_empty() {
+        let names = dropped.join(", ");
+        tracing::warn!(field, keys = %names, "devcontainer env keys dropped");
+        warnings.push(format!(
+            "devcontainer {field} keys ignored (reserved for Vibeke or security-sensitive): {names}"
+        ));
+    }
+    kept
+}
+
 fn mkdir_private(p: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
     std::fs::create_dir_all(p)?;
@@ -314,8 +377,14 @@ pub fn build(i: BuildIn) -> Result<CtrBox, RpcError> {
     }
     let mut clone = None;
     if code == "clone" {
-        let layout = vk_sandbox::GitLayout::detect(checkout)
-            .ok_or_else(|| invalid(format!("{} is not a git checkout", checkout.display())))?;
+        // The objects dir of the detected layout is mounted into the box: refuse a `.git`
+        // file that points at some other host repository (13 §6).
+        let layout = vk_sandbox::GitLayout::detect_checked(
+            checkout,
+            &super::trusted_git_roots(server, task),
+        )
+        .map_err(|e| err(ErrorKind::PermissionDenied, e))?
+        .ok_or_else(|| invalid(format!("{} is not a git checkout", checkout.display())))?;
         let branch = layout
             .branch
             .clone()
@@ -409,6 +478,8 @@ pub fn build(i: BuildIn) -> Result<CtrBox, RpcError> {
             None => warnings.push(format!("unknown cache volume {c}")),
         }
     }
+    // Every key Vibeke itself sets in the box env: repo-controlled env never overrides them.
+    let vibeke_env_keys: Vec<String> = env.iter().map(|(k, _)| k.clone()).collect();
     if let Some(d) = &dc {
         // Repo-controlled: plain per-task volume names, binds only from inside a trusted
         // checkout in worktree mode, never sockets or a writable view of `.git` (13 §9).
@@ -425,7 +496,16 @@ pub fn build(i: BuildIn) -> Result<CtrBox, RpcError> {
         );
         mounts.extend(m);
         warnings.extend(w);
-        env.extend(literal_env(&d.container_env, &mut warnings));
+        // Repo-controlled env goes first and never overrides what Vibeke sets.
+        let reserved: Vec<&str> = vibeke_env_keys.iter().map(String::as_str).collect();
+        let mut dc_env = police_dc_env(
+            "containerEnv",
+            literal_env(&d.container_env, &mut warnings),
+            &reserved,
+            &mut warnings,
+        );
+        dc_env.append(&mut env);
+        env = dc_env;
     }
     // Credentials: path-valued projection env is rewritten to the box mount; everything else is
     // a secret passed by name per exec (13 §8).
@@ -453,7 +533,22 @@ pub fn build(i: BuildIn) -> Result<CtrBox, RpcError> {
         }
     }
     if let Some(d) = &dc {
-        exec_env.extend(literal_env(&d.remote_env, &mut warnings));
+        // remoteEnv also goes first: the projected credential env and the per-pane identity
+        // (`VIBEKE_*`, set over it in `pane_exec`) always win.
+        let reserved: Vec<&str> = exec_env
+            .iter()
+            .chain(secrets.iter())
+            .map(|(k, _)| k.as_str())
+            .chain(vibeke_env_keys.iter().map(String::as_str))
+            .collect();
+        let mut dc_env = police_dc_env(
+            "remoteEnv",
+            literal_env(&d.remote_env, &mut warnings),
+            &reserved,
+            &mut warnings,
+        );
+        dc_env.append(&mut exec_env);
+        exec_env = dc_env;
     }
     let limits = Limits {
         cpus: repo_cfg.cpus.clone().or(cfg.container.cpus.clone()),
@@ -1012,4 +1107,60 @@ pub async fn api(server: &Arc<Server>, method: &str, p: &Value) -> R {
     })
     .await
     .map_err(internal)?
+}
+
+#[cfg(test)]
+mod dc_env_tests {
+    use super::*;
+
+    fn kv(k: &str) -> (String, String) {
+        (k.to_string(), "x".to_string())
+    }
+
+    #[test]
+    fn devcontainer_env_cannot_override_sensitive_or_vibeke_keys() {
+        let entries: Vec<(String, String)> = [
+            "PATH",
+            "HOME",
+            "LD_PRELOAD",
+            "DYLD_INSERT_LIBRARIES",
+            "https_proxy",
+            "NO_PROXY",
+            "SSL_CERT_FILE",
+            "NODE_OPTIONS",
+            "GIT_SSH_COMMAND",
+            "VIBEKE_SOCKET",
+            "CLAUDE_CONFIG_DIR",
+            "ANTHROPIC_BASE_URL",
+            "OPENAI_API_KEY",
+            "CODEX_HOME",
+            "CARGO_TARGET_DIR",
+            "RUST_LOG",
+            "MY_TOKEN_PATH",
+        ]
+        .into_iter()
+        .map(kv)
+        .collect();
+        let mut warnings = Vec::new();
+        let kept = police_dc_env(
+            "containerEnv",
+            entries,
+            &["CARGO_TARGET_DIR"],
+            &mut warnings,
+        );
+        let keys: Vec<&str> = kept.iter().map(|(k, _)| k.as_str()).collect();
+        // Vibeke's own key (a cache volume var) and every sensitive key are dropped.
+        assert_eq!(keys, ["RUST_LOG", "MY_TOKEN_PATH"]);
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("LD_PRELOAD") && warnings[0].contains("CARGO_TARGET_DIR"));
+        // Values never appear in the warning.
+        assert!(!warnings[0].contains("=x"));
+        // Nothing to drop: no warning.
+        let mut w2 = Vec::new();
+        assert_eq!(
+            police_dc_env("remoteEnv", vec![kv("FOO")], &[], &mut w2).len(),
+            1
+        );
+        assert!(w2.is_empty());
+    }
 }

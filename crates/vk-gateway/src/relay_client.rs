@@ -73,11 +73,8 @@ where
 }
 
 async fn control(gw: &Arc<Gateway>, base: &str) -> Result<()> {
-    let mut url = format!("{base}/v1/host");
-    if let Some(t) = &gw.cfg.relay_token {
-        url.push_str(&format!("?token={t}"));
-    }
-    let (mut ws, _) = connect_async(&url)
+    let req = host_request(base, gw.cfg.relay_token.as_deref())?;
+    let (mut ws, _) = connect_async(req)
         .await
         .with_context(|| format!("connect {base}"))?;
     let dialed = canonical_origin(base)?;
@@ -117,7 +114,10 @@ async fn control(gw: &Arc<Gateway>, base: &str) -> Result<()> {
                             tracing::warn!("dropping incoming connection: connection limit reached");
                             continue;
                         }
-                        let slot = crate::session::Dialing::reserve(gw);
+                        let Some(slot) = crate::session::Dialing::try_reserve(gw) else {
+                            tracing::warn!("dropping incoming connection: too many handshakes in progress");
+                            continue;
+                        };
                         let (gw, base, origin) = (gw.clone(), base.to_string(), origin.clone());
                         tokio::spawn(async move {
                             if let Err(e) = accept(gw, &base, &origin, &conn, generation, slot).await {
@@ -136,6 +136,23 @@ async fn control(gw: &Arc<Gateway>, base: &str) -> Result<()> {
             _ = ping.tick() => { ws.send(Message::Ping(Vec::new().into())).await?; }
         }
     }
+}
+
+/// The control-socket request. A private relay's token travels in `Authorization: Bearer`, never
+/// in the URL, where proxies and access logs would keep it.
+fn host_request(
+    base: &str,
+    token: Option<&str>,
+) -> Result<tokio_tungstenite::tungstenite::handshake::client::Request> {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    use tokio_tungstenite::tungstenite::http::{HeaderValue, header};
+    let mut req = format!("{base}/v1/host").into_client_request()?;
+    if let Some(t) = token {
+        let v = HeaderValue::from_str(&format!("Bearer {t}"))
+            .context("relay token is not a valid header value")?;
+        req.headers_mut().insert(header::AUTHORIZATION, v);
+    }
+    Ok(req)
 }
 
 async fn accept(
@@ -198,6 +215,16 @@ impl Bucket {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn relay_token_goes_in_a_header() {
+        let r = super::host_request("wss://r.example", Some("s3cret")).unwrap();
+        assert_eq!(r.uri().to_string(), "wss://r.example/v1/host");
+        assert!(!r.uri().to_string().contains("s3cret"));
+        assert_eq!(r.headers()["authorization"], "Bearer s3cret");
+        let r = super::host_request("wss://r.example", None).unwrap();
+        assert!(r.headers().get("authorization").is_none());
+    }
+
     #[test]
     fn ws_base_forms() {
         assert_eq!(super::ws_base("https://r.example/"), "wss://r.example");

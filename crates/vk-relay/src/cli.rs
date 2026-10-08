@@ -28,7 +28,7 @@ struct Args {
     /// Serve the web app from this directory (self-hosters only; spec 16 §9.4).
     #[arg(long, env = "VIBEKE_RELAY_APP_DIR")]
     app_dir: Option<PathBuf>,
-    /// Require hosts to present one of these tokens (`?token=`); repeatable or comma-separated.
+    /// Require hosts to present one of these tokens (`Authorization: Bearer`); repeatable or comma-separated.
     #[arg(
         long = "host-token",
         env = "VIBEKE_RELAY_HOST_TOKENS",

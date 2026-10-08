@@ -4,8 +4,12 @@
 //! later creates, writes or grants under such a dir goes through these helpers, which never
 //! follow a symlink and verify containment under the root Vibeke created.
 
+use rustix::fs::{self as rfs, Mode, OFlags};
+use rustix::io::Errno;
+use std::ffi::OsStr;
 use std::io::Write as _;
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::fd::{AsFd, OwnedFd};
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Component, Path, PathBuf};
 
 fn refused(what: &str, p: &Path) -> std::io::Error {
@@ -15,32 +19,52 @@ fn refused(what: &str, p: &Path) -> std::io::Error {
     )
 }
 
-/// `root/rel`, creating missing directories (0700) one component at a time. Every existing
-/// component must be a real directory (lstat): a symlink anywhere below `root` is an error, so
-/// the result is always physically inside `root`. `rel` must be relative without `..`.
-pub fn ensure_dir_under(root: &Path, rel: &Path) -> std::io::Result<PathBuf> {
-    let md = std::fs::symlink_metadata(root)?;
-    if md.file_type().is_symlink() || !md.is_dir() {
-        return Err(refused("sandbox root is not a directory", root));
+fn dir_flags() -> OFlags {
+    OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC
+}
+
+/// Open the directory `name` relative to `dir` without following a symlink in that component.
+fn open_dir_at<Fd: AsFd>(dir: Fd, name: &OsStr, shown: &Path) -> std::io::Result<OwnedFd> {
+    match rfs::openat(dir, name, dir_flags(), Mode::empty()) {
+        Ok(fd) => Ok(fd),
+        Err(e) if e == Errno::LOOP || e == Errno::NOTDIR => {
+            Err(refused("symlink or not a directory", shown))
+        }
+        Err(e) => Err(e.into()),
     }
+}
+
+/// Open `root` (its last component must be a real directory, not a symlink) and walk `rel`
+/// from it with `openat(O_DIRECTORY | O_NOFOLLOW)` for every component, creating missing
+/// directories (0700) with `mkdirat` relative to the parent's fd. A symlink anywhere below
+/// `root` is an error, and nothing is ever resolved by path after the root was opened, so a
+/// concurrent swap of a component for a symlink cannot redirect the walk. `rel` must be
+/// relative without `..`. Returns the final directory's fd and its (lexical) path.
+pub fn open_dir_under(root: &Path, rel: &Path) -> std::io::Result<(OwnedFd, PathBuf)> {
+    let mut dir = open_dir_at(rfs::CWD, root.as_os_str(), root)?;
     let mut cur = root.to_path_buf();
     for c in rel.components() {
         let Component::Normal(name) = c else {
             return Err(refused("unexpected path component", rel));
         };
         cur.push(name);
-        match std::fs::symlink_metadata(&cur) {
-            Ok(m) if m.file_type().is_symlink() => return Err(refused("symlink", &cur)),
-            Ok(m) if !m.is_dir() => return Err(refused("not a directory", &cur)),
-            Ok(_) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                std::fs::create_dir(&cur)?;
-                std::fs::set_permissions(&cur, std::fs::Permissions::from_mode(0o700))?;
-            }
-            Err(e) => return Err(e),
+        let created = match rfs::mkdirat(&dir, name, Mode::RWXU) {
+            Ok(()) => true,
+            Err(e) if e == Errno::EXIST => false,
+            Err(e) => return Err(e.into()),
+        };
+        dir = open_dir_at(&dir, name, &cur)?;
+        if created {
+            rfs::fchmod(&dir, Mode::RWXU)?;
         }
     }
-    Ok(cur)
+    Ok((dir, cur))
+}
+
+/// `root/rel`, creating missing directories (0700) one component at a time (see
+/// [`open_dir_under`]): the result is always physically inside `root`.
+pub fn ensure_dir_under(root: &Path, rel: &Path) -> std::io::Result<PathBuf> {
+    open_dir_under(root, rel).map(|(_, p)| p)
 }
 
 /// Is `path` physically inside `root` (no symlink in any component from `root` down, the
@@ -84,28 +108,51 @@ pub fn final_component_real(path: &Path) -> bool {
     }
 }
 
-/// Write `bytes` to `path` with `mode`, never following a symlink: an existing entry (file or
-/// symlink) is removed first and the new file is created with `O_EXCL | O_NOFOLLOW`. The parent
-/// must already be a verified directory.
+/// Write `bytes` to `path` with `mode`, never following a symlink: the parent is opened with
+/// `O_DIRECTORY | O_NOFOLLOW`, an existing entry (file or symlink) is unlinked relative to that
+/// fd, the new file is created with `O_EXCL | O_NOFOLLOW` and its mode set with `fchmod`, so no
+/// step resolves the final component by path. The parent must already be a verified directory
+/// (see [`ensure_dir_under`]).
 pub fn write_nofollow(path: &Path, bytes: &[u8], mode: u32) -> std::io::Result<()> {
-    if let Ok(m) = std::fs::symlink_metadata(path) {
-        if m.is_dir() {
-            return Err(refused("is a directory", path));
+    let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
+        return Err(refused("not a file path", path));
+    };
+    let parent = if parent.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        parent
+    };
+    let dir = open_dir_at(rfs::CWD, parent.as_os_str(), parent)?;
+    write_nofollow_at(&dir, name, path, bytes, mode)
+}
+
+/// [`write_nofollow`] relative to an already opened directory fd.
+pub fn write_nofollow_at<Fd: AsFd>(
+    dir: Fd,
+    name: &OsStr,
+    shown: &Path,
+    bytes: &[u8],
+    mode: u32,
+) -> std::io::Result<()> {
+    let dir = dir.as_fd();
+    match rfs::unlinkat(dir, name, rfs::AtFlags::empty()) {
+        Ok(()) => {}
+        Err(e) if e == Errno::NOENT => {}
+        Err(e) if e == Errno::ISDIR || e == Errno::PERM => {
+            // unlink(2) of a directory: EISDIR (Linux) / EPERM (macOS).
+            return Err(refused("is a directory", shown));
         }
-        if !m.file_type().is_symlink() {
-            let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
-        }
-        std::fs::remove_file(path)?;
+        Err(e) => return Err(e.into()),
     }
-    let mut f = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .mode(0o600)
-        .open(path)?;
+    let fd = rfs::openat(
+        dir,
+        name,
+        OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::RUSR | Mode::WUSR,
+    )?;
+    let mut f = std::fs::File::from(fd);
     f.write_all(bytes)?;
-    drop(f);
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+    f.set_permissions(std::fs::Permissions::from_mode(mode))
 }
 
 #[cfg(test)]
@@ -137,6 +184,38 @@ mod tests {
         assert!(ensure_dir_under(&link_root, Path::new("a")).is_err());
         assert!(!final_component_real(&d));
         assert!(final_component_real(&outside));
+    }
+
+    #[test]
+    fn walk_never_follows_an_intermediate_symlink() {
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path().canonicalize().unwrap();
+        let sbx = root.join("sbx");
+        let outside = root.join("outside");
+        std::fs::create_dir_all(sbx.join("a")).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        // A middle component swapped for a symlink: nothing is created through it.
+        std::os::unix::fs::symlink(&outside, sbx.join("a/b")).unwrap();
+        assert!(ensure_dir_under(&sbx, Path::new("a/b/c")).is_err());
+        assert!(!outside.join("c").exists());
+        // Created directories are 0700 and the fd refers to the final directory.
+        let (fd, p) = open_dir_under(&sbx, Path::new("x/y")).unwrap();
+        assert_eq!(p, sbx.join("x/y"));
+        assert_eq!(
+            std::fs::metadata(&p).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        write_nofollow_at(&fd, OsStr::new("f"), &p.join("f"), b"hi", 0o600).unwrap();
+        assert_eq!(std::fs::read_to_string(p.join("f")).unwrap(), "hi");
+        // A symlinked parent is refused by write_nofollow.
+        let link = sbx.join("link");
+        std::os::unix::fs::symlink(&outside, &link).unwrap();
+        assert!(write_nofollow(&link.join("f"), b"x", 0o600).is_err());
+        assert!(!outside.join("f").exists());
+        // A directory in the target's place is refused, not removed.
+        std::fs::create_dir_all(sbx.join("d")).unwrap();
+        assert!(write_nofollow(&sbx.join("d"), b"x", 0o600).is_err());
+        assert!(sbx.join("d").is_dir());
     }
 
     #[test]

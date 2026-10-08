@@ -4,7 +4,7 @@
 //! would resume there. Also: a teammate's host only delivers (nothing is placed or started), and
 //! an app cannot claim a handoff invitation.
 //!
-//! Its own test binary: pairing handshakes share a per-process budget (4/min, spec 16 §6.4).
+//! Its own test binary: pairing handshakes share per-process budgets (spec 16 §4.3, §6.4).
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};

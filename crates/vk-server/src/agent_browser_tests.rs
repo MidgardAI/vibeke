@@ -1419,3 +1419,152 @@ async fn redeclaring_a_foreign_preview_does_not_take_it_over() {
             .is_ok()
     );
 }
+
+/// Security review: a pane-scoped `preview.declare` on a port no pane's process listens on would
+/// add that port to the pane's agent-browser loopback allowlist. It now needs the user's
+/// confirmation (an approved call decided outside the pane); approval remembers the port for
+/// the pane's process, denial and timeout refuse, and panes can't decide.
+#[tokio::test(flavor = "multi_thread")]
+async fn unattributed_port_needs_the_users_confirmation() {
+    let e = Env::new();
+    let a = ctx_pane("pane-a");
+    let full = ctx_full();
+    let dispatch = async |ctx: &Ctx, method: &str, p: Value| {
+        crate::api::dispatch(&e.server, ctx, method, &p).await
+    };
+    let owner = |port: u16| {
+        e.server.with_core(|c| {
+            c.model
+                .previews
+                .iter()
+                .find(|p| p.port == port && p.status != vk_proto::model::PreviewStatus::Gone)
+                .map(|p| p.pane.clone())
+        })
+    };
+
+    // Asking: nothing is declared yet; the request carries the server's summary.
+    let r = dispatch(
+        &a,
+        "preview.declare",
+        json!({"port": 6400, "label": "db?", "wait": false}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(r["status"], "pending", "{r}");
+    assert_eq!(r["method"], "preview.declare");
+    assert_eq!(r["facts"]["port"], 6400);
+    assert!(r["summary"].as_str().unwrap().contains("6400"), "{r}");
+    assert_eq!(r["always_allowed"], false);
+    let id = r["request"].as_str().unwrap().to_string();
+    assert_eq!(owner(6400), None);
+
+    // Panes can't decide (not even their own), and "always" isn't offered.
+    for ctx in [&a, &ctx_pane("pane-b")] {
+        let err = dispatch(
+            ctx,
+            "auth.approve.decide",
+            json!({"request": id, "decision": "approve"}),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(kind(&err), "permission_denied");
+    }
+    assert!(
+        dispatch(
+            &full,
+            "auth.approve.decide",
+            json!({"request": id, "decision": "always"}),
+        )
+        .await
+        .is_err()
+    );
+    assert_eq!(owner(6400), None);
+
+    // The user approves: the preview is the pane's, and the waiting call gets it.
+    let d = dispatch(
+        &full,
+        "auth.approve.decide",
+        json!({"request": id, "decision": "approve"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(d["ok"], true, "{d}");
+    assert_eq!(owner(6400), Some(Some("pane-a".into())));
+    let v = dispatch(&a, "preview.declare", json!({"port": 6400, "request": id}))
+        .await
+        .unwrap();
+    assert_eq!(v["preview"]["port"], 6400, "{v}");
+
+    // Remembered for the pane's process: a later declare of the same port needs no new ask.
+    let gone = || {
+        e.server.with_core(|c| {
+            for p in c.model.previews.iter_mut().filter(|p| p.port == 6400) {
+                p.status = vk_proto::model::PreviewStatus::Gone;
+            }
+        })
+    };
+    gone();
+    let v = dispatch(&a, "preview.declare", json!({"port": 6400}))
+        .await
+        .unwrap();
+    assert_eq!(v["preview"]["port"], 6400, "{v}");
+
+    // Not for another pane, and denial refuses.
+    let b = ctx_pane("pane-b");
+    let r = dispatch(&b, "preview.declare", json!({"port": 6401, "wait": false}))
+        .await
+        .unwrap();
+    let id_b = r["request"].as_str().unwrap().to_string();
+    dispatch(
+        &full,
+        "auth.approve.decide",
+        json!({"request": id_b, "decision": "deny"}),
+    )
+    .await
+    .unwrap();
+    let err = dispatch(
+        &b,
+        "preview.declare",
+        json!({"port": 6401, "request": id_b}),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(kind(&err), "permission_denied");
+    assert!(err.message.contains("approval_denied"), "{}", err.message);
+    assert_eq!(owner(6401), None);
+
+    // No decision in time: refused, nothing declared.
+    let err = dispatch(
+        &a,
+        "preview.declare",
+        json!({"port": 6402, "timeout_ms": 50}),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(kind(&err), "timeout");
+    assert!(err.data.details["request"].is_string());
+    assert_eq!(owner(6402), None);
+
+    // Synchronous callers (task previews with an absolute port) are refused outright.
+    let err = crate::preview::declare(&e.server, &b, &json!({"port": 6403})).unwrap_err();
+    assert_eq!(err.data.details["reason"], "confirmation_required");
+    assert_eq!(owner(6403), None);
+
+    // A restarted pane (new child process) asks again.
+    gone();
+    e.server.with_core(|c| {
+        for p in c.model.panes.iter_mut().filter(|p| p.id == "pane-a") {
+            p.child_pid = Some(4_000_000);
+        }
+    });
+    let r = dispatch(&a, "preview.declare", json!({"port": 6400, "wait": false}))
+        .await
+        .unwrap();
+    assert_eq!(r["status"], "pending", "{r}");
+
+    // Full scope keeps the direct path.
+    let v = dispatch(&full, "preview.declare", json!({"port": 6404}))
+        .await
+        .unwrap();
+    assert_eq!(v["preview"]["port"], 6404);
+}

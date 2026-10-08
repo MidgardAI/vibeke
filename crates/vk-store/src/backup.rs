@@ -91,6 +91,20 @@ pub fn prune_backups(db: &Path, keep: usize) -> usize {
     n
 }
 
+/// `state.forget` (09 §8): backups are whole-database copies (`VACUUM INTO`) that cannot be
+/// filtered, and every existing one predates the forget, so all of them (and a kept
+/// `state.db.pre-restore`) still hold the forgotten rows. Delete them. Returns how many files
+/// were removed.
+pub fn forget_backups(db: &Path) -> usize {
+    let mut n = prune_backups(db, 0);
+    let mut keep = db.as_os_str().to_owned();
+    keep.push(".pre-restore");
+    if std::fs::remove_file(PathBuf::from(keep)).is_ok() {
+        n += 1;
+    }
+    n
+}
+
 /// Replace `db` with the backup file `backup` (a name from [`list_backups`] or a path) and rotate
 /// `log_epoch`. The database being replaced is kept next to it as `state.db.pre-restore`. The
 /// caller guarantees no server has the database open (the state lock).
@@ -242,6 +256,29 @@ mod tests {
         let notes: Vec<serde_json::Value> = s.load("note").unwrap();
         assert_eq!(notes.len(), 1, "state is the backup's");
         assert!(d.path().join("s/state.db.pre-restore").exists());
+    }
+
+    #[test]
+    fn forget_removes_every_backup_and_the_pre_restore_copy() {
+        let d = tempfile::tempdir().unwrap();
+        let db = d.path().join("state.db");
+        let c = Connection::open(&db).unwrap();
+        c.execute_batch("CREATE TABLE t (x TEXT); INSERT INTO t VALUES ('secret');")
+            .unwrap();
+        make_backup(&c, &db, 1).unwrap();
+        make_backup(&c, &db, 2).unwrap();
+        std::fs::write(d.path().join("state.db.pre-restore"), b"old").unwrap();
+        assert_eq!(list_backups(&db).len(), 2);
+        assert_eq!(forget_backups(&db), 3);
+        assert!(list_backups(&db).is_empty());
+        assert!(!d.path().join("state.db.pre-restore").exists());
+        // Store connections overwrite deleted content.
+        let s = Store::open(&d.path().join("s2/state.db")).unwrap();
+        let on: i64 = s
+            .conn
+            .query_row("PRAGMA secure_delete", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(on, 1);
     }
 
     #[test]

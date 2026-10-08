@@ -38,7 +38,9 @@ pub async fn run(gw: Arc<Gateway>) -> Result<()> {
         if gw.live_connections() >= gw.limits.max_connections {
             continue;
         }
-        let slot = crate::session::Dialing::reserve(&gw);
+        let Some(slot) = crate::session::Dialing::try_reserve(&gw) else {
+            continue;
+        };
         let gw = gw.clone();
         tokio::spawn(async move {
             let cfg = WebSocketConfig::default()

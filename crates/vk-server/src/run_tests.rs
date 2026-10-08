@@ -139,3 +139,121 @@ async fn unsubscribe_needs_a_control_connection() {
         "pane-scoped callers may unsubscribe their own connection's subscriptions"
     );
 }
+
+// ---- security hardening ---------------------------------------------------------------------
+
+/// A daemonized descendant reparented to the pane's holder (Linux child subreaper) still
+/// resolves to the pane; the walk stops at init and at the server itself.
+#[test]
+fn ancestry_reaches_the_pane_through_its_holder() {
+    // 300 → 200 (holder of P1) → 1; 400 → 1; 500 → this server → 200.
+    let parents: std::collections::HashMap<u32, u32> =
+        [(300, 200), (200, 1), (400, 1), (500, 77), (77, 200)].into();
+    let ppid = |p: u32| parents.get(&p).copied();
+    let roots = vec![(150u32, "P0".to_string()), (200u32, "P1".to_string())];
+    assert_eq!(ancestry_match(&roots, 300, 77, ppid).as_deref(), Some("P1"));
+    assert_eq!(ancestry_match(&roots, 200, 77, ppid).as_deref(), Some("P1"));
+    assert_eq!(ancestry_match(&roots, 400, 77, ppid), None);
+    assert_eq!(
+        ancestry_match(&roots, 500, 77, ppid),
+        None,
+        "stops at the server"
+    );
+    assert_eq!(ancestry_match(&[], 300, 77, ppid), None);
+}
+
+#[test]
+fn pane_client_ids_are_namespaced_and_remote_is_server_side() {
+    assert_eq!(bound_client_id(None, "tui-1"), "tui-1");
+    assert_eq!(bound_client_id(Some("P1"), "tui-1"), "pane:P1:tui-1");
+    let mut ctx = Ctx {
+        client_id: "c".into(),
+        kind: "cli".into(),
+        pane_scope: None,
+        remote: false,
+    };
+    assert!(!hello_remote(&ctx, &json!({})));
+    assert!(!hello_remote(&ctx, &json!({"remote": false})));
+    assert!(hello_remote(&ctx, &json!({"remote": true})));
+    ctx.kind = "gateway".into();
+    assert!(
+        hello_remote(&ctx, &json!({"remote": false})),
+        "a gateway is always remote"
+    );
+    ctx.kind = "cli".into();
+    ctx.remote = true;
+    assert!(
+        hello_remote(&ctx, &json!({"remote": false})),
+        "never cleared"
+    );
+}
+
+#[tokio::test]
+async fn control_lines_are_capped() {
+    let data = b"short\n0123456789abcdef\n".to_vec();
+    let mut rd = tokio::io::BufReader::new(&data[..]);
+    let mut line = String::new();
+    assert_eq!(read_line_capped(&mut rd, &mut line, 8).await.unwrap(), 6);
+    assert_eq!(line, "short\n");
+    line.clear();
+    let e = read_line_capped(&mut rd, &mut line, 8).await.unwrap_err();
+    assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
+    // Exactly the limit (plus newline) is fine; EOF is 0.
+    let data = b"12345678\n".to_vec();
+    let mut rd = tokio::io::BufReader::new(&data[..]);
+    let mut line = String::new();
+    assert_eq!(read_line_capped(&mut rd, &mut line, 8).await.unwrap(), 9);
+    line.clear();
+    assert_eq!(read_line_capped(&mut rd, &mut line, 8).await.unwrap(), 0);
+}
+
+#[tokio::test]
+async fn pane_scope_cannot_use_side_channels() {
+    let (d, srv) = server();
+    let pane = Ctx {
+        client_id: "c".into(),
+        kind: "agent".into(),
+        pane_scope: Some("P1".into()),
+        remote: false,
+    };
+    let secret = d.path().join("secret.txt");
+    std::fs::write(&secret, "x").unwrap();
+    let path = secret.to_string_lossy().into_owned();
+    for (method, params) in [
+        ("blob.put", json!({"path": path})),
+        ("config.validate", json!({"path": path})),
+        ("task.create", json!({"title": "t", "agents": "claude:2"})),
+        (
+            "task.create",
+            json!({"title": "t", "yolo": true, "isolate": "host", "confirm_host_yolo": true}),
+        ),
+    ] {
+        let e = api::dispatch(&srv, &pane, method, &params)
+            .await
+            .expect_err(method);
+        assert_eq!(e.data.kind, "permission_denied", "{method}: {}", e.message);
+    }
+    // A user client may still read a regular file into a blob, within the limit.
+    let user = Ctx {
+        pane_scope: None,
+        ..pane.clone()
+    };
+    let v = api::blob_put(&srv, &user, &json!({"path": path})).unwrap();
+    assert_eq!(v["size"], 1);
+    // …but not through a symlink or a directory.
+    let link = d.path().join("link");
+    std::os::unix::fs::symlink(&secret, &link).unwrap();
+    assert!(api::blob_put(&srv, &user, &json!({"path": link})).is_err());
+    assert!(api::blob_put(&srv, &user, &json!({"path": d.path()})).is_err());
+}
+
+#[test]
+fn delayed_kill_re_identifies_the_process() {
+    let me = std::process::id();
+    let start = vk_hold::procinfo::info(me).map(|i| i.start);
+    assert!(start.is_some());
+    assert!(crate::pane::same_process(me, start));
+    assert!(!crate::pane::same_process(me, start.map(|s| s + 1)));
+    assert!(!crate::pane::same_process(me, None));
+    assert!(!crate::pane::same_process(1, Some(0)));
+}

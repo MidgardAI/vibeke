@@ -1,9 +1,10 @@
 //! Pairing (spec 16 §4): the device's claim inside the encrypted channel, and the operator's
 //! `vibeke-gateway pair` command that shows the QR and confirms the device fingerprint.
 
+use std::collections::HashMap;
 use std::io::Write;
 use std::sync::Arc;
-use std::sync::Mutex;
+use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, bail};
@@ -16,17 +17,102 @@ use crate::Gateway;
 use crate::session::{Ws, spawn_writer};
 use crate::state::{Device, GitUser, Pairing, PairingStatus, PeerInfo, Scope, StateDir, now_s};
 
-static HANDSHAKES: Mutex<Vec<Instant>> = Mutex::new(Vec::new());
+/// Pairing handshakes per pairing id per minute (spec 16 §4.3).
+pub const PER_PAIRING_PER_MIN: usize = 10;
+/// Last-resort ceiling on pairing handshakes across all pairing ids, well above one pairing's
+/// budget so a busy pairing can't starve the others.
+const GLOBAL_PER_MIN: usize = 60;
+/// Pair hellos naming an unknown, expired or already claimed pairing id. They cost nothing of a
+/// real pairing's budget; past this they are dropped without an answer.
+const UNKNOWN_PER_MIN: usize = 30;
+/// A pairing the operator rejected this many claims for is withdrawn: its link has leaked.
+pub const MAX_REJECTED_CLAIMS: u32 = 5;
+const WINDOW: Duration = Duration::from_secs(60);
 
-/// Global pairing-handshake budget (spec 16 §6.4: ≤ 4/min).
-pub fn handshake_allowed() -> bool {
-    let mut h = HANDSHAKES.lock().unwrap();
-    h.retain(|t| t.elapsed() < Duration::from_secs(60));
-    if h.len() >= 4 {
+/// Sliding-window counters for pairing handshakes (spec 16 §4.3, §6.4). A per-pairing budget,
+/// so one known host id or one leaked pairing id can't block every other pairing.
+#[derive(Default)]
+pub struct PairLimiter {
+    per_pid: HashMap<String, Vec<Instant>>,
+    global: Vec<Instant>,
+    unknown: Vec<Instant>,
+    rejected: HashMap<String, u32>,
+}
+
+fn take(window: &mut Vec<Instant>, max: usize, now: Instant) -> bool {
+    window.retain(|t| now.saturating_duration_since(*t) < WINDOW);
+    if window.len() >= max {
         return false;
     }
-    h.push(Instant::now());
+    window.push(now);
     true
+}
+
+impl PairLimiter {
+    /// A handshake for a known, pending pairing: within its own budget and the global ceiling.
+    pub fn allow(&mut self, pid: &str, per_pid: usize, now: Instant) -> bool {
+        self.per_pid.retain(|_, w| {
+            w.retain(|t| now.saturating_duration_since(*t) < WINDOW);
+            !w.is_empty()
+        });
+        let w = self.per_pid.entry(pid.to_string()).or_default();
+        if w.len() >= per_pid {
+            return false;
+        }
+        if !take(&mut self.global, GLOBAL_PER_MIN, now) {
+            return false;
+        }
+        w.push(now);
+        true
+    }
+
+    /// A pair hello whose pairing id is unknown or no longer claimable.
+    pub fn allow_unknown(&mut self, now: Instant) -> bool {
+        take(&mut self.unknown, UNKNOWN_PER_MIN, now)
+    }
+
+    /// Count an operator rejection for `pid`; true once the pairing should be withdrawn.
+    pub fn rejected(&mut self, pid: &str) -> bool {
+        let n = self.rejected.entry(pid.to_string()).or_default();
+        *n += 1;
+        *n >= MAX_REJECTED_CLAIMS
+    }
+
+    pub fn forget(&mut self, pid: &str) {
+        self.per_pid.remove(pid);
+        self.rejected.remove(pid);
+    }
+}
+
+static LIMITER: LazyLock<Mutex<PairLimiter>> = LazyLock::new(Default::default);
+
+/// Pairing-handshake budget for one known, pending pairing id.
+pub fn handshake_allowed(pid: &str, per_pid: usize) -> bool {
+    LIMITER.lock().unwrap().allow(pid, per_pid, Instant::now())
+}
+
+/// Budget for pair hellos naming no claimable pairing (probing, stale links).
+pub fn unknown_allowed() -> bool {
+    LIMITER.lock().unwrap().allow_unknown(Instant::now())
+}
+
+/// Device-supplied text shown to the operator (terminal prompt, TUI, device list): control
+/// characters become spaces and bidirectional overrides/isolates/marks are dropped, so a claim
+/// can't move the cursor, clear the prompt or reorder the fingerprint line.
+pub fn sanitize_label(s: &str, max: usize) -> String {
+    let cleaned: String = s
+        .chars()
+        .filter(|c| !is_bidi_control(*c))
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    cleaned.trim().chars().take(max).collect()
+}
+
+fn is_bidi_control(c: char) -> bool {
+    matches!(
+        c,
+        '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{200E}' | '\u{200F}' | '\u{061C}'
+    )
 }
 
 const CONFIRM_TIMEOUT: Duration = Duration::from_secs(120);
@@ -59,20 +145,11 @@ pub async fn claim(
     }
     let id = req.get("id").cloned().unwrap_or(Value::Null);
     let p = req.get("params").cloned().unwrap_or_default();
-    let name: String = p
-        .get("name")
-        .and_then(|v| v.as_str())
-        .unwrap_or("device")
-        .chars()
-        .take(64)
-        .collect();
-    let platform: String = p
-        .get("platform")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .chars()
-        .take(32)
-        .collect();
+    let mut name = sanitize_label(p.get("name").and_then(|v| v.as_str()).unwrap_or(""), 64);
+    if name.is_empty() {
+        name = "device".into();
+    }
+    let platform = sanitize_label(p.get("platform").and_then(|v| v.as_str()).unwrap_or(""), 32);
     // A host redeeming a peer or handoff invitation introduces itself (spec 16 §15.3).
     let sender = p.get("peer").filter(|v| v.is_object()).map(peer_identity);
     // A handoff invitation is claimed by one of the claimer's own hosts, never by an app: the
@@ -220,18 +297,28 @@ pub async fn claim(
         })()
         .unwrap_or(false);
     if consumed {
+        LIMITER.lock().unwrap().forget(&pairing.pid);
         gw.state.audit(&json!({"ts": now_s(), "event": "device.paired", "device": device.id, "name": name, "fingerprint": fingerprint, "kind": device.kind}));
         out.notify("pair.done", json!({"device_id": device.id, "host_name": gw.host_name, "host_id": gw.keys.host_id(), "scope": device.scope, "kind": device.kind})).await;
     } else {
-        // Back to pending: a hijacked claim must not lock the owner out (spec 16 §4.3).
+        // Back to pending: a hijacked claim must not lock the owner out (spec 16 §4.3). But a
+        // pairing whose claims the operator keeps rejecting has leaked; withdraw it.
         if let Ok(_lock) = gw.state.lock()
             && let Ok(Some(mut p)) = gw.state.pairing(&pairing.pid)
             && matches!(&p.status, PairingStatus::Claimed { claim_id: c, .. } if *c == claim_id)
         {
-            p.status = PairingStatus::Pending;
-            p.confirmed = None;
-            p.confirmed_claim = None;
-            let _ = gw.state.save_pairing(&p);
+            let rejected = p.confirmed == Some(false)
+                && p.confirmed_claim.as_deref() == Some(claim_id.as_str());
+            if rejected && LIMITER.lock().unwrap().rejected(&pairing.pid) {
+                tracing::warn!(pid = %pairing.pid, "pairing withdrawn after repeated rejected claims");
+                gw.state.audit(&json!({"ts": now_s(), "event": "pairing.withdrawn", "reason": "rejected_claims"}));
+                let _ = gw.state.remove_pairing(&pairing.pid);
+            } else {
+                p.status = PairingStatus::Pending;
+                p.confirmed = None;
+                p.confirmed_claim = None;
+                let _ = gw.state.save_pairing(&p);
+            }
         }
         out.notify("pair.rejected", json!({})).await;
     }
@@ -302,7 +389,7 @@ pub fn create_with(
 fn peer_identity(v: &Value) -> PeerInfo {
     let text = |v: Option<&Value>, max: usize| -> Option<String> {
         v.and_then(|x| x.as_str())
-            .map(|x| x.trim().chars().take(max).collect::<String>())
+            .map(|x| sanitize_label(x, max))
             .filter(|x| !x.is_empty())
     };
     let user = v.get("user").filter(|u| u.is_object()).map(|u| GitUser {
@@ -374,6 +461,18 @@ pub fn record_answer(state: &StateDir, pid: &str, claim: &str, yes: bool) -> Res
     }
 }
 
+/// The terminal question for a claim. Device-supplied text is sanitized again (the pairing file
+/// may come from an older gateway), and the fingerprint sits alone on the last line, where
+/// nothing the device sent can precede it on the same line.
+fn confirm_prompt(name: &str, platform: &str, fingerprint: &str) -> String {
+    let name = sanitize_label(name, 64);
+    let platform = sanitize_label(platform, 32);
+    let fingerprint = sanitize_label(fingerprint, 128);
+    format!(
+        "Pair \"{name}\" ({platform})? Check this fingerprint matches the phone:\n  {fingerprint}\nPair? [y/N] "
+    )
+}
+
 /// Interactive side of `vibeke-gateway pair`.
 pub async fn wait_and_confirm(state: &StateDir, pid: &str, exp: u64) -> Result<()> {
     // The claim the operator was last asked about; answers are bound to it.
@@ -401,9 +500,7 @@ pub async fn wait_and_confirm(state: &StateDir, pid: &str, exp: u64) -> Result<(
             } if asked.as_deref() != Some(claim_id.as_str()) => {
                 let shown = claim_id.clone();
                 asked = Some(shown.clone());
-                let prompt = format!(
-                    "Pair \"{name}\" ({platform}) with fingerprint {fingerprint}? Check it matches the phone. [y/N] "
-                );
+                let prompt = confirm_prompt(name, platform, fingerprint);
                 let answer = tokio::task::spawn_blocking(move || {
                     print!("{prompt}");
                     let _ = std::io::stdout().flush();
@@ -428,5 +525,95 @@ pub async fn wait_and_confirm(state: &StateDir, pid: &str, exp: u64) -> Result<(
             _ => {}
         }
         tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn per_pairing_budget_is_independent() {
+        let mut l = PairLimiter::default();
+        let now = Instant::now();
+        for _ in 0..PER_PAIRING_PER_MIN {
+            assert!(l.allow("a", PER_PAIRING_PER_MIN, now));
+        }
+        assert!(!l.allow("a", PER_PAIRING_PER_MIN, now));
+        // Another pairing is unaffected by the exhausted one.
+        assert!(l.allow("b", PER_PAIRING_PER_MIN, now));
+        // The window slides.
+        assert!(l.allow(
+            "a",
+            PER_PAIRING_PER_MIN,
+            now + WINDOW + Duration::from_secs(1)
+        ));
+    }
+
+    #[test]
+    fn unknown_pairing_ids_do_not_spend_real_budgets() {
+        let mut l = PairLimiter::default();
+        let now = Instant::now();
+        while l.allow_unknown(now) {}
+        assert!(!l.allow_unknown(now));
+        assert!(l.allow("real", PER_PAIRING_PER_MIN, now));
+    }
+
+    #[test]
+    fn global_ceiling_holds_across_pairings() {
+        let mut l = PairLimiter::default();
+        let now = Instant::now();
+        let mut ok = 0;
+        for i in 0..GLOBAL_PER_MIN + 10 {
+            if l.allow(&format!("p{i}"), PER_PAIRING_PER_MIN, now) {
+                ok += 1;
+            }
+        }
+        assert_eq!(ok, GLOBAL_PER_MIN);
+        // A refused handshake does not count against the pairing itself.
+        assert!(
+            l.per_pid
+                .get(&format!("p{}", GLOBAL_PER_MIN + 1))
+                .is_none_or(|w| w.is_empty())
+        );
+    }
+
+    #[test]
+    fn repeated_rejections_withdraw_the_pairing() {
+        let mut l = PairLimiter::default();
+        for _ in 1..MAX_REJECTED_CLAIMS {
+            assert!(!l.rejected("x"));
+        }
+        assert!(l.rejected("x"));
+        assert!(!l.rejected("y"));
+        l.forget("x");
+        assert!(!l.rejected("x"));
+    }
+
+    #[test]
+    fn labels_lose_control_and_bidi_characters() {
+        assert_eq!(sanitize_label("Phone\x1b[2J\x1b[H", 64), "Phone [2J [H");
+        assert_eq!(sanitize_label("a\rb\nc\u{7}", 64), "a b c");
+        assert_eq!(
+            sanitize_label(
+                "x\u{202E}evil\u{2066}\u{2069}\u{200E}\u{200F}\u{061C}\u{202A}",
+                64
+            ),
+            "xevil"
+        );
+        assert_eq!(sanitize_label("  ok  ", 64), "ok");
+        assert_eq!(sanitize_label(&"é".repeat(100), 64).chars().count(), 64);
+        // C1 controls too (CSI is U+009B).
+        assert_eq!(sanitize_label("a\u{9b}2Jb", 64), "a 2Jb");
+    }
+
+    #[test]
+    fn prompt_puts_the_fingerprint_on_its_own_line() {
+        let p = confirm_prompt("Phone\r\x1b[KFake", "ios\u{202E}", "AB12 CD34");
+        assert!(!p.chars().any(|c| c.is_control() && c != '\n'));
+        let lines: Vec<&str> = p.lines().collect();
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[1].trim(), "AB12 CD34");
+        assert!(!lines[0].contains('\u{202E}'));
     }
 }

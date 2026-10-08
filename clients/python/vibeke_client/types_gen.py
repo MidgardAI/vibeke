@@ -102,7 +102,7 @@ ApprovalRequest = TypedDict("ApprovalRequest", {
     "pane": str,
     "pane_handle": str,
     "workspace": str,
-    "method": Literal["handoff.send", "handoff.cancel", "gateway.call"],
+    "method": Literal["handoff.send", "handoff.cancel", "gateway.call", "preview.declare"],
     "params": Dict[str, Any],
     "summary": str,
     "facts": Dict[str, Any],
@@ -1730,7 +1730,7 @@ AuditVerifyResult = TypedDict("AuditVerifyResult", {
 })
 
 AuthApproveParams = TypedDict("AuthApproveParams", {
-    "method": NotRequired[Literal["handoff.send", "handoff.cancel", "gateway.call"]],
+    "method": NotRequired[Literal["handoff.send", "handoff.cancel", "gateway.call", "preview.declare"]],
     "params": NotRequired[Dict[str, Any]],
     "reason": NotRequired[str],
     "wait": NotRequired[bool],
@@ -5359,12 +5359,18 @@ PreviewDeclareParams = TypedDict("PreviewDeclareParams", {
     "pane": NotRequired["Target"],
     "task": NotRequired["Target"],
     "tls_origin": NotRequired[bool],
+    "reason": NotRequired[str],
+    "wait": NotRequired[bool],
+    "timeout_ms": NotRequired[int],
+    "request": NotRequired[str],
 })
 
-PreviewDeclareResult = TypedDict("PreviewDeclareResult", {
+PreviewDeclareResultXV0 = TypedDict("PreviewDeclareResultXV0", {
     "preview": "Preview",
     "cursor": NotRequired["Cursor"],
 })
+
+PreviewDeclareResult: TypeAlias = Union["PreviewDeclareResultXV0", "ApprovalRequest"]
 
 PreviewDismissParams = TypedDict("PreviewDismissParams", {
     "preview": "Target",

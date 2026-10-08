@@ -20,7 +20,19 @@ pub struct Target {
 }
 
 impl Target {
+    /// An address starting with `-` would be read by ssh as an option (`-oProxyCommand=...`);
+    /// it is rejected by leaving the address empty, which [`Target::check_address`] refuses.
     pub fn parse(label: &str, address: &str) -> Target {
+        if address.starts_with('-') {
+            return Target {
+                label: label.to_string(),
+                address: String::new(),
+                port: None,
+                identity: None,
+                jump: None,
+                extra: vec![],
+            };
+        }
         // user@host:port
         let (addr, port) = match address.rsplit_once(':') {
             Some((a, p)) if p.chars().all(|c| c.is_ascii_digit()) && !p.is_empty() => {
@@ -36,6 +48,20 @@ impl Target {
             jump: None,
             extra: vec![],
         }
+    }
+
+    /// Refuse an empty/option-like destination before spawning ssh.
+    pub fn check_address(&self) -> Result<()> {
+        if self.address.is_empty()
+            || self.address.starts_with('-')
+            || self
+                .address
+                .chars()
+                .any(|c| c.is_whitespace() || c.is_control())
+        {
+            bail!("invalid ssh address for machine {:?}", self.label);
+        }
+        Ok(())
     }
 
     fn control_dir() -> PathBuf {
@@ -84,7 +110,7 @@ impl Target {
         if batch {
             c.args(["-o", "BatchMode=yes"]);
         }
-        c.arg("-T").arg(&self.address).arg(remote);
+        c.arg("-T").arg("--").arg(&self.address).arg(remote);
         c.kill_on_drop(true);
         c
     }
@@ -92,6 +118,7 @@ impl Target {
     /// Run a remote shell command, optionally feeding stdin; returns stdout. Interactive auth
     /// (password, 2FA) is allowed here so later connections reuse the ControlMaster.
     pub async fn run(&self, remote: &str, stdin: Option<&[u8]>) -> Result<String> {
+        self.check_address()?;
         let mut c = self.command(remote, false);
         c.stdin(if stdin.is_some() {
             Stdio::piped()
@@ -126,6 +153,7 @@ impl Target {
             sh_quote(remote_bin),
             sh_quote(session)
         );
+        self.check_address()?;
         let mut c = self.command(&cmd, true);
         c.stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -146,9 +174,11 @@ impl Target {
         if !matches!(op, "check" | "exit") {
             bail!("unsupported control operation {op}");
         }
+        self.check_address()?;
         let mut c = Command::new(std::env::var("VIBEKE_SSH").unwrap_or_else(|_| "ssh".into()));
         c.args(self.args())
             .args(["-O", op])
+            .arg("--")
             .arg(&self.address)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -208,10 +238,14 @@ mod tests {
         assert_eq!(t.address, "alice@devbox");
         assert_eq!(t.port, Some(2222));
         assert_eq!(Target::parse("x", "host").port, None);
+        assert!(Target::parse("x", "host").check_address().is_ok());
         assert_eq!(
             sh_quote("~/.local/share/vibeke/current/vibeke"),
             "\"$HOME\"/.local/share/vibeke/current/vibeke"
         );
+        let bad = Target::parse("x", "-oProxyCommand=x");
+        assert!(bad.address.is_empty());
+        assert!(bad.check_address().is_err());
         assert_eq!(sh_quote("a b'c"), "'a b'\\''c'");
     }
 }

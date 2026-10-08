@@ -2031,7 +2031,7 @@ pub fn title(app: &App) -> Option<String> {
         .replace("{machine}", &m.label)
         .replace("{session}", &app.nav.session);
     // No control characters in OSC 2; keep it short.
-    let s: String = s.chars().filter(|c| !c.is_control()).take(120).collect();
+    let s = crate::notifications::host_safe(&s, 120);
     let s = s.trim().trim_matches('·').trim().to_string();
     Some(if s.is_empty() { "vibeke".into() } else { s })
 }

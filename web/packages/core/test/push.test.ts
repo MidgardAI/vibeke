@@ -43,7 +43,7 @@ function fakePush(): PushSupport & { subs: number; current: PushSubscriptionInfo
   return p;
 }
 
-function setup(hosts: string[]) {
+function setup(hosts: string[], shares: string[] = []) {
   const calls: [string, string, any][] = [];
   const platform = testPlatform((sock, url) => {
     const host = new URL(url.replace('wss:', 'https:')).searchParams.get('host')!;
@@ -58,7 +58,8 @@ function setup(hosts: string[]) {
       },
     });
   });
-  const store: HostStore = { list: async () => hosts.map(rec), put: async () => {}, remove: async () => {} };
+  const records = [...hosts.map(rec), ...shares.map((id): HostRecord => ({ ...rec(id), kind: 'share' }))];
+  const store: HostStore = { list: async () => records, put: async () => {}, remove: async () => {} };
   const manager = new HostManager({ platform, store, devicePrivate: DEV, client: { client: 't', version: '0' } });
   const push = fakePush();
   const keystore = new MemKeyStore();
@@ -151,6 +152,23 @@ describe('PushSync', () => {
     await s.sync.disable();
     expect(s.calls.some((c) => c[1] === 'push.unsubscribe')).toBe(true);
     expect(s.sync.state).toBe('off');
+    s.manager.stop();
+  });
+
+  test('share hosts never receive the VAPID key or push calls', async () => {
+    const s = setup(['own'], ['shared']);
+    await s.manager.start();
+    await flush(30);
+    expect(s.manager.connections().every((c) => c.getSnapshot().status === 'online')).toBe(true);
+    await s.sync.start();
+    await s.sync.enable();
+    await s.sync.syncAll(true);
+    await s.sync.rotate();
+    await s.sync.disable();
+    const push = s.calls.filter((c) => c[1].startsWith('push.'));
+    expect(push.length).toBeGreaterThan(0);
+    expect(push.every((c) => c[0] === 'own')).toBe(true);
+    expect(s.calls.some((c) => c[0] === 'shared' && JSON.stringify(c[2] ?? {}).includes('vapid_private'))).toBe(false);
     s.manager.stop();
   });
 });

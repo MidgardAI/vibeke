@@ -103,6 +103,7 @@ fn spec(fx: &Fx, network: NetMode) -> SandboxSpec {
         network,
         allow_bind_localhost: true,
         protected: vec![],
+        control_dir: None,
     }
 }
 

@@ -59,7 +59,8 @@ pub struct Gateway {
     push_throttle: Mutex<HashMap<String, Throttle>>,
     /// Bounds concurrent push sends.
     push_slots: tokio::sync::Semaphore,
-    /// Accepted relay connections still before their handshake completes.
+    /// Accepted relay or local connections still before their handshake completes: their own
+    /// small pool (`limits.max_pending`), apart from established sessions.
     pub dialing: std::sync::atomic::AtomicUsize,
     pub limits: GatewayLimits,
     pub status: state::StatusWriter,
@@ -67,17 +68,23 @@ pub struct Gateway {
 
 #[derive(Debug, Clone)]
 pub struct GatewayLimits {
+    /// Established (authenticated) device connections.
     pub max_connections: usize,
+    /// Unauthenticated connections still in hello/handshake. Kept apart from
+    /// `max_connections`, so announces nobody completes can't take the paired devices' slots.
+    pub max_pending: usize,
     pub max_inflight: usize,
-    pub pair_handshakes_per_min: u32,
+    /// Pairing handshakes per pairing id per minute (spec 16 §4.3).
+    pub pair_handshakes_per_min: usize,
 }
 
 impl Default for GatewayLimits {
     fn default() -> Self {
         GatewayLimits {
             max_connections: 16,
+            max_pending: 8,
             max_inflight: 32,
-            pair_handshakes_per_min: 4,
+            pair_handshakes_per_min: pair::PER_PAIRING_PER_MIN,
         }
     }
 }
@@ -235,12 +242,11 @@ impl Gateway {
         }
     }
 
-    /// Live device connections plus accepts being dialed (handshakes in progress).
+    /// Established device connections (handshakes in progress count in `dialing` instead).
     pub fn live_connections(&self) -> usize {
         let mut live = self.live.lock().unwrap();
         live.values_mut().for_each(|v| v.retain(|c| !c.is_closed()));
         live.values().map(Vec::len).sum::<usize>()
-            + self.dialing.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     pub fn register_conn(

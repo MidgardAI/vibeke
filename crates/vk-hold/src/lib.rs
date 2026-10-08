@@ -212,7 +212,27 @@ pub fn holder_alive(socket: &Path, holder_pid: Option<u32>) -> bool {
     if unsafe { libc::kill(pid as i32, 0) } != 0 {
         return false;
     }
-    procinfo::argv(pid).iter().any(|a| a == "--spec")
+    spec_matches_socket(&procinfo::argv(pid), socket)
+}
+
+/// Whether a holder's argv (`… --spec <spec_dir>/spawn-….bin`) belongs to the holder serving
+/// `socket`: its spec file was written in a directory containing the socket (the session's
+/// runtime directory). A pid reused by an unrelated process, or by a holder of another
+/// session, does not match.
+fn spec_matches_socket(argv: &[String], socket: &Path) -> bool {
+    let Some(spec) = argv
+        .iter()
+        .position(|a| a == "--spec")
+        .and_then(|i| argv.get(i + 1))
+    else {
+        return false;
+    };
+    let spec = Path::new(spec);
+    let named = spec
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.starts_with("spawn-"));
+    named && spec.parent().is_some_and(|d| socket.starts_with(d))
 }
 
 /// Used by tests: a std::fs::File from a raw fd we own.
@@ -220,4 +240,32 @@ pub fn holder_alive(socket: &Path, holder_pid: Option<u32>) -> bool {
 pub fn file_from_fd(fd: i32) -> std::fs::File {
     // SAFETY: caller passes ownership of a valid fd.
     unsafe { std::fs::File::from_raw_fd(fd) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn argv(spec: &str) -> Vec<String> {
+        ["vibeke", "hold", "--spec", spec]
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
+    }
+
+    #[test]
+    fn holder_pid_fallback_needs_this_sessions_spec() {
+        let sock = Path::new("/run/vk/default/holders/abc.sock");
+        assert!(spec_matches_socket(
+            &argv("/run/vk/default/spawn-p1-7.bin"),
+            sock
+        ));
+        // Another session's holder, or an unrelated process with `--spec`.
+        assert!(!spec_matches_socket(
+            &argv("/run/vk/other/spawn-p1-7.bin"),
+            sock
+        ));
+        assert!(!spec_matches_socket(&argv("/run/vk/default/x.toml"), sock));
+        assert!(!spec_matches_socket(&["sleep".to_string()], sock));
+    }
 }

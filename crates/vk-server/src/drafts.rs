@@ -247,19 +247,22 @@ fn resolve_scope(
     }
 }
 
-fn attachments_from(server: &Server, p: &Value) -> Result<Vec<Attachment>, RpcError> {
+fn attachments_from(server: &Server, ctx: &Ctx, p: &Value) -> Result<Vec<Attachment>, RpcError> {
     let Some(list) = p.get("attachments").and_then(Value::as_array) else {
         return Ok(vec![]);
     };
     if list.len() > MAX_ATTACHMENTS {
         return Err(invalid(format!("at most {MAX_ATTACHMENTS} attachments")));
     }
-    list.iter().map(|a| attachment_from(server, a)).collect()
+    list.iter()
+        .map(|a| attachment_from(server, ctx, a))
+        .collect()
 }
 
 /// `{kind: file|screenshot, path}` (a path on this machine), `{kind, blob: <hash>}` (a file
-/// stored by `blob.put`) or `{kind, data_b64, name?}` (stored now in the pane inbox).
-fn attachment_from(server: &Server, a: &Value) -> Result<Attachment, RpcError> {
+/// stored by `blob.put`) or `{kind, data_b64, name?}` (stored now in the pane inbox). A
+/// pane-scoped caller cannot name a `path`: the existence check would be a file oracle.
+fn attachment_from(server: &Server, ctx: &Ctx, a: &Value) -> Result<Attachment, RpcError> {
     let kind = s(a, "kind").unwrap_or("file");
     if !matches!(kind, "file" | "screenshot") {
         return Err(invalid(format!(
@@ -267,6 +270,12 @@ fn attachment_from(server: &Server, a: &Value) -> Result<Attachment, RpcError> {
         )));
     }
     let path = if let Some(path) = s(a, "path") {
+        if ctx.pane_scope.is_some() {
+            return Err(err(
+                ErrorKind::PermissionDenied,
+                "attachment path needs a user client; attach the content with data_b64",
+            ));
+        }
         let pth = Path::new(path);
         if !pth.is_absolute() || !pth.exists() {
             return Err(invalid(format!(
@@ -288,7 +297,7 @@ fn attachment_from(server: &Server, a: &Value) -> Result<Attachment, RpcError> {
             .map(|p| p.to_string_lossy().into_owned())
             .ok_or_else(|| not_found("blob", hash))?
     } else if a.get("data_b64").is_some() {
-        let v = crate::api::blob_put(server, a)?;
+        let v = crate::api::blob_put(server, ctx, a)?;
         v["path"].as_str().unwrap_or("").to_string()
     } else {
         return Err(invalid("attachment needs path, blob or data_b64"));
@@ -419,7 +428,7 @@ fn create(server: &Server, ctx: &Ctx, scope: Option<&str>, p: &Value) -> R {
         return Err(denied("draft.create"));
     }
     let text = bounded_text(s(p, "text").unwrap_or(""), "text")?;
-    let att = attachments_from(server, p)?;
+    let att = attachments_from(server, ctx, p)?;
     if text.trim().is_empty() && att.is_empty() {
         return Err(invalid("a draft needs text or an attachment"));
     }
@@ -459,13 +468,13 @@ fn update(server: &Server, ctx: &Ctx, scope: Option<&str>, p: &Value) -> R {
         d.title = t.as_str().map(str::to_string);
     }
     if p.get("attachments").is_some() {
-        d.attachments = attachments_from(server, p)?;
+        d.attachments = attachments_from(server, ctx, p)?;
     }
     if let Some(a) = p.get("add_attachment") {
         if d.attachments.len() >= MAX_ATTACHMENTS {
             return Err(invalid(format!("at most {MAX_ATTACHMENTS} attachments")));
         }
-        d.attachments.push(attachment_from(server, a)?);
+        d.attachments.push(attachment_from(server, ctx, a)?);
     }
     if let Some(i) = p.get("remove_attachment").and_then(Value::as_u64) {
         if (i as usize) >= d.attachments.len() {

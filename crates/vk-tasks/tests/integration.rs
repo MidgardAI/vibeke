@@ -775,3 +775,51 @@ fn free_block(n: u16) -> u16 {
         .find(|&b| (b..b + n).all(|p| std::net::TcpListener::bind(("127.0.0.1", p)).is_ok()))
         .expect("no free port block")
 }
+
+#[test]
+fn create_refuses_traversal_slugs_and_option_bases() {
+    let (tmp, repo) = fixture();
+    let c = cfg(WorktreeRoot::Dir(tmp.path().join("wt")));
+    for bad in [
+        "../../escape",
+        "a/b",
+        "-x",
+        ".hidden",
+        "Upper",
+        "",
+        "a--b",
+        "a-",
+    ] {
+        let r = CreateRequest {
+            slug: Some(bad.into()),
+            ..req(&repo, "t")
+        };
+        assert!(
+            matches!(create_worktree(&r, &c), Err(Error::Refused(_))),
+            "slug {bad:?} accepted"
+        );
+    }
+    assert!(!tmp.path().join("escape").exists());
+    for bad in ["--upload-pack=x", "-b", "no-such-ref"] {
+        let r = CreateRequest {
+            base: Some(bad.into()),
+            ..req(&repo, "t")
+        };
+        assert!(
+            matches!(create_worktree(&r, &c), Err(Error::Refused(_))),
+            "base {bad:?} accepted"
+        );
+    }
+    // A valid slug and base still work.
+    let r = CreateRequest {
+        slug: Some("fix-login-2".into()),
+        base: Some("main".into()),
+        ..req(&repo, "t")
+    };
+    let co = create_worktree(&r, &c).unwrap();
+    assert_eq!(co.slug, "fix-login-2");
+    assert!(
+        co.path
+            .starts_with(tmp.path().join("wt").canonicalize().unwrap())
+    );
+}

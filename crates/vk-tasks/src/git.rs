@@ -11,7 +11,6 @@
 use crate::{Error, Result};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-use std::sync::mpsc;
 use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
@@ -223,25 +222,52 @@ pub(crate) fn exec(dir: &Path, args: &[&str], timeout: Option<Duration>) -> Resu
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let child = cmd.spawn()?;
-    let pid = child.id();
+    let mut child = cmd.spawn()?;
     let out = match timeout {
         None => child.wait_with_output()?,
         Some(t) => {
-            let (tx, rx) = mpsc::channel();
-            thread::spawn(move || {
-                let _ = tx.send(child.wait_with_output());
-            });
-            match rx.recv_timeout(t) {
-                Ok(r) => r?,
-                Err(_) => {
-                    // SAFETY: plain kill(2) on a child we spawned.
-                    unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+            // The child stays owned (and unreaped) here until it exits or is killed, so the
+            // kill can never hit a recycled pid: `Child::kill` only signals an unwaited child.
+            let drain = |r: Option<Box<dyn std::io::Read + Send>>| {
+                thread::spawn(move || {
+                    let mut buf = Vec::new();
+                    if let Some(mut r) = r {
+                        let _ = r.read_to_end(&mut buf);
+                    }
+                    buf
+                })
+            };
+            let so = drain(
+                child
+                    .stdout
+                    .take()
+                    .map(|x| Box::new(x) as Box<dyn std::io::Read + Send>),
+            );
+            let se = drain(
+                child
+                    .stderr
+                    .take()
+                    .map(|x| Box::new(x) as Box<dyn std::io::Read + Send>),
+            );
+            let deadline = std::time::Instant::now() + t;
+            let status = loop {
+                if let Some(st) = child.try_wait()? {
+                    break st;
+                }
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
                     return Err(Error::Timeout {
                         args: args.join(" "),
                         secs: t.as_secs_f32(),
                     });
                 }
+                thread::sleep(Duration::from_millis(10));
+            };
+            Output {
+                status,
+                stdout: so.join().unwrap_or_default(),
+                stderr: se.join().unwrap_or_default(),
             }
         }
     };

@@ -3,7 +3,9 @@
 //!
 //! - `auth.approve {method, params, reason?, wait?, timeout_ms?, request?}` (pane scope only).
 //!   [`APPROVABLE`] lists what can be asked for: `handoff.send`, `handoff.cancel` of the pane's
-//!   own jobs, and `gateway.call {method: "peer.redeem"}`. The params are validated as the
+//!   own jobs, `gateway.call {method: "peer.redeem"}`, and `preview.declare` on a port no pane's
+//!   process listens on (asked by `preview.declare` itself; approval also remembers the port
+//!   for the pane's process, see `crate::preview`). The params are validated as the
 //!   target method would validate them and frozen; the summary the user reads is computed here
 //!   from server facts (pane, repository, branch, changed files, agent, peer and its owner),
 //!   never from the caller's text. The caller's `reason` is carried separately and marked
@@ -49,7 +51,12 @@ use vk_proto::rpc::{ErrorKind, RpcError};
 use vk_store::now_ms;
 
 /// Methods a pane can ask the user to run.
-pub const APPROVABLE: &[&str] = &["handoff.send", "handoff.cancel", "gateway.call"];
+pub const APPROVABLE: &[&str] = &[
+    "handoff.send",
+    "handoff.cancel",
+    "gateway.call",
+    "preview.declare",
+];
 /// `gateway.call` methods a pane can ask for.
 pub const APPROVABLE_GATEWAY: &[&str] = &["peer.redeem"];
 /// How long `auth.approve` waits for a decision by default.
@@ -254,7 +261,7 @@ fn cwd_of(server: &Server, pane: &vk_proto::model::Pane) -> Option<String> {
 
 /// Validate a pane's ask as the target method would, and freeze it with the summary.
 async fn prepare(
-    server: &Server,
+    server: &Arc<Server>,
     ctx: &Ctx,
     me: &str,
     method: &str,
@@ -398,6 +405,22 @@ async fn prepare(
                 peer: None,
                 summary,
                 facts: json!({"gateway_method": inner, "share_user": share_user}),
+                always_allowed: false,
+            })
+        }
+        "preview.declare" => {
+            let (params, summary, facts) =
+                crate::preview::approval_request(server, ctx, me, &params).await?;
+            let target = s(&params, "pane").map(str::to_string);
+            Ok(Frozen {
+                method: method.into(),
+                params,
+                target,
+                repo: None,
+                peer: None,
+                summary,
+                facts,
+                // Approval is per port; the preview side remembers it for the pane's process.
                 always_allowed: false,
             })
         }
@@ -700,6 +723,9 @@ async fn run_approved(server: &Arc<Server>, approver: &Ctx, r: &Request) -> R {
             crate::handoff_out::send_job(server, &ctx, &f.params, Some(expect))
         }
         "handoff.cancel" => crate::handoff_out::cancel(server, &f.params),
+        "preview.declare" => {
+            crate::preview::declare_approved(server, approver, &r.pane, r.child_pid, &f.params)
+        }
         "gateway.call" => {
             let method = s(&f.params, "method").unwrap_or("");
             let params = f.params.get("params").cloned().unwrap_or(Value::Null);
@@ -716,6 +742,9 @@ fn result_brief(method: &str, v: &Value) -> Value {
             json!({"job": v.pointer("/job/id"), "state": v.pointer("/job/state")})
         }
         "gateway.call" => json!({"peer": v.pointer("/peer/id"), "name": v.pointer("/peer/name")}),
+        "preview.declare" => {
+            json!({"preview": v.pointer("/preview/id"), "port": v.pointer("/preview/port")})
+        }
         _ => Value::Null,
     }
 }
@@ -1224,15 +1253,15 @@ pub fn grants_of(server: &Server, pane: &str) -> usize {
 
 /// Definitions for the schema registry (`api_schema` loads them with its own).
 pub const DEFS: &str = r##"
-ApprovalRequest = {request: string, kind: approval, pane: string, pane_handle: string, workspace: string, method: "handoff.send"|"handoff.cancel"|"gateway.call", params: object, summary: string, facts: object, reason: string, reason_verified: bool, peer: {id: string, name: string, owner: string}|null, always_allowed: bool, created_at_ms: int, status: pending|running|approved|failed|denied|withdrawn}
+ApprovalRequest = {request: string, kind: approval, pane: string, pane_handle: string, workspace: string, method: "handoff.send"|"handoff.cancel"|"gateway.call"|"preview.declare", params: object, summary: string, facts: object, reason: string, reason_verified: bool, peer: {id: string, name: string, owner: string}|null, always_allowed: bool, created_at_ms: int, status: pending|running|approved|failed|denied|withdrawn}
 ApprovalGrant = {pane: string, method: string, target: string|null, peer: string, peer_name: string, request: string, created_at_ms: int}
 "##;
 
 /// Method shapes (`api_schema` loads them next to its own tables).
 pub const SHAPES: &str = r##"
 # --- approved calls (09 §3.2): a pane asks, the user decides outside it ---
-# pane scope only: handoff.send, handoff.cancel (the pane's own jobs) or gateway.call {method: peer.redeem}; waits for the decision and returns the target method's result; `wait: false` returns the request; `request` resumes waiting; a standing grant runs it at once
-auth.approve :: {method?: "handoff.send"|"handoff.cancel"|"gateway.call", params?: object, reason?: string, wait?: bool = true, timeout_ms?: int = 120000, request?: string}
+# pane scope only: handoff.send, handoff.cancel (the pane's own jobs), gateway.call {method: peer.redeem} or preview.declare (a port no pane listens on; preview.declare asks by itself); waits for the decision and returns the target method's result; `wait: false` returns the request; `request` resumes waiting; a standing grant runs it at once
+auth.approve :: {method?: "handoff.send"|"handoff.cancel"|"gateway.call"|"preview.declare", params?: object, reason?: string, wait?: bool = true, timeout_ms?: int = 120000, request?: string}
   => ApprovalRequest | object
 # full scope only, never from a pane or an elevated connection; approve runs the frozen call once as the caller; always also grants (pane, method, target pane, peer) until the pane restarts
 auth.approve.decide :: {request: string, decision: approve|always|deny}

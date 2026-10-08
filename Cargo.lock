@@ -3712,6 +3712,7 @@ version = "0.2.0"
 dependencies = [
  "blake3",
  "libc",
+ "rustix",
  "serde",
  "serde_json",
  "tempfile",

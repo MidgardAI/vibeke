@@ -87,17 +87,25 @@ pub async fn git_user() -> Option<GitUser> {
 }
 
 /// Redeem a peer or handoff invitation as this host and remember the peer. A second record for
-/// the same host replaces the first (re-pairing).
+/// the same host replaces the first (re-pairing). The invitation's relay must be this host's own
+/// unless `allow_other_relay` (see [`crate::peer_client::check_invitation_relay`]).
 pub async fn redeem(
     state: &StateDir,
     our_host_id: &str,
     us: &Identity,
     link: &str,
+    allow_other_relay: bool,
 ) -> Result<PeerRecord> {
     let link = PairingLink::parse(link.trim()).context("not a Vibeke invitation link")?;
     if link.host == our_host_id {
         bail!("this invitation is for this host itself");
     }
+    let configured = state.config()?.relay;
+    crate::peer_client::check_invitation_relay(
+        &link.relay,
+        configured.as_deref(),
+        allow_other_relay,
+    )?;
     let rec = PeerClient::pair(&link, us).await?;
     let _lock = state.lock()?;
     let mut all = state.peers()?;
@@ -240,13 +248,18 @@ pub async fn dispatch(gw: &Arc<Gateway>, device: &Device, method: &str, p: &Valu
                 host_name: gw.host_name.clone(),
                 user,
             };
-            let rec = redeem(&gw.state, &gw.keys.host_id(), &us, link)
+            let allow_other = p.get("allow_other_relay").and_then(|v| v.as_bool()) == Some(true);
+            let rec = redeem(&gw.state, &gw.keys.host_id(), &us, link, allow_other)
                 .await
                 .map_err(|e| {
                     let m = format!("{e:#}");
                     if m.contains("not a peer")
                         || m.contains("not a Vibeke")
                         || m.contains("itself")
+                        || m.contains("invitation relay")
+                        || m.contains("invitation uses relay")
+                        || m.contains("invitation points at")
+                        || m.contains("invalid relay address")
                     {
                         ApiError::invalid(m)
                     } else if m.contains("expired")

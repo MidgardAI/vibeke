@@ -36,6 +36,7 @@ fn manifests() -> manifest::Set {
         user_dir: Some(vk_server::agents::manifests::user_dir()),
         remote: vk_server::agents::channel::cached_dir(),
         trusted_repos: vec![],
+        plugin_roots: vec![],
     })
 }
 

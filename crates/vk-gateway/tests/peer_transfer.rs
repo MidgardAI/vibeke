@@ -5,7 +5,7 @@
 //! `handoff.incoming.add`. Then A's worker runs a whole server job: export a real repository,
 //! send, commit, report `delivered`.
 //!
-//! Its own test binary: pairing handshakes share a per-process budget (4/min, spec 16 §6.4).
+//! Its own test binary: pairing handshakes share per-process budgets (spec 16 §4.3, §6.4).
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};

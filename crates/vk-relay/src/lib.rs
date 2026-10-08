@@ -47,7 +47,8 @@ impl Authorizer for Open {
     }
 }
 
-/// Hosts must present one of these tokens (`?token=` on `/v1/host`).
+/// Hosts must present one of these tokens (`Authorization: Bearer` on `/v1/host`; the older
+/// `?token=` query parameter is still accepted for older gateways).
 pub struct StaticTokens(pub Vec<String>);
 impl Authorizer for StaticTokens {
     fn host_connect(&self, _: &str, token: Option<&str>) -> bool {
@@ -100,7 +101,12 @@ pub struct Relay {
     pending: Mutex<HashMap<String, Pending>>,
     next_gen: AtomicU64,
     ip_rate: RateMap,
+    /// `/v1/connect` announces per (client IP, host): one address can't flood one host's
+    /// gateway with handshakes it must dial back for.
+    announce_rate: RateMap<(IpAddr, String)>,
     ip_conns: std::sync::Mutex<HashMap<IpAddr, usize>>,
+    /// Control and accept sockets per IP that have not authenticated yet (spec 16 §6.4: ≤ 8).
+    ip_unauth: std::sync::Mutex<HashMap<IpAddr, usize>>,
     pub(crate) per_host: std::sync::Mutex<HashMap<String, usize>>,
     pub(crate) spliced: AtomicUsize,
     draining: AtomicBool,
@@ -121,6 +127,7 @@ impl Relay {
             "at least one --public-url is required"
         );
         let ip_rate = RateMap::new(cfg.limits.ip_new_per_min);
+        let announce_rate = RateMap::new(cfg.limits.ip_host_announces_per_min);
         Ok(Arc::new(Relay {
             cfg: Config {
                 public_origins,
@@ -131,7 +138,9 @@ impl Relay {
             pending: Mutex::new(HashMap::new()),
             next_gen: AtomicU64::new(1),
             ip_rate,
+            announce_rate,
             ip_conns: std::sync::Mutex::new(HashMap::new()),
+            ip_unauth: std::sync::Mutex::new(HashMap::new()),
             per_host: std::sync::Mutex::new(HashMap::new()),
             spliced: AtomicUsize::new(0),
             draining: AtomicBool::new(false),
@@ -211,6 +220,21 @@ impl Relay {
         })
     }
 
+    /// Reserve one of the IP's unauthenticated control/accept slots; released when the socket
+    /// authenticates or closes.
+    fn admit_unauth(self: &Shared, ip: IpAddr) -> Result<UnauthGuard, StatusCode> {
+        let mut m = self.ip_unauth.lock().unwrap();
+        let n = m.entry(ip).or_default();
+        if *n >= self.cfg.limits.ip_unauthenticated {
+            return Err(StatusCode::TOO_MANY_REQUESTS);
+        }
+        *n += 1;
+        Ok(UnauthGuard {
+            relay: self.clone(),
+            ip,
+        })
+    }
+
     fn host_spliced(&self, host: &str) -> usize {
         self.per_host
             .lock()
@@ -237,6 +261,23 @@ struct IpGuard {
 impl Drop for IpGuard {
     fn drop(&mut self) {
         let mut m = self.relay.ip_conns.lock().unwrap();
+        if let Some(n) = m.get_mut(&self.ip) {
+            *n -= 1;
+            if *n == 0 {
+                m.remove(&self.ip);
+            }
+        }
+    }
+}
+
+struct UnauthGuard {
+    relay: Shared,
+    ip: IpAddr,
+}
+
+impl Drop for UnauthGuard {
+    fn drop(&mut self) {
+        let mut m = self.relay.ip_unauth.lock().unwrap();
         if let Some(n) = m.get_mut(&self.ip) {
             *n -= 1;
             if *n == 0 {
@@ -288,7 +329,24 @@ fn random_id() -> String {
 
 #[derive(serde::Deserialize)]
 struct HostQuery {
+    /// Deprecated: tokens in URLs end up in proxy and access logs. Gateways after 0.2.0 send
+    /// `Authorization: Bearer`; drop this once 0.2.0 and older gateways are gone.
     token: Option<String>,
+}
+
+/// The host token: `Authorization: Bearer <token>`, else the deprecated `?token=`.
+fn host_token(headers: &HeaderMap, query: Option<String>) -> Option<String> {
+    headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| {
+            let (scheme, rest) = v.trim().split_once(' ')?;
+            scheme
+                .eq_ignore_ascii_case("bearer")
+                .then(|| rest.trim().to_string())
+        })
+        .filter(|t| !t.is_empty())
+        .or(query)
 }
 
 async fn host_ws(
@@ -299,18 +357,29 @@ async fn host_ws(
     ws: WebSocketUpgrade,
 ) -> Response {
     let ip = relay.client_ip(peer, &headers);
+    let token = host_token(&headers, q.token);
     let guard = match relay.admit(ip) {
+        Ok(g) => g,
+        Err(c) => return reject(c),
+    };
+    let unauth = match relay.admit_unauth(ip) {
         Ok(g) => g,
         Err(c) => return reject(c),
     };
     let limits = relay.cfg.limits.clone();
     upgrade(ws, &limits).on_upgrade(move |socket| async move {
         let _guard = guard;
-        host_session(relay, socket, q.token, ip).await;
+        host_session(relay, socket, token, ip, unauth).await;
     })
 }
 
-async fn host_session(relay: Shared, mut ws: WebSocket, token: Option<String>, ip: IpAddr) {
+async fn host_session(
+    relay: Shared,
+    mut ws: WebSocket,
+    token: Option<String>,
+    ip: IpAddr,
+    unauth: UnauthGuard,
+) {
     let nonce = keys::random_bytes::<32>();
     let origin = relay.cfg.public_origins[0].clone();
     let challenge = Ctrl::Challenge {
@@ -334,6 +403,7 @@ async fn host_session(relay: Shared, mut ws: WebSocket, token: Option<String>, i
     if !relay.auth.host_connect(&host, token.as_deref()) {
         return close_ws(ws, close::UNAUTHORIZED, "not allowed").await;
     }
+    drop(unauth);
     let generation = relay.next_gen.fetch_add(1, Ordering::SeqCst);
     let (tx, mut rx) = mpsc::channel::<Outbound>(64);
     {
@@ -457,6 +527,10 @@ async fn connect_ws(
     if !relay.auth.client_connect(&q.host, q.ticket.as_deref(), ip) {
         return reject(StatusCode::UNAUTHORIZED);
     }
+    // Each announce makes the host dial back and wait for a handshake: bound them per address.
+    if !relay.announce_rate.allow((ip, q.host.clone())) {
+        return reject(StatusCode::TOO_MANY_REQUESTS);
+    }
     let guard = match relay.admit(ip) {
         Ok(g) => g,
         Err(c) => return reject(c),
@@ -541,13 +615,17 @@ async fn accept_ws(
         Ok(g) => g,
         Err(c) => return reject(c),
     };
+    let unauth = match relay.admit_unauth(ip) {
+        Ok(g) => g,
+        Err(c) => return reject(c),
+    };
     let limits = relay.cfg.limits.clone();
     upgrade(ws, &limits).on_upgrade(move |socket| async move {
-        accept_session(relay, socket, guard).await;
+        accept_session(relay, socket, guard, unauth).await;
     })
 }
 
-async fn accept_session(relay: Shared, mut ws: WebSocket, guard: IpGuard) {
+async fn accept_session(relay: Shared, mut ws: WebSocket, guard: IpGuard, unauth: UnauthGuard) {
     let Some(text) = read_text(&mut ws, relay.cfg.limits.auth_timeout).await else {
         return close_ws(ws, close::UNAUTHORIZED, "accept timeout").await;
     };
@@ -589,6 +667,7 @@ async fn accept_session(relay: Shared, mut ws: WebSocket, guard: IpGuard) {
     let Some(p) = taken else {
         return close_ws(ws, close::UNAUTHORIZED, "unknown or expired conn").await;
     };
+    drop(unauth);
     let (p, slot) = p;
     if p.deliver.send((ws, guard, slot)).is_err() {
         tracing::debug!("client left before accept");
@@ -622,4 +701,22 @@ async fn status(
         axum::Json(json!({ "online": online })),
     )
         .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn host_token_prefers_the_header() {
+        let mut h = HeaderMap::new();
+        assert_eq!(host_token(&h, None), None);
+        assert_eq!(host_token(&h, Some("q".into())).as_deref(), Some("q"));
+        h.insert("authorization", "Bearer secret".parse().unwrap());
+        assert_eq!(host_token(&h, Some("q".into())).as_deref(), Some("secret"));
+        h.insert("authorization", "bearer  other ".parse().unwrap());
+        assert_eq!(host_token(&h, None).as_deref(), Some("other"));
+        h.insert("authorization", "Basic abc".parse().unwrap());
+        assert_eq!(host_token(&h, Some("q".into())).as_deref(), Some("q"));
+    }
 }

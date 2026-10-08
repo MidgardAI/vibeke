@@ -1,7 +1,7 @@
 //! Worktree creation, listing and lookup (05 §4).
 
 use crate::git::{git, git_timeout, ref_exists, same_path};
-use crate::naming::{DEFAULT_SLUG_MAX, render_branch, slugify, user_handle};
+use crate::naming::{DEFAULT_SLUG_MAX, render_branch, slugify, slugify_raw, user_handle};
 use crate::repo::{RepoInfo, repo_root};
 use crate::{Error, Result};
 use std::path::{Path, PathBuf};
@@ -241,6 +241,65 @@ pub fn worktree_path(root: &WorktreeRoot, repo_root: &Path, slug: &str) -> PathB
     }
 }
 
+/// Longest slug accepted from a caller (derived ones are at most `slug_max_len` plus a
+/// `-<n>` suffix).
+const MAX_SLUG: usize = 128;
+
+/// A caller-provided slug must already be a slug: lowercase ASCII alphanumerics separated by
+/// single hyphens, so it is one plain path component (no `/`, `..`, leading `-` or `.`).
+pub fn validate_slug(slug: &str) -> Result<()> {
+    if slug.is_empty() || slug.len() > MAX_SLUG || slugify_raw(slug, MAX_SLUG) != slug {
+        return Err(Error::Refused(format!(
+            "invalid slug {slug:?}: use lowercase letters, digits and single hyphens"
+        )));
+    }
+    Ok(())
+}
+
+/// A caller-provided base must name a commit and must not look like an option to git.
+pub fn validate_base(repo: &Path, base: &str) -> Result<()> {
+    if base.is_empty() || base.starts_with('-') {
+        return Err(Error::Refused(format!("invalid base {base:?}")));
+    }
+    git(
+        repo,
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            "--end-of-options",
+            &format!("{base}^{{commit}}"),
+        ],
+    )
+    .map_err(|_| Error::Refused(format!("base {base:?} is not a commit in this repository")))?;
+    Ok(())
+}
+
+/// The worktree path must be a direct child of the configured root's directory for this repo.
+fn check_contained(root: &WorktreeRoot, repo_root: &Path, path: &Path) -> Result<()> {
+    let name = repo_root
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "repo".into());
+    let parent = match root {
+        WorktreeRoot::Dir(d) => d.join(&name),
+        WorktreeRoot::Sibling => repo_root.parent().unwrap_or(repo_root).to_path_buf(),
+    };
+    let ok = path.parent() == Some(parent.as_path())
+        && matches!(
+            path.components().next_back(),
+            Some(std::path::Component::Normal(_))
+        );
+    if !ok {
+        return Err(Error::Refused(format!(
+            "worktree path {} escapes {}",
+            path.display(),
+            parent.display()
+        )));
+    }
+    Ok(())
+}
+
 /// Create a git worktree for a task (steps 1-3 of the lifecycle).
 pub fn create_worktree(req: &CreateRequest, cfg: &WorktreeConfig) -> Result<Checkout> {
     let info = repo_root(&req.repo).ok_or_else(|| Error::NotARepo(req.repo.clone()))?;
@@ -260,6 +319,12 @@ pub fn create_worktree(req: &CreateRequest, cfg: &WorktreeConfig) -> Result<Chec
         FetchOutcome::Skipped
     };
 
+    if let Some(s) = &req.slug {
+        validate_slug(s)?;
+    }
+    if let Some(b) = &req.base {
+        validate_base(&main, b)?;
+    }
     let base = req.base.clone().unwrap_or_else(|| default_base(&info));
     let slug_base = req
         .slug
@@ -277,6 +342,7 @@ pub fn create_worktree(req: &CreateRequest, cfg: &WorktreeConfig) -> Result<Chec
             format!("{slug_base}-{n}")
         };
         let path = worktree_path(&cfg.root, &main, &slug);
+        check_contained(&cfg.root, &main, &path)?;
         if path.exists() {
             continue;
         }
@@ -355,13 +421,19 @@ pub fn restore_worktree(
     slug: &str,
     cfg: &WorktreeConfig,
 ) -> Result<Checkout> {
+    // A slug stored before slugs were validated is re-derived instead of refused.
+    let slug = if validate_slug(slug).is_ok() {
+        slug.to_string()
+    } else {
+        slugify(slug, cfg.slug_max_len)
+    };
     create_worktree(
         &CreateRequest {
             repo: repo.to_path_buf(),
-            title: slug.to_string(),
+            title: slug.clone(),
             branch: Some(branch.to_string()),
             base: None,
-            slug: Some(slug.to_string()),
+            slug: Some(slug),
         },
         cfg,
     )

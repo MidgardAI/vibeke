@@ -13,6 +13,14 @@ try {
     page.on('pageerror', error => errors.push(error.message))
     const response = await page.goto(`${origin}/#/pair`)
     assert.equal(response?.status(), 200)
+    const headers = response?.headers() ?? {}
+    const csp = headers['content-security-policy'] ?? ''
+    for (const directive of ["script-src 'self'", "object-src 'none'", "base-uri 'none'", "frame-ancestors 'none'", "connect-src 'self' wss:"]) {
+      assert(csp.includes(directive), `Content-Security-Policy is missing ${directive}: ${csp}`)
+    }
+    assert.equal(headers['x-content-type-options'], 'nosniff')
+    assert.equal(headers['referrer-policy'], 'no-referrer')
+    assert(headers['permissions-policy'], 'Permissions-Policy header missing')
     await expect(page.getByRole('heading', { name: 'Pair with a host', exact: true })).toBeVisible()
     const manifest = await page.evaluate(async () => {
       const response = await fetch('/manifest.webmanifest')

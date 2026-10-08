@@ -379,7 +379,8 @@
           "enum": [
             "handoff.send",
             "handoff.cancel",
-            "gateway.call"
+            "gateway.call",
+            "preview.declare"
           ]
         },
         "params": {
@@ -7273,7 +7274,8 @@
             "enum": [
               "handoff.send",
               "handoff.cancel",
-              "gateway.call"
+              "gateway.call",
+              "preview.declare"
             ]
           },
           "params": {
@@ -20283,6 +20285,20 @@
           },
           "tls_origin": {
             "type": "boolean"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "wait": {
+            "type": "boolean",
+            "default": true
+          },
+          "timeout_ms": {
+            "type": "integer",
+            "default": 120000
+          },
+          "request": {
+            "type": "string"
           }
         },
         "required": [
@@ -20290,17 +20306,24 @@
         ]
       },
       "result": {
-        "type": "object",
-        "properties": {
-          "preview": {
-            "$ref": "#/$defs/Preview"
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "preview": {
+                "$ref": "#/$defs/Preview"
+              },
+              "cursor": {
+                "$ref": "#/$defs/Cursor"
+              }
+            },
+            "required": [
+              "preview"
+            ]
           },
-          "cursor": {
-            "$ref": "#/$defs/Cursor"
+          {
+            "$ref": "#/$defs/ApprovalRequest"
           }
-        },
-        "required": [
-          "preview"
         ]
       }
     },

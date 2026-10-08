@@ -242,6 +242,75 @@ pub fn local_socket(relay: &str) -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
+/// Whether this host may dial the relay named in an invitation it is about to redeem. The link
+/// comes from someone else, so it must not point this host at an arbitrary endpoint:
+/// - `local:<path>` only at another gateway's local socket (`…/gateway.sock`);
+/// - plain `ws://` only to a loopback address;
+/// - otherwise the relay this host is configured with, unless `allow_other` says to trust it.
+pub fn check_invitation_relay(
+    link_relay: &str,
+    configured: Option<&str>,
+    allow_other: bool,
+) -> Result<()> {
+    if link_relay.starts_with("local") {
+        let Some(path) = local_socket(link_relay) else {
+            bail!("local transport link without a socket path");
+        };
+        if path.file_name().and_then(|n| n.to_str()) != Some("gateway.sock") {
+            bail!("invitation points at a local socket that is not a Vibeke gateway");
+        }
+        return Ok(());
+    }
+    if let Some((scheme, _)) = link_relay.split_once("://")
+        && !matches!(
+            scheme.to_ascii_lowercase().as_str(),
+            "wss" | "https" | "ws" | "http"
+        )
+    {
+        bail!("invitation has an invalid relay address: {link_relay}");
+    }
+    let base = crate::relay_client::ws_base(link_relay);
+    let origin = vk_e2e::relay::canonical_origin(&base)
+        .map_err(|_| anyhow::anyhow!("invitation has an invalid relay address: {link_relay}"))?;
+    if let Some(rest) = origin.strip_prefix("http://")
+        && !is_loopback_authority(rest)
+    {
+        bail!(
+            "invitation relay {link_relay} is not encrypted (ws://); only wss:// relays are accepted"
+        );
+    }
+    if allow_other {
+        return Ok(());
+    }
+    let ours = configured
+        .map(crate::relay_client::ws_base)
+        .and_then(|c| vk_e2e::relay::canonical_origin(&c).ok());
+    if ours.as_deref() != Some(origin.as_str()) {
+        bail!(
+            "invitation uses relay {link_relay}, not this host's relay{}; \
+             redeem it with --allow-other-relay (allow_other_relay) if you trust that relay",
+            configured.map(|c| format!(" {c}")).unwrap_or_default()
+        );
+    }
+    Ok(())
+}
+
+/// `host[:port]` of a canonical origin names this machine.
+fn is_loopback_authority(authority: &str) -> bool {
+    let host = if let Some(rest) = authority.strip_prefix('[') {
+        rest.split(']').next().unwrap_or("")
+    } else {
+        match authority.rsplit_once(':') {
+            Some((h, port)) if port.bytes().all(|b| b.is_ascii_digit()) => h,
+            _ => authority,
+        }
+    };
+    host == "localhost"
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
+}
+
 async fn dial(relay: &str, host: &str) -> Result<Box<dyn Ws>> {
     if let Some(path) = local_socket(relay) {
         let stream = tokio::net::UnixStream::connect(&path)
@@ -485,6 +554,45 @@ mod tests {
         );
         assert_eq!(local_socket("local:"), None);
         assert_eq!(local_socket("wss://relay"), None);
+    }
+
+    #[test]
+    fn invitation_relays() {
+        let ours = Some("https://relay.example");
+        // Our own relay, in any spelling.
+        for r in [
+            "wss://relay.example",
+            "https://relay.example/",
+            "relay.example",
+            "wss://RELAY.example:443",
+        ] {
+            assert!(check_invitation_relay(r, ours, false).is_ok(), "{r}");
+        }
+        // Another relay needs the explicit opt-in.
+        let e = check_invitation_relay("wss://evil.example", ours, false).unwrap_err();
+        assert!(e.to_string().contains("--allow-other-relay"), "{e}");
+        assert!(check_invitation_relay("wss://evil.example", ours, true).is_ok());
+        assert!(check_invitation_relay("wss://relay.example", None, false).is_err());
+        // Plain ws:// only to loopback, even when trusted.
+        for r in [
+            "ws://relay.example",
+            "http://10.0.0.5:8787",
+            "ws://localhost.evil.example",
+        ] {
+            assert!(check_invitation_relay(r, ours, true).is_err(), "{r}");
+        }
+        for r in ["ws://127.0.0.1:8787", "ws://localhost:1", "ws://[::1]:8787"] {
+            assert!(check_invitation_relay(r, Some(r), false).is_ok(), "{r}");
+            assert!(check_invitation_relay(r, None, true).is_ok(), "{r}");
+        }
+        // Local transport: only a gateway socket.
+        assert!(
+            check_invitation_relay("local:/home/u/.vibeke/gateway/gateway.sock", None, false)
+                .is_ok()
+        );
+        assert!(check_invitation_relay("local:/var/run/docker.sock", None, true).is_err());
+        assert!(check_invitation_relay("local:", None, true).is_err());
+        assert!(check_invitation_relay("ftp://x", None, true).is_err());
     }
 
     #[tokio::test]

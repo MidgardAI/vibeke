@@ -7,7 +7,7 @@
 //! `cwd` or `pane` it layers that repository's trusted `.vibeke/config.toml` in.
 
 use crate::Server;
-use crate::api::{R, b, err, internal, invalid, req, s};
+use crate::api::{Ctx, R, b, err, internal, invalid, req, s};
 use crate::core::Tx;
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -357,7 +357,14 @@ async fn config_set(server: &Server, p: &Value) -> R {
     }))
 }
 
-fn config_validate(p: &Value) -> R {
+fn config_validate(ctx: &Ctx, p: &Value) -> R {
+    // From a pane, `path` would be a file existence and parse oracle for any file.
+    if ctx.pane_scope.is_some() && p.get("path").is_some_and(|v| !v.is_null()) {
+        return Err(err(
+            ErrorKind::PermissionDenied,
+            "config.validate {path} needs a user client; a pane validates the user config only",
+        ));
+    }
     let path = s(p, "path")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(vk_config::config_path);
@@ -380,11 +387,11 @@ fn config_validate(p: &Value) -> R {
 }
 
 /// Dispatch hook for `config.*` and `server.reload_config`.
-pub async fn api(server: &Arc<Server>, method: &str, p: &Value) -> Option<R> {
+pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Option<R> {
     Some(match method {
         "config.get" => config_get(server, p),
         "config.set" => config_set(server, p).await,
-        "config.validate" => config_validate(p),
+        "config.validate" => config_validate(ctx, p),
         "config.reload" | "server.reload_config" => reload(server, "api"),
         _ => return None,
     })

@@ -2,7 +2,7 @@
 //! redeems gateway B's `peer.invite` link and a teammate handoff invitation, calls B as a peer,
 //! and B lists and revokes invitations and the devices they produced.
 //!
-//! Its own test binary: pairing handshakes share a per-process budget (4/min, spec 16 §6.4).
+//! Its own test binary: pairing handshakes share per-process budgets (spec 16 §4.3, §6.4).
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};

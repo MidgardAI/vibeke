@@ -17,6 +17,11 @@ use crate::state::now_s;
 use crate::{ConnCmd, Gateway};
 
 pub const IDLE: Duration = Duration::from_secs(60);
+/// The device's hello follows the splice at once; an announce that never sends one is dropped
+/// quickly so it can't hold a pre-handshake slot.
+pub const HELLO_DEADLINE: Duration = Duration::from_secs(3);
+/// First Noise message after the hello.
+pub const M1_DEADLINE: Duration = Duration::from_secs(5);
 pub const MAX_AGE: Duration = Duration::from_secs(12 * 3600);
 
 pub trait Ws:
@@ -54,11 +59,19 @@ async fn reject(mut ws: impl Ws, text: String) {
 pub struct Dialing(Arc<Gateway>);
 
 impl Dialing {
-    /// Reserve a connection slot before dialing the relay (spec 16 §6.4 gateway limits).
-    pub fn reserve(gw: &Arc<Gateway>) -> Dialing {
-        gw.dialing.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        Dialing(gw.clone())
+    /// Reserve a pre-handshake slot before dialing the relay (spec 16 §6.4 gateway limits), or
+    /// `None` when `limits.max_pending` handshakes are already in progress.
+    pub fn try_reserve(gw: &Arc<Gateway>) -> Option<Dialing> {
+        reserve_slot(&gw.dialing, gw.limits.max_pending).then(|| Dialing(gw.clone()))
     }
+}
+
+/// Take one slot of `counter` if fewer than `max` are taken.
+fn reserve_slot(counter: &std::sync::atomic::AtomicUsize, max: usize) -> bool {
+    use std::sync::atomic::Ordering::SeqCst;
+    counter
+        .try_update(SeqCst, SeqCst, |n| (n < max).then_some(n + 1))
+        .is_ok()
 }
 
 impl Drop for Dialing {
@@ -70,7 +83,7 @@ impl Drop for Dialing {
 }
 
 pub async fn serve(gw: Arc<Gateway>, mut ws: impl Ws, dialing: Dialing) {
-    let Some(Message::Text(hello_raw)) = recv(&mut ws, Duration::from_secs(10)).await else {
+    let Some(Message::Text(hello_raw)) = recv(&mut ws, HELLO_DEADLINE).await else {
         return;
     };
     let prologue = hello_raw.as_bytes().to_vec();
@@ -80,16 +93,25 @@ pub async fn serve(gw: Arc<Gateway>, mut ws: impl Ws, dialing: Dialing) {
     };
     let pairing = match &hello.mode {
         Mode::Pair => {
-            if !crate::pair::handshake_allowed() {
-                return reject(ws, json!({"error": "rate_limited"}).to_string()).await;
-            }
+            // Look the pairing up first: only a claimable pairing spends a handshake budget, and
+            // that budget is its own (spec 16 §4.3), so knowing the host id blocks nothing.
             match gw.state.pairing(hello.pid.as_deref().unwrap_or("")) {
                 Ok(Some(p))
                     if p.exp > now_s() && p.status == crate::state::PairingStatus::Pending =>
                 {
+                    if !crate::pair::handshake_allowed(&p.pid, gw.limits.pair_handshakes_per_min) {
+                        return reject(ws, json!({"error": "rate_limited"}).to_string()).await;
+                    }
                     Some(p)
                 }
-                _ => return reject(ws, json!({"error": "unauthorized"}).to_string()).await,
+                _ => {
+                    // Unknown, expired or taken: refused without touching any pairing's budget;
+                    // past their own budget such hellos get no answer at all.
+                    if !crate::pair::unknown_allowed() {
+                        return;
+                    }
+                    return reject(ws, json!({"error": "unauthorized"}).to_string()).await;
+                }
             }
         }
         Mode::Device => None,
@@ -104,7 +126,7 @@ pub async fn serve(gw: Arc<Gateway>, mut ws: impl Ws, dialing: Dialing) {
     let Ok(mut responder) = Responder::new(&prologue, &gw.keys.noise_private, psk.as_ref()) else {
         return;
     };
-    let Some(Message::Binary(m1)) = recv(&mut ws, Duration::from_secs(10)).await else {
+    let Some(Message::Binary(m1)) = recv(&mut ws, M1_DEADLINE).await else {
         return;
     };
     let Ok((remote, _)) = responder.read_first(&m1) else {
@@ -590,5 +612,23 @@ async fn forward_events(
             }
             Err(_) => return,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn pre_handshake_pool_is_bounded() {
+        let c = AtomicUsize::new(0);
+        for _ in 0..8 {
+            assert!(reserve_slot(&c, 8));
+        }
+        assert!(!reserve_slot(&c, 8));
+        assert_eq!(c.load(Ordering::SeqCst), 8);
+        c.fetch_sub(1, Ordering::SeqCst);
+        assert!(reserve_slot(&c, 8));
     }
 }

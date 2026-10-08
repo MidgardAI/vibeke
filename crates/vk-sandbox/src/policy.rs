@@ -73,6 +73,63 @@ impl GitLayout {
     }
 }
 
+impl GitLayout {
+    /// [`GitLayout::detect`], refusing (fail closed) a layout whose git dirs lie outside what
+    /// the checkout legitimately owns. A `.git` *file* can point anywhere; trusting it would
+    /// make another host repository's object store, refs and worktree state writable inside
+    /// the box. Accepted:
+    ///
+    /// * git and common dirs inside the checkout itself or one of `trusted` (the task's main
+    ///   repository);
+    /// * a linked worktree: `git_dir` is `<common>/worktrees/<name>` and its `gitdir` back-link
+    ///   names this checkout's `.git` (git writes it when it creates the worktree; a planted
+    ///   `.git` file pointing at another repo's worktree fails it).
+    pub fn detect_checked(path: &Path, trusted: &[PathBuf]) -> Result<Option<GitLayout>, String> {
+        let Some(g) = GitLayout::detect(path) else {
+            return Ok(None);
+        };
+        g.verify(path, trusted)?;
+        Ok(Some(g))
+    }
+
+    /// The containment check of [`GitLayout::detect_checked`].
+    pub fn verify(&self, checkout: &Path, trusted: &[PathBuf]) -> Result<(), String> {
+        let co = canon(checkout);
+        let git_dir = canon(&self.git_dir);
+        let common = canon(&self.common_dir);
+        let trusted: Vec<PathBuf> = trusted.iter().map(|t| canon(t)).collect();
+        let inside = |p: &Path| p.starts_with(&co) || trusted.iter().any(|t| p.starts_with(t));
+        let linked = git_dir.parent().is_some_and(|w| {
+            w.file_name().is_some_and(|n| n == "worktrees") && w.parent() == Some(common.as_path())
+        }) && backlink_matches(&git_dir, &co);
+        if (inside(&git_dir) && inside(&common)) || linked {
+            return Ok(());
+        }
+        let culprit = if inside(&git_dir) { &common } else { &git_dir };
+        Err(format!(
+            "refusing to isolate {}: its git metadata ({}) lies outside the checkout and is not a \
+             worktree of it; a `.git` file pointing at another repository would make that \
+             repository writable",
+            co.display(),
+            culprit.display()
+        ))
+    }
+}
+
+/// Does `<git_dir>/gitdir` (git's back-link for a linked worktree) name `<checkout>/.git`?
+fn backlink_matches(git_dir: &Path, checkout: &Path) -> bool {
+    let Ok(text) = std::fs::read_to_string(git_dir.join("gitdir")) else {
+        return false;
+    };
+    let link = Path::new(text.trim());
+    let link = if link.is_absolute() {
+        link.to_path_buf()
+    } else {
+        git_dir.join(link)
+    };
+    canon(&link) == checkout.join(".git")
+}
+
 /// Network side of the profile.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NetMode {
@@ -114,6 +171,10 @@ pub struct SandboxSpec {
     /// ([`crate::gitexec::exec_targets`]): never writable.
     #[serde(default)]
     pub protected: Vec<PathBuf>,
+    /// Vibeke's control directory (generated profiles, exec specs): never readable or
+    /// writable from inside, even when another grant covers it.
+    #[serde(default)]
+    pub control_dir: Option<PathBuf>,
 }
 
 /// Home-relative paths readable inside a sandbox by default (13 §5: git config, toolchains,
@@ -299,7 +360,16 @@ impl Policy {
             push_unique(&mut p.allow_read_late, canon(f));
         }
         for rel in HOME_NEVER_READ {
-            push_unique(&mut p.never_read, home.join(rel));
+            let literal = home.join(rel);
+            // Both the path and what it resolves to: `~/.ssh -> /opt/keys` must hide the
+            // target too (Seatbelt and the bind mounts match resolved paths).
+            if let Ok(target) = literal.canonicalize() {
+                push_unique(&mut p.never_read, target);
+            }
+            push_unique(&mut p.never_read, literal);
+        }
+        if let Some(c) = &spec.control_dir {
+            push_unique(&mut p.never_read, canon(c));
         }
         // Layer 3: writes.
         push_unique(&mut p.allow_write, checkout.clone());
@@ -457,6 +527,37 @@ pub fn check_checkout(home: &Path, checkout: &Path, hidden: &[PathBuf]) -> Resul
     Ok(())
 }
 
+/// The per-user temporary directory as the OS reports it (`confstr(_CS_DARWIN_USER_TEMP_DIR)`
+/// on macOS), independent of the server's `$TMPDIR`, which may be unset or point elsewhere.
+/// `None` on other platforms or when the call fails.
+pub fn os_user_temp_dir() -> Option<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let mut buf = vec![0u8; 1024];
+        // SAFETY: `buf` is a writable buffer of the given length; confstr NUL-terminates.
+        let n = unsafe {
+            libc::confstr(
+                libc::_CS_DARWIN_USER_TEMP_DIR,
+                buf.as_mut_ptr().cast(),
+                buf.len(),
+            )
+        };
+        if n == 0 || n > buf.len() {
+            return None;
+        }
+        let bytes = &buf[..n - 1];
+        if bytes.is_empty() {
+            return None;
+        }
+        Some(PathBuf::from(std::ffi::OsStr::from_bytes(bytes)))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
+    }
+}
+
 /// Inputs that select a network mode from a profile and a running proxy.
 pub fn net_mode(profile: NetworkProfile, proxy_port: Option<u16>, local_ports: &[u16]) -> NetMode {
     match (profile.uses_proxy(), proxy_port) {
@@ -494,6 +595,7 @@ pub(crate) mod tests {
             },
             allow_bind_localhost: true,
             protected: vec![root.join("home/code/repo-task/.githooks")],
+            control_dir: Some(root.join("state/sbx/.ctl")),
         }
     }
 
@@ -606,6 +708,93 @@ pub(crate) mod tests {
         // `~/.config` (shell/tool config) and `~/.ssh` themselves.
         assert!(check_checkout(&home, &home.join(".config"), &hidden).is_err());
         assert!(check_checkout(&home, &home.join(".ssh"), &[]).is_err());
+    }
+
+    #[test]
+    fn control_dir_and_resolved_credential_dirs_are_never_readable() {
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path().canonicalize().unwrap();
+        for d in ["home/code/repo-task", "keys", "state/sbx/.ctl/p1"] {
+            std::fs::create_dir_all(root.join(d)).unwrap();
+        }
+        std::os::unix::fs::symlink(root.join("keys"), root.join("home/.ssh")).unwrap();
+        let mut s = spec(&root);
+        // Even a broad grant over the sandbox root does not expose the control dir.
+        s.extra_write.push(root.join("state/sbx"));
+        let p = Policy::from_spec(&s);
+        let ctl = root.join("state/sbx/.ctl");
+        assert!(p.never_read.contains(&ctl));
+        assert!(p.deny_write.contains(&ctl));
+        assert!(!p.can_read(&ctl.join("p1/profile.sb")));
+        // `~/.ssh -> keys`: literal and target are both hidden and write-denied.
+        assert!(p.never_read.contains(&root.join("home/.ssh")));
+        assert!(p.never_read.contains(&root.join("keys")));
+        assert!(p.deny_write.contains(&root.join("keys")));
+        assert!(!p.can_read(&root.join("keys/id_ed25519")));
+    }
+
+    #[test]
+    fn git_layout_outside_the_checkout_is_refused() {
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path().canonicalize().unwrap();
+        let co = root.join("co");
+        let main = root.join("main");
+        let other = root.join("other");
+        for d in [
+            "co",
+            "main/.git/worktrees/co",
+            "other/.git/worktrees/x",
+            "x",
+        ] {
+            std::fs::create_dir_all(root.join(d)).unwrap();
+        }
+        // A plain repo: everything inside the checkout.
+        let plain = GitLayout {
+            common_dir: co.join(".git"),
+            git_dir: co.join(".git"),
+            branch: None,
+        };
+        assert!(plain.verify(&co, &[]).is_ok());
+        // A genuine linked worktree: the back-link names this checkout.
+        std::fs::write(
+            main.join(".git/worktrees/co/gitdir"),
+            format!("{}\n", co.join(".git").display()),
+        )
+        .unwrap();
+        let wt = GitLayout {
+            common_dir: main.join(".git"),
+            git_dir: main.join(".git/worktrees/co"),
+            branch: Some("vk/t".into()),
+        };
+        assert!(wt.verify(&co, &[]).is_ok());
+        // A `.git` file pointing straight at another repository.
+        let foreign = GitLayout {
+            common_dir: other.join(".git"),
+            git_dir: other.join(".git"),
+            branch: None,
+        };
+        assert!(foreign.verify(&co, &[]).is_err());
+        // … unless that repository is the task's own main repo.
+        assert!(foreign.verify(&co, std::slice::from_ref(&other)).is_ok());
+        // Another repo's worktree whose back-link names a different checkout.
+        std::fs::write(
+            other.join(".git/worktrees/x/gitdir"),
+            format!("{}\n", root.join("x/.git").display()),
+        )
+        .unwrap();
+        let hijack = GitLayout {
+            common_dir: other.join(".git"),
+            git_dir: other.join(".git/worktrees/x"),
+            branch: None,
+        };
+        assert!(hijack.verify(&co, &[]).is_err());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn os_user_temp_dir_is_a_directory() {
+        let d = os_user_temp_dir().expect("confstr temp dir");
+        assert!(d.is_absolute() && d.is_dir(), "{}", d.display());
     }
 
     #[test]

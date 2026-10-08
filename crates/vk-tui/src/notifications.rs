@@ -37,6 +37,20 @@ pub fn host_meta() -> Option<Value> {
 
 const TOAST_TTL: Duration = Duration::from_secs(6);
 
+/// Make pane-controlled text safe to embed in an escape sequence written to the host terminal:
+/// drops every control character (C0, DEL, C1 incl. U+009C/U+009D/U+009B, CR/LF, ...) and bidi
+/// override/isolate/mark characters, then caps the result at `max` characters.
+pub(crate) fn host_safe(s: &str, max: usize) -> String {
+    s.chars()
+        .filter(|c| {
+            !c.is_control()
+                && !matches!(*c as u32,
+                    0x202A..=0x202E | 0x2066..=0x2069 | 0x200E | 0x200F | 0x061C)
+        })
+        .take(max)
+        .collect()
+}
+
 /// A `Notify` frame from machine `mi`.
 pub fn on_notify(
     app: &mut App,
@@ -98,11 +112,30 @@ pub fn on_notify(
     // Forward to the host terminal so it can raise its own notification (08 §7.1) — unless the
     // server already showed a native one, or this one was coalesced into a visible toast.
     if !app.host_focused && count == 1 && !delivered.iter().any(|d| d == "native") {
-        let osc = format!("\x1b]9;{}\x07", title.replace(['\x07', '\x1b'], ""));
+        let osc = format!("\x1b]9;{}\x07", host_safe(&title, 200));
         if cfg!(test) {
             app.parity.notes.osc_sink.push(osc);
         } else {
             let _ = std::io::stdout().write_all(osc.as_bytes());
         }
+    }
+}
+
+#[cfg(test)]
+mod host_safe_tests {
+    use super::host_safe;
+
+    #[test]
+    fn strips_c1_newlines_and_bidi() {
+        let out = host_safe(
+            "a\u{9c}b\u{9d}c\u{9b}d\ne\r\x18\x1a\x1b\x07\u{202e}f\u{2066}g\u{200f}",
+            200,
+        );
+        assert_eq!(out, "abcdefg");
+    }
+
+    #[test]
+    fn caps_length() {
+        assert_eq!(host_safe(&"x".repeat(500), 200).chars().count(), 200);
     }
 }

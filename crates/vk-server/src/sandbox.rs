@@ -17,7 +17,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use vk_proto::model::*;
@@ -293,8 +293,15 @@ fn hidden_paths() -> Vec<PathBuf> {
     if let Some(d) = vk_config::config_path().parent() {
         v.push(d.to_path_buf());
     }
-    if let Some(t) = std::env::var_os("TMPDIR") {
+    if let Some(t) = std::env::var_os("TMPDIR").filter(|t| !t.is_empty()) {
         v.push(PathBuf::from(t));
+    }
+    // The server's `$TMPDIR` may be unset or differ from the user's real per-user temp dir
+    // (launchd, a test harness): ask the OS too (macOS `confstr`).
+    if let Some(t) = vk_sandbox::policy::os_user_temp_dir()
+        && !v.contains(&t)
+    {
+        v.push(t);
     }
     // ssh/gpg agents, the D-Bus user bus and other per-user sockets (Linux; usually under /run,
     // which the bubblewrap profile empties anyway).
@@ -306,6 +313,30 @@ fn hidden_paths() -> Vec<PathBuf> {
 
 fn credentials_dir() -> PathBuf {
     paths::state_root().join("credentials")
+}
+
+/// Repositories a task checkout's git metadata may legitimately live in: the task's main
+/// repository (the one its worktree was created from).
+fn trusted_git_roots(server: &Server, task: Option<&str>) -> Vec<PathBuf> {
+    task.and_then(|t| {
+        server.with_core(|c| {
+            c.task(t)
+                .map(|t| t.repo_root.clone())
+                .filter(|r| !r.is_empty())
+        })
+    })
+    .map(|r| vec![PathBuf::from(r)])
+    .unwrap_or_default()
+}
+
+/// A pane's control dir under a sandbox root (`<root>/.ctl/<pane>`): exec specs and profiles
+/// go here, never in the box-writable private dir.
+fn control_dir(root: &Path, pane_id: &str) -> std::io::Result<PathBuf> {
+    std::fs::create_dir_all(root)?;
+    vk_sandbox::fsafe::ensure_dir_under(
+        root,
+        &Path::new(vk_sandbox::runner::CONTROL_DIR).join(vk_sandbox::runner::short_id(pane_id)),
+    )
 }
 
 fn sbx_root(key: &str) -> PathBuf {
@@ -558,7 +589,13 @@ pub async fn prepare_box_opts(
             let setup = SandboxSetup {
                 home: home.clone(),
                 checkout: checkout.clone(),
-                git: vk_sandbox::GitLayout::detect(&checkout),
+                // A `.git` file may point at any repo: refuse git dirs outside the checkout
+                // that are not its own worktree metadata or the task's main repo (13 §6).
+                git: vk_sandbox::GitLayout::detect_checked(
+                    &checkout,
+                    &trusted_git_roots(server, task),
+                )
+                .map_err(|e| err(ErrorKind::PermissionDenied, e))?,
                 root: root.clone(),
                 network: req.network,
                 proxy_port: req.proxy_port,
@@ -957,6 +994,8 @@ fn start_broker(server: &Arc<Server>, pane_id: &str, path: &Path) {
     let task = handle.spawn(async move {
         loop {
             let Ok((stream, _)) = l.accept().await else {
+                // EMFILE and the like: back off instead of spinning.
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                 continue;
             };
             let (srv, pane) = (srv.clone(), pane.clone());
@@ -977,6 +1016,9 @@ fn start_broker(server: &Arc<Server>, pane_id: &str, path: &Path) {
     }
     ensure_tick(server);
 }
+
+/// Longest request line a sandbox broker connection accepts (hook reports are small).
+pub const BROKER_MAX_LINE: usize = 1024 * 1024;
 
 /// One broker connection: pane scope is fixed by the socket, tokens can't change it, and only
 /// [`BROKER_METHODS`] are served.
@@ -1000,7 +1042,8 @@ where
     let mut line = String::new();
     loop {
         tokio::select! {
-            n = rd.read_line(&mut line) => {
+            // A request longer than the broker's limit ends the connection.
+            n = crate::run::read_line_capped(&mut rd, &mut line, BROKER_MAX_LINE) => {
                 if n? == 0 { break }
                 let l = std::mem::take(&mut line);
                 let l = l.trim_end_matches(['\n', '\r']).to_string();
@@ -1496,6 +1539,9 @@ pub async fn prepare_agent(
                 argv,
             });
         }
+        // This spec is read by `vibeke sandbox exec` *inside* the already sandboxed pane
+        // shell, so it must sit where the box can read it; tampering with it gains nothing
+        // beyond the box itself (it carries no profile and runs contained).
         let spec_path = private.join(format!("launch-{}.json", &ulid()[20..]));
         vk_sandbox::exec::write_spec(
             &spec_path,
@@ -1573,12 +1619,14 @@ pub async fn prepare_agent(
             l.add_pane(pane_id);
         }
     }
-    let private = prepared
-        .profile
-        .as_ref()
-        .and_then(|p| p.parent().map(Path::to_path_buf))
-        .unwrap_or_else(|| sbx_root(&key));
-    let spec_path = private.join(format!("launch-{}.json", &ulid()[20..]));
+    // The host shell runs this spec unsandboxed: it lives in the control dir, which the box
+    // can neither read nor write (never the pane's private dir).
+    let ctl = match &b.runner {
+        BoxRunner::Sandbox(r) => r.ensure_control_dir(pane_id),
+        _ => control_dir(&sbx_root(&key), pane_id),
+    }
+    .map_err(internal)?;
+    let spec_path = ctl.join(format!("launch-{}.json", &ulid()[20..]));
     vk_sandbox::exec::write_spec(
         &spec_path,
         &vk_sandbox::exec::ExecSpec {
@@ -2014,6 +2062,7 @@ pub fn can_see(server: &Server, pane: &str, path: &str) -> Option<bool> {
         network: vk_sandbox::NetMode::None,
         allow_bind_localhost: false,
         protected: vec![],
+        control_dir: Some(r.control_root()),
     });
     Some(policy.can_read(Path::new(path)))
 }

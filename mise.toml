@@ -3,11 +3,11 @@
 
 [tools]
 rust = { version = "1.99.0", components = "rustfmt,clippy,rust-src", profile = "minimal", targets = "aarch64-unknown-linux-musl,x86_64-unknown-linux-musl" }
-"cargo:cargo-nextest" = "latest"
-"cargo:cargo-deny" = "latest"
+"cargo:cargo-nextest" = "0.9.148"
+"cargo:cargo-deny" = "0.20.2"
 bun = "1.3.14"                 # integrations/pi-extension (TypeScript) and harness test fixtures
 zig = "0.16.0"            # builds the vendored libghostty-vt (vk-term build.rs, spec/03 §2.2) and links musl release builds
-"cargo:cargo-zigbuild" = "latest"  # cross-builds the Linux (musl) release binaries
+"cargo:cargo-zigbuild" = "0.23.4"  # cross-builds the Linux (musl) release binaries
 
 [env]
 CARGO_TERM_COLOR = "always"

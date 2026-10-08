@@ -687,7 +687,8 @@ repo.candidates :: {origin: string} => {repos: [{path: string, remote: string}]}
 # --- previews ---
 preview.list :: {machine?: string, task?: Target, pane?: Target, status?: suggested|declared|up|down|gone|all, all?: bool} => {previews: [Preview], machine?: string}
 preview.get :: {preview: Target, machine?: string} => {preview: Preview}
-preview.declare :: {port: int|string, path?: string = '/', scheme?: http|https = http, label?: string, pane?: Target, task?: Target, tls_origin?: bool} => {preview: Preview}
+# from a pane, a port no pane's process listens on needs the user's confirmation (an approved call, auth.approve.decide): waits up to `timeout_ms`; `wait: false` returns the pending ApprovalRequest; `request` resumes waiting; approval holds for the pane until it restarts
+preview.declare :: {port: int|string, path?: string = '/', scheme?: http|https = http, label?: string, pane?: Target, task?: Target, tls_origin?: bool, reason?: string, wait?: bool = true, timeout_ms?: int = 120000, request?: string} => {preview: Preview} | ApprovalRequest
 preview.promote :: {preview: Target, machine?: string} => {preview: Preview}
 preview.dismiss :: {preview: Target, machine?: string} => {}
 preview.forget :: {preview: Target, machine?: string} => {}

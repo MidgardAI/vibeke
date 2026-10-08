@@ -389,6 +389,9 @@ pub fn kind_allows(kind: &str, method: &str) -> bool {
                 || method.starts_with("peer.")
                 || method.starts_with("handoff.")
                 || method.starts_with("auth.")
+                // Push belongs to the user's own devices: a share device must not hand this
+                // host a VAPID private key or trigger pushes (the app only syncs own hosts).
+                || method.starts_with("push.")
                 || method.starts_with("tab.") && method != "tab.create"
                 || matches!(
                     method,
@@ -1756,6 +1759,13 @@ mod share_tests {
         assert_eq!(required_scope("auth.elevate.decide"), None);
         assert!(!is_mutating("peer.list") && !is_mutating("share.list"));
         assert!(!kind_allows("from-the-future", "ping"));
+        // Push registration: own devices only.
+        for m in ["push.subscribe", "push.unsubscribe", "push.test"] {
+            assert!(kind_allows("device", m), "{m}");
+            assert!(!kind_allows("share", m), "{m}");
+            assert!(!kind_allows("peer", m), "{m}");
+            assert!(!kind_allows("handoff", m), "{m}");
+        }
     }
 }
 

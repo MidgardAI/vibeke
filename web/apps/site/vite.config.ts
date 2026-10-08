@@ -28,6 +28,14 @@ export default defineConfig({
     }),
     nitro({
       routeRules: {
+        '/**': {
+          headers: {
+            'x-frame-options': 'DENY',
+            'content-security-policy': "frame-ancestors 'none'",
+            'x-content-type-options': 'nosniff',
+            'referrer-policy': 'strict-origin-when-cross-origin',
+          },
+        },
         '/install.sh': {
           redirect: { to: 'https://github.com/MidgardAI/vibeke/releases/latest/download/install.sh', status: 302 },
           headers: { 'cache-control': 'no-store' },

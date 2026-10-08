@@ -1,6 +1,7 @@
 //! Limits and token buckets (spec 16 §6.4).
 
 use std::collections::HashMap;
+use std::hash::Hash;
 use std::net::IpAddr;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -22,6 +23,10 @@ pub struct Limits {
     pub write_timeout: Duration,
     pub max_hosts: usize,
     pub max_conns: usize,
+    /// `/v1/connect` announces one IP may cause for one host per minute.
+    pub ip_host_announces_per_min: u32,
+    /// Control (`/v1/host`) and accept sockets per IP that have not authenticated yet.
+    pub ip_unauthenticated: usize,
 }
 
 impl Default for Limits {
@@ -42,6 +47,8 @@ impl Default for Limits {
             write_timeout: Duration::from_secs(30),
             max_hosts: 10_000,
             max_conns: 50_000,
+            ip_host_announces_per_min: 10,
+            ip_unauthenticated: 8,
         }
     }
 }
@@ -98,25 +105,25 @@ impl Bucket {
     }
 }
 
-/// Per-IP buckets with opportunistic cleanup.
-pub struct RateMap {
+/// Per-key (per-IP, or per IP and host) buckets with opportunistic cleanup.
+pub struct RateMap<K = IpAddr> {
     per_min: u32,
-    map: Mutex<HashMap<IpAddr, Bucket>>,
+    map: Mutex<HashMap<K, Bucket>>,
 }
 
-impl RateMap {
+impl<K: Hash + Eq> RateMap<K> {
     pub fn new(per_min: u32) -> Self {
         RateMap {
             per_min,
             map: Mutex::new(HashMap::new()),
         }
     }
-    pub fn allow(&self, ip: IpAddr) -> bool {
+    pub fn allow(&self, key: K) -> bool {
         let mut m = self.map.lock().unwrap();
         if m.len() > 50_000 {
             m.retain(|_, b| !b.full());
         }
-        m.entry(ip)
+        m.entry(key)
             .or_insert_with(|| Bucket::per_minute(self.per_min))
             .take(1.0)
     }
@@ -135,5 +142,15 @@ mod tests {
         let mut b = Bucket::new(10.0, 10.0);
         assert_eq!(b.take_wait(10.0), Duration::ZERO);
         assert!(b.take_wait(5.0) >= Duration::from_millis(400));
+    }
+
+    #[test]
+    fn keyed_rate_is_per_key() {
+        let ip: IpAddr = "192.0.2.1".parse().unwrap();
+        let m: RateMap<(IpAddr, String)> = RateMap::new(2);
+        assert!(m.allow((ip, "a".into())));
+        assert!(m.allow((ip, "a".into())));
+        assert!(!m.allow((ip, "a".into())));
+        assert!(m.allow((ip, "b".into())));
     }
 }

@@ -109,10 +109,43 @@ pub fn plan(
 /// Downloads `url` to the file `dest`.
 pub type Fetch<'a> = &'a dyn Fn(&str, &Path) -> Result<()>;
 
+/// Upper bound for the browser archive (512 MiB), passed to curl `--max-filesize`.
+const MAX_DOWNLOAD: &str = "536870912";
+
+/// Refuse archive entries that could escape the extraction directory: absolute paths, `..`
+/// components, or symlinks. `names` is `unzip -Z1` output; `long` is the plain `unzip -Z`
+/// listing, whose lines for symlinks start with `l`.
+pub fn check_zip_entries(names: &str, long: &str) -> Result<()> {
+    for n in names.lines().filter(|l| !l.is_empty()) {
+        if n.starts_with('/')
+            || n.starts_with('\\')
+            || n.split(['/', '\\']).any(|c| c == "..")
+            || n.contains('\0')
+            || n.as_bytes().get(1) == Some(&b':')
+        {
+            bail!("archive entry {n:?} escapes the install directory; nothing was installed");
+        }
+    }
+    if long.lines().any(|l| l.starts_with('l')) {
+        bail!("archive contains a symlink; nothing was installed");
+    }
+    Ok(())
+}
+
 /// Production fetcher: `curl` over https only, failing on HTTP errors.
 pub fn curl_fetch(url: &str, dest: &Path) -> Result<()> {
     let st = Command::new("curl")
-        .args(["-fsSL", "--proto", "=https", "--tlsv1.2", "-o"])
+        .args([
+            "-fsSL",
+            "--proto",
+            "=https",
+            "--proto-redir",
+            "=https",
+            "--tlsv1.2",
+            "--max-filesize",
+            MAX_DOWNLOAD,
+            "-o",
+        ])
         .arg(dest)
         .arg(url)
         .status()
@@ -155,6 +188,24 @@ pub fn install(plan: &InstallPlan, fetch: Fetch) -> Result<PathBuf> {
         if &got != want {
             bail!("checksum mismatch: expected {want}, got {got}; nothing was installed");
         }
+        let list = |flag: &str| -> Result<String> {
+            let o = Command::new("unzip")
+                .args(["-Z", flag])
+                .arg(&part)
+                .output()
+                .context("run unzip -Z")?;
+            if !o.status.success() {
+                bail!("unzip could not list the archive ({})", o.status);
+            }
+            Ok(String::from_utf8_lossy(&o.stdout).into_owned())
+        };
+        let names = list("-1")?;
+        let long = Command::new("unzip")
+            .arg("-Z")
+            .arg(&part)
+            .output()
+            .context("run unzip -Z")?;
+        check_zip_entries(&names, &String::from_utf8_lossy(&long.stdout))?;
         std::fs::create_dir_all(&staging)?;
         let st = Command::new("unzip")
             .args(["-q", "-o"])
@@ -210,6 +261,16 @@ pub fn installed(root: &Path) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn zip_entries_are_vetted() {
+        use super::check_zip_entries as c;
+        let long = "Archive:  x.zip\n-rw-r--r--  3.0 unx  10 bx defN a/b\n";
+        assert!(c("a/b\na/c/d\n", long).is_ok());
+        assert!(c("/etc/passwd\n", long).is_err());
+        assert!(c("a/../../x\n", long).is_err());
+        assert!(c("a\\..\\x\n", long).is_err());
+        assert!(c("a/b\n", "lrwxr-xr-x  3.0 unx  10 bx stor a/link\n").is_err());
+    }
     use super::*;
 
     fn have(cmd: &str) -> bool {

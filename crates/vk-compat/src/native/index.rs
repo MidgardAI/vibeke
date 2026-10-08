@@ -100,7 +100,18 @@ pub fn fetch(url: &str) -> Result<Index, String> {
         std::fs::read_to_string(url).map_err(|e| format!("{url}: {e}"))?
     } else if url.starts_with("https://") {
         let out = std::process::Command::new("curl")
-            .args(["-fsSL", "--proto", "=https", "--max-time", "30", url])
+            .args([
+                "-fsSL",
+                "--proto",
+                "=https",
+                "--proto-redir",
+                "=https",
+                "--max-filesize",
+                "67108864",
+                "--max-time",
+                "30",
+                url,
+            ])
             .stdin(std::process::Stdio::null())
             .output()
             .map_err(|e| format!("curl: {e} (needed to read {url})"))?;

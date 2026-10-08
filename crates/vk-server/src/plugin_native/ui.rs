@@ -543,7 +543,29 @@ fn sync_harness(server: &Server, plugin: &str, root: &Path) {
         let (Some(id), Some(rel)) = (v["id"].as_str(), v["path"].as_str()) else {
             continue;
         };
-        let _ = std::fs::copy(root.join(rel), dir.join(format!("{id}.toml")));
+        // `id` and `path` come from the plugin: keep the id a plain name and the source a
+        // regular file inside the plugin's own directory.
+        if id.is_empty()
+            || !id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        {
+            continue;
+        }
+        let rel = Path::new(rel);
+        if !rel
+            .components()
+            .all(|c| matches!(c, std::path::Component::Normal(_)))
+        {
+            continue;
+        }
+        let (Ok(src), Ok(base)) = (root.join(rel).canonicalize(), root.canonicalize()) else {
+            continue;
+        };
+        if !src.starts_with(&base) || !src.is_file() {
+            continue;
+        }
+        let _ = std::fs::copy(&src, dir.join(format!("{id}.toml")));
     }
     crate::agents::manifests::set_plugin_root(&hroot, true);
     if let Some(pu) = state(server).ui.lock().unwrap().by_plugin.get_mut(plugin) {

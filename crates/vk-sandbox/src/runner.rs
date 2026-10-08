@@ -137,9 +137,32 @@ pub fn short_id(id: &str) -> String {
     s.chars().rev().collect::<String>().to_ascii_lowercase()
 }
 
+/// Name of the control directory under a sandbox root (generated profiles/policies and exec
+/// specs). Pane ids are alphanumeric ([`short_id`]), so it cannot collide with a pane dir.
+pub const CONTROL_DIR: &str = ".ctl";
+
 impl SandboxRunner {
     pub fn pane_dir(&self, pane_id: &str) -> PathBuf {
         self.setup.root.join(short_id(pane_id))
+    }
+
+    /// `<root>/.ctl`: never readable or writable from inside the box (see
+    /// [`SandboxSpec::control_dir`]). The pane private dir is writable from inside, so a
+    /// profile or exec spec there could be rewritten by the box before the host reads it.
+    pub fn control_root(&self) -> PathBuf {
+        self.setup.root.join(CONTROL_DIR)
+    }
+
+    /// The pane's control dir (`<root>/.ctl/<pane>`), created (or verified) without following
+    /// symlinks.
+    pub fn ensure_control_dir(&self, pane_id: &str) -> std::io::Result<PathBuf> {
+        if !self.setup.root.exists() {
+            std::fs::create_dir_all(&self.setup.root)?;
+        }
+        crate::fsafe::ensure_dir_under(
+            &self.setup.root,
+            &Path::new(CONTROL_DIR).join(short_id(pane_id)),
+        )
     }
 
     /// May a projected path become a grant? The box can write inside projected dirs, so it may
@@ -208,6 +231,7 @@ impl SandboxRunner {
             network: crate::policy::net_mode(s.network, s.proxy_port, &s.local_ports),
             allow_bind_localhost: true,
             protected: s.protected.clone(),
+            control_dir: Some(self.control_root()),
         }
     }
 
@@ -244,16 +268,17 @@ impl SandboxRunner {
         Ok(e)
     }
 
-    /// Write the per-pane profile and return (profile path, policy).
+    /// Write the per-pane profile into the pane's control dir `ctl` (never the box-writable
+    /// private dir) and return (profile path, policy).
     pub fn write_profile(
         &self,
+        ctl: &Path,
         private: &Path,
         broker: Option<&Path>,
     ) -> std::io::Result<(PathBuf, Policy)> {
         let policy = Policy::from_spec(&self.spec(private, broker));
-        // The private dir is writable from inside: never write through a planted symlink.
         let path = if cfg!(target_os = "linux") {
-            let p = private.join("policy.json");
+            let p = ctl.join("policy.json");
             crate::fsafe::write_nofollow(
                 &p,
                 &serde_json::to_vec_pretty(&policy).unwrap_or_default(),
@@ -261,7 +286,7 @@ impl SandboxRunner {
             )?;
             p
         } else {
-            let p = private.join("profile.sb");
+            let p = ctl.join("profile.sb");
             crate::fsafe::write_nofollow(&p, crate::seatbelt::render(&policy).as_bytes(), 0o600)?;
             p
         };
@@ -307,8 +332,9 @@ impl Runner for SandboxRunner {
     fn prepare(&self, req: SpawnRequest) -> Result<PreparedSpawn, RunnerError> {
         self.check()?;
         let private = self.ensure_pane_dir(&req.pane_id)?;
+        let ctl = self.ensure_control_dir(&req.pane_id)?;
         let broker = self.setup.broker.then(|| private.join("b.sock"));
-        let (profile, policy) = self.write_profile(&private, broker.as_deref())?;
+        let (profile, policy) = self.write_profile(&ctl, &private, broker.as_deref())?;
         let env = self.env(&req.env, &private, broker.as_deref())?;
         let argv = if cfg!(target_os = "linux") {
             let bin = self
@@ -467,7 +493,8 @@ mod tests {
         s.projection.read_only_files = vec![cred.clone()];
         let r = SandboxRunner { setup: s };
         let private = r.ensure_pane_dir("01PANE0000000000000000AAAA").unwrap();
-        let (_, pol) = r.write_profile(&private, None).unwrap();
+        let ctl = r.ensure_control_dir("01PANE0000000000000000AAAA").unwrap();
+        let (_, pol) = r.write_profile(&ctl, &private, None).unwrap();
         assert!(pol.allow_write.contains(&eph));
         assert!(pol.allow_read_late.contains(&cred));
         // The box swaps its projected home (and credential file) for symlinks into the host.
@@ -477,7 +504,8 @@ mod tests {
         std::os::unix::fs::symlink(root.join("home"), &eph).unwrap();
         // The next pane (or a restart) must not grant the symlink targets.
         let private2 = r.ensure_pane_dir("01PANE0000000000000000BBBB").unwrap();
-        let (_, pol) = r.write_profile(&private2, None).unwrap();
+        let ctl2 = r.ensure_control_dir("01PANE0000000000000000BBBB").unwrap();
+        let (_, pol) = r.write_profile(&ctl2, &private2, None).unwrap();
         assert!(!pol.allow_write.contains(&root.join("home")), "{pol:?}");
         assert!(!pol.allow_write.contains(&eph));
         assert!(!pol.allow_read_late.contains(&root.join("home")));
@@ -487,14 +515,14 @@ mod tests {
         // symlink is replaced rather than written through.
         let victim = root.join("home/victim");
         std::fs::write(&victim, "host").unwrap();
-        let profile = private2.join(if cfg!(target_os = "linux") {
+        let profile = ctl2.join(if cfg!(target_os = "linux") {
             "policy.json"
         } else {
             "profile.sb"
         });
         std::fs::remove_file(&profile).unwrap();
         std::os::unix::fs::symlink(&victim, &profile).unwrap();
-        r.write_profile(&private2, None).unwrap();
+        r.write_profile(&ctl2, &private2, None).unwrap();
         assert_eq!(std::fs::read_to_string(&victim).unwrap(), "host");
         std::fs::remove_dir_all(&private2).unwrap();
         std::os::unix::fs::symlink(root.join("home"), &private2).unwrap();
@@ -540,7 +568,18 @@ mod tests {
             .unwrap();
         assert_eq!(p.argv[0], crate::seatbelt::SANDBOX_EXEC);
         assert_eq!(&p.argv[3..], ["/bin/zsh", "-l"]);
-        assert!(p.profile.as_ref().unwrap().is_file());
+        let profile = p.profile.as_ref().unwrap();
+        assert!(profile.is_file());
+        // The profile sits in the control dir, outside the box-writable private dir, and the
+        // policy hides and write-protects that dir.
+        let ctl = r.control_root();
+        assert!(profile.starts_with(&ctl), "{}", profile.display());
+        assert!(!profile.starts_with(r.pane_dir("01PANE0000000000000000ABCD")));
+        let pol = p.policy.as_ref().unwrap();
+        let ctl_c = crate::policy::canon(&ctl);
+        assert!(pol.never_read.contains(&ctl_c));
+        assert!(pol.deny_write.contains(&ctl_c));
+        assert!(!pol.can_read(profile));
         assert!(
             p.env
                 .iter()

@@ -2637,11 +2637,17 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
             resume_run(server, &run, pane).await
         }
         "agent.harnesses" => {
-            let list: Vec<Value> = Harness::all()
-                .iter()
-                .map(|h| json!({"id": h.id(), "display": h.display(), "capabilities": h.capabilities(), "version_detected": harness::version(*h)}))
-                .collect();
-            Ok(json!({"harnesses": list}))
+            // Version probes spawn processes: off the async threads, and cached
+            // (`harness::version`), so a caller looping on this method cannot stall the server.
+            tokio::task::spawn_blocking(|| {
+                Harness::all()
+                    .iter()
+                    .map(|h| json!({"id": h.id(), "display": h.display(), "capabilities": h.capabilities(), "version_detected": harness::version(*h)}))
+                    .collect::<Vec<Value>>()
+            })
+            .await
+            .map_err(internal)
+            .map(|list| json!({"harnesses": list}))
         }
         "agent.report" => {
             // Self-report transport (04 §4.1): agent/wrapper reports its own state.

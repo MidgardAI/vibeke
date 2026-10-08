@@ -465,7 +465,19 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
             redact_search(server, ctx, &mut v);
             v
         }),
-        "state.forget" => Box::pin(crate::forget_scope::forget(server, ctx, p)).await,
+        "state.forget" => Box::pin(crate::forget_scope::forget(server, ctx, p))
+            .await
+            .map(|mut v| {
+                // Pre-migration backups are whole copies of state.db made before this forget:
+                // they still hold what was forgotten, so they go too (not on a dry run).
+                if p.get("dry_run").and_then(Value::as_bool) != Some(true) {
+                    let n = vk_store::backup::forget_backups(&server.paths.db());
+                    if let Some(o) = v.as_object_mut() {
+                        o.insert("backups_removed".into(), json!(n));
+                    }
+                }
+                v
+            }),
         "security.encryption.status" => Ok(status_json(server)),
         "security.encryption.migrate" => migrate(server, p).await,
         _ => return None,

@@ -15,7 +15,9 @@
 //! `import` restores entries whose id is not registered yet and copies config/state files that
 //! do not exist yet; everything already present is a reported conflict and left alone. Imported
 //! managed checkouts get a new immutable path, so Herdr legacy grants (bound to the root) need
-//! a new review; native consents carry over. Links are imported only when their directory
+//! a new review; native consents do not carry over (the foreign registry is not trusted: consent
+//! is dropped, tree digests are recomputed from the imported files, and the plugin must be
+//! consented again). Plugin ids from the export are validated before any path is built. Links are imported only when their directory
 //! exists. Import never touches Herdr's own data.
 
 use std::path::{Path, PathBuf};
@@ -128,6 +130,35 @@ pub fn export(dirs: &PluginDirs, out: &Path) -> Result<Report, RegistryError> {
     Ok(rep)
 }
 
+/// A plugin id that is safe to use as one path component under a Vibeke directory. Native ids
+/// must also satisfy the manifest rule.
+fn safe_id(id: &str, native: bool) -> bool {
+    let ok = !id.is_empty()
+        && id.len() <= 128
+        && !id.contains("..")
+        && id.chars().next().is_some_and(|c| c.is_ascii_alphanumeric())
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
+    ok && (!native || crate::native::manifest::valid_id(id))
+}
+
+/// `root/<rel>` where every component of `rel` is a plain name (no `..`, no root, no prefix).
+fn join_under(root: &Path, rel: &Path) -> Result<PathBuf, RegistryError> {
+    if rel
+        .components()
+        .all(|c| matches!(c, std::path::Component::Normal(_)))
+    {
+        Ok(root.join(rel))
+    } else {
+        Err(RegistryError::Corrupt(format!(
+            "path {} escapes {}",
+            rel.display(),
+            root.display()
+        )))
+    }
+}
+
 /// Import an export directory (see the module docs). `dry_run` reports without writing.
 pub fn import(dirs: &PluginDirs, from: &Path, dry_run: bool) -> Result<Report, RegistryError> {
     let text = std::fs::read_to_string(from.join("plugins.json"))?;
@@ -135,16 +166,22 @@ pub fn import(dirs: &PluginDirs, from: &Path, dry_run: bool) -> Result<Report, R
         serde_json::from_str(&text).map_err(|e| RegistryError::Corrupt(e.to_string()))?;
     let mut rep = Report::default();
     let current = Registry::load_shared(dirs)?;
+    let checkouts_root = std::fs::canonicalize(from.join("checkouts")).ok();
     let checkout_of = |id: &str, root: &Path| -> Option<PathBuf> {
         let name = root.file_name()?;
-        let p = from.join("checkouts").join(id).join(name);
-        p.is_dir().then_some(p)
+        let p = join_under(&from.join("checkouts"), &Path::new(id).join(name)).ok()?;
+        // Still under the export's checkouts directory once symlinks are resolved.
+        let real = std::fs::canonicalize(&p).ok()?;
+        (real.is_dir() && real.starts_with(checkouts_root.as_ref()?)).then_some(p)
     };
     // Plan first (no writes on a dry run).
     let mut herdr = vec![];
     let mut native = vec![];
-    for e in src.plugins.values() {
-        if current.plugins.contains_key(&e.id) || current.native.contains_key(&e.id) {
+    for (key, e) in &src.plugins {
+        if key != &e.id || !safe_id(&e.id, false) {
+            rep.skipped
+                .push(format!("{}: invalid plugin id", e.id.escape_debug()));
+        } else if current.plugins.contains_key(&e.id) || current.native.contains_key(&e.id) {
             rep.conflicts.push(format!("{}: already registered", e.id));
         } else if e.managed && checkout_of(&e.id, &e.root).is_none() {
             rep.skipped
@@ -159,8 +196,11 @@ pub fn import(dirs: &PluginDirs, from: &Path, dry_run: bool) -> Result<Report, R
             herdr.push(e.clone());
         }
     }
-    for e in src.native.values() {
-        if current.plugins.contains_key(&e.id) || current.native.contains_key(&e.id) {
+    for (key, e) in &src.native {
+        if key != &e.id || !safe_id(&e.id, true) {
+            rep.skipped
+                .push(format!("{}: invalid plugin id", e.id.escape_debug()));
+        } else if current.plugins.contains_key(&e.id) || current.native.contains_key(&e.id) {
             rep.conflicts.push(format!("{}: already registered", e.id));
         } else if e.managed && checkout_of(&e.id, &e.root).is_none() {
             rep.skipped
@@ -185,7 +225,10 @@ pub fn import(dirs: &PluginDirs, from: &Path, dry_run: bool) -> Result<Report, R
     }
     let place = |id: &str, root: &Path| -> Result<PathBuf, RegistryError> {
         let src = checkout_of(id, root).ok_or_else(|| RegistryError::NotFound(id.into()))?;
-        let dest = dirs.checkouts.join(id).join(format!("import-{}", nonce()));
+        let dest = join_under(
+            &dirs.checkouts,
+            &Path::new(id).join(format!("import-{}", nonce())),
+        )?;
         copy_tree(&src, &dest)?;
         set_tree_writable(&dest, false)?;
         Ok(dest)
@@ -204,7 +247,14 @@ pub fn import(dirs: &PluginDirs, from: &Path, dry_run: bool) -> Result<Report, R
     for mut e in native {
         if e.managed {
             e.root = place(&e.id, &e.root)?;
+            e.tree_sha256 = crate::herdr::registry::tree_digest(&e.root)?;
+        } else {
+            e.tree_sha256.clear();
         }
+        // The export's consent and build state are not trusted: consent again.
+        e.consent = None;
+        e.built = false;
+        rep.needs_review.push(e.id.clone());
         placed_n.push(e);
     }
     let ids = Registry::update(dirs, |r| {
@@ -224,15 +274,16 @@ pub fn import(dirs: &PluginDirs, from: &Path, dry_run: bool) -> Result<Report, R
         Ok(ids)
     })?;
     for id in &ids {
+        let rel = Path::new(id);
         copy_missing(
-            &from.join("config").join(id),
-            &dirs.config_dir(id),
+            &join_under(&from.join("config"), rel)?,
+            &join_under(&dirs.config, rel)?,
             &mut rep,
             id,
         )?;
         copy_missing(
-            &from.join("state").join(id),
-            &dirs.state_dir(id),
+            &join_under(&from.join("state"), rel)?,
+            &join_under(&dirs.state, rel)?,
             &mut rep,
             id,
         )?;
@@ -294,11 +345,49 @@ mod tests {
         let reg = Registry::load(&b).unwrap();
         let e = reg.native_get("acme.bk").unwrap();
         assert!(e.root.starts_with(&b.checkouts));
-        assert!(e.consent.is_some(), "native consent carries over");
+        assert!(e.consent.is_none(), "native consent is dropped on import");
+        assert!(!e.built);
+        assert_eq!(rep.needs_review, vec!["acme.bk"]);
+        assert_eq!(
+            e.tree_sha256,
+            crate::herdr::registry::tree_digest(&e.root).unwrap(),
+            "tree digest recomputed from the imported files"
+        );
         assert!(b.state_dir("acme.bk").join("db.json").is_file());
         // A second import conflicts and changes nothing.
         let again = import(&b, &out, false).unwrap();
         assert!(again.plugins.is_empty());
         assert_eq!(again.conflicts.len(), 1);
+    }
+
+    #[test]
+    fn import_refuses_path_traversal_ids() {
+        let t = tempfile::tempdir().unwrap();
+        let a = dirs(&t.path().join("a"));
+        let src = t.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(
+            src.join(super::super::MANIFEST_FILE),
+            "id = \"acme.bk\"\nversion = \"1.0.0\"\n",
+        )
+        .unwrap();
+        let staged = stage(&a, &src, local_origin(&src, None)).unwrap();
+        Registry::update(&a, |r| r.native_install_staged(&a, staged).map(|_| ())).unwrap();
+        let out = t.path().join("export");
+        export(&a, &out).unwrap();
+        // Forge the id in the exported registry.
+        let text = std::fs::read_to_string(out.join("plugins.json")).unwrap();
+        let forged = text.replace("acme.bk", "../../x");
+        assert_ne!(text, forged);
+        std::fs::write(out.join("plugins.json"), forged).unwrap();
+        let b = dirs(&t.path().join("b"));
+        let rep = import(&b, &out, false).unwrap();
+        assert!(rep.plugins.is_empty(), "{rep:?}");
+        assert_eq!(rep.skipped.len(), 1);
+        assert!(rep.skipped[0].contains("invalid plugin id"));
+        assert!(Registry::load(&b).unwrap().native.is_empty());
+        assert!(!t.path().join("x").exists());
+        assert!(!safe_id("../../x", false) && !safe_id("a/b", false) && !safe_id("a.b/..", true));
+        assert!(safe_id("acme.bk", true) && safe_id("reviewr", false));
     }
 }

@@ -1268,17 +1268,87 @@ pub fn version(h: Harness) -> Option<String> {
             (l.m.version.command.clone(), Some(l))
         }
     };
-    let out = std::process::Command::new(cmd.first()?)
-        .args(&cmd[1..])
-        .stdin(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .output()
-        .ok()?;
-    let text = String::from_utf8_lossy(&out.stdout);
-    match manifest {
+    let key = (h.id().to_string(), cmd.clone());
+    let cached = |c: &VersionCache| {
+        c.get(&key)
+            .filter(|(at, _)| at.elapsed() < VERSION_TTL)
+            .map(|(_, v)| v.clone())
+    };
+    if let Some(v) = cached(&version_cache().lock().unwrap()) {
+        return v;
+    }
+    // One probe at a time: a burst of `agent.harnesses` calls waits for the first probe and
+    // then answers from the cache instead of spawning a process each.
+    let _probe = PROBE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(v) = cached(&version_cache().lock().unwrap()) {
+        return v;
+    }
+    let v = probe_output(&cmd, VERSION_TIMEOUT).and_then(|text| match manifest {
         Some(l) => l.parse_version(&text),
         None => parse_version(&text),
+    });
+    version_cache()
+        .lock()
+        .unwrap()
+        .insert(key, (std::time::Instant::now(), v.clone()));
+    v
+}
+
+/// How long a probed version is reused (a pane calling `agent.harnesses` in a loop must not
+/// spawn a process per call).
+const VERSION_TTL: std::time::Duration = std::time::Duration::from_secs(300);
+/// A version command that does not answer in time is killed (and reported as no version).
+const VERSION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+static PROBE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+type VersionCache =
+    std::collections::HashMap<(String, Vec<String>), (std::time::Instant, Option<String>)>;
+
+fn version_cache() -> &'static std::sync::Mutex<VersionCache> {
+    static C: std::sync::OnceLock<std::sync::Mutex<VersionCache>> = std::sync::OnceLock::new();
+    C.get_or_init(Default::default)
+}
+
+/// Run `cmd` (stdin closed, stderr dropped) and return its stdout, or `None` when it cannot
+/// start, fails to finish within `timeout` (then it is killed), or prints more than 64 KiB.
+fn probe_output(cmd: &[String], timeout: std::time::Duration) -> Option<String> {
+    use std::io::Read;
+    let mut child = std::process::Command::new(cmd.first()?)
+        .args(&cmd[1..])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()?;
+    let mut stdout = child.stdout.take()?;
+    let reader = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = (&mut stdout).take(64 * 1024).read_to_end(&mut buf);
+        buf
+    });
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
     }
+    // A descendant may keep stdout open after the command exits: don't wait past the deadline.
+    while !reader.is_finished() {
+        if std::time::Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let out = reader.join().ok()?;
+    Some(String::from_utf8_lossy(&out).into_owned())
 }
 
 /// First version-looking token: `2.1.290 (Claude Code)`, `codex-cli 0.160.1`, `omp/17.2.12`, `v0.84.1`.

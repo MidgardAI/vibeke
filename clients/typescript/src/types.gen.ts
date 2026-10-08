@@ -95,7 +95,7 @@ export type ApprovalRequest = {
   pane: string;
   pane_handle: string;
   workspace: string;
-  method: "handoff.send" | "handoff.cancel" | "gateway.call";
+  method: "handoff.send" | "handoff.cancel" | "gateway.call" | "preview.declare";
   params: Record<string, unknown>;
   summary: string;
   facts: Record<string, unknown>;
@@ -1627,7 +1627,7 @@ export type AuditVerifyResult = {
 };
 
 export type AuthApproveParams = {
-  method?: "handoff.send" | "handoff.cancel" | "gateway.call";
+  method?: "handoff.send" | "handoff.cancel" | "gateway.call" | "preview.declare";
   params?: Record<string, unknown>;
   reason?: string;
   wait?: boolean;
@@ -5000,12 +5000,16 @@ export type PreviewDeclareParams = {
   pane?: Target;
   task?: Target;
   tls_origin?: boolean;
+  reason?: string;
+  wait?: boolean;
+  timeout_ms?: number;
+  request?: string;
 };
 
 export type PreviewDeclareResult = {
   preview: Preview;
   cursor?: Cursor;
-};
+} | ApprovalRequest;
 
 export type PreviewDismissParams = {
   preview: Target;

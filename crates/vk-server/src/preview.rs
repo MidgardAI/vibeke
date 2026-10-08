@@ -198,7 +198,14 @@ pub struct Previews {
     pub(crate) tls_ca: Mutex<Option<Arc<vk_preview::ca::CaStore>>>,
     /// Explicit mirrors by local port (B4; never persisted, never automatic).
     pub(crate) mirrors: Mutex<HashMap<u16, crate::preview_fabric::Mirror>>,
+    /// Ports the user approved for a pane to declare although no pane listens on them
+    /// ([`declare_api`]): pane → (its child process when approved, ports). In memory only; a
+    /// restarted pane (new child process) asks again.
+    approved_ports: Mutex<HashMap<String, ApprovedPorts>>,
 }
+
+/// A pane's approved ports: its child process when approved, and the ports.
+type ApprovedPorts = (Option<u32>, HashSet<u16>);
 
 impl Default for Previews {
     fn default() -> Self {
@@ -223,6 +230,7 @@ impl Default for Previews {
             proxy_port_override: Mutex::default(),
             tls_ca: Mutex::default(),
             mirrors: Mutex::default(),
+            approved_ports: Mutex::default(),
         }
     }
 }
@@ -1338,7 +1346,7 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
         return None;
     }
     Some(match method {
-        "preview.declare" => declare(server, ctx, p),
+        "preview.declare" => declare_api(server, ctx, p).await,
         "preview.list" => list(server, p).await,
         "preview.get" => {
             let t = match s(p, "preview") {
@@ -1445,7 +1453,203 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
     })
 }
 
+/// How a pane-scoped declare treats a port no pane's process listens on (06 B5): anything
+/// could be listening there (a database, a local admin service), and the declared port joins
+/// the pane's agent-browser loopback allowlist.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Unattributed {
+    /// Needs the user's confirmation unless it was approved for this pane already.
+    Ask,
+    /// Run the checks only; change nothing (validating an approval request).
+    Check,
+    /// A port Vibeke leased to the task itself.
+    Leased,
+}
+
+enum Declared {
+    Done(Value),
+    NeedsConfirmation,
+}
+
+/// Default wait for the user's decision on a confirmation (as `auth.elevate`).
+const CONFIRM_WAIT_MS: u64 = 120_000;
+
+fn confirmation_required(port: u16) -> RpcError {
+    err(
+        ErrorKind::PermissionDenied,
+        format!(
+            "preview.declare from a pane on port {port}, which no pane's process listens on, needs the user's confirmation; call preview.declare from the pane to ask"
+        ),
+    )
+    .details(json!({"scope": "pane", "reason": "confirmation_required", "port": port}))
+}
+
+/// Whether the user approved `port` for `pane`'s current process.
+fn port_approved(server: &Server, pane: &str, port: u16) -> bool {
+    let pid = server.with_core(|c| c.pane(pane).map(|p| p.child_pid));
+    let mut m = server.previews.approved_ports.lock().unwrap();
+    match (m.get(pane), pid) {
+        (Some((at, ports)), Some(now)) if *at == now => ports.contains(&port),
+        (Some(_), _) => {
+            // The pane restarted or is gone: its approvals ended with it.
+            m.remove(pane);
+            false
+        }
+        _ => false,
+    }
+}
+
+fn remember_port(server: &Server, pane: &str, child_pid: Option<u32>, port: u16) {
+    let mut m = server.previews.approved_ports.lock().unwrap();
+    let e = m
+        .entry(pane.to_string())
+        .or_insert_with(|| (child_pid, HashSet::new()));
+    if e.0 != child_pid {
+        *e = (child_pid, HashSet::new());
+    }
+    e.1.insert(port);
+}
+
+/// `preview.declare` for synchronous callers: a pane-scoped declare that needs the user's
+/// confirmation is refused (`confirmation_required`).
 pub(crate) fn declare(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
+    match declare_with(server, ctx, p, Unattributed::Ask)? {
+        Declared::Done(v) => Ok(v),
+        Declared::NeedsConfirmation => Err(confirmation_required(port_param(p)?)),
+    }
+}
+
+/// `preview.declare` of a port leased to the task by Vibeke (`task.create` repo previews).
+pub(crate) fn declare_leased(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
+    match declare_with(server, ctx, p, Unattributed::Leased)? {
+        Declared::Done(v) => Ok(v),
+        Declared::NeedsConfirmation => Err(confirmation_required(port_param(p)?)),
+    }
+}
+
+/// The `preview.declare` method. From a pane, a port no pane's process listens on is declared
+/// only after the user confirms it outside the pane, through the approved-call machinery
+/// (`auth.approve`, decided with `auth.approve.decide`): the call waits for the decision
+/// (`timeout_ms`, default 2 min), `wait: false` returns the pending request, and `request`
+/// resumes waiting on it. Approval also remembers the port for the pane until its process
+/// restarts; denial or timeout refuses.
+async fn declare_api(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
+    async fn approve(server: &Arc<Server>, ctx: &Ctx, q: Value) -> R {
+        crate::approve::api(server, ctx, "auth.approve", &q)
+            .await
+            .unwrap_or_else(|| Err(crate::api::internal("auth.approve is unavailable")))
+    }
+    let mut wait = json!({"timeout_ms": u(p, "timeout_ms").unwrap_or(CONFIRM_WAIT_MS)});
+    if let Some(w) = b(p, "wait") {
+        wait["wait"] = json!(w);
+    }
+    if ctx.pane_scope.is_some()
+        && let Some(id) = s(p, "request")
+    {
+        wait["request"] = json!(id);
+        return approve(server, ctx, wait).await;
+    }
+    match declare_with(server, ctx, p, Unattributed::Ask)? {
+        Declared::Done(v) => Ok(v),
+        Declared::NeedsConfirmation => {
+            let mut params = p.clone();
+            if let Some(o) = params.as_object_mut() {
+                for k in ["request", "wait", "timeout_ms", "reason"] {
+                    o.remove(k);
+                }
+            }
+            wait["method"] = json!("preview.declare");
+            wait["params"] = params;
+            if let Some(r) = s(p, "reason") {
+                wait["reason"] = json!(r);
+            }
+            approve(server, ctx, wait).await
+        }
+    }
+}
+
+/// `auth.approve {method: "preview.declare"}` (crate::approve): validate the pane's ask as the
+/// declare would and summarise it from server facts. Returns (frozen params, summary, facts).
+pub(crate) async fn approval_request(
+    server: &Arc<Server>,
+    ctx: &Ctx,
+    me: &str,
+    params: &Value,
+) -> Result<(Value, String, Value), RpcError> {
+    if ctx.pane_scope.as_deref() != Some(me) {
+        return Err(invalid("preview.declare approvals are asked from the pane"));
+    }
+    let port = port_param(params)?;
+    // Every refusal a direct declare would give applies to the ask too.
+    declare_with(server, ctx, params, Unattributed::Check)?;
+    let mut frozen = json!({"port": port});
+    for k in ["path", "scheme", "label", "pane", "task", "tls_origin"] {
+        if let Some(v) = params.get(k).filter(|v| !v.is_null()) {
+            frozen[k] = v.clone();
+        }
+    }
+    let target = match s(params, "pane") {
+        Some(t) => resolve_pane(server, ctx, Some(t))?.id,
+        None => me.to_string(),
+    };
+    frozen["pane"] = json!(target);
+    let handle = |id: &str| {
+        server
+            .with_core(|c| c.pane(id).map(|x| x.handle.clone()))
+            .unwrap_or_else(|| id.to_string())
+    };
+    let (me_handle, target_handle) = (handle(me), handle(&target));
+    let listening = probe::tcp_alive(None, port).await;
+    let summary = format!(
+        "Let pane {me_handle} declare a preview on localhost:{port}{}. No pane's process listens on that port ({}); once declared, the agent browser of pane {target_handle} can reach it until the pane restarts",
+        if target == me {
+            String::new()
+        } else {
+            format!(" for pane {target_handle}")
+        },
+        if listening {
+            "another program on this machine is listening there now"
+        } else {
+            "nothing listens there yet"
+        }
+    );
+    let facts =
+        json!({"port": port, "listening": listening, "pane": target, "pane_handle": target_handle});
+    Ok((frozen, summary, facts))
+}
+
+/// Run an approved `preview.declare` for `pane` (crate::approve): remember the port for the
+/// pane's process, then declare with the pane's own scope, so every other check still applies.
+pub(crate) fn declare_approved(
+    server: &Arc<Server>,
+    approver: &Ctx,
+    pane: &str,
+    child_pid: Option<u32>,
+    params: &Value,
+) -> R {
+    let port = port_param(params)?;
+    remember_port(server, pane, child_pid, port);
+    let ctx = Ctx {
+        client_id: approver.client_id.clone(),
+        kind: approver.kind.clone(),
+        pane_scope: Some(pane.to_string()),
+        remote: approver.remote,
+    };
+    match declare_with(server, &ctx, params, Unattributed::Ask)? {
+        Declared::Done(v) => Ok(v),
+        Declared::NeedsConfirmation => Err(err(
+            ErrorKind::Conflict,
+            "the pane restarted since it asked; nothing was declared",
+        )),
+    }
+}
+
+fn declare_with(
+    server: &Arc<Server>,
+    ctx: &Ctx,
+    p: &Value,
+    unattributed: Unattributed,
+) -> Result<Declared, RpcError> {
     let port = port_param(p)?;
     let pane = match s(p, "pane") {
         Some(t) => Some(resolve_pane(server, ctx, Some(t))?.id),
@@ -1520,10 +1724,21 @@ pub(crate) fn declare(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
                 .as_deref()
                 .map(|l| server.with_core(|c| is_mine(c, l)));
             match (existing.is_some(), mine) {
-                (_, Some(true)) | (false, None) => {}
+                (_, Some(true)) => {}
+                // No pane's process listens there (nothing yet, or a program outside every
+                // pane): the user confirms it once for this pane's process.
+                (false, None) => {
+                    if unattributed != Unattributed::Leased && !port_approved(server, caller, port)
+                    {
+                        return Ok(Declared::NeedsConfirmation);
+                    }
+                }
                 _ => return refuse("the port is not your listener"),
             }
         }
+    }
+    if unattributed == Unattributed::Check {
+        return Ok(Declared::Done(Value::Null));
     }
     server.previews.dismissed.lock().unwrap().remove(&port);
     let pv = match existing {
@@ -1586,9 +1801,9 @@ pub(crate) fn declare(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     if let Some(t) = b(p, "tls_origin") {
         crate::preview_fabric::set_tls_origin(server, &pv.id, t);
     }
-    Ok(
+    Ok(Declared::Done(
         json!({"preview": server.with_core(|c| preview_json(c, &pv)), "cursor": crate::api::cursor(server, None)}),
-    )
+    ))
 }
 
 async fn list(server: &Arc<Server>, p: &Value) -> R {

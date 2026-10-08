@@ -1040,6 +1040,14 @@ fn proc_for(
         dead: AtomicBool::new(false),
         launched_at: Instant::now(),
     });
+    // Pages must not write files to disk behind the user's back.
+    if let Err(e) = proc.cdp.call(
+        None,
+        "Browser.setDownloadBehavior",
+        json!({"behavior": "deny"}),
+    ) {
+        tracing::warn!(error = %format!("{e:#}"), "browser pane: could not deny downloads");
+    }
     if let Some(pid) = l.pid {
         preview::register_browser(
             server,
@@ -1207,6 +1215,15 @@ fn on_event(server: &Weak<Server>, proc: &Arc<Proc>, t: &Arc<Target>, ev: Event)
                 }
                 Err(e) => tracing::debug!(error = %format!("{e:#}"), "frame decode failed"),
             }
+        }
+        // A headless page can't show alert/confirm/prompt/beforeunload; dismiss so the page
+        // doesn't hang waiting for an answer.
+        "Page.javascriptDialogOpening" => {
+            let _ = proc.cdp.send(
+                ev.session_id.as_deref(),
+                "Page.handleJavaScriptDialog",
+                json!({"accept": false}),
+            );
         }
         "Page.frameNavigated" => {
             let frame = &ev.params["frame"];

@@ -890,7 +890,15 @@ pub(crate) fn declare_task_previews(
         if let Some(t) = r.tls_origin {
             params["tls_origin"] = json!(t);
         }
-        match crate::preview::declare(server, ctx, &params) {
+        // A leased port is Vibeke's own allocation for the task; an absolute port from a pane
+        // (`port = 5432`) needs the user's confirmation like any pane-scoped declare.
+        let leased = !r.from.starts_with("port ");
+        let res = if leased {
+            crate::preview::declare_leased(server, ctx, &params)
+        } else {
+            crate::preview::declare(server, ctx, &params)
+        };
+        match res {
             Ok(v) => {
                 let mut pv = v["preview"].clone();
                 pv["name"] = json!(r.name);

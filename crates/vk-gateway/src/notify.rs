@@ -217,6 +217,7 @@ fn approval_verb(method: &str) -> &'static str {
         "handoff.send" => "send a handoff",
         "handoff.cancel" => "cancel a handoff",
         "gateway.call" => "redeem a peer invitation",
+        "preview.declare" => "open a port to its browser",
         _ => "run a call",
     }
 }
@@ -308,7 +309,14 @@ async fn send(gw: &Arc<Gateway>, open: &Open, is_done: bool) {
     // Pane → workspace, fetched only if a limited (share) device needs it.
     let mut pane_ws: Option<Vec<(String, Option<String>)>> = None;
     for d in gw.devices() {
-        if d.push.is_empty() || d.vapid_private.is_none() || gw.is_visible(&d.id) || d.expired() {
+        // Push is for the user's own devices only; a share device registered by an older
+        // gateway keeps its stored subscription but is not sent anything.
+        if d.kind != "device"
+            || d.push.is_empty()
+            || d.vapid_private.is_none()
+            || gw.is_visible(&d.id)
+            || d.expired()
+        {
             continue;
         }
         let visible = match crate::api::Allowed::of(&d) {

@@ -232,6 +232,42 @@ fn check_binding(path: String, raw: &str, errs: &mut Vec<Problem>, warns: &mut V
     }
 }
 
+/// The uid owning `$HOME` (the user the config belongs to), if it can be read.
+fn home_owner() -> Option<u32> {
+    use std::os::unix::fs::MetadataExt;
+    let home = std::env::var_os("HOME")?;
+    std::fs::metadata(home).ok().map(|m| m.uid())
+}
+
+/// A warning (never an error) when the config file at `path` is group- or world-writable, or
+/// owned by someone other than `owner`: another account could then change what this user's
+/// server runs.
+pub(crate) fn permission_warning(path: &Path, owner: Option<u32>) -> Option<Warning> {
+    use std::os::unix::fs::MetadataExt;
+    let m = std::fs::metadata(path).ok()?;
+    let mode = m.mode() & 0o777;
+    if mode & 0o022 != 0 {
+        return Some(Warning::new(
+            "",
+            format!(
+                "{} is writable by other users (mode {mode:o}); run `chmod go-w` on it",
+                path.display()
+            ),
+        ));
+    }
+    if owner.is_some_and(|o| o != m.uid()) {
+        return Some(Warning::new(
+            "",
+            format!(
+                "{} is owned by another user (uid {}); it should belong to you",
+                path.display(),
+                m.uid()
+            ),
+        ));
+    }
+    None
+}
+
 impl Config {
     /// Load a config file. A missing file yields the defaults. Unknown keys are warnings;
     /// syntax and validation errors carry `file:line:col`.
@@ -239,7 +275,7 @@ impl Config {
         let path = path.as_ref();
         // `config.set {persist: false}` overrides apply to the user's config file only.
         let overridden = crate::layers::has_overrides() && path == config_path();
-        match std::fs::read_to_string(path) {
+        let loaded = match std::fs::read_to_string(path) {
             Ok(src) if overridden => {
                 Config::parse(&crate::edit::apply_runtime_overrides(&src), path)
             }
@@ -252,7 +288,14 @@ impl Config {
                 path: path.to_path_buf(),
                 source: e,
             }),
-        }
+        };
+        // The user's config decides isolation and what runs: warn when others could edit it.
+        loaded.map(|(c, mut w)| {
+            if path == config_path() {
+                w.extend(permission_warning(path, home_owner()));
+            }
+            (c, w)
+        })
     }
 
     /// Parse config text; `origin` is only used in diagnostics.
@@ -887,4 +930,26 @@ fn valid_duration(s: &str) -> bool {
     let s = s.trim();
     let digits = s.strip_suffix(['s', 'm', 'h', 'd']).unwrap_or(s);
     digits.parse::<u64>().is_ok_and(|n| n > 0)
+}
+
+#[cfg(test)]
+mod permission_tests {
+    use super::*;
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    #[test]
+    fn warns_on_writable_or_foreign_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("config.toml");
+        std::fs::write(&f, "").unwrap();
+        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let me = std::fs::metadata(&f).unwrap().uid();
+        assert!(permission_warning(&f, Some(me)).is_none());
+        assert!(permission_warning(&f, None).is_none());
+        assert!(permission_warning(&f, Some(me + 1)).is_some());
+        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o620)).unwrap();
+        assert!(permission_warning(&f, Some(me)).is_some());
+        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o602)).unwrap();
+        assert!(permission_warning(&f, Some(me)).is_some());
+    }
 }

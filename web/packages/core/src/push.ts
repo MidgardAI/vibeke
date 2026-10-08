@@ -1,11 +1,12 @@
 // Device-owned Web Push (spec 16 §8.1, §8.3): one P-256 VAPID key pair per device, one browser
-// subscription signed by it, and `push.subscribe {subscription, vapid_private}` sent to EVERY
-// paired host. The browser specifics (PushManager, permission prompts) live behind
+// subscription signed by it, and `push.subscribe {subscription, vapid_private}` sent to every
+// host this device paired as its own (`kind: device`). Share hosts (someone else's machine that
+// shared a workspace or pane with us) never receive the VAPID private key. The browser specifics (PushManager, permission prompts) live behind
 // `PushSupport`; this module owns the key and keeps all hosts in sync.
 
 import { p256 } from '@noble/curves/nist.js';
 import * as b64 from './b64';
-import type { HostManagerApi } from './hosts';
+import { hostKind, type HostManagerApi, type HostState } from './hosts';
 import { getOrCreateKey, type KeyStore, type PushSubscriptionInfo, type PushSupport } from './platform';
 
 export const VAPID_KEY_NAME = 'device_vapid_private';
@@ -44,6 +45,12 @@ const dec = new TextDecoder();
 
 /** Marker of what a host last received: endpoint + VAPID public key. */
 const marker = (sub: PushSubscriptionInfo, keys: VapidKeys): string => `${sub.endpoint}|${b64.encode(keys.publicKey)}`;
+
+/**
+ * Push goes only to the user's own hosts: the VAPID private key lets a host sign pushes as this
+ * device, so a share host (another person's machine) must never hold it.
+ */
+const ownOnline = (st: HostState): boolean => st.status === 'online' && hostKind(st.record) === 'device';
 
 export type PushSyncState = 'unsupported' | 'off' | 'on' | 'error';
 
@@ -138,7 +145,7 @@ export class PushSync {
     this.sub = null;
     await Promise.all(
       this.o.manager.connections().map((c) =>
-        c.getSnapshot().status === 'online'
+        ownOnline(c.getSnapshot())
           ? c.request('push.unsubscribe', endpoint ? { endpoint } : {}).catch(() => {})
           : undefined,
       ),
@@ -174,7 +181,7 @@ export class PushSync {
     await this.saveSent();
   }
 
-  /** Send to every online host whose marker is out of date (or all, with `force`). */
+  /** Send to every own online host whose marker is out of date (or all, with `force`). */
   async syncAll(force = false): Promise<void> {
     const sub = this.sub;
     const keys = this.keys;
@@ -183,7 +190,7 @@ export class PushSync {
     const jobs: Promise<void>[] = [];
     for (const c of this.o.manager.connections()) {
       const st = c.getSnapshot();
-      if (st.status !== 'online' || this.inflight.has(c.id)) continue;
+      if (!ownOnline(st) || this.inflight.has(c.id)) continue;
       if (!force && this.sent[c.id] === want) continue;
       this.inflight.add(c.id);
       jobs.push(

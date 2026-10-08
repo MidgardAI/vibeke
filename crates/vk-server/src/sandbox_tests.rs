@@ -7,6 +7,7 @@ use crate::ServerOpts;
 use crate::paths::Paths;
 use std::process::Command;
 use std::sync::Once;
+use tokio::io::AsyncBufReadExt;
 
 fn init_env() {
     static ONCE: Once = Once::new();
@@ -739,15 +740,19 @@ async fn broker_enforces_ownership_of_explicit_targets() {
     // Its own pane is fine.
     let r = call(30, "agent.report", json!({"pane": mine, "state": "idle"})).await;
     assert!(r.get("error").is_none(), "{r}");
-    let r = call(31, "preview.declare", json!({"port": 41997})).await;
+    // A port no pane listens on: its own pane may ask, and the user confirms it.
+    let r = call(31, "preview.declare", json!({"port": 41997, "wait": false})).await;
     assert!(r.get("error").is_none(), "{r}");
+    assert_eq!(r["result"]["status"], "pending", "{r}");
+    assert_eq!(r["result"]["method"], "preview.declare", "{r}");
     let r = call(
         32,
         "preview.declare",
-        json!({"port": 41996, "task": "task-ba"}),
+        json!({"port": 41996, "task": "task-ba", "wait": false}),
     )
     .await;
     assert!(r.get("error").is_none(), "{r}");
+    assert_eq!(r["result"]["status"], "pending", "{r}");
 }
 
 #[path = "sandbox_container_tests.rs"]
