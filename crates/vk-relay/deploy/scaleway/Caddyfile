@@ -1,0 +1,11 @@
+@DOMAIN@ {
+	@release path /.well-known/vibeke-release
+	handle @release {
+		root * /opt/vibeke-relay/current
+		rewrite * /RELEASE
+		file_server
+	}
+	handle {
+		reverse_proxy 127.0.0.1:8787
+	}
+}

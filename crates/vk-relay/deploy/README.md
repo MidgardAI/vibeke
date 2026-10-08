@@ -1,5 +1,7 @@
 # vibeke-relay
 
+For the repeatable Scaleway VM deployment, see [Scaleway setup](scaleway/README.md).
+
 The relay lets phones and desktops reach a Vibeke host that has no inbound port (spec 16 §6). It
 only forwards end-to-end encrypted WebSocket messages; it never sees keys or content. No accounts
 yet: anyone can register a host, and limits keep abuse cheap. Use `--host-token` for a private relay.
