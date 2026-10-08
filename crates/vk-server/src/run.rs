@@ -297,7 +297,8 @@ fn connection_gate(
 }
 
 /// Per-connection cleanup that must run however the connection ends (EOF, error, panic
-/// unwinding): client-held agent-browser screencast subscriptions and take-overs.
+/// unwinding): client-held agent-browser screencast subscriptions and take-overs, and a
+/// gateway's connected-devices report.
 struct ConnGuard {
     server: Arc<Server>,
     client_ids: Arc<std::sync::Mutex<Vec<String>>>,
@@ -323,6 +324,8 @@ impl Drop for ConnGuard {
             crate::agent_browser::client_gone(&self.server, &id);
             // A pane's CLI waiting on an approval request withdraws it (Ctrl-C).
             crate::approve::client_gone(&self.server, &id);
+            // A gateway's connected-devices report (the TUI's 📱 count) ends with it.
+            crate::gateway_api::client_gone(&self.server, &id);
         }
     }
 }

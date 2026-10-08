@@ -54,6 +54,8 @@ pub struct Gateway {
     /// Device id → when its foreground lease expires (spec 16 §7.4 `client.visibility`).
     visible: Mutex<HashMap<String, Instant>>,
     live: Mutex<HashMap<String, Vec<mpsc::Sender<ConnCmd>>>>,
+    /// A device connected or went away: [`report_devices`] tells the server (`client.devices`).
+    conns_changed: tokio::sync::Notify,
     push_throttle: Mutex<HashMap<String, Throttle>>,
     /// Bounds concurrent push sends.
     push_slots: tokio::sync::Semaphore,
@@ -80,6 +82,24 @@ impl Default for GatewayLimits {
     }
 }
 
+/// Tell the server which devices are connected (`client.devices`, the TUI's 📱 count): on every
+/// connect and disconnect, and every 30 s, because the server drops the list when this
+/// gateway's connection to it ends, and a reconnected one starts empty. One task, so reports
+/// arrive in order.
+async fn report_devices(gw: Arc<Gateway>) {
+    loop {
+        let list = gw.connected_devices();
+        if let Err(e) = gw
+            .server
+            .call("client.devices", json!({"devices": list}))
+            .await
+        {
+            tracing::debug!("client.devices: {}", e.message);
+        }
+        let _ = tokio::time::timeout(Duration::from_secs(30), gw.conns_changed.notified()).await;
+    }
+}
+
 impl Gateway {
     pub fn new(state: StateDir, server: Arc<Server>) -> Result<Arc<Self>> {
         let cfg = state.config()?;
@@ -103,6 +123,7 @@ impl Gateway {
             devices: RwLock::new(devices),
             visible: Mutex::new(HashMap::new()),
             live: Mutex::new(HashMap::new()),
+            conns_changed: tokio::sync::Notify::new(),
             dialing: std::sync::atomic::AtomicUsize::new(0),
             push_throttle: Mutex::new(HashMap::new()),
             push_slots: tokio::sync::Semaphore::new(8),
@@ -234,7 +255,33 @@ impl Gateway {
             return Err("too many connections");
         }
         live.entry(device.into()).or_default().push(tx);
+        drop(live);
+        self.conns_changed.notify_one();
         Ok(())
+    }
+
+    /// A device connection ended (its `ConnCmd` receiver is gone).
+    pub fn conn_closed(&self) {
+        self.conns_changed.notify_one();
+    }
+
+    /// The devices connected right now, one entry each however many connections they hold. Peers
+    /// are other hosts, not phones or desktops, and are left out.
+    pub fn connected_devices(&self) -> Vec<Value> {
+        let mut ids: Vec<String> = {
+            let mut live = self.live.lock().unwrap();
+            live.values_mut().for_each(|v| v.retain(|c| !c.is_closed()));
+            live.retain(|_, v| !v.is_empty());
+            live.keys().cloned().collect()
+        };
+        // Stable order: the server only announces a list that changed.
+        ids.sort();
+        let devices = self.devices();
+        ids.iter()
+            .filter_map(|id| devices.iter().find(|d| &d.id == id))
+            .filter(|d| d.kind != "peer")
+            .map(|d| json!({"id": d.id, "name": d.name, "platform": d.platform, "kind": d.kind}))
+            .collect()
     }
 
     pub fn set_visible(&self, device: &str, visible: bool) {
@@ -408,6 +455,7 @@ pub async fn run(gw: Arc<Gateway>) -> Result<()> {
     tokio::spawn(handoff_send::run(gw.clone()));
     // Requests from the server (`gateway.call`): peers and invitations for the TUI.
     tokio::spawn(bridge::run(gw.clone()));
+    tokio::spawn(report_devices(gw.clone()));
     tokio::spawn({
         let gw = gw.clone();
         async move {

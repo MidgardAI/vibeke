@@ -345,6 +345,9 @@ async fn device_loop(gw: Arc<Gateway>, ws: impl Ws, session: Session, device_id:
         t.abort();
     }
     gw.set_visible(&device_id, false);
+    // Closes this connection's entry in the live list before the report reads it.
+    drop(cmd_rx);
+    gw.conn_closed();
     drop(out);
     let _ = tokio::time::timeout(Duration::from_secs(2), writer).await;
     tracing::info!(device = %device_id, "device disconnected");

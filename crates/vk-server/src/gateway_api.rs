@@ -391,9 +391,9 @@ fn client_list(server: &Server) -> Value {
         .collect();
     // Activity reported for TUIs attached to other machines (host-wide "user at desk").
     let elsewhere: Vec<Value> = activity.iter().filter(|(id, _)| !clients.contains_key(*id)).map(|(id, at)| json!({"id": id, "kind": "tui", "remote_activity": true, "last_input_ms": at})).collect();
-    // Devices reported by gateways that are still connected (stale reporters dropped).
-    let mut dev = state(server).devices.lock().unwrap();
-    dev.retain(|id, _| clients.contains_key(id));
+    // Devices reported by gateways still connected: a gateway's report goes when its connection
+    // does (`client_gone`). Gateways talk plain RPC, so they are never in `clients`.
+    let dev = state(server).devices.lock().unwrap();
     let devices: Vec<Value> = dev
         .iter()
         .flat_map(|(gw, l)| {
@@ -412,6 +412,21 @@ fn client_list(server: &Server) -> Value {
         .filter_map(|c| c["last_input_ms"].as_i64())
         .max();
     json!({"clients": list, "other_activity": elsewhere, "user_last_input_ms": user_last, "devices": devices})
+}
+
+/// A connection ended: the devices its gateway reported are no longer reachable through it.
+pub fn client_gone(server: &Server, client_id: &str) {
+    let gone = state(server).devices.lock().unwrap().remove(client_id);
+    if gone.is_some_and(|l| !l.is_empty()) {
+        let mut c = server.core.lock().unwrap();
+        let mut tx = Tx::new();
+        tx.event(
+            "client.devices_changed",
+            json!({"client": client_id}),
+            json!({"devices": 0}),
+        );
+        let _ = server.commit(&mut c, tx);
+    }
 }
 
 // ---- X5: out-of-band confirm ----------------------------------------------------------------

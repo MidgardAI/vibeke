@@ -238,3 +238,34 @@ fn methods_outside_the_allow_list_are_refused() {
         assert_eq!(kind(&e), "remote_unavailable", "{kind_}: {e}");
     }
 }
+
+#[test]
+fn reported_devices_last_as_long_as_the_gateway_connection() {
+    let s = Session::new();
+    let none = api(&s, "client.list", json!({})).unwrap();
+    assert_eq!(none["devices"], json!([]), "{none}");
+    let mut gw = gateway_rpc(&s);
+    gw.call(
+        "client.devices",
+        json!({"devices": [{"id": "d1", "name": "Pixel", "platform": "android", "kind": "device"}]}),
+    )
+    .unwrap();
+    // Gateways talk plain RPC (no render attach); their report still counts.
+    let list = api(&s, "client.list", json!({})).unwrap();
+    let devices = list["devices"].as_array().unwrap();
+    assert_eq!(devices.len(), 1, "{list}");
+    assert_eq!(devices[0]["name"], "Pixel", "{list}");
+    // Only gateways report devices.
+    let e = api(&s, "client.devices", json!({"devices": []})).unwrap_err();
+    assert_eq!(kind(&e), "permission_denied", "{e}");
+    // The gateway goes away: so do the devices it reached.
+    drop(gw);
+    for _ in 0..100 {
+        let list = api(&s, "client.list", json!({})).unwrap();
+        if list["devices"] == json!([]) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    panic!("the devices outlived their gateway");
+}

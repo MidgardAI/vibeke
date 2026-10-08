@@ -38,11 +38,17 @@ async fn start_relay() -> SocketAddr {
 }
 
 /// A tiny stand-in for the Vibeke server's NDJSON JSON-RPC socket.
-fn fake_server(path: PathBuf) {
+/// The `client.devices` reports the fake server received, in order.
+type Reports = std::sync::Arc<std::sync::Mutex<Vec<Value>>>;
+
+fn fake_server(path: PathBuf) -> Reports {
     let listener = UnixListener::bind(&path).unwrap();
+    let reports = Reports::default();
+    let out = reports.clone();
     tokio::spawn(async move {
         loop {
             let (stream, _) = listener.accept().await.unwrap();
+            let reports = reports.clone();
             tokio::spawn(async move {
                 let (r, mut w) = stream.into_split();
                 let mut lines = BufReader::new(r).lines();
@@ -68,6 +74,10 @@ fn fake_server(path: PathBuf) {
                                                       "delivery": {"channel": "native"}, "echo": p})
                         }
                         "events.subscribe" => json!({"subscription_id": "s", "at": {"seq": 7}}),
+                        "client.devices" => {
+                            reports.lock().unwrap().push(p["devices"].clone());
+                            json!({})
+                        }
                         _ => json!({}),
                     };
                     let line =
@@ -79,6 +89,18 @@ fn fake_server(path: PathBuf) {
             });
         }
     });
+    out
+}
+
+/// Wait for the latest `client.devices` report to satisfy `ok`.
+async fn report_where(reports: &Reports, ok: impl Fn(&Value) -> bool) -> Value {
+    for _ in 0..250 {
+        if let Some(last) = reports.lock().unwrap().last().filter(|l| ok(l)) {
+            return last.clone();
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("no matching report in {:?}", reports.lock().unwrap());
 }
 
 struct Client {
@@ -391,7 +413,7 @@ async fn local_socket_pairs_and_serves() {
     use tokio_tungstenite::client_async;
     let tmp = tempfile::tempdir().unwrap();
     let sock = tmp.path().join("vibeke.sock");
-    fake_server(sock.clone());
+    let reports = fake_server(sock.clone());
     let state = StateDir::open(tmp.path().join("gw")).unwrap();
     let mut cfg = state.config().unwrap();
     cfg.host_name = Some("mac".into()); // no relay: local only
@@ -487,4 +509,10 @@ async fn local_socket_pairs_and_serves() {
     let mut c = open_local(&path, Hello::device(), &dev, &hk, None).await;
     let d = c.call(2, "dashboard.get", json!({})).await;
     assert_eq!(d["result"]["at"], 7);
+    // The server hears which devices are connected (the TUI's 📱 count), and when they leave.
+    let list = report_where(&reports, |l| l.as_array().is_some_and(|a| a.len() == 1)).await;
+    assert_eq!(list[0]["name"], "desktop", "{list}");
+    assert_eq!(list[0]["platform"], "macos", "{list}");
+    drop(c);
+    report_where(&reports, |l| l.as_array().is_some_and(Vec::is_empty)).await;
 }
