@@ -1436,3 +1436,168 @@ async fn revocation_and_disconnects_end_approval_requests_and_grants() {
     assert!(reasons.contains(&"revoked".to_string()), "{reasons:?}");
     assert!(reasons.contains(&"disconnected".to_string()), "{reasons:?}");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_revoked_pane_s_request_or_standing_grant_never_runs() {
+    let (e, _repo) = approval_env().await;
+    let mut ask = send_ask("laptop");
+    ask["wait"] = json!(false);
+    let cancel_all = |e: &Env| {
+        for j in crate::handoff_out::list(&e.server) {
+            if !crate::handoff_out::terminal(&j.state) {
+                crate::handoff_out::cancel(&e.server, &json!({"id": j.id})).unwrap();
+            }
+        }
+    };
+    // pane-b holds a standing grant for sending itself to laptop.
+    let first = e
+        .call(&pane_ctx("pane-b"), "auth.approve", ask.clone())
+        .await
+        .unwrap();
+    e.ok(
+        "auth.approve.decide",
+        json!({"request": first["request"], "decision": "always"}),
+    )
+    .await;
+    cancel_all(&e);
+    assert_eq!(crate::approve::grants_of(&e.server, "pane-b"), 1);
+    let b_jobs = jobs_of(&e, "pane-b").len();
+
+    // pane-a asks; its revocation reaches the auth table before the user approves (and
+    // before it reached the approval table): the approval refuses and nothing runs.
+    let req = e
+        .call(&pane_ctx("pane-a"), "auth.approve", ask.clone())
+        .await
+        .unwrap();
+    crate::auth::mark_revoked_for_test(&e.server, "pane-a");
+    for decision in ["always", "approve"] {
+        let r = e
+            .call(
+                &user(),
+                "auth.approve.decide",
+                json!({"request": req["request"], "decision": decision}),
+            )
+            .await;
+        let err = r.unwrap_err();
+        if decision == "always" {
+            assert_eq!(kind(&err), ErrorKind::PermissionDenied, "{}", err.message);
+            assert!(
+                err.message.starts_with("approval_withdrawn"),
+                "{}",
+                err.message
+            );
+        } else {
+            // Withdrawn by the first attempt.
+            assert_eq!(kind(&err), ErrorKind::NotFound, "{}", err.message);
+        }
+    }
+    assert!(jobs_of(&e, "pane-a").is_empty());
+    assert_eq!(crate::approve::grants_of(&e.server, "pane-a"), 0);
+    assert!(
+        !e.events("auth.approval_granted")
+            .iter()
+            .any(|ev| ev.subject["pane"] == "pane-a")
+    );
+    assert!(
+        e.events("auth.approval_withdrawn")
+            .iter()
+            .any(|ev| ev.subject["pane"] == "pane-a" && ev.data["reason"] == "revoked")
+    );
+    let l = e.ok("auth.list", json!({})).await;
+    assert!(
+        !l["approvals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["pane"] == "pane-a")
+    );
+
+    // pane-b is revoked while its identical ask is prepared: the standing grant doesn't run.
+    crate::approve::set_after_prepare(&e.server, |srv| {
+        crate::auth::mark_revoked_for_test(srv, "pane-b");
+    });
+    let r = crate::approve::api(
+        &e.server,
+        &pane_ctx("pane-b"),
+        "auth.approve",
+        &send_ask("laptop"),
+    )
+    .await
+    .expect("auth.approve is an approve method");
+    let err = r.unwrap_err();
+    assert_eq!(kind(&err), ErrorKind::PermissionDenied, "{}", err.message);
+    assert!(
+        err.message.starts_with("approval_withdrawn"),
+        "{}",
+        err.message
+    );
+    assert_eq!(jobs_of(&e, "pane-b").len(), b_jobs);
+    assert!(
+        !e.events("auth.approval_granted")
+            .iter()
+            .any(|ev| ev.data["grant"] == "standing")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_ask_whose_caller_left_or_pane_was_revoked_while_preparing_is_never_registered() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let (e, _repo) = approval_env().await;
+    // The connection closes while the repository is inspected (the CLI's Ctrl-C): its
+    // cleanup finds nothing registered yet, and the ask must not register afterwards.
+    for wait in [true, false] {
+        let open = Arc::new(AtomicBool::new(true));
+        let flag = open.clone();
+        crate::approve::set_after_prepare(&e.server, move |srv| {
+            flag.store(false, Ordering::SeqCst);
+            crate::approve::client_gone(srv, "c-pane-a");
+        });
+        let mut p = send_ask("laptop");
+        p["wait"] = json!(wait);
+        p["timeout_ms"] = json!(15000);
+        let r = crate::approve::CONN_OPEN
+            .scope(open, e.call(&pane_ctx("pane-a"), "auth.approve", p))
+            .await;
+        let err = r.unwrap_err();
+        assert_eq!(kind(&err), ErrorKind::Conflict, "{}", err.message);
+        assert!(
+            err.message.starts_with("approval_withdrawn") && err.message.contains("disconnected"),
+            "{}",
+            err.message
+        );
+    }
+    // The pane's token is revoked while the repository is inspected (`clear_pane` runs with
+    // nothing registered yet): the ask is refused.
+    crate::approve::set_after_prepare(&e.server, |srv| {
+        crate::approve::clear_pane(srv, "pane-a", json!({"kind": "user"}));
+    });
+    let mut p = send_ask("laptop");
+    p["timeout_ms"] = json!(15000);
+    let err = e
+        .call(&pane_ctx("pane-a"), "auth.approve", p)
+        .await
+        .unwrap_err();
+    assert_eq!(kind(&err), ErrorKind::PermissionDenied, "{}", err.message);
+    assert!(
+        err.message.starts_with("approval_withdrawn") && err.message.contains("revoked"),
+        "{}",
+        err.message
+    );
+    // Nothing was left pending, announced or run.
+    let l = e.ok("auth.list", json!({})).await;
+    assert!(l["approvals"].as_array().unwrap().is_empty(), "{l}");
+    assert!(e.events("auth.approval_requested").is_empty());
+    assert!(jobs_of(&e, "pane-a").is_empty());
+
+    // An open connection registers as before.
+    let mut p = send_ask("laptop");
+    p["wait"] = json!(false);
+    let r = crate::approve::CONN_OPEN
+        .scope(
+            Arc::new(AtomicBool::new(true)),
+            e.call(&pane_ctx("pane-a"), "auth.approve", p),
+        )
+        .await
+        .unwrap();
+    assert_eq!(r["status"], "pending");
+}
