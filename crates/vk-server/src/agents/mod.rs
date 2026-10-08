@@ -2347,6 +2347,16 @@ async fn prompt(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         let r = server.with_core(|c| c.run(&run.id).map(|r| run_json(c, r)));
         return Ok(json!({"run": r}));
     }
+    // Never type text into a picker or a dialog Vibeke cannot read.
+    if let Some(open) = dialog_on_pane(server, &run) {
+        return Err(err(
+            ErrorKind::Conflict,
+            "the agent is showing a dialog; answer or cancel it first",
+        )
+        .details(json!({"reason": "dialog_open", "interaction": open, "run": run.handle})));
+    }
+    let slash = text.trim_start().starts_with('/');
+    let t0 = now_ms();
     let modes = crate::render::input_modes(server, &run.pane);
     let mut m = modes;
     m.bracketed_paste = modes.bracketed_paste;
@@ -2372,10 +2382,13 @@ async fn prompt(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         b"\r".to_vec(),
     )
     .await;
-    // Stall detection (07 §1.4): no lifecycle change within 5 s.
+    // Stall detection (07 §1.4): no lifecycle change within 5 s. A slash command may open a
+    // picker or just print output instead of starting a turn: never a stall.
+    let mut started = was_working;
+    let mut opened: Option<String> = None;
     if !was_working {
-        let deadline = Instant::now() + Duration::from_secs(5);
-        let mut started = false;
+        let window = if slash { 3 } else { 5 };
+        let deadline = Instant::now() + Duration::from_secs(window);
         while Instant::now() < deadline {
             let st = server.with_core(|c| {
                 c.run(&run.id)
@@ -2388,13 +2401,21 @@ async fn prompt(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
                 started = true;
                 break;
             }
+            if let Some(id) = picker_opened_since(server, &run.pane, t0) {
+                opened = Some(id);
+                break;
+            }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        if !started && run.integration == "hooks" {
+        if !started && !slash && opened.is_none() && run.integration == "hooks" {
             return Err(
                 err(ErrorKind::Stalled, "agent_prompt_stalled").details(json!({"run": run.handle}))
             );
         }
+    }
+    if let Some(id) = opened {
+        let r = server.with_core(|c| c.run(&run.id).map(|r| run_json(c, r)));
+        return Ok(json!({"run": r, "turn_started": started, "interaction": id}));
     }
     if p.get("wait").and_then(Value::as_bool).unwrap_or(false) {
         let until = vec![
@@ -2404,17 +2425,63 @@ async fn prompt(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
             "error".into(),
             "exited".into(),
         ];
-        return wait(
+        let mut v = wait(
             server,
             &run,
             &until,
             u(p, "timeout_ms").unwrap_or(600_000),
             Some(rev0),
         )
-        .await;
+        .await?;
+        v["turn_started"] = json!(started);
+        return Ok(v);
     }
     let r = server.with_core(|c| c.run(&run.id).map(|r| run_json(c, r)));
-    Ok(json!({"run": r}))
+    Ok(json!({"run": r, "turn_started": started}))
+}
+
+/// An open picker (or unknown dialog) on the run's pane, or one the screen shows right now.
+/// `Some(None)` when the screen shows one that has no interaction yet.
+fn dialog_on_pane(server: &Arc<Server>, run: &AgentRun) -> Option<Option<String>> {
+    let open = |server: &Arc<Server>| {
+        server.with_core(|c| {
+            c.model
+                .interactions
+                .iter()
+                .find(|i| {
+                    i.pane == run.pane
+                        && i.status == InteractionStatus::Open
+                        && i.kind == InteractionKind::Picker
+                })
+                .map(|i| i.id.clone())
+        })
+    };
+    if let Some(id) = open(server) {
+        return Some(Some(id));
+    }
+    let h = Harness::from_id(&run.harness)?;
+    let rt = server.pane_rt(&run.pane)?;
+    let text = rt.screen.lock().unwrap().engine.screen_text();
+    screen::evaluate(h, &text).dialog?.picker?;
+    // Open it now so the caller can name it.
+    server.agents.on_screen(server, &run.pane);
+    Some(open(server))
+}
+
+/// A picker interaction opened on `pane` at or after `since_ms`.
+fn picker_opened_since(server: &Server, pane: &str, since_ms: i64) -> Option<String> {
+    server.with_core(|c| {
+        c.model
+            .interactions
+            .iter()
+            .find(|i| {
+                i.pane == pane
+                    && i.kind == InteractionKind::Picker
+                    && i.status == InteractionStatus::Open
+                    && i.opened_at_ms >= since_ms
+            })
+            .map(|i| i.id.clone())
+    })
 }
 
 async fn wait(
