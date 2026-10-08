@@ -1356,11 +1356,10 @@ mod sessions {
 
     // ---- structured model control (agent.models / agent.set_model) ---------------------------
 
-    fn model_cmd(
-        t: &T,
-        s: &mut Session,
-        op: ModelOp,
-    ) -> (Vec<(u64, Value)>, oneshot::Receiver<Result<Value, String>>) {
+    /// The writes a model command made, and the receiver of its answer.
+    type ModelCmd = (Vec<(u64, Value)>, oneshot::Receiver<Result<Value, String>>);
+
+    fn model_cmd(t: &T, s: &mut Session, op: ModelOp) -> ModelCmd {
         let (tx, rx) = oneshot::channel();
         let acts = s.on_cmd(&t.server, Cmd::Model { op, ack: tx });
         (act_writes(&acts), rx)
