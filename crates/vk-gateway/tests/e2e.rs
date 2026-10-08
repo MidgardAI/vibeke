@@ -74,6 +74,20 @@ fn fake_server(path: PathBuf) -> Reports {
                                                       "delivery": {"channel": "native"}, "echo": p})
                         }
                         "events.subscribe" => json!({"subscription_id": "s", "at": {"seq": 7}}),
+                        "agent.commands" => {
+                            json!({"commands": [{"name": "model", "description": "Set the AI model", "takes_arg": true, "opens_picker": true, "dangerous": false}],
+                                   "source": "catalog", "echo": p})
+                        }
+                        "agent.models" => {
+                            let line = json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32010, "message": "no structured model control",
+                                "data": {"kind": "unsupported", "details": {"reason": "harness", "fallback": "/model"}, "retryable": false}}})
+                            .to_string()
+                                + "\n";
+                            if w.write_all(line.as_bytes()).await.is_err() {
+                                return;
+                            }
+                            continue;
+                        }
                         "client.devices" => {
                             reports.lock().unwrap().push(p["devices"].clone());
                             json!({})
@@ -335,6 +349,22 @@ async fn pair_confirm_call_and_revoke() {
     assert_eq!(d["result"]["at"], 7);
     assert_eq!(d["result"]["interactions"][0]["kind"], "approval");
     assert_eq!(d["result"]["interactions"][0]["action"]["risk"], "low");
+
+    // Pickers: the command catalog and model list are reads (no op_id); an unsupported harness
+    // stays `unsupported`; switching the model needs full scope.
+    let cmds = c.call("agent.commands", json!({"target": "r1"})).await;
+    assert_eq!(cmds["result"]["commands"][0]["name"], "model", "{cmds}");
+    assert_eq!(cmds["result"]["echo"], json!({"target": "r1"}));
+    let models = c.call("agent.models", json!({"target": "r1"})).await;
+    assert_eq!(models["error"]["data"]["kind"], "unsupported", "{models}");
+    assert_eq!(models["error"]["data"]["details"]["fallback"], "/model");
+    let set = c
+        .call(
+            "agent.set_model",
+            json!({"target": "r1", "model": "m", "op_id": "o0"}),
+        )
+        .await;
+    assert_eq!(set["error"]["data"]["kind"], "forbidden", "{set}");
 
     // Scope: approve may not type into panes.
     let f = c

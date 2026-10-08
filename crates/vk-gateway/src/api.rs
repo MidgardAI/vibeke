@@ -66,6 +66,8 @@ const SERVER_READ_ONLY: &[&str] = &[
     "agent.list",
     "agent.transcript",
     "agent.harnesses",
+    "agent.commands",
+    "agent.models",
     "agent.wait",
     "interaction.get",
     "interaction.list",
@@ -120,6 +122,10 @@ pub fn required_scope(method: &str) -> Option<Scope> {
         | "git.log"
         | "fs.list"
         | "fs.read" => View,
+        // Pickers: the slash-command catalog and the model list are reads; switching the model
+        // changes what the agent runs, like a prompt.
+        "agent.commands" | "agent.models" => View,
+        "agent.set_model" => Full,
         "agent.interrupt"
         | "interaction.answer"
         | "interaction.answer_batch"
@@ -966,6 +972,16 @@ impl Call<'_> {
                     .await
             }
             "agent.interrupt" => self.server("agent.interrupt", pick(&p, &["target"])).await,
+            "agent.commands" | "agent.models" => {
+                req(&p, "target")?;
+                self.server(method, pick(&p, &["target"])).await
+            }
+            "agent.set_model" => {
+                req(&p, "target")?;
+                req(&p, "model")?;
+                self.server("agent.set_model", pick(&p, &["target", "model", "scope"]))
+                    .await
+            }
             "agent.harnesses" => self.server("agent.harnesses", json!({})).await,
             "agent.transcript" => {
                 // Server pages natively for gateway clients: {turns:[{n, ts, items}], next_before}.
@@ -1599,6 +1615,11 @@ mod tests {
         assert_eq!(required_scope("dashboard.get"), Some(Scope::View));
         assert_eq!(required_scope("interaction.answer"), Some(Scope::Approve));
         assert_eq!(required_scope("agent.prompt"), Some(Scope::Full));
+        assert_eq!(required_scope("agent.commands"), Some(Scope::View));
+        assert_eq!(required_scope("agent.models"), Some(Scope::View));
+        assert_eq!(required_scope("agent.set_model"), Some(Scope::Full));
+        assert!(is_mutating("agent.set_model"));
+        assert!(!is_mutating("agent.models") && !is_mutating("agent.commands"));
         assert_eq!(required_scope("pane.send_keys"), Some(Scope::Full));
         assert_eq!(required_scope("server.stop"), None);
         assert!(is_mutating("interaction.answer"));
