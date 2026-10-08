@@ -215,6 +215,32 @@ async fn a_known_turn_id_is_never_recorded_twice() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_model_switch_mid_session_updates_the_run_model() {
+    let e = env();
+    let path = e.dir.path().join("switch.jsonl");
+    std::fs::write(&path, claude_lines("claude-sonnet-4", 1)).unwrap();
+    let run = add_run(&e, "run-switch", "pane-switch", |r| {
+        r.model = Some("claude-sonnet-4".into());
+        r.transcript_path = Some(path.display().to_string());
+    });
+    assert!(tailer::track(&run));
+    tailer::poll_all(&e.server);
+    assert_eq!(
+        run_of(&e, "run-switch").model.as_deref(),
+        Some("claude-sonnet-4")
+    );
+    // `/model` fires no hook: the next answer in the transcript names the new model.
+    let mut more = std::fs::read_to_string(&path).unwrap();
+    more.push_str(&claude_lines("claude-opus-4", 2));
+    std::fs::write(&path, more).unwrap();
+    tailer::poll_all(&e.server);
+    let r = run_of(&e, "run-switch");
+    assert_eq!(r.model.as_deref(), Some("claude-opus-4"));
+    assert_eq!(r.usage.model.as_deref(), Some("claude-opus-4"));
+    tailer::untrack("run-switch");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn subscription_billing_keeps_tokens_and_no_dollars() {
     let e = env();
     // A claude-family manifest under its own id, so the billing override cannot leak into the

@@ -41,7 +41,7 @@ export function cleanUserText(text: string): string {
     const args = /<command-args>([\s\S]*?)<\/command-args>/.exec(s);
     return `${cmd[1]!.trim()}${args && args[1]!.trim() ? ` ${args[1]!.trim()}` : ''}`;
   }
-  s = s.replace(/<(local-command-stdout|local-command-stderr|command-message)>[\s\S]*?<\/\1>/g, '');
+  s = s.replace(/<(local-command-stdout|local-command-stderr|local-command-caveat|command-message)>[\s\S]*?<\/\1>/g, '');
   return s.trim();
 }
 

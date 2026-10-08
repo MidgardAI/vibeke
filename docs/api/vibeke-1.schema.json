@@ -30418,6 +30418,16 @@
               }
             ]
           },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "source": {
             "type": "string"
           }

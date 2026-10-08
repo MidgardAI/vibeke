@@ -95,10 +95,15 @@ fn store(server: &Server, run: &str, usage: Option<RunUsage>, limit: Option<Rate
         if let Some(u) = usage
             && u != r.usage
         {
+            // A newly reported model is the one the agent now answers with (a `/model` switch
+            // mid-session fires no hook), so the run's model follows it.
+            if u.model.is_some() && u.model != r.usage.model {
+                r.model = u.model.clone();
+            }
             tx.event(
                 "agent.usage",
                 json!({"run": r.id, "pane": r.pane}),
-                json!({"input": u.input_tokens, "output": u.output_tokens, "cache_read": u.cache_read_tokens, "cache_write": u.cache_write_tokens, "cost_usd": u.cost_usd, "source": u.source}),
+                json!({"input": u.input_tokens, "output": u.output_tokens, "cache_read": u.cache_read_tokens, "cache_write": u.cache_write_tokens, "cost_usd": u.cost_usd, "model": u.model, "source": u.source}),
             );
             r.usage = u;
         }
