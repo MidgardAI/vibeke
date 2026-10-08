@@ -33,6 +33,7 @@
     "dev": "bun scripts/dev.ts",
     "build": "bun scripts/build.ts",
     "start": "electron .",
+    "package": "electron-builder -c electron-builder.config.cjs",
     "dist": "bun scripts/build.ts && electron-builder -c electron-builder.config.cjs",
     "dist:dir": "bun scripts/build.ts && electron-builder -c electron-builder.config.cjs --dir",
     "dist:mac": "bun scripts/build.ts && electron-builder -c electron-builder.config.cjs --mac",

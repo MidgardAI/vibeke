@@ -28,7 +28,8 @@ export class DraftStore {
     this.file = join(dir, 'drafts.bin');
   }
   private load(): Promise<void> {
-    return this.ready ??= (async () => {
+    if (this.ready) return this.ready;
+    const loading = (async () => {
       await mkdir(this.dir, { recursive: true, mode: 0o700 });
       // The unreleased vault implementation also saved terminal passwords. Do not migrate it.
       await rm(join(this.dir, 'vault.bin'), { force: true });
@@ -37,16 +38,20 @@ export class DraftStore {
         if ((await stat(this.file)).size > MAX_TOTAL * 8) throw new Error('Draft storage exceeds its size limit');
         const value = JSON.parse(this.safe.decryptString(await readFile(this.file)));
         if (value.v !== 1 || !Array.isArray(value.drafts) || value.drafts.length > MAX_DRAFTS) throw new Error('Invalid draft storage');
+        const loaded = new Map<string, Draft>();
         let size = 0;
         for (const d of value.drafts as Draft[]) {
           if (typeof d.host !== 'string' || typeof d.pane !== 'string' || typeof d.text !== 'string' || !Number.isFinite(d.at)) throw new Error('Invalid draft');
           size += Buffer.byteLength(d.text);
           if (Buffer.byteLength(d.text) > MAX_TEXT || size > MAX_TOTAL) throw new Error('Draft storage exceeds its size limit');
-          this.data.set(key(d.host, d.pane), d);
+          loaded.set(key(d.host, d.pane), d);
         }
+        this.data = loaded;
       } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; }
       this.prune();
     })();
+    this.ready = loading.catch((e) => { this.ready = undefined; throw e; });
+    return this.ready;
   }
   private allowed(host: string, pane: string): boolean {
     return (!this.hosts || this.hosts.has(host)) && (!this.panes.has(host) || this.panes.get(host)!.has(pane));
@@ -97,12 +102,13 @@ export class DraftStore {
   }
   async removeHost(host: string): Promise<void> {
     await this.retainPanes(host, []);
-    await this.flush();
+    await this.flush(false);
   }
   hasPending(): boolean { return this.admitting > 0 || this.rejected.size > 0 || this.dirty || this.waiters.length > 0 || this.saving; }
-  async flush(): Promise<void> {
+  async flush(requireAll = true): Promise<void> {
     // Do not open an unused keychain just because the app is quitting.
-    if (!this.ready) return;
+    if (!this.ready && !this.rejected.size) return;
+    if (!this.ready) await this.load();
     await this.ready;
     clearTimeout(this.timer);
     this.timer = undefined;
@@ -129,6 +135,6 @@ export class DraftStore {
     });
     this.writing = run.catch(() => {});
     await run;
-    if (this.rejected.size) throw new Error('Some composer drafts could not be saved. Copy or clear them before restarting.');
+    if (requireAll && this.rejected.size) throw new Error('Some composer drafts could not be saved. Copy or clear them before restarting.');
   }
 }

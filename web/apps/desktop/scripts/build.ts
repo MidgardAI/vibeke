@@ -47,7 +47,7 @@ await bundle('src/main/index.ts', 'out/main', 'node');
 await bundle('src/main/updater-impl.ts', 'out/main', 'node');
 const realIdentity = !!(process.env.CSC_LINK || process.env.CSC_NAME || process.env.VIBEKE_MAC_SIGN);
 const notarized = !!(process.env.APPLE_API_KEY || process.env.APPLE_ID || process.env.APPLE_KEYCHAIN_PROFILE);
-writeFileSync(`${root}out/main/update-policy.json`, JSON.stringify({ macSigned: realIdentity && notarized }));
+writeFileSync(`${root}out/main/update-policy.json`, JSON.stringify({ macSigned: process.env.VIBEKE_MAC_UPDATE_SUPPORTED === 'true' || (realIdentity && notarized) }));
 await bundle('src/preload/index.ts', 'out/preload', 'browser');
 mkdirSync(`${root}out/main/assets`, { recursive: true });
 cpSync(`${root}build/tray`, `${root}out/main/assets`, { recursive: true });

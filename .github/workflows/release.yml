@@ -93,6 +93,10 @@ jobs:
             test "v$version" = "$GITHUB_REF_NAME"
           fi
       - run: bun install --frozen-lockfile
+      - name: Build desktop app without signing credentials
+        env:
+          VIBEKE_MAC_UPDATE_SUPPORTED: ${{ matrix.platform == 'mac' && secrets.MAC_CSC_LINK != '' && secrets.APPLE_API_KEY_P8 != '' && secrets.APPLE_API_KEY_ID != '' && secrets.APPLE_API_ISSUER != '' }}
+        run: bun run --cwd apps/desktop build
       - name: Build macOS installers without publishing
         if: matrix.platform == 'mac'
         env:
@@ -110,16 +114,16 @@ jobs:
             export APPLE_API_KEY="$notarization_key"
           fi
           unset APPLE_API_KEY_P8
-          bun run --cwd apps/desktop dist -- ${{ matrix.args }} --publish never
+          bun run --cwd apps/desktop package -- ${{ matrix.args }} --publish never
       - name: Build Windows installer without publishing
         if: matrix.platform == 'windows'
         env:
           WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
           WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
-        run: bun run --cwd apps/desktop dist -- ${{ matrix.args }} --publish never
+        run: bun run --cwd apps/desktop package -- ${{ matrix.args }} --publish never
       - name: Build Linux installers without publishing
         if: matrix.platform == 'linux'
-        run: bun run --cwd apps/desktop dist -- ${{ matrix.args }} --publish never
+        run: bun run --cwd apps/desktop package -- ${{ matrix.args }} --publish never
       - name: Verify packaged fuses, ASAR and macOS code signatures
         run: bun run --cwd apps/desktop verify:package
       - name: Verify update channel metadata and payloads

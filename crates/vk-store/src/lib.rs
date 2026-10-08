@@ -28,6 +28,28 @@ use serde_json::Value;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// Highest state schema this binary can safely open.
+pub const SCHEMA_VERSION: usize = MIGRATIONS.len();
+
+/// Inspect an existing database without migrating it or initializing application state.
+pub fn database_schema_version(path: &Path) -> Result<Option<u64>> {
+    if !path.try_exists()? {
+        return Ok(None);
+    }
+    let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    conn.busy_timeout(std::time::Duration::from_secs(5))?;
+    let version: i64 = conn.query_row(
+        "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+        [],
+        |r| r.get(0),
+    )?;
+    Ok(Some(
+        version
+            .try_into()
+            .context("invalid database schema version")?,
+    ))
+}
+
 pub fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

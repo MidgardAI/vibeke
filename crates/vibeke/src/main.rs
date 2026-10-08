@@ -297,6 +297,11 @@ async fn dispatch(g: Global, args: Vec<String>) -> i32 {
             println!("vibeke {}", vk_proto::VERSION);
             EXIT_OK
         }
+        // Read-only compatibility probe used before switching to an older installation.
+        Some("--internal-schema-version") if args.len() == 1 => {
+            println!("{}", vk_store::SCHEMA_VERSION);
+            EXIT_OK
+        }
         Some("--skill") => {
             print!("{}", commands::SKILL);
             EXIT_OK

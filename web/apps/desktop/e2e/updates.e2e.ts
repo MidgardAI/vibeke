@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { createServer } from 'node:https';
 import { execFileSync } from 'node:child_process';
 import { createHash, generateKeyPairSync, sign } from 'node:crypto';
 import { join } from 'node:path';
@@ -115,5 +116,60 @@ test('failed installation clears saved navigation before later activations', asy
     expect(result.before).toHaveProperty('updateRoute');
     expect(result.after).not.toHaveProperty('updateRoute');
     expect(result.quitting).toBe(false);
+  } finally { await a?.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('Electron discovery follows HTTPS redirects and refuses downgrades and oversized responses', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'vibeke-redirect-test-'));
+  let a: LaunchedApp | undefined;
+  const key = join(dir, 'key.pem'), cert = join(dir, 'cert.pem');
+  execFileSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', key, '-out', cert, '-days', '1', '-subj', '/CN=localhost'], { stdio: 'ignore' });
+  const server = createServer({ key: readFileSync(key), cert: readFileSync(cert) }, (req, res) => {
+    if (req.url === '/start') { res.writeHead(302, { Location: '/payload' }); res.end(); }
+    else if (req.url === '/downgrade') { res.writeHead(302, { Location: 'http://127.0.0.1/payload' }); res.end(); }
+    else if (req.url === '/loop') { res.writeHead(302, { Location: '/loop' }); res.end(); }
+    else { res.writeHead(200); res.end('authenticated metadata fixture'); }
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const port = (server.address() as { port: number }).port;
+  try {
+    const module = join(dir, 'fetch.cjs');
+    execFileSync('bun', ['build', 'src/main/update-fetch.ts', '--target=node', '--format=cjs', '--external=electron', `--outfile=${module}`], { cwd: appRoot });
+    a = await launchApp();
+    const result = await a.app.evaluate(async ({ session }, f) => {
+      session.defaultSession.setCertificateVerifyProc((request, callback) => callback(request.hostname === '127.0.0.1' ? 0 : -3));
+      const { createRequire } = process.getBuiltinModule('module');
+      const { electronFetchBytes: fetch } = createRequire(f.module)(f.module);
+      const payload = (await fetch(`${f.base}/start`)).toString();
+      const errors: string[] = [];
+      for (const [path, limit] of [['/downgrade', 1024], ['/loop', 1024], ['/payload', 4]] as const) {
+        try { await fetch(`${f.base}${path}`, limit); errors.push('accepted'); } catch (e) { errors.push((e as Error).message); }
+      }
+      return { payload, errors };
+    }, { module, base: `https://127.0.0.1:${port}` });
+    expect(result.payload).toBe('authenticated metadata fixture');
+    expect(result.errors[0]).toContain('HTTPS');
+    expect(result.errors[1]).toContain('redirects');
+    expect(result.errors[2]).toContain('too large');
+  } finally { await a?.close(); server.closeAllConnections(); await new Promise<void>((resolve) => server.close(() => resolve())); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('composer view changes preserve both drafts without persisting terminal input', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'vibeke-composer-test-'));
+  let a: LaunchedApp | undefined;
+  try {
+    const bundle = join(dir, 'composer.js');
+    execFileSync('bun', ['build', 'e2e/fixtures/composer-draft.tsx', '--target=browser', '--format=iife', `--outfile=${bundle}`], { cwd: appRoot });
+    a = await launchApp();
+    await a.page.evaluate(readFileSync(bundle, 'utf8'));
+    const input = a.page.getByRole('textbox', { name: 'Draft test input' });
+    const toggle = a.page.getByRole('button', { name: 'Toggle composer view' });
+    await expect(input).toHaveValue('restored conversation');
+    await input.fill('unsent conversation');
+    await toggle.click(); await expect(input).toHaveValue('');
+    await input.fill('example terminal secret');
+    await toggle.click(); await expect(input).toHaveValue('unsent conversation');
+    await toggle.click(); await expect(input).toHaveValue('example terminal secret');
+    await expect(a.page.getByTestId('draft-saves')).not.toContainText('terminal secret');
   } finally { await a?.close(); rmSync(dir, { recursive: true, force: true }); }
 });

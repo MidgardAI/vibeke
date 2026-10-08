@@ -118,8 +118,8 @@ export function registerIpc(d: IpcDeps): void {
   handle(INVOKE.remove, async (_e, host) => {
     try {
       const id = v.hostId(host);
-      await d.drafts.removeHost(id);
       await d.engine.remove(id);
+      await d.drafts.removeHost(id).catch((e) => console.warn('Draft cleanup after host removal failed', e));
       return ok(null);
     } catch (e) {
       return err(e);

@@ -76,9 +76,9 @@ impl Reporter {
         data["state"] = json!(state);
         data["message"] = json!(message);
         if self.0 {
-            println!("{data}");
+            let _ = writeln!(std::io::stdout().lock(), "{data}");
         } else {
-            println!("{message}");
+            let _ = writeln!(std::io::stdout().lock(), "{message}");
         }
         let _ = std::io::stdout().flush();
     }
@@ -406,10 +406,14 @@ async fn online_with(
     // Refuse a live-but-unreachable session before changing the installation. A dead
     // socket left by a crashed process is equivalent to no running session.
     connect_running(g).await?;
+    if &candidate < newest_local {
+        ensure_schema_compatible(g, &binary).await?;
+    }
     let dest = crate::doctor::install_version(layout, &release.version, &binary)?;
     let previous = crate::doctor::switch_current(layout, &release.version)?;
     match restart(g, &dest).await {
         Ok((before, after)) => {
+            crate::doctor::prune_unused_versions(layout).await;
             if let Some(warning) = pane_warning(before, after) {
                 r.emit("warning", &warning, json!({}));
             }
@@ -423,6 +427,12 @@ async fn online_with(
             {
                 bail!(
                     "restart exec failed: {e}; restored installation v{prev}; the existing server is still running"
+                );
+            }
+            if e.downcast_ref::<ExecFailure>().is_some() {
+                bail!(
+                    "installed v{} but its server exec failed: {e}. The existing server is still running; no previous installation was available to restore",
+                    release.version
                 );
             }
             // No old-image exec here: a timeout can mean the replacement has already
@@ -450,6 +460,59 @@ fn recover_exec_failure(
         return Ok(Some(prev.into()));
     }
     Ok(None)
+}
+
+/// A downgrade must not strand this or another session on an unreadable database.
+/// Older binaries without the read-only probe are conservatively refused when state exists.
+pub(crate) async fn ensure_schema_compatible(g: &Global, candidate: &Path) -> Result<()> {
+    let mut paths = vec![vk_server::paths::Paths::new(&g.session).db()];
+    if let Ok(entries) = std::fs::read_dir(vk_server::paths::state_root()) {
+        paths.extend(
+            entries
+                .flatten()
+                .map(|e| e.path().join("state.db"))
+                .filter(|p| p.is_file()),
+        );
+    }
+    let mut schema = None;
+    for path in paths {
+        if let Some(v) = vk_store::database_schema_version(&path)? {
+            schema = Some(schema.map_or(v, |old: u64| old.max(v)));
+        }
+    }
+    check_candidate_schema(candidate, schema).await
+}
+
+async fn check_candidate_schema(candidate: &Path, schema: Option<u64>) -> Result<()> {
+    let Some(schema) = schema else {
+        return Ok(());
+    };
+    let output = tokio::time::timeout(
+        Duration::from_secs(5),
+        tokio::process::Command::new(candidate)
+            .arg("--internal-schema-version")
+            .stdin(Stdio::null())
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await??;
+    let supported = output
+        .status
+        .success()
+        .then(|| {
+            std::str::from_utf8(&output.stdout)
+                .ok()?
+                .trim()
+                .parse::<u64>()
+                .ok()
+        })
+        .flatten();
+    let supported = supported.context("refusing downgrade: the target cannot report database compatibility; keep the current installation or restore a compatible backup offline first")?;
+    anyhow::ensure!(
+        supported >= schema,
+        "refusing downgrade: database schema {schema} is newer than the target supports ({supported}); the installation and running session are unchanged. Restore a compatible backup offline before downgrading"
+    );
+    Ok(())
 }
 
 async fn binary_version(bin: &Path) -> Result<String> {
@@ -719,6 +782,24 @@ mod tests {
         );
         assert_eq!(layout.current_version().as_deref(), Some("0.2.0"));
         assert!(pane_warning(Some((2, 2)), Some((1, 1))).is_some());
+    }
+    #[tokio::test]
+    async fn downgrade_preflight_refuses_newer_databases_and_legacy_targets() {
+        let d = tempfile::tempdir().unwrap();
+        let bin = d.path().join("candidate");
+        std::fs::write(&bin, "#!/bin/sh\necho 2\n").unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(check_candidate_schema(&bin, Some(2)).await.is_ok());
+        assert!(
+            check_candidate_schema(&bin, Some(3))
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("installation and running session are unchanged")
+        );
+        std::fs::write(&bin, "#!/bin/sh\necho 'unknown option'\nexit 2\n").unwrap();
+        assert!(check_candidate_schema(&bin, Some(1)).await.is_err());
+        assert!(check_candidate_schema(&bin, None).await.is_ok());
     }
     #[test]
     fn rejects_partial_prerelease_and_mismatched_releases() {

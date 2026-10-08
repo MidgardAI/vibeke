@@ -457,8 +457,11 @@ pub fn build(i: BuildIn) -> Result<CtrBox, RpcError> {
         });
         env.push(("VIBEKE_BIN".into(), BOX_BIN.into()));
         // Hook configs copied from the host name the host binary's absolute path.
-        let host_bin = &server.opts.bin;
-        if host_bin.is_absolute() && host_bin.is_file() && !host_bin.starts_with("/bin") {
+        let host_bins = vk_agents::install::hook_paths(&server.opts.bin, home);
+        for host_bin in host_bins
+            .into_iter()
+            .filter(|b| b.is_absolute() && b.is_file() && !b.starts_with("/bin"))
+        {
             mounts.push(BoxMount::Bind {
                 host: b.clone(),
                 target: host_bin.to_string_lossy().into_owned(),

@@ -39,6 +39,7 @@ import { startUpdates, type Updates } from './updater';
 import { externalUrl, isTrustedUrl } from './validate';
 import { Vault } from './vault';
 import { DraftStore } from './drafts';
+import { syncDraftHosts } from './draft-lifecycle';
 import { Windows } from './windows';
 
 declare const __APP_VERSION__: string;
@@ -192,7 +193,7 @@ const notifier = new Notifier(
 );
 
 engine.onPatch((patch) => {
-  void drafts.retainHosts(patch.order).catch((e) => log(`draft cleanup: ${(e as Error).message}`));
+  void syncDraftHosts(engine, drafts).catch((e) => log(`draft cleanup: ${(e as Error).message}`));
   for (const s of patch.changed) if (s.status === 'online' && s.dashboard) {
     void drafts.retainPanes(s.record.host_id, s.dashboard.panes.filter((p) => !p.exited).map((p) => p.id)).catch((e) => log(`draft cleanup: ${(e as Error).message}`));
   }
@@ -533,15 +534,20 @@ app.whenReady().then(() => {
 
 app.on('activate', () => windows.showMain());
 let flushingQuit = false;
+let discardDraftsOnQuit = false;
 app.on('before-quit', (event) => {
-  if (drafts.hasPending()) {
+  if (!discardDraftsOnQuit && drafts.hasPending()) {
     event.preventDefault();
     if (!flushingQuit) {
       flushingQuit = true;
-      void drafts.flush().then(() => { flushingQuit = false; app.quit(); }, (error) => {
-        flushingQuit = false;
+      void drafts.flush().then(() => { flushingQuit = false; app.quit(); }, async (error) => {
         windows.cancelUpdate();
-        dialog.showErrorBox('Drafts could not be saved', `Copy or send your conversation drafts before quitting. ${(error as Error).message}`);
+        const { response } = await dialog.showMessageBox({ type: 'warning', title: 'Drafts could not be saved',
+          message: 'Some conversation drafts could not be saved.', detail: `Copy or send them before quitting to keep your edits. ${(error as Error).message}`,
+          buttons: ['Retry', 'Quit without saving', 'Cancel'], defaultId: 2, cancelId: 2 });
+        flushingQuit = false;
+        if (response === 1) { discardDraftsOnQuit = true; app.quit(); }
+        else if (response === 0) app.quit();
       });
     }
     return;

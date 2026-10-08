@@ -82,7 +82,9 @@ vibeke update
 The updater verifies the signed release manifest and binary checksum. Running terminal
 processes survive the local session's restart. Other sessions use the installed version
 on their next restart; remote hosts are updated separately. Use `vibeke update --rollback`
-to return to the previous installed version.
+to return to the previous installed version when it can read your session databases.
+A rollback is refused if the target cannot confirm database compatibility or a newer schema
+is in use; restore a compatible backup offline before downgrading.
 
 For desktop updates, use **Check for Updates…** in the app menu. See the
 [desktop guide](desktop.md) for in-app installation and manual download options.

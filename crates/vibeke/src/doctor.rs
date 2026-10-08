@@ -1610,6 +1610,53 @@ impl Layout {
     }
 }
 
+/// Keep current, previous and every image used by a process. If process enumeration is
+/// unavailable or incomplete, retain the cache rather than break another session.
+pub(crate) async fn prune_unused_versions(l: &Layout) {
+    let mut cmd = tokio::process::Command::new("lsof");
+    // SAFETY: geteuid has no preconditions and returns this process's user id.
+    let uid = unsafe { libc::geteuid() }.to_string();
+    cmd.args(["-Fn", "-a", "-u", &uid, "-d", "txt"])
+        .kill_on_drop(true);
+    let Ok(Ok(output)) = tokio::time::timeout(Duration::from_secs(5), cmd.output()).await else {
+        return;
+    };
+    if !output.status.success() || !output.stderr.is_empty() {
+        return;
+    }
+    let paths: std::collections::HashSet<PathBuf> = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| line.strip_prefix('n'))
+        .map(|path| PathBuf::from(path.strip_suffix(" (deleted)").unwrap_or(path)))
+        .collect();
+    if paths.is_empty() {
+        return;
+    }
+    prune_with_active_images(l, &paths);
+}
+
+fn prune_with_active_images(l: &Layout, active: &std::collections::HashSet<PathBuf>) {
+    let keep = [l.current_version(), l.previous_version()];
+    let Ok(entries) = std::fs::read_dir(l.data.join("versions")) else {
+        return;
+    };
+    for e in entries.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        if keep.iter().flatten().any(|v| v == &name)
+            || semver::Version::parse(&name).is_err()
+            || !e.file_type().is_ok_and(|t| t.is_dir())
+        {
+            continue;
+        }
+        let binary = e.path().join("vibeke");
+        if let Ok(real) = std::fs::canonicalize(&binary)
+            && !active.contains(&real)
+        {
+            let _ = std::fs::remove_dir_all(e.path());
+        }
+    }
+}
+
 fn atomic_symlink(target: &Path, link: &Path) -> std::io::Result<()> {
     let mut t = link.as_os_str().to_owned();
     t.push(".tmp");
@@ -1772,6 +1819,11 @@ pub async fn update(g: &Global, args: &[String]) -> i32 {
             eprintln!("previous version {prev} is no longer installed");
             return EXIT_API;
         }
+        if let Err(e) = crate::update::ensure_schema_compatible(g, &layout.version_bin(&prev)).await
+        {
+            eprintln!("{e:#}");
+            return EXIT_API;
+        }
         if let Err(e) = switch_current(&layout, &prev) {
             eprintln!("switch to {prev}: {e}");
             return EXIT_API;
@@ -1833,7 +1885,12 @@ pub async fn update(g: &Global, args: &[String]) -> i32 {
         eprintln!("{e:#}");
         return EXIT_API;
     }
-    let ord = cmp_semver(&cand_version, vk_proto::VERSION);
+    let installed = layout.current_version();
+    let newest = installed
+        .as_deref()
+        .filter(|v| cmp_semver(v, vk_proto::VERSION) == Ordering::Greater)
+        .unwrap_or(vk_proto::VERSION);
+    let ord = cmp_semver(&cand_version, newest);
     if check {
         println!("current: vibeke {}", vk_proto::VERSION);
         match ord {
@@ -1858,8 +1915,14 @@ pub async fn update(g: &Global, args: &[String]) -> i32 {
         );
         return EXIT_OK;
     }
-    if let Err(msg) = downgrade_allowed(&cand_version, vk_proto::VERSION, allow_downgrade) {
+    if let Err(msg) = downgrade_allowed(&cand_version, newest, allow_downgrade) {
         eprintln!("{msg}");
+        return EXIT_API;
+    }
+    if ord == Ordering::Less
+        && let Err(e) = crate::update::ensure_schema_compatible(g, &cand_path).await
+    {
+        eprintln!("{e:#}");
         return EXIT_API;
     }
     if let Err(e) = install_version(&layout, &cand_version, &cand_path) {
@@ -1913,10 +1976,13 @@ fn verify_candidate(p: &Path) -> Result<(vk_remote::bootstrap::Trust, Option<Str
 
 async fn finish_restart(g: &Global, layout: &Layout) -> i32 {
     match restart_server(g, &restart_bin(layout)).await {
-        Ok((b, a)) => report_restart(b, a),
+        Ok((b, a)) => {
+            prune_unused_versions(layout).await;
+            report_restart(b, a)
+        }
         Err(e) => {
             eprintln!(
-                "restart failed: {e}\nthe new binary is installed; retry with `vibeke server restart`"
+                "restart failed: {e}\nthe selected binary is installed; check `vibeke server status` before retrying"
             );
             EXIT_API
         }
@@ -1925,6 +1991,26 @@ async fn finish_restart(g: &Global, layout: &Layout) -> i32 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn version_gc_preserves_current_previous_and_running_images() {
+        let d = tempfile::tempdir().unwrap();
+        let layout = Layout {
+            data: d.path().join("data"),
+            bin: d.path().join("bin"),
+        };
+        let src = d.path().join("src");
+        std::fs::write(&src, "image").unwrap();
+        for v in ["0.1.0", "0.2.0", "0.3.0", "0.4.0"] {
+            install_version(&layout, v, &src).unwrap();
+            switch_current(&layout, v).unwrap();
+        }
+        let running = std::fs::canonicalize(layout.version_bin("0.1.0")).unwrap();
+        prune_with_active_images(&layout, &[running].into());
+        assert!(layout.version_bin("0.1.0").exists());
+        assert!(!layout.version_bin("0.2.0").exists());
+        assert!(layout.version_bin("0.3.0").exists());
+        assert!(layout.version_bin("0.4.0").exists());
+    }
     #[test]
     fn port_pool_problems_are_warnings_and_a_healthy_pool_is_not() {
         let pool = vk_tasks::PortPool::parse("20000-20029", 10).unwrap();

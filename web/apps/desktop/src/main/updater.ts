@@ -1,10 +1,11 @@
 // One updater in main; renderers can request actions but cannot choose feeds or executables.
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { app, net } from 'electron';
+import { app } from 'electron';
 import type { UpdateState } from '@vibeke/ui';
 import { packagedFeed } from './updater-feed';
-import { UPDATE_FEED, discoverRelease, createFetcher } from './update-release';
+import { UPDATE_FEED, discoverRelease } from './update-release';
+import { electronFetchBytes } from './update-fetch';
 import { UpdateController } from './update-controller';
 
 declare const __RELEASE_KEYS__: string[];
@@ -28,7 +29,7 @@ export function startUpdates(changed: (state: UpdateState) => void, beforeInstal
     : process.platform === 'darwin' && !macSigned ? 'This Mac build requires a manual installation.'
     : process.platform === 'linux' && !process.env.APPIMAGE ? 'Install the new DEB with your package manager, or download an AppImage.' : null;
   const controller = new UpdateController({ version: app.getVersion(), manualReason,
-    discover: () => discoverRelease(process.platform, process.arch, __RELEASE_KEYS__, createFetcher((url, init) => net.fetch(url, init)), process.platform === 'linux' && !process.env.APPIMAGE), changed, beforeInstall, installFailed,
+    discover: () => discoverRelease(process.platform, process.arch, __RELEASE_KEYS__, electronFetchBytes, process.platform === 'linux' && !process.env.APPIMAGE), changed, beforeInstall, installFailed,
     installer: () => {
       const impl = require(join(app.getAppPath(), 'out/main/updater-impl.cjs')) as typeof import('./updater-impl');
       return impl.createInstaller();

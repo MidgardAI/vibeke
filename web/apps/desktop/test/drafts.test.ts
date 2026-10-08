@@ -68,3 +68,19 @@ test('JSON escaping cannot make a valid draft collection unreadable on relaunch'
   await Promise.all(Array.from({ length: 4 }, (_, i) => store.set('h', `p${i}`, text)));
   expect(await new DraftStore(dir, safe, 'darwin').get('h', 'p3')).toBe(text);
 });
+
+test('keychain failures can be retried and unrelated rejected drafts do not block host removal', async () => {
+  const { safe, store } = setup();
+  let available = false;
+  safe.isEncryptionAvailable = () => available;
+  await expect(store.set('a', 'p', 'unsent')).rejects.toThrow();
+  available = true;
+  await store.set('a', 'p', 'recovered');
+  await store.set('b', 'p', 'remove me');
+  await expect(store.set('a', 'p', 'x'.repeat(262145))).rejects.toThrow('large');
+  await store.removeHost('b');
+  expect(await store.get('b', 'p')).toBe('');
+  expect(await store.get('a', 'p')).toBe('recovered');
+  await store.set('a', 'p', '');
+  await store.flush();
+});

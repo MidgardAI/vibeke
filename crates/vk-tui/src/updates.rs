@@ -117,7 +117,7 @@ fn start(app: &mut App, install: bool, background: bool) {
     let exe = w.exe.clone();
     let inc = w.inc.clone();
     u.busy = true;
-    u.installing = install;
+    u.installing = false;
     u.background = background;
     u.check_error = None;
     u.confirm = false;
@@ -126,7 +126,7 @@ fn start(app: &mut App, install: bool, background: bool) {
     }
     app.dirty = true;
     tokio::spawn(async move {
-        let result = worker(exe, args, &inc).await;
+        let result = worker(exe, args, &inc, install).await;
         let _ = inc.send(Incoming::Update(Event::Finished(result)));
     });
 }
@@ -135,6 +135,7 @@ async fn worker(
     exe: PathBuf,
     args: Vec<String>,
     inc: &mpsc::UnboundedSender<Incoming>,
+    install: bool,
 ) -> Result<Value, String> {
     use std::process::Stdio;
     use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
@@ -143,7 +144,7 @@ async fn worker(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .kill_on_drop(true)
+        .kill_on_drop(!install)
         .spawn()
         .map_err(|e| e.to_string())?;
     let stderr = child.stderr.take().unwrap();
@@ -157,7 +158,7 @@ async fn worker(
     while let Some(s) = lines.next_line().await.map_err(|e| e.to_string())? {
         let v: Value = serde_json::from_str(&s).map_err(|_| "Invalid update worker response")?;
         last = v.clone();
-        if inc.send(Incoming::Update(Event::Progress(v))).is_err() {
+        if inc.send(Incoming::Update(Event::Progress(v))).is_err() && !install {
             return Err("Update view closed".into());
         }
     }
@@ -181,6 +182,9 @@ async fn worker(
 pub fn on_event(app: &mut App, event: Event) {
     match event {
         Event::Progress(v) => {
+            if v["state"] == "installing" {
+                app.ux.updates.installing = true;
+            }
             if !app.ux.updates.background {
                 app.ux.updates.status = v;
             }
@@ -282,8 +286,8 @@ pub fn tick(app: &mut App) {
         start(app, false, true);
     }
 }
-/// The worker can be changing symlinks or restarting the server. A normal TUI quit must
-/// not drop it partway through; checks alone are safe to cancel.
+/// Keep the TUI open during the short restart so focus can resume. Install workers are
+/// detached on quit, so closing during a long download cannot interrupt a later commit.
 pub fn prevent_quit(app: &mut App) -> bool {
     if !app.ux.updates.installing {
         return false;
@@ -351,6 +355,17 @@ pub fn draw(app: &App, g: &mut Grid) {
         a.line(&crate::plugins::sanitize(error, 400), t.text());
     }
     a.line("", t.text());
+    if u.busy
+        && matches!(
+            u.status["state"].as_str(),
+            Some("downloading" | "verifying")
+        )
+    {
+        a.line(
+            "Closing the TUI lets an accepted update continue in the background.",
+            t.text(),
+        );
+    }
     if u.confirm {
         a.line("Install this update and reopen the TUI?", t.bold(t.yellow));
         a.line(
