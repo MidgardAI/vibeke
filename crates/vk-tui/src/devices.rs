@@ -45,6 +45,8 @@ const STALE: Duration = Duration::from_secs(35);
 /// The most kept of any text the account sign-in shows.
 const CLEAN_MAX: usize = 512;
 /// When `account.login.start` leaves out `expires_in`.
+/// Longest countdown we show, whatever the gateway says.
+const MAX_EXPIRES_IN: u64 = 3600;
 const DEFAULT_EXPIRES_IN: u64 = 900;
 
 /// Tags each `pair.create`, so a late answer can't land in a newer attempt or a reopened view.
@@ -233,7 +235,12 @@ impl SignIn {
             uri,
             code: clean_of(x, "user_code")?,
             expires_at: Instant::now()
-                + Duration::from_secs(x["expires_in"].as_u64().unwrap_or(DEFAULT_EXPIRES_IN)),
+                + Duration::from_secs(
+                    x["expires_in"]
+                        .as_u64()
+                        .unwrap_or(DEFAULT_EXPIRES_IN)
+                        .min(MAX_EXPIRES_IN),
+                ),
             status: SignInStatus::Pending,
             scope_after,
             polled_at: None,
@@ -675,7 +682,10 @@ fn sign_in_failed(v: &mut View, e: &RpcErr) {
 
 /// The gateway (or the server's bridge) predates `account.*`: pair as before.
 fn predates_accounts(e: &RpcErr) -> bool {
-    e.is_method_not_found() || (e.kind == "invalid_params" && e.message.contains("does not carry"))
+    // An older gateway bridge refuses unknown methods as `forbidden` (`permission_denied` here).
+    e.is_method_not_found()
+        || e.kind == "permission_denied"
+        || (e.kind == "invalid_params" && e.message.contains("does not carry"))
 }
 
 /// `account.login.start` refused with reason `not_needed` (the relay is open after all).

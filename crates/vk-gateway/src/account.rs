@@ -134,6 +134,8 @@ pub async fn login_needed(cfg: &Config, dir: &Path, host_id: &str) -> Result<Log
 /// How long `account.status` trusts the relay's last `/v1/status` answer.
 const STATUS_TTL: Duration = Duration::from_secs(60);
 /// Lifetime of a device code when the server names none.
+/// Longest a login job may stay pending, whatever the server says.
+const MAX_EXPIRES_S: u64 = 3600;
 const DEFAULT_EXPIRES_S: u64 = 600;
 
 /// Where a TUI-started login stands.
@@ -277,10 +279,10 @@ impl Logins {
             }
         };
         let id = format!("login-{:016x}", rand::random::<u64>());
-        let expires_in = if prompt.expires_in == 0 {
-            DEFAULT_EXPIRES_S
-        } else {
-            prompt.expires_in
+        // A server cannot keep a job alive forever with a huge `expires_in`.
+        let expires_in = match prompt.expires_in {
+            0 => DEFAULT_EXPIRES_S,
+            n => n.min(MAX_EXPIRES_S),
         };
         let job = LoginJob {
             id: id.clone(),
@@ -304,6 +306,13 @@ impl Logins {
     }
 
     /// Abort login `id` if it is still pending (it then reads as expired).
+    /// Abort whatever login is pending (a logout must not be undone by a later approval).
+    pub fn cancel_all(&self) {
+        if let Some(job) = self.job.lock().unwrap().take() {
+            job.handle.abort();
+        }
+    }
+
     pub fn cancel(&self, id: &str) {
         let mut job = self.job.lock().unwrap();
         if job

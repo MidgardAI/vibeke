@@ -315,6 +315,8 @@ fn login_cancel(gw: &Arc<Gateway>, p: &Value) -> ApiResult {
 /// `account.logout`: revoke the session (best effort) and forget the credential. The relay
 /// client reports `login_required` when it next needs a host token.
 async fn logout(gw: &Arc<Gateway>) -> ApiResult {
+    // A pending login approved after the logout would sign the host straight back in.
+    gw.logins.cancel_all();
     let acct = gateway_account(gw)?;
     let out = acct
         .logout()
