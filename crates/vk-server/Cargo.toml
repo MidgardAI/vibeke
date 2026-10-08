@@ -6,7 +6,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-vk-proto = { workspace = true }
+vk-proto = { workspace = true, features = ["tokio"] }
 vk-hold = { workspace = true }
 vk-term = { workspace = true }
 vk-store = { workspace = true }

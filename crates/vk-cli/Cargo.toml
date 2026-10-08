@@ -6,7 +6,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-vk-proto = { workspace = true }
+vk-proto = { workspace = true, features = ["tokio"] }
 vk-server = { workspace = true }
 vk-browser = { workspace = true }
 vk-config = { path = "../vk-config" }

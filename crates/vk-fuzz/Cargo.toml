@@ -7,7 +7,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
-vk-proto = { workspace = true }
+vk-proto = { workspace = true, features = ["tokio"] }
 vk-term = { workspace = true }
 vk-preview = { workspace = true }
 vk-remote = { workspace = true }

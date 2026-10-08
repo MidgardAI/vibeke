@@ -10,7 +10,7 @@ license.workspace = true
 testing = []
 
 [dependencies]
-vk-proto = { workspace = true }
+vk-proto = { workspace = true, features = ["tokio"] }
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true

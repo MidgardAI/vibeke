@@ -12,7 +12,7 @@ path = "src/main.rs"
 [dependencies]
 vk-gateway.workspace = true
 vk-relay.workspace = true
-vk-proto = { workspace = true }
+vk-proto = { workspace = true, features = ["tokio"] }
 vk-hold = { workspace = true }
 vk-server = { workspace = true }
 vk-cli = { workspace = true }

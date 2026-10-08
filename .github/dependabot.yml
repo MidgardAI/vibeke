@@ -14,8 +14,7 @@ updates:
     groups:
       cargo:
         patterns: ["*"]
-  # Dependabot reads bun.lock through the npm ecosystem.
-  - package-ecosystem: npm
+  - package-ecosystem: bun
     directory: /web
     schedule:
       interval: weekly

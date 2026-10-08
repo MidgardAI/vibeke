@@ -6,7 +6,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-vk-proto = { workspace = true, default-features = false }
+vk-proto = { workspace = true }
 rustix.workspace = true
 libc.workspace = true
 polling.workspace = true
@@ -19,5 +19,5 @@ postcard.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
-vk-proto = { workspace = true, default-features = false }
+vk-proto = { workspace = true }
 libc.workspace = true

@@ -11,7 +11,7 @@ repository = "https://github.com/MidgardAI/vibeke"
 rust-version = "1.99"
 
 [workspace.dependencies]
-vk-proto = { path = "crates/vk-proto" }
+vk-proto = { path = "crates/vk-proto", default-features = false }
 vk-hold = { path = "crates/vk-hold" }
 vk-term = { path = "crates/vk-term" }
 vk-store = { path = "crates/vk-store" }
