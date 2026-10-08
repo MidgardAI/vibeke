@@ -31,11 +31,11 @@ Read `.github/workflows/release.yml`, `docs/releases.md`, `scripts/release-build
 
 ### 1. Prepare a fixed source commit
 
-1. Select the version and update `[workspace.package].version` in `Cargo.toml`, affected workspace entries in `Cargo.lock`, and the fallback `VERSION` in `scripts/install.sh`.
-2. Update `web/apps/desktop/package.json` to the same version. Update the browser app version in `web/apps/pwa/package.json` when publishing that app for the release. Refresh lockfiles as necessary and verify frozen-lockfile installation.
+1. Select the version and update `[workspace.package].version` in `Cargo.toml`, affected workspace entries in `Cargo.lock` (`cargo metadata` refreshes them), and the fallback `VERSION` in `scripts/install.sh`. The Python and TypeScript clients and the pi extension carry their own versions; leave them unchanged.
+2. Update `web/apps/desktop/package.json` to the same version. Update the browser app version in `web/apps/pwa/package.json` when publishing that app for the release. `bun install` does not rewrite workspace versions in `web/bun.lock`; edit those entries by hand, then verify `bun install --frozen-lockfile`.
 3. Review version references rather than replacing historical versions globally. Old release notes and version-pinned historical download links must keep their original versions.
-4. Run the applicable checks, including `mise run ci` and release-signing checks described in `docs/releases.md`. Regenerate API references if needed. Report failures accurately; do not claim a release is fully green when checks failed or were not run.
-5. Commit the release inputs and record the exact SHA. Build release artifacts from this committed state. Do not silently reuse binaries from a different source revision or move an existing published tag.
+4. Regenerate API references if needed. Commit the release inputs, record the exact SHA, and push it to `main`. Build release artifacts from this committed state. Do not silently reuse binaries from a different source revision or move an existing published tag.
+5. Let GitHub run the checks: the `ci` workflow on that commit runs `mise run ci`, the release-signing contract test, and the web and desktop checks. Do not repeat them locally. Tag only after `ci` passes on the release commit. Report failures accurately; do not claim a release is fully green when checks failed or were not run.
 
 For a packaging rehearsal, use `gh workflow run release.yml --ref main`. Optional `-f component=cli` or `-f component=desktop` limits the build. Manual runs retain workflow artifacts and do not create releases.
 
@@ -140,14 +140,13 @@ Commit the documentation and download-table changes, push the authorized branch,
 bun run typecheck
 bun run test
 bun run build
-bun run e2e --workers 2
 vercel pull --yes --environment production --scope <team>
 VERCEL=1 bun run build
 vercel deploy --prebuilt --prod --scope <team>
 PLAYWRIGHT_BASE_URL=https://vibeke.dev bun run e2e --workers 2
 ```
 
-A documentation update does not require rebuilding Electron or deploying the browser app. When the browser app changes, follow `web/apps/pwa/README.md`: check it, run `bun run build:vercel`, and deploy its prebuilt output to `vibeke-app`. Build from a committed checkout so the About screen has a traceable build identifier.
+GitHub CI runs the site e2e suite on the pushed commit; the production e2e run above checks the deployed site, so skip a local pre-deploy e2e run. A documentation update does not require rebuilding Electron or deploying the browser app. When the browser app changes, follow `web/apps/pwa/README.md`: check it, run `bun run build:vercel`, and deploy its prebuilt output to `vibeke-app`. Build from a committed checkout so the About screen has a traceable build identifier.
 
 ### 6. Verify the public result
 
