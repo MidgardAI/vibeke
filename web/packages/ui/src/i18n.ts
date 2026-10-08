@@ -239,7 +239,7 @@ export const en = {
 
   pair: {
     title: 'Pair with a host',
-    intro: 'Open a pairing link from `vibeke-gateway pair`, scan its QR code, or paste the link.',
+    intro: 'Open a pairing link from `vibeke gateway pair`, scan its QR code, or paste the link.',
     paste: 'Paste pairing link',
     pastePlaceholder: 'https://…/#/pair?d=…',
     scan: 'Scan QR code',
@@ -252,13 +252,13 @@ export const en = {
     start: 'Pair',
     connecting: 'Connecting to the host…',
     checkFingerprint: 'Check this matches your terminal',
-    waitingConfirm: 'Confirm the pairing in the terminal where you ran `vibeke-gateway pair`.',
+    waitingConfirm: 'Confirm the pairing in the terminal where you ran `vibeke gateway pair`.',
     done: (host: string) => `Paired with ${host}`,
     openApp: 'Open Vibeke',
     errors: {
-      expired: 'This pairing link has expired. Run `vibeke-gateway pair` again.',
+      expired: 'This pairing link has expired. Run `vibeke gateway pair` again.',
       rejected: 'The host rejected this pairing.',
-      offline: 'Could not reach the host. Is `vibeke-gateway run` running and online?',
+      offline: 'Could not reach the host. Check `vibeke gateway status` on the host.',
       mismatch: 'The host shows a different fingerprint. Do not confirm it.',
       invalid: 'This is not a valid pairing link.',
       unauthorized: 'The host does not accept this link (used, expired or replaced).',

@@ -14,9 +14,12 @@ try {
     const response = await page.goto(`${origin}/#/pair`)
     assert.equal(response?.status(), 200)
     await expect(page.getByRole('heading', { name: 'Pair with a host', exact: true })).toBeVisible()
-    const manifest = await context.request.get(`${origin}/manifest.webmanifest`)
-    assert.equal(manifest.status(), 200)
-    assert.equal((await manifest.json()).start_url, '/#/')
+    const manifest = await page.evaluate(async () => {
+      const response = await fetch('/manifest.webmanifest')
+      return { status: response.status, body: await response.json() }
+    })
+    assert.equal(manifest.status, 200)
+    assert.equal(manifest.body.start_url, '/#/')
     await page.evaluate(async () => {
       const ready = await navigator.serviceWorker.ready
       if (!ready.active) throw new Error('Service worker not active')
