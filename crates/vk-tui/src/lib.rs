@@ -55,6 +55,7 @@ pub mod scroll_req;
 pub mod scrollback;
 pub mod search;
 pub mod selection;
+pub mod sharing;
 pub mod sidebar;
 pub mod statusbar;
 pub mod sync_input;

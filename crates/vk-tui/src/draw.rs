@@ -892,6 +892,10 @@ fn right_cluster(app: &App) -> Vec<(String, Style)> {
     if let Some(h) = crate::handoff::status(app) {
         right.insert(0, (format!(" {h} "), t.s(t.accent)));
     }
+    // Incoming handoffs waiting (16 §15.2): chrome only, like the elevation notice.
+    if let Some(b) = crate::handoff::badge(app) {
+        right.insert(0, (b, t.bold(t.accent)));
+    }
     if let Some(p) = app.focused_pane()
         && let Some(badge) = crate::osc::exit_badge(app, app.cur, &p, std::time::Instant::now())
     {
@@ -951,6 +955,39 @@ fn right_cluster(app: &App) -> Vec<(String, Style)> {
         right.insert(0, (format!(" {} ", truncate(title, 40)), t.s(t.accent)));
     }
     right
+}
+
+/// The right-cluster entry drawn at (`x`, `y`), as [`compose`] places it: on the tab row, or
+/// over the pane area's top-right corner when the tab bar is hidden.
+pub fn right_cluster_at(app: &App, x: u16, y: u16) -> Option<String> {
+    let right = right_cluster(app);
+    let end = match crate::chrome::tab_row(app) {
+        Some(ty) if ty == y => {
+            let (tx, tw) = crate::chrome::main_x(app);
+            tx + tw
+        }
+        Some(_) => return None,
+        None => {
+            let area = app.pane_area();
+            if right.is_empty() || area.y != y {
+                return None;
+            }
+            area.x + area.w
+        }
+    };
+    let rw: u16 = right
+        .iter()
+        .map(|(s, _)| unicode_width::UnicodeWidthStr::width(s.as_str()) as u16)
+        .sum();
+    let mut at = end.saturating_sub(rw);
+    for (s, _) in right {
+        let w = unicode_width::UnicodeWidthStr::width(s.as_str()) as u16;
+        if (at..at + w).contains(&x) {
+            return Some(s);
+        }
+        at += w;
+    }
+    None
 }
 
 /// Draw `right` right-aligned on row `y`, ending before column `end`.

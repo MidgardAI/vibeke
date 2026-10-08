@@ -23,11 +23,14 @@ The destination needs the agent CLI and its own agent login. It does not need a 
 6. Follow the progress, or close the sheet: the transfer continues in the background and the app
    tells you when it is delivered or failed. A failed transfer can be tried again from the sheet.
 
-In the terminal client, run **Hand off this pane to another host…** (`handoff_send`) from the
-command palette: pick one of the hosts this one is paired with, tick **Interrupt agent if busy**
-if needed and press `enter`. The tab bar shows the progress ("⇢ marvin 42%"), and a notice says
-when the work was delivered or imported. Cancel a send from **Incoming handoffs** (`x`). Pairing
-with a teammate's invitation happens on the command line (`vibeke gateway peer add <link>`).
+In the terminal client, press `prefix+alt+h` (**Hand off this pane to another host…**,
+`handoff_send`), or right-click the pane's row in the sidebar and choose **Hand off…**. Pick one
+of the hosts this one is paired with, tick **Interrupt agent if busy** if needed and press
+`enter`. When the terminal client is attached to several of your machines, the ones this host is
+not paired with yet are listed under **Your machines (will pair)**: choosing one pairs the two
+hosts first, then hands off. The tab bar shows the progress ("⇢ marvin 42%"), and a notice says
+when the work was delivered or imported. Cancel a send from **Incoming handoffs** (`x`). A
+teammate's invitation is accepted in **Sharing & handoff** (see below).
 
 ### From a shell pane
 
@@ -102,8 +105,9 @@ importing handoffs** for that host.
 ### In the terminal client
 
 A waiting handoff shows in the attention inbox (`prefix+i`) as "Incoming handoff from <host>:
-<branch>". Select it and press `enter`, or open **Incoming handoffs** from the command palette
-(`handoffs`), to see what arrived: the sender, the repository and branch with its head commit,
+<branch>", and the tab bar shows `⇣N` while N handoffs wait. Select it and press `enter`, or open
+**Incoming handoffs** (`prefix+shift+h`, a click on `⇣N`, or `handoffs` in the command palette),
+to see what arrived: the sender, the repository and branch with its head commit,
 the untracked files, the secret files the sender kept back ("bring your own: .env"), the agent's
 last message and whether the conversation resumes. Then choose:
 
@@ -121,6 +125,11 @@ handoff; `esc` (**Later**) leaves it waiting.
 
 The **Incoming handoffs** list also shows imported and failed handoffs and the panes you are
 sending; there `d` declines, `r` retries the agent of an imported handoff and `x` cancels a send.
+For a pane an import created, right-click its sidebar row and choose **Handoff details**
+(`handoff_details`) to see where it came from and retry the agent.
+
+To review every handoff first in the terminal client, open **Sharing & handoff** (`sharing` in
+the command palette) and press `a` for **Always ask before importing handoffs**.
 
 ### From the command line
 
@@ -169,6 +178,14 @@ The sender accepts the invitation on one of their hosts:
    recipient see who is sending; otherwise they only see your host's name.
 3. Hand off a pane on that host and select the teammate's host as the destination.
 
+In the terminal client, the recipient opens **Sharing & handoff** (`sharing` in the command
+palette) on the receiving host and presses `n`, then `t` (**Invite a teammate to send to me**):
+the link shows with a QR code, and `c` copies it. The sender opens **Sharing & handoff** on their
+host, presses `p` and pastes the link. The view says what it is before anything happens
+("Handoff invitation from laptop-anna (teammate), valid 23h"); tick **Show my git name and
+email** if you like, then **Accept**. A link that isn't an invitation for a host, or that
+expired, is refused without contacting anyone.
+
 The invitation pairs that host with the teammate's host until the invitation expires. The app
 itself is never paired for it: opening the link in an app only offers to accept it on one of your
 hosts, and the recipient's host refuses a claim from anything but a host. It lets the host deliver
@@ -205,6 +222,11 @@ vibeke gateway peer remove <id or name>
 `vibeke handoff redeem '<invitation link>'` does the same as `vibeke gateway peer add`; inside a
 pane it asks for your approval first.
 
+In the terminal client, **Sharing & handoff** does the same: `n` then `h` (**Pair another of my
+hosts**) on the destination shows the invitation, and `p` on the source pastes and accepts it.
+When the terminal client is attached to both hosts, you don't need either: choosing the other
+host under **Your machines (will pair)** when handing off pairs them for you.
+
 A peer invitation pairs one of your own hosts and never expires. A teammate's handoff invitation can also be redeemed this way; that pairing expires with the invitation. A paired host can only deliver handoffs: it can't see panes, the inbox or other devices.
 
 ## Manage invitations
@@ -215,6 +237,12 @@ In the app, **Settings → Sharing & handoff** shows, for each of your hosts:
 - the hosts it sends handoffs to, with their owner and expiry, which you can remove;
 - the devices and hosts invitations created (shares and paired hosts, including a teammate's), with
   their kind, owner and expiry, which you can revoke.
+
+In the terminal client, **Sharing & handoff** (`sharing` in the command palette) shows the same
+sections for the host it is attached to (`m` switches machine): **Peers**, **Invitations** and
+**Invited devices**, where `x` removes, cancels or revokes the selected entry after a
+confirmation. It reaches the gateway through the host's server; when the gateway isn't running
+it says so ("start it with `vibeke gateway run`").
 
 From a terminal:
 

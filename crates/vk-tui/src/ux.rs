@@ -27,7 +27,8 @@
 //! Lane 3A: [`crate::collision`]: shared-checkout collisions (pane badge, sidebar line, popup).
 //!
 //! Handoffs (16 §15.2): [`crate::handoff`]: the accept overlay, the handoffs list and sending a
-//! pane to a paired host.
+//! pane to a paired host; [`crate::sharing`]: the Sharing & handoff view (peers, invitations,
+//! pasting an invitation, invited devices) over `gateway.call`.
 
 use crate::app::{App, Popup, RpcErr};
 use crate::screen::Grid;
@@ -52,6 +53,7 @@ pub struct State {
     pub tasks: crate::taskbadge::State,
     pub collision: crate::collision::State,
     pub handoff: crate::handoff::State,
+    pub sharing: crate::sharing::State,
 }
 
 /// Replies routed back to the 2B modules.
@@ -65,6 +67,7 @@ pub enum Reply {
     Tasks(crate::taskbadge::Reply),
     Collision(crate::collision::Reply),
     Handoff(crate::handoff::Reply),
+    Sharing(crate::sharing::Reply),
     /// `tab.renumber`.
     Renumber,
 }
@@ -79,6 +82,7 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
         Reply::Tasks(r) => crate::taskbadge::on_reply(app, mi, r, res),
         Reply::Collision(r) => crate::collision::on_reply(app, mi, r, res),
         Reply::Handoff(r) => crate::handoff::on_reply(app, mi, r, res),
+        Reply::Sharing(r) => crate::sharing::on_reply(app, mi, r, res),
         Reply::Renumber => crate::tabbar::on_renumbered(app, res),
     }
 }
@@ -103,6 +107,7 @@ pub fn action(app: &mut App, action: &str) -> bool {
         || crate::taskbadge::action(app, action)
         || crate::collision::action(app, action)
         || crate::handoff::action(app, action)
+        || crate::sharing::action(app, action)
 }
 
 /// `[[keys.command]] when = "agent:<harness>"`: only while the focused pane runs that harness
@@ -161,6 +166,7 @@ pub fn popup_draw(app: &App, g: &mut Grid, p: &Popup) {
 /// rail, popup frames, focus follows mouse. True when consumed.
 pub fn on_mouse(app: &mut App, me: &crossterm::event::MouseEvent) -> bool {
     if crate::popup_pane::on_mouse(app, me)
+        || crate::handoff::on_mouse(app, me)
         || crate::sidebar::on_mouse(app, me)
         || crate::tabbar::on_mouse(app, me)
     {
@@ -182,6 +188,7 @@ pub fn on_tick(app: &mut App) {
     crate::scroll_req::tick(app);
     crate::taskbadge::tick(app, now);
     crate::collision::tick(app, now);
+    crate::handoff::tick(app);
 }
 
 pub fn deadlines(app: &App, now: Instant, d: &mut crate::deadline::Deadlines) {

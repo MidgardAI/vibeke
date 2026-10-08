@@ -1,7 +1,8 @@
 //! Handoff tests: the accept overlay (summary, choosing a clone, Browse… and the worktree picker,
 //! the branch field, toggles, the params `handoff.accept` gets, `repo_mismatch`, progress phases,
 //! focusing the imported pane, Retry resume, decline), the inbox entry, the send flow's params
-//! and the progress shown for a send.
+//! and the progress shown for a send; the key bindings, the `⇣N` badge, the pane menu and
+//! Handoff details, and pairing two machines before a send.
 
 use super::*;
 use crate::app::App;
@@ -768,4 +769,260 @@ fn clone_defaults() {
     assert!(!Rec::from_value(&v).unwrap().resumable());
     v["manifest"]["harness"] = json!("aider");
     assert!(Rec::from_value(&v).unwrap().agent().is_none());
+}
+
+// ---- entry points (B1) and auto-pairing (B4) -------------------------------------------------------
+
+fn prefix(app: &mut App, k: KeyEvent) {
+    app.on_key(app.keymap.prefix.clone());
+    app.on_key(k);
+}
+
+#[test]
+fn bindings_open_the_handoff_views() {
+    let (mut app, mut rxs) = fleet();
+    assert_eq!(
+        app.keymap.binding_for("handoffs").as_deref(),
+        Some("prefix+shift+h")
+    );
+    assert_eq!(
+        app.keymap.binding_for("handoff_send").as_deref(),
+        Some("prefix+alt+h")
+    );
+    prefix(
+        &mut app,
+        KeyEvent::new(Key::Char('h'), vk_proto::input::Mods::SHIFT),
+    );
+    assert!(matches!(app.mode, Mode::Popup(Popup::Handoffs)));
+    assert!(
+        commands(&mut rxs[0])
+            .iter()
+            .any(|c| c.1 == "handoff.incoming.list")
+    );
+    app.on_key(named(NamedKey::Escape));
+    prefix(
+        &mut app,
+        KeyEvent::new(Key::Char('h'), vk_proto::input::Mods::ALT),
+    );
+    assert!(matches!(app.mode, Mode::Popup(Popup::HandoffSend)));
+    only(&commands(&mut rxs[0]), "handoff.peers");
+    app.on_key(named(NamedKey::Escape));
+    app.action("sharing", None);
+    assert!(matches!(app.mode, Mode::Popup(Popup::Sharing)));
+}
+
+#[test]
+fn the_badge_counts_waiting_handoffs_and_a_click_opens_the_list() {
+    let (mut app, mut rxs) = fleet();
+    assert_eq!(badge(&app), None);
+    let mut failed = incoming("h2", "failed");
+    failed["error"] = json!({"kind": "conflict", "message": "boom"});
+    let mut imported = incoming("h3", "imported");
+    imported["result"] = json!({"pane": "p2"});
+    for (id, v) in [
+        ("h1", incoming("h1", "pending")),
+        ("h2", failed),
+        ("h3", imported),
+    ] {
+        on_event(
+            &mut app,
+            0,
+            "handoff.incoming",
+            &event("handoff.incoming", id, json!({"incoming": v})),
+        );
+    }
+    assert_eq!(waiting_count(&app), 2);
+    assert_eq!(badge(&app).as_deref(), Some(" ⇣2 "));
+    let s = screen(&app);
+    assert!(s.contains("⇣2"), "{s}");
+    // Where the badge is drawn, a click opens the handoffs list.
+    let row = crate::chrome::tab_row(&app).expect("a tab row");
+    let x = (0..app.size.0)
+        .find(|&x| crate::draw::right_cluster_at(&app, x, row).as_deref() == Some(" ⇣2 "))
+        .expect("the badge is in the right cluster");
+    commands(&mut rxs[0]);
+    app.on_mouse(crossterm::event::MouseEvent {
+        kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+        column: x,
+        row,
+        modifiers: crossterm::event::KeyModifiers::NONE,
+    });
+    assert!(matches!(app.mode, Mode::Popup(Popup::Handoffs)));
+    // Accepting from the list opens the overlay (as from the inbox); newest first, so the
+    // imported h3 leads and the failed h2 follows.
+    app.on_key(ch('j'));
+    app.on_key(named(NamedKey::Enter));
+    assert!(matches!(app.mode, Mode::Popup(Popup::HandoffAccept)));
+    assert!(
+        commands(&mut rxs[0])
+            .iter()
+            .any(|c| c.1 == "handoff.incoming.get")
+    );
+}
+
+#[test]
+fn the_pane_menu_offers_hand_off_and_details_of_an_imported_pane() {
+    let (mut app, mut rxs) = fleet();
+    let mut imported = incoming("h3", "imported");
+    imported["result"] = json!({"pane": "p2", "worktree": "/w"});
+    on_event(
+        &mut app,
+        0,
+        "handoff.incoming",
+        &event("handoff.incoming", "h3", json!({"incoming": imported})),
+    );
+    assert_eq!(imported_into(&app, 0, "p2").as_deref(), Some("h3"));
+    // Right-click on p2's sidebar row: the palette on its handoff actions.
+    pane_menu(&mut app, 0, "p2");
+    match &app.mode {
+        Mode::Popup(Popup::Palette { filter, .. }) => assert_eq!(filter, "handoff"),
+        m => panic!("{m:?}"),
+    }
+    let entries = crate::nav::palette_entries(&app);
+    assert!(entries.iter().any(|e| e.id == "handoff_send"));
+    assert!(entries.iter().any(|e| e.id == "handoff_details"));
+    commands(&mut rxs[0]);
+    app.action("handoff_details", None);
+    let cmds = commands(&mut rxs[0]);
+    assert_eq!(only(&cmds, "handoff.incoming.get").1, json!({"id": "h3"}));
+    assert!(matches!(app.mode, Mode::Popup(Popup::HandoffAccept)));
+    // Hand off…: the right-clicked pane, not the focused one.
+    app.on_key(named(NamedKey::Escape));
+    pane_menu(&mut app, 0, "p2");
+    app.action("handoff_send", None);
+    assert_eq!(app.ux.handoff.send.as_ref().unwrap().pane, "p2");
+    // A pane that didn't come from a handoff.
+    app.on_key(named(NamedKey::Escape));
+    app.action("handoff_details", None);
+    assert!(
+        app.toasts
+            .iter()
+            .any(|t| t.text == "this pane didn't come from a handoff")
+    );
+}
+
+#[test]
+fn sending_to_an_unpaired_machine_pairs_them_first() {
+    let (mut app, mut rxs) = crate::drafts::tests::fleet_n(3);
+    // m2 is already a peer of m0 (by name); m1 is not.
+    commands(&mut rxs[0]);
+    app.action("handoff_send", None);
+    let cmds = commands(&mut rxs[0]);
+    let (req, _) = only(&cmds, "handoff.peers");
+    reply(
+        &mut app,
+        0,
+        req,
+        json!({"peers": [{"id": "pr2", "name": "M2.local", "owner": "self"}]}),
+    );
+    let s = screen(&app);
+    assert!(s.contains("Your machines (will pair)"), "{s}");
+    assert!(s.contains("your machine · will pair"), "{s}");
+    let f = app.ux.handoff.send.as_ref().unwrap();
+    let names: Vec<String> = f
+        .ranked()
+        .iter()
+        .map(|(d, _)| d.name().to_string())
+        .collect();
+    assert_eq!(names, vec!["M2.local", "m1"]);
+    assert_eq!(plan_send(&f.ranked()[1].0, now_ms()), Plan::Pair(1));
+    // Choose m1.
+    typ(&mut app, "m1");
+    app.on_key(named(NamedKey::Enter));
+    assert!(screen(&app).contains("not paired with m0 yet"));
+    app.on_key(named(NamedKey::Enter));
+    // 1. An invitation on m1.
+    let cmds = commands(&mut rxs[1]);
+    let (req, p) = only(&cmds, "gateway.call");
+    assert_eq!(p, json!({"method": "peer.invite", "params": {}}));
+    assert!(commands(&mut rxs[0]).is_empty());
+    let link = "https://app.example/#/pair?d=xyz";
+    reply(
+        &mut app,
+        1,
+        req,
+        json!({"link": link, "pid": "pidP", "open_by": now_ms() / 1000 + 900}),
+    );
+    // 2. Accepted on m0.
+    let cmds = commands(&mut rxs[0]);
+    let (req, p) = only(&cmds, "gateway.call");
+    assert_eq!(
+        p,
+        json!({"method": "peer.redeem", "params": {"link": link, "share_user": false},
+               "timeout_ms": 60_000})
+    );
+    reply(
+        &mut app,
+        0,
+        req,
+        json!({"peer": {"id": "pr9", "name": "m1", "owner": "self", "expires_at": null}}),
+    );
+    // 3. The send itself, to the new peer.
+    let cmds = commands(&mut rxs[0]);
+    let (req, p) = only(&cmds, "handoff.send");
+    assert_eq!(p, json!({"pane": "p1", "peer": "pr9", "interrupt": false}));
+    assert!(app.toasts.iter().any(|t| t.text == "paired with m1"));
+    reply(
+        &mut app,
+        0,
+        req,
+        json!({"job": {"id": "j9", "pane": "p1", "peer": "pr9", "peer_name": "m1",
+                       "state": "queued", "sent": 0, "total": 0}}),
+    );
+    assert!(matches!(app.mode, Mode::Normal));
+    assert_eq!(status(&app).as_deref(), Some("⇢ m1 queued"));
+}
+
+#[test]
+fn pairing_failures_and_unavailable_destinations_stay_in_the_summary() {
+    let (mut app, mut rxs) = crate::drafts::tests::fleet_n(2);
+    app.action("handoff_send", None);
+    let (req, _) = only(&commands(&mut rxs[0]), "handoff.peers");
+    reply(
+        &mut app,
+        0,
+        req,
+        json!({"peers": [{"id": "old", "name": "box", "owner": "teammate",
+                          "expires_at": 1, "expired": true}]}),
+    );
+    // An expired peer is refused here.
+    app.on_key(named(NamedKey::Enter));
+    app.on_key(named(NamedKey::Enter));
+    assert!(screen(&app).contains("the pairing with box has expired"));
+    assert!(commands(&mut rxs[0]).is_empty());
+    // The gateway of m1 isn't running.
+    app.on_key(named(NamedKey::Escape));
+    app.on_key(named(NamedKey::Down));
+    app.on_key(named(NamedKey::Enter));
+    app.on_key(named(NamedKey::Enter));
+    let (req, _) = only(&commands(&mut rxs[1]), "gateway.call");
+    let json = json!({"jsonrpc": "2.0", "id": req, "error": {"code": -32000,
+        "message": "the gateway isn't running: start it with `vibeke gateway run`",
+        "data": {"kind": "remote_unavailable", "details": null}}})
+    .to_string();
+    app.on_frame(
+        1,
+        vk_proto::render::ServerFrame::CommandResult { req, json },
+    );
+    let s = screen(&app);
+    assert!(
+        s.contains("pairing failed on m1: the gateway isn't running"),
+        "{s}"
+    );
+    assert!(!app.ux.handoff.send.as_ref().unwrap().busy);
+    // An offline machine can't be paired.
+    app.machines[1].tx = None;
+    app.on_key(named(NamedKey::Escape));
+    let f = app.ux.handoff.send.as_mut().unwrap();
+    f.machines = vec![Dest::Machine {
+        mi: 1,
+        name: "m1".into(),
+        online: false,
+    }];
+    assert_eq!(
+        plan_send(&f.machines[0], now_ms()),
+        Plan::Unavailable("offline")
+    );
+    assert!(same_host("Mini.local", "mini"));
+    assert!(!same_host("", ""));
 }

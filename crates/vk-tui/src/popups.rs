@@ -157,6 +157,7 @@ pub fn key(app: &mut App, ev: KeyEvent, p: Popup) {
         Popup::HandoffAccept => crate::handoff::accept_key(app, ev),
         Popup::Handoffs => crate::handoff::handoffs_key(app, ev),
         Popup::HandoffSend => crate::handoff::send_key(app, ev),
+        Popup::Sharing => crate::sharing::key(app, ev),
         Popup::Peek { pane } => match ev.key {
             _ if esc => {}
             Key::Named(NamedKey::Enter) => {
@@ -529,6 +530,10 @@ pub fn draw(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
             Popup::Handoffs => crate::handoff::draw_list(app, g),
             Popup::HandoffSend => {
                 let (x, y) = crate::handoff::draw_send(app, g)?;
+                return Some((x, y, CursorShape::Bar));
+            }
+            Popup::Sharing => {
+                let (x, y) = crate::sharing::draw(app, g)?;
                 return Some((x, y, CursorShape::Bar));
             }
             Popup::BrowserDrop(a) => crate::browser_io::draw_drop(app, g, a),

@@ -15,16 +15,22 @@
 //!   focuses the new pane. A failure stays in the overlay for another try; `repo_mismatch` lists
 //!   the clone's remotes. An import whose agent did not start offers **Retry resume**
 //!   (`handoff.resume`).
-//! - **Handoffs list** (`handoffs` in the palette): incoming handoffs and the ones being sent.
+//! - **Handoffs list** (`handoffs`, default `prefix+shift+h`, or the `⇣N` badge in the tab
+//!   bar's right cluster while N handoffs wait): incoming handoffs and the ones being sent.
 //!   `enter` opens (accept, or the imported pane), `d` declines, `r` retries the agent of an
 //!   imported one, `x` cancels a send.
-//! - **Send** (`handoff_send` in the palette): the peers from `handoff.peers` in a fuzzy list,
-//!   then a summary with *Interrupt agent if busy*; `handoff.send` starts a job the source
-//!   gateway runs. `handoff.job` events drive the progress shown at the right of the tab bar
-//!   ("⇢ marvin 42%"); where a send ended shows as a toast.
+//! - **Send** (`handoff_send`, default `prefix+alt+h`): the peers from `handoff.peers` in a fuzzy
+//!   list, then the user's other machines this TUI is attached to that are not peers yet ("Your
+//!   machines (will pair)": choosing one runs `gateway.call peer.invite` there and `gateway.call
+//!   peer.redeem` on the source first, the rules of the app's `planSend`), then a summary with
+//!   *Interrupt agent if busy*; `handoff.send` starts a job the source gateway runs.
+//!   `handoff.job` events drive the progress shown at the right of the tab bar ("⇢ marvin
+//!   42%"); where a send ended shows as a toast.
+//! - **Pane menu:** a right-click on a pane's sidebar row opens the palette on that pane's
+//!   handoff actions: **Hand off…** and, for a pane an import created, **Handoff details**
+//!   (`handoff_details`, the accept overlay in its imported state).
 //!
-//! Redeeming a teammate's invitation needs the gateway (`vibeke gateway peer add <link>`); the
-//! TUI talks to vk-server only, so it has no "Paste invitation" action.
+//! Peers, invitations and pasting a teammate's invitation live in [`crate::sharing`].
 
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
@@ -298,8 +304,20 @@ pub struct Peer {
     pub name: String,
     /// `self` or `teammate`.
     pub owner: String,
-    /// Epoch ms (or the server's text) when the pairing ends; none for your own hosts.
+    /// When the pairing ends (unix seconds from the gateway, or epoch ms, or the server's
+    /// text); none for your own hosts.
     pub expires_at: Option<Value>,
+    /// The gateway says the pairing has ended.
+    pub expired: bool,
+}
+
+/// Unix seconds or epoch ms as epoch ms (the gateway counts seconds; nothing in ms is that small).
+pub fn epoch_ms(t: i64) -> i64 {
+    if (1..100_000_000_000).contains(&t) {
+        t * 1000
+    } else {
+        t
+    }
 }
 
 impl Peer {
@@ -310,7 +328,15 @@ impl Peer {
             id,
             owner: text(v, "/owner").unwrap_or_default(),
             expires_at: v.get("expires_at").filter(|e| !e.is_null()).cloned(),
+            expired: v["expired"].as_bool().unwrap_or(false),
         })
+    }
+
+    /// The pairing has ended (the gateway says so, or its expiry passed).
+    pub fn is_expired(&self, now: i64) -> bool {
+        self.expired
+            || matches!(&self.expires_at, Some(Value::Number(n))
+                if n.as_i64().is_some_and(|t| epoch_ms(t) <= now))
     }
 
     /// "your host", "teammate · expires in 3d".
@@ -320,8 +346,11 @@ impl Peer {
         } else {
             "teammate"
         };
+        if self.expired {
+            return format!("{who} · expired");
+        }
         match &self.expires_at {
-            Some(Value::Number(n)) => match n.as_i64() {
+            Some(Value::Number(n)) => match n.as_i64().map(epoch_ms) {
                 Some(t) if t > now => format!("{who} · expires in {}", fmt_age(t - now)),
                 Some(_) => format!("{who} · expired"),
                 None => who.to_string(),
@@ -350,6 +379,9 @@ pub struct State {
     pub list_confirm: Option<String>,
     /// Tests: where the pickers read folders (else the local disk on a local machine).
     pub dirs: Option<Arc<dyn DirSource>>,
+    /// The pane a right-click on its sidebar row picked for the handoff actions (machine,
+    /// pane); dropped once the palette it opened is gone.
+    pub target: Option<(usize, String)>,
 }
 
 /// Replies routed back here (through `ux::Reply::Handoff`).
@@ -357,13 +389,25 @@ pub struct State {
 pub enum Reply {
     List,
     Jobs,
-    Get { id: String },
-    Accept { id: String },
-    Decline { id: String },
-    Resume { id: String },
+    Get {
+        id: String,
+    },
+    Accept {
+        id: String,
+    },
+    Decline {
+        id: String,
+    },
+    Resume {
+        id: String,
+    },
     Peers,
     Send,
     Cancel,
+    /// Auto-pairing for a send: `gateway.call peer.invite` on the destination machine.
+    PairInvite,
+    /// Then `gateway.call peer.redeem` on the source.
+    PairRedeem,
 }
 
 fn pend(r: Reply) -> Pending {
@@ -442,6 +486,94 @@ pub fn status(app: &App) -> Option<String> {
         0 => None,
         1 | 2 => Some(active.join(" · ")),
         n => Some(format!("{} · +{} more", active[..2].join(" · "), n - 2)),
+    }
+}
+
+/// Incoming handoffs waiting for the user (pending or failed, not expired), on every machine.
+pub fn waiting_count(app: &App) -> usize {
+    inbox_items(app).len()
+}
+
+/// The `⇣N` badge in the tab bar's right cluster while handoffs wait: chrome only, like the
+/// elevation notice (`elevate::notice`), never over a pane. A click on it opens the list.
+pub fn badge(app: &App) -> Option<String> {
+    match waiting_count(app) {
+        0 => None,
+        n => Some(format!(" ⇣{n} ")),
+    }
+}
+
+/// A left click on the badge opens the handoffs list.
+pub fn on_mouse(app: &mut App, me: &crossterm::event::MouseEvent) -> bool {
+    use crossterm::event::{MouseButton, MouseEventKind};
+    if !matches!(me.kind, MouseEventKind::Down(MouseButton::Left)) {
+        return false;
+    }
+    let Some(b) = badge(app) else {
+        return false;
+    };
+    if crate::draw::right_cluster_at(app, me.column, me.row).as_deref() != Some(b.as_str()) {
+        return false;
+    }
+    open_list(app);
+    app.dirty = true;
+    true
+}
+
+/// Forget a right-click target once the palette it opened is gone.
+pub fn tick(app: &mut App) {
+    if app.ux.handoff.target.is_some() && !matches!(app.mode, Mode::Popup(Popup::Palette { .. })) {
+        app.ux.handoff.target = None;
+    }
+}
+
+/// Right-click on a pane's sidebar row: its handoff actions, in the palette.
+pub fn pane_menu(app: &mut App, mi: usize, pane: &str) {
+    app.ux.handoff.target = Some((mi, pane.to_string()));
+    crate::nav::open_palette(app, "handoff".into());
+}
+
+/// The pane a handoff action applies to: the right-clicked one, else the focused pane.
+fn take_target(app: &mut App) -> Option<(usize, String)> {
+    if let Some((mi, p)) = app.ux.handoff.target.take()
+        && app
+            .machines
+            .get(mi)
+            .is_some_and(|m| m.model.panes.iter().any(|x| x.id == p))
+    {
+        return Some((mi, p));
+    }
+    Some((app.cur, app.focused_pane()?))
+}
+
+/// The incoming handoff whose import created `pane` on machine `mi`.
+pub fn imported_into(app: &App, mi: usize, pane: &str) -> Option<String> {
+    app.ux
+        .handoff
+        .incoming
+        .get(&mi)?
+        .iter()
+        .find(|r| r.state == "imported" && r.pane().as_deref() == Some(pane))
+        .map(|r| r.id.clone())
+}
+
+/// `handoff_details`: the accept overlay of the handoff an imported pane came from (what
+/// arrived, where it went, Retry resume).
+pub fn open_details(app: &mut App) {
+    let Some((mi, pane)) = take_target(app) else {
+        app.toast("no focused pane");
+        return;
+    };
+    match imported_into(app, mi, &pane) {
+        Some(id) => open_accept(app, mi, &id),
+        None => {
+            if !app.ux.handoff.unsupported.contains(&mi)
+                && !app.ux.handoff.incoming.contains_key(&mi)
+            {
+                refresh(app, mi);
+            }
+            app.toast("this pane didn't come from a handoff");
+        }
     }
 }
 
@@ -578,18 +710,30 @@ fn dirs(app: &App, mi: usize) -> Arc<dyn DirSource> {
 /// command result: an import (or a clone) can take minutes, and the render stream answers its
 /// commands in order. Tests (no worker) use the render stream.
 fn call_long(app: &mut App, mi: usize, method: &str, params: Value, reply: Reply) {
+    call_long_pending(app, mi, method, params, pend(reply));
+}
+
+/// [`call_long`] with any reply route (the Sharing view's `gateway.call`s use it too: a call
+/// through the gateway may wait up to its `timeout_ms`).
+pub(crate) fn call_long_pending(
+    app: &mut App,
+    mi: usize,
+    method: &str,
+    params: Value,
+    pending: Pending,
+) {
     let worker = app
         .uploads
         .worker
         .as_ref()
         .and_then(|w| Some((w.connectors.get(mi)?.clone(), w.inc.clone())));
     let Some((conn, inc)) = worker else {
-        app.command_on(mi, method, params, pend(reply));
+        app.command_on(mi, method, params, pending);
         return;
     };
     let req = app.next_req;
     app.next_req += 1;
-    app.machines[mi].pending.insert(req, pend(reply));
+    app.machines[mi].pending.insert(req, pending);
     let line = json!({"jsonrpc": "2.0", "id": req, "method": method, "params": params}).to_string();
     tokio::spawn(async move {
         let json = match call_once(&conn, &line, req).await {
@@ -1714,7 +1858,7 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
                     .send
                     .as_ref()
                     .and_then(|f| f.chosen.as_ref())
-                    .map(|p| p.name.clone());
+                    .map(|d| d.name().to_string());
                 if let Some(j) = Job::from_value(&v["job"]) {
                     let who = name.unwrap_or_else(|| j.name().to_string());
                     upsert_job(app, mi, j);
@@ -1728,6 +1872,7 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
             Err(e) => {
                 if let Some(f) = app.ux.handoff.send.as_mut() {
                     f.busy = false;
+                    f.pairing = None;
                     f.error = Some(e.message);
                 } else {
                     app.toast(format!("✗ {}", e.message));
@@ -1744,6 +1889,8 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
             }
             Err(e) => app.toast(format!("✗ {}", e.message)),
         },
+        Reply::PairInvite => on_pair_invite(app, mi, res),
+        Reply::PairRedeem => on_pair_redeem(app, res),
     }
     app.dirty = true;
 }
@@ -2033,40 +2180,147 @@ pub fn draw_list(app: &App, g: &mut Grid) {
 
 // ---- send ---------------------------------------------------------------------------------------
 
+/// Where a pane's work can go.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Dest {
+    /// A host the source is paired with (`handoff.peers`).
+    Peer(Peer),
+    /// One of the user's machines this TUI is attached to that is not a peer of the source yet:
+    /// choosing it pairs the two first.
+    Machine {
+        mi: usize,
+        name: String,
+        online: bool,
+    },
+}
+
+impl Dest {
+    pub fn name(&self) -> &str {
+        match self {
+            Dest::Peer(p) => &p.name,
+            Dest::Machine { name, .. } => name,
+        }
+    }
+
+    fn note(&self, now: i64) -> String {
+        match self {
+            Dest::Peer(p) => p.note(now),
+            Dest::Machine { online: true, .. } => "your machine · will pair".into(),
+            Dest::Machine { online: false, .. } => "your machine · offline".into(),
+        }
+    }
+
+    fn search_text(&self) -> String {
+        match self {
+            Dest::Peer(p) => format!("{} {} {}", p.name, p.owner, p.id),
+            Dest::Machine { name, .. } => format!("{name} your machine will pair"),
+        }
+    }
+}
+
+/// What choosing a destination does (the decision rules of the app's `planSend`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Plan {
+    /// Send to this peer.
+    Send(String),
+    /// Pair first: `peer.invite` on this machine, `peer.redeem` on the source, then send.
+    Pair(usize),
+    /// `expired` or `offline`.
+    Unavailable(&'static str),
+}
+
+pub fn plan_send(d: &Dest, now: i64) -> Plan {
+    match d {
+        Dest::Peer(p) if p.is_expired(now) => Plan::Unavailable("expired"),
+        Dest::Peer(p) => Plan::Send(p.id.clone()),
+        Dest::Machine {
+            mi, online: true, ..
+        } => Plan::Pair(*mi),
+        Dest::Machine { .. } => Plan::Unavailable("offline"),
+    }
+}
+
+/// Two names of the same host: equal ignoring case and any domain (`mini` = `Mini.local`).
+pub fn same_host(a: &str, b: &str) -> bool {
+    let short = |s: &str| {
+        s.trim()
+            .split('.')
+            .next()
+            .unwrap_or_default()
+            .to_lowercase()
+    };
+    let (a, b) = (short(a), short(b));
+    !a.is_empty() && a == b
+}
+
+/// The machines this TUI is attached to, other than the source, by name.
+fn other_machines(app: &App, source: usize) -> Vec<Dest> {
+    let mut v: Vec<Dest> = app
+        .machines
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| *i != source)
+        .map(|(i, m)| Dest::Machine {
+            mi: i,
+            name: m.label.clone(),
+            online: m.connected(),
+        })
+        .collect();
+    v.sort_by(|a, b| a.name().cmp(b.name()));
+    v
+}
+
 pub struct SendForm {
     pub mi: usize,
     pub pane: String,
     pub peers: Vec<Peer>,
+    /// The other machines this TUI is attached to (listed when no peer has their name).
+    pub machines: Vec<Dest>,
     pub loading: bool,
     pub filter: String,
     pub sel: usize,
-    /// The chosen peer: the summary step.
-    pub chosen: Option<Peer>,
+    /// The chosen destination: the summary step.
+    pub chosen: Option<Dest>,
     pub interrupt: bool,
-    /// `handoff.send` in flight.
+    /// `handoff.send` (or the pairing before it) in flight.
     pub busy: bool,
+    /// Auto-pairing step in progress, as the summary shows it.
+    pub pairing: Option<String>,
     pub error: Option<String>,
 }
 
 impl SendForm {
-    /// Peers matching the filter, best first, with highlight positions in the name.
-    pub fn ranked(&self) -> Vec<(Peer, Vec<usize>)> {
-        let mut v: Vec<(i32, usize, Peer, Vec<usize>)> = self
-            .peers
-            .iter()
+    /// The source's peers (server order: own hosts first), then the user's machines that are not
+    /// peers yet.
+    pub fn dests(&self) -> Vec<Dest> {
+        let mut v: Vec<Dest> = self.peers.iter().cloned().map(Dest::Peer).collect();
+        v.extend(
+            self.machines
+                .iter()
+                .filter(|d| !self.peers.iter().any(|p| same_host(&p.name, d.name())))
+                .cloned(),
+        );
+        v
+    }
+
+    /// Destinations matching the filter, best first (peers before machines to pair), with
+    /// highlight positions in the name.
+    pub fn ranked(&self) -> Vec<(Dest, Vec<usize>)> {
+        let mut v: Vec<(bool, i32, usize, Dest, Vec<usize>)> = self
+            .dests()
+            .into_iter()
             .enumerate()
-            .filter_map(|(i, p)| {
-                let full = format!("{} {} {}", p.name, p.owner, p.id);
-                let m = fuzzy(&self.filter, &full)?;
-                let n = p.name.chars().count();
+            .filter_map(|(i, d)| {
+                let m = fuzzy(&self.filter, &d.search_text())?;
+                let n = d.name().chars().count();
                 let pos = m.positions.into_iter().filter(|x| *x < n).collect();
-                Some((m.score, i, p.clone(), pos))
+                Some((matches!(d, Dest::Machine { .. }), m.score, i, d, pos))
             })
             .collect();
         if !self.filter.is_empty() {
-            v.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+            v.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)).then(a.2.cmp(&b.2)));
         }
-        v.into_iter().map(|(_, _, p, pos)| (p, pos)).collect()
+        v.into_iter().map(|(_, _, _, d, pos)| (d, pos)).collect()
     }
 }
 
@@ -2075,31 +2329,196 @@ pub fn send_params(pane: &str, peer: &Peer, interrupt: bool) -> Value {
     json!({"pane": pane, "peer": peer.id, "interrupt": interrupt})
 }
 
-/// `handoff_send`: hand the focused pane off to a paired host.
+/// `handoff_send`: hand the focused (or right-clicked) pane off to a paired host, or to one of
+/// the user's other machines (paired first).
 pub fn open_send(app: &mut App) {
-    let Some(pane) = app.focused_pane() else {
+    let Some((mi, pane)) = take_target(app) else {
         app.toast("no focused pane to hand off");
         return;
     };
-    let mi = app.cur;
     if !app.machines[mi].connected() {
         app.toast(format!("{} offline — nothing sent", app.machines[mi].label));
         return;
     }
+    let machines = other_machines(app, mi);
     app.ux.handoff.send = Some(SendForm {
         mi,
         pane,
         peers: Vec::new(),
+        machines,
         loading: true,
         filter: String::new(),
         sel: 0,
         chosen: None,
         interrupt: false,
         busy: false,
+        pairing: None,
         error: None,
     });
     app.mode = Mode::Popup(Popup::HandoffSend);
     app.command_on(mi, "handoff.peers", json!({}), pend(Reply::Peers));
+}
+
+/// `handoff.send` for the form's pane to peer `peer`.
+fn start_send(app: &mut App, peer: &str) {
+    let Some(f) = app.ux.handoff.send.as_mut() else {
+        return;
+    };
+    f.busy = true;
+    f.error = None;
+    f.pairing = None;
+    let p = json!({"pane": f.pane, "peer": peer, "interrupt": f.interrupt});
+    let mi = f.mi;
+    app.command_on(mi, "handoff.send", p, pend(Reply::Send));
+}
+
+/// The chosen destination, by the `planSend` rules.
+fn submit_send(app: &mut App) {
+    let Some(f) = app.ux.handoff.send.as_mut() else {
+        return;
+    };
+    let Some(dest) = f.chosen.clone() else {
+        return;
+    };
+    match plan_send(&dest, now_ms()) {
+        Plan::Send(peer) => start_send(app, &peer),
+        Plan::Pair(dmi) => {
+            let source = app
+                .machines
+                .get(f.mi)
+                .map(|m| m.label.clone())
+                .unwrap_or_default();
+            f.busy = true;
+            f.error = None;
+            f.pairing = Some(format!(
+                "pairing {} with {source}: creating an invitation on {}…",
+                dest.name(),
+                dest.name()
+            ));
+            crate::handoff::call_long_pending(
+                app,
+                dmi,
+                "gateway.call",
+                json!({"method": "peer.invite", "params": {}}),
+                pend(Reply::PairInvite),
+            );
+        }
+        Plan::Unavailable(why) => {
+            f.error = Some(if why == "expired" {
+                format!("the pairing with {} has expired", dest.name())
+            } else {
+                format!("{} is offline — reconnect it to pair", dest.name())
+            });
+        }
+    }
+}
+
+/// Auto-pairing failed: the summary says where.
+fn pair_failed(app: &mut App, msg: String) {
+    if let Some(f) = app.ux.handoff.send.as_mut() {
+        f.busy = false;
+        f.pairing = None;
+        f.error = Some(msg);
+    } else {
+        app.toast(format!("✗ {msg}"));
+    }
+}
+
+/// `peer.invite` answered on the destination machine `dmi`: redeem it on the source, unless the
+/// source already has a peer of that name (the machine's label differs from its host name).
+fn on_pair_invite(app: &mut App, dmi: usize, res: Result<Value, RpcErr>) {
+    let Some(f) = app.ux.handoff.send.as_ref().filter(|f| f.pairing.is_some()) else {
+        return;
+    };
+    let name = f
+        .chosen
+        .as_ref()
+        .map(|d| d.name().to_string())
+        .unwrap_or_default();
+    let v = match res {
+        Ok(v) => v,
+        Err(e) => {
+            let why = crate::sharing::bridge_error(&e);
+            return pair_failed(app, format!("pairing failed on {name}: {why}"));
+        }
+    };
+    let Some(link) = v["link"]
+        .as_str()
+        .filter(|l| !l.is_empty())
+        .map(str::to_string)
+    else {
+        return pair_failed(
+            app,
+            format!("pairing failed: {name} returned no invitation"),
+        );
+    };
+    let now = now_ms();
+    let known = crate::sharing::parse_link(&link).ok().and_then(|inv| {
+        f.peers
+            .iter()
+            .find(|p| p.name == inv.host_name && !p.is_expired(now))
+            .cloned()
+    });
+    let src = f.mi;
+    if let Some(p) = known {
+        // Already paired after all: the unused invitation goes, the work goes to that peer.
+        if let Some(pid) = v["pid"].as_str() {
+            crate::handoff::call_long_pending(
+                app,
+                dmi,
+                "gateway.call",
+                json!({"method": "share.revoke", "params": {"id": pid}}),
+                Pending::Ignore,
+            );
+        }
+        if let Some(f) = app.ux.handoff.send.as_mut() {
+            f.chosen = Some(Dest::Peer(p.clone()));
+        }
+        return start_send(app, &p.id);
+    }
+    if let Some(f) = app.ux.handoff.send.as_mut() {
+        f.pairing = Some(format!(
+            "pairing with {name}: accepting the invitation here…"
+        ));
+    }
+    call_long_pending(
+        app,
+        src,
+        "gateway.call",
+        json!({"method": "peer.redeem", "params": {"link": link, "share_user": false},
+               "timeout_ms": crate::sharing::REDEEM_TIMEOUT_MS}),
+        pend(Reply::PairRedeem),
+    );
+}
+
+/// `peer.redeem` answered on the source: the new peer is the destination.
+fn on_pair_redeem(app: &mut App, res: Result<Value, RpcErr>) {
+    if !app
+        .ux
+        .handoff
+        .send
+        .as_ref()
+        .is_some_and(|f| f.pairing.is_some())
+    {
+        return;
+    }
+    let v = match res {
+        Ok(v) => v,
+        Err(e) => {
+            let why = crate::sharing::bridge_error(&e);
+            return pair_failed(app, format!("pairing failed: {why}"));
+        }
+    };
+    let Some(p) = Peer::from_value(&v["peer"]) else {
+        return pair_failed(app, "pairing failed: the gateway returned no peer".into());
+    };
+    if let Some(f) = app.ux.handoff.send.as_mut() {
+        f.peers.retain(|x| x.id != p.id);
+        f.peers.push(p.clone());
+        f.chosen = Some(Dest::Peer(p.clone()));
+    }
+    app.toast(format!("paired with {}", p.name));
+    start_send(app, &p.id);
 }
 
 pub fn send_key(app: &mut App, ev: KeyEvent) {
@@ -2120,7 +2539,7 @@ pub fn send_key(app: &mut App, ev: KeyEvent) {
         }
         return;
     }
-    if let Some(peer) = f.chosen.clone() {
+    if f.chosen.is_some() {
         let plain = !ev.mods.ctrl() && !ev.mods.alt();
         match ev.key {
             _ if esc => {
@@ -2130,12 +2549,7 @@ pub fn send_key(app: &mut App, ev: KeyEvent) {
             Key::Char('i') if plain => f.interrupt = !f.interrupt,
             Key::Named(NamedKey::Space) => f.interrupt = !f.interrupt,
             Key::Char(' ') if plain => f.interrupt = !f.interrupt,
-            Key::Named(NamedKey::Enter) => {
-                f.busy = true;
-                f.error = None;
-                let (mi, p) = (f.mi, send_params(&f.pane, &peer, f.interrupt));
-                app.command_on(mi, "handoff.send", p, pend(Reply::Send));
-            }
+            Key::Named(NamedKey::Enter) => submit_send(app),
             _ => {}
         }
         app.dirty = true;
@@ -2148,8 +2562,8 @@ pub fn send_key(app: &mut App, ev: KeyEvent) {
             app.mode = Mode::Normal;
         }
         ListKey::Enter(i) | ListKey::EnterAlt(i) => {
-            if let Some((p, _)) = ranked.get(i) {
-                f.chosen = Some(p.clone());
+            if let Some((d, _)) = ranked.get(i) {
+                f.chosen = Some(d.clone());
                 f.error = None;
             }
             f.filter = String::new();
@@ -2186,20 +2600,37 @@ fn pane_label(app: &App, mi: usize, pane: &str) -> String {
     }
 }
 
-/// Draw the send flow; the filter's cursor position in the peer list.
+/// Draw the send flow; the filter's cursor position in the destination list.
 pub fn draw_send(app: &App, g: &mut Grid) -> Option<(u16, u16)> {
     let f = app.ux.handoff.send.as_ref()?;
     let t = app.theme;
-    if let Some(peer) = &f.chosen {
-        let mut b = frame(app, g, 84, 12, "hand off pane");
+    if let Some(dest) = &f.chosen {
+        let mut b = frame(app, g, 84, 14, "hand off pane");
         b.line(
             &format!(
                 "Hand off {} to {}?",
                 pane_label(app, f.mi, &f.pane),
-                peer.name
+                dest.name()
             ),
             t.bold(t.fg),
         );
+        if let Dest::Machine { .. } = dest {
+            let source = app.machines.get(f.mi).map_or("", |m| m.label.as_str());
+            b.line(
+                &format!(
+                    "{} is one of your machines but not paired with {source} yet: Vibeke pairs",
+                    dest.name()
+                ),
+                t.s(t.yellow),
+            );
+            b.line(
+                &format!(
+                    "them first (an invitation on {}, accepted on {source}), then hands off.",
+                    dest.name()
+                ),
+                t.s(t.yellow),
+            );
+        }
         b.line(
             "After the agent's turn this host exports the work and delivers it; the receiver",
             t.dim(),
@@ -2217,7 +2648,9 @@ pub fn draw_send(app: &App, g: &mut Grid) -> Option<(u16, u16)> {
             t.text(),
         );
         b.line("", t.text());
-        if f.busy {
+        if let Some(p) = &f.pairing {
+            b.line(&format!("⏳ {p}"), t.s(t.yellow));
+        } else if f.busy {
             b.line("⏳ starting the handoff…", t.s(t.yellow));
         } else if let Some(e) = &f.error {
             b.line(&format!("✗ {e}"), t.s(t.red));
@@ -2240,25 +2673,42 @@ pub fn draw_send(app: &App, g: &mut Grid) -> Option<(u16, u16)> {
     };
     let ranked = f.ranked();
     let now = now_ms();
-    let skip = f.sel.saturating_sub(rows.saturating_sub(1) as usize);
-    for (row, (i, (p, pos))) in ranked
+    // A header row goes before the first machine to pair.
+    let first_machine = ranked
         .iter()
-        .enumerate()
-        .skip(skip)
-        .take(rows as usize)
-        .enumerate()
-    {
+        .position(|(d, _)| matches!(d, Dest::Machine { .. }));
+    let disp = |i: usize| i + usize::from(first_machine.is_some_and(|m| i >= m));
+    let rows = rows as usize;
+    let skip = disp(f.sel).saturating_sub(rows.saturating_sub(1));
+    let visible = |r: usize| (skip..skip + rows).contains(&r);
+    for (i, (d, pos)) in ranked.iter().enumerate() {
+        if Some(i) == first_machine {
+            let hr = disp(i) - 1;
+            if visible(hr) {
+                g.put_str(
+                    x + 1,
+                    y + (hr - skip) as u16,
+                    "Your machines (will pair)",
+                    t.dim(),
+                    w,
+                );
+            }
+        }
+        let r = disp(i);
+        if !visible(r) {
+            continue;
+        }
         let at = SRect {
             x,
-            y: y + row as u16,
+            y: y + (r - skip) as u16,
             w,
             h: 1,
         };
         list_row(
             g,
             at,
-            highlight(&p.name, pos, t.text(), hi),
-            &p.note(now),
+            highlight(d.name(), pos, t.text(), hi),
+            &d.note(now),
             i == f.sel,
             app,
         );
@@ -2268,7 +2718,7 @@ pub fn draw_send(app: &App, g: &mut Grid) -> Option<(u16, u16)> {
             (Some(e), _, _) => format!("✗ {e}"),
             (None, true, _) => "loading paired hosts…".into(),
             (None, false, true) => {
-                "no paired hosts — pair one with `vibeke gateway peer add <link>`".into()
+                "no paired hosts — pair one in Sharing & handoff (:sharing) or `vibeke gateway peer add <link>`".into()
             }
             (None, false, false) => "nothing matches".into(),
         };
@@ -2286,6 +2736,7 @@ pub fn action(app: &mut App, action: &str) -> bool {
     match action {
         "handoffs" | "incoming_handoffs" => open_list(app),
         "handoff_send" | "handoff_pane" => open_send(app),
+        "handoff_details" => open_details(app),
         _ => return false,
     }
     true
