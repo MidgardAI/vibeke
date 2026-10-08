@@ -1,0 +1,112 @@
+title = "Vibeke secret scanning"
+
+[extend]
+useDefault = true
+
+# Exceptions match an exact reviewed value AND its specific source files.
+# Keep production credentials detectable, including credentials added to test files.
+
+[[allowlists]]
+description = "Reviewed public value or synthetic redaction fixture"
+condition = "AND"
+targetRules = ["aws-access-token"]
+paths = ["(^|/)crates/vibeke/tests/compat_herdr_slice2\\.rs$", "(^|/)web/packages/core/test/redact\\.test\\.ts$"]
+regexes = ["^\\QAKIAABCDEFGHIJKLMNOP\\E$"]
+
+[[allowlists]]
+description = "Reviewed public value or synthetic redaction fixture"
+condition = "AND"
+targetRules = ["curl-auth-header"]
+paths = ["(^|/)crates/vk\\-redact/src/lib\\.rs$"]
+regexes = ["^\\Qabcdef0123456789xyz\\E$"]
+
+[[allowlists]]
+description = "Reviewed public value or synthetic redaction fixture"
+condition = "AND"
+targetRules = ["curl-auth-header"]
+paths = ["(^|/)web/packages/core/test/redact\\.test\\.ts$"]
+regexes = ["^\\Qabcdefghijkl\\E$"]
+
+[[allowlists]]
+description = "Reviewed public value or synthetic redaction fixture"
+condition = "AND"
+targetRules = ["generic-api-key"]
+paths = ["(^|/)scripts/install\\.sh$"]
+regexes = ["^\\QRWQ0X1WPxwluX2gFO4vO586PSTdpSfJqrb+xsQnZ2ctND/VDw7VCWx5z\\E$"]
+
+[[allowlists]]
+description = "Reviewed public value or synthetic redaction fixture"
+condition = "AND"
+targetRules = ["generic-api-key"]
+paths = ["(^|/)scripts/install\\.sh$"]
+regexes = ["^\\QRWR8LE7QI2pTaSsb4srEFbF1j78fXZzbORy4KGRzHErddJwSJLxwqH3x\\E$"]
+
+[[allowlists]]
+description = "Reviewed public value or synthetic redaction fixture"
+condition = "AND"
+targetRules = ["generic-api-key"]
+paths = ["(^|/)crates/vk\\-server/src/browser_page_tests\\.rs$"]
+regexes = ["^\\Qabcd1234secret\\E$"]
+
+[[allowlists]]
+description = "Reviewed public value or synthetic redaction fixture"
+condition = "AND"
+targetRules = ["generic-api-key"]
+paths = ["(^|/)vendor/libghostty\\-vt/src/input/Binding\\.zig$"]
+regexes = ["^\\Qchain=close_surface\\E$"]
+
+[[allowlists]]
+description = "Reviewed public value or synthetic redaction fixture"
+condition = "AND"
+targetRules = ["generic-api-key"]
+paths = ["(^|/)crates/vk\\-preview/src/proxy_tests\\.rs$"]
+regexes = ["^\\QdGhlIHNhbXBsZSBub25jZQ==\\E$"]
+
+[[allowlists]]
+description = "Reviewed public value or synthetic redaction fixture"
+condition = "AND"
+targetRules = ["generic-api-key"]
+paths = ["(^|/)vendor/libghostty\\-vt/src/terminal/snapshot/terminal\\.zig$"]
+regexes = ["^\\Qheader.modify_other_keys_2\\E$"]
+
+[[allowlists]]
+description = "Reviewed public value or synthetic redaction fixture"
+condition = "AND"
+targetRules = ["generic-api-key"]
+paths = ["(^|/)crates/vk\\-server/src/browser_page_tests\\.rs$"]
+regexes = ["^\\Qsk-live-123456789012345678901234\\E$"]
+
+[[allowlists]]
+description = "Reviewed public value or synthetic redaction fixture"
+condition = "AND"
+targetRules = ["generic-api-key"]
+paths = ["(^|/)crates/vibeke/tests/assist_2d\\.rs$", "(^|/)crates/vk\\-assist/src/config\\.rs$", "(^|/)crates/vk\\-assist/src/diagnose\\.rs$", "(^|/)crates/vk\\-assist/src/keychain\\.rs$", "(^|/)crates/vk\\-config/src/default_config\\.toml$", "(^|/)crates/vk\\-store/src/keychain\\.rs$", "(^|/)docs/site/src/reference/config\\.md$", "(^|/)spec/08\\-ux\\-config\\-and\\-keybindings\\.md$", "(^|/)spec/09\\-security\\-and\\-privacy\\.md$", "(^|/)spec/14\\-llm\\-assistance\\.md$"]
+regexes = ["^\\Qvibeke/assistant/primary\\E$"]
+
+[[allowlists]]
+description = "Reviewed public value or synthetic redaction fixture"
+condition = "AND"
+targetRules = ["jwt"]
+paths = ["(^|/)crates/vk\\-redact/src/lib\\.rs$"]
+regexes = ["^\\QeyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVPmB92K27uhbUJU1p1r\\E$"]
+
+[[allowlists]]
+description = "Reviewed public value or synthetic redaction fixture"
+condition = "AND"
+targetRules = ["private-key"]
+paths = ["(^|/)crates/vk\\-redact/src/lib\\.rs$"]
+regexes = ["^\\Q-----BEGIN OPENSSH PRIVATE KEY-----\\nb3BlbnNzaC1rZXktdjEAAAAA\\nQyNTUxOQAAACD\\n-----END OPENSSH PRIVATE KEY-----\\E$"]
+
+[[allowlists]]
+description = "Reviewed public value or synthetic redaction fixture"
+condition = "AND"
+targetRules = ["private-key"]
+paths = ["(^|/)crates/vk\\-server/src/debug_bundle\\.rs$"]
+regexes = ["^\\Q-----BEGIN PRIVATE KEY-----\\n{}\\n-----END PRIVATE KEY-----\",\n            body.join(\"\\n\")\n        );\n        let escaped = format!(\n            \"{{\\\"private_key\\\": \\\"-----BEGIN RSA PRIVATE KEY-----\\E$"]
+
+[[allowlists]]
+description = "Reviewed public value or synthetic redaction fixture"
+condition = "AND"
+targetRules = ["private-key"]
+paths = ["(^|/)web/packages/core/test/redact\\.test\\.ts$"]
+regexes = ["^\\Q-----BEGIN RSA PRIVATE KEY-----\\nMIIE\\n-----END RSA PRIVATE KEY----- tail')).toBe(`${REDACTED} tail`);\n    expect(redact('x -----BEGIN PRIVATE KEY-----\\E$"]

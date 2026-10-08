@@ -57,7 +57,7 @@ Each item alone can be copied; the bet is the combination, shipped open source a
 
 ## Success metrics (gate for M1 and every later milestone)
 
-Measured on the maintainer's real workload against a 2-week baseline of the current setup (which stays installed during dogfooding):
+Measure on a representative developer workload against a 2-week baseline of the current setup (which stays installed during dogfooding):
 
 | Metric | Definition | M1 target |
 |---|---|---|
@@ -82,7 +82,7 @@ The basic M1 interaction list is specified in 08. [15](15-task-outcomes-review-a
 
 ## Users
 
-- **Primary**: a developer running 3–15 agent sessions across several repos on one or more machines (laptop + devbox), mixing vendors (Claude Code + Codex) and custom harnesses (pi/omp with personal extensions). The maintainer's current setup is the reference: a tmux-style multiplexer, samplehub/dashboard/backend/storefront workspaces, Claude + Codex side by side, sibling `*-todo` worktree directories created by hand.
+- **Primary**: a developer running 3–15 agent sessions across several repos on one or more machines (laptop + devbox), mixing vendors (Claude Code + Codex) and custom harnesses (pi/omp with personal extensions). A representative setup uses several project workspaces, multiple harnesses side by side, and separate task worktrees.
 - **Secondary**: harness authors who want their agent to integrate deeply (documented adapter protocol, ~50 lines to integrate).
 - **Tertiary**: plugin authors.
 

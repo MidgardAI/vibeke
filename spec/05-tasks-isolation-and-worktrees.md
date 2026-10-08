@@ -1,6 +1,6 @@
 # 05 — Tasks, isolation and worktrees
 
-A **task workspace** is the default way to give an agent somewhere to work. One command produces an isolated checkout, a branch, a collision-free port range, an env, a finished setup script and a running agent. Running several agents in one shared cwd stays possible, because people do it (the maintainer's samplehub workspace has 2 Claude + 1 Codex in one directory). In that case Vibeke watches for collisions and warns (advisory only); moving a running agent out of a shared cwd is a Phase 2 feature (§11).
+A **task workspace** is the default way to give an agent somewhere to work. One command produces an isolated checkout, a branch, a collision-free port range, an env, a finished setup script and a running agent. Running several agents in one shared cwd stays possible, for example with two Claude sessions and one Codex session in one directory. In that case Vibeke watches for collisions and warns (advisory only); moving a running agent out of a shared cwd is a Phase 2 feature (§11).
 
 **Scope of the isolation a task gives you.** A worktree is **checkout isolation**: each agent edits its own files and branch. It is **not execution isolation** — every task still runs as you, on the same machine, sharing databases, caches, credentials, `~`, Docker, and anything else reachable from your user. Linked/cloned directories (§5) and shared services (a local Postgres) are shared too. For execution isolation (OS sandbox, container, VM — and safe "yolo") see [13](13-sandboxes-and-vms.md); a task combines one checkout mode with one execution level.
 
@@ -83,7 +83,7 @@ trait IsolationBackend {
 
 Execution isolation (`host` / `sandbox` / `container` / `vm`) is an orthogonal axis, specified in [13-sandboxes-and-vms.md](13-sandboxes-and-vms.md) and in Phase 1 scope (M2–M4). **Status (2026-10-06):** `vibeke task new --isolate sandbox|container [--yolo] [--network p]` records the execution level as `Task.isolation`, and every pane in the task's workspace inherits it. `sandbox` uses `worktree` code isolation, and a sandboxed worktree gets the git write rules of 13 §6. `container` defaults to `clone` (above) and can bind the worktree instead (`--code worktree`). The box image comes from `--image`, `.vibeke/sandbox.toml`, the repo's devcontainer, or `[isolation.container] image`. A container task's setup script and devcontainer lifecycle commands run inside the box after repo trust. See 13 §15.
 
-**Worktree root**: `tasks.root = "~/.vibeke/worktrees"`, layout `<root>/<repo-name>-<hash6>/<slug>`. `tasks.root = "sibling"` gives the maintainer's current convention, `../<repo>-<slug>`, next to the repo (e.g. `~/code/samplehub-lk20-maths-grade-names`). Either way the path is stored on the Task, never recomputed.
+**Worktree root**: `tasks.root = "~/.vibeke/worktrees"`, layout `<root>/<repo-name>-<hash6>/<slug>`. `tasks.root = "sibling"` uses sibling directories, `../<repo>-<slug>`, next to the repo (e.g. `~/code/samplehub-fix-login`). Either way the path is stored on the Task, never recomputed.
 
 **Reconciliation**: on start and every 60 s per repo with tasks, `list()` is compared with stored tasks. A checkout removed outside Vibeke marks the task `missing` (UI offers recreate or forget). A worktree created outside Vibeke inside the root can be adopted with `vibeke task adopt --path`.
 

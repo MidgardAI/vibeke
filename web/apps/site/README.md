@@ -67,9 +67,11 @@ To refresh the screenshots, build `target/debug/vibeke`, the desktop app, and th
 
 ```sh
 bunx tsx scripts/capture-clients.ts
+# Refresh only the TUI (desktop and PWA builds are not required):
+bunx tsx scripts/capture-clients.ts --tui-only
 ```
 
-The script starts an isolated session, gateway, and local relay. It creates sample repositories, conversations, and permission requests. It captures the actual Electron and web interfaces with Playwright. It captures the running TUI through tmux and renders its ANSI output with the original colors. `public/screenshots/capture.json` records the capture date and source commit. Temporary processes and data are removed when the script exits.
+The script starts an isolated session, gateway, and local relay. The TUI hostname is replaced with `demo-laptop` before rendering the screenshot. It creates sample repositories, conversations, and permission requests. It captures the actual Electron and web interfaces with Playwright. It captures the running TUI through tmux and renders its ANSI output with the original colors. `public/screenshots/capture.json` records capture dates and sample-data handling. Temporary processes and data are removed when the script exits.
 
 ## Branding
 

@@ -2,7 +2,8 @@
 // Requires built desktop/PWA apps, target/debug/vibeke, tmux, and installed Chrome.
 // Run from this directory: bunx tsx scripts/capture-clients.ts
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { hostname } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createServer } from 'node:net'
@@ -19,6 +20,7 @@ const children: ChildProcess[] = []
 let desktop: LaunchedApp | undefined
 let browser: Browser | undefined
 const tmuxName = `vibeke-shots-${process.pid}`
+const tuiOnly = process.argv.includes('--tui-only')
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 const run = (args: string[], input?: string) => host.cli(args, input)
 const api = (method: string, params: unknown = {}) => JSON.parse(run(['api', 'call', method, JSON.stringify(params)]))
@@ -63,6 +65,8 @@ function transcript(path: string, cwd: string) {
 
 try {
   mkdirSync(output, { recursive: true })
+  mkdirSync(join(host.env.XDG_CONFIG_HOME!, 'vibeke'), { recursive: true })
+  writeFileSync(join(host.env.XDG_CONFIG_HOME!, 'vibeke/config.toml'), 'onboarding = false\n')
   const probe = createServer()
   await new Promise<void>(resolve => probe.listen(0, '127.0.0.1', resolve))
   const port = (probe.address() as { port: number }).port
@@ -102,42 +106,44 @@ try {
   host.requestApproval(apiWork.pane, 'cargo test -p api', apiWork.cwd)
   host.requestApproval(website.pane, 'bun run build', website.cwd)
 
-  desktop = await launchApp({ ...host.env, VIBEKE_BIN: bin, HOME: process.env.HOME ?? host.env.HOME })
-  const page = desktop.page
-  await desktop.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find(w => w.webContents.getURL().includes('surface=full'))?.setContentSize(1440, 900))
-  await appearance(desktop.app, 'dark')
-  await page.emulateMedia({ colorScheme: 'dark' })
-  await page.getByRole('button', { name: /Connect to this (Mac|computer)/ }).click()
-  await expect(page.getByText(/^Connected to /)).toBeVisible({ timeout: 30000 })
-  await page.getByRole('button', { name: 'Open Vibeke' }).click()
-  await page.getByRole('button', { name: 'Skip', exact: true }).click()
-  await page.getByRole('navigation', { name: 'Workspaces' }).locator('[data-nav-item]').filter({ hasText: 'runtime' }).click()
-  await expect(page.getByRole('log', { name: 'Conversation' })).toContainText('Ready for review.', { timeout: 20000 })
-  await expect(page.getByRole('complementary', { name: 'Workspace panel' })).toContainText('session.ts')
-  await settled(page)
-  await page.mouse.move(1400, 880)
-  await page.screenshot({ path: join(output, 'electron.png') })
-  console.log('Captured Electron workspace')
-
   browser = await chromium.launch({ channel: 'chrome' })
-  const context = await browser.newContext({ viewport: { width: 430, height: 860 }, deviceScaleFactor: 2, colorScheme: 'dark', isMobile: true, hasTouch: true })
-  const web = await context.newPage()
-  let pairOutput = ''
-  const pairing = spawn(bin, ['gateway', 'pair', '--no-qr', '--no-confirm'], { env: host.env, stdio: ['ignore', 'pipe', 'ignore'] })
-  children.push(pairing)
-  pairing.stdout?.on('data', chunk => { pairOutput += String(chunk) })
-  await host.until(() => pairOutput.includes('/#/pair?d='), 15000, 'pair link not ready')
-  const pairUrl = pairOutput.match(/http:\/\/[^\s]+\/#\/pair\?d=[^\s]+/)![0]
-  await web.goto(pairUrl)
-  await web.getByRole('button', { name: 'Pair', exact: true }).click()
-  await expect(web.getByRole('button', { name: 'Open Vibeke' })).toBeVisible({ timeout: 30000 })
-  await web.getByRole('button', { name: 'Open Vibeke' }).click()
-  await web.getByRole('button', { name: 'Skip', exact: true }).click()
-  await web.goto(`${origin}/#/inbox`)
-  await expect(web.getByText('bun test src/auth.test.ts', { exact: false }).first()).toBeVisible({ timeout: 20000 })
-  await settled(web)
-  await web.screenshot({ path: join(output, 'web.png') })
-  console.log('Captured the paired web app')
+  if (!tuiOnly) {
+    desktop = await launchApp({ ...host.env, VIBEKE_BIN: bin, HOME: process.env.HOME ?? host.env.HOME })
+    const page = desktop.page
+    await desktop.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find(w => w.webContents.getURL().includes('surface=full'))?.setContentSize(1440, 900))
+    await appearance(desktop.app, 'dark')
+    await page.emulateMedia({ colorScheme: 'dark' })
+    await page.getByRole('button', { name: /Connect to this (Mac|computer)/ }).click()
+    await expect(page.getByText(/^Connected to /)).toBeVisible({ timeout: 30000 })
+    await page.getByRole('button', { name: 'Open Vibeke' }).click()
+    await page.getByRole('button', { name: 'Skip', exact: true }).click()
+    await page.getByRole('navigation', { name: 'Workspaces' }).locator('[data-nav-item]').filter({ hasText: 'runtime' }).click()
+    await expect(page.getByRole('log', { name: 'Conversation' })).toContainText('Ready for review.', { timeout: 20000 })
+    await expect(page.getByRole('complementary', { name: 'Workspace panel' })).toContainText('session.ts')
+    await settled(page)
+    await page.mouse.move(1400, 880)
+    await page.screenshot({ path: join(output, 'electron.png') })
+    console.log('Captured Electron workspace')
+
+    const context = await browser.newContext({ viewport: { width: 430, height: 860 }, deviceScaleFactor: 2, colorScheme: 'dark', isMobile: true, hasTouch: true })
+    const web = await context.newPage()
+    let pairOutput = ''
+    const pairing = spawn(bin, ['gateway', 'pair', '--no-qr', '--no-confirm'], { env: host.env, stdio: ['ignore', 'pipe', 'ignore'] })
+    children.push(pairing)
+    pairing.stdout?.on('data', chunk => { pairOutput += String(chunk) })
+    await host.until(() => pairOutput.includes('/#/pair?d='), 15000, 'pair link not ready')
+    const pairUrl = pairOutput.match(/http:\/\/[^\s]+\/#\/pair\?d=[^\s]+/)![0]
+    await web.goto(pairUrl)
+    await web.getByRole('button', { name: 'Pair', exact: true }).click()
+    await expect(web.getByRole('button', { name: 'Open Vibeke' })).toBeVisible({ timeout: 30000 })
+    await web.getByRole('button', { name: 'Open Vibeke' }).click()
+    await web.getByRole('button', { name: 'Skip', exact: true }).click()
+    await web.goto(`${origin}/#/inbox`)
+    await expect(web.getByText('bun test src/auth.test.ts', { exact: false }).first()).toBeVisible({ timeout: 20000 })
+    await settled(web)
+    await web.screenshot({ path: join(output, 'web.png') })
+    console.log('Captured the paired web app')
+  }
 
   const terminalText = '\\033[2J\\033[H\\033[38;2;203;166;247mClaude Code\\033[0m  ·  runtime\\n\\n❯ Keep the agent session running after a disconnect.\\n  Add a test for reconnecting.\\n\\n\\033[38;2;166;227;161m✓\\033[0m Read src/session.ts\\n\\033[38;2;166;227;161m✓\\033[0m Update holder reconnect path\\n\\033[38;2;166;227;161m✓\\033[0m Add src/session.test.ts\\n\\n  $ bun test src/session.test.ts\\n\\n\\033[38;2;166;227;161m  4 pass   0 fail\\033[0m\\n\\nThe session now reconnects to its holder.\\nThe agent keeps running after a disconnect.\\n\\nReady for review.\\n'
   const terminalScript = join(host.root, 'terminal-sample.sh')
@@ -148,7 +154,13 @@ try {
   tmux('-f', '/dev/null', 'new-session', '-d', '-s', 'capture', '-x', '140', '-y', '42', bin, '--session', 't')
   tmux('set-option', '-g', 'status', 'off')
   await delay(2500)
-  const ansi = tmux('capture-pane', '-p', '-e', '-t', 'capture')
+  // Use a sample host label before rendering; never publish the capture machine's hostname.
+  const machineName = hostname().split('.')[0]!
+  const ansi = tmux('capture-pane', '-p', '-e', '-t', 'capture').replaceAll(machineName, 'demo-laptop')
+  if (!ansi.includes('demo-laptop') || !ansi.includes('Ready for review.')) {
+    console.error(ansi)
+    throw new Error('TUI capture did not contain the sample host and conversation')
+  }
   // Keep the terminal capture in memory; only the screenshot is published.
   const lines = parseAnsi(ansi).slice(0, 42)
   const html = lines.map(line => '<div>' + (line.map(({ text, style }) => {
@@ -159,7 +171,8 @@ try {
   await term.setContent(`<html><head><style>:root{--ansi-black:#45475a;--ansi-red:#f38ba8;--ansi-green:#a6e3a1;--ansi-yellow:#f9e2af;--ansi-blue:#89b4fa;--ansi-magenta:#cba6f7;--ansi-cyan:#94e2d5;--ansi-white:#cdd6f4}body{margin:0;padding:30px;background:#1e1e2e;color:#cdd6f4}pre{margin:0;font:16px/20px Menlo,monospace;white-space:pre}</style></head><body><pre>${html}</pre></body></html>`)
   await term.screenshot({ path: join(output, 'tui.png') })
   console.log('Captured the live TUI through tmux')
-  writeFileSync(join(output, 'capture.json'), JSON.stringify({ capturedAt: new Date().toISOString(), sourceCommit: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim(), sampleData: true, electron: 'Actual Electron renderer, 1440x870 at 2x', web: 'Actual PWA paired through a local encrypted relay, 430x860 at 2x', tui: 'Live TUI in a 140x42 PTY; ANSI capture rendered with original colors' }, null, 2) + '\n')
+  const previous = tuiOnly ? JSON.parse(readFileSync(join(output, 'capture.json'), 'utf8')) : {}
+  writeFileSync(join(output, 'capture.json'), JSON.stringify({ ...previous, capturedAt: tuiOnly ? previous.capturedAt : new Date().toISOString(), sampleData: true, electron: 'Actual Electron renderer, 1440x870 at 2x', web: 'Actual PWA paired through a local encrypted relay, 430x860 at 2x', tui: 'Live TUI in a 140x42 PTY; hostname replaced with demo-laptop before rendering ANSI with original colors', tuiCapturedAt: new Date().toISOString(), ...(tuiOnly ? { refreshed: ['tui'] } : {}) }, (key, value) => key === 'sourceCommit' ? undefined : value, 2) + '\n')
 } finally {
   try { execFileSync('/opt/homebrew/bin/tmux', ['-L', tmuxName, 'kill-server'], { stdio: 'ignore' }) } catch {}
   await browser?.close()

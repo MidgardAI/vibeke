@@ -12,7 +12,7 @@ No calendar estimates are given: the earlier week numbers were unsupported place
 
 ## Goal 01 track (current priority)
 
-The first build goal ([milestones](11-milestones.md)) is a remote daily driver over SSH for the maintainer. It covers **M0 + M1 + the remote-machine half of M3** (06 Part A: machines, bootstrap, bridge, multi-machine view, reconnection, clipboard, image paste, dropped-path translation). M2 (safe yolo, extra harnesses) and the preview half of M3 come after it. Milestone numbering is unchanged; only the order of delivery differs.
+The first build goal is a remote daily driver over SSH for the maintainer. It covers **M0 + M1 + the remote-machine half of M3** (06 Part A: machines, bootstrap, bridge, multi-machine view, reconnection, clipboard, image paste, dropped-path translation). M2 (safe yolo, extra harnesses) and the preview half of M3 come after it. Milestone numbering is unchanged; only the order of delivery differs.
 
 **Next goals:** [task outcomes and review](15-task-outcomes-review-and-attention.md) (spec 15 T1–T3, plus pi/omp) and [remote and preview design](06-remote-and-preview.md) (the preview half of M3, with the in-terminal browser pane). M2 isolation follows.
 

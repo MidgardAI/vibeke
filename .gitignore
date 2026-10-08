@@ -3,4 +3,10 @@
 .DS_Store
 /.claude/
 /dist/
-.env.local
+.env
+.env.*
+!.env.example
+!.env.*.example
+/goals/
+/reviews/
+/research/
