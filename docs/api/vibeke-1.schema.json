@@ -1449,6 +1449,7 @@
             "online",
             "offline",
             "local_only",
+            "login_required",
             "external",
             "crashed"
           ]
@@ -13825,6 +13826,7 @@
               "online",
               "offline",
               "local_only",
+              "login_required",
               "external",
               "crashed"
             ]

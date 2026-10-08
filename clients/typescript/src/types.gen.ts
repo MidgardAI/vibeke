@@ -310,7 +310,7 @@ export type FloatingPane = {
 };
 
 export type GatewayStatus = {
-  state: "off" | "starting" | "connecting" | "online" | "offline" | "local_only" | "external" | "crashed";
+  state: "off" | "starting" | "connecting" | "online" | "offline" | "local_only" | "login_required" | "external" | "crashed";
   autostart: boolean;
   supervised: boolean;
   pid: number | null;
@@ -3314,7 +3314,7 @@ export type GatewayStatusParams = {
 export type GatewayStatusResult = {
   connected: boolean;
   configured: boolean;
-  state?: "off" | "starting" | "connecting" | "online" | "offline" | "local_only" | "external" | "crashed";
+  state?: "off" | "starting" | "connecting" | "online" | "offline" | "local_only" | "login_required" | "external" | "crashed";
   autostart?: boolean;
   supervised?: boolean;
   pid?: number | null;
