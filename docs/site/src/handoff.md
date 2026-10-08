@@ -6,7 +6,7 @@ The browser and desktop apps provide both features through the gateway.
 
 ## Requirements
 
-[Pair the app](mobile.md) with a gateway first. Both hosts must be online for a transfer. Offline delivery is unavailable.
+[Pair the app](mobile.md) with a gateway first. After setup, the server runs the gateway for you. You do not start it by hand. Both hosts must be online for a transfer. Offline delivery is unavailable.
 
 The destination needs a repository checkout, the agent CLI, and its own agent login.
 

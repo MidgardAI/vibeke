@@ -29,29 +29,67 @@ The development host does not need an inbound port. You do not need to expose it
      --app-dir web/apps/pwa/dist
    ```
 
-5. In another terminal, start the gateway:
+You do not run the gateway yourself. The next step starts it.
+
+## Set up and pair the browser
+
+1. Set up the gateway and create a pairing invitation:
 
    ```sh
-   cargo run -p vk-gateway --bin vibeke-gateway -- run \
-     --relay http://localhost:8787
+   vibeke gateway pair --relay http://localhost:8787
    ```
 
-## Pair the browser
+   The command saves the relay, turns the gateway on, starts it through the server, and waits for it to connect. It then shows the pairing link and QR code.
 
-1. Create a pairing invitation:
-
-   ```sh
-   cargo run -p vk-gateway --bin vibeke-gateway -- pair
-   ```
-
-2. Open the printed link.
+2. Open the printed link, or scan the QR code.
 3. Compare the browser fingerprint with the terminal fingerprint.
 4. If they match, select **Pair**.
 5. Confirm the pairing in the terminal.
 
+Later runs of `vibeke gateway pair` skip the relay option and only create an invitation.
+
 Localhost works for a browser on the same computer. A phone needs a reachable relay origin with HTTPS. On a phone, `localhost` refers to the phone.
 
-For restricted access, use `pair --scope approve` or `pair --scope view`. Use `vibeke-gateway devices` to list devices. Use `vibeke-gateway revoke <id>` to revoke a device.
+For restricted access, use `pair --scope approve` or `pair --scope view`.
+
+## Autostart
+
+After setup, autostart is on. The server starts the gateway when it starts. The gateway stops when the server stops. If the gateway crashes, the server restarts it after a short delay. After repeated crashes it stops trying and reports `crashed`.
+
+Commands:
+
+- `vibeke gateway status`: show the setup and whether the gateway is running.
+- `vibeke gateway on`: turn autostart on and start the gateway.
+- `vibeke gateway off`: turn autostart off and stop the gateway.
+- `vibeke gateway logs [-f] [-n N]`: show the gateway log. Use `-f` to follow it.
+- `vibeke server status`: show the server state, including a `gateway` line.
+
+The terminal client shows a gateway indicator in the status bar. It appears only after setup. Without setup, it is hidden.
+
+If you start `vibeke gateway run` by hand, the server detects it and reports the gateway as `external`. It does not start a second one.
+
+## If you don't use the phone or desktop apps
+
+Nothing runs and no connection opens until you pair. The gateway stays off until you run `vibeke gateway pair` or `vibeke gateway on`.
+
+## Turning it off
+
+1. Stop the gateway and keep it off:
+
+   ```sh
+   vibeke gateway off
+   ```
+
+   It stays off after server restarts. Run `vibeke gateway on` to turn it back on.
+
+2. To remove a paired device, list the devices and revoke one:
+
+   ```sh
+   vibeke gateway devices
+   vibeke gateway revoke <id>
+   ```
+
+A revoked device cannot reconnect. Create a new invitation to pair it again.
 
 ## iOS notifications
 
