@@ -301,12 +301,17 @@ struct ConnGuard {
     client_ids: Arc<std::sync::Mutex<Vec<String>>>,
     /// `events.subscribe` tasks of this connection, by subscription id (`events.unsubscribe`).
     subs: Subs,
+    /// Cleared when the connection ends; dispatched calls run in its scope
+    /// (`approve::CONN_OPEN`), so an approval ask still being prepared isn't registered.
+    open: Arc<std::sync::atomic::AtomicBool>,
 }
 
 type Subs = Arc<std::sync::Mutex<std::collections::HashMap<String, tokio::task::AbortHandle>>>;
 
 impl Drop for ConnGuard {
     fn drop(&mut self) {
+        // Before `approve::client_gone`: an ask registering after it sees the closed flag.
+        self.open.store(false, std::sync::atomic::Ordering::SeqCst);
         // The connection's event subscriptions end with it.
         for (_, h) in self.subs.lock().unwrap().drain() {
             h.abort();
@@ -328,6 +333,7 @@ where
         server: server.clone(),
         client_ids: Arc::default(),
         subs: Arc::default(),
+        open: Arc::new(std::sync::atomic::AtomicBool::new(true)),
     };
     let (rd, mut wr) = tokio::io::split(stream);
     let mut rd = BufReader::new(rd);
@@ -486,7 +492,8 @@ where
                     }
                     _ => {
                         let (srv, c, tx, l) = (server.clone(), ctx.clone(), out_tx.clone(), l.to_string());
-                        tokio::spawn(async move { let _ = tx.send(api::handle_line(&srv, &c, &l).await); });
+                        let open = guard.open.clone();
+                        tokio::spawn(crate::approve::CONN_OPEN.scope(open, async move { let _ = tx.send(api::handle_line(&srv, &c, &l).await); }));
                     }
                 }
             }

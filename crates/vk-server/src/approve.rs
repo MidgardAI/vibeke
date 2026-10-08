@@ -19,6 +19,14 @@
 //! - `auth.approve.withdraw {request}` (the asking pane). A waiter whose connection closes
 //!   withdraws its request too ([`client_gone`]).
 //!
+//! Preparing a request awaits repository inspection, so the pane can be revoked or its caller
+//! can go away meanwhile. The pane's revocation generation is taken before preparing and the
+//! request is registered only if, under the request table's lock, the generation is unchanged
+//! and the caller's connection ([`CONN_OPEN`]) is still open; otherwise the ask ends with
+//! `approval_withdrawn`. The waiting caller is registered with the request itself, so a close
+//! right after registration withdraws it. Running an approved call (a decision or a standing
+//! grant) re-checks the pane's revocation as well as its process.
+//!
 //! An approved `handoff.send` records the repository root, branch and HEAD seen when the pane
 //! asked (`expect` on the job). Approving re-checks them first, and the gateway re-checks its
 //! export against them, so a pane that moved to another repository, branch or commit in between
@@ -33,6 +41,7 @@ use crate::api::{Ctx, R, err, invalid, not_found, req, s, u};
 use crate::core::{Tx, ulid};
 use serde_json::{Value, json};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::watch;
@@ -52,15 +61,40 @@ const GATEWAY_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_REASON: usize = 500;
 const MAX_LINK: usize = 4096;
 
+tokio::task_local! {
+    /// Whether the connection a call came on is still open: `run::connection` runs each
+    /// dispatched call in its scope and clears it before [`client_gone`]. A call made without a
+    /// connection (in-process callers, tests) counts as open.
+    pub static CONN_OPEN: Arc<AtomicBool>;
+}
+
+fn conn_open() -> bool {
+    CONN_OPEN
+        .try_with(|f| f.load(Ordering::SeqCst))
+        .unwrap_or(true)
+}
+
 #[derive(Default)]
 pub struct State {
     inner: Mutex<Inner>,
+    /// Tests: run once between preparing a request and registering it.
+    #[cfg(test)]
+    after_prepare: Mutex<Option<Box<dyn FnOnce(&Server) + Send>>>,
 }
 
 #[derive(Default)]
 struct Inner {
     requests: HashMap<String, Request>,
     grants: Vec<Grant>,
+    /// pane → how often its token was revoked ([`clear_pane`]). Requests and grants carry the
+    /// generation they were made under and are only registered or used under the same one.
+    revocations: HashMap<String, u64>,
+}
+
+impl Inner {
+    fn generation(&self, pane: &str) -> u64 {
+        self.revocations.get(pane).copied().unwrap_or(0)
+    }
 }
 
 /// How a request ended.
@@ -104,6 +138,8 @@ struct Request {
     workspace: String,
     /// The asking pane's child process when it asked (a restarted pane can't collect).
     child_pid: Option<u32>,
+    /// The pane's revocation generation when it asked.
+    generation: u64,
     frozen: Frozen,
     reason: String,
     created_at_ms: i64,
@@ -118,6 +154,8 @@ struct Request {
 struct Grant {
     pane: String,
     child_pid: Option<u32>,
+    /// The pane's revocation generation when it was granted.
+    generation: u64,
     method: String,
     target: Option<String>,
     peer: String,
@@ -132,6 +170,23 @@ fn state(server: &Server) -> &State {
 
 fn denied(msg: impl Into<String>) -> RpcError {
     err(ErrorKind::PermissionDenied, msg).details(json!({"scope": "pane"}))
+}
+
+/// `approval_withdrawn`: request `id` (or an ask not registered yet) ended for `why`.
+fn withdrawn_err(id: Option<&str>, why: &str) -> RpcError {
+    let msg = match id {
+        Some(id) => format!("approval_withdrawn: request {id} ended ({why})"),
+        None => format!("approval_withdrawn: the request ended before it was registered ({why})"),
+    };
+    err(
+        if why == "revoked" {
+            ErrorKind::PermissionDenied
+        } else {
+            ErrorKind::Conflict
+        },
+        msg,
+    )
+    .details(json!({"request": id, "reason": why}))
 }
 
 pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Option<R> {
@@ -486,6 +541,9 @@ fn prune(server: &Server) {
 pub fn clear_pane(server: &Server, pane: &str, actor: Value) -> (usize, usize) {
     let (ended, grants) = {
         let mut g = state(server).inner.lock().unwrap();
+        // Asks being prepared and calls being approved under the old generation can't
+        // register or run any more.
+        *g.revocations.entry(pane.to_string()).or_default() += 1;
         let before = g.grants.len();
         g.grants.retain(|gr| gr.pane != pane);
         let grants = before - g.grants.len();
@@ -517,8 +575,9 @@ pub fn clear_pane(server: &Server, pane: &str, actor: Value) -> (usize, usize) {
     (n, grants)
 }
 
-/// A connection closed (`run::ConnGuard`): requests only it was waiting on are withdrawn (the
-/// CLI's Ctrl-C).
+/// A connection closed (`run::ConnGuard`, after it cleared [`CONN_OPEN`]): requests only it was
+/// waiting on are withdrawn (the CLI's Ctrl-C). An ask of that connection still being prepared
+/// sees the cleared flag when it registers and is refused.
 pub fn client_gone(server: &Server, client_id: &str) {
     let ended = {
         let mut g = state(server).inner.lock().unwrap();
@@ -724,10 +783,35 @@ async fn approve(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
             }
             r.decision.subscribe()
         };
-        return wait_for(server, ctx, id, rx, wait_ms).await;
+        return wait_for(server, ctx, id, rx, wait_ms, false).await;
     }
     let method = req(p, "method")?;
+    // The pane's authorization before preparing (which awaits repository inspection): a
+    // revocation from now on bumps the generation (`clear_pane`), one before it shows here.
+    let generation = state(server).inner.lock().unwrap().generation(&me);
+    if crate::auth::is_revoked(server, &me) {
+        return Err(denied(format!(
+            "token_revoked: pane {me}'s API access was revoked; restart the pane to restore it"
+        )));
+    }
     let frozen = prepare(server, ctx, &me, method, p).await?;
+    #[cfg(test)]
+    {
+        let hook = state(server).after_prepare.lock().unwrap().take();
+        if let Some(hook) = hook {
+            hook(&**server);
+        }
+    }
+    // Under the request table's lock: still the same authorization, and still a caller.
+    let still_valid = |g: &Inner| -> Result<(), RpcError> {
+        if g.generation(&me) != generation {
+            return Err(withdrawn_err(None, "revoked"));
+        }
+        if !conn_open() {
+            return Err(withdrawn_err(None, "disconnected"));
+        }
+        Ok(())
+    };
     let (handle, workspace, child_pid) = server
         .with_core(|c| {
             c.pane(&me)
@@ -741,12 +825,13 @@ async fn approve(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         .take(MAX_REASON)
         .collect();
     let (tx, rx) = watch::channel(None);
-    let r = Request {
+    let mut r = Request {
         id: format!("ap-{}", &ulid()[16..]),
         pane: me.clone(),
         pane_handle: handle.clone(),
         workspace,
         child_pid,
+        generation,
         frozen,
         reason,
         created_at_ms: now_ms(),
@@ -757,11 +842,13 @@ async fn approve(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     // A standing grant for exactly this (pane, method, target, peer) runs it now.
     let standing = {
         let g = state(server).inner.lock().unwrap();
+        still_valid(&*g)?;
         g.grants
             .iter()
             .find(|gr| {
                 gr.pane == me
                     && gr.child_pid == child_pid
+                    && gr.generation == generation
                     && gr.method == r.frozen.method
                     && gr.target == r.frozen.target
                     && r.frozen.peer.as_ref().is_some_and(|p| p.id == gr.peer)
@@ -769,11 +856,22 @@ async fn approve(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
             .cloned()
     };
     if let Some(grant) = standing {
+        // A revocation that reached the auth table but not yet the grants (`clear_pane`
+        // runs after it) still stops the grant.
+        if crate::auth::is_revoked(server, &me) {
+            return Err(withdrawn_err(None, "revoked"));
+        }
         return run_standing(server, ctx, r, &grant).await;
     }
     let id = r.id.clone();
+    // The waiting caller is registered with the request, so its connection closing at any
+    // point after this withdraws it.
+    if wait {
+        r.waiters.push(ctx.client_id.clone());
+    }
     {
         let mut g = state(server).inner.lock().unwrap();
+        still_valid(&*g)?;
         let open = g
             .requests
             .values()
@@ -821,7 +919,7 @@ async fn approve(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         let g = state(server).inner.lock().unwrap();
         return Ok(g.requests.get(&id).map(request_json).unwrap_or(Value::Null));
     }
-    wait_for(server, ctx, &id, rx, wait_ms).await
+    wait_for(server, ctx, &id, rx, wait_ms, true).await
 }
 
 /// Removes this waiter from the request however the wait ends.
@@ -848,8 +946,10 @@ async fn wait_for(
     id: &str,
     mut rx: watch::Receiver<Option<Outcome>>,
     wait_ms: u64,
+    // The caller was registered as a waiter when the request was.
+    registered: bool,
 ) -> R {
-    {
+    if !registered {
         let mut g = state(server).inner.lock().unwrap();
         if let Some(r) = g.requests.get_mut(id) {
             r.waiters.push(ctx.client_id.clone());
@@ -889,15 +989,7 @@ async fn wait_for(
         Outcome::Denied => Err(denied(format!(
             "approval_denied: the user denied request {id}"
         ))),
-        Outcome::Withdrawn(why) => Err(err(
-            if why == "revoked" {
-                ErrorKind::PermissionDenied
-            } else {
-                ErrorKind::Conflict
-            },
-            format!("approval_withdrawn: request {id} ended ({why})"),
-        )
-        .details(json!({"request": id, "reason": why}))),
+        Outcome::Withdrawn(why) => Err(withdrawn_err(Some(id), why)),
     }
 }
 
@@ -985,27 +1077,58 @@ async fn decide(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
                           "ok": false, "result": null, "error": null}),
         );
     }
-    let grant = if decision == Decision::Always {
+    let new_grant = (decision == Decision::Always).then(|| {
         let peer = r.frozen.peer.clone().unwrap_or(Peer {
             id: String::new(),
             name: String::new(),
             owner: String::new(),
         });
-        let gr = Grant {
+        Grant {
             pane: r.pane.clone(),
             child_pid: r.child_pid,
+            generation: r.generation,
             method: r.frozen.method.clone(),
             target: r.frozen.target.clone(),
             peer: peer.id,
             peer_name: peer.name,
             request: r.id.clone(),
             created_at_ms: now_ms(),
-        };
-        state(server).inner.lock().unwrap().grants.push(gr);
+        }
+    });
+    let grant = if new_grant.is_some() {
         "always"
     } else {
         "once"
     };
+    // Claimed: the pane's token must still be valid. A revocation that reached the auth table
+    // shows in `is_revoked`; one after that bumps the generation before it clears requests and
+    // grants (`clear_pane` skips a running request), so it shows here under the lock.
+    let revoked = crate::auth::is_revoked(server, &r.pane) || {
+        let mut g = state(server).inner.lock().unwrap();
+        let stale = g.generation(&r.pane) != r.generation;
+        if !stale && let Some(gr) = new_grant {
+            g.grants.push(gr);
+        }
+        stale
+    };
+    if revoked {
+        let r = state(server)
+            .inner
+            .lock()
+            .unwrap()
+            .requests
+            .remove(id)
+            .unwrap_or(r);
+        r.decision.send_replace(Some(Outcome::Withdrawn("revoked")));
+        announce(
+            server,
+            "auth.approval_withdrawn",
+            crate::audit::actor_of(ctx),
+            subject(&r.pane, &r.id),
+            json!({"method": r.frozen.method, "reason": "revoked"}),
+        );
+        return Err(withdrawn_err(Some(id), "revoked"));
+    }
     let out = run_approved(server, ctx, &r).await;
     {
         let mut g = state(server).inner.lock().unwrap();
@@ -1075,6 +1198,12 @@ fn withdraw(server: &Server, ctx: &Ctx, p: &Value) -> R {
         json!({"method": r.frozen.method, "reason": "withdrawn"}),
     );
     Ok(json!({"request": id, "withdrawn": true}))
+}
+
+/// Tests: run `f` once between preparing the next ask and registering it.
+#[cfg(test)]
+pub fn set_after_prepare(server: &Server, f: impl FnOnce(&Server) + Send + 'static) {
+    *state(server).after_prepare.lock().unwrap() = Some(Box::new(f));
 }
 
 /// Tests: whether `pane` holds a standing grant.

@@ -136,6 +136,20 @@ pub fn is_revoked(server: &Server, pane: &str) -> bool {
     }
 }
 
+/// Tests: mark `pane`'s current process tree revoked in the auth table only, as `revoke` does
+/// before it clears the pane's approval requests and grants.
+#[cfg(test)]
+pub fn mark_revoked_for_test(server: &Server, pane: &str) {
+    let pid = server
+        .with_core(|c| c.pane(pane).map(|p| p.child_pid))
+        .flatten();
+    let mut g = server.security.auth.inner.lock().unwrap();
+    load_revoked(server, &mut g);
+    if let Some(m) = g.revoked.as_mut() {
+        m.insert(pane.to_string(), pid);
+    }
+}
+
 /// Is this elevated connection's grant still valid?
 fn elevated_valid(server: &Server, kind: &str) -> bool {
     let Some(prefix) = kind.strip_prefix(ELEVATED_KIND) else {
