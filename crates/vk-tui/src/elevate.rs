@@ -486,6 +486,7 @@ pub fn deadlines(app: &App, d: &mut crate::deadline::Deadlines) {
     // Kept until a frame showed the keys live, so the wakeup at the deadline still repaints.
     if let Some(v) = &app.ux.elevate.view
         && !v.shown_armed.get()
+        && sel_index(app).is_some()
     {
         d.redraw("elevate.arm", v.opened_at + ARM_DELAY);
     }

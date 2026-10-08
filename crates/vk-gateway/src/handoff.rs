@@ -177,7 +177,7 @@ pub async fn export_bundle(
         e.check(&root.display().to_string(), branch.as_deref(), &head)?;
     }
     // Every checkout appends to HEAD's reflog, even one that later returns to `head`.
-    let head_log = head_log_len(&root).await;
+    let head_log = head_fingerprint(&root).await;
     let origin = git_line(&root, &["remote", "get-url", "origin"]).await;
     let has_remotes = git_line(&root, &["remote"]).await.is_some();
 
@@ -306,7 +306,7 @@ pub async fn export_bundle(
     // A checkout to elsewhere and back leaves HEAD as it was, but not its reflog.
     let moved = match still_at(&root, manifest.branch.as_deref(), &manifest.head).await {
         Err(e) => Some(e),
-        Ok(()) if head_log_len(&root).await != head_log => Some(err(
+        Ok(()) if head_fingerprint(&root).await != head_log => Some(err(
             "conflict",
             "repo_moved: the repository was checked out during the export; nothing was sent, try again",
         )),
@@ -488,10 +488,18 @@ async fn tracked_changes(root: &Path, head: &str) -> Result<Vec<u8>, ApiError> {
     .map_err(ApiError::from)
 }
 
-/// The length of HEAD's reflog (`None` without one, e.g. `core.logAllRefUpdates=false`).
-async fn head_log_len(root: &Path) -> Option<u64> {
-    let rel = git_line(root, &["rev-parse", "--git-path", "logs/HEAD"]).await?;
-    std::fs::metadata(root.join(rel)).ok().map(|m| m.len())
+/// What a checkout always changes, even one that returns to the same commit: the length of
+/// HEAD's reflog (absent with `core.logAllRefUpdates=false`) and the HEAD file's modification
+/// time (a checkout rewrites it).
+async fn head_fingerprint(root: &Path) -> (Option<u64>, Option<std::time::SystemTime>) {
+    let meta = |name: &'static str| async move {
+        let rel = git_line(root, &["rev-parse", "--git-path", name]).await?;
+        std::fs::metadata(root.join(rel)).ok()
+    };
+    (
+        meta("logs/HEAD").await.map(|m| m.len()),
+        meta("HEAD").await.and_then(|m| m.modified().ok()),
+    )
 }
 
 /// `repo_moved` unless the repository is still on `branch` at `head`.
@@ -647,13 +655,22 @@ mod tests {
     async fn a_checkout_elsewhere_and_back_changes_the_head_reflog() {
         let t = tempfile::tempdir().unwrap();
         let (repo, _a, b) = setup(t.path());
-        let before = head_log_len(&repo).await;
-        assert!(before.is_some());
-        assert_eq!(head_log_len(&repo).await, before);
+        let before = head_fingerprint(&repo).await;
+        assert!(before.0.is_some() && before.1.is_some());
+        assert_eq!(head_fingerprint(&repo).await, before);
         sh(&repo, &["checkout", "-q", "main"]);
         sh(&repo, &["checkout", "-q", "feature"]);
         assert!(still_at(&repo, Some("feature"), &b).await.is_ok());
-        assert_ne!(head_log_len(&repo).await, before);
+        assert_ne!(head_fingerprint(&repo).await, before);
+        // Without a reflog the HEAD file's rewrite still shows.
+        sh(&repo, &["config", "core.logAllRefUpdates", "false"]);
+        std::fs::remove_file(repo.join(".git/logs/HEAD")).unwrap();
+        let before = head_fingerprint(&repo).await;
+        assert!(before.0.is_none());
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        sh(&repo, &["checkout", "-q", "main"]);
+        sh(&repo, &["checkout", "-q", "feature"]);
+        assert_ne!(head_fingerprint(&repo).await, before);
     }
 
     #[test]
