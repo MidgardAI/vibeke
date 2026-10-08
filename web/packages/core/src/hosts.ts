@@ -279,7 +279,7 @@ export class HostConnection implements HostConnectionApi {
    */
   refresh(): Promise<void> {
     const rpc = this.rpc;
-    if (!rpc || !isDashboardHost(this.state.record)) return Promise.resolve();
+    if (!rpc) return Promise.resolve();
     if (this.refreshing && this.refreshingRpc === rpc) {
       this.refreshAgain = true;
       return this.refreshing;
