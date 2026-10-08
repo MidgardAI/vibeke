@@ -12,8 +12,8 @@
 //!   `vibeke gateway pair`) => `{link, pid, open_by, scope}`. `unavailable` without a relay or
 //!   an app origin.
 //! - `pair.status {pid}` => `{status: pending}` | `{status: claimed, name, platform,
-//!   fingerprint}` | `{status: done, device_id, name?}` (reported once: the record is removed) |
-//!   `{status: rejected}` | `{status: gone}` (unknown, expired or already reported).
+//!   fingerprint}` | `{status: done, device_id, name?}` (kept until the sweep removes it, so a retry sees it again) |
+//!   `{status: rejected}` | `{status: gone}` (unknown or expired).
 //!
 //! Cancelling a pairing is `share.revoke {id: pid}` (removes any pairing that isn't done).
 
@@ -171,7 +171,7 @@ fn pair_create(gw: &Arc<Gateway>, p: &Value) -> ApiResult {
     }))
 }
 
-/// `pair.status`: where a pairing stands. `done` is reported once (the record is removed then).
+/// `pair.status`: where a pairing stands. `done` stays readable until the sweep removes the record.
 fn pair_status(gw: &Arc<Gateway>, p: &Value) -> ApiResult {
     let pid = s(p, "pid")
         .filter(|v| !v.is_empty())
@@ -187,12 +187,10 @@ fn pair_status(gw: &Arc<Gateway>, p: &Value) -> ApiResult {
         };
         let expired = pairing.exp <= now_s();
         match pairing.status {
-            PairingStatus::Done { device_id } => {
-                gw.state.remove_pairing(pid).map_err(crate::api::internal)?;
-                device_id
-            }
-            PairingStatus::Rejected => return Ok(json!({"status": "rejected"})),
+            // Kept (the sweep removes it after expiry) so a lost reply can be asked again.
+            PairingStatus::Done { device_id } => device_id,
             _ if expired => return Ok(json!({"status": "gone"})),
+            PairingStatus::Rejected => return Ok(json!({"status": "rejected"})),
             PairingStatus::Pending => return Ok(json!({"status": "pending"})),
             PairingStatus::Claimed {
                 fingerprint,
@@ -411,7 +409,7 @@ mod tests {
             json!({"status": "claimed", "name": "phone", "platform": "ios", "fingerprint": "ab-cd"})
         );
 
-        // Done: reported once with the device's name, then gone.
+        // Done: reported with the device's name, again on a retry (a reply may be lost).
         gw.add_device(device("d9", "phone")).unwrap();
         gw.state
             .save_pairing(&Pairing {
@@ -425,7 +423,7 @@ mod tests {
             status(pid.clone()).await,
             json!({"status": "done", "device_id": "d9", "name": "phone"})
         );
-        assert_eq!(status(pid.clone()).await, json!({"status": "gone"}));
+        assert_eq!(status(pid.clone()).await["status"], "done");
         assert_eq!(status("nope".into()).await, json!({"status": "gone"}));
 
         // Rejected and expired.

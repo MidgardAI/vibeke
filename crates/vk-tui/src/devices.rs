@@ -16,6 +16,7 @@
 //! Without a gateway (or without a relay/app URL) the server answers with a message that the view
 //! shows as it is.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
@@ -30,6 +31,11 @@ use crate::sharing::{bridge_error, draw_link_qr, gw_call_pending, unreachable};
 
 /// How often `pair.status` is asked while a pairing link is open.
 pub const POLL: Duration = Duration::from_secs(1);
+/// Past the bridge's own timeout: a `pair.status` with no answer by then never gets one.
+const STALE: Duration = Duration::from_secs(35);
+
+/// Tags each `pair.create`, so a late answer can't land in a newer attempt or a reopened view.
+static NEXT_ATTEMPT: AtomicU64 = AtomicU64::new(1);
 
 /// (scope, name, what it allows), the default first.
 const SCOPES: [(&str, &str, &str); 3] = [
@@ -131,7 +137,9 @@ pub struct Pairing {
     pub status: PairStatus,
     pub scope: String,
     polled_at: Option<Instant>,
-    inflight: bool,
+    /// When the outstanding `pair.status` was sent. A reply lost to a reconnect never comes, so
+    /// after [`STALE`] the next poll goes out anyway.
+    inflight: Option<Instant>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -155,6 +163,8 @@ pub struct View {
     pub busy: Option<String>,
     pub confirm: Option<Confirm>,
     pub stage: Stage,
+    /// The `pair.create` this view waits for; any other answer is an abandoned link.
+    creating: Option<u64>,
 }
 
 impl View {
@@ -169,6 +179,7 @@ impl View {
             busy: None,
             confirm: None,
             stage: Stage::List,
+            creating: None,
         }
     }
 
@@ -184,7 +195,9 @@ pub enum Reply {
     Revoke {
         name: String,
     },
-    Create,
+    Create {
+        attempt: u64,
+    },
     Status {
         pid: String,
     },
@@ -252,7 +265,6 @@ pub fn tick(app: &mut App) {
         return;
     }
     let now = Instant::now();
-    let secs = now_s();
     let Some(v) = view_mut(app) else {
         return;
     };
@@ -260,19 +272,15 @@ pub fn tick(app: &mut App) {
     let Stage::Pairing(p) = &mut v.stage else {
         return;
     };
-    if matches!(p.status, PairStatus::Pending | PairStatus::Rejected) && secs > p.open_by {
-        p.status = PairStatus::Expired;
-        app.dirty = true;
-        return;
-    }
+    // Expiry is the gateway's call (`gone`): its clock, and a pairing may finish at the last second.
     if p.status == PairStatus::Expired
-        || p.inflight
+        || p.inflight.is_some_and(|t| now.duration_since(t) < STALE)
         || p.polled_at.is_some_and(|t| now.duration_since(t) < POLL)
     {
         return;
     }
     p.polled_at = Some(now);
-    p.inflight = true;
+    p.inflight = Some(now);
     let pid = p.pid.clone();
     gw(
         app,
@@ -287,9 +295,12 @@ pub fn deadlines(app: &App, now: Instant, d: &mut crate::deadline::Deadlines) {
     if let (Mode::Popup(Popup::Devices), Some(v)) = (&app.mode, &app.ux.devices)
         && let Stage::Pairing(p) = &v.stage
         && p.status != PairStatus::Expired
-        && !p.inflight
     {
-        d.at("devices.poll", p.polled_at.map_or(now, |t| t + POLL));
+        let next = p.polled_at.map_or(now, |t| t + POLL);
+        d.at(
+            "devices.poll",
+            p.inflight.map_or(next, |t| next.max(t + STALE)),
+        );
     }
 }
 
@@ -327,15 +338,17 @@ fn create(app: &mut App, scope: &str) {
     let Some(v) = view_mut(app) else {
         return;
     };
+    let attempt = NEXT_ATTEMPT.fetch_add(1, Ordering::Relaxed);
     v.busy = Some("creating a pairing link…".into());
     v.notice = None;
+    v.creating = Some(attempt);
     let mi = v.mi;
     gw(
         app,
         mi,
         "pair.create",
         json!({"scope": scope}),
-        Reply::Create,
+        Reply::Create { attempt },
     );
 }
 
@@ -385,6 +398,7 @@ pub fn key(app: &mut App, ev: KeyEvent) {
         Stage::PickScope { sel } => {
             if quit {
                 v.busy = None;
+                v.creating = None;
                 v.stage = Stage::List;
             } else if v.busy.is_some() {
             } else if down {
@@ -398,12 +412,11 @@ pub fn key(app: &mut App, ev: KeyEvent) {
         }
         Stage::Pairing(p) => {
             if quit {
-                let (pid, live) = (p.pid.clone(), p.status != PairStatus::Expired);
+                // Even when it looks expired: a no-op then, and the gateway's clock decides.
+                let pid = p.pid.clone();
                 let mi = v.mi;
                 v.stage = Stage::List;
-                if live {
-                    cancel_link(app, mi, &pid);
-                }
+                cancel_link(app, mi, &pid);
             } else if plain && matches!(ev.key, Key::Char('c')) {
                 let link = p.link.clone();
                 app.copy_text(&link);
@@ -428,6 +441,22 @@ fn failed(v: &mut View, e: &RpcErr) {
 
 pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) {
     app.dirty = true;
+    // A link made for an attempt nobody waits for any more (backed out, closed, a newer attempt)
+    // must not stay usable.
+    if let Reply::Create { attempt } = &r
+        && !app
+            .ux
+            .devices
+            .as_ref()
+            .is_some_and(|v| v.mi == mi && v.creating == Some(*attempt))
+    {
+        if let Ok(x) = &res
+            && let Some(pid) = s_of(x, "pid")
+        {
+            cancel_link(app, mi, &pid);
+        }
+        return;
+    }
     let Some(v) = view_mut(app).filter(|v| v.mi == mi) else {
         return;
     };
@@ -456,14 +485,14 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
                 Err(e) => failed(v, &e),
             }
         }
-        Reply::Create => {
-            let waiting = matches!(v.stage, Stage::PickScope { .. }) && v.busy.is_some();
+        Reply::Create { .. } => {
             v.busy = None;
+            v.creating = None;
             match res {
                 Ok(x) => {
                     let pid = s_of(&x, "pid").unwrap_or_default();
                     match s_of(&x, "link") {
-                        Some(link) if waiting => {
+                        Some(link) if !pid.is_empty() => {
                             v.notice = None;
                             v.stage = Stage::Pairing(Pairing {
                                 pid,
@@ -472,13 +501,10 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
                                 status: PairStatus::Pending,
                                 scope: s_of(&x, "scope").unwrap_or_default().to_lowercase(),
                                 polled_at: None,
-                                inflight: false,
+                                inflight: None,
                             });
                         }
-                        // Backed out while it was being made: the link is not wanted.
-                        Some(_) if !pid.is_empty() => cancel_link(app, mi, &pid),
-                        Some(_) => {}
-                        None => v.notice = Some("✗ the gateway returned no link".into()),
+                        _ => v.notice = Some("✗ the gateway returned no link".into()),
                     }
                 }
                 Err(e) => failed(v, &e),
@@ -491,7 +517,7 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
             if p.pid != pid {
                 return;
             }
-            p.inflight = false;
+            p.inflight = None;
             match res {
                 Ok(x) => match x["status"].as_str() {
                     Some("pending") => p.status = PairStatus::Pending,

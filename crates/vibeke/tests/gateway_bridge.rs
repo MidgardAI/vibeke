@@ -206,7 +206,6 @@ fn methods_outside_the_allow_list_are_refused() {
     for (method, params) in [
         ("handoff.send", json!({})),
         ("pane.send_text", json!({"text": "x"})),
-        ("devices.revoke", json!({})),
         ("share.create", json!({"kind": "share", "workspace": "w"})),
         ("share.create", json!({})),
     ] {
@@ -217,6 +216,16 @@ fn methods_outside_the_allow_list_are_refused() {
         )
         .unwrap_err();
         assert_eq!(kind(&e), "invalid_params", "{method}: {e}");
+    }
+    // Device management and pairing pass the check (and then find no gateway).
+    for method in [
+        "devices.list",
+        "devices.revoke",
+        "pair.create",
+        "pair.status",
+    ] {
+        let e = api(&s, "gateway.call", json!({"method": method, "params": {}})).unwrap_err();
+        assert_eq!(kind(&e), "remote_unavailable", "{method}: {e}");
     }
     // The kinds the bridge carries pass the check (and then find no gateway).
     for kind_ in ["handoff", "peer"] {

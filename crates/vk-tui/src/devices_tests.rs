@@ -237,16 +237,97 @@ fn rejected_keeps_polling_and_gone_stops() {
 }
 
 #[test]
-fn a_link_past_open_by_expires_locally() {
+fn past_open_by_the_gateway_still_decides() {
     let (mut app, mut rxs) = opened();
-    pairing(&mut app, &mut rxs);
+    let pid = pairing(&mut app, &mut rxs);
     let Some(Stage::Pairing(p)) = app.ux.devices.as_mut().map(|v| &mut v.stage) else {
         panic!("pairing");
     };
     p.open_by = now_s() - 1;
     tick(&mut app);
-    assert!(commands(&mut rxs[0]).is_empty());
+    // Still asked: the pairing may have finished at the last second.
+    let (req, p) = gw(&commands(&mut rxs[0]), "pair.status");
+    assert_eq!(p["params"], json!({"pid": pid}));
+    reply(&mut app, 0, req, json!({"status": "gone"}));
     assert!(screen(&app).contains("Link expired — press n for a new one"));
+}
+
+#[test]
+fn a_lost_status_reply_is_asked_again_later() {
+    let (mut app, mut rxs) = opened();
+    pairing(&mut app, &mut rxs);
+    tick(&mut app);
+    gw(&commands(&mut rxs[0]), "pair.status");
+    // No answer (a reconnect dropped it): nothing new until it is stale.
+    let Some(Stage::Pairing(p)) = app.ux.devices.as_mut().map(|v| &mut v.stage) else {
+        panic!("pairing");
+    };
+    p.polled_at = Some(Instant::now() - POLL * 2);
+    tick(&mut app);
+    assert!(commands(&mut rxs[0]).is_empty());
+    let Some(Stage::Pairing(p)) = app.ux.devices.as_mut().map(|v| &mut v.stage) else {
+        panic!("pairing");
+    };
+    p.inflight = Some(Instant::now() - STALE - POLL);
+    tick(&mut app);
+    gw(&commands(&mut rxs[0]), "pair.status");
+}
+
+#[test]
+fn a_late_link_for_an_abandoned_attempt_is_cancelled() {
+    let (mut app, mut rxs) = opened();
+    app.on_key(ch('n'));
+    app.on_key(named(NamedKey::Enter));
+    let (old, _) = gw(&commands(&mut rxs[0]), "pair.create");
+    // Back out and ask again (another scope) before the first answer.
+    app.on_key(named(NamedKey::Escape));
+    app.on_key(ch('n'));
+    app.on_key(ch('j'));
+    app.on_key(named(NamedKey::Enter));
+    let (new, p) = gw(&commands(&mut rxs[0]), "pair.create");
+    assert_eq!(p["params"], json!({"scope": "approve"}));
+    reply(
+        &mut app,
+        0,
+        old,
+        json!({"link": "https://app.example/#/pair?d=old", "pid": "old1",
+               "open_by": now_s() + 600, "scope": "full"}),
+    );
+    let (_, p) = gw(&commands(&mut rxs[0]), "share.revoke");
+    assert_eq!(p["params"], json!({"id": "old1"}));
+    assert!(matches!(
+        app.ux.devices.as_ref().unwrap().stage,
+        Stage::PickScope { .. }
+    ));
+    reply(
+        &mut app,
+        0,
+        new,
+        json!({"link": "https://app.example/#/pair?d=new", "pid": "new1",
+               "open_by": now_s() + 600, "scope": "approve"}),
+    );
+    assert!(commands(&mut rxs[0]).is_empty());
+    assert!(screen(&app).contains("approve access"));
+}
+
+#[test]
+fn a_link_made_after_closing_is_cancelled() {
+    let (mut app, mut rxs) = opened();
+    app.on_key(ch('n'));
+    app.on_key(named(NamedKey::Enter));
+    let (req, _) = gw(&commands(&mut rxs[0]), "pair.create");
+    app.on_key(named(NamedKey::Escape));
+    app.on_key(named(NamedKey::Escape));
+    assert!(app.ux.devices.is_none());
+    reply(
+        &mut app,
+        0,
+        req,
+        json!({"link": "https://app.example/#/pair?d=x", "pid": "x1",
+               "open_by": now_s() + 600, "scope": "full"}),
+    );
+    let (_, p) = gw(&commands(&mut rxs[0]), "share.revoke");
+    assert_eq!(p["params"], json!({"id": "x1"}));
 }
 
 #[test]
