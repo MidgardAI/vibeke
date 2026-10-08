@@ -38,8 +38,13 @@ pub const TYPES: &[&str] = &[
     "auth.elevate_*",
     "auth.approval_*",
     "pane.scroll_requested",
+<<<<<<< HEAD
     // Incoming handoffs and sends (16 §15.2).
     "handoff.*",
+=======
+    // Gateway autostart: the supervised gateway's state for the status bar.
+    "gateway.status",
+>>>>>>> 24bef74 (WIP gateway indicator)
 ];
 
 #[derive(Debug, Default, Clone)]
@@ -144,6 +149,8 @@ pub fn on_events(app: &mut App, i: usize, events: Vec<PushedEvent>, lagged: bool
             crate::elevate::on_event(app, i, k, &v);
         } else if k == "pane.scroll_requested" {
             crate::scroll_req::on_event(app, i, &v);
+        } else if k == "gateway.status" {
+            crate::gw_indicator::on_event(app, i, &v);
         } else if k.starts_with("task.collision_") {
             crate::collision::on_event(app, i, k);
         } else if k.starts_with("handoff.") {

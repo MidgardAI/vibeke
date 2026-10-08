@@ -24,7 +24,11 @@ pub mod floats;
 pub mod gallery;
 pub mod gateway;
 pub mod groups;
+<<<<<<< HEAD
 pub mod handoff;
+=======
+pub mod gw_indicator;
+>>>>>>> 24bef74 (WIP gateway indicator)
 pub mod inbox;
 pub mod input;
 pub mod keymap;

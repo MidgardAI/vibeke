@@ -13,6 +13,8 @@ pub struct State {
     pub floats: crate::floats::State,
     pub groups: crate::groups::State,
     pub status: crate::statusbar::State,
+    /// Gateway indicator per machine (`crate::gw_indicator`).
+    pub gateway: std::collections::HashMap<usize, crate::gw_indicator::GatewayIndicator>,
     pub search: crate::search::State,
     pub appearance: crate::appearance::State,
     pub notes: crate::notifications::State,
@@ -29,6 +31,8 @@ pub enum Reply {
     Ignore,
     /// `status.segments`.
     Status,
+    /// `gateway.status`.
+    GatewayStatus,
     Search(crate::search::Reply),
     /// `group.create`; then move `ws` into the new group.
     GroupCreated {
@@ -56,6 +60,7 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
             }
         }
         Reply::Status => crate::statusbar::on_reply(app, mi, res),
+        Reply::GatewayStatus => crate::gw_indicator::on_reply(app, mi, res),
         Reply::Search(r) => crate::search::on_reply(app, mi, r, res),
         Reply::GroupCreated { ws } => crate::groups::on_created(app, mi, ws, res),
         Reply::LayoutExport { name } => crate::layouts::on_export(app, &name, res),
@@ -71,6 +76,7 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
 pub fn on_connected(app: &mut App, mi: usize) {
     crate::appearance::on_connected(app, mi);
     app.parity.status.stale = true;
+    crate::gw_indicator::on_connected(app, mi);
 }
 
 pub fn on_model(app: &mut App, _mi: usize) {
