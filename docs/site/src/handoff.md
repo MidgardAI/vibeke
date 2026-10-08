@@ -140,8 +140,10 @@ The sender accepts the invitation on one of their hosts:
    recipient see who is sending; otherwise they only see your host's name.
 3. Hand off a pane on that host and select the teammate's host as the destination.
 
-The invitation pairs that host with the teammate's host until the invitation expires. It lets the
-host deliver handoffs and nothing else: it can't see panes, the inbox or other devices there, and
+The invitation pairs that host with the teammate's host until the invitation expires. The app
+itself is never paired for it: opening the link in an app only offers to accept it on one of your
+hosts, and the recipient's host refuses a claim from anything but a host. It lets the host deliver
+handoffs and nothing else: it can't see panes, the inbox or other devices there, and
 the sender cannot choose where the work lands on the recipient's host.
 
 The handoff arrives as an incoming handoff and is never imported automatically. The recipient
@@ -179,17 +181,17 @@ In the app, **Settings → Sharing & handoff** shows, for each of your hosts:
 
 - pending invitations, which you can cancel;
 - the hosts it sends handoffs to, with their owner and expiry, which you can remove;
-- the devices and hosts invitations created (shares, handoff senders and paired hosts), with
+- the devices and hosts invitations created (shares and paired hosts, including a teammate's), with
   their kind, owner and expiry, which you can revoke.
 
 From a terminal:
 
 ```sh
-vibeke gateway invites        # unused invitation links, and the share, handoff and peer devices they created
+vibeke gateway invites        # unused invitation links, and the share and peer devices they created
 vibeke gateway revoke <id>    # cancel an unused invitation, or revoke a device
 ```
 
-Both list the kind, expiry, limit and owner of each entry. Every cancellation and revocation is recorded in the gateway's audit log. When you accept an invitation in the app, the app pairs with a separate key for it, so it never replaces your own pairing with that host.
+Both list the kind, expiry, limit and owner of each entry. Every cancellation and revocation is recorded in the gateway's audit log. When you accept a share in the app, the app pairs with a separate key for it, so it never replaces your own pairing with that host.
 
 ## Recover from a connection failure
 
