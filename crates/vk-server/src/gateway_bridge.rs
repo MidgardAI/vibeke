@@ -9,7 +9,9 @@
 //!   (the app API's, as the owner) and the bridge-only `pair.create {scope?, ttl_s?}` =>
 //!   `{link, pid, open_by, scope}` and `pair.status {pid}` => `{status: pending | claimed |
 //!   done | rejected | gone, …}` (see `vk_gateway::bridge`); `share.revoke {id: pid}` cancels a
-//!   pairing.
+//!   pairing. The TUI signs the host in to an account relay with the bridge-only
+//!   `account.status`, `account.login.start` / `.status` / `.cancel` and `account.logout`; a
+//!   pane may never reach the login methods ([`PANE_FORBIDDEN_CALLS`]).
 //! - `gateway.reply {id, result | error: {kind, message, details?}}` is the gateway's answer
 //!   (gateway clients only, like `handoff.job.update`).
 //! - `gateway.status {}` says whether a gateway is connected, plus the supervised gateway's
@@ -42,6 +44,16 @@ pub const METHODS: &[(&str, bool)] = &[
 /// Calling the gateway and answering for it are the user's and the gateway's, never a pane's.
 pub const PANE_FORBIDDEN: &[&str] = &["gateway.call", "gateway.reply"];
 
+/// Bridged methods refused to a pane-scoped caller even if `gateway.call` reached it: signing
+/// the host in or out of its relay account is the user's. (`gateway.call` itself is in
+/// [`PANE_FORBIDDEN`], and `auth.approve` carries only `approve::APPROVABLE_GATEWAY`.)
+pub const PANE_FORBIDDEN_CALLS: &[&str] = &[
+    "account.login.start",
+    "account.login.status",
+    "account.login.cancel",
+    "account.logout",
+];
+
 /// What `gateway.call` may run. The gateway checks this list again (`vk_gateway::bridge::ALLOWED`
 /// must stay identical; both crates test against the same literal).
 pub const ALLOWED: &[&str] = &[
@@ -56,6 +68,11 @@ pub const ALLOWED: &[&str] = &[
     "devices.revoke",
     "pair.create",
     "pair.status",
+    "account.status",
+    "account.login.start",
+    "account.login.status",
+    "account.login.cancel",
+    "account.logout",
 ];
 
 /// The `share.create` kinds the bridge lets through.
@@ -317,6 +334,12 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
                 Ok(m) => m,
                 Err(e) => return Some(Err(e)),
             };
+            if ctx.pane_scope.is_some() && PANE_FORBIDDEN_CALLS.contains(&m) {
+                return Some(Err(err(
+                    ErrorKind::PermissionDenied,
+                    format!("{m} is the user's, never a pane's"),
+                )));
+            }
             let params = p.get("params").cloned().unwrap_or_else(|| json!({}));
             let ms = p
                 .get("timeout_ms")
@@ -333,14 +356,14 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
 
 /// Schema registry entries (`api_schema` loads them next to its own tables).
 pub const SHAPES: &str = r##"
-# --- the server-to-gateway bridge (spec 16 §15.5): peer.*, share.*, devices.* and pair.* run in the host's gateway ---
-# full scope, never from a pane; method is one of peer.invite, peer.redeem, peer.list, peer.remove, share.create (kind handoff or peer), share.list, share.revoke, devices.list, devices.revoke, pair.create, pair.status; answers with the gateway's result; remote_unavailable when no gateway is connected or it doesn't answer in time
+# --- the server-to-gateway bridge (spec 16 §15.5): peer.*, share.*, devices.*, pair.* and account.* run in the host's gateway ---
+# full scope, never from a pane; method is one of peer.invite, peer.redeem, peer.list, peer.remove, share.create (kind handoff or peer), share.list, share.revoke, devices.list, devices.revoke, pair.create, pair.status, account.status, account.login.start, account.login.status, account.login.cancel, account.logout; answers with the gateway's result; remote_unavailable when no gateway is connected or it doesn't answer in time
 gateway.call :: {method: string, params?: object, timeout_ms?: int = 30000} => any
 # gateway clients only: the answer to a gateway.request event (result or error, not both)
 gateway.reply :: {id: string, result?: any, error?: {kind: string, message: string, details?: any}} => {}
 # whether a gateway holds an event stream open (connected), whether this server manages one (configured) and, when it does, the supervisor's GatewayStatus fields; dir: the caller's gateway dir, conflict when this server supervises another
 gateway.status :: {dir?: string}
-  => {connected: bool, configured: bool, state?: off|starting|connecting|online|offline|local_only|external|crashed, autostart?: bool, supervised?: bool, pid?: int|null, restarts?: int, relay?: string|null, devices?: int|null, since_ms?: int|null, last_error?: string|null, log?: string}
+  => {connected: bool, configured: bool, state?: off|starting|connecting|online|offline|local_only|login_required|external|crashed, autostart?: bool, supervised?: bool, pid?: int|null, restarts?: int, relay?: string|null, devices?: int|null, since_ms?: int|null, last_error?: string|null, log?: string}
 "##;
 
 pub const EVENTS: &str = r##"
@@ -370,10 +393,64 @@ mod tests {
                 "devices.revoke",
                 "pair.create",
                 "pair.status",
+                "account.status",
+                "account.login.start",
+                "account.login.status",
+                "account.login.cancel",
+                "account.logout",
             ]
         );
         assert!(check_allowed("pair.create", &json!({})).is_ok());
+        assert!(check_allowed("account.login.start", &json!({})).is_ok());
         assert!(check_allowed("devices.revoke", &json!({"device": "d"})).is_ok());
         assert!(check_allowed("auth.list", &json!({})).is_err());
+    }
+
+    /// Signing in or out is never a pane's: `gateway.call` is refused to panes, the login
+    /// methods are refused again by name, and `auth.approve` can't carry them.
+    #[test]
+    fn account_logins_are_not_for_panes() {
+        use crate::api::{PaneScope, pane_scope_of};
+        assert_eq!(pane_scope_of("gateway.call"), PaneScope::Forbidden);
+        for m in PANE_FORBIDDEN_CALLS {
+            assert!(ALLOWED.contains(m), "{m}");
+            assert!(!crate::approve::APPROVABLE_GATEWAY.contains(m), "{m}");
+        }
+        assert!(!PANE_FORBIDDEN_CALLS.contains(&"account.status"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pane_callers_cannot_start_logins() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let paths = crate::paths::Paths {
+            session: "t".into(),
+            runtime: root.join("run"),
+            state: root.join("state"),
+        };
+        let opts = crate::ServerOpts {
+            session: "t".into(),
+            machine: "m".into(),
+            bin: "/bin/false".into(),
+            hold_args: vec![],
+            default_shell: None,
+            env: vec![],
+            shims: false,
+            gateway: None,
+        };
+        let server = Server::new(paths, opts).unwrap();
+        let pane = Ctx {
+            client_id: "c".into(),
+            kind: "tui".into(),
+            pane_scope: Some("p1".into()),
+            remote: false,
+        };
+        for m in PANE_FORBIDDEN_CALLS {
+            let e = api(&server, &pane, "gateway.call", &json!({"method": m}))
+                .await
+                .unwrap()
+                .unwrap_err();
+            assert_eq!(e.data.kind, "permission_denied", "{m}");
+        }
     }
 }

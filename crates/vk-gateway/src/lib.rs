@@ -67,6 +67,8 @@ pub struct Gateway {
     pub status: state::StatusWriter,
     /// Messages for the live relay control socket (`Ctrl::Revoke`); `None` while offline.
     relay_ctl: Mutex<Option<mpsc::UnboundedSender<vk_e2e::relay::Ctrl>>>,
+    /// Account logins started from the TUI (`account.*` on the server bridge).
+    pub logins: Arc<account::Logins>,
 }
 
 #[derive(Debug, Clone)]
@@ -140,6 +142,7 @@ impl Gateway {
             limits: GatewayLimits::default(),
             status,
             relay_ctl: Mutex::new(None),
+            logins: Arc::default(),
         }))
     }
 

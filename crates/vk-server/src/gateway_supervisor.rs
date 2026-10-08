@@ -306,7 +306,13 @@ pub fn check_dir(ours: &Path, p: &Value) -> Result<(), String> {
     }
 }
 
-const RUNNING_STATES: &[&str] = &["connecting", "online", "offline", "local_only"];
+const RUNNING_STATES: &[&str] = &[
+    "connecting",
+    "online",
+    "offline",
+    "local_only",
+    "login_required",
+];
 
 fn running_state(s: &str) -> String {
     if RUNNING_STATES.contains(&s) {
@@ -972,7 +978,7 @@ fn emit(server: &Server, st: &GatewayStatus) {
 
 /// Schema registry entries (`api_schema` loads them next to its own tables).
 pub const DEFS: &str = r##"
-GatewayStatus = {state: off|starting|connecting|online|offline|local_only|external|crashed, autostart: bool, supervised: bool, pid: int|null, restarts: int, relay: string|null, devices: int|null, since_ms: int|null, last_error: string|null, log: string}
+GatewayStatus = {state: off|starting|connecting|online|offline|local_only|login_required|external|crashed, autostart: bool, supervised: bool, pid: int|null, restarts: int, relay: string|null, devices: int|null, since_ms: int|null, last_error: string|null, log: string}
 "##;
 
 pub const SHAPES: &str = r##"
@@ -1088,6 +1094,18 @@ mod tests {
         assert_eq!(st.relay.as_deref(), Some("wss://relay.example"));
         let st = derive(&snap, Some(&file(42, "local_only")), None, &log());
         assert_eq!(st.state, "local_only");
+        // The relay needs an account login: reported as such, with the gateway's hint.
+        let st = derive(
+            &snap,
+            Some(&StatusFile {
+                last_error: Some("run: vibeke login".into()),
+                ..file(42, "login_required")
+            }),
+            None,
+            &log(),
+        );
+        assert_eq!(st.state, "login_required");
+        assert_eq!(st.last_error.as_deref(), Some("run: vibeke login"));
         // Unknown states read as connecting.
         let st = derive(&snap, Some(&file(42, "warming")), None, &log());
         assert_eq!(st.state, "connecting");
