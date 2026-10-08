@@ -56,8 +56,14 @@ interface Done {
   ticket_exp?: number;
 }
 
+const trimSlashes = (s: string): string => {
+  let end = s.length;
+  while (end > 0 && s.charCodeAt(end - 1) === 47 /* '/' */) end--;
+  return s.slice(0, end);
+};
+
 export const relayConnectUrl = (relay: string, hostId: string, ticket?: string): string =>
-  `${relay.replace(/\/+$/, '')}/v1/connect?host=${encodeURIComponent(hostId)}${ticket ? `&ticket=${encodeURIComponent(ticket)}` : ''}`;
+  `${trimSlashes(relay)}/v1/connect?host=${encodeURIComponent(hostId)}${ticket ? `&ticket=${encodeURIComponent(ticket)}` : ''}`;
 
 export async function pair(o: PairOptions): Promise<HostRecord> {
   const { link, platform } = o;
