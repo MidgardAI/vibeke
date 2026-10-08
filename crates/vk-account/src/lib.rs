@@ -431,10 +431,11 @@ pub trait CredentialStore: Send + Sync {
     fn save(&self, c: &Credential) -> Result<()>;
     /// `Ok(false)` when there was nothing to delete.
     fn delete(&self, server: &str) -> Result<bool>;
-    /// Exclusive cross-process lock held while a refresh, login or logout reads and then writes
-    /// the credential, so a refresh cannot resurrect a credential another process just deleted.
-    /// Released when the guard drops. Stores without a shared medium return a no-op guard.
-    fn lock(&self) -> Result<Box<dyn std::any::Any + Send>> {
+    /// Exclusive cross-process lock for `server`'s credential, held while a refresh, login or
+    /// logout reads and then writes it, so a refresh cannot resurrect a credential another
+    /// process just deleted. Released when the guard drops. Stores without a shared medium
+    /// return a no-op guard.
+    fn lock(&self, _server: &str) -> Result<Box<dyn std::any::Any + Send>> {
         Ok(Box::new(()))
     }
 }
@@ -569,10 +570,26 @@ impl CredentialStore for KeychainStore {
         Ok(gone)
     }
 
-    fn lock(&self) -> Result<Box<dyn std::any::Any + Send>> {
-        Ok(Box::new(FileLock::acquire(
-            &self.fallback.with_extension("lock"),
-        )?))
+    fn lock(&self, server: &str) -> Result<Box<dyn std::any::Any + Send>> {
+        // The OS keychain entry is shared by every process of this user, whatever gateway
+        // directory they use, so the lock must be per user and per server, not per directory.
+        let path = match &self.primary {
+            Some(_) => {
+                // SAFETY: getuid has no preconditions.
+                let uid = unsafe { libc::getuid() };
+                let dir = std::env::temp_dir().join(format!("vibeke-account-{uid}"));
+                std::fs::create_dir_all(&dir)
+                    .map_err(|e| Error::Store(format!("lock dir {}: {e}", dir.display())))?;
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+                }
+                dir.join(format!("{}.lock", keychain_account(server)))
+            }
+            None => self.fallback.with_extension("lock"),
+        };
+        Ok(Box::new(FileLock::acquire(&path)?))
     }
 }
 
@@ -625,7 +642,7 @@ impl Account {
 
     /// Store a credential from [`Client::login`].
     pub fn save(&self, c: &Credential) -> Result<()> {
-        let _lock = self.store.lock()?;
+        let _lock = self.store.lock(self.server())?;
         self.store.save(c)
     }
 
@@ -633,7 +650,7 @@ impl Account {
     pub async fn access_token(&self, force: bool) -> Result<String> {
         // Held across the refresh so a concurrent login or logout in another process cannot
         // interleave between our read and our write.
-        let _lock = self.store.lock()?;
+        let _lock = self.store.lock(self.server())?;
         let cred = self.credential()?.ok_or(Error::LoginRequired)?;
         if !force && let Some(t) = cred.access_at(now_s()) {
             return Ok(t.to_string());
@@ -712,7 +729,7 @@ impl Account {
     /// Revoke the session on the server (best effort) and delete the credential. Returns whether
     /// a credential was stored.
     pub async fn logout(&self) -> Result<bool> {
-        let _lock = self.store.lock()?;
+        let _lock = self.store.lock(self.server())?;
         let Some(cred) = self.credential()? else {
             return Ok(false);
         };
