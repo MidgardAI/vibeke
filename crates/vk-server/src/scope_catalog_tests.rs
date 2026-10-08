@@ -44,6 +44,7 @@ fn tables() -> Vec<&'static [(&'static str, bool)]> {
         crate::orch::METHODS,
         crate::handoff_out::METHODS,
         crate::gateway_bridge::METHODS,
+        crate::gateway_supervisor::METHODS,
     ]
 }
 
@@ -129,6 +130,7 @@ impl Env {
             default_shell: None,
             env: vec![],
             shims: false,
+            gateway: None,
         };
         let server = Server::new(paths, opts).unwrap();
         let p = Pane {

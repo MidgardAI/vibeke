@@ -610,6 +610,7 @@ fn t4_mutations_are_human_only_and_listed() {
             default_shell: None,
             env: vec![],
             shims: false,
+            gateway: None,
         },
     )
     .unwrap();

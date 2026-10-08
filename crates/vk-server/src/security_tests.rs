@@ -102,6 +102,7 @@ impl Env {
             default_shell: None,
             env: vec![],
             shims: false,
+            gateway: None,
         };
         let server = Server::new(paths, opts).unwrap();
         let e = Env { dir, server };
@@ -497,6 +498,7 @@ async fn audit_log_is_chained_searchable_and_verified() {
             default_shell: None,
             env: vec![],
             shims: false,
+            gateway: None,
         },
     )
     .unwrap();
@@ -848,6 +850,7 @@ fn debug_bundle_has_no_secrets_and_scrubs_printed_tokens() {
             default_shell: None,
             env: vec![],
             shims: false,
+            gateway: None,
         },
     )
     .unwrap();

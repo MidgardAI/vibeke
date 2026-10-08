@@ -93,6 +93,7 @@ pub async fn serve(server: Arc<Server>, listener: UnixListener) -> Result<()> {
     crate::items::start(&server);
     crate::collision::start(&server);
     crate::assist::start(&server);
+    crate::gateway_supervisor::start(&server);
     let sd = server.clone();
     tokio::spawn(async move {
         let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
@@ -106,6 +107,7 @@ pub async fn serve(server: Arc<Server>, listener: UnixListener) -> Result<()> {
         }
         tokio::time::sleep(Duration::from_millis(300)).await;
         sd.housekeeping();
+        crate::gateway_supervisor::shutdown(&sd).await;
         crate::machines::stopped(&sd, "signal");
         let _ = sd.ui.send(crate::UiEvent::Goodbye("server stopped".into()));
         tokio::time::sleep(Duration::from_millis(100)).await;

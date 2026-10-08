@@ -676,6 +676,7 @@ mod sessions {
                 default_shell: None,
                 env: vec![("PATH".into(), "/usr/bin:/bin".into())],
                 shims: false,
+                gateway: None,
             };
             let server = Server::new(paths, opts).unwrap();
             let work = root.join("work");

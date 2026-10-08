@@ -88,6 +88,7 @@ impl Env {
             default_shell: None,
             env: vec![],
             shims: false,
+            gateway: None,
         };
         let server = Server::new(paths, opts).unwrap();
         let repo = root.join("repo");
@@ -973,6 +974,7 @@ fn pane_scope_cannot_accept_authorize_run_or_update_attention() {
             default_shell: None,
             env: vec![],
             shims: false,
+            gateway: None,
         },
     )
     .unwrap();

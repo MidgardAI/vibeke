@@ -44,6 +44,7 @@ fn server(dir: &std::path::Path, session: &str) -> Arc<Server> {
         default_shell: None,
         env: vec![],
         shims: false,
+        gateway: None,
     };
     Server::new(paths, opts).unwrap()
 }

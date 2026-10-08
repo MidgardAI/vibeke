@@ -40,3 +40,7 @@ tab.focus
 tab.move
 worktree.create
 worktree.open
+
+# spawn a real gateway process; covered by vk-server unit tests (gateway_supervisor) and the gateway CLI
+gateway.start
+gateway.stop

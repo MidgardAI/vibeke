@@ -283,6 +283,16 @@ async fn restart_local(g: &Global, args: &[String]) -> i32 {
     }
 }
 
+/// The gateway this server supervises. Always present: when the gateway isn't set up for this
+/// session (or its dir doesn't exist yet) the supervisor stays idle (no process, no wakeups)
+/// until `gateway.start` (e.g. from `vibeke gateway pair`), so a later setup needs no server
+/// restart.
+fn gateway_launch(session: &str) -> vk_server::GatewayLaunch {
+    let dir = vk_gateway::state::default_dir();
+    let autostart = vk_gateway::state::autostart_for_session(&dir, session);
+    vk_server::GatewayLaunch { dir, autostart }
+}
+
 async fn run_server(g: &Global) -> i32 {
     // 09 §3.1: everything the server creates is private; pane children get the user's umask.
     vk_server::paths::harden_umask();
@@ -310,6 +320,7 @@ async fn run_server(g: &Global) -> i32 {
         default_shell: Some(cfg.terminal.default_shell.clone()).filter(|s| !s.is_empty()),
         env,
         shims: cfg.agents.shims,
+        gateway: Some(gateway_launch(&g.session)),
     };
     opts.env
         .extend(cfg.terminal.env.iter().map(|(k, v)| (k.clone(), v.clone())));

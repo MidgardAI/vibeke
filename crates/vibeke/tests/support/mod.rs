@@ -27,7 +27,9 @@ impl Session {
         let d = self.dir.path();
         c.env("VIBEKE_RUNTIME_DIR", d.join("run"))
             .env("VIBEKE_STATE_DIR", d.join("state"))
-            .env("VIBEKE_CONFIG", d.join("config.toml"));
+            .env("VIBEKE_CONFIG", d.join("config.toml"))
+            // Never the user's gateway (the server supervises the one set up there).
+            .env("VIBEKE_GATEWAY_DIR", d.join("gateway"));
         c.env_remove("VIBEKE")
             .env_remove("VIBEKE_SOCKET")
             .env_remove("VIBEKE_SESSION")

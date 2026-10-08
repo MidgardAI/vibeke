@@ -47,6 +47,7 @@ fn env() -> Env {
         default_shell: None,
         env: vec![("TERM_PROGRAM".into(), "ghostty".into())],
         shims: false,
+        gateway: None,
     };
     Env {
         server: Server::new(paths, opts).unwrap(),

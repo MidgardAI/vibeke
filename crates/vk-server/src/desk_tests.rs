@@ -40,6 +40,7 @@ fn server_at(root: &Path) -> Arc<Server> {
         default_shell: None,
         env: vec![],
         shims: false,
+        gateway: None,
     };
     let s = Server::new(paths, opts).unwrap();
     *s.desk.config_override.lock().unwrap() = Some(DeskConfig::default());

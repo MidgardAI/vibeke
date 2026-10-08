@@ -810,6 +810,7 @@ async fn real_container_clone_sync_and_egress_gated() {
                 default_shell: None,
                 env: opts_env,
                 shims: false,
+                gateway: None,
             },
         )
         .unwrap()

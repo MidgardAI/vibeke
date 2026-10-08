@@ -49,6 +49,7 @@ pub fn method_tables() -> Vec<(&'static str, &'static [(&'static str, bool)])> {
         ("browse_api", browse_api::METHODS),
         ("handoff_out", handoff_out::METHODS),
         ("gateway_bridge", gateway_bridge::METHODS),
+        ("gateway_supervisor", gateway_supervisor::METHODS),
         ("hardening", hardening::METHODS),
         ("machines", machines::METHODS),
         ("items", items::METHODS),
@@ -132,6 +133,7 @@ fn build() -> Result<Registry, Vec<String>> {
         .chain(BATCH_3A_DEFS.lines())
         .chain(crate::handoff::DEFS.lines())
         .chain(crate::approve::DEFS.lines())
+        .chain(crate::gateway_supervisor::DEFS.lines())
     {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
@@ -194,6 +196,7 @@ fn build() -> Result<Registry, Vec<String>> {
             crate::handoff::EVENTS,
             crate::handoff_out::EVENTS,
             crate::gateway_bridge::EVENTS,
+            crate::gateway_supervisor::EVENTS,
             crate::approve::EVENTS,
         ],
         "event",
@@ -508,6 +511,7 @@ pub const METHOD_SHAPES: &[&str] = &[
     crate::orch_shapes::SHAPES,
     crate::handoff_out::SHAPES,
     crate::gateway_bridge::SHAPES,
+    crate::gateway_supervisor::SHAPES,
     ADAPTER_POLISH_SHAPES,
     PRIVACY_SHAPES,
     BATCH_3D_SHAPES,
@@ -548,7 +552,7 @@ api.methods :: {} => {methods: [{name: string, mutating: bool, milestone?: strin
 api.schema :: {method?: string} => {schema: object}
 # `boot_id` changes when the server image changes (start or `server.restart`); `restart_error` says why the last restart could not exec (the old image keeps serving)
 server.status :: {}
-  => {pid: int, version: string, uptime_ms: int, boot_id?: string, restart_error?: string|null, session: string, machine: string, panes: int, holders: {live: int, orphaned?: int}, clients: int, event_seq: int, socket?: string, degraded?: any, ephemeral?: int, preview?: object, timers?: object, db_size?: int, rss?: int}
+  => {pid: int, version: string, uptime_ms: int, boot_id?: string, restart_error?: string|null, session: string, machine: string, panes: int, holders: {live: int, orphaned?: int}, clients: int, event_seq: int, socket?: string, degraded?: any, ephemeral?: int, preview?: object, timers?: object, gateway?: GatewayStatus|null, db_size?: int, rss?: int}
 # re-read config.toml (runtime overrides on top); errors leave the applied config in force; full scope only
 server.reload_config :: {} => {changed: [string], errors: [ConfigDiagnostic], warnings?: [ConfigWarning]}
 # with kill_panes false the holders keep running and the next server reattaches; full scope only
