@@ -552,10 +552,11 @@ impl Session {
                 let mut spawn = |dir: &std::path::Path, argv: Vec<String>, title: String| {
                     #[cfg(test)]
                     if let Some(f) = test_spawn.as_mut() {
-                        return f(dir, argv, title);
+                        return f(dir, argv, title)
+                            .map(|pane| acp_term::Spawned { pane, rt: None });
                     }
                     server
-                        .split_pane(
+                        .split_pane_with_runtime(
                             &owner,
                             vk_proto::layout::Direction::Down,
                             0.5,
@@ -565,7 +566,10 @@ impl Session {
                             None,
                             &format!("agent:{owner}"),
                         )
-                        .map(|p| p.id)
+                        .map(|(p, rt)| acp_term::Spawned {
+                            pane: p.id,
+                            rt: Some(rt),
+                        })
                         .map_err(|e| e.to_string())
                 };
                 let mut cx = acp_term::Ctx {

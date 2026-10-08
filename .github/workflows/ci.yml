@@ -82,9 +82,12 @@ jobs:
         env:
           VIBEKE_BIN: ${{ github.workspace }}/target/debug/vibeke
       - working-directory: web
-        run: bun run dist:desktop -- --dir
+        # Apply an ad-hoc signature after changing Electron fuses, including on PRs.
+        # This job has no signing credentials and must never select a real identity.
+        run: bun run dist:desktop -- --dir --config.mac.identity=-
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
+          CSC_FOR_PULL_REQUEST: "true"
       - working-directory: web
         # Fuses, asar-only loading with integrity, and codesign --verify (spec 16 §16.3).
         run: bun run --cwd apps/desktop verify:package
