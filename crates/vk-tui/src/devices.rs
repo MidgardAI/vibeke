@@ -4,14 +4,23 @@
 //!
 //! 1. **List** (`devices.list`, only `kind == "device"`): name, platform, scope, how long ago it
 //!    paired, 🔔 when it takes push. `n` pairs a new one, `x` revokes the selected one after a
-//!    confirm (`devices.revoke`), `r` reads the list again.
-//! 2. **Pick scope**: full (default), approve or view. Enter creates the link (`pair.create`).
+//!    confirm (`devices.revoke`), `r` reads the list again. When the relay needs an account
+//!    (`account.status`, read once on opening), a line shows who is signed in, and `s` signs in.
+//! 2. **Pick scope**: full (default), approve or view. Enter asks `account.status` first: a relay
+//!    that needs an account nobody has signed in to goes through **Sign in**, anything else (an
+//!    open relay, an older gateway without the method) creates the link (`pair.create`).
 //!    `pair_phone` / `phone_pairing` open the view here.
 //! 3. **Pairing**: the link with a QR code, the scope and a countdown to when the link stops
 //!    working. `pair.status` is polled about once a second (one request in flight): the phone
 //!    claims the link (its fingerprint shows here and in the confirm prompt), then the pairing
 //!    is done ("Paired ✓") and the list is read again. Esc cancels a pending pairing
 //!    (`share.revoke {id: pid}`, best effort).
+//!
+//! **Sign in** (`account.login.start`): a device code with its URL and a QR code of the URL with
+//! the code filled in, polled like a pairing (`account.login.status`). Done continues with the
+//! picked scope's link; an expired code goes back to the scope picker; Esc cancels
+//! (`account.login.cancel`). The gateway's text is cleaned of control and bidi characters
+//! before it is shown or copied.
 //!
 //! Without a gateway (or without a relay/app URL) the server answers with a message that the view
 //! shows as it is.
@@ -33,6 +42,10 @@ use crate::sharing::{bridge_error, draw_link_qr, gw_call_pending, unreachable};
 pub const POLL: Duration = Duration::from_secs(1);
 /// Past the bridge's own timeout: a `pair.status` with no answer by then never gets one.
 const STALE: Duration = Duration::from_secs(35);
+/// The most kept of any text the account sign-in shows.
+const CLEAN_MAX: usize = 512;
+/// When `account.login.start` leaves out `expires_in`.
+const DEFAULT_EXPIRES_IN: u64 = 900;
 
 /// Tags each `pair.create`, so a late answer can't land in a newer attempt or a reopened view.
 static NEXT_ATTEMPT: AtomicU64 = AtomicU64::new(1);
@@ -75,6 +88,32 @@ fn s_of(v: &Value, k: &str) -> Option<String> {
         .and_then(Value::as_str)
         .filter(|s| !s.is_empty())
         .map(str::to_string)
+}
+
+/// `s` without control characters or bidi/format controls that could disguise a URL or code,
+/// trimmed and capped at [`CLEAN_MAX`] characters.
+pub(crate) fn clean(s: &str) -> String {
+    let kept: String = s
+        .chars()
+        .filter(|c| {
+            !c.is_control()
+                && !matches!(
+                    *c,
+                    '\u{200E}'
+                        | '\u{200F}'
+                        | '\u{202A}'..='\u{202E}'
+                        | '\u{2066}'..='\u{2069}'
+                        | '\u{061C}'
+                        | '\u{2028}'
+                        | '\u{2029}'
+                )
+        })
+        .collect();
+    kept.trim().chars().take(CLEAN_MAX).collect()
+}
+
+fn clean_of(v: &Value, k: &str) -> Option<String> {
+    s_of(v, k).map(|s| clean(&s)).filter(|s| !s.is_empty())
 }
 
 impl DeviceRow {
@@ -142,11 +181,96 @@ pub struct Pairing {
     inflight: Option<Instant>,
 }
 
+/// Where a relay-account sign-in stands (`account.login.status`).
+#[derive(Debug, Clone, PartialEq)]
+pub enum SignInStatus {
+    Pending,
+    Done { login: String },
+    Expired,
+    Denied,
+    Error { message: String },
+}
+
+impl SignInStatus {
+    fn from_value(x: &Value) -> Option<SignInStatus> {
+        Some(match x["status"].as_str()? {
+            "pending" => SignInStatus::Pending,
+            "done" => SignInStatus::Done {
+                login: clean_of(x, "login").unwrap_or_default(),
+            },
+            "expired" => SignInStatus::Expired,
+            "denied" => SignInStatus::Denied,
+            "error" => SignInStatus::Error {
+                message: clean_of(x, "message").unwrap_or_default(),
+            },
+            _ => return None,
+        })
+    }
+}
+
+/// A device-code sign-in to the relay's account (`account.login.start`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SignIn {
+    pub id: String,
+    pub uri: String,
+    /// `uri` with the code filled in: the QR code and `c` carry it.
+    pub uri_complete: String,
+    pub code: String,
+    pub expires_at: Instant,
+    pub status: SignInStatus,
+    /// The scope picked before signing in: its pairing link follows. None from the list (`s`).
+    pub scope_after: Option<String>,
+    polled_at: Option<Instant>,
+    inflight: Option<Instant>,
+}
+
+impl SignIn {
+    fn from_value(x: &Value, scope_after: Option<String>) -> Option<SignIn> {
+        let uri = clean_of(x, "verification_uri")?;
+        Some(SignIn {
+            id: s_of(x, "id")?,
+            uri_complete: clean_of(x, "verification_uri_complete").unwrap_or_else(|| uri.clone()),
+            uri,
+            code: clean_of(x, "user_code")?,
+            expires_at: Instant::now()
+                + Duration::from_secs(x["expires_in"].as_u64().unwrap_or(DEFAULT_EXPIRES_IN)),
+            status: SignInStatus::Pending,
+            scope_after,
+            polled_at: None,
+            inflight: None,
+        })
+    }
+}
+
+/// What `account.status` says about the relay's account.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Account {
+    /// False for open and self-hosted relays: no account line, no `s`.
+    pub needs_account: bool,
+    pub logged_in: bool,
+    pub login: Option<String>,
+}
+
+impl Account {
+    fn from_value(x: &Value) -> Account {
+        Account {
+            needs_account: x["needs_account"].as_bool().unwrap_or(false),
+            logged_in: x["logged_in"].as_bool().unwrap_or(false),
+            login: clean_of(x, "login"),
+        }
+    }
+
+    fn sign_in_needed(&self) -> bool {
+        self.needs_account && !self.logged_in
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Stage {
     List,
     PickScope { sel: usize },
     Pairing(Pairing),
+    SignIn(SignIn),
 }
 
 #[derive(Debug, Clone)]
@@ -163,7 +287,10 @@ pub struct View {
     pub busy: Option<String>,
     pub confirm: Option<Confirm>,
     pub stage: Stage,
-    /// The `pair.create` this view waits for; any other answer is an abandoned link.
+    /// `account.status`, when the gateway answered it.
+    pub account: Option<Account>,
+    /// The `pair.create` (or the `account.status` / `account.login.start` before it) this view
+    /// waits for; any other answer is an abandoned attempt.
     creating: Option<u64>,
 }
 
@@ -179,6 +306,7 @@ impl View {
             busy: None,
             confirm: None,
             stage: Stage::List,
+            account: None,
             creating: None,
         }
     }
@@ -201,8 +329,22 @@ pub enum Reply {
     Status {
         pid: String,
     },
-    /// `share.revoke` of an abandoned link: nothing to show.
+    /// `share.revoke` of an abandoned link or `account.login.cancel`: nothing to show.
     Cancel,
+    /// `account.status` on opening: the account line.
+    AccountInfo,
+    /// `account.status` before creating a link for `scope`.
+    AccountCheck {
+        attempt: u64,
+        scope: String,
+    },
+    LoginStart {
+        attempt: u64,
+        scope_after: Option<String>,
+    },
+    LoginStatus {
+        id: String,
+    },
 }
 
 fn gw(app: &mut App, mi: usize, method: &str, params: Value, r: Reply) {
@@ -231,6 +373,7 @@ fn open_on(app: &mut App, mi: usize, stage: Stage) {
     app.ux.devices = Some(v);
     app.mode = Mode::Popup(Popup::Devices);
     refresh(app);
+    gw(app, mi, "account.status", json!({}), Reply::AccountInfo);
 }
 
 fn refresh(app: &mut App) {
@@ -269,37 +412,52 @@ pub fn tick(app: &mut App) {
         return;
     };
     let mi = v.mi;
-    let Stage::Pairing(p) = &mut v.stage else {
-        return;
+    // Expiry is the gateway's call (`gone`, `expired`): its clock, and a pairing or sign-in may
+    // finish at the last second.
+    let (polled_at, inflight, method, params, reply) = match &mut v.stage {
+        Stage::Pairing(p) if p.status != PairStatus::Expired => (
+            &mut p.polled_at,
+            &mut p.inflight,
+            "pair.status",
+            json!({"pid": p.pid}),
+            Reply::Status { pid: p.pid.clone() },
+        ),
+        Stage::SignIn(s) if s.status == SignInStatus::Pending => (
+            &mut s.polled_at,
+            &mut s.inflight,
+            "account.login.status",
+            json!({"id": s.id}),
+            Reply::LoginStatus { id: s.id.clone() },
+        ),
+        _ => return,
     };
-    // Expiry is the gateway's call (`gone`): its clock, and a pairing may finish at the last second.
-    if p.status == PairStatus::Expired
-        || p.inflight.is_some_and(|t| now.duration_since(t) < STALE)
-        || p.polled_at.is_some_and(|t| now.duration_since(t) < POLL)
+    if inflight.is_some_and(|t| now.duration_since(t) < STALE)
+        || polled_at.is_some_and(|t| now.duration_since(t) < POLL)
     {
         return;
     }
-    p.polled_at = Some(now);
-    p.inflight = Some(now);
-    let pid = p.pid.clone();
-    gw(
-        app,
-        mi,
-        "pair.status",
-        json!({"pid": pid}),
-        Reply::Status { pid },
-    );
+    *polled_at = Some(now);
+    *inflight = Some(now);
+    gw(app, mi, method, params, reply);
+}
+
+/// (polled_at, inflight) of the stage that polls, if any.
+fn polling(stage: &Stage) -> Option<(Option<Instant>, Option<Instant>)> {
+    match stage {
+        Stage::Pairing(p) if p.status != PairStatus::Expired => Some((p.polled_at, p.inflight)),
+        Stage::SignIn(s) if s.status == SignInStatus::Pending => Some((s.polled_at, s.inflight)),
+        _ => None,
+    }
 }
 
 pub fn deadlines(app: &App, now: Instant, d: &mut crate::deadline::Deadlines) {
     if let (Mode::Popup(Popup::Devices), Some(v)) = (&app.mode, &app.ux.devices)
-        && let Stage::Pairing(p) = &v.stage
-        && p.status != PairStatus::Expired
+        && let Some((polled_at, inflight)) = polling(&v.stage)
     {
-        let next = p.polled_at.map_or(now, |t| t + POLL);
+        let next = polled_at.map_or(now, |t| t + POLL);
         d.at(
             "devices.poll",
-            p.inflight.map_or(next, |t| next.max(t + STALE)),
+            inflight.map_or(next, |t| next.max(t + STALE)),
         );
     }
 }
@@ -352,6 +510,54 @@ fn create(app: &mut App, scope: &str) {
     );
 }
 
+/// Enter on a scope: a relay that needs an account nobody signed in to signs in first.
+fn confirm_scope(app: &mut App, scope: &str) {
+    let Some(v) = view_mut(app) else {
+        return;
+    };
+    let attempt = NEXT_ATTEMPT.fetch_add(1, Ordering::Relaxed);
+    v.busy = Some("checking the relay account…".into());
+    v.notice = None;
+    v.creating = Some(attempt);
+    let mi = v.mi;
+    gw(
+        app,
+        mi,
+        "account.status",
+        json!({}),
+        Reply::AccountCheck {
+            attempt,
+            scope: scope.into(),
+        },
+    );
+}
+
+/// `account.login.start`; the gateway hands back the same login while one is pending.
+fn start_login(app: &mut App, scope_after: Option<String>) {
+    let Some(v) = view_mut(app) else {
+        return;
+    };
+    let attempt = NEXT_ATTEMPT.fetch_add(1, Ordering::Relaxed);
+    v.busy = Some("starting the sign-in…".into());
+    v.notice = None;
+    v.creating = Some(attempt);
+    let mi = v.mi;
+    gw(
+        app,
+        mi,
+        "account.login.start",
+        json!({}),
+        Reply::LoginStart {
+            attempt,
+            scope_after,
+        },
+    );
+}
+
+fn scope_index(scope: &str) -> usize {
+    SCOPES.iter().position(|s| s.0 == scope).unwrap_or(0)
+}
+
 /// Best effort: the link stops working; the answer is ignored.
 fn cancel_link(app: &mut App, mi: usize, pid: &str) {
     gw(app, mi, "share.revoke", json!({"id": pid}), Reply::Cancel);
@@ -391,6 +597,11 @@ pub fn key(app: &mut App, ev: KeyEvent) {
                 _ if up => v.sel = v.sel.saturating_sub(1),
                 Key::Char('x') if plain => ask_revoke(v),
                 Key::Char('n') if plain => v.stage = Stage::PickScope { sel: 0 },
+                Key::Char('s')
+                    if plain && v.account.as_ref().is_some_and(Account::sign_in_needed) =>
+                {
+                    start_login(app, None)
+                }
                 Key::Char('r' | 'g') if plain => refresh(app),
                 _ => {}
             }
@@ -407,7 +618,7 @@ pub fn key(app: &mut App, ev: KeyEvent) {
                 *sel = sel.saturating_sub(1);
             } else if enter {
                 let scope = SCOPES[*sel].0;
-                create(app, scope);
+                confirm_scope(app, scope);
             }
         }
         Stage::Pairing(p) => {
@@ -422,6 +633,23 @@ pub fn key(app: &mut App, ev: KeyEvent) {
                 app.copy_text(&link);
             } else if plain && matches!(ev.key, Key::Char('n')) && p.status == PairStatus::Expired {
                 v.stage = Stage::PickScope { sel: 0 };
+            }
+        }
+        Stage::SignIn(s) => {
+            if quit {
+                let id = s.id.clone();
+                let mi = v.mi;
+                v.stage = Stage::List;
+                gw(
+                    app,
+                    mi,
+                    "account.login.cancel",
+                    json!({"id": id}),
+                    Reply::Cancel,
+                );
+            } else if plain && matches!(ev.key, Key::Char('c')) {
+                let link = s.uri_complete.clone();
+                app.copy_text(&link);
             }
         }
     }
@@ -439,18 +667,44 @@ fn failed(v: &mut View, e: &RpcErr) {
     }
 }
 
+/// A failed sign-in call: always the notice (`unavailable` is the account server, not the
+/// gateway).
+fn sign_in_failed(v: &mut View, e: &RpcErr) {
+    v.notice = Some(format!("✗ {}", clean(&bridge_error(e))));
+}
+
+/// The gateway (or the server's bridge) predates `account.*`: pair as before.
+fn predates_accounts(e: &RpcErr) -> bool {
+    e.is_method_not_found() || (e.kind == "invalid_params" && e.message.contains("does not carry"))
+}
+
+/// `account.login.start` refused with reason `not_needed` (the relay is open after all).
+fn not_needed(e: &RpcErr) -> bool {
+    ["/reason", "/details/reason"]
+        .iter()
+        .any(|p| e.details.pointer(p).and_then(Value::as_str) == Some("not_needed"))
+}
+
 pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) {
     app.dirty = true;
-    // A link made for an attempt nobody waits for any more (backed out, closed, a newer attempt)
-    // must not stay usable.
-    if let Reply::Create { attempt } = &r
+    // An answer for an attempt nobody waits for any more (backed out, closed, a newer attempt) is
+    // dropped, and a link made for it must not stay usable. A late `account.login.start` is left
+    // alone: the gateway hands the same pending login to the next attempt.
+    let attempt = match &r {
+        Reply::Create { attempt }
+        | Reply::AccountCheck { attempt, .. }
+        | Reply::LoginStart { attempt, .. } => Some(*attempt),
+        _ => None,
+    };
+    if let Some(attempt) = attempt
         && !app
             .ux
             .devices
             .as_ref()
-            .is_some_and(|v| v.mi == mi && v.creating == Some(*attempt))
+            .is_some_and(|v| v.mi == mi && v.creating == Some(attempt))
     {
-        if let Ok(x) = &res
+        if let Reply::Create { .. } = r
+            && let Ok(x) = &res
             && let Some(pid) = s_of(x, "pid")
         {
             cancel_link(app, mi, &pid);
@@ -493,7 +747,8 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
                     let pid = s_of(&x, "pid").unwrap_or_default();
                     match s_of(&x, "link") {
                         Some(link) if !pid.is_empty() => {
-                            v.notice = None;
+                            // "Signed in as …" stays up while the phone pairs.
+                            v.notice = v.notice.take().filter(|n| n.starts_with("Signed in"));
                             v.stage = Stage::Pairing(Pairing {
                                 pid,
                                 link,
@@ -551,6 +806,131 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
             }
         }
         Reply::Cancel => {}
+        Reply::AccountInfo => {
+            // An older gateway doesn't know the method: no account line.
+            if let Ok(x) = res {
+                v.account = Some(Account::from_value(&x));
+            }
+        }
+        Reply::AccountCheck { scope, .. } => match res {
+            Ok(x) => {
+                let acc = Account::from_value(&x);
+                let sign_in = acc.sign_in_needed();
+                v.account = Some(acc);
+                if sign_in {
+                    start_login(app, Some(scope));
+                } else {
+                    create(app, &scope);
+                }
+            }
+            Err(e) if predates_accounts(&e) => create(app, &scope),
+            Err(e) => {
+                v.busy = None;
+                v.creating = None;
+                failed(v, &e);
+            }
+        },
+        Reply::LoginStart { scope_after, .. } => {
+            v.busy = None;
+            v.creating = None;
+            match res {
+                Ok(x) => match SignIn::from_value(&x, scope_after) {
+                    Some(s) => {
+                        v.notice = None;
+                        v.stage = Stage::SignIn(s);
+                    }
+                    None => v.notice = Some("✗ the gateway returned no sign-in code".into()),
+                },
+                Err(e) if not_needed(&e) => {
+                    if let Some(acc) = v.account.as_mut() {
+                        acc.needs_account = false;
+                    }
+                    if let Some(scope) = scope_after {
+                        create(app, &scope);
+                    }
+                }
+                Err(e) => sign_in_failed(v, &e),
+            }
+        }
+        Reply::LoginStatus { id } => {
+            let Stage::SignIn(s) = &mut v.stage else {
+                return;
+            };
+            if s.id != id {
+                return;
+            }
+            s.inflight = None;
+            let status = match res {
+                Ok(x) => match SignInStatus::from_value(&x) {
+                    Some(st) => st,
+                    None => return,
+                },
+                // The gateway no longer knows this login (restarted): as good as expired.
+                Err(e) if e.kind == "not_found" => SignInStatus::Expired,
+                // Keep asking: the next poll may get through.
+                Err(e) => {
+                    sign_in_failed(v, &e);
+                    return;
+                }
+            };
+            s.status = status.clone();
+            let scope_after = s.scope_after.clone();
+            match status {
+                SignInStatus::Pending => {}
+                SignInStatus::Done { login } => {
+                    v.account = Some(Account {
+                        needs_account: true,
+                        logged_in: true,
+                        login: Some(login.clone()).filter(|l| !l.is_empty()),
+                    });
+                    let notice = if login.is_empty() {
+                        "Signed in".to_string()
+                    } else {
+                        format!("Signed in as {login}")
+                    };
+                    match scope_after {
+                        Some(scope) => {
+                            v.stage = Stage::PickScope {
+                                sel: scope_index(&scope),
+                            };
+                            create(app, &scope);
+                            if let Some(v) = view_mut(app) {
+                                v.notice = Some(notice);
+                            }
+                        }
+                        None => {
+                            v.stage = Stage::List;
+                            v.notice = Some(notice);
+                        }
+                    }
+                }
+                SignInStatus::Expired => match scope_after {
+                    Some(scope) => {
+                        v.stage = Stage::PickScope {
+                            sel: scope_index(&scope),
+                        };
+                        v.notice =
+                            Some("✗ the sign-in code expired: press enter for a new one".into());
+                    }
+                    None => {
+                        v.stage = Stage::List;
+                        v.notice = Some("✗ the sign-in code expired: press s for a new one".into());
+                    }
+                },
+                SignInStatus::Denied => {
+                    v.stage = Stage::List;
+                    v.notice = Some("✗ the sign-in was denied".into());
+                }
+                SignInStatus::Error { message } => {
+                    v.stage = Stage::List;
+                    v.notice = Some(if message.is_empty() {
+                        "✗ the sign-in failed".into()
+                    } else {
+                        format!("✗ the sign-in failed: {message}")
+                    });
+                }
+            }
+        }
     }
 }
 
@@ -609,15 +989,14 @@ pub fn draw(app: &App, g: &mut Grid) {
         Stage::List => draw_list(app, &mut a, v),
         Stage::PickScope { sel } => draw_pick(app, &mut a, v, *sel),
         Stage::Pairing(p) => draw_pairing(app, &mut a, v, p),
+        Stage::SignIn(s) => draw_sign_in(app, &mut a, v, s),
     }
 }
 
-/// The busy line, else the notice (red when it is a failure).
+/// The notice (red when it is a failure), then the busy line.
 fn status_line(app: &App, a: &mut crate::drafts::Area<'_>, v: &View) {
     let t = app.theme;
-    if let Some(b) = &v.busy {
-        a.line(&format!("⏳ {b}"), t.s(t.yellow));
-    } else if let Some(n) = &v.notice {
+    if let Some(n) = &v.notice {
         a.line(
             n,
             t.s(if n.starts_with('✗') {
@@ -626,6 +1005,9 @@ fn status_line(app: &App, a: &mut crate::drafts::Area<'_>, v: &View) {
                 t.yellow
             }),
         );
+    }
+    if let Some(b) = &v.busy {
+        a.line(&format!("⏳ {b}"), t.s(t.yellow));
     }
 }
 
@@ -636,6 +1018,17 @@ fn draw_list(app: &App, a: &mut crate::drafts::Area<'_>, v: &View) {
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0);
     a.line("Your paired phones and apps", t.bold(t.fg));
+    let sign_in = v.account.as_ref().is_some_and(Account::sign_in_needed);
+    if let Some(acc) = v.account.as_ref().filter(|acc| acc.needs_account) {
+        if acc.logged_in {
+            a.line(
+                &format!("Account: {}", acc.login.as_deref().unwrap_or("signed in")),
+                t.dim(),
+            );
+        } else {
+            a.line("Account: sign in required (s)", t.s(t.yellow));
+        }
+    }
     a.line("", t.text());
     if v.rows.is_empty() {
         a.line(
@@ -667,7 +1060,11 @@ fn draw_list(app: &App, a: &mut crate::drafts::Area<'_>, v: &View) {
         status_line(app, a, v);
     }
     a.footer(
-        "j/k move · n pair a phone · x revoke · r refresh · esc",
+        if sign_in {
+            "j/k move · n pair a phone · s sign in · x revoke · r refresh · esc"
+        } else {
+            "j/k move · n pair a phone · x revoke · r refresh · esc"
+        },
         t.dim(),
     );
 }
@@ -740,7 +1137,7 @@ fn draw_pairing(app: &App, a: &mut crate::drafts::Area<'_>, v: &View, p: &Pairin
         PairStatus::Expired => a.line("Link expired — press n for a new one", t.bold(t.red)),
     }
     if let Some(n) = &v.notice {
-        a.line(n, t.s(t.red));
+        a.line(n, t.s(if n.starts_with('✗') { t.red } else { t.green }));
     }
     a.line("", t.text());
     if p.status != PairStatus::Expired {
@@ -754,6 +1151,37 @@ fn draw_pairing(app: &App, a: &mut crate::drafts::Area<'_>, v: &View, p: &Pairin
         },
         t.dim(),
     );
+}
+
+fn draw_sign_in(app: &App, a: &mut crate::drafts::Area<'_>, v: &View, s: &SignIn) {
+    let t = app.theme;
+    let left = s
+        .expires_at
+        .saturating_duration_since(Instant::now())
+        .as_secs() as i64;
+    a.line("Sign in to the relay account", t.bold(t.fg));
+    wrap_lines(
+        a,
+        &format!("Open {} on any device and enter the code", s.uri),
+        t.text(),
+    );
+    a.line("", t.text());
+    a.line(&format!("    {}", s.code), t.bold(t.accent));
+    a.line("", t.text());
+    a.line(
+        &format!(
+            "Waiting for the sign-in… the code works for {}",
+            countdown(left)
+        ),
+        t.s(t.yellow),
+    );
+    if s.scope_after.is_some() {
+        a.line("The pairing link follows once you're signed in", t.dim());
+    }
+    status_line(app, a, v);
+    a.line("", t.text());
+    draw_link_qr(app, a, &s.uri_complete);
+    a.footer("c copy link · esc cancel", t.dim());
 }
 
 #[cfg(test)]

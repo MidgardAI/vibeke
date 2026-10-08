@@ -21,6 +21,8 @@ pub struct GatewayIndicator {
     pub state: String,
     pub autostart: bool,
     pub devices: Option<u32>,
+    /// Why the gateway stopped or can't connect (`login_required`: the relay wants a sign-in).
+    pub last_error: Option<String>,
 }
 
 impl GatewayIndicator {
@@ -36,6 +38,11 @@ impl GatewayIndicator {
             state: o.get("state")?.as_str()?.to_string(),
             autostart: o.get("autostart").and_then(Value::as_bool).unwrap_or(false),
             devices: o.get("devices").and_then(Value::as_u64).map(|n| n as u32),
+            last_error: o
+                .get("last_error")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
         })
     }
 
@@ -46,7 +53,7 @@ impl GatewayIndicator {
     pub fn tone(&self) -> Tone {
         match self.state.as_str() {
             "online" | "local_only" => Tone::Ok,
-            "starting" | "connecting" => Tone::Warn,
+            "starting" | "connecting" | "login_required" => Tone::Warn,
             "offline" | "crashed" => Tone::Error,
             _ => Tone::Neutral,
         }
@@ -66,6 +73,8 @@ impl GatewayIndicator {
             "starting" | "connecting" => "◌ gw".into(),
             "offline" => "○ gw".into(),
             "crashed" => "✗ gw".into(),
+            // Devices (`prefix+alt+d`) signs in.
+            "login_required" => "! gw sign in".into(),
             "external" => "◇ gw".into(),
             _ => "○ gw".into(),
         })

@@ -1,9 +1,11 @@
 //! Devices view tests: the list (only `kind == "device"` rows), revoke with a confirm, the scope
 //! picker, `pair.create` and the link with its QR code, polling `pair.status` (claimed, done,
-//! rejected, gone), cancelling a pending link, and the gateway's own messages.
+//! rejected, gone), cancelling a pending link, and the gateway's own messages. Signing in to a
+//! relay that needs an account: `account.status` before each link, the device code and its
+//! polling, the account line and `s`, and an older gateway without `account.*`.
 
 use super::*;
-use crate::drafts::tests::{ch, commands, fleet, named, only, reply, screen};
+use crate::drafts::tests::{ch, commands, fleet, named, reply, reply_err, screen};
 use tokio::sync::mpsc::UnboundedReceiver;
 use vk_proto::render::{ClientFrame, ServerFrame};
 
@@ -40,8 +42,20 @@ fn devices_json() -> Value {
     ]})
 }
 
-/// The view opened by `action` and its list read answered.
-fn opened() -> (App, Vec<UnboundedReceiver<ClientFrame>>) {
+/// `account.status` of an open relay.
+fn open_relay() -> Value {
+    json!({"needs_account": false, "account_url": null, "logged_in": false, "login": null,
+           "relay": "wss://relay.example"})
+}
+
+/// `account.status` of a relay that needs an account nobody has signed in to.
+fn signed_out() -> Value {
+    json!({"needs_account": true, "account_url": "https://account.example", "logged_in": false,
+           "login": null, "relay": "wss://relay.example"})
+}
+
+/// The view opened by `action`, its list read and `account.status` answered with `account`.
+fn opened_with(account: Value) -> (App, Vec<UnboundedReceiver<ClientFrame>>) {
     let (mut app, mut rxs) = fleet();
     commands(&mut rxs[0]);
     app.action("devices", None);
@@ -50,13 +64,29 @@ fn opened() -> (App, Vec<UnboundedReceiver<ClientFrame>>) {
     let (req, p) = gw(&cmds, "devices.list");
     assert_eq!(p, json!({"method": "devices.list", "params": {}}));
     reply(&mut app, 0, req, devices_json());
+    let (req, p) = gw(&cmds, "account.status");
+    assert_eq!(p, json!({"method": "account.status", "params": {}}));
+    reply(&mut app, 0, req, account);
     (app, rxs)
+}
+
+fn opened() -> (App, Vec<UnboundedReceiver<ClientFrame>>) {
+    opened_with(open_relay())
+}
+
+/// Enter at the scope picker, its `account.status` answered with `account`.
+fn confirm(app: &mut App, rxs: &mut [UnboundedReceiver<ClientFrame>], account: Value) {
+    app.on_key(named(NamedKey::Enter));
+    assert!(screen(app).contains("checking the relay account…"));
+    let (req, p) = gw(&commands(&mut rxs[0]), "account.status");
+    assert_eq!(p["params"], json!({}));
+    reply(app, 0, req, account);
 }
 
 /// From the list: `n`, Enter, and the `pair.create` answered with a link.
 fn pairing(app: &mut App, rxs: &mut [UnboundedReceiver<ClientFrame>]) -> String {
     app.on_key(ch('n'));
-    app.on_key(named(NamedKey::Enter));
+    confirm(app, rxs, open_relay());
     let cmds = commands(&mut rxs[0]);
     let (req, _) = gw(&cmds, "pair.create");
     let pid = "pid42".to_string();
@@ -122,7 +152,7 @@ fn n_then_enter_creates_a_full_pairing_and_shows_the_link() {
     assert!(s.contains("› Full"), "{s}");
     assert!(s.contains("Approve"), "{s}");
     assert!(s.contains("read-only"), "{s}");
-    app.on_key(named(NamedKey::Enter));
+    confirm(&mut app, &mut rxs, open_relay());
     let cmds = commands(&mut rxs[0]);
     let (req, p) = gw(&cmds, "pair.create");
     assert_eq!(
@@ -152,7 +182,7 @@ fn another_scope_is_sent_as_picked() {
     let (mut app, mut rxs) = opened();
     app.on_key(ch('n'));
     app.on_key(ch('j'));
-    app.on_key(named(NamedKey::Enter));
+    confirm(&mut app, &mut rxs, open_relay());
     let (_, p) = gw(&commands(&mut rxs[0]), "pair.create");
     assert_eq!(p["params"], json!({"scope": "approve"}));
 }
@@ -277,13 +307,13 @@ fn a_lost_status_reply_is_asked_again_later() {
 fn a_late_link_for_an_abandoned_attempt_is_cancelled() {
     let (mut app, mut rxs) = opened();
     app.on_key(ch('n'));
-    app.on_key(named(NamedKey::Enter));
+    confirm(&mut app, &mut rxs, open_relay());
     let (old, _) = gw(&commands(&mut rxs[0]), "pair.create");
     // Back out and ask again (another scope) before the first answer.
     app.on_key(named(NamedKey::Escape));
     app.on_key(ch('n'));
     app.on_key(ch('j'));
-    app.on_key(named(NamedKey::Enter));
+    confirm(&mut app, &mut rxs, open_relay());
     let (new, p) = gw(&commands(&mut rxs[0]), "pair.create");
     assert_eq!(p["params"], json!({"scope": "approve"}));
     reply(
@@ -314,7 +344,7 @@ fn a_late_link_for_an_abandoned_attempt_is_cancelled() {
 fn a_link_made_after_closing_is_cancelled() {
     let (mut app, mut rxs) = opened();
     app.on_key(ch('n'));
-    app.on_key(named(NamedKey::Enter));
+    confirm(&mut app, &mut rxs, open_relay());
     let (req, _) = gw(&commands(&mut rxs[0]), "pair.create");
     app.on_key(named(NamedKey::Escape));
     app.on_key(named(NamedKey::Escape));
@@ -349,7 +379,7 @@ fn esc_while_pending_cancels_the_link() {
 fn an_unconfigured_relay_shows_the_servers_message() {
     let (mut app, mut rxs) = opened();
     app.on_key(ch('n'));
-    app.on_key(named(NamedKey::Enter));
+    confirm(&mut app, &mut rxs, open_relay());
     let (req, _) = gw(&commands(&mut rxs[0]), "pair.create");
     reply_msg(&mut app, 0, req, "unavailable", NO_RELAY);
     let s = screen(&app);
@@ -383,7 +413,10 @@ fn pair_phone_opens_the_scope_picker() {
     commands(&mut rxs[0]);
     app.action("pair_phone", None);
     assert!(matches!(app.mode, Mode::Popup(Popup::Devices)));
-    only(&commands(&mut rxs[0]), "gateway.call");
+    let cmds = commands(&mut rxs[0]);
+    assert_eq!(cmds.len(), 2, "{cmds:?}");
+    gw(&cmds, "devices.list");
+    gw(&cmds, "account.status");
     let s = screen(&app);
     assert!(s.contains("Pair a phone: what may it do?"), "{s}");
     app.on_key(named(NamedKey::Escape));
@@ -401,4 +434,284 @@ fn the_action_is_bound_and_described() {
     assert_eq!(b["devices"], "prefix+alt+d");
     assert!(crate::nav::describe("devices").starts_with("Devices"));
     assert_eq!(crate::nav::describe("pair_phone"), "Pair a phone");
+}
+
+// ---- signing in to the relay account ------------------------------------------------------------
+
+const CODE: &str = "WDJB-MJHT";
+const URI: &str = "https://account.example/device";
+const URI_COMPLETE: &str = "https://account.example/device?code=WDJB-MJHT";
+
+fn login_started() -> Value {
+    json!({"id": "login1", "verification_uri": URI, "verification_uri_complete": URI_COMPLETE,
+           "user_code": CODE, "expires_in": 600})
+}
+
+fn sign_in_mut(app: &mut App) -> &mut SignIn {
+    match app.ux.devices.as_mut().map(|v| &mut v.stage) {
+        Some(Stage::SignIn(s)) => s,
+        other => panic!("sign-in: {other:?}"),
+    }
+}
+
+/// Signed out, `n`, `j` (approve), Enter: `account.login.start` answered with a code.
+fn signing_in(app: &mut App, rxs: &mut [UnboundedReceiver<ClientFrame>]) {
+    app.on_key(ch('n'));
+    app.on_key(ch('j'));
+    confirm(app, rxs, signed_out());
+    let cmds = commands(&mut rxs[0]);
+    assert!(
+        !cmds.iter().any(|c| c.2["method"] == "pair.create"),
+        "{cmds:?}"
+    );
+    let (req, p) = gw(&cmds, "account.login.start");
+    assert_eq!(p["params"], json!({}));
+    reply(app, 0, req, login_started());
+}
+
+#[test]
+fn an_open_relay_has_no_account_line() {
+    let (app, _rxs) = opened();
+    let s = screen(&app);
+    assert!(!s.contains("Account:"), "{s}");
+    assert!(!s.contains("s sign in"), "{s}");
+}
+
+#[test]
+fn a_signed_out_relay_signs_in_then_pairs_with_the_picked_scope() {
+    let (mut app, mut rxs) = opened_with(signed_out());
+    signing_in(&mut app, &mut rxs);
+    let s = screen(&app);
+    assert!(s.contains("Sign in to the relay account"), "{s}");
+    assert!(
+        s.contains(&format!("Open {URI} on any device and enter the code")),
+        "{s}"
+    );
+    assert!(s.contains(CODE), "{s}");
+    assert!(s.contains(URI_COMPLETE), "{s}");
+    assert!(s.contains("the code works for 9m 5"), "{s}");
+    assert!(s.contains("c copy link · esc cancel"), "{s}");
+    assert!(
+        s.contains('▀') || s.contains('▄') || s.contains('█'),
+        "a QR code: {s}"
+    );
+    // One request at a time.
+    tick(&mut app);
+    tick(&mut app);
+    let (req, p) = gw(&commands(&mut rxs[0]), "account.login.status");
+    assert_eq!(p["params"], json!({"id": "login1"}));
+    reply(&mut app, 0, req, json!({"status": "pending"}));
+    tick(&mut app);
+    assert!(commands(&mut rxs[0]).is_empty());
+    sign_in_mut(&mut app).polled_at = Some(Instant::now() - POLL);
+    tick(&mut app);
+    let (req, _) = gw(&commands(&mut rxs[0]), "account.login.status");
+    reply(&mut app, 0, req, json!({"status": "done", "login": "octo"}));
+    let (req, p) = gw(&commands(&mut rxs[0]), "pair.create");
+    assert_eq!(p["params"], json!({"scope": "approve"}));
+    assert!(screen(&app).contains("Signed in as octo"));
+    reply(
+        &mut app,
+        0,
+        req,
+        json!({"link": "https://app.example/#/pair?d=abc", "pid": "pid42",
+               "open_by": now_s() + 600, "scope": "approve"}),
+    );
+    let s = screen(&app);
+    assert!(s.contains("approve access"), "{s}");
+    assert!(s.contains("Signed in as octo"), "{s}");
+}
+
+#[test]
+fn an_expired_code_goes_back_to_the_scope_picker() {
+    let (mut app, mut rxs) = opened_with(signed_out());
+    signing_in(&mut app, &mut rxs);
+    tick(&mut app);
+    let (req, _) = gw(&commands(&mut rxs[0]), "account.login.status");
+    reply(&mut app, 0, req, json!({"status": "expired"}));
+    assert!(matches!(
+        app.ux.devices.as_ref().unwrap().stage,
+        Stage::PickScope { sel: 1 }
+    ));
+    let s = screen(&app);
+    assert!(s.contains("the sign-in code expired"), "{s}");
+    assert!(s.contains("› Approve"), "{s}");
+}
+
+#[test]
+fn a_denied_sign_in_goes_back_to_the_list() {
+    let (mut app, mut rxs) = opened_with(signed_out());
+    signing_in(&mut app, &mut rxs);
+    tick(&mut app);
+    let (req, _) = gw(&commands(&mut rxs[0]), "account.login.status");
+    reply(
+        &mut app,
+        0,
+        req,
+        json!({"status": "error", "message": "account suspended"}),
+    );
+    assert!(matches!(
+        app.ux.devices.as_ref().unwrap().stage,
+        Stage::List
+    ));
+    assert!(screen(&app).contains("✗ the sign-in failed: account suspended"));
+}
+
+#[test]
+fn esc_cancels_the_sign_in() {
+    let (mut app, mut rxs) = opened_with(signed_out());
+    signing_in(&mut app, &mut rxs);
+    app.on_key(named(NamedKey::Escape));
+    let (_, p) = gw(&commands(&mut rxs[0]), "account.login.cancel");
+    assert_eq!(p["params"], json!({"id": "login1"}));
+    assert!(matches!(
+        app.ux.devices.as_ref().unwrap().stage,
+        Stage::List
+    ));
+    // No more polling.
+    tick(&mut app);
+    assert!(commands(&mut rxs[0]).is_empty());
+}
+
+#[test]
+fn the_list_shows_the_account_and_s_signs_in() {
+    let (mut app, mut rxs) = opened_with(signed_out());
+    let s = screen(&app);
+    assert!(s.contains("Account: sign in required (s)"), "{s}");
+    assert!(s.contains("s sign in"), "{s}");
+    app.on_key(ch('s'));
+    let (req, _) = gw(&commands(&mut rxs[0]), "account.login.start");
+    reply(&mut app, 0, req, login_started());
+    tick(&mut app);
+    let (req, _) = gw(&commands(&mut rxs[0]), "account.login.status");
+    reply(&mut app, 0, req, json!({"status": "done", "login": "octo"}));
+    // Back at the list, no link made.
+    assert!(commands(&mut rxs[0]).is_empty());
+    assert!(matches!(
+        app.ux.devices.as_ref().unwrap().stage,
+        Stage::List
+    ));
+    let s = screen(&app);
+    assert!(s.contains("Signed in as octo"), "{s}");
+    assert!(s.contains("Account: octo"), "{s}");
+    assert!(!s.contains("s sign in"), "{s}");
+    // Signed in: s does nothing.
+    app.on_key(ch('s'));
+    assert!(commands(&mut rxs[0]).is_empty());
+}
+
+#[test]
+fn a_signed_in_relay_pairs_straight_away() {
+    let (mut app, mut rxs) = opened_with(
+        json!({"needs_account": true, "logged_in": true, "login": "octo", "relay": null,
+               "account_url": "https://account.example"}),
+    );
+    assert!(screen(&app).contains("Account: octo"));
+    app.on_key(ch('n'));
+    confirm(
+        &mut app,
+        &mut rxs,
+        json!({"needs_account": true, "logged_in": true, "login": "octo"}),
+    );
+    gw(&commands(&mut rxs[0]), "pair.create");
+}
+
+#[test]
+fn an_older_gateway_without_accounts_pairs_as_before() {
+    let (mut app, mut rxs) = fleet();
+    commands(&mut rxs[0]);
+    app.action("devices", None);
+    let cmds = commands(&mut rxs[0]);
+    let (req, _) = gw(&cmds, "devices.list");
+    reply(&mut app, 0, req, devices_json());
+    let (req, _) = gw(&cmds, "account.status");
+    reply_msg(
+        &mut app,
+        0,
+        req,
+        "method_not_found",
+        "unknown method account.status",
+    );
+    let s = screen(&app);
+    assert!(!s.contains("Account:"), "{s}");
+    assert!(!s.contains('⚠'), "{s}");
+    app.on_key(ch('n'));
+    app.on_key(named(NamedKey::Enter));
+    let (req, _) = gw(&commands(&mut rxs[0]), "account.status");
+    reply_msg(
+        &mut app,
+        0,
+        req,
+        "method_not_found",
+        "unknown method account.status",
+    );
+    let (_, p) = gw(&commands(&mut rxs[0]), "pair.create");
+    assert_eq!(p["params"], json!({"scope": "full"}));
+    // A server whose bridge doesn't carry account.* yet is just as old.
+    app.on_key(named(NamedKey::Escape));
+    app.on_key(ch('n'));
+    app.on_key(named(NamedKey::Enter));
+    let (req, _) = gw(&commands(&mut rxs[0]), "account.status");
+    reply_msg(
+        &mut app,
+        0,
+        req,
+        "invalid_params",
+        "gateway.call does not carry account.status (allowed: …)",
+    );
+    gw(&commands(&mut rxs[0]), "pair.create");
+}
+
+#[test]
+fn not_needed_after_all_pairs() {
+    let (mut app, mut rxs) = opened_with(signed_out());
+    app.on_key(ch('n'));
+    confirm(&mut app, &mut rxs, signed_out());
+    let (req, _) = gw(&commands(&mut rxs[0]), "account.login.start");
+    reply_err(&mut app, 0, req, "invalid", json!({"reason": "not_needed"}));
+    gw(&commands(&mut rxs[0]), "pair.create");
+}
+
+#[test]
+fn an_unreachable_account_server_is_a_notice() {
+    let (mut app, mut rxs) = opened_with(signed_out());
+    app.on_key(ch('n'));
+    confirm(&mut app, &mut rxs, signed_out());
+    let (req, _) = gw(&commands(&mut rxs[0]), "account.login.start");
+    reply_msg(
+        &mut app,
+        0,
+        req,
+        "unavailable",
+        "the account server can't be reached",
+    );
+    let s = screen(&app);
+    assert!(s.contains("✗ the account server can't be reached"), "{s}");
+    assert!(matches!(
+        app.ux.devices.as_ref().unwrap().stage,
+        Stage::PickScope { .. }
+    ));
+}
+
+#[test]
+fn the_gateways_sign_in_text_is_cleaned() {
+    assert_eq!(clean("AB\u{202E}CD-\u{2066}EF\u{2069}\u{200F}"), "ABCD-EF");
+    assert_eq!(clean(" a\u{1b}[31mb\n "), "a[31mb");
+    assert_eq!(clean(&"x".repeat(2000)).len(), CLEAN_MAX);
+    let (mut app, mut rxs) = opened_with(signed_out());
+    app.on_key(ch('n'));
+    confirm(&mut app, &mut rxs, signed_out());
+    let (req, _) = gw(&commands(&mut rxs[0]), "account.login.start");
+    reply(
+        &mut app,
+        0,
+        req,
+        json!({"id": "login1", "verification_uri": URI,
+               "verification_uri_complete": format!("{URI_COMPLETE}\u{202E}"),
+               "user_code": "WDJB\u{202E}-MJHT", "expires_in": 600}),
+    );
+    let s = sign_in_mut(&mut app);
+    assert_eq!(s.code, CODE);
+    assert_eq!(s.uri_complete, URI_COMPLETE);
+    assert!(screen(&app).contains(CODE));
 }
