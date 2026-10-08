@@ -339,6 +339,18 @@ Git execution rules (git can run configured programs):
 
 ---
 
+### 7.9 Lifecycle and supervision
+
+The gateway is a child of the server, not a separate service to start by hand.
+
+- **Opt-in.** `gateway.toml` holds `autostart` (optional bool). The gateway is enabled when `autostart = true`, or when `autostart` is unset and `relay` is set. `local_socket` defaults to true, so it never counts as setup on its own. A user who never sets up the gateway gets no process and no network connection. `pair`, `on` and `run --relay` set `autostart = true`; `off` sets it false.
+- **Supervisor.** At boot, if enabled for the server's session, the server spawns `<bin> gateway run --autostart --session <session>` with `VIBEKE_GATEWAY_SUPERVISED=1`, stdin closed, output appended to `gateway.log` (rotated to `gateway.log.1` at spawn when over 5 MiB), in its own process group. It restarts after a crash with backoff 1 s, 2 s, 4 s up to 60 s, resets the backoff after 60 s healthy, and gives up (`crashed`) after 10 crashes in 10 minutes. On shutdown it sends SIGTERM, waits 3 s, then SIGKILL.
+- **Single instance.** `run` holds an exclusive lock on `run.lock` for its whole life. A second `run` exits with code 3.
+- **Status.** `run` writes `status.json` atomically on every state change (`pid`, `state` of `connecting|online|offline|local_only`, `relay`, `devices`, `since_ms`, `last_error`) and removes it on clean exit. The server polls it every 2 s.
+- **Exit codes.** 0 clean stop (signal, or the parent is gone: `--autostart` polls the parent every 5 s so a crashed server leaves no orphan); 3 already running; 4 not enabled or session mismatch (checked before any network use); anything else is a crash. Only a crash is restarted.
+- **Methods.** `gateway.status` returns `{state, autostart, supervised, pid, restarts, relay, devices, since_ms, last_error, log}`. `state` also takes `off`, `starting`, `crashed` and `external` (a hand-run gateway the server did not start). `gateway.start` is idempotent and clears a `crashed` or stopped latch; `gateway.stop` stops the child and keeps it stopped until the next start. Pane-scope tokens may call `gateway.status` only. `server.status` carries the same object as `gateway`, and each change is broadcast as a `gateway.status` event.
+- **Starting on demand.** `handoff.send`, `peer add` and `handoff redeem` start an enabled gateway that is not running.
+
 ## 8. Push mechanics
 
 ### 8.1 One subscription per device, signed by the device's VAPID key
