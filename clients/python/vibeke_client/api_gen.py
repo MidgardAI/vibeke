@@ -14,6 +14,9 @@ class Api:
     ) -> Any:
         raise NotImplementedError
 
+    async def adapter_control(self, params: "Optional[t.AdapterControlParams]" = None) -> "t.AdapterControlResult":
+        return await self.call("adapter.control", params or {})  # type: ignore[arg-type, return-value]
+
     async def adapter_delivery_ack(self, params: "t.AdapterDeliveryAckParams") -> "t.AdapterDeliveryAckResult":
         return await self.call("adapter.delivery_ack", params)  # type: ignore[arg-type, return-value]
 
@@ -25,6 +28,9 @@ class Api:
 
     async def adapter_signal(self, params: "t.AdapterSignalParams") -> "t.AdapterSignalResult":
         return await self.call("adapter.signal", params)  # type: ignore[arg-type, return-value]
+
+    async def agent_commands(self, params: "t.AgentCommandsParams") -> "t.AgentCommandsResult":
+        return await self.call("agent.commands", params)  # type: ignore[arg-type, return-value]
 
     async def agent_drift(self, params: "Optional[t.AgentDriftParams]" = None) -> "t.AgentDriftResult":
         return await self.call("agent.drift", params or {})  # type: ignore[arg-type, return-value]
@@ -59,6 +65,9 @@ class Api:
     async def agent_manifests_reload(self, params: "Optional[t.AgentManifestsReloadParams]" = None) -> "t.AgentManifestsReloadResult":
         return await self.call("agent.manifests_reload", params or {})  # type: ignore[arg-type, return-value]
 
+    async def agent_models(self, params: "t.AgentModelsParams") -> "t.AgentModelsResult":
+        return await self.call("agent.models", params)  # type: ignore[arg-type, return-value]
+
     async def agent_prompt(self, params: "t.AgentPromptParams") -> "t.AgentPromptResult":
         return await self.call("agent.prompt", params)  # type: ignore[arg-type, return-value]
 
@@ -82,6 +91,9 @@ class Api:
 
     async def agent_send_keys(self, params: "t.AgentSendKeysParams") -> "t.AgentSendKeysResult":
         return await self.call("agent.send_keys", params)  # type: ignore[arg-type, return-value]
+
+    async def agent_set_model(self, params: "t.AgentSetModelParams") -> "t.AgentSetModelResult":
+        return await self.call("agent.set_model", params)  # type: ignore[arg-type, return-value]
 
     async def agent_spawn(self, params: "t.AgentSpawnParams") -> "t.AgentSpawnResult":
         return await self.call("agent.spawn", params)  # type: ignore[arg-type, return-value]

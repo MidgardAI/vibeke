@@ -261,6 +261,9 @@
               "const": "deny"
             },
             {
+              "const": "cancel"
+            },
+            {
               "type": "string"
             },
             {
@@ -1944,6 +1947,16 @@
               "type": "null"
             }
           ]
+        },
+        "picker": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PickerInfo"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [
@@ -2545,6 +2558,112 @@
         "progress",
         "last_exit",
         "user_vars"
+      ]
+    },
+    "PickerInfo": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "anyOf": [
+            {
+              "const": "model"
+            },
+            {
+              "const": "effort"
+            },
+            {
+              "const": "resume"
+            },
+            {
+              "const": "permissions"
+            },
+            {
+              "const": "confirm"
+            },
+            {
+              "const": "menu"
+            },
+            {
+              "const": "unknown"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "cancel_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "up_down": {
+          "type": "boolean"
+        },
+        "left_right": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "verb": {
+                  "type": "string"
+                },
+                "values": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "current": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "verb",
+                "values",
+                "current"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source": {
+          "anyOf": [
+            {
+              "const": "screen"
+            },
+            {
+              "const": "protocol"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "signature": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "cancel_key",
+        "up_down",
+        "left_right",
+        "source",
+        "signature"
       ]
     },
     "PolicyMatch": {
@@ -3915,6 +4034,84 @@
     }
   },
   "x-methods": {
+    "adapter.control": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "params": {
+        "type": "object",
+        "properties": {
+          "harness": {
+            "type": "string"
+          },
+          "ops": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "reply": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "ok": {
+                "type": "boolean"
+              },
+              "result": {},
+              "error": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "ok"
+            ]
+          },
+          "wait_ms": {
+            "type": "integer"
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "request": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "op": {
+                    "type": "string"
+                  },
+                  "params": {
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "id",
+                  "op",
+                  "params"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "request"
+        ]
+      }
+    },
     "adapter.delivery_ack": {
       "mutating": true,
       "scope": "pane",
@@ -4116,6 +4313,68 @@
             "$ref": "#/$defs/Cursor"
           }
         }
+      }
+    },
+    "agent.commands": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "params": {
+        "type": "object",
+        "properties": {
+          "target": {
+            "$ref": "#/$defs/Target"
+          }
+        },
+        "required": [
+          "target"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "commands": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string"
+                },
+                "takes_arg": {
+                  "type": "boolean"
+                },
+                "opens_picker": {
+                  "type": "boolean"
+                },
+                "dangerous": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "name",
+                "description",
+                "takes_arg",
+                "opens_picker",
+                "dangerous"
+              ]
+            }
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "catalog",
+              "protocol"
+            ]
+          }
+        },
+        "required": [
+          "commands",
+          "source"
+        ]
       }
     },
     "agent.drift": {
@@ -4726,6 +4985,63 @@
         ]
       }
     },
+    "agent.models": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "params": {
+        "type": "object",
+        "properties": {
+          "target": {
+            "$ref": "#/$defs/Target"
+          }
+        },
+        "required": [
+          "target"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "models": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string"
+                },
+                "current": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "id",
+                "label",
+                "current"
+              ]
+            }
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "protocol",
+              "screen"
+            ]
+          }
+        },
+        "required": [
+          "models",
+          "source"
+        ]
+      }
+    },
     "agent.prompt": {
       "mutating": true,
       "scope": "pane",
@@ -4779,6 +5095,12 @@
             "$ref": "#/$defs/AgentRun"
           },
           "turn": {},
+          "turn_started": {
+            "type": "boolean"
+          },
+          "interaction": {
+            "type": "string"
+          },
           "cursor": {
             "$ref": "#/$defs/Cursor"
           }
@@ -5031,6 +5353,52 @@
             "$ref": "#/$defs/Cursor"
           }
         }
+      }
+    },
+    "agent.set_model": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "own_target",
+      "params": {
+        "type": "object",
+        "properties": {
+          "target": {
+            "$ref": "#/$defs/Target"
+          },
+          "model": {
+            "type": "string"
+          },
+          "scope": {
+            "type": "string",
+            "enum": [
+              "session",
+              "default"
+            ],
+            "default": "session"
+          }
+        },
+        "required": [
+          "target",
+          "model"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "run": {
+            "$ref": "#/$defs/AgentRun"
+          },
+          "default_changed": {
+            "type": "boolean"
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "run",
+          "default_changed"
+        ]
       }
     },
     "agent.spawn": {
@@ -16217,7 +16585,8 @@
             "enum": [
               "allow",
               "allow_always",
-              "deny"
+              "deny",
+              "cancel"
             ]
           },
           "choices": {
@@ -16228,6 +16597,9 @@
                 "type": "string"
               }
             }
+          },
+          "expected_signature": {
+            "type": "string"
           },
           "text": {
             "type": "string"

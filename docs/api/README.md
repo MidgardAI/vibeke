@@ -43,10 +43,12 @@ Clients must accept new fields and event types. The API can change before versio
 
 | Method | Action | Access |
 |---|---|---|
+| `adapter.control` | Write | Pane |
 | `adapter.delivery_ack` | Write | Pane |
 | `adapter.gate` | Write | Pane |
 | `adapter.report_self` | Write | Pane |
 | `adapter.signal` | Write | Pane |
+| `agent.commands` | Read | Pane |
 | `agent.drift` | Read | Pane |
 | `agent.get` | Read | Pane |
 | `agent.harnesses` | Read | Pane |
@@ -58,6 +60,7 @@ Clients must accept new fields and event types. The API can change before versio
 | `agent.manifests` | Read | Pane |
 | `agent.manifests_check` | Write | Full |
 | `agent.manifests_reload` | Write | Pane |
+| `agent.models` | Read | Pane |
 | `agent.prompt` | Write | Own panes |
 | `agent.read` | Read | Pane |
 | `agent.release` | Write | Own panes |
@@ -66,6 +69,7 @@ Clients must accept new fields and event types. The API can change before versio
 | `agent.resumable` | Read | Pane |
 | `agent.resume` | Write | Own panes |
 | `agent.send_keys` | Write | Own panes |
+| `agent.set_model` | Write | Own panes |
 | `agent.spawn` | Write | Pane |
 | `agent.start` | Write | Own panes |
 | `agent.turn_usage` | Read | Pane |

@@ -136,6 +136,9 @@ Use `--json` to print JSON. Non-terminal output also uses JSON.
 | `resume` | `<run>` | `agent.resume` | [--pane p] |
 | `resumable` | - | `agent.resumable` | ended runs that can be resumed |
 | `harnesses` | - | `agent.harnesses` |  |
+| `commands` | `<target>` | `agent.commands` | slash commands the agent understands (built-in catalog) |
+| `models` | `<target>` | `agent.models` | models the agent can switch to (where the harness offers a structured way) |
+| `set-model` | `<target>` `<model>` | `agent.set_model` | <target> <model> [--scope session\|default] |
 | `turn-usage` | `<run>` | `agent.turn_usage` | <run> [--limit 200] — per-turn tokens and cost from the transcript |
 | `limits` | - | `agent.limits` | latest rate-limit observation per harness |
 | `drift` | - | `agent.drift` | disagreement/answer-failure counters per harness version |

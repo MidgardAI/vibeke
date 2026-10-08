@@ -66,7 +66,7 @@ export type AgentSummary = {
 };
 
 export type Answer = {
-  decision: "allow" | "allow_always" | "deny" | string | null;
+  decision: "allow" | "allow_always" | "deny" | "cancel" | string | null;
   choices?: unknown[];
   text?: string | null;
 };
@@ -402,6 +402,7 @@ export type Interaction = {
   answer_key?: string | null;
   opened_at_ms: number;
   answered_at_ms: number | null;
+  picker?: PickerInfo | null;
 };
 
 export type Isolation = {
@@ -514,6 +515,19 @@ export type PaneLive = {
     at_ms: number;
   } | null;
   user_vars: string[][];
+};
+
+export type PickerInfo = {
+  name: "model" | "effort" | "resume" | "permissions" | "confirm" | "menu" | "unknown" | string;
+  cancel_key: string | null;
+  up_down: boolean;
+  left_right: {
+    verb: string;
+    values: string[];
+    current: string | null;
+  } | null;
+  source: "screen" | "protocol" | string;
+  signature: string;
 };
 
 export type PolicyMatch = {
@@ -816,6 +830,27 @@ export type Workspace = {
 
 // ---- methods ----
 
+export type AdapterControlParams = {
+  harness?: string;
+  ops?: string[];
+  reply?: {
+    id: string;
+    ok: boolean;
+    result?: unknown;
+    error?: string;
+  };
+  wait_ms?: number;
+};
+
+export type AdapterControlResult = {
+  request: {
+    id: string;
+    op: string;
+    params: Record<string, unknown>;
+  } | null;
+  cursor?: Cursor;
+};
+
 export type AdapterDeliveryAckParams = {
   interaction: Target;
   idempotency_key: string;
@@ -871,6 +906,21 @@ export type AdapterSignalParams = {
 export type AdapterSignalResult = {
   hook_output?: Record<string, unknown>;
   cursor?: Cursor;
+};
+
+export type AgentCommandsParams = {
+  target: Target;
+};
+
+export type AgentCommandsResult = {
+  commands: {
+    name: string;
+    description: string;
+    takes_arg: boolean;
+    opens_picker: boolean;
+    dangerous: boolean;
+  }[];
+  source: "catalog" | "protocol";
 };
 
 export type AgentDriftParams = Record<string, unknown>;
@@ -1026,6 +1076,20 @@ export type AgentManifestsReloadResult = {
   cursor?: Cursor;
 };
 
+export type AgentModelsParams = {
+  target: Target;
+};
+
+export type AgentModelsResult = {
+  models: {
+    id: string;
+    label: string;
+    description?: string;
+    current: boolean;
+  }[];
+  source: "protocol" | "screen";
+};
+
 export type AgentPromptParams = {
   target: Target;
   text: string;
@@ -1039,6 +1103,8 @@ export type AgentPromptParams = {
 export type AgentPromptResult = {
   run: AgentRun;
   turn?: unknown;
+  turn_started?: boolean;
+  interaction?: string;
   cursor?: Cursor;
 };
 
@@ -1109,6 +1175,18 @@ export type AgentSendKeysParams = {
 };
 
 export type AgentSendKeysResult = {
+  cursor?: Cursor;
+};
+
+export type AgentSetModelParams = {
+  target: Target;
+  model: string;
+  scope?: "session" | "default";
+};
+
+export type AgentSetModelResult = {
+  run: AgentRun;
+  default_changed: boolean;
   cursor?: Cursor;
 };
 
@@ -3911,8 +3989,9 @@ export type IntegrationDoctorResult = {
 
 export type InteractionAnswerParams = {
   interaction: Target;
-  decision?: "allow" | "allow_always" | "deny";
+  decision?: "allow" | "allow_always" | "deny" | "cancel";
   choices?: { [key: string]: string[] };
+  expected_signature?: string;
   text?: string;
   scope?: "once" | "session" | "rule";
   rule?: PolicyRule;
@@ -7334,10 +7413,12 @@ export type WorktreeRepoRootResult = {
 
 /** Params and result of every method. */
 export interface Methods {
+  "adapter.control": { params: AdapterControlParams; result: AdapterControlResult };
   "adapter.delivery_ack": { params: AdapterDeliveryAckParams; result: AdapterDeliveryAckResult };
   "adapter.gate": { params: AdapterGateParams; result: AdapterGateResult };
   "adapter.report_self": { params: AdapterReportSelfParams; result: AdapterReportSelfResult };
   "adapter.signal": { params: AdapterSignalParams; result: AdapterSignalResult };
+  "agent.commands": { params: AgentCommandsParams; result: AgentCommandsResult };
   "agent.drift": { params: AgentDriftParams; result: AgentDriftResult };
   "agent.get": { params: AgentGetParams; result: AgentGetResult };
   "agent.harnesses": { params: AgentHarnessesParams; result: AgentHarnessesResult };
@@ -7349,6 +7430,7 @@ export interface Methods {
   "agent.manifests": { params: AgentManifestsParams; result: AgentManifestsResult };
   "agent.manifests_check": { params: AgentManifestsCheckParams; result: AgentManifestsCheckResult };
   "agent.manifests_reload": { params: AgentManifestsReloadParams; result: AgentManifestsReloadResult };
+  "agent.models": { params: AgentModelsParams; result: AgentModelsResult };
   "agent.prompt": { params: AgentPromptParams; result: AgentPromptResult };
   "agent.read": { params: AgentReadParams; result: AgentReadResult };
   "agent.release": { params: AgentReleaseParams; result: AgentReleaseResult };
@@ -7357,6 +7439,7 @@ export interface Methods {
   "agent.resumable": { params: AgentResumableParams; result: AgentResumableResult };
   "agent.resume": { params: AgentResumeParams; result: AgentResumeResult };
   "agent.send_keys": { params: AgentSendKeysParams; result: AgentSendKeysResult };
+  "agent.set_model": { params: AgentSetModelParams; result: AgentSetModelResult };
   "agent.spawn": { params: AgentSpawnParams; result: AgentSpawnResult };
   "agent.start": { params: AgentStartParams; result: AgentStartResult };
   "agent.turn_usage": { params: AgentTurnUsageParams; result: AgentTurnUsageResult };
@@ -7757,10 +7840,12 @@ export type MethodName = keyof Methods;
 
 /** Mutating flag and scope of every method (`full`: not callable with a pane token). */
 export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" | "pane"; paneScope: "forbidden" | "own_target" | "open" }> = {
+  "adapter.control": { mutating: true, scope: "pane", paneScope: "open" },
   "adapter.delivery_ack": { mutating: true, scope: "pane", paneScope: "open" },
   "adapter.gate": { mutating: true, scope: "pane", paneScope: "open" },
   "adapter.report_self": { mutating: true, scope: "pane", paneScope: "open" },
   "adapter.signal": { mutating: true, scope: "pane", paneScope: "open" },
+  "agent.commands": { mutating: false, scope: "pane", paneScope: "open" },
   "agent.drift": { mutating: false, scope: "pane", paneScope: "open" },
   "agent.get": { mutating: false, scope: "pane", paneScope: "open" },
   "agent.harnesses": { mutating: false, scope: "pane", paneScope: "open" },
@@ -7772,6 +7857,7 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "agent.manifests": { mutating: false, scope: "pane", paneScope: "open" },
   "agent.manifests_check": { mutating: true, scope: "full", paneScope: "forbidden" },
   "agent.manifests_reload": { mutating: true, scope: "pane", paneScope: "open" },
+  "agent.models": { mutating: false, scope: "pane", paneScope: "open" },
   "agent.prompt": { mutating: true, scope: "pane", paneScope: "own_target" },
   "agent.read": { mutating: false, scope: "pane", paneScope: "open" },
   "agent.release": { mutating: true, scope: "pane", paneScope: "own_target" },
@@ -7780,6 +7866,7 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "agent.resumable": { mutating: false, scope: "pane", paneScope: "open" },
   "agent.resume": { mutating: true, scope: "pane", paneScope: "own_target" },
   "agent.send_keys": { mutating: true, scope: "pane", paneScope: "own_target" },
+  "agent.set_model": { mutating: true, scope: "pane", paneScope: "own_target" },
   "agent.spawn": { mutating: true, scope: "pane", paneScope: "open" },
   "agent.start": { mutating: true, scope: "pane", paneScope: "own_target" },
   "agent.turn_usage": { mutating: false, scope: "pane", paneScope: "open" },

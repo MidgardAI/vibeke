@@ -67,7 +67,7 @@ AgentSummary = TypedDict("AgentSummary", {
 })
 
 Answer = TypedDict("Answer", {
-    "decision": Optional[Union[Literal["allow"], Literal["allow_always"], Literal["deny"], str]],
+    "decision": Optional[Union[Literal["allow"], Literal["allow_always"], Literal["deny"], Literal["cancel"], str]],
     "choices": NotRequired[List[Any]],
     "text": NotRequired[Optional[str]],
 })
@@ -419,6 +419,7 @@ Interaction = TypedDict("Interaction", {
     "answer_key": NotRequired[Optional[str]],
     "opened_at_ms": int,
     "answered_at_ms": Optional[int],
+    "picker": NotRequired[Optional["PickerInfo"]],
 })
 
 Isolation = TypedDict("Isolation", {
@@ -543,6 +544,21 @@ PaneLive = TypedDict("PaneLive", {
     "progress": Optional["PaneLiveProgressV0"],
     "last_exit": Optional["PaneLiveLastExitV0"],
     "user_vars": List[List[str]],
+})
+
+PickerInfoLeftRightV0 = TypedDict("PickerInfoLeftRightV0", {
+    "verb": str,
+    "values": List[str],
+    "current": Optional[str],
+})
+
+PickerInfo = TypedDict("PickerInfo", {
+    "name": Union[Literal["model"], Literal["effort"], Literal["resume"], Literal["permissions"], Literal["confirm"], Literal["menu"], Literal["unknown"], str],
+    "cancel_key": Optional[str],
+    "up_down": bool,
+    "left_right": Optional["PickerInfoLeftRightV0"],
+    "source": Union[Literal["screen"], Literal["protocol"], str],
+    "signature": str,
 })
 
 PolicyMatch = TypedDict("PolicyMatch", {
@@ -853,6 +869,31 @@ Workspace = TypedDict("Workspace", {
 
 # ---- methods ----
 
+AdapterControlParamsReply = TypedDict("AdapterControlParamsReply", {
+    "id": str,
+    "ok": bool,
+    "result": NotRequired[Any],
+    "error": NotRequired[str],
+})
+
+AdapterControlParams = TypedDict("AdapterControlParams", {
+    "harness": NotRequired[str],
+    "ops": NotRequired[List[str]],
+    "reply": NotRequired["AdapterControlParamsReply"],
+    "wait_ms": NotRequired[int],
+})
+
+AdapterControlResultRequestV0 = TypedDict("AdapterControlResultRequestV0", {
+    "id": str,
+    "op": str,
+    "params": Dict[str, Any],
+})
+
+AdapterControlResult = TypedDict("AdapterControlResult", {
+    "request": Optional["AdapterControlResultRequestV0"],
+    "cursor": NotRequired["Cursor"],
+})
+
 AdapterDeliveryAckParams = TypedDict("AdapterDeliveryAckParams", {
     "interaction": "Target",
     "idempotency_key": str,
@@ -908,6 +949,23 @@ AdapterSignalParams = TypedDict("AdapterSignalParams", {
 AdapterSignalResult = TypedDict("AdapterSignalResult", {
     "hook_output": NotRequired[Dict[str, Any]],
     "cursor": NotRequired["Cursor"],
+})
+
+AgentCommandsParams = TypedDict("AgentCommandsParams", {
+    "target": "Target",
+})
+
+AgentCommandsResultCommandsItem = TypedDict("AgentCommandsResultCommandsItem", {
+    "name": str,
+    "description": str,
+    "takes_arg": bool,
+    "opens_picker": bool,
+    "dangerous": bool,
+})
+
+AgentCommandsResult = TypedDict("AgentCommandsResult", {
+    "commands": List["AgentCommandsResultCommandsItem"],
+    "source": Literal["catalog", "protocol"],
 })
 
 AgentDriftParams: TypeAlias = Dict[str, Any]
@@ -1073,6 +1131,22 @@ AgentManifestsReloadResult = TypedDict("AgentManifestsReloadResult", {
     "cursor": NotRequired["Cursor"],
 })
 
+AgentModelsParams = TypedDict("AgentModelsParams", {
+    "target": "Target",
+})
+
+AgentModelsResultModelsItem = TypedDict("AgentModelsResultModelsItem", {
+    "id": str,
+    "label": str,
+    "description": NotRequired[str],
+    "current": bool,
+})
+
+AgentModelsResult = TypedDict("AgentModelsResult", {
+    "models": List["AgentModelsResultModelsItem"],
+    "source": Literal["protocol", "screen"],
+})
+
 AgentPromptParams = TypedDict("AgentPromptParams", {
     "target": "Target",
     "text": str,
@@ -1086,6 +1160,8 @@ AgentPromptParams = TypedDict("AgentPromptParams", {
 AgentPromptResult = TypedDict("AgentPromptResult", {
     "run": "AgentRun",
     "turn": NotRequired[Any],
+    "turn_started": NotRequired[bool],
+    "interaction": NotRequired[str],
     "cursor": NotRequired["Cursor"],
 })
 
@@ -1156,6 +1232,18 @@ AgentSendKeysParams = TypedDict("AgentSendKeysParams", {
 })
 
 AgentSendKeysResult = TypedDict("AgentSendKeysResult", {
+    "cursor": NotRequired["Cursor"],
+})
+
+AgentSetModelParams = TypedDict("AgentSetModelParams", {
+    "target": "Target",
+    "model": str,
+    "scope": NotRequired[Literal["session", "default"]],
+})
+
+AgentSetModelResult = TypedDict("AgentSetModelResult", {
+    "run": "AgentRun",
+    "default_changed": bool,
     "cursor": NotRequired["Cursor"],
 })
 
@@ -4204,8 +4292,9 @@ IntegrationDoctorResult = TypedDict("IntegrationDoctorResult", {
 
 InteractionAnswerParams = TypedDict("InteractionAnswerParams", {
     "interaction": "Target",
-    "decision": NotRequired[Literal["allow", "allow_always", "deny"]],
+    "decision": NotRequired[Literal["allow", "allow_always", "deny", "cancel"]],
     "choices": NotRequired[Dict[str, List[str]]],
+    "expected_signature": NotRequired[str],
     "text": NotRequired[str],
     "scope": NotRequired[Literal["once", "session", "rule"]],
     "rule": NotRequired["PolicyRule"],
@@ -7899,10 +7988,12 @@ WorktreeRepoRootResult = TypedDict("WorktreeRepoRootResult", {
 
 # Mutating flag and scope of every method (`full`: not callable with a pane token).
 METHODS: Dict[str, Dict[str, Any]] = {
+    "adapter.control": {"mutating": True, "scope": "pane", "pane_scope": "open"},
     "adapter.delivery_ack": {"mutating": True, "scope": "pane", "pane_scope": "open"},
     "adapter.gate": {"mutating": True, "scope": "pane", "pane_scope": "open"},
     "adapter.report_self": {"mutating": True, "scope": "pane", "pane_scope": "open"},
     "adapter.signal": {"mutating": True, "scope": "pane", "pane_scope": "open"},
+    "agent.commands": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "agent.drift": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "agent.get": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "agent.harnesses": {"mutating": False, "scope": "pane", "pane_scope": "open"},
@@ -7914,6 +8005,7 @@ METHODS: Dict[str, Dict[str, Any]] = {
     "agent.manifests": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "agent.manifests_check": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "agent.manifests_reload": {"mutating": True, "scope": "pane", "pane_scope": "open"},
+    "agent.models": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "agent.prompt": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
     "agent.read": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "agent.release": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
@@ -7922,6 +8014,7 @@ METHODS: Dict[str, Dict[str, Any]] = {
     "agent.resumable": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "agent.resume": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
     "agent.send_keys": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
+    "agent.set_model": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
     "agent.spawn": {"mutating": True, "scope": "pane", "pane_scope": "open"},
     "agent.start": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
     "agent.turn_usage": {"mutating": False, "scope": "pane", "pane_scope": "open"},

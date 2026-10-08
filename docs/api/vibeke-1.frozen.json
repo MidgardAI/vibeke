@@ -2,12 +2,17 @@
   "api": "vibeke/1",
   "status": "draft until 1.0",
   "rule": "frozen methods may not be removed and their mutating/scope/pane_scope flags may not change; additions are allowed",
-  "render_protocol": 5,
+  "render_protocol": 6,
   "holder_protocol": {
     "proto": 2,
     "min": 1
   },
   "methods": {
+    "adapter.control": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
     "adapter.delivery_ack": {
       "mutating": true,
       "scope": "pane",
@@ -25,6 +30,11 @@
     },
     "adapter.signal": {
       "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "agent.commands": {
+      "mutating": false,
       "scope": "pane",
       "pane_scope": "open"
     },
@@ -83,6 +93,11 @@
       "scope": "pane",
       "pane_scope": "open"
     },
+    "agent.models": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
     "agent.prompt": {
       "mutating": true,
       "scope": "pane",
@@ -119,6 +134,11 @@
       "pane_scope": "own_target"
     },
     "agent.send_keys": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "own_target"
+    },
+    "agent.set_model": {
       "mutating": true,
       "scope": "pane",
       "pane_scope": "own_target"
