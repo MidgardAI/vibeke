@@ -4,7 +4,7 @@
 //   notarization     APPLE_API_KEY + APPLE_API_KEY_ID + APPLE_API_ISSUER, or
 //                    APPLE_ID + APPLE_APP_SPECIFIC_PASSWORD + APPLE_TEAM_ID, or APPLE_KEYCHAIN_PROFILE
 //   Windows signing  WIN_CSC_LINK (+ WIN_CSC_KEY_PASSWORD)
-//   update feed      VIBEKE_UPDATE_URL (generic provider; updates stay off without it)
+//   update feed      public GitHub release assets; signed metadata is verified in main
 // `bun run dist:dir` builds an app directory signed ad hoc (no Developer ID; runs locally only).
 
 const env = process.env;
@@ -14,8 +14,7 @@ const notarize = !!(env.APPLE_API_KEY || env.APPLE_ID || env.APPLE_KEYCHAIN_PROF
 // and applying Electron fuses invalidates Electron's own linker signature.
 const realIdentity = !!(env.CSC_LINK || env.CSC_NAME || env.VIBEKE_MAC_SIGN);
 // The update feed is baked into the bundle (resources/app-update.yml); the app trusts nothing else.
-const feed = env.VIBEKE_UPDATE_URL || '';
-if (feed && !/^https:\/\/[^/@\s]+(\/\S*)?$/.test(feed)) throw new Error('VIBEKE_UPDATE_URL must be an https URL');
+const feed = 'https://github.com/MidgardAI/vibeke/releases/latest/download';
 
 /** @type {import('electron-builder').Configuration} */
 module.exports = {
@@ -38,7 +37,7 @@ module.exports = {
     onlyLoadAppFromAsar: true,
     grantFileProtocolExtraPrivileges: false,
   },
-  publish: feed ? [{ provider: 'generic', url: feed }] : null,
+  publish: [{ provider: 'generic', url: feed }],
   mac: {
     category: 'public.app-category.developer-tools',
     icon: 'build/icon.png',

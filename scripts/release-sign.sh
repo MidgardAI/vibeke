@@ -89,8 +89,15 @@ DESKTOP_ARTIFACTS=
 for f in "$DIST"/Vibeke-*; do
   [ -f "$f" ] || continue
   case "$f" in
-    *.dmg|*.zip|*.AppImage|*.deb|*.exe) DESKTOP_ARTIFACTS="$DESKTOP_ARTIFACTS $(basename "$f")" ;;
+    *.dmg|*.zip|*.AppImage|*.deb|*.exe|*.blockmap) DESKTOP_ARTIFACTS="$DESKTOP_ARTIFACTS $(basename "$f")" ;;
   esac
+done
+
+# Authenticate Electron's channel bytes with the same release signature. Clients verify
+# this list before parsing a channel; the channel then binds payload SHA-512 hashes.
+for f in "$DIST"/latest*.yml; do
+  [ -f "$f" ] || continue
+  DESKTOP_ARTIFACTS="$DESKTOP_ARTIFACTS $(basename "$f")"
 done
 
 cd "$DIST"

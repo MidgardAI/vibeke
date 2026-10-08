@@ -35,7 +35,7 @@ import { APP_ORIGIN, CSP, handleAppProtocol, registerScheme } from './protocol';
 import { loadSettings, writeJson } from './store';
 import { connectNode } from './transport';
 import { AppTray } from './tray';
-import { startUpdates } from './updater';
+import { startUpdates, type Updates } from './updater';
 import { externalUrl, isTrustedUrl } from './validate';
 import { Vault } from './vault';
 import { Windows } from './windows';
@@ -95,8 +95,10 @@ const userData = app.getPath('userData');
 const outDir = join(app.getAppPath(), 'out');
 const settingsFile = join(userData, 'settings.json');
 let settings: DesktopSettings = loadSettings(settingsFile);
+let updates: Updates;
 
 const vault = new Vault(userData, safeStorage);
+const drafts = new Vault(join(userData, 'drafts'), safeStorage);
 
 const visible = new Set<() => void>();
 const hidden = new Set<() => void>();
@@ -268,7 +270,12 @@ function updateSettings(patch: Partial<DesktopSettings>): DesktopSettings {
     }
     throw e;
   }
+  const updateChecksChanged = settings.automaticUpdates !== next.automaticUpdates;
   settings = next;
+  if (updates && updateChecksChanged) {
+    updates.automatic(settings.automaticUpdates);
+    for (const w of windows.all()) w.webContents.send(EVENT.updates, updates.snapshot());
+  }
   writeJson(settingsFile, settings);
   for (const w of windows.all()) w.webContents.send(EVENT.settings, settings);
   return settings;
@@ -284,6 +291,7 @@ const menu = () =>
     openMain: (hash) => windows.showMain(hash),
     toggleQuick: () => windows.toggleQuick(),
     connectLocal: () => windows.showMain('#/pair'),
+    checkUpdates: () => { windows.showMain('#/settings'); void updates.check(); },
     shortcut: () => settings.shortcut,
     devTools: !app.isPackaged,
   });
@@ -452,7 +460,15 @@ app.whenReady().then(() => {
   if (!devServer) handleAppProtocol(join(outDir, 'renderer'));
   secureSession();
 
+  const controller = startUpdates(
+    (state) => { for (const w of windows.all()) w.webContents.send(EVENT.updates, { ...state, automatic: settings.automaticUpdates }); },
+    () => { windows.prepareUpdate(); windows.quitting = true; },
+    () => { windows.quitting = false; },
+  );
+  updates = { ...controller, snapshot: () => ({ ...controller.snapshot(), automatic: settings.automaticUpdates }) };
   registerIpc({
+    drafts,
+    updates,
     engine,
     setHostEvents: (wc, hostId, on) => eventSubs.set(wc, hostId, on),
     windows,
@@ -472,6 +488,7 @@ app.whenReady().then(() => {
   ipcMain.handle(INVOKE.boot, (e) => {
     if (!isTrustedUrl(e.senderFrame?.url, trustedOrigins()) || !windows.isOurs(e.sender)) throw new Error('forbidden');
     const info: BootInfo = {
+      updates: updates.snapshot(),
       platform: process.platform,
       platformName,
       deviceName: deviceName(),
@@ -498,7 +515,7 @@ app.whenReady().then(() => {
     () => notifier.start(),
     (e) => log(`engine: ${(e as Error).message}`),
   );
-  startUpdates(log);
+  updates.automatic(settings.automaticUpdates);
 
   const hiddenStart = process.argv.includes('--hidden') || (process.platform === 'darwin' && app.getLoginItemSettings().wasOpenedAtLogin);
   ready = true;
@@ -514,6 +531,7 @@ app.on('before-quit', () => {
   windows.quitting = true;
 });
 app.on('will-quit', () => {
+  updates?.stop();
   globalShortcut.unregisterAll();
   notifier.stop();
   engine.stop();

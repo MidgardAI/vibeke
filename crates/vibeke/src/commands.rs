@@ -48,6 +48,14 @@ pub async fn attach(g: &Global, args: &[String]) -> i32 {
         specs.extend(crate::remote_specs(&config, g));
     }
     let opts = vk_tui::app::Opts {
+        update_args: (!readonly).then(|| {
+            vec![
+                "--session".into(),
+                g.session.clone(),
+                "--socket".into(),
+                socket.to_string_lossy().into_owned(),
+            ]
+        }),
         session: g.session.clone(),
         config,
         initial_machine: 0,
@@ -726,5 +734,5 @@ pub async fn doctor(g: &Global, args: &[String]) -> i32 {
 }
 
 pub async fn update(g: &Global, args: &[String]) -> i32 {
-    crate::doctor::update(g, args).await
+    crate::update::run(g, args).await
 }

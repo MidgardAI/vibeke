@@ -1594,7 +1594,7 @@ impl Layout {
             bin: paths::home().join(".local/bin"),
         }
     }
-    fn version_bin(&self, v: &str) -> PathBuf {
+    pub(crate) fn version_bin(&self, v: &str) -> PathBuf {
         self.data.join("versions").join(v).join("vibeke")
     }
     fn current(&self) -> PathBuf {
@@ -1690,94 +1690,12 @@ fn resolve_from(p: &Path) -> PathBuf {
     }
 }
 
-async fn pane_counts(g: &Global) -> Option<(u64, u64)> {
-    let socket = client::socket_path(&g.session, g.socket.as_deref());
-    match probe_server(&socket).await {
-        ServerProbe::Up(v) => Some((
-            v.get("panes").and_then(Value::as_u64).unwrap_or(0),
-            v.pointer("/holders/live")
-                .and_then(Value::as_u64)
-                .unwrap_or(0),
-        )),
-        _ => None,
-    }
-}
-
-fn spawn_server_with(bin: &Path, session: &str) -> anyhow::Result<()> {
-    use std::os::unix::process::CommandExt;
-    let paths = Paths::new(session);
-    paths.ensure()?;
-    let log = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(paths.logs().join("server.log"))?;
-    let mut cmd = std::process::Command::new(bin);
-    cmd.args(["server", "--session", session])
-        .stdin(std::process::Stdio::null())
-        .stdout(log.try_clone()?)
-        .stderr(log);
-    for k in vk_server::run::PANE_IDENTITY_ENV {
-        cmd.env_remove(k);
-    }
-    // SAFETY: setsid between fork and exec is async-signal-safe.
-    unsafe {
-        cmd.pre_exec(|| {
-            libc::setsid();
-            Ok(())
-        });
-    }
-    cmd.spawn()?;
-    Ok(())
-}
-
 type Counts = Option<(u64, u64)>;
 
-/// Stop the session server over the API (holders keep the panes) and start `bin` in its place.
-/// Returns the pane/holder counts seen before and after.
+/// Exec the replacement through the server's restart API. Its holders and session options
+/// survive; a failed exec leaves the old server serving and reports `restart_error`.
 async fn restart_server(g: &Global, bin: &Path) -> Result<(Counts, Counts), String> {
-    let socket = client::socket_path(&g.session, g.socket.as_deref());
-    let before = pane_counts(g).await;
-    if before.is_none() {
-        return Ok((None, None));
-    }
-    let s = client::connect(&socket)
-        .await
-        .map_err(|e| format!("{e:#}"))?;
-    let mut c = Client::new(s);
-    c.hello("cli").await.map_err(|e| e.to_string())?;
-    match tokio::time::timeout(Duration::from_secs(10), c.call("server.stop", json!({}))).await {
-        Ok(Ok(_)) | Ok(Err(client::CallError::Io(_))) => {}
-        Ok(Err(e)) => return Err(format!("server.stop: {e}")),
-        Err(_) => return Err("server.stop timed out".into()),
-    }
-    drop(c);
-    let mut gone = false;
-    for _ in 0..100 {
-        if tokio::net::UnixStream::connect(&socket).await.is_err() {
-            gone = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    if !gone {
-        return Err("old server did not exit within 5 s".into());
-    }
-    spawn_server_with(bin, &g.session).map_err(|e| format!("spawn server: {e:#}"))?;
-    let mut after = None;
-    for _ in 0..250 {
-        if let Some(a) = pane_counts(g).await {
-            after = Some(a);
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    if after.is_none() {
-        return Err(format!(
-            "new server did not come up within 5 s (see {})",
-            Paths::new(&g.session).logs().join("server.log").display()
-        ));
-    }
-    Ok((before, after))
+    crate::update::restart(g, bin).await
 }
 
 fn report_restart(before: Counts, after: Counts) -> i32 {

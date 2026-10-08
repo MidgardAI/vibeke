@@ -9,6 +9,7 @@ export interface MenuActions {
   openMain(hash?: string): void;
   toggleQuick(): void;
   connectLocal(): void;
+  checkUpdates(): void;
   shortcut(): string;
   devTools: boolean;
 }
@@ -22,6 +23,7 @@ export function buildMenu(a: MenuActions): Menu {
           label: app.name,
           submenu: [
             { role: 'about' },
+            { label: 'Check for Updates…', click: a.checkUpdates },
             { type: 'separator' },
             { label: 'Settings…', accelerator: 'Command+,', click: () => a.openMain('#/settings') },
             { label: 'Connect to This Mac…', click: () => a.connectLocal() },
@@ -85,6 +87,7 @@ export function buildMenu(a: MenuActions): Menu {
     {
       role: 'help',
       submenu: [
+        ...(!mac ? [{ label: 'Check for Updates…', click: a.checkUpdates }] : []),
         { label: 'Keyboard Shortcuts', accelerator: 'CommandOrControl+/', click: cmd('shortcuts') },
       ],
     },

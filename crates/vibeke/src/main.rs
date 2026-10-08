@@ -15,6 +15,7 @@ mod keychain_cmd;
 mod remote;
 mod setup;
 mod state_backup;
+mod update;
 
 pub use remote::specs as remote_specs;
 
@@ -42,7 +43,8 @@ usage:
   vibeke doctor [--rebuild-index|--list-backups|--restore-backup NAME] diagnose install, sockets, integrations, terminal, remote; rebuild the scrollback index or restore a pre-migration state backup offline
   vibeke doctor terminal         probe the host terminal: a pass/warn row per feature (03 §6.1)
   vibeke forget --pane p|--workspace w|--before t|--all [--yes] [--dry-run]   delete archived scrollback
-  vibeke update [--check]         replace the binary and restart the server (panes survive)
+  vibeke update [--check] [--version VERSION]   fetch a signed stable release and restart the local session
+  vibeke update --rollback | --from PATH | --cached   restore or install an offline artifact
   vibeke server [start|stop|status|restart [--binary PATH]|reload-config]
   vibeke config path|get|set|validate|reload|default|edit|reset-keys
   vibeke shell-integration zsh|bash|fish   OSC 133/7 prompt marks: eval \"$(vibeke shell-integration zsh)\"

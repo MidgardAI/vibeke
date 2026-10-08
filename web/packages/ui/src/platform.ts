@@ -62,7 +62,31 @@ export interface BuildInfo {
   origin: string;
 }
 
+export interface UpdateState {
+  status: 'idle' | 'checking' | 'up-to-date' | 'available' | 'downloading' | 'ready' | 'error';
+  currentVersion: string;
+  version?: string;
+  progress?: number;
+  message?: string;
+  releaseUrl?: string;
+  downloadUrl?: string;
+  manualReason?: string;
+  automatic?: boolean;
+  revision?: number;
+}
+export interface UpdatesCapability {
+  get(): UpdateState;
+  subscribe(cb: () => void): () => void;
+  check(): Promise<void>;
+  download(): Promise<void>;
+  install(): Promise<void>;
+  setAutomatic(enabled: boolean): Promise<void>;
+}
+
 export interface UiPlatform extends Platform {
+  updates?: UpdatesCapability;
+  /** Optional encrypted persistence for unsent composer text. */
+  drafts?: { get(host: string, pane: string): Promise<string>; set(host: string, pane: string, text: string): Promise<void> };
   hostStore: HostStore;
   /** Small non-secret key-value storage (prefs, pins). */
   kv: KV;
@@ -145,6 +169,7 @@ export interface UiExtensions {
 
 /** Named commands a shell can send into the UI (menu accelerators, tray, notifications). */
 export type UiCommand =
+  | 'updates'
   | 'palette'
   | 'shortcuts'
   | 'find'

@@ -69,5 +69,6 @@ pub mod tasks_t4;
 pub mod term;
 pub mod theme;
 pub mod trust;
+pub mod updates;
 pub mod upload;
 pub mod ux;

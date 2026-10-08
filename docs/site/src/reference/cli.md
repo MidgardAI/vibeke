@@ -12,7 +12,9 @@ Use `--json` to print JSON. Non-terminal output also uses JSON.
 
 - `vibeke` or `vibeke attach`: connect the terminal client. Start the server if necessary.
 - `vibeke ssh <host>`: connect to a remote host.
-- `vibeke update`: update the binary.
+- `vibeke update --check`: check the latest published stable release.
+- `vibeke update [--version VERSION]`: download and verify a signed stable release, install it, and restart the selected local session. Other sessions and remote hosts keep their running versions. `--json` emits newline-delimited progress objects for online checks and updates.
+- `vibeke update --rollback`: restore the previous installed version. `--from PATH` installs a verified local artifact; `--cached` selects the newest cached artifact. Use `--pretty` for these offline operations. `--force` reinstalls; `--allow-downgrade` explicitly permits an older version.
 - `vibeke doctor`: check the installation.
 - `vibeke doctor --rebuild-index`: rebuild the scrollback search index. Stop the server first.
 - `vibeke doctor --list-backups` and `vibeke doctor --restore-backup NAME`: list the pre-migration copies of the state database (the last three) and restore one. Stop the server first. Restoring rotates the event-log epoch and keeps the replaced database as `state.db.pre-restore`.

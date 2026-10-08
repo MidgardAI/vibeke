@@ -652,10 +652,14 @@ pub const ACTION_INFO: &[(&str, &str)] = &[
         "Devices: your paired phones — pair, list, revoke",
     ),
     ("pair_phone", "Pair a phone"),
+    ("update", "Update Vibeke…"),
+    ("check_updates", "Check for updates"),
 ];
 
 /// Actions only reachable from the palette (no keymap entry).
 const EXTRA_ACTIONS: &[&str] = &[
+    "update",
+    "check_updates",
     "sync_input_off",
     "sidebar_width_reset",
     "track_work",

@@ -51,6 +51,8 @@ echo linux-x86 >"$DIST/vibeke-linux-x86_64"
 echo linux-arm >"$DIST/vibeke-linux-aarch64"
 echo mac >"$DIST/vibeke-macos-aarch64"
 echo desktop >"$DIST/Vibeke-0.9.0-mac-arm64.dmg"
+echo metadata >"$DIST/latest-mac.yml"
+echo blockmap >"$DIST/Vibeke-0.9.0-mac-arm64.zip.blockmap"
 echo stale >"$DIST/vibeke-macos-aarch64.sha256"
 
 # Without the key file (HOME is empty) it refuses before doing anything.
@@ -71,8 +73,10 @@ for f in SHA256SUMS SHA256SUMS.minisig manifest.json manifest.json.minisig; do
 done
 grep -q "^$(shasum -a 256 "$DIST/vibeke-linux-x86_64" | cut -d' ' -f1)  vibeke-linux-x86_64\$" "$DIST/SHA256SUMS" || fail "SHA256SUMS content"
 grep -q "vibeke-macos-aarch64.sha256" "$DIST/SHA256SUMS" && fail "sidecar listed in SHA256SUMS"
-[ "$(wc -l <"$DIST/SHA256SUMS" | tr -d ' ')" = 4 ] || fail "SHA256SUMS should list 3 binaries and the desktop installer"
+[ "$(wc -l <"$DIST/SHA256SUMS" | tr -d ' ')" = 6 ] || fail "SHA256SUMS should list binaries, desktop installer, channel and blockmap"
 grep -q 'Vibeke-0.9.0-mac-arm64.dmg' "$DIST/SHA256SUMS" || fail "desktop installer missing from signed sums"
+grep -q 'latest-mac.yml' "$DIST/SHA256SUMS" || fail "channel missing from signed sums"
+grep -q 'zip.blockmap' "$DIST/SHA256SUMS" || fail "blockmap missing from signed sums"
 grep -q 'Vibeke-' "$DIST/manifest.json" && fail "desktop installer listed as a remote runtime target"
 grep -q '"version":"0.9.0"' "$DIST/manifest.json" || fail "manifest version"
 grep -q '"target":"linux-x86_64"' "$DIST/manifest.json" || fail "manifest target"

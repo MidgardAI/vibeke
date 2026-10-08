@@ -27,6 +27,7 @@ import {
 } from 'lucide-react';
 import { Badge, HarnessIcon, IconButton, Kbd, RelTime, Row, SectionHeader, Sheet, SheetRow, StatusDot, cx, type Status } from '../components/ui';
 import { t } from '../i18n';
+import { UpdateSidebar } from '../components/updates';
 import { keyLabel } from '../lib/shortcuts';
 import type { WorkspaceGroupId, WorkspaceRow } from '../lib/workspaces';
 import { navigate, workspaceRoute, type Route } from '../router';
@@ -261,6 +262,7 @@ export function Sidebar({ route, mode }: { route: Route; mode: 'inline' | 'drawe
         </div>
       )}
 
+      <UpdateSidebar />
       <div className="flex h-11 shrink-0 items-center gap-0.5 border-t border-border px-2 pb-safe">
         <button
           type="button"

@@ -182,6 +182,7 @@ export function settingsPatch(v: unknown): RendererSettingsPatch {
         break;
       case 'openAtLogin':
       case 'showDock':
+      case 'automaticUpdates':
       case 'notifications':
         if (typeof x !== 'boolean') fail(`settings.${k}`);
         out[k] = x as boolean;

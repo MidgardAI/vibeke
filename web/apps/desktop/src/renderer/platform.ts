@@ -3,7 +3,7 @@
 // nothing in the renderer may open a connection or touch key material.
 
 import { linkToUrl, systemClock, type HostRecord, type KeyStore, type Lifecycle, type Socket } from '@vibeke/core';
-import type { HostEngine, KV, UiCommand, UiPlatform } from '@vibeke/ui';
+import type { HostEngine, KV, UiCommand, UiPlatform, UpdateState, UpdatesCapability } from '@vibeke/ui';
 import { EVENT, INVOKE, type BootInfo, type Bridge, type EngineHello } from '../shared/contract';
 import { RemoteManager, call } from './remote';
 import { extensions } from './extensions';
@@ -128,9 +128,31 @@ function engine(bridge: Bridge): HostEngine {
   };
 }
 
+function updates(bridge: Bridge, boot: BootInfo): UpdatesCapability {
+  let state: UpdateState = boot.updates ?? { status: 'idle', currentVersion: boot.version, automatic: boot.settings.automaticUpdates };
+  const listeners = new Set<() => void>();
+  const receive = (s: UpdateState) => {
+    if ((s.revision ?? 0) < (state.revision ?? 0)) return;
+    state = s;
+    for (const cb of listeners) cb();
+  };
+  bridge.on(EVENT.updates, (s) => receive(s as UpdateState));
+  void call<UpdateState>(bridge, INVOKE.updatesGet).then(receive).catch(() => {});
+  return {
+    get: () => state, subscribe: (cb) => { listeners.add(cb); return () => { listeners.delete(cb); }; },
+    check: () => call(bridge, INVOKE.updatesCheck), download: () => call(bridge, INVOKE.updatesDownload), install: () => call(bridge, INVOKE.updatesInstall),
+    setAutomatic: async (enabled) => { await call(bridge, INVOKE.settingsSet, { automaticUpdates: enabled }); },
+  };
+}
+
 export function createDesktopPlatform(bridge: Bridge, boot: BootInfo): UiPlatform {
   const win = (op: Record<string, unknown>) => void bridge.invoke(INVOKE.window, op).catch(() => {});
   return {
+    updates: updates(bridge, boot),
+    drafts: {
+      get: (host, pane) => call<string>(bridge, INVOKE.draftGet, host, pane),
+      set: (host, pane, text) => call(bridge, INVOKE.draftSet, host, pane, text),
+    },
     keystore: noKeys,
     hostStore: { list: async () => [], put: async () => {}, remove: async () => {} },
     kv,

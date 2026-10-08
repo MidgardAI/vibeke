@@ -79,6 +79,14 @@ jobs:
         working-directory: web
     env:
       CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      # Optional publisher signing. Without these, macOS offers manual updates.
+      CSC_LINK: ${{ matrix.platform == 'mac' && secrets.MAC_CSC_LINK || '' }}
+      CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+      APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+      APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+      APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+      WIN_CSC_LINK: ${{ matrix.platform == 'windows' && secrets.WIN_CSC_LINK || '' }}
+      WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
@@ -93,10 +101,18 @@ jobs:
             test "v$version" = "$GITHUB_REF_NAME"
           fi
       - run: bun install --frozen-lockfile
+      - name: Prepare notarization key
+        if: matrix.platform == 'mac' && env.APPLE_API_KEY_P8 != ''
+        run: |
+          umask 077
+          printf '%s' "$APPLE_API_KEY_P8" > "$RUNNER_TEMP/vibeke-notarization.p8"
+          echo "APPLE_API_KEY=$RUNNER_TEMP/vibeke-notarization.p8" >> "$GITHUB_ENV"
       - name: Build desktop installers without publishing
         run: bun run --cwd apps/desktop dist -- ${{ matrix.args }} --publish never
       - name: Verify packaged fuses, ASAR and macOS code signatures
         run: bun run --cwd apps/desktop verify:package
+      - name: Verify update channel metadata and payloads
+        run: bun apps/desktop/scripts/verify-update-feed.ts apps/desktop/dist --platform ${{ matrix.platform }}
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: desktop-${{ matrix.platform }}
@@ -106,6 +122,8 @@ jobs:
             web/apps/desktop/dist/Vibeke-*.AppImage
             web/apps/desktop/dist/Vibeke-*.deb
             web/apps/desktop/dist/Vibeke-*.exe
+            web/apps/desktop/dist/Vibeke-*.blockmap
+            web/apps/desktop/dist/latest*.yml
           if-no-files-found: error
 
   draft:
@@ -130,6 +148,7 @@ jobs:
             test -s "dist/vibeke-$target"
             (cd dist && sha256sum -c "vibeke-$target.sha256")
           done
+          for channel in latest.yml latest-mac.yml latest-linux.yml; do test -s "dist/$channel"; done
           # Bind the installer to this release even after the workspace version is bumped.
           sed "s/^VERSION=.*/VERSION=\"\${VIBEKE_VERSION:-$version}\"/" scripts/install.sh > dist/install.sh
           sh -n dist/install.sh
@@ -137,4 +156,4 @@ jobs:
           gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft \
             --title "Vibeke ${GITHUB_REF_NAME#v}" \
             --notes "Unsigned draft. The maintainer signs SHA256SUMS and manifest.json locally (scripts/release-sign.sh) and uploads the .minisig files before publishing." \
-            dist/vibeke-* dist/Vibeke-* dist/install.sh
+            dist/vibeke-* dist/Vibeke-* dist/latest*.yml dist/install.sh

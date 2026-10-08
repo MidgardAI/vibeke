@@ -3366,6 +3366,7 @@ dependencies = [
  "libc",
  "rusqlite",
  "rustix",
+ "semver",
  "serde_json",
  "tempfile",
  "tokio",

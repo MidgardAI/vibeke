@@ -345,6 +345,7 @@ pub enum Popup {
     Sharing,
     /// Devices (your paired phones): list, pair, revoke; state in `App::ux.devices`.
     Devices,
+    Updates,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -476,6 +477,7 @@ pub struct App {
 }
 
 pub struct Opts {
+    pub update_args: Option<Vec<String>>,
     pub session: String,
     pub config: vk_config::Config,
     /// Machine to show first (e.g. the remote for `vibeke ssh host`).
@@ -494,6 +496,7 @@ pub enum Incoming {
     Disconnected(usize, String),
     /// Progress from a transfer task (separate connection, see `upload`).
     Upload(crate::upload::UploadEvent),
+    Update(crate::updates::Event),
 }
 
 /// Attach the render stream on `stream` for machine `idx`: JSON-RPC `render.attach`, then
@@ -605,6 +608,11 @@ pub async fn run(opts: Opts, machines: Vec<MachineSpec>) -> Result<String> {
     term::enter(probe.kitty_keyboard)?;
     let result = run_inner(opts, machines, probe, gcaps).await;
     term::leave();
+    if let Ok(reason) = &result
+        && let Some(message) = crate::updates::relaunch(reason)
+    {
+        return Ok(message);
+    }
     result
 }
 
@@ -660,6 +668,7 @@ async fn run_inner(
             app.pending_ops.ops.len()
         ));
     }
+    crate::updates::init(&mut app, opts.update_args, inc_tx.clone());
     // Connect every machine (in the background; reconnect with backoff, 06 A7).
     let mut connectors: Vec<std::sync::Arc<Connector>> = Vec::new();
     let mut bulk: Vec<std::sync::Arc<Connector>> = Vec::new();
@@ -764,6 +773,7 @@ async fn run_inner(
                     }
                     Incoming::Frame(i, f) => app.on_frame(i, f),
                     Incoming::Upload(e) => crate::upload::on_event(&mut app, e),
+                    Incoming::Update(e) => crate::updates::on_event(&mut app, e),
                     Incoming::Disconnected(i, why) => {
                         app.machines[i].tx = None;
                         app.on_disconnected(i);
@@ -783,6 +793,7 @@ async fn run_inner(
                     match more {
                         Incoming::Frame(i, f) => app.on_frame(i, f),
                         Incoming::Upload(e) => crate::upload::on_event(&mut app, e),
+                        Incoming::Update(e) => crate::updates::on_event(&mut app, e),
                         Incoming::Connected(i, tx, features) => { app.machines[i].tx = Some(tx); app.machines[i].features = features; app.machines[i].status = "connected".into(); app.machines[i].panes.clear(); app.machines[i].last_hint.clear(); app.on_connected(i); }
                         Incoming::Disconnected(i, _) => {
                             app.machines[i].tx = None;
@@ -1947,7 +1958,7 @@ impl App {
                 crate::sharing::on_paste(self, &text);
                 return;
             }
-            Mode::Popup(Popup::Devices) => return,
+            Mode::Popup(Popup::Devices | Popup::Updates) => return,
             Mode::Popup(_) => {
                 // Editors in the drafts, desk and assist views.
                 crate::drafts::on_paste(self, &text);

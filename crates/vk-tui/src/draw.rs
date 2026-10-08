@@ -712,7 +712,7 @@ pub fn compose(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
         let mut target_i = 0;
         for (i, r) in sidebar_rows(app).iter().enumerate() {
             let y = i as u16 + 1;
-            if y >= rows {
+            if y >= rows.saturating_sub(u16::from(crate::updates::badge(app).is_some())) {
                 break;
             }
             let selected = r.selectable() && nav_sel == Some(target_i);
@@ -736,6 +736,18 @@ pub fn compose(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
             }
         }
         crate::preview_ui::draw_thumbs(app, g, sx, w);
+        if let Some(badge) = crate::updates::badge(app) {
+            g.fill(
+                SRect {
+                    x: sx,
+                    y: rows.saturating_sub(1),
+                    w,
+                    h: 1,
+                },
+                t.text(),
+            );
+            g.put_str(sx, rows.saturating_sub(1), &badge, t.bold(t.accent), w);
+        }
         for y in 0..rows {
             g.put_str(bx, y, "│", t.border(false), 1);
         }

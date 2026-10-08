@@ -71,6 +71,9 @@ export class Vault {
     mkdirSync(dir, { recursive: true, mode: 0o700 });
   }
 
+  /** Wait for all queued writes before an explicit app restart. */
+  async flush(): Promise<void> { await this.lock; }
+
   /** Serialize `f` with every other vault operation. */
   private exclusive<T>(f: () => T | Promise<T>): Promise<T> {
     const run = this.lock.then(f, f);
