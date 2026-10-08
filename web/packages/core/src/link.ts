@@ -22,6 +22,8 @@ export interface PairingLink {
   name: string;
   /** Present on share/handoff invitations (spec 16 §15). */
   share?: ShareInvite;
+  /** Relay ticket for the pairing connection (`pid:` subject); opaque, URL-safe. */
+  tk?: string;
 }
 
 export type HostKind = 'device' | 'share';
@@ -51,8 +53,11 @@ const STRING_FIELDS = ['relay', 'host', 'hk', 'pid', 'psk', 'name'] as const;
 
 /** JSON in serde field order (so links round-trip byte-identically with Rust). */
 export function linkJson(l: PairingLink): string {
-  const { v, relay, host, hk, pid, psk, exp, name, share } = l;
-  return JSON.stringify(share ? { v, relay, host, hk, pid, psk, exp, name, share } : { v, relay, host, hk, pid, psk, exp, name });
+  const { v, relay, host, hk, pid, psk, exp, name, share, tk } = l;
+  const o: Record<string, unknown> = { v, relay, host, hk, pid, psk, exp, name };
+  if (share) o.share = share;
+  if (tk !== undefined) o.tk = tk;
+  return JSON.stringify(o);
 }
 
 export function linkToUrl(l: PairingLink, appBase: string): string {
@@ -85,6 +90,10 @@ export function parseLink(s: string): PairingLink {
   const share = parseShare(l.share);
   const out: PairingLink = { v: link.v, relay: link.relay, host: link.host, hk: link.hk, pid: link.pid, psk: link.psk, exp: link.exp, name: link.name };
   if (share) out.share = share;
+  if (l.tk !== undefined && l.tk !== null) {
+    if (typeof l.tk !== 'string' || !/^[A-Za-z0-9_.-]+$/.test(l.tk)) throw new Error('link: bad tk');
+    out.tk = l.tk;
+  }
   return out;
 }
 

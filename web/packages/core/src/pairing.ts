@@ -52,10 +52,12 @@ interface Done {
   device_id: string;
   host_name?: string;
   scope: Scope;
+  ticket?: string;
+  ticket_exp?: number;
 }
 
-export const relayConnectUrl = (relay: string, hostId: string): string =>
-  `${relay.replace(/\/+$/, '')}/v1/connect?host=${encodeURIComponent(hostId)}`;
+export const relayConnectUrl = (relay: string, hostId: string, ticket?: string): string =>
+  `${relay.replace(/\/+$/, '')}/v1/connect?host=${encodeURIComponent(hostId)}${ticket ? `&ticket=${encodeURIComponent(ticket)}` : ''}`;
 
 export async function pair(o: PairOptions): Promise<HostRecord> {
   const { link, platform } = o;
@@ -69,7 +71,7 @@ export async function pair(o: PairOptions): Promise<HostRecord> {
   let channel: Channel;
   try {
     channel = await Channel.connect({
-      socket: platform.connect(relayConnectUrl(link.relay, link.host)),
+      socket: platform.connect(relayConnectUrl(link.relay, link.host, link.tk)),
       hello: helloPair(link.pid),
       hostKey: linkHostKey(link),
       devicePrivate: o.devicePrivate,
@@ -150,6 +152,10 @@ export async function pair(o: PairOptions): Promise<HostRecord> {
       record.until = link.share.until;
       if (link.share.label) record.label = link.share.label;
       if (link.share.limit) record.limit = link.share.limit;
+    }
+    if (typeof done.ticket === 'string' && done.ticket && typeof done.ticket_exp === 'number' && Number.isFinite(done.ticket_exp)) {
+      record.ticket = done.ticket;
+      record.ticket_exp = done.ticket_exp;
     }
     if (o.keyName) record.key = o.keyName;
     await o.store?.put(record);

@@ -35,7 +35,7 @@ describe('pair()', () => {
         handle(method, params, ctx) {
           if (method !== 'pair.claim') return undefined;
           claim = params;
-          setTimeout(() => ctx.notify('pair.done', { device_id: 'd1', host_name: 'devbox.local', scope: 'approve' }), 5);
+          setTimeout(() => ctx.notify('pair.done', { device_id: 'd1', host_name: 'devbox.local', scope: 'approve', ticket: 'dev.ticket', ticket_exp: 1_900_000_000 }), 5);
           return { status: 'pending', fingerprint: fingerprint(ctx.deviceKey) };
         },
       }),
@@ -43,7 +43,7 @@ describe('pair()', () => {
     const stored: HostRecord[] = [];
     let shown = '';
     const rec = await pair({
-      link: link(),
+      link: link({ tk: 'e30.sig-x_y' }),
       platform,
       devicePrivate: DEV,
       deviceName: "Alice's phone",
@@ -51,7 +51,8 @@ describe('pair()', () => {
       onPending: (fp) => (shown = fp),
       store: { list: async () => stored, put: async (r) => void stored.push(r), remove: async () => {} },
     });
-    expect(platform.urls).toEqual(['wss://relay.example/v1/connect?host=hostid']);
+    expect(platform.urls).toEqual(['wss://relay.example/v1/connect?host=hostid&ticket=e30.sig-x_y']);
+    expect(rec).toMatchObject({ ticket: 'dev.ticket', ticket_exp: 1_900_000_000 });
     expect(claim).toEqual({ name: "Alice's phone", platform: 'test', vapid_public: 'BPk' });
     expect(shown).toBe(fingerprint(x25519Public(DEV)));
     expect(rec).toMatchObject({ host_id: 'hostid', relay: 'wss://relay.example', device_id: 'd1', name: 'devbox.local', scope: 'approve' });

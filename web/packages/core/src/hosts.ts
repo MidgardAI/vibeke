@@ -51,6 +51,10 @@ export interface HostRecord {
    * `createInvitationKey`); absent: the device key.
    */
   key?: string;
+  /** Host-signed relay ticket for `/v1/connect` (opaque). */
+  ticket?: string;
+  /** Unix seconds the ticket expires. */
+  ticket_exp?: number;
 }
 
 export const hostKind = (r: HostRecord): HostKind => r.kind ?? 'device';
@@ -71,6 +75,7 @@ export type HostStatus =
   | 'unauthorized' // plaintext unauthorized (unauthenticated hint); retrying
   | 'revoked' // authenticated device.revoked, or 3 consecutive unauthorized closes
   | 'incompatible' // unsupported_version
+  | 'ticket_expired' // plaintext unauthorized with a `ticket_*` reason; pair again
   | 'expired'; // share device past its `until`
 
 export interface HostInfo {
@@ -243,6 +248,7 @@ export class HostConnection implements HostConnectionApi {
 
   /** Skip the backoff (e.g. app became visible, user tapped Retry). Also re-arms revoked hosts. */
   reconnectNow(): void {
+    if (this.state.status === 'ticket_expired') return;
     if (!this.running) return this.start();
     if (this.state.status === 'online' || this.state.status === 'connecting') return;
     this.attempts = 0;
@@ -253,7 +259,7 @@ export class HostConnection implements HostConnectionApi {
 
   setVisible(visible: boolean): void {
     const s = this.state.status;
-    if (visible && s !== 'revoked' && s !== 'incompatible' && s !== 'expired') this.reconnectNow();
+    if (visible && s !== 'revoked' && s !== 'incompatible' && s !== 'expired' && s !== 'ticket_expired') this.reconnectNow();
     if (this.rpc && this.state.status === 'online') {
       this.rpc.request('client.visibility', { visible }).catch(() => {});
     }
@@ -364,7 +370,7 @@ export class HostConnection implements HostConnectionApi {
     let channel: Channel;
     try {
       channel = await Channel.connect({
-        socket: platform.connect(relayConnectUrl(rec.relay, rec.host_id)),
+        socket: platform.connect(relayConnectUrl(rec.relay, rec.host_id, rec.ticket)),
         hello: helloDevice(),
         hostKey: b64.decodeExact(rec.hk, 32),
         devicePrivate,
@@ -410,6 +416,7 @@ export class HostConnection implements HostConnectionApi {
       }
       await this.resync(rpc, true);
       if (gen !== this.generation || rpc.closed) return;
+      void this.refreshTicket(rpc, gen);
       this.attempts = 0;
       this.unauthorizedCount = 0;
       this.set({ status: 'online', error: null, closeCode: null, lastOnlineAt: clock.now() });
@@ -420,6 +427,20 @@ export class HostConnection implements HostConnectionApi {
         this.set({ error: (e as Error).message });
         rpc.close();
       }
+    }
+  }
+
+  /** Renew the relay ticket after a successful connect. Failures (older gateway) are non-fatal. */
+  private async refreshTicket(rpc: RpcClient, gen: number): Promise<void> {
+    try {
+      const r = await rpc.request<{ ticket?: unknown; exp?: unknown }>('relay.ticket', {});
+      if (gen !== this.generation) return;
+      if (typeof r?.ticket !== 'string' || !r.ticket || typeof r.exp !== 'number' || !Number.isFinite(r.exp)) return;
+      const next: HostRecord = { ...this.state.record, ticket: r.ticket, ticket_exp: r.exp };
+      this.set({ record: next });
+      await this.o.persist?.(next);
+    } catch {
+      /* gateway without relay.ticket, or persistence failed: keep the current ticket */
     }
   }
 
@@ -494,6 +515,12 @@ export class HostConnection implements HostConnectionApi {
     if (hostExpired(this.state.record, this.o.platform.clock.now())) return this.expire();
     const ce = err instanceof ChannelError ? err : null;
     const closeCode = ce?.closeCode ?? null;
+    if (ce?.code === 'unauthorized' && ce.reason?.startsWith('ticket_')) {
+      // The relay refused the ticket: retrying with the same one cannot succeed. Pair again.
+      this.running = false;
+      this.set({ status: 'ticket_expired', error: `relay ticket rejected (${ce.reason})`, closeCode });
+      return;
+    }
     if (ce?.code === 'unauthorized') {
       // Unauthenticated: a relay can forge it. Only the third in a row counts as revoked (§4.4).
       this.unauthorizedCount++;

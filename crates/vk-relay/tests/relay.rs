@@ -3,28 +3,38 @@
 use std::net::SocketAddr;
 use std::time::Duration;
 
+use futures::future::BoxFuture;
 use futures::{SinkExt, StreamExt};
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
-use vk_e2e::relay::{Ctrl, accept_message, host_auth_message};
+use vk_e2e::relay::{Ctrl, accept_message, host_auth_message, sign_ticket};
 use vk_e2e::{HostKeys, b64};
-use vk_relay::{Config, Limits, Open, Relay};
+use vk_relay::{Authorizer, Config, Decision, HostConnect, Limits, Open, Relay, StaticTokens};
 
 type Ws = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 async fn start(limits: Limits) -> SocketAddr {
+    start_with(
+        Config {
+            limits,
+            ..Config::default()
+        },
+        Box::new(Open),
+    )
+    .await
+}
+
+async fn start_with(cfg: Config, auth: Box<dyn Authorizer>) -> SocketAddr {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let relay = Relay::new(
         Config {
             public_origins: vec![format!("http://{addr}")],
-            app_dir: None,
-            trust_proxy: false,
             log_ip_raw: true,
-            limits,
+            ..cfg
         },
-        Box::new(Open),
+        auth,
     )
     .unwrap();
     let app = relay
@@ -62,6 +72,24 @@ async fn close_code(ws: &mut Ws) -> u16 {
             Some(Ok(_)) => continue,
         }
     }
+}
+
+async fn register_with(addr: SocketAddr, keys: &HostKeys, query: &str) -> Ws {
+    let mut ctrl = ws(addr, &format!("/v1/host{query}")).await;
+    let Ctrl::Challenge { nonce, origin } = Ctrl::parse(&next_text(&mut ctrl).await).unwrap()
+    else {
+        panic!()
+    };
+    let sig = keys.sign(&host_auth_message(&origin, &b64::decode(&nonce).unwrap()));
+    let auth = Ctrl::Auth {
+        host: keys.host_id(),
+        public: b64::encode(keys.relay_public()),
+        sig: b64::encode(sig),
+    };
+    ctrl.send(Message::Text(auth.to_text().into()))
+        .await
+        .unwrap();
+    ctrl
 }
 
 struct Host {
@@ -343,4 +371,192 @@ async fn unauthenticated_sockets_are_bounded_per_ip() {
     let host = register(addr, HostKeys::generate()).await;
     let _c = ws(addr, "/v1/accept").await;
     drop(host);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Tickets and authorizers (spec 16 §6.6)
+
+fn now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+}
+
+async fn tickets_relay() -> SocketAddr {
+    start_with(
+        Config {
+            require_tickets: true,
+            account_url: Some("https://example.com/account".into()),
+            ..Config::default()
+        },
+        Box::new(Open),
+    )
+    .await
+}
+
+/// Expect the plaintext refusal a browser can read, then close 4401.
+async fn expect_denied(c: &mut Ws, reason: &str) {
+    let v: serde_json::Value = serde_json::from_str(&next_text(c).await).unwrap();
+    assert_eq!(
+        v,
+        serde_json::json!({ "error": "unauthorized", "reason": reason })
+    );
+    assert_eq!(close_code(c).await, 4401);
+}
+
+fn connect_path(host: &str, ticket: &str) -> String {
+    format!("/v1/connect?host={host}&ticket={ticket}")
+}
+
+#[tokio::test]
+async fn tickets_are_required_and_verified() {
+    let addr = tickets_relay().await;
+    let mut host = register(addr, HostKeys::generate()).await;
+    let id = host.keys.host_id();
+
+    let mut c = ws(addr, &format!("/v1/connect?host={id}")).await;
+    expect_denied(&mut c, "ticket_missing").await;
+
+    let expired = sign_ticket(&host.keys, "dev:d1", now() - 1);
+    let mut c = ws(addr, &connect_path(&id, &expired)).await;
+    expect_denied(&mut c, "ticket_expired").await;
+
+    // Claims this host, signed by another key.
+    let other = HostKeys::generate();
+    let forged = sign_ticket(&other, "dev:d1", now() + 60);
+    let (_, sig) = forged.split_once('.').unwrap();
+    let claims = b64::encode(format!(
+        r#"{{"v":1,"host":"{id}","sub":"dev:d1","exp":{}}}"#,
+        now() + 60
+    ));
+    let mut c = ws(addr, &connect_path(&id, &format!("{claims}.{sig}"))).await;
+    expect_denied(&mut c, "ticket_invalid").await;
+    // Another host's ticket.
+    let mut c = ws(addr, &connect_path(&id, &forged)).await;
+    expect_denied(&mut c, "ticket_invalid").await;
+
+    let good = sign_ticket(&host.keys, "dev:d1", now() + 60);
+    let client = tokio::spawn(async move {
+        let mut c = ws(addr, &connect_path(&id, &good)).await;
+        c.send(Message::Text("hi".into())).await.unwrap();
+        c
+    });
+    let (conn, generation) = host.incoming().await;
+    let mut data = host.accept(addr, &conn, generation).await;
+    assert_eq!(next_text(&mut data).await, "hi");
+    drop(client.await.unwrap());
+}
+
+#[tokio::test]
+async fn revoked_subject_is_refused_and_disconnected() {
+    let addr = tickets_relay().await;
+    let mut host = register(addr, HostKeys::generate()).await;
+    let id = host.keys.host_id();
+    let ticket = sign_ticket(&host.keys, "dev:d1", now() + 60);
+
+    // A live splice for the subject closes when the host revokes it.
+    let mut live = ws(addr, &connect_path(&id, &ticket)).await;
+    let (conn, generation) = host.incoming().await;
+    let mut data = host.accept(addr, &conn, generation).await;
+    live.send(Message::Text("x".into())).await.unwrap();
+    assert_eq!(next_text(&mut data).await, "x");
+    let revoke = Ctrl::Revoke {
+        sub: "dev:d1".into(),
+    };
+    host.ctrl
+        .send(Message::Text(revoke.to_text().into()))
+        .await
+        .unwrap();
+    assert_eq!(close_code(&mut live).await, 4401);
+    assert_eq!(close_code(&mut data).await, 4401);
+
+    let mut c = ws(addr, &connect_path(&id, &ticket)).await;
+    expect_denied(&mut c, "ticket_revoked").await;
+    // Other subjects are unaffected.
+    let other = sign_ticket(&host.keys, "dev:d2", now() + 60);
+    let _c = ws(addr, &connect_path(&id, &other)).await;
+    host.incoming().await;
+}
+
+#[tokio::test]
+async fn open_relay_still_checks_present_tickets() {
+    let addr = start(Limits::default()).await;
+    let mut host = register(addr, HostKeys::generate()).await;
+    let id = host.keys.host_id();
+    let _ticketless = ws(addr, &format!("/v1/connect?host={id}")).await;
+    host.incoming().await;
+    let mut c = ws(addr, &connect_path(&id, "garbage")).await;
+    expect_denied(&mut c, "ticket_invalid").await;
+    let foreign = sign_ticket(&HostKeys::generate(), "dev:d1", now() + 60);
+    let mut c = ws(addr, &connect_path(&id, &foreign)).await;
+    expect_denied(&mut c, "ticket_invalid").await;
+}
+
+struct DenyHosts;
+impl Authorizer for DenyHosts {
+    fn host_connect<'a>(&'a self, _: HostConnect<'a>) -> BoxFuture<'a, Decision> {
+        Box::pin(async { Decision::deny(4401, "account_required") })
+    }
+}
+
+#[tokio::test]
+async fn denied_host_gets_error_before_close() {
+    let addr = start_with(Config::default(), Box::new(DenyHosts)).await;
+    let mut ctrl = register_with(addr, &HostKeys::generate(), "").await;
+    assert_eq!(
+        Ctrl::parse(&next_text(&mut ctrl).await).unwrap(),
+        Ctrl::Error {
+            code: 4401,
+            reason: "account_required".into()
+        }
+    );
+    assert_eq!(close_code(&mut ctrl).await, 4401);
+}
+
+#[tokio::test]
+async fn static_tokens_gate_hosts() {
+    let addr = start_with(
+        Config::default(),
+        Box::new(StaticTokens(vec!["s3cret".into()])),
+    )
+    .await;
+    let keys = HostKeys::generate();
+    for query in ["", "?token=wrong"] {
+        let mut ctrl = register_with(addr, &keys, query).await;
+        assert_eq!(
+            Ctrl::parse(&next_text(&mut ctrl).await).unwrap(),
+            Ctrl::Error {
+                code: 4401,
+                reason: "token_invalid".into()
+            }
+        );
+        assert_eq!(close_code(&mut ctrl).await, 4401);
+    }
+    let mut ctrl = register_with(addr, &keys, "?token=s3cret").await;
+    assert!(matches!(
+        Ctrl::parse(&next_text(&mut ctrl).await).unwrap(),
+        Ctrl::Ok { .. }
+    ));
+}
+
+#[tokio::test]
+async fn status_reports_auth_mode() {
+    let addr = tickets_relay().await;
+    let id = HostKeys::generate().host_id();
+    let v: serde_json::Value =
+        serde_json::from_str(&reqwest_get(addr, &format!("/v1/status?host={id}")).await).unwrap();
+    assert_eq!(
+        v,
+        serde_json::json!({
+            "online": false,
+            "auth": "tickets",
+            "account_url": "https://example.com/account",
+        })
+    );
+    let addr = start(Limits::default()).await;
+    let v: serde_json::Value =
+        serde_json::from_str(&reqwest_get(addr, &format!("/v1/status?host={id}")).await).unwrap();
+    assert_eq!(v["auth"], "open");
+    assert_eq!(v["account_url"], serde_json::Value::Null);
 }

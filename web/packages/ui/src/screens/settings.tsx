@@ -375,6 +375,8 @@ function HostCard({ h }: { h: HostState }) {
       ? t.conn.online
       : h.status === 'expired'
         ? t.conn.expired
+      : h.status === 'ticket_expired'
+        ? t.conn.ticketExpired
       : h.status === 'revoked'
         ? t.conn.revoked
         : h.status === 'unauthorized'
@@ -471,7 +473,12 @@ function HostCard({ h }: { h: HostState }) {
       )}
       {err && <div className="px-4 pb-2 text-xs text-danger">{err}</div>}
       <div className="flex gap-2 border-t border-border px-4 py-2">
-        {h.status !== 'online' && h.status !== 'expired' && (
+        {h.status === 'ticket_expired' && (
+          <Button size="sm" variant="outline" onClick={() => navigate({ name: 'pair', d: null })}>
+            {t.pair.title}
+          </Button>
+        )}
+        {h.status !== 'online' && h.status !== 'expired' && h.status !== 'ticket_expired' && (
           <Button size="sm" variant="outline" onClick={() => app.conn(h.record.host_id)?.reconnectNow()}>
             {t.retry}
           </Button>
