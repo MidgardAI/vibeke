@@ -29,27 +29,24 @@ bun run dev:site | build:site | preview:site | e2e:site            # product web
 
 ## Running the stack locally
 
-You need a running Vibeke server session (`vibeke` or `vibeke server start`), then three processes from the repo root:
+You need a running Vibeke server session (`vibeke` or `vibeke server start`), then a relay and a pairing command from the repo root:
 
 ```sh
 # 1. Relay, also serving the built app (self-hoster mode, spec 16 §9.4)
 bun run --cwd web build
 cargo run -p vk-relay --bin vibeke-relay -- --public-url http://localhost:8787 --app-dir web/apps/pwa/dist
 
-# 2. Gateway next to the server (dials the relay; no inbound port)
-cargo run -p vk-gateway --bin vibeke-gateway -- run --relay http://localhost:8787
-
-# 3. Pair a browser: prints a QR + link, then asks you to confirm the fingerprint
-cargo run -p vk-gateway --bin vibeke-gateway -- pair
+# 2. Start the managed gateway and pair a browser
+vibeke gateway pair --relay http://localhost:8787 --app-from-relay
 ```
 
 Open the printed link (`http://localhost:8787/#/pair?d=…`), check that the fingerprint shown in the app matches the one the terminal prints, tap **Pair**, and answer `y` in the terminal.
 
-Useful flags: `--session NAME` on `run` picks the server session; `pair --no-confirm` makes the link a bearer invitation (scripted setups); `pair --scope approve|view` pairs a restricted device; `vibeke-gateway devices` / `revoke <id>` manage devices (the app shows "revoked").
+Useful flags: `--session NAME` on `run` picks the server session; `pair --no-confirm` makes the link a bearer invitation (scripted setups); `pair --scope approve|view` pairs a restricted device; `vibeke gateway devices` / `vibeke gateway revoke <id>` manage devices (the app shows "revoked").
 
 ### Dev workflow
 
-`bun run dev` serves the app with hot reload on `http://localhost:5173`. The dev server proxies nothing: the app connects straight to the relay URL embedded in the pairing link (`ws://localhost:8787`). Pairing links point at the gateway's `app_url` (default: the relay origin), so either
+`bun run dev` serves the app with hot reload on `http://localhost:5173`. The dev server proxies nothing: the app connects straight to the relay URL embedded in the pairing link (`ws://localhost:8787`). Pairing links point at the gateway's `app_url` (set explicitly during pairing), so either
 
 - start the gateway once with `--app-url http://localhost:5173` (saved to `gateway.toml`), or
 - replace `http://localhost:8787` with `http://localhost:5173` in the printed link.

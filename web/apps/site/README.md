@@ -59,7 +59,7 @@ VERCEL=1 bun run build
 vercel deploy --prebuilt --prod --scope your-team
 ```
 
-This uploads the compiled site, including the documentation. It does not require the Rust workspace on Vercel. Run the checks above before each deployment. To test the deployed site, run `PLAYWRIGHT_BASE_URL=https://vibeke-dev.vercel.app bun run e2e`. Regenerate the references first if API or CLI definitions changed.
+This uploads the compiled site, including the documentation. `/install.sh` redirects to the latest public GitHub release installer. It does not require the Rust workspace on Vercel. Run the checks above before each deployment. To test the deployed site, run `PLAYWRIGHT_BASE_URL=https://vibeke-dev.vercel.app bun run e2e`. Regenerate the references first if API or CLI definitions changed.
 
 The landing page uses captures of the TUI, Electron app, and web app with sample workspace data. Select an app to bring its screenshot forward, or open it at full size. The gallery does not connect to a live session.
 
@@ -78,3 +78,8 @@ The logo is the approved “Duck in a shell” concept. The shared source is
 the website, PWA, and Electron exports. Keep the source and generated assets
 with the generator changes. The site serves PNG and ICO favicons, an Apple
 touch icon, a web manifest, and a 1200 × 630 link preview.
+
+## Public browser app
+
+The browser app is deployed independently to Vercel project `your-team/vibeke-app` at `https://app.vibeke.dev`.
+The public relay remains at `https://relay.vibeke.dev`. See [PWA deployment](../pwa/README.md).

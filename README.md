@@ -25,7 +25,7 @@
 - **One task, one workspace.** `vibeke task new` gives an agent its own worktree, branch and port range, then collects the diff, checks and transcript evidence for review. [Tasks and review →](https://vibeke.dev/docs/tasks)
 - **Remote work that feels local.** Connect SSH machines, forward dev servers, and open previews, screenshots and a real browser pane from the devbox in your local terminal. [Remote and previews →](https://vibeke.dev/docs/previews)
 - **Isolation when you want it.** Run a task on the host, in an OS sandbox, a container or a VM. If the provider you picked isn't available, the task doesn't start. [Execution and isolation →](https://vibeke.dev/docs/sandboxes)
-- **Your phone in the loop.** Pair the web or desktop app with a QR code. Traffic goes through an end-to-end encrypted relay, so the dev host needs no open ports. [Mobile and desktop →](https://vibeke.dev/docs/mobile)
+- **Your phone in the loop.** Pair the web or desktop app with a QR code. Traffic goes through an end-to-end encrypted relay, so the dev host needs no open ports. [Phone and browser →](https://vibeke.dev/docs/mobile)
 - **Bring your own harness.** Claude Code, Codex, pi, omp, OpenCode, Gemini CLI, any ACP agent, or your own wrapper described in a TOML manifest.
 - **Built to be scripted.** A versioned JSON-RPC API (`vibeke/1`), a CLI on top of it, and an MCP server for agents. [Control API →](https://vibeke.dev/docs/api)
 - **Plugins.** Native plugins with declared capabilities. Coming from Herdr? Import your config and layouts and keep your plugins. [Moving from Herdr →](https://vibeke.dev/docs/migrating-from-herdr)
@@ -38,18 +38,21 @@
 Vibeke runs on macOS (Apple silicon) and Linux (x86_64, aarch64).
 
 ```sh
-curl -fsSL https://github.com/MidgardAI/vibeke/releases/latest/download/install.sh | sh
+curl -fsSL https://vibeke.dev/install.sh | sh
 ```
 
-The installer writes only inside `$HOME` and verifies the release signature and checksums before it installs anything. While the repository is private, download the release with `gh` first; see [installation](https://vibeke.dev/docs/install).
+Install `minisign` first (`brew install minisign` on macOS, or your Linux package manager). The installer writes only inside `$HOME` and verifies the release signature and checksums. See [installation](https://vibeke.dev/docs/install).
+
+[Download the desktop app](https://github.com/MidgardAI/vibeke/releases/latest) for macOS, Linux, or Windows, or open the [browser app](https://app.vibeke.dev). The desktop app connects to a host; local use also requires the CLI.
 
 Then start it in your project:
 
 ```sh
+cd your-project
 vibeke
 ```
 
-Run your agents, split panes and step away; `vibeke` reattaches to the same session. Start with the [quickstart](https://vibeke.dev/docs/quickstart).
+Complete first-run setup, then run `claude`, `codex`, or your usual agent command in a pane. Split panes and step away; `vibeke` reattaches to the same session. Start with the [quickstart](https://vibeke.dev/docs/quickstart).
 
 ## Docs
 

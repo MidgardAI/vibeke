@@ -151,7 +151,7 @@ test('copy controls and mobile navigation work', async ({ page }, info) => {
   await page.goto('/docs/quickstart')
   await page.getByRole('button', { name: 'Copy code', exact: true }).first().click()
   await expect(page.getByRole('button', { name: 'Copied', exact: true })).toBeVisible()
-  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe('vibeke')
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe('cd your-project\nvibeke')
   if (info.project.name === 'mobile') {
     await page.getByRole('button', { name: 'Documentation menu' }).click()
     await page.getByRole('link', { name: 'Process durability', exact: true }).first().click()
@@ -204,4 +204,11 @@ test('API methods filter, expand, and copy without breaking the table', async ({
   const schema = await page.request.get('/api-reference/vibeke-1.schema.json')
   expect(schema.status()).toBe(200)
   expect((await schema.json()).$defs).toBeTruthy()
+})
+
+
+test('public install endpoint redirects to the release installer', async ({ request }) => {
+  const response = await request.get('/install.sh', { maxRedirects: 0 })
+  expect(response.status()).toBe(302)
+  expect(response.headers().location).toBe('https://github.com/MidgardAI/vibeke/releases/latest/download/install.sh')
 })

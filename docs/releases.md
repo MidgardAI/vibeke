@@ -56,7 +56,7 @@ Checksums alone detect corruption. They do not prove who built the file: an atta
 
 The default release URL is `https://github.com/MidgardAI/vibeke/releases/download/v<version>`. Set `VIBEKE_RELEASE_URL` for a mirror, or `VIBEKE_INSTALL_FROM=<dir>` for offline installation.
 
-While the repository is **private**, GitHub does not serve the plain download URL without authentication. The installer and `remote-download` therefore honour `VIBEKE_GITHUB_TOKEN`, else `GITHUB_TOKEN`:
+The public Vibeke repository needs no token. For private forks, the installer and `remote-download` support `VIBEKE_GITHUB_TOKEN`, else `GITHUB_TOKEN`:
 
 - With a token and a `github.com/<owner>/<repo>/releases/download/...` URL, the file is fetched through the GitHub API asset endpoint (`/repos/<owner>/<repo>/releases/assets/<id>`) with `Accept: application/octet-stream` and `Authorization: Bearer <token>`.
 - curl reads the headers from stdin, so the token is never on a command line (`ps`). Nothing prints it. Error messages say only that a token is needed.
@@ -103,7 +103,7 @@ Signing happens locally. CI never holds a signing secret.
 7. Upload the four signing outputs to the draft: `gh release upload v<version> dist/<version>/SHA256SUMS dist/<version>/SHA256SUMS.minisig dist/<version>/manifest.json dist/<version>/manifest.json.minisig`. The workflow already includes the version-pinned installer.
 8. Check the result with a fresh checkout of the files: `minisign -V -P <public key> -m SHA256SUMS`.
 9. Publish the draft (`gh release edit v<version> --draft=false`).
-10. Smoke test: run `scripts/install.sh` with `VIBEKE_VERSION=<version>` (and `GITHUB_TOKEN` while the repository is private) on a clean `HOME`.
+10. Smoke test: run `scripts/install.sh` with `VIBEKE_VERSION=<version>` (private forks can also set `GITHUB_TOKEN`) on a clean `HOME`.
 
 `manifest.json` lists `{version, artifacts: [{target, sha256, url}]}`. Its signature carries the trusted comment `vibeke v<version> version:<version>`, so an old manifest cannot be replayed under a new version.
 

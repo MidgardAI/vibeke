@@ -26,7 +26,14 @@ export default defineConfig({
       prerender: { enabled: true, crawlLinks: true, failOnError: true, filter: page => firstForOutputPath(page.path) },
       pages: docManifest.map(doc => ({ path: `/docs/${doc.slug}` })),
     }),
-    nitro(),
+    nitro({
+      routeRules: {
+        '/install.sh': {
+          redirect: { to: 'https://github.com/MidgardAI/vibeke/releases/latest/download/install.sh', status: 302 },
+          headers: { 'cache-control': 'no-store' },
+        },
+      },
+    }),
     react(),
   ],
 })

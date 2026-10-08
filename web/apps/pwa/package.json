@@ -8,7 +8,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "test": "bun test",
-    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.sw.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.sw.json --noEmit",
+    "build:vercel": "bun run build && bun scripts/prepare-vercel.ts"
   },
   "dependencies": {
     "@vibeke/core": "workspace:*",

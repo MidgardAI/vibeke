@@ -4,13 +4,8 @@ Vibeke uses separate configuration, sockets, and state. The importer reads Herdr
 
 ## Install Vibeke
 
-Use the [installation guide](site/src/install.md) to build from source or install a release.
-
-For a local release build, use:
-
-```sh
-VIBEKE_INSTALL_FROM=dist/0.1.0 sh scripts/install.sh
-```
+Follow the [installation guide](site/src/install.md) to install the published CLI.
+First-run setup offers to import an existing Herdr configuration. Use the commands below for a detailed migration.
 
 The installer does not use `sudo`. It creates `~/.local/bin/vibeke`. Add that directory to `PATH` if necessary.
 

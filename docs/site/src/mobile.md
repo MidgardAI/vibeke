@@ -1,120 +1,86 @@
-# Mobile and desktop access
+# Phone and browser access
 
-The browser and Electron apps connect to a Vibeke session through a gateway. The gateway makes an outbound connection to a relay.
+Open [app.vibeke.dev](https://app.vibeke.dev) on your phone or computer.
+The browser app connects to your Vibeke host through `relay.vibeke.dev`.
+The relay carries encrypted traffic. Your host makes an outbound connection and needs no inbound port.
 
-The development host does not need an inbound port. You do not need to expose its control socket.
+The browser app and relay are separate services. You do not need to build either one to use the public service.
+For local desktop access, use the [desktop connection guide](desktop.md).
 
-## Start a local system
+## Pair your device
 
-1. From the repository root, install the web dependencies:
-
-   ```sh
-   cd web
-   bun install
-   ```
-
-2. Build the browser app:
+1. [Install the CLI](install.md) on your host and start a session with `vibeke`.
+2. In a shell on that host, run:
 
    ```sh
-   bun run build
-   cd ..
+   vibeke gateway pair \
+     --relay https://relay.vibeke.dev \
+     --app-url https://app.vibeke.dev
    ```
 
-3. Start a session with `vibeke`.
-4. In another terminal, start the relay:
+   This saves the connection settings, enables gateway autostart, and asks the server to start it.
+   Keep the command running while you pair.
 
-   ```sh
-   cargo run -p vk-relay --bin vibeke-relay -- \
-     --public-url http://localhost:8787 \
-     --app-dir web/apps/pwa/dist
-   ```
+3. Scan the QR code on your phone, or open the printed link in your browser.
+4. Compare the device fingerprint with the fingerprint shown by the pairing command.
+5. Confirm pairing on the device and in the terminal when prompted.
 
-You do not run the gateway yourself. The next step starts it.
+After the first setup, create another invitation with:
 
-## Set up and pair the browser
+```sh
+vibeke gateway pair
+```
 
-1. Set up the gateway and create a pairing invitation:
+Pairing starts from this command in v0.1.0. The TUI does not yet have a device-pairing action.
+You do not need to start a separate gateway process.
 
-   ```sh
-   vibeke gateway pair --relay http://localhost:8787
-   ```
+For limited access, use `vibeke gateway pair --scope approve` or `vibeke gateway pair --scope view`.
+Each invitation is temporary and can be used once.
 
-   The command saves the relay, turns the gateway on, starts it through the server, and waits for it to connect. It then shows the pairing link and QR code.
+## Keep the connection available
 
-2. Open the printed link, or scan the QR code.
-3. Compare the browser fingerprint with the terminal fingerprint.
-4. If they match, select **Pair**.
-5. Confirm the pairing in the terminal.
+After setup, the server starts the gateway whenever the server starts.
+It restarts the gateway after a crash, with a retry limit. The gateway stops when the server stops.
+The TUI status bar shows gateway state after setup.
 
-Later runs of `vibeke gateway pair` skip the relay option and only create an invitation.
+The host must remain awake and online. Closing the terminal client does not stop the server or its panes.
 
-Localhost works for a browser on the same computer. A phone needs a reachable relay origin with HTTPS. On a phone, `localhost` refers to the phone.
+## Manage devices
 
-For restricted access, use `pair --scope approve` or `pair --scope view`.
-
-## Autostart
-
-After setup, autostart is on. The server starts the gateway when it starts. The gateway stops when the server stops. If the gateway crashes, the server restarts it after a short delay. After repeated crashes it stops trying and reports `crashed`.
-
-Commands:
-
-- `vibeke gateway status`: show the setup and whether the gateway is running.
-- `vibeke gateway on`: turn autostart on and start the gateway.
-- `vibeke gateway off`: turn autostart off and stop the gateway.
-- `vibeke gateway logs [-f] [-n N]`: show the gateway log. Use `-f` to follow it.
-- `vibeke server status`: show the server state, including a `gateway` line.
-
-The terminal client shows a gateway indicator in the status bar. It appears only after setup. Without setup, it is hidden.
-
-If you start `vibeke gateway run` by hand, the server detects it and reports the gateway as `external`. It does not start a second one.
-
-## If you don't use the phone or desktop apps
-
-Nothing runs and no connection opens until you pair. The gateway stays off until you run `vibeke gateway pair` or `vibeke gateway on`.
-
-## Turning it off
-
-1. Stop the gateway and keep it off:
-
-   ```sh
-   vibeke gateway off
-   ```
-
-   It stays off after server restarts. Run `vibeke gateway on` to turn it back on.
-
-2. To remove a paired device, list the devices and revoke one:
-
-   ```sh
-   vibeke gateway devices
-   vibeke gateway revoke <id>
-   ```
+```sh
+vibeke gateway devices
+vibeke gateway revoke <id>
+```
 
 A revoked device cannot reconnect. Create a new invitation to pair it again.
 
-## iOS notifications
+To stop remote access and disable autostart:
 
-Web Push requires HTTPS. On iOS or iPadOS 16.4 and later:
+```sh
+vibeke gateway off
+```
 
-1. Add Vibeke to the Home Screen in Safari.
-2. Open the installed app.
-3. Select **Settings → Alerts → Turn on**.
+Use `vibeke gateway on` to enable it again.
+Before setup, the gateway stays off and opens no connection.
 
+## Install on your phone
+
+On iOS or iPadOS, open the app in Safari and add it to the Home Screen.
+Open that installed app before pairing, so you pair the app you will use.
+For supported Web Push notifications, use iOS or iPadOS 16.4 or later.
+
+Select **Settings → Alerts → Turn on** and allow notifications.
 Configure notifications separately on each device.
 
-## Desktop app
+## Troubleshooting
 
-Run `bun run dev:desktop` from `web/` to start the Electron app.
+- Run `vibeke gateway status` to check the gateway and relay connection.
+- Run `vibeke gateway logs -f` to follow its log.
+- Check that the host is awake and the Vibeke server is running.
+- Create a new invitation if the previous link expired or the device was revoked.
 
-The desktop app supports relay and local Unix-socket connections. It provides native notifications, menu-bar approvals, and separate pane windows.
+The browser stores pairing keys for each origin. Changing domains creates a separate device.
+The app origin is trusted with keys and decrypted content. Check it before opening a pairing link.
+Build information is available in **Settings → About**.
 
-See the [desktop development guide](../../../web/apps/desktop/README.md) for builds and packaging.
-
-## Trust and recovery
-
-The relay carries encrypted messages. The app origin remains trusted because its JavaScript can access the device key and decrypted content.
-
-Check the origin and build hash in **Settings → About**.
-
-The browser stores pairing state for each origin. A different port or domain creates a different device. After device revocation, create a new pairing invitation.
-
-See the [web apps guide](../../../web/README.md) for development instructions.
+For your own relay or app hosting, see [self-hosting](self-hosting.md).

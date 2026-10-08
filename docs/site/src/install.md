@@ -1,77 +1,52 @@
 # Installation
 
-Vibeke supports macOS on Apple silicon and Linux on x86_64 or aarch64. Linux release binaries use static musl linking. Windows support is planned.
+Install the terminal CLI, download the desktop app, or open the [browser app](https://app.vibeke.dev).
+Vibeke is pre-1.0 software. Public releases do not require a GitHub account.
 
-Vibeke is pre-1.0 software. Install a tagged release for a fixed version, or build from source to use the current code.
+## Terminal CLI
 
-## Build from source
+The host CLI runs on macOS with Apple silicon and Linux with x86_64 or aarch64 processors.
+Linux binaries use static musl linking.
 
-1. Install [mise](https://mise.jdx.dev/).
-2. Open the repository root in your shell.
-3. Install the toolchains from `mise.toml`:
-
-   ```sh
-   mise install
-   ```
-
-4. Build Vibeke:
-
-   ```sh
-   mise run build
-   ```
-
-5. Add the debug binary directory to this shell's `PATH`:
-
-   ```sh
-   export PATH="$PWD/target/debug:$PATH"
-   ```
-
-6. Check the installation:
-
-   ```sh
-   vibeke --version
-   vibeke doctor
-   ```
-
-For release binaries, use `mise run dist`. This command writes binaries and checksums to `dist/<version>/`. It also updates the local release cache for remote installation.
-
-See [releases and reproducible builds](reference/releases.md).
-
-## Install a published release
-
-Check the [release files](https://github.com/MidgardAI/vibeke/releases). While the repository is private, use an authenticated GitHub CLI to download the release, then install the verified local files:
+Install `minisign` first. It verifies the release signature. On macOS:
 
 ```sh
-gh auth login
-release_dir=$(mktemp -d)
-gh release download v0.1.0 --repo MidgardAI/vibeke --dir "$release_dir" \
-  --pattern 'vibeke-*' --pattern 'SHA256SUMS*' --pattern 'install.sh'
-VIBEKE_INSTALL_FROM="$release_dir" sh "$release_dir/install.sh"
+brew install minisign
 ```
 
-Once the repository is public, the same installer can be downloaded without authentication:
+On Debian or Ubuntu:
 
 ```sh
-curl -fsSL https://github.com/MidgardAI/vibeke/releases/latest/download/install.sh | sh
+sudo apt install minisign
 ```
 
-The installer writes the binary to `~/.local/share/vibeke/versions/<v>/vibeke`. It creates links at `~/.local/share/vibeke/current` and `~/.local/bin/vibeke`.
+Then install Vibeke:
 
-The installer does not use `sudo`. It writes only inside `$HOME`. It verifies the minisign signature of `SHA256SUMS` against the embedded release keys, then checks the binary against `SHA256SUMS`, before it installs anything. This needs the `minisign` tool (`brew install minisign`). The release keys and their key ids are listed in [release verification](reference/releases.md).
+```sh
+curl -fsSL https://vibeke.dev/install.sh | sh
+```
 
-For online installation from an already downloaded installer while the repository is private, set `GITHUB_TOKEN` (or `VIBEKE_GITHUB_TOKEN`) to a token with read access. The installer then downloads through the GitHub API and never prints the token. This does not authenticate the initial `curl` that fetches the installer; use the GitHub CLI flow above. Public releases need no token.
+The installer downloads the latest published release installer from GitHub. It verifies the signature and binary checksum before installing.
+It installs inside your home directory without `sudo`.
 
-| Variable | Purpose |
-| --- | --- |
-| `VIBEKE_VERSION` | Select the release version. |
-| `VIBEKE_RELEASE_URL` | Set the base URL for binaries, `SHA256SUMS` and `SHA256SUMS.minisig`. |
-| `GITHUB_TOKEN`, `VIBEKE_GITHUB_TOKEN` | Read a private release repository. Not needed for public releases. |
-| `VIBEKE_ALLOW_UNSIGNED` | Set to `1` to accept an unsigned release for development. The checksum must still match. |
-| `VIBEKE_INSTALL_FROM` | Use a local directory for offline installation. |
+Check your installation:
+
+```sh
+vibeke --version
+vibeke doctor
+```
+
+If your shell cannot find Vibeke, add this line to your shell configuration and open a new terminal:
+
+```sh
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+Continue with [your first workspace](quickstart.md).
 
 ## Desktop app
 
-Download the desktop installer from the [release page](https://github.com/MidgardAI/vibeke/releases) while signed into GitHub with repository access:
+Download the installer for your computer from the [latest release](https://github.com/MidgardAI/vibeke/releases/latest).
 
 | Platform | Download |
 | --- | --- |
@@ -82,15 +57,37 @@ Download the desktop installer from the [release page](https://github.com/Midgar
 
 On macOS, open the DMG and drag Vibeke into Applications. ZIP downloads are also available.
 
-The desktop app connects to a Vibeke host; it does not bundle the host CLI. To use your own Mac or Linux machine as a host, install the CLI above as well. Intel Macs and Windows can use the desktop app to connect to a supported remote host; this release does not include a host binary for those platforms.
+The desktop app connects to a Vibeke host. It does not bundle the host CLI.
+For local use on a supported Mac or Linux computer, install the CLI too.
+Windows and Intel Macs can connect to a supported remote host. This release has no host CLI for those platforms.
 
-Desktop downloads are included in the signed `SHA256SUMS`. The macOS app is ad-hoc signed, without Apple Developer ID signing or notarization; the Windows installer is not publisher-signed. Operating-system security checks may require explicit approval. Automatic desktop updates are not configured; download a new release to upgrade.
+The macOS app is ad-hoc signed and is not notarized. The Windows installer is not publisher-signed.
+Operating-system security checks can require approval. Desktop downloads are included in the signed release checksums.
 
-## Check the installation
+Continue with the [desktop connection guide](desktop.md).
+
+## Browser and phone
+
+Open [app.vibeke.dev](https://app.vibeke.dev). Pair it with your host using the [phone and browser guide](mobile.md).
+You do not need to build the app or run a relay.
+
+## Upgrade
+
+Run the installation command again to install the latest CLI release. Reconnect with `vibeke` afterward.
+See [process durability](concepts/holders.md) for what survives a server restart.
+
+For the desktop app, download and install the new release. Automatic desktop updates are not configured.
+
+## Advanced installation
+
+The CLI lives at `~/.local/share/vibeke/versions/<version>/vibeke`.
+The installer creates links at `~/.local/share/vibeke/current` and `~/.local/bin/vibeke`.
+
+To select a version, set the variable on the shell that runs the installer:
 
 ```sh
-vibeke --version
-vibeke doctor
+curl -fsSL https://vibeke.dev/install.sh | VIBEKE_VERSION=0.1.0 sh
 ```
 
-If the shell cannot find Vibeke, add `~/.local/bin` to `PATH`. Then use the [quickstart](quickstart.md) to create a workspace.
+For mirrors, offline installation, signatures, and development builds, see [release verification](reference/releases.md).
+To contribute code, see [building from source](development.md).

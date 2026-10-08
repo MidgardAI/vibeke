@@ -25,6 +25,9 @@ An agent can read its own requests. It cannot answer them.
 
 ## Configure an integration
 
-Use `vibeke integration install|status|uninstall|doctor` to manage integrations. The installer preserves existing hooks.
+Open **Setup** in the command palette to select integrations, inspect changes, and confirm installation. The installer preserves existing hooks.
+
+Then run your usual `claude`, `codex`, `pi`, or `omp` command in a shell pane.
+For scripts and troubleshooting, use `vibeke integration install|status|uninstall|doctor`.
 
 Use `vibeke agent start|prompt|wait|read|send-keys|get|list` to control agent runs. See the [CLI reference](../reference/cli.md) for command arguments.

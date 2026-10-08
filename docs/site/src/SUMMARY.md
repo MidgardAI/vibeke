@@ -6,6 +6,7 @@
 
 - [Install](install.md)
 - [Quickstart](quickstart.md)
+- [Using the terminal](terminal.md)
 
 # Concepts
 
@@ -18,8 +19,15 @@
 
 # Guides
 
-- [Mobile and desktop supervision](mobile.md)
+- [Phone and browser access](mobile.md)
+- [Desktop app](desktop.md)
+- [Connect through SSH](remote.md)
 - [Sharing and handoff](handoff.md)
+
+# Advanced
+
+- [Self-hosting](self-hosting.md)
+- [Build from source](development.md)
 
 # Reference
 
