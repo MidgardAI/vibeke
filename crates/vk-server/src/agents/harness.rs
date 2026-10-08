@@ -582,6 +582,7 @@ fn blank_interaction(
         answer_key: None,
         opened_at_ms: vk_store::now_ms(),
         answered_at_ms: None,
+        picker: None,
     }
 }
 
@@ -668,6 +669,7 @@ fn elicitation_interaction(p: &Value) -> Interaction {
                             label: names.get(i).cloned().unwrap_or_else(|| id.clone()),
                             id,
                             description: None,
+                            selected: false,
                         })
                     })
                     .collect(),
@@ -677,6 +679,7 @@ fn elicitation_interaction(p: &Value) -> Interaction {
                         id: v.to_string(),
                         label: v.to_string(),
                         description: None,
+                        selected: false,
                     })
                     .collect(),
                 None => vec![],
@@ -702,11 +705,13 @@ fn elicitation_interaction(p: &Value) -> Interaction {
                     id: "accept".into(),
                     label: "Accept".into(),
                     description: None,
+                    selected: false,
                 },
                 QuestionOption {
                     id: "decline".into(),
                     label: "Decline".into(),
                     description: None,
+                    selected: false,
                 },
             ],
             allow_free_text: false,
@@ -839,6 +844,7 @@ pub fn interaction_from_hook(h: Harness, event: &str, p: &Value) -> Option<Inter
                                         .get("description")
                                         .and_then(Value::as_str)
                                         .map(str::to_string),
+                                    selected: false,
                                 }
                             })
                             .collect()
@@ -960,11 +966,13 @@ fn dialog_interaction(p: &Value) -> Interaction {
                         id: "yes".into(),
                         label: "Yes".into(),
                         description: None,
+                        selected: false,
                     },
                     QuestionOption {
                         id: "no".into(),
                         label: "No".into(),
                         description: None,
+                        selected: false,
                     },
                 ],
                 allow_free_text: false,
@@ -984,6 +992,7 @@ fn dialog_interaction(p: &Value) -> Interaction {
                             id: l.into(),
                             label: l.into(),
                             description: None,
+                            selected: false,
                         })
                         .collect()
                 })
@@ -1117,7 +1126,9 @@ pub fn decision_json_with(h: Harness, it: &Interaction, a: &Answer, persist: &Pe
             }
             _ => json!({"behavior": "allow"}),
         },
-        Some(Decision::Deny) | None => json!({"behavior": "deny", "message": deny_msg}),
+        Some(Decision::Deny) | Some(Decision::Cancel) | None => {
+            json!({"behavior": "deny", "message": deny_msg})
+        }
     };
     json!({"hookSpecificOutput": {"hookEventName": "PermissionRequest", "decision": decision}})
 }

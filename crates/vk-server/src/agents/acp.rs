@@ -127,6 +127,7 @@ pub fn permission_interaction(p: &Value) -> Interaction {
                             .unwrap_or("")
                             .to_string(),
                         description: o.get("kind").and_then(Value::as_str).map(str::to_string),
+                        selected: false,
                     })
                     .collect()
             })
@@ -169,6 +170,7 @@ pub fn decision_json(it: &Interaction, a: &Answer) -> Value {
         Some(Decision::Allow) => by_kind(&["allow_once", "allow_always"]),
         Some(Decision::AllowAlways) => by_kind(&["allow_always", "allow_once"]),
         Some(Decision::Deny) | None => by_kind(&["reject_once", "reject_always"]),
+        Some(Decision::Cancel) => None,
     });
     match chosen {
         Some(id) => json!({"outcome": {"outcome": "selected", "optionId": id}}),

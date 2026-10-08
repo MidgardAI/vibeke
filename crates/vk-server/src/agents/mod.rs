@@ -580,6 +580,7 @@ impl Agents {
                     answer_key: None,
                     opened_at_ms: now_ms(),
                     answered_at_ms: None,
+                    picker: None,
                 };
                 let mut tx = Tx::new();
                 tx.counters = true;
@@ -720,6 +721,7 @@ fn notify_interaction(server: &Server, it: &Interaction, run: &AgentRun) {
         InteractionKind::Question => "has a question",
         InteractionKind::PlanReview => "wants a plan review",
         InteractionKind::Notice => "notice",
+        InteractionKind::Picker => "is showing a picker",
     };
     let urgency = match it.action.as_ref().map(|a| a.risk) {
         Some(Risk::High) => "high",

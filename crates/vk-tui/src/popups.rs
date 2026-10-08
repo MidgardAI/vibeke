@@ -277,39 +277,39 @@ pub fn key(app: &mut App, ev: KeyEvent, p: Popup) {
                         input: String::new(),
                     });
                 }
-                (InteractionKind::Question, Key::Char('j') | Key::Named(NamedKey::Down)) => {
+                (
+                    InteractionKind::Question | InteractionKind::Picker,
+                    Key::Char('j') | Key::Named(NamedKey::Down),
+                ) => {
                     let n = it.questions.first().map(|q| q.options.len()).unwrap_or(0);
                     sel = (sel + 1).min(n.saturating_sub(1));
                     app.mode = Mode::Popup(Popup::Card { interaction, sel });
                 }
-                (InteractionKind::Question, Key::Char('k') | Key::Named(NamedKey::Up)) => {
+                (
+                    InteractionKind::Question | InteractionKind::Picker,
+                    Key::Char('k') | Key::Named(NamedKey::Up),
+                ) => {
                     sel = sel.saturating_sub(1);
                     app.mode = Mode::Popup(Popup::Card { interaction, sel });
                 }
-                (InteractionKind::Question, Key::Named(NamedKey::Enter) | Key::Char(' '))
-                    if open =>
-                {
-                    if let Some(q) = it.questions.first()
-                        && let Some(o) = q.options.get(sel)
-                    {
-                        app.answer(
-                            mi,
-                            &it.id,
-                            json!({"choices": {q.id.clone(): [o.id.clone()]}}),
-                        );
+                (
+                    InteractionKind::Question | InteractionKind::Picker,
+                    Key::Named(NamedKey::Enter) | Key::Char(' '),
+                ) if open => {
+                    if let Some(a) = choice_answer(&it, sel) {
+                        app.answer(mi, &it.id, a);
                     }
                 }
-                (InteractionKind::Question, Key::Char(c)) if open && c.is_ascii_digit() => {
+                (InteractionKind::Question | InteractionKind::Picker, Key::Char(c))
+                    if open && c.is_ascii_digit() =>
+                {
                     let idx = c.to_digit(10).unwrap_or(1).saturating_sub(1) as usize;
-                    if let Some(q) = it.questions.first()
-                        && let Some(o) = q.options.get(idx)
-                    {
-                        app.answer(
-                            mi,
-                            &it.id,
-                            json!({"choices": {q.id.clone(): [o.id.clone()]}}),
-                        );
+                    if let Some(a) = choice_answer(&it, idx) {
+                        app.answer(mi, &it.id, a);
                     }
+                }
+                (InteractionKind::Picker, Key::Char('c')) if open => {
+                    app.answer(mi, &it.id, json!({"decision": "cancel"}))
                 }
                 // The batch view of equivalent approvals (08 §8).
                 (_, Key::Char('A')) => crate::batch::open(app, Some((mi, it.id.clone()))),
@@ -663,6 +663,7 @@ pub fn draw(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
                     InteractionKind::Question => "question",
                     InteractionKind::PlanReview => "plan review",
                     InteractionKind::Notice => "notice",
+                    InteractionKind::Picker => "picker",
                 };
                 let mut b = frame(
                     app,
@@ -685,6 +686,9 @@ pub fn draw(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
                         InteractionKind::PlanReview => "[y] approve  [e] request changes  [n] reject  [o] open  [esc] later".into(),
                         InteractionKind::Question => "[j/k] choose  [enter] answer  [1-9] pick  [o] open  [esc] later".into(),
                         InteractionKind::Notice => "[o] open  [esc] close".into(),
+                        InteractionKind::Picker if it.questions.iter().all(|q| q.options.is_empty()) => "[c] cancel the dialog  [o] open  [esc] later".into(),
+                        InteractionKind::Picker if it.questions.first().is_some_and(|q| q.multi) => "[j/k] choose  [enter] toggle and confirm  [c] cancel  [o] open  [esc] later".into(),
+                        InteractionKind::Picker => "[j/k] choose  [enter] pick  [c] cancel  [o] open  [esc] later".into(),
                     }
                 };
                 b.line("", t.text());
@@ -694,6 +698,27 @@ pub fn draw(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
         _ => {}
     }
     None
+}
+
+/// The `interaction.answer` params for picking row `idx`: one option, or for a multi-select
+/// picker the full desired checked set (the current set with that row toggled).
+pub fn choice_answer(it: &Interaction, idx: usize) -> Option<serde_json::Value> {
+    let q = it.questions.first()?;
+    let o = q.options.get(idx)?;
+    let ids: Vec<String> = if it.kind == InteractionKind::Picker && q.multi {
+        q.options
+            .iter()
+            .filter(|x| x.selected != (x.id == o.id))
+            .map(|x| x.id.clone())
+            .collect()
+    } else {
+        vec![o.id.clone()]
+    };
+    let mut a = json!({"choices": {q.id.clone(): ids}});
+    if let Some(p) = &it.picker {
+        a["expected_signature"] = json!(p.signature);
+    }
+    Some(a)
 }
 
 /// The body of an interaction card (shared by the card popup and the inbox detail).
@@ -754,8 +779,27 @@ pub fn card_lines(
                 .as_ref()
                 .map(|d| format!(" — {d}"))
                 .unwrap_or_default();
-            b.line(&format!("{}. {}{d}", i + 1, o.label), st);
+            // Pickers mark the harness's current row (or checked boxes in a multi-select).
+            let mark = match (it.kind, q.multi, o.selected) {
+                (InteractionKind::Picker, true, true) => "[x] ",
+                (InteractionKind::Picker, true, false) => "[ ] ",
+                (InteractionKind::Picker, false, true) => "● ",
+                (InteractionKind::Picker, false, false) => "  ",
+                _ => "",
+            };
+            b.line(&format!("{}. {mark}{}{d}", i + 1, o.label), st);
         }
+    }
+    if let Some(lr) = it.picker.as_ref().and_then(|p| p.left_right.as_ref()) {
+        b.line(
+            &format!(
+                "{}: {} (current: {})",
+                lr.verb,
+                lr.values.join(" · "),
+                lr.current.as_deref().unwrap_or("?")
+            ),
+            t.dim(),
+        );
     }
     if it.source == StateSource::Screen {
         b.line(

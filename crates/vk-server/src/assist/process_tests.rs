@@ -176,6 +176,7 @@ impl Env {
             answer_key: None,
             opened_at_ms: vk_store::now_ms(),
             answered_at_ms: None,
+            picker: None,
         };
         self.commit(|tx| {
             tx.interaction(i);

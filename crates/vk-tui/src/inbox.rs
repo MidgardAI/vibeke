@@ -1203,16 +1203,12 @@ pub fn key(app: &mut App, ev: KeyEvent) {
                 (InteractionKind::Approval | InteractionKind::PlanReview, Key::Char('n')) => {
                     app.answer(mi, &x.id, json!({"decision": "deny"}))
                 }
-                (InteractionKind::Question, Key::Char(c)) if c.is_ascii_digit() => {
+                (InteractionKind::Question | InteractionKind::Picker, Key::Char(c))
+                    if c.is_ascii_digit() =>
+                {
                     let idx = c.to_digit(10).unwrap_or(1).saturating_sub(1) as usize;
-                    if let Some(q) = x.questions.first()
-                        && let Some(o) = q.options.get(idx)
-                    {
-                        app.answer(
-                            mi,
-                            &x.id,
-                            json!({"choices": {q.id.clone(): [o.id.clone()]}}),
-                        );
+                    if let Some(a) = crate::popups::choice_answer(&x, idx) {
+                        app.answer(mi, &x.id, a);
                     }
                 }
                 _ => {}
@@ -1624,6 +1620,7 @@ fn detail_lines(app: &App, it: &Item, out: &mut Vec<(String, Style)>) {
                 }
                 InteractionKind::Question => "[1-9] pick  [enter] full card  [o] open pane".into(),
                 InteractionKind::Notice => "[o] open pane".into(),
+                InteractionKind::Picker => "[1-9] pick  [enter] full card  [o] open pane".into(),
             }
         };
         out.push((String::new(), t.text()));

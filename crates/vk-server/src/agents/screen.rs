@@ -40,6 +40,7 @@ impl Dialog {
                     id: n.to_string(),
                     label: l.clone(),
                     description: None,
+                    selected: false,
                 })
                 .collect(),
             allow_free_text: false,
@@ -376,6 +377,7 @@ pub fn keys_for(h: Harness, d: &Dialog, it: &Interaction, answer: &Answer) -> Op
         let l = screen_manifest(h)?;
         let spec = l.dialog_spec(&d.rule).cloned().unwrap_or_default();
         let intent = match (it.kind, answer.decision) {
+            (_, Some(Decision::Cancel)) => return None,
             (InteractionKind::Question, _) => {
                 KeyIntent::Option(answer.choices.first().and_then(|(_, o)| o.first())?.clone())
             }
@@ -401,6 +403,7 @@ pub fn keys_for(h: Harness, d: &Dialog, it: &Interaction, answer: &Answer) -> Op
             .cloned()
     };
     let opt = match (it.kind, answer.decision) {
+        (_, Some(Decision::Cancel)) => return None,
         (InteractionKind::Question, _) => {
             let want = answer.choices.first().and_then(|(_, o)| o.first())?;
             d.options

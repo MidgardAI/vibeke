@@ -99,6 +99,7 @@ impl Claude {
                                                         .get("description")
                                                         .and_then(Value::as_str)
                                                         .map(str::to_string),
+                                                    selected: false,
                                                 }
                                             })
                                             .collect()

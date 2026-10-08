@@ -1437,6 +1437,7 @@ pub fn interaction(
         answer_key: None,
         opened_at_ms: now_ms(),
         answered_at_ms: None,
+        picker: None,
     }
 }
 
@@ -1510,6 +1511,7 @@ fn answer_label(it: &Interaction, a: &Answer) -> String {
         Some(Decision::Allow) => "allowed".into(),
         Some(Decision::AllowAlways) => "allowed always".into(),
         Some(Decision::Deny) => "denied".into(),
+        Some(Decision::Cancel) => "cancelled".into(),
         None => it
             .questions
             .first()

@@ -431,6 +431,11 @@ pub enum InteractionKind {
     Question,
     PlanReview,
     Notice,
+    /// An agent CLI's interactive picker or menu (model, effort, resume list, confirmation,
+    /// generic key-hint menu, or an unrecognised modal dialog). Never a gate: answered by
+    /// keystrokes (screen source) or a protocol call (structured source). Appended (postcard
+    /// encodes the variant index).
+    Picker,
 }
 
 impl InteractionKind {
@@ -440,6 +445,7 @@ impl InteractionKind {
             InteractionKind::Question => "question",
             InteractionKind::PlanReview => "plan_review",
             InteractionKind::Notice => "notice",
+            InteractionKind::Picker => "picker",
         }
     }
 }
@@ -496,6 +502,37 @@ pub struct QuestionOption {
     pub id: String,
     pub label: String,
     pub description: Option<String>,
+    /// The row the harness currently points at, or a checked box in a multi-select.
+    /// Appended (render protocol 6).
+    #[serde(default)]
+    pub selected: bool,
+}
+
+/// A left/right adjuster on a picker row (e.g. an effort level slider).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct PickerAdjust {
+    /// Verb shown to users ("Adjust effort").
+    pub verb: String,
+    pub values: Vec<String>,
+    pub current: Option<String>,
+}
+
+/// How a [`InteractionKind::Picker`] interaction is driven. Its options live in
+/// `questions[0]`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct PickerInfo {
+    /// `model` | `effort` | `resume` | `permissions` | `confirm` | `menu` (generic) | `unknown`.
+    pub name: String,
+    /// Key that dismisses it (`Escape`, `ctrl+c`); `None` when it cannot be dismissed safely.
+    pub cancel_key: Option<String>,
+    /// Arrow-navigable list (up/down).
+    pub up_down: bool,
+    /// Optional left/right adjuster.
+    pub left_right: Option<PickerAdjust>,
+    /// `screen` (parsed from the pane) | `protocol` (the agent's structured API).
+    pub source: String,
+    /// Hash of the parsed region; answers carry it back so a changed screen is refused.
+    pub signature: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -513,6 +550,8 @@ pub enum Decision {
     Allow,
     AllowAlways,
     Deny,
+    /// Dismiss a picker with its cancel key. Appended (postcard).
+    Cancel,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -552,6 +591,9 @@ pub struct Interaction {
     pub answer_key: Option<String>,
     pub opened_at_ms: i64,
     pub answered_at_ms: Option<i64>,
+    /// Set on [`InteractionKind::Picker`] interactions. Appended (render protocol 6).
+    #[serde(default)]
+    pub picker: Option<PickerInfo>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

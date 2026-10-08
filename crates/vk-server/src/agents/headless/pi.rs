@@ -200,6 +200,7 @@ impl Pi {
                                 id: l.clone(),
                                 label: l,
                                 description: None,
+                                selected: false,
                             })
                             .collect()
                     })
