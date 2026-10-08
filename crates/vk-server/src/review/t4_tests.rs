@@ -176,21 +176,21 @@ async fn snapshot_refuses_a_changing_or_clean_checkout() {
         reason(call(&e, "task.review.snapshot", json!({"task": task})).await),
         "nothing_to_snapshot"
     );
-    // A writer keeps changing the checkout during the capture.
-    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let (stop2, repo) = (stop.clone(), e.repo.clone());
-    let writer = std::thread::spawn(move || {
-        let mut i = 0u64;
-        while !stop2.load(Ordering::Relaxed) {
-            i += 1;
+    // A writer changes the checkout during every capture attempt.
+    let (n, repo) = (
+        Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        e.repo.clone(),
+    );
+    hooks::set(
+        "snapshot_capture",
+        &task,
+        Arc::new(move || {
+            let i = n.fetch_add(1, Ordering::Relaxed);
             std::fs::write(repo.join("busy.txt"), format!("{i}\n")).unwrap();
-            std::thread::sleep(Duration::from_millis(1));
-        }
-    });
-    std::thread::sleep(Duration::from_millis(20));
+        }),
+    );
     let r = call(&e, "task.review.snapshot", json!({"task": task})).await;
-    stop.store(true, Ordering::Relaxed);
-    writer.join().unwrap();
+    hooks::clear("snapshot_capture", &task);
     let err = r.unwrap_err();
     assert_eq!(err.data.details["reason"], "workspace_changing", "{err:?}");
     assert_eq!(

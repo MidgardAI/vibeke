@@ -526,18 +526,19 @@ command = ["sh", "-c", "herdr agent view-clear > \"$HERDR_PLUGIN_STATE_DIR/clear
     let state = s_.path("state/plugins/state/acme.view");
     std::fs::create_dir_all(&state).unwrap();
     let agent = || -> String {
-        s_.herdr(&[
-            "pane",
-            "report-agent",
-            &pane,
-            "--agent",
-            "claude",
-            "--state",
-            "idle",
-        ]);
-        // The report is applied asynchronously; on a slow runner the first list can be empty.
+        // The report is applied asynchronously and lapses after a few seconds, so on a slow
+        // runner it can be gone before the list sees it: report again on every poll.
         let t0 = std::time::Instant::now();
         let target = loop {
+            s_.herdr(&[
+                "pane",
+                "report-agent",
+                &pane,
+                "--agent",
+                "claude",
+                "--state",
+                "idle",
+            ]);
             let agents = s_.herdr(&["agent", "list"]);
             if let Some(id) = agents["agents"][0]["agent_id"].as_str() {
                 break id.to_string();

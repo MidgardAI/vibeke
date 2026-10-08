@@ -1514,6 +1514,21 @@ async fn pre_tool_claims_deny_foreign_edits_when_enforced() {
     assert!(pre_tool_claim(&f.s, "pa", &edit).is_none(), "the owner");
 }
 
+#[tokio::test]
+async fn adapter_gate_needs_a_pane_token_and_passes_plain_signals_through() {
+    let f = fx("gatebasics");
+    let _a = add_run(&f, "ra", "pa", "claude", Execution::Working);
+    let p = json!({"harness": "claude", "event": "PostToolUse", "payload": {}});
+    let r = dispatch(&f.s, &user(), "adapter.gate", &p).await;
+    assert!(
+        matches!(&r, Err(e) if e.code == ErrorKind::PermissionDenied.code()),
+        "{r:?}"
+    );
+    // An event that asks nothing opens no interaction and leaves the harness to decide.
+    let r = ok(&f.s, &pane_ctx("pa"), "adapter.gate", p).await;
+    assert_eq!(r, json!({"decision": null}));
+}
+
 fn put_task_claim(f: &Fx, id: &str, task: &str, glob: &str) {
     let claim = vk_orchestrate::merge::Claim {
         id: id.into(),

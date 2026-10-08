@@ -369,7 +369,14 @@ async fn snapshot_api(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
                 json!({}),
             )
         })?;
-        snapshot::capture_dirty_snapshot(&p2, &base, &SnapshotOptions::default()).map_err(|e| {
+        let hook_task = t2.id.clone();
+        snapshot::capture_dirty_snapshot_with(
+            &p2,
+            &base,
+            &SnapshotOptions::default(),
+            &mut |_| test_hook("snapshot_capture", &hook_task),
+        )
+        .map_err(|e| {
             let extra = match &e {
                 SnapshotError::UnsupportedCapture { what, paths } => json!({
                     "unsupported": what,
