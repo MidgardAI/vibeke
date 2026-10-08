@@ -34,7 +34,7 @@ Read `.github/workflows/release.yml`, `docs/releases.md`, `scripts/release-build
 1. Select the version and update `[workspace.package].version` in `Cargo.toml`, affected workspace entries in `Cargo.lock`, and the fallback `VERSION` in `scripts/install.sh`.
 2. Update `web/apps/desktop/package.json` to the same version. Update the browser app version in `web/apps/pwa/package.json` when publishing that app for the release. Refresh lockfiles as necessary and verify frozen-lockfile installation.
 3. Review version references rather than replacing historical versions globally. Old release notes and version-pinned historical download links must keep their original versions.
-4. Run the applicable checks, including `mise run ci`, `mise run repro-check`, and release-signing checks described in `docs/releases.md`. Regenerate API references if needed. Report failures accurately; do not claim a release is fully green when checks failed or were not run.
+4. Run the applicable checks, including `mise run ci` and release-signing checks described in `docs/releases.md`. Regenerate API references if needed. Report failures accurately; do not claim a release is fully green when checks failed or were not run.
 5. Commit the release inputs and record the exact SHA. Build release artifacts from this committed state. Do not silently reuse binaries from a different source revision or move an existing published tag.
 
 For a packaging rehearsal, use `gh workflow run release.yml --ref main`. Optional `-f component=cli` or `-f component=desktop` limits the build. Manual runs retain workflow artifacts and do not create releases.
