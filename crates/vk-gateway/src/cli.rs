@@ -755,7 +755,7 @@ async fn ensure_login(state: &StateDir, cfg: &Config) -> Result<()> {
     }
     let host = state.host_keys()?.host_id();
     match crate::account::relay_auth(relay, &host).await {
-        Ok(a) if a.tickets => {}
+        Ok(a) if a.needs_account() => {}
         Ok(_) => return Ok(()),
         Err(e) => {
             tracing::debug!("relay status: {e:#}");

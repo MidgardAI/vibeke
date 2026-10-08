@@ -280,8 +280,9 @@ impl std::error::Error for RelayClosed {}
 fn token_refused(http_status: Option<u16>, close: Option<(u16, &str)>) -> bool {
     matches!(http_status, Some(401 | 403))
         || close.is_some_and(|(code, reason)| {
-            code == vk_e2e::relay::close::UNAUTHORIZED
-                && matches!(reason, "not allowed" | "token_invalid")
+            // Only the pre-header relay's reason. A current relay says `token_invalid`
+            // after reading the header, so resending that token in the URL would only leak it.
+            code == vk_e2e::relay::close::UNAUTHORIZED && reason == "not allowed"
         })
 }
 

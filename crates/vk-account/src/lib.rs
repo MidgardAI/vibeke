@@ -6,7 +6,7 @@
 //! user code to a callback and completes by polling alone.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -431,6 +431,42 @@ pub trait CredentialStore: Send + Sync {
     fn save(&self, c: &Credential) -> Result<()>;
     /// `Ok(false)` when there was nothing to delete.
     fn delete(&self, server: &str) -> Result<bool>;
+    /// Exclusive cross-process lock held while a refresh, login or logout reads and then writes
+    /// the credential, so a refresh cannot resurrect a credential another process just deleted.
+    /// Released when the guard drops. Stores without a shared medium return a no-op guard.
+    fn lock(&self) -> Result<Box<dyn std::any::Any + Send>> {
+        Ok(Box::new(()))
+    }
+}
+
+/// An advisory `flock` on a lock file, released on drop.
+/// Dropping the file releases the lock.
+struct FileLock {
+    _file: std::fs::File,
+}
+
+impl FileLock {
+    fn acquire(path: &Path) -> Result<FileLock> {
+        use std::os::fd::AsRawFd;
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let f = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(path)
+            .map_err(|e| Error::Store(format!("lock {}: {e}", path.display())))?;
+        // SAFETY: flock on a valid, open descriptor.
+        if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX) } != 0 {
+            return Err(Error::Store(format!(
+                "lock {}: {}",
+                path.display(),
+                std::io::Error::last_os_error()
+            )));
+        }
+        Ok(FileLock { _file: f })
+    }
 }
 
 /// Keychain account for a server: `account:<host[:port]>` for https, `account:http:<host[:port]>`
@@ -532,6 +568,12 @@ impl CredentialStore for KeychainStore {
         gone |= self.file().delete(SERVICE, &account).map_err(store_err)?;
         Ok(gone)
     }
+
+    fn lock(&self) -> Result<Box<dyn std::any::Any + Send>> {
+        Ok(Box::new(FileLock::acquire(
+            &self.fallback.with_extension("lock"),
+        )?))
+    }
 }
 
 /// In-memory store for tests.
@@ -583,21 +625,28 @@ impl Account {
 
     /// Store a credential from [`Client::login`].
     pub fn save(&self, c: &Credential) -> Result<()> {
+        let _lock = self.store.lock()?;
         self.store.save(c)
     }
 
     /// A valid access token: the cached one, or a refreshed one (`force`: always refresh).
     pub async fn access_token(&self, force: bool) -> Result<String> {
+        // Held across the refresh so a concurrent login or logout in another process cannot
+        // interleave between our read and our write.
+        let _lock = self.store.lock()?;
         let cred = self.credential()?.ok_or(Error::LoginRequired)?;
         if !force && let Some(t) = cred.access_at(now_s()) {
             return Ok(t.to_string());
         }
+        // The refresh token we actually rotated (another process may have rotated ours first).
+        let mut used = cred.refresh_token.clone();
         let t = match self.client.refresh(&cred.refresh_token).await {
             Err(Error::LoginRequired) => {
                 // Another process may have rotated the token meanwhile: retry with its token;
                 // forget the credential only when it is still the one refused.
                 match self.credential()? {
                     Some(now) if now.refresh_token != cred.refresh_token => {
+                        used = now.refresh_token.clone();
                         self.client.refresh(&now.refresh_token).await?
                     }
                     Some(_) => {
@@ -613,7 +662,7 @@ impl Account {
         // Save only if the credential we refreshed is still the stored one. A `logout` that
         // finished meanwhile must stay a logout, and a newer login must not be overwritten.
         match self.credential()? {
-            Some(stored) if stored.refresh_token == cred.refresh_token => {
+            Some(stored) if stored.refresh_token == used => {
                 self.store.save(&fresh)?;
                 Ok(fresh.access_token.clone().unwrap_or_default())
             }
@@ -663,6 +712,7 @@ impl Account {
     /// Revoke the session on the server (best effort) and delete the credential. Returns whether
     /// a credential was stored.
     pub async fn logout(&self) -> Result<bool> {
+        let _lock = self.store.lock()?;
         let Some(cred) = self.credential()? else {
             return Ok(false);
         };
