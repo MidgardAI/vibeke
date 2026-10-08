@@ -7,6 +7,7 @@ import { packagedFeed } from './updater-feed';
 import { UPDATE_FEED, discoverRelease } from './update-release';
 import { electronFetchBytes } from './update-fetch';
 import { UpdateController } from './update-controller';
+import { isVibekeAppImage } from './appimage';
 
 declare const __RELEASE_KEYS__: string[];
 export interface Updates {
@@ -27,9 +28,9 @@ export function startUpdates(changed: (state: UpdateState) => void, beforeInstal
   const manualReason = !app.isPackaged ? 'Development builds must be updated from source.'
     : feed?.replace(/\/$/, '') !== UPDATE_FEED ? 'Install the latest desktop package to enable in-app updates.'
     : process.platform === 'darwin' && !macSigned ? 'This Mac build requires a manual installation.'
-    : process.platform === 'linux' && !process.env.APPIMAGE ? 'Install the new DEB with your package manager, or download an AppImage.' : null;
+    : process.platform === 'linux' && !isVibekeAppImage(process.env, process.execPath, process.platform) ? 'Install the new DEB with your package manager, or download an AppImage.' : null;
   const controller = new UpdateController({ version: app.getVersion(), manualReason,
-    discover: () => discoverRelease(process.platform, process.arch, __RELEASE_KEYS__, electronFetchBytes, process.platform === 'linux' && !process.env.APPIMAGE), changed, beforeInstall, installFailed,
+    discover: () => discoverRelease(process.platform, process.arch, __RELEASE_KEYS__, electronFetchBytes, process.platform === 'linux' && !isVibekeAppImage(process.env, process.execPath, process.platform)), changed, beforeInstall, installFailed,
     installer: () => {
       const impl = require(join(app.getAppPath(), 'out/main/updater-impl.cjs')) as typeof import('./updater-impl');
       return impl.createInstaller();

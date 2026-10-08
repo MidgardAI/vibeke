@@ -4,6 +4,7 @@ import { autoUpdater } from 'electron-updater';
 import { Provider, resolveFiles, type ProviderRuntimeOptions } from 'electron-updater/out/providers/Provider';
 import type { Installer } from './update-controller';
 import { checkedInfo } from './update-info';
+import { isVibekeAppImage } from './appimage';
 
 // The provider gets only the exact metadata already authenticated by update-release.ts.
 // It never fetches mutable latest metadata again between checking and downloading.
@@ -36,7 +37,7 @@ export function createInstaller(): Installer {
       } finally { autoUpdater.removeListener('download-progress', onProgress); }
     },
     install(onError) {
-      const releasesLock = process.platform === 'linux' && !!process.env.APPIMAGE;
+      const releasesLock = isVibekeAppImage(process.env, process.execPath, process.platform);
       installError = (error) => {
         if (releasesLock && !app.requestSingleInstanceLock()) app.quit();
         onError(error);

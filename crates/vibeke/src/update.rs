@@ -381,6 +381,7 @@ async fn online_with(
     if &candidate < newest_local && !o.allow_downgrade {
         bail!("refusing to downgrade from {newest_local}; use --allow-downgrade explicitly");
     }
+    refuse_pane_scope(g).await?;
     r.emit(
         "downloading",
         &format!("Downloading v{}…", release.version),
@@ -569,6 +570,28 @@ fn pane_warning(before: Counts, after: Counts) -> Option<String> {
     }
 }
 
+/// A pane-scoped caller may not restart the server (`server.restart` is pane-forbidden), so
+/// it must not change the installation either: refuse before anything is downloaded.
+async fn refuse_pane_scope(g: &Global) -> Result<()> {
+    let socket = client::socket_path(&g.session, g.socket.as_deref());
+    let Ok(stream) = client::connect(&socket).await else {
+        return Ok(());
+    };
+    let mut c = Client::new(stream);
+    if let Ok(h) = c.hello("cli").await
+        && is_pane_scope(&h)
+    {
+        bail!(
+            "this shell runs inside a Vibeke pane, which may not restart the session; run `vibeke update` from a terminal outside Vibeke, use the update action in the TUI, or approve `vibeke auth elevate` first. Nothing was installed"
+        );
+    }
+    Ok(())
+}
+
+fn is_pane_scope(hello: &Value) -> bool {
+    hello["capabilities"] == json!(["pane"])
+}
+
 async fn connect_running(g: &Global) -> Result<Option<Client<tokio::net::UnixStream>>> {
     let socket = client::socket_path(&g.session, g.socket.as_deref());
     tokio::time::timeout(Duration::from_secs(10), async {
@@ -650,6 +673,17 @@ pub(crate) async fn restart(g: &Global, bin: &Path) -> Result<(Counts, Counts)> 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn pane_scoped_hello_is_detected() {
+        assert!(super::is_pane_scope(
+            &serde_json::json!({"capabilities": ["pane"]})
+        ));
+        assert!(!super::is_pane_scope(
+            &serde_json::json!({"capabilities": ["*"]})
+        ));
+        assert!(!super::is_pane_scope(&serde_json::json!({})));
+    }
+
     use super::*;
     fn args(a: &[&str]) -> Vec<String> {
         a.iter().map(|a| a.to_string()).collect()

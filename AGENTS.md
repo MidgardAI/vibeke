@@ -52,6 +52,7 @@ Wait for all required packaging jobs and inspect the actual draft asset list. Cu
 | Linux desktop | `Vibeke-<version>-linux-x86_64.AppImage`, `Vibeke-<version>-linux-amd64.deb` |
 | Windows desktop | `Vibeke-<version>-win-x64.exe` |
 | Installer | `install.sh`, pinned by the workflow to the tag's version |
+| Desktop update feed | `latest.yml`, `latest-mac.yml`, `latest-linux.yml`, and a `Vibeke-<version>-*.blockmap` per updatable package; all are covered by the signed `SHA256SUMS` |
 
 Do not advertise unsupported architectures or assets that were not produced. Desktop packaging runs `verify:package` for Electron fuses, ASAR layout, and applicable macOS code signatures.
 
