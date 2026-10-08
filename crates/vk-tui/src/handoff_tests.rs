@@ -1026,3 +1026,192 @@ fn pairing_failures_and_unavailable_destinations_stay_in_the_summary() {
     assert!(same_host("Mini.local", "mini"));
     assert!(!same_host("", ""));
 }
+
+/// A `peer.invite` link from host `host` named `name` (the shape the gateway returns).
+fn peer_link(host: &str, name: &str) -> String {
+    use base64::Engine as _;
+    let b = |x: [u8; 32]| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(x);
+    let v = json!({
+        "v": 1, "relay": "wss://relay.example", "host": host, "hk": b([1; 32]),
+        "pid": "pidP", "psk": b([2; 32]), "exp": now_ms() / 1000 + 900, "name": name,
+        "share": {"kind": "peer", "scope": "full", "until": 0, "label": null, "limit": null}
+    });
+    let d =
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(serde_json::to_vec(&v).unwrap());
+    format!("https://app.example/#/pair?d={d}")
+}
+
+/// The send form on m0 with these peers, machine `m1` chosen (the row after the peers) and
+/// submitted: the `peer.invite` request on m1.
+fn pair_m1(app: &mut App, rxs: &mut [UnboundedReceiver<ClientFrame>], peers: Value) -> u64 {
+    commands(&mut rxs[0]);
+    app.action("handoff_send", None);
+    let (req, _) = only(&commands(&mut rxs[0]), "handoff.peers");
+    let n = peers.as_array().map_or(0, Vec::len);
+    reply(app, 0, req, json!({ "peers": peers }));
+    for _ in 0..n {
+        app.on_key(named(NamedKey::Down));
+    }
+    app.on_key(named(NamedKey::Enter));
+    let f = app.ux.handoff.send.as_ref().unwrap();
+    assert!(
+        matches!(&f.chosen, Some(Dest::Machine { mi: 1, .. })),
+        "{:?}",
+        f.chosen
+    );
+    app.on_key(named(NamedKey::Enter));
+    let (req, p) = only(&commands(&mut rxs[1]), "gateway.call");
+    assert_eq!(p, json!({"method": "peer.invite", "params": {}}));
+    req
+}
+
+#[test]
+fn a_same_named_teammate_peer_is_never_the_destination_for_your_machine() {
+    let (mut app, mut rxs) = crate::drafts::tests::fleet_n(2);
+    // A teammate's host is also called m1: your machine m1 is still listed, to pair.
+    let req = pair_m1(
+        &mut app,
+        &mut rxs,
+        json!([{"id": "tm", "name": "m1", "owner": "teammate"}]),
+    );
+    let link = peer_link("H1", "m1");
+    reply(
+        &mut app,
+        1,
+        req,
+        json!({"link": link, "pid": "pidP", "open_by": now_ms() / 1000 + 900}),
+    );
+    // The source's peers by host id: a teammate and an own host both named m1, other hosts.
+    let (req, p) = only(&commands(&mut rxs[0]), "gateway.call");
+    assert_eq!(p, json!({"method": "peer.list", "params": {}}));
+    reply(
+        &mut app,
+        0,
+        req,
+        json!({"peers": [
+            {"id": "tm", "name": "m1", "host": "T9", "owner": "teammate"},
+            {"id": "old", "name": "m1", "host": "H0", "owner": "self"}
+        ]}),
+    );
+    // No identity match: the invitation is redeemed, nothing goes to "tm" or "old".
+    let cmds = commands(&mut rxs[0]);
+    assert!(!cmds.iter().any(|c| c.1 == "handoff.send"), "{cmds:?}");
+    let (req, p) = only(&cmds, "gateway.call");
+    assert_eq!(p["method"], "peer.redeem");
+    assert_eq!(p["params"]["link"], json!(link));
+    reply(
+        &mut app,
+        0,
+        req,
+        json!({"peer": {"id": "pr9", "name": "m1", "owner": "self"}}),
+    );
+    let (_, p) = only(&commands(&mut rxs[0]), "handoff.send");
+    assert_eq!(p, json!({"pane": "p1", "peer": "pr9", "interrupt": false}));
+}
+
+#[test]
+fn an_own_peer_with_the_invitations_host_id_is_used_and_the_invitation_revoked() {
+    let (mut app, mut rxs) = crate::drafts::tests::fleet_n(2);
+    // Paired already, under another name (and a teammate claims the machine's name).
+    let req = pair_m1(
+        &mut app,
+        &mut rxs,
+        json!([{"id": "tm", "name": "m1", "owner": "teammate"},
+               {"id": "mine", "name": "studio", "owner": "self"}]),
+    );
+    reply(
+        &mut app,
+        1,
+        req,
+        json!({"link": peer_link("H1", "m1"), "pid": "pidP"}),
+    );
+    let (req, _) = only(&commands(&mut rxs[0]), "gateway.call");
+    reply(
+        &mut app,
+        0,
+        req,
+        json!({"peers": [
+            {"id": "tm", "name": "m1", "host": "H1", "owner": "teammate"},
+            {"id": "mine", "name": "studio", "host": "H1", "owner": "self"}
+        ]}),
+    );
+    let (_, p) = only(&commands(&mut rxs[1]), "gateway.call");
+    assert_eq!(
+        p,
+        json!({"method": "share.revoke", "params": {"id": "pidP"}})
+    );
+    let (_, p) = only(&commands(&mut rxs[0]), "handoff.send");
+    assert_eq!(p, json!({"pane": "p1", "peer": "mine", "interrupt": false}));
+}
+
+#[test]
+fn a_late_pairing_reply_after_esc_never_drives_a_new_send_form() {
+    let (mut app, mut rxs) = crate::drafts::tests::fleet_n(3);
+    // Form A: p1 to m1; Esc while the invitation is being made.
+    commands(&mut rxs[0]);
+    app.action("handoff_send", None);
+    let (req, _) = only(&commands(&mut rxs[0]), "handoff.peers");
+    reply(&mut app, 0, req, json!({"peers": []}));
+    typ(&mut app, "m1");
+    app.on_key(named(NamedKey::Enter));
+    app.on_key(named(NamedKey::Enter));
+    let (inv_a, _) = only(&commands(&mut rxs[1]), "gateway.call");
+    app.on_key(named(NamedKey::Escape));
+    assert!(app.ux.handoff.send.is_none());
+    // Form B: p2 to m2.
+    pane_menu(&mut app, 0, "p2");
+    app.action("handoff_send", None);
+    let (req, _) = only(&commands(&mut rxs[0]), "handoff.peers");
+    reply(&mut app, 0, req, json!({"peers": []}));
+    typ(&mut app, "m2");
+    app.on_key(named(NamedKey::Enter));
+    app.on_key(named(NamedKey::Enter));
+    let (inv_b, _) = only(&commands(&mut rxs[2]), "gateway.call");
+    // A's invitation arrives: revoked on m1, nothing happens on m0, B still waits for m2.
+    reply(
+        &mut app,
+        1,
+        inv_a,
+        json!({"link": peer_link("H1", "m1"), "pid": "pidA"}),
+    );
+    let (_, p) = only(&commands(&mut rxs[1]), "gateway.call");
+    assert_eq!(
+        p,
+        json!({"method": "share.revoke", "params": {"id": "pidA"}})
+    );
+    assert!(commands(&mut rxs[0]).is_empty());
+    let f = app.ux.handoff.send.as_ref().unwrap();
+    assert_eq!(f.pane, "p2");
+    assert_eq!(f.chosen.as_ref().map(Dest::name), Some("m2"));
+    assert!(f.busy && f.pairing.is_some());
+    // B's invitation (a link without a host id) goes straight to redeem; then Esc and form C.
+    reply(
+        &mut app,
+        2,
+        inv_b,
+        json!({"link": "https://app.example/#/pair?d=xyz", "pid": "pidB"}),
+    );
+    let (redeem_b, p) = only(&commands(&mut rxs[0]), "gateway.call");
+    assert_eq!(p["method"], "peer.redeem");
+    app.on_key(named(NamedKey::Escape));
+    commands(&mut rxs[0]);
+    app.action("handoff_send", None);
+    let (req, _) = only(&commands(&mut rxs[0]), "handoff.peers");
+    reply(&mut app, 0, req, json!({"peers": []}));
+    typ(&mut app, "m1");
+    app.on_key(named(NamedKey::Enter));
+    app.on_key(named(NamedKey::Enter));
+    only(&commands(&mut rxs[1]), "gateway.call");
+    // B's late redeem: no send for form C's pane, C still pairing with m1.
+    reply(
+        &mut app,
+        0,
+        redeem_b,
+        json!({"peer": {"id": "pr2", "name": "m2", "owner": "self"}}),
+    );
+    assert!(commands(&mut rxs[0]).is_empty());
+    let f = app.ux.handoff.send.as_ref().unwrap();
+    assert_eq!(f.pane, "p1");
+    assert_eq!(f.chosen.as_ref().map(Dest::name), Some("m1"));
+    assert!(f.busy && f.pairing.is_some());
+}

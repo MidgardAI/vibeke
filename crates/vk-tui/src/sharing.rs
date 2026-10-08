@@ -74,6 +74,8 @@ pub struct Invite {
     pub kind: InviteKind,
     /// The inviting host's name as the link carries it.
     pub host_name: String,
+    /// The inviting host's id on the relay (`host`): its identity, unlike the name.
+    pub host: String,
     /// Unix seconds: the link must be used before this.
     pub open_by: i64,
     /// Unix seconds: when the pairing it makes ends (handoff invitations).
@@ -135,6 +137,7 @@ pub fn parse_link(s: &str) -> Result<Invite, String> {
     Ok(Invite {
         kind,
         host_name: field("name").unwrap_or_default().to_string(),
+        host: field("host").unwrap_or_default().to_string(),
         open_by,
         until: share
             .and_then(|x| x.get("until"))
