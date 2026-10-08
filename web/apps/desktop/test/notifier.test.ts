@@ -308,4 +308,18 @@ describe('notifier', () => {
       timers.restore();
     }
   });
+
+  test('a pane approval request raises an alert that its end withdraws', async () => {
+    const { notifier, set, replies, shown } = setup();
+    set([host(dash([]))]);
+    notifier.start();
+    replies[0]!.resolve(prefs('summary'));
+    await flush();
+    const ev = (type: string) => ({ seq: 1, ts: 1, type, subject: { pane: 'p1', request: 'q1' }, data: { method: 'handoff.send', summary: 'Send work to peer b' } });
+    notifier.onEvent('h1', ev('auth.approval_requested') as never);
+    await flush();
+    expect(shown.map((n) => [n.title, n.body])).toEqual([['A pane asks to send a handoff', 'Send work to peer b']]);
+    notifier.onEvent('h1', ev('auth.approval_denied') as never);
+    expect(shown[0]!.closed).toBe(true);
+  });
 });

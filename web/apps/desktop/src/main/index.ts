@@ -202,6 +202,7 @@ engine.onPatch((patch) => {
 // Live host events, filtered to the types the UI needs, only to visible windows that subscribed
 // for that host (hidden ones catch up from the dashboard when shown).
 engine.onEvent((hostId, e) => {
+  notifier.onEvent(hostId, e);
   let payload: HostEventPayload | null = null;
   for (const w of windows.all()) {
     if (!w.isVisible() || !eventSubs.wants(w.webContents, hostId)) continue;

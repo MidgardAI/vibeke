@@ -12,7 +12,7 @@
 // new alert and withdraw the notification when gated.
 
 import type { NotificationConstructorOptions } from 'electron';
-import { RpcError, type HostState } from '@vibeke/core';
+import { RpcError, type AppEvent, type HostState } from '@vibeke/core';
 import { AlertTracker, DONE_DEBOUNCE_MS, alertAllowed, alertPrefsFrom, payloadFor, type DoneCandidate, type HostAlertChange, type HostAlertPrefs } from './alerts';
 import type { Engine } from './engine';
 
@@ -37,6 +37,9 @@ export interface NotificationLike {
   on(ev: 'click' | 'close', cb: () => void): unknown;
   on(ev: 'action', cb: (e: unknown, index: number) => void): unknown;
 }
+
+/** What an approved call does, for the alert title (mirrors the UI's approvals verbs). */
+const APPROVAL_VERBS: Record<string, string> = { 'handoff.send': 'send a handoff', 'handoff.cancel': 'cancel a handoff', 'gateway.call': 'redeem a peer invitation' };
 
 const PREFS_REFRESH_MS = 5 * 60_000;
 /** Gateways without `prefs.get` (older builds): the most private behaviour. */
@@ -65,6 +68,8 @@ export class Notifier {
   /** Backoff retries of `prefs.get` while an alert waits for preferences. */
   private retries = new Map<string, { attempt: number; timer: ReturnType<typeof setTimeout> | null }>();
   private doneTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** Pane approval requests awaiting a decision (notification tags). */
+  private approvals = new Set<string>();
   private off: (() => void) | null = null;
   private stopped = false;
 
@@ -97,6 +102,34 @@ export class Notifier {
     for (const id of [...this.retries.keys()]) this.clearRetry(id);
     for (const s of this.shown.values()) s.n.close();
     this.shown.clear();
+    this.approvals.clear();
+  }
+
+  /**
+   * Host events: a pane's approval request raises its own alert (click opens the review screen,
+   * no decision buttons); granted / denied / withdrawn withdraw it. Same gates as other input alerts.
+   */
+  onEvent(hostId: string, e: AppEvent): void {
+    const request = e.subject.request;
+    if (!request || this.stopped) return;
+    const tag = `${hostId}:approval:${request}`;
+    if (e.type === 'auth.approval_granted' || e.type === 'auth.approval_denied' || e.type === 'auth.approval_withdrawn') {
+      this.approvals.delete(tag);
+      this.close(tag);
+      return;
+    }
+    if (e.type !== 'auth.approval_requested') return;
+    this.approvals.add(tag);
+    const method = typeof e.data.method === 'string' ? e.data.method : '';
+    const summary = typeof e.data.summary === 'string' ? e.data.summary : '';
+    void (async () => {
+      const p = await this.prefsFor(hostId);
+      if (!p || this.stopped || !this.approvals.has(tag)) return; // unknown prefs fail closed; or ended meanwhile
+      if (!this.hooks.enabled() || this.hooks.appFocused() || !alertAllowed(p, this.now(), 'input')) return;
+      const title = `A pane asks to ${APPROVAL_VERBS[method] ?? 'run a call'}`;
+      const body = p.privacy === 'minimal' ? '' : summary;
+      this.show(tag, hostId, title, body, `#/approve/${encodeURIComponent(hostId)}/${encodeURIComponent(request)}`, null);
+    })();
   }
 
   /** The renderer changed prefs on a host (prefs.set): refetch; until then nothing is delivered. */
