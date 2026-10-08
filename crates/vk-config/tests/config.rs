@@ -369,49 +369,71 @@ fn config_path_resolution() {
     );
 }
 
+/// Saves `src` the way editors do: a temporary file renamed over `p`. A plain
+/// `std::fs::write` truncates first, so a stalled writer could let the watcher read an empty
+/// (valid, all-defaults) file between the truncate and the write.
+fn save(p: &Path, src: &str) {
+    let tmp = p.with_extension("toml.tmp");
+    std::fs::write(&tmp, src).unwrap();
+    std::fs::rename(&tmp, p).unwrap();
+}
+
+fn reloaded_theme(ev: ReloadEvent) -> String {
+    match ev {
+        ReloadEvent::Reloaded {
+            config, changed, ..
+        } => {
+            assert_eq!(changed, vec!["theme.name"]);
+            config.theme.name
+        }
+        other => panic!("unexpected {other:?}"),
+    }
+}
+
 #[test]
 fn watcher_reloads_debounced_and_rejects_bad_config() {
+    // The server's debounce.
+    const DEBOUNCE: Duration = Duration::from_millis(250);
     let dir = tempfile::tempdir().unwrap();
     let p = dir.path().join("config.toml");
     std::fs::write(&p, "[theme]\nname = \"nord\"\n").unwrap();
     let (cur, _) = Config::load(&p).unwrap();
-    let (_w, rx) = watch(&p, cur, Duration::from_millis(100)).unwrap();
+    let (_w, rx) = watch(&p, cur, DEBOUNCE).unwrap();
     std::thread::sleep(Duration::from_millis(200));
 
     // Burst of writes collapses into one event.
+    let started = std::time::Instant::now();
     for name in ["dracula", "gruvbox", "vesper"] {
-        std::fs::write(&p, format!("[theme]\nname = \"{name}\"\n")).unwrap();
+        save(&p, &format!("[theme]\nname = \"{name}\"\n"));
         std::thread::sleep(Duration::from_millis(10));
     }
-    match rx.recv_timeout(Duration::from_secs(10)).unwrap() {
-        ReloadEvent::Reloaded {
-            config, changed, ..
-        } => {
-            assert_eq!(config.theme.name, "vesper");
-            assert_eq!(changed, vec!["theme.name"]);
+    let burst = started.elapsed();
+    let first = reloaded_theme(rx.recv_timeout(Duration::from_secs(10)).unwrap());
+    if burst < DEBOUNCE / 2 {
+        assert_eq!(first, "vesper");
+        assert!(rx.recv_timeout(2 * DEBOUNCE).is_err());
+    } else {
+        // The runner stalled the writer for longer than the debounce, so the burst was
+        // legitimately seen as separate saves; it must still settle on the last one.
+        eprintln!("burst took {burst:?}; not checking that it collapsed");
+        let mut last = first;
+        while last != "vesper" {
+            last = reloaded_theme(rx.recv_timeout(Duration::from_secs(10)).unwrap());
         }
-        other => panic!("unexpected {other:?}"),
+        assert!(rx.recv_timeout(2 * DEBOUNCE).is_err());
     }
-    assert!(rx.recv_timeout(Duration::from_millis(400)).is_err());
 
     // A broken file is rejected, not applied.
-    std::fs::write(&p, "[theme\nname = 1\n").unwrap();
+    save(&p, "[theme\nname = 1\n");
     match rx.recv_timeout(Duration::from_secs(10)).unwrap() {
         ReloadEvent::Rejected(e) => assert!(e.first_diagnostic().is_some()),
         other => panic!("unexpected {other:?}"),
     }
 
     // Fixing it applies, diffed against the last *accepted* config (vesper).
-    std::fs::write(&p, "[theme]\nname = \"kanagawa\"\n").unwrap();
-    match rx.recv_timeout(Duration::from_secs(10)).unwrap() {
-        ReloadEvent::Reloaded {
-            config, changed, ..
-        } => {
-            assert_eq!(config.theme.name, "kanagawa");
-            assert_eq!(changed, vec!["theme.name"]);
-        }
-        other => panic!("unexpected {other:?}"),
-    }
+    save(&p, "[theme]\nname = \"kanagawa\"\n");
+    let fixed = reloaded_theme(rx.recv_timeout(Duration::from_secs(10)).unwrap());
+    assert_eq!(fixed, "kanagawa");
 }
 
 #[test]
