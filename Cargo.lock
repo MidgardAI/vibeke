@@ -3373,6 +3373,7 @@ dependencies = [
  "toml_edit",
  "tracing",
  "tracing-subscriber",
+ "vk-account",
  "vk-agents",
  "vk-assist",
  "vk-browser",
@@ -3390,6 +3391,21 @@ dependencies = [
  "vk-tasks",
  "vk-term",
  "vk-tui",
+]
+
+[[package]]
+name = "vk-account"
+version = "0.2.0"
+dependencies = [
+ "axum",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "vk-e2e",
+ "vk-store",
 ]
 
 [[package]]
@@ -3550,6 +3566,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "ulid",
+ "vk-account",
  "vk-e2e",
  "vk-handoff",
  "vk-proto",

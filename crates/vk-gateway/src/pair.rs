@@ -117,6 +117,19 @@ fn is_bidi_control(c: char) -> bool {
 
 const CONFIRM_TIMEOUT: Duration = Duration::from_secs(120);
 
+/// How long a device's relay ticket lasts (spec 16 §6.6); apps renew with `relay.ticket`.
+pub const DEVICE_TICKET_TTL: Duration = Duration::from_secs(30 * 24 * 3600);
+
+/// A relay ticket for device `id` (`dev:<id>`), valid for [`DEVICE_TICKET_TTL`] but never past the
+/// device's own expiry. Returns the ticket and its expiry (unix seconds).
+pub fn device_ticket(keys: &vk_e2e::HostKeys, id: &str, expires_at: Option<u64>) -> (String, u64) {
+    let exp = (now_s() + DEVICE_TICKET_TTL.as_secs()).min(expires_at.unwrap_or(u64::MAX));
+    (
+        vk_e2e::relay::sign_ticket(keys, &format!("dev:{id}"), exp),
+        exp,
+    )
+}
+
 /// Runs after the IKpsk2 handshake. The device proves psk possession with its first transport
 /// message (`pair.claim`); only then is anything recorded (spec 16 §4.2–§4.3).
 pub async fn claim(
@@ -299,7 +312,9 @@ pub async fn claim(
     if consumed {
         LIMITER.lock().unwrap().forget(&pairing.pid);
         gw.state.audit(&json!({"ts": now_s(), "event": "device.paired", "device": device.id, "name": name, "fingerprint": fingerprint, "kind": device.kind}));
-        out.notify("pair.done", json!({"device_id": device.id, "host_name": gw.host_name, "host_id": gw.keys.host_id(), "scope": device.scope, "kind": device.kind})).await;
+        let (ticket, ticket_exp) = device_ticket(&gw.keys, &device.id, device.expires_at);
+        out.notify("pair.done", json!({"device_id": device.id, "host_name": gw.host_name, "host_id": gw.keys.host_id(), "scope": device.scope, "kind": device.kind,
+                                       "ticket": ticket, "ticket_exp": ticket_exp})).await;
     } else {
         // Back to pending: a hijacked claim must not lock the owner out (spec 16 §4.3). But a
         // pairing whose claims the operator keeps rejecting has leaked; withdraw it.
@@ -371,6 +386,8 @@ pub fn create_with(
         serde_json::json!({"kind": sh.kind, "scope": scope.as_str(), "until": sh.until,
                            "label": sh.label, "limit": sh.limit})
     });
+    // Admits the claim on relays that require tickets (spec 16 §6.6); harmless elsewhere.
+    let tk = vk_e2e::relay::sign_ticket(&keys, &format!("pid:{pid}"), exp);
     let link = PairingLink {
         v: 1,
         relay: crate::relay_client::ws_base(relay),
@@ -381,7 +398,7 @@ pub fn create_with(
         exp,
         name: host_name.into(),
         share: share_json,
-        tk: None,
+        tk: Some(tk),
     };
     Ok((pairing, link))
 }

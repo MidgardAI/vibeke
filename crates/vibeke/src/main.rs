@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use vk_cli::client;
 use vk_cli::{EXIT_NO_SERVER, EXIT_OK, EXIT_USAGE, Global};
 
+mod account_cmd;
 mod commands;
 mod config_cmd;
 mod debug;
@@ -52,6 +53,7 @@ usage:
   vibeke completion bash|zsh|fish|nu|powershell
   vibeke gateway run|on|off|logs|pair|share|devices|invites|revoke|peer|status   reach this host from phone/desktop apps (E2E via a relay)
   vibeke relay --public-url URL [--app-dir DIR]         run a self-hosted relay
+  vibeke login [--server URL] [--no-browser] | logout | whoami   the account a hosted relay requires
   vibeke api call <method> [json]
   vibeke --skill | --default-config | --version
 
@@ -311,6 +313,7 @@ async fn dispatch(g: Global, args: Vec<String>) -> i32 {
             EXIT_OK
         }
         Some("server") => commands::server(&g, &args[1..]).await,
+        Some(cmd @ ("login" | "logout" | "whoami")) => account_cmd::run(cmd, &args[1..]).await,
         Some("bridge") => commands::bridge(&g, &args[1..]).await,
         Some("sandbox") if args.get(1).map(String::as_str) == Some("bridge") => {
             remote::box_bridge(&args[2..]).await

@@ -391,6 +391,9 @@ pub async fn run_as<I: IntoIterator<Item = String>>(prog: &'static str, args: I)
                 cfg.autostart = Some(true);
                 Ok(())
             })?;
+            // A relay that requires accounts (spec 16 §6.6): log in first, so the gateway can
+            // come online and the device's link is usable.
+            ensure_login(&state, &cfg).await?;
             // New connection settings reach a running gateway only through a restart.
             let restart = needs_restart(&before, &cfg, running_status(&state.dir).as_ref());
             match start_gateway(&cfg, &state.dir, restart).await {
@@ -665,6 +668,9 @@ pub async fn run_as<I: IntoIterator<Item = String>>(prog: &'static str, args: I)
                 "relay        {}",
                 cfg.relay.as_deref().unwrap_or("(not set)")
             );
+            if cfg.relay.is_some() && cfg.relay_token.is_none() {
+                println!("account      {}", crate::account::account_server(&cfg));
+            }
             println!(
                 "app url      {}",
                 cfg.app_url
@@ -728,8 +734,56 @@ fn update_config(
 }
 
 /// The settings a running gateway connects with (read once at its start).
-fn connection(c: &Config) -> [&Option<String>; 4] {
-    [&c.relay, &c.app_url, &c.relay_token, &c.host_name]
+fn connection(c: &Config) -> [&Option<String>; 5] {
+    [
+        &c.relay,
+        &c.app_url,
+        &c.relay_token,
+        &c.host_name,
+        &c.account_url,
+    ]
+}
+
+/// `pair` on a relay that requires accounts and without a stored login: run the device-code
+/// login inline (same output as `vibeke login`). A private relay's static token needs none.
+async fn ensure_login(state: &StateDir, cfg: &Config) -> Result<()> {
+    let Some(relay) = cfg.relay.as_deref() else {
+        return Ok(());
+    };
+    if cfg.relay_token.is_some() {
+        return Ok(());
+    }
+    let host = state.host_keys()?.host_id();
+    match crate::account::relay_auth(relay, &host).await {
+        Ok(a) if a.tickets => {}
+        Ok(_) => return Ok(()),
+        Err(e) => {
+            tracing::debug!("relay status: {e:#}");
+            return Ok(());
+        }
+    }
+    let acct = crate::account::account(&crate::account::account_server(cfg), &state.dir)?;
+    let has = {
+        let a = acct.clone();
+        tokio::task::spawn_blocking(move || a.credential())
+            .await??
+            .is_some()
+    };
+    if has {
+        return Ok(());
+    }
+    println!("This relay needs a Vibeke account. Log in first.\n");
+    crate::account::login_interactive(&acct, Some(&host), true).await?;
+    println!();
+    Ok(())
+}
+
+/// How a gateway state reads in `status`: `login_required` spelled out with what to do.
+fn state_text(state: &str) -> String {
+    match state {
+        "login_required" => "login required (run: vibeke login)".into(),
+        s => s.into(),
+    }
 }
 
 /// Whether `gateway.start` must replace a running gateway: the connection settings changed, or
@@ -828,7 +882,7 @@ fn print_gateway_status(st: &Value) {
             .unwrap_or("-")
             .to_string()
     };
-    println!("gateway      {}", s("state"));
+    println!("gateway      {}", state_text(&s("state")));
     if let Some(pid) = st.get("pid").and_then(|v| v.as_u64()) {
         println!("pid          {pid}");
     }
@@ -900,12 +954,12 @@ fn running_text(dir: &std::path::Path) -> String {
         Some(s) => {
             let mut t = format!(
                 "{} · pid {pid} · for {} · {} device{}",
-                s.state,
+                state_text(&s.state),
                 ago_text(crate::state::now_ms(), s.since_ms),
                 s.devices,
                 if s.devices == 1 { "" } else { "s" }
             );
-            if let Some(e) = s.last_error {
+            if let Some(e) = s.last_error.filter(|_| s.state != "login_required") {
                 t.push_str(&format!(" · last error: {e}"));
             }
             t
@@ -1423,6 +1477,8 @@ mod tests {
                 owner: "teammate".into(),
                 added_at: 0,
                 expires_at: None,
+                ticket: None,
+                ticket_exp: None,
             }],
             0,
         );
