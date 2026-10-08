@@ -285,11 +285,10 @@ async fn prepare(
                 name: job.peer_name.clone(),
                 owner: "teammate".into(),
             });
-            let progress = if job.total > 0 {
-                format!(", {}% sent", job.sent * 100 / job.total)
-            } else {
-                String::new()
-            };
+            let progress = (job.sent * 100)
+                .checked_div(job.total)
+                .map(|pct| format!(", {pct}% sent"))
+                .unwrap_or_default();
             let summary = format!(
                 "Cancel the handoff of pane {handle} to {} ({}; {}{progress})",
                 peer.name,
@@ -642,12 +641,7 @@ async fn run_approved(server: &Arc<Server>, approver: &Ctx, r: &Request) -> R {
         "gateway.call" => {
             let method = s(&f.params, "method").unwrap_or("");
             let params = f.params.get("params").cloned().unwrap_or(Value::Null);
-            // INTEGRATION: `crate::gateway_bridge::call` is added on the gateway.call branch
-            // (crates/vk-server/src/gateway_bridge.rs). Adjust the argument and error types to
-            // its final signature, e.g. `.map_err(RpcError::from)` or a small conversion.
-            crate::gateway_bridge::call(server, method, params, GATEWAY_TIMEOUT)
-                .await
-                .map_err(Into::into)
+            crate::gateway_bridge::call(server, method, params, GATEWAY_TIMEOUT).await
         }
         other => Err(invalid(format!("{other} can't be approved"))),
     }
