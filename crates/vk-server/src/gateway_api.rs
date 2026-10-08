@@ -20,6 +20,8 @@ pub struct State {
     confirms: Mutex<HashMap<String, oneshot::Sender<Option<String>>>>,
     /// Devices a gateway reports as connected (`client.devices`), by reporting client id.
     devices: Mutex<HashMap<String, Vec<Value>>>,
+    /// Requests waiting for the gateway, and the gateways connected (`gateway.call`).
+    pub(crate) bridge: crate::gateway_bridge::Bridge,
 }
 
 fn state(server: &Server) -> &State {

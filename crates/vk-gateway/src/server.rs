@@ -240,6 +240,11 @@ async fn events_once(path: &PathBuf, hub: &Hub) -> anyhow::Result<()> {
         match v.get("method").and_then(|m| m.as_str()) {
             Some("events.event") => {
                 if let Some(ev) = v.pointer("/params/event") {
+                    // Not a fact for devices: the server asks this gateway to do something.
+                    if ev.get("type").and_then(|t| t.as_str()) == Some("gateway.request") {
+                        hub.push_request(ev.get("data").cloned().unwrap_or(Value::Null));
+                        continue;
+                    }
                     hub.push(ev.clone());
                 }
             }

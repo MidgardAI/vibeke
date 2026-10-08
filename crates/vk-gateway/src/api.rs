@@ -1311,6 +1311,11 @@ impl Call<'_> {
     }
 }
 
+/// `share.create` for the server bridge (`gateway.call`): the same code as the app API.
+pub fn share_create_as(gw: &Arc<Gateway>, device: &Device, p: &Value) -> ApiResult {
+    Call { gw, device }.share_create(p)
+}
+
 impl Call<'_> {
     fn share_create(&self, p: &Value) -> ApiResult {
         let kind = s(p, "kind").unwrap_or("share");

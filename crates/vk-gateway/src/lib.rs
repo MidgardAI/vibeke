@@ -3,6 +3,7 @@
 //! Web Push.
 
 pub mod api;
+pub mod bridge;
 pub mod cli;
 pub mod events;
 pub mod handoff;
@@ -402,6 +403,8 @@ pub async fn run(gw: Arc<Gateway>) -> Result<()> {
     tokio::spawn(notify::run(gw.clone()));
     // Outgoing handoffs (server jobs) and the peer list clients choose from.
     tokio::spawn(handoff_send::run(gw.clone()));
+    // Requests from the server (`gateway.call`): peers and invitations for the TUI.
+    tokio::spawn(bridge::run(gw.clone()));
     tokio::spawn({
         let gw = gw.clone();
         async move {
