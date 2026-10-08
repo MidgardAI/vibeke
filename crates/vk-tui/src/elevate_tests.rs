@@ -1,11 +1,15 @@
 //! Request review view: elevation and approved-call requests from pushed events and
 //! `auth.list`, the chrome-only notice, the view replacing the pane area (the requesting pane's
 //! content is not on screen), the arm delay, explicit y/n (and a for approved calls) through
-//! `auth.elevate.decide` / `auth.approve.decide`, never auto-approving, the auto-open rule for a
-//! command just typed in the focused shell pane, scoped clients, and errors.
+//! `auth.elevate.decide` / `auth.approve.decide`, never auto-approving, never opening by itself
+//! (not even for the focused shell pane running vibeke), the selection kept by request id and
+//! cleared when that request goes away, re-arming on every change of selection, fresh unmodified
+//! presses only (no repeats, releases, hyper/meta, keys held since before arming), scoped
+//! clients, and errors.
 
 use super::*;
 use crate::drafts::tests::{ch, commands, fleet, fleet_n, named, only, reply, reply_err, screen};
+use vk_proto::input::Mods;
 use vk_proto::render::{PushedEvent, ServerFrame};
 
 fn event(app: &mut App, mi: usize, kind: &str, v: Value) {
@@ -116,8 +120,16 @@ fn keys_within_the_arm_delay_and_modified_keys_never_decide() {
     assert!(matches!(app.mode, Mode::Popup(Popup::Elevate)));
     assert!(commands(&mut rx[0]).is_empty(), "never auto-approved");
     app.ux.elevate.view.as_mut().unwrap().opened_at = Instant::now() - ARM_DELAY * 2;
-    app.on_key(KeyEvent::new(Key::Char('y'), Mods::CTRL));
-    app.on_key(KeyEvent::new(Key::Char('y'), Mods::ALT));
+    for m in [
+        Mods::CTRL,
+        Mods::ALT,
+        Mods::SUPER,
+        Mods::HYPER,
+        Mods::META,
+        Mods::SHIFT,
+    ] {
+        app.on_key(KeyEvent::new(Key::Char('y'), m));
+    }
     assert!(commands(&mut rx[0]).is_empty());
     // Esc closes without deciding; the request stays.
     app.on_key(named(NamedKey::Escape));
@@ -157,6 +169,12 @@ fn y_approves_through_auth_elevate_decide_and_n_denies() {
             .contains("approved elevation for w1:p1")
     );
     assert!(matches!(app.mode, Mode::Popup(Popup::Elevate)));
+    // The decided request is gone: nothing is selected until the user selects again.
+    app.on_key(ch('n'));
+    assert!(commands(&mut rx[0]).is_empty());
+    assert!(screen(&app).contains("select one with j/k"));
+    app.on_key(ch('j'));
+    arm(&mut app);
     app.on_key(ch('n'));
     let (req, p) = only(&commands(&mut rx[0]), "auth.elevate.decide");
     assert_eq!(p, json!({"request": "el-2", "decision": "deny"}));
@@ -297,8 +315,14 @@ fn arm(app: &mut App) {
     app.ux.elevate.view.as_mut().unwrap().opened_at = Instant::now() - ARM_DELAY * 2;
 }
 
+fn with_kind(mut e: KeyEvent, k: KeyKind) -> KeyEvent {
+    e.kind = k;
+    e
+}
+
 #[test]
-fn approval_from_the_focused_shell_pane_running_vibeke_opens_at_once() {
+fn approval_from_the_focused_shell_pane_running_vibeke_does_not_open_the_view() {
+    // A pane controls its own argv: looking like the vibeke CLI earns nothing.
     let (mut app, mut rx) = fleet();
     app.ux.elevate.scoped_override = Some(false);
     app.machines[0].panes.get_mut("p2").unwrap().lines = vec![row_of("PANE-CONTENT")];
@@ -307,95 +331,137 @@ fn approval_from_the_focused_shell_pane_running_vibeke_opens_at_once() {
         &["/usr/local/bin/vibeke", "handoff", "send", "marvin"],
     );
     approval(&mut app, 0, "ap-1", "p2", "handoff.send", true);
-    assert!(matches!(app.mode, Mode::Popup(Popup::Elevate)));
-    let v = app.ux.elevate.view.as_ref().unwrap();
-    assert!(v.auto);
-    // Opened, never decided: nothing is sent, and the keys typed right after are swallowed.
-    for c in "yay".chars() {
-        app.on_key(ch(c));
-    }
-    assert!(commands(&mut rx[0]).is_empty(), "never auto-approved");
-    assert!(matches!(app.mode, Mode::Popup(Popup::Elevate)));
-    // It replaces the pane area: the pane's content is not on screen.
+    app.on_tick();
+    assert!(matches!(app.mode, Mode::Normal));
+    assert!(app.ux.elevate.view.is_none());
+    assert!(commands(&mut rx[0]).is_empty());
+    // Only the notice, and the pane stays on screen.
     let s = screen(&app);
-    assert!(s.contains("drawn by Vibeke, not by any pane"), "{s}");
-    assert!(s.contains("asks to send a handoff"), "{s}");
-    assert!(s.contains("Opened because you just ran vibeke"), "{s}");
-    assert!(!s.contains("PANE-CONTENT"), "{s}");
-}
-
-#[test]
-fn approval_auto_opens_when_the_foreground_process_arrives_after_the_request() {
-    let (mut app, _rx) = fleet();
-    app.ux.elevate.scoped_override = Some(false);
-    focus_shell(&mut app, &["-zsh"]);
-    approval(&mut app, 0, "ap-1", "p2", "handoff.send", true);
-    assert!(matches!(app.mode, Mode::Normal));
-    // The server reports the pane's new foreground process a moment later.
-    focus_shell(&mut app, &["vibeke", "handoff", "send", "marvin"]);
-    app.on_tick();
-    assert!(matches!(app.mode, Mode::Popup(Popup::Elevate)));
-    // Closed with esc: it does not open again by itself.
-    app.on_key(named(NamedKey::Escape));
-    app.on_tick();
-    assert!(matches!(app.mode, Mode::Normal));
-    assert_eq!(app.ux.elevate.requests.len(), 1);
-    // Too late: a request older than the window only shows the notice.
-    let (mut app, _rx) = fleet();
-    app.ux.elevate.scoped_override = Some(false);
-    focus_shell(&mut app, &["zsh"]);
-    approval(&mut app, 0, "ap-2", "p2", "handoff.send", true);
-    app.ux.elevate.auto[0].2 = Instant::now() - AUTO_OPEN_WINDOW * 2;
-    focus_shell(&mut app, &["vibeke", "handoff", "send", "marvin"]);
-    app.on_tick();
-    assert!(matches!(app.mode, Mode::Normal));
-}
-
-#[test]
-fn approval_never_auto_opens_for_an_agent_pane_an_unfocused_pane_or_another_program() {
-    // An agent pane (p1 runs claude), focused, even with vibeke in the foreground.
-    let (mut app, mut rx) = fleet();
-    app.ux.elevate.scoped_override = Some(false);
-    app.machines[0].model.panes[0].fg_cmdline = vec!["vibeke".into(), "handoff".into()];
-    approval(&mut app, 0, "ap-1", "p1", "handoff.send", true);
-    assert!(matches!(app.mode, Mode::Normal));
-    let top = screen(&app);
-    let top = top.lines().next().unwrap();
+    let top = s.lines().next().unwrap();
     assert!(top.contains("asks to send a handoff"), "{top}");
     assert!(top.contains("prefix+shift+e"), "{top}");
-    assert!(commands(&mut rx[0]).is_empty());
-    // A shell pane running vibeke, but not focused (p1 is).
-    let (mut app, _rx) = fleet();
-    app.ux.elevate.scoped_override = Some(false);
+    assert!(s.contains("PANE-CONTENT"), "{s}");
+    // The foreground process changing later does not open it either.
     focus_shell(&mut app, &["vibeke", "handoff", "send", "marvin"]);
-    app.machines[0].focus.pane = Some("p1".into());
-    approval(&mut app, 0, "ap-1", "p2", "handoff.send", true);
     app.on_tick();
     assert!(matches!(app.mode, Mode::Normal));
-    // The focused shell pane, but the foreground is a script (or the gateway), not the CLI.
-    for fg in [&["bash", "deploy.sh"][..], &["vibeke-gateway"][..], &[][..]] {
-        let (mut app, _rx) = fleet();
-        app.ux.elevate.scoped_override = Some(false);
-        focus_shell(&mut app, fg);
-        approval(&mut app, 0, "ap-1", "p2", "handoff.send", true);
-        app.on_tick();
-        assert!(matches!(app.mode, Mode::Normal), "{fg:?}");
+}
+
+#[test]
+fn a_withdrawn_selection_selects_nothing_and_a_new_selection_re_arms() {
+    let (mut app, mut rx) = fleet();
+    app.ux.elevate.scoped_override = Some(false);
+    approval(&mut app, 0, "ap-a", "p1", "handoff.send", true);
+    approval(&mut app, 0, "ap-b", "p2", "handoff.send", true);
+    open_armed(&mut app);
+    assert_eq!(
+        app.ux.elevate.view.as_ref().unwrap().sel,
+        Some((0, "ap-a".to_string()))
+    );
+    // The pane withdraws A just before the user presses y: B must not be approved.
+    event(
+        &mut app,
+        0,
+        "auth.approval_withdrawn",
+        json!({"subject": {"pane": "p1", "request": "ap-a"}, "data": {}}),
+    );
+    assert_eq!(app.ux.elevate.view.as_ref().unwrap().sel, None);
+    for c in "yan".chars() {
+        app.on_key(ch(c));
     }
-    // Another machine than the one this client shows.
-    let (mut app, _rx) = fleet_n(2);
+    assert!(
+        commands(&mut rx[0]).is_empty(),
+        "nothing selected, nothing decided"
+    );
+    assert!(matches!(app.mode, Mode::Popup(Popup::Elevate)));
+    let s = screen(&app);
+    assert!(s.contains("select one with j/k"), "{s}");
+    assert!(s.contains("ap-b"), "{s}");
+    // Selecting B re-arms: keys right after it are ignored.
+    app.on_key(ch('j'));
+    assert_eq!(
+        app.ux.elevate.view.as_ref().unwrap().sel,
+        Some((0, "ap-b".to_string()))
+    );
+    app.on_key(ch('y'));
+    assert!(
+        commands(&mut rx[0]).is_empty(),
+        "re-armed after the selection changed"
+    );
+    arm(&mut app);
+    app.on_key(ch('y'));
+    let (_, p) = only(&commands(&mut rx[0]), "auth.approve.decide");
+    assert_eq!(p, json!({"request": "ap-b", "decision": "approve"}));
+    // j/k to another request re-arms too.
+    let (mut app, mut rx) = fleet();
     app.ux.elevate.scoped_override = Some(false);
-    focus_shell(&mut app, &["vibeke"]);
-    app.machines[1].focus.pane = Some("p2".into());
-    app.machines[1].model.panes[1].fg_cmdline = vec!["vibeke".into()];
-    approval(&mut app, 1, "ap-1", "p2", "handoff.send", true);
-    assert!(matches!(app.mode, Mode::Normal));
-    // Elevation never opens by itself, even from such a pane.
-    let (mut app, _rx) = fleet();
+    approval(&mut app, 0, "ap-a", "p1", "handoff.send", true);
+    approval(&mut app, 0, "ap-b", "p2", "handoff.send", true);
+    open_armed(&mut app);
+    app.on_key(ch('j'));
+    app.on_key(ch('y'));
+    assert!(commands(&mut rx[0]).is_empty());
+    // An auth.list snapshot without the selected request clears the selection as well.
+    arm(&mut app);
+    crate::elevate::on_connected(&mut app, 0);
+    let (req, _) = only(&commands(&mut rx[0]), "auth.list");
+    let t = now_ms();
+    reply(
+        &mut app,
+        0,
+        req,
+        json!({"pending": [], "approvals": [{"request": "ap-a", "pane": "p1", "method": "handoff.send",
+               "summary": "x", "created_at_ms": t, "status": "pending"}]}),
+    );
+    assert_eq!(app.ux.elevate.view.as_ref().unwrap().sel, None);
+    app.on_key(ch('y'));
+    assert!(commands(&mut rx[0]).is_empty());
+}
+
+#[test]
+fn repeats_releases_and_keys_held_since_before_arming_never_decide() {
+    let (mut app, mut rx) = fleet();
+    app.kitty = true;
     app.ux.elevate.scoped_override = Some(false);
-    focus_shell(&mut app, &["vibeke", "auth", "elevate"]);
-    requested(&mut app, 0, "el-1", "p2", "x");
-    app.on_tick();
-    assert!(matches!(app.mode, Mode::Normal));
+    approval(&mut app, 0, "ap-1", "p1", "handoff.send", true);
+    // `y` held from before the view opened: only its repeats (and release) reach the view.
+    open_armed(&mut app);
+    app.on_key(with_kind(ch('y'), KeyKind::Repeat));
+    app.on_key(with_kind(ch('y'), KeyKind::Repeat));
+    assert!(commands(&mut rx[0]).is_empty(), "a repeat never decides");
+    // A press without the release seen in between does not count either.
+    app.on_key(ch('y'));
+    assert!(commands(&mut rx[0]).is_empty());
+    app.on_key(with_kind(ch('y'), KeyKind::Release));
+    assert!(commands(&mut rx[0]).is_empty(), "a release never decides");
+    // Pressed while not armed and still held when the delay ends.
+    app.ux.elevate.view.as_mut().unwrap().opened_at = Instant::now();
+    app.on_key(ch('a'));
+    arm(&mut app);
+    app.on_key(with_kind(ch('a'), KeyKind::Repeat));
+    app.on_key(ch('a'));
+    assert!(commands(&mut rx[0]).is_empty(), "held since before arming");
+    app.on_key(with_kind(ch('a'), KeyKind::Release));
+    // Hyper and meta are modifiers too.
+    app.on_key(KeyEvent::new(Key::Char('y'), Mods::HYPER));
+    app.on_key(KeyEvent::new(Key::Char('y'), Mods::META));
+    assert!(commands(&mut rx[0]).is_empty());
+    // Released, then a fresh plain press: decides.
+    app.on_key(ch('y'));
+    let (_, p) = only(&commands(&mut rx[0]), "auth.approve.decide");
+    assert_eq!(p, json!({"request": "ap-1", "decision": "approve"}));
+    // Without the kitty protocol (no repeats or releases reported) the arm delay is the guard:
+    // a key typed during it does not lock that key out.
+    let (mut app, mut rx) = fleet();
+    app.ux.elevate.scoped_override = Some(false);
+    approval(&mut app, 0, "ap-1", "p1", "handoff.send", true);
+    app.action("elevation_requests", None);
+    app.on_key(ch('n'));
+    assert!(commands(&mut rx[0]).is_empty());
+    arm(&mut app);
+    app.on_key(ch('n'));
+    let (_, p) = only(&commands(&mut rx[0]), "auth.approve.decide");
+    assert_eq!(p, json!({"request": "ap-1", "decision": "deny"}));
 }
 
 #[test]
@@ -423,7 +489,6 @@ fn approval_view_shows_the_summary_then_the_unverified_reason() {
         s.contains("[y] approve once   [a] always   [n] deny"),
         "{s}"
     );
-    assert!(!s.contains("Opened because"), "{s}");
 }
 
 #[test]
@@ -455,6 +520,9 @@ fn approval_keys_y_a_n_send_auth_approve_decide_with_exact_params() {
     let last = &app.toasts.last().unwrap().text;
     assert!(last.contains("approved for w1:p1"), "{last}");
     assert!(last.contains("job-7"), "{last}");
+    // The decided request is gone: select the next one (and wait out the arm delay again).
+    app.on_key(ch('j'));
+    arm(&mut app);
     app.on_key(ch('a'));
     let (req, p) = only(&commands(&mut rx[0]), "auth.approve.decide");
     assert_eq!(p, json!({"request": "ap-2", "decision": "always"}));
@@ -468,6 +536,8 @@ fn approval_keys_y_a_n_send_auth_approve_decide_with_exact_params() {
     let last = &app.toasts.last().unwrap().text;
     assert!(last.contains("always from this pane"), "{last}");
     assert!(last.contains("the handoff is already done"), "{last}");
+    app.on_key(ch('j'));
+    arm(&mut app);
     // peer.redeem: no "always" (not offered, and `a` sends nothing).
     let s = screen(&app);
     assert!(s.contains("can only be approved once"), "{s}");

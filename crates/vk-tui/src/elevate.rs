@@ -17,25 +17,35 @@
 //! stays open and what approval grants. Elevation: `y` approves and `n` denies through
 //! `auth.elevate.decide`. Approved calls: `y` runs the call once, `a` (only when the server
 //! allows it) also allows the same call from that pane to that peer until the pane's process
-//! restarts, `n` denies, through `auth.approve.decide`. Nothing is ever approved automatically,
-//! keys typed in the first 600 ms after the view opens are ignored (they were meant for the
-//! pane), and modified keys never decide. A client that is itself inside a pane (not full scope)
-//! cannot decide; the view says so and points at the CLI outside Vibeke.
+//! restarts, `n` denies, through `auth.approve.decide`. Nothing is ever approved automatically.
+//!
+//! What a key decides is guarded:
+//!
+//! - the selection is the request's (machine, id), never a list index: when the request under
+//!   review goes away (decided, withdrawn, expired) nothing is selected until the user selects
+//!   again, so a request that slides into its place is never decided by a key meant for the
+//!   other one;
+//! - keys typed in the first 600 ms after the view opens **or the selection changes** are
+//!   ignored (they were meant for the pane, or for the previous request);
+//! - only a fresh key press with no modifier at all decides: never a repeat or a release, and
+//!   (with the kitty keyboard protocol, which reports repeats and releases) never a key that was
+//!   already held while the view was not armed, until it has been released. Without the
+//!   protocol the arm delay is the guard.
+//!
+//! A client that is itself inside a pane (not full scope) cannot decide; the view says so and
+//! points at the CLI outside Vibeke.
 //!
 //! The view opens only when the user opens it (`elevation_requests`, default `prefix+shift+e`,
-//! the notice, or the palette), with one exception for approved calls ([`auto_open_ok`]): the
-//! request comes from the **focused** pane of this client's current machine, that pane has no
-//! agent run, and its foreground process (the model's `fg_cmdline`, which the server keeps
-//! current from the pane's process group) is the `vibeke` CLI. Then the user just typed the
-//! command in a shell and the review view is the expected next step; it still replaces the pane
-//! area and still waits out the arm delay. Every other request only shows the notice.
+//! the notice, or the palette), for approved calls exactly like elevation: a request never
+//! opens it by itself, whatever the pane runs, since a pane controls its own argv (and so what
+//! its foreground process looks like).
 
 use crate::app::{App, Mode, Pending, Popup, RpcErr};
 use crate::screen::Grid;
 use serde_json::{Value, json};
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
-use vk_proto::input::{Key, KeyEvent, KeyKind, Mods, NamedKey};
+use vk_proto::input::{Key, KeyEvent, KeyKind, NamedKey};
 
 /// Keys right after the view opens are swallowed: they were typed for the pane.
 pub const ARM_DELAY: Duration = Duration::from_millis(600);
@@ -43,9 +53,6 @@ pub const ARM_DELAY: Duration = Duration::from_millis(600);
 pub const REQUEST_TTL_MS: i64 = 30 * 60 * 1000;
 /// What an elevation grants.
 pub const GRANT_MINUTES: i64 = 10;
-/// An approved-call request may open the view by itself only this soon after it arrived: the
-/// pane's foreground process can be reported a moment after the request.
-pub const AUTO_OPEN_WINDOW: Duration = Duration::from_secs(5);
 
 /// What a pane asks for.
 #[derive(Debug, Clone, PartialEq)]
@@ -113,11 +120,15 @@ impl Decision {
 
 #[derive(Debug, Clone)]
 pub struct View {
-    pub sel: usize,
+    /// The request under review as (machine, request id): `None` once it went away, until the
+    /// user selects again.
+    pub sel: Option<(usize, String)>,
+    /// When the view opened or the selection last changed: keys count only [`ARM_DELAY`] later.
     pub opened_at: Instant,
     pub notice: Option<String>,
-    /// Opened by itself for a command just typed in the focused shell pane.
-    pub auto: bool,
+    /// Kitty keyboard protocol: keys seen pressed while not armed, or repeating, and not seen
+    /// released since. Their next press does not decide.
+    pub held: HashSet<Key>,
 }
 
 #[derive(Debug, Default)]
@@ -126,9 +137,6 @@ pub struct State {
     pub view: Option<View>,
     /// Decisions in flight: (machine, request).
     pub deciding: HashSet<(usize, String)>,
-    /// Approved-call requests that may still open the view by itself: (machine, request,
-    /// when it arrived). See [`auto_open_ok`].
-    pub auto: Vec<(usize, String, Instant)>,
     /// Tests: pretend this client is (not) full scope.
     pub scoped_override: Option<bool>,
 }
@@ -210,18 +218,52 @@ fn remove(app: &mut App, mi: usize, id: &str) {
         .requests
         .retain(|r| !(r.machine == mi && r.id == id));
     app.ux.elevate.deciding.remove(&(mi, id.to_string()));
-    app.ux
-        .elevate
-        .auto
-        .retain(|(m, x, _)| !(*m == mi && x == id));
-    clamp(app);
+    reconcile(app);
     app.dirty = true;
 }
 
-fn clamp(app: &mut App) {
-    let n = app.ux.elevate.requests.len();
+/// The index of the selected request, if it is still open.
+fn sel_index(app: &App) -> Option<usize> {
+    let (mi, id) = app.ux.elevate.view.as_ref()?.sel.as_ref()?;
+    app.ux
+        .elevate
+        .requests
+        .iter()
+        .position(|r| r.machine == *mi && r.id == *id)
+}
+
+/// Select request `i` (or nothing). A different request than before re-arms the view.
+fn select(app: &mut App, i: Option<usize>) {
+    let sel = i
+        .and_then(|i| app.ux.elevate.requests.get(i))
+        .map(|r| (r.machine, r.id.clone()));
     if let Some(v) = app.ux.elevate.view.as_mut() {
-        v.sel = v.sel.min(n.saturating_sub(1));
+        if v.sel != sel {
+            v.opened_at = Instant::now();
+        }
+        v.sel = sel;
+        v.notice = None;
+    }
+}
+
+/// The request under review went away (decided, withdrawn, expired, its machine gone): select
+/// nothing, so no key meant for it decides another one; the user selects again (and waits out
+/// the arm delay again).
+fn reconcile(app: &mut App) {
+    let gone = app
+        .ux
+        .elevate
+        .view
+        .as_ref()
+        .is_some_and(|v| v.sel.is_some())
+        && sel_index(app).is_none();
+    if gone && let Some(v) = app.ux.elevate.view.as_mut() {
+        v.sel = None;
+        v.opened_at = Instant::now();
+        v.notice = Some(
+            "the request you were reviewing is gone (decided, withdrawn or expired): select one with j/k"
+                .into(),
+        );
     }
 }
 
@@ -259,99 +301,15 @@ pub fn on_event(app: &mut App, mi: usize, kind: &str, v: &Value) {
     };
     match kind {
         "auth.elevate_requested" => add(app, base(Kind::Elevation)),
-        "auth.approval_requested" => {
-            let r = base(Kind::Approval(approval_of(&v["data"])));
-            add(app, r);
-            app.ux
-                .elevate
-                .auto
-                .push((mi, id.to_string(), Instant::now()));
-            auto_open(app);
-        }
+        // Like elevation, an approved call only shows the notice: it never opens the view by
+        // itself (08 §8), whatever the pane runs.
+        "auth.approval_requested" => add(app, base(Kind::Approval(approval_of(&v["data"])))),
         "auth.elevate_granted"
         | "auth.elevate_denied"
         | "auth.approval_granted"
         | "auth.approval_denied"
         | "auth.approval_withdrawn" => remove(app, mi, id),
         _ => {}
-    }
-}
-
-/// The auto-open exception (08 §8): an approved-call request opens the review view without a
-/// key press only when it comes from the **focused** pane of this client's current machine,
-/// that pane has **no agent run**, and its foreground process is the **`vibeke` CLI** (the
-/// model's `fg_cmdline`, which the server updates on `pane.process_changed` from the pane's
-/// foreground process group), and nothing else is open (normal mode) and this client may
-/// decide. Then the user has just typed the command in a shell. Elevation never opens by itself.
-pub fn auto_open_ok(app: &App, r: &Request) -> bool {
-    if r.approval().is_none()
-        || r.machine != app.cur
-        || !matches!(app.mode, Mode::Normal)
-        || app.ux.elevate.view.is_some()
-        || !can_decide(app, r.machine)
-    {
-        return false;
-    }
-    if app.focused_pane().as_deref() != Some(r.pane.as_str()) {
-        return false;
-    }
-    let Some(m) = app.machines.get(r.machine) else {
-        return false;
-    };
-    if m.model
-        .runs
-        .iter()
-        .any(|x| x.pane == r.pane && x.ended_at_ms.is_none())
-    {
-        return false;
-    }
-    m.model
-        .panes
-        .iter()
-        .find(|p| p.id == r.pane)
-        .and_then(|p| p.fg_cmdline.first())
-        .is_some_and(|a| is_vibeke_cli(a))
-}
-
-/// `vibeke`, `/usr/local/bin/vibeke` (not `vibeke-gateway`, not a script that runs it).
-fn is_vibeke_cli(argv0: &str) -> bool {
-    argv0
-        .rsplit('/')
-        .next()
-        .unwrap_or(argv0)
-        .trim_start_matches('-')
-        == "vibeke"
-}
-
-/// Open the view for a fresh request that meets [`auto_open_ok`] (checked again after every
-/// wakeup for [`AUTO_OPEN_WINDOW`], since the pane's foreground process may arrive later).
-fn auto_open(app: &mut App) {
-    if app.ux.elevate.auto.is_empty() {
-        return;
-    }
-    app.ux
-        .elevate
-        .auto
-        .retain(|(_, _, at)| at.elapsed() < AUTO_OPEN_WINDOW);
-    let cands = app.ux.elevate.auto.clone();
-    for (mi, id, _) in cands {
-        let Some(i) = app
-            .ux
-            .elevate
-            .requests
-            .iter()
-            .position(|r| r.machine == mi && r.id == id)
-        else {
-            continue;
-        };
-        if auto_open_ok(app, &app.ux.elevate.requests[i]) {
-            app.ux
-                .elevate
-                .auto
-                .retain(|(m, x, _)| !(*m == mi && *x == id));
-            open_at(app, i, true);
-            return;
-        }
     }
 }
 
@@ -398,7 +356,7 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
             for r in all {
                 add(app, r);
             }
-            clamp(app);
+            reconcile(app);
             app.dirty = true;
         }
         Reply::Decide {
@@ -488,8 +446,7 @@ fn approval_done(pane: &str, decision: Decision, v: &Value) -> String {
     format!("approved for {pane}{always}{what}")
 }
 
-/// Drop requests the server has forgotten (and those of machines that went away); open the
-/// view for a fresh request that meets the auto-open rule.
+/// Drop requests the server has forgotten (and those of machines that went away).
 pub fn tick(app: &mut App) {
     let now = now_ms();
     let n = app.ux.elevate.requests.len();
@@ -499,14 +456,13 @@ pub fn tick(app: &mut App) {
         .requests
         .retain(|r| r.expires_at_ms() > now && r.machine < machines);
     if app.ux.elevate.requests.len() != n {
-        clamp(app);
+        reconcile(app);
         app.dirty = true;
     }
     // The view closed by any route: forget its state.
     if app.ux.elevate.view.is_some() && !matches!(app.mode, Mode::Popup(Popup::Elevate)) {
         app.ux.elevate.view = None;
     }
-    auto_open(app);
 }
 
 pub fn deadlines(app: &App, d: &mut crate::deadline::Deadlines) {
@@ -596,15 +552,12 @@ pub fn open(app: &mut App) {
         app.toast("no elevation or approval requests");
         return;
     }
-    open_at(app, 0, false);
-}
-
-fn open_at(app: &mut App, sel: usize, auto: bool) {
+    let r = &app.ux.elevate.requests[0];
     app.ux.elevate.view = Some(View {
-        sel,
+        sel: Some((r.machine, r.id.clone())),
         opened_at: Instant::now(),
         notice: None,
-        auto,
+        held: HashSet::new(),
     });
     app.mode = Mode::Popup(Popup::Elevate);
     app.dirty = true;
@@ -622,7 +575,8 @@ pub fn action(app: &mut App, action: &str) -> bool {
 }
 
 fn decide(app: &mut App, decision: Decision) {
-    let Some(sel) = app.ux.elevate.view.as_ref().map(|v| v.sel) else {
+    // Nothing selected (the request under review went away): nothing to decide.
+    let Some(sel) = sel_index(app) else {
         return;
     };
     let Some(r) = app.ux.elevate.requests.get(sel).cloned() else {
@@ -687,19 +641,39 @@ pub fn key(app: &mut App, ev: KeyEvent) {
         return;
     };
     if ev.kind == KeyKind::Release {
+        if let Some(v) = app.ux.elevate.view.as_mut() {
+            v.held.remove(&ev.key);
+        }
         return keep(app);
     }
     // Esc always closes (nothing decided); everything else waits for the arm delay and must be
-    // a plain key.
+    // a fresh press of a key with no modifier at all.
     if matches!(ev.key, Key::Named(NamedKey::Escape)) {
         app.ux.elevate.view = None;
         return;
     }
-    if opened.elapsed() < ARM_DELAY
-        || ev.mods.contains(Mods::CTRL)
-        || ev.mods.contains(Mods::ALT)
-        || ev.mods.contains(Mods::SUPER)
-    {
+    let armed = opened.elapsed() >= ARM_DELAY;
+    let kitty = app.kitty;
+    let was_held = match app.ux.elevate.view.as_mut() {
+        Some(v) => {
+            let was = v.held.contains(&ev.key);
+            // With the kitty protocol a release will come: remember a key pressed while not
+            // armed, or repeating (held since before the view opened), until it is released.
+            if kitty && (!armed || ev.kind == KeyKind::Repeat) {
+                v.held.insert(ev.key);
+            }
+            was
+        }
+        None => false,
+    };
+    if !armed || ev.kind != KeyKind::Press || !ev.mods.is_empty() {
+        return keep(app);
+    }
+    if was_held {
+        // Pressed again without a release we saw: this press does not count, the next one does.
+        if let Some(v) = app.ux.elevate.view.as_mut() {
+            v.held.remove(&ev.key);
+        }
         return keep(app);
     }
     let n = app.ux.elevate.requests.len();
@@ -709,23 +683,21 @@ pub fn key(app: &mut App, ev: KeyEvent) {
             return;
         }
         Key::Char('j') | Key::Named(NamedKey::Down) => {
-            if let Some(v) = app.ux.elevate.view.as_mut() {
-                v.sel = (v.sel + 1).min(n.saturating_sub(1));
-                v.notice = None;
-            }
+            let i = match sel_index(app) {
+                Some(i) => (i + 1).min(n.saturating_sub(1)),
+                None => 0,
+            };
+            select(app, (n > 0).then_some(i));
         }
         Key::Char('k') | Key::Named(NamedKey::Up) => {
-            if let Some(v) = app.ux.elevate.view.as_mut() {
-                v.sel = v.sel.saturating_sub(1);
-                v.notice = None;
-            }
+            let i = sel_index(app).map(|i| i.saturating_sub(1)).unwrap_or(0);
+            select(app, (n > 0).then_some(i));
         }
         Key::Char('y') => decide(app, Decision::Approve),
         Key::Char('a') => decide(app, Decision::Always),
         Key::Char('n') => decide(app, Decision::Deny),
         Key::Char('o') => {
-            let sel = app.ux.elevate.view.as_ref().map(|v| v.sel).unwrap_or(0);
-            if let Some(r) = app.ux.elevate.requests.get(sel).cloned()
+            if let Some(r) = sel_index(app).and_then(|i| app.ux.elevate.requests.get(i).cloned())
                 && app.machines[r.machine]
                     .model
                     .panes
@@ -791,14 +763,15 @@ pub fn draw(app: &App, g: &mut Grid) {
         ),
     );
     let now = now_ms();
-    if reqs.len() > 1 {
+    let sel = sel_index(app);
+    if reqs.len() > 1 || sel.is_none() {
         for (i, r) in reqs.iter().enumerate() {
-            let st = if i == v.sel {
+            let st = if Some(i) == sel {
                 t.sel(t.accent)
             } else {
                 t.text()
             };
-            let mark = if i == v.sel { "▸" } else { " " };
+            let mark = if Some(i) == sel { "▸" } else { " " };
             let kind = match &r.kind {
                 Kind::Elevation => "elevation".to_string(),
                 Kind::Approval(x) => verb(&x.method).to_string(),
@@ -815,8 +788,15 @@ pub fn draw(app: &App, g: &mut Grid) {
         }
         a.line("", t.text());
     }
-    let Some(r) = reqs.get(v.sel) else {
-        a.line("no open requests", t.dim());
+    let Some(r) = sel.and_then(|i| reqs.get(i)) else {
+        if reqs.is_empty() {
+            a.line("no open requests", t.dim());
+        } else {
+            if let Some(n) = &v.notice {
+                a.line(n, t.bold(t.yellow));
+            }
+            a.footer("[j/k] select a request   [esc] later", t.dim());
+        }
         return;
     };
     let width = (app.pane_area().w as usize)
@@ -837,14 +817,6 @@ pub fn draw(app: &App, g: &mut Grid) {
         ),
         t.dim(),
     );
-    if v.auto {
-        for l in wrap(
-            "Opened because you just ran vibeke in this pane; nothing is decided until you press a key.",
-            width,
-        ) {
-            a.line(&l, t.dim());
-        }
-    }
     a.line("", t.text());
     if let Some(x) = r.approval() {
         a.line(
