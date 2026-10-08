@@ -77,3 +77,15 @@ mise run ci      # formatting, lints and tests, as CI runs them
 ## License
 
 Vibeke is licensed under the [Apache License 2.0](LICENSE).
+
+## Inspiration and related work
+
+Vibeke takes inspiration from [Herdr](https://herdr.dev/), particularly its approach to organizing coding agents in terminal workspaces and its plugin ecosystem.
+
+There is a rich body of related work here. [cmux](https://cmux.com/) brings agent notifications and a programmable browser into terminal workspaces. [Paseo](https://paseo.sh/) makes coding agents accessible across machines and devices. [Conductor](https://www.conductor.build/docs), [Emdash](https://emdash.com/docs), and [Superset](https://docs.superset.sh/overview) explore parallel agents, isolated workspaces, and review workflows. [Solo](https://soloterm.com/docs) brings agent CLIs and development services together, while [Warp](https://www.warp.dev/) explores integrated terminal and agent workflows. These projects deserve recognition alongside the foundations established by [tmux](https://github.com/tmux/tmux/wiki) and [Zellij](https://zellij.dev/).
+
+We created Vibeke to bring together the workflow we wanted: keep using our usual agent commands, run work on our own laptops and remote machines, and follow up from a terminal, browser, or phone. Its built-in, end-to-end encrypted relay makes hosts reachable without opening inbound ports or configuring a VPN.
+
+We also wanted to make that work easier to share: invite teammates to view panes or help with approvals, and hand off code changes and supported agent sessions so someone else can pick up where we left off. Vibeke brings these capabilities together with structured agent integrations and processes that survive server restarts.
+
+Special thanks to [Ghostty](https://ghostty.org/), whose `libghostty-vt` provides Vibeke’s terminal engine, and to the maintainers and contributors behind these projects.
