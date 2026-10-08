@@ -146,8 +146,30 @@ pub fn spawn_pipe(argv: &[String], cwd: &Path, env: &[(String, String)]) -> Resu
 }
 
 /// Foreground process group of the terminal, if any.
+///
+/// Calls tcgetpgrp(3) directly: on macOS it returns 0 once the terminal has no foreground
+/// group (the child just exited, e.g. between the two hangups of a pane close), and
+/// `rustix::termios::tcgetpgrp` turns that 0 into a `Pid` unchecked (a debug assertion
+/// panic that killed the holder before it could report the exit).
 pub fn fg_pgrp(master: impl AsFd) -> Option<u32> {
-    rustix::termios::tcgetpgrp(master)
-        .ok()
-        .map(|p| p.as_raw_nonzero().get() as u32)
+    // SAFETY: tcgetpgrp(3) on a descriptor borrowed for the duration of the call.
+    let pgrp = unsafe { libc::tcgetpgrp(master.as_fd().as_raw_fd()) };
+    (pgrp > 0).then_some(pgrp as u32)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fg_pgrp_follows_the_child_and_is_none_once_it_exits() {
+        let argv = ["/bin/sh".to_string(), "-c".into(), "sleep 30".into()];
+        let (pty, mut child) = spawn(&argv, Path::new("/"), &[], 80, 24).unwrap();
+        assert_eq!(fg_pgrp(&pty.master), Some(child.id()));
+        // The terminal loses its foreground group with the child (macOS reports 0 then).
+        let _ = child.kill();
+        let _ = child.wait();
+        let fg = fg_pgrp(&pty.master);
+        assert!(fg.is_none_or(|p| p > 0), "{fg:?}");
+    }
 }
