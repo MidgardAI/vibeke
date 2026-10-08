@@ -15,6 +15,7 @@ import {
   isPickerChanged,
   isUnknownDialog,
   loadModels,
+  modelMemoKey,
   normalizeCommands,
   openDialogs,
   promptInteraction,
@@ -218,9 +219,17 @@ describe('model switcher', () => {
     expect(r).toEqual({ kind: 'models', models: models.models });
   });
   test('unsupported, a missing method or an empty list fall back to /model', async () => {
-    expect(await loadModels({ request: async () => { throw err('unsupported'); } } as never, 'r1')).toEqual({ kind: 'fallback' });
-    expect(await loadModels({ request: async () => { throw err('method_not_found', undefined, -32601); } } as never, 'r1')).toEqual({ kind: 'fallback' });
-    expect(await loadModels({ request: async () => ({ models: [], source: 'screen' }) } as never, 'r1')).toEqual({ kind: 'fallback' });
+    expect(await loadModels({ request: async () => { throw err('unsupported', { reason: 'harness' }); } } as never, 'r1')).toEqual({ kind: 'fallback', remember: true });
+    expect(await loadModels({ request: async () => { throw err('method_not_found', undefined, -32601); } } as never, 'r1')).toEqual({ kind: 'fallback', remember: true });
+    expect(await loadModels({ request: async () => ({ models: [], source: 'screen' }) } as never, 'r1')).toEqual({ kind: 'fallback', remember: false });
+  });
+  test('the /model fallback is remembered per run, never for an extension that is briefly unreachable', async () => {
+    // Interactive and headless Codex on one host: one run's fallback must not hide the other's list.
+    expect(modelMemoKey('h1', { id: 'r-tui' })).not.toBe(modelMemoKey('h1', { id: 'r-headless' }));
+    expect(modelMemoKey('h1', { id: 'r1' })).not.toBe(modelMemoKey('h2', { id: 'r1' }));
+    const gone = { request: async () => { throw err('unsupported', { reason: 'extension_unavailable' }); } } as never;
+    expect(await loadModels(gone, 'r1')).toEqual({ kind: 'fallback', remember: false });
+    expect(await switchModel(gone, async () => true, 'r1', 'b')).toBe('picker_once');
   });
   test('other failures are shown, not swallowed', async () => {
     const r = await loadModels({ request: async () => { throw err('internal'); } } as never, 'r1');

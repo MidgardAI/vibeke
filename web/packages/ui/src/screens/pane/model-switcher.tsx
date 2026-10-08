@@ -10,10 +10,10 @@ import { Button, HarnessIcon, Notice, Sheet, Spinner, cx } from '../../component
 import { t } from '../../i18n';
 import { errorMessage } from '../../lib/answer';
 import { harnessLabel } from '../../lib/harness';
-import { loadModels, switchModel } from '../../lib/pickers';
+import { loadModels, modelMemoKey, switchModel } from '../../lib/pickers';
 import type { PaneActions } from './actions';
 
-/** Harnesses (per host) that cannot list models: go straight to `/model` next time. */
+/** Runs (per host) that cannot list models: go straight to `/model` next time. */
 const noStructured = new Set<string>();
 
 export function ModelSwitcher({ hostId, run, actions, disabled }: { hostId: string; run: AgentRun; actions: PaneActions; disabled?: boolean }) {
@@ -23,10 +23,10 @@ export function ModelSwitcher({ hostId, run, actions, disabled }: { hostId: stri
   const [busy, setBusy] = useState<string | null>(null);
   /** A model whose switch would also save the harness's default: asks before switching. */
   const [confirm, setConfirm] = useState<AgentModel | null>(null);
-  const memo = `${hostId}/${run.harness}`;
+  const memo = modelMemoKey(hostId, run);
 
-  const slash = async () => {
-    noStructured.add(memo);
+  const slash = async (remember: boolean) => {
+    if (remember) noStructured.add(memo);
     setOpen(false);
     await actions.text('/model');
   };
@@ -37,7 +37,7 @@ export function ModelSwitcher({ hostId, run, actions, disabled }: { hostId: stri
     setState({ phase: 'loading' });
     const r = await loadModels(conn, run.id);
     if (r.kind === 'models') setState({ phase: 'ready', models: r.models });
-    else if (r.kind === 'fallback') await slash();
+    else if (r.kind === 'fallback') await slash(r.remember);
     else setState({ phase: 'error', message: r.message });
   };
 

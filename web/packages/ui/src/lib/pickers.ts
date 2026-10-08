@@ -2,7 +2,7 @@
 // slash-command bar and the model switcher. Components stay thin; everything here is testable
 // without a DOM.
 
-import { RpcError, type AgentCommand, type AgentModel, type AppApi, type AppMethod, type Decision, type Interaction, type Question, type QuestionOption } from '@vibeke/core';
+import { RpcError, type AgentCommand, type AgentModel, type AgentRun, type AppApi, type AppMethod, type Decision, type Interaction, type Question, type QuestionOption } from '@vibeke/core';
 import { slashCommandsFor } from './harness';
 
 // ---- picker interactions -----------------------------------------------------------------------
@@ -185,16 +185,26 @@ export class CommandCache {
 
 // ---- models -----------------------------------------------------------------------------------
 
-export type ModelList = { kind: 'models'; models: AgentModel[] } | { kind: 'fallback' } | { kind: 'error'; message: string };
+/**
+ * `remember`: whether a fallback to `/model` holds for the rest of the run. An extension that is
+ * not reachable right now (`extension_unavailable`) may be back in a moment, so it is not
+ * remembered.
+ */
+export type ModelList = { kind: 'models'; models: AgentModel[] } | { kind: 'fallback'; remember: boolean } | { kind: 'error'; message: string };
+
+/** Key of the per-run "no structured model control" memo: a host's runs differ (interactive vs headless). */
+export const modelMemoKey = (hostId: string, run: Pick<AgentRun, 'id'>): string => `${hostId}/${run.id}`;
+
+const transientUnsupported = (e: unknown): boolean => detailsOf(e)?.reason === 'extension_unavailable';
 
 /** `agent.models`; unsupported (or missing on an older host) means: send `/model` instead. */
 export async function loadModels(conn: Req, run: string): Promise<ModelList> {
   try {
     const r = await conn.request('agent.models', { target: run });
     const models = Array.isArray(r?.models) ? r.models : [];
-    return models.length ? { kind: 'models', models } : { kind: 'fallback' };
+    return models.length ? { kind: 'models', models } : { kind: 'fallback', remember: false };
   } catch (e) {
-    if (isUnsupportedCall(e)) return { kind: 'fallback' };
+    if (isUnsupportedCall(e)) return { kind: 'fallback', remember: !transientUnsupported(e) };
     return { kind: 'error', message: e instanceof Error ? e.message : String(e) };
   }
 }
@@ -215,13 +225,14 @@ export async function switchModel(
   run: string,
   model: string,
   scope: 'session' | 'default' = 'session',
-): Promise<'set' | 'picker' | 'failed' | 'confirm_default'> {
+): Promise<'set' | 'picker' | 'picker_once' | 'failed' | 'confirm_default'> {
   try {
     await conn.request('agent.set_model', { target: run, model, scope });
     return 'set';
   } catch (e) {
     if (scope === 'session' && isPersistsDefault(e)) return 'confirm_default';
-    if (isUnsupportedCall(e)) return (await send('/model')) ? 'picker' : 'failed';
+    // `picker_once`: the fallback is not worth remembering (the extension may come back).
+    if (isUnsupportedCall(e)) return (await send('/model')) ? (transientUnsupported(e) ? 'picker_once' : 'picker') : 'failed';
     throw e;
   }
 }
