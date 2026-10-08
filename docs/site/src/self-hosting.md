@@ -7,7 +7,7 @@ The app serves the interface and holds device keys. The relay forwards encrypted
 
 ## Use your own relay
 
-Run the relay from the published CLI:
+A relay you run needs no Vibeke account. Run it from the published CLI:
 
 ```sh
 vibeke relay --public-url https://relay.example.com
@@ -15,6 +15,9 @@ vibeke relay --public-url https://relay.example.com
 
 Configure a reverse proxy with HTTPS and WebSocket support for that address.
 See the [relay deployment guide](../../../crates/vk-relay/deploy/README.md) for process supervision and deployment details.
+
+To restrict which hosts may register on a private relay, add `--host-token <token>` and set `relay_token` in the host's `gateway.toml`.
+Add `--require-tickets` to refuse devices that lack a host-signed ticket.
 
 Pair using your relay and the public browser app:
 

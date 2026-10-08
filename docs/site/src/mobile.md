@@ -6,6 +6,12 @@ The relay carries encrypted traffic. Your host makes an outbound connection and 
 
 For local desktop access, use the [desktop connection guide](desktop.md).
 
+## Account
+
+The hosted relay requires a Vibeke account. On your host, run `vibeke login` once.
+It prints a URL and a short code. Open the URL on any device, sign in with GitHub and confirm the code; the terminal finishes by itself.
+No browser is needed on the host, so this works over SSH. Use `vibeke whoami` to see the signed-in account and `vibeke logout` to sign out.
+
 ## Pair your device
 
 1. [Install the CLI](install.md) on your host and start a session with `vibeke`.
@@ -17,7 +23,8 @@ For local desktop access, use the [desktop connection guide](desktop.md).
      --app-url https://app.vibeke.dev
    ```
 
-   This saves the connection settings, enables gateway autostart, and asks the server to start it.
+   If you have not signed in, this command starts the login flow first.
+   It saves the connection settings, enables gateway autostart, and asks the server to start it.
    Keep the command running while you pair.
 
 3. Scan the QR code on your phone, or open the printed link in your browser.
