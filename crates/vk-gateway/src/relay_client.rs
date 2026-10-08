@@ -340,8 +340,11 @@ pub async fn run(gw: Arc<Gateway>, relay: &str) -> Result<()> {
         if let Some(token) = token {
             let mode = token_in(&base);
             let mut r = control(&gw, &base, token.as_deref(), mode).await;
+            // Only a static `relay_token` may fall back to the URL (old self-hosted relays).
+            // Account host tokens never travel in a query string: the account relay reads the
+            // header, and a URL would leave the token in proxy and access logs.
             if let Err(e) = &r
-                && retry_with_query(token.is_some(), mode, e)
+                && retry_with_query(token.is_some() && !tokens.uses_account(), mode, e)
             {
                 tracing::info!(
                     "relay refused the token in the Authorization header; retrying with ?token="
