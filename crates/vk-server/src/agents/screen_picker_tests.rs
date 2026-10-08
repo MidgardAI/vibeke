@@ -686,3 +686,50 @@ fn signature_covers_body_and_descriptions_but_not_navigation() {
         generic_menu(&m).unwrap().signature
     );
 }
+
+/// Review finding: a hook-backed question names its options by label (`Stop here`), while the
+/// screen view numbers its rows; the walk maps id → label → the verified row before moving.
+#[test]
+fn structured_question_answers_map_labels_to_screen_rows() {
+    const Q: &str = "╭──────────────────────────────────────────────╮
+│ Bash command                                 │
+│                                              │
+│   rm -rf build                               │
+│                                              │
+│ Do you want to proceed?                      │
+│ ❯ 1. Keep going                              │
+│   2. Stop here                               │
+╰──────────────────────────────────────────────╯";
+    let d = screen::evaluate(Harness::Claude, Q).dialog.unwrap();
+    let mut questions = d.options_as_question();
+    for o in &mut questions[0].options {
+        o.id = o.label.clone();
+    }
+    let it = Interaction {
+        kind: InteractionKind::Question,
+        questions,
+        ..super::harness_tests_blank()
+    };
+    let view = super::screen_walk::question_view(&d).unwrap();
+    let answer = Answer {
+        choices: vec![("q0".into(), vec!["Stop here".into()])],
+        ..Default::default()
+    };
+    let mut g = super::screen_walk::goal_of(&it, &answer);
+    assert_eq!(g.target.as_deref(), Some("Stop here"));
+    let mut order: Vec<String> = it.questions[0]
+        .options
+        .iter()
+        .map(|o| o.id.clone())
+        .collect();
+    super::screen_walk::to_screen_rows(&it, &view, &mut g, &mut order).unwrap();
+    assert_eq!(g.target.as_deref(), Some("2"));
+    assert_eq!(order, ["1", "2"]);
+    assert_eq!(step(&view, &g), Step::Key("down".into()));
+    // A label no row shows is refused, not guessed.
+    let mut bad = Goal {
+        target: Some("Abort everything".into()),
+        ..Default::default()
+    };
+    assert!(super::screen_walk::to_screen_rows(&it, &view, &mut bad, &mut order).is_err());
+}

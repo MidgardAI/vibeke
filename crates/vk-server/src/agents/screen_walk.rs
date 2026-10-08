@@ -93,6 +93,64 @@ pub fn goal_of(it: &Interaction, answer: &Answer) -> Goal {
     g
 }
 
+/// Translate a goal in the interaction's option ids into the ids of the rows `view` shows.
+///
+/// A picker's options are its screen rows already. A question's options may come from a
+/// structured source (hook-backed questions use labels such as `Stop here` as ids) while the
+/// screen view numbers its rows, so each option goes id → label → the one row showing that
+/// label: an exact label first, then the same label ignoring case and spacing, then a unique
+/// prefix match. An option no row (or more than one row) matches is refused.
+pub fn to_screen_rows(
+    it: &Interaction,
+    view: &Picker,
+    goal: &mut Goal,
+    order: &mut Vec<String>,
+) -> Result<(), String> {
+    if it.kind == InteractionKind::Picker {
+        return Ok(());
+    }
+    let opts: Vec<&QuestionOption> = it
+        .questions
+        .first()
+        .map(|q| q.options.iter().collect())
+        .unwrap_or_default();
+    let norm = |s: &str| {
+        s.split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase()
+    };
+    let row_for = |id: &str| -> Option<String> {
+        let label = opts
+            .iter()
+            .find(|o| o.id == id)
+            .map(|o| o.label.as_str())
+            .unwrap_or(id);
+        let one = |m: Vec<&Row>| (m.len() == 1).then(|| m[0].id.clone());
+        let (want, rows) = (norm(label), &view.rows);
+        one(rows.iter().filter(|r| r.label == label).collect())
+            .or_else(|| one(rows.iter().filter(|r| norm(&r.label) == want).collect()))
+            .or_else(|| {
+                one(rows
+                    .iter()
+                    .filter(|r| {
+                        let have = norm(&r.label);
+                        !want.is_empty() && (have.starts_with(&want) || want.starts_with(&have))
+                    })
+                    .collect())
+            })
+    };
+    let map = |id: &String| row_for(id).ok_or_else(|| format!("option {id} is not on screen"));
+    if let Some(t) = &goal.target {
+        goal.target = Some(map(t)?);
+    }
+    if let Some(c) = &goal.checked {
+        goal.checked = Some(c.iter().map(map).collect::<Result<_, _>>()?);
+    }
+    *order = order.iter().filter_map(|id| row_for(id)).collect();
+    Ok(())
+}
+
 /// The picker (or walkable question) currently on the pane.
 fn read(h: Harness, rt: &PaneRt) -> Option<Picker> {
     let text = rt.screen.lock().unwrap().engine.screen_text();
@@ -124,14 +182,21 @@ pub async fn walk(
     signature: &str,
     answer: &Answer,
 ) -> (DeliveryState, Option<String>) {
-    let goal = goal_of(it, answer);
-    let order: Vec<String> = it
+    let mut goal = goal_of(it, answer);
+    let mut order: Vec<String> = it
         .questions
         .first()
         .map(|q| q.options.iter().map(|o| o.id.clone()).collect())
         .unwrap_or_default();
     server.agents.lock_input(&it.pane);
-    let out = walk_locked(server, h, rt, it, signature, &goal, &order).await;
+    let mapped = match read(h, rt) {
+        Some(view) => to_screen_rows(it, &view, &mut goal, &mut order),
+        None => Err("picker_changed: the picker is no longer on screen".into()),
+    };
+    let out = match mapped {
+        Ok(()) => walk_locked(server, h, rt, it, signature, &goal, &order).await,
+        Err(r) => (DeliveryState::Failed, Some(r)),
+    };
     server.agents.unlock_input(&it.pane);
     out
 }
