@@ -484,7 +484,12 @@ pub fn is_pane_targeted(method: &str) -> bool {
 pub fn is_run_targeted(method: &str) -> bool {
     matches!(
         method,
-        "agent.prompt" | "agent.interrupt" | "agent.send_keys" | "agent.rename" | "agent.release"
+        "agent.prompt"
+            | "agent.interrupt"
+            | "agent.send_keys"
+            | "agent.rename"
+            | "agent.release"
+            | "agent.set_model"
     )
 }
 

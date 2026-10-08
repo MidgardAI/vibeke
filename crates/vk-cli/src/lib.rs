@@ -348,6 +348,27 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
     ("agent", "harnesses", "agent.harnesses", &[], ""),
     (
         "agent",
+        "commands",
+        "agent.commands",
+        &["target"],
+        "slash commands the agent understands (built-in catalog)",
+    ),
+    (
+        "agent",
+        "models",
+        "agent.models",
+        &["target"],
+        "models the agent can switch to (where the harness offers a structured way)",
+    ),
+    (
+        "agent",
+        "set-model",
+        "agent.set_model",
+        &["target", "model"],
+        "<target> <model> [--scope session|default]",
+    ),
+    (
+        "agent",
         "turn-usage",
         "agent.turn_usage",
         &["run"],
