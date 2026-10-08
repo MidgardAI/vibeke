@@ -54,3 +54,17 @@ test('failed persistence leaves a pending batch and explicit flush reports the f
   safe.encryptString = (s) => Buffer.from(Buffer.from(s).map((b) => b ^ 0x5a));
   await store.flush(); expect(store.hasPending()).toBe(false);
 });
+
+test('quit sees the first edit even while storage is loading', async () => {
+  const { dir, safe, store } = setup();
+  const saved = store.set('h', 'p', 'first edit');
+  expect(store.hasPending()).toBe(true);
+  await store.flush(); await saved;
+  expect(await new DraftStore(dir, safe, 'darwin').get('h', 'p')).toBe('first edit');
+});
+test('JSON escaping cannot make a valid draft collection unreadable on relaunch', async () => {
+  const { dir, safe, store } = setup();
+  const text = '\0'.repeat(256 * 1024);
+  await Promise.all(Array.from({ length: 4 }, (_, i) => store.set('h', `p${i}`, text)));
+  expect(await new DraftStore(dir, safe, 'darwin').get('h', 'p3')).toBe(text);
+});

@@ -177,6 +177,7 @@ class VibekeClient {
     s.unref();
     s.setNoDelay?.(true);
     s.on("error", () => {});
+    s.on("end", () => s.destroy());
     s.on("data", lineReader((line) => {
       try {
         const m = JSON.parse(line);
@@ -377,6 +378,7 @@ class VibekeClient {
       s = sock;
       sock.unref();
       sock.on("error", () => {});
+      sock.on("end", () => sock.destroy());
       sock.on("close", () => {
         if (s === sock)
           s = null;

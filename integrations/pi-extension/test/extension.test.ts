@@ -358,7 +358,12 @@ describe("reconnect and fail-open", () => {
     await waitFor(() => server.events().includes("Working"));
     await server.kill();
     for (let i = 0; i < 20; i++) await pi.emit("turn_end", { message: { usage: { input: 1, output: 1 } } }, c);
-    await waitFor(() => !h.client.connected);
+    await waitFor(() => !h.client.connected, 3000, "disconnect after server EOF");
+    const connects = h.client.connects;
+    await server.listen();
+    await waitFor(() => h.client.connected && h.client.connects > connects, 3000, "reconnect");
+    await waitFor(() => server.signals(server.conns.length - 1).some((s) => s.event === "Snapshot"), 3000, "reconnect snapshot");
+    h.client.close();
   });
 });
 

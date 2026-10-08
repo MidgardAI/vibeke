@@ -34,7 +34,7 @@ export class DraftStore {
       await rm(join(this.dir, 'vault.bin'), { force: true });
       checkSafeStorage(this.safe, this.platform);
       try {
-        if ((await stat(this.file)).size > MAX_TOTAL * 4) throw new Error('Draft storage exceeds its size limit');
+        if ((await stat(this.file)).size > MAX_TOTAL * 8) throw new Error('Draft storage exceeds its size limit');
         const value = JSON.parse(this.safe.decryptString(await readFile(this.file)));
         if (value.v !== 1 || !Array.isArray(value.drafts) || value.drafts.length > MAX_DRAFTS) throw new Error('Invalid draft storage');
         let size = 0;
