@@ -2,6 +2,8 @@ import { describe, expect, test } from 'bun:test'
 import { loadDocs } from '../content/docs-plugin'
 import { docManifest } from '../content/manifest'
 import { searchDocs } from '../src/lib/search'
+import { latestRelease } from '../src/lib/release'
+import { readdirSync } from 'node:fs'
 
 const docs = loadDocs()
 
@@ -56,5 +58,17 @@ describe('API reference content', () => {
     expect(rows.length).toBeGreaterThan(200)
     for (const row of rows) expect(row.split('|')).toHaveLength(5)
     expect(api.body).toContain('](/api-reference/vibeke-1.schema.json)')
+  })
+})
+
+describe('home page release', () => {
+  test('shows the newest release with published notes', () => {
+    const versions = readdirSync(new URL('../../../../docs/release-notes/', import.meta.url))
+      .map(name => name.match(/^v(\d+)\.(\d+)\.(\d+)\.md$/))
+      .filter(match => match !== null)
+      .map(match => match.slice(1, 4).map(Number))
+      .sort((a, b) => a[0]! - b[0]! || a[1]! - b[1]! || a[2]! - b[2]!)
+    expect(latestRelease.version).toBe(versions.at(-1)!.join('.'))
+    expect(latestRelease.url).toBe(`https://github.com/MidgardAI/vibeke/releases/tag/v${latestRelease.version}`)
   })
 })

@@ -4,6 +4,7 @@ import { useState } from 'react'
 import { CodeBlock, Eyebrow } from '../components/ui'
 import { ClientShowcase } from '../components/client-showcase'
 import { comparisonCount } from '../lib/comparisons'
+import { latestRelease } from '../lib/release'
 
 export const Route = createFileRoute('/')({ component: Home })
 
@@ -27,7 +28,7 @@ function Home() {
         <div className="flex items-center gap-3"><span className="h-1.5 w-1.5 bg-accent" /><Eyebrow>A terminal workspace for coding agents</Eyebrow><span className="ml-auto hidden font-mono text-[10px] text-muted sm:inline">LOCAL + SSH</span></div>
         <div className="mt-7 grid items-end gap-8 lg:grid-cols-[1.65fr_1fr] lg:gap-16">
           <h1 className="text-[clamp(3.1rem,6.6vw,5.75rem)] leading-[1.02] font-medium tracking-[-0.065em]">Run your agents.<br /><span className="text-accent">Keep control.</span></h1>
-          <div className="pb-1"><p className="max-w-md text-[15px] leading-7 text-muted">Run Claude Code, Codex, and other agent CLIs in one workspace. Reconnect to the same processes after you disconnect. Answer agent requests from the inbox.</p><div className="mt-7 flex flex-wrap gap-3"><Link to="/docs/$slug" params={{ slug: 'install' }} className="button-primary">Install CLI <ArrowUpRight size={16} /></Link><Link to="/docs/$slug" params={{ slug: 'desktop' }} className="button-secondary">Download desktop <ArrowRight size={14} /></Link></div><p className="mt-4 font-mono text-[10px] text-muted">CLI: macOS + Linux <span className="mx-2">/</span> Desktop: macOS + Linux + Windows</p></div>
+          <div className="pb-1"><p className="max-w-md text-[15px] leading-7 text-muted">Run Claude Code, Codex, and other agent CLIs in one workspace. Reconnect to the same processes after you disconnect. Answer agent requests from the inbox.</p><div className="mt-7 flex flex-wrap gap-3"><Link to="/docs/$slug" params={{ slug: 'install' }} className="button-primary">Install CLI <ArrowUpRight size={16} /></Link><Link to="/docs/$slug" params={{ slug: 'desktop' }} className="button-secondary">Download desktop <ArrowRight size={14} /></Link></div><p className="mt-4 font-mono text-[10px] text-muted"><a href={latestRelease.url} className="text-cream hover:text-accent">Latest release v{latestRelease.version}</a><span className="mx-2">/</span>CLI: macOS + Linux <span className="mx-2">/</span> Desktop: macOS + Linux + Windows</p></div>
         </div>
         <div className="mt-8"><CodeBlock title="install the CLI · requires minisign" code="curl -fsSL https://vibeke.dev/install.sh | sh" /><div className="mt-4 flex flex-wrap gap-6 text-xs"><Link to="/docs/$slug" params={{ slug: 'install' }} className="text-link">Installation requirements <ArrowRight size={13} /></Link><a href="https://app.vibeke.dev" className="text-link">Open browser app <ArrowUpRight size={13} /></a><Link to="/docs/$slug" params={{ slug: 'mobile' }} className="text-link">Pair your phone <ArrowRight size={13} /></Link></div></div>
         <div className="mt-12 sm:mt-14"><ClientShowcase /></div>

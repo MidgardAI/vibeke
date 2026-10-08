@@ -20,6 +20,7 @@ Discover the deployment team from the local Vercel project link or authenticated
 - Installation and quickstart pages lead with published releases and the terminal interface. Source builds belong in the development guide.
 - A fresh `vibeke` session creates its first workspace in the current directory. Users can run their normal `claude`, `codex`, or other agent command in a pane. Do not require a second terminal for ordinary onboarding.
 - Describe only released UI actions. Device pairing currently uses `vibeke gateway pair`; the server manages the gateway after setup. The desktop app offers local connection and gateway-start controls.
+- The TUI Devices view (`prefix+alt+d`, palette **Pair a phone**: pair with a QR code, list and revoke devices) and the fixed 📱 connected-devices count in the status bar are on `main` but not in v0.1.0. In the first release that includes them, describe them in `docs/site/src/mobile.md` (pairing and **Manage devices**), then delete this note.
 - Keep host CLI platforms distinct from desktop client platforms. Do not imply that the desktop package bundles the CLI.
 - CLI, configuration, and API references are generated. Regenerate them with `VIBEKE_UPDATE_DOCS=1 cargo test -p vibeke --test api_docs` when their source changes.
 - Use `docs/desktop-downloads.md` as the shared desktop download table. The installation and desktop guides include it. Update it with each release.
@@ -129,6 +130,8 @@ Replace the workflow's unsigned-draft placeholder before publishing. State the r
 
 After verification, publish the draft with `gh release edit v<version> --repo MidgardAI/vibeke --draft=false`. Confirm whether it is the intended latest stable release; prereleases must not silently become the default installer target.
 
+Update the version shown on the home page: set `version` and `url` in `web/apps/site/src/lib/release.ts` to the published stable release. The site test (`bun run test`) fails when it does not match the newest `docs/release-notes/v<version>.md`. Do not change it for a prerelease or before the release is published.
+
 The website's `/install.sh` route is a 302 redirect, configured in `web/apps/site/vite.config.ts`, to `https://github.com/MidgardAI/vibeke/releases/latest/download/install.sh`. It uses `Cache-Control: no-store`. Keep this endpoint stable; the published release supplies the version-pinned installer. Do not maintain a stale second copy of the script in website public assets.
 
 Commit the documentation and download-table changes, push the authorized branch, and deploy the website from that committed state. From `web/apps/site/`:
@@ -150,6 +153,7 @@ A documentation update does not require rebuilding Electron or deploying the bro
 
 - Confirm the release tag, asset inventory, signatures, and exact source/build identities. Fetch public download links without a GitHub token.
 - Follow `https://vibeke.dev/install.sh`; compare the response with the release's installer and check shell syntax. Verify the downloaded CLI signature/checksum and reported version. Test installation in an isolated test environment without changing the user's installation.
+- Check that the home page shows the new version and that its link opens the published release.
 - Check every desktop asset link returns successfully and appears on both `/docs/install` and `/docs/desktop`. Confirm the release body matches its committed Markdown source.
 - Run website desktop/mobile checks against production. Check for stale `github.com/espen/` links, private-repository instructions, and source-build requirements in normal onboarding.
 - For app releases, run `bun scripts/check-app.ts https://app.vibeke.dev` from `web/apps/site/`. From the repository root, run `bun web/packages/core/scripts/check-relay.ts wss://relay.vibeke.dev`. Test pairing with an isolated host and the released CLI when the connection flow changes.
