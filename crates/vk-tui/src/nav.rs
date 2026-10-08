@@ -647,6 +647,11 @@ pub const ACTION_INFO: &[(&str, &str)] = &[
         "sharing",
         "Sharing & handoff: peers, invitations, paste an invitation, invited devices",
     ),
+    (
+        "devices",
+        "Devices: your paired phones — pair, list, revoke",
+    ),
+    ("pair_phone", "Pair a phone"),
 ];
 
 /// Actions only reachable from the palette (no keymap entry).
@@ -684,6 +689,7 @@ const EXTRA_ACTIONS: &[&str] = &[
     "assist_briefing",
     "assist_pane_title",
     "handoff_details",
+    "pair_phone",
 ];
 
 pub fn describe(action: &str) -> String {

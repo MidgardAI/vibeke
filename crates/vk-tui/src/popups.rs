@@ -158,6 +158,7 @@ pub fn key(app: &mut App, ev: KeyEvent, p: Popup) {
         Popup::Handoffs => crate::handoff::handoffs_key(app, ev),
         Popup::HandoffSend => crate::handoff::send_key(app, ev),
         Popup::Sharing => crate::sharing::key(app, ev),
+        Popup::Devices => crate::devices::key(app, ev),
         Popup::Peek { pane } => match ev.key {
             _ if esc => {}
             Key::Named(NamedKey::Enter) => {
@@ -355,7 +356,7 @@ pub fn draw(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
         }
         Mode::Popup(p) => match p {
             Popup::Help => {
-                let mut b = frame(app, g, 72, 30, "help · esc to close");
+                let mut b = frame(app, g, 72, 31, "help · esc to close");
                 let km = &app.keymap;
                 for (action, label) in [
                     ("split_vertical", "split side by side"),
@@ -380,6 +381,7 @@ pub fn draw(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
                     ("url_hints", "label URLs/IDs in the pane: open or copy"),
                     ("next_attention", "next agent that needs you"),
                     ("agent_list", "every agent on every machine, by attention"),
+                    ("devices", "your paired phones: pair, list, revoke"),
                     ("enter_copy_mode", "copy mode (/ search, v select, y yank)"),
                     ("resize_mode", "resize mode"),
                     ("toggle_sidebar", "toggle sidebar"),
@@ -536,6 +538,7 @@ pub fn draw(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
                 let (x, y) = crate::sharing::draw(app, g)?;
                 return Some((x, y, CursorShape::Bar));
             }
+            Popup::Devices => crate::devices::draw(app, g),
             Popup::BrowserDrop(a) => crate::browser_io::draw_drop(app, g, a),
             Popup::Peek { pane } => {
                 let m = app.m();

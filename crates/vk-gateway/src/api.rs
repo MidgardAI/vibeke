@@ -1263,26 +1263,8 @@ impl Call<'_> {
                 let n = self.gw.push_to(&self.device.id, &json!({"title": "Vibeke", "body": format!("Test from {}", self.gw.host_name), "tag": format!("vibeke:{}:test", self.gw.keys.host_id())}), "normal").await;
                 Ok(json!({"sent": n}))
             }
-            "devices.list" => {
-                let me = &self.device.id;
-                let list: Vec<Value> = self
-                    .gw
-                    .devices()
-                    .iter()
-                    .map(|d| json!({"id": d.id, "name": d.name, "platform": d.platform, "scope": d.scope, "paired_at": d.paired_at, "fingerprint": d.fingerprint(), "push": !d.push.is_empty(), "this": &d.id == me, "kind": d.kind, "expires_at": d.expires_at, "limit": d.limit, "peer": d.peer}))
-                    .collect();
-                Ok(json!({"devices": list}))
-            }
-            "devices.revoke" => {
-                let id = req(&p, "device")?;
-                if id == self.device.id {
-                    return Err(ApiError::invalid(
-                        "a device cannot revoke itself here; use Forget host",
-                    ));
-                }
-                self.gw.revoke(id).await.map_err(internal)?;
-                Ok(json!({}))
-            }
+            "devices.list" => devices_list_as(self.gw, self.device),
+            "devices.revoke" => devices_revoke_as(self.gw, self.device, &p).await,
             "stt.transcribe" => crate::stt::transcribe(self.gw, &p).await,
             "share.create" => self.share_create(&p),
             m if m.starts_with("peer.") || m == "share.list" || m == "share.revoke" => {
@@ -1329,6 +1311,32 @@ impl Call<'_> {
             )),
         }
     }
+}
+
+/// `devices.list`, for the app API and the server bridge (`gateway.call`): `this` marks `device`.
+pub fn devices_list_as(gw: &Arc<Gateway>, device: &Device) -> ApiResult {
+    // Another process (`vibeke-gateway revoke`, a claim) may have changed the registry.
+    let _ = gw.reload_devices();
+    let me = &device.id;
+    let list: Vec<Value> = gw
+        .devices()
+        .iter()
+        .map(|d| json!({"id": d.id, "name": d.name, "platform": d.platform, "scope": d.scope, "paired_at": d.paired_at, "fingerprint": d.fingerprint(), "push": !d.push.is_empty(), "this": &d.id == me, "kind": d.kind, "expires_at": d.expires_at, "limit": d.limit, "peer": d.peer}))
+        .collect();
+    Ok(json!({"devices": list}))
+}
+
+/// `devices.revoke {device}`, for the app API and the server bridge. A device never revokes
+/// itself here.
+pub async fn devices_revoke_as(gw: &Arc<Gateway>, device: &Device, p: &Value) -> ApiResult {
+    let id = req(p, "device")?;
+    if id == device.id {
+        return Err(ApiError::invalid(
+            "a device cannot revoke itself here; use Forget host",
+        ));
+    }
+    gw.revoke(id).await.map_err(internal)?;
+    Ok(json!({}))
 }
 
 /// `share.create` for the server bridge (`gateway.call`): the same code as the app API.

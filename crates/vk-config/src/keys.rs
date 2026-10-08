@@ -84,6 +84,8 @@ pub const DEFAULT_KEYMAP: &[(&str, &str)] = &[
     ("handoffs", "prefix+shift+h"),
     ("handoff_send", "prefix+alt+h"),
     ("sharing", ""),
+    // Devices (your paired phones): `prefix+shift+d` is `close_workspace`.
+    ("devices", "prefix+alt+d"),
 ];
 
 /// Copy-mode actions for `[keys.copy_mode]` per-key overrides (`key = "action"`; an empty

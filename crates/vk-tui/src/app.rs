@@ -343,6 +343,8 @@ pub enum Popup {
     /// Sharing & handoff (16 §15.3–§15.5): peers, invitations, pasting an invitation, invited
     /// devices; a full pane-area view, state in `App::ux.sharing`.
     Sharing,
+    /// Devices (your paired phones): list, pair, revoke; state in `App::ux.devices`.
+    Devices,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1942,6 +1944,7 @@ impl App {
                 crate::sharing::on_paste(self, &text);
                 return;
             }
+            Mode::Popup(Popup::Devices) => return,
             Mode::Popup(_) => {
                 // Editors in the drafts, desk and assist views.
                 crate::drafts::on_paste(self, &text);

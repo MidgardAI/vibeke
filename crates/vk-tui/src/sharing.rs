@@ -199,7 +199,7 @@ pub fn render_qr(text: &str) -> Option<String> {
 
 /// What a failed `gateway.call` says: the server's message (`remote_unavailable` carries "the
 /// gateway isn't running: start it with `vibeke gateway on`"), or that the server is too old.
-pub fn bridge_error(e: &RpcErr) -> String {
+pub(crate) fn bridge_error(e: &RpcErr) -> String {
     if e.is_method_not_found() {
         "this machine's vibeke has no gateway bridge (update it)".into()
     } else {
@@ -208,7 +208,7 @@ pub fn bridge_error(e: &RpcErr) -> String {
 }
 
 /// The gateway can't be reached at all (no point in trying the other calls).
-fn unreachable(e: &RpcErr) -> bool {
+pub(crate) fn unreachable(e: &RpcErr) -> bool {
     e.kind == "remote_unavailable" || e.is_method_not_found()
 }
 
@@ -435,12 +435,17 @@ pub enum Reply {
 /// `gateway.call {method, params}` on machine `mi`, on its own connection (the gateway may take
 /// up to the bridge's timeout to answer).
 fn gw_call(app: &mut App, mi: usize, method: &str, params: Value, r: Reply) {
+    gw_call_pending(app, mi, method, params, pend(r));
+}
+
+/// [`gw_call`] with any reply route (the Devices view shares it).
+pub(crate) fn gw_call_pending(app: &mut App, mi: usize, method: &str, params: Value, p: Pending) {
     crate::handoff::call_long_pending(
         app,
         mi,
         "gateway.call",
         json!({"method": method, "params": params}),
-        pend(r),
+        p,
     );
 }
 
@@ -1158,8 +1163,15 @@ fn draw_created(app: &App, a: &mut crate::drafts::Area<'_>, c: &Created, now: i6
         );
     }
     a.line("", t.text());
+    draw_link_qr(app, a, &c.link);
+    a.footer("[c] copy link   [esc] back", t.bold(t.fg));
+}
+
+/// The link wrapped to the width, then its QR code (or why there is none; `c` copies the link).
+pub(crate) fn draw_link_qr(app: &App, a: &mut crate::drafts::Area<'_>, link: &str) {
+    let t = app.theme;
     let w = a.rest().w as usize;
-    let chars: Vec<char> = c.link.chars().collect();
+    let chars: Vec<char> = link.chars().collect();
     for chunk in chars.chunks(w.max(20)) {
         a.line(&chunk.iter().collect::<String>(), t.s(t.accent));
     }
@@ -1169,7 +1181,7 @@ fn draw_created(app: &App, a: &mut crate::drafts::Area<'_>, c: &Created, now: i6
         bg: Color::Rgb(255, 255, 255),
         ..Style::default()
     };
-    match render_qr(&c.link) {
+    match render_qr(link) {
         Some(qr) => {
             let lines: Vec<&str> = qr.lines().collect();
             let qw = lines
@@ -1190,7 +1202,6 @@ fn draw_created(app: &App, a: &mut crate::drafts::Area<'_>, c: &Created, now: i6
         }
         None => a.line("(link too long for a QR code: c copies it)", t.dim()),
     }
-    a.footer("[c] copy link   [esc] back", t.bold(t.fg));
 }
 
 fn draw_paste(
