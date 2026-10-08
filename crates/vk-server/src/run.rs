@@ -654,6 +654,9 @@ fn subscribe(
     // Live-only: the position is fixed now (with the receiver already subscribed), not when the
     // task first runs — an event committed in between would otherwise be skipped.
     let live_from = (!replay).then(|| server.with_core(|c| c.store.last_seq().unwrap_or(0)));
+    // A gateway counts as connected (`gateway.status`) from before the subscription is
+    // acknowledged until its stream ends.
+    let presence = crate::gateway_bridge::enter(server, ctx);
     let _ = out.send(serde_json::to_string(&Response::ok(
         id,
         json!({"subscription_id": sub_id, "at": at}),
@@ -663,6 +666,8 @@ fn subscribe(
     let ctx = ctx.clone();
     let mut revoked = crate::auth::revocations(server);
     let task = tokio::spawn(async move {
+        // The guard fails the requests waiting on this gateway when the task ends or is aborted.
+        let _gateway = presence;
         let notify = |e: &vk_store::Event| {
             serde_json::to_string(&json!({"jsonrpc": "2.0", "method": "events.event", "params": {"subscription_id": sub_id, "event": e}})).unwrap()
         };
@@ -724,6 +729,12 @@ fn subscribe(
                         // it never moves the cursor, and generated text goes to full-scope
                         // subscribers only (14 §9).
                         if pane_scoped && e.kind.starts_with("assistant.") {
+                            continue;
+                        }
+                        // Addressed to one gateway: its params may hold an invitation link.
+                        if e.kind == "gateway.request"
+                            && !crate::gateway_bridge::deliver_to(&e, &ctx)
+                        {
                             continue;
                         }
                     } else {

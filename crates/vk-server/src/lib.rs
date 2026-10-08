@@ -20,6 +20,7 @@ pub mod desk;
 pub mod drafts;
 pub mod fs_api;
 pub mod gateway_api;
+pub mod gateway_bridge;
 pub mod git_api;
 pub mod handoff;
 pub mod handoff_out;

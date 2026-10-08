@@ -640,6 +640,16 @@ A gateway can pair with another gateway as a client (`vk-gateway/src/peer_client
 - Expired devices are removed from `devices.json` at startup and by the 5 s sweep (audit `device.expired`).
 - The app pairs each share/handoff invitation with **its own key** (keystore `invite_static:<pid>`, kept on the host record), so the host never confuses it with the device's own pairing (re-pairing the same key still replaces the old record). The app keeps one record per host, so it does not offer to accept an invitation for a host it already has full access to.
 
+### 15.5 The server bridge (`gateway.call`)
+
+`peer.*` and `share.*` live in the host's gateway, which a TUI attached to a remote machine cannot reach (the CLI reads the gateway state directory itself). One generic bridge through the server carries them:
+
+- `gateway.call {method, params?, timeout_ms? = 30000}` (full scope, never from a pane) runs `method` in the gateway and returns its result. Allowed: `peer.invite`, `peer.redeem`, `peer.list`, `peer.remove`, `share.create` (kinds `handoff` and `peer` only), `share.list`, `share.revoke`; anything else is `invalid_params`. The gateway checks the list again.
+- The server stores a pending request and emits the transient event `gateway.request {id, method, params, client}` (seq 0, never stored or replayed), delivered only to the event stream of the one gateway it is addressed to, since the params can hold an invitation link. The gateway runs the request through the same code as its app API, as the host owner (`by: "tui"` in `audit.log`), and answers with `gateway.reply {id, result | error: {kind, message, details?}}`. `gateway.reply` is accepted only from gateway clients, like `handoff.job.update`. Error kinds the server has keep their kind (`forbidden` becomes `permission_denied`).
+- No gateway connected, no answer within `timeout_ms`, or the gateway's stream ending first: `remote_unavailable`, "the gateway isn't running: start it with `vibeke gateway run`". Pending entries are removed on each of these.
+- `gateway.status {}` returns `{connected: bool}`: a gateway is connected while its event stream is open.
+- Server code that needs the gateway (the pairing step of `auth.approve` calls `peer.redeem`) uses `vk_server::gateway_bridge::call(server, method, params, timeout)`, which does the same allow-list check and round trip.
+
 ## 16. Desktop app (G4, build now)
 
 `web/apps/desktop` (`@vibeke/desktop`): an Electron shell over `@vibeke/core` + `@vibeke/ui`. It must feel native on macOS first (Linux and Windows build and run; polish follows), and it adds what a phone can't do well.

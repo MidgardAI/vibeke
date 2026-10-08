@@ -26,6 +26,9 @@ struct Ring {
 pub struct Hub {
     ring: Mutex<Ring>,
     tx: broadcast::Sender<Fanout>,
+    /// `gateway.request` events (transient, addressed to this gateway): never in the ring and
+    /// never shown to devices.
+    requests: broadcast::Sender<Value>,
 }
 
 pub fn seq_of(ev: &Value) -> u64 {
@@ -41,6 +44,7 @@ impl Default for Hub {
                 cursor: None,
             }),
             tx: broadcast::channel(1000).0,
+            requests: broadcast::channel(64).0,
         }
     }
 }
@@ -111,6 +115,15 @@ impl Hub {
         r.cursor = None;
         drop(r);
         let _ = self.tx.send(Fanout::Reset);
+    }
+
+    /// A `gateway.request` event's data (`{id, method, params}`) for [`crate::bridge`].
+    pub fn push_request(&self, data: Value) {
+        let _ = self.requests.send(data);
+    }
+
+    pub fn subscribe_requests(&self) -> broadcast::Receiver<Value> {
+        self.requests.subscribe()
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<Fanout> {
