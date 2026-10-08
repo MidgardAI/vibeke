@@ -61,13 +61,14 @@ module.exports = {
   dmg: { sign: false },
   linux: {
     target: ['AppImage', 'deb'],
+    executableName: 'vibeke-desktop',
     category: 'Development',
     icon: 'build/icons',
     maintainer: 'Vibeke',
     synopsis: 'Your agents and terminals, end-to-end encrypted.',
     mimeTypes: ['x-scheme-handler/vibeke'],
   },
-  deb: { depends: ['libsecret-1-0'] },
+  deb: { packageName: 'vibeke-desktop', depends: ['libsecret-1-0'] },
   win: { target: ['nsis'], icon: 'build/icon.png' },
   nsis: { oneClick: false, perMachine: false, allowToChangeInstallationDirectory: true },
 };

@@ -77,7 +77,7 @@ Download the desktop installer from the [release page](https://github.com/Midgar
 | --- | --- |
 | macOS, Apple silicon | `Vibeke-<version>-mac-arm64.dmg` |
 | macOS, Intel | `Vibeke-<version>-mac-x64.dmg` |
-| Linux, x86_64 | `Vibeke-<version>-linux-x64.AppImage` or `.deb` |
+| Linux, x86_64 | `Vibeke-<version>-linux-x86_64.AppImage` or `Vibeke-<version>-linux-amd64.deb` |
 | Windows, x86_64 | `Vibeke-<version>-win-x64.exe` |
 
 On macOS, open the DMG and drag Vibeke into Applications. ZIP downloads are also available.

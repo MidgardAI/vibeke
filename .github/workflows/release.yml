@@ -8,12 +8,19 @@ on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      component:
+        description: Which packages to check (manual runs never publish)
+        type: choice
+        default: all
+        options: [all, cli, desktop]
 
 permissions:
   contents: read
 
 jobs:
   build:
+    if: inputs.component != 'desktop'
     strategy:
       fail-fast: true
       matrix:
@@ -50,6 +57,7 @@ jobs:
           if-no-files-found: error
 
   desktop:
+    if: inputs.component != 'cli'
     strategy:
       fail-fast: false
       matrix:
