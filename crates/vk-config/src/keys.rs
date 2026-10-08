@@ -79,6 +79,11 @@ pub const DEFAULT_KEYMAP: &[(&str, &str)] = &[
     ("tab_renumber", ""),
     ("task_recreate", ""),
     ("task_forget", ""),
+    // Handoffs (16 §15.2): the list, sending the focused pane, the Sharing & handoff view.
+    // `prefix+shift+o` is `preview_list`, so sending takes the list's letter with `alt`.
+    ("handoffs", "prefix+shift+h"),
+    ("handoff_send", "prefix+alt+h"),
+    ("sharing", ""),
 ];
 
 /// Copy-mode actions for `[keys.copy_mode]` per-key overrides (`key = "action"`; an empty

@@ -314,6 +314,151 @@
         "source"
       ]
     },
+    "ApprovalGrant": {
+      "type": "object",
+      "properties": {
+        "pane": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string"
+        },
+        "target": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "peer": {
+          "type": "string"
+        },
+        "peer_name": {
+          "type": "string"
+        },
+        "request": {
+          "type": "string"
+        },
+        "created_at_ms": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "pane",
+        "method",
+        "target",
+        "peer",
+        "peer_name",
+        "request",
+        "created_at_ms"
+      ]
+    },
+    "ApprovalRequest": {
+      "type": "object",
+      "properties": {
+        "request": {
+          "type": "string"
+        },
+        "kind": {
+          "const": "approval"
+        },
+        "pane": {
+          "type": "string"
+        },
+        "pane_handle": {
+          "type": "string"
+        },
+        "workspace": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "enum": [
+            "handoff.send",
+            "handoff.cancel",
+            "gateway.call"
+          ]
+        },
+        "params": {
+          "type": "object"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "facts": {
+          "type": "object"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "reason_verified": {
+          "type": "boolean"
+        },
+        "peer": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "owner": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "name",
+                "owner"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "always_allowed": {
+          "type": "boolean"
+        },
+        "created_at_ms": {
+          "type": "integer"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "pending",
+            "running",
+            "approved",
+            "failed",
+            "denied",
+            "withdrawn"
+          ]
+        }
+      },
+      "required": [
+        "request",
+        "kind",
+        "pane",
+        "pane_handle",
+        "workspace",
+        "method",
+        "params",
+        "summary",
+        "facts",
+        "reason",
+        "reason_verified",
+        "peer",
+        "always_allowed",
+        "created_at_ms",
+        "status"
+      ]
+    },
     "AuditEntry": {
       "type": "object",
       "properties": {
@@ -7024,6 +7169,172 @@
         ]
       }
     },
+    "auth.approve": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "params": {
+        "type": "object",
+        "properties": {
+          "method": {
+            "type": "string",
+            "enum": [
+              "handoff.send",
+              "handoff.cancel",
+              "gateway.call"
+            ]
+          },
+          "params": {
+            "type": "object"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "wait": {
+            "type": "boolean",
+            "default": true
+          },
+          "timeout_ms": {
+            "type": "integer",
+            "default": 120000
+          },
+          "request": {
+            "type": "string"
+          }
+        }
+      },
+      "result": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/ApprovalRequest"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "cursor": {
+                "$ref": "#/$defs/Cursor"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "auth.approve.decide": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "request": {
+            "type": "string"
+          },
+          "decision": {
+            "type": "string",
+            "enum": [
+              "approve",
+              "always",
+              "deny"
+            ]
+          }
+        },
+        "required": [
+          "request",
+          "decision"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "request": {
+            "type": "string"
+          },
+          "pane": {
+            "type": "string"
+          },
+          "decision": {
+            "type": "string",
+            "enum": [
+              "approved",
+              "denied"
+            ]
+          },
+          "grant": {
+            "anyOf": [
+              {
+                "const": "once"
+              },
+              {
+                "const": "always"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "result": {},
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/RpcError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "request",
+          "pane",
+          "decision",
+          "grant",
+          "ok",
+          "result",
+          "error"
+        ]
+      }
+    },
+    "auth.approve.withdraw": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "params": {
+        "type": "object",
+        "properties": {
+          "request": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "request"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "request": {
+            "type": "string"
+          },
+          "withdrawn": {
+            "type": "boolean"
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "request",
+          "withdrawn"
+        ]
+      }
+    },
     "auth.elevate": {
       "mutating": true,
       "scope": "pane",
@@ -7197,12 +7508,26 @@
                 "pane"
               ]
             }
+          },
+          "approvals": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/ApprovalRequest"
+            }
+          },
+          "grants": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/ApprovalGrant"
+            }
           }
         },
         "required": [
           "pending",
           "elevated",
-          "revoked"
+          "revoked",
+          "approvals",
+          "grants"
         ]
       }
     },
@@ -13291,6 +13616,90 @@
         ]
       }
     },
+    "gateway.call": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "method": {
+            "type": "string"
+          },
+          "params": {
+            "type": "object"
+          },
+          "timeout_ms": {
+            "type": "integer",
+            "default": 30000
+          }
+        },
+        "required": [
+          "method"
+        ]
+      },
+      "result": {}
+    },
+    "gateway.reply": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "result": {},
+          "error": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              },
+              "details": {}
+            },
+            "required": [
+              "kind",
+              "message"
+            ]
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        }
+      }
+    },
+    "gateway.status": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "connected": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "connected"
+        ]
+      }
+    },
     "git.diff": {
       "mutating": false,
       "scope": "pane",
@@ -14555,6 +14964,44 @@
               },
               "by": {
                 "type": "string"
+              },
+              "expect": {
+                "type": "object",
+                "properties": {
+                  "repo_root": {
+                    "type": "string"
+                  },
+                  "branch": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "head": {
+                    "type": "string"
+                  },
+                  "request": {
+                    "type": "string"
+                  },
+                  "requested_by": {
+                    "type": "string"
+                  },
+                  "approved_by": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "repo_root",
+                  "branch",
+                  "head",
+                  "request",
+                  "requested_by",
+                  "approved_by"
+                ]
               }
             },
             "required": [
@@ -14843,6 +15290,44 @@
               },
               "by": {
                 "type": "string"
+              },
+              "expect": {
+                "type": "object",
+                "properties": {
+                  "repo_root": {
+                    "type": "string"
+                  },
+                  "branch": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "head": {
+                    "type": "string"
+                  },
+                  "request": {
+                    "type": "string"
+                  },
+                  "requested_by": {
+                    "type": "string"
+                  },
+                  "approved_by": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "repo_root",
+                  "branch",
+                  "head",
+                  "request",
+                  "requested_by",
+                  "approved_by"
+                ]
               }
             },
             "required": [
@@ -14931,6 +15416,44 @@
                 },
                 "by": {
                   "type": "string"
+                },
+                "expect": {
+                  "type": "object",
+                  "properties": {
+                    "repo_root": {
+                      "type": "string"
+                    },
+                    "branch": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "head": {
+                      "type": "string"
+                    },
+                    "request": {
+                      "type": "string"
+                    },
+                    "requested_by": {
+                      "type": "string"
+                    },
+                    "approved_by": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "repo_root",
+                    "branch",
+                    "head",
+                    "request",
+                    "requested_by",
+                    "approved_by"
+                  ]
                 }
               },
               "required": [
@@ -15268,6 +15791,44 @@
               },
               "by": {
                 "type": "string"
+              },
+              "expect": {
+                "type": "object",
+                "properties": {
+                  "repo_root": {
+                    "type": "string"
+                  },
+                  "branch": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "head": {
+                    "type": "string"
+                  },
+                  "request": {
+                    "type": "string"
+                  },
+                  "requested_by": {
+                    "type": "string"
+                  },
+                  "approved_by": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "repo_root",
+                  "branch",
+                  "head",
+                  "request",
+                  "requested_by",
+                  "approved_by"
+                ]
               }
             },
             "required": [
@@ -30307,6 +30868,189 @@
         ]
       }
     },
+    "auth.approval_denied": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "pane": {
+            "type": "string"
+          },
+          "request": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "pane",
+          "request"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "method": {
+            "type": "string"
+          },
+          "summary": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "method",
+          "summary"
+        ]
+      }
+    },
+    "auth.approval_granted": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "pane": {
+            "type": "string"
+          },
+          "request": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "pane",
+          "request"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "method": {
+            "type": "string"
+          },
+          "grant": {
+            "type": "string",
+            "enum": [
+              "once",
+              "always",
+              "standing"
+            ]
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "summary": {
+            "type": "string"
+          },
+          "result": {},
+          "standing_grant": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "method",
+          "grant",
+          "ok",
+          "error",
+          "summary",
+          "result"
+        ]
+      }
+    },
+    "auth.approval_requested": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "pane": {
+            "type": "string"
+          },
+          "request": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "pane",
+          "request"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "method": {
+            "type": "string"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "peer": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "always_allowed": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "method",
+          "summary",
+          "reason",
+          "peer",
+          "always_allowed"
+        ]
+      }
+    },
+    "auth.approval_withdrawn": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "pane": {
+            "type": "string"
+          },
+          "request": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "pane",
+          "request"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "method": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string",
+            "enum": [
+              "withdrawn",
+              "disconnected",
+              "revoked",
+              "pane_restarted",
+              "expired"
+            ]
+          }
+        },
+        "required": [
+          "method",
+          "reason"
+        ]
+      }
+    },
     "auth.elevate_denied": {
       "subject": {
         "type": "object",
@@ -31067,6 +31811,42 @@
         ]
       }
     },
+    "gateway.request": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "params": {
+            "type": "object"
+          },
+          "client": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "method",
+          "params",
+          "client"
+        ]
+      }
+    },
     "goal.approved": {
       "subject": {
         "type": "object",
@@ -31582,6 +32362,44 @@
           },
           "by": {
             "type": "string"
+          },
+          "expect": {
+            "type": "object",
+            "properties": {
+              "repo_root": {
+                "type": "string"
+              },
+              "branch": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "head": {
+                "type": "string"
+              },
+              "request": {
+                "type": "string"
+              },
+              "requested_by": {
+                "type": "string"
+              },
+              "approved_by": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "repo_root",
+              "branch",
+              "head",
+              "request",
+              "requested_by",
+              "approved_by"
+            ]
           }
         },
         "required": [

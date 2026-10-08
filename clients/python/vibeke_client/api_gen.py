@@ -161,6 +161,15 @@ class Api:
     async def audit_verify(self, params: "Optional[t.AuditVerifyParams]" = None) -> "t.AuditVerifyResult":
         return await self.call("audit.verify", params or {})  # type: ignore[arg-type, return-value]
 
+    async def auth_approve(self, params: "Optional[t.AuthApproveParams]" = None) -> "t.AuthApproveResult":
+        return await self.call("auth.approve", params or {})  # type: ignore[arg-type, return-value]
+
+    async def auth_approve_decide(self, params: "t.AuthApproveDecideParams") -> "t.AuthApproveDecideResult":
+        return await self.call("auth.approve.decide", params)  # type: ignore[arg-type, return-value]
+
+    async def auth_approve_withdraw(self, params: "t.AuthApproveWithdrawParams") -> "t.AuthApproveWithdrawResult":
+        return await self.call("auth.approve.withdraw", params)  # type: ignore[arg-type, return-value]
+
     async def auth_elevate(self, params: "Optional[t.AuthElevateParams]" = None) -> "t.AuthElevateResult":
         return await self.call("auth.elevate", params or {})  # type: ignore[arg-type, return-value]
 
@@ -451,6 +460,15 @@ class Api:
 
     async def fs_read(self, params: "t.FsReadParams") -> "t.FsReadResult":
         return await self.call("fs.read", params)  # type: ignore[arg-type, return-value]
+
+    async def gateway_call(self, params: "t.GatewayCallParams") -> "t.GatewayCallResult":
+        return await self.call("gateway.call", params)  # type: ignore[arg-type, return-value]
+
+    async def gateway_reply(self, params: "t.GatewayReplyParams") -> "t.GatewayReplyResult":
+        return await self.call("gateway.reply", params)  # type: ignore[arg-type, return-value]
+
+    async def gateway_status(self, params: "Optional[t.GatewayStatusParams]" = None) -> "t.GatewayStatusResult":
+        return await self.call("gateway.status", params or {})  # type: ignore[arg-type, return-value]
 
     async def git_diff(self, params: "t.GitDiffParams") -> "t.GitDiffResult":
         return await self.call("git.diff", params)  # type: ignore[arg-type, return-value]

@@ -80,6 +80,40 @@ Appearance = TypedDict("Appearance", {
     "source": str,
 })
 
+ApprovalGrant = TypedDict("ApprovalGrant", {
+    "pane": str,
+    "method": str,
+    "target": Optional[str],
+    "peer": str,
+    "peer_name": str,
+    "request": str,
+    "created_at_ms": int,
+})
+
+ApprovalRequestPeerV0 = TypedDict("ApprovalRequestPeerV0", {
+    "id": str,
+    "name": str,
+    "owner": str,
+})
+
+ApprovalRequest = TypedDict("ApprovalRequest", {
+    "request": str,
+    "kind": Literal["approval"],
+    "pane": str,
+    "pane_handle": str,
+    "workspace": str,
+    "method": Literal["handoff.send", "handoff.cancel", "gateway.call"],
+    "params": Dict[str, Any],
+    "summary": str,
+    "facts": Dict[str, Any],
+    "reason": str,
+    "reason_verified": bool,
+    "peer": Optional["ApprovalRequestPeerV0"],
+    "always_allowed": bool,
+    "created_at_ms": int,
+    "status": Literal["pending", "running", "approved", "failed", "denied", "withdrawn"],
+})
+
 AuditEntry = TypedDict("AuditEntry", {
     "seq": int,
     "ts": int,
@@ -1682,6 +1716,47 @@ AuditVerifyResult = TypedDict("AuditVerifyResult", {
     "segments": List[str],
 })
 
+AuthApproveParams = TypedDict("AuthApproveParams", {
+    "method": NotRequired[Literal["handoff.send", "handoff.cancel", "gateway.call"]],
+    "params": NotRequired[Dict[str, Any]],
+    "reason": NotRequired[str],
+    "wait": NotRequired[bool],
+    "timeout_ms": NotRequired[int],
+    "request": NotRequired[str],
+})
+
+AuthApproveResultXV1 = TypedDict("AuthApproveResultXV1", {
+    "cursor": NotRequired["Cursor"],
+})
+
+AuthApproveResult: TypeAlias = Union["ApprovalRequest", "AuthApproveResultXV1"]
+
+AuthApproveDecideParams = TypedDict("AuthApproveDecideParams", {
+    "request": str,
+    "decision": Literal["approve", "always", "deny"],
+})
+
+AuthApproveDecideResult = TypedDict("AuthApproveDecideResult", {
+    "request": str,
+    "pane": str,
+    "decision": Literal["approved", "denied"],
+    "grant": Optional[Union[Literal["once"], Literal["always"]]],
+    "ok": bool,
+    "result": Any,
+    "error": Optional["RpcError"],
+    "cursor": NotRequired["Cursor"],
+})
+
+AuthApproveWithdrawParams = TypedDict("AuthApproveWithdrawParams", {
+    "request": str,
+})
+
+AuthApproveWithdrawResult = TypedDict("AuthApproveWithdrawResult", {
+    "request": str,
+    "withdrawn": bool,
+    "cursor": NotRequired["Cursor"],
+})
+
 AuthElevateParams = TypedDict("AuthElevateParams", {
     "reason": NotRequired[str],
     "timeout_ms": NotRequired[int],
@@ -1729,6 +1804,8 @@ AuthListResult = TypedDict("AuthListResult", {
     "pending": List["ElevationRequest"],
     "elevated": List["AuthListResultElevatedItem"],
     "revoked": List["AuthListResultRevokedItem"],
+    "approvals": List["ApprovalRequest"],
+    "grants": List["ApprovalGrant"],
 })
 
 AuthRevokeTokenParams = TypedDict("AuthRevokeTokenParams", {
@@ -3423,6 +3500,36 @@ FsReadResult = TypedDict("FsReadResult", {
     "secret": bool,
 })
 
+GatewayCallParams = TypedDict("GatewayCallParams", {
+    "method": str,
+    "params": NotRequired[Dict[str, Any]],
+    "timeout_ms": NotRequired[int],
+})
+
+GatewayCallResult: TypeAlias = Any
+
+GatewayReplyParamsError = TypedDict("GatewayReplyParamsError", {
+    "kind": str,
+    "message": str,
+    "details": NotRequired[Any],
+})
+
+GatewayReplyParams = TypedDict("GatewayReplyParams", {
+    "id": str,
+    "result": NotRequired[Any],
+    "error": NotRequired["GatewayReplyParamsError"],
+})
+
+GatewayReplyResult = TypedDict("GatewayReplyResult", {
+    "cursor": NotRequired["Cursor"],
+})
+
+GatewayStatusParams: TypeAlias = Dict[str, Any]
+
+GatewayStatusResult = TypedDict("GatewayStatusResult", {
+    "connected": bool,
+})
+
 GitDiffParams = TypedDict("GitDiffParams", {
     "pane": NotRequired["Target"],
     "path": NotRequired[str],
@@ -3770,6 +3877,15 @@ HandoffCancelParams = TypedDict("HandoffCancelParams", {
     "id": str,
 })
 
+HandoffCancelResultJobExpect = TypedDict("HandoffCancelResultJobExpect", {
+    "repo_root": str,
+    "branch": Optional[str],
+    "head": str,
+    "request": str,
+    "requested_by": str,
+    "approved_by": str,
+})
+
 HandoffCancelResultJob = TypedDict("HandoffCancelResultJob", {
     "id": str,
     "pane": str,
@@ -3785,6 +3901,7 @@ HandoffCancelResultJob = TypedDict("HandoffCancelResultJob", {
     "created_at": int,
     "updated_at": int,
     "by": NotRequired[str],
+    "expect": NotRequired["HandoffCancelResultJobExpect"],
 })
 
 HandoffCancelResult = TypedDict("HandoffCancelResult", {
@@ -3847,6 +3964,15 @@ HandoffJobUpdateParams = TypedDict("HandoffJobUpdateParams", {
     "error": NotRequired[str],
 })
 
+HandoffJobUpdateResultJobExpect = TypedDict("HandoffJobUpdateResultJobExpect", {
+    "repo_root": str,
+    "branch": Optional[str],
+    "head": str,
+    "request": str,
+    "requested_by": str,
+    "approved_by": str,
+})
+
 HandoffJobUpdateResultJob = TypedDict("HandoffJobUpdateResultJob", {
     "id": str,
     "pane": str,
@@ -3862,6 +3988,7 @@ HandoffJobUpdateResultJob = TypedDict("HandoffJobUpdateResultJob", {
     "created_at": int,
     "updated_at": int,
     "by": NotRequired[str],
+    "expect": NotRequired["HandoffJobUpdateResultJobExpect"],
 })
 
 HandoffJobUpdateResult = TypedDict("HandoffJobUpdateResult", {
@@ -3870,6 +3997,15 @@ HandoffJobUpdateResult = TypedDict("HandoffJobUpdateResult", {
 })
 
 HandoffJobsParams: TypeAlias = Dict[str, Any]
+
+HandoffJobsResultJobsItemExpect = TypedDict("HandoffJobsResultJobsItemExpect", {
+    "repo_root": str,
+    "branch": Optional[str],
+    "head": str,
+    "request": str,
+    "requested_by": str,
+    "approved_by": str,
+})
 
 HandoffJobsResultJobsItem = TypedDict("HandoffJobsResultJobsItem", {
     "id": str,
@@ -3886,6 +4022,7 @@ HandoffJobsResultJobsItem = TypedDict("HandoffJobsResultJobsItem", {
     "created_at": int,
     "updated_at": int,
     "by": NotRequired[str],
+    "expect": NotRequired["HandoffJobsResultJobsItemExpect"],
 })
 
 HandoffJobsResult = TypedDict("HandoffJobsResult", {
@@ -3962,6 +4099,15 @@ HandoffSendParams = TypedDict("HandoffSendParams", {
     "interrupt": NotRequired[bool],
 })
 
+HandoffSendResultJobExpect = TypedDict("HandoffSendResultJobExpect", {
+    "repo_root": str,
+    "branch": Optional[str],
+    "head": str,
+    "request": str,
+    "requested_by": str,
+    "approved_by": str,
+})
+
 HandoffSendResultJob = TypedDict("HandoffSendResultJob", {
     "id": str,
     "pane": str,
@@ -3977,6 +4123,7 @@ HandoffSendResultJob = TypedDict("HandoffSendResultJob", {
     "created_at": int,
     "updated_at": int,
     "by": NotRequired[str],
+    "expect": NotRequired["HandoffSendResultJobExpect"],
 })
 
 HandoffSendResult = TypedDict("HandoffSendResult", {
@@ -7844,6 +7991,9 @@ METHODS: Dict[str, Dict[str, Any]] = {
     "audit.search": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
     "audit.tail": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
     "audit.verify": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
+    "auth.approve": {"mutating": True, "scope": "pane", "pane_scope": "open"},
+    "auth.approve.decide": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "auth.approve.withdraw": {"mutating": True, "scope": "pane", "pane_scope": "open"},
     "auth.elevate": {"mutating": True, "scope": "pane", "pane_scope": "open"},
     "auth.elevate.decide": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "auth.list": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
@@ -7941,6 +8091,9 @@ METHODS: Dict[str, Dict[str, Any]] = {
     "fs.browse": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
     "fs.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "fs.read": {"mutating": False, "scope": "pane", "pane_scope": "open"},
+    "gateway.call": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "gateway.reply": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "gateway.status": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "git.diff": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "git.log": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "git.status": {"mutating": False, "scope": "pane", "pane_scope": "open"},
@@ -8563,6 +8716,54 @@ AuditRecordedData = TypedDict("AuditRecordedData", {
     "hash": str,
 })
 
+AuthApprovalDeniedSubject = TypedDict("AuthApprovalDeniedSubject", {
+    "pane": str,
+    "request": str,
+})
+
+AuthApprovalDeniedData = TypedDict("AuthApprovalDeniedData", {
+    "method": str,
+    "summary": str,
+})
+
+AuthApprovalGrantedSubject = TypedDict("AuthApprovalGrantedSubject", {
+    "pane": str,
+    "request": str,
+})
+
+AuthApprovalGrantedData = TypedDict("AuthApprovalGrantedData", {
+    "method": str,
+    "grant": Literal["once", "always", "standing"],
+    "ok": bool,
+    "error": Optional[str],
+    "summary": str,
+    "result": Any,
+    "standing_grant": NotRequired[str],
+})
+
+AuthApprovalRequestedSubject = TypedDict("AuthApprovalRequestedSubject", {
+    "pane": str,
+    "request": str,
+})
+
+AuthApprovalRequestedData = TypedDict("AuthApprovalRequestedData", {
+    "method": str,
+    "summary": str,
+    "reason": str,
+    "peer": Optional[str],
+    "always_allowed": bool,
+})
+
+AuthApprovalWithdrawnSubject = TypedDict("AuthApprovalWithdrawnSubject", {
+    "pane": str,
+    "request": str,
+})
+
+AuthApprovalWithdrawnData = TypedDict("AuthApprovalWithdrawnData", {
+    "method": str,
+    "reason": Literal["withdrawn", "disconnected", "revoked", "pane_restarted", "expired"],
+})
+
 AuthElevateDeniedSubject = TypedDict("AuthElevateDeniedSubject", {
     "pane": str,
     "request": str,
@@ -8807,6 +9008,17 @@ FamilyPickedData = TypedDict("FamilyPickedData", {
     "discarded": int,
 })
 
+GatewayRequestSubject = TypedDict("GatewayRequestSubject", {
+    "id": str,
+})
+
+GatewayRequestData = TypedDict("GatewayRequestData", {
+    "id": str,
+    "method": str,
+    "params": Dict[str, Any],
+    "client": str,
+})
+
 GoalApprovedSubject = TypedDict("GoalApprovedSubject", {
     "goal": str,
 })
@@ -8948,6 +9160,15 @@ HandoffJobSubject = TypedDict("HandoffJobSubject", {
     "job": str,
 })
 
+HandoffJobDataExpect = TypedDict("HandoffJobDataExpect", {
+    "repo_root": str,
+    "branch": Optional[str],
+    "head": str,
+    "request": str,
+    "requested_by": str,
+    "approved_by": str,
+})
+
 HandoffJobData = TypedDict("HandoffJobData", {
     "id": str,
     "pane": str,
@@ -8963,6 +9184,7 @@ HandoffJobData = TypedDict("HandoffJobData", {
     "created_at": int,
     "updated_at": int,
     "by": NotRequired[str],
+    "expect": NotRequired["HandoffJobDataExpect"],
 })
 
 HandoffPeersChangedSubject: TypeAlias = Dict[str, Any]
@@ -10881,6 +11103,10 @@ EVENT_TYPES = (
     "assistant.test_finished",
     "attention.preference_changed",
     "audit.recorded",
+    "auth.approval_denied",
+    "auth.approval_granted",
+    "auth.approval_requested",
+    "auth.approval_withdrawn",
     "auth.elevate_denied",
     "auth.elevate_granted",
     "auth.elevate_requested",
@@ -10907,6 +11133,7 @@ EVENT_TYPES = (
     "family.checked",
     "family.created",
     "family.picked",
+    "gateway.request",
     "goal.approved",
     "goal.cancelled",
     "goal.created",

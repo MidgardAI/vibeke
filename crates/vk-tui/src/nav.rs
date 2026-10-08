@@ -639,6 +639,14 @@ pub const ACTION_INFO: &[(&str, &str)] = &[
         "Incoming handoffs (accept, decline) and handoffs being sent",
     ),
     ("handoff_send", "Hand off this pane to another host…"),
+    (
+        "handoff_details",
+        "Handoff details: where this imported pane came from (retry resume)",
+    ),
+    (
+        "sharing",
+        "Sharing & handoff: peers, invitations, paste an invitation, invited devices",
+    ),
 ];
 
 /// Actions only reachable from the palette (no keymap entry).
@@ -675,8 +683,7 @@ const EXTRA_ACTIONS: &[&str] = &[
     "notes",
     "assist_briefing",
     "assist_pane_title",
-    "handoffs",
-    "handoff_send",
+    "handoff_details",
 ];
 
 pub fn describe(action: &str) -> String {

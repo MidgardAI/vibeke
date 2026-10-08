@@ -154,8 +154,9 @@ pub fn required_scope(method: &str) -> Option<Scope> {
         "fs.browse" | "repo.candidates" => Full,
         // Gateway-to-gateway handoffs (spec 16 §15.2): a peer delivers (handoff_peer.rs); the
         // owner's apps start, follow and cancel outgoing jobs (server records, handoff_send.rs).
-        "handoff.offer" | "handoff.status" | "handoff.commit" | "handoff.send" | "handoff.jobs"
-        | "handoff.cancel" | "handoff.peers" => Full,
+        "handoff.offer" | "handoff.status" | "handoff.write" | "handoff.commit"
+        | "handoff.discard" | "handoff.send" | "handoff.jobs" | "handoff.cancel"
+        | "handoff.peers" => Full,
         // Host-to-host trust and invitation management (spec 16 §15.3–§15.4, peers.rs).
         "peer.invite" | "peer.redeem" | "peer.list" | "peer.remove" | "share.list"
         | "share.revoke" => Full,

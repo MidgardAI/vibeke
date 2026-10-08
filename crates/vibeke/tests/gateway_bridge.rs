@@ -101,6 +101,9 @@ fn without_a_gateway_the_call_is_unavailable() {
 #[test]
 fn the_gateway_answers_a_call() {
     let s = Session::new();
+    // The first call starts the server; the raw stream needs its socket.
+    let st = api(&s, "gateway.status", json!({})).unwrap();
+    assert_eq!(st["connected"], false, "{st}");
     let mut stream = Stream::connect(&s);
     let mut gw = gateway_rpc(&s);
     let st = api(&s, "gateway.status", json!({})).unwrap();

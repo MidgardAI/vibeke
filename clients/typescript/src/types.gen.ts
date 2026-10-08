@@ -79,6 +79,38 @@ export type Appearance = {
   source: string;
 };
 
+export type ApprovalGrant = {
+  pane: string;
+  method: string;
+  target: string | null;
+  peer: string;
+  peer_name: string;
+  request: string;
+  created_at_ms: number;
+};
+
+export type ApprovalRequest = {
+  request: string;
+  kind: "approval";
+  pane: string;
+  pane_handle: string;
+  workspace: string;
+  method: "handoff.send" | "handoff.cancel" | "gateway.call";
+  params: Record<string, unknown>;
+  summary: string;
+  facts: Record<string, unknown>;
+  reason: string;
+  reason_verified: boolean;
+  peer: {
+    id: string;
+    name: string;
+    owner: string;
+  } | null;
+  always_allowed: boolean;
+  created_at_ms: number;
+  status: "pending" | "running" | "approved" | "failed" | "denied" | "withdrawn";
+};
+
 export type AuditEntry = {
   seq: number;
   ts: number;
@@ -1581,6 +1613,45 @@ export type AuditVerifyResult = {
   segments: string[];
 };
 
+export type AuthApproveParams = {
+  method?: "handoff.send" | "handoff.cancel" | "gateway.call";
+  params?: Record<string, unknown>;
+  reason?: string;
+  wait?: boolean;
+  timeout_ms?: number;
+  request?: string;
+};
+
+export type AuthApproveResult = ApprovalRequest | {
+  cursor?: Cursor;
+};
+
+export type AuthApproveDecideParams = {
+  request: string;
+  decision: "approve" | "always" | "deny";
+};
+
+export type AuthApproveDecideResult = {
+  request: string;
+  pane: string;
+  decision: "approved" | "denied";
+  grant: "once" | "always" | null;
+  ok: boolean;
+  result: unknown;
+  error: RpcError | null;
+  cursor?: Cursor;
+};
+
+export type AuthApproveWithdrawParams = {
+  request: string;
+};
+
+export type AuthApproveWithdrawResult = {
+  request: string;
+  withdrawn: boolean;
+  cursor?: Cursor;
+};
+
 export type AuthElevateParams = {
   reason?: string;
   timeout_ms?: number;
@@ -1622,6 +1693,8 @@ export type AuthListResult = {
   revoked: {
     pane: string;
   }[];
+  approvals: ApprovalRequest[];
+  grants: ApprovalGrant[];
 };
 
 export type AuthRevokeTokenParams = {
@@ -3192,6 +3265,34 @@ export type FsReadResult = {
   secret: boolean;
 };
 
+export type GatewayCallParams = {
+  method: string;
+  params?: Record<string, unknown>;
+  timeout_ms?: number;
+};
+
+export type GatewayCallResult = unknown;
+
+export type GatewayReplyParams = {
+  id: string;
+  result?: unknown;
+  error?: {
+    kind: string;
+    message: string;
+    details?: unknown;
+  };
+};
+
+export type GatewayReplyResult = {
+  cursor?: Cursor;
+};
+
+export type GatewayStatusParams = Record<string, unknown>;
+
+export type GatewayStatusResult = {
+  connected: boolean;
+};
+
 export type GitDiffParams = {
   pane?: Target;
   path?: string;
@@ -3525,6 +3626,14 @@ export type HandoffCancelResult = {
     created_at: number;
     updated_at: number;
     by?: string;
+    expect?: {
+      repo_root: string;
+      branch: string | null;
+      head: string;
+      request: string;
+      requested_by: string;
+      approved_by: string;
+    };
   };
   cursor?: Cursor;
 };
@@ -3598,6 +3707,14 @@ export type HandoffJobUpdateResult = {
     created_at: number;
     updated_at: number;
     by?: string;
+    expect?: {
+      repo_root: string;
+      branch: string | null;
+      head: string;
+      request: string;
+      requested_by: string;
+      approved_by: string;
+    };
   };
   cursor?: Cursor;
 };
@@ -3620,6 +3737,14 @@ export type HandoffJobsResult = {
     created_at: number;
     updated_at: number;
     by?: string;
+    expect?: {
+      repo_root: string;
+      branch: string | null;
+      head: string;
+      request: string;
+      requested_by: string;
+      approved_by: string;
+    };
   }[];
 };
 
@@ -3703,6 +3828,14 @@ export type HandoffSendResult = {
     created_at: number;
     updated_at: number;
     by?: string;
+    expect?: {
+      repo_root: string;
+      branch: string | null;
+      head: string;
+      request: string;
+      requested_by: string;
+      approved_by: string;
+    };
   };
   cursor?: Cursor;
 };
@@ -7289,6 +7422,9 @@ export interface Methods {
   "audit.search": { params: AuditSearchParams; result: AuditSearchResult };
   "audit.tail": { params: AuditTailParams; result: AuditTailResult };
   "audit.verify": { params: AuditVerifyParams; result: AuditVerifyResult };
+  "auth.approve": { params: AuthApproveParams; result: AuthApproveResult };
+  "auth.approve.decide": { params: AuthApproveDecideParams; result: AuthApproveDecideResult };
+  "auth.approve.withdraw": { params: AuthApproveWithdrawParams; result: AuthApproveWithdrawResult };
   "auth.elevate": { params: AuthElevateParams; result: AuthElevateResult };
   "auth.elevate.decide": { params: AuthElevateDecideParams; result: AuthElevateDecideResult };
   "auth.list": { params: AuthListParams; result: AuthListResult };
@@ -7386,6 +7522,9 @@ export interface Methods {
   "fs.browse": { params: FsBrowseParams; result: FsBrowseResult };
   "fs.list": { params: FsListParams; result: FsListResult };
   "fs.read": { params: FsReadParams; result: FsReadResult };
+  "gateway.call": { params: GatewayCallParams; result: GatewayCallResult };
+  "gateway.reply": { params: GatewayReplyParams; result: GatewayReplyResult };
+  "gateway.status": { params: GatewayStatusParams; result: GatewayStatusResult };
   "git.diff": { params: GitDiffParams; result: GitDiffResult };
   "git.log": { params: GitLogParams; result: GitLogResult };
   "git.status": { params: GitStatusParams; result: GitStatusResult };
@@ -7708,6 +7847,9 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "audit.search": { mutating: false, scope: "full", paneScope: "forbidden" },
   "audit.tail": { mutating: false, scope: "full", paneScope: "forbidden" },
   "audit.verify": { mutating: false, scope: "full", paneScope: "forbidden" },
+  "auth.approve": { mutating: true, scope: "pane", paneScope: "open" },
+  "auth.approve.decide": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "auth.approve.withdraw": { mutating: true, scope: "pane", paneScope: "open" },
   "auth.elevate": { mutating: true, scope: "pane", paneScope: "open" },
   "auth.elevate.decide": { mutating: true, scope: "full", paneScope: "forbidden" },
   "auth.list": { mutating: false, scope: "full", paneScope: "forbidden" },
@@ -7805,6 +7947,9 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "fs.browse": { mutating: false, scope: "full", paneScope: "forbidden" },
   "fs.list": { mutating: false, scope: "pane", paneScope: "open" },
   "fs.read": { mutating: false, scope: "pane", paneScope: "open" },
+  "gateway.call": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "gateway.reply": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "gateway.status": { mutating: false, scope: "pane", paneScope: "open" },
   "git.diff": { mutating: false, scope: "pane", paneScope: "open" },
   "git.log": { mutating: false, scope: "pane", paneScope: "open" },
   "git.status": { mutating: false, scope: "pane", paneScope: "open" },
@@ -8425,6 +8570,54 @@ export type AuditRecordedData = {
   hash: string;
 };
 
+export type AuthApprovalDeniedSubject = {
+  pane: string;
+  request: string;
+};
+
+export type AuthApprovalDeniedData = {
+  method: string;
+  summary: string;
+};
+
+export type AuthApprovalGrantedSubject = {
+  pane: string;
+  request: string;
+};
+
+export type AuthApprovalGrantedData = {
+  method: string;
+  grant: "once" | "always" | "standing";
+  ok: boolean;
+  error: string | null;
+  summary: string;
+  result: unknown;
+  standing_grant?: string;
+};
+
+export type AuthApprovalRequestedSubject = {
+  pane: string;
+  request: string;
+};
+
+export type AuthApprovalRequestedData = {
+  method: string;
+  summary: string;
+  reason: string;
+  peer: string | null;
+  always_allowed: boolean;
+};
+
+export type AuthApprovalWithdrawnSubject = {
+  pane: string;
+  request: string;
+};
+
+export type AuthApprovalWithdrawnData = {
+  method: string;
+  reason: "withdrawn" | "disconnected" | "revoked" | "pane_restarted" | "expired";
+};
+
 export type AuthElevateDeniedSubject = {
   pane: string;
   request: string;
@@ -8667,6 +8860,17 @@ export type FamilyPickedData = {
   discarded: number;
 };
 
+export type GatewayRequestSubject = {
+  id: string;
+};
+
+export type GatewayRequestData = {
+  id: string;
+  method: string;
+  params: Record<string, unknown>;
+  client: string;
+};
+
 export type GoalApprovedSubject = {
   goal: string;
 };
@@ -8823,6 +9027,14 @@ export type HandoffJobData = {
   created_at: number;
   updated_at: number;
   by?: string;
+  expect?: {
+    repo_root: string;
+    branch: string | null;
+    head: string;
+    request: string;
+    requested_by: string;
+    approved_by: string;
+  };
 };
 
 export type HandoffPeersChangedSubject = Record<string, unknown>;
@@ -10733,6 +10945,10 @@ export interface EventMap {
   "assistant.test_finished": { subject: AssistantTestFinishedSubject; data: AssistantTestFinishedData };
   "attention.preference_changed": { subject: AttentionPreferenceChangedSubject; data: AttentionPreferenceChangedData };
   "audit.recorded": { subject: AuditRecordedSubject; data: AuditRecordedData };
+  "auth.approval_denied": { subject: AuthApprovalDeniedSubject; data: AuthApprovalDeniedData };
+  "auth.approval_granted": { subject: AuthApprovalGrantedSubject; data: AuthApprovalGrantedData };
+  "auth.approval_requested": { subject: AuthApprovalRequestedSubject; data: AuthApprovalRequestedData };
+  "auth.approval_withdrawn": { subject: AuthApprovalWithdrawnSubject; data: AuthApprovalWithdrawnData };
   "auth.elevate_denied": { subject: AuthElevateDeniedSubject; data: AuthElevateDeniedData };
   "auth.elevate_granted": { subject: AuthElevateGrantedSubject; data: AuthElevateGrantedData };
   "auth.elevate_requested": { subject: AuthElevateRequestedSubject; data: AuthElevateRequestedData };
@@ -10759,6 +10975,7 @@ export interface EventMap {
   "family.checked": { subject: FamilyCheckedSubject; data: FamilyCheckedData };
   "family.created": { subject: FamilyCreatedSubject; data: FamilyCreatedData };
   "family.picked": { subject: FamilyPickedSubject; data: FamilyPickedData };
+  "gateway.request": { subject: GatewayRequestSubject; data: GatewayRequestData };
   "goal.approved": { subject: GoalApprovedSubject; data: GoalApprovedData };
   "goal.cancelled": { subject: GoalCancelledSubject; data: GoalCancelledData };
   "goal.created": { subject: GoalCreatedSubject; data: GoalCreatedData };
