@@ -284,7 +284,10 @@ export const en = {
     join: 'Join',
     accept: 'Accept invitation',
     doneShare: (host: string) => `You can now follow ${host}`,
-    doneHandoff: (host: string) => `You can now hand work off to ${host}`,
+    legacyHandoffHosts: (n: number) =>
+      n === 1
+        ? 'A teammate’s handoff invitation was removed from this app. Accept it on one of your hosts instead.'
+        : `${n} teammate handoff invitations were removed from this app. Accept them on one of your hosts instead.`,
     replacesOwn: 'You already have full access to this host as your own device, so this invitation is not needed.',
     localOnly: 'This link is for the Vibeke desktop app on the same computer as the host.',
     thisComputer: 'This computer (local socket)',
@@ -473,7 +476,6 @@ export const en = {
     localAlerts: 'Notifications',
     localAlertsHint: 'Shown by this app while it runs (also from the menu bar), using each host’s settings below.',
     transport: 'Transport',
-    handoffOnly: 'Accepts handoffs only',
     appearance: 'Appearance',
     theme: 'Theme',
     themes: { system: 'System', light: 'Light', dark: 'Dark' } as Record<string, string>,

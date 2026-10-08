@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useMemo, useState } from 'react';
-import { groupBatches, isDashboardHost, rankInbox, type Batch, type HostState, type InboxItem } from '@vibeke/core';
+import { groupBatches, rankInbox, type Batch, type HostState, type InboxItem } from '@vibeke/core';
 import { useStore } from '../lib/store';
 import { buildTree, runForPane, type PaneTree } from '../lib/tree';
 import type { Prefs } from '../lib/prefs';
@@ -13,19 +13,15 @@ export function useApp(): AppModel {
   return app;
 }
 
-/** Every paired host, including handoff invitations (Settings, handoff destinations). */
+/** Every paired host. */
 export function useAllHosts(): readonly HostState[] {
   const app = useApp();
   return useStore(app.manager);
 }
 
-/**
- * Hosts with dashboards (panes, inbox, banners). Handoff-invitation hosts only accept handoffs,
- * so they never appear here.
- */
+/** Hosts with dashboards (panes, inbox, banners): every paired host. */
 export function useHosts(): readonly HostState[] {
-  const all = useAllHosts();
-  return useMemo(() => (all.every((h) => isDashboardHost(h.record)) ? all : all.filter((h) => isDashboardHost(h.record))), [all]);
+  return useAllHosts();
 }
 
 export function useHost(hostId: string): HostState | undefined {

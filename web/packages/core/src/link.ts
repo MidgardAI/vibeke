@@ -24,7 +24,7 @@ export interface PairingLink {
   share?: ShareInvite;
 }
 
-export type HostKind = 'device' | 'share' | 'handoff';
+export type HostKind = 'device' | 'share';
 
 /** What a share/handoff invitation link says about itself (spec 16 §15.1). */
 export interface ShareInvite {

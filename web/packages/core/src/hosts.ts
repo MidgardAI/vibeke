@@ -36,29 +36,26 @@ export interface HostRecord {
   scope: Scope;
   paired_at?: number;
   /**
-   * `device` (own pairing, default), `share` (someone shared a workspace/pane with us; limited and
-   * expiring) or `handoff` (a handoff invitation: the host only accepts `handoff.begin/write/finish`,
-   * so it never appears in dashboards or the inbox).
+   * `device` (own pairing, default) or `share` (someone shared a workspace/pane with us; limited
+   * and expiring).
    */
   kind?: HostKind;
-  /** Unix seconds after which a share/handoff device no longer works. */
+  /** Unix seconds after which a share device no longer works. */
   until?: number;
   /** Share label from the invitation. */
   label?: string | null;
   /** What a share covers. */
   limit?: { workspace?: string; pane?: string } | null;
   /**
-   * Keystore name of this record's own private key (share/handoff invitations get one each, see
+   * Keystore name of this record's own private key (share invitations get one each, see
    * `createInvitationKey`); absent: the device key.
    */
   key?: string;
 }
 
 export const hostKind = (r: HostRecord): HostKind => r.kind ?? 'device';
-/** A share/handoff host whose time is up (the gateway refuses it at the handshake). */
+/** A share host whose time is up (the gateway refuses it at the handshake). */
 export const hostExpired = (r: HostRecord, nowMs: number): boolean => r.until !== undefined && nowMs / 1000 >= r.until;
-/** Hosts that carry dashboards, panes and interactions (not handoff-only invitations). */
-export const isDashboardHost = (r: HostRecord): boolean => hostKind(r) !== 'handoff';
 
 export interface HostStore {
   list(): Promise<HostRecord[]>;
@@ -74,7 +71,7 @@ export type HostStatus =
   | 'unauthorized' // plaintext unauthorized (unauthenticated hint); retrying
   | 'revoked' // authenticated device.revoked, or 3 consecutive unauthorized closes
   | 'incompatible' // unsupported_version
-  | 'expired'; // share/handoff device past its `until`
+  | 'expired'; // share device past its `until`
 
 export interface HostInfo {
   host_name: string;
@@ -82,14 +79,14 @@ export interface HostInfo {
   scope: Scope;
   server_version: string;
   features: string[];
-  /** This device's kind on the host (`device` | `share` | `handoff`). */
+  /** This device's kind on the host (`device` | `share`). */
   kind?: string;
   /** Unix seconds this device stops working; null for an ordinary device. */
   expires_at?: number | null;
   limit?: { workspace?: string | null; pane?: string | null } | null;
 }
 
-const HOST_KINDS: readonly string[] = ['device', 'share', 'handoff'];
+const HOST_KINDS: readonly string[] = ['device', 'share'];
 
 /**
  * The record as the host describes this device in `hello` (kind, expiry, limit), or null when
@@ -411,8 +408,7 @@ export class HostConnection implements HostConnectionApi {
       } else {
         this.set({ info });
       }
-      // Handoff invitations only accept hello/ping/handoff.*: no dashboard, no events.
-      if (isDashboardHost(this.state.record)) await this.resync(rpc, true);
+      await this.resync(rpc, true);
       if (gen !== this.generation || rpc.closed) return;
       this.attempts = 0;
       this.unauthorizedCount = 0;
@@ -579,6 +575,12 @@ export interface HostManagerApi {
 
 export interface HostManagerOptions extends ConnectionOptions {
   store: HostStore;
+  /**
+   * Records of the retired `handoff` kind (an app paired with a teammate's handoff invitation)
+   * are dropped on start; this gets their host names, once, so the app can say invitations are
+   * now accepted on a host.
+   */
+  onLegacyHandoffHosts?(names: string[]): void;
 }
 
 /** All paired hosts. `getSnapshot` returns a stable array until something changes. */
@@ -594,7 +596,14 @@ export class HostManager implements HostManagerApi {
   constructor(private readonly o: HostManagerOptions) {}
 
   async start(): Promise<void> {
-    for (const r of await this.o.store.list()) this.attach(r);
+    const legacy: string[] = [];
+    for (const r of await this.o.store.list()) {
+      if ((r.kind as string | undefined) === 'handoff') {
+        legacy.push(r.name);
+        await this.o.store.remove(r.host_id);
+      } else this.attach(r);
+    }
+    if (legacy.length) this.o.onLegacyHandoffHosts?.(legacy);
     const lc = this.o.platform.lifecycle;
     this.lifecycleOff = [
       lc.onVisible(() => this.conns.forEach((c) => c.setVisible(true))),

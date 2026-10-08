@@ -553,7 +553,7 @@ export interface InvitationInfo {
 /** A device an invitation produced (`share.list`); `share.revoke {id}` revokes it. */
 export interface InvitedDeviceInfo {
   id: string;
-  kind: 'share' | 'handoff' | 'peer';
+  kind: 'share' | 'peer';
   name: string;
   scope: Scope;
   paired_at: number;
@@ -561,33 +561,6 @@ export interface InvitedDeviceInfo {
   sender: { host_name?: string | null; user?: GitUser | null } | null;
   expires_at: number | null;
   limit: { workspace?: string; pane?: string } | null;
-}
-
-/** Handoff bundle manifest (vk-gateway handoff.rs `Manifest`). */
-export interface HandoffManifest {
-  v: number;
-  source_host: string;
-  repo_name: string;
-  origin: string | null;
-  branch: string | null;
-  head: string;
-  /** `thin` | `full` | `none` (HEAD already on a remote). */
-  bundle: string;
-  cwd_rel: string;
-  source_cwd: string;
-  source_root: string;
-  harness: string | null;
-  session_id: string | null;
-  resume_args: string[];
-  transcript_rel: string | null;
-  last_message: string | null;
-  untracked: string[];
-  skipped: { path: string; reason: string }[];
-  redactions: number;
-  created_at: number;
-  /** The sending host's job id, when its gateway delivered the handoff. */
-  source_job?: string;
-  [k: string]: unknown;
 }
 
 /** What an accepted handoff became on the receiving host (vk-server handoff.rs `run_accept`). */
@@ -642,18 +615,6 @@ export interface IncomingHandoff {
   created_at_ms: number;
   updated_at_ms: number;
   expires_at_ms: number;
-}
-
-/**
- * `handoff.finish`: the bundle was delivered as an incoming handoff. `pending` waits for the
- * receiver to accept it; `importing`/`imported` when it imports automatically (or `repo_path` was
- * given by the owner's device).
- */
-export interface HandoffFinishResult {
-  incoming: string;
-  state: IncomingHandoffState;
-  result?: HandoffImportResult | null;
-  record?: IncomingHandoff;
 }
 
 /** `handoff.prefs`: placement the receiving host remembers, and whether own handoffs always wait. */
@@ -791,18 +752,6 @@ export interface AppApi {
     /** `open_by`: unix seconds the link must be opened by; `expires_at`: unix seconds access ends. */
     result: { link: string; pid: string; open_by?: number; expires_after_s?: number; expires_at?: number };
   };
-  'handoff.export': {
-    params: { pane: string; interrupt?: boolean; full?: boolean };
-    result: { id: string; size: number; sha256: string; manifest: HandoffManifest };
-  };
-  'handoff.read': { params: { id: string; offset: number; len: number }; result: { data_b64: string; eof: boolean; size: number } };
-  'handoff.discard': { params: { id: string }; result: Record<string, never> };
-  'handoff.begin': { params: { manifest: HandoffManifest; size: number; sha256: string }; result: { id: string } };
-  'handoff.write': { params: { id: string; offset: number; data_b64: string }; result: { received: number } };
-  'handoff.finish': {
-    params: { id: string; repo_path?: string; worktree_path?: string; branch?: string; start_agent?: boolean };
-    result: HandoffFinishResult;
-  };
   /** Spec 16 §15.2: incoming handoffs on this host (full-scope devices). */
   'handoff.incoming.list': { params: Record<string, never>; result: { incoming: IncomingHandoff[] } };
   'handoff.incoming.get': {
@@ -873,12 +822,6 @@ export const MUTATING_METHODS: ReadonlySet<string> = new Set([
   'push.test',
   'stt.transcribe',
   'share.create',
-  'handoff.export',
-  'handoff.read',
-  'handoff.discard',
-  'handoff.begin',
-  'handoff.write',
-  'handoff.finish',
   'peer.invite',
   'peer.redeem',
   'peer.remove',

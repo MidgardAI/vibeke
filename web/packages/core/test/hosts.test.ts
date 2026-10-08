@@ -412,14 +412,19 @@ describe('HostManager', () => {
     mgr.stop();
   });
 
-  test('handoff-invitation hosts only say hello: no dashboard, no events', async () => {
-    const { mgr, h, methods } = harness({ ...record, kind: 'handoff', until: 2_000_000_000 });
+  test('stored records of the retired handoff kind are dropped on start, once', async () => {
+    const { platform } = harness();
+    const rec = record;
+    const removed: string[] = [];
+    const legacy: HostRecord = { ...rec, host_id: 'old', name: 'kari-box', kind: 'handoff' as never, until: 2_000_000_000 };
+    const store: HostStore = { list: async () => [legacy, rec], put: async () => {}, remove: async (id) => void removed.push(id) };
+    const names: string[][] = [];
+    const mgr = new HostManager({ platform, store, devicePrivate: DEV, client: { client: 'test', version: '0' }, onLegacyHandoffHosts: (n) => names.push(n) });
     await mgr.start();
-    await flush(20);
-    expect(h().getSnapshot().status).toBe('online');
-    expect(methods()).toEqual(['hello']);
-    await h().refresh();
-    expect(methods()).toEqual(['hello']);
+    expect(removed).toEqual(['old']);
+    expect(names).toEqual([['kari-box']]);
+    expect(mgr.get('old')).toBeUndefined();
+    expect(mgr.get(rec.host_id)).toBeDefined();
     mgr.stop();
   });
 

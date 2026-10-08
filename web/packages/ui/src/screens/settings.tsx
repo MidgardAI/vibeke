@@ -360,7 +360,7 @@ function HostCard({ h }: { h: HostState }) {
   const now = useNow(30_000);
 
   useEffect(() => {
-    // Share and handoff-invitation devices may not list devices.
+    // Share devices may not list devices.
     if (!online || !conn || kind !== 'device') return;
     conn.request('devices.list', {}).then(
       (r) => setDevices(r.devices),
@@ -394,7 +394,7 @@ function HostCard({ h }: { h: HostState }) {
       {kind !== 'device' && (
         <div className="px-4 pt-1 text-xs text-muted">
           {[
-            kind === 'handoff' ? t.settings.handoffOnly : t.settings.sharedWithYou,
+            t.settings.sharedWithYou,
             h.record.label,
             h.record.until !== undefined
               ? (h.record.until * 1000 <= now ? t.settings.expiredAt : t.settings.expiresAt)(whenText(h.record.until * 1000, now))

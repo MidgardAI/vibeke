@@ -19,7 +19,7 @@ type Phase =
   | { k: 'form' }
   | { k: 'connecting' }
   | { k: 'pending'; fingerprint: string }
-  | { k: 'done'; host: string; kind: 'device' | 'share' | 'handoff' }
+  | { k: 'done'; host: string; kind: 'device' | 'share' }
   /** A handoff invitation redeemed by one of the user's hosts (`on`) for the teammate's `to`. */
   | { k: 'redeemed'; on: string; to: string }
   | { k: 'error'; message: string };
@@ -112,10 +112,10 @@ export function PairScreen({ d }: { d: string | null }) {
         <Card className="space-y-4 p-5 text-center">
           <CheckCircle2 className="mx-auto size-12 text-ok" />
           <div className="text-lg font-medium">
-            {phase.kind === 'share' ? t.pair.doneShare(phase.host) : phase.kind === 'handoff' ? t.pair.doneHandoff(phase.host) : t.pair.done(phase.host)}
+            {phase.kind === 'share' ? t.pair.doneShare(phase.host) : t.pair.done(phase.host)}
           </div>
-          <Button variant="primary" block size="lg" onClick={() => navigate(phase.kind === 'handoff' ? { name: 'settings' } : { name: 'home' })}>
-            {phase.kind === 'handoff' ? t.settings.title : t.pair.openApp}
+          <Button variant="primary" block size="lg" onClick={() => navigate({ name: 'home' })}>
+            {t.pair.openApp}
           </Button>
         </Card>
       ) : phase.k === 'redeemed' ? (

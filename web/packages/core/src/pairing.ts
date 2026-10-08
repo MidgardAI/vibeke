@@ -61,6 +61,9 @@ export async function pair(o: PairOptions): Promise<HostRecord> {
   const { link, platform } = o;
   const clock = platform.clock;
   if (linkExpired(link, clock.now())) throw new PairingError('expired', 'pairing link expired');
+  // A handoff invitation is accepted on one of the user's hosts (`peer.redeem`); the gateway
+  // refuses an app's claim.
+  if (link.share?.kind === 'handoff') throw new PairingError('protocol', 'open this invitation on one of your hosts');
   const ownFingerprint = fingerprint(x25519Public(o.devicePrivate));
 
   let channel: Channel;
@@ -143,7 +146,7 @@ export async function pair(o: PairOptions): Promise<HostRecord> {
       paired_at: clock.now(),
     };
     if (link.share) {
-      record.kind = link.share.kind;
+      record.kind = 'share';
       record.until = link.share.until;
       if (link.share.label) record.label = link.share.label;
       if (link.share.limit) record.limit = link.share.limit;

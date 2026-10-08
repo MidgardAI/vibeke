@@ -117,4 +117,11 @@ describe('renderer method allow-list', () => {
       expect(v.method(m)).toBe(m);
     }
   });
+
+  test('the retired courier methods are refused', () => {
+    for (const m of ['handoff.export', 'handoff.read', 'handoff.begin', 'handoff.write', 'handoff.finish', 'handoff.discard']) {
+      expect(RENDERER_METHODS as readonly string[]).not.toContain(m);
+      expect(() => v.method(m)).toThrow(v.IpcValidationError);
+    }
+  });
 });

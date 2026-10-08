@@ -5,7 +5,7 @@
 
 import { p256 } from '@noble/curves/nist.js';
 import * as b64 from './b64';
-import { isDashboardHost, type HostManagerApi } from './hosts';
+import type { HostManagerApi } from './hosts';
 import { getOrCreateKey, type KeyStore, type PushSubscriptionInfo, type PushSupport } from './platform';
 
 export const VAPID_KEY_NAME = 'device_vapid_private';
@@ -138,7 +138,7 @@ export class PushSync {
     this.sub = null;
     await Promise.all(
       this.o.manager.connections().map((c) =>
-        c.getSnapshot().status === 'online' && isDashboardHost(c.getSnapshot().record)
+        c.getSnapshot().status === 'online'
           ? c.request('push.unsubscribe', endpoint ? { endpoint } : {}).catch(() => {})
           : undefined,
       ),
@@ -183,8 +183,7 @@ export class PushSync {
     const jobs: Promise<void>[] = [];
     for (const c of this.o.manager.connections()) {
       const st = c.getSnapshot();
-      // Handoff invitations cannot (and need not) push to this device.
-      if (st.status !== 'online' || !isDashboardHost(st.record) || this.inflight.has(c.id)) continue;
+      if (st.status !== 'online' || this.inflight.has(c.id)) continue;
       if (!force && this.sent[c.id] === want) continue;
       this.inflight.add(c.id);
       jobs.push(
