@@ -107,6 +107,8 @@ pub fn required_scope(method: &str) -> Option<Scope> {
         | "prefs.set" | "push.subscribe" | "push.unsubscribe" | "push.test" | "devices.list" => {
             View
         }
+        // A fresh relay admission ticket for the caller (spec 16 §6.6).
+        "relay.ticket" => View,
         // Workspace views (read-only passthroughs).
         "attention.list"
         | "task.review.get"
@@ -383,6 +385,7 @@ pub fn kind_allows(kind: &str, method: &str) -> bool {
             method,
             "hello"
                 | "ping"
+                | "relay.ticket"
                 | "handoff.offer"
                 | "handoff.status"
                 | "handoff.write"
@@ -1242,6 +1245,10 @@ impl Call<'_> {
                 }
                 Ok(json!({}))
             }
+            "relay.ticket" => {
+                let (ticket, exp) = self.gw.device_ticket(self.device);
+                Ok(json!({"ticket": ticket, "exp": exp}))
+            }
             "push.subscribe" => {
                 let sub: crate::push::Subscription =
                     serde_json::from_value(p.get("subscription").cloned().unwrap_or_default())
@@ -1624,6 +1631,12 @@ mod tests {
         assert_eq!(required_scope("server.stop"), None);
         assert!(is_mutating("interaction.answer"));
         assert!(!is_mutating("pane.read"));
+        // Every device kind may renew its relay ticket; it changes nothing.
+        assert_eq!(required_scope("relay.ticket"), Some(Scope::View));
+        assert!(!is_mutating("relay.ticket"));
+        for kind in ["device", "share", "peer"] {
+            assert!(kind_allows(kind, "relay.ticket"), "{kind}");
+        }
     }
 
     #[test]

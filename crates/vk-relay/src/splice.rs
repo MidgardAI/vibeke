@@ -6,8 +6,10 @@ use axum::extract::ws::{CloseFrame, Message, WebSocket};
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
 
-use crate::Shared;
+use tokio::sync::broadcast::error::RecvError;
+
 use crate::limits::Bucket;
+use crate::{Shared, Watch};
 
 /// One active-splice slot (global + per host); taken atomically when a pending connection is
 /// accepted and released when the splice ends or the handoff to the client fails.
@@ -52,6 +54,7 @@ pub async fn run(
     host_ws: WebSocket,
     host: String,
     _slot: Counted,
+    watch: Watch,
 ) {
     let (mut c_tx, c_rx) = client.split();
     let (mut h_tx, h_rx) = host_ws.split();
@@ -60,17 +63,25 @@ pub async fn run(
     let outcome = tokio::select! {
         r = forward(c_rx, &mut h_tx, l, &mut up_in) => (r, Side::Client),
         r = forward(h_rx, &mut c_tx, l, &mut down_in) => (r, Side::Host),
+        () = revoked(&relay, &host, watch) => (None, Side::Revoked),
     };
     let frame = outcome.0.unwrap_or(CloseFrame {
         code: 1001,
         reason: "peer gone".into(),
     });
-    // Propagate the close to whichever side is still open.
-    let other = match outcome.1 {
-        Side::Client => &mut h_tx,
-        Side::Host => &mut c_tx,
-    };
-    let _ = tokio::time::timeout(l.write_timeout, other.send(Message::Close(Some(frame)))).await;
+    // Propagate the close to whichever side is still open (both, on revocation).
+    match outcome.1 {
+        Side::Client => close(l, &mut h_tx, frame).await,
+        Side::Host => close(l, &mut c_tx, frame).await,
+        Side::Revoked => {
+            let frame = CloseFrame {
+                code: vk_e2e::relay::close::UNAUTHORIZED,
+                reason: "ticket_revoked".into(),
+            };
+            close(l, &mut c_tx, frame.clone()).await;
+            close(l, &mut h_tx, frame).await;
+        }
+    }
     relay.auth_usage(&host, up_in, down_in);
     tracing::debug!(
         host = &host[..8],
@@ -83,6 +94,28 @@ pub async fn run(
 enum Side {
     Client,
     Host,
+    Revoked,
+}
+
+async fn close(l: &crate::Limits, tx: &mut SplitSink<WebSocket, Message>, frame: CloseFrame) {
+    let _ = tokio::time::timeout(l.write_timeout, tx.send(Message::Close(Some(frame)))).await;
+}
+
+/// Resolves when the host revokes this splice's ticket subject; never without a ticket.
+async fn revoked(relay: &Shared, host: &str, watch: Watch) {
+    let Some((sub, mut rx)) = watch else {
+        return std::future::pending().await;
+    };
+    loop {
+        match rx.recv().await {
+            Ok((h, s)) if h == host && s == sub => return,
+            Ok(_) => {}
+            // Missed some: fall back to the host's revoked set.
+            Err(RecvError::Lagged(_)) if relay.is_revoked(host, &sub) => return,
+            Err(RecvError::Lagged(_)) => {}
+            Err(RecvError::Closed) => return std::future::pending().await,
+        }
+    }
 }
 
 /// Returns the close frame received from `rx`, or `None` on error/idle/limit.

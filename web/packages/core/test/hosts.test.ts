@@ -37,24 +37,36 @@ function harness(rec: HostRecord = record) {
   const state = {
     at: 10,
     resetOnResume: false,
-    refuse: false as boolean | 'offline',
+    refuse: false as boolean | 'offline' | `ticket_${string}`,
+    /** Reply to `relay.ticket` with this (default: an unknown-method error). */
+    ticket: null as { ticket: string; exp: number } | null,
     ctx: null as GatewayCtx | null,
     sockets: [] as MemSocket[],
     hello: {} as Record<string, unknown>,
     puts: [] as HostRecord[],
+    ticketCalls: 0,
     /** While true, `dashboard.get` answers only when its gate is released (in any order). */
     gated: false,
     gates: [] as { at: number; release(): void; fail(): void }[],
   };
   const platform = testPlatform((sock) => {
     if (state.refuse === 'offline') return false;
+    if (typeof state.refuse === 'string' && state.refuse.startsWith('ticket_')) {
+      const reason = state.refuse;
+      queueMicrotask(() => {
+        sock.send(JSON.stringify({ error: 'unauthorized', reason }));
+        sock.close(4401, 'unauthorized');
+      });
+      return;
+    }
     state.sockets.push(sock);
     serveGateway(sock, {
       hostPrivate: HOST,
       authorize: () => !state.refuse,
       onReady: (c) => (state.ctx = c),
       handle(method, params) {
-        calls.push([method, params]);
+        if (method !== 'relay.ticket') calls.push([method, params]);
+        else state.ticketCalls++;
         switch (method) {
           case 'hello':
             return { host_name: 'devbox', device_id: 'd1', scope: 'full', server_version: '0.1.0', features: [], ...state.hello };
@@ -63,6 +75,9 @@ function harness(rec: HostRecord = record) {
             if (!state.gated) return d;
             return new Promise((resolve, reject) => state.gates.push({ at: d.at, release: () => resolve(d), fail: () => reject({ code: -32000, message: 'busy' }) }));
           }
+          case 'relay.ticket':
+            if (!state.ticket) throw { code: -32601, message: 'method not found' };
+            return state.ticket;
           case 'events.subscribe':
             return params.after !== undefined && state.resetOnResume && params.after !== state.at ? { at: state.at, reset: true } : { at: state.at };
           default:
@@ -80,7 +95,7 @@ function harness(rec: HostRecord = record) {
 
 describe('HostManager', () => {
   test('connects, loads dashboard (normalized), subscribes at the barrier', async () => {
-    const { mgr, h, calls, platform } = harness();
+    const { mgr, h, calls, platform, state } = harness();
     const seen: string[] = [];
     mgr.subscribe(() => seen.push(h()?.getSnapshot().status));
     await mgr.start();
@@ -93,6 +108,8 @@ describe('HostManager', () => {
     expect(calls.map((c) => c[0])).toEqual(['hello', 'dashboard.get', 'events.subscribe']);
     expect(calls[0]![1]).toEqual({ client: 'test', version: '0', visible: true });
     expect(calls[2]![1]).toEqual({ after: 10 });
+    expect(state.ticketCalls).toBe(1);
+    expect(h().getSnapshot().status).toBe('online'); // older gateway: relay.ticket errors, non-fatal
     expect(seen).toContain('connecting');
     expect(mgr.getSnapshot()).toBe(mgr.getSnapshot()); // stable for useSyncExternalStore
     expect(platform.urls[0]).toBe('wss://relay.example/v1/connect?host=h1');
@@ -372,6 +389,33 @@ describe('HostManager', () => {
     const n = platform.urls.length;
     await platform.clock.advance(60_000);
     expect(platform.urls.length).toBe(n);
+    mgr.stop();
+  });
+
+  test('connect URL carries the stored ticket; relay.ticket refresh is persisted', async () => {
+    const { mgr, h, state, platform } = harness({ ...record, ticket: 'a.b-c_d', ticket_exp: 1000 });
+    state.ticket = { ticket: 'new.ticket', exp: 99_999 };
+    await mgr.start();
+    await flush(20);
+    expect(platform.urls[0]).toBe('wss://relay.example/v1/connect?host=h1&ticket=a.b-c_d');
+    expect(state.puts.at(-1)).toMatchObject({ host_id: 'h1', ticket: 'new.ticket', ticket_exp: 99_999 });
+    expect(h().getSnapshot().record.ticket).toBe('new.ticket');
+    mgr.stop();
+  });
+
+  test('plaintext ticket_* unauthorized → ticket_expired, no retry, reconnectNow does not re-arm', async () => {
+    const { mgr, h, state, platform } = harness();
+    state.refuse = 'ticket_expired';
+    await mgr.start();
+    await flush(10);
+    expect(h().getSnapshot().status).toBe('ticket_expired');
+    const n = platform.urls.length;
+    await platform.clock.advance(120_000);
+    h().reconnectNow();
+    platform.lifecycle.show();
+    await flush(10);
+    expect(platform.urls.length).toBe(n);
+    expect(h().getSnapshot().status).toBe('ticket_expired');
     mgr.stop();
   });
 

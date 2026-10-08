@@ -827,6 +827,8 @@ export interface AppApi {
     params: { subscription: { endpoint: string; keys: { p256dh: string; auth: string } }; vapid_private: string };
     result: Record<string, never>;
   };
+  /** Fresh relay ticket for this device (`exp` unix seconds). */
+  'relay.ticket': { params: Record<string, never>; result: { ticket: string; exp: number } };
   'push.unsubscribe': { params: { endpoint?: string }; result: Record<string, never> };
   'push.test': { params: Record<string, never>; result: { sent?: number } };
   /** `data_b64` is standard (padded) base64. */

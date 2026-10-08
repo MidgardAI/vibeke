@@ -39,6 +39,18 @@ export function pairingErrorMessage(e: unknown): string {
       case 'channel': {
         const c = e.cause;
         if (c instanceof ChannelError) {
+          if (c.code === 'unauthorized') {
+            switch (c.reason) {
+              case 'ticket_missing':
+                return t.pair.errors.ticketMissing;
+              case 'ticket_invalid':
+                return t.pair.errors.ticketInvalid;
+              case 'ticket_expired':
+                return t.pair.errors.ticketExpired;
+              case 'ticket_revoked':
+                return t.pair.errors.ticketRevoked;
+            }
+          }
           if (c.code === 'unauthorized') return t.pair.errors.unauthorized;
           if (c.closeCode === 4404 || c.closeCode === 4408 || c.code === 'closed') return t.pair.errors.offline;
         }

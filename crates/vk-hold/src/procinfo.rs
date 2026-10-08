@@ -337,8 +337,10 @@ mod tests {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         let env = loop {
             let env = super::environ(c.id());
-            if !env.is_empty() || !cfg!(target_os = "linux") || std::time::Instant::now() > deadline
-            {
+            // Between fork and exec the child still shows the parent's environment, so wait
+            // for the probe itself rather than for any environment.
+            let execed = env.iter().any(|(k, _)| k == "VK_PROCINFO_PROBE");
+            if execed || !cfg!(target_os = "linux") || std::time::Instant::now() > deadline {
                 break env;
             }
             std::thread::sleep(std::time::Duration::from_millis(5));

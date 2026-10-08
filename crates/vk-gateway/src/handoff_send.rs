@@ -385,7 +385,10 @@ async fn transfer(
         }
         if conn.is_none() {
             match PeerClient::connect_with_backoff(rec, CONNECT_DEADLINE).await {
-                Ok(c) => conn = Some(c),
+                Ok(mut c) => {
+                    crate::peers::renew_ticket(&rep.gw.state, rec, &mut c).await;
+                    conn = Some(c)
+                }
                 Err(e) if is_refusal(&e) => {
                     break Err(ApiError::new(
                         "forbidden",

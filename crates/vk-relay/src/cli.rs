@@ -35,6 +35,13 @@ struct Args {
         value_delimiter = ','
     )]
     host_tokens: Vec<String>,
+    /// Refuse devices on /v1/connect without a host-signed ticket (`?ticket=`); tickets that are
+    /// present are always verified.
+    #[arg(long, env = "VIBEKE_RELAY_REQUIRE_TICKETS")]
+    require_tickets: bool,
+    /// Account sign-up URL advertised on /v1/status (`account_url`).
+    #[arg(long, env = "VIBEKE_RELAY_ACCOUNT_URL")]
+    account_url: Option<String>,
     /// Trust X-Forwarded-For from the reverse proxy for client IPs.
     #[arg(long)]
     trust_proxy: bool,
@@ -91,6 +98,8 @@ pub async fn run_as<I: IntoIterator<Item = String>>(
             trust_proxy: a.trust_proxy,
             log_ip_raw: a.log_ip_raw,
             limits,
+            require_tickets: a.require_tickets,
+            account_url: a.account_url,
         },
         auth,
     )?;

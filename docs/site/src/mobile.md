@@ -1,10 +1,17 @@
 # Phone and browser access
 
 Open [app.vibeke.dev](https://app.vibeke.dev) on your phone or computer.
-The browser app connects to your Vibeke host through `relay.vibeke.dev`.
+The browser app connects to your Vibeke host through a relay.
 The relay carries encrypted traffic. Your host makes an outbound connection and needs no inbound port.
+Two hosted relays exist: `cloud.vibeke.dev` requires a Vibeke account, and `relay.vibeke.dev` still accepts any host without one.
 
 For local desktop access, use the [desktop connection guide](desktop.md).
+
+## Account
+
+`cloud.vibeke.dev` requires a Vibeke account. On your host, run `vibeke login` once.
+It prints a URL and a short code. Open the URL on any device, sign in with GitHub and confirm the code; the terminal finishes by itself.
+No browser is needed on the host, so this works over SSH. Use `vibeke whoami` to see the signed-in account and `vibeke logout` to sign out.
 
 ## Pair your device
 
@@ -13,11 +20,13 @@ For local desktop access, use the [desktop connection guide](desktop.md).
 
    ```sh
    vibeke gateway pair \
-     --relay https://relay.vibeke.dev \
+     --relay https://cloud.vibeke.dev \
      --app-url https://app.vibeke.dev
    ```
 
-   This saves the connection settings, enables gateway autostart, and asks the server to start it.
+   If you have not signed in, this command starts the login flow first.
+   With `--relay https://relay.vibeke.dev` no account is needed.
+   It saves the connection settings, enables gateway autostart, and asks the server to start it.
    Keep the command running while you pair.
 
 3. Scan the QR code on your phone, or open the printed link in your browser.

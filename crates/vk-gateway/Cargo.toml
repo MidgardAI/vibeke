@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 vk-e2e = { path = "../vk-e2e" }
+vk-account.workspace = true
 vk-proto = { workspace = true, features = ["tokio"] }
 vk-redact.workspace = true
 vk-handoff.workspace = true
@@ -39,4 +40,5 @@ qrcode = { version = "0.14", default-features = false }
 
 [dev-dependencies]
 vk-relay = { path = "../vk-relay" }
+vk-account = { workspace = true, features = ["fake-server"] }
 axum = { version = "0.8", features = ["ws"] }

@@ -17,17 +17,25 @@ use vk_gateway::{Gateway, pair, server};
 type Ws = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 async fn start_relay() -> SocketAddr {
+    start_relay_with(false, Box::new(vk_relay::Open)).await
+}
+
+async fn start_relay_with(
+    require_tickets: bool,
+    auth: Box<dyn vk_relay::Authorizer>,
+) -> SocketAddr {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let relay = vk_relay::Relay::new(
         vk_relay::Config {
             public_origins: vec![format!("http://{addr}")],
-            app_dir: None,
-            trust_proxy: false,
             log_ip_raw: true,
-            limits: Default::default(),
+            require_tickets,
+            // Requiring tickets alone needs no account; naming an account server does.
+            account_url: require_tickets.then(|| "http://accounts.test".to_string()),
+            ..Default::default()
         },
-        Box::new(vk_relay::Open),
+        auth,
     )
     .unwrap();
     let app = relay
@@ -132,17 +140,33 @@ impl Client {
         hk: &[u8; 32],
         psk: Option<&[u8; 32]>,
     ) -> Result<Client, String> {
-        let (mut ws, _) = connect_async(format!("ws://{relay}/v1/connect?host={host}"))
-            .await
-            .unwrap();
+        Self::open_with(relay, host, None, hello, dev, hk, psk).await
+    }
+
+    /// [`open`](Self::open) presenting a relay ticket (`&ticket=`, spec 16 §6.6).
+    async fn open_with(
+        relay: SocketAddr,
+        host: &str,
+        ticket: Option<&str>,
+        hello: Hello,
+        dev: &DeviceKey,
+        hk: &[u8; 32],
+        psk: Option<&[u8; 32]>,
+    ) -> Result<Client, String> {
+        let mut url = format!("ws://{relay}/v1/connect?host={host}");
+        if let Some(t) = ticket {
+            url.push_str(&format!("&ticket={t}"));
+        }
+        let (mut ws, _) = connect_async(url).await.unwrap();
         let hb = hello.to_bytes();
-        ws.send(Message::Text(String::from_utf8(hb.clone()).unwrap().into()))
-            .await
-            .unwrap();
+        // A refused connection may already be closed; its plaintext refusal is still readable.
+        let _ = ws
+            .send(Message::Text(String::from_utf8(hb.clone()).unwrap().into()))
+            .await;
         let mut i = Initiator::new(&hb, &dev.private, hk, psk).unwrap();
-        ws.send(Message::Binary(i.write_first(b"").unwrap().into()))
-            .await
-            .unwrap();
+        let _ = ws
+            .send(Message::Binary(i.write_first(b"").unwrap().into()))
+            .await;
         match tokio::time::timeout(Duration::from_secs(5), ws.next())
             .await
             .unwrap()
@@ -545,4 +569,236 @@ async fn local_socket_pairs_and_serves() {
     assert_eq!(list[0]["platform"], "macos", "{list}");
     drop(c);
     report_where(&reports, |l| l.as_array().is_some_and(Vec::is_empty)).await;
+}
+
+/// Hosts need the token `t1` (a stand-in for an account host token).
+struct TokenAuth;
+
+impl vk_relay::Authorizer for TokenAuth {
+    fn host_connect<'a>(
+        &'a self,
+        c: vk_relay::HostConnect<'a>,
+    ) -> futures::future::BoxFuture<'a, vk_relay::Decision> {
+        let ok = c.token == Some("t1");
+        Box::pin(async move {
+            if ok {
+                vk_relay::Decision::Allow
+            } else {
+                vk_relay::Decision::deny(4401, "token_invalid")
+            }
+        })
+    }
+}
+
+/// A relay that requires tickets (spec 16 §6.6): the pairing link's ticket admits the claim, the
+/// claim result carries the device's ticket, `relay.ticket` renews it, a revoked device's ticket
+/// stops working and a connect without a ticket is refused in plaintext.
+#[tokio::test(flavor = "multi_thread")]
+async fn tickets_admit_pairing_and_devices() {
+    let tmp = tempfile::tempdir().unwrap();
+    let relay = start_relay_with(true, Box::new(TokenAuth)).await;
+    let sock = tmp.path().join("vibeke.sock");
+    fake_server(sock.clone());
+    let state = StateDir::open(tmp.path().join("gw")).unwrap();
+    let mut cfg = state.config().unwrap();
+    cfg.relay = Some(format!("http://{relay}"));
+    cfg.relay_token = Some("t1".into());
+    cfg.host_name = Some("devbox".into());
+    state.save_config(&cfg).unwrap();
+    let (_, link) = pair::create(
+        &state,
+        &format!("http://{relay}"),
+        "devbox",
+        Scope::View,
+        true,
+        Duration::from_secs(300),
+    )
+    .unwrap();
+    let link = PairingLink::parse(&link.to_url(&format!("http://{relay}"))).unwrap();
+    let gw = Gateway::new(
+        StateDir::open(tmp.path().join("gw")).unwrap(),
+        server::Server::new(sock),
+    )
+    .unwrap();
+    tokio::spawn(vk_gateway::run(gw.clone()));
+    let mut online = false;
+    for _ in 0..100 {
+        if reqwest_status(relay, &link.host).await {
+            online = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(online, "the gateway registered with its static token");
+    let hk = link.host_key().unwrap();
+    let psk = link.psk_bytes().unwrap();
+    let relay_pub = gw.keys.relay_public();
+    let host = link.host.clone();
+
+    // No ticket: refused by the relay before the host sees anything.
+    let dev = DeviceKey::generate();
+    let err = Client::open(relay, &host, Hello::pair(&link.pid), &dev, &hk, Some(&psk))
+        .await
+        .err()
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&err).unwrap(),
+        json!({"error": "unauthorized", "reason": "ticket_missing"})
+    );
+
+    // The link's pairing ticket admits the claim.
+    let tk = link.tk.clone().expect("links carry a pairing ticket");
+    let t =
+        vk_e2e::relay::verify_ticket(&relay_pub, &host, &tk, vk_gateway::state::now_s()).unwrap();
+    assert_eq!(t.sub, format!("pid:{}", link.pid));
+    assert_eq!(t.exp, link.exp);
+    let mut c = Client::open_with(
+        relay,
+        &host,
+        Some(&tk),
+        Hello::pair(&link.pid),
+        &dev,
+        &hk,
+        Some(&psk),
+    )
+    .await
+    .unwrap();
+    let r = c
+        .call("pair.claim", json!({"name": "phone", "platform": "test"}))
+        .await;
+    assert_eq!(r["result"]["status"], "pending");
+    let done = c.recv().await;
+    assert_eq!(done["method"], "pair.done", "{done}");
+    let device_id = done["params"]["device_id"].as_str().unwrap().to_string();
+    let ticket = done["params"]["ticket"].as_str().unwrap().to_string();
+    let now = vk_gateway::state::now_s();
+    let t = vk_e2e::relay::verify_ticket(&relay_pub, &host, &ticket, now).unwrap();
+    assert_eq!(t.sub, format!("dev:{device_id}"));
+    assert_eq!(done["params"]["ticket_exp"], t.exp);
+    assert!(t.exp >= now + 29 * 24 * 3600 && t.exp <= now + 30 * 24 * 3600 + 5);
+
+    // Reconnect with the device ticket; renew it.
+    let mut c = Client::open_with(
+        relay,
+        &host,
+        Some(&ticket),
+        Hello::device(),
+        &dev,
+        &hk,
+        None,
+    )
+    .await
+    .unwrap();
+    let r = c.call("relay.ticket", json!({})).await;
+    let fresh = r["result"]["ticket"].as_str().expect("relay.ticket result");
+    let ft = vk_e2e::relay::verify_ticket(&relay_pub, &host, fresh, now).unwrap();
+    assert_eq!(ft.sub, format!("dev:{device_id}"));
+    assert_eq!(r["result"]["exp"], ft.exp);
+
+    // Another host's ticket is no good here.
+    let other = vk_e2e::HostKeys::generate();
+    let forged = vk_e2e::relay::sign_ticket(&other, &format!("dev:{device_id}"), now + 60);
+    let err = Client::open_with(
+        relay,
+        &host,
+        Some(&forged),
+        Hello::device(),
+        &dev,
+        &hk,
+        None,
+    )
+    .await
+    .err()
+    .unwrap();
+    assert!(err.contains("ticket_invalid"), "{err}");
+
+    // Revoking the device revokes its tickets at the relay (Ctrl::Revoke on the control socket).
+    gw.revoke(&device_id).await.unwrap();
+    let mut refused = String::new();
+    for _ in 0..50 {
+        match Client::open_with(relay, &host, Some(fresh), Hello::device(), &dev, &hk, None).await {
+            Err(e) if e.contains("ticket_revoked") => {
+                refused = e;
+                break;
+            }
+            _ => tokio::time::sleep(Duration::from_millis(50)).await,
+        }
+    }
+    assert!(refused.contains("ticket_revoked"), "{refused}");
+}
+
+/// Hosts need an account host token from the fake control plane (`h<n>`).
+struct AccountAuth;
+
+impl vk_relay::Authorizer for AccountAuth {
+    fn host_connect<'a>(
+        &'a self,
+        c: vk_relay::HostConnect<'a>,
+    ) -> futures::future::BoxFuture<'a, vk_relay::Decision> {
+        let ok = c.token.is_some_and(|t| t.starts_with('h'));
+        Box::pin(async move {
+            if ok {
+                vk_relay::Decision::Allow
+            } else {
+                vk_relay::Decision::deny(4401, "account_required")
+            }
+        })
+    }
+}
+
+/// A relay that requires accounts: without a login the gateway reports `login_required`; a
+/// login stored later (as `vibeke login` does) brings it online with a host token.
+#[tokio::test(flavor = "multi_thread")]
+async fn account_login_brings_the_gateway_online() {
+    // Only this test touches the account store; keep it off the OS keychain.
+    // SAFETY: set before any gateway task reads it; no other test in this binary reads it.
+    unsafe { std::env::set_var("VIBEKE_ACCOUNT_STORE", "file") };
+    let tmp = tempfile::tempdir().unwrap();
+    let relay = start_relay_with(true, Box::new(AccountAuth)).await;
+    let accounts = vk_account::fake::FakeServer::start().await;
+    let sock = tmp.path().join("vibeke.sock");
+    fake_server(sock.clone());
+    let dir = tmp.path().join("gw");
+    let state = StateDir::open(dir.clone()).unwrap();
+    let mut cfg = state.config().unwrap();
+    cfg.relay = Some(format!("http://{relay}"));
+    cfg.account_url = Some(accounts.url.clone());
+    state.save_config(&cfg).unwrap();
+    let gw = Gateway::new(state, server::Server::new(sock)).unwrap();
+    gw.status.enable("connecting", cfg.relay.clone(), 0);
+    tokio::spawn(vk_gateway::run(gw.clone()));
+    let host = gw.keys.host_id();
+
+    let mut st = None;
+    for _ in 0..100 {
+        st = vk_gateway::state::read_status(&dir);
+        if st.as_ref().is_some_and(|s| s.state == "login_required") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let st = st.unwrap();
+    assert_eq!(st.state, "login_required");
+    assert_eq!(st.last_error.as_deref(), Some("run: vibeke login"));
+
+    // `vibeke login` in another process: the credential lands in the store.
+    let client = vk_account::Client::new(&accounts.url).unwrap();
+    let cred = client.login(|_| {}).await.unwrap();
+    use vk_account::CredentialStore;
+    vk_account::KeychainStore::file_only(dir.join("account.json"))
+        .save(&cred)
+        .unwrap();
+    // Watch the status file: polling the relay would trip its per-IP rate limit for the
+    // gateway's own connects.
+    let mut online = false;
+    for _ in 0..300 {
+        if vk_gateway::state::read_status(&dir).is_some_and(|s| s.state == "online") {
+            online = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(online, "the gateway picked up the login");
+    assert!(reqwest_status(relay, &host).await);
+    assert_eq!(accounts.with(|s| s.host_tokens.clone()), ["h1"]);
 }

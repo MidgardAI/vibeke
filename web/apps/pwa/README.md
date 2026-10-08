@@ -1,7 +1,7 @@
 # Vibeke browser app
 
 Production: https://app.vibeke.dev. Vercel project: `your-team/vibeke-app`.
-This project serves the static PWA. The public relay runs separately at `https://relay.vibeke.dev`.
+This project serves the static PWA. The public relay runs separately at `https://relay.vibeke.dev`. Hosts sign in with `vibeke login` before pairing through it.
 The marketing site and documentation use the `your-team/vibeke-dev` project at `https://vibeke.dev`.
 
 ## Build and deploy

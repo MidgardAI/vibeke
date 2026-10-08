@@ -162,6 +162,11 @@ pub struct PeerRecord {
     pub added_at: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<u64>,
+    /// Relay admission ticket the other host signed for us (spec 16 §6.6), sent as `&ticket=`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ticket: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ticket_exp: Option<u64>,
 }
 
 impl PeerRecord {
@@ -285,6 +290,9 @@ pub struct Config {
     pub host_name: Option<String>,
     /// Token for private relays (`--host-token` on the relay).
     pub relay_token: Option<String>,
+    /// Control plane for the hosted relay's accounts (spec 16 §6.6). Defaults to the relay origin.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account_url: Option<String>,
     pub session: Option<String>,
     pub socket: Option<PathBuf>,
     /// Whether the server starts the gateway for you. `None` = on when a relay is saved.
@@ -334,6 +342,7 @@ impl Default for Config {
             app_url: None,
             host_name: None,
             relay_token: None,
+            account_url: None,
             session: None,
             socket: None,
             autostart: None,
@@ -555,7 +564,8 @@ impl StateDir {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StatusFile {
     pub pid: u32,
-    /// `connecting` | `online` | `offline` | `local_only`
+    /// `connecting` | `online` | `offline` | `local_only` | `login_required` (the relay needs an
+    /// account: `vibeke login`, spec 16 §6.6)
     pub state: String,
     pub relay: Option<String>,
     pub devices: u32,
@@ -938,11 +948,14 @@ mod tests {
             owner: "self".into(),
             added_at: 1,
             expires_at: None,
+            ticket: Some("tk".into()),
+            ticket_exp: None,
         };
         s.save_peers(std::slice::from_ref(&r)).unwrap();
         let mode = fs::metadata(t.path().join("gw/peers.json")).unwrap().mode() & 0o777;
         assert_eq!(mode, 0o600);
         assert_eq!(s.peers().unwrap()[0].device_key, "secret");
         assert!(!r.public_json().to_string().contains("secret"));
+        assert!(!r.public_json().to_string().contains("tk"));
     }
 }

@@ -64,7 +64,14 @@ try {
   const { publicKey, privateKey } = generateKeyPairSync('ed25519');
   const publicBytes = publicKey.export({ format: 'der', type: 'spki' }).subarray(-32);
   const host = hostId(publicBytes);
-  const control = await connect('/v1/host');
+  const statusUrl = new URL(`/v1/status?host=${host}`, origin);
+  try {
+    const st = (await (await fetch(statusUrl)).json()) as { auth?: unknown };
+    console.log(`relay auth: ${JSON.stringify(st.auth ?? null)}`);
+  } catch (e) {
+    console.log(`relay auth: unavailable (${(e as Error).message})`);
+  }
+  const control = await connect(process.env.VIBEKE_HOST_TOKEN ? `/v1/host?token=${encodeURIComponent(process.env.VIBEKE_HOST_TOKEN)}` : '/v1/host');
   const challenge = await control.json();
   assert.equal(challenge.t, 'challenge');
   assert.equal(challenge.origin, origin);
@@ -77,7 +84,12 @@ try {
     sig: sign(null, auth, privateKey).toString('base64url'),
   }));
   assert.equal((await control.json()).t, 'ok');
-  const client = await connect(`/v1/connect?host=${host}`);
+  // Host-signed ticket for this ephemeral host (subject `pid:check`, 5 minutes).
+  const sub = 'pid:check';
+  const exp = Math.floor(Date.now() / 1000) + 300;
+  const ticketSig = sign(null, Buffer.from(`vibeke-relay/1 ticket\0${host}\0${sub}\0${String(exp)}`), privateKey);
+  const ticket = `${Buffer.from(JSON.stringify({ v: 1, host, sub, exp })).toString('base64url')}.${ticketSig.toString('base64url')}`;
+  const client = await connect(`/v1/connect?host=${host}&ticket=${encodeURIComponent(ticket)}`);
   const incoming = await control.json();
   assert.equal(incoming.t, 'incoming');
   const data = await connect('/v1/accept');
