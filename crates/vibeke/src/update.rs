@@ -689,7 +689,7 @@ mod tests {
         a.iter().map(|a| a.to_string()).collect()
     }
     fn release() -> Value {
-        let base = format!("{REPO}/releases/download/v0.3.0");
+        let base = format!("{REPO}/releases/download/v99.0.0");
         let assets = [
             "manifest.json".to_string(),
             "manifest.json.minisig".into(),
@@ -698,7 +698,7 @@ mod tests {
         .iter()
         .map(|n| json!({"name":n,"browser_download_url":format!("{base}/{n}")}))
         .collect::<Vec<_>>();
-        json!({"tag_name":"v0.3.0", "draft":false, "prerelease":false, "assets": assets})
+        json!({"tag_name":"v99.0.0", "draft":false, "prerelease":false, "assets": assets})
     }
     struct Fixture {
         files: std::collections::HashMap<String, Vec<u8>>,
@@ -721,15 +721,15 @@ mod tests {
         }
     }
     fn fixture(dir: &Path) -> Fixture {
-        let base = format!("{REPO}/releases/download/v0.3.0");
-        let binary = b"#!/bin/sh\necho 'vibeke 0.3.0'\n".to_vec();
+        let base = format!("{REPO}/releases/download/v99.0.0");
+        let binary = b"#!/bin/sh\necho 'vibeke 99.0.0'\n".to_vec();
         let sample = dir.join("sample");
         std::fs::write(&sample, &binary).unwrap();
         let url = format!("{base}/vibeke-{}", crate::doctor::platform_target());
-        let manifest = serde_json::to_vec(&json!({"version":"0.3.0", "artifacts":[{
+        let manifest = serde_json::to_vec(&json!({"version":"99.0.0", "artifacts":[{
             "target": crate::doctor::platform_target(), "url":url, "sha256":bootstrap::sha256_file(&sample).unwrap()
         }]})).unwrap();
-        let sig = vk_remote::minisign::testing::sign(&manifest, "version:0.3.0");
+        let sig = vk_remote::minisign::testing::sign(&manifest, "version:99.0.0");
         Fixture {
             files: [
                 (
@@ -759,7 +759,7 @@ mod tests {
         };
         let mut f = fixture(d.path());
         let binary_url = format!(
-            "{REPO}/releases/download/v0.3.0/vibeke-{}",
+            "{REPO}/releases/download/v99.0.0/vibeke-{}",
             crate::doctor::platform_target()
         );
         let binary = f.files[&binary_url].clone();
@@ -773,10 +773,10 @@ mod tests {
         online_with(&g, &layout, &Options::default(), &Reporter(false), &f)
             .await
             .unwrap();
-        assert_eq!(layout.current_version().as_deref(), Some("0.3.0"));
+        assert_eq!(layout.current_version().as_deref(), Some("99.0.0"));
         assert_eq!(
             binary_version(&layout.bin.join("vibeke")).await.unwrap(),
-            "0.3.0"
+            "99.0.0"
         );
     }
     #[test]
@@ -837,7 +837,7 @@ mod tests {
     }
     #[test]
     fn rejects_partial_prerelease_and_mismatched_releases() {
-        assert_eq!(Release::parse(&release(), None).unwrap().version, "0.3.0");
+        assert_eq!(Release::parse(&release(), None).unwrap().version, "99.0.0");
         for key in ["draft", "prerelease"] {
             let mut v = release();
             v[key] = json!(true);
