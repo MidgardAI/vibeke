@@ -381,6 +381,7 @@ pub fn create_with(
         exp,
         name: host_name.into(),
         share: share_json,
+        tk: None,
     };
     Ok((pairing, link))
 }

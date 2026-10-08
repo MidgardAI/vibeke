@@ -607,6 +607,7 @@ mod tests {
             exp: now_s() + 60,
             name: "x".into(),
             share: Some(json!({"kind": "share", "scope": "view", "until": 1})),
+            tk: None,
         };
         let e = PeerClient::pair(&link, &Identity::default())
             .await
