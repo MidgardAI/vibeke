@@ -1049,10 +1049,11 @@ fn draw_pane_at(
     }
     // Recovery / exit badges.
     if let Some(p) = app.m().model.panes.iter().find(|p| p.id == pid)
-        && p.recovered.as_deref() == Some("ring_only")
+        && let Some(rec) = p.recovered.as_deref()
+        && let Some(badge) =
+            crate::osc::recovery_badge(app, app.cur, pid, rec, std::time::Instant::now())
     {
-        let badge = " recovered (ring only) ";
-        let w = badge.len() as u16;
+        let w = badge.chars().count() as u16;
         g.put_str(r.x + r.w.saturating_sub(w), r.y, badge, t.dim(), w);
     }
 }

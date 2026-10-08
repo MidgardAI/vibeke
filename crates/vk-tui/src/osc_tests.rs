@@ -432,3 +432,28 @@ fn copy_mode_prompt_jumps_and_select_output() {
     key(&mut cm3, 'o');
     assert!(cm3.message().unwrap().contains("OSC 133"));
 }
+
+#[test]
+fn recovery_notice_is_transient_and_lost_output_is_persistent() {
+    let (mut app, _rx) = setup();
+    app.machines[0].model.panes[0].recovered = Some("ring_only".into());
+    app.machines[0].model.panes[1].recovered = Some("lost".into());
+    on_model(&mut app, 0);
+    let now = Instant::now();
+    assert_eq!(
+        recovery_badge(&app, 0, "p1", "ring_only", now),
+        Some(" reconnected after server restart ")
+    );
+    assert_eq!(
+        recovery_badge(&app, 0, "p1", "ring_only", now + RECOVERY_NOTICE),
+        None
+    );
+    let lost = |t| recovery_badge(&app, 0, "p2", "lost", t);
+    assert_eq!(
+        lost(now + RECOVERY_NOTICE * 10),
+        Some(" earlier output lost ")
+    );
+    // A keypress in the focused pane (p1) dismisses its notice.
+    dismiss_recovery(&mut app);
+    assert_eq!(recovery_badge(&app, 0, "p1", "ring_only", now), None);
+}

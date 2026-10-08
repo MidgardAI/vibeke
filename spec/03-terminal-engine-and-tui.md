@@ -169,7 +169,7 @@ Implements the recovery contract in 01 §1.2. `vt_snapshots(pane_id, holder_offs
 - **Recovery** (server start, per live pane):
   1. Deserialize the latest snapshot (the terminal is renderable at READY; history pages may finish restoring in the background); re-transmit stored images and placements (§2.4); `set_replaying(true)`.
   2. `Attach{from_offset: holder_offset}`; feed journal bytes and apply journaled `Resize` markers in order. `InputAck` markers update the input-id dedupe window.
-  3. If the journal starts after `holder_offset` (overflow), reset the screen and replay the whole journal from its first cut point: `pane.recovered{method: ring_only}`.
+  3. If the journal starts after `holder_offset` (overflow), reset the screen and replay the whole journal from its first cut point: `pane.recovered{method: lost}` (output scrolled out of the ring). A pane re-adopted without a snapshot whose ring still starts at offset 0 records `ring_only` (nothing lost).
   4. `set_replaying(false)`. Answer the holder's queued screen-dependent queries (≤ 5 s old) from current state.
   5. If the foreground process is a TUI (alternate screen active, or a harness manifest marks it), send the **resize nudge** (cols−1 then cols, 50 ms apart) so the app repaints.
   6. Restore scrollback above the screen from the archive (§11.2), not from the journal.

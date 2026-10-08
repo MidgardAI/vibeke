@@ -1821,6 +1821,9 @@ impl App {
     }
 
     pub(crate) fn on_key(&mut self, ev: KeyEvent) {
+        if ev.kind != KeyKind::Release && matches!(self.mode, Mode::Normal) {
+            crate::osc::dismiss_recovery(self);
+        }
         if crate::gateway::key(self, &ev) {
             return;
         }

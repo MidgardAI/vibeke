@@ -1,4 +1,4 @@
-//! Chaos scenarios from 10 §5.1 that `chaos.rs` does not cover: ring overflow (`ring_only`),
+//! Chaos scenarios from 10 §5.1 that `chaos.rs` does not cover: ring overflow (`lost`),
 //! holder crash, `log_epoch` identity across restarts, and a client that stops reading.
 //! Each is quick enough for the PR run; `VIBEKE_CHAOS_ITER` repeats the loops for the nightly.
 
@@ -18,11 +18,11 @@ fn iters() -> usize {
 }
 
 /// 10 §5.1 "Ring overflow": the server is down while the pane emits more than the holder's
-/// 16 MiB ring holds. On restart the pane is recovered `ring_only` (replay cannot be
+/// 16 MiB ring holds. On restart the pane is recovered `lost` (replay cannot be
 /// complete), the process is alive and the pane is usable.
 #[test]
 #[ignore = "slow in debug builds (replays 16 MiB); nightly runs it in release: cargo test --release -p vibeke --test chaos_gaps -- --ignored ring_overflow"]
-fn ring_overflow_while_server_is_down_recovers_ring_only() {
+fn ring_overflow_while_server_is_down_recovers_lost() {
     for round in 0..iters() {
         let s = Session::new();
         let pane = s.workspace("/bin/sh");
@@ -56,7 +56,7 @@ fn ring_overflow_while_server_is_down_recovers_ring_only() {
         );
         assert!(alive(child), "round {round}: process died");
         assert_eq!(
-            p["recovered"], "ring_only",
+            p["recovered"], "lost",
             "round {round}: recovery method; pane = {p}"
         );
         // Announced once, as an event.
@@ -72,7 +72,7 @@ fn ring_overflow_while_server_is_down_recovers_ring_only() {
             .collect();
         assert_eq!(
             methods,
-            ["ring_only"],
+            ["lost"],
             "round {round}: pane.recovered events"
         );
         // Usable: the shell finished its burst and takes new input.

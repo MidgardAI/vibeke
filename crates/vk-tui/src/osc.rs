@@ -56,6 +56,9 @@ pub struct State {
     pub hover: Option<(usize, String, String)>,
     /// When each pane's current exit mark was first seen here (server clocks may differ).
     exit_seen: HashMap<(usize, String), (i64, Instant)>,
+    /// When each recovered pane's transient "reconnected" notice was first seen here, and
+    /// whether a keypress in the pane already dismissed it.
+    recovery_seen: HashMap<(usize, String), (Instant, bool)>,
 }
 
 impl State {
@@ -381,6 +384,19 @@ pub fn progress_in<'a>(app: &'a App, mi: usize, ids: &[&str]) -> Option<&'a Prog
 /// A new model from machine `mi`: note when each exit mark was first seen.
 pub fn on_model(app: &mut App, mi: usize) {
     let now = Instant::now();
+    let rec: Vec<String> = app.machines[mi]
+        .model
+        .panes
+        .iter()
+        .filter(|p| matches!(p.recovered.as_deref(), Some(m) if m != "lost"))
+        .map(|p| p.id.clone())
+        .collect();
+    app.osc
+        .recovery_seen
+        .retain(|(m, p), _| *m != mi || rec.contains(p));
+    for p in rec {
+        app.osc.recovery_seen.entry((mi, p)).or_insert((now, false));
+    }
     let marks: Vec<(String, i64)> = app.machines[mi]
         .model
         .pane_live
@@ -407,6 +423,37 @@ pub fn exit_badge(app: &App, mi: usize, pane: &str, now: Instant) -> Option<Stri
         .then(|| format!(" ✗ exit {} ", e.code))
 }
 
+/// How long the "reconnected after server restart" notice shows.
+pub const RECOVERY_NOTICE: Duration = Duration::from_secs(5);
+
+/// The recovery notice of a pane: a transient " reconnected after server restart " (gone
+/// after [`RECOVERY_NOTICE`] or the next keypress in the pane), or the persistent
+/// " earlier output lost " when the holder's ring no longer held the pane's whole history.
+pub fn recovery_badge(
+    app: &App,
+    mi: usize,
+    pane: &str,
+    recovered: &str,
+    now: Instant,
+) -> Option<&'static str> {
+    if recovered == "lost" {
+        return Some(" earlier output lost ");
+    }
+    let (seen, dismissed) = app.osc.recovery_seen.get(&(mi, pane.to_string()))?;
+    (!dismissed && now.duration_since(*seen) < RECOVERY_NOTICE)
+        .then_some(" reconnected after server restart ")
+}
+
+/// A keypress went to the focused pane: its transient recovery notice goes away.
+pub fn dismiss_recovery(app: &mut App) {
+    if let Some(p) = app.focused_pane() {
+        let cur = app.cur;
+        if let Some(e) = app.osc.recovery_seen.get_mut(&(cur, p)) {
+            e.1 = true;
+        }
+    }
+}
+
 /// Redraw when an exit badge expires.
 pub fn deadlines(app: &App, now: Instant, d: &mut crate::deadline::Deadlines) {
     if let Some(t) = app
@@ -418,6 +465,17 @@ pub fn deadlines(app: &App, now: Instant, d: &mut crate::deadline::Deadlines) {
         .min()
     {
         d.at("exit_badge", t);
+    }
+    if let Some(t) = app
+        .osc
+        .recovery_seen
+        .values()
+        .filter(|(_, dismissed)| !dismissed)
+        .map(|(seen, _)| *seen + RECOVERY_NOTICE)
+        .filter(|t| *t > now)
+        .min()
+    {
+        d.at("recovery_notice", t);
     }
 }
 

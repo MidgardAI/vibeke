@@ -143,7 +143,7 @@ Proposed extension: [15 §4 and §10](15-task-outcomes-review-and-attention.md) 
 | `session.*` | `started`, `server_restarted {prev_pid, recovered_panes}`, `config_reloaded`, `stopped` |
 | `machine.*` | `added`, `connected`, `disconnected`, `degraded {reason}`, `removed` |
 | `group.*` / `workspace.*` / `tab.*` | `created`, `renamed`, `moved`, `closed`, `focused`, `layout_changed` |
-| `pane.*` | `created`, `closed`, `resized`, `focused`, `title_changed`, `cwd_changed`, `process_changed {fg_cmdline}`, `exited {code}`, `bell`, `marked_unread`, `seen`, `pinned`, `recovered {method: snapshot+replay|ring_only|lost}` |
+| `pane.*` | `created`, `closed`, `resized`, `focused`, `title_changed`, `cwd_changed`, `process_changed {fg_cmdline}`, `exited {code}`, `bell`, `marked_unread`, `seen`, `pinned`, `recovered {method: snapshot+replay|ring_only|lost}` (`ring_only`: whole ring replayed, nothing lost; `lost`: output scrolled out of the ring) |
 | `adapter.*` | `health_changed {from, to}`, `disagreement {facet, structured, other}` |
 | `agent.*` | `detected {harness, via}`, `started`, `identified {harness_session_id, transcript_path}`, `state_changed {facet, from, to, source, confidence}`, `named`, `turn_started`, `turn_completed {usage}`, `item {kind, summary}` (sampled/compacted), `file_changed {path, op}`, `subagent_started/finished`, `resume_handle {argv}`, `exited`, `released` |
 | `interaction.*` | `opened`, `updated`, `decided {rev, by, answer, channel}`, `delivery_started`, `delivered`, `delivery_unknown`, `delivery_failed {reason}`, `resolved_elsewhere`, `expired`, `cancelled` (names per 04 §7.3) |

@@ -505,6 +505,11 @@ async fn run_inner(
         sc.archived_upto = server.archive_last_line(&rt.id).map(|l| l + 1).unwrap_or(0);
         if method == "ring_only" {
             from = ring.start_offset;
+            // The ring no longer starts at the beginning of the pane's output: what scrolled
+            // out of it while the server was away is gone.
+            if ring.start_offset > 0 {
+                method = "lost";
+            }
         }
     }
     asyncio::write_frame(
@@ -696,7 +701,7 @@ impl PaneLoop {
                 let (c, r) = (sc.engine.cols(), sc.engine.rows());
                 sc.engine = new_engine(c, r);
                 sc.engine.set_replaying(true);
-                self.method = "ring_only".into();
+                self.method = "lost".into();
             }
             FromHolder::ReplayDone { queued_queries, .. } => {
                 if self.replaying {
