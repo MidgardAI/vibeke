@@ -537,6 +537,19 @@ fn tab_renumber_closes_gaps_in_tab_order() {
         tabs.push(t["tab"]["id"].as_str().unwrap().to_string());
     }
     r.call("tab.close", json!({"tab": tabs[0]})).unwrap();
+    // The tab goes once its pane's process has exited, which a slow runner reports later.
+    let t0 = std::time::Instant::now();
+    loop {
+        let left = r.call("tab.list", json!({"workspace": ws})).unwrap();
+        if left["tabs"].as_array().unwrap().len() == 2 {
+            break;
+        }
+        assert!(
+            t0.elapsed() < Duration::from_secs(10),
+            "tab never closed: {left}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
     let out = s.json(&["tab", "renumber", &ws]);
     assert_eq!(out["changed"], 1, "{out}");
     let numbers: Vec<u64> = out["tabs"]
