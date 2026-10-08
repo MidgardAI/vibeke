@@ -12,6 +12,7 @@ pub mod harness;
 pub mod headless;
 pub mod hook;
 pub mod manifests;
+mod models;
 mod opencode;
 mod polish;
 mod route;
@@ -74,6 +75,11 @@ pub const METHODS: &[(&str, bool)] = &[
     ("agent.drift", false),
     ("agent.manifests_check", true),
     ("agent.manifest_pin", true),
+    // Pickers: slash-command catalog and structured model control (`models.rs`).
+    ("agent.commands", false),
+    ("agent.models", false),
+    ("agent.set_model", true),
+    ("adapter.control", true),
 ];
 
 /// Gate timeout (04 §7.2): after this the hook returns no decision and the native dialog shows.
@@ -2648,6 +2654,9 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
     if let Some(r) = polish::api(server, ctx, method, p).await {
         return Some(r);
     }
+    if let Some(r) = models::api(server, ctx, method, p).await {
+        return Some(r);
+    }
     Some(match method {
         "agent.list" => {
             let ws = s(p, "workspace")
@@ -3125,6 +3134,9 @@ fn subject(p: &Pane) -> Value {
 
 #[cfg(test)]
 mod polish_tests;
+
+#[cfg(test)]
+mod models_tests;
 
 #[cfg(test)]
 pub(crate) fn harness_tests_run() -> AgentRun {

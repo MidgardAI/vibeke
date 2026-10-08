@@ -105,6 +105,9 @@ class VibekeClient {
   dropped = 0;
   connects = 0;
   gateReconnects = 0;
+  controlHandled = 0;
+  controlStarted = false;
+  controlSock = null;
   cap;
   minMs;
   maxMs;
@@ -321,7 +324,109 @@ class VibekeClient {
     this.queue.length = 0;
     try {
       this.sock?.destroy();
+      this.controlSock?.destroy();
     } catch {}
+  }
+  control(ops, handle) {
+    if (this.controlStarted || this.closed || ops.length === 0)
+      return;
+    this.controlStarted = true;
+    let tries = 0;
+    let reply;
+    const retry = () => {
+      if (this.closed)
+        return;
+      const delay = Math.min(this.minMs * 2 ** Math.min(tries, 16), this.maxMs);
+      tries++;
+      const t = setTimeout(connect, delay);
+      t.unref?.();
+    };
+    const connect = () => {
+      if (this.closed)
+        return;
+      let sock;
+      try {
+        sock = net.createConnection(this.o.socketPath);
+      } catch {
+        retry();
+        return;
+      }
+      this.controlSock = sock;
+      sock.unref();
+      sock.on("error", () => {});
+      let id = 1;
+      let sentAt = 0;
+      let stopped = false;
+      const poll = () => {
+        if (this.closed || sock.destroyed)
+          return;
+        id++;
+        sentAt = Date.now();
+        const params = { harness: this.harness, ops };
+        if (reply)
+          params.reply = reply;
+        reply = undefined;
+        try {
+          sock.write(JSON.stringify({ jsonrpc: "2.0", id, method: "adapter.control", params }) + `
+`);
+        } catch {
+          sock.destroy();
+        }
+      };
+      sock.on("data", lineReader((line) => {
+        let m;
+        try {
+          m = JSON.parse(line);
+        } catch {
+          return;
+        }
+        if (m?.id !== id)
+          return;
+        const r = m.result;
+        if (m.error || !r || typeof r !== "object" || !("request" in r)) {
+          stopped = true;
+          sock.destroy();
+          return;
+        }
+        tries = 0;
+        const req = r.request;
+        if (req && typeof req === "object" && typeof req.id === "string") {
+          const params = req.params && typeof req.params === "object" ? req.params : {};
+          Promise.resolve().then(() => handle(String(req.op), params)).then((result) => ({ id: req.id, ok: true, result: result ?? null }), (e) => ({ id: req.id, ok: false, error: String(e?.message ?? e).slice(0, 500) })).then((rep) => {
+            this.controlHandled++;
+            reply = rep;
+            poll();
+          });
+        } else if (Date.now() - sentAt < 1000) {
+          const t = setTimeout(poll, 1000);
+          t.unref?.();
+        } else {
+          poll();
+        }
+      }));
+      sock.on("connect", () => {
+        try {
+          sock.write(JSON.stringify({
+            jsonrpc: "2.0",
+            id: 1,
+            method: "client.hello",
+            params: { client: "vibeke-pi-extension", kind: "agent", token: this.o.token, version: this.o.version }
+          }) + `
+`);
+        } catch {
+          sock.destroy();
+          return;
+        }
+        poll();
+      });
+      sock.on("close", () => {
+        if (this.controlSock === sock)
+          this.controlSock = null;
+        if (!stopped)
+          retry();
+      });
+    };
+    connect();
   }
   gate(event, payload) {
     let settle;
@@ -459,6 +564,7 @@ function createExtension(pi, opts = {}) {
   const debounceMs = opts.debounceMs ?? 250;
   let lastCtx;
   let model;
+  let currentModel;
   let turnIndex = 0;
   let streaming = false;
   let turnOpen = false;
@@ -617,8 +723,75 @@ function createExtension(pi, opts = {}) {
       if (now - c.at > CACHE_TTL_MS)
         calls.delete(k);
   }
+  async function available() {
+    const reg = lastCtx?.modelRegistry;
+    if (!reg || typeof reg.getAvailable !== "function")
+      throw new Error("the host exposes no model registry");
+    const list = await reg.getAvailable();
+    return Array.isArray(list) ? list : [];
+  }
+  async function onControl(op, params) {
+    if (op === "models") {
+      const cur = modelKey(currentModel ?? lastCtx?.model ?? undefined);
+      const models = (await available()).slice(0, 500).map((m) => {
+        const id = modelKey(m);
+        if (!id)
+          return;
+        return {
+          id,
+          label: typeof m.name === "string" && m.name ? m.name : String(m.id),
+          ...typeof m.provider === "string" ? { description: m.provider } : {},
+          current: id === cur
+        };
+      }).filter((m) => m !== undefined);
+      return { models };
+    }
+    if (op === "set_model") {
+      const want = String(params.model ?? "");
+      if (params.scope === "default" && host === "omp")
+        throw new Error("oh-my-pi switches models for the session only");
+      if (typeof pi.setModel !== "function")
+        throw new Error("the host cannot switch models");
+      const list = await available();
+      const slash = want.indexOf("/");
+      const m = list.find((x) => modelKey(x) === want) ?? (slash > 0 ? lastCtx?.modelRegistry?.find?.(want.slice(0, slash), want.slice(slash + 1)) : undefined) ?? list.find((x) => x.id === want);
+      if (!m)
+        throw new Error(`unknown model: ${want}`);
+      const ok = await pi.setModel(m);
+      if (ok === false)
+        throw new Error(`no credentials for ${m.provider ?? "this provider"}`);
+      currentModel = m;
+      if (typeof m.id === "string")
+        model = m.id;
+      return { model: modelKey(m), default_changed: host === "pi" };
+    }
+    if (op === "commands") {
+      if (typeof pi.getCommands !== "function")
+        throw new Error("the host cannot list commands");
+      const cmds = pi.getCommands() ?? [];
+      return {
+        commands: cmds.slice(0, 500).filter((c) => typeof c?.name === "string").map((c) => ({ name: c.name, description: typeof c.description === "string" ? c.description : "" }))
+      };
+    }
+    throw new Error(`unknown request: ${op}`);
+  }
+  function startControl(ctx) {
+    if (headlessOwner || opts.control === false || ctx.mode !== "tui")
+      return;
+    const ops = [];
+    if (ctx.modelRegistry && typeof ctx.modelRegistry.getAvailable === "function") {
+      ops.push("models");
+      if (typeof pi.setModel === "function")
+        ops.push("set_model");
+    }
+    if (typeof pi.getCommands === "function")
+      ops.push("commands");
+    client.control(ops, onControl);
+  }
   function identify(event, ctx, fallbackSource) {
     lastCtx = ctx;
+    if (ctx.model)
+      currentModel = ctx.model;
     if (ctx.model?.id)
       model = ctx.model.id;
     ensureWrapped(ctx.ui, ctx);
@@ -669,6 +842,7 @@ function createExtension(pi, opts = {}) {
         try {
           if (ctx && typeof ctx === "object") {
             lastCtx = ctx;
+            startControl(ctx);
           }
           return fn(event, ctx);
         } catch {
@@ -808,6 +982,8 @@ function createExtension(pi, opts = {}) {
     const id = e?.model?.id ?? e?.modelId;
     if (typeof id === "string")
       model = id;
+    if (e?.model && typeof e.model === "object")
+      currentModel = e.model;
   });
   on("session_shutdown", async (e) => {
     cancelEnd();
@@ -827,6 +1003,11 @@ function createExtension(pi, opts = {}) {
     ensureWrapped,
     wrapperEnabled: () => wrapperOk
   };
+}
+function modelKey(m) {
+  if (!m || typeof m.id !== "string" || !m.id)
+    return;
+  return typeof m.provider === "string" && m.provider ? `${m.provider}/${m.id}` : m.id;
 }
 function safe(fn) {
   try {

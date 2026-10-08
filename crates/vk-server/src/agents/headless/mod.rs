@@ -154,6 +154,10 @@ pub struct Record {
     /// their panes again.
     #[serde(default)]
     pub terminals: Vec<acp_term::Saved>,
+    /// The model chosen through `agent.set_model` where the protocol takes it per turn (Codex
+    /// `turn/start {model}`): sent with every later turn, also after a restart.
+    #[serde(default)]
+    pub model: Option<String>,
 }
 
 /// A prompt waiting in [`Record::queued`].
@@ -241,7 +245,33 @@ pub enum Cmd {
     },
     /// An ACP terminal's process exited (its watcher task).
     TerminalExited(String),
+    /// `agent.models` / `agent.set_model` over the protocol (see [`Adapter::models`]).
+    Model {
+        op: ModelOp,
+        ack: oneshot::Sender<Result<Value, String>>,
+    },
 }
+
+/// A structured model request.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ModelOp {
+    List,
+    /// `default`: also make it the harness's persisted default.
+    Set {
+        model: String,
+        default: bool,
+    },
+}
+
+/// The answer to a [`ModelOp`]: at once, or when the response to this request id arrives
+/// (delivered through [`Cx::reply`]).
+pub enum Reply {
+    Now(Value),
+    Later(String),
+}
+
+/// Error text of an adapter without structured model control.
+pub const UNSUPPORTED: &str = "unsupported";
 
 /// What the pane loop must do for the session: write protocol bytes as an acked holder input,
 /// or show transcript text in the pane.
@@ -277,6 +307,10 @@ pub struct Cx {
     pub live: bool,
     /// Automatic requests whose side effect was just carried out (see [`Record::auto_done`]).
     auto_done: Vec<String>,
+    /// Responses to [`Reply::Later`] requests: (request id, normalized result).
+    replies: Vec<(String, Result<Value, String>)>,
+    /// A model override to persist in [`Record::model`].
+    model: Option<String>,
 }
 
 impl Cx {
@@ -349,6 +383,14 @@ impl Cx {
     pub fn auto_done(&mut self, native_ref: String) {
         self.auto_done.push(native_ref);
     }
+    /// The response to a model request answered [`Reply::Later`].
+    pub fn reply(&mut self, id: String, r: Result<Value, String>) {
+        self.replies.push((id, r));
+    }
+    /// Persist the per-turn model override (see [`Record::model`]).
+    pub fn persist_model(&mut self, m: &str) {
+        self.model = Some(m.to_string());
+    }
     fn live() -> Cx {
         Cx {
             live: true,
@@ -386,6 +428,14 @@ pub trait Adapter: Send {
     }
     /// Automatic requests whose side effect already happened (from [`Record::auto_done`]).
     fn set_auto_done(&mut self, _done: &[String]) {}
+    /// `agent.models`: `{models: [{id, label, description?, current}]}` from the protocol.
+    fn models(&mut self, _cx: &mut Cx) -> Result<Reply, String> {
+        Err(UNSUPPORTED.into())
+    }
+    /// `agent.set_model`: `{default_changed: bool}` once the harness took it.
+    fn set_model(&mut self, _cx: &mut Cx, _model: &str, _default: bool) -> Result<Reply, String> {
+        Err(UNSUPPORTED.into())
+    }
 }
 
 /// Line buffer of one journal stream.
@@ -433,6 +483,8 @@ pub struct Session {
     terms: acp_term::Terms,
     /// `terminal/wait_for_exit` requests waiting: (terminal id, request id).
     term_waits: Vec<(String, Value)>,
+    /// Model requests waiting for their response, by request id.
+    model_waiters: HashMap<String, oneshot::Sender<Result<Value, String>>>,
     /// Tests: start terminal commands with this instead of a pane.
     #[cfg(test)]
     pub term_spawn: Option<TestSpawn>,
@@ -478,6 +530,7 @@ impl Session {
             transcript: transcript::Transcript::default(),
             terms: Default::default(),
             term_waits: vec![],
+            model_waiters: HashMap::new(),
             #[cfg(test)]
             term_spawn: None,
             #[cfg(test)]
@@ -728,6 +781,17 @@ impl Session {
             if let Some(r) = &it.native_ref {
                 self.seen_requests.insert(r.clone());
             }
+        }
+        for (id, r) in cx.replies {
+            if let Some(w) = self.model_waiters.remove(&id) {
+                let _ = w.send(r);
+            }
+        }
+        if let Some(m) = cx.model
+            && self.rec.model.as_deref() != Some(m.as_str())
+        {
+            self.rec.model = Some(m);
+            self.dirty = true;
         }
         if let Some(s) = cx.session
             && self.rec.session.as_deref() != Some(s.as_str())
@@ -1054,6 +1118,27 @@ impl Session {
                 native_ref,
                 key,
             } => self.deliver(server, &interaction, &native_ref, &key),
+            Cmd::Model { op, ack } => {
+                let mut cx = Cx::live();
+                let r = match &op {
+                    ModelOp::List => self.adapter.models(&mut cx),
+                    ModelOp::Set { model, default } => {
+                        self.adapter.set_model(&mut cx, model, *default)
+                    }
+                };
+                match r {
+                    Ok(Reply::Now(v)) => {
+                        let _ = ack.send(Ok(v));
+                    }
+                    Ok(Reply::Later(id)) => {
+                        self.model_waiters.insert(id, ack);
+                    }
+                    Err(e) => {
+                        let _ = ack.send(Err(e));
+                    }
+                }
+                self.apply(server, cx, true)
+            }
             Cmd::TerminalExited(tid) => acp_term::exited(&self.terms, &mut self.term_waits, &tid)
                 .into_iter()
                 .map(|v| self.write(server, &v, None))
@@ -1822,6 +1907,7 @@ pub(super) async fn start(server: &Arc<Server>, ctx: Option<&Ctx>, p: &Value) ->
             auto_done: vec![],
             isolated: iso.is_some(),
             terminals: vec![],
+            model: None,
         };
         let mut tx = Tx::new();
         tx.counters = true;
@@ -1930,6 +2016,31 @@ pub(super) async fn prompt(server: &Server, run: &AgentRun, text: &str, mode: Pr
         Ok(Ok(Err(e))) => Err(err(ErrorKind::Conflict, e)),
         _ => Err(err(ErrorKind::Timeout, "input_unconfirmed")
             .details(json!({"status": "input_unconfirmed"}))),
+    }
+}
+
+/// `agent.models` / `agent.set_model` on a headless run: the adapter's structured answer.
+pub(super) async fn model_op(server: &Server, run: &AgentRun, op: ModelOp) -> R {
+    let rt = server
+        .pane_rt(&run.pane)
+        .ok_or_else(|| err(ErrorKind::Conflict, "the headless pane is not running"))?;
+    let (tx, rx) = oneshot::channel();
+    rt.send(crate::pane::PaneCmd::Headless(Cmd::Model { op, ack: tx }));
+    match tokio::time::timeout(Duration::from_secs(15), rx).await {
+        Ok(Ok(Ok(v))) => Ok(v),
+        Ok(Ok(Err(e))) if e == UNSUPPORTED => Err(err(
+            ErrorKind::Unsupported,
+            format!("{} offers no structured model control", run.harness),
+        )
+        .details(json!({"reason": "harness", "fallback": "/model"}))),
+        Ok(Ok(Err(e))) => {
+            Err(err(ErrorKind::Conflict, e).details(json!({"reason": "harness_error"})))
+        }
+        Ok(Err(_)) => Err(err(ErrorKind::Conflict, "the headless session ended")),
+        Err(_) => Err(err(
+            ErrorKind::Timeout,
+            "the agent did not answer the model request",
+        )),
     }
 }
 

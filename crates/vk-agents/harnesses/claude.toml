@@ -8,6 +8,62 @@ name = "Claude Code"
 icon = "✳"
 color = "#d97757"
 
+# Built-in slash commands (`agent.commands`). Source: Claude Code 2.1.295: built-in command table of the installed CLI (interactive variants only; hidden,
+# feature-gated and internal commands left out).
+# takes_arg: accepts text after the name; opens_picker: typed bare it opens a picker or menu;
+# dangerous: discards or replaces the conversation, signs out or ends the session.
+commands = [
+  { name = "add-dir", description = "Add a new working directory", takes_arg = true, opens_picker = false, dangerous = false },
+  { name = "background", description = "Send this session to the background and free the terminal", takes_arg = true, opens_picker = false, dangerous = false },
+  { name = "branch", description = "Create a branch of the current conversation at this point", takes_arg = true, opens_picker = false, dangerous = false },
+  { name = "clear", description = "Start a new session with empty context; the previous session stays on disk", takes_arg = false, opens_picker = false, dangerous = true },
+  { name = "color", description = "Set the prompt bar color for this session", takes_arg = false, opens_picker = false, dangerous = false },
+  { name = "compact", description = "Free up context by summarizing the conversation so far", takes_arg = true, opens_picker = false, dangerous = false },
+  { name = "config", description = "Open settings", takes_arg = true, opens_picker = true, dangerous = false },
+  { name = "context", description = "Show current context usage", takes_arg = false, opens_picker = false, dangerous = false },
+  { name = "copy", description = "Copy Claude's last response to clipboard", takes_arg = false, opens_picker = false, dangerous = false },
+  { name = "diff", description = "View uncommitted changes and per-turn diffs", takes_arg = false, opens_picker = true, dangerous = false },
+  { name = "doctor", description = "Health-check your setup and fix issues", takes_arg = false, opens_picker = false, dangerous = false },
+  { name = "effort", description = "Set effort level for model usage", takes_arg = false, opens_picker = true, dangerous = false },
+  { name = "exit", description = "Exit the CLI", takes_arg = false, opens_picker = false, dangerous = true },
+  { name = "export", description = "Export the current conversation to a file or clipboard", takes_arg = true, opens_picker = true, dangerous = false },
+  { name = "fast", description = "Toggle fast mode", takes_arg = true, opens_picker = false, dangerous = false },
+  { name = "feedback", description = "Send feedback to Anthropic or report a bug", takes_arg = true, opens_picker = false, dangerous = false },
+  { name = "focus", description = "Toggle focus view: just your prompt, summary, and response", takes_arg = false, opens_picker = false, dangerous = false },
+  { name = "fork", description = "Spawn a background agent that inherits the full conversation", takes_arg = true, opens_picker = false, dangerous = false },
+  { name = "goal", description = "Set a goal Claude checks before stopping", takes_arg = true, opens_picker = false, dangerous = false },
+  { name = "help", description = "Show help and available commands", takes_arg = false, opens_picker = true, dangerous = false },
+  { name = "hooks", description = "View hook configurations for tool events", takes_arg = false, opens_picker = true, dangerous = false },
+  { name = "ide", description = "Manage IDE integrations and show status", takes_arg = true, opens_picker = true, dangerous = false },
+  { name = "init", description = "Initialize a new CLAUDE.md file with codebase documentation", takes_arg = false, opens_picker = false, dangerous = false },
+  { name = "insights", description = "Generate a report analyzing your Claude Code sessions", takes_arg = false, opens_picker = false, dangerous = false },
+  { name = "keybindings", description = "Open your keyboard shortcuts file", takes_arg = false, opens_picker = false, dangerous = false },
+  { name = "login", description = "Sign in with your Anthropic account", takes_arg = false, opens_picker = true, dangerous = false },
+  { name = "logout", description = "Sign out from your Anthropic account", takes_arg = false, opens_picker = false, dangerous = true },
+  { name = "mcp", description = "Manage MCP servers", takes_arg = true, opens_picker = true, dangerous = false },
+  { name = "memory", description = "Edit CLAUDE.md files and memory settings", takes_arg = false, opens_picker = true, dangerous = false },
+  { name = "model", description = "Set the AI model for Claude Code", takes_arg = true, opens_picker = true, dangerous = false },
+  { name = "permissions", description = "Manage allow and deny tool permission rules", takes_arg = false, opens_picker = true, dangerous = false },
+  { name = "plan", description = "Enable plan mode or view the current session plan", takes_arg = true, opens_picker = false, dangerous = false },
+  { name = "plugin", description = "Manage Claude Code plugins", takes_arg = false, opens_picker = true, dangerous = false },
+  { name = "privacy-settings", description = "View and update your privacy settings", takes_arg = false, opens_picker = true, dangerous = false },
+  { name = "recap", description = "Generate a one-line session recap now", takes_arg = false, opens_picker = false, dangerous = false },
+  { name = "release-notes", description = "View release notes", takes_arg = false, opens_picker = true, dangerous = false },
+  { name = "reload-plugins", description = "Activate pending plugin changes in the current session", takes_arg = false, opens_picker = false, dangerous = false },
+  { name = "rename", description = "Rename the current conversation", takes_arg = true, opens_picker = false, dangerous = false },
+  { name = "resume", description = "Resume a previous conversation", takes_arg = true, opens_picker = true, dangerous = false },
+  { name = "rewind", description = "Restore the code and/or conversation to a previous point", takes_arg = false, opens_picker = true, dangerous = true },
+  { name = "security-review", description = "Complete a security review of the pending changes on the current branch", takes_arg = false, opens_picker = false, dangerous = false },
+  { name = "skills", description = "List available skills", takes_arg = false, opens_picker = true, dangerous = false },
+  { name = "status", description = "Show Claude Code status including version, model, account, API connectivity, and tool statuses", takes_arg = false, opens_picker = true, dangerous = false },
+  { name = "statusline", description = "Set up Claude Code's status line UI", takes_arg = false, opens_picker = false, dangerous = false },
+  { name = "tasks", description = "View and manage everything running in the background", takes_arg = false, opens_picker = true, dangerous = false },
+  { name = "terminal-setup", description = "Set up terminal key bindings for newlines", takes_arg = false, opens_picker = false, dangerous = false },
+  { name = "theme", description = "Change the theme", takes_arg = false, opens_picker = true, dangerous = false },
+  { name = "tui", description = "Set the terminal UI renderer (default or fullscreen)", takes_arg = true, opens_picker = false, dangerous = false },
+  { name = "usage", description = "Show session cost, plan usage, and activity stats", takes_arg = false, opens_picker = true, dangerous = false },
+]
+
 [detect]
 priority = 100
 [[detect.process]]

@@ -634,6 +634,12 @@ agent.send_keys :: {target: Target, keys: [string]} => {}
 agent.rename :: {target: Target, name: string|null} => {run: AgentRun}
 agent.release :: {target: Target} => {}
 agent.resume :: {pane?: Target, run: Target, mode?: string} => {run: AgentRun}
+# built-in slash commands of the run's harness (manifest [[commands]]); source protocol when an interactive pi/omp extension added its own
+agent.commands :: {target: Target} => {commands: [{name: string, description: string, takes_arg: bool, opens_picker: bool, dangerous: bool}], source: catalog|protocol}
+# unsupported (details.fallback "/model") when the harness offers no structured way: send /model and answer the picker
+agent.models :: {target: Target} => {models: [{id: string, label: string, description?: string, current: bool}], source: protocol|screen}
+# scope default only where the harness can save a default (Codex, pi), else invalid_params; default_changed: pi saves every switch as its default
+agent.set_model :: {target: Target, model: string, scope?: session|default = session} => {run: AgentRun, default_changed: bool}
 
 # --- interactions ---
 interaction.list :: {status?: open|string, run?: Target, workspace?: Target, kind?: string} => {interactions: [Interaction]}
@@ -803,6 +809,8 @@ adapter.gate :: {harness: string, event: string, payload?: any, pid?: int} => {d
 # pane scope limited to own pane (or panes it created); dropped when seq <= last seen from (pane, source)
 adapter.report_self :: {pane?: Target, pane_id?: Target, source?: string = vibeke, seq?: int, agent?: string, harness?: string, state: idle|working|blocked|done|string, message?: string, resume_argv?: [string]}
   => {type: 'ok', dropped?: 'stale_seq', applied?: bool}
+# pane-token only; the extension's long-poll for model/command requests (agents/models.rs); reply carries the previous request's result
+adapter.control :: {harness?: string, ops?: [string], reply?: {id: string, ok: bool, result?: any, error?: string}, wait_ms?: int} => {request: {id: string, op: string, params: object}|null}
 # pane-token only; fire-and-forget event signal from a hook/extension
 adapter.signal :: {harness: string, event: string, payload?: any, pid?: int} => {hook_output?: object}
 agent.manifests :: {} => {manifests: [{id: string, name: string, source: string, family: string, transports: [string], validated_range: any, capabilities_unversioned: any, capabilities_unverified: any, detects: bool, screen_rules: bool, warnings: [string]}], warnings: [string]}

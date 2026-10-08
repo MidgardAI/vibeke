@@ -4,7 +4,7 @@
 import { randomUUID } from "node:crypto";
 import { boundedPrompt, fileChangePath, preview, RATE_LIMIT_RE, redactInput } from "./describe.js";
 import { type GateAnswer, VibekeClient } from "./protocol.js";
-import type { HostApi, HostContext, UiContext } from "./types.js";
+import type { HostApi, HostContext, HostModel, UiContext } from "./types.js";
 import { EXTENSION_VERSION } from "./version.js";
 
 export { EXTENSION_VERSION };
@@ -14,6 +14,8 @@ export type HostKind = "pi" | "omp";
 export interface Options {
   env?: Record<string, string | undefined>;
   host?: HostKind;
+  /** Long-poll the control channel (model list/switch, commands) in TUI mode. Default true. */
+  control?: boolean;
   /** Test hooks. */
   debounceMs?: number;
   clientOverrides?: Partial<ConstructorParameters<typeof VibekeClient>[0]>;
@@ -57,6 +59,8 @@ export function createExtension(pi: HostApi, opts: Options = {}): Handle | undef
   // ---- live state (for snapshots) ----
   let lastCtx: HostContext | undefined;
   let model: string | undefined;
+  /** The current model object (`provider/id` is how Vibeke names it). */
+  let currentModel: HostModel | undefined;
   let turnIndex = 0;
   let streaming = false;
   let turnOpen = false;
@@ -231,8 +235,77 @@ export function createExtension(pi: HostApi, opts: Options = {}): Handle | undef
     for (const [k, c] of calls) if (now - c.at > CACHE_TTL_MS) calls.delete(k);
   }
 
+  // ---- control channel (PROTOCOL.md "Control") ----
+  async function available(): Promise<HostModel[]> {
+    const reg = lastCtx?.modelRegistry;
+    if (!reg || typeof reg.getAvailable !== "function") throw new Error("the host exposes no model registry");
+    const list = await reg.getAvailable();
+    return Array.isArray(list) ? list : [];
+  }
+
+  async function onControl(op: string, params: Record<string, unknown>): Promise<unknown> {
+    if (op === "models") {
+      const cur = modelKey(currentModel ?? lastCtx?.model ?? undefined);
+      const models = (await available())
+        .slice(0, 500)
+        .map((m) => {
+          const id = modelKey(m);
+          if (!id) return undefined;
+          return {
+            id,
+            label: typeof m.name === "string" && m.name ? m.name : String(m.id),
+            ...(typeof m.provider === "string" ? { description: m.provider } : {}),
+            current: id === cur,
+          };
+        })
+        .filter((m) => m !== undefined);
+      return { models };
+    }
+    if (op === "set_model") {
+      const want = String(params.model ?? "");
+      if (params.scope === "default" && host === "omp") throw new Error("oh-my-pi switches models for the session only");
+      if (typeof pi.setModel !== "function") throw new Error("the host cannot switch models");
+      const list = await available();
+      const slash = want.indexOf("/");
+      const m =
+        list.find((x) => modelKey(x) === want) ??
+        (slash > 0 ? lastCtx?.modelRegistry?.find?.(want.slice(0, slash), want.slice(slash + 1)) : undefined) ??
+        list.find((x) => x.id === want);
+      if (!m) throw new Error(`unknown model: ${want}`);
+      const ok = await pi.setModel(m);
+      if (ok === false) throw new Error(`no credentials for ${m.provider ?? "this provider"}`);
+      currentModel = m;
+      if (typeof m.id === "string") model = m.id;
+      // pi saves every switch as its default model; omp keeps it to the session.
+      return { model: modelKey(m), default_changed: host === "pi" };
+    }
+    if (op === "commands") {
+      if (typeof pi.getCommands !== "function") throw new Error("the host cannot list commands");
+      const cmds = pi.getCommands() ?? [];
+      return {
+        commands: cmds
+          .slice(0, 500)
+          .filter((c) => typeof c?.name === "string")
+          .map((c) => ({ name: c.name, description: typeof c.description === "string" ? c.description : "" })),
+      };
+    }
+    throw new Error(`unknown request: ${op}`);
+  }
+
+  function startControl(ctx: HostContext): void {
+    if (headlessOwner || opts.control === false || ctx.mode !== "tui") return;
+    const ops: string[] = [];
+    if (ctx.modelRegistry && typeof ctx.modelRegistry.getAvailable === "function") {
+      ops.push("models");
+      if (typeof pi.setModel === "function") ops.push("set_model");
+    }
+    if (typeof pi.getCommands === "function") ops.push("commands");
+    client.control(ops, onControl);
+  }
+
   function identify(event: any, ctx: HostContext, fallbackSource: string): void {
     lastCtx = ctx;
+    if (ctx.model) currentModel = ctx.model;
     if (ctx.model?.id) model = ctx.model.id;
     ensureWrapped(ctx.ui, ctx);
     emit("SessionStart", {
@@ -286,6 +359,7 @@ export function createExtension(pi: HostApi, opts: Options = {}): Handle | undef
         try {
           if (ctx && typeof ctx === "object") {
             lastCtx = ctx;
+            startControl(ctx);
           }
           return fn(event, ctx);
         } catch {
@@ -439,6 +513,7 @@ export function createExtension(pi: HostApi, opts: Options = {}): Handle | undef
   on("model_select", (e) => {
     const id = e?.model?.id ?? e?.modelId;
     if (typeof id === "string") model = id;
+    if (e?.model && typeof e.model === "object") currentModel = e.model;
   });
 
   on("session_shutdown", async (e) => {
@@ -464,6 +539,12 @@ export function createExtension(pi: HostApi, opts: Options = {}): Handle | undef
     ensureWrapped,
     wrapperEnabled: () => wrapperOk,
   } as Handle;
+}
+
+/** `provider/id`, or the bare id when the model names no provider. */
+function modelKey(m: HostModel | null | undefined): string | undefined {
+  if (!m || typeof m.id !== "string" || !m.id) return undefined;
+  return typeof m.provider === "string" && m.provider ? `${m.provider}/${m.id}` : m.id;
 }
 
 function safe<T>(fn: () => T): T | undefined {
