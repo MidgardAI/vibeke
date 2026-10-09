@@ -74,7 +74,7 @@ fn default_keymap_fills_the_groups() {
             "tab",
             "workspace",
             "agents",
-            "hosts",
+            "connect",
             "session"
         ]
     );
@@ -86,7 +86,8 @@ fn default_keymap_fills_the_groups() {
     assert_eq!(item(&groups, "workspace", "N").label, "new workspace");
     assert_eq!(item(&groups, "workspace", "g").label, "goto anything");
     assert_eq!(item(&groups, "agents", "a").label, "next needing you");
-    assert_eq!(item(&groups, "hosts", "alt+d").label, "devices");
+    assert_eq!(item(&groups, "connect", "alt+d").label, "connections");
+    assert_eq!(item(&groups, "connect", "alt+v").label, "share pane");
     assert_eq!(item(&groups, "focus", "h").label, "focus left");
     assert_eq!(item(&groups, "text", "[").label, "copy mode");
     // Items follow the group table, not the alphabet of action names.
@@ -114,7 +115,7 @@ fn rebinds_unbinds_commands_and_sequences_show_up() {
     rebind(
         &mut app,
         &[
-            ("split_vertical", "prefix+alt+v"),
+            ("split_vertical", "prefix+alt+z"),
             ("zoom", ""),
             ("new_tab", "prefix+m w"),
             ("rename_tab", "prefix+m t"),
@@ -129,7 +130,7 @@ fn rebinds_unbinds_commands_and_sequences_show_up() {
     });
     app.keymap = Keymap::from_config(&app.config);
     let groups = build(&app, &[]);
-    assert_eq!(item(&groups, "pane", "alt+v").label, "split side by side");
+    assert_eq!(item(&groups, "pane", "alt+z").label, "split side by side");
     assert!(group(&groups, "pane").items.iter().all(|i| i.key != "z"));
     assert_eq!(item(&groups, "workspace", "ctrl+G").label, "goto anything");
     assert_eq!(item(&groups, "commands", "alt+t").label, "run the tests");
