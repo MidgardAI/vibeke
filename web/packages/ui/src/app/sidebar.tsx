@@ -23,13 +23,16 @@ import {
   Plus,
   Search,
   Settings,
+  SquareTerminal,
   X,
 } from 'lucide-react';
 import { Badge, HarnessIcon, IconButton, Kbd, RelTime, Row, SectionHeader, Sheet, SheetRow, StatusDot, cx, type Status } from '../components/ui';
 import { t } from '../i18n';
 import { UpdateSidebar } from '../components/updates';
 import { keyLabel } from '../lib/shortcuts';
+import type { PaneRow } from '../lib/tree';
 import type { WorkspaceGroupId, WorkspaceRow } from '../lib/workspaces';
+import { paneLabel, paneStatus } from '../screens/workspace/tab-strip';
 import { navigate, workspaceRoute, type Route } from '../router';
 import { useApprovalCount } from './approval-stores';
 import { useIncoming, useIncomingCount } from './handoff-stores';
@@ -78,6 +81,7 @@ export function Sidebar({ route, mode }: { route: Route; mode: 'inline' | 'drawe
   };
   const open = (r: WorkspaceRow) => go(workspaceRoute(r.host, r.workspace.id));
   const isActive = (r: WorkspaceRow) => route.name === 'workspace' && route.host === r.host && route.workspace === r.workspace.id;
+  const isPaneActive = (r: WorkspaceRow, p: PaneRow) => isActive(r) && route.name === 'workspace' && (route.pane ?? r.primary?.pane.id) === p.pane.id;
 
   const rowView = (r: WorkspaceRow) => {
     const status = rowStatus(r);
@@ -106,11 +110,11 @@ export function Sidebar({ route, mode }: { route: Route; mode: 'inline' | 'drawe
           {r.summary}
         </span>,
       );
-    return (
+    const row = (
       <Row
         key={r.key}
         data-nav-item={r.key}
-        active={isActive(r)}
+        active={isActive(r) && r.panes.length < 2}
         onClick={() => open(r)}
         onContextMenu={(e) => {
           e.preventDefault();
@@ -139,6 +143,30 @@ export function Sidebar({ route, mode }: { route: Route; mode: 'inline' | 'drawe
       >
         <span className={cx(r.unread || r.group === 'needs' ? 'font-medium text-fg' : '')}>{r.title}</span>
       </Row>
+    );
+    if (r.panes.length < 2) return row;
+    // Several panes: each one under its workspace, opening the workspace on that pane.
+    return (
+      <div key={r.key} className="space-y-px">
+        {row}
+        {r.panes.map((p) => {
+          const ps = paneStatus(p);
+          return (
+            <Row
+              key={p.key}
+              compact
+              depth={2}
+              active={isPaneActive(r, p)}
+              onClick={() => go(workspaceRoute(r.host, r.workspace.id, { pane: p.pane.id }))}
+              title={paneLabel(p)}
+              leading={p.run ? <HarnessIcon harness={p.run.harness} /> : <SquareTerminal className="size-3.5 text-muted" strokeWidth={1.75} />}
+              trailing={ps ? <StatusDot status={ps} /> : undefined}
+            >
+              <span className="truncate text-[13px] text-fg/80">{paneLabel(p)}</span>
+            </Row>
+          );
+        })}
+      </div>
     );
   };
 
