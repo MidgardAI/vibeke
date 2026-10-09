@@ -8,9 +8,9 @@
 //! (`ZIG_GLOBAL_CACHE_DIR`, default `~/.cache/zig`), so only the first build needs network.
 //!
 //! The built archive is also kept in a cache outside the target dir, keyed by a hash of the
-//! vendored tree, this script, the Zig version, the target and the optimize mode. Cargo reruns
-//! this script for every fresh target dir, profile wrapper (clippy) and CI run; the cache turns
-//! those reruns from a multi-minute Zig build into a file copy.
+//! vendored tree, this script, the Zig version (and the Apple SDK), the target and the optimize
+//! mode. Cargo reruns this script for every fresh target dir, profile wrapper (clippy) and CI
+//! run; the cache turns those reruns from a multi-minute Zig build into a file copy.
 //!
 //! Environment overrides: `ZIG` (zig binary), `LIBGHOSTTY_VT_OPTIMIZE` (default ReleaseFast),
 //! `VK_TERM_CACHE_DIR` (archive cache, default `$XDG_CACHE_HOME/vibeke/libghostty-vt` or
@@ -109,6 +109,20 @@ fn cache_entry(
     }
     let mut h = DefaultHasher::new();
     h.write(&version.stdout);
+    // On Apple targets Zig compiles against the SDK that `xcrun` selects.
+    if target.contains("apple") {
+        for var in ["DEVELOPER_DIR", "SDKROOT", "MACOSX_DEPLOYMENT_TARGET"] {
+            h.write(env::var(var).unwrap_or_default().as_bytes());
+            h.write_u8(0);
+        }
+        for flag in ["--show-sdk-path", "--show-sdk-build-version"] {
+            let sdk = Command::new("xcrun")
+                .args(["--sdk", "macosx", flag])
+                .output()
+                .ok()?;
+            h.write(&sdk.stdout);
+        }
+    }
     for input in inputs {
         h.write_u64(input.len() as u64);
         h.write(input);

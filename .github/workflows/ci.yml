@@ -38,7 +38,8 @@ jobs:
           rust=true
           web=false
           if base=$(git merge-base "$BASE" HEAD 2>/dev/null); then
-            files=$(git diff --name-only "$base" HEAD)
+            # --no-renames lists both sides of a move.
+            files=$(git diff --name-only --no-renames "$base" HEAD)
             rust=false
             for f in $files; do
               case $f in
