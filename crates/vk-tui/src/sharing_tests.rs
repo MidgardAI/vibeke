@@ -54,7 +54,7 @@ fn reply_msg(app: &mut App, mi: usize, req: u64, kind: &str, message: &str) {
 fn opened() -> (App, Vec<UnboundedReceiver<ClientFrame>>) {
     let (mut app, mut rxs) = fleet();
     commands(&mut rxs[0]);
-    app.action("sharing", None);
+    app.action("hosts", None);
     assert!(matches!(app.mode, Mode::Popup(Popup::Sharing)));
     let cmds = commands(&mut rxs[0]);
     let (preq, p) = gw(&cmds, "peer.list");
@@ -417,7 +417,7 @@ fn always_ask_toggles_through_handoff_prefs() {
 #[test]
 fn a_gateway_that_isnt_running_is_said_so() {
     let (mut app, mut rxs) = fleet();
-    app.action("sharing", None);
+    app.action("hosts", None);
     let cmds = commands(&mut rxs[0]);
     let (preq, _) = gw(&cmds, "peer.list");
     let (sreq, _) = gw(&cmds, "share.list");

@@ -4,7 +4,7 @@
 //! - **Devices** ([`crate::devices`]; `devices`, `pair_phone`): your own paired phones and apps.
 //! - **People** ([`crate::people`]; `people`, `share_pane`): colleagues you shared a pane or a
 //!   workspace with.
-//! - **Hosts** ([`crate::sharing`]; `sharing`): peers, invitations, pasting an invitation, the
+//! - **Hosts** ([`crate::sharing`]; `hosts`): peers, invitations, pasting an invitation, the
 //!   hosts holding access to this one.
 //! - **Handoffs** ([`crate::handoff`]; `handoffs`, `prefix+shift+h`): incoming handoffs and the
 //!   ones being sent.
@@ -71,7 +71,7 @@ pub fn open_tab(app: &mut App, tab: Tab, mi: usize) {
     }
 }
 
-/// The actions that open a tab (old names included, so bindings and habits keep working).
+/// The actions that open a tab.
 pub fn action(app: &mut App, action: &str) -> bool {
     let mi = app.cur;
     match action {
@@ -80,7 +80,7 @@ pub fn action(app: &mut App, action: &str) -> bool {
             open_tab(app, tab, mi);
         }
         "devices" => open_tab(app, Tab::Devices, mi),
-        "pair_phone" | "phone_pairing" => {
+        "pair_phone" => {
             app.ux.connections.last = Tab::Devices;
             app.ux.connections.mi = mi;
             crate::devices::open_on(app, mi, crate::devices::Stage::PickScope { sel: 0 });
@@ -95,8 +95,8 @@ pub fn action(app: &mut App, action: &str) -> bool {
             }
             None => app.toast("no focused pane"),
         },
-        "sharing" | "sharing_and_handoff" | "invitations" => open_tab(app, Tab::Hosts, mi),
-        "handoffs" | "incoming_handoffs" => open_tab(app, Tab::Handoffs, mi),
+        "hosts" => open_tab(app, Tab::Hosts, mi),
+        "handoffs" => open_tab(app, Tab::Handoffs, mi),
         _ => return false,
     }
     true

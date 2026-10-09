@@ -105,7 +105,7 @@ fn leaving_devices_while_a_link_is_up_cancels_it() {
 fn text_fields_keep_tab() {
     let (mut app, _rxs) = fleet();
     // The Hosts paste field: tab moves inside the form.
-    app.action("sharing", None);
+    app.action("hosts", None);
     app.on_key(ch('p'));
     app.on_key(named(NamedKey::Tab));
     assert_eq!(showing(&app), Some(Tab::Hosts));
@@ -138,7 +138,7 @@ fn the_actions_open_their_tabs() {
     let (mut app, _rxs) = fleet();
     for (action, tab) in [
         ("devices", Tab::Devices),
-        ("sharing", Tab::Hosts),
+        ("hosts", Tab::Hosts),
         ("handoffs", Tab::Handoffs),
         ("people", Tab::People),
         ("pair_phone", Tab::Devices),

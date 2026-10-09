@@ -807,7 +807,7 @@ fn bindings_open_the_handoff_views() {
     assert!(matches!(app.mode, Mode::Popup(Popup::HandoffSend)));
     only(&commands(&mut rxs[0]), "handoff.peers");
     app.on_key(named(NamedKey::Escape));
-    app.action("sharing", None);
+    app.action("hosts", None);
     assert!(matches!(app.mode, Mode::Popup(Popup::Sharing)));
 }
 

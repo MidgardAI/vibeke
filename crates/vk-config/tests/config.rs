@@ -125,22 +125,6 @@ mode = "proxy"
 }
 
 #[test]
-fn the_old_devices_binding_binds_connections() {
-    // A config written before the Connections view still parses, without warnings or conflicts.
-    let (c, w) = parse("[keys]\ndevices = \"prefix+alt+d\"\n").unwrap();
-    assert_eq!(w, vec![]);
-    assert_eq!(c.keys.bindings["connections"], "prefix+alt+d");
-    assert!(!c.keys.bindings.contains_key("devices"));
-    assert_eq!(check_keys(&c), vec![]);
-    let (c, _) = parse("[keys]\ndevices = \"prefix+alt+x\"\n").unwrap();
-    assert_eq!(c.keys.bindings["connections"], "prefix+alt+x");
-    // An explicit `connections` wins.
-    let (c, _) =
-        parse("[keys]\ndevices = \"prefix+alt+x\"\nconnections = \"prefix+alt+y\"\n").unwrap();
-    assert_eq!(c.keys.bindings["connections"], "prefix+alt+y");
-}
-
-#[test]
 fn unknown_keys_warn_with_dotted_path_and_line() {
     let src = "[ui]\nbogus = 1\n[ui.sidebar]\nwidth = 30\nnope = true\n[wat]\nx = 1\n[[policy.rule]]\nmatch = { tool = \"Bash\", extra = 1 }\neffect = \"deny\"\nzzz = 1\n[keys]\nnot_an_action = \"prefix+q\"\n";
     let (c, w) = parse(src).unwrap();

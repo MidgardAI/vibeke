@@ -1,5 +1,5 @@
 //! Hosts in the TUI (16 §15.3–§15.5): the Hosts tab of the Connections view
-//! ([`crate::connections`]; `sharing` in the palette, unbound by default) over one machine's
+//! ([`crate::connections`]; `hosts` in the palette, unbound by default) over one machine's
 //! gateway, reached through that machine's server with `gateway.call` (the TUI talks to
 //! vk-server only; `peer.*` and `share.*` live in the gateway). Four sections, j/k moving
 //! through all of them:

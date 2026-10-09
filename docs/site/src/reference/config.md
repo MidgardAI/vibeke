@@ -150,7 +150,7 @@ Vibeke reloads the file after a change. If parsing fails, it keeps the previous 
 # connections              = "prefix+alt+d"   # Connections: devices, people, hosts, handoffs (opens the last tab used)
 # handoffs                 = "prefix+shift+h" # Connections → Handoffs: incoming handoffs and the ones being sent
 # handoff_send             = "prefix+alt+h"   # hand off the focused pane to another host
-# sharing                  = ""               # Connections → Hosts: peers, invitations, paste an invitation
+# hosts                    = ""               # Connections → Hosts: peers, invitations, paste an invitation
 # share_pane               = "prefix+alt+v"   # share the focused pane or its workspace with someone (view or approve)
 
 # [keys.copy_mode]

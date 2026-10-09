@@ -10,7 +10,7 @@
 //! 2. **Pick scope**: full (default), approve or view. Enter asks `account.status` first: a relay
 //!    that needs an account nobody has signed in to goes through **Sign in**, anything else (an
 //!    open relay, an older gateway without the method) creates the link (`pair.create`).
-//!    `pair_phone` / `phone_pairing` open the view here.
+//!    `pair_phone` opens the view here.
 //! 3. **Pairing**: the link with a QR code, the scope and a countdown to when the link stops
 //!    working. `pair.status` is polled about once a second (one request in flight): the phone
 //!    claims the link (its fingerprint shows here and in the confirm prompt), then the pairing

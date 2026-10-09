@@ -649,7 +649,7 @@ pub const ACTION_INFO: &[(&str, &str)] = &[
         "Handoff details: where this imported pane came from (retry resume)",
     ),
     (
-        "sharing",
+        "hosts",
         "Hosts: peers, invitations, paste an invitation, hosts holding access",
     ),
     (
