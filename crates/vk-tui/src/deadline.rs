@@ -224,7 +224,10 @@ mod tests {
             let at = app.deadlines(now).get("ages").expect("ages armed");
             assert!(at > now && at <= now + Duration::from_secs(1));
         }
-        app.mode = Mode::Popup(Popup::Help);
+        app.mode = Mode::Popup(Popup::Message {
+            title: "t".into(),
+            body: String::new(),
+        });
         assert!(app.deadlines(Instant::now()).is_empty());
     }
 
@@ -258,8 +261,13 @@ mod tests {
     fn prefix_mode_arms_its_timeout() {
         let (mut app, _rxs) = idle_app();
         app.keymap.prefix_timeout_ms = 20;
+        app.keymap.menu_ms = None;
         let at = Instant::now();
-        app.mode = Mode::Prefix(at);
+        app.mode = Mode::Prefix(crate::app::PrefixState {
+            since: at,
+            seq: vec![],
+            menu: false,
+        });
         let d = app.deadlines(at);
         assert_eq!(d.names(), vec!["prefix"]);
         assert_eq!(d.get("prefix"), Some(at + Duration::from_millis(20)));

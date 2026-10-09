@@ -21,6 +21,9 @@ pub struct Keymap {
     pub prefix: KeyEvent,
     pub bindings: Vec<Bound>,
     pub prefix_timeout_ms: u64,
+    /// `keys.prefix_menu_ms` while `keys.prefix_menu` is on: the prefix menu appears this long
+    /// after the prefix without a second key. `None` never shows it on its own.
+    pub menu_ms: Option<u64>,
     pub passthrough: bool,
     /// `keys.altgr_mode`: AltGr text keys are text (`text`, `auto`) or chords (`chord`).
     pub altgr_text: bool,
@@ -73,6 +76,10 @@ impl Keymap {
             prefix,
             bindings,
             prefix_timeout_ms: cfg.keys.prefix_timeout_ms as u64,
+            menu_ms: cfg
+                .keys
+                .prefix_menu
+                .then_some(cfg.keys.prefix_menu_ms as u64),
             passthrough: cfg.keys.prefix_passthrough,
             altgr_text: cfg.keys.altgr_mode != vk_config::AltgrMode::Chord,
         };
@@ -167,9 +174,60 @@ impl Keymap {
 
     /// Binding for the chord following the prefix.
     pub fn prefixed(&self, ev: &KeyEvent) -> Option<&Bound> {
-        self.bindings
-            .iter()
-            .find(|b| b.prefix && b.chords.len() == 1 && key_matches(&b.chords[0], ev))
+        match self.resolve(&[], ev) {
+            Resolve::Exact(b) => Some(b),
+            _ => None,
+        }
+    }
+
+    /// Resolve the next chord `ev` after the prefix and the chords `seq` already pressed. A
+    /// binding of exactly `seq + ev` runs (first match wins, so an exact binding beats a
+    /// sequence it shadows); a longer sequence through `seq + ev` opens a submenu.
+    pub fn resolve(&self, seq: &[KeyEvent], ev: &KeyEvent) -> Resolve<'_> {
+        let mut deeper = false;
+        for b in self.bindings.iter().filter(|b| b.prefix) {
+            if b.chords.len() <= seq.len() || !starts_with(&b.chords, seq) {
+                continue;
+            }
+            if !key_matches(&b.chords[seq.len()], ev) {
+                continue;
+            }
+            if b.chords.len() == seq.len() + 1 {
+                return Resolve::Exact(b);
+            }
+            deeper = true;
+        }
+        if deeper {
+            Resolve::Descend
+        } else {
+            Resolve::None
+        }
+    }
+
+    /// The next chord of every prefix binding under `seq`, in binding order, one entry per
+    /// distinct chord: the binding it runs, or the number of bindings behind a submenu.
+    pub fn level(&self, seq: &[KeyEvent]) -> Vec<(KeyEvent, LevelEntry<'_>)> {
+        let mut out: Vec<(KeyEvent, LevelEntry<'_>)> = Vec::new();
+        for b in self.bindings.iter().filter(|b| b.prefix) {
+            if b.chords.len() <= seq.len() || !starts_with(&b.chords, seq) {
+                continue;
+            }
+            let next = &b.chords[seq.len()];
+            let exact = b.chords.len() == seq.len() + 1;
+            match out.iter_mut().find(|(k, _)| key_matches(k, next)) {
+                Some((_, LevelEntry::Submenu(n))) if !exact => *n += 1,
+                Some(_) => {}
+                None => out.push((
+                    next.clone(),
+                    if exact {
+                        LevelEntry::Action(b)
+                    } else {
+                        LevelEntry::Submenu(1)
+                    },
+                )),
+            }
+        }
+        out
     }
 
     /// Direct (non-prefix) binding.
@@ -196,6 +254,29 @@ impl Keymap {
                 )
             })
     }
+}
+
+/// Outcome of a chord after the prefix (see `Keymap::resolve`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Resolve<'a> {
+    Exact(&'a Bound),
+    Descend,
+    None,
+}
+
+/// One entry of a prefix-menu level (see `Keymap::level`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LevelEntry<'a> {
+    Action(&'a Bound),
+    Submenu(usize),
+}
+
+fn starts_with(chords: &[KeyEvent], seq: &[KeyEvent]) -> bool {
+    chords.len() >= seq.len()
+        && chords
+            .iter()
+            .zip(seq.iter())
+            .all(|(c, s)| key_matches(c, s))
 }
 
 /// The binding spec names the `altgr` modifier.
@@ -420,6 +501,38 @@ mod tests {
         assert_eq!(km.altgr(alt_x.clone()), alt_x);
         let plain = KeyEvent::new(Key::Char('q'), Mods::CTRL | Mods::ALT);
         assert_eq!(km.altgr(plain.clone()), plain);
+    }
+
+    #[test]
+    fn sequences_descend_and_resolve() {
+        let km = with_keys(&[("new_tab", "prefix+m w"), ("zoom", "prefix+m t")], "auto");
+        let m = KeyEvent::ch('m');
+        assert_eq!(km.resolve(&[], &m), Resolve::Descend);
+        assert!(km.prefixed(&m).is_none());
+        match km.resolve(&[m.clone()], &KeyEvent::ch('w')) {
+            Resolve::Exact(b) => assert_eq!(b.action, "new_tab"),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(km.resolve(&[m.clone()], &KeyEvent::ch('q')), Resolve::None);
+        assert_eq!(km.resolve(&[], &KeyEvent::ch('~')), Resolve::None);
+        // The level under `m` lists both; the top level shows one submenu of two.
+        let level = km.level(&[m.clone()]);
+        assert_eq!(level.len(), 2);
+        assert!(matches!(level[0].1, LevelEntry::Action(b) if b.action == "new_tab"));
+        let top = km.level(&[]);
+        let (_, entry) = top.iter().find(|(k, _)| key_matches(k, &m)).unwrap();
+        assert_eq!(*entry, LevelEntry::Submenu(2));
+        // An exact binding beats a sequence it shadows (config check reports the clash).
+        let km = with_keys(&[("new_tab", "prefix+c"), ("zoom", "prefix+c t")], "auto");
+        assert!(matches!(
+            km.resolve(&[], &KeyEvent::ch('c')),
+            Resolve::Exact(_)
+        ));
+        // Disabled menu: no delay.
+        let mut cfg = vk_config::Config::default();
+        assert_eq!(Keymap::from_config(&cfg).menu_ms, Some(400));
+        cfg.keys.prefix_menu = false;
+        assert_eq!(Keymap::from_config(&cfg).menu_ms, None);
     }
 
     #[test]

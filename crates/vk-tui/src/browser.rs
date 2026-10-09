@@ -2387,7 +2387,10 @@ mod tests {
                 .any(|f| matches!(f, ClientFrame::MediaAck { seq: 1, .. }))
         );
         // A popup over the pane clips the image: its cells are no longer placeholders.
-        app.mode = Mode::Popup(crate::app::Popup::Help);
+        app.mode = Mode::Popup(crate::app::Popup::Message {
+            title: "t".into(),
+            body: String::new(),
+        });
         let mut g2 = Grid::new(121, 25);
         crate::draw::compose(&app, &mut g2);
         let covered = (0..121u16)

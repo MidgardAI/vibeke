@@ -329,6 +329,7 @@ range     := "1..9"   (indexed bindings: switch_tab = "prefix+1..9")
 - `"prefix+n"` requires the prefix. A chord without `prefix+` is a **direct** binding active in terminal mode and is consumed before the pane sees it. Direct bindings warn at config load if they shadow common app keys (`ctrl+c`, `ctrl+d`, `ctrl+r`, `esc`).
 - Matching uses the base-layout key (03 §7.1), so bindings are layout-independent. `cmd`/`super` bindings need a host that reports them (kitty keyboard); config load warns otherwise.
 - Prefix behaviour: `keys.prefix_timeout_ms = 1500`; pressing the prefix twice sends the prefix key to the pane (tmux-like, `keys.prefix_passthrough = true`).
+- A sequence (`"prefix+m w"`) opens a submenu after its first chord: the next chord picks the binding, Esc goes up one level. An exact binding on the same chord wins (`vibeke keys check` reports the shadowing).
 - Empty string `""` unbinds. `vibeke keys list` prints the effective keymap; `vibeke keys check` reports conflicts.
 
 ### 10.2 Default keymap
@@ -398,6 +399,9 @@ Mode-local keymaps: `[keys.navigate]`, `[keys.copy_mode]`, `[keys.resize]`, `[ke
 ### 10.3 Custom commands
 `[[keys.command]]` (`type = "shell" | "pane" | "popup" | "plugin_action"`, `width`/`height`, `description`) plus ✚ `type = "float"` (persistent floating pane), ✚ `cwd = "pane" | "workspace" | path`, ✚ `env`, ✚ `title`, and ✚ `when = "agent:claude"` (only active when the focused pane runs that harness). *As built (M5 slice 3):* `type = "plugin_action"` with `command = "<plugin>.<action>"` runs the plugin action in the focused context (`plugin.action.run {action, pane, source: keybinding}`); its `description` (else `title`) labels the toast and the palette entry, which shows the binding. Plugin manifests' own `[[keys.command]]` defaults are installed while the plugin is trusted and enabled (the server lists them with conflicts already resolved: a key that duplicates or shadows any user, default or earlier-plugin binding is skipped and reported in `plugin.list`; user keys win), and removed when it is disabled or unlinked; the action-context rule also applies to key bindings (a binding fired where the action does not apply toasts `not available here`). A plugin's `agent.view.set` line shows after the run's state in the sidebar row and in the peek.
 
+### 10.4 Prefix menu
+After the prefix, with no second key for `keys.prefix_menu_ms` (default 400; 0 at once; `keys.prefix_menu = false` never), the client draws the **prefix menu** above the status bar: every prefix binding of the current level in groups (pane, tab, workspace, agents, session, then `[[keys.command]]` and repo commands, plugin actions, other; a browser pane's own table first while one is focused). Keys show in display form (`N` for `shift+n`, `1‥9` for a range), sequences and resize mode as `key ▸`. Once up, the menu never times out: a key runs its binding or descends into its submenu, Esc closes it (one level up inside a submenu). `help` (`prefix+?`) opens it at once. Resize mode draws the same way as a sticky level (keys repeat; Esc leaves). The `prefix_timeout_ms` expiry applies only before the menu appears. Mode badge: `PREFIX`, then `PREFIX g` inside a sequence.
+
 ## 11. `config.toml` schema
 
 **This section is the single canonical configuration reference.** Other sections describe behaviour and may show excerpts; key names here win. CI generates this block from the Rust config types and fails if any section's excerpt uses a key not in the schema.
@@ -454,6 +458,8 @@ inbox_retention  = "14d"
 prefix             = "ctrl+b"
 prefix_timeout_ms  = 1500
 prefix_passthrough = true
+prefix_menu        = true             # §10.4: every prefix key in groups after the prefix (prefix+? at once)
+prefix_menu_ms     = 400              # wait for a second key this long first; 0 shows it immediately
 altgr_mode         = "auto"           # auto | text | chord (auto = text: AltGr keys type their character, 03 §7.1)
 shift_enter_legacy = "lf"             # lf | cr (lf: newline in agent TUIs without kitty keys)
 # … action = "binding" entries as in §10.2

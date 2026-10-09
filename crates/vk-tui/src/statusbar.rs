@@ -343,8 +343,8 @@ pub fn segment(app: &App, id: &str, d: &Value) -> (String, Style) {
             None => (String::new(), t.dim()),
         },
         "clock" => (clock(now_ms()), t.text()),
-        "prefix_indicator" => match app.mode {
-            Mode::Prefix(_) => ("PREFIX".into(), t.rev()),
+        "prefix_indicator" => match &app.mode {
+            Mode::Prefix(p) => (crate::draw::prefix_badge(p), t.rev()),
             _ => (String::new(), t.text()),
         },
         "mode" => {

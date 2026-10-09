@@ -263,6 +263,10 @@ pub struct Keys {
     pub prefix: String,
     pub prefix_timeout_ms: u32,
     pub prefix_passthrough: bool,
+    /// Show the prefix menu (every prefix key in groups) after `prefix_menu_ms` without a
+    /// second key. Once shown it stays until Esc or a key.
+    pub prefix_menu: bool,
+    pub prefix_menu_ms: u32,
     pub altgr_mode: AltgrMode,
     pub shift_enter_legacy: ShiftEnterLegacy,
     pub copy_mode: CopyMode,
@@ -284,6 +288,8 @@ impl Default for Keys {
             prefix: s("ctrl+b"),
             prefix_timeout_ms: 1500,
             prefix_passthrough: true,
+            prefix_menu: true,
+            prefix_menu_ms: 400,
             altgr_mode: AltgrMode::Auto,
             shift_enter_legacy: ShiftEnterLegacy::Lf,
             copy_mode: CopyMode::default(),

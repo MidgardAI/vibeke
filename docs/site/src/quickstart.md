@@ -35,12 +35,13 @@ The sidebar shows agent state when an integration or terminal detection is avail
 
 ## Find your way around
 
-Press **Ctrl+B**, release both keys, then press the key in this table:
+Press **Ctrl+B**, release both keys, then press the key in this table.
+Wait a moment instead, and a menu shows every key.
 
 | Key | Action |
 | --- | --- |
 | `:` | Open the command palette. Type an action name and press Enter. |
-| `?` | Show key help. |
+| `?` | Show every key in a menu. |
 | `v` | Split the pane side by side. |
 | `c` | Create a tab. |
 | `w` | Navigate workspaces in the sidebar. |

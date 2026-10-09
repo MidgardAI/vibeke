@@ -226,7 +226,6 @@ pub struct Prompt {
 
 #[derive(Debug, Clone)]
 pub enum Popup {
-    Help,
     /// Goto list (`prefix+g`): filter text + selection.
     Goto {
         filter: String,
@@ -366,10 +365,51 @@ pub enum Action {
     },
 }
 
+/// The prefix is armed (08 §10.4): chords pressed after it so far and whether the prefix
+/// menu is up. Without the menu the prefix times out; with it, only Esc or a key ends it.
+#[derive(Debug, Clone)]
+pub struct PrefixState {
+    /// When the prefix was pressed, or the last chord of `seq`.
+    pub since: Instant,
+    /// Chords after the prefix (empty at the top level).
+    pub seq: Vec<KeyEvent>,
+    /// The menu is drawn; no timeout.
+    pub menu: bool,
+}
+
+impl PrefixState {
+    /// Just pressed: the menu follows after `keys.prefix_menu_ms` (at once for 0).
+    pub fn armed(km: &Keymap) -> Self {
+        PrefixState {
+            since: Instant::now(),
+            seq: Vec::new(),
+            menu: km.menu_ms == Some(0),
+        }
+    }
+
+    /// Opened on purpose (`help`): the menu is up from the start.
+    pub fn menu() -> Self {
+        PrefixState {
+            since: Instant::now(),
+            seq: Vec::new(),
+            menu: true,
+        }
+    }
+
+    /// The chords so far for badges: `g w`.
+    pub fn seq_text(&self) -> String {
+        self.seq
+            .iter()
+            .map(vk_term::keygrammar::display_key)
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Mode {
     Normal,
-    Prefix(Instant),
+    Prefix(PrefixState),
     Navigate { sel: usize },
     Resize,
     Copy(Box<CopyMode>),
@@ -1728,11 +1768,23 @@ impl App {
         if self.toasts.len() != before {
             self.dirty = true;
         }
-        if let Mode::Prefix(at) = self.mode
-            && at.elapsed() > Duration::from_millis(self.keymap.prefix_timeout_ms)
+        if let Mode::Prefix(p) = &self.mode
+            && !p.menu
         {
-            self.mode = Mode::Normal;
-            self.dirty = true;
+            let elapsed = p.since.elapsed();
+            let show = self
+                .keymap
+                .menu_ms
+                .is_some_and(|ms| elapsed >= Duration::from_millis(ms));
+            if show {
+                if let Mode::Prefix(p) = &mut self.mode {
+                    p.menu = true;
+                }
+                self.dirty = true;
+            } else if elapsed > Duration::from_millis(self.keymap.prefix_timeout_ms) {
+                self.mode = Mode::Normal;
+                self.dirty = true;
+            }
         }
         crate::inbox::tick(self);
         crate::tasks::tick(self);
@@ -1761,10 +1813,16 @@ impl App {
         if let Some(t) = self.toasts.iter().map(|t| t.until).min() {
             d.at("toast", t);
         }
-        if let Mode::Prefix(at) = self.mode {
+        // The menu, once up, waits for a key (no timeout).
+        if let Mode::Prefix(p) = &self.mode
+            && !p.menu
+        {
+            if let Some(ms) = self.keymap.menu_ms {
+                d.at("prefix.menu", p.since + Duration::from_millis(ms));
+            }
             d.at(
                 "prefix",
-                at + Duration::from_millis(self.keymap.prefix_timeout_ms),
+                p.since + Duration::from_millis(self.keymap.prefix_timeout_ms),
             );
         }
         crate::draw::deadlines(self, now, &mut d);
@@ -1872,7 +1930,7 @@ impl App {
                     return;
                 }
                 if self.keymap.is_prefix(&ev) {
-                    self.mode = Mode::Prefix(Instant::now());
+                    self.mode = Mode::Prefix(PrefixState::armed(&self.keymap));
                     return;
                 }
                 // A plugin popup is modal: its terminal gets every key (08 §5).
@@ -1895,12 +1953,8 @@ impl App {
                 }
                 self.send_key(ev);
             }
-            Mode::Prefix(_) => {
-                if ev.kind == KeyKind::Release {
-                    self.mode = Mode::Prefix(Instant::now());
-                    return;
-                }
-                if matches!(
+            Mode::Prefix(mut p) => {
+                let bare_modifier = matches!(
                     ev.key,
                     Key::Named(
                         NamedKey::LeftShift
@@ -1912,23 +1966,50 @@ impl App {
                             | NamedKey::LeftSuper
                             | NamedKey::RightSuper
                     )
-                ) {
-                    self.mode = Mode::Prefix(Instant::now());
+                );
+                if ev.kind == KeyKind::Release || bare_modifier {
+                    if !p.menu {
+                        p.since = Instant::now();
+                    }
+                    self.mode = Mode::Prefix(p);
                     return;
                 }
-                if self.keymap.is_prefix(&ev) && self.keymap.passthrough {
+                if p.seq.is_empty() && self.keymap.is_prefix(&ev) && self.keymap.passthrough {
                     self.send_key(ev);
                     return;
                 }
-                if crate::plugins::prefix_key(self, &ev) || crate::browser::prefix_key(self, &ev) {
-                } else if let Some(b) = self.keymap.prefixed(&ev).cloned() {
-                    self.action(&b.action, b.index);
-                } else if matches!(ev.key, Key::Named(NamedKey::Escape)) {
-                } else {
-                    self.toast(format!(
-                        "no binding for prefix+{}",
-                        vk_term::keygrammar::format_key(&ev)
-                    ));
+                if matches!(ev.key, Key::Named(NamedKey::Escape)) {
+                    // Inside a submenu Esc goes up one level; at the top it closes.
+                    if p.seq.pop().is_some() {
+                        self.mode = Mode::Prefix(p);
+                    }
+                    return;
+                }
+                if p.seq.is_empty()
+                    && (crate::plugins::prefix_key(self, &ev)
+                        || crate::browser::prefix_key(self, &ev))
+                {
+                    return;
+                }
+                let resolved = match self.keymap.resolve(&p.seq, &ev) {
+                    keymap::Resolve::Exact(b) => Ok(b.clone()),
+                    keymap::Resolve::Descend => Err(true),
+                    keymap::Resolve::None => Err(false),
+                };
+                match resolved {
+                    Ok(b) => self.action(&b.action, b.index),
+                    Err(true) => {
+                        p.seq.push(ev);
+                        p.menu = true;
+                        p.since = Instant::now();
+                        self.mode = Mode::Prefix(p);
+                    }
+                    Err(false) => {
+                        let mut seq: Vec<String> =
+                            p.seq.iter().map(vk_term::keygrammar::format_key).collect();
+                        seq.push(vk_term::keygrammar::format_key(&ev));
+                        self.toast(format!("no binding for prefix+{}", seq.join(" ")));
+                    }
                 }
             }
             Mode::Navigate { sel } => self.navigate_key(ev, sel),
@@ -2169,7 +2250,7 @@ impl App {
         let tab = self.focused_tab();
         let ws = self.focused_ws();
         match action {
-            "help" => self.mode = Mode::Popup(Popup::Help),
+            "help" => self.mode = Mode::Prefix(PrefixState::menu()),
             "detach" => self.quit = Some("detached".into()),
             "cancel_transfer" => crate::upload::cancel_all(self),
             "review_clipboard" => self.review_clipboard(),
@@ -3130,9 +3211,12 @@ mod clipboard_tests {
         assert!(matches!(app.mode, Mode::Resize));
         assert_eq!(app.clip.pending.len(), 1);
         assert_eq!(sink(&app), 0);
-        app.mode = Mode::Popup(Popup::Help);
+        app.mode = Mode::Popup(Popup::Message {
+            title: "t".into(),
+            body: String::new(),
+        });
         app.on_clipboard(1, "p2".into(), false, b"again".to_vec());
-        assert!(matches!(app.mode, Mode::Popup(Popup::Help)));
+        assert!(matches!(app.mode, Mode::Popup(Popup::Message { .. })));
         assert_eq!(sink(&app), 0);
     }
 

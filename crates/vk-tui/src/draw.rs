@@ -880,12 +880,21 @@ pub fn compose(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
     cursor
 }
 
+/// `PREFIX`, or `PREFIX g` inside a key sequence.
+pub(crate) fn prefix_badge(p: &crate::app::PrefixState) -> String {
+    if p.seq.is_empty() {
+        "PREFIX".into()
+    } else {
+        format!("PREFIX {}", p.seq_text())
+    }
+}
+
 /// The right side of the tab bar: mode, toasts, connection, notices.
 fn right_cluster(app: &App) -> Vec<(String, Style)> {
     let t = app.theme;
     let mut right: Vec<(String, Style)> = Vec::new();
     match &app.mode {
-        Mode::Prefix(_) => right.push((" PREFIX ".into(), t.rev())),
+        Mode::Prefix(p) => right.push((format!(" {} ", prefix_badge(p)), t.rev())),
         Mode::Copy(_) => right.push((" COPY ".into(), t.rev())),
         Mode::Navigate { .. } => match &app.ux.nav.filter {
             Some(f) => right.push((

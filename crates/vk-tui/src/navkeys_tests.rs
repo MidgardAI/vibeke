@@ -128,7 +128,6 @@ fn palette_actions_ask_for_their_argument() {
     assert_eq!(p["command"], json!(["/bin/sh", "-c", "htop"]));
     assert_eq!(parse_size("0.25"), Some(0.25));
     assert_eq!(parse_size("100%"), None);
-    let _ = Popup::Help;
 }
 
 #[test]

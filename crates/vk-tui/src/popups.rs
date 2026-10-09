@@ -18,6 +18,19 @@ impl BoxDraw<'_> {
     pub(crate) fn width(&self) -> u16 {
         self.r.w
     }
+    /// Write at column `dx` of the current row without advancing; `next` moves on.
+    pub(crate) fn put(&mut self, dx: u16, s: &str, st: Style) {
+        if self.y + 1 >= self.r.y + self.r.h {
+            return;
+        }
+        let max = self.r.w.saturating_sub(4).saturating_sub(dx);
+        if max > 0 {
+            self.g.put_str(self.r.x + 2 + dx, self.y, s, st, max);
+        }
+    }
+    pub(crate) fn next(&mut self) {
+        self.y += 1;
+    }
     pub(crate) fn line(&mut self, s: &str, st: Style) {
         if self.y + 1 >= self.r.y + self.r.h {
             return;
@@ -34,6 +47,12 @@ pub(crate) fn frame<'a>(app: &App, g: &'a mut Grid, w: u16, h: u16, title: &str)
     let h = h.min(area.h.saturating_sub(1)).max(5);
     let x = area.x + (area.w.saturating_sub(w)) / 2;
     let y = area.y + (area.h.saturating_sub(h)) / 3;
+    frame_at(app, g, SRect { x, y, w, h }, title)
+}
+
+/// A bordered, titled box at `r` (the caller keeps it inside the pane area).
+pub(crate) fn frame_at<'a>(app: &App, g: &'a mut Grid, r: SRect, title: &str) -> BoxDraw<'a> {
+    let SRect { x, y, w, h } = r;
     let t = app.theme;
     let st = t.text();
     g.fill(SRect { x, y, w, h }, st);
@@ -94,7 +113,7 @@ fn find_interaction(app: &App, id: &str) -> Option<(usize, Interaction)> {
 pub fn key(app: &mut App, ev: KeyEvent, p: Popup) {
     let esc = matches!(ev.key, Key::Named(NamedKey::Escape));
     match p {
-        Popup::Help | Popup::Message { .. } => {}
+        Popup::Message { .. } => {}
         Popup::Confirm { action, message } => match ev.key {
             Key::Char('y' | 'Y') | Key::Named(NamedKey::Enter) => app.confirm(*action),
             Key::Char('n' | 'N') | Key::Named(NamedKey::Escape) => {}
@@ -357,62 +376,6 @@ pub fn draw(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
             ));
         }
         Mode::Popup(p) => match p {
-            Popup::Help => {
-                let mut b = frame(app, g, 72, 32, "help · esc to close");
-                let km = &app.keymap;
-                for (action, label) in [
-                    ("split_vertical", "split side by side"),
-                    ("split_horizontal", "split stacked"),
-                    ("close_pane", "close pane"),
-                    ("zoom", "zoom pane"),
-                    ("focus_pane_left", "focus left (h j k l)"),
-                    ("new_tab", "new tab"),
-                    ("next_tab", "next tab (p previous, 1..9 jump)"),
-                    ("rename_tab", "rename tab"),
-                    ("new_workspace", "new workspace"),
-                    (
-                        "workspace_picker",
-                        "navigate sidebar (space peek, a answer)",
-                    ),
-                    ("goto", "goto anything"),
-                    (
-                        "command_palette",
-                        "command palette (every action, searchable)",
-                    ),
-                    ("last_workspace", "back to the last workspace"),
-                    ("url_hints", "label URLs/IDs in the pane: open or copy"),
-                    ("next_attention", "next agent that needs you"),
-                    ("agent_list", "every agent on every machine, by attention"),
-                    (
-                        "connections",
-                        "connections: devices, people, hosts, handoffs",
-                    ),
-                    ("share_pane", "share this pane or workspace with someone"),
-                    ("enter_copy_mode", "copy mode (/ search, v select, y yank)"),
-                    ("resize_mode", "resize mode"),
-                    ("toggle_sidebar", "toggle sidebar"),
-                    ("mark_unread", "mark unread"),
-                    ("new_task", "new task (git worktree)"),
-                    ("reload_config", "reload config"),
-                    ("detach", "detach"),
-                ] {
-                    let k = km.binding_for(action).unwrap_or_else(|| "—".into());
-                    b.line(&format!("{k:<18} {label}"), t.text());
-                }
-                b.line(
-                    "prefix+i           inbox (f 5-minute view, s snooze, e effort)",
-                    t.text(),
-                );
-                b.line(
-                    "peek t             track this work / task details",
-                    t.text(),
-                );
-                b.line(":track_work :task_details :pending_operations", t.text());
-                b.line(
-                    ":desk :drafts :notes :screenshots :screenshot_pane :assist_briefing",
-                    t.text(),
-                );
-            }
             Popup::Message { title, body } => {
                 let mut b = frame(app, g, 70, 12, title);
                 for l in body.lines() {
@@ -706,6 +669,8 @@ pub fn draw(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
                 b.line(&keys, t.dim());
             }
         },
+        Mode::Prefix(p) if p.menu => crate::menu::draw(app, g),
+        Mode::Resize => crate::menu::draw_resize(app, g),
         _ => {}
     }
     None

@@ -272,6 +272,54 @@ pub fn format_key(ev: &KeyEvent) -> String {
     out
 }
 
+/// Short display form for menus and badges: `shift+n` → `N`, `minus` → `-`, `shift+tab` →
+/// `shift+tab`, arrows as `← ↓ ↑ →`, `escape` → `esc`. Not parseable; use `format_key` for
+/// config text.
+pub fn display_key(ev: &KeyEvent) -> String {
+    let mut mods = ev.mods;
+    if mods.contains(Mods::META) {
+        mods = mods.without(Mods::META) | Mods::ALT;
+    }
+    let key = match ev.key {
+        Key::Char(' ') => "space".to_string(),
+        Key::Char(c) if c.is_alphabetic() => {
+            let shifted = mods.contains(Mods::SHIFT) || c.is_uppercase();
+            mods = mods.without(Mods::SHIFT);
+            if shifted {
+                c.to_uppercase().to_string()
+            } else {
+                c.to_lowercase().to_string()
+            }
+        }
+        Key::Char(c) => {
+            // Punctuation arrives shifted on some hosts; the character already says so.
+            mods = mods.without(Mods::SHIFT);
+            c.to_string()
+        }
+        Key::Named(NamedKey::Escape) => "esc".into(),
+        Key::Named(NamedKey::Up) => "↑".into(),
+        Key::Named(NamedKey::Down) => "↓".into(),
+        Key::Named(NamedKey::Left) => "←".into(),
+        Key::Named(NamedKey::Right) => "→".into(),
+        Key::Named(n) => named_str(n),
+    };
+    let mut out = String::new();
+    for (bit, name) in [
+        (Mods::CTRL, "ctrl"),
+        (Mods::ALT, "alt"),
+        (Mods::SHIFT, "shift"),
+        (Mods::SUPER, "super"),
+        (Mods::HYPER, "hyper"),
+    ] {
+        if mods.contains(bit) {
+            out.push_str(name);
+            out.push('+');
+        }
+    }
+    out.push_str(&key);
+    out
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Binding {
     /// Requires the prefix key first.
@@ -337,6 +385,23 @@ mod tests {
 
     fn p(s: &str) -> KeyEvent {
         parse_key(s).unwrap_or_else(|e| panic!("{s}: {e}"))
+    }
+
+    #[test]
+    fn display_keys_are_short() {
+        assert_eq!(display_key(&p("shift+n")), "N");
+        assert_eq!(display_key(&p("N")), "N");
+        assert_eq!(display_key(&p("n")), "n");
+        assert_eq!(display_key(&p("minus")), "-");
+        assert_eq!(display_key(&p("shift+question")), "?");
+        assert_eq!(display_key(&p("alt+d")), "alt+d");
+        assert_eq!(display_key(&p("ctrl+shift+r")), "ctrl+R");
+        assert_eq!(display_key(&p("tab")), "tab");
+        assert_eq!(display_key(&p("shift+tab")), "shift+tab");
+        assert_eq!(display_key(&p("esc")), "esc");
+        assert_eq!(display_key(&p("left")), "←");
+        assert_eq!(display_key(&p("space")), "space");
+        assert_eq!(display_key(&p("f5")), "f5");
     }
 
     #[test]

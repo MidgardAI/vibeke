@@ -32,6 +32,9 @@ pub mod inbox;
 pub mod input;
 pub mod keymap;
 pub mod layouts;
+pub mod menu;
+#[cfg(test)]
+mod menu_tests;
 pub mod mouse_focus;
 pub mod nav;
 pub mod navkeys;

@@ -11,6 +11,14 @@ Type an action name, choose a result, and press Enter. Press Escape to close the
 Useful actions include **New workspace**, **New tab**, **Split side by side**, **Attention inbox**, and **Setup**.
 The palette displays configured shortcuts beside actions.
 
+## See every key
+
+Press **Ctrl+B** and wait a moment. A menu lists every prefix key in groups: pane, tab, workspace, agents, and session, plus your own commands and plugin actions.
+Press a key to run it, or Escape to close the menu. It stays open until you do one of those.
+Press **?** after **Ctrl+B** to open it at once. Resize mode shows its keys the same way.
+
+Set `prefix_menu_ms` under `[keys]` to change the delay, or `prefix_menu = false` to turn the menu off.
+
 ## Workspaces, tabs, and panes
 
 A workspace groups a project. Tabs hold layouts, and panes run shells or agents.
@@ -34,7 +42,7 @@ These are the default keys. Press **Ctrl+B** before each key:
 | `a` | Find the next agent that needs attention. |
 | `s` | Open setup and settings. |
 | `q` | Detach this client. |
-| `?` | Show key help. |
+| `?` | Show the key menu. |
 
 Your configuration can change these keys. Run `vibeke keys` to see active bindings.
 

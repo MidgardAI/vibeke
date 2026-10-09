@@ -116,9 +116,12 @@ fn unfocused_pane_waits_until_focused_and_popups_hold_it() {
     assert!(app.ux.scroll.pending.is_empty());
     scroll_event(&mut app, "p2", 7, Value::Null);
     // While a popup owns the keyboard, even the focused pane waits.
-    app.mode = Mode::Popup(Popup::Help);
+    app.mode = Mode::Popup(Popup::Message {
+        title: "t".into(),
+        body: String::new(),
+    });
     scroll_event(&mut app, "p1", 3, Value::Null);
-    assert!(matches!(app.mode, Mode::Popup(Popup::Help)));
+    assert!(matches!(app.mode, Mode::Popup(Popup::Message { .. })));
     assert_eq!(app.ux.scroll.pending.get(&(0, "p1".into())), Some(&3));
     app.on_key(named(NamedKey::Escape));
     app.on_tick();
