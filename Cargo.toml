@@ -37,36 +37,36 @@ vk-orchestrate = { path = "crates/vk-orchestrate" }
 vk-handoff = { path = "crates/vk-handoff" }
 
 anyhow = "1"
-base64 = "0.22"
+base64 = "0.23"
 blake3 = "1"
 clap = { version = "4", features = ["derive", "env"] }
 crossterm = { version = "0.29", features = ["bracketed-paste", "event-stream"] }
 futures = "0.3"
-hmac = "0.12"
+hmac = "0.13"
 libc = "0.2"
 notify = "8"
 polling = "3"
 postcard = { version = "1", default-features = false, features = ["use-std"] }
-rand = "0.9"
+rand = "0.10"
 regex = "1"
-rusqlite = { version = "0.37", features = ["bundled"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
 rustix = { version = "1", features = ["pty", "termios", "process", "fs", "net", "stdio"] }
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = { version = "1", features = ["preserve_order"] }
-sha2 = "0.10"
-signal-hook = "0.3"
+sha2 = "0.11"
+signal-hook = "0.4"
 tempfile = "3"
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }
-toml = "0.9"
-toml_edit = "0.23"
+toml = "1.1"
+toml_edit = "0.25"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
-ulid = { version = "1", features = ["serde"] }
+ulid = { version = "3", features = ["serde"] }
 unicode-segmentation = "1"
 unicode-width = "0.2"
 url = "2"
-zstd = "0.13"
+zstd = "0.14"
 
 [profile.release]
 lto = "thin"
