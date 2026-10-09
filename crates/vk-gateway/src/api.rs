@@ -562,11 +562,24 @@ impl Call<'_> {
         if p.get("machine").is_some_and(|m| !m.is_null()) {
             return Err(deny());
         }
+        // A named workspace must be the shared one, whatever else the call names (`tab.create`
+        // with a shared `pane` and another `workspace` creates the tab in that workspace).
+        if s(p, "workspace").is_some_and(|w| Some(w) != allowed.workspace.as_deref()) {
+            return Err(deny());
+        }
         match method {
             "tab.create" | "agent.start" if s(p, "pane").is_none() => {
                 if allowed.pane.is_some() || s(p, "workspace") != allowed.workspace.as_deref() {
                     return Err(deny());
                 }
+            }
+            // Opens beside whatever the owner has focused, or a host browser window.
+            "preview.open" => return Err(deny()),
+            // Host-wide do-not-disturb silences every device's approval pushes.
+            "prefs.set" if p.get("host").is_some() => return Err(deny()),
+            // Only the shared run's session model, never the persistent default for every run.
+            "agent.set_model" if s(p, "scope").is_some_and(|sc| sc != "session") => {
+                return Err(deny());
             }
             "interaction.answer_batch" => {
                 for item in p
@@ -2067,6 +2080,13 @@ mod workspace_tests {
                 json!({"request": "r", "decision": "approve"}),
             ),
             ("pane.send_text", json!({"pane": "p2", "text": "ls"})),
+            ("tab.create", json!({"pane": "p1", "workspace": "w2"})),
+            ("preview.open", json!({"url": "https://example.org"})),
+            ("prefs.set", json!({"host": {"dnd_until": 4102444800u64}})),
+            (
+                "agent.set_model",
+                json!({"target": "r1", "model": "m", "scope": "default"}),
+            ),
         ] {
             assert_eq!(
                 call.dispatch(m, p).await.unwrap_err().kind,
