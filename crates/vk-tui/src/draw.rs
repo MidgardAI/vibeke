@@ -1,6 +1,6 @@
 //! Frame composition (03 §6.2): chrome (sidebar, tab bar, borders, popups) + pane cells.
 
-use crate::app::{App, Mode, PaneBuf};
+use crate::app::{App, Mode, PaneBuf, PrefixState};
 use crate::screen::{Grid, Rect as SRect};
 use vk_proto::layout::Rect;
 use vk_proto::model::*;
@@ -864,9 +864,10 @@ pub fn compose(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
             cursor = None;
         }
     }
+    // The prefix menu and resize level cover the pane like a popup: no pane cursor.
     if !matches!(
         app.mode,
-        Mode::Normal | Mode::Prefix(_) | Mode::Navigate { .. } | Mode::Resize
+        Mode::Normal | Mode::Prefix(PrefixState { menu: false, .. }) | Mode::Navigate { .. }
     ) {
         cursor = None;
     }
@@ -1064,7 +1065,10 @@ fn draw_pane_at(
     }
     if focused == Some(pid)
         && buf.cursor.visible
-        && matches!(app.mode, Mode::Normal | Mode::Prefix(_))
+        && matches!(
+            app.mode,
+            Mode::Normal | Mode::Prefix(PrefixState { menu: false, .. })
+        )
     {
         let (cx, cy) = (buf.cursor.col, buf.cursor.row);
         if cx < r.w && cy < r.h {
