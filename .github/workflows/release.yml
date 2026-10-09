@@ -106,6 +106,10 @@ jobs:
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
         run: |
+          # Unset secrets arrive as empty strings; electron-builder would read an empty CSC_LINK
+          # as a certificate path (the project directory) and fail.
+          [ -n "$CSC_LINK" ] || unset CSC_LINK CSC_KEY_PASSWORD
+          for v in APPLE_API_KEY_ID APPLE_API_ISSUER; do [ -n "${!v}" ] || unset "$v"; done
           notarization_key="$RUNNER_TEMP/vibeke-notarization.p8"
           trap 'rm -f "$notarization_key"' EXIT
           if [ -n "$APPLE_API_KEY_P8" ]; then
@@ -120,7 +124,9 @@ jobs:
         env:
           WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
           WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
-        run: bun run --cwd apps/desktop package -- ${{ matrix.args }} --publish never
+        run: |
+          [ -n "$WIN_CSC_LINK" ] || unset WIN_CSC_LINK WIN_CSC_KEY_PASSWORD
+          bun run --cwd apps/desktop package -- ${{ matrix.args }} --publish never
       - name: Build Linux installers without publishing
         if: matrix.platform == 'linux'
         run: bun run --cwd apps/desktop package -- ${{ matrix.args }} --publish never
