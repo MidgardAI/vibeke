@@ -472,10 +472,15 @@ pub fn tick(app: &mut App) {
         return;
     };
     let mi = v.mi;
-    // A link that can't be used yet: watch for the gateway coming back.
+    // While a link is up, keep checking the gateway: a link that can't be used yet waits for it
+    // to come back, a usable one is hidden as soon as the relay drops.
+    let every = if link_blocked(v).is_some() {
+        2 * POLL
+    } else {
+        5 * POLL
+    };
     if matches!(v.stage, Stage::Pairing(_))
-        && link_blocked(v).is_some()
-        && v.gw_asked.is_none_or(|t| now.duration_since(t) >= 2 * POLL)
+        && v.gw_asked.is_none_or(|t| now.duration_since(t) >= every)
     {
         v.gw_asked = Some(now);
         ask_gateway_status(app, mi);

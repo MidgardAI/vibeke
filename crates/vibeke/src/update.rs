@@ -673,7 +673,7 @@ pub(crate) async fn restart(g: &Global, bin: &Path) -> Result<(Counts, Counts)> 
 
 /// Whether a server reporting `server` should be restarted onto a CLI of version `cli`: only
 /// when it is strictly older. Unparsable versions never trigger a restart.
-fn server_outdated(server: &str, cli: &str) -> bool {
+pub(crate) fn server_outdated(server: &str, cli: &str) -> bool {
     let parse = |v: &str| Version::parse(v.trim().trim_start_matches('v')).ok();
     matches!((parse(server), parse(cli)), (Some(s), Some(c)) if s < c)
 }

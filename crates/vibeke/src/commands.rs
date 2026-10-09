@@ -226,12 +226,7 @@ async fn restart_local(g: &Global, args: &[String]) -> i32 {
             return EXIT_USAGE;
         }
     };
-    if params.get("binary").is_none()
-        && let Some(obj) = params.as_object_mut()
-        && let Some(bin) = current_bin()
-    {
-        obj.insert("binary".into(), json!(bin));
-    }
+    let default_bin = params.get("binary").is_none();
     let socket = client::socket_path(&g.session, g.socket.as_deref());
     let s = match client::connect(&socket).await {
         Ok(s) => s,
@@ -251,6 +246,19 @@ async fn restart_local(g: &Global, args: &[String]) -> i32 {
             return vk_cli::exit_code_for(&e);
         }
     };
+    // Unless one was named: this CLI's binary, but never onto an older version than the server
+    // runs (its database may already be migrated past what an older binary can open).
+    if default_bin
+        && let Some(running) = before["version"].as_str()
+        && !crate::update::server_outdated(vk_proto::VERSION, running)
+        && let Some(bin) = current_bin()
+        && crate::update::ensure_schema_compatible(g, &bin)
+            .await
+            .is_ok()
+        && let Some(obj) = params.as_object_mut()
+    {
+        obj.insert("binary".into(), json!(bin));
+    }
     let r = match c.call("server.restart", params).await {
         Ok(r) => r,
         Err(e) => {

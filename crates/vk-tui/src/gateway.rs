@@ -67,22 +67,21 @@ impl Confirm {
     }
 }
 
-/// The option `y` picks when no label starts with `y`: an affirmative id, else the first option.
+/// The option `y` picks when no label starts with `y`: an affirmative id, never a position (an
+/// unknown option order must not turn a key into the wrong answer).
 fn yes_index(options: &[(String, String)]) -> Option<usize> {
     const YES: [&str; 5] = ["pair", "ok", "yes", "allow", "approve"];
     options
         .iter()
         .position(|(id, _)| YES.contains(&id.to_ascii_lowercase().as_str()))
-        .or_else(|| (!options.is_empty()).then_some(0))
 }
 
-/// The option `n` picks when no label starts with `n`: a negative id, else the last of exactly two.
+/// The option `n` picks when no label starts with `n`: a negative id, never a position.
 fn no_index(options: &[(String, String)]) -> Option<usize> {
     const NO: [&str; 4] = ["reject", "cancel", "no", "deny"];
     options
         .iter()
         .position(|(id, _)| NO.contains(&id.to_ascii_lowercase().as_str()))
-        .or_else(|| (options.len() == 2).then_some(1))
 }
 
 /// The shortcut letter shown for option `i`, when `y`/`n` would pick it and its label's own
@@ -752,6 +751,17 @@ mod tests {
             s.handle_key(&kev(Key::Char('y')), later),
             KeyOutcome::Answer { choice, .. } if choice == "b"
         ));
+        // Unknown ids: y/n never fall back to a position (Decline/Approve must not turn n into
+        // an approval).
+        let mut c = conf("r", t0, 30);
+        c.options = vec![
+            ("decline".into(), "Decline".into()),
+            ("go".into(), "Go ahead".into()),
+        ];
+        let mut s = State::default();
+        s.push(c);
+        assert_eq!(s.handle_key(&kev(Key::Char('n')), later), KeyOutcome::None);
+        assert_eq!(s.handle_key(&kev(Key::Char('y')), later), KeyOutcome::None);
         let o = pair(false).options;
         assert_eq!((yn_hint(&o, 0), yn_hint(&o, 1)), (Some('y'), Some('n')));
     }
