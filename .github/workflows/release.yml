@@ -18,6 +18,10 @@ on:
 permissions:
   contents: read
 
+env:
+  # Build libghostty-vt from source (crates/vk-term/build.rs): no cached archive in releases.
+  VK_TERM_CACHE_DIR: "0"
+
 jobs:
   build:
     if: inputs.component != 'desktop'

@@ -18,7 +18,7 @@ Preserve unrelated changes in the shared checkout. Check `git status` and the cu
 
 ## Build and test
 
-- Toolchains are pinned in `mise.toml`. The system `cargo` may be older than the workspace `rust-version`; use `cargo +<pinned version>` or `mise exec -- cargo …`. `vk-term` needs the pinned Zig on `PATH` or in `ZIG`.
+- Toolchains are pinned in `mise.toml`. The system `cargo` may be older than the workspace `rust-version`; use `cargo +<pinned version>` or `mise exec -- cargo …`. `vk-term` needs the pinned Zig on `PATH` or in `ZIG`. Its build script caches the built libghostty-vt in `~/.cache/vibeke/libghostty-vt` (`VK_TERM_CACHE_DIR`), so new worktrees and clippy runs skip the Zig build.
 - A new worktree needs `mise trust` before its first build; otherwise cargo falls back to an older toolchain and fails to load the manifest.
 - Rust checks: `mise run ci` (fmt, clippy `-D warnings`, cargo-deny, nextest). While iterating, run targeted tests: `cargo nextest run -p <crate> <filter>` or `cargo test -p vibeke --test <file> <name>`. In a shared checkout, format with `cargo fmt -p <crate>`, not `--all`. For releases, GitHub CI replaces local full runs (see below).
 - Web checks, from `web/`: `bun install --frozen-lockfile`, `bun run typecheck`, `bun run test`. `bun run build` builds the PWA; use `build:site` and `build:desktop` for the others. Commit `web/bun.lock` when dependencies or workspace versions change.
@@ -101,7 +101,7 @@ Read `.github/workflows/release.yml`, `docs/releases.md`, `scripts/release-build
 2. Update `web/apps/desktop/package.json` to the same version. Update the browser app version in `web/apps/pwa/package.json` when publishing that app for the release. `bun install` does not rewrite workspace versions in `web/bun.lock`; edit those entries by hand, then verify `bun install --frozen-lockfile`.
 3. Review version references rather than replacing historical versions globally. Old release notes and version-pinned historical download links must keep their original versions.
 4. Regenerate API references if needed. Commit the release inputs, record the exact SHA, and push it to `main`. Build release artifacts from this committed state. Do not silently reuse binaries from a different source revision or move an existing published tag.
-5. Let GitHub run the checks: the `ci` workflow on that commit runs `mise run ci`, the release-signing contract test, and the web and desktop checks. Do not repeat them locally. Tag only after `ci` passes on the release commit. Report failures accurately; do not claim a release is fully green when checks failed or were not run.
+5. Let GitHub run the checks: the `ci` workflow on that commit runs the `mise run ci` checks in separate lint and test jobs, the release-signing contract test, and the web and desktop checks. It skips the Rust and desktop jobs when a commit changes only web code, release notes or agent notes; its `ci-ok` job gives the overall result. Do not repeat them locally. Tag only after `ci` passes on the release commit. Report failures accurately; do not claim a release is fully green when checks failed or were not run.
 
 For a packaging rehearsal, use `gh workflow run release.yml --ref main`. Optional `-f component=cli` or `-f component=desktop` limits the build. Manual runs retain workflow artifacts and do not create releases.
 

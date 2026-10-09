@@ -27,6 +27,8 @@ RUSTUP_HOME_DIR="${RUSTUP_HOME:-$HOME/.rustup}"
 # Paths that would otherwise be embedded (panic locations, debug info, build-script output).
 RUSTFLAGS_COMMON="--remap-path-prefix=$ROOT=/build --remap-path-prefix=$CARGO_HOME_DIR=/cargo --remap-path-prefix=$RUSTUP_HOME_DIR=/rustup -C strip=symbols"
 export CARGO_INCREMENTAL=0
+# Build libghostty-vt from source: a cached archive would skip what releases must reproduce.
+export VK_TERM_CACHE_DIR=0
 export TZ=UTC LC_ALL=C
 
 SCRATCH=$(mktemp -d "${TMPDIR:-/tmp}/vibeke-repro.XXXXXX")

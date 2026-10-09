@@ -97,7 +97,7 @@ For a packaging check before tagging, run `gh workflow run release.yml --ref mai
 Minisign release signing happens locally. CI never holds the minisign secret key.
 
 1. Update the workspace version in `Cargo.toml`, commit it, and push it to `main`.
-2. Wait for the `ci` workflow (which runs `mise run ci`) to pass on that commit. The [hardening guide](hardening.md) describes the separate fuzz, performance and reproducibility checks.
+2. Wait for the `ci` workflow to pass on that commit. It runs the same checks as `mise run ci`. The [hardening guide](hardening.md) describes the separate fuzz, performance and reproducibility checks.
 3. Tag and push: `git tag v<version> && git push origin v<version>`.
 4. The `release` workflow (`.github/workflows/release.yml`) builds the macOS and Linux artifacts, verifies that all three binaries match their `.sha256` files, and creates a **draft** release `v<version>` with those files and an `install.sh` pinned to the tag's version. It needs no secret beyond the repository's own `GITHUB_TOKEN`.
 5. Download the draft's files into one directory, for example with `gh release download v<version> --dir dist/<version>` (a private repository needs `gh auth login`). Alternatively build locally with `scripts/release-build.sh <version>` and use `dist/<version>/`. If you built both, compare the sha256 of the files first: they should be identical.
