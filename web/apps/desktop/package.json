@@ -1,6 +1,6 @@
 {
   "name": "@vibeke/desktop",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "private": true,
   "description": "Vibeke for macOS, Linux and Windows: your agents and terminals, end-to-end encrypted.",
   "author": "Vibeke",
