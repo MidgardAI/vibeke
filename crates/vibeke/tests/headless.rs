@@ -747,11 +747,31 @@ fn acp_headless_terminals_run_as_panes() {
     // Immediate exits must retain both the final screen and status, even when the
     // watcher is scheduled after the pane has already left the runtime map.
     for turn in 1..=10 {
-        s.api(
+        if let Err(e) = s.api(
             "agent.prompt",
             json!({"target": run_id, "text": "use a terminal", "wait": true, "timeout_ms": 30000}),
-        )
-        .unwrap();
+        ) {
+            let logs = std::fs::read_dir(s.dir.path().join("state/default/logs"))
+                .into_iter()
+                .flatten()
+                .flatten()
+                .map(|f| {
+                    let t = std::fs::read_to_string(f.path()).unwrap_or_default();
+                    let mut from = t.len().saturating_sub(6000);
+                    while !t.is_char_boundary(from) {
+                        from += 1;
+                    }
+                    format!("== {}\n{}", f.path().display(), &t[from..])
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            let panes = s.cmd(&["pane", "list"]).output().unwrap();
+            panic!(
+                "turn {turn}: {e}\nfake log:\n{}\npanes: {}\n{logs}",
+                s.log_text(),
+                String::from_utf8_lossy(&panes.stdout)
+            );
+        }
         assert_eq!(s.log_count("outside:-32002"), turn, "{}", s.log_text());
         let r = s.run(&run_id);
         assert_eq!(

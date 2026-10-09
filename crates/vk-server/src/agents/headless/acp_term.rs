@@ -440,6 +440,22 @@ fn snapshot(rt: &crate::pane::PaneRt, terms: &Terms, tid: &str) {
     }
 }
 
+/// How the process that `rt` ran ended, once it no longer runs: the pane exited or closed,
+/// or its slot holds another runtime (the holder was lost and a fresh shell took its place).
+fn gone(server: &Server, pane: &str, rt: &Arc<crate::pane::PaneRt>) -> Option<Exit> {
+    let replaced = server
+        .pane_rt(pane)
+        .is_none_or(|now| !Arc::ptr_eq(&now, rt));
+    let (exited, code) = server.with_core(|c| match c.pane(pane) {
+        Some(p) => (p.exited, p.exit_code),
+        None => (true, None),
+    });
+    (exited || replaced).then(|| Exit {
+        code: code.filter(|_| exited).map(i64::from),
+        signal: None,
+    })
+}
+
 /// Follow terminal `tid`'s pane until its process exits, then tell the run's pane.
 fn watch(
     server: &Arc<Server>,
@@ -471,6 +487,12 @@ fn watch(
             Some(rt) => {
                 let mut rev = rt.rev_tx.subscribe();
                 snapshot(&rt, &terms, &tid);
+                // A steady check, not restarted by output or unrelated events: the exit event
+                // never comes when the holder dies before reporting it (its slot then gets a
+                // fresh shell), and the agent's `wait_for_exit` must still be answered.
+                let mut check = tokio::time::interval(Duration::from_secs(1));
+                check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                check.reset();
                 let exit = loop {
                     tokio::select! {
                         r = rev.changed() => {
@@ -489,11 +511,9 @@ fn watch(
                             Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
                             Err(_) => break Exit { code: None, signal: None },
                         },
-                        _ = tokio::time::sleep(Duration::from_secs(1)) => {
-                            let gone = server.with_core(|c| c.pane(&pane).is_none_or(|p| p.exited));
-                            if gone {
-                                let code = server.with_core(|c| c.pane(&pane).and_then(|p| p.exit_code));
-                                break Exit { code: code.map(i64::from), signal: None };
+                        _ = check.tick() => {
+                            if let Some(exit) = gone(&server, &pane, &rt) {
+                                break exit;
                             }
                         }
                     }
