@@ -206,7 +206,7 @@ fn methods_outside_the_allow_list_are_refused() {
     for (method, params) in [
         ("handoff.send", json!({})),
         ("pane.send_text", json!({"text": "x"})),
-        ("share.create", json!({"kind": "share", "workspace": "w"})),
+        ("share.create", json!({"kind": "device", "workspace": "w"})),
         ("share.create", json!({})),
     ] {
         let e = api(
@@ -233,7 +233,7 @@ fn methods_outside_the_allow_list_are_refused() {
         assert_eq!(kind(&e), "remote_unavailable", "{method}: {e}");
     }
     // The kinds the bridge carries pass the check (and then find no gateway).
-    for kind_ in ["handoff", "peer"] {
+    for kind_ in ["handoff", "peer", "share"] {
         let e = api(
             &s,
             "gateway.call",
