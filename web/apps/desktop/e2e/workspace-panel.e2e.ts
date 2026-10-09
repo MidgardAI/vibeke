@@ -7,7 +7,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { expect, test, type Page } from '@playwright/test';
-import { TestHost, built, hasDisplay, hookEvent, launchApp, shoot, vibekeBin, type LaunchedApp } from './helpers';
+import { TestHost, agentHooks, built, hasDisplay, launchApp, shoot, vibekeBin, type LaunchedApp } from './helpers';
 
 const bin = vibekeBin();
 test.skip(!hasDisplay(), 'no display');
@@ -89,8 +89,10 @@ async function resize(page: Page, width: number, height: number) {
 test('right panel: changes tree, diff, commits, files, phone layout', async () => {
   test.setTimeout(180_000);
   const site = repo('website');
-  hookEvent(host, site.pane, 'SessionStart', site.cwd, { source: 'startup' });
-  hookEvent(host, site.pane, 'UserPromptSubmit', site.cwd, { prompt: 'Rebuild the homepage hero' });
+  await agentHooks(host, site.pane, site.cwd, [
+    { event: 'SessionStart', extra: { source: 'startup' } },
+    { event: 'UserPromptSubmit', extra: { prompt: 'Rebuild the homepage hero' } },
+  ]);
 
   a = await launchApp({ ...host.env, VIBEKE_BIN: bin!, HOME: process.env.HOME ?? host.env.HOME! });
   const { page, app } = a;

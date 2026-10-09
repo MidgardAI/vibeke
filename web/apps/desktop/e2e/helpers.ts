@@ -2,7 +2,7 @@
 // server + gateway (temp HOME / XDG / runtime dirs, so nothing touches the user's own session).
 
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { _electron as electron, type ElectronApplication, type Page } from '@playwright/test';
@@ -342,9 +342,87 @@ export async function shoot(app: ElectronApplication, page: Page, name: string):
   await page.emulateMedia({ colorScheme: 'light' });
 }
 
-/** Make `pane`'s shell run a Claude-style hook event (session start, prompt, stop…). */
-export function hookEvent(host: TestHost, pane: string, event: string, cwd: string, extra: Record<string, unknown> = {}): void {
-  const payload = JSON.stringify({ session_id: `e2e-${pane}`, hook_event_name: event, cwd, ...extra }).replace(/'/g, '');
-  host.cli(['pane', 'send-text', pane, `echo '${payload}' | '${host.bin}' hook claude ${event}`]);
+/** Wait until `pane`'s shell runs commands (it echoes a marker back). */
+export async function shellReady(host: TestHost, pane: string): Promise<void> {
+  const marker = `VK-READY-${Date.now()}`;
+  host.cli(['pane', 'send-text', pane, `echo ${marker}`]);
   host.cli(['pane', 'send-keys', pane, 'enter']);
+  await host.until(() => host.cli(['pane', 'read', pane]).split(marker).length > 2, 20_000, 'shell did not start');
+}
+
+export interface HookStep {
+  event: string;
+  extra?: Record<string, unknown>;
+}
+
+let hookScripts = 0;
+
+/**
+ * Make `pane`'s shell run Claude-style hook events (session start, prompt, stop…), in order.
+ *
+ * The events run from one script started as a background job, so the pane's foreground stays
+ * the shell. Run in the foreground, each `vibeke hook` would briefly become the pane's foreground
+ * process; the server's process watcher may see that and then the return to the shell, which
+ * ends the hook-created run as "exited" (no agent process is running there). The next event then
+ * starts a new run without the session id, transcript or turn of the first one.
+ */
+export function sendHooks(host: TestHost, pane: string, cwd: string, steps: HookStep[]): void {
+  const lines = steps.map(({ event, extra }) => {
+    const payload = JSON.stringify({ session_id: `e2e-${pane}`, hook_event_name: event, cwd, ...extra }).replace(/'/g, '');
+    return `echo '${payload}' | '${host.bin}' hook claude ${event}`;
+  });
+  const script = join(host.root, `hooks-${++hookScripts}.sh`);
+  writeFileSync(script, lines.join('\n') + '\n');
+  // `disown`: no "Done" line for the job later (a shell without it ignores the error).
+  host.cli(['pane', 'send-text', pane, `sh '${script}' & disown 2>/dev/null`]);
+  host.cli(['pane', 'send-keys', pane, 'enter']);
+}
+
+/** Make `pane`'s shell run one Claude-style hook event (see {@link sendHooks}). */
+export function hookEvent(host: TestHost, pane: string, event: string, cwd: string, extra: Record<string, unknown> = {}): void {
+  sendHooks(host, pane, cwd, [{ event, extra }]);
+}
+
+export interface AgentRunInfo {
+  pane_handle: string;
+  harness_session_id: string | null;
+  transcript_path: string | null;
+  turns_completed: number;
+  ended_at_ms: number | null;
+  execution: { value: string };
+}
+
+/** The live (not ended) agent run of `pane` that the hooks of {@link sendHooks} identified. */
+export function hookRun(host: TestHost, pane: string): AgentRunInfo | undefined {
+  const runs = JSON.parse(host.cli(['agent', 'list'])).runs as AgentRunInfo[];
+  return runs.find((r) => r.pane_handle === pane && r.ended_at_ms == null && r.harness_session_id === `e2e-${pane}`);
+}
+
+/**
+ * Give `pane` an agent run through hook events and wait until the run shows their effect: the
+ * session started, the transcript of a `SessionStart` with `transcript_path`, a completed turn
+ * after `Stop`, Working after `UserPromptSubmit`. Waits for the shell first and sends the events
+ * again when they did not land (keystrokes typed while the shell starts can be lost).
+ */
+export async function agentHooks(host: TestHost, pane: string, cwd: string, steps: HookStep[]): Promise<AgentRunInfo> {
+  await shellReady(host, pane);
+  const transcript = steps.map((s) => s.extra?.transcript_path).find((t): t is string => typeof t === 'string');
+  const last = steps[steps.length - 1]?.event;
+  const ready = (r: AgentRunInfo | undefined): r is AgentRunInfo => {
+    if (!r) return false;
+    if (transcript && r.transcript_path !== transcript) return false;
+    const state = r.execution.value.toLowerCase();
+    if (last === 'Stop') return r.turns_completed > 0 && state === 'idle';
+    if (last === 'UserPromptSubmit') return state === 'working';
+    return true;
+  };
+  for (let attempt = 0; attempt < 3; attempt++) {
+    sendHooks(host, pane, cwd, steps);
+    const ok = await host.until(() => ready(hookRun(host, pane)), 15_000, 'hooks pending').then(
+      () => true,
+      () => false,
+    );
+    if (ok) return hookRun(host, pane)!;
+  }
+  throw new Error(`agent run for ${pane} did not appear: ${JSON.stringify(JSON.parse(host.cli(['agent', 'list'])).runs)}\n${host.cli(['pane', 'read', pane])}`);
 }

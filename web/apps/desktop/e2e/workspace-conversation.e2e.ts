@@ -9,7 +9,7 @@ import { execFileSync } from 'node:child_process';
 import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { expect, test, type Page } from '@playwright/test';
-import { TestHost, built, hasDisplay, hookEvent, launchApp, settled, shoot, vibekeBin, type LaunchedApp } from './helpers';
+import { TestHost, agentHooks, built, hasDisplay, hookEvent, launchApp, settled, shoot, vibekeBin, type LaunchedApp } from './helpers';
 
 const bin = vibekeBin();
 test.skip(!hasDisplay(), 'no display');
@@ -76,14 +76,6 @@ function writeTranscript(path: string, cwd: string): void {
   writeFileSync(path, lines.map((l) => JSON.stringify(l)).join('\n') + '\n');
 }
 
-/** Wait until the pane's shell runs commands (it echoes a marker back). */
-async function shellReady(pane: string): Promise<void> {
-  const marker = `VK-READY-${Date.now()}`;
-  host.cli(['pane', 'send-text', pane, `echo ${marker}`]);
-  host.cli(['pane', 'send-keys', pane, 'enter']);
-  await host.until(() => host.cli(['pane', 'read', pane]).split(marker).length > 2, 20_000, 'shell did not start');
-}
-
 async function resize(page: Page, width: number, height: number) {
   await a!.app.evaluate(({ BrowserWindow }, [w, h]) => {
     const win = BrowserWindow.getAllWindows().find((x) => x.webContents.getURL().includes('surface=full'));
@@ -97,20 +89,11 @@ test('conversation: transcript turns, tool rows, footer, composer, terminal tab,
   const hero = repoWorkspace('homepage');
   const transcript = join(host.root, 'hero-transcript.jsonl');
   writeTranscript(transcript, hero.cwd);
-  // The hooks run in the pane's shell; keystrokes sent while the shell still starts can be lost,
-  // so wait for it to echo, and send the hooks again if the run has not picked them up.
-  await shellReady(hero.pane);
-  const picked = () => {
-    const runs = JSON.parse(host.cli(['agent', 'list'])).runs as { transcript_path: string | null; turns_completed: number }[];
-    return runs.some((r) => r.transcript_path === transcript && r.turns_completed > 0);
-  };
-  for (let attempt = 0; attempt < 3 && !picked(); attempt++) {
-    hookEvent(host, hero.pane, 'SessionStart', hero.cwd, { source: 'startup', transcript_path: transcript, model: 'opus', permission_mode: 'acceptEdits' });
-    hookEvent(host, hero.pane, 'UserPromptSubmit', hero.cwd, { prompt: 'Rebuild the homepage hero' });
-    hookEvent(host, hero.pane, 'Stop', hero.cwd);
-    await host.until(picked, 15_000, 'hooks pending').catch(() => {});
-  }
-  expect(picked()).toBe(true);
+  await agentHooks(host, hero.pane, hero.cwd, [
+    { event: 'SessionStart', extra: { source: 'startup', transcript_path: transcript, model: 'opus', permission_mode: 'acceptEdits' } },
+    { event: 'UserPromptSubmit', extra: { prompt: 'Rebuild the homepage hero' } },
+    { event: 'Stop' },
+  ]);
   const auth = repoWorkspace('api-auth');
   host.requestApproval(auth.pane, 'cargo test -p auth', auth.cwd);
 

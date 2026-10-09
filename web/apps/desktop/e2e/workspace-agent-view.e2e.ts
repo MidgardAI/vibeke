@@ -8,7 +8,7 @@ import { execFileSync } from 'node:child_process';
 import { copyFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { expect, test, type Page } from '@playwright/test';
-import { TestHost, appRoot, built, hasDisplay, hookEvent, launchApp, settled, shoot, vibekeBin, type LaunchedApp } from './helpers';
+import { TestHost, agentHooks, appRoot, built, hasDisplay, launchApp, settled, shoot, vibekeBin, type LaunchedApp } from './helpers';
 
 const bin = vibekeBin();
 test.skip(!hasDisplay(), 'no display');
@@ -28,14 +28,6 @@ test.afterAll(async () => {
   await a?.close();
   await host?.stop();
 });
-
-/** Wait until the pane's shell runs commands (it echoes a marker back). */
-async function shellReady(pane: string): Promise<void> {
-  const marker = `VK-READY-${Date.now()}`;
-  host.cli(['pane', 'send-text', pane, `echo ${marker}`]);
-  host.cli(['pane', 'send-keys', pane, 'enter']);
-  await host.until(() => host.cli(['pane', 'read', pane]).split(marker).length > 2, 20_000, 'shell did not start');
-}
 
 /** A workspace whose shell has an agent run (SessionStart / prompt / Stop hooks), then a tidy screen. */
 async function agentWorkspace(name: string, prompt: string): Promise<{ pane: string; cwd: string }> {
@@ -59,18 +51,12 @@ async function agentWorkspace(name: string, prompt: string): Promise<{ pane: str
       .map((l) => JSON.stringify(l))
       .join('\n') + '\n',
   );
-  await shellReady(w.pane);
-  // The run has picked up the transcript and finished its turn (keystrokes sent while the shell
-  // starts can be lost, so the hooks are sent again until it has).
-  const hasRun = () =>
-    (JSON.parse(host.cli(['agent', 'list'])).runs as { transcript_path: string | null; turns_completed: number }[]).some((r) => r.transcript_path === transcript && r.turns_completed > 0);
-  for (let i = 0; i < 3 && !hasRun(); i++) {
-    hookEvent(host, w.pane, 'SessionStart', w.cwd, { source: 'startup', transcript_path: transcript });
-    hookEvent(host, w.pane, 'UserPromptSubmit', w.cwd, { prompt });
-    hookEvent(host, w.pane, 'Stop', w.cwd);
-    await host.until(hasRun, 10_000, 'run pending').catch(() => {});
-  }
-  expect(hasRun()).toBe(true);
+  // The run has picked up the transcript and finished its turn.
+  await agentHooks(host, w.pane, w.cwd, [
+    { event: 'SessionStart', extra: { source: 'startup', transcript_path: transcript } },
+    { event: 'UserPromptSubmit', extra: { prompt } },
+    { event: 'Stop' },
+  ]);
   // A screen that reads like an agent's own interface (scrolled clear: `clear` would end the run).
   const lines = [`✻ ${name} · session ready`, '', '  Type a message, or /help for commands.', '  Esc to interrupt · Shift+Tab to change mode', ''];
   host.cli(['pane', 'send-text', w.pane, `PS1='$ '; printf '${'\\n'.repeat(40)}'; printf '%s\\n' ${lines.map((l) => `'${l}'`).join(' ')}`]);

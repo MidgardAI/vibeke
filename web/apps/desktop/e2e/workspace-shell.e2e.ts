@@ -7,7 +7,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { expect, test, type Page } from '@playwright/test';
-import { TestHost, built, hasDisplay, hookEvent, launchApp, settled, shoot, vibekeBin, type LaunchedApp } from './helpers';
+import { TestHost, agentHooks, built, hasDisplay, launchApp, settled, shoot, vibekeBin, type LaunchedApp } from './helpers';
 
 const bin = vibekeBin();
 test.skip(!hasDisplay(), 'no display');
@@ -66,11 +66,15 @@ test('workspace sidebar, panel and narrow layout', async () => {
   host.workspace('scratch');
 
   // Agents: one working, one finished, one waiting for an approval.
-  hookEvent(host, homepage.pane, 'SessionStart', homepage.cwd, { source: 'startup' });
-  hookEvent(host, homepage.pane, 'UserPromptSubmit', homepage.cwd, { prompt: 'Rebuild the homepage hero' });
-  hookEvent(host, release.pane, 'SessionStart', release.cwd, { source: 'startup' });
-  hookEvent(host, release.pane, 'UserPromptSubmit', release.cwd, { prompt: 'Draft the release notes' });
-  hookEvent(host, release.pane, 'Stop', release.cwd);
+  await agentHooks(host, homepage.pane, homepage.cwd, [
+    { event: 'SessionStart', extra: { source: 'startup' } },
+    { event: 'UserPromptSubmit', extra: { prompt: 'Rebuild the homepage hero' } },
+  ]);
+  await agentHooks(host, release.pane, release.cwd, [
+    { event: 'SessionStart', extra: { source: 'startup' } },
+    { event: 'UserPromptSubmit', extra: { prompt: 'Draft the release notes' } },
+    { event: 'Stop' },
+  ]);
   host.requestApproval(auth.pane, 'cargo test -p auth', auth.cwd);
 
   a = await launchApp({ ...host.env, VIBEKE_BIN: bin!, HOME: process.env.HOME ?? host.env.HOME! });
