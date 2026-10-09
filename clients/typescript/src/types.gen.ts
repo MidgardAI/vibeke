@@ -8463,7 +8463,7 @@ export type AgentTitledSubject = {
 };
 
 export type AgentTitledData = {
-  title: string;
+  title: string | null;
 };
 
 export type AgentTurnCompletedSubject = {

@@ -396,7 +396,8 @@ pub struct AgentRun {
     #[serde(default)]
     pub rate_limit: Option<RateLimitInfo>,
     /// The harness session's title (02 §1.1): one the user set (`/rename`, `/name`, a Codex thread
-    /// name), else one the harness generated, else the first prompt. From the transcript.
+    /// name), else one the harness generated, else the first prompt. From the transcript, redacted.
+    /// Appended (render protocol 7).
     #[serde(default)]
     pub title: Option<String>,
 }

@@ -24,7 +24,8 @@ use serde::{Deserialize, Serialize};
 ///   placeholder cells, 03 §9).
 /// - 6: picker interactions: `InteractionKind::Picker`, `Decision::Cancel`,
 ///   `QuestionOption.selected`, `Interaction.picker`.
-pub const PROTOCOL: u32 = 6;
+/// - 7: `AgentRun.title` (the harness session's title).
+pub const PROTOCOL: u32 = 7;
 
 /// `render.attach` error kind when client and server speak different render protocols.
 pub const VERSION_MISMATCH: &str = "version_mismatch";

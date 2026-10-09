@@ -8611,7 +8611,7 @@ AgentTitledSubject = TypedDict("AgentTitledSubject", {
 })
 
 AgentTitledData = TypedDict("AgentTitledData", {
-    "title": str,
+    "title": Optional[str],
 })
 
 AgentTurnCompletedSubject = TypedDict("AgentTurnCompletedSubject", {

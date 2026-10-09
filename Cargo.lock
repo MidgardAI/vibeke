@@ -3421,6 +3421,7 @@ dependencies = [
  "tempfile",
  "toml",
  "toml_edit",
+ "vk-redact",
 ]
 
 [[package]]

@@ -647,10 +647,14 @@ impl Parser {
 /// Longest title kept, in characters.
 pub const TITLE_MAX: usize = 80;
 
-/// One line, trimmed, at most [`TITLE_MAX`] characters (cut at a word when possible). Prompts that
+/// One line, redacted, trimmed, at most [`TITLE_MAX`] characters (cut at a word when possible). Prompts that
 /// start with a harness wrapper (`<command-name>`, `<task-notification>`…) are not titles.
 fn clean_title(s: &str) -> Option<String> {
-    let line = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    // Redact before cutting, so a cut cannot leave half a secret unmatched.
+    let line = vk_redact::redact(s)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
     if line.is_empty() || line.starts_with('<') {
         return None;
     }
@@ -815,6 +819,8 @@ mod tests {
         assert!(t.chars().count() <= TITLE_MAX);
         assert!(t.ends_with("word…"));
         assert_eq!(clean_title("   "), None);
+        let t = clean_title("deploy with password=hunter2secret please").unwrap();
+        assert!(!t.contains("hunter2secret"), "{t}");
     }
 
     #[test]

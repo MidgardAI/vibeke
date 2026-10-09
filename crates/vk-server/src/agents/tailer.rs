@@ -430,7 +430,8 @@ fn set_title(server: &Server, run_id: &str, harness: &str, from_transcript: Opti
         .filter(|_| codex)
         .and_then(|s| codex_thread_name(&s))
         .or(from_transcript);
-    if title.is_none() || title == current {
+    // A cleared title (pi `/name` with an empty name) clears the run's too.
+    if title == current {
         return;
     }
     super::update_run(server, run_id, |r, tx| {
