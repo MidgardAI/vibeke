@@ -395,6 +395,10 @@ pub struct AgentRun {
     /// pi/omp/OpenCode retry messages.
     #[serde(default)]
     pub rate_limit: Option<RateLimitInfo>,
+    /// The harness session's title (02 §1.1): one the user set (`/rename`, `/name`, a Codex thread
+    /// name), else one the harness generated, else the first prompt. From the transcript.
+    #[serde(default)]
+    pub title: Option<String>,
 }
 
 /// Session token usage (04 §10). Totals for the harness session, not per turn.

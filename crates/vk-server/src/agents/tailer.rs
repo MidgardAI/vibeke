@@ -28,7 +28,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 use std::sync::atomic::{AtomicI64, Ordering};
-use vk_agents::transcript::{Activity, Event, Format, Parser};
+use vk_agents::transcript::{self, Activity, Event, Format, Parser};
 
 /// Store kind of the compact per-turn usage records.
 pub const K_TURN_USAGE: &str = "turn_usage";
@@ -39,6 +39,8 @@ const K_ITEM: &str = "tool_item";
 const CHUNK: u64 = 1 << 20;
 /// Poll even without file-system events (missed events, files that did not exist yet).
 const TICK: Duration = Duration::from_secs(5);
+/// Bytes read from the head of an omp session for its title line.
+const HEAD: u64 = 4096;
 /// Tail window used by [`reconcile_state`].
 const RECONCILE_WINDOW: u64 = 2 << 20;
 
@@ -213,6 +215,8 @@ pub fn poll_all(server: &Arc<Server>) -> usize {
         let Ok((bytes, start)) = read_from(&path, offset, CHUNK) else {
             continue;
         };
+        // omp rewrites its title line in place: read it from the head, not the stream.
+        let head = read_from(&path, 0, HEAD).ok().map(|(b, _)| b);
         let events = {
             let mut reg = REG.lock().unwrap();
             let Some(t) = reg.tails.get_mut(&path) else {
@@ -223,17 +227,28 @@ pub fn poll_all(server: &Arc<Server>) -> usize {
                 t.parser = Parser::new(t.parser.format());
             }
             t.offset = start + bytes.len() as u64;
-            if bytes.is_empty() {
-                continue;
+            if t.parser.format() == Format::OmpJsonl
+                && let Some(h) = &head
+            {
+                t.parser.set_auto_title(transcript::head_title(h));
             }
-            let ev = t.parser.feed(&bytes);
-            let totals = t.parser.totals().clone();
-            let model = t.parser.model().map(str::to_string);
-            (ev, totals, model)
+            let title = t.parser.title().map(str::to_string);
+            if bytes.is_empty() {
+                (vec![], None, None, title)
+            } else {
+                let ev = t.parser.feed(&bytes);
+                let totals = t.parser.totals().clone();
+                let model = t.parser.model().map(str::to_string);
+                let title = t.parser.title().map(str::to_string);
+                (ev, Some(totals), model, title)
+            }
         };
-        let (ev, totals, model) = events;
+        let (ev, totals, model, title) = events;
         total += ev.len();
-        apply(server, &run, &harness, &ev, &totals, model.as_deref());
+        if let Some(totals) = totals {
+            apply(server, &run, &harness, &ev, &totals, model.as_deref());
+        }
+        set_title(server, &run, &harness, title);
     }
     if total > 0 {
         index_soon(server);
@@ -399,6 +414,48 @@ fn apply(
     if !totals.is_empty() {
         super::usage::from_tailer(server, &run, totals, model, billing.as_deref());
     }
+}
+
+/// The run's title: a Codex thread name from `session_index.jsonl`, else what the transcript
+/// says ([`Parser::title`]). Written only when it changed.
+fn set_title(server: &Server, run_id: &str, harness: &str, from_transcript: Option<String>) {
+    let Some((current, session)) = server.with_core(|c| {
+        c.run(run_id)
+            .map(|r| (r.title.clone(), r.harness_session_id.clone()))
+    }) else {
+        return;
+    };
+    let codex = Harness::from_id(harness).is_some_and(|h| h.family() == harness::Family::Codex);
+    let title = session
+        .filter(|_| codex)
+        .and_then(|s| codex_thread_name(&s))
+        .or(from_transcript);
+    if title.is_none() || title == current {
+        return;
+    }
+    super::update_run(server, run_id, |r, tx| {
+        tx.event(
+            "agent.titled",
+            json!({"run": r.id, "pane": r.pane}),
+            json!({"title": title}),
+        );
+        r.title = title;
+    });
+}
+
+/// `session_index.jsonl` in the Codex home, re-read only when it changed.
+fn codex_thread_name(session: &str) -> Option<String> {
+    static CACHE: LazyLock<Mutex<(Option<std::time::SystemTime>, String)>> =
+        LazyLock::new(|| Mutex::new((None, String::new())));
+    let path = vk_agents::install::Dirs::from_env()
+        .codex
+        .join("session_index.jsonl");
+    let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok()?;
+    let mut cache = CACHE.lock().unwrap();
+    if cache.0 != Some(mtime) {
+        *cache = (Some(mtime), std::fs::read_to_string(&path).ok()?);
+    }
+    transcript::codex_thread_name(&cache.1, session)
 }
 
 /// What the transcript says the run is doing (for the arbiter's `reconcile`): `Idle` when the

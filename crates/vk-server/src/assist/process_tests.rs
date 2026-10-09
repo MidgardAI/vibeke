@@ -144,6 +144,7 @@ impl Env {
             capabilities: vec![],
             usage: Default::default(),
             rate_limit: None,
+            title: None,
         };
         self.commit(|tx| {
             tx.run(r);

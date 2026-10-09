@@ -159,6 +159,33 @@ fn desk_finds_live_session_and_drafts_send_safely() {
     let sessions = s.json(&["desk", "sessions", "--harness", "claude"]);
     assert_eq!(sessions["sessions"][0]["session"], "desk-sess-1");
 
+    // The run's title: the first prompt, then the title Claude generates, then the user's.
+    let title = |want: &str| {
+        s.until(&format!("run title {want:?}"), 15, || {
+            let v = s.json(&["agent", "get", &run]);
+            let r = if v["run"].is_object() { &v["run"] } else { &v };
+            (r["title"] == want).then_some(())
+        })
+    };
+    title("Fix the flaky websocket reconnect");
+    let mut f = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&transcript)
+        .unwrap();
+    use std::io::Write;
+    writeln!(
+        f,
+        r#"{{"type":"ai-title","aiTitle":"Websocket reconnect fix","sessionId":"desk-sess-1"}}"#
+    )
+    .unwrap();
+    title("Websocket reconnect fix");
+    writeln!(
+        f,
+        r#"{{"type":"custom-title","customTitle":"reconnect","sessionId":"desk-sess-1"}}"#
+    )
+    .unwrap();
+    title("reconnect");
+
     // Drafts: kept outside the agent input, sent only through the guarded path.
     let ws = s.json(&["pane", "get", &pane])["pane"]["workspace"]
         .as_str()

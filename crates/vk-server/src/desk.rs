@@ -1231,6 +1231,7 @@ fn template_run(harness: &str, session: &str, argv: Vec<String>, cwd: Option<Str
         capabilities: vec![],
         usage: Default::default(),
         rate_limit: None,
+        title: None,
     }
 }
 

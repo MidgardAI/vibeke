@@ -182,6 +182,16 @@
               "type": "null"
             }
           ]
+        },
+        "title": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [
@@ -30628,6 +30638,34 @@
         "required": [
           "agent_id",
           "agent_type"
+        ]
+      }
+    },
+    "agent.titled": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "run": {
+            "type": "string"
+          },
+          "pane": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "run",
+          "pane"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "title"
         ]
       }
     },

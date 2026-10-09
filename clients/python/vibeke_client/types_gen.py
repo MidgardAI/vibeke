@@ -55,6 +55,7 @@ AgentRun = TypedDict("AgentRun", {
     "capabilities": List[str],
     "usage": NotRequired["RunUsage"],
     "rate_limit": NotRequired[Optional["RateLimitInfo"]],
+    "title": NotRequired[Optional[str]],
 })
 
 AgentState: TypeAlias = Literal["starting", "working", "idle", "error", "rate_limited", "exited", "unknown"]
@@ -8604,6 +8605,15 @@ AgentSubagentStartedData = TypedDict("AgentSubagentStartedData", {
     "agent_type": str,
 })
 
+AgentTitledSubject = TypedDict("AgentTitledSubject", {
+    "run": str,
+    "pane": str,
+})
+
+AgentTitledData = TypedDict("AgentTitledData", {
+    "title": str,
+})
+
 AgentTurnCompletedSubject = TypedDict("AgentTurnCompletedSubject", {
     "run": str,
     "pane": str,
@@ -11109,6 +11119,7 @@ EVENT_TYPES = (
     "agent.state_changed",
     "agent.subagent_finished",
     "agent.subagent_started",
+    "agent.titled",
     "agent.turn_completed",
     "agent.turn_started",
     "agent.turn_usage",

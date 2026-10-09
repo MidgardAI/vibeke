@@ -152,7 +152,7 @@ export const workspaceLabel = (w: Workspace | undefined): string => (w ? display
 
 /** One-line label of a pane row: workspace · tab title / pane title. */
 export function rowTitle(r: PaneRow): string {
-  return r.pane.title ?? r.run?.name ?? r.pane.auto_title;
+  return r.pane.title ?? r.run?.name ?? r.run?.title ?? r.pane.auto_title;
 }
 
 /** Previous/next pane keys on the same host in tree order (pane view prev/next). */

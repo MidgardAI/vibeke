@@ -121,6 +121,10 @@ describe('agent view tabs and ?show=', () => {
       ['a:p1', 'agent'],
       ['t:p2', 'term'],
     ]);
+    // An unnamed agent's tab shows its harness until the session has a title.
+    expect(workspaceTabs(row, [])[0]!.label).toBe(row.panes[0]!.run!.harness);
+    const titled = { ...row, panes: row.panes.map((p) => (p.run ? { ...p, run: { ...p.run, title: 'Fix the reconnect bug' } } : p)) };
+    expect(workspaceTabs(titled, [])[0]!.label).toBe('Fix the reconnect bug');
   });
 
   test('routes carry ?show=conversation, and pane links keep show into the workspace', () => {

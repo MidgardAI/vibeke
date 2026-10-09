@@ -54,6 +54,7 @@ export type AgentRun = {
   capabilities: string[];
   usage?: RunUsage;
   rate_limit?: RateLimitInfo | null;
+  title?: string | null;
 };
 
 export type AgentState = "starting" | "working" | "idle" | "error" | "rate_limited" | "exited" | "unknown";
@@ -8456,6 +8457,15 @@ export type AgentSubagentStartedData = {
   agent_type: string;
 };
 
+export type AgentTitledSubject = {
+  run: string;
+  pane: string;
+};
+
+export type AgentTitledData = {
+  title: string;
+};
+
 export type AgentTurnCompletedSubject = {
   run: string;
   pane: string;
@@ -10947,6 +10957,7 @@ export interface EventMap {
   "agent.state_changed": { subject: AgentStateChangedSubject; data: AgentStateChangedData };
   "agent.subagent_finished": { subject: AgentSubagentFinishedSubject; data: AgentSubagentFinishedData };
   "agent.subagent_started": { subject: AgentSubagentStartedSubject; data: AgentSubagentStartedData };
+  "agent.titled": { subject: AgentTitledSubject; data: AgentTitledData };
   "agent.turn_completed": { subject: AgentTurnCompletedSubject; data: AgentTurnCompletedData };
   "agent.turn_started": { subject: AgentTurnStartedSubject; data: AgentTurnStartedData };
   "agent.turn_usage": { subject: AgentTurnUsageSubject; data: AgentTurnUsageData };

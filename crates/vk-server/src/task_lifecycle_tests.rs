@@ -106,6 +106,7 @@ fn mk_run(id: &str, pane: &str) -> AgentRun {
         capabilities: vec![],
         usage: Default::default(),
         rate_limit: None,
+        title: None,
     }
 }
 

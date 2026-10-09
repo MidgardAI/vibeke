@@ -135,6 +135,12 @@ pub struct Parser {
     last_codex_total: Option<u64>,
     activity: Option<Activity>,
     totals: TurnUsage,
+    /// A title the user gave the session (Claude `/rename`, pi/omp `/name`); wins over `auto_title`.
+    user_title: Option<String>,
+    /// A title the harness generated (Claude `ai-title`, omp `title`).
+    auto_title: Option<String>,
+    /// The first prompt, the fallback title.
+    first_prompt: Option<String>,
     /// Lines that were not valid JSON.
     pub skipped: u64,
 }
@@ -155,6 +161,9 @@ impl Parser {
             last_codex_total: None,
             activity: None,
             totals: TurnUsage::default(),
+            user_title: None,
+            auto_title: None,
+            first_prompt: None,
             skipped: 0,
         }
     }
@@ -178,6 +187,27 @@ impl Parser {
 
     pub fn turns_done(&self) -> u32 {
         self.turns_done
+    }
+
+    /// The session's title: one the user set, else one the harness generated, else the first
+    /// prompt (one line, at most [`TITLE_MAX`] characters).
+    pub fn title(&self) -> Option<&str> {
+        self.user_title
+            .as_deref()
+            .or(self.auto_title.as_deref())
+            .or(self.first_prompt.as_deref())
+    }
+
+    /// Replace the generated title (omp rewrites its title line in place, so the tailer reads it
+    /// from the file head instead of the stream).
+    pub fn set_auto_title(&mut self, t: Option<String>) {
+        self.auto_title = t;
+    }
+
+    fn prompt_seen(&mut self, text: &str) {
+        if self.first_prompt.is_none() {
+            self.first_prompt = clean_title(text);
+        }
     }
 
     /// Feed the next bytes of the file. A trailing partial line is kept for the next call.
@@ -313,6 +343,9 @@ impl Parser {
                 }
                 let meta = v.get("isMeta").and_then(Value::as_bool) == Some(true);
                 if had_text && !had_result && !sidechain && !meta {
+                    if let Some(t) = user_text(content) {
+                        self.prompt_seen(&t);
+                    }
                     let id = v
                         .get("uuid")
                         .and_then(Value::as_str)
@@ -380,6 +413,21 @@ impl Parser {
                     }
                 }
             }
+            Some("custom-title") => {
+                self.user_title = v
+                    .get("customTitle")
+                    .and_then(Value::as_str)
+                    .and_then(clean_title);
+            }
+            Some("ai-title") => {
+                if let Some(t) = v
+                    .get("aiTitle")
+                    .and_then(Value::as_str)
+                    .and_then(clean_title)
+                {
+                    self.auto_title = Some(t);
+                }
+            }
             _ => {}
         }
     }
@@ -401,6 +449,11 @@ impl Parser {
             }
             Some("event_msg") => match pty {
                 "user_message" | "task_started" | "turn_started" => {
+                    if pty == "user_message"
+                        && let Some(m) = p.get("message").and_then(Value::as_str)
+                    {
+                        self.prompt_seen(m);
+                    }
                     if pty == "user_message"
                         && self.in_turn
                         && self.activity == Some(Activity::Working)
@@ -506,8 +559,19 @@ impl Parser {
     // ---- pi / omp --------------------------------------------------------------------------
 
     fn pi(&mut self, v: &Value, out: &mut Vec<Event>) {
-        if v.get("type").and_then(Value::as_str) != Some("message") {
-            return;
+        match v.get("type").and_then(Value::as_str) {
+            Some("message") => {}
+            // `/name`: the latest entry wins, an empty name clears it.
+            Some("session_info") => {
+                self.user_title = v.get("name").and_then(Value::as_str).and_then(clean_title);
+                return;
+            }
+            // omp's title header (also read from the file head, see `head_title`).
+            Some("title") => {
+                self.auto_title = v.get("title").and_then(Value::as_str).and_then(clean_title);
+                return;
+            }
+            _ => return,
         }
         let ts = v
             .get("timestamp")
@@ -517,6 +581,9 @@ impl Parser {
         let entry_id = v.get("id").and_then(Value::as_str).map(str::to_string);
         match m.get("role").and_then(Value::as_str) {
             Some("user") => {
+                if let Some(t) = user_text(m.get("content")) {
+                    self.prompt_seen(&t);
+                }
                 let id = entry_id.unwrap_or_else(|| format!("prompt{}", self.turns_done + 1));
                 self.start_turn(id, ts, out);
             }
@@ -575,6 +642,75 @@ impl Parser {
             _ => {}
         }
     }
+}
+
+/// Longest title kept, in characters.
+pub const TITLE_MAX: usize = 80;
+
+/// One line, trimmed, at most [`TITLE_MAX`] characters (cut at a word when possible). Prompts that
+/// start with a harness wrapper (`<command-name>`, `<task-notification>`…) are not titles.
+fn clean_title(s: &str) -> Option<String> {
+    let line = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    if line.is_empty() || line.starts_with('<') {
+        return None;
+    }
+    if line.chars().count() <= TITLE_MAX {
+        return Some(line);
+    }
+    let cut: String = line.chars().take(TITLE_MAX - 1).collect();
+    let cut = match cut.rfind(' ') {
+        Some(i) if i > TITLE_MAX / 2 => &cut[..i],
+        _ => &cut[..],
+    };
+    Some(format!("{}…", cut.trim_end()))
+}
+
+/// The text of a user message: a string, or its `text` blocks joined.
+fn user_text(content: Option<&Value>) -> Option<String> {
+    match content? {
+        Value::String(s) => Some(s.clone()),
+        Value::Array(blocks) => {
+            let t: Vec<&str> = blocks
+                .iter()
+                .filter(|b| b.get("type").and_then(Value::as_str) == Some("text"))
+                .filter_map(|b| b.get("text").and_then(Value::as_str))
+                .collect();
+            (!t.is_empty()).then(|| t.join(" "))
+        }
+        _ => None,
+    }
+}
+
+/// omp's title from the head of its session file: the first line is a padded `title` entry the
+/// harness rewrites in place, so an incremental tail never sees the update.
+pub fn head_title(head: &[u8]) -> Option<String> {
+    let line = head.split(|b| *b == b'\n').next()?;
+    let v: Value = serde_json::from_slice(line).ok()?;
+    if v.get("type").and_then(Value::as_str) != Some("title") {
+        return None;
+    }
+    v.get("title").and_then(Value::as_str).and_then(clean_title)
+}
+
+/// Codex's thread name for `session` from `session_index.jsonl` (one `{id, thread_name}` line
+/// per rename; the last one for the id wins).
+pub fn codex_thread_name(index: &str, session: &str) -> Option<String> {
+    let mut name = None;
+    for l in index.lines() {
+        if !l.contains(session) {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<Value>(l) else {
+            continue;
+        };
+        if v.get("id").and_then(Value::as_str) == Some(session) {
+            name = v
+                .get("thread_name")
+                .and_then(Value::as_str)
+                .and_then(clean_title);
+        }
+    }
+    name
 }
 
 fn n64(v: &Value, k: &str) -> u64 {
@@ -636,6 +772,59 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    #[test]
+    fn titles_prefer_the_users_then_the_harness_then_the_first_prompt() {
+        use serde_json::json;
+        let mut p = Parser::new(Format::ClaudeJsonl);
+        p.feed(&lines(&[
+            json!({"type":"user","uuid":"u0","message":{"role":"user","content":"<command-name>/clear</command-name>"}}),
+            json!({"type":"user","uuid":"u1","message":{"role":"user","content":[{"type":"text","text":"  fix the\n reconnect bug  "}]}}),
+        ]));
+        assert_eq!(p.title(), Some("fix the reconnect bug"));
+        p.feed(&lines(&[
+            json!({"type":"ai-title","aiTitle":"PWA reconnect error"}),
+        ]));
+        assert_eq!(p.title(), Some("PWA reconnect error"));
+        p.feed(&lines(&[
+            json!({"type":"custom-title","customTitle":"reconnect"}),
+            json!({"type":"ai-title","aiTitle":"Later generated"}),
+        ]));
+        assert_eq!(p.title(), Some("reconnect"));
+
+        let mut pi = Parser::new(Format::PiJsonl);
+        pi.feed(&lines(&[
+            json!({"type":"message","id":"e1","message":{"role":"user","content":[{"type":"text","text":"add tests"}]}}),
+            json!({"type":"session_info","name":"Test pass"}),
+        ]));
+        assert_eq!(pi.title(), Some("Test pass"));
+        pi.feed(&lines(&[json!({"type":"session_info","name":""})]));
+        assert_eq!(pi.title(), Some("add tests"));
+
+        let mut codex = Parser::new(Format::CodexRollout);
+        codex.feed(&lines(&[
+            json!({"type":"event_msg","payload":{"type":"user_message","message":"plan the update flow"}}),
+        ]));
+        assert_eq!(codex.title(), Some("plan the update flow"));
+    }
+
+    #[test]
+    fn long_titles_are_cut_at_a_word() {
+        let t = clean_title(&"word ".repeat(40)).unwrap();
+        assert!(t.chars().count() <= TITLE_MAX);
+        assert!(t.ends_with("word…"));
+        assert_eq!(clean_title("   "), None);
+    }
+
+    #[test]
+    fn omp_head_and_codex_index_titles() {
+        let head = b"{\"type\":\"title\",\"v\":1,\"title\":\"Describe the brand\",\"source\":\"auto\",\"pad\":\"   \"}\n{\"type\":\"session\"}\n";
+        assert_eq!(head_title(head).as_deref(), Some("Describe the brand"));
+        assert_eq!(head_title(b"{\"type\":\"session\"}\n"), None);
+        let index = "{\"id\":\"a\",\"thread_name\":\"First\"}\n{\"id\":\"b\",\"thread_name\":\"Other\"}\n{\"id\":\"a\",\"thread_name\":\"Renamed\"}\n";
+        assert_eq!(codex_thread_name(index, "a").as_deref(), Some("Renamed"));
+        assert_eq!(codex_thread_name(index, "c"), None);
     }
 
     #[test]

@@ -57,7 +57,7 @@ export function useEntityItems(go: {
       out.push({
         id: `p:${r.key}`,
         group: 'pane',
-        title: r.pane.title ?? r.run?.name ?? r.pane.auto_title,
+        title: r.pane.title ?? r.run?.name ?? r.run?.title ?? r.pane.auto_title,
         sub: [r.run ? harnessLabel(r.run.harness) : t.palette.pane, r.workspace ? displayName(r.workspace) : null, multi ? r.hostName : null].filter(Boolean).join(' · '),
         keywords: [r.pane.handle, r.run?.cwd ?? r.pane.cwd ?? ''].join(' '),
         run: () => go.pane(r.host, r.pane.id),

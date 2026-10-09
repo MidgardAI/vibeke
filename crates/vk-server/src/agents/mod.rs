@@ -780,6 +780,7 @@ pub(crate) fn new_run(
         capabilities: h.capabilities().iter().map(|s| s.to_string()).collect(),
         usage: Default::default(),
         rate_limit: None,
+        title: None,
     }
 }
 
@@ -3175,6 +3176,7 @@ pub(crate) fn harness_tests_run() -> AgentRun {
         capabilities: vec![],
         usage: Default::default(),
         rate_limit: None,
+        title: None,
     }
 }
 

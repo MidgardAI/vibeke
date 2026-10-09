@@ -333,6 +333,7 @@ pub(crate) mod testkit {
             capabilities: vec![],
             usage: Default::default(),
             rate_limit: None,
+            title: None,
         }
     }
 

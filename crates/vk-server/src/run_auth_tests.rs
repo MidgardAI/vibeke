@@ -560,6 +560,7 @@ fn agent_run(id: &str, pane: &str) -> vk_proto::model::AgentRun {
         capabilities: vec![],
         usage: Default::default(),
         rate_limit: None,
+        title: None,
     }
 }
 

@@ -31,7 +31,7 @@ export interface WsTab {
 
 const PREVIEW_HIDDEN = new Set(['gone', 'suggested']);
 
-export const paneLabel = (p: PaneRow): string => p.pane.title ?? p.run?.name ?? (p.run ? p.run.harness : p.pane.auto_title);
+export const paneLabel = (p: PaneRow): string => p.pane.title ?? p.run?.name ?? p.run?.title ?? (p.run ? p.run.harness : p.pane.auto_title);
 
 export function paneStatus(p: PaneRow): Status | null {
   if (p.attention === 'interaction' || p.run?.execution.value === 'error') return 'need';
