@@ -548,7 +548,7 @@ export class HostConnection implements HostConnectionApi {
     const base = Math.min(max, min * 2 ** this.attempts++);
     // Equal jitter: [base/2, base), so retries from many devices spread out but never hammer.
     const r = new DataView(random(4).buffer).getUint32(0) / 2 ** 32;
-    const delay = Math.round(base / 2 + (r * base) / 2);
+    const delay = Math.floor(base / 2 + (r * base) / 2);
     const gen = this.generation;
     this.retryTimer = clock.setTimeout(() => {
       this.retryTimer = null;
