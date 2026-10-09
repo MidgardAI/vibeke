@@ -671,8 +671,76 @@ pub(crate) async fn restart(g: &Global, bin: &Path) -> Result<(Counts, Counts)> 
     }
 }
 
+/// Whether a server reporting `server` should be restarted onto a CLI of version `cli`: only
+/// when it is strictly older. Unparsable versions never trigger a restart.
+fn server_outdated(server: &str, cli: &str) -> bool {
+    let parse = |v: &str| Version::parse(v.trim().trim_start_matches('v')).ok();
+    matches!((parse(server), parse(cli)), (Some(s), Some(c)) if s < c)
+}
+
+/// Before the TUI attaches to the local session: a server left running by an older
+/// installation (the installer only swaps links) is restarted onto this CLI's binary, so the
+/// session and its gateway run the installed version. Best effort: on failure the old server
+/// is attached as before. `VIBEKE_NO_AUTO_RESTART=1` opts out.
+pub(crate) async fn restart_if_outdated(g: &Global) {
+    if std::env::var("VIBEKE_NO_AUTO_RESTART").as_deref() == Ok("1") {
+        return;
+    }
+    let socket = client::socket_path(&g.session, g.socket.as_deref());
+    let running = tokio::time::timeout(Duration::from_secs(2), async {
+        let mut c = Client::new(client::connect(&socket).await.ok()?);
+        // A pane-scoped caller may not restart the server.
+        if is_pane_scope(&c.hello("cli").await.ok()?) {
+            return None;
+        }
+        let status = c.call("server.status", json!({})).await.ok()?;
+        status["version"].as_str().map(str::to_owned)
+    })
+    .await
+    .ok()
+    .flatten();
+    let Some(running) = running.filter(|v| server_outdated(v, vk_proto::VERSION)) else {
+        return;
+    };
+    let Some(bin) = crate::commands::current_bin() else {
+        return;
+    };
+    eprintln!(
+        "Restarting the Vibeke server (v{running} → v{})…",
+        vk_proto::VERSION
+    );
+    let r = async {
+        ensure_schema_compatible(g, &bin).await?;
+        restart(g, &bin).await
+    }
+    .await;
+    match r {
+        Ok((before, after)) => {
+            if let Some(warning) = pane_warning(before, after) {
+                eprintln!("{warning}");
+            }
+        }
+        Err(e) => eprintln!(
+            "could not restart the server: {e:#}; attaching to v{running}. Run `vibeke server restart` to retry"
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn only_an_older_server_is_restarted() {
+        use super::server_outdated;
+        assert!(server_outdated("0.2.0", "0.3.0"));
+        assert!(server_outdated("v0.2.9", "0.3.0"));
+        assert!(server_outdated("0.3.0-rc.1", "0.3.0"));
+        assert!(!server_outdated("0.3.0", "0.3.0"));
+        assert!(!server_outdated("0.4.0", "0.3.0"));
+        assert!(!server_outdated("dev", "0.3.0"));
+        assert!(!server_outdated("0.2.0", "dev"));
+        assert!(!server_outdated("", "0.3.0"));
+    }
+
     #[test]
     fn pane_scoped_hello_is_detected() {
         assert!(super::is_pane_scope(

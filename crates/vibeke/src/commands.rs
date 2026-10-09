@@ -43,6 +43,11 @@ pub async fn attach(g: &Global, args: &[String]) -> i32 {
         eprintln!("{e:#}");
         return vk_cli::EXIT_NO_SERVER;
     }
+    // The installer swaps links but leaves a running server on its old image; a read-only
+    // watcher changes nothing, not even that.
+    if !readonly {
+        crate::update::restart_if_outdated(g).await;
+    }
     let mut specs = vec![local_spec_with(&g.session, socket.clone(), readonly)];
     if !readonly {
         specs.extend(crate::remote_specs(&config, g));
@@ -211,15 +216,22 @@ pub async fn server(g: &Global, args: &[String]) -> i32 {
 }
 
 /// `vibeke server restart [--binary PATH]`: `server.restart`, then wait until the new image
-/// answers.
+/// answers. Without `--binary` the server restarts onto this CLI's executable, so a restart
+/// after an upgrade lands on the installed version rather than the image the server pinned.
 async fn restart_local(g: &Global, args: &[String]) -> i32 {
-    let params = match vk_cli::build_params(&[], args) {
+    let mut params = match vk_cli::build_params(&[], args) {
         Ok(p) => p,
         Err(e) => {
             eprintln!("{e}\nvibeke server restart [--binary PATH]");
             return EXIT_USAGE;
         }
     };
+    if params.get("binary").is_none()
+        && let Some(obj) = params.as_object_mut()
+        && let Some(bin) = current_bin()
+    {
+        obj.insert("binary".into(), json!(bin));
+    }
     let socket = client::socket_path(&g.session, g.socket.as_deref());
     let s = match client::connect(&socket).await {
         Ok(s) => s,
@@ -397,6 +409,12 @@ async fn run_server(g: &Global) -> i32 {
 /// shells still use the stable CLI link; holders must match their server's protocol.
 fn stable_bin(bin: &Path) -> PathBuf {
     std::fs::canonicalize(bin).unwrap_or_else(|_| bin.to_path_buf())
+}
+
+/// This CLI's pinned executable, when it still exists (an upgrade may have removed it).
+pub(crate) fn current_bin() -> Option<PathBuf> {
+    let bin = stable_bin(&std::env::current_exe().ok()?);
+    (bin.is_absolute() && bin.is_file()).then_some(bin)
 }
 
 // ---- notify -----------------------------------------------------------------------------------

@@ -818,6 +818,11 @@ async fn start_gateway(cfg: &Config, dir: &std::path::Path, restart: bool) -> Re
             Err(e) if e.kind == "unavailable" && std::time::Instant::now() < deadline => {
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
+            Err(e) if e.kind == "unavailable" => bail!(
+                "the Vibeke server didn't come up at {} ({}); check `vibeke server status`",
+                srv.path().display(),
+                e.message
+            ),
             Err(e) => bail!("{}: {}", e.kind, e.message),
         }
     }

@@ -3075,10 +3075,47 @@ mod clipboard_tests {
     fn key(k: Key) -> KeyEvent {
         KeyEvent::new(k, Mods::empty())
     }
+    fn ask_once(app: &mut App) {
+        app.config.clipboard.remote_write = vk_config::RemoteWrite::AskOnce;
+    }
+
+    #[test]
+    fn remote_writes_are_allowed_by_default() {
+        let (mut app, _rx) = test_app(2);
+        app.on_clipboard(1, "p1".into(), false, b"hi".to_vec());
+        assert_eq!(sink(&app), 1);
+        assert!(app.clip.pending.is_empty());
+    }
+
+    #[test]
+    fn prefix_y_opens_the_review_and_y_allows_and_copies() {
+        let (mut app, _rx) = test_app(2);
+        ask_once(&mut app);
+        assert!(!app.machines[1].local);
+        app.on_clipboard(1, "p1".into(), false, b"from devbox".to_vec());
+        assert_eq!(app.clip.pending.len(), 1);
+        assert_eq!(sink(&app), 0);
+        app.on_key(KeyEvent::new(Key::Char('b'), Mods::CTRL));
+        assert!(matches!(app.mode, Mode::Prefix(_)));
+        app.on_key(key(Key::Char('y')));
+        assert!(
+            matches!(app.mode, Mode::Popup(Popup::ClipboardAsk { .. })),
+            "prefix+y opens the review"
+        );
+        assert!(app.clip.pending.is_empty());
+        app.on_key(key(Key::Char('y')));
+        assert_eq!(sink(&app), 1);
+        assert_eq!(app.machines[1].clipboard_allowed, Some(true));
+        assert!(matches!(app.mode, Mode::Normal));
+        // Allowed for good: the next write goes straight through.
+        app.on_clipboard(1, "p1".into(), false, b"again".to_vec());
+        assert_eq!(sink(&app), 2);
+    }
 
     #[test]
     fn unsolicited_write_does_not_replace_the_ui_mode() {
         let (mut app, _rx) = test_app(2);
+        ask_once(&mut app);
         app.mode = Mode::Resize;
         app.on_clipboard(1, "p1".into(), false, b"hi".to_vec());
         assert!(matches!(app.mode, Mode::Resize));
@@ -3093,6 +3130,7 @@ mod clipboard_tests {
     #[test]
     fn review_popup_needs_explicit_keys() {
         let (mut app, _rx) = test_app(2);
+        ask_once(&mut app);
         app.on_clipboard(1, "p1".into(), false, b"secret".to_vec());
         app.review_clipboard();
         assert!(matches!(app.mode, Mode::Popup(Popup::ClipboardAsk { .. })));
@@ -3122,6 +3160,7 @@ mod clipboard_tests {
     #[test]
     fn prompts_are_rate_limited_per_pane() {
         let (mut app, _rx) = test_app(2);
+        ask_once(&mut app);
         app.on_clipboard(1, "p1".into(), false, b"1".to_vec());
         app.on_clipboard(1, "p1".into(), false, b"2".to_vec());
         app.on_clipboard(1, "p1".into(), false, b"3".to_vec());

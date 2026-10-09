@@ -29,16 +29,37 @@ pub fn socket_path(explicit: Option<PathBuf>, session: &str) -> PathBuf {
     {
         return PathBuf::from(sock);
     }
-    let root = if let Some(d) = std::env::var_os("VIBEKE_RUNTIME_DIR") {
-        PathBuf::from(d)
-    } else if let Some(d) = std::env::var_os("XDG_RUNTIME_DIR") {
-        PathBuf::from(d).join("vibeke")
-    } else {
-        // SAFETY: getuid has no preconditions.
-        let uid = unsafe { libc::getuid() };
-        std::env::temp_dir().join(format!("vibeke-{uid}"))
-    };
-    root.join(session).join("vibeke.sock")
+    // SAFETY: getuid has no preconditions.
+    let uid = unsafe { libc::getuid() };
+    runtime_root(
+        std::env::var_os("VIBEKE_RUNTIME_DIR"),
+        std::env::var_os("XDG_RUNTIME_DIR"),
+        std::env::var_os("TMPDIR"),
+        uid,
+    )
+    .join(session)
+    .join("vibeke.sock")
+}
+
+/// The server's runtime root (`vk_server::paths::runtime_root`), rule for rule. Not
+/// `std::env::temp_dir()`: without `$TMPDIR` it falls back to the per-user
+/// `/var/folders/…/T` on macOS, where the server's `/tmp/vibeke-<uid>` socket isn't.
+fn runtime_root(
+    vibeke: Option<std::ffi::OsString>,
+    xdg: Option<std::ffi::OsString>,
+    tmpdir: Option<std::ffi::OsString>,
+    uid: u32,
+) -> PathBuf {
+    if let Some(d) = vibeke {
+        return PathBuf::from(d);
+    }
+    if let Some(d) = xdg {
+        return PathBuf::from(d).join("vibeke");
+    }
+    tmpdir
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
+        .join(format!("vibeke-{uid}"))
 }
 
 type Pending = Arc<std::sync::Mutex<HashMap<u64, oneshot::Sender<Response>>>>;
@@ -253,4 +274,32 @@ async fn events_once(path: &PathBuf, hub: &Hub) -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::runtime_root;
+    use std::path::PathBuf;
+
+    #[test]
+    fn runtime_root_matches_the_server_rule() {
+        let s = |v: &str| Some(std::ffi::OsString::from(v));
+        assert_eq!(
+            runtime_root(s("/r"), s("/x"), s("/t"), 7),
+            PathBuf::from("/r")
+        );
+        assert_eq!(
+            runtime_root(None, s("/x"), s("/t"), 7),
+            PathBuf::from("/x/vibeke")
+        );
+        assert_eq!(
+            runtime_root(None, None, s("/t"), 7),
+            PathBuf::from("/t/vibeke-7")
+        );
+        // No $TMPDIR (e.g. `su`/`sudo -u` shells): /tmp, like the server, not /var/folders.
+        assert_eq!(
+            runtime_root(None, None, None, 7),
+            PathBuf::from("/tmp/vibeke-7")
+        );
+    }
 }

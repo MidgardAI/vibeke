@@ -487,9 +487,20 @@ async fn confirm(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     Ok(json!({"confirm": id, "choice": choice, "timed_out": timed_out}))
 }
 
-/// Only a TUI (chrome, out of band of any PTY) may answer a confirmation.
+/// Only a TUI (chrome, out of band of any PTY) may answer a confirmation. A TUI attached over
+/// SSH (`render.attach {remote: true}`) is still the user's own terminal; a phone reaches the
+/// server only through the gateway (kind `gateway`, never `tui`).
+fn may_answer(ctx: &Ctx) -> bool {
+    ctx.pane_scope.is_none()
+        && match ctx.kind.as_str() {
+            "tui" => true,
+            "anonymous" => !ctx.remote,
+            _ => false,
+        }
+}
+
 fn confirm_answer(server: &Server, ctx: &Ctx, p: &Value) -> R {
-    if ctx.pane_scope.is_some() || !matches!(ctx.kind.as_str(), "tui" | "anonymous") || ctx.remote {
+    if !may_answer(ctx) {
         return Err(err(
             ErrorKind::PermissionDenied,
             "confirmations are answered from the TUI",
@@ -512,6 +523,24 @@ fn confirm_answer(server: &Server, ctx: &Ctx, p: &Value) -> R {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn confirmations_are_answered_from_a_local_or_ssh_tui_only() {
+        let ctx = |kind: &str, remote: bool, pane: Option<&str>| Ctx {
+            client_id: "c".into(),
+            kind: kind.into(),
+            pane_scope: pane.map(str::to_string),
+            remote,
+        };
+        assert!(may_answer(&ctx("tui", false, None)));
+        // A TUI on another machine attached through `vibeke bridge`.
+        assert!(may_answer(&ctx("tui", true, None)));
+        assert!(may_answer(&ctx("anonymous", false, None)));
+        assert!(!may_answer(&ctx("anonymous", true, None)));
+        assert!(!may_answer(&ctx("gateway", true, None)));
+        assert!(!may_answer(&ctx("cli", false, None)));
+        assert!(!may_answer(&ctx("tui", false, Some("p1"))));
+    }
 
     #[test]
     fn claude_transcript_turns_are_stable() {

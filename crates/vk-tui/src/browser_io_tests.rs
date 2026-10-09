@@ -174,6 +174,7 @@ fn page_clipboard_is_judged_as_a_write_from_the_panes_owner() {
     );
     // A remote machine's page rendered by the local server: ask-once for that machine.
     let (mut app, _rxs) = setup(2);
+    app.config.clipboard.remote_write = vk_config::RemoteWrite::AskOnce;
     app.on_frame(
         0,
         ServerFrame::Clipboard {
@@ -254,6 +255,7 @@ fn page_clipboard_only_from_the_panes_media_host() {
     update_views(&mut app);
     assert!(crate::browser::renders(&app, 2, "bp"));
     app.machines[2].clipboard_allowed = None;
+    app.config.clipboard.remote_write = vk_config::RemoteWrite::AskOnce;
     clip(&mut app, 2, "bp", b"rendered remotely");
     assert!(app.clipboard_sink.as_ref().unwrap().is_empty());
     assert_eq!(app.clip.pending.len(), 1);

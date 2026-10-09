@@ -97,6 +97,9 @@ fn pairing(app: &mut App, rxs: &mut [UnboundedReceiver<ClientFrame>]) -> String 
         json!({"link": "https://app.example/#/pair?d=abc", "pid": pid,
                "open_by": now_s() + 600, "scope": "full"}),
     );
+    // The `gateway.status` asked after the link was made.
+    let cmds = commands(&mut rxs[0]);
+    assert!(cmds.iter().any(|c| c.1 == "gateway.status"), "{cmds:?}");
     pid
 }
 
@@ -206,11 +209,10 @@ fn polling_follows_claimed_then_done() {
     );
     let s = screen(&app);
     assert!(
-        s.contains(
-            "'Pixel 9' (android) is asking to pair — confirm in the prompt, fingerprint 12:34"
-        ),
+        s.contains("'Pixel 9' (android) is asking to pair — press y to pair or n to reject"),
         "{s}"
     );
+    assert!(s.contains("fingerprint 12:34"), "{s}");
     // Not again before a second has passed.
     tick(&mut app);
     assert!(commands(&mut rxs[0]).is_empty());
@@ -336,7 +338,8 @@ fn a_late_link_for_an_abandoned_attempt_is_cancelled() {
         json!({"link": "https://app.example/#/pair?d=new", "pid": "new1",
                "open_by": now_s() + 600, "scope": "approve"}),
     );
-    assert!(commands(&mut rxs[0]).is_empty());
+    let cmds = commands(&mut rxs[0]);
+    assert!(cmds.iter().all(|c| c.1 == "gateway.status"), "{cmds:?}");
     assert!(screen(&app).contains("approve access"));
 }
 
@@ -414,9 +417,10 @@ fn pair_phone_opens_the_scope_picker() {
     app.action("pair_phone", None);
     assert!(matches!(app.mode, Mode::Popup(Popup::Devices)));
     let cmds = commands(&mut rxs[0]);
-    assert_eq!(cmds.len(), 2, "{cmds:?}");
+    assert_eq!(cmds.len(), 3, "{cmds:?}");
     gw(&cmds, "devices.list");
     gw(&cmds, "account.status");
+    assert!(cmds.iter().any(|c| c.1 == "gateway.status"), "{cmds:?}");
     let s = screen(&app);
     assert!(s.contains("Pair a phone: what may it do?"), "{s}");
     app.on_key(named(NamedKey::Escape));
@@ -714,4 +718,108 @@ fn the_gateways_sign_in_text_is_cleaned() {
     assert_eq!(s.code, CODE);
     assert_eq!(s.uri_complete, URI_COMPLETE);
     assert!(screen(&app).contains(CODE));
+}
+
+fn status_of(cmds: &[(u64, String, Value)]) -> u64 {
+    let m: Vec<_> = cmds.iter().filter(|c| c.1 == "gateway.status").collect();
+    assert_eq!(m.len(), 1, "expected one gateway.status in {cmds:?}");
+    m[0].0
+}
+
+fn due(app: &mut App) {
+    let Some(Stage::Pairing(p)) = app.ux.devices.as_mut().map(|v| &mut v.stage) else {
+        panic!("pairing");
+    };
+    p.polled_at = Some(Instant::now() - POLL);
+    app.ux.devices.as_mut().unwrap().gw_asked = Some(Instant::now() - POLL * 3);
+}
+
+#[test]
+fn an_unreachable_gateway_hides_the_link_until_a_poll_succeeds() {
+    let (mut app, mut rxs) = opened();
+    pairing(&mut app, &mut rxs);
+    assert!(screen(&app).contains("https://app.example/#/pair?d=abc"));
+    tick(&mut app);
+    let (req, _) = gw(&commands(&mut rxs[0]), "pair.status");
+    reply_msg(&mut app, 0, req, "remote_unavailable", NOT_RUNNING);
+    let s = screen(&app);
+    assert!(s.contains(&format!("⚠ {NOT_RUNNING}")), "{s}");
+    assert!(!s.contains("https://app.example"), "{s}");
+    assert!(!s.contains('▀') && !s.contains('█'), "no QR: {s}");
+    assert!(s.contains("until it's back"), "{s}");
+    // `c` doesn't copy a link that can't be used.
+    app.on_key(ch('c'));
+    // While blocked, the server is asked whether the gateway is back.
+    due(&mut app);
+    tick(&mut app);
+    let cmds = commands(&mut rxs[0]);
+    let st = status_of(&cmds);
+    reply(
+        &mut app,
+        0,
+        st,
+        json!({"connected": true, "configured": true, "state": "online"}),
+    );
+    due(&mut app);
+    app.ux.devices.as_mut().unwrap().gw_asked = Some(Instant::now());
+    tick(&mut app);
+    let (req, _) = gw(&commands(&mut rxs[0]), "pair.status");
+    reply(&mut app, 0, req, json!({"status": "pending"}));
+    let s = screen(&app);
+    assert!(!s.contains('⚠'), "{s}");
+    assert!(s.contains("https://app.example/#/pair?d=abc"), "{s}");
+}
+
+#[test]
+fn a_gateway_that_is_not_online_shows_no_link_or_qr() {
+    let (mut app, mut rxs) = opened();
+    app.on_key(ch('n'));
+    confirm(&mut app, &mut rxs, open_relay());
+    let (req, _) = gw(&commands(&mut rxs[0]), "pair.create");
+    reply(
+        &mut app,
+        0,
+        req,
+        json!({"link": "https://app.example/#/pair?d=abc", "pid": "p1",
+               "open_by": now_s() + 600, "scope": "full"}),
+    );
+    let st = status_of(&commands(&mut rxs[0]));
+    reply(
+        &mut app,
+        0,
+        st,
+        json!({"connected": true, "configured": true, "state": "offline",
+               "last_error": "relay refused the connection"}),
+    );
+    let s = screen(&app);
+    assert!(s.contains("The gateway is offline (state offline)"), "{s}");
+    assert!(s.contains("relay refused the connection"), "{s}");
+    assert!(s.contains("vibeke gateway on"), "{s}");
+    assert!(!s.contains("https://app.example"), "{s}");
+    assert!(!s.contains('▀') && !s.contains('█'), "no QR: {s}");
+    // Back online (the poll while blocked asks again): the link returns.
+    due(&mut app);
+    tick(&mut app);
+    let st = status_of(&commands(&mut rxs[0]));
+    reply(
+        &mut app,
+        0,
+        st,
+        json!({"connected": true, "configured": true, "state": "online"}),
+    );
+    assert!(screen(&app).contains("https://app.example/#/pair?d=abc"));
+}
+
+#[test]
+fn a_server_without_gateway_status_behaves_as_before() {
+    let (mut app, mut rxs) = fleet();
+    commands(&mut rxs[0]);
+    app.action("devices", None);
+    let cmds = commands(&mut rxs[0]);
+    let st = status_of(&cmds);
+    reply_msg(&mut app, 0, st, "method_not_found", "no such method");
+    let (req, _) = gw(&cmds, "devices.list");
+    reply(&mut app, 0, req, devices_json());
+    let pid = pairing(&mut app, &mut rxs);
+    assert_eq!(pid, "pid42");
 }

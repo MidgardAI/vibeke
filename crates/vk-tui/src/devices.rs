@@ -157,7 +157,7 @@ pub struct Confirm {
 pub enum PairStatus {
     /// Nobody has opened the link.
     Pending,
-    /// A phone opened it and is asking to pair: confirm in the prompt.
+    /// A phone opened it and is asking to pair: y/n in the Confirm prompt.
     Claimed {
         name: String,
         platform: String,
@@ -181,6 +181,50 @@ pub struct Pairing {
     /// When the outstanding `pair.status` was sent. A reply lost to a reconnect never comes, so
     /// after [`STALE`] the next poll goes out anyway.
     inflight: Option<Instant>,
+}
+
+/// What `gateway.status` says: whether the gateway can serve a phone right now.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GwHealth {
+    pub connected: bool,
+    /// The supervisor's state when this server manages the gateway.
+    pub state: Option<String>,
+    pub last_error: Option<String>,
+}
+
+impl GwHealth {
+    fn from_value(x: &Value) -> GwHealth {
+        GwHealth {
+            connected: x["connected"].as_bool().unwrap_or(true),
+            state: s_of(x, "state"),
+            last_error: clean_of(x, "last_error"),
+        }
+    }
+
+    /// Why a link made now would be useless, if it would be. States this view can't judge
+    /// (`external`, `local_only`, none) pass as before.
+    fn problem(&self) -> Option<String> {
+        let bad = matches!(
+            self.state.as_deref(),
+            Some("off" | "starting" | "connecting" | "offline" | "login_required" | "crashed")
+        );
+        if !self.connected || bad {
+            let state = match &self.state {
+                Some(st) if bad => format!(" (state {st})"),
+                _ => String::new(),
+            };
+            let why = self
+                .last_error
+                .as_deref()
+                .map(|e| format!(" — {e}"))
+                .unwrap_or_default();
+            Some(format!(
+                "The gateway is offline{state}{why}: a phone can't use a link until it's online — run `vibeke gateway on`"
+            ))
+        } else {
+            None
+        }
+    }
 }
 
 /// Where a relay-account sign-in stands (`account.login.status`).
@@ -296,6 +340,10 @@ pub struct View {
     pub stage: Stage,
     /// `account.status`, when the gateway answered it.
     pub account: Option<Account>,
+    /// `gateway.status`, when the server answered it (older servers don't).
+    pub gw: Option<GwHealth>,
+    /// When `gateway.status` was last asked while the pairing link can't be used.
+    gw_asked: Option<Instant>,
     /// The `pair.create` (or the `account.status` / `account.login.start` before it) this view
     /// waits for; any other answer is an abandoned attempt.
     creating: Option<u64>,
@@ -314,6 +362,8 @@ impl View {
             confirm: None,
             stage: Stage::List,
             account: None,
+            gw: None,
+            gw_asked: None,
             creating: None,
         }
     }
@@ -352,6 +402,8 @@ pub enum Reply {
     LoginStatus {
         id: String,
     },
+    /// `gateway.status`: is the gateway online?
+    GatewayInfo,
 }
 
 fn gw(app: &mut App, mi: usize, method: &str, params: Value, r: Reply) {
@@ -381,6 +433,7 @@ fn open_on(app: &mut App, mi: usize, stage: Stage) {
     app.mode = Mode::Popup(Popup::Devices);
     refresh(app);
     gw(app, mi, "account.status", json!({}), Reply::AccountInfo);
+    ask_gateway_status(app, mi);
 }
 
 fn refresh(app: &mut App) {
@@ -419,6 +472,15 @@ pub fn tick(app: &mut App) {
         return;
     };
     let mi = v.mi;
+    // A link that can't be used yet: watch for the gateway coming back.
+    if matches!(v.stage, Stage::Pairing(_))
+        && link_blocked(v).is_some()
+        && v.gw_asked.is_none_or(|t| now.duration_since(t) >= 2 * POLL)
+    {
+        v.gw_asked = Some(now);
+        ask_gateway_status(app, mi);
+        return;
+    }
     // Expiry is the gateway's call (`gone`, `expired`): its clock, and a pairing or sign-in may
     // finish at the last second.
     let (polled_at, inflight, method, params, reply) = match &mut v.stage {
@@ -482,6 +544,28 @@ fn ask_revoke(v: &mut View) {
         }
         None => v.notice = Some("nothing selected".into()),
     }
+}
+
+/// Why the pairing link can't be used right now: the gateway is unreachable, or the server says
+/// it is not online.
+fn link_blocked(v: &View) -> Option<String> {
+    if v.error.is_some() {
+        return Some(
+            "The gateway is unreachable: a phone can't use a link until it's back — run `vibeke gateway on`"
+                .into(),
+        );
+    }
+    v.gw.as_ref().and_then(GwHealth::problem)
+}
+
+/// Ask the server for `gateway.status` (a server method, not bridged to the gateway).
+fn ask_gateway_status(app: &mut App, mi: usize) {
+    app.command_on(
+        mi,
+        "gateway.status",
+        json!({}),
+        Pending::Ux(crate::ux::Reply::Devices(Reply::GatewayInfo)),
+    );
 }
 
 fn revoke(app: &mut App, c: Confirm) {
@@ -588,6 +672,7 @@ pub fn key(app: &mut App, ev: KeyEvent) {
     let up = matches!(ev.key, Key::Char('k') | Key::Named(NamedKey::Up));
     let down = matches!(ev.key, Key::Char('j') | Key::Named(NamedKey::Down));
     let enter = matches!(ev.key, Key::Named(NamedKey::Enter));
+    let blocked = link_blocked(v).is_some();
     match &mut v.stage {
         Stage::List => {
             if let Some(c) = v.confirm.take() {
@@ -636,8 +721,10 @@ pub fn key(app: &mut App, ev: KeyEvent) {
                 v.stage = Stage::List;
                 cancel_link(app, mi, &pid);
             } else if plain && matches!(ev.key, Key::Char('c')) {
-                let link = p.link.clone();
-                app.copy_text(&link);
+                if !blocked {
+                    let link = p.link.clone();
+                    app.copy_text(&link);
+                }
             } else if plain && matches!(ev.key, Key::Char('n')) && p.status == PairStatus::Expired {
                 v.stage = Stage::PickScope { sel: 0 };
             }
@@ -759,6 +846,7 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
                         Some(link) if !pid.is_empty() => {
                             // "Signed in as …" stays up while the phone pairs.
                             v.notice = v.notice.take().filter(|n| n.starts_with("Signed in"));
+                            v.gw_asked = Some(Instant::now());
                             v.stage = Stage::Pairing(Pairing {
                                 pid,
                                 link,
@@ -768,6 +856,7 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
                                 polled_at: None,
                                 inflight: None,
                             });
+                            ask_gateway_status(app, mi);
                         }
                         _ => v.notice = Some("✗ the gateway returned no link".into()),
                     }
@@ -784,38 +873,48 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
             }
             p.inflight = None;
             match res {
-                Ok(x) => match x["status"].as_str() {
-                    Some("pending") => p.status = PairStatus::Pending,
-                    Some("claimed") => {
-                        p.status = PairStatus::Claimed {
-                            name: s_of(&x, "name").unwrap_or_default(),
-                            platform: s_of(&x, "platform").unwrap_or_default(),
-                            fingerprint: s_of(&x, "fingerprint").unwrap_or_default(),
+                Ok(x) => {
+                    // The gateway answered: the unreachable banner no longer holds.
+                    v.error = None;
+                    match x["status"].as_str() {
+                        Some("pending") => p.status = PairStatus::Pending,
+                        Some("claimed") => {
+                            p.status = PairStatus::Claimed {
+                                name: s_of(&x, "name").unwrap_or_default(),
+                                platform: s_of(&x, "platform").unwrap_or_default(),
+                                fingerprint: s_of(&x, "fingerprint").unwrap_or_default(),
+                            }
                         }
+                        Some("rejected") => p.status = PairStatus::Rejected,
+                        Some("gone") => p.status = PairStatus::Expired,
+                        Some("done") => {
+                            let name = s_of(&x, "name")
+                                .or_else(|| match &p.status {
+                                    PairStatus::Claimed { name, .. } if !name.is_empty() => {
+                                        Some(name.clone())
+                                    }
+                                    _ => None,
+                                })
+                                .unwrap_or_else(|| "your phone".into());
+                            v.stage = Stage::List;
+                            v.notice =
+                                Some(format!("Paired ✓ {}", crate::plugins::sanitize(&name, 40)));
+                            refresh(app);
+                        }
+                        _ => {}
                     }
-                    Some("rejected") => p.status = PairStatus::Rejected,
-                    Some("gone") => p.status = PairStatus::Expired,
-                    Some("done") => {
-                        let name = s_of(&x, "name")
-                            .or_else(|| match &p.status {
-                                PairStatus::Claimed { name, .. } if !name.is_empty() => {
-                                    Some(name.clone())
-                                }
-                                _ => None,
-                            })
-                            .unwrap_or_else(|| "your phone".into());
-                        v.stage = Stage::List;
-                        v.notice =
-                            Some(format!("Paired ✓ {}", crate::plugins::sanitize(&name, 40)));
-                        refresh(app);
-                    }
-                    _ => {}
-                },
+                }
                 // Keep asking: the next poll may get through.
                 Err(e) => failed(v, &e),
             }
         }
         Reply::Cancel => {}
+        Reply::GatewayInfo => {
+            // An older server doesn't know the method: behave as before.
+            if let Ok(x) = res {
+                v.gw = Some(GwHealth::from_value(&x));
+            }
+        }
         Reply::AccountInfo => {
             // An older gateway doesn't know the method: no account line.
             if let Ok(x) = res {
@@ -1134,7 +1233,7 @@ fn draw_pairing(app: &App, a: &mut crate::drafts::Area<'_>, v: &View, p: &Pairin
             wrap_lines(
                 a,
                 &format!(
-                    "'{who}'{plat} is asking to pair — confirm in the prompt, fingerprint {}",
+                    "'{who}'{plat} is asking to pair — press y to pair or n to reject in the Confirm prompt, fingerprint {}",
                     crate::plugins::sanitize(fingerprint, 80)
                 ),
                 t.bold(t.green),
@@ -1150,12 +1249,18 @@ fn draw_pairing(app: &App, a: &mut crate::drafts::Area<'_>, v: &View, p: &Pairin
         a.line(n, t.s(if n.starts_with('✗') { t.red } else { t.green }));
     }
     a.line("", t.text());
+    let blocked = link_blocked(v);
     if p.status != PairStatus::Expired {
-        draw_link_qr(app, a, &p.link);
+        match &blocked {
+            Some(why) => wrap_lines(a, why, t.bold(t.yellow)),
+            None => draw_link_qr(app, a, &p.link),
+        }
     }
     a.footer(
         if p.status == PairStatus::Expired {
             "n new link · esc back"
+        } else if blocked.is_some() {
+            "esc cancel"
         } else {
             "c copy link · esc cancel"
         },

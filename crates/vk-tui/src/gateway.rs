@@ -67,6 +67,43 @@ impl Confirm {
     }
 }
 
+/// The option `y` picks when no label starts with `y`: an affirmative id, else the first option.
+fn yes_index(options: &[(String, String)]) -> Option<usize> {
+    const YES: [&str; 5] = ["pair", "ok", "yes", "allow", "approve"];
+    options
+        .iter()
+        .position(|(id, _)| YES.contains(&id.to_ascii_lowercase().as_str()))
+        .or_else(|| (!options.is_empty()).then_some(0))
+}
+
+/// The option `n` picks when no label starts with `n`: a negative id, else the last of exactly two.
+fn no_index(options: &[(String, String)]) -> Option<usize> {
+    const NO: [&str; 4] = ["reject", "cancel", "no", "deny"];
+    options
+        .iter()
+        .position(|(id, _)| NO.contains(&id.to_ascii_lowercase().as_str()))
+        .or_else(|| (options.len() == 2).then_some(1))
+}
+
+/// The shortcut letter shown for option `i`, when `y`/`n` would pick it and its label's own
+/// initial doesn't already.
+fn yn_hint(options: &[(String, String)], i: usize) -> Option<char> {
+    let has = |c: char| {
+        options.iter().any(|(_, l)| {
+            l.chars()
+                .next()
+                .is_some_and(|f| f.to_ascii_lowercase() == c)
+        })
+    };
+    if !has('y') && yes_index(options) == Some(i) {
+        Some('y')
+    } else if !has('n') && no_index(options) == Some(i) {
+        Some('n')
+    } else {
+        None
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum KeyOutcome {
     /// Swallowed, nothing to do.
@@ -199,11 +236,19 @@ impl State {
                 let i = *ch as usize - '1' as usize;
                 (i < n).then_some(i)
             }
-            Key::Char(ch) => c.options.iter().position(|(_, l)| {
-                l.chars()
-                    .next()
-                    .is_some_and(|f| f.to_lowercase().eq(ch.to_lowercase()))
-            }),
+            Key::Char(ch) => c
+                .options
+                .iter()
+                .position(|(_, l)| {
+                    l.chars()
+                        .next()
+                        .is_some_and(|f| f.to_lowercase().eq(ch.to_lowercase()))
+                })
+                .or_else(|| match ch.to_ascii_lowercase() {
+                    'y' => yes_index(&c.options),
+                    'n' => no_index(&c.options),
+                    _ => None,
+                }),
             _ => None,
         };
         match pick.filter(|i| *i < n) {
@@ -611,7 +656,11 @@ pub fn draw_overlay(app: &App, g: &mut Grid) {
             t.text()
         };
         let mark = if i == c.sel { "▸" } else { " " };
-        b.line(&format!("{mark} [{}] {l}", i + 1), st);
+        let keys = match yn_hint(&c.options, i) {
+            Some(h) => format!("{}/{h}", i + 1),
+            None => (i + 1).to_string(),
+        };
+        b.line(&format!("{mark} [{keys}] {l}"), st);
     }
     b.line("", t.text());
     let secs = c.remaining(Instant::now()).as_secs();
@@ -626,7 +675,7 @@ pub fn draw_overlay(app: &App, g: &mut Grid) {
         if secs <= 10 { t.s(t.red) } else { t.dim() },
     );
     b.line(
-        "[1-9]/letter choose · [enter] selected · [esc] dismiss (no answer)",
+        "[1-9]/y/n/letter choose · [enter] selected · [esc] dismiss (no answer)",
         t.dim(),
     );
 }
@@ -656,6 +705,55 @@ mod tests {
             sel: 0,
             shown_at: now,
         }
+    }
+
+    #[test]
+    fn confirm_y_and_n_pick_affirmative_and_negative() {
+        let t0 = Instant::now();
+        let later = t0 + Duration::from_secs(1);
+        let pair = |extra: bool| {
+            let mut c = conf("p", t0, 30);
+            c.options = vec![
+                ("pair".into(), "Pair".into()),
+                ("reject".into(), "Reject".into()),
+            ];
+            if extra {
+                c.options.push(("later".into(), "Later".into()));
+            }
+            c
+        };
+        for (key, want) in [('y', "pair"), ('n', "reject"), ('Y', "pair")] {
+            let mut s = State::default();
+            s.push(pair(false));
+            match s.handle_key(&kev(Key::Char(key)), later) {
+                KeyOutcome::Answer { choice, .. } => assert_eq!(choice, want, "{key}"),
+                o => panic!("{key}: {o:?}"),
+            }
+        }
+        // Digits still work; the overlay advertises the letters.
+        let mut s = State::default();
+        s.push(pair(false));
+        assert!(matches!(
+            s.handle_key(&kev(Key::Char('2')), later),
+            KeyOutcome::Answer { choice, .. } if choice == "reject"
+        ));
+        // `n` with three unlabelled-negative options and no negative id does nothing.
+        let mut c = pair(true);
+        c.options[1].0 = "other".into();
+        let mut s = State::default();
+        s.push(c);
+        assert_eq!(s.handle_key(&kev(Key::Char('n')), later), KeyOutcome::None);
+        // A label that starts with the letter wins (Yes/No-style options).
+        let mut c = conf("q", t0, 30);
+        c.options = vec![("a".into(), "No thanks".into()), ("b".into(), "Yes".into())];
+        let mut s = State::default();
+        s.push(c);
+        assert!(matches!(
+            s.handle_key(&kev(Key::Char('y')), later),
+            KeyOutcome::Answer { choice, .. } if choice == "b"
+        ));
+        let o = pair(false).options;
+        assert_eq!((yn_hint(&o, 0), yn_hint(&o, 1)), (Some('y'), Some('n')));
     }
 
     #[test]
@@ -832,8 +930,8 @@ mod tests {
             "Confirm · m0",
             "Pair device",
             "Fingerprint 12-34",
-            "[1] Approve",
-            "[2] Cancel",
+            "[1/y] Approve",
+            "[2/n] Cancel",
             "expires in",
         ] {
             assert!(s.contains(needle), "missing {needle}:\n{s}");

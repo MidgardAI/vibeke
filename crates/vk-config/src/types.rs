@@ -60,7 +60,7 @@ choice_enum!(ShellMode { Auto = "auto", Login = "login", NonLogin = "non_login" 
 choice_enum!(GraphemeWidth { Auto = "auto", Unicode = "unicode", Legacy = "legacy" } default Auto);
 choice_enum!(AllowDeny { Allow = "allow", Deny = "deny" } default Allow);
 choice_enum!(Osc52Read { Deny = "deny", Ask = "ask", Allow = "allow" } default Deny);
-choice_enum!(RemoteWrite { AskOnce = "ask_once", Allow = "allow", Deny = "deny" } default AskOnce);
+choice_enum!(RemoteWrite { AskOnce = "ask_once", Allow = "allow", Deny = "deny" } default Allow);
 choice_enum!(MouseSelectInApps { Modifier = "modifier", Always = "always" } default Modifier);
 choice_enum!(PasteTranslate { PathsOnly = "paths_only", Embedded = "embedded", Ask = "ask", Off = "off" } default PathsOnly);
 choice_enum!(AltgrMode { Auto = "auto", Text = "text", Chord = "chord" } default Auto);
@@ -232,7 +232,7 @@ impl Default for Clipboard {
             copy_on_select: true,
             primary_selection: false,
             mouse_select_in_apps: MouseSelectInApps::Modifier,
-            remote_write: RemoteWrite::AskOnce,
+            remote_write: RemoteWrite::Allow,
             remote_write_max_bytes: ByteSize::mib(1),
             remote_write_min_interval: Dur::secs(5),
         }
