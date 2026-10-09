@@ -511,14 +511,17 @@ mod tests {
         let m = KeyEvent::ch('m');
         assert_eq!(km.resolve(&[], &m), Resolve::Descend);
         assert!(km.prefixed(&m).is_none());
-        match km.resolve(&[m.clone()], &KeyEvent::ch('w')) {
+        match km.resolve(std::slice::from_ref(&m), &KeyEvent::ch('w')) {
             Resolve::Exact(b) => assert_eq!(b.action, "new_tab"),
             other => panic!("{other:?}"),
         }
-        assert_eq!(km.resolve(&[m.clone()], &KeyEvent::ch('q')), Resolve::None);
+        assert_eq!(
+            km.resolve(std::slice::from_ref(&m), &KeyEvent::ch('q')),
+            Resolve::None
+        );
         assert_eq!(km.resolve(&[], &KeyEvent::ch('~')), Resolve::None);
         // The level under `m` lists both; the top level shows one submenu of two.
-        let level = km.level(&[m.clone()]);
+        let level = km.level(std::slice::from_ref(&m));
         assert_eq!(level.len(), 2);
         assert!(matches!(level[0].1, LevelEntry::Action(b) if b.action == "new_tab"));
         let top = km.level(&[]);
