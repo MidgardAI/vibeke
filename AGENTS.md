@@ -4,6 +4,72 @@ Vibeke is public. Keep committed documentation, examples, screenshots, and relea
 
 Preserve unrelated changes in the shared checkout. Check `git status` and the current branch before editing. Verify the current remote state before pushing. Use the current code and published assets as evidence; design specifications are not proof that a feature shipped.
 
+## Repository map
+
+- `crates/vibeke`: main binary, setup/doctor/update commands, and integration tests in `crates/vibeke/tests/`.
+- `crates/vk-server`: state actor, JSON-RPC API (`api.rs`), schema registry (`api_schema.rs`), render stream, agents, gateway supervisor. `vk-hold` is the per-pane holder that owns the PTY and survives server restarts. `vk-store` holds SQLite state and scrollback.
+- `crates/vk-proto`: wire types. JSON-RPC is `vibeke/1`; the render stream is postcard with `render::PROTOCOL`; `holder.rs` is the holder protocol.
+- `crates/vk-term`: VT engine over vendored libghostty-vt, built with Zig by `build.rs` (pin and patches in `vendor/`).
+- `crates/vk-tui`, `crates/vk-cli`: TUI client and CLI. `vibeke <noun> <verb> --flag` maps to API namespace, method and params; commands that make several calls live in modules such as `vk-cli/src/verbs.rs`.
+- Remote access: `vk-gateway` (host bridge), `vk-relay` (content-blind relay), `vk-e2e` (Noise channel and pairing), `vk-account`, `vk-remote` (SSH bootstrap).
+- `crates/vk-config`: config schema (`types.rs`, `default_config.toml`) and default keymap (`keys.rs`, conflict check `check_keys`).
+- `web/`: bun workspace. `packages/core` (protocol, no DOM) and `packages/ui` (all app screens) are shared by `apps/pwa` and `apps/desktop`, which only implement `UiPlatform`. `apps/site` is the independent product site. See `web/README.md`.
+- `clients/`, `integrations/`: API clients and harness plugins. `spec/` holds design specs cited in code as `spec NN §x`.
+
+## Build and test
+
+- Toolchains are pinned in `mise.toml`. The system `cargo` may be older than the workspace `rust-version`; use `cargo +<pinned version>` or `mise exec -- cargo …`. `vk-term` needs the pinned Zig on `PATH` or in `ZIG`.
+- A new worktree needs `mise trust` before its first build; otherwise cargo falls back to an older toolchain and fails to load the manifest.
+- Rust checks: `mise run ci` (fmt, clippy `-D warnings`, cargo-deny, nextest). While iterating, run targeted tests: `cargo nextest run -p <crate> <filter>` or `cargo test -p vibeke --test <file> <name>`. In a shared checkout, format with `cargo fmt -p <crate>`, not `--all`. For releases, GitHub CI replaces local full runs (see below).
+- Web checks, from `web/`: `bun install --frozen-lockfile`, `bun run typecheck`, `bun run test`. `bun run build` builds the PWA; use `build:site` and `build:desktop` for the others. Commit `web/bun.lock` when dependencies or workspace versions change.
+- Generated files fail their tests when stale. Regenerate in this order, then rerun without the variables:
+  1. `VIBEKE_UPDATE_DOCS=1 cargo test -p vibeke --test api_docs` (API schema and site reference; `api_clients` compares against it)
+  2. `VIBEKE_UPDATE_CLIENTS=1 cargo test -p vibeke --test api_clients` (Python and TypeScript clients)
+  3. `mise run pi-extension` (`integrations/pi-extension/dist/vibeke.js` is committed and embedded)
+- A new API method needs an entry in the method tables of `api_schema.rs` (with its `mutating` flag), a deliberate pane scope (`api::pane_scope_of`), and an integration test or a reasoned entry in `crates/vibeke/tests/api_method_allowlist.txt` (checked by `api_method_coverage.rs`).
+
+## Compatibility rules
+
+- `vibeke/1` is additive only. Clients must ignore unknown fields and events. The frozen schema is `docs/api/vibeke-1.frozen.json`; update it with `VIBEKE_UPDATE_API_FREEZE=1`, and a deliberate break also needs `VIBEKE_API_FREEZE_ALLOW_BREAK=1` plus the `api-break-approved` PR label for the schema-diff workflow.
+- The render stream is positional (postcard): any field change is breaking and requires bumping `PROTOCOL` in `vk-proto/src/render.rs`.
+- A new server must keep talking to holders started by an older version. Do not reorder or remove holder protocol variants or extend frames that older peers decode.
+
+## Code and test conventions
+
+- All state mutations go through `Core::commit` (`vk-server/src/core.rs`): it writes entities and events in one SQLite transaction and only then updates memory.
+- Many unit tests sit in sibling `*_tests.rs` files. Most integration tests use `crates/vibeke/tests/support/mod.rs::Session`, which runs the real binary in isolated `VIBEKE_*` directories.
+- Unix socket paths must stay under 104 bytes (macOS limit). Tests create short directories under `/tmp`; do not root test sockets in a long `TMPDIR`.
+- Fix flaky tests at the cause: wait for a condition instead of sleeping, use relative time bounds and free ports, and assume a loaded machine.
+- Redact sensitive output with `vk-redact` before it reaches logs, events or debug bundles; event storage does not redact for you.
+- Host CLI targets are macOS and Linux only; Windows is desktop-only. Sandboxing is Seatbelt on macOS and bubblewrap on Linux.
+- Fuzz targets are `fn(&[u8])`, registered in `vk-fuzz/src/targets.rs`. Do not add fuzzing crates to the main lockfile (`docs/hardening.md`).
+
+## Parallel work and sub-agents
+
+- Several agent sessions may edit the checkout at once. Stage your own paths explicitly and review `git diff --cached`; never `git add -A` or `git commit -a`. If `main` was rewritten, rebase onto it.
+- Give each sub-agent its own branch and worktree, rebased on current `main`. Remove worktrees with `git worktree remove` and delete merged branches.
+- Sub-agents write code and run `cargo fmt -p <crate>` only. They do not compile, run clippy or run test suites: parallel cold builds slow the machine for everyone. The main agent merges the branches, then builds and tests once at the end.
+- Use a faster model for sub-agents that make straightforward changes: Sonnet 5.5 in Claude Code, `gpt-6.1-sol` in Codex. Keep the main model for design work and difficult fixes.
+- Before merging to `main`, have a different coding agent review the final diff, read-only:
+  - From Claude Code, use Codex: `codex exec -s read-only -m gpt-6-astra "<review prompt>"` (`codex review --base` does not accept a custom prompt).
+  - From Codex, use Claude Code: `claude -p --model claude-opus-5-5 --permission-mode plan "<review prompt>"`.
+- Fix the findings, review again, then fast-forward `main`.
+
+## Commits
+
+- Commit subjects are plain imperative sentences describing the change, optionally prefixed with an area (`Desktop e2e: …`). No conventional-commit tags and no AI co-author trailers.
+
+## Writing style
+
+Public docs, site copy and release notes follow the Simple English Wikipedia guide (https://simple.wikipedia.org/wiki/Wikipedia:How_to_write_Simple_English_pages):
+
+- Use common words. Explain a technical term the first time it appears, or link to its explanation.
+- Use active voice and subject-verb-object sentences.
+- Write one idea per sentence. Split sentences joined by "and", "but", "so" or a semicolon. Use at most one subordinate clause.
+- Do not use idioms or contractions.
+- Clarity is more important than brevity, but do not add filler (see Documentation conventions).
+- Docs and UI text may address the reader as "you".
+
 ## Public entry points
 
 - Repository and releases: `https://github.com/MidgardAI/vibeke`.
@@ -97,7 +163,7 @@ Download a fresh verification copy and verify both signatures and artifact check
 
 ### 4. Write release notes and update downloads
 
-Keep the public notes in `docs/release-notes/v<version>.md`. Use `v0.1.0.md` as a structural example, not as version or provenance data to copy unchanged.
+Keep the public notes in `docs/release-notes/v<version>.md`. Use `v0.1.0.md` as a structural example, not as version data to copy unchanged.
 
 Recommended order:
 
@@ -106,7 +172,6 @@ Recommended order:
 3. Direct desktop download table: OS, architecture, and format links.
 4. Browser/phone access and the current pairing instructions.
 5. Known limitations, upgrade behavior, and links to checksums/signatures.
-6. An expandable `<details>` section for exact build provenance and release-validation evidence. Preserve material caveats; do not hide a mismatch between source tags and shipped binaries behind a cleanup of wording.
 
 Use public installation instructions without GitHub login. Pin the CLI version in version-specific notes:
 
