@@ -32,10 +32,11 @@ export const FOLD_KEEP = 3;
 
 /**
  * User text cleaned for display: harness wrappers (`<command-name>/x</command-name>`, system
- * reminders, local command output) collapse to what the user typed. Empty → nothing to show.
+ * reminders, background-task notifications, local command output) collapse to what the user
+ * typed. Empty → nothing to show.
  */
 export function cleanUserText(text: string): string {
-  let s = text.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '');
+  let s = text.replace(/<(system-reminder|task-notification)>[\s\S]*?<\/\1>/g, '');
   const cmd = /<command-name>([\s\S]*?)<\/command-name>/.exec(s);
   if (cmd) {
     const args = /<command-args>([\s\S]*?)<\/command-args>/.exec(s);
