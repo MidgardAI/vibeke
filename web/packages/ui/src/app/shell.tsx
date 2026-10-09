@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import { Menu } from 'lucide-react';
+import { createPortal } from 'react-dom';
 import { useApp, useHosts, useNow } from './hooks';
 import { emitUi, isMacLike } from './keyboard';
 import { Button, IconButton, cx } from '../components/ui';
@@ -52,7 +53,8 @@ export function Toasts() {
   const app = useApp();
   const toasts = useStore(app.toasts);
   if (!toasts.length) return null;
-  return (
+  // Portalled like dialogs: #root is its own stacking context in the installed app (styles.css).
+  return createPortal(
     <div className="pointer-events-none fixed inset-x-0 bottom-6 z-[70] flex flex-col items-center gap-2 px-4 pb-safe">
       {toasts.map((x) => (
         <div
@@ -66,7 +68,8 @@ export function Toasts() {
           {x.text}
         </div>
       ))}
-    </div>
+    </div>,
+    document.body,
   );
 }
 
