@@ -806,7 +806,12 @@ pub fn take_output(app: &mut App) -> Vec<u8> {
 
 /// After the frame was written: iTerm2 inline images, then acks.
 pub fn after_write(app: &mut App, out: &mut Vec<u8>) {
-    if gfx(app) == Gfx::Iterm && matches!(app.mode, Mode::Normal | Mode::Prefix(_)) {
+    if gfx(app) == Gfx::Iterm
+        && matches!(
+            app.mode,
+            Mode::Normal | Mode::Prefix(crate::app::PrefixState { menu: false, .. })
+        )
+    {
         for (pid, r) in app.pane_rects() {
             let Some(pm) = app.browser.panes.get_mut(&pid) else {
                 continue;
@@ -1761,7 +1766,12 @@ pub(crate) fn deadlines(app: &App, now: Instant, d: &mut crate::deadline::Deadli
                 .map_or(now, |t| t + Duration::from_secs(10)),
         );
     }
-    if gfx(app) == Gfx::Iterm && matches!(app.mode, Mode::Normal | Mode::Prefix(_)) {
+    if gfx(app) == Gfx::Iterm
+        && matches!(
+            app.mode,
+            Mode::Normal | Mode::Prefix(crate::app::PrefixState { menu: false, .. })
+        )
+    {
         let interval = if app.caps.host_remote {
             INLINE_INTERVAL * 2
         } else {

@@ -662,7 +662,10 @@ pub fn observe(app: &mut App) {
     }
     if let Some(p) = session_popup(app)
         && app.focused_pane().as_deref() != Some(p.as_str())
-        && matches!(app.mode, Mode::Normal | Mode::Prefix(_))
+        && matches!(
+            app.mode,
+            Mode::Normal | Mode::Prefix(crate::app::PrefixState { menu: false, .. })
+        )
         && app
             .plugins
             .refocus_at
@@ -722,7 +725,10 @@ pub(crate) fn deadlines(app: &App, now: Instant, d: &mut crate::deadline::Deadli
         );
     }
     if let Some(t) = app.plugins.refocus_at
-        && matches!(app.mode, Mode::Normal | Mode::Prefix(_))
+        && matches!(
+            app.mode,
+            Mode::Normal | Mode::Prefix(crate::app::PrefixState { menu: false, .. })
+        )
         && let Some(p) = session_popup(app)
         && app.focused_pane().as_deref() != Some(p.as_str())
         && t + REFOCUS_EVERY > now

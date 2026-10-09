@@ -564,27 +564,64 @@ fn draw_groups(app: &App, g: &mut Grid, title: &str, groups: &[Group], footer: &
             .collect();
         (cols, heights, col_w)
     };
-    let (cols, heights, col_w) = (1..=groups.len())
-        .rev()
-        .map(pack)
-        .find(|(_, _, col_w)| {
-            col_w.iter().sum::<usize>() + GAP * col_w.len().saturating_sub(1) <= inner
-        })
-        .unwrap_or_else(|| pack(1));
+    let layout = |inner: usize| {
+        (1..=groups.len())
+            .rev()
+            .map(pack)
+            .find(|(_, _, col_w)| {
+                col_w.iter().sum::<usize>() + GAP * col_w.len().saturating_sub(1) <= inner
+            })
+            .unwrap_or_else(|| pack(1))
+    };
+    let max_h = area.h.saturating_sub(1).max(4);
+    let visible = (max_h as usize).saturating_sub(3); // borders + footer
+    // Rows past the bottom are not drawn; count the keys that hides.
+    let hidden_in = |cols: &[Vec<usize>]| -> usize {
+        cols.iter()
+            .map(|col| {
+                let mut at = 0;
+                let mut n = 0;
+                for gi in col {
+                    let gr = &groups[*gi];
+                    n += gr
+                        .items
+                        .len()
+                        .saturating_sub(visible.saturating_sub(at + 1));
+                    at += gr.items.len() + 2;
+                }
+                n
+            })
+            .sum()
+    };
+    // The menu is modal: when it does not fit the pane area it may cover the sidebar too.
+    let (mut ax, mut aw) = (area.x, area.w);
+    let mut packed = layout(inner);
+    if hidden_in(&packed.0) > 0 && app.size.0 > area.w {
+        (ax, aw) = (0, app.size.0);
+        packed = layout(aw.saturating_sub(4) as usize);
+    }
+    let (cols, heights, col_w) = packed;
     let ncols = cols.len();
+    let hidden = hidden_in(&cols);
+    let footer = if hidden > 0 {
+        let esc = footer
+            .split(" · ")
+            .find(|s| s.starts_with("esc"))
+            .unwrap_or(footer);
+        format!("{hidden} more · : palette has everything · {esc}")
+    } else {
+        footer.to_string()
+    };
     let body = heights.iter().copied().max().unwrap_or(0);
     let content_w = (col_w.iter().sum::<usize>() + GAP * ncols.saturating_sub(1))
         .max(title.width() + 2)
         .max(footer.width());
-    let max_h = area.h.saturating_sub(1).max(4);
-    let want = (body + 3) as u16; // borders + footer
-    let footer_on = want <= max_h;
-    let h = want.min(max_h).max(4);
-    let w = ((content_w + 4) as u16).min(area.w).max(20.min(area.w));
-    let x = area.x + (area.w - w) / 2;
+    let h = ((body + 3) as u16).min(max_h);
+    let w = ((content_w + 4) as u16).min(aw).max(20.min(aw));
+    let x = ax + (aw - w) / 2;
     let y = area.y + area.h - h;
     let mut b = crate::popups::frame_at(app, g, SRect { x, y, w, h }, title);
-    for row in 0..body {
+    for row in 0..visible.min(body) {
         let mut dx = 0;
         for (c, col) in cols.iter().enumerate() {
             // Which group, and which line of it, sits on this row of the column?
@@ -612,7 +649,5 @@ fn draw_groups(app: &App, g: &mut Grid, title: &str, groups: &[Group], footer: &
         }
         b.next();
     }
-    if footer_on {
-        b.line(footer, t.dim());
-    }
+    b.line(&footer, t.dim());
 }

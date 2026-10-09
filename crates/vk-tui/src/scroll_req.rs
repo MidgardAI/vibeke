@@ -66,7 +66,10 @@ fn apply(app: &mut App, mi: usize, pane: &str, offset: u32) -> bool {
         }
         return true;
     }
-    if !matches!(app.mode, Mode::Normal | Mode::Prefix(_)) {
+    if !matches!(
+        app.mode,
+        Mode::Normal | Mode::Prefix(crate::app::PrefixState { menu: false, .. })
+    ) {
         return false;
     }
     if offset == 0 {

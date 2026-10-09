@@ -291,11 +291,9 @@ pub fn display_key(ev: &KeyEvent) -> String {
                 c.to_lowercase().to_string()
             }
         }
-        Key::Char(c) => {
-            // Punctuation arrives shifted on some hosts; the character already says so.
-            mods = mods.without(Mods::SHIFT);
-            c.to_string()
-        }
+        // A shifted non-letter keeps `shift+`: `key_matches` requires it when the binding
+        // names it (`ctrl+shift+1`), and a bare `?` never carries it.
+        Key::Char(c) => c.to_string(),
         Key::Named(NamedKey::Escape) => "esc".into(),
         Key::Named(NamedKey::Up) => "↑".into(),
         Key::Named(NamedKey::Down) => "↓".into(),
@@ -393,7 +391,9 @@ mod tests {
         assert_eq!(display_key(&p("N")), "N");
         assert_eq!(display_key(&p("n")), "n");
         assert_eq!(display_key(&p("minus")), "-");
-        assert_eq!(display_key(&p("shift+question")), "?");
+        assert_eq!(display_key(&p("?")), "?");
+        assert_eq!(display_key(&p("shift+question")), "shift+?");
+        assert_eq!(display_key(&p("ctrl+shift+1")), "ctrl+shift+1");
         assert_eq!(display_key(&p("alt+d")), "alt+d");
         assert_eq!(display_key(&p("ctrl+shift+r")), "ctrl+R");
         assert_eq!(display_key(&p("tab")), "tab");

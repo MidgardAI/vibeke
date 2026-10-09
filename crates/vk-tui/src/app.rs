@@ -1978,13 +1978,6 @@ impl App {
                     self.send_key(ev);
                     return;
                 }
-                if matches!(ev.key, Key::Named(NamedKey::Escape)) {
-                    // Inside a submenu Esc goes up one level; at the top it closes.
-                    if p.seq.pop().is_some() {
-                        self.mode = Mode::Prefix(p);
-                    }
-                    return;
-                }
                 if p.seq.is_empty()
                     && (crate::plugins::prefix_key(self, &ev)
                         || crate::browser::prefix_key(self, &ev))
@@ -2003,6 +1996,12 @@ impl App {
                         p.menu = true;
                         p.since = Instant::now();
                         self.mode = Mode::Prefix(p);
+                    }
+                    // Esc with no binding: inside a submenu one level up, at the top close.
+                    Err(false) if matches!(ev.key, Key::Named(NamedKey::Escape)) => {
+                        if p.seq.pop().is_some() {
+                            self.mode = Mode::Prefix(p);
+                        }
                     }
                     Err(false) => {
                         let mut seq: Vec<String> =

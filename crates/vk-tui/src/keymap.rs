@@ -216,6 +216,8 @@ impl Keymap {
             let exact = b.chords.len() == seq.len() + 1;
             match out.iter_mut().find(|(k, _)| key_matches(k, next)) {
                 Some((_, LevelEntry::Submenu(n))) if !exact => *n += 1,
+                // An exact binding runs (`resolve`), so it is what the menu shows.
+                Some((_, e @ LevelEntry::Submenu(_))) => *e = LevelEntry::Action(b),
                 Some(_) => {}
                 None => out.push((
                     next.clone(),
@@ -528,6 +530,12 @@ mod tests {
             km.resolve(&[], &KeyEvent::ch('c')),
             Resolve::Exact(_)
         ));
+        // Whichever comes first, and the menu says so.
+        let km = with_keys(&[("new_tab", "prefix+m w"), ("zoom", "prefix+m")], "auto");
+        assert!(matches!(km.resolve(&[], &m), Resolve::Exact(b) if b.action == "zoom"));
+        let top = km.level(&[]);
+        let (_, entry) = top.iter().find(|(k, _)| key_matches(k, &m)).unwrap();
+        assert!(matches!(entry, LevelEntry::Action(b) if b.action == "zoom"));
         // Disabled menu: no delay.
         let mut cfg = vk_config::Config::default();
         assert_eq!(Keymap::from_config(&cfg).menu_ms, Some(400));

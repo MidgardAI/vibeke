@@ -274,6 +274,35 @@ fn prefix_twice_still_passes_through_and_releases_keep_the_menu() {
 }
 
 #[test]
+fn esc_still_reaches_bindings_and_hooks_first() {
+    let (mut app, mut rxs) = fleet();
+    rebind(&mut app, &[("zoom", "prefix+esc")]);
+    app.mode = Mode::Prefix(PrefixState::menu());
+    app.on_key(named(NamedKey::Escape));
+    assert!(matches!(app.mode, Mode::Normal));
+    only(&commands(&mut rxs[0]), "pane.zoom");
+}
+
+#[test]
+fn a_short_screen_says_how_many_keys_are_hidden() {
+    let (mut app, _rx) = fleet();
+    app.size = (80, 24);
+    app.action("help", None);
+    let s = screen(&app);
+    assert!(
+        s.contains(" more · : palette has everything · esc close"),
+        "{s}"
+    );
+    assert!(!s.contains("esc close · : palette"), "{s}");
+    assert!(s.lines().count() <= 24);
+    // Too narrow beside the sidebar: the menu takes the whole width and gets two columns.
+    assert!(
+        s.lines().any(|l| l.contains("PANE") && l.contains("FOCUS")),
+        "{s}"
+    );
+}
+
+#[test]
 fn resize_mode_draws_as_a_sticky_level() {
     let (mut app, _rx) = fleet();
     app.action("resize_mode", None);
