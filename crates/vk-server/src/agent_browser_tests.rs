@@ -474,18 +474,28 @@ async fn fetch_layer_blocks_schemes_and_internal_addresses() {
             .any(|c| c.1["requestId"] == "c1")
     })
     .await;
-    let net = e
-        .call(&a, "browser.network", json!({"session": "b1"}))
-        .await
-        .unwrap();
-    let blocked: Vec<&Value> = net["entries"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|x| !x["blocked_by_policy"].is_null())
-        .collect();
-    assert_eq!(blocked.len(), 4);
-    assert_eq!(e.events("browser.request_denied").len(), 4);
+    // The entry is recorded right after the decision goes out: poll for it rather than racing.
+    let t = Instant::now();
+    loop {
+        let net = e
+            .call(&a, "browser.network", json!({"session": "b1"}))
+            .await
+            .unwrap();
+        let blocked = net["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|x| !x["blocked_by_policy"].is_null())
+            .count();
+        if blocked == 4 && e.events("browser.request_denied").len() == 4 {
+            break;
+        }
+        assert!(
+            blocked <= 4 && t.elapsed() < Duration::from_secs(8),
+            "blocked entries: {blocked}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
