@@ -686,14 +686,15 @@ fn user_text(content: Option<&Value>) -> Option<String> {
 }
 
 /// omp's title from the head of its session file: the first line is a padded `title` entry the
-/// harness rewrites in place, so an incremental tail never sees the update.
-pub fn head_title(head: &[u8]) -> Option<String> {
+/// harness rewrites in place, so an incremental tail never sees the update. `None` when the first
+/// line cannot be read as JSON (mid-rewrite): keep the title you had. `Some(None)`: no title.
+pub fn head_title(head: &[u8]) -> Option<Option<String>> {
     let line = head.split(|b| *b == b'\n').next()?;
     let v: Value = serde_json::from_slice(line).ok()?;
     if v.get("type").and_then(Value::as_str) != Some("title") {
-        return None;
+        return Some(None);
     }
-    v.get("title").and_then(Value::as_str).and_then(clean_title)
+    Some(v.get("title").and_then(Value::as_str).and_then(clean_title))
 }
 
 /// Codex's thread name for `session` from `session_index.jsonl` (one `{id, thread_name}` line
@@ -826,8 +827,9 @@ mod tests {
     #[test]
     fn omp_head_and_codex_index_titles() {
         let head = b"{\"type\":\"title\",\"v\":1,\"title\":\"Describe the brand\",\"source\":\"auto\",\"pad\":\"   \"}\n{\"type\":\"session\"}\n";
-        assert_eq!(head_title(head).as_deref(), Some("Describe the brand"));
-        assert_eq!(head_title(b"{\"type\":\"session\"}\n"), None);
+        assert_eq!(head_title(head), Some(Some("Describe the brand".into())));
+        assert_eq!(head_title(b"{\"type\":\"session\"}\n"), Some(None));
+        assert_eq!(head_title(b"{\"type\":\"tit"), None);
         let index = "{\"id\":\"a\",\"thread_name\":\"First\"}\n{\"id\":\"b\",\"thread_name\":\"Other\"}\n{\"id\":\"a\",\"thread_name\":\"Renamed\"}\n";
         assert_eq!(codex_thread_name(index, "a").as_deref(), Some("Renamed"));
         assert_eq!(codex_thread_name(index, "c"), None);

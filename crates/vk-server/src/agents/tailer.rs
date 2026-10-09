@@ -228,9 +228,9 @@ pub fn poll_all(server: &Arc<Server>) -> usize {
             }
             t.offset = start + bytes.len() as u64;
             if t.parser.format() == Format::OmpJsonl
-                && let Some(h) = &head
+                && let Some(title) = head.as_deref().and_then(transcript::head_title)
             {
-                t.parser.set_auto_title(transcript::head_title(h));
+                t.parser.set_auto_title(title);
             }
             let title = t.parser.title().map(str::to_string);
             if bytes.is_empty() {
@@ -426,10 +426,15 @@ fn set_title(server: &Server, run_id: &str, harness: &str, from_transcript: Opti
         return;
     };
     let codex = Harness::from_id(harness).is_some_and(|h| h.family() == harness::Family::Codex);
-    let title = session
-        .filter(|_| codex)
-        .and_then(|s| codex_thread_name(&s))
-        .or(from_transcript);
+    let thread = match session.filter(|_| codex) {
+        // An unreadable index keeps the title the run has (no flapping to the first prompt).
+        Some(s) => match codex_thread_name(&s) {
+            Ok(t) => t,
+            Err(()) => return,
+        },
+        None => None,
+    };
+    let title = thread.or(from_transcript);
     // A cleared title (pi `/name` with an empty name) clears the run's too.
     if title == current {
         return;
@@ -444,19 +449,24 @@ fn set_title(server: &Server, run_id: &str, harness: &str, from_transcript: Opti
     });
 }
 
-/// `session_index.jsonl` in the Codex home, re-read only when it changed.
-fn codex_thread_name(session: &str) -> Option<String> {
+/// `session_index.jsonl` in the Codex home, re-read only when it changed. `Ok(None)` when Codex
+/// has no index yet or no name for the session; `Err` when the index exists but cannot be read.
+fn codex_thread_name(session: &str) -> Result<Option<String>, ()> {
     static CACHE: LazyLock<Mutex<(Option<std::time::SystemTime>, String)>> =
         LazyLock::new(|| Mutex::new((None, String::new())));
     let path = vk_agents::install::Dirs::from_env()
         .codex
         .join("session_index.jsonl");
-    let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok()?;
+    let mtime = match std::fs::metadata(&path).and_then(|m| m.modified()) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err(()),
+    };
     let mut cache = CACHE.lock().unwrap();
     if cache.0 != Some(mtime) {
-        *cache = (Some(mtime), std::fs::read_to_string(&path).ok()?);
+        *cache = (Some(mtime), std::fs::read_to_string(&path).map_err(|_| ())?);
     }
-    transcript::codex_thread_name(&cache.1, session)
+    Ok(transcript::codex_thread_name(&cache.1, session))
 }
 
 /// What the transcript says the run is doing (for the arbiter's `reconcile`): `Idle` when the
