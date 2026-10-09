@@ -215,6 +215,19 @@ impl PeerClient {
     }
 }
 
+/// What a handshake-time message says about a refusal: the plaintext answer of the host or relay
+/// (`{"error":"unauthorized",…}`, `rate_limited`, a version error), or the relay's
+/// `unauthorized` close (4401, e.g. a ticket revoked while the handshake was under way).
+fn refusal(m: &Message) -> Option<String> {
+    match m {
+        Message::Text(t) => Some(t.as_str().to_string()),
+        Message::Close(Some(f)) if u16::from(f.code) == vk_e2e::relay::close::UNAUTHORIZED => {
+            Some(format!("unauthorized ({})", f.reason.as_str()))
+        }
+        _ => None,
+    }
+}
+
 /// The host answered the handshake with a plaintext refusal (revoked, expired or unknown key).
 pub fn is_refusal(e: &anyhow::Error) -> bool {
     let s = format!("{e:#}");
@@ -408,12 +421,25 @@ impl Conn {
         hk: &[u8; 32],
         psk: Option<&[u8; 32]>,
     ) -> Result<Conn> {
-        let mut ws = dial(relay, host, ticket).await?;
+        let ws = dial(relay, host, ticket).await?;
+        Self::handshake_on(ws, host, hello, key, hk, psk).await
+    }
+
+    /// The handshake over an open socket: hello and Noise m1, then m2 or a refusal.
+    async fn handshake_on(
+        mut ws: Box<dyn Ws>,
+        host: &str,
+        hello: Hello,
+        key: &DeviceKey,
+        hk: &[u8; 32],
+        psk: Option<&[u8; 32]>,
+    ) -> Result<Conn> {
         let hb = hello.to_bytes();
         let mut i = Initiator::new(&hb, &key.private, hk, psk)?;
         let first = i.write_first(b"")?;
-        // The relay may refuse (a ticket problem) and close before our first frames land: its
-        // plaintext refusal is still readable, and is the better error.
+        // The relay may refuse (a ticket problem, or one revoked as we connect) and close before
+        // our first frames land, so writing fails (a broken pipe): its refusal is still readable,
+        // and is the better error.
         let sent = async {
             ws.send(Message::Text(String::from_utf8(hb.clone())?.into()))
                 .await?;
@@ -422,10 +448,18 @@ impl Conn {
         }
         .await;
         if let Err(e) = sent {
-            if let Ok(Some(Ok(Message::Text(t)))) =
-                tokio::time::timeout(Duration::from_secs(2), ws.next()).await
-            {
-                bail!("refused: {}", t.as_str());
+            let pending = tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    match ws.next().await {
+                        Some(Ok(Message::Ping(_) | Message::Pong(_) | Message::Frame(_))) => {}
+                        Some(Ok(m)) => return refusal(&m),
+                        _ => return None,
+                    }
+                }
+            })
+            .await;
+            if let Ok(Some(why)) = pending {
+                bail!("refused: {why}");
             }
             return Err(e);
         }
@@ -446,8 +480,8 @@ impl Conn {
                         info,
                     });
                 }
-                Some(Ok(Message::Text(t))) => bail!("refused: {}", t.as_str()),
                 Some(Ok(Message::Ping(_) | Message::Pong(_) | Message::Frame(_))) => {}
+                Some(Ok(m)) if let Some(why) = refusal(&m) => bail!("refused: {why}"),
                 other => bail!("handshake failed: {other:?}"),
             }
         }
@@ -653,6 +687,93 @@ mod tests {
         assert!(check_invitation_relay("local:/var/run/docker.sock", None, true).is_err());
         assert!(check_invitation_relay("local:", None, true).is_err());
         assert!(check_invitation_relay("ftp://x", None, true).is_err());
+    }
+
+    /// A host or relay end of a socket pair, and the device's handshake over the other end.
+    async fn handshake_against<F, Fut>(server: F) -> Result<Conn>
+    where
+        F: FnOnce(tokio_tungstenite::WebSocketStream<tokio::net::UnixStream>) -> Fut,
+        Fut: std::future::Future<Output = ()> + Send + 'static,
+    {
+        use tokio_tungstenite::tungstenite::protocol::Role;
+        let (a, b) = tokio::net::UnixStream::pair().unwrap();
+        let srv = tokio_tungstenite::WebSocketStream::from_raw_socket(a, Role::Server, None).await;
+        let dev = tokio_tungstenite::WebSocketStream::from_raw_socket(b, Role::Client, None).await;
+        tokio::spawn(server(srv)).await.unwrap();
+        let key = DeviceKey::generate();
+        let hk = DeviceKey::generate().public();
+        Conn::handshake_on(Box::new(dev), "h", Hello::device(), &key, &hk, None).await
+    }
+
+    fn close_frame(code: u16, reason: &str) -> Message {
+        use tokio_tungstenite::tungstenite::protocol::CloseFrame;
+        Message::Close(Some(CloseFrame {
+            code: code.into(),
+            reason: reason.into(),
+        }))
+    }
+
+    /// The relay revokes a ticket while the device is mid-handshake: it closes with 4401 and
+    /// no plaintext. Whether the device then reads that close or fails to write (a broken
+    /// pipe), it is a refusal, not a network error to retry.
+    #[tokio::test]
+    async fn revoked_ticket_close_is_a_refusal() {
+        // Closed before the device writes anything: the write fails, the close is still queued.
+        let e = handshake_against(|mut srv| async move {
+            srv.send(close_frame(4401, "ticket_revoked")).await.unwrap();
+        })
+        .await
+        .err()
+        .unwrap();
+        assert!(is_refusal(&e), "{e:#}");
+        // Closed after the hello and first Noise message arrived.
+        let e = handshake_against(|mut srv| async move {
+            tokio::spawn(async move {
+                for _ in 0..2 {
+                    srv.next().await;
+                }
+                srv.send(close_frame(4401, "ticket_revoked")).await.unwrap();
+            });
+        })
+        .await
+        .err()
+        .unwrap();
+        assert!(is_refusal(&e), "{e:#}");
+        // The host's plaintext refusal after m1, as before.
+        let e = handshake_against(|mut srv| async move {
+            tokio::spawn(async move {
+                for _ in 0..2 {
+                    srv.next().await;
+                }
+                let _ = srv
+                    .send(Message::Text(r#"{"error":"unauthorized"}"#.into()))
+                    .await;
+            });
+        })
+        .await
+        .err()
+        .unwrap();
+        assert!(is_refusal(&e), "{e:#}");
+    }
+
+    /// Other closes and plain disconnects stay network errors (retried by
+    /// `connect_with_backoff`).
+    #[tokio::test]
+    async fn other_closes_are_not_refusals() {
+        for code in [1001, vk_e2e::relay::close::HOST_OFFLINE] {
+            let e = handshake_against(move |mut srv| async move {
+                srv.send(close_frame(code, "peer gone")).await.unwrap();
+            })
+            .await
+            .err()
+            .unwrap();
+            assert!(!is_refusal(&e), "{code}: {e:#}");
+        }
+        let e = handshake_against(|srv| async move { drop(srv) })
+            .await
+            .err()
+            .unwrap();
+        assert!(!is_refusal(&e), "{e:#}");
     }
 
     #[tokio::test]
