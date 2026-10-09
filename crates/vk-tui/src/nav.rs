@@ -976,6 +976,12 @@ pub(crate) fn list_row(
     }
 }
 
+/// The column of the first filter character for [`list_frame`]'s `x`: the frame draws its
+/// `> ` line two cells in from the border, and `x` is one cell in.
+pub(crate) fn filter_col(x: u16) -> u16 {
+    x + 3
+}
+
 pub(crate) fn list_frame(
     app: &App,
     g: &mut Grid,
@@ -1035,7 +1041,7 @@ pub fn draw_palette(app: &App, g: &mut Grid, filter: &str, sel: usize) -> (u16, 
     if ranked.is_empty() {
         g.put_str(x + 1, y, "no matching command", t.dim(), w);
     }
-    (x + 2 + UnicodeWidthStr::width(filter) as u16, y - 1)
+    (filter_col(x) + UnicodeWidthStr::width(filter) as u16, y - 1)
 }
 
 // ---- goto --------------------------------------------------------------------------------------
@@ -1616,7 +1622,7 @@ pub fn draw_goto(app: &App, g: &mut Grid, filter: &str, sel: usize) -> (u16, u16
         };
         g.put_str(x + 1, y, &msg, t.dim(), w);
     }
-    (x + 2 + UnicodeWidthStr::width(filter) as u16, y - 1)
+    (filter_col(x) + UnicodeWidthStr::width(filter) as u16, y - 1)
 }
 
 // ---- hints -------------------------------------------------------------------------------------

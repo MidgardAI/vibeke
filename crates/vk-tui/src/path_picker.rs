@@ -469,7 +469,7 @@ impl PathPicker {
             g.put_str(x + 1, y, msg, t.dim(), w);
         }
         let before = UnicodeWidthStr::width(&self.input[start..self.cursor]) as u16;
-        (x + 2 + before, y - 1)
+        (crate::nav::filter_col(x) + before, y - 1)
     }
 }
 

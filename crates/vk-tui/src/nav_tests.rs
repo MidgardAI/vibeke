@@ -809,3 +809,17 @@ fn goto_hint_and_path_row_draw() {
         "{text}"
     );
 }
+
+/// The bar cursor sits right after the typed filter, not on its last character.
+#[test]
+fn filter_cursor_follows_the_last_typed_character() {
+    let (app, _rx) = test_app(1);
+    let at = |g: &Grid, x: u16, y: u16| g.get(x, y).map(|c| c.text.as_str().to_string());
+    for draw in [draw_palette, draw_goto] {
+        let mut g = Grid::new(120, 40);
+        let (x, y) = draw(&app, &mut g, "abc", 0);
+        assert_eq!(at(&g, x - 1, y).as_deref(), Some("c"));
+        assert_eq!(at(&g, x - 4, y).as_deref(), Some(" "));
+        assert_eq!(at(&g, x - 5, y).as_deref(), Some(">"));
+    }
+}

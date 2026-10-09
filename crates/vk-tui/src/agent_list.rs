@@ -215,7 +215,10 @@ pub fn draw(app: &App, g: &mut Grid, filter: &str, sel: usize) -> (u16, u16) {
         };
         g.put_str(x + 1, y, msg, t.dim(), w);
     }
-    (x + 2 + UnicodeWidthStr::width(filter) as u16, y - 1)
+    (
+        crate::nav::filter_col(x) + UnicodeWidthStr::width(filter) as u16,
+        y - 1,
+    )
 }
 
 #[cfg(test)]
