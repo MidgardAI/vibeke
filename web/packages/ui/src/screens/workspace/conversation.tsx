@@ -28,7 +28,7 @@ import {
   X,
 } from 'lucide-react';
 import { NotConnectedError, RpcError, applyLatest, applyOlder, emptyTranscript, type AgentRun, type AppApi, type TranscriptItem, type TranscriptState, type TranscriptTurn } from '@vibeke/core';
-import { useApp, useVisible } from '../../app/hooks';
+import { useApp, useHost, useVisible } from '../../app/hooks';
 import { Markdown } from '../../components/markdown';
 import { Button, Chip, DiffCount, Empty, IconButton, Spinner, cx } from '../../components/ui';
 import { t } from '../../i18n';
@@ -84,6 +84,7 @@ export function Conversation({
 }) {
   const app = useApp();
   const visible = useVisible();
+  const online = useHost(hostId)?.status === 'online';
   const [tr, setTr] = useState<TranscriptState>(emptyTranscript);
   const [phase, setPhase] = useState<'loading' | 'ready' | 'none' | 'error'>('loading');
   const [error, setError] = useState<string | null>(null);
@@ -124,7 +125,10 @@ export function Conversation({
         fail: (target, e) => {
           if (target !== runRef.current) return;
           if (isUnsupported(e)) setPhase('none');
-          else if (!trRef.current.turns.length || trRef.current.run !== target) {
+          // Not connected yet (e.g. the app just resumed): keep loading, the reconnect refetches.
+          else if (e instanceof NotConnectedError) {
+            if (!trRef.current.turns.length || trRef.current.run !== target) setPhase('loading');
+          } else if (!trRef.current.turns.length || trRef.current.run !== target) {
             setPhase('error');
             setError(errorMessage(e));
           }
@@ -160,6 +164,14 @@ export function Conversation({
     setPhase('loading');
     feed.setRun(run.id);
   }, [run.id, feed]);
+
+  // Back online (resumed, network change): fetch the newest turns, a request made while the
+  // host was reconnecting failed and turns may have landed meanwhile.
+  const wasOnline = useRef(online);
+  useEffect(() => {
+    if (online && !wasOnline.current) void feed.load();
+    wasOnline.current = online;
+  }, [online, feed]);
 
   // Live: the run's events (turn started / completed, state, usage, file edits, approvals).
   const [eventsLive, setEventsLive] = useState(false);
