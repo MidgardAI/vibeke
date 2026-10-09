@@ -113,11 +113,9 @@ jobs:
       - run: sh scripts/tests/repro-check-test.sh
       - run: sh scripts/tests/release-sign-test.sh
   web:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+    # Ubuntu only: these checks do not depend on the platform, and macOS runners are scarce
+    # (the desktop job covers the macOS app).
+    runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: web
@@ -129,13 +127,15 @@ jobs:
       - run: bun run test
       - run: bun run build
       - run: bun run build:site
-      - if: matrix.os == 'ubuntu-latest'
-        run: bun run --cwd apps/site e2e:install
-      - if: matrix.os == 'ubuntu-latest'
-        run: bun run e2e:site
+      # The browser download takes 20 s on a good day and minutes on a bad one.
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('web/bun.lock') }}
+      - run: bun run --cwd apps/site e2e:install
+      - run: bun run e2e:site
       - run: bun run build:desktop
-      - if: matrix.os == 'ubuntu-latest'
-        name: Check the committed pi extension bundle is current
+      - name: Check the committed pi extension bundle is current
         working-directory: .
         run: |
           # Rebuild only: the extension's tests run in the harness suites.
