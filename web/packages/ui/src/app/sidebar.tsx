@@ -38,7 +38,7 @@ import { useApprovalCount } from './approval-stores';
 import { useIncoming, useIncomingCount } from './handoff-stores';
 import { useApp, useHosts, useInboxItems, usePrefs } from './hooks';
 import { emitUi, isMacLike } from './keyboard';
-import { drawerOpen, useWorkspaces, workspacePinKey } from './selection';
+import { drawerOpen, selectedPane, useWorkspaces, workspacePinKey } from './selection';
 
 const GROUP_ICON: Record<WorkspaceGroupId, ReactNode> = {
   needs: <CircleAlert className="size-3.5 text-need" strokeWidth={2} />,
@@ -81,7 +81,7 @@ export function Sidebar({ route, mode }: { route: Route; mode: 'inline' | 'drawe
   };
   const open = (r: WorkspaceRow) => go(workspaceRoute(r.host, r.workspace.id));
   const isActive = (r: WorkspaceRow) => route.name === 'workspace' && route.host === r.host && route.workspace === r.workspace.id;
-  const isPaneActive = (r: WorkspaceRow, p: PaneRow) => isActive(r) && route.name === 'workspace' && (route.pane ?? r.primary?.pane.id) === p.pane.id;
+  const isPaneActive = (r: WorkspaceRow, p: PaneRow) => route.name === 'workspace' && isActive(r) && selectedPane(route, r) === p.pane.id;
 
   const rowView = (r: WorkspaceRow) => {
     const status = rowStatus(r);
@@ -154,6 +154,7 @@ export function Sidebar({ route, mode }: { route: Route; mode: 'inline' | 'drawe
           return (
             <Row
               key={p.key}
+              data-nav-item={p.key}
               compact
               depth={2}
               active={isPaneActive(r, p)}

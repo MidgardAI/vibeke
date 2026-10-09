@@ -52,7 +52,7 @@ export function ConnectionBanner() {
 export function Toasts() {
   const app = useApp();
   const toasts = useStore(app.toasts);
-  if (!toasts.length) return null;
+  if (!toasts.length || typeof document === 'undefined') return null;
   // Portalled like dialogs: #root is its own stacking context in the installed app (styles.css).
   return createPortal(
     <div className="pointer-events-none fixed inset-x-0 bottom-6 z-[70] flex flex-col items-center gap-2 px-4 pb-safe">
