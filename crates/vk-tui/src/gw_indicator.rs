@@ -73,7 +73,7 @@ impl GatewayIndicator {
             "starting" | "connecting" => "◌ gw".into(),
             "offline" => "○ gw".into(),
             "crashed" => "✗ gw".into(),
-            // Devices (`prefix+alt+d`) signs in.
+            // Connections → Devices (`prefix+alt+d`) signs in.
             "login_required" => "! gw sign in".into(),
             "external" => "◇ gw".into(),
             _ => "○ gw".into(),

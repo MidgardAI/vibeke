@@ -129,11 +129,11 @@ pub async fn execute(gw: &Arc<Gateway>, method: &str, p: &Value) -> ApiResult {
     let owner = owner();
     match method {
         "share.create" => match s(p, "kind") {
-            Some("handoff") => crate::api::share_create_as(gw, &owner, p),
+            Some("handoff" | "share") => crate::api::share_create_as(gw, &owner, p),
             Some("peer") => crate::peers::dispatch(gw, &owner, "peer.invite", p).await,
             _ => Err(ApiError::new(
                 "forbidden",
-                "the server bridge carries share.create for handoff and peer invitations only",
+                "the server bridge carries share.create for handoff, share and peer invitations only",
             )),
         },
         "devices.list" => crate::api::devices_list_as(gw, &owner),
@@ -582,6 +582,56 @@ mod tests {
             json!({"cancelled": "invitation"})
         );
         assert_eq!(status(pid).await, json!({"status": "gone"}));
+    }
+
+    /// A pane or workspace share goes through the bridge like the app's; other kinds stay refused.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn share_create_list_and_revoke() {
+        let t = tempfile::tempdir().unwrap();
+        let gw = gateway(&t, Some("ws://relay.test"), Some("https://app.test"));
+        let r = execute(
+            &gw,
+            "share.create",
+            &json!({"kind": "share", "scope": "approve", "pane": "p1", "ttl_s": 3600, "name": "Sam"}),
+        )
+        .await
+        .unwrap();
+        assert!(r["link"].as_str().is_some_and(|l| !l.is_empty()));
+        assert_eq!(r["expires_after_s"], 3600);
+        let pid = r["pid"].as_str().unwrap().to_string();
+        // Neither a pane nor a workspace: refused.
+        assert_eq!(
+            execute(&gw, "share.create", &json!({"kind": "share"}))
+                .await
+                .unwrap_err()
+                .kind,
+            "invalid_params"
+        );
+        for kind in ["device", "owner"] {
+            assert_eq!(
+                execute(&gw, "share.create", &json!({"kind": kind, "pane": "p1"}))
+                    .await
+                    .unwrap_err()
+                    .kind,
+                "forbidden",
+                "{kind}"
+            );
+        }
+        let list = execute(&gw, "share.list", &json!({})).await.unwrap();
+        let inv = &list["invitations"][0];
+        assert_eq!(inv["id"], pid.as_str());
+        assert_eq!(inv["kind"], "share");
+        assert_eq!(inv["scope"], "approve");
+        assert_eq!(inv["label"], "Sam");
+        assert_eq!(inv["limit"]["pane"], "p1");
+        assert_eq!(
+            execute(&gw, "share.revoke", &json!({"id": pid}))
+                .await
+                .unwrap(),
+            json!({"cancelled": "invitation"})
+        );
+        let list = execute(&gw, "share.list", &json!({})).await.unwrap();
+        assert!(list["invitations"].as_array().unwrap().is_empty());
     }
 
     /// A relay stub answering `/v1/status` with `status`; returns its `ws://` URL.

@@ -147,10 +147,11 @@ Vibeke reloads the file after a change. If parsing fails, it keeps the previous 
 # tab_renumber             = ""               # renumber this workspace's tabs 1..n in order
 # task_recreate            = ""               # recreate the checkout of a task marked missing
 # task_forget              = ""               # forget a task marked missing (nothing is deleted)
-# handoffs                 = "prefix+shift+h" # incoming handoffs and the ones being sent (accept, decline, cancel)
+# connections              = "prefix+alt+d"   # Connections: devices, people, hosts, handoffs (opens the last tab used)
+# handoffs                 = "prefix+shift+h" # Connections → Handoffs: incoming handoffs and the ones being sent
 # handoff_send             = "prefix+alt+h"   # hand off the focused pane to another host
-# sharing                  = ""               # Sharing & handoff: peers, invitations, paste an invitation, invited devices
-# devices                  = "prefix+alt+d"   # Devices: your paired phones — pair, list, revoke
+# sharing                  = ""               # Connections → Hosts: peers, invitations, paste an invitation
+# share_pane               = "prefix+alt+v"   # share the focused pane or its workspace with someone (view or approve)
 
 # [keys.copy_mode]
 # mode = "vi"                           # vi | emacs

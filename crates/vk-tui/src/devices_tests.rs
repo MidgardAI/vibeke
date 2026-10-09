@@ -1,4 +1,4 @@
-//! Devices view tests: the list (only `kind == "device"` rows), revoke with a confirm, the scope
+//! Devices tab tests: the list (only `kind == "device"` rows), revoke with a confirm, the scope
 //! picker, `pair.create` and the link with its QR code, polling `pair.status` (claimed, done,
 //! rejected, gone), cancelling a pending link, and the gateway's own messages. Signing in to a
 //! relay that needs an account: `account.status` before each link, the device code and its
@@ -107,7 +107,8 @@ fn pairing(app: &mut App, rxs: &mut [UnboundedReceiver<ClientFrame>]) -> String 
 fn the_list_shows_only_devices() {
     let (app, _rxs) = opened();
     let s = screen(&app);
-    assert!(s.contains("Vibeke · Devices · m0"), "{s}");
+    assert!(s.contains("Vibeke · Connections · m0"), "{s}");
+    assert!(s.contains("Devices · People · Hosts · Handoffs"), "{s}");
     assert!(s.contains("› Pixel 8 · android · full · paired"), "{s}");
     assert!(s.contains("🔔"), "{s}");
     assert!(s.contains("iPhone · ios · view"), "{s}");
@@ -435,7 +436,8 @@ fn pair_phone_opens_the_scope_picker() {
 #[test]
 fn the_action_is_bound_and_described() {
     let b = vk_config::default_bindings();
-    assert_eq!(b["devices"], "prefix+alt+d");
+    // `prefix+alt+d` opens the Connections view; `devices` is the palette's way to this tab.
+    assert_eq!(b["connections"], "prefix+alt+d");
     assert!(crate::nav::describe("devices").starts_with("Devices"));
     assert_eq!(crate::nav::describe("pair_phone"), "Pair a phone");
 }

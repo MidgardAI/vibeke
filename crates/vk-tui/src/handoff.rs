@@ -15,10 +15,11 @@
 //!   focuses the new pane. A failure stays in the overlay for another try; `repo_mismatch` lists
 //!   the clone's remotes. An import whose agent did not start offers **Retry resume**
 //!   (`handoff.resume`).
-//! - **Handoffs list** (`handoffs`, default `prefix+shift+h`, or the `⇣N` badge in the tab
-//!   bar's right cluster while N handoffs wait): incoming handoffs and the ones being sent.
-//!   `enter` opens (accept, or the imported pane), `d` declines, `r` retries the agent of an
-//!   imported one, `x` cancels a send.
+//! - **Handoffs list**: the Handoffs tab of the Connections view ([`crate::connections`];
+//!   `handoffs`, default `prefix+shift+h`, or the `⇣N` badge in the tab bar's right cluster
+//!   while N handoffs wait): incoming handoffs and the ones being sent. `enter` opens (accept,
+//!   or the imported pane), `d` declines, `r` retries the agent of an imported one, `x` cancels
+//!   a send.
 //! - **Send** (`handoff_send`, default `prefix+alt+h`): the peers from `handoff.peers` in a fuzzy
 //!   list, then the user's other machines this TUI is attached to that are not peers yet ("Your
 //!   machines (will pair)": choosing one runs `gateway.call peer.invite` there and `gateway.call
@@ -27,7 +28,8 @@
 //!   `handoff.job` events drive the progress shown at the right of the tab bar ("⇢ marvin
 //!   42%"); where a send ended shows as a toast.
 //! - **Pane menu:** a right-click on a pane's sidebar row opens the palette on that pane's
-//!   handoff actions: **Hand off…** and, for a pane an import created, **Handoff details**
+//!   actions ([`PANE_MENU`]): **Hand off…**, **Share this pane or workspace with someone…**
+//!   ([`crate::people`]) and, for a pane an import created, **Handoff details**
 //!   (`handoff_details`, the accept overlay in its imported state).
 //!
 //! Peers, invitations and pasting a teammate's invitation live in [`crate::sharing`].
@@ -532,7 +534,8 @@ pub fn on_mouse(app: &mut App, me: &crossterm::event::MouseEvent) -> bool {
     if crate::draw::right_cluster_at(app, me.column, me.row).as_deref() != Some(b.as_str()) {
         return false;
     }
-    open_list(app);
+    let mi = app.cur;
+    crate::connections::open_tab(app, crate::connections::Tab::Handoffs, mi);
     app.dirty = true;
     true
 }
@@ -544,14 +547,19 @@ pub fn tick(app: &mut App) {
     }
 }
 
-/// Right-click on a pane's sidebar row: its handoff actions, in the palette.
+/// The actions a right-click on a pane's sidebar row offers (the palette shows only these while
+/// a pane is targeted). Each takes its pane with [`take_target`].
+pub const PANE_MENU: &[&str] = &["handoff_send", "share_pane", "handoff_details"];
+
+/// Right-click on a pane's sidebar row: its actions ([`PANE_MENU`]), in the palette.
 pub fn pane_menu(app: &mut App, mi: usize, pane: &str) {
     app.ux.handoff.target = Some((mi, pane.to_string()));
-    crate::nav::open_palette(app, "handoff".into());
+    crate::nav::open_palette(app, String::new());
 }
 
-/// The pane a handoff action applies to: the right-clicked one, else the focused pane.
-fn take_target(app: &mut App) -> Option<(usize, String)> {
+/// The pane an action of the pane menu applies to: the right-clicked one, else the focused
+/// pane.
+pub(crate) fn take_target(app: &mut App) -> Option<(usize, String)> {
     if let Some((mi, p)) = app.ux.handoff.target.take()
         && app
             .machines
@@ -2058,6 +2066,11 @@ pub fn open_list(app: &mut App) {
     app.mode = Mode::Popup(Popup::Handoffs);
 }
 
+/// Leaving the tab for another.
+pub(crate) fn leave(app: &mut App) {
+    app.ux.handoff.list_confirm = None;
+}
+
 pub fn handoffs_key(app: &mut App, ev: KeyEvent) {
     app.mode = Mode::Popup(Popup::Handoffs);
     if ev.kind == KeyKind::Release {
@@ -2072,7 +2085,7 @@ pub fn handoffs_key(app: &mut App, ev: KeyEvent) {
     let cur = list.get(sel).cloned();
     match ev.key {
         Key::Named(NamedKey::Escape) | Key::Char('q') => app.mode = Mode::Normal,
-        Key::Char('j') | Key::Named(NamedKey::Down) | Key::Named(NamedKey::Tab) => {
+        Key::Char('j') | Key::Named(NamedKey::Down) => {
             app.ux.handoff.list_sel = (sel + 1).min(n.saturating_sub(1));
         }
         Key::Char('k') | Key::Named(NamedKey::Up) => {
@@ -2182,16 +2195,20 @@ pub fn entry_line(app: &App, e: &Entry, now: i64) -> (String, String) {
     }
 }
 
+/// The Handoffs tab: every machine's incoming handoffs and sends (the title names the machine
+/// the Connections view was opened on).
 pub fn draw_list(app: &App, g: &mut Grid) {
     let t = app.theme;
     let list = entries(app);
     let now = now_ms();
     let sel = app.ux.handoff.list_sel.min(list.len().saturating_sub(1));
-    let h = (list.len().max(1) + 5).min(30) as u16;
-    let mut b = frame(app, g, 96, h, "handoffs · incoming and sent");
-    let w = b.width().saturating_sub(4) as usize;
+    let mi = app.ux.connections.mi;
+    let mut a = crate::connections::area(app, g, crate::connections::Tab::Handoffs, mi);
+    a.line("Handoffs — incoming and sent", t.bold(t.fg));
+    a.line("", t.text());
+    let w = a.rest().w.saturating_sub(1) as usize;
     if list.is_empty() {
-        b.line("no incoming handoffs and nothing being sent", t.dim());
+        a.line("  no incoming handoffs and nothing being sent", t.dim());
     }
     for (i, e) in list.iter().enumerate() {
         let (s, note) = entry_line(app, e, now);
@@ -2200,19 +2217,19 @@ pub fn draw_list(app: &App, g: &mut Grid) {
         let s = format!("{mark} {}", truncate(&s, w.saturating_sub(note_w + 4)));
         let pad = w.saturating_sub(UnicodeWidthStr::width(s.as_str()) + note_w);
         let line = format!("{s}{}{note}", " ".repeat(pad));
-        b.line(&line, if i == sel { t.sel(t.fg) } else { t.text() });
+        a.line(&line, if i == sel { t.sel(t.fg) } else { t.text() });
     }
-    b.line("", t.text());
-    match &app.ux.handoff.list_confirm {
-        Some(_) => b.line(
+    a.line("", t.text());
+    if app.ux.handoff.list_confirm.is_some() {
+        a.line(
             "Decline the selected handoff? Its bundle is deleted. [d] decline  [other] keep",
             t.bold(t.red),
-        ),
-        None => b.line(
-            "enter accept/open · d decline · r retry resume · x cancel send · g refresh · esc",
-            t.dim(),
-        ),
+        );
     }
+    a.footer(
+        "j/k move · enter accept/open · d decline · r retry resume · x cancel send · g refresh · esc",
+        t.dim(),
+    );
 }
 
 // ---- send ---------------------------------------------------------------------------------------
@@ -2713,8 +2730,8 @@ pub fn send_key(app: &mut App, ev: KeyEvent) {
     app.dirty = true;
 }
 
-/// "claude in api (w1:p1)" for the pane being handed off.
-fn pane_label(app: &App, mi: usize, pane: &str) -> String {
+/// "claude in api (w1:p1)" for the pane being handed off (or shared).
+pub(crate) fn pane_label(app: &App, mi: usize, pane: &str) -> String {
     let Some(m) = app.machines.get(mi) else {
         return pane.to_string();
     };
@@ -2855,7 +2872,7 @@ pub fn draw_send(app: &App, g: &mut Grid) -> Option<(u16, u16)> {
             (Some(e), _, _) => format!("✗ {e}"),
             (None, true, _) => "loading paired hosts…".into(),
             (None, false, true) => {
-                "no paired hosts — pair one in Sharing & handoff (:sharing) or `vibeke gateway peer add <link>`".into()
+                "no paired hosts — pair one in Connections → Hosts (:sharing) or `vibeke gateway peer add <link>`".into()
             }
             (None, false, false) => "nothing matches".into(),
         };
@@ -2871,7 +2888,6 @@ pub fn draw_send(app: &App, g: &mut Grid) -> Option<(u16, u16)> {
 
 pub fn action(app: &mut App, action: &str) -> bool {
     match action {
-        "handoffs" | "incoming_handoffs" => open_list(app),
         "handoff_send" | "handoff_pane" => open_send(app),
         "handoff_details" => open_details(app),
         _ => return false,

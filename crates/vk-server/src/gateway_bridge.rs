@@ -5,7 +5,8 @@
 //! - `gateway.call {method, params?, timeout_ms? = 30000}` (full scope, never from a pane) keeps
 //!   a pending request, emits `gateway.request {id, method, params, client}` to the gateway and
 //!   waits for the answer. Only [`ALLOWED`] methods go through, and `share.create` only for the
-//!   kinds `handoff` and `peer`. The TUI's Devices view uses `devices.list` / `devices.revoke`
+//!   kinds `handoff`, `peer` and `share` (a pane or workspace share for a colleague; the TUI's
+//!   People tab). The TUI's Devices view uses `devices.list` / `devices.revoke`
 //!   (the app API's, as the owner) and the bridge-only `pair.create {scope?, ttl_s?}` =>
 //!   `{link, pid, open_by, scope}` and `pair.status {pid}` => `{status: pending | claimed |
 //!   done | rejected | gone, …}` (see `vk_gateway::bridge`); `share.revoke {id: pid}` cancels a
@@ -45,9 +46,11 @@ pub const METHODS: &[(&str, bool)] = &[
 pub const PANE_FORBIDDEN: &[&str] = &["gateway.call", "gateway.reply"];
 
 /// Bridged methods refused to a pane-scoped caller even if `gateway.call` reached it: signing
-/// the host in or out of its relay account is the user's. (`gateway.call` itself is in
+/// the host in or out of its relay account and handing out access (`share.create`, any kind)
+/// are the user's. (`gateway.call` itself is in
 /// [`PANE_FORBIDDEN`], and `auth.approve` carries only `approve::APPROVABLE_GATEWAY`.)
 pub const PANE_FORBIDDEN_CALLS: &[&str] = &[
+    "share.create",
     "account.login.start",
     "account.login.status",
     "account.login.cancel",
@@ -76,7 +79,7 @@ pub const ALLOWED: &[&str] = &[
 ];
 
 /// The `share.create` kinds the bridge lets through.
-pub const SHARE_KINDS: &[&str] = &["handoff", "peer"];
+pub const SHARE_KINDS: &[&str] = &["handoff", "peer", "share"];
 
 pub const DEFAULT_TIMEOUT_MS: u64 = 30_000;
 const MIN_TIMEOUT_MS: u64 = 100;
@@ -199,7 +202,7 @@ pub fn check_allowed(method: &str, params: &Value) -> Result<(), RpcError> {
     if method == "share.create" && !s(params, "kind").is_some_and(|k| SHARE_KINDS.contains(&k)) {
         return Err(invalid(format!(
             "gateway.call carries share.create for kind {} only",
-            SHARE_KINDS.join(" or ")
+            SHARE_KINDS.join(", ")
         )));
     }
     Ok(())
@@ -357,7 +360,7 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
 /// Schema registry entries (`api_schema` loads them next to its own tables).
 pub const SHAPES: &str = r##"
 # --- the server-to-gateway bridge (spec 16 §15.5): peer.*, share.*, devices.*, pair.* and account.* run in the host's gateway ---
-# full scope, never from a pane; method is one of peer.invite, peer.redeem, peer.list, peer.remove, share.create (kind handoff or peer), share.list, share.revoke, devices.list, devices.revoke, pair.create, pair.status, account.status, account.login.start, account.login.status, account.login.cancel, account.logout; answers with the gateway's result; remote_unavailable when no gateway is connected or it doesn't answer in time
+# full scope, never from a pane; method is one of peer.invite, peer.redeem, peer.list, peer.remove, share.create (kind handoff, peer or share), share.list, share.revoke, devices.list, devices.revoke, pair.create, pair.status, account.status, account.login.start, account.login.status, account.login.cancel, account.logout; answers with the gateway's result; remote_unavailable when no gateway is connected or it doesn't answer in time
 gateway.call :: {method: string, params?: object, timeout_ms?: int = 30000} => any
 # gateway clients only: the answer to a gateway.request event (result or error, not both)
 gateway.reply :: {id: string, result?: any, error?: {kind: string, message: string, details?: any}} => {}
@@ -406,6 +409,25 @@ mod tests {
         assert!(check_allowed("auth.list", &json!({})).is_err());
     }
 
+    #[test]
+    fn share_create_kinds() {
+        for k in ["handoff", "peer", "share"] {
+            assert!(
+                check_allowed("share.create", &json!({"kind": k})).is_ok(),
+                "{k}"
+            );
+        }
+        let share = json!({"kind": "share", "scope": "view", "pane": "p1", "ttl_s": 3600});
+        assert!(check_allowed("share.create", &share).is_ok());
+        for k in ["device", "owner", ""] {
+            assert!(
+                check_allowed("share.create", &json!({"kind": k})).is_err(),
+                "{k}"
+            );
+        }
+        assert!(check_allowed("share.create", &json!({})).is_err());
+    }
+
     /// Signing in or out is never a pane's: `gateway.call` is refused to panes, the login
     /// methods are refused again by name, and `auth.approve` can't carry them.
     #[test]
@@ -417,6 +439,8 @@ mod tests {
             assert!(!crate::approve::APPROVABLE_GATEWAY.contains(m), "{m}");
         }
         assert!(!PANE_FORBIDDEN_CALLS.contains(&"account.status"));
+        // Handing out access is the user's, whatever the kind.
+        assert!(PANE_FORBIDDEN_CALLS.contains(&"share.create"));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -452,5 +476,11 @@ mod tests {
                 .unwrap_err();
             assert_eq!(e.data.kind, "permission_denied", "{m}");
         }
+        let share = json!({"method": "share.create", "params": {"kind": "share", "pane": "p1"}});
+        let e = api(&server, &pane, "gateway.call", &share)
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(e.data.kind, "permission_denied");
     }
 }

@@ -1,9 +1,9 @@
-//! Sharing & handoff view tests: invitation link parsing (the app URL, the bare `d` value,
+//! Hosts tab tests: invitation link parsing (the app URL, the bare `d` value,
 //! `vibeke://pair?d=…`, garbage refused before any call), each action's exact `gateway.call`
 //! params (peer.list / share.list on open, peer.remove, share.revoke for an invitation and a
 //! device, share.create for a teammate, peer.invite, peer.redeem with and without the git
-//! identity), the QR code and copying the link, the always-ask toggle, and the gateway's
-//! "isn't running" message.
+//! identity), the QR code and copying the link, the always-ask toggle, colleagues' shares left
+//! to the People tab, j/k across the sections, and the gateway's "isn't running" message.
 
 use super::*;
 use crate::drafts::tests::{ch, commands, ctl, fleet, named, reply, screen, typ};
@@ -82,12 +82,19 @@ fn opened() -> (App, Vec<UnboundedReceiver<ClientFrame>>) {
         json!({
             "invitations": [{"id": "pidA", "kind": "handoff", "scope": "full", "label": null,
                              "limit": null, "created": 1, "link_expires_at": now_s() + 600,
-                             "device_expires_at": now_s() + 86_400}],
+                             "device_expires_at": now_s() + 86_400},
+                            {"id": "pidS", "kind": "share", "scope": "view", "label": "Sam",
+                             "limit": {"pane": "p1"}, "created": 1,
+                             "link_expires_at": now_s() + 600,
+                             "device_expires_at": now_s() + 7200}],
             "devices": [{"id": "dev9", "kind": "peer", "name": "laptop-bob", "scope": "full",
                          "paired_at": 1, "owner": "teammate",
                          "sender": {"host_name": "laptop-bob",
                                     "user": {"name": "Bob", "email": "bob@example.com"}},
-                         "expires_at": exp, "limit": null}]
+                         "expires_at": exp, "limit": null},
+                        {"id": "sh1", "kind": "share", "name": "Kim's browser",
+                         "scope": "approve", "paired_at": 1, "owner": null, "sender": null,
+                         "expires_at": exp, "limit": {"workspace": "W1"}}]
         }),
     );
     reply(
@@ -159,7 +166,14 @@ fn links_parse_in_all_three_forms_and_garbage_is_refused() {
 fn the_view_lists_peers_invitations_and_devices() {
     let (app, _rxs) = opened();
     let s = screen(&app);
-    assert!(s.contains("Vibeke · Sharing & handoff · m0"), "{s}");
+    assert!(s.contains("Vibeke · Connections · m0"), "{s}");
+    assert!(s.contains("Devices · People · Hosts · Handoffs"), "{s}");
+    // Colleagues' shares are the People tab's.
+    assert!(!s.contains("Sam"), "{s}");
+    assert!(!s.contains("Kim"), "{s}");
+    let v = app.ux.sharing.view.as_ref().unwrap();
+    assert_eq!(v.invitations.len(), 1);
+    assert_eq!(v.devices.len(), 1);
     assert!(s.contains("Peers — hosts m0 can hand work off to"), "{s}");
     assert!(s.contains("› marvin"), "{s}");
     assert!(s.contains("your host"), "{s}");
@@ -197,8 +211,8 @@ fn remove_cancel_and_revoke_ask_first_and_send_the_exact_calls() {
     let cmds = commands(&mut rxs[0]);
     gw(&cmds, "peer.list");
     assert!(screen(&app).contains("removed laptop-anna"));
-    // Invitations.
-    app.on_key(named(NamedKey::Tab));
+    // Invitations: j moves past the last peer into the next section.
+    app.on_key(ch('j'));
     app.on_key(ch('x'));
     assert!(screen(&app).contains("Cancel this handoff invitation?"));
     app.on_key(named(NamedKey::Enter));
@@ -211,8 +225,8 @@ fn remove_cancel_and_revoke_ask_first_and_send_the_exact_calls() {
     reply(&mut app, 0, req, json!({"cancelled": "invitation"}));
     let cmds = commands(&mut rxs[0]);
     gw(&cmds, "share.list");
-    // Invited devices.
-    app.on_key(named(NamedKey::Tab));
+    // Invited hosts.
+    app.on_key(ch('j'));
     app.on_key(ch('x'));
     assert!(screen(&app).contains("Revoke laptop-bob?"));
     app.on_key(ch('y'));

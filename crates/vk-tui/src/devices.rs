@@ -1,6 +1,7 @@
-//! Devices in the TUI: a full pane-area view (`devices` in the palette, `prefix+alt+d`) of the
-//! phones and apps paired with one machine, reached through that machine's server with
-//! `gateway.call` (like [`crate::sharing`]). Three stages:
+//! Devices in the TUI: the Devices tab of the Connections view ([`crate::connections`]; `devices`
+//! in the palette, `connections` on `prefix+alt+d`) of the phones and apps paired with one
+//! machine, reached through that machine's server with `gateway.call` (like
+//! [`crate::sharing`]). Three stages:
 //!
 //! 1. **List** (`devices.list`, only `kind == "device"`): name, platform, scope, how long ago it
 //!    paired, 🔔 when it takes push. `n` pairs a new one, `x` revokes the selected one after a
@@ -119,7 +120,8 @@ fn clean_of(v: &Value, k: &str) -> Option<String> {
 }
 
 impl DeviceRow {
-    /// A `devices.list` entry; None for shares and peers (those live in Sharing & handoff).
+    /// A `devices.list` entry; None for shares and peers (those live in the People and Hosts
+    /// tabs).
     fn from_value(v: &Value) -> Option<DeviceRow> {
         if v.get("kind").and_then(Value::as_str).unwrap_or("device") != "device" {
             return None;
@@ -193,7 +195,7 @@ pub struct GwHealth {
 }
 
 impl GwHealth {
-    fn from_value(x: &Value) -> GwHealth {
+    pub(crate) fn from_value(x: &Value) -> GwHealth {
         GwHealth {
             connected: x["connected"].as_bool().unwrap_or(true),
             state: s_of(x, "state"),
@@ -201,9 +203,9 @@ impl GwHealth {
         }
     }
 
-    /// Why a link made now would be useless, if it would be. States this view can't judge
-    /// (`external`, `local_only`, none) pass as before.
-    fn problem(&self) -> Option<String> {
+    /// Why a link made now would be useless to `who` ("a phone", "your colleague"), if it
+    /// would be. States this view can't judge (`external`, `local_only`, none) pass as before.
+    pub(crate) fn problem(&self, who: &str) -> Option<String> {
         let bad = matches!(
             self.state.as_deref(),
             Some("off" | "starting" | "connecting" | "offline" | "login_required" | "crashed")
@@ -219,7 +221,7 @@ impl GwHealth {
                 .map(|e| format!(" — {e}"))
                 .unwrap_or_default();
             Some(format!(
-                "The gateway is offline{state}{why}: a phone can't use a link until it's online — run `vibeke gateway on`"
+                "The gateway is offline{state}{why}: {who} can't use a link until it's online — run `vibeke gateway on`"
             ))
         } else {
             None
@@ -422,7 +424,8 @@ fn view_mut(app: &mut App) -> Option<&mut View> {
 
 // ---- open / refresh ------------------------------------------------------------------------------
 
-fn open_on(app: &mut App, mi: usize, stage: Stage) {
+/// Open the Devices tab on machine `mi` at `stage` ([`crate::connections`] routes the actions).
+pub(crate) fn open_on(app: &mut App, mi: usize, stage: Stage) {
     if !app.machines.get(mi).is_some_and(|m| m.connected()) {
         app.toast("that machine is offline");
         return;
@@ -446,19 +449,27 @@ fn refresh(app: &mut App) {
     gw(app, mi, "devices.list", json!({}), Reply::List);
 }
 
-pub fn action(app: &mut App, action: &str) -> bool {
-    let mi = app.cur;
-    match action {
-        "devices" => open_on(app, mi, Stage::List),
-        "pair_phone" | "phone_pairing" => open_on(app, mi, Stage::PickScope { sel: 0 }),
-        _ => return false,
-    }
-    true
-}
-
 fn close(app: &mut App) {
     app.ux.devices = None;
     app.mode = Mode::Normal;
+}
+
+/// Leaving the tab for another: a pending pairing link or sign-in is cancelled, as Esc would.
+pub(crate) fn leave(app: &mut App) {
+    let Some(v) = app.ux.devices.take() else {
+        return;
+    };
+    match v.stage {
+        Stage::Pairing(p) if p.status != PairStatus::Expired => cancel_link(app, v.mi, &p.pid),
+        Stage::SignIn(s) if s.status == SignInStatus::Pending => gw(
+            app,
+            v.mi,
+            "account.login.cancel",
+            json!({"id": s.id}),
+            Reply::Cancel,
+        ),
+        _ => {}
+    }
 }
 
 // ---- polling -------------------------------------------------------------------------------------
@@ -554,13 +565,22 @@ fn ask_revoke(v: &mut View) {
 /// Why the pairing link can't be used right now: the gateway is unreachable, or the server says
 /// it is not online.
 fn link_blocked(v: &View) -> Option<String> {
-    if v.error.is_some() {
-        return Some(
-            "The gateway is unreachable: a phone can't use a link until it's back — run `vibeke gateway on`"
-                .into(),
-        );
+    gateway_problem(v.error.is_some(), v.gw.as_ref(), "a phone")
+}
+
+/// Why a link can't be used by `who` right now (shared with the People tab): `unreachable` when
+/// the gateway can't be reached at all, else what `gateway.status` says.
+pub(crate) fn gateway_problem(
+    unreachable: bool,
+    gw: Option<&GwHealth>,
+    who: &str,
+) -> Option<String> {
+    if unreachable {
+        return Some(format!(
+            "The gateway is unreachable: {who} can't use a link until it's back — run `vibeke gateway on`"
+        ));
     }
-    v.gw.as_ref().and_then(GwHealth::problem)
+    gw.and_then(|h| h.problem(who))
 }
 
 /// Ask the server for `gateway.status` (a server method, not bridged to the gateway).
@@ -1093,8 +1113,7 @@ pub fn draw(app: &App, g: &mut Grid) {
         return;
     };
     let t = app.theme;
-    let label = app.machines.get(v.mi).map_or("", |m| m.label.as_str());
-    let mut a = crate::drafts::Area::open(app, g, &format!("Vibeke · Devices · {label}"));
+    let mut a = crate::connections::area(app, g, crate::connections::Tab::Devices, v.mi);
     if let Some(e) = &v.error {
         a.line(&format!("⚠ {e}"), t.bold(t.yellow));
         a.line("", t.text());
@@ -1200,7 +1219,7 @@ fn draw_pick(app: &App, a: &mut crate::drafts::Area<'_>, v: &View, sel: usize) {
 }
 
 /// `s` broken into lines of the area's width.
-fn wrap_lines(a: &mut crate::drafts::Area<'_>, s: &str, st: Style) {
+pub(crate) fn wrap_lines(a: &mut crate::drafts::Area<'_>, s: &str, st: Style) {
     let w = a.rest().w as usize;
     let chars: Vec<char> = s.chars().collect();
     for chunk in chars.chunks(w.max(20)) {

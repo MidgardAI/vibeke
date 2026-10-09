@@ -872,15 +872,22 @@ fn the_pane_menu_offers_hand_off_and_details_of_an_imported_pane() {
         &event("handoff.incoming", "h3", json!({"incoming": imported})),
     );
     assert_eq!(imported_into(&app, 0, "p2").as_deref(), Some("h3"));
-    // Right-click on p2's sidebar row: the palette on its handoff actions.
+    // Right-click on p2's sidebar row: the palette on that pane's actions, and only those.
     pane_menu(&mut app, 0, "p2");
     match &app.mode {
-        Mode::Popup(Popup::Palette { filter, .. }) => assert_eq!(filter, "handoff"),
+        Mode::Popup(Popup::Palette { filter, .. }) => assert_eq!(filter, ""),
         m => panic!("{m:?}"),
     }
-    let entries = crate::nav::palette_entries(&app);
-    assert!(entries.iter().any(|e| e.id == "handoff_send"));
-    assert!(entries.iter().any(|e| e.id == "handoff_details"));
+    let ids: Vec<String> = crate::nav::palette_entries(&app)
+        .into_iter()
+        .map(|e| e.id)
+        .collect();
+    assert_eq!(ids, ["handoff_send", "share_pane", "handoff_details"]);
+    let s = screen(&app);
+    assert!(
+        s.contains("Share this pane or workspace with someone…"),
+        "{s}"
+    );
     commands(&mut rxs[0]);
     app.action("handoff_details", None);
     let cmds = commands(&mut rxs[0]);

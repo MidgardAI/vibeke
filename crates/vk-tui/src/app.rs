@@ -336,15 +336,20 @@ pub enum Popup {
     Path(Box<crate::path_picker::PathPrompt>),
     /// Accept an incoming handoff (16 §15.2); state in `App::ux.handoff.accept`.
     HandoffAccept,
-    /// Incoming handoffs and the ones being sent; state in `App::ux.handoff`.
+    /// Incoming handoffs and the ones being sent (the Connections view's Handoffs tab); state
+    /// in `App::ux.handoff`.
     Handoffs,
     /// Hand the focused pane off to a paired host; state in `App::ux.handoff.send`.
     HandoffSend,
-    /// Sharing & handoff (16 §15.3–§15.5): peers, invitations, pasting an invitation, invited
-    /// devices; a full pane-area view, state in `App::ux.sharing`.
+    /// Hosts (16 §15.3–§15.5; the Connections view's Hosts tab): peers, invitations, pasting
+    /// an invitation, invited hosts; a full pane-area view, state in `App::ux.sharing`.
     Sharing,
-    /// Devices (your paired phones): list, pair, revoke; state in `App::ux.devices`.
+    /// Devices (the Connections view's Devices tab: your paired phones): list, pair, revoke;
+    /// state in `App::ux.devices`.
     Devices,
+    /// People (the Connections view's People tab: colleagues' shares of a pane or workspace):
+    /// list, share, revoke; state in `App::ux.people`.
+    People,
     Updates,
 }
 
@@ -1958,6 +1963,10 @@ impl App {
             }
             Mode::Popup(Popup::Sharing) => {
                 crate::sharing::on_paste(self, &text);
+                return;
+            }
+            Mode::Popup(Popup::People) => {
+                crate::people::on_paste(self, &text);
                 return;
             }
             Mode::Popup(Popup::Devices | Popup::Updates) => return,

@@ -35,7 +35,7 @@ No browser is needed on the host, so this works over SSH. Use `vibeke whoami` to
 
 After the first setup, pair another device from the TUI or the shell.
 
-In the TUI, press `prefix` then `alt+d`, or run **Pair a phone** from the command palette.
+In the TUI, press `prefix` then `alt+d` to open **Connections** on its **Devices** tab, or run **Pair a phone** from the command palette.
 Choose the access level and press `enter`.
 When the relay needs a Vibeke account and you are not signed in, the view first shows a sign-in code with a QR code.
 Open the link on any device, sign in with GitHub and confirm the code; the pairing link follows by itself.
@@ -62,7 +62,7 @@ The host must remain awake and online. Closing the terminal client does not stop
 
 ## Manage devices
 
-In the TUI, press `prefix` then `alt+d` to list your paired devices.
+In the TUI, press `prefix` then `alt+d` to list your paired devices on the **Devices** tab of **Connections**.
 Select one and press `x`, then `y`, to revoke it. Press `n` to pair a new one.
 The 📱 count in the status bar shows how many devices are connected.
 

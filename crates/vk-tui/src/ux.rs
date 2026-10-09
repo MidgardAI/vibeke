@@ -27,10 +27,12 @@
 //!
 //! Lane 3A: [`crate::collision`]: shared-checkout collisions (pane badge, sidebar line, popup).
 //!
-//! Handoffs (16 §15.2): [`crate::handoff`]: the accept overlay, the handoffs list and sending a
-//! pane to a paired host; [`crate::sharing`]: the Sharing & handoff view (peers, invitations,
-//! pasting an invitation, invited devices) over `gateway.call`; [`crate::devices`]: your own
-//! paired phones (list, pair with a QR code, revoke).
+//! Connections ([`crate::connections`]): one view with four tabs over a machine's gateway.
+//! [`crate::devices`]: your own paired phones (list, pair with a QR code, revoke);
+//! [`crate::people`]: colleagues' shares of a pane or workspace; [`crate::sharing`]: Hosts
+//! (peers, invitations, pasting an invitation, invited hosts) over `gateway.call`; and the
+//! handoffs list of [`crate::handoff`] (16 §15.2), which also has the accept overlay and sending
+//! a pane to a paired host.
 
 use crate::app::{App, Popup, RpcErr};
 use crate::screen::Grid;
@@ -58,6 +60,8 @@ pub struct State {
     pub handoff: crate::handoff::State,
     pub sharing: crate::sharing::State,
     pub devices: Option<crate::devices::View>,
+    pub people: Option<crate::people::View>,
+    pub connections: crate::connections::State,
 }
 
 /// Replies routed back to the 2B modules.
@@ -73,6 +77,7 @@ pub enum Reply {
     Handoff(crate::handoff::Reply),
     Sharing(crate::sharing::Reply),
     Devices(crate::devices::Reply),
+    People(crate::people::Reply),
     /// `tab.renumber`.
     Renumber,
 }
@@ -89,6 +94,7 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
         Reply::Handoff(r) => crate::handoff::on_reply(app, mi, r, res),
         Reply::Sharing(r) => crate::sharing::on_reply(app, mi, r, res),
         Reply::Devices(r) => crate::devices::on_reply(app, mi, r, res),
+        Reply::People(r) => crate::people::on_reply(app, mi, r, res),
         Reply::Renumber => crate::tabbar::on_renumbered(app, res),
     }
 }
@@ -113,9 +119,8 @@ pub fn action(app: &mut App, action: &str) -> bool {
         || crate::agent_list::action(app, action)
         || crate::taskbadge::action(app, action)
         || crate::collision::action(app, action)
+        || crate::connections::action(app, action)
         || crate::handoff::action(app, action)
-        || crate::sharing::action(app, action)
-        || crate::devices::action(app, action)
 }
 
 /// `[[keys.command]] when = "agent:<harness>"`: only while the focused pane runs that harness
@@ -198,6 +203,7 @@ pub fn on_tick(app: &mut App) {
     crate::collision::tick(app, now);
     crate::handoff::tick(app);
     crate::devices::tick(app);
+    crate::people::tick(app);
     crate::updates::tick(app);
 }
 
@@ -209,6 +215,7 @@ pub fn deadlines(app: &App, now: Instant, d: &mut crate::deadline::Deadlines) {
     crate::taskbadge::deadlines(app, d);
     crate::collision::deadlines(app, d);
     crate::devices::deadlines(app, now, d);
+    crate::people::deadlines(app, now, d);
     crate::updates::deadlines(app, d);
 }
 

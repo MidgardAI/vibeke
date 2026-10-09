@@ -1,12 +1,14 @@
-//! Sharing & handoff in the TUI (16 §15.3–§15.5): a full pane-area view (`sharing` in the
-//! palette, unbound by default) over one machine's gateway, reached through that machine's
-//! server with `gateway.call` (the TUI talks to vk-server only; `peer.*` and `share.*` live in
-//! the gateway). Four sections:
+//! Hosts in the TUI (16 §15.3–§15.5): the Hosts tab of the Connections view
+//! ([`crate::connections`]; `sharing` in the palette, unbound by default) over one machine's
+//! gateway, reached through that machine's server with `gateway.call` (the TUI talks to
+//! vk-server only; `peer.*` and `share.*` live in the gateway). Four sections, j/k moving
+//! through all of them:
 //!
 //! 1. **Peers** (`peer.list`): the hosts this host can hand work off to, with owner (your host or
 //!    a teammate's), expiry and whether this TUI sees that machine online. `x` removes one after a
 //!    confirm (`peer.remove`).
-//! 2. **Invitations** (`share.list` `invitations`): unused links with kind and expiry; `x`
+//! 2. **Invitations** (`share.list` `invitations`, but for colleagues' shares, which the People
+//!    tab ([`crate::people`]) lists): unused links with kind and expiry; `x`
 //!    cancels one (`share.revoke`). `n` creates one: `t` **Invite a teammate to send to me**
 //!    (`share.create {kind: "handoff", ttl_s}`) or `h` **Pair another of my hosts**
 //!    (`peer.invite`). The new link shows with a QR code; `c` copies it through the TUI's
@@ -16,8 +18,9 @@
 //!    says what it is before anything happens ("Handoff invitation from laptop-anna (teammate),
 //!    valid 23h", "Pair your host mini"); anything else is refused without a call. Then **Show my
 //!    git name and email** (off by default) and **Accept** → `peer.redeem`.
-//! 4. **Invited devices** (`share.list` `devices`): share and peer devices that other people or
-//!    hosts hold on this host, with kind, owner and expiry; `x` revokes one (`share.revoke`).
+//! 4. **Invited hosts** (`share.list` `devices`, again without shares): handoff and peer devices
+//!    that other hosts hold on this host, with kind, owner and expiry; `x` revokes one
+//!    (`share.revoke`).
 //!
 //! Plus **Always ask before importing handoffs** (`a`, `handoff.prefs {always_ask}`).
 //!
@@ -221,13 +224,7 @@ pub enum Section {
     Devices,
 }
 
-impl Section {
-    fn next(self, by: i32) -> Section {
-        let all = [Section::Peers, Section::Invitations, Section::Devices];
-        let i = all.iter().position(|s| *s == self).unwrap_or(0) as i32;
-        all[(i + by).rem_euclid(3) as usize]
-    }
-}
+const SECTIONS: [Section; 3] = [Section::Peers, Section::Invitations, Section::Devices];
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct PeerRow {
@@ -285,7 +282,11 @@ impl PeerRow {
 }
 
 impl InvitationRow {
+    /// None for a colleague's share: those are the People tab's.
     fn from_value(v: &Value) -> Option<InvitationRow> {
+        if v.get("kind").and_then(Value::as_str) == Some("share") {
+            return None;
+        }
         Some(InvitationRow {
             id: s_of(v, "id")?,
             kind: s_of(v, "kind").unwrap_or_else(|| "device".into()),
@@ -297,7 +298,11 @@ impl InvitationRow {
 }
 
 impl DeviceRow {
+    /// None for a colleague's share: those are the People tab's.
     fn from_value(v: &Value) -> Option<DeviceRow> {
+        if v.get("kind").and_then(Value::as_str) == Some("share") {
+            return None;
+        }
         let sender = v.get("sender").filter(|s| !s.is_null()).and_then(|s| {
             let host = s_of(s, "host_name");
             let u = &s["user"];
@@ -412,6 +417,28 @@ impl View {
     fn clamp(&mut self) {
         self.sel = self.sel.min(self.len(self.section).saturating_sub(1));
     }
+
+    /// j/k: the next (or previous) row, past a section's end into the next non-empty section.
+    fn step(&mut self, down: bool) {
+        let n = self.len(self.section);
+        let i = SECTIONS
+            .iter()
+            .position(|s| *s == self.section)
+            .unwrap_or(0);
+        if down {
+            if self.sel + 1 < n {
+                self.sel += 1;
+            } else if let Some(s) = SECTIONS[i + 1..].iter().find(|s| self.len(**s) > 0) {
+                self.section = *s;
+                self.sel = 0;
+            }
+        } else if self.sel > 0 {
+            self.sel -= 1;
+        } else if let Some(s) = SECTIONS[..i].iter().rev().find(|s| self.len(**s) > 0) {
+            self.section = *s;
+            self.sel = self.len(*s) - 1;
+        }
+    }
 }
 
 #[derive(Default)]
@@ -455,12 +482,8 @@ fn view_mut(app: &mut App) -> Option<&mut View> {
 
 // ---- open / refresh ------------------------------------------------------------------------------
 
-pub fn open(app: &mut App) {
-    let mi = app.cur;
-    open_on(app, mi);
-}
-
-fn open_on(app: &mut App, mi: usize) {
+/// Open the Hosts tab on machine `mi` ([`crate::connections`] routes the actions).
+pub(crate) fn open_on(app: &mut App, mi: usize) {
     if !app.machines.get(mi).is_some_and(|m| m.connected()) {
         app.toast("that machine is offline");
         return;
@@ -481,14 +504,6 @@ fn refresh(app: &mut App) {
     gw_call(app, mi, "peer.list", json!({}), Reply::Peers);
     gw_call(app, mi, "share.list", json!({}), Reply::Shares);
     app.command_on(mi, "handoff.prefs", json!({}), pend(Reply::Prefs));
-}
-
-pub fn action(app: &mut App, action: &str) -> bool {
-    if matches!(action, "sharing" | "sharing_and_handoff" | "invitations") {
-        open(app);
-        return true;
-    }
-    false
 }
 
 // ---- actions -------------------------------------------------------------------------------------
@@ -639,6 +654,20 @@ fn close(app: &mut App) {
     app.mode = Mode::Normal;
 }
 
+/// Leaving the tab for another (a redeem in flight still finishes on the gateway).
+pub(crate) fn leave(app: &mut App) {
+    app.ux.sharing.view = None;
+}
+
+/// A text field has the keys (tab moves within the paste form, not between tabs).
+pub(crate) fn typing(app: &App) -> bool {
+    app.ux
+        .sharing
+        .view
+        .as_ref()
+        .is_some_and(|v| v.paste.is_some())
+}
+
 /// The next connected machine after the view's.
 fn next_machine(app: &App, mi: usize) -> Option<usize> {
     let n = app.machines.len();
@@ -697,16 +726,11 @@ pub fn key(app: &mut App, ev: KeyEvent) {
         return;
     }
     v.notice = None;
-    let n = v.len(v.section);
     match ev.key {
         _ if esc => return close(app),
         Key::Char('q') if plain => return close(app),
-        Key::Named(NamedKey::Tab) => {
-            v.section = v.section.next(if ev.mods.shift() { -1 } else { 1 });
-            v.sel = 0;
-        }
-        Key::Char('j') | Key::Named(NamedKey::Down) => v.sel = (v.sel + 1).min(n.saturating_sub(1)),
-        Key::Char('k') | Key::Named(NamedKey::Up) => v.sel = v.sel.saturating_sub(1),
+        Key::Char('j') | Key::Named(NamedKey::Down) => v.step(true),
+        Key::Char('k') | Key::Named(NamedKey::Up) => v.step(false),
         Key::Char('x') if plain => ask_remove(v),
         Key::Char('n') if plain => v.choosing = true,
         Key::Char('p') if plain => v.paste = Some(PasteForm::default()),
@@ -1012,7 +1036,7 @@ pub fn draw(app: &App, g: &mut Grid) -> Option<(u16, u16)> {
     let v = app.ux.sharing.view.as_ref()?;
     let t = app.theme;
     let label = app.machines.get(v.mi).map_or("", |m| m.label.as_str());
-    let mut a = crate::drafts::Area::open(app, g, &format!("Vibeke · Sharing & handoff · {label}"));
+    let mut a = crate::connections::area(app, g, crate::connections::Tab::Hosts, v.mi);
     let now = now_ms();
     if let Some(e) = &v.error {
         a.line(&format!("⚠ {e}"), t.bold(t.yellow));
@@ -1081,7 +1105,7 @@ pub fn draw(app: &App, g: &mut Grid) -> Option<(u16, u16)> {
     a.line("Paste invitation — p", t.bold(t.fg));
     a.line("", t.text());
     a.line(
-        "Invited devices — hosts and devices holding access to this host",
+        "Invited hosts — teammates' and your own hosts holding access to this host",
         head(Section::Devices),
     );
     if v.devices.is_empty() {
@@ -1138,7 +1162,7 @@ pub fn draw(app: &App, g: &mut Grid) -> Option<(u16, u16)> {
     };
     a.footer(
         &format!(
-            "tab section · j/k move · x remove/cancel/revoke · n new invitation · p paste · a always ask · g refresh{more} · esc"
+            "j/k move · x remove/cancel/revoke · n new invitation · p paste · a always ask · g refresh{more} · esc"
         ),
         t.dim(),
     );
@@ -1152,7 +1176,7 @@ fn draw_created(app: &App, a: &mut crate::drafts::Area<'_>, c: &Created, now: i6
             "Invitation for a teammate: once they accept it on one of their hosts, that host can hand work off to this one (nothing else)."
         }
         _ => {
-            "Peer invitation: accept it on your other host (Sharing & handoff → p, or `vibeke gateway peer add <link>`) to hand work off to this one."
+            "Peer invitation: accept it on your other host (Connections → Hosts → p, or `vibeke gateway peer add <link>`) to hand work off to this one."
         }
     };
     a.line(what, t.bold(t.fg));

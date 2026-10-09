@@ -635,21 +635,30 @@ pub const ACTION_INFO: &[(&str, &str)] = &[
         "Suggest a title for this pane (assistant)",
     ),
     (
+        "connections",
+        "Connections: devices, people, hosts, handoffs",
+    ),
+    (
         "handoffs",
-        "Incoming handoffs (accept, decline) and handoffs being sent",
+        "Handoffs: incoming handoffs (accept, decline) and handoffs being sent",
     ),
     ("handoff_send", "Hand off this pane to another host…"),
+    ("share_pane", "Share this pane or workspace with someone…"),
     (
         "handoff_details",
         "Handoff details: where this imported pane came from (retry resume)",
     ),
     (
         "sharing",
-        "Sharing & handoff: peers, invitations, paste an invitation, invited devices",
+        "Hosts: peers, invitations, paste an invitation, hosts holding access",
     ),
     (
         "devices",
         "Devices: your paired phones — pair, list, revoke",
+    ),
+    (
+        "people",
+        "People: who you shared panes and workspaces with — share, revoke",
     ),
     ("pair_phone", "Pair a phone"),
     ("update", "Update Vibeke…"),
@@ -693,6 +702,8 @@ const EXTRA_ACTIONS: &[&str] = &[
     "assist_briefing",
     "assist_pane_title",
     "handoff_details",
+    "devices",
+    "people",
     "pair_phone",
 ];
 
@@ -825,6 +836,10 @@ pub fn palette_entries(app: &App) -> Vec<PaletteEntry> {
                 None,
             );
         }
+    }
+    // A right-clicked pane: only its menu.
+    if app.ux.handoff.target.is_some() {
+        out.retain(|e| crate::handoff::PANE_MENU.contains(&e.id.as_str()));
     }
     out
 }

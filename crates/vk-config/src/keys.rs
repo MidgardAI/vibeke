@@ -79,13 +79,18 @@ pub const DEFAULT_KEYMAP: &[(&str, &str)] = &[
     ("tab_renumber", ""),
     ("task_recreate", ""),
     ("task_forget", ""),
-    // Handoffs (16 §15.2): the list, sending the focused pane, the Sharing & handoff view.
+    // Connections: one view over a machine's gateway with the tabs Devices (your paired
+    // phones), People (colleagues' shares), Hosts (peers, invitations) and Handoffs.
+    // `prefix+shift+d` is `close_workspace`. `devices` is an alias (see `ACTION_ALIASES`).
+    ("connections", "prefix+alt+d"),
+    // Handoffs (16 §15.2): the Handoffs tab, sending the focused pane, the Hosts tab.
     // `prefix+shift+o` is `preview_list`, so sending takes the list's letter with `alt`.
     ("handoffs", "prefix+shift+h"),
     ("handoff_send", "prefix+alt+h"),
     ("sharing", ""),
-    // Devices (your paired phones): `prefix+shift+d` is `close_workspace`.
-    ("devices", "prefix+alt+d"),
+    // Share the focused pane or its workspace with a colleague: `prefix+alt+s` is
+    // `sync_input_pane`.
+    ("share_pane", "prefix+alt+v"),
 ];
 
 /// Copy-mode actions for `[keys.copy_mode]` per-key overrides (`key = "action"`; an empty
@@ -130,8 +135,10 @@ pub fn is_copy_mode_action(name: &str) -> bool {
     COPY_MODE_ACTIONS.contains(&name)
 }
 
-/// Herdr action names accepted as aliases for ours (`from`, `to`).
-pub const ACTION_ALIASES: &[(&str, &str)] = &[("fullscreen", "zoom")];
+/// Action names accepted as aliases for ours (`from`, `to`): Herdr's, and our own older names.
+/// `devices` (bound to `prefix+alt+d` before the Connections view) binds `connections`; the
+/// palette still opens the Devices tab by that name.
+pub const ACTION_ALIASES: &[(&str, &str)] = &[("fullscreen", "zoom"), ("devices", "connections")];
 
 pub fn default_bindings() -> BTreeMap<String, String> {
     DEFAULT_KEYMAP

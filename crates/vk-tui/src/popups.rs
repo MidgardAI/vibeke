@@ -155,10 +155,11 @@ pub fn key(app: &mut App, ev: KeyEvent, p: Popup) {
         Popup::Agents { filter, sel } => crate::agent_list::key(app, ev, filter, sel),
         Popup::Path(p) => crate::path_picker::popup_key(app, ev, p),
         Popup::HandoffAccept => crate::handoff::accept_key(app, ev),
-        Popup::Handoffs => crate::handoff::handoffs_key(app, ev),
+        Popup::Handoffs => crate::connections::key(app, ev, crate::connections::Tab::Handoffs),
         Popup::HandoffSend => crate::handoff::send_key(app, ev),
-        Popup::Sharing => crate::sharing::key(app, ev),
-        Popup::Devices => crate::devices::key(app, ev),
+        Popup::Sharing => crate::connections::key(app, ev, crate::connections::Tab::Hosts),
+        Popup::Devices => crate::connections::key(app, ev, crate::connections::Tab::Devices),
+        Popup::People => crate::connections::key(app, ev, crate::connections::Tab::People),
         Popup::Updates => crate::updates::key(app, &ev),
         Popup::Peek { pane } => match ev.key {
             _ if esc => {}
@@ -357,7 +358,7 @@ pub fn draw(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
         }
         Mode::Popup(p) => match p {
             Popup::Help => {
-                let mut b = frame(app, g, 72, 31, "help · esc to close");
+                let mut b = frame(app, g, 72, 32, "help · esc to close");
                 let km = &app.keymap;
                 for (action, label) in [
                     ("split_vertical", "split side by side"),
@@ -382,7 +383,11 @@ pub fn draw(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
                     ("url_hints", "label URLs/IDs in the pane: open or copy"),
                     ("next_attention", "next agent that needs you"),
                     ("agent_list", "every agent on every machine, by attention"),
-                    ("devices", "your paired phones: pair, list, revoke"),
+                    (
+                        "connections",
+                        "connections: devices, people, hosts, handoffs",
+                    ),
+                    ("share_pane", "share this pane or workspace with someone"),
                     ("enter_copy_mode", "copy mode (/ search, v select, y yank)"),
                     ("resize_mode", "resize mode"),
                     ("toggle_sidebar", "toggle sidebar"),
@@ -540,6 +545,10 @@ pub fn draw(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
                 return Some((x, y, CursorShape::Bar));
             }
             Popup::Devices => crate::devices::draw(app, g),
+            Popup::People => {
+                let (x, y) = crate::people::draw(app, g)?;
+                return Some((x, y, CursorShape::Bar));
+            }
             Popup::Updates => crate::updates::draw(app, g),
             Popup::BrowserDrop(a) => crate::browser_io::draw_drop(app, g, a),
             Popup::Peek { pane } => {

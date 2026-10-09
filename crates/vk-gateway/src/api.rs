@@ -174,6 +174,17 @@ pub fn required_scope(method: &str) -> Option<Scope> {
     })
 }
 
+/// Full-scope methods that act on the whole host rather than a pane, workspace, run or task:
+/// refused to every device limited to a pane or workspace (`check_limit`).
+const HOST_WIDE: &[&str] = &[
+    "share.create",
+    "share.list",
+    "share.revoke",
+    "devices.revoke",
+    "auth.list",
+    "auth.approve.decide",
+];
+
 /// Full-scope methods without side effects (no op_id needed).
 const FULL_READ_ONLY: &[&str] = &[
     "handoff.status",
@@ -566,6 +577,12 @@ impl Call<'_> {
                 {
                     self.check_selectors(allowed, item).await?;
                 }
+            }
+            // Host-wide management: a share (even a Control share, full scope within its pane or
+            // workspace) never creates or revokes access, moves work between hosts or decides
+            // approvals for other panes.
+            m if HOST_WIDE.contains(&m) || m.starts_with("peer.") || m.starts_with("handoff.") => {
+                return Err(deny());
             }
             "worktree.list" | "fs.browse" | "repo.candidates" => {
                 // The list covers the whole repository (sibling checkouts, paths, branches), so
@@ -1378,7 +1395,9 @@ impl Call<'_> {
                 match s(p, "scope").unwrap_or("view") {
                     "view" => Scope::View,
                     "approve" => Scope::Approve,
-                    _ => return Err(ApiError::invalid("a share is view or approve")),
+                    // Control: type into and prompt the shared pane(s), still limited to them.
+                    "full" | "control" => Scope::Full,
+                    _ => return Err(ApiError::invalid("a share is view, approve or full")),
                 },
                 2 * 3600,
             ),
@@ -2014,6 +2033,47 @@ mod workspace_tests {
         assert!(!ws.tab_ok(Some("w2"), &["p1".into()]));
         assert!(pane.tab_ok(Some("w2"), &["p1".into()]));
         assert!(!pane.tab_ok(Some("w1"), &["p2".into()]));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn control_shares_stay_inside_their_pane() {
+        let t = tempfile::tempdir().unwrap();
+        let gw = gateway(&t).await;
+        let share = device(
+            "s2",
+            Scope::Full,
+            "share",
+            Some(Limit {
+                workspace: None,
+                pane: Some("p1".into()),
+            }),
+        );
+        gw.add_device(share.clone()).unwrap();
+        let call = Call {
+            gw: &gw,
+            device: &share,
+        };
+        for (m, p) in [
+            ("share.create", json!({"kind": "share", "pane": "p1"})),
+            ("share.list", json!({})),
+            ("share.revoke", json!({"id": "x"})),
+            ("devices.revoke", json!({"device": "d1"})),
+            ("peer.invite", json!({})),
+            ("handoff.send", json!({"pane": "p1", "peer": "x"})),
+            ("handoff.incoming.list", json!({})),
+            ("auth.list", json!({})),
+            (
+                "auth.approve.decide",
+                json!({"request": "r", "decision": "approve"}),
+            ),
+            ("pane.send_text", json!({"pane": "p2", "text": "ls"})),
+        ] {
+            assert_eq!(
+                call.dispatch(m, p).await.unwrap_err().kind,
+                "forbidden",
+                "{m}"
+            );
+        }
     }
 
     #[tokio::test(flavor = "multi_thread")]

@@ -58,6 +58,6 @@ See [agents and interactions](concepts/agents.md).
 ## Phone and desktop access
 
 The desktop app has a **Connect to this Mac/computer** flow.
-**Devices** (`prefix` then `alt+d`, or **Pair a phone** in the command palette) pairs a phone or browser and lists and revokes paired devices.
+**Connections** (`prefix` then `alt+d`) has four tabs, switched with `tab` and `shift+tab`: **Devices** pairs a phone or browser (also **Pair a phone** in the command palette) and lists and revokes paired devices; **People** lists, creates and revokes colleagues' shared access to a pane or workspace; **Hosts** manages your paired hosts and handoff invitations; **Handoffs** lists incoming handoffs (`prefix+shift+h`).
 
 See [desktop access](desktop.md) and [phone and browser access](mobile.md).
