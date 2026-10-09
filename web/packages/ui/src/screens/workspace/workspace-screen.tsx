@@ -113,7 +113,7 @@ function Workspace({ route, row, current, locked }: { route: WorkspaceRoute; row
   const tabs = locked ? allTabs.filter((x) => x.pane?.pane.id === current.pane.id && x.kind !== 'preview') : allTabs;
   const tabId = currentTabId(current, show, view);
   // An agent showing its other view (`t:`/`c:` from ?show=) is still its own tab in the strip.
-  const tab: WsTab | null = allTabs.find((x) => x.id === tabId) ?? (current.run ? (allTabs.find((x) => x.id === `a:${current.pane.id}`) ?? null) : null);
+  const tab: WsTab | null = allTabs.find((x) => x.id === tabId) ?? (current.run && /^[tc]:/.test(tabId) ? (allTabs.find((x) => x.id === `a:${current.pane.id}`) ?? null) : null);
   const body = tabBody(tabId, view);
   const hasAgents = locked ? !!current.run : row.panes.some((p) => p.run);
   /** What the toggle shows as on: the agent body on screen, else the workspace's view. */
