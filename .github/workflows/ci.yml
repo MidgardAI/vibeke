@@ -108,7 +108,8 @@ jobs:
             ~/Library/Caches/zig
             /tmp/vk-term-cache
           key: ghostty-${{ runner.os }}-${{ hashFiles('vendor/libghostty-vt.vendor.json', 'vendor/libghostty-vt/**', 'crates/vk-term/build.rs', 'mise.toml') }}
-      - run: cargo nextest run --workspace --no-fail-fast
+      # Most tests wait on child processes and sockets, not the CPU: two per core.
+      - run: cargo nextest run --workspace --no-fail-fast --test-threads "$(( $(getconf _NPROCESSORS_ONLN) * 2 ))"
       - run: sh scripts/tests/repro-check-test.sh
       - run: sh scripts/tests/release-sign-test.sh
   web:
