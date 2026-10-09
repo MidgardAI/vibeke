@@ -128,7 +128,11 @@ impl Session {
         self.write_config(&cfg(true, endpoint, top, profile));
     }
     fn workspace(&self) -> (String, String) {
-        let v = self.json(&["workspace", "create", "--cwd", "/tmp"]);
+        // The resolved path (/private/tmp on macOS): the pane's first status renames a workspace
+        // whose cwd differs from the live one, and the name is part of a briefing's sources,
+        // so a rename between two requests changes the cache key.
+        let cwd = std::fs::canonicalize("/tmp").unwrap();
+        let v = self.json(&["workspace", "create", "--cwd", cwd.to_str().unwrap()]);
         (
             v["workspace"]["id"]
                 .as_str()

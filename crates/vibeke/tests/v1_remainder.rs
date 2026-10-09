@@ -119,7 +119,12 @@ fn sync_input_mirrors_user_input_and_excludes_agents() {
     let s = Session::new();
     let a = s.workspace("cat");
     let b = s.split(&a, "cat");
-    let c = s.split(&a, "cat");
+    // c runs `cat` under the name `claude`. Process detection then agrees with the report
+    // below; a plain `cat` would end the reported run as soon as c's first process status
+    // arrived, and that status can come after the report.
+    let fake = s.dir.path().join("claude");
+    std::os::unix::fs::symlink("/bin/cat", &fake).unwrap();
+    let c = s.split(&a, fake.to_str().unwrap());
     let mut r = rpc(&s);
     // c runs an agent: excluded unless included explicitly.
     r.call(
