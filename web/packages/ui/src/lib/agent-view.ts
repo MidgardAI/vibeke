@@ -1,6 +1,6 @@
 // How an agent pane is shown: the structured conversation or the harness's own terminal UI.
 // A per-device default (Settings → Appearance) and per-workspace overrides (`<host>/<workspace>`),
-// both in prefs. The primary agent tab renders the chosen view; the secondary tab the other one.
+// both in prefs. The agent tab renders the chosen view; the strip's toggle switches it.
 // `?show=term` / `?show=conversation` pick a body explicitly (deep links); null = the chosen view.
 
 import type { Prefs } from './prefs';

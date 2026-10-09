@@ -109,10 +109,11 @@ function Workspace({ route, row, current, locked }: { route: WorkspaceRoute; row
   const previews = useMemo(() => workspacePreviews(row, host?.dashboard?.previews), [row, host?.dashboard?.previews]);
   const view = agentViewFor(prefs, row.host, row.workspace.id);
   const overridden = hasViewOverride(prefs, row.host, row.workspace.id);
-  const allTabs = useMemo(() => workspaceTabs(row, previews, view), [row, previews, view]);
+  const allTabs = useMemo(() => workspaceTabs(row, previews), [row, previews]);
   const tabs = locked ? allTabs.filter((x) => x.pane?.pane.id === current.pane.id && x.kind !== 'preview') : allTabs;
   const tabId = currentTabId(current, show, view);
-  const tab: WsTab | null = allTabs.find((x) => x.id === tabId) ?? null;
+  // An agent showing its other view (`t:`/`c:` from ?show=) is still its own tab in the strip.
+  const tab: WsTab | null = allTabs.find((x) => x.id === tabId) ?? (current.run ? (allTabs.find((x) => x.id === `a:${current.pane.id}`) ?? null) : null);
   const body = tabBody(tabId, view);
   const hasAgents = locked ? !!current.run : row.panes.some((p) => p.run);
   /** What the toggle shows as on: the agent body on screen, else the workspace's view. */
@@ -122,18 +123,11 @@ function Workspace({ route, row, current, locked }: { route: WorkspaceRoute; row
 
   const select = useCallback(
     (x: WsTab) => {
-      const s =
-        x.kind === 'preview'
-          ? `preview:${x.preview!.id}`
-          : x.kind === 'term' && x.pane?.run
-            ? showFor('terminal', view)
-            : x.kind === 'conv'
-              ? showFor('conversation', view)
-              : null;
+      const s = x.kind === 'preview' ? `preview:${x.preview!.id}` : null;
       if (locked) return setLocalShow(s);
       navigate({ ...route, pane: x.pane?.pane.id ?? route.pane, show: s, view: null }, { replace: true });
     },
-    [locked, route, view],
+    [locked, route],
   );
   const openTerminal = () => {
     const s = showFor('terminal', view);
@@ -258,7 +252,7 @@ function Workspace({ route, row, current, locked }: { route: WorkspaceRoute; row
       </header>
       <TabStrip
         tabs={tabs}
-        current={tabId}
+        current={tab?.id ?? tabId}
         onSelect={select}
         onNewAgent={full ? () => setSheet('new') : undefined}
         onNewTerminal={full ? () => void newTerminal() : undefined}

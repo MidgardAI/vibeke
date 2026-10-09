@@ -1,7 +1,7 @@
 // Conversation-first workspace centre against a real server + gateway: a Claude-style agent whose
 // SessionStart hook names a transcript file, so `agent.transcript` serves real turns. Checks the
 // user pill, tool rows with summaries, the folded "N steps", the turn footer ("Worked for …",
-// counts), the composer labels, the Terminal tab, the + menu, and an approval rendered inline at
+// counts), the composer labels, the view toggle, the + menu, and an approval rendered inline at
 // the end of another agent's stream (`data-act` kept). Light/dark captures at 1440×900 and
 // 390×844.
 
@@ -84,7 +84,7 @@ async function resize(page: Page, width: number, height: number) {
   await page.waitForFunction(([w]) => window.innerWidth === w, [width], { timeout: 5000 }).catch(() => page.setViewportSize({ width, height }));
 }
 
-test('conversation: transcript turns, tool rows, footer, composer, terminal tab, inline approval', async () => {
+test('conversation: transcript turns, tool rows, footer, composer, view toggle, inline approval', async () => {
   test.setTimeout(180_000);
   const hero = repoWorkspace('homepage');
   const transcript = join(host.root, 'hero-transcript.jsonl');
@@ -111,7 +111,7 @@ test('conversation: transcript turns, tool rows, footer, composer, terminal tab,
   await expect(page).toHaveURL(/#\/w\/[^/]+\/[^/?]+/);
 
   // The agent tab is selected and shows its conversation.
-  await expect(page.getByRole('tab', { selected: true })).not.toHaveText('Terminal');
+  await expect(page.getByRole('tab', { selected: true })).toHaveAttribute('data-tab', /^a:/);
   const log = page.getByRole('log', { name: 'Conversation' });
   await expect(log.locator('[data-role="user"]').filter({ hasText: 'Rebuild the homepage hero' })).toBeVisible({ timeout: 30_000 });
   await expect(log.getByText('Ready for review.')).toBeVisible();
@@ -174,28 +174,14 @@ test('conversation: transcript turns, tool rows, footer, composer, terminal tab,
   await expect(page.getByRole('button', { name: 'Interrupt' })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Send', exact: true })).toBeVisible();
 
-  // Tabs keyboard: one tab stop, ←/→ move focus, Enter selects, Home/End jump; tab ↔ panel linked.
+  // Tabs: one tab per agent (no separate Terminal tab), one tab stop; tab ↔ panel linked.
   const strip = page.getByRole('tablist', { name: 'Tabs' });
   const agentTab = strip.getByRole('tab', { selected: true });
   await expect(agentTab).toHaveAttribute('tabindex', '0');
-  await expect(strip.getByRole('tab', { name: 'Terminal' })).toHaveAttribute('tabindex', '-1');
+  await expect(strip.getByRole('tab', { name: 'Terminal' })).toHaveCount(0);
   const panelId = await agentTab.getAttribute('aria-controls');
   await expect(page.locator(`#${panelId}`)).toHaveAttribute('role', 'tabpanel');
   await expect(page.locator(`#${panelId}`)).toHaveAttribute('aria-labelledby', (await agentTab.getAttribute('id'))!);
-  await agentTab.focus();
-  await page.keyboard.press('ArrowRight');
-  await expect(strip.getByRole('tab', { name: 'Terminal' })).toBeFocused();
-  await page.keyboard.press('Home');
-  await expect(agentTab).toBeFocused();
-  await page.keyboard.press('End');
-  await expect(strip.getByRole('tab', { name: 'Terminal' })).toBeFocused();
-  await page.keyboard.press('Enter');
-  await expect(page).toHaveURL(/show=term/);
-  await expect(strip.getByRole('tab', { name: 'Terminal' })).toHaveAttribute('aria-selected', 'true');
-  await page.keyboard.press('ArrowLeft');
-  await page.keyboard.press('Enter');
-  await expect(page).not.toHaveURL(/show=term/);
-  await expect(log).toBeVisible();
 
   // Keys and quick replies live behind ⋯ in the composer.
   await page.getByRole('button', { name: 'Keys and quick replies' }).click();
@@ -207,12 +193,11 @@ test('conversation: transcript turns, tool rows, footer, composer, terminal tab,
   await expect(page.getByRole('menuitem', { name: 'New terminal' })).toBeVisible();
   await page.keyboard.press('Escape');
 
-  // The Terminal tab mirrors the pane.
-  await page.getByRole('tab', { name: 'Terminal' }).click();
-  await expect(page).toHaveURL(/show=term/);
+  // The view toggle shows the pane's terminal mirror, and back.
+  await page.getByRole('button', { name: 'Show terminal' }).click();
   await expect(page.locator('.term').first()).toBeVisible();
   await expect(log).toHaveCount(0);
-  await page.getByRole('tab', { name: /claude|Claude/ }).first().click();
+  await page.getByRole('button', { name: 'Show conversation' }).click();
   await expect(log).toBeVisible();
 
   // Another agent waiting for an approval: the card sits at the end of its stream.

@@ -1,6 +1,5 @@
-// The workspace's tab strip: one tab per agent (harness glyph + name, showing the workspace's
-// agent view) with a secondary tab for the other view ("Terminal" or "Conversation"), one per
-// shell pane, and one per dev-server preview. `+` starts an agent or a terminal (`tab.create`);
+// The workspace's tab strip: one tab per agent (harness glyph + name; the toggle on the right
+// picks its conversation or terminal), one per shell pane, and one per dev-server preview. `+` starts an agent or a terminal (`tab.create`);
 // ⋯ renames, closes or focuses the host tab behind the selected one (hidden for hosts without
 // `tab.*` and for devices without full scope). On the right, the conversation / terminal toggle.
 
@@ -16,19 +15,17 @@ import type { PaneRow } from '../../lib/tree';
 import type { WorkspaceRow } from '../../lib/workspaces';
 import { MenuButton, type MenuItem } from './menu';
 
-/** `agent` = the primary agent tab (the chosen view), `conv` = an agent's secondary conversation. */
-export type TabKind = 'agent' | 'term' | 'conv' | 'preview';
+/** `agent` = an agent pane (conversation or terminal, by the toggle), `term` = a shell. */
+export type TabKind = 'agent' | 'term' | 'preview';
 
 export interface WsTab {
-  /** `a:<pane>`, `t:<pane>`, `c:<pane>`, `p:<preview>` (see lib/agent-view.ts `paneTabId`). */
+  /** `a:<pane>`, `t:<pane>`, `p:<preview>` (see lib/agent-view.ts `paneTabId`). */
   id: string;
   kind: TabKind;
   pane: PaneRow | null;
   preview: Preview | null;
   label: string;
   title: string;
-  /** Secondary tab of an agent pane, the view not chosen (rendered quieter). */
-  secondary: boolean;
   status: Status | null;
 }
 
@@ -58,27 +55,22 @@ export function previewLabel(v: Preview): string {
   }
 }
 
-/** Tabs in display order: agents (with their other view), shells, previews. */
-export function workspaceTabs(row: WorkspaceRow, previews: readonly Preview[], view: AgentView = 'conversation'): WsTab[] {
+/** Tabs in display order: agents, shells, previews. */
+export function workspaceTabs(row: WorkspaceRow, previews: readonly Preview[]): WsTab[] {
   const out: WsTab[] = [];
   const agents = row.panes.filter((p) => p.run);
   const shells = row.panes.filter((p) => !p.run);
   for (const p of agents) {
     const label = paneLabel(p);
-    out.push({ id: `a:${p.pane.id}`, kind: 'agent', pane: p, preview: null, label, title: label, secondary: false, status: paneStatus(p) });
-    out.push(
-      view === 'conversation'
-        ? { id: `t:${p.pane.id}`, kind: 'term', pane: p, preview: null, label: t.tabs2.terminal, title: t.tabs2.terminalOf(label), secondary: true, status: null }
-        : { id: `c:${p.pane.id}`, kind: 'conv', pane: p, preview: null, label: t.tabs2.conversation, title: t.tabs2.conversationOf(label), secondary: true, status: null },
-    );
+    out.push({ id: `a:${p.pane.id}`, kind: 'agent', pane: p, preview: null, label, title: label, status: paneStatus(p) });
   }
   for (const p of shells) {
     const label = p.pane.title ?? (p.pane.fg_cmdline.length ? p.pane.fg_cmdline.join(' ') : p.pane.auto_title);
-    out.push({ id: `t:${p.pane.id}`, kind: 'term', pane: p, preview: null, label, title: label, secondary: false, status: paneStatus(p) });
+    out.push({ id: `t:${p.pane.id}`, kind: 'term', pane: p, preview: null, label, title: label, status: paneStatus(p) });
   }
   for (const v of previews) {
     const label = previewLabel(v);
-    out.push({ id: `p:${v.id}`, kind: 'preview', pane: row.panes.find((p) => p.pane.id === v.pane) ?? null, preview: v, label, title: v.url, secondary: false, status: null });
+    out.push({ id: `p:${v.id}`, kind: 'preview', pane: row.panes.find((p) => p.pane.id === v.pane) ?? null, preview: v, label, title: v.url, status: null });
   }
   return out;
 }
@@ -170,15 +162,12 @@ export function TabStrip({
               className={cx(
                 'vk-focus inline-flex h-7 max-w-[220px] shrink-0 items-center gap-1.5 rounded-md px-2.5 text-[13px] pointer-coarse:h-8',
                 on ? 'bg-selected text-fg' : 'text-muted hover:bg-hover hover:text-fg',
-                tab.secondary && !on && 'text-faint',
               )}
             >
               {tab.kind === 'agent' ? (
                 <HarnessIcon harness={tab.pane?.run?.harness ?? null} />
               ) : tab.kind === 'preview' ? (
                 <Globe aria-hidden className="size-3.5 shrink-0" strokeWidth={1.75} />
-              ) : tab.kind === 'conv' ? (
-                <MessageSquare aria-hidden className="size-3.5 shrink-0" strokeWidth={1.75} />
               ) : (
                 <SquareTerminal aria-hidden className="size-3.5 shrink-0" strokeWidth={1.75} />
               )}

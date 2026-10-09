@@ -113,9 +113,9 @@ test('agent view: toggle, typing into the terminal, shortcut, palette, settings 
   const showTerminal = page.getByRole('button', { name: 'Show terminal' });
   const showConversation = page.getByRole('button', { name: 'Show conversation' });
 
-  // Default: the conversation, a secondary Terminal tab, the toggle on Conversation.
+  // Default: the conversation, one tab for the agent, the toggle on Conversation.
   await expect(log).toBeVisible({ timeout: 30_000 });
-  await expect(strip.getByRole('tab', { name: 'Terminal' })).toBeVisible();
+  await expect(strip.getByRole('tab', { name: 'Terminal' })).toHaveCount(0);
   await expect(showConversation).toHaveAttribute('aria-pressed', 'true');
   await expect(showTerminal).toHaveAttribute('aria-pressed', 'false');
 
@@ -125,9 +125,7 @@ test('agent view: toggle, typing into the terminal, shortcut, palette, settings 
   await expect(log).toHaveCount(0);
   await expect(screen).toContainText('session ready', { timeout: 15_000 });
   await expect(showTerminal).toHaveAttribute('aria-pressed', 'true');
-  await expect(strip.getByRole('tab', { name: 'Conversation' })).toBeVisible();
-  await expect(strip.getByRole('tab', { name: 'Terminal' })).toHaveCount(0);
-  await expect(strip.getByRole('tab', { selected: true })).not.toHaveText('Conversation');
+  await expect(strip.getByRole('tab', { name: 'Conversation' })).toHaveCount(0);
   await expect(strip.getByRole('tab', { selected: true })).toHaveAttribute('data-tab', /^a:/);
   await expect(page).not.toHaveURL(/show=/);
   await expect(page.locator('[data-belt]').getByRole('button', { name: 'Keys' })).toBeVisible();
@@ -163,11 +161,11 @@ test('agent view: toggle, typing into the terminal, shortcut, palette, settings 
   await page.keyboard.press(`${mod}+Shift+T`);
   await expect(screen).toBeVisible();
 
-  // The secondary tab shows the other view and says so in the URL.
-  await strip.getByRole('tab', { name: 'Conversation' }).click();
-  await expect(page).toHaveURL(/show=conversation/);
+  // A deep link to the other view keeps the agent's tab selected; the tab goes back to the chosen view.
+  await page.evaluate(() => (location.hash += location.hash.includes('?') ? '&show=conversation' : '?show=conversation'));
   await expect(log).toBeVisible();
-  await strip.getByRole('tab', { selected: false }).first().click();
+  await expect(strip.getByRole('tab', { selected: true })).toHaveAttribute('data-tab', /^a:/);
+  await strip.getByRole('tab', { selected: true }).click();
   await expect(screen).toBeVisible();
 
   // Palette: both commands; run "Show agent as conversation".
@@ -195,7 +193,6 @@ test('agent view: toggle, typing into the terminal, shortcut, palette, settings 
   await sidebar.locator('[data-nav-item]').filter({ hasText: 'docs-site' }).click();
   await expect(screen).toBeVisible({ timeout: 30_000 });
   await expect(screen).toContainText('session ready', { timeout: 15_000 });
-  await expect(strip.getByRole('tab', { name: 'Conversation' })).toBeVisible();
   await sidebar.locator('[data-nav-item]').filter({ hasText: 'homepage' }).click();
   await expect(log).toBeVisible({ timeout: 30_000 });
   // "Use default view (Terminal)" clears the override.

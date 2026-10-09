@@ -109,7 +109,7 @@ describe('agent view tabs and ?show=', () => {
     expect(tabBody('p:v1', 'terminal')).toBe('preview');
   });
 
-  test('workspace tabs: secondary is Terminal or Conversation by view', () => {
+  test('workspace tabs: one per agent (the toggle picks its view), then shells', () => {
     const d = dashboard({
       workspaces: [ws({ id: 'w1' })],
       tabs: [tab({ id: 't1', layout: { Split: { dir: 'Horizontal', children: [[{ Leaf: { pane: 'p1' } }, 0.5], [{ Leaf: { pane: 'p2' } }, 0.5]] } } })],
@@ -117,22 +117,10 @@ describe('agent view tabs and ?show=', () => {
       runs: [run({ id: 'r1', pane: 'p1' })],
     });
     const row = groupWorkspaces(buildTree([host('h1', d)], { pins: new Set(), seenDone: {} }), { pins: new Set() }).all[0]!;
-    const conv = workspaceTabs(row, [], 'conversation');
-    expect(conv.map((x) => [x.id, x.kind, x.secondary])).toEqual([
-      ['a:p1', 'agent', false],
-      ['t:p1', 'term', true],
-      ['t:p2', 'term', false],
+    expect(workspaceTabs(row, []).map((x) => [x.id, x.kind])).toEqual([
+      ['a:p1', 'agent'],
+      ['t:p2', 'term'],
     ]);
-    expect(conv[1]!.label).toBe('Terminal');
-    const term = workspaceTabs(row, [], 'terminal');
-    expect(term.map((x) => [x.id, x.kind, x.secondary])).toEqual([
-      ['a:p1', 'agent', false],
-      ['c:p1', 'conv', true],
-      ['t:p2', 'term', false],
-    ]);
-    expect(term[1]!.label).toBe('Conversation');
-    // Default (no view given) keeps the conversation layout.
-    expect(workspaceTabs(row, []).map((x) => x.id)).toEqual(conv.map((x) => x.id));
   });
 
   test('routes carry ?show=conversation, and pane links keep show into the workspace', () => {
