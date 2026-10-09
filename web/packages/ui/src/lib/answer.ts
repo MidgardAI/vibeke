@@ -2,6 +2,7 @@
 // interaction, `stale` refresh, unknown outcome (never retried, §1.7), answered elsewhere.
 
 import { NotConnectedError, OutcomeUnknownError, RpcError, type Interaction } from '@vibeke/core';
+import { t } from '../i18n';
 
 export type LocalPhase = 'sending' | 'sent' | 'stale' | 'unknown' | 'error';
 
@@ -94,10 +95,13 @@ export function staleInteraction(e: unknown): Interaction | null {
   return it && typeof it === 'object' && 'id' in it ? (it as Interaction) : null;
 }
 
+/** Gateway error messages that are codes, not sentences. */
+const KNOWN_MESSAGES = new Map<string, () => string>([['not_a_repo', () => t.changes.notRepo]]);
+
 /** Human message for an error. */
 export function errorMessage(e: unknown): string {
-  if (e instanceof RpcError) return e.data?.kind && e.message.includes(':') ? e.message.split(': ').slice(1).join(': ') : e.message;
-  return e instanceof Error ? e.message : String(e);
+  const m = e instanceof RpcError ? (e.data?.kind && e.message.includes(':') ? e.message.split(': ').slice(1).join(': ') : e.message) : e instanceof Error ? e.message : String(e);
+  return KNOWN_MESSAGES.get(m)?.() ?? m;
 }
 
 export class AnswerStore {
