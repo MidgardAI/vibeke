@@ -1080,7 +1080,9 @@ impl Provider for Sprites {
                 &[
                     ("path", path.to_string()),
                     ("mode", format!("{:04o}", mode & 0o7777)),
-                    ("mkdir", "true".into()),
+                    // The parameter names follow the official Go SDK
+                    // (superfly/sprites-go, filesystem.go WriteFileContext).
+                    ("mkdirParents", "true".into()),
                 ],
             )?;
             send(

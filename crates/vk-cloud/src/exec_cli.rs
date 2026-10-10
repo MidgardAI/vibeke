@@ -8,7 +8,9 @@
 //! - `-t`: terminal mode. Local stdin goes raw when it is a TTY, the size follows the local
 //!   terminal (`SIGWINCH`), and the session is detachable. With `--session-file`, an active
 //!   session named in the file is attached instead of starting `CMD`; a new session's id is
-//!   written to the file (0600). A lost connection attaches again with backoff.
+//!   written to the file (0600). A lost connection attaches again with backoff. At startup,
+//!   transient errors while checking that session are retried for up to a minute; a new
+//!   `CMD` starts only when the provider reports the session gone (else exit 125).
 //! - `-i` without `-t`: pipe mode. stdin is sent, then EOF; stdout and stderr stay separate.
 //! - Exit codes: the remote command's code; 125 when it can't run (no credential: stderr
 //!   `vibeke: needs_auth <provider>`); 255 when the connection is lost in pipe mode.
@@ -345,7 +347,48 @@ fn write_session_file(p: &Path, id: &str) {
     }
 }
 
+/// How long startup keeps retrying a session named in `--session-file` before it gives up
+/// (without starting a second copy of the command).
+const RESUME_BUDGET: Duration = Duration::from_secs(60);
+
+/// Errors that may clear up on their own; the caller retries them with backoff.
+fn transient(k: ErrorKind) -> bool {
+    matches!(
+        k,
+        ErrorKind::Unavailable | ErrorKind::RateLimited | ErrorKind::Internal
+    )
+}
+
+/// What to do with the session named in `--session-file`.
+#[derive(Debug, PartialEq, Eq)]
+enum Resume {
+    /// The provider lists it as active: attach.
+    Attach,
+    /// The provider positively reports it gone: start a new command.
+    Gone,
+    /// The answer was a transient failure (its message): ask again.
+    Retry(String),
+}
+
+/// Decide from the provider's session list. Non-transient errors other than `NotFound`
+/// (the box itself is gone) are returned: they must not start a replacement command.
+fn classify_sessions(
+    r: Result<Vec<crate::SessionInfo>, crate::CloudError>,
+    id: &str,
+) -> Result<Resume, crate::CloudError> {
+    match r {
+        Ok(list) if list.iter().any(|s| s.id == id && s.active) => Ok(Resume::Attach),
+        Ok(_) => Ok(Resume::Gone),
+        Err(e) if e.kind == ErrorKind::NotFound => Ok(Resume::Gone),
+        Err(e) if transient(e.kind) => Ok(Resume::Retry(e.message)),
+        Err(e) => Err(e),
+    }
+}
+
 /// Attach to the session named in `--session-file` when the provider reports it active.
+/// Returns `Ok(None)` only when the provider positively reports that session gone, so a
+/// replacement command may start. Transient failures are retried with the reconnect backoff
+/// for up to [`RESUME_BUDGET`]; after that the error is returned and nothing new starts.
 async fn try_resume(
     p: &dyn Provider,
     cred: &Secret,
@@ -353,21 +396,57 @@ async fn try_resume(
     cols: u16,
     rows: u16,
 ) -> Result<Option<Session>, crate::CloudError> {
-    let Some(id) = o.session_file.as_deref().and_then(read_session_file) else {
+    let Some(file) = o.session_file.as_deref() else {
         return Ok(None);
     };
-    let sessions = match p.sessions(cred, &o.box_id).await {
-        Ok(s) => s,
-        Err(e) if e.kind == ErrorKind::NeedsAuth => return Err(e),
-        Err(_) => return Ok(None),
-    };
-    if !sessions.iter().any(|s| s.id == id && s.active) {
+    let Some(id) = read_session_file(file) else {
         return Ok(None);
-    }
-    match p.attach(cred, &o.box_id, &id, cols, rows).await {
-        Ok(s) => Ok(Some(s)),
-        Err(e) if e.kind == ErrorKind::NeedsAuth => Err(e),
-        Err(_) => Ok(None),
+    };
+    let deadline = tokio::time::Instant::now() + RESUME_BUDGET;
+    let mut delay = Duration::from_millis(500);
+    let mut announced = false;
+    loop {
+        let last = match classify_sessions(p.sessions(cred, &o.box_id).await, &id)? {
+            Resume::Gone => return Ok(None),
+            Resume::Attach => match p.attach(cred, &o.box_id, &id, cols, rows).await {
+                Ok(s) => return Ok(Some(s)),
+                // Ended between the listing and the attach.
+                Err(e) if e.kind == ErrorKind::NotFound => return Ok(None),
+                Err(e) if transient(e.kind) => e.message,
+                Err(e) => return Err(e),
+            },
+            Resume::Retry(m) => m,
+        };
+        tracing::debug!(reason = %last, "cloud exec resume failed; retrying");
+        let now = tokio::time::Instant::now();
+        if now + delay > deadline {
+            return Err(crate::CloudError::new(
+                ErrorKind::Unavailable,
+                format!(
+                    "can't reach session {id} in {}/{} ({last}); not starting a new command \
+                     while it may still run. Try again later, or delete {} to start fresh",
+                    o.provider,
+                    o.box_id,
+                    file.display()
+                ),
+            ));
+        }
+        if !announced {
+            announced = true;
+            let mut stdout = tokio::io::stdout();
+            let _ = stdout
+                .write_all(
+                    format!(
+                        "\r\n\x1b[2m[vibeke: reconnecting to {}…]\x1b[0m\r\n",
+                        o.box_id
+                    )
+                    .as_bytes(),
+                )
+                .await;
+            let _ = stdout.flush().await;
+        }
+        tokio::time::sleep(delay).await;
+        delay = (delay * 2).min(Duration::from_secs(10));
     }
 }
 
@@ -545,5 +624,44 @@ mod tests {
         assert!(parse(&a(&["-i", "nobox", "ls"]), &env).is_err());
         assert!(parse(&a(&["-x", "fake/b", "ls"]), &env).is_err());
         assert_eq!(parse(&a(&["--help"]), &env).unwrap_err(), "");
+    }
+
+    fn info(id: &str, active: bool) -> crate::SessionInfo {
+        crate::SessionInfo {
+            id: id.into(),
+            command: "bash".into(),
+            tty: true,
+            active,
+            last_activity_at: 0,
+        }
+    }
+
+    #[test]
+    fn resume_starts_a_replacement_only_when_the_session_is_gone() {
+        use crate::CloudError;
+        let c = |r| classify_sessions(r, "s1");
+        assert_eq!(c(Ok(vec![info("s1", true)])), Ok(Resume::Attach));
+        assert_eq!(c(Ok(vec![info("s1", false)])), Ok(Resume::Gone));
+        assert_eq!(c(Ok(vec![info("s2", true)])), Ok(Resume::Gone));
+        assert_eq!(c(Ok(vec![])), Ok(Resume::Gone));
+        assert_eq!(c(Err(CloudError::not_found("gone"))), Ok(Resume::Gone));
+        for k in [
+            ErrorKind::Unavailable,
+            ErrorKind::RateLimited,
+            ErrorKind::Internal,
+        ] {
+            assert_eq!(
+                c(Err(CloudError::new(k, "x"))),
+                Ok(Resume::Retry("x".into())),
+                "{k:?}"
+            );
+        }
+        for k in [
+            ErrorKind::NeedsAuth,
+            ErrorKind::Account,
+            ErrorKind::Unsupported,
+        ] {
+            assert!(c(Err(CloudError::new(k, "x"))).is_err(), "{k:?}");
+        }
     }
 }

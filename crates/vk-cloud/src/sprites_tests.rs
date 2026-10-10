@@ -6,7 +6,7 @@ use axum::extract::ws::{Message as AxMsg, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, RawQuery};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
-use axum::routing::get;
+use axum::routing::{get, put};
 use serde_json::{Value, json};
 
 use super::*;
@@ -210,12 +210,41 @@ async fn attach(
     }))
 }
 
+async fn write(
+    h: HeaderMap,
+    Path(name): Path<String>,
+    RawQuery(q): RawQuery,
+    body: axum::body::Bytes,
+) -> (StatusCode, Json<Value>) {
+    if let Err(e) = auth(&h) {
+        return e;
+    }
+    let q = q.unwrap_or_default();
+    let mut pairs: Vec<(String, String)> = url::form_urlencoded::parse(q.as_bytes())
+        .into_owned()
+        .collect();
+    pairs.sort();
+    let want = [
+        ("mkdirParents".to_string(), "true".to_string()),
+        ("mode".to_string(), "0755".to_string()),
+        ("path".to_string(), "/usr/local/bin/vibeke".to_string()),
+    ];
+    if name != VK || pairs != want || &body[..] != b"ELF" {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": format!("unexpected write: {name} {q}")})),
+        );
+    }
+    (StatusCode::OK, Json(json!({})))
+}
+
 async fn serve() -> Sprites {
     let app = Router::new()
         .route("/v1/sprites", get(list).post(create))
         .route("/v1/sprites/{name}", get(get_one).delete(delete_one))
         .route("/v1/sprites/{name}/exec", get(exec))
-        .route("/v1/sprites/{name}/exec/{sid}", get(attach));
+        .route("/v1/sprites/{name}/exec/{sid}", get(attach))
+        .route("/v1/sprites/{name}/fs/write", put(write));
     let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = l.local_addr().unwrap();
     tokio::spawn(async move {
@@ -300,6 +329,20 @@ async fn create_get_destroy() {
         p.get(&tok("bad/bad/bad"), VK).await.unwrap_err().kind,
         ErrorKind::NeedsAuth
     );
+}
+
+#[tokio::test]
+async fn write_file_uses_the_sdk_parameter_names() {
+    let p = serve().await;
+    p.write_file(
+        &tok(TOKEN),
+        VK,
+        "/usr/local/bin/vibeke",
+        b"ELF".to_vec(),
+        0o100755,
+    )
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
