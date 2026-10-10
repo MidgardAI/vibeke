@@ -3022,6 +3022,7 @@ CloudBoxAdoptResult = TypedDict("CloudBoxAdoptResult", {
     "repo": str,
     "branch": str,
     "worktree": str,
+    "notes": List[str],
     "cursor": NotRequired["Cursor"],
 })
 

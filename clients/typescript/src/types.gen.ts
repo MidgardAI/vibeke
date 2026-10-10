@@ -2805,6 +2805,7 @@ export type CloudBoxAdoptResult = {
   repo: string;
   branch: string;
   worktree: string;
+  notes: string[];
   cursor?: Cursor;
 };
 

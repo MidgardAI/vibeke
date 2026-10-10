@@ -1536,7 +1536,7 @@
       "milestone": null,
       "spec": null,
       "params": "{box: string, repo?: string, title?: string, root?: string}",
-      "result": "{box: string, task: string, panes: [string], sessions: int, repo: string, branch: string, worktree: string}"
+      "result": "{box: string, task: string, panes: [string], sessions: int, repo: string, branch: string, worktree: string, notes: [string]}"
     },
     {
       "name": "cloud.box.checkpoint",

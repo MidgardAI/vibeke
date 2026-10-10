@@ -11973,6 +11973,12 @@
           "worktree": {
             "type": "string"
           },
+          "notes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
           "cursor": {
             "$ref": "#/$defs/Cursor"
           }
@@ -11984,7 +11990,8 @@
           "sessions",
           "repo",
           "branch",
-          "worktree"
+          "worktree",
+          "notes"
         ]
       }
     },
