@@ -13,6 +13,9 @@ pub mod headless;
 pub mod hook;
 pub mod manifests;
 mod models;
+mod nested;
+#[cfg(test)]
+mod nested_tests;
 mod opencode;
 mod polish;
 mod route;
@@ -111,6 +114,8 @@ struct Inner {
     /// Per pane: since when each `hold_ms` screen rule has matched (04 §9.1).
     holds: HashMap<String, vk_agents::manifest::HoldTracker>,
     resume_mode: String,
+    /// Per pane: the harness process behind its run's hooks (harness id, process); see `nested`.
+    harness_procs: HashMap<String, (String, nested::Proc)>,
 }
 
 const SCREEN_GRACE: Duration = Duration::from_secs(2);
@@ -275,6 +280,18 @@ impl Agents {
             .unwrap()
             .locks
             .insert(pane.to_string(), Instant::now());
+    }
+
+    fn harness_proc(&self, pane: &str) -> Option<(String, nested::Proc)> {
+        self.inner.lock().unwrap().harness_procs.get(pane).cloned()
+    }
+
+    fn set_harness_proc(&self, pane: &str, harness: String, p: nested::Proc) {
+        self.inner
+            .lock()
+            .unwrap()
+            .harness_procs
+            .insert(pane.to_string(), (harness, p));
     }
 
     pub fn unlock_input(&self, pane: &str) {
@@ -1321,6 +1338,39 @@ fn on_extension_signal(server: &Arc<Server>, pane: &str, h: Harness, event: &str
     }
 }
 
+/// The run's native session from a hook payload: session id (and resume handle), transcript
+/// path, model and cwd. A new session id is announced with `agent.identified`.
+fn identify(server: &Arc<Server>, run: &str, h: Harness, p: &Value) {
+    let sid = p.get("session_id").and_then(Value::as_str);
+    let transcript = p
+        .get("transcript_path")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let model = p.get("model").and_then(Value::as_str).map(str::to_string);
+    let cwd = p.get("cwd").and_then(Value::as_str).map(str::to_string);
+    update_run(server, run, |r, tx| {
+        if let Some(s) = sid
+            && r.harness_session_id.as_deref() != Some(s)
+        {
+            r.harness_session_id = Some(s.to_string());
+            r.resume_argv = h.resume_argv(s);
+            tx.event(
+                "agent.identified",
+                json!({"run": r.id, "pane": r.pane}),
+                json!({"harness_session_id": s, "transcript_path": transcript}),
+            );
+            tx.event(
+                "agent.resume_handle",
+                json!({"run": r.id}),
+                json!({"argv": r.resume_argv}),
+            );
+        }
+        r.transcript_path = transcript.clone().or(r.transcript_path.take());
+        r.model = model.clone().or(r.model.take());
+        r.cwd = cwd.clone().or(r.cwd.take());
+    });
+}
+
 fn on_signal(server: &Arc<Server>, pane: &str, h: Harness, event: &str, p: &Value) {
     let run = bound_run(server, pane, h);
     // SessionStart is observed after the run's session id is updated below, so a binding never
@@ -1342,35 +1392,21 @@ fn on_signal(server: &Arc<Server>, pane: &str, h: Harness, event: &str, p: &Valu
             r.yolo = yolo;
         });
     }
+    // A run bound after its session started (a nested agent replaced it for a while, or the
+    // server came up mid-session) never sees SessionStart: every hook carries the session id
+    // and transcript path, so a run missing them learns them from whichever hook comes next.
+    if event != "SessionStart"
+        && let Some(s) = sid
+        && (run.harness_session_id.is_none()
+            || (run.harness_session_id.as_deref() == Some(s)
+                && run.transcript_path.is_none()
+                && p.get("transcript_path").is_some_and(Value::is_string)))
+    {
+        identify(server, &run.id, h, p);
+    }
     match event {
         "SessionStart" => {
-            let transcript = p
-                .get("transcript_path")
-                .and_then(Value::as_str)
-                .map(str::to_string);
-            let model = p.get("model").and_then(Value::as_str).map(str::to_string);
-            let cwd = p.get("cwd").and_then(Value::as_str).map(str::to_string);
-            update_run(server, &run.id, |r, tx| {
-                if let Some(s) = sid
-                    && r.harness_session_id.as_deref() != Some(s)
-                {
-                    r.harness_session_id = Some(s.to_string());
-                    r.resume_argv = h.resume_argv(s);
-                    tx.event(
-                        "agent.identified",
-                        json!({"run": r.id, "pane": r.pane}),
-                        json!({"harness_session_id": s, "transcript_path": transcript}),
-                    );
-                    tx.event(
-                        "agent.resume_handle",
-                        json!({"run": r.id}),
-                        json!({"argv": r.resume_argv}),
-                    );
-                }
-                r.transcript_path = transcript.clone().or(r.transcript_path.take());
-                r.model = model.clone().or(r.model.take());
-                r.cwd = cwd.clone().or(r.cwd.take());
-            });
+            identify(server, &run.id, h, p);
             set_execution(
                 server,
                 &run.id,
@@ -3098,12 +3134,23 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
             let h = route::effective(server, &pane, h);
             let event = s(p, "event").unwrap_or("").to_string();
             let payload = p.get("payload").cloned().unwrap_or(Value::Null);
+            let pid = p
+                .get("pid")
+                .and_then(Value::as_u64)
+                .and_then(|v| u32::try_from(v).ok());
+            // An agent started by the pane's agent: neither replaces the pane's run nor gates
+            // (no decision, so the nested harness keeps its own behaviour).
+            if nested::is_nested(server, &pane, h, pid) {
+                return Some(Ok(json!({})));
+            }
             if method == "adapter.signal" {
                 route::signal(server, &pane, h, &event, &payload);
+                nested::record(server, &pane, h, pid, &event);
                 Ok(crate::collision::signal_reply(
                     server, &pane, h, &event, &payload,
                 ))
             } else {
+                nested::record(server, &pane, h, pid, &event);
                 gate(server, &pane, h, &event, &payload).await
             }
         }
