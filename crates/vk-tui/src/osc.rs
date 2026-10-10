@@ -17,10 +17,10 @@
 //!   5 s exit badge ([`progress_bar`], [`exit_badge`]).
 
 use crate::app::{App, Mode, Popup};
+use crate::event::{KeyModifiers, MouseEvent, MouseEventKind};
 use crate::screen::Grid;
-use crossterm::event::{KeyModifiers, MouseEvent, MouseEventKind};
+use crate::time::{Duration, Instant};
 use std::collections::{HashMap, HashSet};
-use std::time::{Duration, Instant};
 use vk_proto::input::{Key, KeyEvent, KeyKind, NamedKey};
 use vk_proto::model::{Progress, ProgressState};
 use vk_proto::render::{ClientFrame, ClipSel, Style, attr};
@@ -270,14 +270,14 @@ pub fn plain_url_at(app: &App, mi: usize, pane: &str, col: u16, row: u16) -> Opt
     let tok = crate::plugins::token_at(app, mi, pane, col, row)?;
     let start = tok.find("http://").or_else(|| tok.find("https://"))?;
     let url = tok[start..].trim_end_matches(['.', ',', ';', ':', ')', ']', '>', '"', '\'']);
-    (url.len() > "https://".len() && url.len() <= vk_term::engine::LINK_URI_MAX)
+    (url.len() > "https://".len() && url.len() <= vk_term::limits::LINK_URI_MAX)
         .then(|| url.to_string())
 }
 
 /// Open a link target from a pane: plugin handlers first, then `nav::open_url` for safe
 /// targets (http/https; loopback as a browser pane), else copy.
 pub fn activate(app: &mut App, mi: usize, pane: &str, uri: &str) {
-    if uri.chars().any(|c| c.is_control()) || uri.len() > vk_term::engine::LINK_URI_MAX {
+    if uri.chars().any(|c| c.is_control()) || uri.len() > vk_term::limits::LINK_URI_MAX {
         app.toast("link not opened: unsafe target");
         return;
     }
@@ -314,7 +314,7 @@ pub fn on_mouse(app: &mut App, me: &MouseEvent) -> bool {
         app.osc.hover = hover;
         app.dirty = true;
     }
-    if let (MouseEventKind::Down(crossterm::event::MouseButton::Left), true, Some((pane, c, r))) =
+    if let (MouseEventKind::Down(crate::event::MouseButton::Left), true, Some((pane, c, r))) =
         (me.kind, modded(me), hit)
         && let Some(uri) = link_at(app, cur, &pane, c, r)
     {

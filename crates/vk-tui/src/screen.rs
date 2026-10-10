@@ -275,7 +275,7 @@ impl Grid {
 /// Whether an OSC 8 target may be passed to the host terminal: a bounded, control-free URI
 /// with a scheme hosts open sensibly. Anything else is drawn as plain text.
 pub fn osc8_passthrough_ok(uri: &str) -> bool {
-    if uri.is_empty() || uri.len() > vk_term::engine::LINK_URI_MAX {
+    if uri.is_empty() || uri.len() > vk_term::limits::LINK_URI_MAX {
         return false;
     }
     if uri
@@ -1101,7 +1101,7 @@ mod tests {
         assert!(osc8_passthrough_ok("mailto:a@b.c"));
         assert!(!osc8_passthrough_ok(&format!(
             "https://x/{}",
-            "a".repeat(vk_term::engine::LINK_URI_MAX)
+            "a".repeat(vk_term::limits::LINK_URI_MAX)
         )));
     }
 
@@ -1251,7 +1251,7 @@ mod tests {
     #[test]
     #[ignore]
     fn bench_full_redraw() {
-        use std::time::Instant;
+        use crate::time::Instant;
         let mut a = Grid::new(300, 80);
         let styles = [
             Style::default(),

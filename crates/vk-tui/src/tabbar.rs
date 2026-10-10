@@ -16,7 +16,7 @@
 //!   says so in a toast; nothing changes locally.
 
 use crate::app::{Action, App, Mode, Pending, Popup, RpcErr};
-use crossterm::event::{MouseButton as CtButton, MouseEvent, MouseEventKind};
+use crate::event::{MouseButton as CtButton, MouseEvent, MouseEventKind};
 use serde_json::{Value, json};
 use vk_proto::model::Tab;
 
@@ -163,6 +163,9 @@ fn tab_busy(app: &App, t: &Tab) -> bool {
 
 /// Close a tab from a middle click: ask when something runs in it.
 pub fn close_tab(app: &mut App, t: &Tab) {
+    if !app.m().capabilities().action("close_tab") {
+        return;
+    }
     if tab_busy(app, t) {
         app.mode = Mode::Popup(Popup::Confirm {
             message: format!("Close tab {}? A process is running.", t.number),
@@ -233,7 +236,9 @@ pub fn on_mouse(app: &mut App, me: &MouseEvent) -> bool {
                 .find(|(_, (_, _, a, b))| me.column >= *a && me.column < *b)
             {
                 let idx = laid.first + i;
-                app.ux.tabs.drag = Some((t.id.clone(), idx, idx));
+                if app.m().capabilities().host {
+                    app.ux.tabs.drag = Some((t.id.clone(), idx, idx));
+                }
                 app.command("tab.focus", json!({"tab": t.id}), Pending::Ignore);
                 return true;
             }

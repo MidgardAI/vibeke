@@ -22,6 +22,7 @@ pub mod server;
 pub mod session;
 pub mod state;
 pub mod stt;
+pub mod tui;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};

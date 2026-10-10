@@ -843,6 +843,7 @@ pub fn palette_entries(app: &App) -> Vec<PaletteEntry> {
             );
         }
     }
+    out.retain(|e| app.m().capabilities().action(&e.id));
     // A right-clicked pane: only its menu.
     if app.ux.handoff.target.is_some() {
         out.retain(|e| crate::handoff::PANE_MENU.contains(&e.id.as_str()));
@@ -874,6 +875,9 @@ pub fn palette_ranked(app: &App, filter: &str) -> Vec<(PaletteEntry, Vec<usize>)
 
 pub fn open_palette(app: &mut App, filter: String) {
     for mi in 0..app.machines.len() {
+        if !app.machines[mi].capabilities().host {
+            continue;
+        }
         refresh_sessions(app, mi);
         crate::plugins::refresh(app, mi);
     }
@@ -882,6 +886,9 @@ pub fn open_palette(app: &mut App, filter: String) {
 
 /// Run a palette entry and remember it.
 pub fn run_palette(app: &mut App, id: &str) {
+    if !app.m().capabilities().action(id) {
+        return;
+    }
     app.nav.hist.note_action(id);
     app.nav.save();
     if let Some(rest) = id.strip_prefix("watch:") {
@@ -1958,6 +1965,7 @@ pub fn open_url(app: &mut App, mi: usize, pane: &str, url: &str) {
         return;
     }
     app.nav.opened.push(url.to_string());
+    #[cfg(not(target_arch = "wasm32"))]
     if !cfg!(test) {
         let opener = if cfg!(target_os = "macos") {
             "open"

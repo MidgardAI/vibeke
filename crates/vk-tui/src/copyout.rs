@@ -14,6 +14,7 @@
 //!   iTerm2 drops OSC 52 unless "Applications in terminal may access clipboard" is on.
 
 use std::io::Write;
+#[cfg(not(target_arch = "wasm32"))]
 use std::process::{Command, Stdio};
 
 /// What the TUI knows about where it runs.
@@ -154,6 +155,7 @@ pub fn deliver(
 }
 
 /// The platform clipboard tool, or the `VIBEKE_CLIPBOARD_CMD` override.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn native_copy(cmd: Option<&str>, data: &[u8], primary: bool) -> anyhow::Result<()> {
     let Some(cmd) = cmd else {
         return if primary {
@@ -304,4 +306,9 @@ mod tests {
         );
         assert!(native_copy(Some("exit 3"), b"x", false).is_err());
     }
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn native_copy(_cmd: Option<&str>, _data: &[u8], _primary: bool) -> anyhow::Result<()> {
+    anyhow::bail!("Use the browser clipboard controls")
 }

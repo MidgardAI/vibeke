@@ -113,6 +113,30 @@ fn show_numbers_off_drops_the_number() {
 }
 
 #[test]
+fn shared_tabs_can_be_focused_but_not_closed_or_dragged() {
+    let (mut app, mut rxs) = fleet();
+    app.machines[0].features = vec![
+        "shared_tui".into(),
+        "shared_tui.control".into(),
+        "shared_tui.workspace".into(),
+    ];
+    many_tabs(&mut app, 2);
+    let laid = crate::draw::tab_layout(&app);
+    let (_, _, a0, _) = laid.entries[0].clone();
+    let (_, _, _, b2) = laid.entries[2].clone();
+    mouse(&mut app, MouseEventKind::Down(CtButton::Middle), a0 + 1, 0);
+    assert!(matches!(app.mode, Mode::Normal));
+    assert!(commands(&mut rxs[0]).is_empty());
+    mouse(&mut app, MouseEventKind::Down(CtButton::Left), a0 + 1, 0);
+    mouse(&mut app, MouseEventKind::Drag(CtButton::Left), b2 - 1, 0);
+    mouse(&mut app, MouseEventKind::Up(CtButton::Left), b2 - 1, 0);
+    assert!(app.ux.tabs.drag.is_none());
+    let cmds = commands(&mut rxs[0]);
+    assert_eq!(cmds.len(), 1);
+    assert_eq!(only(&cmds, "tab.focus").1["tab"], "T1");
+}
+
+#[test]
 fn tab_renumber_asks_the_server_for_the_focused_workspace() {
     let (mut app, mut rxs) = fleet();
     many_tabs(&mut app, 2);

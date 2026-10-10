@@ -32,7 +32,7 @@ fn state(server: &Server) -> &State {
 
 /// Runs before normal dispatch. `None` lets the regular handler run.
 pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Option<R> {
-    if ctx.kind == "gateway"
+    if matches!(ctx.kind.as_str(), "gateway" | "gateway-tui")
         && let Some(r) = audit(server, ctx, method, p)
     {
         return Some(r);
@@ -43,7 +43,7 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
             if p.get("before").is_some()
                 || p.get("items").and_then(Value::as_bool) == Some(true)
                 || p.get("image").is_some()
-                || ctx.kind == "gateway" =>
+                || matches!(ctx.kind.as_str(), "gateway" | "gateway-tui") =>
         {
             transcript(server, ctx, p)
         }

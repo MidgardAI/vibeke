@@ -2,17 +2,17 @@
 //! mouse, bracketed paste, focus events, kitty keyboard. Teardown also runs from a panic hook.
 
 use crate::caps::{self, EnvHints, ProbeResult};
-use crossterm::event::{
+use crate::event::{
     DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
     EnableFocusChange, EnableMouseCapture, PopKeyboardEnhancementFlags,
 };
+use crate::time::{Duration, Instant};
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};
 
 static KITTY_PUSHED: AtomicBool = AtomicBool::new(false);
 

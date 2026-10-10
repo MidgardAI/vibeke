@@ -154,6 +154,7 @@ pub fn edit_text(src: &str, key: &str, value: Option<&toml::Value>) -> Result<St
 
 /// Write `text` to `path` atomically: a private temp file in the same directory, fsync, then
 /// rename over the target. The file mode of an existing target is kept (new files are 0600).
+#[cfg(not(target_arch = "wasm32"))]
 pub fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
     use std::io::Write;
     use std::os::unix::fs::PermissionsExt;
@@ -243,4 +244,11 @@ mod tests {
         );
         assert_eq!(std::fs::read_dir(d.path()).unwrap().count(), 1);
     }
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn write_atomic(_: &Path, _: &str) -> std::io::Result<()> {
+    Err(std::io::Error::other(
+        "Host configuration files are unavailable in the browser",
+    ))
 }

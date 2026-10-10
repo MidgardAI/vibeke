@@ -14,6 +14,10 @@ export type BeltSize = 's' | 'm' | 'l';
 export interface Prefs {
   theme: Theme;
   termFont: number;
+  tuiScreenReader: boolean;
+  tuiOptionMeta: boolean;
+  tuiHintDismissed: boolean;
+  preferredTuiHost: string | null;
   beltSize: BeltSize;
   /** Interface language; `system` follows the browser. */
   language: LanguagePref;
@@ -64,6 +68,10 @@ export const PANEL_MAX = 760;
 export const DEFAULT_PREFS: Prefs = {
   theme: 'dark',
   termFont: 12,
+  tuiScreenReader: false,
+  tuiOptionMeta: false,
+  tuiHintDismissed: false,
+  preferredTuiHost: null,
   beltSize: 'm',
   language: 'system',
   haptics: true,
@@ -105,6 +113,8 @@ export function parsePrefs(raw: string | null): Prefs {
   if (v.theme === 'light' || v.theme === 'dark' || v.theme === 'system') p.theme = v.theme;
   if (typeof v.termFont === 'number' && v.termFont >= 8 && v.termFont <= 24) p.termFont = v.termFont;
   if (v.language === 'system' || isLanguage(v.language)) p.language = v.language;
+  for (const k of ['tuiScreenReader', 'tuiOptionMeta', 'tuiHintDismissed'] as const) if (typeof v[k] === 'boolean') p[k] = v[k];
+  if (typeof v.preferredTuiHost === 'string') p.preferredTuiHost = v.preferredTuiHost;
   if (v.beltSize === 's' || v.beltSize === 'm' || v.beltSize === 'l') p.beltSize = v.beltSize;
   for (const k of ['haptics', 'zenLandscape', 'wrap', 'tourDone', 'panelOpen', 'sidebarHidden', 'showDone', 'leftHand'] as const) if (typeof v[k] === 'boolean') p[k] = v[k] as boolean;
   if (typeof v.deviceName === 'string') p.deviceName = v.deviceName.slice(0, 64);

@@ -574,6 +574,7 @@ pub fn unique_name(prefix: &str) -> String {
 /// POSIX shared memory objects for `t=s`.
 pub mod shm {
     use super::*;
+    #[cfg(not(target_arch = "wasm32"))]
     use std::ffi::CString;
 
     /// macOS limits shm names to 31 bytes (`PSHMNAMLEN`), including the leading `/`.
@@ -623,6 +624,7 @@ pub mod shm {
     }
 
     /// Size of the object `name` (`fstat`), without mapping it.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn object_size(name: &str) -> Result<u64> {
         let c = CString::new(name)?;
         // SAFETY: valid C string; read-only open.
@@ -636,6 +638,7 @@ pub mod shm {
         size
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn fd_size(fd: libc::c_int) -> Result<u64> {
         // SAFETY: zeroed stat is a valid out-buffer.
         let mut st: libc::stat = unsafe { std::mem::zeroed() };
@@ -647,6 +650,7 @@ pub mod shm {
     }
 
     /// Create `name` (exclusive, mode 0600) holding exactly `data`.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn write(name: &str, data: &[u8]) -> Result<()> {
         if name.len() > MAX_NAME || !name.starts_with('/') {
             bail!("bad shm name {name:?}");
@@ -702,6 +706,7 @@ pub mod shm {
     }
 
     /// Read `len` bytes back (what the terminal does), for tests and the bench.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn read(name: &str, len: usize) -> Result<Vec<u8>> {
         let c = CString::new(name)?;
         // SAFETY: valid C string; read-only open.
@@ -752,12 +757,27 @@ pub mod shm {
         Ok(out)
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn unlink(name: &str) {
         if let Ok(c) = CString::new(name) {
             // SAFETY: valid C string.
             unsafe { libc::shm_unlink(c.as_ptr()) };
         }
     }
+    #[cfg(target_arch = "wasm32")]
+    pub fn object_size(_: &str) -> Result<u64> {
+        bail!("Shared memory is unavailable in the browser")
+    }
+    #[cfg(target_arch = "wasm32")]
+    pub fn write(_: &str, _: &[u8]) -> Result<()> {
+        bail!("Shared memory is unavailable in the browser")
+    }
+    #[cfg(target_arch = "wasm32")]
+    pub fn read(_: &str, _: usize) -> Result<Vec<u8>> {
+        bail!("Shared memory is unavailable in the browser")
+    }
+    #[cfg(target_arch = "wasm32")]
+    pub fn unlink(_: &str) {}
 }
 
 /// Write `data` to a fresh temp file whose name kitty accepts for `t=t`.

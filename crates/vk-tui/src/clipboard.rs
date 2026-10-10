@@ -1,10 +1,13 @@
 //! OS clipboard helpers (06 §A9, §A10): OSC 52 encoding, native copy fallbacks, and reading an
 //! image off the local clipboard for remote image paste.
 
+#[cfg(not(target_arch = "wasm32"))]
 use std::io::Write as _;
 use std::process::{Command, Stdio};
 
-use anyhow::{Context, Result, anyhow, bail};
+#[cfg(not(target_arch = "wasm32"))]
+use anyhow::Context;
+use anyhow::{Result, anyhow, bail};
 use base64::Engine as _;
 
 /// OSC 52 set-clipboard sequence (`c` clipboard, `p` primary), ST-terminated.
@@ -14,6 +17,7 @@ pub fn osc52_set(data: &[u8], primary: bool) -> Vec<u8> {
     format!("\x1b]52;{sel};{b64}\x1b\\").into_bytes()
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn pipe_to(cmd: &str, args: &[&str], data: &[u8]) -> Result<()> {
     let mut child = Command::new(cmd)
         .args(args)
@@ -275,4 +279,9 @@ mod tests {
         assert!(pipe_to("false", &[], b"x").is_err());
         assert!(pipe_to("cat", &[], b"x").is_ok());
     }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn pipe_to(_cmd: &str, _args: &[&str], _data: &[u8]) -> Result<()> {
+    bail!("Use the browser clipboard controls")
 }

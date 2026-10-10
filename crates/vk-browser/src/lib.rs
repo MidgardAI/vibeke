@@ -22,21 +22,29 @@
 //! - [`devices`]: device presets, pinned viewports and letterboxing (06 B3.2, B5 `--device`).
 //! - [`capture`]: console/network rings from CDP events (06 B5 capture, the pane's console split).
 
+#[cfg(not(target_arch = "wasm32"))]
 pub mod capture;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod cdp;
 /// Device presets (`--device iphone-15`): viewport, DPR, mobile, user agent.
 pub mod devices;
 pub mod diff;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod fake;
 /// Fake Chromium speaking CDP over the pipe (browser-pane tests, `vibeke debug fake-chromium`).
+#[cfg(not(target_arch = "wasm32"))]
 pub mod fake_chromium;
 pub mod frame;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod headless;
 pub mod input;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod install;
 pub mod kitty;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod local_http;
 pub mod policy;
 pub mod probe;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod proxy;
 pub mod snapshot;

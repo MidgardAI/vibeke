@@ -6,12 +6,12 @@
 //! without the method) the model-derived segments are computed locally.
 
 use crate::app::{App, Mode, Pending, RpcErr};
+use crate::event::{MouseButton as CtButton, MouseEvent, MouseEventKind};
 use crate::parity::Reply;
 use crate::screen::{Grid, Rect as SRect};
-use crossterm::event::{MouseButton as CtButton, MouseEvent, MouseEventKind};
+use crate::time::{Duration, Instant};
 use serde_json::{Value, json};
 use std::collections::HashSet;
-use std::time::{Duration, Instant};
 use unicode_width::UnicodeWidthStr;
 use vk_proto::model::*;
 use vk_proto::render::Style;
@@ -89,7 +89,11 @@ pub(crate) fn deadlines(app: &App, now: Instant, d: &mut crate::deadline::Deadli
     }
     let mi = app.cur;
     let st = &app.parity.status;
-    if st.inflight || st.unsupported.contains(&mi) || !app.machines[mi].connected() {
+    if st.inflight
+        || st.unsupported.contains(&mi)
+        || !app.machines[mi].connected()
+        || !app.machines[mi].capabilities().host
+    {
         return;
     }
     let at = match st.last_req {
@@ -114,7 +118,11 @@ pub fn tick(app: &mut App) {
     }
     let mi = app.cur;
     let st = &app.parity.status;
-    if st.inflight || st.unsupported.contains(&mi) || !app.machines[mi].connected() {
+    if st.inflight
+        || st.unsupported.contains(&mi)
+        || !app.machines[mi].connected()
+        || !app.machines[mi].capabilities().host
+    {
         return;
     }
     let since = st.last_req.map(|t| t.elapsed());
@@ -170,13 +178,14 @@ pub fn action(app: &mut App, action: &str) -> bool {
 }
 
 fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    crate::time::SystemTime::now()
+        .duration_since(crate::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
 }
 
 /// Local `HH:MM`.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn clock(ms: i64) -> String {
     // SAFETY: localtime_r only writes into the provided struct.
     unsafe {
@@ -489,4 +498,10 @@ pub fn on_mouse(app: &mut App, me: &MouseEvent) -> bool {
         }
     }
     true
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn clock(ms: i64) -> String {
+    let date = js_sys::Date::new(&wasm_bindgen::JsValue::from_f64(ms as f64));
+    format!("{:02}:{:02}", date.get_hours(), date.get_minutes())
 }

@@ -22,8 +22,8 @@
 use crate::app::{App, Mode, Pending, Popup, RpcErr};
 use crate::drafts::{Area, TextEditor, arr, ctrl, st};
 use crate::screen::Grid;
+use crate::time::{Duration, Instant};
 use serde_json::{Value, json};
-use std::time::{Duration, Instant};
 use vk_proto::input::{Key, KeyEvent, KeyKind, NamedKey};
 
 pub const OFF: &str = "Assistance is off — enable in config";

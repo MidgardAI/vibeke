@@ -7,7 +7,7 @@
 //! (input, server frames and deadlines alike), so a condition that becomes due because of an
 //! event is handled on that same wakeup; the deadlines only cover what time alone changes.
 
-use std::time::{Duration, Instant};
+use crate::time::{Duration, Instant};
 
 /// Wake this long after a deadline, so checks written as `elapsed() > limit` see it as passed.
 pub const SLACK: Duration = Duration::from_millis(1);

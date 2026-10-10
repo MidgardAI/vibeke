@@ -1,6 +1,6 @@
 // Root component: shells mount <VibekeApp platform={…}/> and nothing else (spec 16 §9.3).
 
-import { useEffect, useMemo, useRef, type ReactNode } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useRef, type ReactNode } from 'react';
 import { AlertTriangle } from 'lucide-react';
 import { Empty, Spinner, cx } from '../components/ui';
 import { useScrollMemory } from '../lib/scroll-memory';
@@ -28,6 +28,8 @@ import { Layout, WorkspaceScreen } from './layout';
 import { lastWorkspace, rememberTab, resolveLegacy, useWorkspaceRows } from './selection';
 import { BusyBar, ConnectionBanner, Toasts, TopBar, useThemeEffect } from './shell';
 import { SurfaceContext } from './surface';
+
+const TuiScreen = lazy(() => import('../screens/tui'));
 
 /**
  * `surface`: `full` (the app), `quick` (menu-bar quick approvals: inbox only, Esc closes) or
@@ -159,11 +161,14 @@ function Main() {
   useEffect(() => {
     if (route.name !== 'home') return;
     if (hosts.length === 0) return navigate({ name: 'pair', d: null }, { replace: true });
+    if (app.platform.tui && prefs.preferredTuiHost && hosts.some((h) => h.record.host_id === prefs.preferredTuiHost && (h.info?.kind ?? h.record.kind ?? 'device') === 'device')) {
+      return navigate({ name: 'tui', host: prefs.preferredTuiHost }, { replace: true });
+    }
     if (!ready && !decided.current) return;
     decided.current = true;
     const top = mostUrgent(rows);
     navigate(items.length || approvals || !top ? { name: 'inbox' } : workspaceRoute(top.host, top.workspace.id), { replace: true });
-  }, [route.name, hosts.length, ready, items.length, approvals, rows]);
+  }, [route.name, hosts.length, ready, items.length, approvals, rows, prefs.preferredTuiHost]);
 
   // Old routes (Panes, Focus, Changes tabs; pane links) → their workspace.
   const routeKey = formatRoute(route);
@@ -180,18 +185,18 @@ function Main() {
 
   return (
     <>
-      <Layout route={route}>
+      {route.name === 'tui' ? <Suspense fallback={<Spinner />}><TuiScreen host={route.host} workspace={route.workspace} pane={route.pane} /></Suspense> : <Layout route={route}>
         <ConnectionBanner />
         <BusyBar />
         <ReloadPrompt />
         <div className="flex min-h-0 flex-1 flex-col">
           <Screen route={route} />
         </div>
-      </Layout>
+      </Layout>}
       <Toasts />
       <IdleLockOverlay />
-      {hosts.length > 0 && (route.name === 'inbox' || route.name === 'workspace') && <Tour />}
-      <KeyboardLayer surface="full" />
+      {hosts.some((h) => (h.info?.kind ?? h.record.kind ?? 'device') === 'device') && (route.name === 'inbox' || route.name === 'workspace') && <Tour />}
+      {route.name !== 'tui' && <KeyboardLayer surface="full" />}
     </>
   );
 }

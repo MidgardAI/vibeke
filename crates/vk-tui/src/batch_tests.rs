@@ -220,3 +220,26 @@ fn deny_all_and_partial_failure_and_config_off() {
             .contains("batch view is off")
     );
 }
+
+#[test]
+fn single_and_batch_answers_include_each_seen_revision() {
+    let (mut app, mut rxs) = setup();
+    app.machines[0].features = vec!["shared_tui".into(), "shared_tui.approve".into()];
+    for (i, it) in app.machines[0].model.interactions.iter_mut().enumerate() {
+        it.decision_rev = 10 + i as u32;
+    }
+    app.answer(0, "i3", json!({"decision":"allow"}));
+    let single = commands(&mut rxs[0]);
+    assert_eq!(single[0].2["decision_rev"], 10);
+    app.action("batch_approvals", None);
+    key(&mut app, Key::Char('y'));
+    let batch = commands(&mut rxs[0]);
+    let answers: Vec<_> = batch
+        .iter()
+        .filter(|c| c.1 == "interaction.answer")
+        .collect();
+    assert_eq!(answers.len(), 3);
+    for (i, answer) in answers.iter().enumerate() {
+        assert_eq!(answer.2["decision_rev"], 10 + i as u64);
+    }
+}

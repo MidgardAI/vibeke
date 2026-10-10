@@ -11,6 +11,7 @@ import { createDrafts } from './drafts';
 import { isExpired, isSharedRecord } from './share-store';
 
 declare const __BUILD_HASH__: string;
+declare const __WASM_TUI_MODULE_URL__: string | null;
 declare const __APP_VERSION__: string;
 
 const asBytes = (v: unknown): Uint8Array | null =>
@@ -360,6 +361,7 @@ export function createPwaPlatform(update?: AppUpdate): UiPlatform {
       set: (host, v) => idbSet('mirrors', `dashboard:${host}`, v),
       remove: (host) => idbDelete('mirrors', `dashboard:${host}`),
     },
+    tui: __WASM_TUI_MODULE_URL__ ? { moduleUrl: __WASM_TUI_MODULE_URL__ } : undefined,
     build: { version: __APP_VERSION__, hash: __BUILD_HASH__, origin: location.origin },
     client: { client: 'vibeke-pwa', version: __APP_VERSION__ },
   };

@@ -64,17 +64,92 @@ fn fake_server(path: PathBuf) -> Reports {
                     let req: Value = serde_json::from_str(&line).unwrap();
                     let id = req["id"].clone();
                     let p = &req["params"];
+                    if req["method"] == "client.hello"
+                        && p["client"] == "vibeke-browser-tui"
+                        && reports
+                            .lock()
+                            .unwrap()
+                            .iter()
+                            .any(|v| v["tui"] == "delay-attach")
+                    {
+                        reports
+                            .lock()
+                            .unwrap()
+                            .push(json!({"tui":"attach-started"}));
+                        assert!(lines.next_line().await.unwrap().is_none());
+                        reports
+                            .lock()
+                            .unwrap()
+                            .push(json!({"tui":"attach-cancelled"}));
+                        return;
+                    }
+                    if req["method"] == "render.attach" {
+                        assert_eq!(p["remote"], true);
+                        reports.lock().unwrap().push(json!({"tui":"attached"}));
+                        let reply = json!({"jsonrpc":"2.0", "id":id, "result":{"protocol":vk_proto::render::PROTOCOL,"features":["scoped_share"]}});
+                        w.write_all(format!("{reply}\n").as_bytes()).await.unwrap();
+                        let mut r = lines.into_inner();
+                        while let Ok(f) = vk_proto::frame::asyncio::read_frame::<
+                            _,
+                            vk_proto::render::ClientFrame,
+                        >(&mut r)
+                        .await
+                        {
+                            use vk_proto::render::{ClientFrame, ServerFrame};
+                            let response = match f {
+                                ClientFrame::Ping { nonce } => ServerFrame::Pong {
+                                    nonce,
+                                    server_ts_ms: 0,
+                                },
+                                ClientFrame::Command { req, json } => {
+                                    ServerFrame::CommandResult { req, json }
+                                }
+                                _ => continue,
+                            };
+                            if vk_proto::frame::asyncio::write_frame(&mut w, &response)
+                                .await
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
+                        reports.lock().unwrap().push(json!({"tui":"closed"}));
+                        return;
+                    }
+                    if req["method"] == "client.hello"
+                        && p["client"] == "vibeke-browser-tui-command"
+                    {
+                        assert_eq!(p["kind"], "gateway-tui");
+                        assert_eq!(p["remote"], true);
+                        reports.lock().unwrap().push(json!({"tui":"control-hello"}));
+                    }
+                    if req["method"] == "handoff.test_slow" {
+                        reports
+                            .lock()
+                            .unwrap()
+                            .push(json!({"tui":"control-started", "actor":p["actor"]}));
+                        // Withhold the command response until the gateway closes its reader.
+                        assert!(lines.next_line().await.unwrap().is_none());
+                        reports
+                            .lock()
+                            .unwrap()
+                            .push(json!({"tui":"control-closed"}));
+                        return;
+                    }
                     let result = match req["method"].as_str().unwrap() {
-                        "client.hello" => json!({"server_version": "test", "capabilities": ["*"]}),
+                        "client.hello" => {
+                            json!({"server_version": "test", "capabilities": ["*"], "features":["render.scoped_share"]})
+                        }
                         "server.status" => json!({}),
                         "session.snapshot" => {
                             json!({"at_seq": 7, "workspaces": [], "panes": [], "runs": [],
                             "interactions": [{"id": "i1", "kind": "Approval", "status": "Open", "decision_rev": 3, "answerable": true,
                                               "action": {"tool": "Bash", "command": "pnpm test", "risk": "Low"}}]})
                         }
+                        "pane.get" => json!({"pane":{"id":p["pane"],"workspace":"w1"}}),
                         "notification.list" => json!({"notifications": []}),
                         "interaction.get" => {
-                            json!({"interaction": {"id": p["interaction"], "kind": "Approval", "status": "Open", "decision_rev": 3,
+                            json!({"interaction": {"id": p["interaction"], "pane":"p1", "kind": "Approval", "status": "Open", "decision_rev": 3,
                                                     "answerable": true, "action": {"tool": "Bash", "command": "pnpm test", "risk": "Low"}}})
                         }
                         "interaction.answer" => {
@@ -801,4 +876,370 @@ async fn account_login_brings_the_gateway_online() {
     assert!(online, "the gateway picked up the login");
     assert!(reqwest_status(relay, &host).await);
     assert_eq!(accounts.with(|s| s.host_tokens.clone()), ["h1"]);
+}
+
+async fn assert_tui_rejects_command(c: &mut Client, stream: &str, command: &str, kind: &str) {
+    use vk_proto::render::{ClientFrame, ServerFrame};
+    let mut data = vk_proto::frame::encode(&ClientFrame::Command {
+        req: 87,
+        json: command.into(),
+    })
+    .unwrap();
+    data.extend(vk_proto::frame::encode(&ClientFrame::Ping { nonce: 789 }).unwrap());
+    c.send(json!({"jsonrpc":"2.0","id":987,"method":"tui.send","params":{"stream":stream,"data":vk_e2e::b64::encode(data)}})).await;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let mut decoded = vk_proto::frame::FrameBuf::default();
+        let (mut rejected, mut pong) = (false, false);
+        while !rejected || !pong {
+            let message = c.recv().await;
+            assert_ne!(message["method"], "tui.closed", "{message}");
+            if message["method"] != "tui.frame" {
+                continue;
+            }
+            decoded
+                .push(&vk_e2e::b64::decode(message["params"]["data"].as_str().unwrap()).unwrap());
+            while let Some(frame) = decoded.next_frame::<ServerFrame>().unwrap() {
+                match frame {
+                    ServerFrame::CommandResult { req: 87, json } => {
+                        let response: Value = serde_json::from_str(&json).unwrap();
+                        assert_eq!(response["error"]["data"]["kind"], kind, "{response}");
+                        rejected = true;
+                    }
+                    ServerFrame::Pong { nonce: 789, .. } => pong = true,
+                    _ => {}
+                }
+            }
+        }
+    })
+    .await
+    .expect("rejected command must not close or block render traffic");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn browser_tui_is_encrypted_scoped_and_closed_on_revocation() {
+    use vk_proto::render::{ClientFrame, ServerFrame};
+    let tmp = tempfile::Builder::new()
+        .prefix("vkw")
+        .tempdir_in("/tmp")
+        .unwrap();
+    let relay = start_relay().await;
+    let sock = tmp.path().join("s");
+    let reports = fake_server(sock.clone());
+    let state = StateDir::open(tmp.path().join("gw")).unwrap();
+    let mut cfg = state.config().unwrap();
+    cfg.relay = Some(format!("http://{relay}"));
+    state.save_config(&cfg).unwrap();
+    let key = DeviceKey::generate();
+    let device: vk_gateway::state::Device = serde_json::from_value(json!({
+        "id":"browser", "name":"Browser", "public":vk_e2e::b64::encode(key.public()), "scope":"full", "paired_at":0
+    })).unwrap();
+    state.save_devices(std::slice::from_ref(&device)).unwrap();
+    let gw = Gateway::new(state, server::Server::new(sock)).unwrap();
+    tokio::spawn(vk_gateway::run(gw.clone()));
+    let host = gw.keys.host_id();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let mut delay = Duration::from_millis(50);
+        while !reqwest_status(relay, &host).await {
+            tokio::time::sleep(delay).await;
+            delay = (delay * 2).min(Duration::from_secs(1));
+        }
+    })
+    .await
+    .unwrap();
+    let mut c = Client::open(
+        relay,
+        &host,
+        Hello::device(),
+        &key,
+        &gw.keys.noise_public(),
+        None,
+    )
+    .await
+    .unwrap();
+    let mismatch = c.call("tui.attach", json!({"protocol":0})).await;
+    assert!(mismatch.get("error").is_some(), "{mismatch}");
+    assert!(
+        reports
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|v| v["tui"] != "attached")
+    );
+    let attached = c
+        .call("tui.attach", json!({"protocol":vk_proto::render::PROTOCOL}))
+        .await;
+    let stream = attached["result"]["stream"]
+        .as_str()
+        .expect("TUI attached")
+        .to_string();
+    assert_tui_rejects_command(&mut c, &stream, "{", "invalid_params").await;
+    assert_tui_rejects_command(
+        &mut c,
+        &stream,
+        r#"{"method":"client.devices"}"#,
+        "forbidden",
+    )
+    .await;
+    let input = vk_proto::frame::encode(&ClientFrame::Ping { nonce: 123 }).unwrap();
+    c.send(json!({"jsonrpc":"2.0","id":999,"method":"tui.send","params":{"stream":stream,"data":vk_e2e::b64::encode(&input)}})).await;
+    let mut decoded = vk_proto::frame::FrameBuf::default();
+    loop {
+        let v = c.recv().await;
+        if v["method"] != "tui.frame" {
+            continue;
+        }
+        decoded.push(&vk_e2e::b64::decode(v["params"]["data"].as_str().unwrap()).unwrap());
+        if let Some(f) = decoded.next_frame::<ServerFrame>().unwrap() {
+            assert!(matches!(f, ServerFrame::Pong { nonce: 123, .. }));
+            break;
+        }
+    }
+    let input = vk_proto::frame::encode(&ClientFrame::Command {
+        req: 88,
+        json: json!({"method":"pane.close","params":{"pane":"p1","actor":"spoofed"}}).to_string(),
+    })
+    .unwrap();
+    c.send(json!({"jsonrpc":"2.0","id":1000,"method":"tui.send","params":{"stream":stream,"data":vk_e2e::b64::encode(&input)}})).await;
+    loop {
+        let v = c.recv().await;
+        if v["method"] != "tui.frame" {
+            continue;
+        }
+        decoded.push(&vk_e2e::b64::decode(v["params"]["data"].as_str().unwrap()).unwrap());
+        if let Some(ServerFrame::CommandResult { req, json }) =
+            decoded.next_frame::<ServerFrame>().unwrap()
+        {
+            assert_eq!(req, 88);
+            let command: Value = serde_json::from_str(&json).unwrap();
+            assert_eq!(command["params"]["actor"], "gateway:Browser (browser)");
+            break;
+        }
+    }
+    let mut input = vk_proto::frame::encode(&ClientFrame::Command {
+        req: 89,
+        json: json!({"jsonrpc":"2.0", "id":89, "method":"handoff.test_slow", "params":{"actor":"spoofed"}}).to_string(),
+    }).unwrap();
+    input.extend(vk_proto::frame::encode(&ClientFrame::Ping { nonce: 456 }).unwrap());
+    c.send(json!({"jsonrpc":"2.0","id":1001,"method":"tui.send","params":{"stream":stream,"data":vk_e2e::b64::encode(&input)}})).await;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let v = c.recv().await;
+            if v["method"] != "tui.frame" {
+                continue;
+            }
+            decoded.push(&vk_e2e::b64::decode(v["params"]["data"].as_str().unwrap()).unwrap());
+            if let Some(ServerFrame::Pong { nonce: 456, .. }) =
+                decoded.next_frame::<ServerFrame>().unwrap()
+            {
+                break;
+            }
+        }
+        loop {
+            if reports
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|v| v["tui"] == "control-started" && v["actor"] == "gateway:Browser (browser)")
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("slow command must not block render traffic");
+    gw.revoke("browser").await.unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if ["closed", "control-closed"]
+                .iter()
+                .all(|kind| reports.lock().unwrap().iter().any(|v| v["tui"] == *kind))
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("revocation closes the server render socket");
+
+    // Scope is checked before a server socket is opened.
+    let mut limited = device;
+    limited.scope = Scope::Approve;
+    gw.state
+        .save_devices(std::slice::from_ref(&limited))
+        .unwrap();
+    gw.reload_devices().unwrap();
+    let mut c = Client::open(
+        relay,
+        &host,
+        Hello::device(),
+        &key,
+        &gw.keys.noise_public(),
+        None,
+    )
+    .await
+    .unwrap();
+    let denied = c
+        .call("tui.attach", json!({"protocol":vk_proto::render::PROTOCOL}))
+        .await;
+    assert_eq!(denied["error"]["data"]["kind"], "forbidden");
+    assert_eq!(
+        reports
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|v| v["tui"] == "attached")
+            .count(),
+        1
+    );
+    limited.scope = Scope::Full;
+    gw.state
+        .save_devices(std::slice::from_ref(&limited))
+        .unwrap();
+    gw.reload_devices().unwrap();
+    reports.lock().unwrap().push(json!({"tui":"delay-attach"}));
+    c.send(json!({"jsonrpc":"2.0", "id":700, "method":"tui.attach", "params":{"protocol":vk_proto::render::PROTOCOL}})).await;
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while !reports
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|v| v["tui"] == "attach-started")
+        {
+            tokio::task::yield_now().await;
+        }
+        let hello = c.call("hello", json!({})).await;
+        assert_eq!(hello["result"]["scope"], "full");
+    })
+    .await
+    .expect("a stalled attach must not block other device RPCs");
+    gw.revoke("browser").await.unwrap();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while !reports
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|v| v["tui"] == "attach-cancelled")
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("revocation cancels the pending attach socket promptly");
+}
+
+#[tokio::test]
+async fn shared_tui_commands_use_the_existing_gateway_permissions() {
+    use vk_proto::render::{ClientFrame, ServerFrame};
+    let tmp = tempfile::Builder::new()
+        .prefix("vks")
+        .tempdir_in("/tmp")
+        .unwrap();
+    let relay = start_relay().await;
+    let sock = tmp.path().join("s");
+    let _reports = fake_server(sock.clone());
+    let state = StateDir::open(tmp.path().join("gw")).unwrap();
+    let mut cfg = state.config().unwrap();
+    cfg.relay = Some(format!("http://{relay}"));
+    state.save_config(&cfg).unwrap();
+    let key = DeviceKey::generate();
+    let mut device: vk_gateway::state::Device = serde_json::from_value(json!({"id":"guest","name":"Guest","public":vk_e2e::b64::encode(key.public()),"scope":"view","kind":"share","limit":{"pane":"p1"},"expires_at":u64::MAX,"paired_at":0})).unwrap();
+    state.save_devices(std::slice::from_ref(&device)).unwrap();
+    let gw = Gateway::new(state, server::Server::new(sock)).unwrap();
+    tokio::spawn(vk_gateway::run(gw.clone()));
+    let host = gw.keys.host_id();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let mut delay = Duration::from_millis(50);
+        while !reqwest_status(relay, &host).await {
+            tokio::time::sleep(delay).await;
+            delay = (delay * 2).min(Duration::from_secs(1));
+        }
+    })
+    .await
+    .unwrap();
+    for scope in [Scope::View, Scope::Approve, Scope::Full] {
+        device.scope = scope;
+        gw.state
+            .save_devices(std::slice::from_ref(&device))
+            .unwrap();
+        gw.reload_devices().unwrap();
+        let mut c = Client::open(
+            relay,
+            &host,
+            Hello::device(),
+            &key,
+            &gw.keys.noise_public(),
+            None,
+        )
+        .await
+        .unwrap();
+        let attach = c
+            .call("tui.attach", json!({"protocol":vk_proto::render::PROTOCOL}))
+            .await;
+        let features = attach["result"]["features"].as_array().unwrap();
+        assert!(features.contains(&json!("shared_tui")));
+        assert_eq!(
+            features.contains(&json!("shared_tui.approve")),
+            scope >= Scope::Approve
+        );
+        assert_eq!(
+            features.contains(&json!("shared_tui.control")),
+            scope == Scope::Full
+        );
+        assert!(!features.contains(&json!("shared_tui.workspace")));
+        let stream = attach["result"]["stream"].as_str().unwrap();
+        assert_tui_rejects_command(&mut c, stream, "{", "invalid_params").await;
+        for (req, method, params, permitted) in [
+            (
+                1,
+                "interaction.answer",
+                json!({"interaction":"i1","decision":"allow","decision_rev":3,"actor":"spoof"}),
+                scope != Scope::View,
+            ),
+            (
+                2,
+                "pane.send_text",
+                json!({"pane":"p2","text":"private"}),
+                false,
+            ),
+            (3, "gateway.call", json!({"method":"devices.list"}), false),
+            (
+                4,
+                "pane.send_text",
+                json!({"pane":"p1","text":"shared"}),
+                scope == Scope::Full,
+            ),
+        ] {
+            let data = vk_proto::frame::encode(&ClientFrame::Command {
+                req,
+                json: json!({"method":method,"params":params}).to_string(),
+            })
+            .unwrap();
+            c.send(json!({"jsonrpc":"2.0","id":900+req,"method":"tui.send","params":{"stream":stream,"data":vk_e2e::b64::encode(data)}})).await;
+            loop {
+                let message = c.recv().await;
+                if message["method"] != "tui.frame" {
+                    continue;
+                }
+                let data =
+                    vk_e2e::b64::decode(message["params"]["data"].as_str().unwrap()).unwrap();
+                if let ServerFrame::CommandResult { req: reply, json } =
+                    vk_proto::frame::read_frame(&mut std::io::Cursor::new(data)).unwrap()
+                {
+                    assert_eq!(reply, req);
+                    let response: Value = serde_json::from_str(&json).unwrap();
+                    assert_eq!(
+                        response.get("error").is_none(),
+                        permitted,
+                        "{scope:?} {method}: {response}"
+                    );
+                    if permitted && method == "interaction.answer" {
+                        assert_eq!(response["result"]["echo"]["actor"], "gateway:Guest");
+                    }
+                    break;
+                }
+            }
+        }
+    }
 }

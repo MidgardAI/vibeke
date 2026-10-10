@@ -11,9 +11,9 @@
 
 use crate::app::{App, Mode, Pending, Popup, RpcErr};
 use crate::screen::{Grid, Rect as SRect};
+use crate::time::{Duration, Instant};
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
-use std::time::{Duration, Instant};
 use vk_config::TileView;
 use vk_proto::input::{Key, KeyEvent, KeyKind, NamedKey};
 

@@ -1,8 +1,11 @@
 //! Client-side keybinding resolution (01 §1.4, 08 §10). Bindings use the shared key grammar and
 //! match on the logical key + modifiers, so they are layout-independent.
 
-use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyEventKind, KeyModifiers};
-use vk_proto::input::{Key, KeyEvent, KeyKind, Mods, NamedKey};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::event::{KeyCode, KeyEvent as CtKey, KeyEventKind, KeyModifiers};
+#[cfg(not(target_arch = "wasm32"))]
+use vk_proto::input::KeyKind;
+use vk_proto::input::{Key, KeyEvent, Mods, NamedKey};
 use vk_term::keygrammar::{expand_range, parse_binding};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -345,6 +348,7 @@ pub fn key_matches(binding: &KeyEvent, ev: &KeyEvent) -> bool {
 }
 
 /// crossterm → logical key event.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn from_crossterm(k: &CtKey) -> Option<KeyEvent> {
     let mut mods = Mods::empty();
     let m = k.modifiers;
@@ -398,7 +402,7 @@ pub fn from_crossterm(k: &CtKey) -> Option<KeyEvent> {
             Key::Char(' ')
         }
         KeyCode::Modifier(mk) => {
-            use crossterm::event::ModifierKeyCode as M;
+            use crate::event::ModifierKeyCode as M;
             Key::Named(match mk {
                 M::LeftShift => NamedKey::LeftShift,
                 M::LeftControl => NamedKey::LeftControl,
@@ -584,4 +588,9 @@ mod tests {
             "enter_copy_mode"
         );
     }
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn from_crossterm(k: &KeyEvent) -> Option<KeyEvent> {
+    Some(k.clone())
 }

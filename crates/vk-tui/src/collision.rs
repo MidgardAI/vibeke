@@ -20,9 +20,9 @@
 
 use crate::app::{App, Mode, Pending, Popup, RpcErr};
 use crate::screen::Grid;
+use crate::time::{Duration, Instant};
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
-use std::time::{Duration, Instant};
 use vk_proto::input::{Key, KeyEvent, KeyKind, NamedKey};
 
 /// How often the list is re-read when no event arrived.
@@ -203,6 +203,7 @@ fn send(app: &mut App, mi: usize, method: &str, params: Value, r: Reply) {
 pub fn tick(app: &mut App, now: Instant) {
     for mi in 0..app.machines.len() {
         if !app.machines[mi].connected()
+            || !app.machines[mi].capabilities().host
             || app.ux.collision.unsupported.contains(&mi)
             || app.ux.collision.inflight.contains(&mi)
         {
@@ -229,7 +230,11 @@ pub fn tick(app: &mut App, now: Instant) {
 pub fn deadlines(app: &App, d: &mut crate::deadline::Deadlines) {
     let s = &app.ux.collision;
     if let Some(t) = (0..app.machines.len())
-        .filter(|mi| app.machines[*mi].connected() && !s.unsupported.contains(mi))
+        .filter(|mi| {
+            app.machines[*mi].connected()
+                && app.machines[*mi].capabilities().host
+                && !s.unsupported.contains(mi)
+        })
         .filter(|mi| !s.inflight.contains(mi))
         .filter_map(|mi| s.asked.get(&mi).map(|t| *t + REFRESH))
         .min()
@@ -453,8 +458,8 @@ fn run_label(r: &RunInfo) -> String {
 }
 
 fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    crate::time::SystemTime::now()
+        .duration_since(crate::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
 }

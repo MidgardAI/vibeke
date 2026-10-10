@@ -27,6 +27,7 @@
 use crate::app::{App, Mode, Pending, Popup};
 use crate::upload::{Item, Source};
 use serde_json::json;
+#[cfg(not(target_arch = "wasm32"))]
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -48,6 +49,7 @@ pub struct DropFile {
 
 impl DropFile {
     /// The file at `path` now (following links), if it is a regular file.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn at(path: &Path) -> std::io::Result<DropFile> {
         let canon = std::fs::canonicalize(path)?;
         let m = std::fs::metadata(&canon)?;
@@ -166,6 +168,7 @@ pub fn drop_problem(p: &Path) -> Option<String> {
 /// Open a confirmed file for delivery: the last component must not be a link (`O_NOFOLLOW`),
 /// and the descriptor must be the very file the prompt showed (device, inode and size), a
 /// regular file ≤ 50 MiB. The upload then reads only from this descriptor.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn open_snapshot(f: &DropFile) -> Result<std::fs::File, String> {
     let file = std::fs::OpenOptions::new()
         .read(true)
@@ -343,8 +346,8 @@ pub fn on_clip_image(app: &mut App, pane: &str, img: Option<(String, Vec<u8>)>) 
     };
     let name = format!(
         "clipboard-{}.{ext}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        crate::time::SystemTime::now()
+            .duration_since(crate::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0)
     );
@@ -368,3 +371,16 @@ pub fn on_clip_image(app: &mut App, pane: &str, img: Option<(String, Vec<u8>)>) 
 #[cfg(test)]
 #[path = "browser_io_tests.rs"]
 mod tests;
+
+#[cfg(target_arch = "wasm32")]
+impl DropFile {
+    pub fn at(_: &Path) -> std::io::Result<DropFile> {
+        Err(std::io::Error::other(
+            "Local file uploads are unavailable in the browser TUI",
+        ))
+    }
+}
+#[cfg(target_arch = "wasm32")]
+pub fn open_snapshot(_: &DropFile) -> Result<std::fs::File, String> {
+    Err("Local file uploads are unavailable in the browser TUI".into())
+}

@@ -155,7 +155,7 @@ pub fn on_pane_full(app: &mut App, mi: usize, pane: &str) {
 /// The largest image accepted (`graphics.max_image_bytes`, 03 §9).
 fn max_image(app: &App) -> usize {
     (app.config.graphics.max_image_bytes.0 as usize)
-        .clamp(64 << 10, vk_term::engine::MAX_IMAGE_BYTES_CAP)
+        .clamp(64 << 10, vk_term::limits::MAX_IMAGE_BYTES_CAP)
 }
 
 /// Before composing: transmit (once per image, within the frame budget) the images visible
@@ -643,9 +643,9 @@ mod tests {
         let (w, h) = (2048u32, 4096u32);
         assert_eq!(
             w as usize * h as usize * 4,
-            vk_term::engine::MAX_IMAGE_BYTES
+            vk_term::limits::MAX_IMAGE_BYTES
         );
-        let px = vec![fill; vk_term::engine::MAX_IMAGE_BYTES];
+        let px = vec![fill; vk_term::limits::MAX_IMAGE_BYTES];
         on_image(app, 0, hash.into(), w, h, kitty::zlib(&px, 1));
     }
 
@@ -675,7 +675,7 @@ mod tests {
                 // The cached zlib stream is the payload.
                 1 << 20
             } else {
-                vk_term::engine::MAX_IMAGE_BYTES / 3 * 4 + (1 << 20)
+                vk_term::limits::MAX_IMAGE_BYTES / 3 * 4 + (1 << 20)
             };
             assert!(out.len() <= bound, "zlib={zlib}: {} bytes", out.len());
             // The next frames send nothing: no retransmission per size.
@@ -720,7 +720,7 @@ mod tests {
         let first = take_output(&mut app);
         assert_eq!(count(&first, "a=t,"), 1);
         assert!(
-            first.len() <= FRAME_OUT_MAX + vk_term::engine::MAX_IMAGE_BYTES / 3 * 4 + (1 << 20)
+            first.len() <= FRAME_OUT_MAX + vk_term::limits::MAX_IMAGE_BYTES / 3 * 4 + (1 << 20)
         );
         assert!(app.dirty, "another frame is asked for");
         app.dirty = false;
@@ -747,7 +747,7 @@ mod tests {
             vec![place("h", -30_000, -30_000, u16::MAX, u16::MAX)],
         );
         before_draw(&mut app);
-        let t = std::time::Instant::now();
+        let t = crate::time::Instant::now();
         let mut g = Grid::new(app.size.0, app.size.1);
         crate::draw::compose(&app, &mut g);
         let r = rect(&app);
@@ -757,7 +757,7 @@ mod tests {
         );
         let last = g.get(r.x + r.w - 1, r.y + r.h - 1).unwrap();
         assert!(last.text.as_str().starts_with(kitty::PLACEHOLDER));
-        assert!(t.elapsed() < std::time::Duration::from_secs(5));
+        assert!(t.elapsed() < crate::time::Duration::from_secs(5));
         // Entirely outside: nothing drawn, also for the label path.
         app.caps.kitty_graphics = false;
         on_places(

@@ -1,9 +1,11 @@
 import { execSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { readFileSync, rmSync } from 'node:fs';
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import { defineConfig } from 'vite';
 import { VitePWA } from 'vite-plugin-pwa';
+import { tuiSourceDigest } from '../../scripts/tui-source';
+import { BROWSER_TUI_API } from '../../packages/ui/src/lib/tui-api';
 
 const pkg = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')) as { version: string };
 const hash = (() => {
@@ -29,14 +31,23 @@ const shareTarget = {
     files: [{ name: 'files', accept: ['image/*', 'text/*', '.md', '.txt', '.log', '.json', '.diff', '.patch'] }],
   },
 };
+const tuiEnabled = process.env.VIBEKE_WASM_TUI === '1';
+const tuiModuleUrl = (() => {
+  if (!tuiEnabled) return null;
+  const manifest = JSON.parse(readFileSync(new URL('./public/tui/manifest.json', import.meta.url), 'utf8')) as { api: number; moduleUrl: string; sourceRevision: string; sourceDigest: string; sourceInputs: string[] };
+  if (manifest.api !== BROWSER_TUI_API || !manifest.sourceInputs?.length || manifest.sourceDigest !== tuiSourceDigest(manifest.sourceInputs)) throw new Error('The WASM TUI is stale. Run bun run build:tui from web/ before building this app.');
+  return manifest.moduleUrl;
+})();
 
 export default defineConfig({
   base: '/',
   define: {
+    __WASM_TUI_MODULE_URL__: JSON.stringify(tuiModuleUrl),
     __BUILD_HASH__: JSON.stringify(process.env.VIBEKE_BUILD_HASH ?? hash),
     __APP_VERSION__: JSON.stringify(pkg.version),
   },
   plugins: [
+    { name: 'optional-tui-assets', closeBundle() { if (!tuiEnabled) rmSync(new URL('./dist/tui/', import.meta.url), { recursive: true, force: true }); } },
     react(),
     tailwindcss(),
     VitePWA({
@@ -48,6 +59,8 @@ export default defineConfig({
       injectManifest: {
         rollupFormat: 'iife',
         globPatterns: ['**/*.{js,css,html,svg,png,ico,webmanifest}'],
+        // The optional WASM module loads online; keep its glue out of the offline shell.
+        globIgnores: ['tui/**'],
       },
       manifest: {
         name: 'Vibeke',

@@ -5,8 +5,8 @@
 //! frame is what `App::pane_rects` and `ViewHint` report, so float PTYs get real sizes.
 
 use crate::app::{App, Mode, Pending};
+use crate::event::{MouseButton as CtButton, MouseEvent, MouseEventKind};
 use crate::screen::{Grid, Rect as SRect};
-use crossterm::event::{MouseButton as CtButton, MouseEvent, MouseEventKind};
 use serde_json::json;
 use vk_proto::input::{Key, KeyEvent, KeyKind, NamedKey};
 use vk_proto::layout::Rect;

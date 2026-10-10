@@ -28,10 +28,11 @@
 
 use crate::app::{Action, App, Mode, Pending, Popup};
 use crate::browser::{Reply, mirror_of};
+use crate::event::{MouseButton as CtButton, MouseEvent, MouseEventKind};
 use crate::screen::{Grid, Rect as SRect};
-use crossterm::event::{MouseButton as CtButton, MouseEvent, MouseEventKind};
+use crate::time::Instant;
 use serde_json::{Value, json};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use unicode_width::UnicodeWidthStr;
 use vk_proto::input::{Key, KeyEvent, KeyKind, NamedKey};
 use vk_proto::model::{Preview, PreviewSource, PreviewStatus};
@@ -119,8 +120,8 @@ pub struct Row {
 }
 
 fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    crate::time::SystemTime::now()
+        .duration_since(crate::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
 }

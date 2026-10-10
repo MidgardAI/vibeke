@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-vk-proto = { workspace = true, features = ["tokio"] }
+vk-proto.workspace = true
 unicode-width = { workspace = true }
 unicode-segmentation = { workspace = true }
 base64 = { workspace = true }
@@ -17,17 +17,29 @@ toml_edit = { workspace = true }
 vk-compat = { workspace = true }
 vk-browser = { workspace = true }
 # Directory drops are packed with the same rules the server unpacks with (06 A11.2).
-vk-remote = { workspace = true }
 blake3.workspace = true
-crossterm = { workspace = true }
-tokio = { workspace = true }
 futures = { workspace = true }
 serde_json = { workspace = true }
 serde = { workspace = true }
 regex = { workspace = true }
-libc = { workspace = true }
 # QR codes for invitation links in the Sharing & handoff view (same version as vk-gateway).
 qrcode = { version = "0.14", default-features = false }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+vk-remote = { workspace = true }
+crossterm = { workspace = true }
+tokio = { workspace = true }
+libc = { workspace = true }
+vk-proto = { workspace = true, features = ["tokio"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+tokio = { version = "1", default-features = false, features = ["sync", "io-util"] }
+web-time = "1"
+wasm-bindgen = "=0.2.129"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = ["Window", "Storage"] }
+bitflags = "2"
+getrandom = { version = "0.3", features = ["wasm_js"] }

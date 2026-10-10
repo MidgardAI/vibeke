@@ -8,9 +8,9 @@
 use crate::app::{App, Mode, Pending, Popup, RpcErr};
 use crate::draw::{harness_icon, truncate};
 use crate::screen::{Grid, Rect as SRect};
+use crate::time::{Duration, Instant};
 use serde_json::{Value, json};
 use std::collections::HashSet;
-use std::time::{Duration, Instant};
 use vk_proto::input::{Key, KeyEvent, NamedKey};
 use vk_proto::model::*;
 use vk_proto::render::Style;
@@ -161,8 +161,8 @@ pub enum Reply {
 }
 
 fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    crate::time::SystemTime::now()
+        .duration_since(crate::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
 }
@@ -973,6 +973,7 @@ pub fn parse_custom(s: &str, now_ms: i64) -> Option<i64> {
 }
 
 /// Local wall-clock time `days` days after `now_ms` at `hh:mm`.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn local_at(now_ms: i64, days: i32, hh: i32, mm: i32) -> i64 {
     let t = (now_ms / 1000) as libc::time_t;
     // SAFETY: localtime_r/mktime with valid pointers to stack values.
@@ -1107,7 +1108,9 @@ pub fn key(app: &mut App, ev: KeyEvent) {
         }
         Key::Char('s') => {
             let it = sel.unwrap();
-            if it.key.kind == "handoff" {
+            if !app.machines[it.key.machine].capabilities().host {
+                app.inbox.notice = Some("Snooze is unavailable in a shared terminal".into());
+            } else if it.key.kind == "handoff" {
                 app.inbox.notice =
                     Some("a handoff waits until it is accepted, declined or expires".into());
             } else if it.stale || it.fallback {
@@ -1478,8 +1481,20 @@ pub fn draw(app: &App, g: &mut Grid) {
         }
         Sub::None => {}
     }
-    let keys = "j/k move · enter open · y/n/1-9 answer · A batch · o open pane · s snooze · e effort · f 5-minute view · esc close";
-    g.put_str(r.x + 1, bottom, keys, t.dim(), r.w.saturating_sub(2));
+    let mut keys = String::from("j/k move · enter open");
+    let caps = v
+        .items
+        .get(app.inbox.sel_idx)
+        .map(|it| app.machines[it.key.machine].capabilities());
+    if caps.is_some_and(|c| c.approve) {
+        keys.push_str(" · y/n/1-9 answer · A batch");
+    }
+    keys.push_str(" · o open pane");
+    if caps.is_some_and(|c| c.host) {
+        keys.push_str(" · s snooze · e effort");
+    }
+    keys.push_str(" · f 5-minute view · esc close");
+    g.put_str(r.x + 1, bottom, &keys, t.dim(), r.w.saturating_sub(2));
 }
 
 /// One **Also working** footer row.
@@ -1934,6 +1949,11 @@ mod tests {
         assert_eq!(upd.1["params"]["key"], json!({"kind": "review", "id": "a"}));
         assert!(upd.1["params"]["snooze_until_ms"].as_i64().unwrap() > now_ms());
         assert!(matches!(app.mode, Mode::Popup(Popup::Inbox)));
+        app.machines[0].features = vec!["shared_tui".into(), "shared_tui.control".into()];
+        app.on_key(key(Key::Char('s')));
+        assert!(matches!(app.inbox.sub, Sub::None));
+        assert!(commands(&mut rxs[0]).is_empty());
+        assert!(app.inbox.notice.as_deref().unwrap().contains("unavailable"));
     }
 
     #[test]
@@ -2196,4 +2216,15 @@ mod tests {
         assert_eq!(w[0].run, "r1");
         assert!(working_line(&app, &w[0]).contains("working"));
     }
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn local_at(now_ms: i64, days: i32, hh: i32, mm: i32) -> i64 {
+    let date = js_sys::Date::new(&wasm_bindgen::JsValue::from_f64(now_ms as f64));
+    date.set_date((date.get_date() as i32 + days) as u32);
+    date.set_hours(hh as u32);
+    date.set_minutes(mm as u32);
+    date.set_seconds(0);
+    date.set_milliseconds(0);
+    date.get_time() as i64
 }

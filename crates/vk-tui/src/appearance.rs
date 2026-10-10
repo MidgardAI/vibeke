@@ -18,10 +18,10 @@ use crate::app::{App, Pending};
 use crate::parity::Reply;
 use crate::screen::Grid;
 use crate::theme::Theme;
+use crate::time::{Duration, Instant};
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
 use vk_proto::model::Appearance;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -160,6 +160,7 @@ pub fn startup() -> Option<Detected> {
 /// Re-query the host with nobody else reading the terminal: write the queries and read raw
 /// replies until the DA1 sentinel (≤ 150 ms). Bytes that aren't replies (keys typed in that
 /// window) are dropped.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn reprobe() -> Option<Detected> {
     use std::io::{Read, Write};
     // Let a reader that was just stopped finish its last read first.
@@ -198,6 +199,7 @@ pub fn reprobe() -> Option<Detected> {
     parse_reports(&buf)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn has_da1(b: &[u8]) -> bool {
     b.windows(3).enumerate().any(|(i, w)| {
         w == b"\x1b[?" && {
@@ -313,4 +315,9 @@ pub fn action(app: &mut App, action: &str) -> bool {
     // Report again even when the value didn't change (e.g. the server restarted).
     app.parity.appearance.reported.clear();
     true
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn reprobe() -> Option<Detected> {
+    None
 }

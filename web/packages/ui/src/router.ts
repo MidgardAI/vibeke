@@ -35,6 +35,7 @@ export interface WorkspaceRoute {
 
 export type Route =
   | { name: 'home' }
+  | { name: 'tui'; host: string; workspace?: string; pane?: string }
   | { name: Tab }
   | { name: 'crew' }
   /** Cloud sandboxes of the own hosts (spec 17). */
@@ -85,6 +86,9 @@ export function parseRoute(hash: string): Route {
       return { name: 'crew' };
     case 'sandboxes':
       return { name: 'sandboxes' };
+    case 'tui':
+      if (b && !c) return { name: 'tui', host: b, ...(opt('workspace') ? { workspace: opt('workspace')! } : {}), ...(opt('pane') ? { pane: opt('pane')! } : {}) };
+      break;
     case 'handoffs':
       return { name: 'handoffs', host: b || null, id: (b && c) || null };
     case 'approve':
@@ -148,6 +152,8 @@ export function formatRoute(r: Route): string {
   switch (r.name) {
     case 'home':
       return '#/';
+    case 'tui':
+      return `#/tui/${enc(r.host)}` + (r.workspace || r.pane ? '?' + new URLSearchParams({ ...(r.workspace ? { workspace: r.workspace } : {}), ...(r.pane ? { pane: r.pane } : {}) }) : '');
     case 'inbox':
     case 'panes':
     case 'focus':

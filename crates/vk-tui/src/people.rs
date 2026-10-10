@@ -29,8 +29,8 @@
 //! shows: while the gateway isn't online the link and its QR code are hidden and the view says
 //! why. An older gateway (or server bridge) that refuses `kind: "share"` shows its own message.
 
+use crate::time::Instant;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Instant;
 
 use serde_json::{Value, json};
 use unicode_width::UnicodeWidthStr;
@@ -71,8 +71,8 @@ const FIRST_OPENS: &str = "Whoever opens this link first gets the access. Send i
 static NEXT_ATTEMPT: AtomicU64 = AtomicU64::new(1);
 
 fn now_s() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    crate::time::SystemTime::now()
+        .duration_since(crate::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
 }
@@ -540,7 +540,7 @@ fn link_blocked(v: &View) -> Option<String> {
 // ---- polling -------------------------------------------------------------------------------------
 
 /// How long until `gateway.status` is asked again while a link shows.
-fn gw_every(v: &View) -> std::time::Duration {
+fn gw_every(v: &View) -> crate::time::Duration {
     if link_blocked(v).is_some() {
         2 * POLL
     } else {

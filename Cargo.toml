@@ -4,7 +4,7 @@ members = ["crates/*"]
 exclude = ["vendor"]
 
 [workspace.package]
-version = "0.9.0"
+version = "0.9.1"
 edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/MidgardAI/vibeke"
@@ -88,3 +88,20 @@ debug = false
 # Chunked encryption over multi-megabyte blobs: its tests take 25 s unoptimized, 3 s at level 1.
 [profile.dev.package.vk-store]
 opt-level = 1
+
+# Fast enough to iterate on the browser experiment without a native release rebuild.
+[profile.wasm]
+inherits = "dev"
+opt-level = 1
+debug = 0
+panic = "abort"
+
+# Compact browser distribution; native release settings stay independent.
+[profile.wasm-release]
+inherits = "release"
+opt-level = "s"
+lto = "thin"
+codegen-units = 1
+debug = 0
+strip = "debuginfo"
+panic = "abort"
