@@ -3381,6 +3381,7 @@ dependencies = [
  "vk-assist",
  "vk-browser",
  "vk-cli",
+ "vk-cloud",
  "vk-compat",
  "vk-config",
  "vk-gateway",
