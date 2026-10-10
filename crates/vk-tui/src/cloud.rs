@@ -17,9 +17,9 @@
 //! The tab bar shows `☁ <provider> <state>` while a job runs ([`status`]). The sandboxes overview
 //! ([`crate::sandboxes`]) shares the Auth stage ([`AuthState`]).
 
+use crate::time::{Duration, Instant};
 use std::collections::{BTreeMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
-use crate::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use unicode_width::UnicodeWidthStr;
