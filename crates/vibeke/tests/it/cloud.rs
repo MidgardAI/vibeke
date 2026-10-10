@@ -244,3 +244,183 @@ fn cloud_methods_are_listed_with_their_mutating_flags() {
         assert!(flag(m), "{m}");
     }
 }
+
+impl Host {
+    fn ok(&self, method: &str, p: Value) -> Value {
+        self.api(method, p.clone())
+            .unwrap_or_else(|e| panic!("{method} {p}: {e}"))
+    }
+
+    /// A repository with two commits.
+    fn repo(&self) -> std::path::PathBuf {
+        let r = self.dir.path().join("repo");
+        std::fs::create_dir_all(&r).unwrap();
+        let git = |a: &[&str]| {
+            let o = Command::new("git")
+                .arg("-C")
+                .arg(&r)
+                .args(["-c", "user.name=t", "-c", "user.email=t@example.com"])
+                .args(a)
+                .output()
+                .unwrap();
+            assert!(o.status.success(), "git {a:?}: {o:?}");
+        };
+        git(&["init", "-q", "-b", "main"]);
+        git(&["commit", "-q", "--allow-empty", "-m", "init"]);
+        std::fs::write(r.join("a.txt"), "hello\n").unwrap();
+        git(&["add", "a.txt"]);
+        git(&["commit", "-q", "-m", "a"]);
+        r
+    }
+
+    /// Wait (up to `secs`) for `f` to return `Some`.
+    fn wait<T>(&self, secs: u64, what: &str, mut f: impl FnMut() -> Option<T>) -> T {
+        let end = std::time::Instant::now() + std::time::Duration::from_secs(secs);
+        loop {
+            if let Some(v) = f() {
+                return v;
+            }
+            assert!(std::time::Instant::now() < end, "timed out: {what}");
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+    }
+
+    fn screen(&self, pane: &str) -> String {
+        self.api("pane.read", json!({"pane": pane, "lines": 60}))
+            .ok()
+            .and_then(|v| v["text"].as_str().map(str::to_string))
+            .unwrap_or_default()
+    }
+
+    /// Type `cmd; echo <mark>` into `pane` and wait for the mark.
+    fn run(&self, pane: &str, cmd: &str, mark: &str) -> String {
+        self.ok(
+            "pane.send_text",
+            json!({"pane": pane, "text": format!("{cmd}; echo {mark}-$((1+1))\r")}),
+        );
+        let want = format!("{mark}-2");
+        self.wait(30, mark, || {
+            let s = self.screen(pane);
+            s.contains(&want).then_some(s)
+        })
+    }
+
+    fn job_done(&self, id: &str) -> Value {
+        self.wait(90, "cloud job", || {
+            let js = self.ok("cloud.jobs", json!({}));
+            js["jobs"]
+                .as_array()?
+                .iter()
+                .find(|j| j["id"] == id)
+                .filter(|j| matches!(j["state"].as_str(), Some("done" | "failed" | "cancelled")))
+                .cloned()
+        })
+    }
+
+    fn only_box(&self) -> Value {
+        let l = self.ok("cloud.box.list", json!({"refresh": true}));
+        let b = l["boxes"].as_array().unwrap();
+        assert_eq!(b.len(), 1, "{l}");
+        b[0].clone()
+    }
+}
+
+/// The cloud level end to end with the fake provider: a task in a box, a server restart, the
+/// destroy guard, bringing the work back, sending it out again, and cleaning up.
+#[test]
+fn a_task_runs_in_a_box_and_moves_between_host_and_box() {
+    let h = Host::new();
+    let repo = h.repo();
+    h.ok(
+        "cloud.auth.set",
+        json!({"provider": "fake", "token": "fake-token"}),
+    );
+
+    // A task in a fresh box: the branch is pushed in and the pane's shell runs there.
+    let t = h.ok(
+        "task.create",
+        json!({"title": "cloudy", "repo": repo, "isolate": "cloud", "provider": "fake"}),
+    );
+    assert_eq!(t["task"]["isolation"]["level"], "cloud", "{t}");
+    let task = t["task"]["id"].as_str().unwrap().to_string();
+    let pane = t["panes"][0]["id"].as_str().unwrap().to_string();
+    let s = h.run(&pane, "pwd; git log --oneline | wc -l", "M1");
+    assert!(s.contains("/workspace"), "{s}");
+    let b = h.only_box();
+    assert_eq!(b["ownership"], "attached", "{b}");
+    assert_eq!(b["task"], task.as_str(), "{b}");
+    let box_ref = b["box"].as_str().unwrap().to_string();
+
+    // Work in the box, then restart the server: the pane keeps its shell.
+    h.run(
+        &pane,
+        "echo boxwork > b.txt && git add b.txt && git -c user.name=t -c user.email=t@example.com commit -qm boxwork && echo dirty >> a.txt; KEEP=kept",
+        "M2",
+    );
+    let _ = h.cmd(&["server", "stop"]).output().unwrap();
+    let s = h.run(&pane, "echo shell-$KEEP", "M3");
+    assert!(s.contains("shell-kept"), "{s}");
+
+    // The destroy guard sees the work that is only in the box.
+    let b = h.only_box();
+    assert_eq!(b["unsynced"]["commits"], 1, "{b}");
+    assert_eq!(b["unsynced"]["dirty"], 1, "{b}");
+    let e = h
+        .api("cloud.box.destroy", json!({"box": box_ref}))
+        .unwrap_err();
+    assert_eq!(kind(&e), "conflict", "{e}");
+    assert_eq!(reason(&e), "unsynced_changes", "{e}");
+
+    // Bring it back to this host: commit and change land in the task's checkout.
+    let j = h.ok(
+        "cloud.move",
+        json!({"pane": pane, "to": {"kind": "local"}, "interrupt": true}),
+    );
+    let j = h.job_done(j["job"]["id"].as_str().unwrap());
+    assert_eq!(j["state"], "done", "{j}");
+    let wt = j["result"]["worktree"].as_str().unwrap().to_string();
+    let log = Command::new("git")
+        .args(["-C", &wt, "log", "--oneline"])
+        .output()
+        .unwrap();
+    assert!(String::from_utf8_lossy(&log.stdout).contains("boxwork"));
+    let a = std::fs::read_to_string(std::path::Path::new(&wt).join("a.txt")).unwrap();
+    assert!(a.contains("dirty"), "{a}");
+    let b = h.only_box();
+    assert_eq!(b["state"], "paused", "{b}");
+    assert_eq!(b["unsynced"]["summary"], "clean", "{b}");
+    let host_pane = j["result"]["pane"].as_str().unwrap().to_string();
+
+    // A move needs a sign-in first; then send the host pane out again.
+    h.ok("cloud.auth.clear", json!({"provider": "fake"}));
+    let e = h
+        .api(
+            "cloud.move",
+            json!({"pane": host_pane, "to": {"kind": "cloud", "provider": "fake"}}),
+        )
+        .unwrap_err();
+    assert_needs_auth(&e, "cloud.move");
+    h.ok(
+        "cloud.auth.set",
+        json!({"provider": "fake", "token": "fake-token"}),
+    );
+    std::fs::write(std::path::Path::new(&wt).join("new.txt"), "host\n").unwrap();
+    let j = h.ok(
+        "cloud.move",
+        json!({"pane": host_pane, "to": {"kind": "cloud", "provider": "fake"}, "interrupt": true}),
+    );
+    let j = h.job_done(j["job"]["id"].as_str().unwrap());
+    assert_eq!(j["state"], "done", "{j}");
+    let box_pane = j["result"]["pane"].as_str().unwrap().to_string();
+    let s = h.run(&box_pane, "cat new.txt; git log --oneline | head -1", "M4");
+    assert!(s.contains("host") && s.contains("boxwork"), "{s}");
+
+    // Force-destroying the box closes its panes and removes it.
+    let r = h.ok(
+        "cloud.box.destroy",
+        json!({"box": j["result"]["box"], "force": true}),
+    );
+    assert_eq!(r["destroyed"], true, "{r}");
+    let l = h.ok("cloud.box.list", json!({"refresh": true}));
+    assert_eq!(l["boxes"], json!([]), "{l}");
+}

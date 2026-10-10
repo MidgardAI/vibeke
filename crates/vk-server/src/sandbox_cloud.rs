@@ -985,9 +985,25 @@ pub async fn build(server: &Arc<Server>, i: BuildIn<'_>) -> Result<CloudCtx, Rpc
     let (p, cred) = credential(server, &prov_id)?;
     let host = host_id(server);
     let tags = vk_cloud::naming::Tags::new(&host, key);
-    let (rb, created) = match &box_id {
-        Some(id) => (p.get(&cred, id).await.map_err(map_err(p.as_ref()))?, false),
-        None => {
+    // The task's own box from before (a bring-back kept or suspended it): use it again.
+    let reuse = box_id.is_none().then(|| {
+        list_records(server)
+            .into_iter()
+            .find(|r| r.key == key && r.provider == prov_id && r.ownership != "missing")
+            .map(|r| r.id)
+    });
+    let found = match reuse.flatten() {
+        Some(id) => match p.get(&cred, &id).await {
+            Ok(rb) => Some(rb),
+            Err(e) if e.kind == vk_cloud::ErrorKind::NotFound => None,
+            Err(e) => return Err(map_err(p.as_ref())(e)),
+        },
+        None => None,
+    };
+    let (rb, created) = match (&box_id, found) {
+        (_, Some(rb)) => (rb, false),
+        (Some(id), None) => (p.get(&cred, id).await.map_err(map_err(p.as_ref()))?, false),
+        (None, None) => {
             let pc = cfg.provider(&prov_id);
             let spec = vk_cloud::CreateSpec {
                 name: vk_cloud::naming::box_name(&tags),
@@ -1003,6 +1019,19 @@ pub async fn build(server: &Arc<Server>, i: BuildIn<'_>) -> Result<CloudCtx, Rpc
             )
         }
     };
+    // A box that sleeps (a suspended box taken up again) is woken before panes start in it.
+    let mut rb = rb;
+    if !created
+        && !matches!(
+            rb.state,
+            vk_cloud::BoxState::Running | vk_cloud::BoxState::Creating
+        )
+    {
+        p.resume(&cred, &rb.id).await.map_err(map_err(p.as_ref()))?;
+        if let Ok(x) = p.get(&cred, &rb.id).await {
+            rb = x;
+        }
+    }
     let box_ref = format!("{}/{}", p.id(), rb.id);
     req.provider = Some(p.id().to_string());
     req.cloud_box = Some(box_ref.clone());
