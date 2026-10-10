@@ -13,6 +13,7 @@ export const docManifest = [
   { slug: 'desktop', title: 'Desktop app', group: 'Guides', file: 'desktop.md', description: 'Download the app and connect to a local or remote host.' },
   { slug: 'remote', title: 'Connect through SSH', group: 'Guides', file: 'remote.md', description: 'Install a signed release on your host and connect through SSH.' },
   { slug: 'handoff', title: 'Transfers & shared access', group: 'Guides', file: 'handoff.md', description: 'Transfer work to another host or teammate. Share access to a pane.' },
+  { slug: 'cloud-sandboxes', title: 'Cloud sandboxes', group: 'Guides', file: 'cloud-sandboxes.md', description: 'Run agents on a cloud machine. Send work there and bring it back.' },
   { slug: 'migrating-from-herdr', title: 'Moving from Herdr', group: 'Guides', file: 'migrating-from-herdr.md', description: 'Import supported configuration and layouts from Herdr.' },
   { slug: 'self-hosting', title: 'Self-hosting', group: 'Advanced', file: 'self-hosting.md', description: 'Operate your own relay or browser app.' },
   { slug: 'development', title: 'Build from source', group: 'Advanced', file: 'development.md', description: 'Build the CLI and apps for development.' },
