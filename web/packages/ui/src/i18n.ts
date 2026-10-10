@@ -920,10 +920,27 @@ export const en = {
     panel: 'Workspace panel',
     changes: 'Changes',
     files: 'Files',
+    screenshots: 'Screenshots',
     filesUnsupported: 'Update the host to browse files',
     filesUnsupportedHint: 'File browsing needs a newer Vibeke on this host.',
     closePanel: 'Close panel',
     resizePanel: 'Resize panel',
+  },
+
+  shots: {
+    emptyTitle: 'No screenshots yet',
+    emptyHint: 'An agent can attach a screenshot with vibeke screenshot add <file> or the show_image tool. It appears here.',
+    loadFailed: 'Could not load the screenshots',
+    retry: 'Try again',
+    open: (name: string) => `Open ${name}`,
+    tooLarge: 'Too large to preview',
+    failed: 'Could not load the image',
+    from: (pane: string) => `from ${pane}`,
+    viewer: 'Screenshot viewer',
+    prev: 'Newer screenshot',
+    next: 'Older screenshot',
+    save: 'Save',
+    position: (i: number, n: number) => `${i} of ${n}`,
   },
 
   panel: {
