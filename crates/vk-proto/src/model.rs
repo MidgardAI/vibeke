@@ -402,6 +402,16 @@ pub struct AgentRun {
     pub title: Option<String>,
 }
 
+impl AgentRun {
+    /// What clients call the run: the user's name, else the session title, else the harness.
+    pub fn label(&self) -> &str {
+        self.name
+            .as_deref()
+            .or(self.title.as_deref().filter(|t| !t.is_empty()))
+            .unwrap_or(&self.harness)
+    }
+}
+
 /// Session token usage (04 §10). Totals for the harness session, not per turn.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct RunUsage {

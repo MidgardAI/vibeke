@@ -2036,14 +2036,13 @@ pub fn title(app: &App) -> Option<String> {
         .focused_pane()
         .and_then(|p| {
             let run = m.model.runs.iter().find(|r| r.pane == p);
-            run.map(|r| r.name.clone().unwrap_or_else(|| r.harness.clone()))
-                .or_else(|| {
-                    m.model
-                        .panes
-                        .iter()
-                        .find(|x| x.id == p)
-                        .map(|x| x.display_title().to_string())
-                })
+            run.map(|r| r.label().to_string()).or_else(|| {
+                m.model
+                    .panes
+                    .iter()
+                    .find(|x| x.id == p)
+                    .map(|x| x.display_title().to_string())
+            })
         })
         .unwrap_or_default();
     let s = app

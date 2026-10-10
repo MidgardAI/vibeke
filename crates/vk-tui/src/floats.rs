@@ -383,7 +383,7 @@ pub fn on_model(app: &mut App) {
 fn title_of(app: &App, pane: &str) -> String {
     let m = app.m();
     if let Some(r) = m.model.runs.iter().find(|r| r.pane == pane) {
-        return r.name.clone().unwrap_or_else(|| r.harness.clone());
+        return r.label().to_string();
     }
     m.model
         .panes

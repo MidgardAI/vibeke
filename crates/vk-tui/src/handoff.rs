@@ -2749,7 +2749,7 @@ pub(crate) fn pane_label(app: &App, mi: usize, pane: &str) -> String {
         .iter()
         .find(|r| r.pane == pane && r.ended_at_ms.is_none());
     let what = run
-        .map(|r| r.name.clone().unwrap_or_else(|| r.harness.clone()))
+        .map(|r| r.label().to_string())
         .unwrap_or_else(|| "pane".into());
     let handle = p.map(|p| p.handle.clone()).unwrap_or_else(|| pane.into());
     match ws {
