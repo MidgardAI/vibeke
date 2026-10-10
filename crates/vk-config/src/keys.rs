@@ -91,6 +91,10 @@ pub const DEFAULT_KEYMAP: &[(&str, &str)] = &[
     // Share the focused pane or its workspace with a colleague: `prefix+alt+s` is
     // `sync_input_pane`.
     ("share_pane", "prefix+alt+v"),
+    // Cloud sandboxes (spec 17 §8): unbound; reachable from the palette and the pane menu.
+    ("cloud_send", ""),
+    ("cloud_bring_back", ""),
+    ("sandboxes", ""),
 ];
 
 /// Copy-mode actions for `[keys.copy_mode]` per-key overrides (`key = "action"`; an empty

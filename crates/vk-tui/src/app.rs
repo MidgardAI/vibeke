@@ -353,6 +353,11 @@ pub enum Popup {
     /// People (the Connections view's People tab: colleagues' shares of a pane or workspace):
     /// list, share, revoke; state in `App::ux.people`.
     People,
+    /// Send a pane to a cloud sandbox, or bring one back (spec 17 §8); state in
+    /// `App::ux.cloud.flow`.
+    CloudSend,
+    /// Cloud sandboxes overview (spec 17 §8); state in `App::ux.sandboxes`.
+    Sandboxes,
     Updates,
 }
 
@@ -2065,6 +2070,14 @@ impl App {
             }
             Mode::Popup(Popup::People) => {
                 crate::people::on_paste(self, &text);
+                return;
+            }
+            Mode::Popup(Popup::CloudSend) => {
+                crate::cloud::on_paste(self, &text);
+                return;
+            }
+            Mode::Popup(Popup::Sandboxes) => {
+                crate::sandboxes::on_paste(self, &text);
                 return;
             }
             Mode::Popup(Popup::Devices | Popup::Updates) => return,

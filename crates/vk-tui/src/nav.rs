@@ -647,6 +647,9 @@ pub const ACTION_INFO: &[(&str, &str)] = &[
     ),
     ("handoff_send", "Hand off this pane to another host…"),
     ("share_pane", "Share this pane or workspace with someone…"),
+    ("cloud_send", "Send to cloud…"),
+    ("cloud_bring_back", "Bring back from cloud…"),
+    ("sandboxes", "Sandboxes"),
     (
         "handoff_details",
         "Handoff details: where this imported pane came from (retry resume)",

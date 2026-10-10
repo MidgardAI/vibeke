@@ -549,7 +549,13 @@ pub fn tick(app: &mut App) {
 
 /// The actions a right-click on a pane's sidebar row offers (the palette shows only these while
 /// a pane is targeted). Each takes its pane with [`take_target`].
-pub const PANE_MENU: &[&str] = &["handoff_send", "share_pane", "handoff_details"];
+pub const PANE_MENU: &[&str] = &[
+    "handoff_send",
+    "cloud_send",
+    "cloud_bring_back",
+    "share_pane",
+    "handoff_details",
+];
 
 /// Right-click on a pane's sidebar row: its actions ([`PANE_MENU`]), in the palette.
 pub fn pane_menu(app: &mut App, mi: usize, pane: &str) {

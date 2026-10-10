@@ -143,6 +143,9 @@ handoffs                 = "prefix+shift+h" # Connections → Handoffs: incoming
 handoff_send             = "prefix+alt+h"   # hand off the focused pane to another host
 hosts                    = ""               # Connections → Hosts: peers, invitations, paste an invitation
 share_pane               = "prefix+alt+v"   # share the focused pane or its workspace with someone (view or approve)
+cloud_send               = ""               # send the focused pane's agent to a cloud sandbox
+cloud_bring_back         = ""               # bring the focused cloud pane back to this host or a paired host
+sandboxes                = ""               # cloud sandboxes: sign-in, state, suspend, bring back, destroy, clean up
 
 [keys.copy_mode]
 mode = "vi"                           # vi | emacs
