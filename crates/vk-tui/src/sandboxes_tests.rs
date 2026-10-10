@@ -253,10 +253,27 @@ fn adopt_asks_for_a_repository_and_focuses_the_pane() {
         &mut app,
         0,
         req,
-        json!({"box": "sprites/b3", "task": "T5", "pane": "p2"}),
+        json!({"box": "sprites/b3", "task": "T5", "panes": ["p2", "p9"], "sessions": 2,
+               "notes": ["1 adopted session started on another host"]}),
     );
     assert!(matches!(app.mode, Mode::Normal));
     assert_eq!(app.machines[0].focus.pane.as_deref(), Some("p2"));
+    assert!(
+        app.toasts
+            .iter()
+            .any(|t| t.text.contains("started on another host"))
+    );
+}
+
+#[test]
+fn the_adopted_pane_is_the_first_of_panes() {
+    assert_eq!(
+        adopted_pane(&json!({"panes": ["p2", "p9"]})).as_deref(),
+        Some("p2")
+    );
+    // The old `pane` field is not part of the result.
+    assert_eq!(adopted_pane(&json!({"pane": "p2"})), None);
+    assert_eq!(adopted_pane(&json!({"panes": []})), None);
 }
 
 #[test]

@@ -9,12 +9,12 @@ import { useState } from 'react';
 import { Cloud, RefreshCw, Trash2 } from 'lucide-react';
 import { RpcError, type CloudBox, type CloudProvider, type HostConnectionApi } from '@vibeke/core';
 import { useCloud, useCloudStores, useHostCloud, type HostCloud } from '../app/cloud-stores';
-import { useAllHosts, useApp, useHost, useNow } from '../app/hooks';
+import { useAllHosts, useApp, useNow } from '../app/hooks';
 import { requestCloudAuth, withCloudAuth } from '../components/cloud-auth';
 import { Button, Card, Empty, Notice, Pill, Sheet, Spinner, TextField } from '../components/ui';
 import { t } from '../i18n';
 import { errorMessage } from '../lib/answer';
-import { adoptNeedsRepo, authEnvVar, boxActions, boxCounts, confirmedPruneParams, groupBoxes, hasUnsynced, tryDestroy, type BoxAction, type ProviderGroup } from '../lib/cloud';
+import { adoptDestination, adoptNeedsRepo, authEnvVar, boxActions, boxCounts, confirmedPruneParams, groupBoxes, hasUnsynced, tryDestroy, type BoxAction, type ProviderGroup } from '../lib/cloud';
 import { relTime } from '../lib/format';
 import { isOwnFullHost } from '../lib/handoff-send';
 import { navigate, workspaceRoute } from '../router';
@@ -167,7 +167,6 @@ function HostSandboxes({ hostId, name, many }: { hostId: string; name: string; m
   const app = useApp();
   const stores = useCloudStores();
   const cloud: HostCloud = useHostCloud(hostId);
-  const dashboard = useHost(hostId)?.dashboard;
   const [repo, setRepo] = useState('');
   const now = useNow(30_000) ;
   const [busy, setBusy] = useState<string | null>(null);
@@ -227,9 +226,12 @@ function HostSandboxes({ hostId, name, many }: { hostId: string; name: string; m
       const r = await withCloudAuth(c, b.provider, () => c.request('cloud.box.adopt', { box: b.box, ...(repoPath ? { repo: repoPath } : {}) }, { timeoutMs: 180_000 }));
       setDialog(null);
       void stores.refresh(hostId);
-      if (r.pane) return navigate({ name: 'pane', host: hostId, pane: r.pane, view: 'term' });
-      const ws = dashboard?.tasks.find((x) => x.id === r.task || x.handle === r.task)?.workspace;
-      if (ws) return navigate(workspaceRoute(hostId, ws));
+      for (const n of r.notes ?? []) app.toast(n, 'warn', 8000);
+      // The new task and its panes: read them before going there.
+      await c.refresh().catch(() => {});
+      const dest = adoptDestination(r, c.getSnapshot().dashboard);
+      if (dest.workspace) return navigate(workspaceRoute(hostId, dest.workspace, { pane: dest.pane }));
+      if (dest.pane) return navigate({ name: 'pane', host: hostId, pane: dest.pane, view: 'term' });
       app.toast(t.cloud.adopted(r.task), 'ok');
     } catch (e) {
       if (adoptNeedsRepo(e)) {

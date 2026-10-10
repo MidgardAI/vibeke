@@ -915,6 +915,10 @@ pub fn record_sync(server: &Server, tb: &TaskBox, o: &[SyncOutcome]) {
 pub struct BoxLink {
     mux: std::sync::Mutex<Option<vk_remote::Mux>>,
     panes: std::sync::Mutex<std::collections::HashMap<String, Option<tokio::io::DuplexStream>>>,
+    /// Extra broker names served in the box: an old pane's short id → the short id of the
+    /// pane whose broker answers for it (an adopted session keeps the `VIBEKE_SOCKET` of the
+    /// pane that started it).
+    aliases: std::sync::Mutex<std::collections::HashMap<String, String>>,
     pub connected: std::sync::atomic::AtomicBool,
 }
 
@@ -933,7 +937,12 @@ impl BoxLink {
     /// Serve `pane`'s broker inside the box (now, and after every reconnect).
     pub fn add_pane(self: &Arc<Self>, pane: &str) {
         let short = vk_sandbox::runner::short_id(pane);
-        self.panes.lock().unwrap().insert(short.clone(), None);
+        {
+            let mut panes = self.panes.lock().unwrap();
+            panes.insert(short.clone(), None);
+            // A pane's own name is never an alias.
+            self.aliases.lock().unwrap().remove(&short);
+        }
         if let Some(m) = self.mux.lock().unwrap().clone() {
             self.open_listen(m, short);
         }
@@ -956,10 +965,50 @@ impl BoxLink {
         m.open(&format!("tcp:{port}")).await
     }
     pub fn remove_pane(&self, pane: &str) {
-        self.panes
+        let short = vk_sandbox::runner::short_id(pane);
+        let mut panes = self.panes.lock().unwrap();
+        panes.remove(&short);
+        self.aliases.lock().unwrap().retain(|old, to| {
+            let keep = *to != short;
+            if !keep {
+                panes.remove(old);
+            }
+            keep
+        });
+    }
+    /// Serve the broker name `old_short` in the box as well, answered by `pane`'s broker: a
+    /// session that pane took over still calls the socket of the pane that started it. A name
+    /// that is a pane's own short id is never redirected.
+    pub fn add_alias(self: &Arc<Self>, old_short: &str, pane: &str) -> bool {
+        let to = vk_sandbox::runner::short_id(pane);
+        if old_short == to {
+            return true;
+        }
+        let valid = !old_short.is_empty()
+            && old_short.len() <= 32
+            && old_short.chars().all(|c| c.is_ascii_alphanumeric());
+        {
+            let mut panes = self.panes.lock().unwrap();
+            let mut aliases = self.aliases.lock().unwrap();
+            if !valid || (panes.contains_key(old_short) && !aliases.contains_key(old_short)) {
+                return false;
+            }
+            aliases.insert(old_short.to_string(), to);
+            panes.insert(old_short.to_string(), None);
+        }
+        if let Some(m) = self.mux.lock().unwrap().clone() {
+            self.open_listen(m, old_short.to_string());
+        }
+        true
+    }
+    /// The short id whose broker answers for broker name `short` ([`BoxLink::add_alias`]).
+    pub fn resolve(&self, short: &str) -> String {
+        self.aliases
             .lock()
             .unwrap()
-            .remove(&vk_sandbox::runner::short_id(pane));
+            .get(short)
+            .cloned()
+            .unwrap_or_else(|| short.to_string())
     }
     /// The in-box end is up on `m`: use it and reopen every pane's broker listener (cloud links,
     /// `sandbox::cloud`, share this with [`start_link`]).

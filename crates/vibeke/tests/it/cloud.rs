@@ -564,6 +564,18 @@ fn a_foreign_box_is_adopted_into_a_host_task() {
     );
     let task = r["task"].as_str().unwrap().to_string();
     let wt = r["worktree"].as_str().unwrap().to_string();
+    // Its own worktree, not the clone's main checkout; no session was left to reattach.
+    assert_ne!(
+        std::path::Path::new(&wt).canonicalize().unwrap(),
+        clone.canonicalize().unwrap(),
+        "{r}"
+    );
+    // The session started on the other host: this host can't map its old broker name.
+    let notes = r["notes"].as_array().cloned().unwrap_or_default();
+    assert!(
+        notes.len() == 1 && notes[0].as_str().unwrap().contains("another host"),
+        "{r}"
+    );
     // The box's commit is on this host now.
     let log = Command::new("git")
         .args(["-C", &wt, "log", "--oneline"])

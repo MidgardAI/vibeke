@@ -1133,8 +1133,15 @@ export interface AppApi {
   'cloud.box.checkpoint': { params: { box: string; note?: string }; result: { box: string; checkpoint: unknown } };
   /** Unsynced work without `force` fails with `conflict`, `details.reason = "unsynced_changes"`. */
   'cloud.box.destroy': { params: { box: string; force?: boolean }; result: { box: string; destroyed: true } };
-  /** `repo`: a repository on this host, for a box whose record names none. Opens a pane per live session. */
-  'cloud.box.adopt': { params: { box: string; repo?: string; title?: string }; result: { box: string; task: string; pane?: string | null } };
+  /**
+   * `repo`: a repository on this host, for a box whose record names none. Opens a pane per live
+   * session (or one new pane): `panes`, first one first. `notes`: limits the user should know
+   * (sessions whose hooks cannot reach this host until restarted).
+   */
+  'cloud.box.adopt': {
+    params: { box: string; repo?: string; title?: string; root?: string };
+    result: { box: string; task: string; panes: string[]; sessions: number; repo: string; branch: string; worktree: string; notes?: string[] };
+  };
   'cloud.box.forget': { params: { box: string }; result: { box: string } };
   'cloud.prune': {
     /** `boxes`: only these (each checked again; an ineligible one comes back in `skipped`). */

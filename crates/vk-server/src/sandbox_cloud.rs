@@ -84,6 +84,9 @@ impl Unsynced {
                 "commits on other branches or tags",
             ));
         }
+        if p.notes > 0 {
+            parts.push(plural(p.notes, "notes commit", "notes commits"));
+        }
         if p.dirty > 0 {
             parts.push(plural(p.dirty, "changed file", "changed files"));
         }
@@ -101,7 +104,7 @@ impl Unsynced {
             parts.push(plural(p.untracked, "untracked file", "untracked files"));
         }
         Unsynced {
-            commits: p.commits + p.other_commits,
+            commits: p.commits + p.other_commits + p.notes,
             dirty: p.dirty + p.submodules + p.stashes,
             untracked: p.untracked,
             summary: if parts.is_empty() {
@@ -133,6 +136,8 @@ pub struct Parts {
     pub commits: u32,
     /// Commits on other branches or tags of the box that no host ref reaches.
     pub other_commits: u32,
+    /// Commits of `refs/notes/*` (git notes) that no host ref reaches.
+    pub notes: u32,
     pub dirty: u32,
     /// Submodules with changes (new commits, changed or untracked files): a bundle never
     /// carries them.
@@ -173,6 +178,24 @@ pub struct BoxRecord {
     /// This host took the box over with `cloud.box.adopt`. The box name and tags keep the
     /// creating host's tag, so ownership follows the record (`key`, `task`), not the tag.
     pub adopted: bool,
+    /// Vibeke (a bring-back, a task close or the idle policy) or the user put the box to sleep,
+    /// and nothing woke it since: the bridge link stays down, since starting it would wake the
+    /// box. Cleared by a resume, a new pane in the box, or a listing that shows it running.
+    pub held: bool,
+    /// Panes that last ran in the box, newest first (at most [`LAST_PANES`]). Kept after the
+    /// panes and their task are gone, so an adopt can serve their broker names to the panes
+    /// that attach to their sessions.
+    pub last_panes: Vec<String>,
+}
+
+/// How many [`BoxRecord::last_panes`] a record keeps.
+pub const LAST_PANES: usize = 16;
+
+/// `pane` in front of `last`, without duplicates, at most [`LAST_PANES`].
+pub fn push_last_pane(last: &mut Vec<String>, pane: &str) {
+    last.retain(|p| p != pane);
+    last.insert(0, pane.to_string());
+    last.truncate(LAST_PANES);
 }
 
 impl BoxRecord {
@@ -283,6 +306,24 @@ pub fn view_in(c: &Core, rec: &BoxRecord, caps: vk_cloud::Caps) -> Value {
 pub fn view(server: &Server, rec: &BoxRecord) -> Value {
     let caps = caps_of(&rec.provider);
     server.with_core(|c| view_in(c, rec, caps))
+}
+
+/// A new pane spawned in box `box_ref`: remember it ([`BoxRecord::last_panes`]), and the box
+/// is awake again (the spawn starts a session, which wakes it), so the link may run.
+pub fn note_pane_spawned(server: &Server, box_ref: &str, pane: &str) {
+    if let Some(mut rec) = load_record(server, box_ref) {
+        let before = rec.clone();
+        push_last_pane(&mut rec.last_panes, pane);
+        rec.held = false;
+        if rec != before {
+            save_record(server, &rec);
+        }
+    }
+}
+
+/// Whether the box was put to sleep and not woken since ([`BoxRecord::held`]).
+pub fn is_held(server: &Server, box_ref: &str) -> bool {
+    load_record(server, box_ref).is_some_and(|r| r.held)
 }
 
 /// Write `rec` and emit `cloud.box.changed` with its view.
@@ -901,7 +942,8 @@ async fn exec_session(
     stdin: Vec<u8>,
 ) -> Result<Captured, RpcError> {
     let req = ExecReq {
-        argv: argv.to_vec(),
+        // Marked, so the session never counts as use of the box ([`user_session`]).
+        argv: mgmt_argv(argv),
         env: env.to_vec(),
         cwd: None,
         tty: false,
@@ -1215,6 +1257,9 @@ pub async fn build(server: &Arc<Server>, i: BuildIn<'_>) -> Result<CloudCtx, Rpc
         branch: Some(clone.branch.clone()),
         base: Some(clone.base.clone()),
         adopted: prior.as_ref().is_some_and(|r| r.adopted && r.key == key),
+        // The box runs now (it was created, or woken to be checked).
+        held: false,
+        last_panes: prior.map(|r| r.last_panes).unwrap_or_default(),
     };
     save_record(server, &rec);
     Ok(c)
@@ -1590,16 +1635,110 @@ pub fn preset_session(key: &str, pane_id: &str, session: &str) -> std::io::Resul
     f.write_all(session.as_bytes())
 }
 
-/// A provider session that counts as use of the box: a live terminal session (a pane's shell
-/// or agent). Vibeke's own management processes (the bridge link, git services, scripts) run
-/// without a terminal and never keep a box active.
+/// A provider session that counts as use of the box: any live session (a pane's shell or
+/// agent, a `vibeke cloud exec` batch command with or without a terminal) except Vibeke's own
+/// management sessions ([`management_command`]).
 pub fn user_session(s: &vk_cloud::SessionInfo) -> bool {
-    s.active && s.tty && !s.command.contains("/vibeke/bin/vibeke sandbox")
+    s.active && !management_command(&s.command)
+}
+
+/// Whether a session's command (the argv joined by spaces, as every provider lists it) is one of
+/// Vibeke's own management sessions: the in-box bridge and bundle commands
+/// (`/vibeke/bin/vibeke sandbox …`), the git services of `task.sync`
+/// (`git upload-pack` / `git receive-pack`) and the server's scripts ([`MGMT_MARK`]).
+pub fn management_command(command: &str) -> bool {
+    if command.contains(MGMT_MARK) {
+        return true;
+    }
+    let mut words = command.split_whitespace();
+    let first = words.next().unwrap_or_default();
+    if first.ends_with("/vibeke/bin/vibeke") && words.next() == Some("sandbox") {
+        return true;
+    }
+    let mut words = command.split_whitespace();
+    let first = words.next().unwrap_or_default();
+    (first == "git" || first.ends_with("/git"))
+        && matches!(
+            words.next(),
+            Some("upload-pack" | "receive-pack" | "git-upload-pack" | "git-receive-pack")
+        )
+}
+
+/// Marker in the command of every exec the server runs in a box for itself
+/// ([`mgmt_argv`]): its sessions are management, not use of the box.
+pub const MGMT_MARK: &str = "# vibeke-mgmt";
+
+/// `argv` run through `/bin/sh` with [`MGMT_MARK`] in the command, so a session listing
+/// shows it as management. Exit code, stdin and output are the command's own.
+pub fn mgmt_argv(argv: &[String]) -> Vec<String> {
+    if argv.iter().any(|a| a.contains(MGMT_MARK)) {
+        return argv.to_vec();
+    }
+    let mut v = vec![
+        "/bin/sh".to_string(),
+        "-c".into(),
+        format!("exec \"$@\" {MGMT_MARK}"),
+        "vibeke-mgmt".into(),
+    ];
+    v.extend(argv.iter().cloned());
+    v
 }
 
 /// Whether task `key` has a pane in its box (the link only runs then, so an idle box can sleep).
 fn has_cloud_panes(server: &Server, key: &str) -> bool {
     server.with_core(|c| !cloud_panes(c, Some(key)).1.is_empty())
+}
+
+/// Whether the link of task `key` to `box_ref` should run: the task has a pane in the box, and
+/// the box was not put to sleep ([`BoxRecord::held`]). Starting the bridge runs a command in
+/// the box, which would wake a paused box.
+fn link_wanted(server: &Server, key: &str, box_ref: &str) -> bool {
+    has_cloud_panes(server, key) && !is_held(server, box_ref)
+}
+
+/// How long the bridge's `cloud exec` gets to end the command in the box after SIGTERM.
+const LINK_STOP_GRACE: Duration = Duration::from_secs(3);
+
+/// Stop a host `cloud exec` gracefully: SIGTERM (it ends the remote command), then SIGKILL
+/// after [`LINK_STOP_GRACE`].
+async fn stop_exec(child: &mut tokio::process::Child) {
+    if matches!(child.try_wait(), Ok(Some(_))) {
+        return;
+    }
+    if let Some(pid) = child.id().and_then(|p| i32::try_from(p).ok()) {
+        // SAFETY: plain kill(2) on our own child, which has not been reaped yet.
+        unsafe {
+            libc::kill(pid, libc::SIGTERM);
+        }
+        if tokio::time::timeout(LINK_STOP_GRACE, child.wait())
+            .await
+            .is_ok()
+        {
+            return;
+        }
+    }
+    let _ = child.start_kill();
+    let _ = child.wait().await;
+}
+
+/// The bridge's host process; dropping it (the link task aborted) still stops it gracefully
+/// ([`stop_exec`]) in the background.
+struct LinkChild(Option<tokio::process::Child>);
+
+impl Drop for LinkChild {
+    fn drop(&mut self) {
+        let Some(mut child) = self.0.take() else {
+            return;
+        };
+        match tokio::runtime::Handle::try_current() {
+            Ok(h) => {
+                h.spawn(async move { stop_exec(&mut child).await });
+            }
+            Err(_) => {
+                let _ = child.start_kill();
+            }
+        }
+    }
 }
 
 /// Keep the bridge link to the box up while the task has cloud panes: brokers of its panes
@@ -1620,12 +1759,27 @@ pub fn start_link(
     let env = c.runner.cli_env.clone();
     let run_dir = c.run_dir.clone();
     let key = c.key.clone();
+    let box_ref = c.box_ref();
     let weak = Arc::downgrade(server);
+    // Broker channels from the box: an alias (an adopted session's old pane) goes to the
+    // broker of the pane that took the session over ([`BoxLink::add_alias`]).
+    let inner = vk_remote::boxlink::host_acceptor(None, run_dir.clone());
+    let wl = Arc::downgrade(&link);
+    let acceptor: vk_remote::mux::Acceptor = Arc::new(move |kind: String| {
+        let kind = match (
+            kind.strip_prefix("broker:").map(str::to_string),
+            wl.upgrade(),
+        ) {
+            (Some(id), Some(l)) => format!("broker:{}", l.resolve(&id)),
+            _ => kind,
+        };
+        inner(kind)
+    });
     let h = tokio::spawn(async move {
         let mut backoff = Duration::from_millis(500);
         loop {
             let Some(srv) = weak.upgrade() else { return };
-            let wanted = has_cloud_panes(&srv, &key);
+            let wanted = link_wanted(&srv, &key, &box_ref);
             drop(srv);
             if !wanted {
                 tokio::time::sleep(Duration::from_secs(2)).await;
@@ -1639,38 +1793,40 @@ pub fn start_link(
                 .stdin(std::process::Stdio::piped())
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::null())
-                .kill_on_drop(true)
                 .spawn();
             if let Ok(mut child) = child
                 && let (Some(si), Some(so)) = (child.stdin.take(), child.stdout.take())
             {
-                let m = vk_remote::Mux::start(
-                    so,
-                    si,
-                    "bridge",
-                    Some(vk_remote::boxlink::host_acceptor(None, run_dir.clone())),
-                );
+                let mut child = LinkChild(Some(child));
+                let m = vk_remote::Mux::start(so, si, "bridge", Some(acceptor.clone()));
                 l2.connect(m.clone());
-                // The link goes when the task's last box pane closes: the bridge is a session
-                // in the box, and providers count it as activity, so an idle box would never
-                // sleep (or meet its idle policy) while it runs.
+                // The link goes when the task's last box pane closes, or the box is put to
+                // sleep: the bridge is a session in the box, and providers count it as
+                // activity, so an idle box would never sleep (or meet its idle policy) while it
+                // runs.
                 let unwanted = async {
                     loop {
                         tokio::time::sleep(Duration::from_secs(2)).await;
                         match weak.upgrade() {
-                            Some(srv) if has_cloud_panes(&srv, &key) => {}
+                            Some(srv) if link_wanted(&srv, &key, &box_ref) => {}
                             _ => break,
                         }
                     }
                 };
-                tokio::select! {
-                    _ = m.closed() => {}
-                    _ = child.wait() => {}
-                    _ = unwanted => {}
+                if let Some(ch) = child.0.as_mut() {
+                    tokio::select! {
+                        _ = m.closed() => {}
+                        _ = ch.wait() => {}
+                        _ = unwanted => {}
+                    }
                 }
                 l2.disconnect();
-                let _ = child.start_kill();
-                let _ = child.wait().await;
+                // SIGTERM first: `cloud exec` then ends the bridge in the box (a killed one
+                // would leave it running there).
+                if let Some(ch) = child.0.as_mut() {
+                    stop_exec(ch).await;
+                }
+                child.0 = None;
             }
             if started.elapsed() > Duration::from_secs(30) {
                 backoff = Duration::from_millis(500);
@@ -1780,6 +1936,9 @@ pub struct Report {
     /// Commits on other local branches or tags that neither HEAD, the host refs nor the base
     /// reach.
     pub other: u32,
+    /// Commits of `refs/notes/*` that neither HEAD, the host refs nor the base reach: git notes
+    /// are never carried by a sync.
+    pub notes: u32,
     /// Submodules with changes ([`SUBMODULE_CHANGES`]); counted even when the tree is marked
     /// synced, since no bring-back carries them.
     pub submodules: u32,
@@ -1858,6 +2017,8 @@ echo \"ahead=$a\"\n\
 x=; if [ -n \"$b\" ] && git rev-parse -q --verify \"$b^{{commit}}\" >/dev/null 2>&1; then x=$b; fi\n\
 o=$(git rev-list --count --branches --tags --not ${{h:+HEAD}} --glob='refs/vibeke/host/*' ${{x:+\"$x\"}} 2>/dev/null || echo 0)\n\
 echo \"other=$o\"\n\
+n=$(git rev-list --count --glob='refs/notes/*' --not ${{h:+HEAD}} --glob='refs/vibeke/host/*' ${{x:+\"$x\"}} 2>/dev/null || echo 0)\n\
+echo \"notes=$n\"\n\
 {SUBMODULE_CHANGES}\n\
 echo \"submodules=$sm\"\n\
 {TREE_FINGERPRINT}\n\
@@ -1884,6 +2045,7 @@ pub fn parse_report(s: &str) -> Report {
             "untracked" => r.untracked = n(),
             "stashes" => r.stashes = n(),
             "other" => r.other = n(),
+            "notes" => r.notes = n(),
             "submodules" => r.submodules = n(),
             _ => {}
         }
@@ -1930,6 +2092,7 @@ pub fn combine(r: &Report, host_missing: Option<Option<u32>>) -> Unsynced {
     Unsynced::from_parts(Parts {
         commits,
         other_commits: r.other,
+        notes: r.notes,
         dirty: r.dirty,
         submodules: r.submodules,
         untracked: r.untracked,
@@ -2079,6 +2242,7 @@ pub async fn suspend_box(server: &Arc<Server>, c: &CloudCtx) -> Result<(), RpcEr
         .unwrap_or_else(|_| "unknown".into());
     if let Some(mut rec) = load_record(server, &c.box_ref()) {
         rec.state = state;
+        rec.held = true;
         save_record(server, &rec);
     }
     Ok(())

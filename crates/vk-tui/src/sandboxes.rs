@@ -998,9 +998,21 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
         }
         (Call::Adopt { name, .. }, Ok(x)) => {
             done(v);
-            // The reattached pane: focus it (the server focuses it even before the model has it).
-            if let Some(pane) = s_of(&x, "pane") {
+            // Limits to know about (sessions whose hooks cannot reach this host yet).
+            let notes: Vec<String> = x["notes"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(crate::devices::clean)
+                .collect();
+            // The first reattached pane (`panes`, first one first): focus it (the server
+            // focuses it even before the model has it).
+            if let Some(pane) = adopted_pane(&x) {
                 close(app);
+                for n in notes {
+                    app.toast(n);
+                }
                 app.focus_pane(mi, &pane);
                 return;
             }
@@ -1009,6 +1021,9 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
                 .unwrap_or_default();
             v.notice = Some(format!("adopted {name}{task}"));
             list(app);
+            for n in notes {
+                app.toast(n);
+            }
         }
         (Call::Adopt { box_id, name, repo }, Err(e)) if adopt_needs_repo(&e) => {
             done(v);
@@ -1307,6 +1322,16 @@ pub fn draw(app: &App, g: &mut Grid) -> Option<(u16, u16)> {
         t.dim(),
     );
     None
+}
+
+/// The pane an adopt opened first (`panes[0]` of `cloud.box.adopt`).
+pub(crate) fn adopted_pane(x: &Value) -> Option<String> {
+    x["panes"]
+        .as_array()
+        .and_then(|a| a.first())
+        .and_then(Value::as_str)
+        .filter(|p| !p.is_empty())
+        .map(str::to_string)
 }
 
 #[cfg(test)]

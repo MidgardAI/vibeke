@@ -133,12 +133,16 @@ export function sendBoxChoices(boxes: readonly CloudBox[], provider: string, tas
   return boxes.filter((b) => b.provider === provider && !!b.task && taskKeys.includes(b.task) && (b.ownership === 'attached' || b.ownership === 'idle') && b.state !== 'destroyed');
 }
 
-/** The id, handle and slug of the task a pane works on (its run's task, else its workspace's). */
-export function paneTaskKeys(d: Pick<Dashboard, 'panes' | 'runs' | 'workspaces' | 'tasks'> | null | undefined, pane: string): string[] {
+/**
+ * The id, handle and slug of the task a send from `pane` works on: its workspace's task, as the
+ * host decides it (`cloud.move` uses the pane's workspace task, and a pane without one gets a new
+ * task, which has no box yet). A run's own task never picks the box.
+ */
+export function paneTaskKeys(d: Pick<Dashboard, 'panes' | 'workspaces' | 'tasks'> | null | undefined, pane: string): string[] {
   if (!d) return [];
   const p = d.panes.find((x) => x.id === pane || x.handle === pane);
   if (!p) return [];
-  const id = d.runs.find((r) => r.pane === p.id && r.task)?.task ?? d.workspaces.find((w) => w.id === p.workspace)?.task ?? null;
+  const id = d.workspaces.find((w) => w.id === p.workspace)?.task ?? null;
   if (!id) return [];
   const t = d.tasks.find((x) => x.id === id);
   return t ? [t.id, t.handle, t.slug].filter(Boolean) : [id];
@@ -146,6 +150,16 @@ export function paneTaskKeys(d: Pick<Dashboard, 'panes' | 'runs' | 'workspaces' 
 
 /** The confirmed "Clean up": only the boxes the dry run showed (the host checks each again). */
 export const confirmedPruneParams = (candidates: readonly CloudBox[]): { ownership: ['orphaned', 'idle']; boxes: string[] } => ({ ownership: ['orphaned', 'idle'], boxes: candidates.map((b) => b.box) });
+
+/**
+ * Where an adopt lands: its first pane (`panes[0]`), in that pane's workspace, else the new
+ * task's, once `d` (a dashboard read after the adopt) has it.
+ */
+export function adoptDestination(r: { task: string; panes?: readonly string[] | null }, d: Pick<Dashboard, 'panes' | 'tasks'> | null | undefined): { pane: string | null; workspace: string | null } {
+  const pane = r.panes?.[0] ?? null;
+  const workspace = (pane ? d?.panes.find((p) => p.id === pane)?.workspace : null) ?? d?.tasks.find((x) => x.id === r.task || x.handle === r.task)?.workspace ?? null;
+  return { pane, workspace };
+}
 
 /** `cloud.box.adopt` needs a repository on this host for a box whose record has none. */
 export const adoptNeedsRepo = (e: unknown): boolean => {

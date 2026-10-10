@@ -67,9 +67,9 @@ cloud.box.resume :: {box: string} => CloudBoxView
 cloud.box.checkpoint :: {box: string, note?: string} => {box: string, checkpoint: string}
 # closes the box's panes first; unsynced work without force fails conflict, details {reason: unsynced_changes, unsynced}
 cloud.box.destroy :: {box: string, force?: bool = false} => {box: string, destroyed: true}
-# takes over an orphaned or foreign box: pulls its branch into repo (default: the recorded repo on this host), creates a task with a worktree on it, attaches the box and opens a pane per live terminal session
+# takes over an orphaned or foreign box: pulls its branch into repo (default: the recorded repo on this host), creates a task with its own worktree on it, attaches the box and opens a pane per live terminal session (panes, first one first); a failure after the task exists undoes the adopt (details.rollback); notes: limits to tell the user (sessions whose hooks cannot reach this host until restarted)
 cloud.box.adopt :: {box: string, repo?: string, title?: string, root?: string}
-  => {box: string, task: string, panes: [string], sessions: int, repo: string, branch: string, worktree: string}
+  => {box: string, task: string, panes: [string], sessions: int, repo: string, branch: string, worktree: string, notes: [string]}
 # drops the record of a box the provider no longer lists (ownership missing)
 cloud.box.forget :: {box: string} => {box: string}
 # boxes: only these boxes (for example the ones a dry run listed); one that is no longer eligible is reported in skipped
@@ -368,6 +368,8 @@ async fn box_power(server: &Arc<Server>, p: &Value, suspend: bool) -> R {
         rec.state = rb.state.as_str().to_string();
         rec.url = rb.url.or(rec.url);
     }
+    // A suspended box stays asleep: its bridge link waits for a resume or a new pane.
+    rec.held = suspend;
     if !suspend {
         rec.last_activity_at = vk_cloud::now_s();
     }
@@ -651,13 +653,14 @@ async fn box_adopt(server: &Arc<Server>, p: &Value) -> R {
             .await
             .map_err(crate::api::internal)??;
 
-    // The host task, with its worktree on that branch.
+    // The host task, with its own worktree on that branch (never the main checkout, whatever
+    // `[tasks] checkout` says).
     let title = s(p, "title")
         .filter(|t| !t.is_empty())
         .map(str::to_string)
         .unwrap_or_else(|| format!("Adopted {}", rec.name));
     let mut create = json!({"title": title, "repo": repo, "branch": host_branch,
-                            "setup": false, "fetch": false});
+                            "isolation": "worktree", "setup": false, "fetch": false});
     if let Some(root) = s(p, "root") {
         create["root"] = json!(root);
     }
@@ -667,11 +670,187 @@ async fn box_adopt(server: &Arc<Server>, p: &Value) -> R {
         .and_then(Value::as_str)
         .ok_or_else(|| crate::api::internal("task.create returned no task"))?
         .to_string();
+
+    // From here on a failure undoes the adoption (the task, the record, the box branch), so
+    // adopt can be tried again.
+    let before = rec.clone();
+    let mut done = AdoptDone::default();
+    let steps = AdoptSteps {
+        box_ref,
+        pid: &pid,
+        id: &id,
+        repo: &repo,
+        box_branch: &box_branch,
+        host_branch: &host_branch,
+        head: &head,
+    };
+    match adopt_attach(
+        server,
+        prov.as_ref(),
+        &cred,
+        &probe,
+        &mut rec,
+        &t,
+        &steps,
+        &mut done,
+    )
+    .await
+    {
+        Ok(v) => Ok(v),
+        Err(e) => {
+            let rb = adopt_roll_back(server, &probe, &before, &task_id, &steps, &done).await;
+            tracing::info!(box_ref, rollback = %rb, "cloud adopt rolled back: {}", e.message);
+            let mut d = e.data.details.clone();
+            if !d.is_object() {
+                d = json!({});
+            }
+            d["task"] = json!(task_id);
+            d["rollback"] = rb;
+            Err(e.details(d))
+        }
+    }
+}
+
+/// What an adopt is about (`cloud.box.adopt`, after its task exists).
+struct AdoptSteps<'a> {
+    box_ref: &'a str,
+    pid: &'a str,
+    id: &'a str,
+    repo: &'a std::path::Path,
+    box_branch: &'a str,
+    host_branch: &'a str,
+    head: &'a str,
+}
+
+/// What an adopt changed so far, for [`adopt_roll_back`].
+#[derive(Debug, Default)]
+struct AdoptDone {
+    /// The box branch may have been renamed to the host branch.
+    renamed: bool,
+    /// The record names the new task.
+    recorded: bool,
+    /// Panes the adopt opened.
+    panes: Vec<String>,
+}
+
+/// Whether the task `task.create` returned has its own worktree on `branch` (not the main
+/// checkout at `repo`): the box record names that branch, and a bring-back writes there.
+pub(crate) fn adopt_checkout_ok(task: &Value, repo: &std::path::Path, branch: &str) -> bool {
+    let canon = |p: &std::path::Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+    let wt = task["worktree_path"].as_str().unwrap_or_default();
+    task["checkout"].as_str() != Some("none")
+        && task["branch"].as_str() == Some(branch)
+        && !wt.is_empty()
+        && canon(std::path::Path::new(wt)) != canon(repo)
+}
+
+/// `<session id> <broker short id>` lines of [`session_broker_script`].
+pub(crate) fn parse_session_brokers(out: &str) -> std::collections::HashMap<String, String> {
+    out.lines()
+        .filter_map(|l| {
+            let (sid, short) = l.trim().split_once(' ')?;
+            let ok = |x: &str| {
+                !x.is_empty() && x.len() <= 32 && x.chars().all(|c| c.is_ascii_alphanumeric())
+            };
+            (ok(sid) && ok(short)).then(|| (sid.to_string(), short.to_string()))
+        })
+        .collect()
+}
+
+/// In-box script printing `<pid> <short>` for each session id that is a process id (E2B) and
+/// whose environment names a pane broker (`VIBEKE_SOCKET=…/<short>.sock`). Other providers'
+/// session ids are not processes: they print nothing.
+pub(crate) fn session_broker_script(sessions: &[String]) -> Option<String> {
+    let pids: Vec<&str> = sessions
+        .iter()
+        .map(String::as_str)
+        .filter(|s| !s.is_empty() && s.len() <= 10 && s.chars().all(|c| c.is_ascii_digit()))
+        .collect();
+    if pids.is_empty() {
+        return None;
+    }
+    Some(format!(
+        r#"for p in {}; do s=$(tr '\0' '\n' < /proc/$p/environ 2>/dev/null | sed -n 's|^VIBEKE_SOCKET=.*/\([A-Za-z0-9]*\)\.sock$|\1|p' | head -n 1); if [ -n "$s" ]; then echo "$p $s"; fi; done; exit 0"#,
+        pids.join(" ")
+    ))
+}
+
+/// Which old broker names each adopted session keeps calling: the name its environment shows
+/// (`probed`), else, for the only session of a box this host ran, the names of the panes that
+/// last ran there (`known`). Returns the names per session (in `sessions` order) and how many
+/// sessions have none.
+pub(crate) fn plan_aliases(
+    sessions: &[String],
+    probed: &std::collections::HashMap<String, String>,
+    known: &[String],
+) -> (Vec<Vec<String>>, usize) {
+    let mut unmapped = 0;
+    let plan = sessions
+        .iter()
+        .map(|sid| {
+            if let Some(short) = probed.get(sid) {
+                vec![short.clone()]
+            } else if sessions.len() == 1 && !known.is_empty() {
+                known.to_vec()
+            } else {
+                unmapped += 1;
+                vec![]
+            }
+        })
+        .collect();
+    (plan, unmapped)
+}
+
+/// The note an adopt result carries when some sessions keep an unknown broker name.
+pub(crate) fn unmapped_note(n: usize) -> String {
+    format!(
+        "{n} adopted session{} started on another host or by a pane this host does not know: hooks and `vibeke` calls inside {} cannot reach this host until {} restarted",
+        if n == 1 { "" } else { "s" },
+        if n == 1 { "it" } else { "them" },
+        if n == 1 { "it is" } else { "they are" },
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn adopt_attach(
+    server: &Arc<Server>,
+    prov: &dyn Provider,
+    cred: &Secret,
+    probe: &cl::CloudCtx,
+    rec: &mut BoxRecord,
+    t: &Value,
+    st: &AdoptSteps<'_>,
+    done: &mut AdoptDone,
+) -> R {
+    let box_ref = st.box_ref;
+    let task_id = t
+        .pointer("/task/id")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
     let worktree = t
         .pointer("/task/worktree_path")
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string();
+    if !adopt_checkout_ok(&t["task"], st.repo, st.host_branch) {
+        return Err(err(
+            ErrorKind::Conflict,
+            format!(
+                "the new task did not get its own worktree on {} (got branch {}, checkout {})",
+                st.host_branch,
+                t.pointer("/task/branch")
+                    .and_then(Value::as_str)
+                    .unwrap_or("none"),
+                if worktree.is_empty() {
+                    "none"
+                } else {
+                    worktree.as_str()
+                },
+            ),
+        )
+        .details(json!({"reason": "checkout_mismatch"})));
+    }
     let ws = t
         .pointer("/workspace/id")
         .and_then(Value::as_str)
@@ -690,21 +869,22 @@ async fn box_adopt(server: &Arc<Server>, p: &Value) -> R {
     let w = vk_sandbox::container::sh_quote(&probe.workdir);
     let q = vk_sandbox::container::sh_quote;
     let mut script = vec!["set -e".to_string(), format!("cd {w}")];
-    if host_branch != box_branch {
+    if st.host_branch != st.box_branch {
+        done.renamed = true;
         script.push(format!(
             "git branch -m {} {}",
-            q(&box_branch),
-            q(&host_branch)
+            q(st.box_branch),
+            q(st.host_branch)
         ));
     }
     script.push(format!(
         "git update-ref {} {}",
-        q(&vk_tasks::sync::host_ref(&host_branch)),
-        q(&head)
+        q(&vk_tasks::sync::host_ref(st.host_branch)),
+        q(st.head)
     ));
     let o = cl::exec_capture(
         server,
-        &probe,
+        probe,
         &["sh".into(), "-c".into(), script.join("\n")],
         vec![],
         std::time::Duration::from_secs(60),
@@ -713,45 +893,78 @@ async fn box_adopt(server: &Arc<Server>, p: &Value) -> R {
     if !o.ok() {
         return Err(err(
             ErrorKind::Conflict,
-            format!(
-                "could not take over the box branch: {}; task {task_id} was created on this host",
-                o.err_text()
-            ),
+            format!("could not take over the box branch: {}", o.err_text()),
         )
-        .details(json!({"reason": "box_branch", "task": task_id})));
+        .details(json!({"reason": "box_branch"})));
     }
 
     // Record the box for the new task: from now on it is ours by its record.
+    let known: Vec<String> = rec
+        .last_panes
+        .iter()
+        .chain(rec.panes.iter())
+        .map(|p| vk_sandbox::runner::short_id(p))
+        .fold(Vec::new(), |mut v, s| {
+            if !v.contains(&s) {
+                v.push(s);
+            }
+            v
+        });
     let our_tag = vk_cloud::naming::host_tag(&cl::host_id(server));
     rec.adopted = rec.tags.as_ref().is_some_and(|t| t.host != our_tag) || rec.adopted;
     rec.key = task_id.clone();
     rec.task = Some(task_id.clone());
-    rec.repo = Some(repo.to_string_lossy().into_owned());
+    rec.repo = Some(st.repo.to_string_lossy().into_owned());
     rec.worktree = Some(worktree.clone());
-    rec.branch = Some(host_branch.clone());
-    rec.base = Some(head.clone());
+    rec.branch = Some(st.host_branch.to_string());
+    rec.base = Some(st.head.to_string());
     rec.ownership = "attached".into();
     rec.unsynced = None;
-    cl::save_record(server, &rec);
-    let attach = cl::ensure_for_task(server, &task_id, Some(&pid)).await;
-    if let Err(e) = attach {
-        return Err(e.details(json!({"reason": "attach_failed", "task": task_id})));
-    }
+    rec.held = false;
+    done.recorded = true;
+    cl::save_record(server, rec);
+    cl::ensure_for_task(server, &task_id, Some(st.pid))
+        .await
+        .map_err(|e| {
+            let mut d = e.data.details.clone();
+            if !d.is_object() {
+                d = json!({});
+            }
+            d["reason"] = json!("attach_failed");
+            e.details(d)
+        })?;
 
     // One pane per live terminal session, attached to it; else one new pane.
     let sessions: Vec<String> = prov
-        .sessions(&cred, &id)
+        .sessions(cred, st.id)
         .await
         .map(|v| {
             v.into_iter()
-                .filter(cl::user_session)
+                .filter(|s| s.tty && cl::user_session(s))
                 .map(|s| s.id)
                 .collect()
         })
         .unwrap_or_default();
-    let title = Some(format!("☁ {pid}"));
-    let mut panes = Vec::new();
-    for sid in &sessions {
+    // The broker name each session's processes call (their `VIBEKE_SOCKET` names the pane that
+    // started them): served for the pane that takes the session over.
+    let probed = match session_broker_script(&sessions) {
+        Some(script) => cl::exec_capture(
+            server,
+            probe,
+            &["sh".into(), "-c".into(), script],
+            vec![],
+            std::time::Duration::from_secs(30),
+        )
+        .await
+        .map(|o| parse_session_brokers(&o.out()))
+        .unwrap_or_default(),
+        None => Default::default(),
+    };
+    let (plan, _) = plan_aliases(&sessions, &probed, &known);
+    let link = crate::sandbox::link(server, &task_id);
+    let title = Some(format!("☁ {}", st.pid));
+    let mut unmapped = 0;
+    for (sid, olds) in sessions.iter().zip(plan) {
         let pane_id = crate::core::ulid();
         if let Err(e) = cl::preset_session(&task_id, &pane_id, sid) {
             tracing::info!(box_ref, error = %e, "cloud adopt: session file");
@@ -765,24 +978,127 @@ async fn box_adopt(server: &Arc<Server>, p: &Value) -> R {
             None,
             Some(pane_id),
         ) {
-            Ok((_, pane)) => panes.push(pane.id),
+            Ok((_, pane)) => {
+                let served = olds
+                    .iter()
+                    .filter(|old| link.as_ref().is_some_and(|l| l.add_alias(old, &pane.id)))
+                    .count();
+                if served == 0 {
+                    unmapped += 1;
+                }
+                done.panes.push(pane.id);
+            }
             Err(e) => tracing::info!(box_ref, error = %e, "cloud adopt: pane"),
         }
     }
-    if panes.is_empty() {
+    if done.panes.is_empty() {
         let (_, pane) = server
             .create_tab(&ws, Some(&worktree), title, None, None)
             .map_err(crate::api::internal)?;
-        panes.push(pane.id);
+        done.panes.push(pane.id);
     }
     // The first pane of the new task started on the host before the box attached.
     for p in host_panes {
         server.close_pane(&p);
     }
+    let mut notes: Vec<String> = Vec::new();
+    if unmapped > 0 {
+        notes.push(unmapped_note(unmapped));
+    }
     Ok(json!({
-        "box": box_ref, "task": task_id, "panes": panes, "sessions": sessions.len(),
-        "repo": repo, "branch": host_branch, "worktree": worktree,
+        "box": box_ref, "task": task_id, "panes": done.panes, "sessions": sessions.len(),
+        "repo": st.repo, "branch": st.host_branch, "worktree": worktree, "notes": notes,
     }))
+}
+
+/// Undo a failed adopt: close the panes it opened, stop serving the task from the box, put the
+/// box record and branch back as they were, and remove the task (its worktree goes unless it
+/// holds uncommitted changes; the branch stays). Returns what was done, for the error.
+async fn adopt_roll_back(
+    server: &Arc<Server>,
+    probe: &cl::CloudCtx,
+    before: &BoxRecord,
+    task_id: &str,
+    st: &AdoptSteps<'_>,
+    done: &AdoptDone,
+) -> Value {
+    for p in &done.panes {
+        server.close_pane(p);
+    }
+    let attached = server
+        .sandbox
+        .get(task_id)
+        .as_deref()
+        .and_then(cl::ctx)
+        .is_some_and(|c| c.box_ref() == st.box_ref);
+    if attached {
+        cl::detach(server, task_id);
+    }
+    // The box branch back under its old name.
+    let mut branch_restored = !done.renamed;
+    if done.renamed {
+        let q = vk_sandbox::container::sh_quote;
+        let (h, b) = (
+            q(&format!("refs/heads/{}", st.host_branch)),
+            q(&format!("refs/heads/{}", st.box_branch)),
+        );
+        let script = format!(
+            "cd {} || exit 3\nif git rev-parse -q --verify {h} >/dev/null && ! git rev-parse -q --verify {b} >/dev/null; then git branch -m {} {}; fi\ngit rev-parse -q --verify {b} >/dev/null",
+            q(&probe.workdir),
+            q(st.host_branch),
+            q(st.box_branch),
+        );
+        branch_restored = cl::exec_capture(
+            server,
+            probe,
+            &["sh".into(), "-c".into(), script],
+            vec![],
+            std::time::Duration::from_secs(60),
+        )
+        .await
+        .is_ok_and(|o| o.ok());
+    }
+    if done.recorded {
+        let mut rec = before.clone();
+        if !branch_restored {
+            // The box branch has the host name now.
+            rec.branch = Some(st.host_branch.to_string());
+        }
+        cl::save_record(server, &rec);
+    }
+    // The task: archived (worktree removed, branch kept) when its worktree holds no changes,
+    // else forgotten (files untouched).
+    let worktree = server
+        .with_core(|c| c.task(task_id).and_then(|t| t.worktree_path.clone()))
+        .filter(|w| std::path::Path::new(w).exists());
+    let clean = worktree.as_deref().is_none_or(|w| {
+        vk_tasks::removal_blockers(std::path::Path::new(w)).is_ok_and(|b| b.dirty_files == 0)
+    });
+    let mut task_action = "failed";
+    if clean
+        && crate::orch::call(
+            server,
+            "task.archive",
+            json!({"task": task_id, "force": true}),
+        )
+        .await
+        .is_ok()
+    {
+        task_action = "archived";
+    } else if crate::orch::call(
+        server,
+        "task.forget",
+        json!({"task": task_id, "force": true}),
+    )
+    .await
+    .is_ok()
+    {
+        task_action = "forgotten";
+    }
+    json!({
+        "task": task_id, "task_action": task_action, "record_restored": done.recorded,
+        "branch_restored": branch_restored, "detached": attached,
+    })
 }
 
 fn box_forget(server: &Arc<Server>, p: &Value) -> R {
@@ -909,3 +1225,7 @@ async fn prune(server: &Arc<Server>, p: &Value) -> R {
     }
     Ok(json!({"candidates": views, "destroyed": destroyed, "skipped": skipped}))
 }
+
+#[cfg(test)]
+#[path = "cloud_api_tests.rs"]
+mod tests;

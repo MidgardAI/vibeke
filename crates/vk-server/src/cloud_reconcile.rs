@@ -179,6 +179,9 @@ pub async fn run(server: &Arc<Server>, only: Option<&str>) -> Vec<Value> {
             let now = vk_cloud::now_s();
             let live = !panes.is_empty() || sessions > 0;
             rec.sessions = sessions;
+            for p in panes.iter().rev() {
+                cl::push_last_pane(&mut rec.last_panes, p);
+            }
             rec.panes = panes;
             if live {
                 rec.last_activity_at = now;
@@ -223,6 +226,10 @@ pub async fn run(server: &Arc<Server>, only: Option<&str>) -> Vec<Value> {
 fn merge_remote(rec: &mut BoxRecord, rb: &vk_cloud::RemoteBox) {
     rec.name = rb.name.clone();
     rec.state = rb.state.as_str().to_string();
+    // Seen awake: whoever woke it, its link may run again.
+    if rb.state == BoxState::Running {
+        rec.held = false;
+    }
     if rb.url.is_some() {
         rec.url = rb.url.clone();
     }
@@ -263,6 +270,7 @@ async fn apply_idle(
             Ok(rb) => rb.state.as_str().to_string(),
             Err(_) => BoxState::Paused.as_str().to_string(),
         };
+        rec.held = true;
         cl::save_record(server, rec);
     }
 }

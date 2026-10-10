@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import type { AppEvent, CloudBox, CloudJob, Dashboard } from '@vibeke/core';
 import { CloudStores } from '../src/app/cloud-stores';
 import type { AppModel } from '../src/app/model';
-import { CloudAuthQueue, adoptNeedsRepo, cloudJobNeedsAuth, confirmedPruneParams, paneTaskKeys, sendBoxChoices, type CloudAuthRequest } from '../src/lib/cloud';
+import { CloudAuthQueue, adoptDestination, adoptNeedsRepo, cloudJobNeedsAuth, confirmedPruneParams, paneTaskKeys, sendBoxChoices, type CloudAuthRequest } from '../src/lib/cloud';
 
 const box = (id: string, p: Partial<CloudBox> = {}): CloudBox => ({ box: `sprites/${id}`, provider: 'sprites', id, name: `vk-${id}`, state: 'running', ownership: 'attached', task: 't1', panes: [], unsynced: null, caps: {}, ...p });
 
@@ -50,15 +50,18 @@ describe('send destinations', () => {
     expect(sendBoxChoices(boxes, 'sprites', [])).toEqual([]);
   });
 
-  test('finds the pane task from its run, else its workspace', () => {
+  test('finds the pane task as the host does: its workspace task only', () => {
     const d = {
       panes: [{ id: 'p1', handle: 'w1:p1', workspace: 'w1' }, { id: 'p2', handle: 'w2:p1', workspace: 'w2' }],
-      runs: [{ pane: 'p2', task: 't9' }],
+      runs: [{ pane: 'p1', task: 't9' }, { pane: 'p2', task: 't9' }],
       workspaces: [{ id: 'w1', task: 't1' }, { id: 'w2', task: null }],
       tasks: [{ id: 't1', handle: 'k1', slug: 'fix-it' }],
     } as unknown as Dashboard;
+    // A run's own task never wins over the workspace task the host moves.
     expect(paneTaskKeys(d, 'p1')).toEqual(['t1', 'k1', 'fix-it']);
-    expect(paneTaskKeys(d, 'w2:p1')).toEqual(['t9']);
+    // No workspace task: the host makes a new task (no box yet), so no existing box is offered.
+    expect(paneTaskKeys(d, 'w2:p1')).toEqual([]);
+    expect(sendBoxChoices([box('mine', { task: 't9' })], 'sprites', paneTaskKeys(d, 'w2:p1'))).toEqual([]);
     expect(paneTaskKeys(d, 'nope')).toEqual([]);
     expect(paneTaskKeys(null, 'p1')).toEqual([]);
   });
@@ -67,6 +70,16 @@ describe('send destinations', () => {
 describe('clean up and adopt', () => {
   test('the confirmed prune names the previewed boxes', () => {
     expect(confirmedPruneParams([box('a'), box('b')])).toEqual({ ownership: ['orphaned', 'idle'], boxes: ['sprites/a', 'sprites/b'] });
+  });
+
+  test('adopt opens the first returned pane in its workspace', () => {
+    const r = { box: 'sprites/a', task: 't7', panes: ['p8', 'p9'], sessions: 2, repo: '/r', branch: 'b', worktree: '/w' };
+    const d = { panes: [{ id: 'p8', workspace: 'w8' }], tasks: [{ id: 't7', handle: 'k7', workspace: 'w7' }] } as unknown as Dashboard;
+    expect(adoptDestination(r, d)).toEqual({ pane: 'p8', workspace: 'w8' });
+    // Before the dashboard has the pane: the task's workspace, else the pane alone.
+    expect(adoptDestination(r, { panes: [], tasks: d.tasks } as unknown as Dashboard)).toEqual({ pane: 'p8', workspace: 'w7' });
+    expect(adoptDestination(r, null)).toEqual({ pane: 'p8', workspace: null });
+    expect(adoptDestination({ task: 't7', panes: [] }, null)).toEqual({ pane: null, workspace: null });
   });
 
   test('adopt asks for a repository on invalid_params about the repo', () => {

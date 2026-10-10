@@ -935,6 +935,15 @@ pub fn wrap_spawn(
             l.add_pane(pane_id);
         }
     }
+    // A new pane in a cloud box: the box record remembers it (an adopt serves its broker name
+    // later), and the spawn wakes the box, so its link may run again. Recorded off this path,
+    // which must not lock `core`.
+    if let BoxRunner::Cloud(c) = &b.runner
+        && let Ok(h) = tokio::runtime::Handle::try_current()
+    {
+        let (srv, box_ref, pane) = (server.clone(), c.box_ref(), pane_id.to_string());
+        h.spawn(async move { cloud::note_pane_spawned(&srv, &box_ref, &pane) });
+    }
     let mut iso = b.isolation.clone();
     iso.scope = "pane".into();
     iso.visible_roots = prepared.visible_roots.clone();

@@ -287,3 +287,50 @@ fn bring_back_marks_only_what_moved() {
         "{m}"
     );
 }
+
+#[test]
+fn moves_are_one_at_a_time_per_task() {
+    let ws_of = |p: &str| match p {
+        "p1" | "p2" => Some("w1".to_string()),
+        "p3" => Some("w2".to_string()),
+        _ => None,
+    };
+    let mut a = sample("a", "uploading");
+    a.task = Some("T1".into());
+    // The same pane: a pane conflict.
+    let jobs = vec![a.clone()];
+    let (j, same) = busy_move(&jobs, "p1", "w1", Some("T1"), ws_of).unwrap();
+    assert_eq!((j.id.as_str(), same), ("a", true));
+    // Another pane of the same task, by its recorded task or (not known yet) its workspace.
+    let (j, same) = busy_move(&jobs, "p2", "w1", Some("T1"), ws_of).unwrap();
+    assert_eq!((j.id.as_str(), same), ("a", false));
+    let mut b = sample("b", "queued");
+    b.task = None;
+    let jobs = vec![b];
+    let (j, same) = busy_move(&jobs, "p2", "w1", None, ws_of).unwrap();
+    assert_eq!((j.id.as_str(), same), ("b", false));
+    // Another task's pane, or a finished move, does not wait.
+    assert!(busy_move(&jobs, "p3", "w2", Some("T2"), ws_of).is_none());
+    let mut done = a;
+    done.state = "failed".into();
+    assert!(busy_move(&[done], "p2", "w1", Some("T1"), ws_of).is_none());
+    let e = busy_err(&sample("c", "creating"), false);
+    assert_eq!(e.data.kind, "conflict");
+    assert!(e.message.contains("this task"), "{}", e.message);
+    assert_eq!(e.data.details["reason"], "move_under_way");
+}
+
+#[test]
+fn a_rolled_back_send_names_only_what_it_made() {
+    let undo = SendUndo {
+        task: Some("T1".into()),
+        panes: vec!["p9".into()],
+        new_box: true,
+        ..Default::default()
+    };
+    // No context installed yet: no box to destroy, only its pane.
+    let v = created_json(&undo);
+    assert_eq!(v["box"], Value::Null);
+    assert_eq!(v["new_box"], false);
+    assert_eq!(v["panes"], json!(["p9"]));
+}

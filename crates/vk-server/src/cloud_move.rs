@@ -599,16 +599,52 @@ pub(crate) fn check_move(
     let jobs = server
         .with_core(|c| c.store.load::<Job>(K_JOB))
         .map_err(internal)?;
-    if let Some(busy) = jobs
-        .iter()
-        .find(|j| j.pane.as_deref() == Some(src.pane.id.as_str()) && !terminal(&j.state))
-    {
-        return Err(conflict(
-            "a move of this pane is already under way; cancel it first",
-            busy,
-        ));
+    let busy = server.with_core(|c| {
+        busy_move(
+            &jobs,
+            &src.pane.id,
+            &src.pane.workspace,
+            src.task.as_deref(),
+            |p| c.pane(p).map(|x| x.workspace.clone()),
+        )
+        .map(|(j, same)| (j.clone(), same))
+    });
+    if let Some((j, same)) = busy {
+        return Err(busy_err(&j, same));
     }
     Ok((src, dest, after))
+}
+
+/// The unfinished move that keeps a new move of `pane` (in workspace `ws`, of `task`) from
+/// starting, and whether it moves the same pane. Moves are one at a time per task: the panes
+/// of a task share its box, and a failed send undoes what it did to the task. A job's task is
+/// its recorded `task`, or (not known yet) its pane's workspace (`ws_of`), which is the task's.
+pub(crate) fn busy_move<'a>(
+    jobs: &'a [Job],
+    pane: &str,
+    ws: &str,
+    task: Option<&str>,
+    ws_of: impl Fn(&str) -> Option<String>,
+) -> Option<(&'a Job, bool)> {
+    let live = || jobs.iter().filter(|j| !terminal(&j.state));
+    if let Some(j) = live().find(|j| j.pane.as_deref() == Some(pane)) {
+        return Some((j, true));
+    }
+    live()
+        .find(|j| {
+            (task.is_some() && j.task.as_deref() == task)
+                || j.pane.as_deref().and_then(&ws_of).as_deref() == Some(ws)
+        })
+        .map(|j| (j, false))
+}
+
+fn busy_err(j: &Job, same_pane: bool) -> RpcError {
+    let msg = if same_pane {
+        "a move of this pane is already under way; cancel it first"
+    } else {
+        "a move of this task is already under way; wait for it or cancel it first"
+    };
+    conflict(msg, j).details(json!({"job": j.id, "state": j.state, "reason": "move_under_way"}))
 }
 
 /// `cloud.move`: record the job and start it. `by` names a pane whose request the user
@@ -648,14 +684,15 @@ pub(crate) fn start_move(server: &Arc<Server>, ctx: &Ctx, p: &Value, by: Option<
     {
         let mut c = server.core.lock().unwrap();
         let jobs = c.store.load::<Job>(K_JOB).map_err(internal)?;
-        if let Some(busy) = jobs
-            .iter()
-            .find(|j| j.pane == job.pane && !terminal(&j.state))
-        {
-            return Err(conflict(
-                "a move of this pane is already under way; cancel it first",
-                busy,
-            ));
+        // Checked again under the lock that records the job: one move per task at a time.
+        if let Some((busy, same)) = busy_move(
+            &jobs,
+            &src.pane.id,
+            &src.pane.workspace,
+            src.task.as_deref(),
+            |p| c.pane(p).map(|x| x.workspace.clone()),
+        ) {
+            return Err(busy_err(busy, same));
         }
         let mut tx = Tx::new();
         // Forget old finished jobs (and the oldest beyond the cap) while we are here.
@@ -888,12 +925,18 @@ async fn task_for(server: &Arc<Server>, pane: &str) -> Result<String, RpcError> 
 }
 
 /// What a send changed before its commit point, so a failure can undo it ([`roll_back_send`]).
+/// Only what this send made is undone: the context it installed (by its box), the panes it
+/// opened and the box it created. The job records them as they happen (`result.created`).
 #[derive(Debug, Default)]
 struct SendUndo {
     /// The task whose context this send created.
     task: Option<String>,
     /// The task's isolation before the send.
     prior: Option<Isolation>,
+    /// The context this send installed (its box).
+    ctx: Option<crate::sandbox::cloud::CloudCtx>,
+    /// Panes this send opened that are still open.
+    panes: Vec<String>,
     /// The task had no box on record before: the send created it.
     new_box: bool,
     /// The box's import ran (it may hold the work now): the box is kept.
@@ -913,6 +956,9 @@ async fn send(
 ) -> R {
     let mut undo = SendUndo::default();
     let out = send_steps(server, job, pane, provider, want_box, &mut undo).await;
+    if out.is_err() {
+        note_created(server, &job.id, &undo);
+    }
     if out.is_err() && !undo.committed && undo.task.is_some() {
         let rb = roll_back_send(server, &undo).await;
         tracing::info!(job = %job.id, rollback = %rb, "cloud send rolled back");
@@ -929,16 +975,25 @@ async fn roll_back_send(server: &Arc<Server>, undo: &SendUndo) -> Value {
     let Some(task) = undo.task.as_deref() else {
         return json!({});
     };
-    let ctx = server
+    // Only the panes this send opened.
+    for p in &undo.panes {
+        server.close_pane(p);
+    }
+    let ctx = undo.ctx.clone();
+    // The task's context goes only while it is still the one this send installed.
+    let current = server
         .sandbox
         .get(task)
         .as_deref()
         .and_then(crate::sandbox::cloud::ctx)
-        .cloned();
-    // Box panes of the task (a destination pane that did not close yet) go with the context.
-    let panes = server.with_core(|c| crate::sandbox::cloud::cloud_panes(c, Some(task)).1);
-    for p in panes {
-        server.close_pane(&p);
+        .map(|c| c.box_ref());
+    let ours = match (&current, &ctx) {
+        (Some(cur), Some(c)) => *cur == c.box_ref(),
+        _ => false,
+    };
+    if !ours {
+        let b = ctx.as_ref().map(|c| c.box_ref());
+        return json!({"box": b, "box_action": "kept", "context": "not_ours"});
     }
     crate::sandbox::cloud::detach(server, task);
     if let Some(prior) = undo.prior.clone() {
@@ -961,6 +1016,7 @@ async fn roll_back_send(server: &Arc<Server>, undo: &SendUndo) -> Value {
         return json!({"box_action": "none"});
     };
     let box_ref = c.box_ref();
+    // Destroy only the box this send created (its context names it).
     if undo.new_box && !undo.imported {
         match crate::sandbox::cloud::destroy_box(server, &c).await {
             Ok(()) => json!({"box": box_ref, "box_action": "destroyed"}),
@@ -971,6 +1027,23 @@ async fn roll_back_send(server: &Arc<Server>, undo: &SendUndo) -> Value {
     } else {
         json!({"box": box_ref, "box_action": "kept"})
     }
+}
+
+/// Record in the job what this send made so far (`result.created`): the box of the context it
+/// installed, whether it created that box, and the panes it opened.
+fn note_created(server: &Server, id: &str, undo: &SendUndo) {
+    if undo.task.is_none() && undo.panes.is_empty() {
+        return;
+    }
+    note(server, id, json!({"created": created_json(undo)}));
+}
+
+fn created_json(undo: &SendUndo) -> Value {
+    json!({
+        "box": undo.ctx.as_ref().map(|c| c.box_ref()),
+        "new_box": undo.new_box && undo.ctx.is_some(),
+        "panes": undo.panes,
+    })
 }
 
 /// How long a resumed agent in the box gets to come up after `start_in_pane_opts` returned.
@@ -1030,11 +1103,13 @@ async fn send_steps(
         undo.new_box = crate::sandbox::cloud::record_for_key(server, &task).is_none();
     }
     let tb = crate::sandbox::cloud::ensure_for_task(server, &task, provider).await?;
-    if undo.prior.is_some() {
-        undo.task = Some(task.clone());
-    }
     let c = crate::sandbox::cloud::ctx(&tb)
         .ok_or_else(|| internal("the task's box is not a cloud box"))?;
+    if undo.prior.is_some() {
+        undo.task = Some(task.clone());
+        undo.ctx = Some(c.clone());
+        note_created(server, id, undo);
+    }
     // LANE-B NEEDED: `CloudCtx { provider, box_id, workdir, bin, .. }` as plain `String`s.
     let box_ref = format!("{}/{}", c.provider, c.box_id);
     if let Some(w) = want_box
@@ -1163,6 +1238,8 @@ async fn send_steps(
             "cloud.move",
         )
         .map_err(internal)?;
+    undo.panes.push(new_pane.id.clone());
+    note_created(server, id, undo);
     let started = async {
         let line = format!("cd {}\r", sh_quote(&box_cwd));
         crate::render::write_and_ack(
@@ -1195,6 +1272,7 @@ async fn send_steps(
         Ok(r) => r,
         Err(e) => {
             server.close_pane(&new_pane.id);
+            undo.panes.retain(|p| *p != new_pane.id);
             return Err(e);
         }
     };

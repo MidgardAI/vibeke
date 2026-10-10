@@ -83,6 +83,10 @@ Use the row actions to open, bring back, suspend, resume, checkpoint, adopt or d
 
 An *orphaned* sandbox is one of yours whose task no longer exists. **Adopt** works on orphaned sandboxes and on sandboxes of another host. Vibeke makes a new task on your host. The task uses the branch of the sandbox, and Vibeke pulls that branch from the sandbox. Vibeke opens a pane for each session that still runs in the sandbox, and the app shows that pane. Sometimes the sandbox does not say which repository it holds. Then Vibeke asks for the path of that repository on your host. From the command line, run `vibeke cloud adopt <sandbox>`.
 
+The new task always gets its own worktree. If the adopt fails, Vibeke removes the new task and puts the sandbox back as it was. You can then try again.
+
+A session keeps the Vibeke address of the pane that started it. Vibeke tries to connect that old address to the new pane. Sometimes Vibeke cannot do this, for example for a session that started on another host. Then the hooks and `vibeke` commands in that session do not reach your host. They work again after you restart the session. Vibeke shows a note when this happens.
+
 A *missing* sandbox is one that the provider no longer lists. **Forget** removes its record.
 
 When you destroy a sandbox that has work that is not on your host, Vibeke stops and asks. You can choose **Bring back first**, or **Destroy anyway**.
@@ -93,7 +97,8 @@ When you destroy a sandbox that has work that is not on your host, Vibeke stops 
 
 The provider bills you for sandboxes, not Vibeke. A running sandbox costs money. Check the prices of your provider.
 
-- Vibeke suspends a sandbox that has had no session for 30 minutes. You can change this with `idle_suspend_after` in the `[cloud]` section.
+- Vibeke suspends a sandbox that has had no session for 30 minutes. You can change this with `idle_suspend_after` in the `[cloud]` section. A command that you run with `vibeke cloud exec` is a session, also when it has no terminal. The background work of Vibeke itself is not a session.
+- A suspended sandbox stays asleep while its panes wait. It wakes when you resume it or open a new pane in it.
 - Vibeke destroys an idle sandbox automatically only when you set `idle_destroy_after`. It never does this when the sandbox has work that is not on your host.
 - A provider may limit how long a sandbox can run, or how many you can have. The app shows the provider's message when a limit stops an action.
 

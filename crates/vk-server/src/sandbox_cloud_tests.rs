@@ -376,7 +376,7 @@ fn records_round_trip_without_secrets() {
 }
 
 #[test]
-fn only_terminal_sessions_keep_a_box_active() {
+fn only_management_sessions_leave_a_box_idle() {
     let s = |command: &str, tty: bool, active: bool| vk_cloud::SessionInfo {
         id: "1".into(),
         command: command.into(),
@@ -386,16 +386,136 @@ fn only_terminal_sessions_keep_a_box_active() {
     };
     assert!(user_session(&s("bash -l", true, true)));
     assert!(!user_session(&s("bash -l", true, false)));
-    // The bridge link, git services and scripts run without a terminal.
-    assert!(!user_session(&s(
+    // A batch command without a terminal (`vibeke cloud exec box -- make test`) is use.
+    assert!(user_session(&s("make test", false, true)));
+    assert!(user_session(&s("python3 train.py --epochs 3", false, true)));
+    // Vibeke's own sessions are not: the bridge, the bundle commands, git services, scripts.
+    for cmd in [
         "/vibeke/bin/vibeke sandbox bridge --brokers /tmp/vibeke-brokers",
-        false,
-        true
-    )));
-    assert!(!user_session(&s("git upload-pack /workspace", false, true)));
-    assert!(!user_session(&s(
         "/vibeke/bin/vibeke sandbox bridge",
-        true,
-        true
-    )));
+        "/tmp/fake-root/vibeke/bin/vibeke sandbox import-bundle --bundle /vibeke/in/x.tar.zst",
+        "git upload-pack /workspace",
+        "git receive-pack '/workspace'",
+        "/usr/bin/git git-upload-pack /workspace",
+    ] {
+        assert!(!user_session(&s(cmd, false, true)), "{cmd}");
+        assert!(!user_session(&s(cmd, true, true)), "{cmd}");
+    }
+    // The server's scripts carry the marker in their command.
+    let argv = mgmt_argv(&["sh".into(), "-c".into(), "git status".into()]);
+    assert_eq!(argv[0], "/bin/sh");
+    assert!(!user_session(&s(&argv.join(" "), false, true)));
+    assert_eq!(&argv[4..], &["sh", "-c", "git status"]);
+    // Marked once.
+    assert_eq!(mgmt_argv(&argv), argv);
+    // A user's git or vibeke commands are use.
+    assert!(user_session(&s("git log", false, true)));
+    assert!(user_session(&s("vibeke sandbox bridge", false, true)));
+}
+
+#[test]
+fn marked_commands_keep_their_exit_code_and_input() {
+    let argv = mgmt_argv(&[
+        "sh".into(),
+        "-c".into(),
+        "read x; echo \"got $x\"; exit 7".into(),
+    ]);
+    let mut child = std::process::Command::new(&argv[0])
+        .args(&argv[1..])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    use std::io::Write;
+    child.stdin.take().unwrap().write_all(b"hi\n").unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert_eq!(out.status.code(), Some(7));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "got hi\n");
+}
+
+#[test]
+fn notes_commits_count_as_unsynced() {
+    let r = parse_report("head=abc\nahead=0\nother=0\nnotes=2\ndirty=0\nuntracked=0\nstashes=0\n");
+    assert_eq!(r.notes, 2);
+    let u = combine(&r, Some(Some(0)));
+    assert!(!u.is_clean());
+    assert_eq!(u.commits, 2);
+    assert_eq!(u.summary, "2 notes commits not on the host");
+    // The script, run in a real repository: notes no host ref reaches are counted.
+    let dir = tempfile::tempdir().unwrap();
+    let w = dir.path();
+    let git = |args: &[&str]| {
+        let o = std::process::Command::new("git")
+            .arg("-C")
+            .arg(w)
+            .args([
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@example.com",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            o.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+    };
+    git(&["init", "-q"]);
+    git(&["commit", "-q", "--allow-empty", "-m", "one"]);
+    let run = || {
+        let script = unsynced_script(&w.to_string_lossy(), None, None);
+        let o = std::process::Command::new("sh")
+            .args(["-c", &script])
+            .output()
+            .unwrap();
+        parse_report(&String::from_utf8_lossy(&o.stdout))
+    };
+    assert_eq!(run().notes, 0);
+    git(&["notes", "add", "-m", "a note", "HEAD"]);
+    git(&["notes", "add", "-f", "-m", "another", "HEAD"]);
+    assert_eq!(run().notes, 2);
+    // Once a host ref reaches them, they are on the host.
+    git(&["update-ref", "refs/vibeke/host/notes", "refs/notes/commits"]);
+    assert_eq!(run().notes, 0);
+}
+
+#[test]
+fn records_remember_recent_panes() {
+    let mut last = vec![];
+    for p in ["a", "b", "a"] {
+        push_last_pane(&mut last, p);
+    }
+    assert_eq!(last, vec!["a".to_string(), "b".to_string()]);
+    for i in 0..40 {
+        push_last_pane(&mut last, &format!("p{i}"));
+    }
+    assert_eq!(last.len(), LAST_PANES);
+    assert_eq!(last[0], "p39");
+    // Older records load without the new fields.
+    let r: BoxRecord = serde_json::from_str(r#"{"provider":"e2b","id":"x"}"#).unwrap();
+    assert!(!r.held && r.last_panes.is_empty());
+}
+
+#[test]
+fn box_link_serves_old_broker_names_for_the_new_pane() {
+    let link = Arc::new(crate::sandbox::container::BoxLink::default());
+    let pane = "01HZZZZZZZZZZZZZZZZZZZZZZZ";
+    let short = vk_sandbox::runner::short_id(pane);
+    link.add_pane(pane);
+    assert!(link.add_alias("oldpane1", pane));
+    assert_eq!(link.resolve("oldpane1"), short);
+    assert_eq!(link.resolve("other"), "other");
+    // Never a live pane's own name, and only plain ids.
+    let other = "01HYYYYYYYYYYYYYYYYYYYYYYY";
+    link.add_pane(other);
+    assert!(!link.add_alias(&vk_sandbox::runner::short_id(other), pane));
+    assert!(!link.add_alias("../x", pane));
+    // The alias goes with the pane that answers for it.
+    link.remove_pane(pane);
+    assert_eq!(link.resolve("oldpane1"), "oldpane1");
 }
