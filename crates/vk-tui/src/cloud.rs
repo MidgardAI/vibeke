@@ -1320,7 +1320,7 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
                     .as_array()
                     .map(|a| a.iter().filter_map(Job::from_value).collect())
                     .unwrap_or_default();
-                jobs.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+                jobs.sort_by_key(|j| std::cmp::Reverse(j.updated_at));
                 jobs.truncate(50);
                 app.ux.cloud.jobs.insert(mi, jobs);
             }

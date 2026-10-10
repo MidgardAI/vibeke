@@ -607,13 +607,16 @@ impl Runner for CloudRunner {
     }
 }
 
+/// Environment entries as `(name, value)` pairs.
+pub type EnvPairs = Vec<(String, String)>;
+
 /// Projected credential env (13 §8): paths under the projection dir become box paths under
 /// `/vibeke/creds`; every other value is a secret passed by name.
 pub fn split_projection_env(
     env: &[(String, String)],
     shared: &Path,
     creds: &str,
-) -> (Vec<(String, String)>, Vec<(String, String)>) {
+) -> (EnvPairs, EnvPairs) {
     let prefix = shared.to_string_lossy().into_owned();
     let mut exec_env = Vec::new();
     let mut secrets = Vec::new();

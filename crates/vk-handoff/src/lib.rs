@@ -356,21 +356,17 @@ pub fn read_manifest(bundle: &Path) -> std::io::Result<Manifest> {
     let mut dec = zstd::Decoder::new(std::fs::File::open(bundle)?)?;
     dec.window_log_max(27)?;
     let mut ar = tar::Archive::new(dec);
-    for entry in ar.entries()?.take(1) {
-        let e = entry?;
-        if e.header().entry_type() != tar::EntryType::Regular
-            || e.path()?.to_string_lossy() != "manifest.json"
-            || e.size() > 1024 * 1024
-        {
-            break;
-        }
-        let mut data = Vec::new();
-        e.take(1024 * 1024 + 1).read_to_end(&mut data)?;
-        return Ok(serde_json::from_slice(&data)?);
+    let missing = || std::io::Error::other("the bundle does not start with a manifest");
+    let e = ar.entries()?.next().ok_or_else(missing)??;
+    if e.header().entry_type() != tar::EntryType::Regular
+        || e.path()?.to_string_lossy() != "manifest.json"
+        || e.size() > 1024 * 1024
+    {
+        return Err(missing());
     }
-    Err(std::io::Error::other(
-        "the bundle does not start with a manifest",
-    ))
+    let mut data = Vec::new();
+    e.take(1024 * 1024 + 1).read_to_end(&mut data)?;
+    Ok(serde_json::from_slice(&data)?)
 }
 
 /// `(size, sha256 hex)` of a file.
