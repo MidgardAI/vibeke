@@ -686,9 +686,66 @@ const ADD_MAX_DIM: u32 = 16384;
 const CAPTION_MAX_CHARS: usize = 500;
 const NAME_MAX_CHARS: usize = 200;
 
-/// Validate an attached image and return PNG bytes with the pixel size. PNG is kept as-is;
-/// JPEG is decoded and re-encoded as PNG. Anything else is refused.
-fn normalize_image(bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), RpcError> {
+/// Allocation cap for one image decode: the JPEG transcode in `screenshot.add` and the
+/// thumbnails of `screenshot.get`. A larger image is refused before its pixels are allocated.
+pub(crate) const DECODE_MAX_ALLOC: u64 = 256 << 20;
+/// Image decodes that may run at once in this process, so their memory stays bounded in
+/// total (each one up to [`DECODE_MAX_ALLOC`] plus its output).
+const DECODE_PERMITS: usize = 2;
+static DECODE_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(DECODE_PERMITS);
+
+/// Run the decode job `f` on the blocking pool once a decode slot is free. The slot is held
+/// until the job ends, even when the caller stops waiting.
+async fn decode_job<T: Send + 'static>(
+    f: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, tokio::task::JoinError> {
+    // The semaphore is never closed.
+    let permit = DECODE_SLOTS.acquire().await.ok();
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        f()
+    })
+    .await
+}
+
+/// Decoder limits: sides up to [`ADD_MAX_DIM`], at most `max_alloc` bytes allocated.
+pub(crate) fn decode_limits(max_alloc: u64) -> image::Limits {
+    #[allow(clippy::field_reassign_with_default)]
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(ADD_MAX_DIM);
+    limits.max_image_height = Some(ADD_MAX_DIM);
+    limits.max_alloc = Some(max_alloc);
+    limits
+}
+
+/// Why [`decode_bounded`] failed.
+#[derive(Debug)]
+pub(crate) enum DecodeFailure {
+    /// The decode would exceed the limits.
+    TooLarge,
+    Invalid(String),
+}
+
+/// Decode `bytes` as `format` within [`decode_limits`]`(max_alloc)`.
+pub(crate) fn decode_bounded(
+    bytes: &[u8],
+    format: image::ImageFormat,
+    max_alloc: u64,
+) -> Result<image::DynamicImage, DecodeFailure> {
+    let mut reader = image::ImageReader::with_format(std::io::Cursor::new(bytes), format);
+    reader.limits(decode_limits(max_alloc));
+    reader.decode().map_err(|e| match e {
+        image::ImageError::Limits(_) => DecodeFailure::TooLarge,
+        e => DecodeFailure::Invalid(e.to_string()),
+    })
+}
+
+const TOO_LARGE_TO_PROCESS: &str = "image is too large to process";
+
+/// Validate an attached image and return PNG bytes with the pixel size. PNG is kept as-is
+/// (only its header is read); JPEG is decoded within `max_alloc` bytes and re-encoded as PNG.
+/// Anything else is refused. Callers run JPEG through [`decode_job`].
+fn normalize_image(bytes: Vec<u8>, max_alloc: u64) -> Result<(Vec<u8>, u32, u32), RpcError> {
     use image::{ImageFormat, ImageReader};
     use std::io::Cursor;
     let unsupported = || invalid("only PNG and JPEG images are supported");
@@ -698,7 +755,7 @@ fn normalize_image(bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), RpcError> {
             ADD_MAX_BYTES >> 20
         )));
     }
-    let format = image::guess_format(bytes).map_err(|_| unsupported())?;
+    let format = image::guess_format(&bytes).map_err(|_| unsupported())?;
     let too_big = |w: u32, h: u32| {
         invalid(format!(
             "image is {w}x{h}; the largest side allowed is {ADD_MAX_DIM}"
@@ -706,28 +763,28 @@ fn normalize_image(bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), RpcError> {
     };
     match format {
         ImageFormat::Png => {
-            let (w, h) = ImageReader::with_format(Cursor::new(bytes), ImageFormat::Png)
+            let (w, h) = ImageReader::with_format(Cursor::new(&bytes), ImageFormat::Png)
                 .into_dimensions()
                 .map_err(|e| invalid(format!("not a valid PNG image: {e}")))?;
             if w == 0 || h == 0 || w > ADD_MAX_DIM || h > ADD_MAX_DIM {
                 return Err(too_big(w, h));
             }
-            Ok((bytes.to_vec(), w, h))
+            Ok((bytes, w, h))
         }
         ImageFormat::Jpeg => {
-            let mut reader = ImageReader::with_format(Cursor::new(bytes), ImageFormat::Jpeg);
-            #[allow(clippy::field_reassign_with_default)]
-            let mut limits = image::Limits::default();
-            limits.max_image_width = Some(ADD_MAX_DIM);
-            limits.max_image_height = Some(ADD_MAX_DIM);
-            reader.limits(limits);
-            let img = reader
-                .decode()
+            // The header first, so an oversized side gets its own message.
+            let (w, h) = ImageReader::with_format(Cursor::new(&bytes), ImageFormat::Jpeg)
+                .into_dimensions()
                 .map_err(|e| invalid(format!("not a valid JPEG image: {e}")))?;
-            let (w, h) = (img.width(), img.height());
             if w == 0 || h == 0 || w > ADD_MAX_DIM || h > ADD_MAX_DIM {
                 return Err(too_big(w, h));
             }
+            let img =
+                decode_bounded(&bytes, ImageFormat::Jpeg, max_alloc).map_err(|e| match e {
+                    DecodeFailure::TooLarge => invalid(TOO_LARGE_TO_PROCESS),
+                    DecodeFailure::Invalid(e) => invalid(format!("not a valid JPEG image: {e}")),
+                })?;
+            let (w, h) = (img.width(), img.height());
             let mut out = Vec::new();
             img.write_to(&mut Cursor::new(&mut out), ImageFormat::Png)
                 .map_err(crate::api::internal)?;
@@ -792,9 +849,14 @@ async fn add(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     let source_name = s(p, "name")
         .and_then(|n| n.rsplit(['/', '\\']).next())
         .and_then(|n| clean_text(n, NAME_MAX_CHARS));
-    let (png, width, height) = tokio::task::spawn_blocking(move || normalize_image(&raw))
-        .await
-        .map_err(crate::api::internal)??;
+    // PNG is kept as-is after a header check; only JPEG is decoded, in a decode slot.
+    let (png, width, height) = if image::guess_format(&raw).ok() == Some(image::ImageFormat::Jpeg) {
+        decode_job(move || normalize_image(raw, DECODE_MAX_ALLOC))
+            .await
+            .map_err(crate::api::internal)??
+    } else {
+        normalize_image(raw, DECODE_MAX_ALLOC)?
+    };
     let blob = blake3::hash(&png).to_hex().to_string();
     let agent = ctx.pane_scope.is_some();
     let taken_by = Requester {
@@ -1166,9 +1228,9 @@ async fn get(server: &Server, ctx: &Ctx, p: &Value, inline: bool) -> R {
 /// says why, like [`inline_into`].
 async fn thumb_into(v: &mut Value, path: PathBuf, edge: u32) {
     use base64::Engine as _;
-    let made = tokio::task::spawn_blocking(move || {
+    let made = decode_job(move || {
         let png = crate::privacy::read_blob(&path).map_err(|e| format!("blob unreadable: {e}"))?;
-        thumbnail_png(&png, edge)
+        thumbnail_png(&png, edge, DECODE_MAX_ALLOC)
     })
     .await
     .unwrap_or_else(|e| Err(format!("thumbnail failed: {e}")));
@@ -1185,24 +1247,24 @@ async fn thumb_into(v: &mut Value, path: PathBuf, edge: u32) {
 
 /// Scale a PNG down so its longest side is at most `edge` pixels, keeping the aspect ratio.
 /// One that already fits is returned unchanged (never scaled up). Decoding is bounded by
-/// `image::Limits` (sides up to [`ADD_MAX_DIM`], the crate's default allocation cap).
-pub(crate) fn thumbnail_png(png: &[u8], edge: u32) -> Result<(Vec<u8>, u32, u32), String> {
+/// [`decode_limits`]`(max_alloc)`; callers run it through [`decode_job`].
+pub(crate) fn thumbnail_png(
+    png: &[u8],
+    edge: u32,
+    max_alloc: u64,
+) -> Result<(Vec<u8>, u32, u32), String> {
     use image::{ImageFormat, ImageReader, imageops::FilterType};
     use std::io::Cursor;
-    let reader = || ImageReader::with_format(Cursor::new(png), ImageFormat::Png);
-    let (w, h) = reader()
+    let (w, h) = ImageReader::with_format(Cursor::new(png), ImageFormat::Png)
         .into_dimensions()
         .map_err(|e| format!("not a valid PNG image: {e}"))?;
     if w.max(h) <= edge {
         return Ok((png.to_vec(), w, h));
     }
-    let mut r = reader();
-    #[allow(clippy::field_reassign_with_default)]
-    let mut limits = image::Limits::default();
-    limits.max_image_width = Some(ADD_MAX_DIM);
-    limits.max_image_height = Some(ADD_MAX_DIM);
-    r.limits(limits);
-    let img = r.decode().map_err(|e| format!("thumbnail failed: {e}"))?;
+    let img = decode_bounded(png, ImageFormat::Png, max_alloc).map_err(|e| match e {
+        DecodeFailure::TooLarge => TOO_LARGE_TO_PROCESS.to_string(),
+        DecodeFailure::Invalid(e) => format!("thumbnail failed: {e}"),
+    })?;
     // `resize` keeps the aspect ratio and fits the image inside edge x edge.
     let small = img.resize(edge, edge, FilterType::Triangle);
     let (tw, th) = (small.width(), small.height());

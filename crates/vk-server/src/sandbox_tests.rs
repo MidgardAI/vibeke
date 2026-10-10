@@ -831,6 +831,34 @@ async fn broker_attaches_images_to_its_own_pane_only() {
     );
     let r = call(6, "agent.report", json!({"pane": mine, "state": "idle"})).await;
     assert!(r.get("error").is_none(), "{r}");
+    // `call` is done with the stream here. The size check reads only the method and id: an
+    // oversized line is refused even when its params come first and nest deeper than a full
+    // parse allows (128 levels), and the method is last.
+    let nested = format!("{}{}", "[".repeat(200), "]".repeat(200));
+    let l = format!(
+        r#"{{"jsonrpc":"2.0","params":{{"note":"{big}","deep":{nested}}},"id":"big-7","method":"agent.report"}}"#
+    );
+    wr.write_all(format!("{l}\n").as_bytes()).await.unwrap();
+    let mut line = String::new();
+    rd.read_line(&mut line).await.unwrap();
+    let r: Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(r["id"], "big-7", "{r}");
+    assert_eq!(r["error"]["data"]["kind"], "invalid_params", "{r}");
+    assert!(
+        r["error"]["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("request longer than"),
+        "{r}"
+    );
+    // The connection still serves requests.
+    let l = json!({"jsonrpc": "2.0", "id": 8, "method": "agent.report", "params": {"pane": mine, "state": "idle"}});
+    wr.write_all(format!("{l}\n").as_bytes()).await.unwrap();
+    let mut line = String::new();
+    rd.read_line(&mut line).await.unwrap();
+    let r: Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(r["id"], 8, "{r}");
+    assert!(r.get("error").is_none(), "{r}");
 }
 
 #[path = "sandbox_container_tests.rs"]

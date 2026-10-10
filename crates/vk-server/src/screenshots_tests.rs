@@ -1356,11 +1356,38 @@ async fn get_returns_a_downscaled_thumbnail() {
 #[test]
 fn thumbnail_keeps_tall_images_tall_and_refuses_garbage() {
     let tall = png(40, 400, |_, y| [0, (y % 256) as u8, 0, 255]);
-    let (out, w, h) = thumbnail_png(&tall, 100).unwrap();
+    let (out, w, h) = thumbnail_png(&tall, 100, DECODE_MAX_ALLOC).unwrap();
     assert_eq!((w, h), (10, 100));
     assert_eq!(&out[..8], b"\x89PNG\r\n\x1a\n");
-    let (same, w, h) = thumbnail_png(&tall, 400).unwrap();
+    let (same, w, h) = thumbnail_png(&tall, 400, DECODE_MAX_ALLOC).unwrap();
     assert_eq!((w, h), (40, 400));
     assert_eq!(same, tall);
-    assert!(thumbnail_png(b"not a png", 100).is_err());
+    assert!(thumbnail_png(b"not a png", 100, DECODE_MAX_ALLOC).is_err());
+}
+
+#[test]
+fn decodes_are_bounded_by_the_allocation_limit() {
+    let limits = decode_limits(DECODE_MAX_ALLOC);
+    assert_eq!(limits.max_alloc, Some(256 << 20));
+    assert_eq!(
+        (limits.max_image_width, limits.max_image_height),
+        (Some(ADD_MAX_DIM), Some(ADD_MAX_DIM))
+    );
+    // 40x400 RGBA needs 64000 bytes: a 1000-byte cap refuses it before decoding.
+    let tall = png(40, 400, |_, y| [0, (y % 256) as u8, 0, 255]);
+    assert_eq!(
+        thumbnail_png(&tall, 100, 1000).unwrap_err(),
+        "image is too large to process"
+    );
+    // Under the cap the same image decodes.
+    assert!(thumbnail_png(&tall, 100, 1 << 20).is_ok());
+    // A JPEG transcode in `screenshot.add` hits the same cap.
+    let e = normalize_image(jpeg(64, 64), 1000).unwrap_err();
+    assert_eq!(e.message, "image is too large to process");
+    let (out, w, h) = normalize_image(jpeg(64, 64), DECODE_MAX_ALLOC).unwrap();
+    assert_eq!((w, h), (64, 64));
+    assert_eq!(&out[..8], b"\x89PNG\r\n\x1a\n");
+    // PNG is only checked, never decoded: the cap does not apply to it.
+    let (same, w, h) = normalize_image(tall.clone(), 1).unwrap();
+    assert_eq!((w, h, same), (40, 400, tall));
 }

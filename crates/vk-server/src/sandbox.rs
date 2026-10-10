@@ -994,8 +994,13 @@ fn start_broker(server: &Arc<Server>, pane_id: &str, path: &Path) {
     let Ok(l) = tokio::net::UnixListener::from_std(l) else {
         return;
     };
+    let slots = Arc::new(tokio::sync::Semaphore::new(BROKER_MAX_CONNECTIONS));
     let task = handle.spawn(async move {
         loop {
+            // The semaphore is never closed.
+            let Ok(permit) = slots.clone().acquire_owned().await else {
+                break;
+            };
             let Ok((stream, _)) = l.accept().await else {
                 // EMFILE and the like: back off instead of spinning.
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -1003,6 +1008,7 @@ fn start_broker(server: &Arc<Server>, pane_id: &str, path: &Path) {
             };
             let (srv, pane) = (srv.clone(), pane.clone());
             tokio::spawn(async move {
+                let _permit = permit;
                 let _ = broker_connection(srv, stream, pane).await;
             });
         }
@@ -1031,6 +1037,63 @@ pub const BROKER_SMALL_LINE: usize = 1024 * 1024;
 /// The only broker method whose requests may be longer than [`BROKER_SMALL_LINE`].
 const BROKER_LARGE_METHOD: &str = "screenshot.add";
 
+/// Connections one broker socket serves at once; further ones wait in the listen backlog.
+/// With [`BROKER_MAX_LINE`] per line and one large request in flight per connection, this
+/// bounds what a sandbox can make the broker buffer.
+const BROKER_MAX_CONNECTIONS: usize = 16;
+
+/// The parts of a broker request line checked before it is parsed in full: unknown fields
+/// (`params`) are skipped by serde without building values.
+#[derive(Deserialize, Default)]
+struct RequestHead {
+    #[serde(default)]
+    method: String,
+    #[serde(default, deserialize_with = "scalar_id")]
+    id: Option<Value>,
+}
+
+/// A JSON-RPC id that is a number or a string; anything else is skipped and read as no id.
+fn scalar_id<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Value>, D::Error> {
+    use serde::de::{IgnoredAny, MapAccess, SeqAccess, Visitor};
+    struct V;
+    impl<'de> Visitor<'de> for V {
+        type Value = Option<Value>;
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("a JSON-RPC id")
+        }
+        fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E> {
+            Ok(Some(json!(v)))
+        }
+        fn visit_i64<E>(self, v: i64) -> Result<Self::Value, E> {
+            Ok(Some(json!(v)))
+        }
+        fn visit_f64<E>(self, v: f64) -> Result<Self::Value, E> {
+            Ok(Some(json!(v)))
+        }
+        fn visit_str<E>(self, v: &str) -> Result<Self::Value, E> {
+            Ok(Some(Value::String(v.to_string())))
+        }
+        fn visit_bool<E>(self, _: bool) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+        fn visit_unit<E>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+        fn visit_none<E>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+        fn visit_seq<A: SeqAccess<'de>>(self, mut a: A) -> Result<Self::Value, A::Error> {
+            while a.next_element::<IgnoredAny>()?.is_some() {}
+            Ok(None)
+        }
+        fn visit_map<A: MapAccess<'de>>(self, mut a: A) -> Result<Self::Value, A::Error> {
+            while a.next_entry::<IgnoredAny, IgnoredAny>()?.is_some() {}
+            Ok(None)
+        }
+    }
+    d.deserialize_any(V)
+}
+
 /// One broker connection: pane scope is fixed by the socket, tokens can't change it, and only
 /// [`BROKER_METHODS`] are served.
 pub async fn broker_connection<S>(
@@ -1050,6 +1113,7 @@ where
         remote: false,
     };
     let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+    let large_slot = Arc::new(tokio::sync::Semaphore::new(1));
     let mut line = String::new();
     loop {
         tokio::select! {
@@ -1059,20 +1123,32 @@ where
                 let l = std::mem::take(&mut line);
                 let l = l.trim_end_matches(['\n', '\r']).to_string();
                 if l.is_empty() { continue }
-                let req: Option<Request> = serde_json::from_str(&l).ok();
-                let method = req.as_ref().map(|r| r.method.clone()).unwrap_or_default();
+                // Only the method and a scalar id first: other values are skipped, not built,
+                // so an oversized line is refused before it is parsed in full.
+                let head: RequestHead = serde_json::from_str(&l).unwrap_or_default();
+                let method = head.method;
                 if !BROKER_METHODS.contains(&method.as_str()) {
-                    let id = req.and_then(|r| r.id).unwrap_or(Value::Null);
+                    let id = head.id.unwrap_or(Value::Null);
                     let r = Response::err(id, err(ErrorKind::PermissionDenied, format!("{method} is not available inside a sandbox (broker, 13 §4.1)")).details(json!({"scope": "broker"})));
                     let _ = tx.send(serde_json::to_string(&r)?);
                     continue;
                 }
-                if l.len() > BROKER_SMALL_LINE && method != BROKER_LARGE_METHOD {
-                    let id = req.and_then(|r| r.id).unwrap_or(Value::Null);
+                let large = l.len() > BROKER_SMALL_LINE;
+                if large && method != BROKER_LARGE_METHOD {
+                    let id = head.id.unwrap_or(Value::Null);
                     let r = Response::err(id, err(ErrorKind::InvalidParams, format!("{method}: request longer than {BROKER_SMALL_LINE} bytes (broker, 13 §4.1)")).details(json!({"scope": "broker"})));
                     let _ = tx.send(serde_json::to_string(&r)?);
                     continue;
                 }
+                // One large request in flight per connection: a large line waits here for the
+                // previous one to finish, and no further line is read meanwhile, so a
+                // connection holds at most two large lines.
+                let large_permit = if large {
+                    large_slot.clone().acquire_owned().await.ok()
+                } else {
+                    None
+                };
+                let req: Option<Request> = serde_json::from_str(&l).ok();
                 let params = req.as_ref().map(|r| r.params.clone()).unwrap_or(Value::Null);
                 if let Err(e) = broker_authorize(&server, &ctx, &method, &params) {
                     let id = req.and_then(|r| r.id).unwrap_or(Value::Null);
@@ -1081,6 +1157,7 @@ where
                 }
                 let (srv, c, t) = (server.clone(), ctx.clone(), tx.clone());
                 tokio::spawn(async move {
+                    let _large_permit = large_permit;
                     // A box port declared from a container pane becomes its forwarded host port.
                     let l = match req.filter(|r| r.method == "preview.declare") {
                         Some(mut r) => {
