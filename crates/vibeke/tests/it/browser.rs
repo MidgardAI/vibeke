@@ -200,7 +200,8 @@ fn mcp_against_a_real_server_and_mcp_installers() {
         .unwrap();
     assert!(!out.status.success());
     let err = String::from_utf8_lossy(&out.stderr);
-    assert!(err.contains("chrome-headless-shell"), "{err}");
+    // The headless shell, or the full browser where the machine can show windows.
+    assert!(err.contains("chrome-for-testing-public"), "{err}");
     // Nothing was started or downloaded.
     assert!(!s.path().join("state/default/agent-browser").exists());
 

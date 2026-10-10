@@ -198,7 +198,7 @@ pub fn rows(app: &App) -> Vec<Row> {
                     format!(
                         "{} {}",
                         x.handle,
-                        vk_proto::text::escape_controls(&x.display_title())
+                        vk_proto::text::escape_controls(x.display_title())
                     )
                 })
                 .unwrap_or_default();
@@ -725,7 +725,7 @@ pub fn draw(app: &App, g: &mut Grid) {
     } else {
         "Previews".into()
     };
-    drop(crate::popups::frame_at(app, g, geo.r, &title));
+    let _ = crate::popups::frame_at(app, g, geo.r, &title);
     // Counts at the right end of the top border.
     let counts = if mirrored > 0 {
         format!(" {total} · {mirrored} mirrored ")
@@ -934,14 +934,12 @@ pub fn chips(app: &App, mi: usize, p: &Preview) -> Vec<Chip> {
     vec![Chip::Pane, Chip::Window, Chip::Proxy, mirror, Chip::Copy]
 }
 
+/// One sidebar row of chips: its segments and each chip's x range.
+pub type ChipRow = (Vec<(String, Style)>, Vec<(Chip, u16, u16)>);
+
 /// Sidebar rows for the expanded preview's chips, wrapped to `width`: per row its segments
 /// and each chip's x range (relative to the sidebar's left edge).
-pub fn chip_rows(
-    app: &App,
-    mi: usize,
-    p: &Preview,
-    width: u16,
-) -> Vec<(Vec<(String, Style)>, Vec<(Chip, u16, u16)>)> {
+pub fn chip_rows(app: &App, mi: usize, p: &Preview, width: u16) -> Vec<ChipRow> {
     let t = &app.theme;
     const INDENT: u16 = 4;
     let mut out = Vec::new();

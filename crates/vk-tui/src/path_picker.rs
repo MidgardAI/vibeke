@@ -1163,7 +1163,7 @@ mod tests {
                 .all(|c| c.1 != "workspace.create")
         );
         let (_, p) = only(&commands(&mut rxs[1]), "workspace.create");
-        assert_eq!(p["cwd"], "/home/r");
+        assert_eq!(p["cwd"], "/home/r/");
         assert_eq!(app.cur, 0);
     }
 
