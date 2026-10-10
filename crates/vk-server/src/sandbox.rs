@@ -1038,9 +1038,13 @@ pub const BROKER_SMALL_LINE: usize = 1024 * 1024;
 const BROKER_LARGE_METHOD: &str = "screenshot.add";
 
 /// Connections one broker socket serves at once; further ones wait in the listen backlog.
-/// With [`BROKER_MAX_LINE`] per line and one large request in flight per connection, this
-/// bounds what a sandbox can make the broker buffer.
+/// Each connection reads one line at a time, so this bounds what a sandbox can make the broker
+/// buffer while it waits.
 const BROKER_MAX_CONNECTIONS: usize = 16;
+
+/// `screenshot.add` requests in flight across all brokers of this server (held until the
+/// request finishes, also after its connection closed).
+static BROKER_IMAGE_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
 
 /// The parts of a broker request line checked before it is parsed in full: unknown fields
 /// (`params`) are skipped by serde without building values.
@@ -1113,7 +1117,6 @@ where
         remote: false,
     };
     let (tx, mut rx) = mpsc::unbounded_channel::<String>();
-    let large_slot = Arc::new(tokio::sync::Semaphore::new(1));
     let mut line = String::new();
     loop {
         tokio::select! {
@@ -1140,11 +1143,12 @@ where
                     let _ = tx.send(serde_json::to_string(&r)?);
                     continue;
                 }
-                // One large request in flight per connection: a large line waits here for the
-                // previous one to finish, and no further line is read meanwhile, so a
-                // connection holds at most two large lines.
-                let large_permit = if large {
-                    large_slot.clone().acquire_owned().await.ok()
+                // Image uploads in flight across every broker of this server: a connection
+                // waits here (reading no further line) until a slot is free, and the slot stays
+                // taken until the request finishes, even if the connection goes away. So queued
+                // or detached uploads cannot add up past BROKER_IMAGE_SLOTS.
+                let image_permit = if method == BROKER_LARGE_METHOD {
+                    BROKER_IMAGE_SLOTS.acquire().await.ok()
                 } else {
                     None
                 };
@@ -1157,7 +1161,7 @@ where
                 }
                 let (srv, c, t) = (server.clone(), ctx.clone(), tx.clone());
                 tokio::spawn(async move {
-                    let _large_permit = large_permit;
+                    let _image_permit = image_permit;
                     // A box port declared from a container pane becomes its forwarded host port.
                     let l = match req.filter(|r| r.method == "preview.declare") {
                         Some(mut r) => {

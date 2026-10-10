@@ -763,9 +763,10 @@ fn normalize_image(bytes: Vec<u8>, max_alloc: u64) -> Result<(Vec<u8>, u32, u32)
     };
     match format {
         ImageFormat::Png => {
-            let (w, h) = ImageReader::with_format(Cursor::new(&bytes), ImageFormat::Png)
-                .into_dimensions()
-                .map_err(|e| invalid(format!("not a valid PNG image: {e}")))?;
+            // Only the fixed-size IHDR chunk: a decoder would also inflate metadata chunks
+            // (iCCP …) outside the decode budget.
+            let (w, h) = png_header_size(&bytes)
+                .ok_or_else(|| invalid("not a valid PNG image: missing IHDR header"))?;
             if w == 0 || h == 0 || w > ADD_MAX_DIM || h > ADD_MAX_DIM {
                 return Err(too_big(w, h));
             }
@@ -792,6 +793,18 @@ fn normalize_image(bytes: Vec<u8>, max_alloc: u64) -> Result<(Vec<u8>, u32, u32)
         }
         _ => Err(unsupported()),
     }
+}
+
+/// Width and height from a PNG's IHDR chunk (signature, then IHDR first, as the format
+/// requires), without inflating anything.
+fn png_header_size(b: &[u8]) -> Option<(u32, u32)> {
+    const SIG: &[u8] = b"\x89PNG\r\n\x1a\n";
+    if b.len() < 24 || &b[..8] != SIG || &b[12..16] != b"IHDR" {
+        return None;
+    }
+    let w = u32::from_be_bytes(b[16..20].try_into().ok()?);
+    let h = u32::from_be_bytes(b[20..24].try_into().ok()?);
+    Some((w, h))
 }
 
 /// Control characters removed, trimmed, cut to `max` characters; `None` when nothing is left.

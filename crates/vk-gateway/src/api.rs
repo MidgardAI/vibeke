@@ -349,9 +349,6 @@ const SCREENSHOT_LIST_PARAMS: &[&str] = &[
     "since_ms",
     "limit",
 ];
-/// `screenshot.list` page size when none is given, and the largest one (the server's bounds).
-const SCREENSHOT_LIST_DEFAULT: u64 = 50;
-const SCREENSHOT_LIST_MAX: u64 = 1000;
 
 /// `screenshot.list` selectors are strings (or absent/null). Another type would pass the share
 /// checks, which read strings only, and then be ignored by the server.
@@ -880,50 +877,58 @@ impl Call<'_> {
             .collect())
     }
 
-    /// A screenshot record inside the limit: its pane is visible, and it was taken while that
-    /// pane was in the pane's current workspace. A pane moved into a shared workspace (or a
-    /// shared pane moved elsewhere) does not carry its older workspace's screenshots along.
-    /// Records without a pane, or of a closed pane, have no live pane to check: dropped.
-    fn screenshot_visible(m: &Value, panes: &[(String, Option<String>)]) -> bool {
-        let Some(pane) = s(m, "pane") else {
-            return false;
-        };
-        panes
-            .iter()
-            .any(|(id, ws)| id == pane && ws.is_some() && ws.as_deref() == s(m, "workspace"))
+    /// The workspace and pane a limited device's screenshots must match. A workspace share sees
+    /// the records taken in its workspace; a pane share sees its pane's records taken in the
+    /// pane's current workspace (a pane moved between workspaces does not carry its older
+    /// workspace's screenshots along). `None`: nothing is visible (the shared pane is gone).
+    async fn screenshot_scope(
+        &self,
+        allowed: &Allowed,
+    ) -> Result<Option<(String, Option<String>)>, ApiError> {
+        if let Some(pane) = &allowed.pane {
+            let panes = self.visible_panes(allowed).await?;
+            return Ok(panes
+                .into_iter()
+                .find(|(id, _)| id == pane)
+                .and_then(|(id, ws)| ws.map(|ws| (ws, Some(id)))));
+        }
+        Ok(allowed.workspace.clone().map(|w| (w, None)))
     }
 
-    /// `screenshot.list` for a limited device. The server is always asked for the shared pane or
-    /// workspace, one large page at a time; records outside the limit are then dropped before
-    /// paging and counting, so `count` and `total` describe only records the device may see.
+    fn screenshot_visible(m: &Value, scope: &(String, Option<String>)) -> bool {
+        let (ws, pane) = scope;
+        s(m, "workspace") == Some(ws.as_str())
+            && pane.as_deref().is_none_or(|p| s(m, "pane") == Some(p))
+    }
+
+    /// `screenshot.list` for a limited device. The scope is expressed as server filters, so the
+    /// server's paging, `count` and `total` cover exactly the records the device may see; the
+    /// result is checked again here.
     async fn limited_screenshot_list(&self, allowed: &Allowed, p: &Value) -> ApiResult {
-        let want = p
-            .get("limit")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(SCREENSHOT_LIST_DEFAULT)
-            .clamp(1, SCREENSHOT_LIST_MAX) as usize;
+        let Some(scope) = self.screenshot_scope(allowed).await? else {
+            return Ok(json!({"screenshots": [], "count": 0, "total": 0}));
+        };
         let mut params = pick(p, SCREENSHOT_LIST_PARAMS);
         // `check_limit` has refused an explicit pane or workspace outside the limit.
-        if let Some(pane) = &allowed.pane {
+        params["workspace"] = scope.0.clone().into();
+        if let Some(pane) = &scope.1 {
             params["pane"] = pane.clone().into();
-        } else if let Some(w) = &allowed.workspace {
-            params["workspace"] = w.clone().into();
         }
-        params["limit"] = SCREENSHOT_LIST_MAX.into();
         let mut r = self.server("screenshot.list", params).await?;
         if !r.is_object() {
             r = json!({});
         }
-        let panes = self.visible_panes(allowed).await?;
         let mut list = match r.get_mut("screenshots").map(Value::take) {
             Some(Value::Array(list)) => list,
             _ => Vec::new(),
         };
-        list.retain(|m| Self::screenshot_visible(m, &panes));
-        let total = list.len();
-        list.truncate(want);
+        let before = list.len();
+        list.retain(|m| Self::screenshot_visible(m, &scope));
+        if list.len() != before {
+            // The server ignored a filter (an older host): never describe what was dropped.
+            r["total"] = list.len().into();
+        }
         r["count"] = list.len().into();
-        r["total"] = total.into();
         r["screenshots"] = Value::Array(list);
         Ok(r)
     }
@@ -935,8 +940,11 @@ impl Call<'_> {
         let not_found = || ApiError::new("not_found", "screenshot not found");
         let id = req(p, "id")?;
         let meta = self.server("screenshot.get", json!({"id": id})).await?;
-        let panes = self.visible_panes(allowed).await?;
-        if !Self::screenshot_visible(&meta, &panes) {
+        let scope = self
+            .screenshot_scope(allowed)
+            .await?
+            .ok_or_else(not_found)?;
+        if !Self::screenshot_visible(&meta, &scope) {
             return Err(not_found());
         }
         let mut params = pick(p, &["inline", "thumb"]);
@@ -945,7 +953,7 @@ impl Call<'_> {
         }
         params["id"] = s(&meta, "id").ok_or_else(not_found)?.into();
         let r = self.server("screenshot.get", params).await?;
-        if s(&r, "id") != s(&meta, "id") || !Self::screenshot_visible(&r, &panes) {
+        if s(&r, "id") != s(&meta, "id") || !Self::screenshot_visible(&r, &scope) {
             return Err(not_found());
         }
         Ok(r)
@@ -2367,8 +2375,9 @@ mod workspace_tests {
                             "preview.list" => json!({"previews": [
                                 {"id": "v1", "pane": "p1"}, {"id": "v2", "pane": "p2"}, {"id": "v3", "pane": null}
                             ]}),
+                            // Filters by workspace and pane, pages like the server.
                             "screenshot.list" => {
-                                json!({"echo": p, "count": 7, "total": 9, "screenshots": [
+                                let all = json!([
                                     {"id": "s1", "pane": "p1", "workspace": "w1", "caption": "in"},
                                     {"id": "s2", "pane": "p2", "workspace": "w2", "caption": "secret"},
                                     {"id": "s3", "pane": null, "workspace": "w1", "caption": "no pane"},
@@ -2377,7 +2386,23 @@ mod workspace_tests {
                                     {"id": "s5", "pane": "p1", "workspace": "w2", "caption": "moved secret"},
                                     {"id": "s6", "pane": "p1", "workspace": "w1", "caption": "in too"},
                                     {"id": "s7", "pane": "p1", "workspace": "w1", "caption": "in three"}
-                                ]})
+                                ]);
+                                let mut list: Vec<Value> = all
+                                    .as_array()
+                                    .unwrap()
+                                    .iter()
+                                    .filter(|m| {
+                                        ["workspace", "pane"].iter().all(|k| {
+                                            p[k].as_str().is_none_or(|v| m[k].as_str() == Some(v))
+                                        })
+                                    })
+                                    .cloned()
+                                    .collect();
+                                let total = list.len();
+                                list.truncate(
+                                    p["limit"].as_u64().unwrap_or(50).clamp(1, 1000) as usize
+                                );
+                                json!({"echo": p, "count": list.len(), "total": total, "screenshots": list})
                             }
                             // Every call is logged; image data only comes with `inline`.
                             "screenshot.get" => {
@@ -2557,12 +2582,12 @@ mod workspace_tests {
             )
             .await
             .unwrap();
-        assert_eq!(ids(&r), ["s1", "s2", "s3", "s4", "s5", "s6", "s7"]);
+        assert_eq!(ids(&r), ["s1", "s2", "s3", "s4", "s5"]);
         assert_eq!(
             r["echo"],
             json!({"environment": "agent", "limit": 5, "since_ms": 10})
         );
-        assert_eq!(r["total"], 9);
+        assert_eq!(r["total"], 7);
         let g = call
             .dispatch(
                 "screenshot.get",
@@ -2619,33 +2644,35 @@ mod workspace_tests {
                 gw: &gw,
                 device: &share,
             };
-            // Only the visible pane's records from its current workspace; no pane-less or
-            // closed-pane ones, and none taken before the pane moved into the share (s5).
-            // `total` counts only those.
+            // A pane share: its pane's records from the pane's current workspace (not s5, taken
+            // before the pane moved). A workspace share: every record taken in the workspace.
+            // The scope is sent as server filters, so `count` and `total` count only those.
+            let (visible, hidden): (&[&str], &[&str]) = if name == "pane share" {
+                (&["s1", "s6", "s7"], &["s2", "s3", "s5"])
+            } else {
+                (&["s1", "s3", "s4", "s6", "s7"], &["s2", "s5"])
+            };
             let r = call.dispatch("screenshot.list", json!({})).await.unwrap();
-            assert_eq!(ids(&r), ["s1", "s6", "s7"], "{name}");
+            assert_eq!(ids(&r), visible, "{name}");
             assert_eq!(
                 (r["count"].clone(), r["total"].clone()),
-                (json!(3), json!(3)),
+                (json!(visible.len()), json!(visible.len())),
                 "{name}"
             );
             assert!(!r.to_string().contains("secret"), "{name}");
-            // The server is asked for the shared pane or workspace only, in one large page.
+            assert_eq!(r["echo"]["workspace"], "w1", "{name}");
             if name == "pane share" {
                 assert_eq!(r["echo"]["pane"], "p1", "{name}");
-            } else {
-                assert_eq!(r["echo"]["workspace"], "w1", "{name}");
             }
-            assert_eq!(r["echo"]["limit"], 1000, "{name}");
             // `limit` pages the visible records; `total` still counts all of them.
             let r = call
                 .dispatch("screenshot.list", json!({"limit": 2}))
                 .await
                 .unwrap();
-            assert_eq!(ids(&r), ["s1", "s6"], "{name}");
+            assert_eq!(ids(&r), visible[..2], "{name}");
             assert_eq!(
                 (r["count"].clone(), r["total"].clone()),
-                (json!(2), json!(3)),
+                (json!(2), json!(visible.len())),
                 "{name}"
             );
             let r = call
@@ -2684,7 +2711,7 @@ mod workspace_tests {
             // Another pane's (or no pane's, or another workspace's) screenshot is not found,
             // never returned, and the host is never asked for its image.
             SHOT_GETS.lock().unwrap().clear();
-            for id in ["s2", "s3", "s5"] {
+            for id in hidden {
                 for p in [
                     json!({"id": id, "inline": true}),
                     json!({"id": id, "inline": true, "thumb": 128}),
