@@ -882,7 +882,16 @@ fn the_pane_menu_offers_hand_off_and_details_of_an_imported_pane() {
         .into_iter()
         .map(|e| e.id)
         .collect();
-    assert_eq!(ids, ["handoff_send", "share_pane", "handoff_details"]);
+    assert_eq!(
+        ids,
+        [
+            "handoff_send",
+            "share_pane",
+            "cloud_send",
+            "cloud_bring_back",
+            "handoff_details"
+        ]
+    );
     let s = screen(&app);
     assert!(
         s.contains("Share this pane or workspace with someone…"),

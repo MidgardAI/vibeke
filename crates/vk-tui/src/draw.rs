@@ -944,6 +944,9 @@ fn right_cluster(app: &App) -> Vec<(String, Style)> {
     if let Some(h) = crate::handoff::status(app) {
         right.insert(0, (format!(" {h} "), t.s(t.accent)));
     }
+    if let Some(c) = crate::cloud::status(app) {
+        right.insert(0, (format!(" {c} "), t.s(t.accent)));
+    }
     // Incoming handoffs waiting (16 §15.2): chrome only, like the elevation notice.
     if let Some(b) = crate::handoff::badge(app) {
         right.insert(0, (b, t.bold(t.accent)));

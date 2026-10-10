@@ -2000,6 +2000,100 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         &[],
         "hosts this one can hand work to (add one with `vibeke gateway peer add <link>`)",
     ),
+    // Cloud sandboxes (spec 17 §8): sign-in state, boxes and moves. `login`, `send` and
+    // `bring-back` need the terminal and live in the `vibeke` binary (`cloud_cmd.rs`);
+    // `cloud exec` is the provider shim of the box panes.
+    (
+        "cloud",
+        "providers",
+        "cloud.providers",
+        &[],
+        "providers: sign-in state and account [--verify]",
+    ),
+    (
+        "cloud",
+        "logout",
+        "cloud.auth.clear",
+        &["provider"],
+        "<provider> — forget the stored credential (running sandboxes keep running)",
+    ),
+    (
+        "cloud",
+        "ls",
+        "cloud.box.list",
+        &[],
+        "sandboxes of every signed-in provider [--provider P] [--ownership attached|idle|orphaned|foreign|missing] [--refresh]",
+    ),
+    (
+        "cloud",
+        "rm",
+        "cloud.box.destroy",
+        &["box"],
+        "<provider/id> [--force] — destroy a sandbox; unsynced work needs --force (put --force after the box)",
+    ),
+    (
+        "cloud",
+        "suspend",
+        "cloud.box.suspend",
+        &["box"],
+        "<provider/id> — suspend a sandbox (providers that sleep by themselves refuse)",
+    ),
+    (
+        "cloud",
+        "resume",
+        "cloud.box.resume",
+        &["box"],
+        "<provider/id> — wake a suspended sandbox",
+    ),
+    (
+        "cloud",
+        "adopt",
+        "cloud.box.adopt",
+        &["box"],
+        "<provider/id> — take over an orphaned or foreign sandbox: creates a task and reopens its sessions",
+    ),
+    (
+        "cloud",
+        "forget",
+        "cloud.box.forget",
+        &["box"],
+        "<provider/id> — drop the record of a sandbox the provider no longer lists",
+    ),
+    (
+        "cloud",
+        "checkpoint",
+        "cloud.box.checkpoint",
+        &["box"],
+        "<provider/id> [--note TEXT] — save a checkpoint (providers with checkpoints)",
+    ),
+    (
+        "cloud",
+        "prune",
+        "cloud.prune",
+        &[],
+        "[--dry-run] [--force] [--provider P] — destroy orphaned and idle sandboxes without unsynced work",
+    ),
+    (
+        "cloud",
+        "jobs",
+        "cloud.jobs",
+        &[],
+        "moves to and from sandboxes: state, progress, errors",
+    ),
+    (
+        "cloud",
+        "cancel",
+        "cloud.cancel",
+        &["id"],
+        "<job> — stop a move that is still running",
+    ),
+    (
+        "cloud",
+        "move",
+        "cloud.move",
+        &[],
+        "(--pane P | --run R | --box B) --to cloud|local|<peer> [--provider X] [--into BOX] [--interrupt] [--source-after keep|suspend|destroy] — start a move (`cloud send` and `cloud bring-back` follow it)",
+    ),
     // Lane 3E (09 §9.1): state encryption.
     (
         "security",
@@ -2184,6 +2278,29 @@ fn adjust(method: &str, p: &mut Value) {
                 .find_map(|k| std::env::var(k).ok().filter(|v| !v.is_empty()))
             {
                 o.insert("pane".into(), json!(p));
+            }
+        }
+        "cloud.move" => {
+            // `--to local|cloud|<peer>` (with `--provider`, `--into`) becomes the `to` object.
+            if let Some(v) = o.remove("to") {
+                let t = v.as_str().unwrap_or_default().to_string();
+                let provider = o.remove("provider");
+                let into = o.remove("into");
+                let to = match t.as_str() {
+                    "local" => json!({"kind": "local"}),
+                    "cloud" => {
+                        let mut c = json!({"kind": "cloud"});
+                        if let Some(p) = provider {
+                            c["provider"] = p;
+                        }
+                        if let Some(b) = into {
+                            c["box"] = b;
+                        }
+                        c
+                    }
+                    peer => json!({"kind": "peer", "peer": peer}),
+                };
+                o.insert("to".into(), to);
             }
         }
         "pane.move" => {
@@ -2582,6 +2699,71 @@ pub fn pretty(method: &str, v: &Value) -> String {
                     } else {
                         ""
                     }
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        "cloud.box.list" => rows("boxes")
+            .iter()
+            .map(|b| {
+                let unsynced = if b["unsynced"]["commits"].as_u64().unwrap_or(0)
+                    + b["unsynced"]["dirty"].as_u64().unwrap_or(0)
+                    + b["unsynced"]["untracked"].as_u64().unwrap_or(0)
+                    > 0
+                {
+                    "unsynced"
+                } else {
+                    ""
+                };
+                format!(
+                    "{:<26} {:<12} {:<10} {:<10} {:>2} pane(s)  {}",
+                    b["box"].as_str().unwrap_or(""),
+                    b["name"].as_str().unwrap_or(""),
+                    b["state"].as_str().unwrap_or(""),
+                    b["ownership"].as_str().unwrap_or(""),
+                    b["panes"].as_array().map_or(0, Vec::len),
+                    unsynced
+                )
+            })
+            .chain(v["errors"].as_array().into_iter().flatten().map(|e| {
+                format!(
+                    "! {}: {}",
+                    e["provider"].as_str().unwrap_or(""),
+                    e["message"].as_str().unwrap_or("")
+                )
+            }))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        "cloud.providers" => rows("providers")
+            .iter()
+            .map(|p| {
+                let a = &p["auth"];
+                format!(
+                    "{:<10} {:<9} {}",
+                    p["id"].as_str().unwrap_or(""),
+                    a["state"].as_str().unwrap_or(""),
+                    a["account"].as_str().unwrap_or("")
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        "cloud.jobs" => rows("jobs")
+            .iter()
+            .map(|j| {
+                let progress = match (
+                    j["progress"]["done"].as_u64(),
+                    j["progress"]["total"].as_u64(),
+                ) {
+                    (Some(d), Some(t)) if t > 0 => format!("{}%", d * 100 / t),
+                    _ => String::new(),
+                };
+                format!(
+                    "{:<26} {:<11} {:<14} {:>4}  {}",
+                    j["id"].as_str().unwrap_or(""),
+                    j["direction"].as_str().unwrap_or(""),
+                    j["state"].as_str().unwrap_or(""),
+                    progress,
+                    j["error"]["message"].as_str().unwrap_or("")
                 )
             })
             .collect::<Vec<_>>()
@@ -3748,6 +3930,71 @@ mod tests {
         let (_, pos) = lookup("draft", "combine").unwrap();
         let p = build_params(pos, &["a".into(), "b".into()]).unwrap();
         assert_eq!(p["ids"], json!(["a", "b"]));
+    }
+
+    #[test]
+    fn cloud_commands_map_to_their_methods() {
+        for (verb, method) in [
+            ("providers", "cloud.providers"),
+            ("logout", "cloud.auth.clear"),
+            ("ls", "cloud.box.list"),
+            ("rm", "cloud.box.destroy"),
+            ("suspend", "cloud.box.suspend"),
+            ("resume", "cloud.box.resume"),
+            ("adopt", "cloud.box.adopt"),
+            ("checkpoint", "cloud.box.checkpoint"),
+            ("prune", "cloud.prune"),
+            ("jobs", "cloud.jobs"),
+            ("cancel", "cloud.cancel"),
+            ("move", "cloud.move"),
+        ] {
+            assert_eq!(lookup("cloud", verb).map(|c| c.0), Some(method), "{verb}");
+        }
+        // `login`, `send` and `bring-back` need the terminal and live in the binary.
+        for verb in ["login", "send", "bring-back", "exec"] {
+            assert!(lookup("cloud", verb).is_none(), "{verb}");
+        }
+        let (_, pos) = lookup("cloud", "rm").unwrap();
+        let p = build_params(pos, &["sprites/b1".into(), "--force".into()]).unwrap();
+        assert_eq!(p, json!({"box": "sprites/b1", "force": true}));
+        let (m, pos) = lookup("cloud", "prune").unwrap();
+        let mut p = build_params(pos, &["--dry-run".into()]).unwrap();
+        adjust(m, &mut p);
+        assert_eq!(p, json!({"dry_run": true}));
+    }
+
+    #[test]
+    fn cloud_move_builds_the_target_object() {
+        let (m, pos) = lookup("cloud", "move").unwrap();
+        let args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let mut p = build_params(
+            pos,
+            &args(&[
+                "--pane",
+                "p1",
+                "--to",
+                "cloud",
+                "--provider",
+                "e2b",
+                "--into",
+                "e2b/x1",
+            ]),
+        )
+        .unwrap();
+        adjust(m, &mut p);
+        assert_eq!(
+            p,
+            json!({"pane": "p1", "to": {"kind": "cloud", "provider": "e2b", "box": "e2b/x1"}})
+        );
+        let mut p = build_params(pos, &args(&["--box", "e2b/x1", "--to", "local"])).unwrap();
+        adjust(m, &mut p);
+        assert_eq!(p, json!({"box": "e2b/x1", "to": {"kind": "local"}}));
+        let mut p = build_params(pos, &args(&["--pane", "p1", "--to", "marvin"])).unwrap();
+        adjust(m, &mut p);
+        assert_eq!(
+            p,
+            json!({"pane": "p1", "to": {"kind": "peer", "peer": "marvin"}})
+        );
     }
 
     #[test]

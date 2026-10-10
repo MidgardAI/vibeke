@@ -61,6 +61,8 @@ pub struct State {
     pub sharing: crate::sharing::State,
     pub devices: Option<crate::devices::View>,
     pub people: Option<crate::people::View>,
+    pub cloud: crate::cloud::State,
+    pub sandboxes: Option<crate::sandboxes::View>,
     pub connections: crate::connections::State,
 }
 
@@ -78,6 +80,8 @@ pub enum Reply {
     Sharing(crate::sharing::Reply),
     Devices(crate::devices::Reply),
     People(crate::people::Reply),
+    Cloud(crate::cloud::Reply),
+    Sandboxes(crate::sandboxes::Reply),
     /// `tab.renumber`.
     Renumber,
 }
@@ -95,6 +99,8 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
         Reply::Sharing(r) => crate::sharing::on_reply(app, mi, r, res),
         Reply::Devices(r) => crate::devices::on_reply(app, mi, r, res),
         Reply::People(r) => crate::people::on_reply(app, mi, r, res),
+        Reply::Cloud(r) => crate::cloud::on_reply(app, mi, r, res),
+        Reply::Sandboxes(r) => crate::sandboxes::on_reply(app, mi, r, res),
         Reply::Renumber => crate::tabbar::on_renumbered(app, res),
     }
 }
@@ -103,6 +109,7 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
 pub fn on_connected(app: &mut App, mi: usize) {
     crate::elevate::on_connected(app, mi);
     crate::handoff::on_connected(app, mi);
+    crate::cloud::on_connected(app, mi);
 }
 
 /// Palette / key actions owned by 2B modules.
@@ -121,6 +128,8 @@ pub fn action(app: &mut App, action: &str) -> bool {
         || crate::collision::action(app, action)
         || crate::connections::action(app, action)
         || crate::handoff::action(app, action)
+        || crate::cloud::action(app, action)
+        || crate::sandboxes::action(app, action)
 }
 
 /// `[[keys.command]] when = "agent:<harness>"`: only while the focused pane runs that harness
@@ -203,6 +212,7 @@ pub fn on_tick(app: &mut App) {
     crate::collision::tick(app, now);
     crate::handoff::tick(app);
     crate::devices::tick(app);
+    crate::cloud::tick(app);
     crate::people::tick(app);
     crate::updates::tick(app);
 }
@@ -215,6 +225,7 @@ pub fn deadlines(app: &App, now: Instant, d: &mut crate::deadline::Deadlines) {
     crate::taskbadge::deadlines(app, d);
     crate::collision::deadlines(app, d);
     crate::devices::deadlines(app, now, d);
+    crate::cloud::deadlines(app, now, d);
     crate::people::deadlines(app, now, d);
     crate::updates::deadlines(app, d);
 }

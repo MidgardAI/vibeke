@@ -180,6 +180,8 @@ pub fn key(app: &mut App, ev: KeyEvent, p: Popup) {
         Popup::Sharing => crate::connections::key(app, ev, crate::connections::Tab::Hosts),
         Popup::Devices => crate::connections::key(app, ev, crate::connections::Tab::Devices),
         Popup::People => crate::connections::key(app, ev, crate::connections::Tab::People),
+        Popup::CloudSend => crate::cloud::key(app, ev),
+        Popup::Sandboxes => crate::sandboxes::key(app, ev),
         Popup::Updates => crate::updates::key(app, &ev),
         Popup::Peek { pane } => match ev.key {
             _ if esc => {}
@@ -512,6 +514,14 @@ pub fn draw(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
             Popup::Devices => crate::devices::draw(app, g),
             Popup::People => {
                 let (x, y) = crate::people::draw(app, g)?;
+                return Some((x, y, CursorShape::Bar));
+            }
+            Popup::CloudSend => {
+                let (x, y) = crate::cloud::draw(app, g)?;
+                return Some((x, y, CursorShape::Bar));
+            }
+            Popup::Sandboxes => {
+                let (x, y) = crate::sandboxes::draw(app, g)?;
                 return Some((x, y, CursorShape::Bar));
             }
             Popup::Updates => crate::updates::draw(app, g),
