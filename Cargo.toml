@@ -35,6 +35,7 @@ vk-sandbox = { path = "crates/vk-sandbox" }
 vk-assist = { path = "crates/vk-assist" }
 vk-orchestrate = { path = "crates/vk-orchestrate" }
 vk-handoff = { path = "crates/vk-handoff" }
+vk-cloud = { path = "crates/vk-cloud" }
 
 anyhow = "1"
 base64 = "0.22"
