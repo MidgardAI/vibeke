@@ -938,7 +938,10 @@ async fn send(
     step(server, id, "uploading")?;
     set_progress(server, id, 0, packed.size);
     let data = tokio::fs::read(&out).await.map_err(internal)?;
-    let remote = format!("{BOX_IN}/{id}.tar.zst");
+    let remote = format!(
+        "{}/{id}.tar.zst",
+        crate::sandbox::cloud::in_box(&c.root, BOX_IN)
+    );
     crate::sandbox::cloud::upload(server, c, &remote, data, 0o600).await?;
     set_progress(server, id, packed.size, packed.size);
 

@@ -159,7 +159,8 @@ fn to_box(id: &str, m: Meta) -> RemoteBox {
 
 /// A path in the box: absolute paths are rooted at the box directory, relative ones too.
 fn map_path(bdir: &Path, p: &str) -> Result<PathBuf> {
-    let p = Path::new(p);
+    // Paths the server built from `box_root` are already inside the box.
+    let p = Path::new(p).strip_prefix(bdir).unwrap_or(Path::new(p));
     let mut out = bdir.to_path_buf();
     for c in p.components() {
         match c {
@@ -809,6 +810,12 @@ impl Provider for Fake {
             check(cred)?;
             Ok(None)
         })
+    }
+
+    fn box_root(&self, id: &str) -> String {
+        self.box_dir(id)
+            .map(|d| d.to_string_lossy().into_owned())
+            .unwrap_or_default()
     }
 }
 

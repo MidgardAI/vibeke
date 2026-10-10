@@ -362,6 +362,8 @@ pub struct CloudCtx {
     pub workdir: String,
     /// `vibeke` inside the box (`/vibeke/bin/vibeke`).
     pub bin: String,
+    /// Prefix of every in-box path ([`vk_cloud::Provider::box_root`]; empty for real boxes).
+    pub root: String,
     /// Host dir of the per-pane broker sockets (served into the box over the link).
     pub run_dir: PathBuf,
     pub clone: Option<CloudClone>,
@@ -385,6 +387,8 @@ pub struct CloudRunner {
     /// `<sbx>/<key>`: pane control dirs (session files) live in `.ctl` below it.
     pub root: PathBuf,
     pub run_dir: PathBuf,
+    /// [`vk_cloud::Provider::box_root`] of the box.
+    pub box_root: String,
     /// Non-secret per-exec env (credential paths rewritten to box paths).
     pub exec_env: Vec<(String, String)>,
     /// Secrets passed by name (`-e K`); the values are in the holder's env only.
@@ -492,7 +496,7 @@ pub fn exec_argv(
 }
 
 /// The bridge link: `vibeke cloud exec -i <box> -- /vibeke/bin/vibeke sandbox bridge …`.
-pub fn link_argv(host_bin: &str, box_ref: &str, box_bin: &str) -> Vec<String> {
+pub fn link_argv(host_bin: &str, box_ref: &str, box_bin: &str, brokers: &str) -> Vec<String> {
     exec_argv(
         host_bin,
         false,
@@ -506,7 +510,7 @@ pub fn link_argv(host_bin: &str, box_ref: &str, box_bin: &str) -> Vec<String> {
             "sandbox".into(),
             "bridge".into(),
             "--brokers".into(),
-            BOX_BROKERS.into(),
+            brokers.to_string(),
         ],
     )
 }
@@ -571,7 +575,7 @@ impl Runner for CloudRunner {
         vk_sandbox::env::set(
             &mut env,
             "VIBEKE_SOCKET",
-            format!("{BOX_BROKERS}/{short}.sock"),
+            format!("{}/{short}.sock", in_box(&self.box_root, BOX_BROKERS)),
         );
         let ctl = control_dir(&self.root, &req.pane_id)?;
         let cmd = box_command(&req.argv, BOX_SHELL);
@@ -608,6 +612,7 @@ impl Runner for CloudRunner {
 pub fn split_projection_env(
     env: &[(String, String)],
     shared: &Path,
+    creds: &str,
 ) -> (Vec<(String, String)>, Vec<(String, String)>) {
     let prefix = shared.to_string_lossy().into_owned();
     let mut exec_env = Vec::new();
@@ -615,7 +620,7 @@ pub fn split_projection_env(
     for (k, v) in env {
         match v.strip_prefix(&prefix) {
             Some(rest) if rest.is_empty() || rest.starts_with('/') => {
-                exec_env.push((k.clone(), format!("{BOX_CREDS}{rest}")))
+                exec_env.push((k.clone(), format!("{creds}{rest}")))
             }
             _ => secrets.push((k.clone(), v.clone())),
         }
@@ -638,6 +643,11 @@ pub fn shell_argv(_server: &Server, c: &CloudCtx, term: &str) -> Vec<String> {
         &c.box_ref(),
         &[BOX_SHELL.into(), "-l".into()],
     )
+}
+
+/// An absolute in-box path below the box root ([`vk_cloud::Provider::box_root`]).
+pub fn in_box(root: &str, path: &str) -> String {
+    format!("{root}{path}")
 }
 
 /// The cloud context of a task box.
@@ -664,19 +674,22 @@ fn make_ctx(
     clone: Option<CloudClone>,
     projection_env: &[(String, String)],
     shared: &Path,
+    root: String,
 ) -> CloudCtx {
-    let (mut exec_env, secrets) = split_projection_env(projection_env, shared);
+    let (mut exec_env, secrets) =
+        split_projection_env(projection_env, shared, &in_box(&root, BOX_CREDS));
     exec_env.push(("VIBEKE_ISOLATION".into(), "cloud".into()));
-    exec_env.push(("VIBEKE_BIN".into(), BOX_BIN.into()));
+    exec_env.push(("VIBEKE_BIN".into(), in_box(&root, BOX_BIN)));
     let box_ref = format!("{provider}/{box_id}");
     let run_dir = super::container::run_dir(key);
     let runner = CloudRunner {
         provider,
         box_ref,
         host_bin: server.opts.bin.to_string_lossy().into_owned(),
-        workdir: BOX_WORKSPACE.into(),
+        workdir: in_box(&root, BOX_WORKSPACE),
         root: sbx_root(key),
         run_dir: run_dir.clone(),
+        box_root: root.clone(),
         exec_env,
         secrets,
         cli_env: cli_env(&server_env(server), &provider_env_vars()),
@@ -686,8 +699,9 @@ fn make_ctx(
         box_id: box_id.to_string(),
         name: name.to_string(),
         key: key.to_string(),
-        workdir: BOX_WORKSPACE.into(),
-        bin: BOX_BIN.into(),
+        workdir: in_box(&root, BOX_WORKSPACE),
+        bin: in_box(&root, BOX_BIN),
+        root,
         run_dir,
         clone,
         runner,
@@ -716,6 +730,7 @@ pub fn ctx_from_record(server: &Server, rec: &BoxRecord) -> Result<CloudCtx, Rpc
         clone,
         &[],
         Path::new("/nonexistent"),
+        p.box_root(&rec.id),
     ))
 }
 
@@ -964,6 +979,7 @@ pub async fn build(server: &Arc<Server>, i: BuildIn<'_>) -> Result<CloudCtx, Rpc
             Some(clone),
             &projection.env,
             shared,
+            p.box_root(&id),
         ));
     }
     let (p, cred) = credential(server, &prov_id)?;
@@ -1000,6 +1016,7 @@ pub async fn build(server: &Arc<Server>, i: BuildIn<'_>) -> Result<CloudCtx, Rpc
         Some(clone.clone()),
         &projection.env,
         shared,
+        p.box_root(&rb.id),
     );
     let bootstrapped = prior.as_ref().is_some_and(|r| r.key == key);
     if (created || !bootstrapped)
@@ -1028,7 +1045,7 @@ pub async fn build(server: &Arc<Server>, i: BuildIn<'_>) -> Result<CloudCtx, Rpc
         ownership: "attached".into(),
         panes: vec![],
         unsynced: None,
-        workdir: BOX_WORKSPACE.into(),
+        workdir: c.workdir.clone(),
         sessions: 0,
         url: rb.url.clone(),
         repo: Some(clone.repo.to_string_lossy().into_owned()),
@@ -1101,9 +1118,12 @@ fn box_vibeke(server: &Server, os: &str, arch: &str) -> Result<PathBuf, RpcError
 }
 
 /// Script that makes the in-box directories (with `sudo -n` when the box user cannot).
-fn prep_script() -> String {
+fn prep_script(root: &str) -> String {
+    let q = |p: &str| sh_quote(&in_box(root, p));
+    let (vk, ws, bin) = (q("/vibeke"), q(BOX_WORKSPACE), q("/vibeke/bin"));
+    let (creds, home, brokers) = (q(BOX_CREDS), q(BOX_HOME), q(BOX_BROKERS));
     format!(
-        "set -e\nfor d in /vibeke {BOX_WORKSPACE}; do\n  if [ ! -d \"$d\" ] || [ ! -w \"$d\" ]; then\n    mkdir -p \"$d\" 2>/dev/null || sudo -n mkdir -p \"$d\"\n    [ -w \"$d\" ] || sudo -n chown \"$(id -u):$(id -g)\" \"$d\"\n  fi\ndone\nmkdir -p /vibeke/bin {BOX_CREDS} {BOX_HOME} {BOX_BROKERS}\nchmod 700 {BOX_CREDS}\nuname -sm"
+        "set -e\nfor d in {vk} {ws}; do\n  if [ ! -d \"$d\" ] || [ ! -w \"$d\" ]; then\n    mkdir -p \"$d\" 2>/dev/null || sudo -n mkdir -p \"$d\"\n    [ -w \"$d\" ] || sudo -n chown \"$(id -u):$(id -g)\" \"$d\"\n  fi\ndone\nmkdir -p {bin} {creds} {home} {brokers}\nchmod 700 {creds}\nuname -sm"
     )
 }
 
@@ -1209,14 +1229,14 @@ async fn bootstrap(
             format!("could not {what} in the cloud box: {}", o.err_text()),
         )
     };
-    let o = exec_on(p, cred, &c.box_id, &sh(&prep_script()), vec![], t).await?;
+    let o = exec_on(p, cred, &c.box_id, &sh(&prep_script(&c.root)), vec![], t).await?;
     if !o.ok() {
         return Err(fail("prepare /vibeke and /workspace", &o));
     }
     let (os, arch) = parse_uname(o.out().lines().last().unwrap_or_default());
     let bin = box_vibeke(server, &os, &arch)?;
     let data = tokio::fs::read(&bin).await.map_err(internal)?;
-    p.write_file(cred, &c.box_id, BOX_BIN, data, 0o755)
+    p.write_file(cred, &c.box_id, &c.bin, data, 0o755)
         .await
         .map_err(map_err(p))?;
     let Some(cl) = c.clone.clone() else {
@@ -1271,7 +1291,7 @@ async fn bootstrap(
     // Projected credentials (13 §8): the same relative layout as the container mount.
     for (host, rel) in files_under(shared) {
         let data = tokio::fs::read(&host).await.map_err(internal)?;
-        let target = Path::new(BOX_CREDS).join(&rel);
+        let target = Path::new(&in_box(&c.root, BOX_CREDS)).join(&rel);
         p.write_file(cred, &c.box_id, &target.to_string_lossy(), data, 0o600)
             .await
             .map_err(map_err(p))?;
@@ -1366,7 +1386,12 @@ pub fn start_link(
 ) -> (Arc<super::container::BoxLink>, tokio::task::JoinHandle<()>) {
     let link = Arc::new(super::container::BoxLink::default());
     let l2 = link.clone();
-    let argv = link_argv(&c.runner.host_bin, &c.box_ref(), &c.bin);
+    let argv = link_argv(
+        &c.runner.host_bin,
+        &c.box_ref(),
+        &c.bin,
+        &in_box(&c.root, BOX_BROKERS),
+    );
     let env = c.runner.cli_env.clone();
     let run_dir = c.run_dir.clone();
     let key = c.key.clone();

@@ -320,6 +320,11 @@ pub trait Provider: Send + Sync {
         id: &'a str,
         port: u16,
     ) -> BoxFut<'a, Result<Option<String>>>;
+    /// Prefix of absolute in-box paths (`/workspace` is `<box_root>/workspace`). Empty for real
+    /// boxes; the fake provider's boxes are host directories, so their paths live below one.
+    fn box_root(&self, _id: &str) -> String {
+        String::new()
+    }
 }
 
 /// Every provider this build knows, in the order clients list them. `fake` only appears when

@@ -13,6 +13,7 @@ fn runner(root: &Path) -> CloudRunner {
         workdir: BOX_WORKSPACE.into(),
         root: root.to_path_buf(),
         run_dir: root.join("run"),
+        box_root: String::new(),
         exec_env: vec![(
             "CLAUDE_CONFIG_DIR".into(),
             "/vibeke/creds/home/claude".into(),
@@ -67,7 +68,7 @@ fn pane_argv_is_a_cloud_exec_with_identity_and_no_secrets() {
 #[test]
 fn link_and_git_services_go_through_cloud_exec() {
     assert_eq!(
-        link_argv("/b/vibeke", "sprites/vk-1", BOX_BIN),
+        link_argv("/b/vibeke", "sprites/vk-1", BOX_BIN, BOX_BROKERS),
         [
             "/b/vibeke",
             "cloud",
@@ -101,6 +102,7 @@ fn projection_env_splits_paths_from_secrets() {
             ("OTHER".into(), "/state/sbx/k/sharedother".into()),
         ],
         shared,
+        BOX_CREDS,
     );
     assert_eq!(
         env,
