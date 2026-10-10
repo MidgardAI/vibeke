@@ -1472,7 +1472,8 @@ impl Call<'_> {
             "browser.click" | "browser.type" | "browser.press" | "browser.navigate" => {
                 // Input goes to a session this device took over, so the agent is paused meanwhile.
                 let session = req(&p, "session")?;
-                if self.gw.screencasts.taken_by(session).as_deref() != Some(self.device.id.as_str())
+                if self.gw.screencasts.controller(session).as_deref()
+                    != Some(self.device.id.as_str())
                 {
                     return Err(ApiError::new(
                         "conflict",

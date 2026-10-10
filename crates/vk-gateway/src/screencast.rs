@@ -32,8 +32,10 @@ pub struct Screencasts {
 struct Watch {
     /// Device id → last attach or frame poll.
     viewers: HashMap<String, Instant>,
-    /// The device whose take-over is in force.
+    /// The device whose take-over is in force or in flight: its lease end releases the session.
     taken_by: Option<String>,
+    /// The host confirmed `taken_by`'s take-over: only then does its input reach the page.
+    confirmed: bool,
 }
 
 /// What to undo on the server after devices stopped watching a session.
@@ -76,10 +78,17 @@ impl Screencasts {
     pub fn set_taken(&self, session: &str, device: Option<&str>) {
         let mut m = self.map.lock().unwrap();
         match device {
-            Some(d) => m.entry(session.to_string()).or_default().taken_by = Some(d.to_string()),
+            Some(d) => {
+                let w = m.entry(session.to_string()).or_default();
+                if w.taken_by.as_deref() != Some(d) {
+                    w.taken_by = Some(d.to_string());
+                    w.confirmed = false;
+                }
+            }
             None => {
                 if let Some(w) = m.get_mut(session) {
                     w.taken_by = None;
+                    w.confirmed = false;
                     if w.viewers.is_empty() {
                         m.remove(session);
                     }
@@ -94,6 +103,38 @@ impl Screencasts {
             .unwrap()
             .get(session)
             .is_some_and(|w| w.viewers.contains_key(device))
+    }
+
+    /// The host answered the take-over: `device` now controls the page.
+    pub fn confirm_taken(&self, session: &str, device: &str) {
+        let mut m = self.map.lock().unwrap();
+        let w = m.entry(session.to_string()).or_default();
+        w.taken_by = Some(device.to_string());
+        w.confirmed = true;
+    }
+
+    /// The device whose confirmed take-over lets its input reach the page.
+    pub fn controller(&self, session: &str) -> Option<String> {
+        self.map
+            .lock()
+            .unwrap()
+            .get(session)
+            .filter(|w| w.confirmed)
+            .and_then(|w| w.taken_by.clone())
+    }
+
+    fn take_state(&self, session: &str) -> Option<(String, bool)> {
+        let m = self.map.lock().unwrap();
+        let w = m.get(session)?;
+        Some((w.taken_by.clone()?, w.confirmed))
+    }
+
+    fn restore_take_state(&self, session: &str, prev: Option<(String, bool)>) {
+        match prev {
+            Some((d, true)) => self.confirm_taken(session, &d),
+            Some((d, false)) => self.set_taken(session, Some(&d)),
+            None => self.set_taken(session, None),
+        }
     }
 
     pub fn taken_by(&self, session: &str) -> Option<String> {
@@ -129,6 +170,7 @@ impl Screencasts {
             let detach = before > 0 && w.viewers.is_empty();
             if release {
                 w.taken_by = None;
+                w.confirmed = false;
             }
             if detach || release {
                 out.push((session.clone(), Release { detach, release }));
@@ -239,8 +281,10 @@ pub async fn control(
     } else {
         "browser.release"
     };
-    // Record the take-over before asking the server: if this request is dropped after the
-    // server took over but before its reply arrives, the lease cleanup still releases it.
+    // Record the take-over before asking the server: if this request is dropped, or its answer
+    // is lost, after the server took over, the lease cleanup still releases it. Input waits for
+    // the server's answer (`confirm_taken`).
+    let prev = gw.screencasts.take_state(session);
     if take {
         gw.screencasts.set_taken(session, Some(device));
     }
@@ -250,9 +294,11 @@ pub async fn control(
         .await
     {
         Ok(r) => r,
+        // No answer: the server may have acted. Keep the record so a lease end releases it.
+        Err(e) if e.kind == "unavailable" => return Err(e),
         Err(e) => {
             if take {
-                gw.screencasts.set_taken(session, None);
+                gw.screencasts.restore_take_state(session, prev);
             }
             return Err(e);
         }
@@ -261,7 +307,11 @@ pub async fn control(
     if handle != session {
         gw.screencasts.set_taken(session, None);
     }
-    gw.screencasts.set_taken(handle, take.then_some(device));
+    if take {
+        gw.screencasts.confirm_taken(handle, device);
+    } else {
+        gw.screencasts.set_taken(handle, None);
+    }
     Ok(r)
 }
 
@@ -328,6 +378,10 @@ mod tests {
         assert!(s.is_viewer("b1", "tablet") && !s.is_viewer("b1", "watch"));
         s.set_taken("b1", Some("phone"));
         assert_eq!(s.taken_by("b1").as_deref(), Some("phone"));
+        // A take-over in flight is released with its lease, but carries no input yet.
+        assert_eq!(s.controller("b1"), None);
+        s.confirm_taken("b1", "phone");
+        assert_eq!(s.controller("b1").as_deref(), Some("phone"));
         // The phone leaves: control goes back, but the tablet still watches.
         assert_eq!(
             s.remove_viewer("b1", "phone"),
