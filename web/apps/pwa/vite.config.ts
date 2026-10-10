@@ -16,6 +16,20 @@ const hash = (() => {
   }
 })();
 
+// Android and installed PWAs offer Vibeke in the share sheet. The service worker receives the POST
+// (src/sw.ts) and opens `#/share-in/<id>`.
+const shareTarget = {
+  action: '/share-target',
+  method: 'POST',
+  enctype: 'multipart/form-data',
+  params: {
+    title: 'title',
+    text: 'text',
+    url: 'url',
+    files: [{ name: 'files', accept: ['image/*', 'text/*', '.md', '.txt', '.log', '.json', '.diff', '.patch'] }],
+  },
+};
+
 export default defineConfig({
   base: '/',
   define: {
@@ -30,7 +44,7 @@ export default defineConfig({
       srcDir: 'src',
       filename: 'sw.ts',
       injectRegister: false,
-      registerType: 'autoUpdate',
+      registerType: 'prompt',
       injectManifest: {
         rollupFormat: 'iife',
         globPatterns: ['**/*.{js,css,html,svg,png,ico,webmanifest}'],
@@ -46,6 +60,7 @@ export default defineConfig({
         orientation: 'any',
         background_color: '#0f1012',
         theme_color: '#0f1012',
+        ...{ share_target: shareTarget },
         icons: [
           { src: '/icons/icon-192.png', sizes: '192x192', type: 'image/png' },
           { src: '/icons/icon-512.png', sizes: '512x512', type: 'image/png' },

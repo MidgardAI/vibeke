@@ -113,6 +113,20 @@ describe('PushSync', () => {
     manager.stop();
   });
 
+  test('supports_clear is sent only when the browser accepts silent pushes', async () => {
+    for (const supportsClear of [true, false]) {
+      const s = setup(['h1']);
+      s.push.supportsClear = supportsClear;
+      await s.manager.start();
+      await flush(30);
+      await s.sync.start();
+      await s.sync.enable();
+      const sub = s.calls.find((c) => c[1] === 'push.subscribe')!;
+      expect(sub[2].supports_clear).toBe(supportsClear ? true : undefined);
+      s.manager.stop();
+    }
+  });
+
   test('app start re-sends only when the endpoint changed', async () => {
     const s = setup(['h1']);
     await s.manager.start();

@@ -1,8 +1,9 @@
 // Minimal IndexedDB key-value wrapper: one database, a few object stores, promise API.
 
 const DB_NAME = 'vibeke';
-const VERSION = 1;
-export const STORES = ['keys', 'hosts', 'mirrors'] as const;
+const VERSION = 2;
+/** `shared`: content received through the Web Share Target, keyed by a one-time id. */
+export const STORES = ['keys', 'hosts', 'mirrors', 'shared'] as const;
 export type StoreName = (typeof STORES)[number];
 
 let dbp: Promise<IDBDatabase> | null = null;
@@ -13,7 +14,15 @@ function open(): Promise<IDBDatabase> {
     req.onupgradeneeded = () => {
       for (const s of STORES) if (!req.result.objectStoreNames.contains(s)) req.result.createObjectStore(s);
     };
-    req.onsuccess = () => resolve(req.result);
+    req.onsuccess = () => {
+      const db = req.result;
+      // A newer version (opened by the service worker or another tab) must not wait on this tab.
+      db.onversionchange = () => {
+        db.close();
+        dbp = null;
+      };
+      resolve(db);
+    };
     req.onerror = () => reject(req.error);
     req.onblocked = () => reject(new Error('indexedDB blocked'));
   });

@@ -16,3 +16,12 @@ export function detectPlatform(ua: string, platform: string, touchPoints: number
   if (/Linux/.test(platform) || /Linux/.test(ua)) return { name: 'Linux', device: 'Linux', ios: false };
   return { name: 'Web', device: 'Browser', ios: false };
 }
+
+/**
+ * Apple WebKit: Safari on macOS and every browser on iOS/iPadOS (they all use WebKit). It revokes
+ * Web Push permission for pushes that show no notification.
+ */
+export function isAppleWebKit(ua: string, platform: string, touchPoints: number): boolean {
+  if (detectPlatform(ua, platform, touchPoints).ios) return true;
+  return /Macintosh|Mac OS X/.test(ua) && /Safari\//.test(ua) && !/Chrome\/|Chromium\/|CriOS\/|Edg\/|OPR\/|Firefox\/|FxiOS\//.test(ua);
+}

@@ -44,7 +44,7 @@ const enc = new TextEncoder();
 const dec = new TextDecoder();
 
 /** Marker of what a host last received: endpoint + VAPID public key. */
-const marker = (sub: PushSubscriptionInfo, keys: VapidKeys): string => `${sub.endpoint}|${b64.encode(keys.publicKey)}`;
+const marker = (sub: PushSubscriptionInfo, keys: VapidKeys, clear = false): string => `${sub.endpoint}|${b64.encode(keys.publicKey)}${clear ? '|clear' : ''}`;
 
 /**
  * Push goes only to the user's own hosts: the VAPID private key lets a host sign pushes as this
@@ -186,7 +186,8 @@ export class PushSync {
     const sub = this.sub;
     const keys = this.keys;
     if (!sub || !keys) return;
-    const want = marker(sub, keys);
+    const clear = this.o.push?.supportsClear === true;
+    const want = marker(sub, keys, clear);
     const jobs: Promise<void>[] = [];
     for (const c of this.o.manager.connections()) {
       const st = c.getSnapshot();
@@ -198,6 +199,7 @@ export class PushSync {
           .request('push.subscribe', {
             subscription: { endpoint: sub.endpoint, keys: { p256dh: sub.keys.p256dh, auth: sub.keys.auth } },
             vapid_private: b64.encode(keys.privateKey),
+            ...(clear ? { supports_clear: true } : {}),
           })
           .then(
             () => {

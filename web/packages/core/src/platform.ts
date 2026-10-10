@@ -105,6 +105,11 @@ export interface PushSupport {
   /** Subscribe with the device's VAPID public key (uncompressed P-256, base64url). */
   subscribe(vapidPublic: string): Promise<PushSubscriptionInfo>;
   unsubscribe(): Promise<void>;
+  /**
+   * The browser accepts a push that shows nothing (Chrome, Firefox). Hosts then send `clear`
+   * pushes that only close notifications. False where the browser revokes push for silent pushes (Apple WebKit).
+   */
+  supportsClear?: boolean;
 }
 
 export interface PushSubscriptionInfo {

@@ -826,7 +826,7 @@ export interface AppApi {
   'prefs.get': { params: Record<string, never>; result: { device: DevicePrefs; host: { dnd_until?: number } } };
   'prefs.set': { params: { device?: DevicePrefs; host?: { dnd_until: number } }; result: unknown };
   'push.subscribe': {
-    params: { subscription: { endpoint: string; keys: { p256dh: string; auth: string } }; vapid_private: string };
+    params: { subscription: { endpoint: string; keys: { p256dh: string; auth: string } }; vapid_private: string; supports_clear?: boolean };
     result: Record<string, never>;
   };
   /** Fresh relay ticket for this device (`exp` unix seconds). */
