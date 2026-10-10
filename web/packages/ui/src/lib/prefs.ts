@@ -4,6 +4,7 @@
 
 import { MAX_VIEW_OVERRIDES, isAgentView, withViewOverride, type AgentView } from './agent-view';
 import { isLanguage, type LanguagePref } from '../i18n';
+import { cleanLayout, type KeyLayout } from './key-layout';
 import { ValueStore } from './store';
 
 export type Theme = 'system' | 'light' | 'dark';
@@ -44,6 +45,10 @@ export interface Prefs {
   agentView: AgentView;
   /** Per-workspace overrides of `agentView`, keyed `<host>/<workspace>`. */
   agentViews: Record<string, AgentView>;
+  /** The keys board; null = the built-in Default layout. */
+  keyLayout: KeyLayout | null;
+  /** Left-hand mode: the belt, Send and Attach move to the left side. */
+  leftHand: boolean;
 }
 
 export const PANEL_MIN = 320;
@@ -71,6 +76,8 @@ export const DEFAULT_PREFS: Prefs = {
   hostFilter: null,
   agentView: 'conversation',
   agentViews: {},
+  keyLayout: null,
+  leftHand: false,
 };
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -89,7 +96,7 @@ export function parsePrefs(raw: string | null): Prefs {
   if (typeof v.termFont === 'number' && v.termFont >= 8 && v.termFont <= 24) p.termFont = v.termFont;
   if (v.language === 'system' || isLanguage(v.language)) p.language = v.language;
   if (v.beltSize === 's' || v.beltSize === 'm' || v.beltSize === 'l') p.beltSize = v.beltSize;
-  for (const k of ['haptics', 'zenLandscape', 'wrap', 'tourDone', 'panelOpen', 'sidebarHidden', 'showDone'] as const) if (typeof v[k] === 'boolean') p[k] = v[k] as boolean;
+  for (const k of ['haptics', 'zenLandscape', 'wrap', 'tourDone', 'panelOpen', 'sidebarHidden', 'showDone', 'leftHand'] as const) if (typeof v[k] === 'boolean') p[k] = v[k] as boolean;
   if (typeof v.deviceName === 'string') p.deviceName = v.deviceName.slice(0, 64);
   if (typeof v.speechConsent === 'boolean') p.speechConsent = v.speechConsent;
   if (isObj(v.quickReplies)) {
@@ -108,6 +115,7 @@ export function parsePrefs(raw: string | null): Prefs {
     for (const [k, view] of Object.entries(v.agentViews).slice(-MAX_VIEW_OVERRIDES)) if (isAgentView(view)) m[k] = view;
     p.agentViews = m;
   }
+  if (v.keyLayout) p.keyLayout = cleanLayout(v.keyLayout);
   if (Array.isArray(v.pins)) p.pins = v.pins.filter((x): x is string => typeof x === 'string').slice(0, 200);
   if (isObj(v.seenDone)) {
     const s: Record<string, number> = {};
