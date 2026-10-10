@@ -641,7 +641,6 @@ button[data-nav-item][data-selected] {
     transform: none;
     transition: none;
   }
-  }
 }
 
 /* Links in output: URLs and workspace files. */
