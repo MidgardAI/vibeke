@@ -463,10 +463,6 @@ pub(crate) fn image_mime(name: &str, head: &[u8]) -> Option<&'static str> {
 }
 
 /// Read up to [`MAX_READ`] bytes of a regular file under `root` (no symlink anywhere).
-fn read_file(root: &Path, rel: &str) -> Result<(u64, Vec<u8>), RpcError> {
-    read_file_capped(root, rel, MAX_READ)
-}
-
 fn read_file_capped(root: &Path, rel: &str, cap: u64) -> Result<(u64, Vec<u8>), RpcError> {
     let f = open_nofollow(root, rel)?;
     let md = f
@@ -850,7 +846,8 @@ mod tests {
     async fn read_returns_images_on_request() {
         use base64::Engine;
         let (_t, root) = fixture();
-        let png = b"\x89PNG\r\n\x1a\nrest";
+        // A real PNG header: the signature, then the IHDR chunk length with its NUL bytes.
+        let png = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDRrest";
         std::fs::write(root.join("pic.png"), png).unwrap();
         // Without the option an image is plain binary.
         let v = read(root.clone(), json!({"path": "pic.png"}))

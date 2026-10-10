@@ -88,6 +88,14 @@ impl Screencasts {
         }
     }
 
+    pub fn is_viewer(&self, session: &str, device: &str) -> bool {
+        self.map
+            .lock()
+            .unwrap()
+            .get(session)
+            .is_some_and(|w| w.viewers.contains_key(device))
+    }
+
     pub fn taken_by(&self, session: &str) -> Option<String> {
         self.map
             .lock()
@@ -208,6 +216,38 @@ pub async fn detach(gw: &Gateway, device: &str, session: &str) -> ApiResult {
     Ok(json!({"session": session, "detached": true}))
 }
 
+/// `browser.take_over` / `browser.release` for one device. A take-over needs the device to be
+/// watching the session, and runs under the same lock as detach and lease expiry: a device whose
+/// lease ends while its take-over is in flight can never leave the agent blocked, because the
+/// lease cannot end until the take-over is recorded, and then it ends both.
+pub async fn control(
+    gw: &Gateway,
+    actor: &str,
+    device: &str,
+    session: &str,
+    take: bool,
+) -> ApiResult {
+    let _seq = gw.screencasts.seq.lock().await;
+    if take && !gw.screencasts.is_viewer(session, device) {
+        return Err(ApiError::new(
+            "conflict",
+            "watch this session first (browser.attach_screencast)",
+        ));
+    }
+    let method = if take {
+        "browser.take_over"
+    } else {
+        "browser.release"
+    };
+    let r = gw
+        .server
+        .call_as(actor, method, json!({"session": session}))
+        .await?;
+    let handle = r.get("session").and_then(|v| v.as_str()).unwrap_or(session);
+    gw.screencasts.set_taken(handle, take.then_some(device));
+    Ok(r)
+}
+
 /// `browser.screencast_frame`: renews the device's lease, then reads the latest frame.
 pub async fn frame(gw: &Gateway, device: &str, params: Value) -> ApiResult {
     let session = params.get("session").and_then(|v| v.as_str()).unwrap_or("");
@@ -268,6 +308,7 @@ mod tests {
         let t0 = Instant::now();
         s.add_viewer("b1", "phone", t0);
         s.add_viewer("b1", "tablet", t0);
+        assert!(!s.is_viewer("b1", "tablet"));
         s.set_taken("b1", Some("phone"));
         assert_eq!(s.taken_by("b1").as_deref(), Some("phone"));
         // The phone leaves: control goes back, but the tablet still watches.
