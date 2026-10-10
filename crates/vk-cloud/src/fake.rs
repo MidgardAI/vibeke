@@ -987,6 +987,23 @@ fn run_daemon(sdir: &Path, spec: &DaemonSpec) -> std::io::Result<()> {
         });
     }
 
+    // The box is gone (destroyed, or a test removed its directory): end the command and stop,
+    // so no daemon outlives its box.
+    {
+        let (sdir, sock) = (sdir.to_path_buf(), sock.clone());
+        std::thread::spawn(move || {
+            while sdir.join("spec.json").exists() {
+                std::thread::sleep(Duration::from_secs(2));
+            }
+            // SAFETY: kill(2) on the command's process group.
+            unsafe {
+                libc::kill(-child_pid, libc::SIGHUP);
+            }
+            let _ = std::fs::remove_file(&sock);
+            std::process::exit(0);
+        });
+    }
+
     for conn in listener.incoming() {
         let Ok(mut c) = conn else { continue };
         let _ = c.set_write_timeout(Some(Duration::from_secs(5)));
