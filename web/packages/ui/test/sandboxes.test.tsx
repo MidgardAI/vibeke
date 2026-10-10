@@ -23,7 +23,7 @@ const box = (id: string, p: Partial<CloudBox> = {}): CloudBox => ({
 });
 
 describe('SandboxGroups', () => {
-  const groups = groupBoxes([provider('sprites'), provider('e2b', 'missing')], [box('a'), box('b', { state: 'suspended', ownership: 'idle' }), box('c', { unsynced: { commits: 2, dirty: 1, untracked: 0, summary: '2 commits not on host' } })]);
+  const groups = groupBoxes([provider('sprites'), provider('e2b', 'missing')], [box('a'), box('b', { state: 'paused', ownership: 'idle' }), box('c', { unsynced: { commits: 2, dirty: 1, untracked: 0, summary: '2 commits not on host' } })]);
   const html = renderToStaticMarkup(<SandboxGroups groups={groups} now={5_000_000} busy={null} onAction={() => {}} onSignIn={() => {}} onSignOut={() => {}} />);
 
   test('groups boxes under their provider with the sign-in state', () => {
@@ -38,7 +38,7 @@ describe('SandboxGroups', () => {
 
   test('shows task, state, ownership and the unsynced marker', () => {
     expect(html).toContain('task a');
-    expect(html).toContain('suspended');
+    expect(html).toContain('paused');
     expect(html).toContain('Idle');
     expect(html).toContain('Not synced');
     expect(html).toContain('2 commits not on host');
@@ -46,7 +46,7 @@ describe('SandboxGroups', () => {
 
   test('offers row actions by capability and state', () => {
     expect(boxActions(box('a'))).toEqual(['open', 'bring_back', 'suspend', 'checkpoint', 'destroy']);
-    expect(boxActions(box('b', { state: 'suspended', ownership: 'idle' }))).toContain('resume');
+    expect(boxActions(box('b', { state: 'paused', ownership: 'idle' }))).toContain('resume');
     expect(boxActions(box('o', { ownership: 'orphaned', panes: [] }))).toEqual(['adopt', 'suspend', 'checkpoint', 'destroy']);
     expect(boxActions(box('m', { ownership: 'missing' }))).toEqual(['forget']);
     expect(boxActions(box('n', { caps: { explicit_suspend: false } }))).not.toContain('suspend');
@@ -103,11 +103,11 @@ describe('events', () => {
   });
 
   test('cloud.box.changed updates the list and a destroyed box leaves it', () => {
-    const b = cloudBoxFromEvent(ev('cloud.box.changed', { box: 'sprites/a' }, { state: 'suspended', ownership: 'idle', panes: [] }));
+    const b = cloudBoxFromEvent(ev('cloud.box.changed', { box: 'sprites/a' }, { state: 'paused', ownership: 'idle', panes: [] }));
     expect(b?.box).toBe('sprites/a');
-    expect(b?.state).toBe('suspended');
+    expect(b?.state).toBe('paused');
     const list = upsertCloudBox([box('a')], b!);
-    expect(list.map((x) => x.state)).toEqual(['suspended']);
+    expect(list.map((x) => x.state)).toEqual(['paused']);
     expect(upsertCloudBox(list, parseCloudBox({ box: 'sprites/a', state: 'destroyed' })!)).toEqual([]);
   });
 });

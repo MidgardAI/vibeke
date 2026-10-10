@@ -122,9 +122,11 @@ const capStrict = (caps: CloudBox['caps'], key: string): boolean => (Array.isArr
 
 export type BoxAction = 'open' | 'bring_back' | 'suspend' | 'resume' | 'checkpoint' | 'adopt' | 'forget' | 'destroy';
 
-const RUNNING = new Set(['running', 'started', 'ready', 'warm']);
+const RUNNING = new Set(['running', 'creating']);
+/** Sleeping states (`warm` keeps memory; Sprites wake it on the next request). */
+const ASLEEP = new Set(['warm', 'cold', 'paused', 'stopped']);
 export const boxRunning = (b: CloudBox): boolean => RUNNING.has(b.state);
-export const boxSuspended = (b: CloudBox): boolean => b.state === 'suspended' || b.state === 'paused' || b.state === 'cold';
+export const boxSuspended = (b: CloudBox): boolean => ASLEEP.has(b.state);
 
 /** Which row actions apply to a box (ownership first, then the provider's capabilities). */
 export function boxActions(b: CloudBox): BoxAction[] {
