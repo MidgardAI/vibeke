@@ -67,3 +67,14 @@ test('a broken file is dropped instead of failing the app', async () => {
   await store.set('dashboard', 'h', 'h', '"ok"');
   expect(await store.get('dashboard', 'h')).toBe('"ok"');
 });
+
+test('a write in progress still counts as pending', async () => {
+  const { store } = setup();
+  await store.set('dashboard', 'h', 'h', '"x"');
+  const writing = store.flush();
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(store.hasPending()).toBe(true);
+  await writing;
+  expect(store.hasPending()).toBe(false);
+});

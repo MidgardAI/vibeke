@@ -20,6 +20,7 @@ export class CacheStore {
   private ready: Promise<void> | undefined;
   private writing: Promise<void> = Promise.resolve();
   private dirty = false;
+  private saving = false;
   private timer: ReturnType<typeof setTimeout> | undefined;
   private hosts: Set<string> | undefined;
   constructor(private dir: string, private safe: SafeStorageLike, private platform = process.platform, private delay = 10_000, private now = Date.now) {
@@ -113,7 +114,7 @@ export class CacheStore {
     await this.flush();
   }
   hasPending(): boolean {
-    return this.dirty;
+    return this.dirty || this.saving;
   }
   async flush(): Promise<void> {
     if (!this.ready) return;
@@ -124,6 +125,7 @@ export class CacheStore {
       if (!this.dirty) return;
       this.dirty = false;
       const tmp = `${this.file}.tmp`;
+      this.saving = true;
       try {
         checkSafeStorage(this.safe, this.platform);
         const bytes = this.safe.encryptString(JSON.stringify({ v: 1, entries: [...this.data.values()] }));
@@ -138,6 +140,8 @@ export class CacheStore {
         this.dirty = true;
         await rm(tmp, { force: true }).catch(() => {});
         throw e;
+      } finally {
+        this.saving = false;
       }
     });
     this.writing = run.catch(() => {});
