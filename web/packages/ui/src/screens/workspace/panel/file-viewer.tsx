@@ -1,5 +1,5 @@
-// Read-only file viewer for the Files tab (`fs.read`): highlighted text with line numbers, and
-// placeholders for secrets, binaries, empty and oversized files. Markdown, SVG and JSON files
+// Read-only file viewer for the Files tab (`fs.read`): highlighted text with line numbers, png,
+// jpeg, gif and webp images, and placeholders for secrets, binaries, empty and oversized files. Markdown, SVG and JSON files
 // also have a Preview (rendered Markdown whose relative links open other files, the SVG as an
 // image from a blob URL, JSON as a collapsible tree). A link such as `src/a.ts:42` opens at its
 // line. Lazy-loaded with the tab.
@@ -19,7 +19,7 @@ import { splitPath } from '../../../lib/changes';
 import { takeFileLine } from '../../../lib/file-focus';
 import { byteSize } from '../../../lib/format';
 import { safeHref } from '../../../lib/markdown';
-import { canPreview, parseJson, previewKind, resolveRelativeLink, type PreviewKind } from '../../../lib/preview';
+import { canPreview, imageDataUrl, isImagePath, parseJson, previewKind, resolveRelativeLink, type PreviewKind } from '../../../lib/preview';
 import { JsonTreeView } from './json-tree';
 
 type Mode = 'source' | 'preview';
@@ -39,7 +39,7 @@ export default function FileViewer({ host, pane, path, onBack, onOpen }: { host:
     setError(null);
     app
       .conn(host)
-      ?.request('fs.read', { pane, path })
+      ?.request('fs.read', isImagePath(path) ? { pane, path, as: 'image' } : { pane, path })
       .then(
         (f) => live && setFile(f),
         (e) => live && setError(errorMessage(e)),
@@ -71,6 +71,8 @@ export default function FileViewer({ host, pane, path, onBack, onOpen }: { host:
   const text = file && !file.secret && !file.binary ? (file.text ?? null) : null;
   const previewable = !!kind && text !== null && text !== '' && !!file && canPreview(kind, file.truncated);
   const shown: Mode = previewable ? (mode ?? (kind === 'markdown' ? 'preview' : 'source')) : 'source';
+
+  const imageUrl = file && !file.secret && file.binary ? imageDataUrl(file.mime, file.data_b64) : null;
 
   const { dir, name } = splitPath(path);
   return (
@@ -112,7 +114,10 @@ export default function FileViewer({ host, pane, path, onBack, onOpen }: { host:
           </div>
         )}
         {file?.secret && <Notice className="m-3">{t.panel.secretFile}</Notice>}
-        {file && !file.secret && file.binary && <Notice className="m-3">{t.panel.binaryFile}</Notice>}
+        {file && !file.secret && file.binary && imageUrl && <ImagePreview url={imageUrl} name={name} />}
+        {file && !file.secret && file.binary && !imageUrl && (
+          <Notice className="m-3">{file.mime && file.truncated ? t.panel.imageTooLarge : t.panel.binaryFile}</Notice>
+        )}
         {file && !file.secret && !file.binary && file.text == null && <Notice className="m-3">{t.panel.tooLarge(byteSize(file.size ?? 0))}</Notice>}
         {file && !file.secret && !file.binary && file.text != null && (
           <>
@@ -187,6 +192,18 @@ function SvgPreview({ text }: { text: string }) {
   return (
     <div className="checker flex min-h-full items-center justify-center p-4">
       <img src={state.url} alt={t.panel.svgAlt} className="max-h-full max-w-full" onError={() => setBroken(true)} />
+    </div>
+  );
+}
+
+/** A raster image on a checkerboard, shrunk to fit; a broken image shows the preview notice. */
+function ImagePreview({ url, name }: { url: string; name: string }) {
+  const [broken, setBroken] = useState(false);
+  useEffect(() => setBroken(false), [url]);
+  if (broken) return <Notice className="m-3">{t.panel.previewFailed}</Notice>;
+  return (
+    <div className="checker flex min-h-full items-center justify-center p-4">
+      <img src={url} alt={t.panel.imageAlt(name)} className="max-h-full max-w-full object-contain" onError={() => setBroken(true)} />
     </div>
   );
 }

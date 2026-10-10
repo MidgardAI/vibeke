@@ -37,6 +37,7 @@ import { Markdown } from '../../components/markdown';
 import { Button, Chip, DiffCount, Empty, IconButton, Spinner, cx } from '../../components/ui';
 import { t } from '../../i18n';
 import { errorMessage } from '../../lib/answer';
+import { ImageSourceContext, TranscriptImage } from '../../components/transcript-image';
 import { turnBlocks, turnHasWork, turnStats, turnText, workedFor, type ConvBlock, type Step, type ToolStep } from '../../lib/conversation';
 import { toolSummary, type ToolKind } from '../../lib/tool-summary';
 import { takePrefetchedTranscript } from '../../lib/prefetch';
@@ -124,6 +125,8 @@ export function Conversation({
   const working = run.execution.value === 'working' || run.execution.value === 'starting';
   const runRef = useRef(run.id);
   runRef.current = run.id;
+
+  const imageSource = useMemo(() => ({ host: hostId, target: run.id }), [hostId, run.id]);
 
   const nearBottom = () => {
     const el = listRef.current;
@@ -484,6 +487,7 @@ export function Conversation({
 
   return (
     <LinkContext.Provider value={links}>
+    <ImageSourceContext.Provider value={imageSource}>
     <div className="relative flex min-h-0 flex-1 flex-col">
       {findOpen && (
         <FindBar query={query} onQuery={onQuery} index={hit} count={count} onStep={stepFind} onClose={closeFind} placeholder={t.conv.findPlaceholder} note={findNote} />
@@ -558,6 +562,7 @@ export function Conversation({
         </div>
       )}
     </div>
+    </ImageSourceContext.Provider>
     </LinkContext.Provider>
   );
 }
@@ -624,6 +629,7 @@ function groupSteps(blocks: ConvBlock[]): (ConvBlock | StepBlock[])[] {
 
 function BlockView({ block }: { block: ConvBlock }) {
   if (block.k === 'user') return <UserMessage text={block.text} />;
+  if (block.k === 'image') return <TranscriptImage mime={block.mime} imageRef={block.ref} size={block.size} />;
   if (block.k === 'text')
     return (
       <div data-find-scope>

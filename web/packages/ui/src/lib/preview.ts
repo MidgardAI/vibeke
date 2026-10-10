@@ -1,6 +1,5 @@
 // File viewer previews: which files have one, links between Markdown files, and a size-bounded
-// tree for JSON. Images (png, jpg, gif, webp) have no preview: `fs.read` returns no bytes for
-// binary files.
+// tree for JSON. Images (png, jpg, gif, webp) come from `fs.read` with `as: 'image'`.
 
 import { normalizePath } from './linkify';
 import { parentDir } from './path-index';
@@ -21,6 +20,23 @@ export function previewKind(path: string): PreviewKind | null {
     default:
       return null;
   }
+}
+
+const IMAGE_MIMES: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp' };
+
+/** Is this a file the server can return as an image (by extension)? SVG is text and has its own preview. */
+export const isImagePath = (path: string): boolean => {
+  const ext = /\.([A-Za-z0-9]+)$/.exec(path)?.[1]?.toLowerCase();
+  return !!ext && Object.hasOwn(IMAGE_MIMES, ext);
+};
+
+/** A raster image type safe to show from a data URL (never SVG, which can carry scripts). */
+export const isRasterMime = (mime: string | null | undefined): mime is string => !!mime && Object.values(IMAGE_MIMES).includes(mime.toLowerCase());
+
+/** `data:` URL for server-provided image bytes; null for another type or text outside the base64 alphabet. */
+export function imageDataUrl(mime: string | null | undefined, b64: string | null | undefined): string | null {
+  if (!isRasterMime(mime) || !b64 || !/^[A-Za-z0-9+/]+={0,2}$/.test(b64)) return null;
+  return `data:${mime.toLowerCase()};base64,${b64}`;
 }
 
 /** A cut-off file cannot be previewed as SVG or JSON (it would not parse); Markdown reads fine. */

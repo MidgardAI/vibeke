@@ -689,7 +689,8 @@ scrollback.forget :: {pane?: Target, workspace?: Target, before?: string|int, al
 
 # --- fs, git ---
 fs.list :: {pane?: Target, path?: string = ''} => {path: string, entries: [{name: string, kind: file|dir|symlink|other, size?: int, ignored: bool, secret: bool}], truncated: bool}
-fs.read :: {pane?: Target, path: string} => {path: string, text?: string, binary: bool, truncated: bool, size: int, secret: bool}
+# as=image: a png, jpeg, gif or webp file up to 4 MiB comes back as mime + data_b64 (standard base64); a larger one has truncated=true and no data
+fs.read :: {pane?: Target, path: string, as?: image} => {path: string, text?: string, binary: bool, truncated: bool, size: int, secret: bool, mime?: string, data_b64?: string}
 git.status :: {pane?: Target, path?: string} => {repo_root: string, branch?: string|null, upstream?: string|null, ahead: int, behind: int, clean: bool, truncated: bool, files: [{path: string, orig_path?: string|null, x: string, y: string, kind: string, staged: bool, adds?: int|null, dels?: int|null, binary: bool, secret: bool}]}
 git.diff :: {pane?: Target, path?: string, file: string, staged?: bool} => {file: string, diff: string, truncated: bool, binary: bool, untracked: bool, secret?: bool}
 git.log :: {pane?: Target, path?: string, base?: string, limit?: int = 50} => {commits: [{sha: string, short: string, author: string, ts: int, subject: string}], truncated: bool}

@@ -1119,8 +1119,11 @@ impl Call<'_> {
             "agent.transcript" => {
                 // Server pages natively for gateway clients: {turns:[{n, ts, items}], next_before}.
                 req(&p, "target")?;
-                self.server("agent.transcript", pick(&p, &["target", "before", "limit"]))
-                    .await
+                self.server(
+                    "agent.transcript",
+                    pick(&p, &["target", "before", "limit", "image"]),
+                )
+                .await
             }
             "agent.start" => {
                 let pane = if let Some(wt) = p.get("worktree") {
@@ -1260,7 +1263,7 @@ impl Call<'_> {
             }
             "fs.list" | "fs.read" => {
                 req(&p, "pane")?;
-                self.server(method, pick(&p, &["pane", "path"])).await
+                self.server(method, pick(&p, &["pane", "path", "as"])).await
             }
             "attention.list" => {
                 let mut r = self

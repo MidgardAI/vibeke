@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { JSON_CAP, buildJsonTree, canPreview, countValues, parseJson, previewKind, resolveRelativeLink } from '../src/lib/preview';
+import { JSON_CAP, buildJsonTree, canPreview, countValues, imageDataUrl, isImagePath, isRasterMime, parseJson, previewKind, resolveRelativeLink } from '../src/lib/preview';
 
 describe('previewKind', () => {
   test('by extension', () => {
@@ -68,5 +68,26 @@ describe('json tree', () => {
     let deep: unknown = 1;
     for (let i = 0; i < 500; i++) deep = [deep];
     expect(() => buildJsonTree(deep)).not.toThrow();
+  });
+});
+
+describe('images', () => {
+  test('image paths are raster files only', () => {
+    expect(isImagePath('a/shot.PNG')).toBe(true);
+    expect(isImagePath('x.jpeg')).toBe(true);
+    expect(isImagePath('x.webp')).toBe(true);
+    expect(isImagePath('logo.svg')).toBe(false);
+    expect(isImagePath('png')).toBe(false);
+    expect(isImagePath('a.txt')).toBe(false);
+  });
+
+  test('data URLs need a raster type and clean base64', () => {
+    expect(isRasterMime('image/svg+xml')).toBe(false);
+    expect(imageDataUrl('image/png', 'iVBORw0KGgo=')).toBe('data:image/png;base64,iVBORw0KGgo=');
+    expect(imageDataUrl('IMAGE/GIF', 'R0lGOD')).toBe('data:image/gif;base64,R0lGOD');
+    expect(imageDataUrl('image/svg+xml', 'AAAA')).toBeNull();
+    expect(imageDataUrl('image/png', 'AAAA" onerror="x')).toBeNull();
+    expect(imageDataUrl('image/png', '')).toBeNull();
+    expect(imageDataUrl(null, 'AAAA')).toBeNull();
   });
 });

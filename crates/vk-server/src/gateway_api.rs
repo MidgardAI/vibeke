@@ -42,6 +42,7 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
         "agent.transcript"
             if p.get("before").is_some()
                 || p.get("items").and_then(Value::as_bool) == Some(true)
+                || p.get("image").is_some()
                 || ctx.kind == "gateway" =>
         {
             transcript(server, ctx, p)
@@ -212,6 +213,74 @@ fn summarize(v: &Value) -> String {
     one.chars().take(160).collect()
 }
 
+/// Largest transcript image `agent.transcript` returns inline (decoded bytes).
+const MAX_TRANSCRIPT_IMAGE: usize = 4 << 20;
+
+/// An inline image block as `(mime, base64 data)`. Claude and pi store base64 data in the block
+/// (`source.data` + `source.media_type`, or `data` + `mimeType`); Codex stores a `data:` URL.
+/// Only png, jpeg, gif and webp count, and a block that links to a URL has no data here.
+fn image_of(c: &Value) -> Option<(String, &str)> {
+    let (mime, data) = match c.get("type").and_then(Value::as_str)? {
+        "image" => {
+            let src = c.get("source").unwrap_or(c);
+            let mime = ["media_type", "mimeType", "mime_type"]
+                .iter()
+                .find_map(|k| src.get(*k).and_then(Value::as_str))?;
+            (mime.to_string(), src.get("data").and_then(Value::as_str)?)
+        }
+        "input_image" | "output_image" => {
+            let url = c.get("image_url")?;
+            let url = url
+                .as_str()
+                .or_else(|| url.get("url").and_then(Value::as_str))?;
+            let (head, data) = url.strip_prefix("data:")?.split_once(',')?;
+            (head.strip_suffix(";base64")?.to_string(), data)
+        }
+        _ => return None,
+    };
+    let mime = mime.to_ascii_lowercase();
+    let known = matches!(
+        mime.as_str(),
+        "image/png" | "image/jpeg" | "image/gif" | "image/webp"
+    );
+    (known && !data.is_empty()).then_some((mime, data))
+}
+
+/// The content blocks of a line that can hold images, in document order: Claude and pi message
+/// content (including the content of a tool result) and Codex message content.
+fn image_candidates(v: &Value) -> Vec<&Value> {
+    let blocks = v
+        .get("message")
+        .and_then(|m| m.get("content"))
+        .or_else(|| {
+            (v.get("type").and_then(Value::as_str) == Some("response_item"))
+                .then(|| v.get("payload")?.get("content"))
+                .flatten()
+        })
+        .and_then(Value::as_array);
+    let mut out = Vec::new();
+    for c in blocks.into_iter().flatten() {
+        out.push(c);
+        if let Some(inner) = c.get("content").and_then(Value::as_array) {
+            out.extend(inner);
+        }
+    }
+    out
+}
+
+/// The images of one transcript line, in the order `line_items` numbers them (`ref` k).
+fn line_images(v: &Value) -> Vec<(String, &str)> {
+    image_candidates(v)
+        .into_iter()
+        .filter_map(image_of)
+        .collect()
+}
+
+fn image_item(k: usize, mime: &str, data: &str) -> Value {
+    // `ref` is completed with the line number by `transcript_items`.
+    json!({"kind": "image", "mime": mime, "ref": k.to_string(), "size": data.len() / 4 * 3})
+}
+
 /// Items from one transcript line, for Claude (`message.content[]`) and Codex rollout
 /// (`response_item` payloads). Returns (is_user_prompt, items).
 pub(crate) fn line_items(v: &Value) -> (bool, Vec<Value>) {
@@ -225,15 +294,30 @@ pub(crate) fn line_items(v: &Value) -> (bool, Vec<Value>) {
                 items.push(json!({"kind": "text", "role": role, "text": t}));
             }
             Some(Value::Array(a)) => {
+                let mut images = 0usize;
                 for c in a {
                     match c.get("type").and_then(Value::as_str) {
+                        Some("image") => {
+                            if let Some((mime, data)) = image_of(c) {
+                                items.push(image_item(images, &mime, data));
+                                images += 1;
+                            }
+                        }
                         Some("text") => {
                             user_prompt |= role == "user";
                             items.push(json!({"kind": "text", "role": role, "text": c.get("text")}));
                         }
                         Some("thinking") => items.push(json!({"kind": "thinking", "text": c.get("thinking")})),
                         Some("tool_use") => items.push(json!({"kind": "tool_call", "tool": c.get("name"), "summary": summarize(c.get("input").unwrap_or(&Value::Null)), "id": c.get("id")})),
-                        Some("tool_result") => items.push(json!({"kind": "tool_result", "summary": summarize(c.get("content").unwrap_or(&Value::Null)), "id": c.get("tool_use_id"), "error": c.get("is_error")})),
+                        Some("tool_result") => {
+                            items.push(json!({"kind": "tool_result", "summary": summarize(c.get("content").unwrap_or(&Value::Null)), "id": c.get("tool_use_id"), "error": c.get("is_error")}));
+                            for inner in c.get("content").and_then(Value::as_array).into_iter().flatten() {
+                                if let Some((mime, data)) = image_of(inner) {
+                                    items.push(image_item(images, &mime, data));
+                                    images += 1;
+                                }
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -249,6 +333,9 @@ pub(crate) fn line_items(v: &Value) -> (bool, Vec<Value>) {
                 if !text.is_empty() {
                     user_prompt = role == "user";
                     items.push(json!({"kind": "text", "role": role, "text": text}));
+                }
+                for (k, (mime, data)) in line_images(v).into_iter().enumerate() {
+                    items.push(image_item(k, &mime, data));
                 }
             }
             Some("reasoning") => items.push(json!({"kind": "thinking", "text": pl.get("summary").map(summarize)})),
@@ -306,7 +393,7 @@ fn finish_turn(turn: &mut Value) {
 /// turns carry `duration_ms`, `tool_count` and `subagent_count`.
 pub fn transcript_items(text: &str) -> Vec<Value> {
     let mut turns: Vec<Value> = Vec::new();
-    for l in text.lines() {
+    for (line_no, l) in text.lines().enumerate() {
         let Ok(v) = serde_json::from_str::<Value>(l) else {
             continue;
         };
@@ -317,6 +404,11 @@ pub fn transcript_items(text: &str) -> Vec<Value> {
         let ts = line_ts_ms(&v);
         for it in &mut items {
             it["ts"] = json!(ts);
+            if it["kind"] == "image" {
+                // `<line>:<k>`: the transcript line and the image's position in it.
+                let k = it["ref"].as_str().unwrap_or("0").to_string();
+                it["ref"] = json!(format!("{line_no}:{k}"));
+            }
         }
         if prompt || turns.is_empty() {
             turns.push(json!({"n": turns.len() as u64 + 1, "ts": v.get("timestamp"), "items": []}));
@@ -328,6 +420,35 @@ pub fn transcript_items(text: &str) -> Vec<Value> {
         finish_turn(t);
     }
     turns
+}
+
+/// The image a transcript item's `ref` (`<line>:<k>`) names: `{mime, size, data_b64}`.
+fn transcript_image(text: &str, r: &str) -> R {
+    let (line, k) = r
+        .split_once(':')
+        .and_then(|(a, b)| Some((a.parse::<usize>().ok()?, b.parse::<usize>().ok()?)))
+        .ok_or_else(|| invalid("image ref must be <line>:<index>"))?;
+    let v: Value = text
+        .lines()
+        .nth(line)
+        .and_then(|l| serde_json::from_str(l).ok())
+        .ok_or_else(|| err(ErrorKind::NotFound, "no such transcript line"))?;
+    let (mime, data) = line_images(&v)
+        .into_iter()
+        .nth(k)
+        .ok_or_else(|| err(ErrorKind::NotFound, "no such image"))?;
+    let size = data.len() / 4 * 3;
+    if size > MAX_TRANSCRIPT_IMAGE {
+        return Err(err(ErrorKind::Unsupported, "image larger than 4 MiB"));
+    }
+    // The data goes into a `data:` URL on the client: only the base64 alphabet may pass.
+    if !data
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'='))
+    {
+        return Err(err(ErrorKind::Unsupported, "image data is not base64"));
+    }
+    Ok(json!({"mime": mime, "size": size, "data_b64": data}))
 }
 
 fn transcript(server: &Server, ctx: &Ctx, p: &Value) -> R {
@@ -350,6 +471,10 @@ fn transcript(server: &Server, ctx: &Ctx, p: &Value) -> R {
     }
     let text =
         std::fs::read_to_string(&path).map_err(|e| err(ErrorKind::Internal, e.to_string()))?;
+    if let Some(r) = s(p, "image") {
+        let image = transcript_image(&text, r)?;
+        return Ok(json!({"run": run.id, "image": image}));
+    }
     let turns = transcript_items(&text);
     let before = u(p, "before").unwrap_or(u64::MAX);
     let limit = u(p, "limit").unwrap_or(20).clamp(1, 200) as usize;
@@ -639,6 +764,77 @@ mod tests {
         assert_eq!(turns[0]["items"][3]["ts"].as_i64().unwrap() % 1000, 100);
         assert_eq!(turns[1]["duration_ms"], 0);
         assert_eq!(turns[1]["tool_count"], 0);
+    }
+
+    #[test]
+    fn transcript_images_are_items_with_a_fetchable_ref() {
+        let data = "iVBORw0KGgo=";
+        let t = [
+            json!({"type": "user", "message": {"content": [
+                {"type": "text", "text": "look"},
+                {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": data}},
+                {"type": "image", "source": {"type": "url", "url": "https://example.com/a.png"}},
+            ]}}),
+            json!({"type": "assistant", "message": {"content": [{"type": "text", "text": "seen"}]}}),
+            json!({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "t1", "content": [
+                {"type": "image", "source": {"type": "base64", "media_type": "image/svg+xml", "data": data}},
+                {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": "/9j/4A=="}},
+            ]}]}}),
+            // pi: data + mimeType on the block.
+            json!({"type": "message", "message": {"role": "user", "content": [{"type": "image", "data": data, "mimeType": "image/gif"}]}}),
+            // Codex: a data URL.
+            json!({"type": "response_item", "payload": {"type": "message", "role": "user", "content": [
+                {"type": "input_text", "text": "shot"},
+                {"type": "input_image", "image_url": format!("data:image/webp;base64,{data}")},
+            ]}}),
+        ]
+        .iter()
+        .map(|v| v.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+        let turns = transcript_items(&t);
+        let images: Vec<&Value> = turns
+            .iter()
+            .flat_map(|t| t["items"].as_array().unwrap())
+            .filter(|i| i["kind"] == "image")
+            .collect();
+        let refs: Vec<(&str, &str)> = images
+            .iter()
+            .map(|i| (i["mime"].as_str().unwrap(), i["ref"].as_str().unwrap()))
+            .collect();
+        assert_eq!(
+            refs,
+            [
+                ("image/png", "0:0"),
+                ("image/jpeg", "2:0"),
+                ("image/gif", "3:0"),
+                ("image/webp", "4:0"),
+            ]
+        );
+        assert!(
+            images
+                .iter()
+                .all(|i| i.get("data").is_none() && i.get("data_b64").is_none())
+        );
+        // The ref fetches the bytes; nothing else does.
+        let got = transcript_image(&t, "0:0").unwrap();
+        assert_eq!(
+            (got["mime"].as_str(), got["data_b64"].as_str()),
+            (Some("image/png"), Some(data))
+        );
+        assert_eq!(transcript_image(&t, "2:0").unwrap()["mime"], "image/jpeg");
+        assert_eq!(transcript_image(&t, "4:0").unwrap()["mime"], "image/webp");
+        for bad in ["0:1", "9:0", "x", "1:0"] {
+            assert!(transcript_image(&t, bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn transcript_image_over_the_cap_is_refused() {
+        let big = "A".repeat(MAX_TRANSCRIPT_IMAGE / 3 * 4 + 8);
+        let t = json!({"type": "user", "message": {"content": [{"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": big}}]}}).to_string();
+        let e = transcript_image(&t, "0:0").unwrap_err();
+        assert_eq!(e.data.kind, "unsupported");
     }
 
     #[test]
