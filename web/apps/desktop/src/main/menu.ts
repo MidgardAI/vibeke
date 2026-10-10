@@ -69,7 +69,7 @@ export function buildMenu(a: MenuActions): Menu {
         { label: 'Toggle Sidebar', accelerator: 'CommandOrControl+\\', click: cmd('sidebar') },
         { label: 'Agent: Conversation / Terminal', accelerator: 'CommandOrControl+Shift+T', click: cmd('agent-view') },
         { type: 'separator' },
-        { label: 'Quick Approvals', accelerator: a.shortcut() || undefined, registerAccelerator: false, click: () => a.toggleQuick() },
+        { label: 'Agents and Approvals', accelerator: a.shortcut() || undefined, registerAccelerator: false, click: () => a.toggleQuick() },
         { type: 'separator' },
         { role: 'resetZoom' },
         { role: 'zoomIn' },

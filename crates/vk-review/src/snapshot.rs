@@ -519,6 +519,8 @@ mod tests {
 
         // A real concurrent writer thread (no hook): either a consistent snapshot of one of the
         // states it wrote, or "workspace changing" — never a mix.
+        r.write("a.txt", "w 0\n");
+        r.write("b.txt", "w 0\n");
         let stop = Arc::new(AtomicBool::new(false));
         let (stop2, root2) = (stop.clone(), root.clone());
         let writer = std::thread::spawn(move || {
@@ -539,7 +541,19 @@ mod tests {
                 let c = s.snapshot.unwrap().commit;
                 let a = r.git(&["show", &format!("{c}:a.txt")]);
                 let b = r.git(&["show", &format!("{c}:b.txt")]);
-                assert_eq!(a, b, "a consistent snapshot holds one writer state");
+                // The writer writes a.txt, then b.txt: the disk only ever holds equal files or
+                // a.txt one write ahead (a writer paused between the two writes on a loaded
+                // machine leaves that state stable for the whole capture).
+                let n = |s: &str| {
+                    s.trim()
+                        .strip_prefix("w ")
+                        .and_then(|v| v.parse::<u64>().ok())
+                };
+                let ok = matches!((n(&a), n(&b)), (Some(x), Some(y)) if x == y || x == y + 1);
+                assert!(
+                    ok,
+                    "a consistent snapshot holds one disk state: a={a:?} b={b:?}"
+                );
             }
             Err(e) => panic!("unexpected {e}"),
         }

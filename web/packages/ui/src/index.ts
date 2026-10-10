@@ -14,6 +14,8 @@ export type {
   InstallCapability,
   SpeechCapability,
   MirrorCache,
+  CachedMirror,
+  DashboardCache,
   BuildInfo,
   HapticKind,
   PermissionState,
@@ -28,6 +30,7 @@ export { hostOfTag, staleTags, badgeCount, openCounts } from './lib/notify';
 export { shortcutFor, keyLabel, fuzzyScore, SHORTCUTS, type ShortcutAction, type KeyLike, type KeyContext } from './lib/shortcuts';
 export { listNav } from './lib/list-nav';
 export type { KV, Prefs, Theme } from './lib/prefs';
+export type { CachedDashboard } from './lib/offline-cache';
 export { pairingErrorMessage } from './screens/pair';
 // Primitives, for shell-provided extensions (UiExtensions) to match the app.
 export { Button, Card, Notice, SectionLabel, Segmented, Spinner, TextField, Toggle, Dot, cx } from './components/ui';

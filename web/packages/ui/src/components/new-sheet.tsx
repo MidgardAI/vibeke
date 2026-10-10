@@ -33,7 +33,20 @@ import { Button, Notice, Segmented, Sheet, Toggle, cx } from './ui';
 
 type GitInfo = { state: 'idle' | 'loading' | 'none' } | { state: 'ready'; defaultBranch: string | null; currentBranch: string | null };
 
-export function NewSheet({ open, onClose, hostId, workspaceId }: { open: boolean; onClose(): void; hostId?: string; workspaceId?: string }) {
+export function NewSheet({
+  open,
+  onClose,
+  hostId,
+  workspaceId,
+  cwd,
+}: {
+  open: boolean;
+  onClose(): void;
+  hostId?: string;
+  workspaceId?: string;
+  /** The folder of the pane on screen: a new terminal in `workspaceId` starts there (like the TUI). */
+  cwd?: string | null;
+}) {
   const app = useApp();
   const prefs = usePrefs();
   const online = useHosts().filter((h) => h.status === 'online');
@@ -172,7 +185,8 @@ export function NewSheet({ open, onClose, hostId, workspaceId }: { open: boolean
         });
         target = null;
       } else {
-        const params = { workspace: wsId! };
+        const here = hid === hostId && wsId === workspaceId && cwd ? cwd : null;
+        const params = { workspace: wsId!, ...(here ? { cwd: here } : {}) };
         opRef.current = opIdFor(opRef.current, { hid, params }, newOpId);
         const r = await conn.request('tab.create', { ...params, op_id: opRef.current.id });
         pane = r.root_pane.id;

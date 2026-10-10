@@ -35,10 +35,12 @@ import { APP_ORIGIN, CSP, handleAppProtocol, registerScheme } from './protocol';
 import { loadSettings, writeJson } from './store';
 import { connectNode } from './transport';
 import { AppTray } from './tray';
+import { TrayTracker } from './tray-state';
 import { startUpdates, type Updates } from './updater';
 import { externalUrl, isTrustedUrl } from './validate';
 import { Vault } from './vault';
 import { DraftStore } from './drafts';
+import { CacheStore } from './cache';
 import { syncDraftHosts } from './draft-lifecycle';
 import { Windows } from './windows';
 
@@ -101,6 +103,7 @@ let updates: Updates;
 
 const vault = new Vault(userData, safeStorage);
 const drafts = new DraftStore(join(userData, 'drafts'), safeStorage);
+const cache = new CacheStore(join(userData, 'cache'), safeStorage);
 
 const visible = new Set<() => void>();
 const hidden = new Set<() => void>();
@@ -149,6 +152,11 @@ const windows: Windows = new Windows({
     if (stale.delete(win.webContents)) win.webContents.send(EVENT.hosts, engine.fullPatch());
   },
   trayBounds: () => tray.bounds(),
+  onQuickShow: () => {
+    // Opening the popover shows the user every agent: finished ones stop counting as new.
+    trayState.markSeen(engine.snapshot());
+    tray.setSummary(trayState.summary(engine.snapshot()));
+  },
   onNewDocument: (wc) => eventSubs.clear(wc),
   onVisibilityChange: () => {
     // Each window learns its own shown/hidden state (renderers pause display timers while hidden).
@@ -169,8 +177,9 @@ const windows: Windows = new Windows({
 });
 
 const iconDir = join(outDir, 'main/assets');
+const trayState = new TrayTracker();
 const tray = new AppTray(
-  { template: join(iconDir, 'trayTemplate.png'), color: join(iconDir, 'tray.png') },
+  { template: join(iconDir, 'trayTemplate.png'), badgeTemplate: join(iconDir, 'trayBadgeTemplate.png'), color: join(iconDir, 'tray.png') },
   {
     toggleQuick: () => windows.toggleQuick(),
     openMain: (hash) => windows.showMain(hash),
@@ -194,12 +203,11 @@ const notifier = new Notifier(
 
 engine.onPatch((patch) => {
   void syncDraftHosts(engine, drafts).catch((e) => log(`draft cleanup: ${(e as Error).message}`));
+  void engine.start().then(() => cache.retainHosts(engine.snapshot().map((s) => s.record.host_id))).catch((e) => log(`cache cleanup: ${(e as Error).message}`));
   for (const s of patch.changed) if (s.status === 'online' && s.dashboard) {
     void drafts.retainPanes(s.record.host_id, s.dashboard.panes.filter((p) => !p.exited).map((p) => p.id)).catch((e) => log(`draft cleanup: ${(e as Error).message}`));
   }
-  let open = 0;
-  for (const s of engine.snapshot()) open += s.dashboard?.interactions.filter((i) => i.status === 'open').length ?? 0;
-  tray.setCount(open);
+  tray.setSummary(trayState.summary(engine.snapshot()));
   for (const w of windows.all()) {
     // Hidden windows catch up when shown: no work while hidden beyond the sockets (§16.3).
     if (w.isVisible()) w.webContents.send(EVENT.hosts, patch);
@@ -474,6 +482,7 @@ app.whenReady().then(() => {
   updates = { ...controller, snapshot: () => ({ ...controller.snapshot(), automatic: settings.automaticUpdates }) };
   registerIpc({
     drafts,
+    cache,
     updates,
     engine,
     setHostEvents: (wc, hostId, on) => eventSubs.set(wc, hostId, on),
@@ -535,6 +544,7 @@ app.whenReady().then(() => {
 app.on('activate', () => windows.showMain());
 let flushingQuit = false;
 let discardDraftsOnQuit = false;
+let cacheFlushedOnQuit = false;
 app.on('before-quit', (event) => {
   if (!discardDraftsOnQuit && drafts.hasPending()) {
     event.preventDefault();
@@ -550,6 +560,13 @@ app.on('before-quit', (event) => {
         else if (response === 0) app.quit();
       });
     }
+    return;
+  }
+  // The offline cache gets a short, best-effort write; quitting never waits longer for it.
+  if (!cacheFlushedOnQuit && cache.hasPending()) {
+    event.preventDefault();
+    cacheFlushedOnQuit = true;
+    void Promise.race([cache.flush().catch(() => {}), new Promise((r) => setTimeout(r, 1500))]).then(() => app.quit());
     return;
   }
   windows.quitting = true;

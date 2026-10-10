@@ -3,7 +3,7 @@
 // nothing in the renderer may open a connection or touch key material.
 
 import { linkToUrl, systemClock, type HostRecord, type KeyStore, type Lifecycle, type Socket } from '@vibeke/core';
-import type { HostEngine, KV, UiCommand, UiPlatform, UpdateState, UpdatesCapability } from '@vibeke/ui';
+import type { CachedDashboard, CachedMirror, DashboardCache, HostEngine, KV, MirrorCache, UiCommand, UiPlatform, UpdateState, UpdatesCapability } from '@vibeke/ui';
 import { EVENT, INVOKE, type BootInfo, type Bridge, type EngineHello } from '../shared/contract';
 import { RemoteManager, call } from './remote';
 import { extensions } from './extensions';
@@ -145,6 +145,37 @@ function updates(bridge: Bridge, boot: BootInfo): UpdatesCapability {
   };
 }
 
+/** Saved dashboards and screens, kept encrypted by main (see main/cache.ts). Failures read as "nothing saved". */
+function caches(bridge: Bridge): { mirrorCache: MirrorCache; dashboardCache: DashboardCache } {
+  const read = async <T>(kind: string, host: string, pane: string | null): Promise<T | null> => {
+    try {
+      const text = await call<string | null>(bridge, INVOKE.cacheGet, kind, host, pane);
+      return text ? (JSON.parse(text) as T) : null;
+    } catch {
+      return null;
+    }
+  };
+  const write = (kind: string, host: string, pane: string | null, value: unknown) => call<void>(bridge, INVOKE.cacheSet, kind, host, pane, JSON.stringify(value));
+  // Mirror keys are `<host>/<pane>`; host ids never contain a slash.
+  const split = (key: string): [string, string] => {
+    const i = key.indexOf('/');
+    return [key.slice(0, i), key.slice(i + 1)];
+  };
+  return {
+    mirrorCache: {
+      get: async (key) => {
+        const v = await read<CachedMirror>('mirror', ...split(key));
+        return v && typeof v.text === 'string' && typeof v.at === 'number' ? v : null;
+      },
+      set: (key, v) => write('mirror', ...split(key), v),
+    },
+    dashboardCache: {
+      get: (host) => read<CachedDashboard>('dashboard', host, null),
+      set: (host, v) => write('dashboard', host, null, v),
+    },
+  };
+}
+
 export function createDesktopPlatform(bridge: Bridge, boot: BootInfo): UiPlatform {
   const win = (op: Record<string, unknown>) => void bridge.invoke(INVOKE.window, op).catch(() => {});
   return {
@@ -153,6 +184,7 @@ export function createDesktopPlatform(bridge: Bridge, boot: BootInfo): UiPlatfor
       get: (host, pane) => call<string>(bridge, INVOKE.draftGet, host, pane),
       set: (host, pane, text) => call(bridge, INVOKE.draftSet, host, pane, text),
     },
+    ...caches(bridge),
     keystore: noKeys,
     hostStore: { list: async () => [], put: async () => {}, remove: async () => {} },
     kv,

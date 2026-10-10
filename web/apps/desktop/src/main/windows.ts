@@ -16,6 +16,8 @@ export interface WindowsOptions {
   /** Called before a hidden window is shown so it can catch up on state first. */
   beforeShow(win: BrowserWindow): void;
   trayBounds(): Rectangle | null;
+  /** The quick popover is about to show (the user looks at the agents). */
+  onQuickShow?(): void;
   onVisibilityChange(): void;
   devTools: boolean;
   /** Destroy the quick popover after it has been hidden this long (it is recreated on demand). */
@@ -26,7 +28,7 @@ export interface WindowsOptions {
   mainTtlMs: number;
 }
 
-const QUICK_SIZE = { width: 400, height: 580 };
+const QUICK_SIZE = { width: 400, height: 620 };
 const isMac = process.platform === 'darwin';
 
 const bg = (): string => (nativeTheme.shouldUseDarkColors ? '#0f1012' : '#f6f6f4');
@@ -264,7 +266,7 @@ export class Windows {
       alwaysOnTop: true,
       hasShadow: true,
       roundedCorners: true,
-      title: 'Vibeke quick approvals',
+      title: 'Vibeke agents and approvals',
       backgroundColor: isMac ? '#00000000' : bg(),
       ...(isMac ? { vibrancy: 'popover' as const, visualEffectState: 'active' as const } : {}),
       webPreferences: this.webPreferences(),
@@ -322,6 +324,7 @@ export class Windows {
       win.show();
       win.focus();
       this.o.onVisibilityChange();
+      this.o.onQuickShow?.();
     };
     if (win.webContents.isLoading()) win.webContents.once('did-finish-load', reveal);
     else reveal();

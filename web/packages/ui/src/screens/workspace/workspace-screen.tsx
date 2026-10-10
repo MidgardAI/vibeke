@@ -236,7 +236,9 @@ function Workspace({ route, row, current, locked }: { route: WorkspaceRoute; row
   const newTerminal = async () => {
     if (!conn) return;
     try {
-      const r = await conn.request('tab.create', { workspace: row.workspace.id });
+      // Like the TUI: the new terminal starts in the folder of the pane on screen, not the workspace root.
+      const cwd = current.pane.cwd;
+      const r = await conn.request('tab.create', { workspace: row.workspace.id, ...(cwd ? { cwd } : {}) });
       void conn.refresh().catch(() => {});
       navigate({ ...route, pane: r.root_pane.id, show: null, view: null });
     } catch (e) {
@@ -365,7 +367,7 @@ function Workspace({ route, row, current, locked }: { route: WorkspaceRoute; row
         )}
       </div>
 
-      <NewSheet open={sheet === 'new'} onClose={() => setSheet(null)} hostId={row.host} workspaceId={row.workspace.id} />
+      <NewSheet open={sheet === 'new'} onClose={() => setSheet(null)} hostId={row.host} workspaceId={row.workspace.id} cwd={current.pane.cwd} />
       <ShareSheet row={current} open={sheet === 'share'} onClose={() => setSheet(null)} />
       <HandoffSheet row={current} open={sheet === 'handoff'} onClose={() => setSheet(null)} />
       <PromptSheet

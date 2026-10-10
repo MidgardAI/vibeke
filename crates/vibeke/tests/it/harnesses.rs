@@ -898,3 +898,97 @@ fn sandbox_relaunch_moves_a_host_run_into_a_sandbox_from_its_session() {
         "{e}"
     );
 }
+
+/// Fake Claude Code (Python, so the hook's parent is not a shell) reporting through the real
+/// hook shim. `claude <dir>` starts with SessionStart, `late <dir>` without it (a run bound mid
+/// session). Mid turn it runs a nested fake Codex as a child process, like a Bash tool call.
+const FAKE_CLAUDE: &str = r#"
+import json, os, subprocess, sys, time
+VB = os.environ["VIBEKE_BIN"]
+def h(harness, ev, p):
+    subprocess.run([VB, "hook", harness, ev], input=json.dumps(p).encode(),
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+mode, d = sys.argv[1], sys.argv[2]
+if mode == "codex":
+    c = {"session_id": "cx-1", "transcript_path": d + "/codex.jsonl"}
+    h("codex", "SessionStart", dict(c, source="startup"))
+    h("codex", "UserPromptSubmit", dict(c, prompt="review the diff"))
+    h("codex", "Stop", dict(c, last_assistant_message="no findings"))
+    sys.exit(0)
+base = {"session_id": "cl-1", "transcript_path": d + "/claude.jsonl"}
+if mode == "claude":
+    h("claude", "SessionStart", dict(base, source="startup"))
+h("claude", "UserPromptSubmit", dict(base, prompt="review and merge"))
+open(d + "/ready", "w").close()
+while not os.path.exists(d + "/go"):
+    time.sleep(0.05)
+tool = dict(base, tool_name="Bash", tool_input={"command": "codex exec"}, tool_use_id="t1")
+h("claude", "PreToolUse", tool)
+subprocess.run([sys.executable, sys.argv[0], "codex", d])
+h("claude", "PostToolUse", dict(tool, tool_response={"stdout": "no findings"}))
+h("claude", "Stop", dict(base, last_assistant_message="Merged."))
+open(d + "/done", "w").close()
+time.sleep(60)
+"#;
+
+fn run_fake_claude(mode: &str) -> Option<(Session, String, PathBuf)> {
+    let py = python3()?;
+    let s = Session::new();
+    let agent = s.dir.path().join("fake_claude.py");
+    std::fs::write(&agent, FAKE_CLAUDE).unwrap();
+    let d = s.dir.path().join("io");
+    std::fs::create_dir_all(&d).unwrap();
+    let pane = s.pane(Path::new("/tmp"));
+    let line = format!("{py} {} {mode} {}", agent.display(), d.display());
+    s.json(&["pane", "run", &pane, &line]);
+    Some((s, pane, d))
+}
+
+#[test]
+fn nested_agent_does_not_replace_the_pane_agent() {
+    let Some((s, pane, d)) = run_fake_claude("claude") else {
+        eprintln!("skipping: no python3 for the fake harness");
+        return;
+    };
+    s.until("claude ready", 20, || {
+        d.join("ready").exists().then_some(())
+    });
+    let run = s.until("claude run identified", 15, || {
+        s.run_of(&pane)
+            .filter(|r| r["harness"] == "claude" && r["harness_session_id"] == "cl-1")
+    });
+    std::fs::write(d.join("go"), "").unwrap();
+    s.until("turn done", 20, || d.join("done").exists().then_some(()));
+    let after = s.until("turn finished", 15, || {
+        s.run_of(&pane).filter(|r| r["last_message"] == "Merged.")
+    });
+    assert_eq!(
+        after["id"], run["id"],
+        "the nested codex replaced the run: {after}"
+    );
+    assert_eq!(after["harness"], "claude");
+    assert_eq!(
+        after["transcript_path"],
+        format!("{}/claude.jsonl", d.display())
+    );
+}
+
+#[test]
+fn run_bound_mid_session_learns_its_transcript_from_any_hook() {
+    let Some((s, pane, d)) = run_fake_claude("late") else {
+        eprintln!("skipping: no python3 for the fake harness");
+        return;
+    };
+    s.until("claude ready", 20, || {
+        d.join("ready").exists().then_some(())
+    });
+    let run = s.until("claude run identified", 15, || {
+        s.run_of(&pane)
+            .filter(|r| r["harness"] == "claude" && r["harness_session_id"] == "cl-1")
+    });
+    assert_eq!(
+        run["transcript_path"],
+        format!("{}/claude.jsonl", d.display())
+    );
+    assert_eq!(run["resume_argv"], json!(["claude", "--resume", "cl-1"]));
+}

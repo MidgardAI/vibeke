@@ -184,7 +184,7 @@ function DesktopSettingsSection({ bridge, boot }: { bridge: Bridge; boot: BootIn
     <section>
       <SectionLabel>Desktop</SectionLabel>
       <div className="inset-group divide-y divide-border border-y border-border bg-surface">
-        <Row label="Quick approvals shortcut" hint="Opens the menu-bar approvals from anywhere.">
+        <Row label="Menu-bar shortcut" hint="Opens the menu-bar agents and approvals from anywhere.">
           <ShortcutField value={s.shortcut} mac={mac} onChange={(v) => void patch({ shortcut: v })} />
         </Row>
         <Row label="Notifications" hint="New requests and stopped agents, per each host’s privacy level and Do Not Disturb.">
@@ -226,7 +226,7 @@ export function extensions(bridge: Bridge, boot: BootInfo): UiExtensions {
     pairPanel: () => <LocalConnect bridge={bridge} boot={boot} />,
     settingsSection: () => <DesktopSettingsSection bridge={bridge} boot={boot} />,
     commands: (): ShellCommand[] => [
-      { id: 'quick', title: 'Quick approvals', hint: boot.settings.shortcut ? acceleratorLabel(boot.settings.shortcut, boot.platform === 'darwin') : undefined, keywords: 'menu bar popover', run: () => void bridge.invoke(INVOKE.window, { op: 'quick' }) },
+      { id: 'quick', title: 'Agents and approvals', hint: boot.settings.shortcut ? acceleratorLabel(boot.settings.shortcut, boot.platform === 'darwin') : undefined, keywords: 'menu bar popover agents tray', run: () => void bridge.invoke(INVOKE.window, { op: 'quick' }) },
       { id: 'local', title: `Connect to ${where}…`, keywords: 'local gateway pair', run: () => navigate({ name: 'pair', d: null }) },
     ],
   };

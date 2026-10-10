@@ -1,8 +1,9 @@
-// Menu-bar / tray icon (spec 16 §16.2): template image on macOS with the open-interaction count
-// as its title, the Dock badge, and a context menu. Click (or the global shortcut) toggles the
-// quick-approvals popover.
+// Menu-bar / tray icon (spec 16 §16.2): template image on macOS, with a badge and the count of
+// agents that need you as its title, the Dock badge, and a context menu. Click (or the global
+// shortcut) toggles the popover with the agents and quick approvals.
 
-import { Menu, Tray, app, nativeImage } from 'electron';
+import { Menu, Tray, app, nativeImage, type NativeImage } from 'electron';
+import type { TraySummary } from './tray-state';
 
 export interface TrayActions {
   toggleQuick(): void;
@@ -14,18 +15,25 @@ export interface TrayActions {
 
 export class AppTray {
   private tray: Tray | null = null;
-  private count = -1;
+  private last = '';
+  private images: { plain: NativeImage; badge: NativeImage } | null = null;
 
   constructor(
-    private readonly icons: { template: string; color: string },
+    private readonly icons: { template: string; badgeTemplate: string; color: string },
     private readonly a: TrayActions,
   ) {}
 
   create(): void {
     const mac = process.platform === 'darwin';
-    const img = nativeImage.createFromPath(mac ? this.icons.template : this.icons.color);
-    if (mac) img.setTemplateImage(true);
-    const tray = new Tray(img.isEmpty() ? nativeImage.createEmpty() : img);
+    const load = (path: string) => {
+      const img = nativeImage.createFromPath(path);
+      if (mac) img.setTemplateImage(true);
+      return img.isEmpty() ? nativeImage.createEmpty() : img;
+    };
+    const plain = load(mac ? this.icons.template : this.icons.color);
+    // Other platforms show the full-colour logo; the launcher badge carries the count there.
+    this.images = { plain, badge: mac ? load(this.icons.badgeTemplate) : plain };
+    const tray = new Tray(plain);
     tray.setToolTip('Vibeke');
     if (mac) tray.setIgnoreDoubleClickEvents(true);
     tray.on('click', () => this.a.toggleQuick());
@@ -33,7 +41,7 @@ export class AppTray {
     // Linux trays often only show a menu (no click events): give them one with the actions.
     if (process.platform === 'linux') tray.setContextMenu(this.menu());
     this.tray = tray;
-    this.setCount(0);
+    this.setSummary({ needs: 0, working: 0 });
   }
 
   bounds(): Electron.Rectangle | null {
@@ -45,7 +53,7 @@ export class AppTray {
   private menu(): Menu {
     const sc = this.a.shortcut();
     return Menu.buildFromTemplate([
-      { label: 'Quick Approvals', accelerator: sc || undefined, registerAccelerator: false, click: () => this.a.toggleQuick() },
+      { label: 'Agents and Approvals', accelerator: sc || undefined, registerAccelerator: false, click: () => this.a.toggleQuick() },
       { label: 'Open Vibeke', click: () => this.a.openMain() },
       { label: 'Inbox', click: () => this.a.openMain('#/inbox') },
       { type: 'separator' },
@@ -56,19 +64,23 @@ export class AppTray {
     ]);
   }
 
-  /** Open interactions across hosts: tray title (macOS), Dock / launcher badge. */
-  setCount(n: number): void {
-    if (n === this.count) return;
-    this.count = n;
-    const label = n > 99 ? '99+' : String(n);
+  /** Agents that need you across hosts: badge glyph and title (macOS), Dock / launcher badge. */
+  setSummary({ needs, working }: TraySummary): void {
+    const key = `${needs}/${working}`;
+    if (key === this.last) return;
+    const countChanged = this.last.split('/')[0] !== String(needs);
+    this.last = key;
+    const label = needs > 99 ? '99+' : String(needs);
     if (process.platform === 'darwin') {
-      this.tray?.setTitle(n > 0 ? label : '', { fontType: 'monospacedDigit' });
-      app.dock?.setBadge(n > 0 ? label : '');
+      if (this.images) this.tray?.setImage(needs > 0 ? this.images.badge : this.images.plain);
+      this.tray?.setTitle(needs > 0 ? label : '', { fontType: 'monospacedDigit' });
+      app.dock?.setBadge(needs > 0 ? label : '');
     } else {
-      app.setBadgeCount(n);
+      app.setBadgeCount(needs);
     }
-    this.tray?.setToolTip(n > 0 ? `Vibeke — ${n} need${n === 1 ? 's' : ''} you` : 'Vibeke');
-    if (process.platform === 'linux') this.tray?.setContextMenu(this.menu());
+    const parts = [needs > 0 ? `${needs} need${needs === 1 ? 's' : ''} you` : '', working > 0 ? `${working} working` : ''].filter(Boolean);
+    this.tray?.setToolTip(parts.length ? `Vibeke — ${parts.join(', ')}` : 'Vibeke');
+    if (countChanged && process.platform === 'linux') this.tray?.setContextMenu(this.menu());
   }
 
   destroy(): void {
