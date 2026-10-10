@@ -10,7 +10,7 @@
 import { useEffect, useState } from 'react';
 import { Download, ExternalLink, KeyRound } from 'lucide-react';
 import { needsAuth, type CloudAuthMethod, type HostConnectionApi } from '@vibeke/core';
-import { cloudStores } from '../app/cloud-stores';
+import { cloudStores, useHostCloud } from '../app/cloud-stores';
 import { useApp } from '../app/hooks';
 import { t } from '../i18n';
 import { errorMessage } from '../lib/answer';
@@ -62,7 +62,7 @@ export function CloudAuthForm({ methods, envVar, busy, error, onToken, onImport,
               onToken(v);
             }}
           >
-            <TextField type="password" label={m.label || t.cloud.token} value={token} onChange={(e) => setToken(e.target.value)} autoComplete="off" autoCapitalize="off" spellCheck={false} placeholder={m.hint} disabled={busy} />
+            <TextField type="password" label={m.label || t.cloud.token} value={token} onChange={(e) => setToken(e.target.value)} autoComplete="off" autoCapitalize="off" spellCheck={false} disabled={busy} />
             {m.hint && <div className="text-xs text-muted">{m.hint}</div>}
             <div className="flex gap-2">
               {help && (
@@ -84,7 +84,7 @@ export function CloudAuthForm({ methods, envVar, busy, error, onToken, onImport,
       ))}
       {envs.map((m, i) => (
         <div key={`e${i}`} className="text-xs text-muted">
-          {t.cloud.envNote(m.var)}
+          {t.cloud.envHint(m.var)}
         </div>
       ))}
     </div>
@@ -141,6 +141,8 @@ function CloudAuthSheet({ req, onFinish }: { req: AuthRequest; onFinish(ok: bool
   const app = useApp();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // A `needs_auth` retry knows only the provider id: show its label when the host listed it.
+  const label = useHostCloud(req.conn.id).providers.find((p) => p.id === req.provider)?.label ?? req.label;
 
   const run = async (method: 'cloud.auth.set' | 'cloud.auth.import', params: { token: string } | { source: string }) => {
     setBusy(true);
@@ -157,7 +159,7 @@ function CloudAuthSheet({ req, onFinish }: { req: AuthRequest; onFinish(ok: bool
   };
 
   return (
-    <Sheet open onClose={() => onFinish(false)} title={t.cloud.signInTo(req.label)}>
+    <Sheet open onClose={() => onFinish(false)} title={t.cloud.signInTo(label)}>
       <CloudAuthForm
         methods={req.methods}
         busy={busy}

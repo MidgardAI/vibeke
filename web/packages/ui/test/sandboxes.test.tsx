@@ -36,8 +36,9 @@ describe('SandboxGroups', () => {
     expect(html).toContain('Sign in');
   });
 
-  test('shows task, state, ownership and the unsynced marker', () => {
-    expect(html).toContain('task a');
+  test('shows the box name (not the task id), state, ownership and the unsynced marker', () => {
+    expect(html).toContain('vk-a');
+    expect(html).not.toContain('task a');
     expect(html).toContain('paused');
     expect(html).toContain('Idle');
     expect(html).toContain('Not synced');

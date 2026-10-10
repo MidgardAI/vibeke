@@ -7,7 +7,7 @@
 import { useState } from 'react';
 import { Cloud, RefreshCw, Trash2 } from 'lucide-react';
 import { RpcError, type CloudBox, type CloudProvider, type HostConnectionApi } from '@vibeke/core';
-import { useCloudStores, useHostCloud, type HostCloud } from '../app/cloud-stores';
+import { useCloud, useCloudStores, useHostCloud, type HostCloud } from '../app/cloud-stores';
 import { useAllHosts, useApp, useNow } from '../app/hooks';
 import { requestCloudAuth, withCloudAuth } from '../components/cloud-auth';
 import { Button, Card, Empty, Notice, Pill, Sheet, Spinner } from '../components/ui';
@@ -95,7 +95,7 @@ function BoxRow({ b, now, busy, onAction }: { b: CloudBox; now: number; busy: bo
   return (
     <div className="space-y-1.5 p-3" data-box={b.box}>
       <div className="flex flex-wrap items-center gap-2">
-        <span className="min-w-0 truncate font-medium">{b.task || b.name}</span>
+        <span className="min-w-0 truncate font-medium">{b.name}</span>
         <Pill>{b.state}</Pill>
         <Pill>{t.cloud.ownership[b.ownership] ?? b.ownership}</Pill>
         {hasUnsynced(b) && (
@@ -131,8 +131,9 @@ function BoxRow({ b, now, busy, onAction }: { b: CloudBox; now: number; busy: bo
 export function SandboxesScreen() {
   const hosts = useAllHosts().filter(isOwnFullHost);
   const stores = useCloudStores();
+  const cloud = useCloud();
   const [spin, setSpin] = useState(false);
-  const all = hosts.flatMap((h) => stores.hosts.get().get(h.record.host_id)?.boxes ?? []);
+  const all = hosts.flatMap((h) => cloud.get(h.record.host_id)?.boxes ?? []);
   const { running, idle } = boxCounts(all);
   const refresh = async () => {
     setSpin(true);
@@ -291,7 +292,7 @@ function HostSandboxes({ hostId, name, many }: { hostId: string; name: string; m
       )}
 
       {dialog?.k === 'destroy' && (
-        <Sheet open role="alertdialog" onClose={() => setDialog(null)} title={`${t.cloud.destroy} ${dialog.box.task || dialog.box.name}?`}>
+        <Sheet open role="alertdialog" onClose={() => setDialog(null)} title={`${t.cloud.destroy} ${dialog.box.name}?`}>
           <div className="space-y-3">
             {dialog.unsynced && (
               <Notice tone="warn">
@@ -324,7 +325,7 @@ function HostSandboxes({ hostId, name, many }: { hostId: string; name: string; m
                 <ul className="space-y-1 text-sm">
                   {dialog.candidates.map((b) => (
                     <li key={b.box} className="flex items-center gap-2">
-                      <span className="min-w-0 flex-1 truncate">{b.task || b.name}</span>
+                      <span className="min-w-0 flex-1 truncate">{b.name}</span>
                       <Pill>{t.cloud.ownership[b.ownership] ?? b.ownership}</Pill>
                     </li>
                   ))}

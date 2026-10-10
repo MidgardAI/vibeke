@@ -897,6 +897,7 @@ export const en = {
     save: 'Save',
     importFrom: (label: string) => label,
     envNote: (v: string) => `Using ${v} from the host`,
+    envHint: (v: string) => `Or set ${v} in the host's environment.`,
     authFailed: 'The provider did not accept this sign-in.',
     chooseBox: 'Where should it run?',
     newBox: 'A new sandbox',

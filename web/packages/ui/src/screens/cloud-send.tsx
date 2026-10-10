@@ -176,7 +176,7 @@ function Body({
           <div className="text-sm text-muted">{t.cloud.chooseBox}</div>
           <Choice icon={<Box className="size-5 text-muted" />} title={t.cloud.newBox} onClick={() => setStep({ k: 'confirm', provider: step.provider, box: null })} />
           {mine.map((b) => (
-            <Choice key={b.box} icon={<Box className="size-5 text-muted" />} title={b.task || b.name} sub={`${t.cloud.existingBox} · ${b.state}`} onClick={() => setStep({ k: 'confirm', provider: step.provider, box: b.box })} />
+            <Choice key={b.box} icon={<Box className="size-5 text-muted" />} title={b.name} sub={`${t.cloud.existingBox} · ${b.state}`} onClick={() => setStep({ k: 'confirm', provider: step.provider, box: b.box })} />
           ))}
           <Button block variant="ghost" onClick={() => setStep({ k: 'provider' })}>
             {t.back}
@@ -203,7 +203,7 @@ function Body({
         <div className="space-y-2">
           {withPanes.length === 0 && <Notice>{t.cloud.noBoxPanes}</Notice>}
           {withPanes.map((b) => (
-            <Choice key={b.box} icon={<Box className="size-5 text-muted" />} title={b.task || b.name} sub={`${b.provider} · ${t.cloud.panes(b.panes.length)}`} onClick={() => setStep({ k: 'target', box: b.box })} />
+            <Choice key={b.box} icon={<Box className="size-5 text-muted" />} title={b.name} sub={`${b.provider} · ${t.cloud.panes(b.panes.length)}`} onClick={() => setStep({ k: 'target', box: b.box })} />
           ))}
         </div>
       );

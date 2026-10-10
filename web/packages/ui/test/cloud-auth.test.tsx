@@ -23,9 +23,10 @@ describe('CloudAuthForm', () => {
     expect(html).toContain('Starts with sk-');
   });
 
-  test('renders the import button, the env note and the error', () => {
+  test('renders the import button, the env hint and the error', () => {
     expect(html).toContain('Import from the provider CLI');
-    expect(html).toContain('Using SPRITES_TOKEN from the host');
+    expect(html).toContain('Or set SPRITES_TOKEN in the host');
+    expect(html).not.toContain('Using SPRITES_TOKEN');
     expect(html).toContain('Token rejected');
   });
 
