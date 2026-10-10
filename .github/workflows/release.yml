@@ -113,6 +113,9 @@ jobs:
           # Unset secrets arrive as empty strings; electron-builder would read an empty CSC_LINK
           # as a certificate path (the project directory) and fail.
           [ -n "$CSC_LINK" ] || unset CSC_LINK CSC_KEY_PASSWORD
+          # With discovery off, electron-builder skips signing even with CSC_LINK set. Discovery
+          # then searches only the temporary keychain it creates from CSC_LINK.
+          [ -z "${CSC_LINK:-}" ] || export CSC_IDENTITY_AUTO_DISCOVERY=true
           for v in APPLE_API_KEY_ID APPLE_API_ISSUER; do [ -n "${!v}" ] || unset "$v"; done
           notarization_key="$RUNNER_TEMP/vibeke-notarization.p8"
           trap 'rm -f "$notarization_key"' EXIT
