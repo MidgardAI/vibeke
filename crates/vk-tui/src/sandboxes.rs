@@ -1007,7 +1007,7 @@ fn where_label(app: &App, mi: usize, b: &BoxRow) -> String {
     "—".into()
 }
 
-/// One row: `name state ownership task/workspace panes age activity unsynced`.
+/// One row: `name state ownership unsynced task/workspace panes age activity`.
 fn row_line(app: &App, mi: usize, b: &BoxRow, now: i64) -> String {
     use crate::draw::truncate;
     let age = if b.created_at > 0 {
@@ -1020,21 +1020,18 @@ fn row_line(app: &App, mi: usize, b: &BoxRow, now: i64) -> String {
     } else {
         "—".into()
     };
+    // The unsynced marker comes early so a narrow view never cuts it off.
     format!(
-        "{:<20} {:<12} {:<9} {:<20} {:>2} pane{} {:>5} {:>8}{}",
+        "{:<20} {:<12} {:<9} {:<11} {:<20} {:>2} pane{} {:>5} {:>8}",
         truncate(&b.name, 20),
         truncate(&state_badge(b), 12),
         b.ownership,
+        if b.has_unsynced() { "⚠ unsynced" } else { "" },
         truncate(&where_label(app, mi, b), 20),
         b.panes.len(),
         if b.panes.len() == 1 { " " } else { "s" },
         age,
         act,
-        if b.has_unsynced() {
-            "  ⚠ unsynced"
-        } else {
-            ""
-        }
     )
 }
 
