@@ -203,7 +203,29 @@ export function navigate(to: Route | string, opts: { replace?: boolean } = {}): 
     window.history.replaceState(window.history.state, '', hash);
     window.dispatchEvent(new HashChangeEvent('hashchange'));
   } else if (window.location.hash !== hash) {
-    window.location.hash = hash;
+    // pushState (not `location.hash =`) so every entry carries the marker `ensureParentEntry` checks.
+    window.history.pushState({ vkNav: 1 }, '', hash);
+    window.dispatchEvent(new HashChangeEvent('hashchange'));
+  }
+}
+
+/** Routes that are one level below the inbox: Back from them goes up to it. */
+export const isDeepRoute = (r: Route): boolean => r.name === 'workspace' || r.name === 'interaction' || r.name === 'run' || r.name === 'pane' || (r.name === 'approve' && !!r.id) || (r.name === 'handoffs' && !!r.id);
+
+/**
+ * After a cold start at a deep link (a notification, a shared link), put `parent` below it in the
+ * history so Back goes up one level instead of leaving the app. Entries made by this app carry a
+ * marker, so a reload or a normal visit adds nothing.
+ */
+export function ensureParentEntry(parent: Route): void {
+  if (!hasWindow) return;
+  try {
+    if ((window.history.state as { vkNav?: number } | null)?.vkNav) return;
+    const here = window.location.href;
+    window.history.replaceState({ vkNav: 1 }, '', formatRoute(parent));
+    window.history.pushState({ vkNav: 1 }, '', here);
+  } catch {
+    // history is locked down (sandboxed frame): Back just leaves
   }
 }
 

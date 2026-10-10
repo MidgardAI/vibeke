@@ -4,6 +4,7 @@
 import type { ComponentType } from 'react';
 import type { HostManagerApi, HostRecord, HostStore, PairingLink, Platform } from '@vibeke/core';
 import type { Segment } from './lib/ansi';
+import type { CachedDashboard } from './lib/offline-cache';
 import type { KV } from './lib/prefs';
 
 export type PermissionState = 'default' | 'granted' | 'denied' | 'unsupported';
@@ -55,6 +56,16 @@ export interface MirrorCache {
   set(key: string, value: CachedMirror): Promise<void>;
 }
 
+/**
+ * The last dashboard of each host (open interactions removed), so a cold start with the host
+ * offline can show the saved workspace rows. Optional: without it the list starts empty.
+ */
+export interface DashboardCache {
+  get(host: string): Promise<CachedDashboard | null>;
+  set(host: string, value: CachedDashboard): Promise<void>;
+  remove?(host: string): Promise<void>;
+}
+
 export interface BuildInfo {
   version: string;
   hash: string;
@@ -91,6 +102,7 @@ export interface UiPlatform extends Platform {
   /** Small non-secret key-value storage (prefs, pins). */
   kv: KV;
   mirrorCache?: MirrorCache;
+  dashboardCache?: DashboardCache;
   haptics?(kind: HapticKind): void;
   clipboard: { writeText(text: string): Promise<void>; readText?(): Promise<string> };
   /** Open an http(s) URL outside the app. */

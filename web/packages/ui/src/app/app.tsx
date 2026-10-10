@@ -3,11 +3,12 @@
 import { useEffect, useMemo, useRef, type ReactNode } from 'react';
 import { AlertTriangle } from 'lucide-react';
 import { Empty, Spinner, cx } from '../components/ui';
+import { useScrollMemory } from '../lib/scroll-memory';
 import { t } from '../i18n';
 import { useStore } from '../lib/store';
 import type { UiPlatform } from '../platform';
 import { mostUrgent, workspaceOfPane } from '../lib/workspaces';
-import { formatRoute, hashFromUrl, navigate, useRoute, workspaceRoute, type Route } from '../router';
+import { ensureParentEntry, formatRoute, hashFromUrl, isDeepRoute, navigate, useRoute, workspaceRoute, type Route } from '../router';
 import { InboxScreen } from '../screens/inbox';
 import { IncomingScreen } from '../screens/incoming';
 import { CrewScreen, IdleLockOverlay, InteractionRoute, RunRoute, Tour, useIdleLock } from '../screens/misc';
@@ -17,7 +18,7 @@ import { QuickScreen } from '../screens/quick';
 import { ApprovalScreen } from '../screens/approve';
 import { useApprovalCount, useApprovalStores } from './approval-stores';
 import { useHandoffStores } from './handoff-stores';
-import { AppContext, useApp, useHosts, useInboxItems, usePrefs } from './hooks';
+import { AppContext, useAllHosts, useApp, useHosts, useInboxItems, usePrefs } from './hooks';
 import { KeyboardLayer, type Surface } from './keyboard';
 import { AppModel } from './model';
 import { Layout, WorkspaceScreen } from './layout';
@@ -124,10 +125,17 @@ function Main() {
   const prefs = usePrefs();
   const route = useRoute();
   const hosts = useHosts();
+  // Live hosts only: a saved dashboard (offline cold start) must not decide where `#/` goes.
+  const liveHosts = useAllHosts();
   const items = useInboxItems();
   const rows = useWorkspaceRows();
   useThemeEffect(prefs.theme, prefs.termFont);
   useIdleLock();
+
+  // A deep link opened cold (notification, shared link): Back goes up to the inbox, not out.
+  useEffect(() => {
+    if (isDeepRoute(route)) ensureParentEntry({ name: 'inbox' });
+  }, []);
   // Incoming handoffs (nav badge) and outgoing jobs (toasts when a sheet closed early).
   useHandoffStores();
   // Approval requests from panes (inbox cards, the review screen).
@@ -138,7 +146,7 @@ function Main() {
   useEffect(() => app.platform.notifications?.onOpen((url) => navigate(hashFromUrl(url))), [app]);
 
   // Hosts known well enough to pick a destination: a dashboard, or every host settled offline.
-  const ready = hosts.some((h) => h.dashboard) || (hosts.length > 0 && hosts.every((h) => h.status !== 'connecting' && h.status !== 'idle'));
+  const ready = liveHosts.some((h) => h.dashboard) || (liveHosts.length > 0 && liveHosts.every((h) => h.status !== 'connecting' && h.status !== 'idle'));
 
   // `#/` → Inbox when anything is open, else the most urgent workspace; no hosts → pairing.
   const decided = useRef(false);
@@ -224,7 +232,7 @@ function Screen({ route }: { route: Route }) {
       );
     case 'inbox':
       return (
-        <Framed title={t.tabs.inbox} sub={<InboxSub />} width="narrow">
+        <Framed title={t.tabs.inbox} sub={<InboxSub />} width="narrow" scrollKey="inbox">
           <InboxScreen />
         </Framed>
       );
@@ -274,11 +282,14 @@ function InboxSub() {
 const WIDTHS = { narrow: 'max-w-[720px]', medium: 'max-w-[880px]', wide: 'max-w-[1280px]' } as const;
 export type FrameWidth = keyof typeof WIDTHS;
 
-function Framed({ title, sub, children, width = 'medium' }: { title: string; sub?: ReactNode; children: ReactNode; width?: FrameWidth }) {
+function Framed({ title, sub, children, width = 'medium', scrollKey }: { title: string; sub?: ReactNode; children: ReactNode; width?: FrameWidth; scrollKey?: string }) {
+  const main = useRef<HTMLElement>(null);
+  // Coming back from a workspace lands where the list was (restored before paint).
+  useScrollMemory(scrollKey, main);
   return (
     <div className="flex h-full min-h-0 flex-col pt-safe px-safe">
       <TopBar title={title} sub={sub} />
-      <main className="vk-scroll min-h-0 flex-1 overflow-y-auto">
+      <main ref={main} className="vk-scroll min-h-0 flex-1 overflow-y-auto">
         <div className={cx('mx-auto w-full pt-2', WIDTHS[width])}>{children}</div>
       </main>
     </div>

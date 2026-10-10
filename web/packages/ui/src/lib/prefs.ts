@@ -41,6 +41,8 @@ export interface Prefs {
   agentView: AgentView;
   /** Per-workspace overrides of `agentView`, keyed `<host>/<workspace>`. */
   agentViews: Record<string, AgentView>;
+  /** Prompt-cache time-to-live in minutes per harness id; missing = the default (lib/cache-clock.ts). */
+  cacheTtl: Record<string, number>;
 }
 
 export const PANEL_MIN = 320;
@@ -67,6 +69,7 @@ export const DEFAULT_PREFS: Prefs = {
   hostFilter: null,
   agentView: 'conversation',
   agentViews: {},
+  cacheTtl: {},
 };
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -102,6 +105,11 @@ export function parsePrefs(raw: string | null): Prefs {
     const m: Record<string, AgentView> = {};
     for (const [k, view] of Object.entries(v.agentViews).slice(-MAX_VIEW_OVERRIDES)) if (isAgentView(view)) m[k] = view;
     p.agentViews = m;
+  }
+  if (isObj(v.cacheTtl)) {
+    const c: Record<string, number> = {};
+    for (const [k, n] of Object.entries(v.cacheTtl).slice(0, 20)) if (typeof n === 'number' && Number.isFinite(n) && n >= 1 && n <= 120) c[k] = Math.round(n);
+    p.cacheTtl = c;
   }
   if (Array.isArray(v.pins)) p.pins = v.pins.filter((x): x is string => typeof x === 'string').slice(0, 200);
   if (isObj(v.seenDone)) {

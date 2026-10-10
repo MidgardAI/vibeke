@@ -16,6 +16,7 @@ import { emitUi, isMacLike, onAgentViewRequest, type AgentViewRequest } from '..
 import { effectivePanel, layoutModeFor, rememberTab, selectedPane, togglePanelRoute, useWorkspaceRows } from '../../app/selection';
 import { MenuButton as SidebarButton, useMediaQuery, useWide } from '../../app/shell';
 import { useSurface } from '../../app/surface';
+import { CacheChip } from '../../components/cache-chip';
 import { BatchCard } from '../../components/batch-card';
 import { InteractionCard } from '../../components/interaction-card';
 import { NewSheet } from '../../components/new-sheet';
@@ -211,7 +212,10 @@ function Workspace({ route, row, current, locked }: { route: WorkspaceRoute; row
 
   const titleBlock = (
     <div className={cx('flex min-w-0 pl-0.5', narrow ? 'flex-1 flex-col leading-tight' : 'items-baseline gap-2')}>
-      <h1 className={cx('truncate font-semibold', narrow ? 'text-[15px]' : 'text-[14px]')}>{row.title}</h1>
+      <span className="flex min-w-0 items-center gap-1.5">
+        <h1 className={cx('truncate font-semibold', narrow ? 'text-[15px]' : 'text-[14px]')}>{row.title}</h1>
+        <CacheChip run={current.run} />
+      </span>
       {sub && <span className={cx('truncate text-muted', narrow ? 'text-xs' : 'text-[13px]')}>{sub}</span>}
     </div>
   );

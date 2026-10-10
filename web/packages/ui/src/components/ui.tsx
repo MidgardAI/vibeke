@@ -241,10 +241,13 @@ export function Sheet({ open, onClose, title, children, role }: { open: boolean;
       role={role}
       labelledBy={title ? titleId : undefined}
       label={title ? undefined : t.close}
+      dragDismiss
+      closeOnNavigate
       className="fixed inset-0 z-50 flex flex-col justify-end sm:items-center sm:justify-center sm:p-6"
       panelClassName="animate-sheet vk-scroll relative max-h-[88vh] w-full overflow-y-auto rounded-t-2xl border-t border-border bg-surface pb-safe shadow-[var(--shadow)] outline-none sm:max-h-[80vh] sm:max-w-md sm:rounded-xl sm:border-0 sm:pb-0"
     >
-      <div className="sticky top-0 z-10 flex items-center gap-2 bg-surface px-4 pb-1.5 pt-3">
+      <div aria-hidden className="mx-auto mt-2 h-1 w-9 rounded-full bg-border-strong sm:hidden" />
+      <div className="sticky top-0 z-10 flex items-center gap-2 bg-surface px-4 pb-1.5 pt-1.5 sm:pt-3">
         <h2 id={titleId} className="min-w-0 flex-1 truncate text-base font-semibold">
           {title}
         </h2>

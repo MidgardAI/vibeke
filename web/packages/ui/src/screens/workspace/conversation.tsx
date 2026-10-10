@@ -35,6 +35,7 @@ import { t } from '../../i18n';
 import { errorMessage } from '../../lib/answer';
 import { turnBlocks, turnHasWork, turnStats, turnText, workedFor, type ConvBlock, type Step, type ToolStep } from '../../lib/conversation';
 import { toolSummary, type ToolKind } from '../../lib/tool-summary';
+import { takePrefetchedTranscript } from '../../lib/prefetch';
 import { EVENT_DEBOUNCE_MS, LatestFeed, SAFETY_POLL_MS, watchRunEvents } from '../../lib/live-transcript';
 import { useGitStatus } from '../../lib/use-git-status';
 
@@ -112,7 +113,9 @@ export function Conversation({
           const conn = app.conn(hostId);
           if (!conn) throw new NotConnectedError(hostId);
           const have = trRef.current.turns.length > 0 && trRef.current.run === target;
-          const r = await conn.request('agent.transcript', { target, limit: have ? LIVE_PAGE : FIRST_PAGE });
+          // The first page may already be here: a finger on the row started the fetch (lib/prefetch.ts).
+          const warm = have ? null : takePrefetchedTranscript(hostId, target, app.platform.clock.now());
+          const r = warm ?? (await conn.request('agent.transcript', { target, limit: have ? LIVE_PAGE : FIRST_PAGE }));
           return { r, have };
         },
         apply: (target, { r, have }) => {
