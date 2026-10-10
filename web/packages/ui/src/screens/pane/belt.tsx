@@ -3,7 +3,9 @@
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Check, Minus, Pencil, Plus, Send, Trash2, WrapText } from 'lucide-react';
+import type { AgentRun } from '@vibeke/core';
 import { useApp, usePrefs } from '../../app/hooks';
+import { SuggestReplies } from '../../components/suggest-replies';
 import { Button, Segmented, Toggle, cx } from '../../components/ui';
 import { t } from '../../i18n';
 import { quickRepliesFor, slashCommandsFor, type SlashCommand } from '../../lib/harness';
@@ -24,6 +26,7 @@ export function ActionBelt({
   harness,
   canType,
   onInsert,
+  suggest,
   zen,
   setZen,
 }: {
@@ -33,6 +36,8 @@ export function ActionBelt({
   harness: string | null;
   canType: boolean;
   onInsert(text: string): void;
+  /** Where "Suggest replies" applies (an agent pane); `fill` puts a chosen reply in the message box. */
+  suggest?: { hostId: string; pane: string; run: AgentRun | null; fill(text: string): void };
   /** Zen (screen only) where the host screen offers it; omitted = no Zen row. */
   zen?: boolean;
   setZen?(v: boolean): void;
@@ -47,7 +52,7 @@ export function ActionBelt({
   return (
     <div className="border-t border-border bg-surface">
       {tab === 'keys' && <KeysPanel actions={actions} />}
-      {tab === 'quick' && <QuickPanel actions={actions} harness={harness} />}
+      {tab === 'quick' && <QuickPanel actions={actions} harness={harness} suggest={suggest} />}
       {tab === 'agent' && <AgentPanel actions={actions} harness={harness} onInsert={onInsert} />}
       {tab === 'display' && <DisplayPanel zen={zen} setZen={setZen} />}
       <div className={cx('flex gap-1 px-2 py-1', prefs.leftHand && 'flex-row-reverse')}>
@@ -322,13 +327,14 @@ function KeysPanel({ actions }: { actions: PaneActions }) {
   );
 }
 
-function QuickPanel({ actions, harness }: { actions: PaneActions; harness: string | null }) {
+function QuickPanel({ actions, harness, suggest }: { actions: PaneActions; harness: string | null; suggest?: { hostId: string; pane: string; run: AgentRun | null; fill(text: string): void } }) {
   const prefs = usePrefs();
   const app = useApp();
   const replies = quickRepliesFor(harness, prefs.quickReplies);
   const [tapped, setTapped] = useState<string | null>(null);
   return (
     <div className="px-2 pt-2">
+      {suggest && <SuggestReplies hostId={suggest.hostId} pane={suggest.pane} run={suggest.run} onPick={suggest.fill} className="pb-2" />}
       <div className="flex flex-wrap gap-1.5">
         {replies.map((r) => (
           <button

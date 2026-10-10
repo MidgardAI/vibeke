@@ -3,6 +3,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { CommandPalette, useEntityItems, type PaletteItem } from '../components/command-palette';
+import { useCatchUpTracking } from '../lib/use-catch-up';
 import { dialogOpen } from '../components/dialog';
 import { NewSheet } from '../components/new-sheet';
 import { Sheet } from '../components/ui';
@@ -299,6 +300,7 @@ export function KeyboardLayer({ surface }: { surface: Surface }) {
   }
   return (
     <>
+      {surface === 'full' && <CatchUpTracker />}
       <UpdateSheet open={updates} onClose={() => setUpdates(false)} />
       <CommandPalette open={palette} onClose={() => setPalette(false)} items={surface === 'full' ? [...commands, ...entities] : commands} />
       <CheatSheet open={help} onClose={() => setHelp(false)} mac={mac} />
@@ -307,6 +309,12 @@ export function KeyboardLayer({ surface }: { surface: Surface }) {
       {sheet?.kind === 'handoff' && <HandoffSheet row={sheet.row} open onClose={() => setSheet(null)} />}
     </>
   );
+}
+
+/** Records when the main window goes to the background (for the inbox's catch-up cards). */
+function CatchUpTracker(): null {
+  useCatchUpTracking();
+  return null;
 }
 
 export function CheatSheet({ open, onClose, mac }: { open: boolean; onClose(): void; mac: boolean }) {

@@ -5,12 +5,15 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Bot, Command, FolderGit2, Inbox, Search, Server, SquareTerminal } from 'lucide-react';
 import { displayName } from '@vibeke/core';
-import { useHosts, useInboxItems, useTree } from '../app/hooks';
+import { useApp, useHosts, useInboxItems, useTree } from '../app/hooks';
 import { t } from '../i18n';
 import { harnessLabel } from '../lib/harness';
 import { fuzzyScore } from '../lib/shortcuts';
+import { canSearch, useSearchAll } from '../lib/use-search-all';
+import type { SearchResult } from '../lib/search-all';
+import { navigate, workspaceRoute } from '../router';
 import { Dialog } from './dialog';
-import { cx } from './ui';
+import { Chip, cx } from './ui';
 
 export interface PaletteItem {
   id: string;
@@ -19,6 +22,9 @@ export interface PaletteItem {
   sub?: string;
   keywords?: string;
   shortcut?: string;
+  /** A matching line (search results). */
+  snippet?: string;
+  icon?: ReactNode;
   run(): void;
 }
 
@@ -82,9 +88,32 @@ export function useEntityItems(go: {
   }, [tree, hosts, inbox]);
 }
 
+/** Open a search result: its live pane in the workspace (terminal for scrollback hits). */
+export function openSearchResult(r: SearchResult): boolean {
+  if (r.pane) {
+    const show = r.kind === 'scrollback' ? 'term' : null;
+    navigate(r.workspace ? workspaceRoute(r.host, r.workspace, { pane: r.pane, show }) : { name: 'pane', host: r.host, pane: r.pane, view: 'term', show });
+    return true;
+  }
+  if (r.run) {
+    navigate({ name: 'run', host: r.host, run: r.run });
+    return true;
+  }
+  return false;
+}
+
+type Mode = 'jump' | 'search';
+
 export function CommandPalette({ open, onClose, items }: { open: boolean; onClose(): void; items: PaletteItem[] }) {
+  const app = useApp();
+  const hosts = useHosts();
+  const multi = hosts.length > 1;
+  const searchable = hosts.some(canSearch);
+  const [mode, setMode] = useState<Mode>('jump');
   const [q, setQ] = useState('');
   const [sel, setSel] = useState(0);
+  const searching = mode === 'search' && searchable;
+  const found = useSearchAll(q, open && searching);
   const input = useRef<HTMLInputElement>(null);
   const list = useRef<HTMLDivElement>(null);
 
@@ -93,9 +122,33 @@ export function CommandPalette({ open, onClose, items }: { open: boolean; onClos
     if (!open) return;
     setQ('');
     setSel(0);
+    setMode('jump');
   }, [open]);
 
+  const searchItems = useMemo((): PaletteItem[] => {
+    return found.results.map((r) => ({
+      id: r.id,
+      group: 'pane',
+      icon: r.kind === 'scrollback' ? <SquareTerminal className="size-4" /> : <Bot className="size-4" />,
+      title: r.title || r.workspaceName || r.snippet,
+      snippet: r.snippet,
+      sub: [
+        r.workspaceName,
+        multi ? r.hostName : null,
+        r.harness ? harnessLabel(r.harness) : null,
+        r.kind === 'scrollback' ? t.searchAll.terminal : r.live ? t.searchAll.session : t.searchAll.past,
+        r.line ? t.searchAll.line(r.line) : null,
+      ]
+        .filter(Boolean)
+        .join(' · '),
+      run: () => {
+        if (!openSearchResult(r)) app.toast(t.searchAll.pastOnly, 'info');
+      },
+    }));
+  }, [found.results, multi, app]);
+
   const shown = useMemo(() => {
+    if (searching) return searchItems;
     if (!q.trim()) {
       // Empty query: commands and open interactions first, then panes.
       const order: PaletteItem['group'][] = ['interaction', 'command', 'pane', 'workspace', 'host'];
@@ -107,9 +160,9 @@ export function CommandPalette({ open, onClose, items }: { open: boolean; onClos
       .sort((a, b) => b.s - a.s)
       .slice(0, 60)
       .map((x) => x.it);
-  }, [items, q]);
+  }, [items, q, searching, searchItems]);
 
-  useEffect(() => setSel(0), [q]);
+  useEffect(() => setSel(0), [q, mode]);
   useEffect(() => {
     list.current?.querySelector(`[data-index="${sel}"]`)?.scrollIntoView({ block: 'nearest' });
   }, [sel]);
@@ -137,9 +190,9 @@ export function CommandPalette({ open, onClose, items }: { open: boolean; onClos
             ref={input}
             value={q}
             onChange={(e) => setQ(e.target.value)}
-            placeholder={t.palette.placeholder}
+            placeholder={searching ? t.searchAll.placeholder : t.palette.placeholder}
             role="combobox"
-            aria-label={t.palette.placeholder}
+            aria-label={searching ? t.searchAll.placeholder : t.palette.placeholder}
             aria-autocomplete="list"
             aria-expanded="true"
             aria-controls="palette-list"
@@ -154,6 +207,9 @@ export function CommandPalette({ open, onClose, items }: { open: boolean; onClos
               } else if (e.key === 'ArrowUp' || (e.ctrlKey && e.key === 'p')) {
                 e.preventDefault();
                 setSel((s) => Math.max(0, s - 1));
+              } else if (e.key === 'Tab' && searchable && !e.shiftKey) {
+                e.preventDefault();
+                setMode((m) => (m === 'jump' ? 'search' : 'jump'));
               } else if (e.key === 'Enter') {
                 e.preventDefault();
                 choose(shown[sel]);
@@ -161,8 +217,22 @@ export function CommandPalette({ open, onClose, items }: { open: boolean; onClos
             }}
           />
         </div>
+        {searchable && (
+          <div role="group" aria-label={t.searchAll.modes} className="flex gap-1.5 border-b border-border px-3 py-1.5">
+            <Chip active={!searching} onClick={() => setMode('jump')} className="h-7 pointer-coarse:h-9">
+              {t.searchAll.jump}
+            </Chip>
+            <Chip active={searching} onClick={() => setMode('search')} icon={<Search />} className="h-7 pointer-coarse:h-9">
+              {t.searchAll.mode}
+            </Chip>
+          </div>
+        )}
         <div ref={list} id="palette-list" role="listbox" aria-label={t.palette.label} className="min-h-0 flex-1 overflow-y-auto p-1.5">
-          {shown.length === 0 && <div className="px-3 py-6 text-center text-sm text-muted">{t.palette.empty}</div>}
+          {shown.length === 0 && (
+            <div className="px-3 py-6 text-center text-sm text-muted" role="status">
+              {searching ? (!found.active ? t.searchAll.typeMore : found.pending > 0 ? t.searchAll.searching : t.searchAll.empty) : t.palette.empty}
+            </div>
+          )}
           {shown.map((it, i) => (
             <div
               key={it.id}
@@ -174,16 +244,22 @@ export function CommandPalette({ open, onClose, items }: { open: boolean; onClos
               onClick={() => choose(it)}
               className={cx('flex min-h-11 cursor-default items-center gap-3 rounded-xl px-2.5 py-1.5', i === sel && 'bg-accent/12')}
             >
-              <span className={cx('shrink-0', i === sel ? 'text-accent' : 'text-muted')}>{it.group === 'pane' && it.sub && !it.sub.startsWith(t.palette.pane) ? <Bot className="size-4" /> : ICONS[it.group]}</span>
+              <span className={cx('shrink-0', i === sel ? 'text-accent' : 'text-muted')}>{it.icon ?? (it.group === 'pane' && it.sub && !it.sub.startsWith(t.palette.pane) ? <Bot className="size-4" /> : ICONS[it.group])}</span>
               <span className="min-w-0 flex-1">
                 <span className="block truncate text-sm">{it.title}</span>
                 {it.sub && <span className="block truncate text-xs text-muted">{it.sub}</span>}
+                {it.snippet && <span className="line-clamp-2 break-words font-mono text-xs text-faint">{it.snippet}</span>}
               </span>
               {it.shortcut && <kbd className="shrink-0 rounded-md border border-border px-1.5 font-sans text-2xs text-muted">{it.shortcut}</kbd>}
             </div>
           ))}
         </div>
-        <div className="border-t border-border px-3.5 py-1.5 text-2xs text-muted">{t.palette.hint}</div>
+        {searching && found.active && (found.failed.length > 0 || (found.pending > 0 && shown.length > 0)) && (
+          <div className="border-t border-border px-3.5 py-1.5 text-2xs text-muted" role="status">
+            {[found.pending > 0 ? t.searchAll.searching : null, found.failed.length ? t.searchAll.hostFailed(found.failed.join(', ')) : null].filter(Boolean).join(' · ')}
+          </div>
+        )}
+        <div className="border-t border-border px-3.5 py-1.5 text-2xs text-muted">{searchable ? t.searchAll.hint : t.palette.hint}</div>
     </Dialog>
   );
 }
