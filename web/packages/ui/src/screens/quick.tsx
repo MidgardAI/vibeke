@@ -5,7 +5,6 @@
 import { useEffect, useState } from 'react';
 import { AppWindow, Check } from 'lucide-react';
 import { interactionRisk, type InboxItem } from '@vibeke/core';
-import { useApprovalCount } from '../app/approval-stores';
 import { useApp, useInboxItems, useTree } from '../app/hooks';
 import { ConnectionBanner, Toasts } from '../app/shell';
 import { CardHeader } from '../components/interaction-card';
@@ -20,7 +19,6 @@ export function QuickScreen() {
   const app = useApp();
   const items = useInboxItems();
   const tree = useTree();
-  const approvals = useApprovalCount();
   const route = useRoute();
   const [confirm, setConfirm] = useState<InboxItem | null>(null);
   const [gone, setGone] = useState(false);
@@ -66,15 +64,10 @@ export function QuickScreen() {
         </IconButton>
       </header>
       <ConnectionBanner />
-      {/* One list for j/k: the inbox cards, then the agent rows. */}
-      <main className="min-h-0 flex-1 overflow-y-auto" data-nav-list>
+      <main className="min-h-0 flex-1 overflow-y-auto">
         {gone && <div className="px-4 pt-3 text-sm text-muted">{t.quick.gone}</div>}
-        {(items.length > 0 || approvals > 0) && (
-          <section aria-label={t.quick.approvals} className="border-b border-border">
-            <InboxScreen />
-          </section>
-        )}
-        <QuickAgents tree={tree} />
+        {/* The agents share the inbox's keyboard list: j/k walk the cards, then the agents. */}
+        <InboxScreen after={<QuickAgents tree={tree} />} />
       </main>
       <footer className="shrink-0 border-t border-border px-3 py-1.5 text-center text-2xs text-faint">j / k · a {t.inbox.allow.toLowerCase()} · d {t.inbox.deny.toLowerCase()} · ↵ {t.open.toLowerCase()} · esc</footer>
       <Toasts />

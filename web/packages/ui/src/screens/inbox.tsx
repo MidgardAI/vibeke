@@ -12,7 +12,11 @@ import { InboxRetainer, itemKey, type RetainedEntry } from '../lib/retain';
 import { useCatchUp } from '../lib/use-catch-up';
 import { InboxApprovals } from './approve';
 
-export function InboxScreen() {
+/**
+ * `after` (the menu-bar popover's agent list) renders below the cards, inside the same keyboard
+ * list; with it, an empty inbox shows only `after` instead of the empty state.
+ */
+export function InboxScreen({ after }: { after?: ReactNode } = {}) {
   const app = useApp();
   const hosts = useHosts();
   const items = useInboxItems();
@@ -50,16 +54,27 @@ export function InboxScreen() {
     rows.push({ key: e.key, node: <EntryCard entry={e} showHost={showHost} /> });
   }
 
-  if (rows.length === 0 && approvals === 0 && catchUp.cards.length === 0) {
+  const empty = rows.length === 0 && approvals === 0 && catchUp.cards.length === 0;
+  if (empty && !after) {
     return <Empty icon={<InboxIcon className="size-10" />} title={t.inbox.empty} hint={t.inbox.emptyHint} />;
   }
-  return (
-    <div className="space-y-3 px-3 pb-6 pt-2 sm:px-4" data-nav-list>
+  if (empty) return <div data-nav-list>{after}</div>;
+  const cards = (
+    <div className="space-y-3 px-3 pb-6 pt-2 sm:px-4" data-nav-list={after ? undefined : true}>
       <CatchUpSection catchUp={catchUp} showHost={showHost} />
       <InboxApprovals showHost={showHost} />
       {rows.map((r) => (
         <div key={r.key}>{r.node}</div>
       ))}
+    </div>
+  );
+  if (!after) return cards;
+  return (
+    <div data-nav-list>
+      <section aria-label={t.quick.approvals} className="border-b border-border">
+        {cards}
+      </section>
+      {after}
     </div>
   );
 }
