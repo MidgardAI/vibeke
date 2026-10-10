@@ -155,6 +155,24 @@ describe('PushSync', () => {
     s.manager.stop();
   });
 
+  test('clear support is sent with the subscription and a change re-sends it', async () => {
+    const s = setup(['h1']);
+    await s.manager.start();
+    await flush(30);
+    await s.sync.start();
+    await s.sync.enable();
+    let subs = s.calls.filter((c) => c[1] === 'push.subscribe');
+    expect(subs[0]![2].supports_clear).toBe(false);
+    // The same subscription from an app whose service worker handles `clear` pushes.
+    const clearing = new PushSync({ manager: s.manager, push: s.push, keystore: s.keystore, random: randomBytes, supportsClear: true });
+    await clearing.start();
+    await flush(10);
+    subs = s.calls.filter((c) => c[1] === 'push.subscribe');
+    expect(subs.length).toBe(2);
+    expect(subs[1]![2].supports_clear).toBe(true);
+    s.manager.stop();
+  });
+
   test('share hosts never receive the VAPID key or push calls', async () => {
     const s = setup(['own'], ['shared']);
     await s.manager.start();

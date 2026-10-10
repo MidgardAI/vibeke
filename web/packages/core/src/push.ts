@@ -43,8 +43,9 @@ export async function loadOrCreateVapid(store: KeyStore, random: (n: number) => 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 
-/** Marker of what a host last received: endpoint + VAPID public key. */
-const marker = (sub: PushSubscriptionInfo, keys: VapidKeys): string => `${sub.endpoint}|${b64.encode(keys.publicKey)}`;
+/** Marker of what a host last received: endpoint + VAPID public key (+ `clear` support). */
+const marker = (sub: PushSubscriptionInfo, keys: VapidKeys, supportsClear = false): string =>
+  `${sub.endpoint}|${b64.encode(keys.publicKey)}${supportsClear ? '|clear' : ''}`;
 
 /**
  * Push goes only to the user's own hosts: the VAPID private key lets a host sign pushes as this
@@ -59,6 +60,12 @@ export interface PushSyncOptions {
   push: PushSupport | undefined;
   keystore: KeyStore;
   random: (n: number) => Uint8Array;
+  /**
+   * The service worker closes a host's notification on a `{kind: "clear", tag, host}` push, so the
+   * gateway may send one when everything it showed was answered elsewhere. Leave unset where a push
+   * must always show a notification.
+   */
+  supportsClear?: boolean;
 }
 
 /**
@@ -186,7 +193,8 @@ export class PushSync {
     const sub = this.sub;
     const keys = this.keys;
     if (!sub || !keys) return;
-    const want = marker(sub, keys);
+    const supportsClear = this.o.supportsClear === true;
+    const want = marker(sub, keys, supportsClear);
     const jobs: Promise<void>[] = [];
     for (const c of this.o.manager.connections()) {
       const st = c.getSnapshot();
@@ -198,6 +206,7 @@ export class PushSync {
           .request('push.subscribe', {
             subscription: { endpoint: sub.endpoint, keys: { p256dh: sub.keys.p256dh, auth: sub.keys.auth } },
             vapid_private: b64.encode(keys.privateKey),
+            supports_clear: supportsClear,
           })
           .then(
             () => {
