@@ -18,9 +18,26 @@ use std::process::Command;
 pub const PINNED_VERSION: &str = "153.0.8010.12";
 
 /// Known SHA-256 checksums per (version, platform). Chrome for Testing publishes no checksums;
-/// entries are recorded by whoever bumps the pin after verifying a download out of band. Until
-/// a platform has one, `--sha256` must be given explicitly.
-pub const PINNED_SHA256: &[(&str, &str, &str)] = &[];
+/// entries are recorded by whoever bumps the pin after verifying a download out of band (these
+/// were checked against the MD5 Google Cloud Storage reports for each object, 2026-10-10). A
+/// version or platform without one needs an explicit `--sha256`.
+pub const PINNED_SHA256: &[(&str, &str, &str)] = &[
+    (
+        "153.0.8010.12",
+        "mac-arm64",
+        "89d80a6d26ccd0ccfd51e22d9e1297283862af2b0cd91dce07459b35ca0059f2",
+    ),
+    (
+        "153.0.8010.12",
+        "mac-x64",
+        "5c2eaa1aad62111bb5a70dd0889dd3093f3142277b8f78957a238257ee85f009",
+    ),
+    (
+        "153.0.8010.12",
+        "linux64",
+        "a9da028861a0cf789ff25c2fed45f5f1aaf969ed9247835b6a7821a4f7af9d1d",
+    ),
+];
 
 /// `mac-arm64`, `mac-x64`, `linux64` (Chrome for Testing platform names).
 pub fn platform() -> Option<&'static str> {
@@ -313,9 +330,13 @@ mod tests {
         assert!(plan(t.path(), None, Some("http://x/y.zip"), None).is_err());
         assert!(plan(t.path(), None, None, Some("abc")).is_err());
         assert!(plan(t.path(), Some("1;rm"), None, None).is_err());
-        // Without a known checksum nothing is fetched.
+        // The pin has a recorded checksum for every supported platform.
+        assert!(pl.sha256.as_deref().is_some_and(valid_sha), "{pl:?}");
+        // Without a known checksum (an unpinned version) nothing is fetched.
+        let unpinned = plan(t.path(), Some("1.2.3"), None, None).unwrap();
+        assert_eq!(unpinned.sha256, None);
         let fetched = std::cell::Cell::new(false);
-        let e = install(&pl, &|_, _| {
+        let e = install(&unpinned, &|_, _| {
             fetched.set(true);
             Ok(())
         })

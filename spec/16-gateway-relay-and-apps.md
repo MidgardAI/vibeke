@@ -286,7 +286,20 @@ Default for `pair` is `full` (your own phone); `approve`/`view` are for shared o
 | `agent.prompt` | `{target, text, op_id}` → `{}` | full | `agent.prompt` |
 | `agent.interrupt` | `{target, op_id}` → `{}` | approve | `agent.interrupt` |
 | `agent.transcript` | `{target, limit?, skip?}` → `{turns, has_older}` | view | `agent.transcript`; `skip` = newest turns the client already has; the gateway asks for `skip + limit` and slices until the server pages natively |
-| `agent.start` | `{workspace, cwd?, harness, prompt?, op_id}` → server `agent.start` result + `pane` (id) | full | `tab.create` → `root_pane`, then `agent.start {pane}` |
+| `agent.start` | `{harness, prompt?, name?, op_id}` plus one of `worktree: {branch, base?, name?}` (with `pane`, `workspace` or `cwd` naming the repository), `new_workspace: {cwd, name?}`, `pane`, or `workspace` + `cwd?` → server `agent.start` result + `pane` (id) | full | `worktree.create {open: true}`, `workspace.create` or `tab.create` → `root_pane`, then `agent.start {pane}`; the first two are refused to limited devices |
+| `worktree.create` | `{pane \| workspace \| cwd, branch, base?, name?, open?, op_id}` → server result | full | server `worktree.create` in the pane's cwd, the workspace root or (devices without a limit) `cwd`; no `path` or `root` override; refused to limited devices |
+| `workspace.create` | `{cwd, name?, op_id}` → `{workspace, tab, root_pane}` | full | server (never `command` or `layout`); refused to limited devices |
+| `agent.turns` | `{run, after_seq?, limit?}` → `{run, turns, next_after_seq}` | view | server; `run` must be inside a limited device's panes |
+| `assistant.status` / `assistant.get` | `{}` / `{request}` | view | server; refused to limited devices |
+| `assistant.generate` | `{operation, workspace?, pane?, run?, interaction?, turns?, include_screen?, priority?, op_id}` → server result (a preview to confirm unless auto-sent) | full | server with `idempotency_key = "gw:<device_id>:<op_id>"`; operations `briefing`, `background_summary`, `decision_card`, `reply_suggestions` only; no `profile`, `remote_sources` or `inputs`; the host's workspace consent applies; refused to limited devices |
+| `assistant.confirm` / `assistant.cancel` | `{request, preview_digest, op_id}` / `{request, op_id}` | full | server; refused to limited devices |
+| `desk.search` | `{text, repo?, harness?, since?, until?, limit?, sort?}` → `{hits, index}` | view | server; snippets redacted with `vk-redact`; refused to limited devices |
+| `search.query` | `{q, pane?, workspace?, sources?, since?, limit?, regex?, context?}` → `{hits}` | view | server (redacts hits for remote clients); a limited device's search is narrowed to its pane or workspace and hits outside its live panes are dropped |
+| `sandbox.list` / `sandbox.status` | `{}` | view | server; refused to limited devices |
+| `browser.list` / `browser.status` | `{}` | view | server; refused to limited devices (all `browser.*`) |
+| `browser.attach_screencast` / `browser.screencast_frame` / `browser.detach_screencast` | `{session}` / `{session, after_seq?}` / `{session}` | view | gateway counts viewers per session (the server holds one subscription for the gateway's connection): it attaches once, and detaches when the last device detaches, stops polling for 30 s or disconnects; a frame poll without an attach is `conflict` |
+| `browser.take_over` / `browser.release` | `{session, op_id}` | full | server; a take-over also ends when its device stops watching or disconnects |
+| `browser.click` / `browser.type` / `browser.press` / `browser.navigate` | server params (whitelisted) + `op_id` | full | server; only from the device whose take-over is in force (`conflict` otherwise) |
 | `agent.harnesses` | `{}` → `{harnesses}` | view | server |
 | `tab.create` | `{workspace, cwd?, op_id}` → `{tab, pane}` | full | `tab.create` |
 | `interaction.list` / `interaction.get` | server params | view | server; normalized |
@@ -308,7 +321,7 @@ Default for `pair` is `full` (your own phone); `approve`/`view` are for shared o
 | `notification.list` / `notification.read` | server params | view / approve | server |
 | `events.subscribe` | `{after?}` → `{at}`; then `event` notifications | view | gateway ring buffer (§7.5) |
 | `prefs.get` / `prefs.set` | `{device: {...}, host: {dnd_until?}}` | view / full | gateway (device prefs per device; DND host-wide) |
-| `push.subscribe` | `{subscription, vapid_private, op_id}` → `{}` | view | gateway (§8.1) |
+| `push.subscribe` | `{subscription, vapid_private, supports_clear?, op_id}` → `{}` | view | gateway (§8.1); `supports_clear` is stored per device (§7.8) |
 | `push.unsubscribe` / `push.test` | `{op_id}` | view | gateway |
 | `stt.transcribe` | `{mime, data_b64, op_id}` → `{text}` | full | gateway, only if `gateway.toml: stt.command` is set (§8.4) |
 | `devices.list` / `devices.revoke` | | view / full | gateway |
@@ -321,6 +334,7 @@ Default for `pair` is `full` (your own phone); `approve`/`view` are for shared o
 - On server `events.overflow`, server restart or cursor epoch change, the gateway resubscribes from its last cursor; on `truncated` it clears the ring and broadcasts `events.reset`.
 - Events are forwarded as `event` notifications carrying the server event `{seq, ts, type, subject, actor, data}`, filtered by scope (all scopes may read all events today). Device cursors are plain `seq` numbers; `events.subscribe {after}` answers `{at}` or `{reset: true}`. Other notifications: `events.reset`, `device.revoked`.
 - `dashboard.get` and `interaction.*` results add `harness` and `repo_root` to each interaction (from its run's cwd) so clients can group batches exactly as §7.6 checks them.
+- A sandbox boundary request (`sandbox.request`, 13 §8) is an approval whose `action.tool` is `boundary`. The gateway adds `boundary: {kind: push|copy_out, pane, remote?, branch?, path?}` so the app can show what would cross the boundary. It is answered `allow` (this once) or `deny` only, and pushes like any other approval.
 - **Normalization:** server enums serialize PascalCase (`"Approval"`, `"Open"`, `"Delivered"`) except `interaction.list`'s `kind`. The gateway rewrites every interaction to snake_case (`kind`, `status`, `delivery`, `action.risk`, `answer.decision`) so the app sees one form.
 
 ### 7.6 Batch eligibility
@@ -330,6 +344,7 @@ The UI only offers a batch the gateway would accept, and the gateway re-checks a
 - `kind == approval`, `status == open`, `answerable`, and `decision_rev` matches the request;
 - the same **fingerprint**: `(harness, action.tool, normalized command or sorted paths, repo root of the pane cwd)`;
 - `action.risk` is `low` or `medium` (`high` and `unknown` are never batched or swiped);
+- `action.tool` is not `boundary` (sandbox boundary requests are decided one by one);
 - the decision is `allow` or `deny` (never `allow_always` in a batch).
 
 ### 7.7 Server additions (additive)
@@ -356,9 +371,10 @@ Git execution rules (git can run configured programs):
 | `agent.state_changed` to `error` / `rate_limited` | "Claude · dashboard stopped: rate limited" |
 | `auth.approval_requested` (a pane asks to run one call, 09 §3.2) | "A pane asks to send a handoff", urgent, link `#/approve/<host>/<request>`; owner devices only; ended by `auth.approval_granted|denied|withdrawn` |
 | `notification.created` with urgency ≥ normal and **not** generated for an interaction already pushed (nor the high-urgency `auth.approve` one, pushed above) | title/body |
+| `agent.state_changed` from `working` to `idle`, harness with a known prompt-cache lifetime (Claude and Codex: 300 s) | "Claude · backend: prompt cache expires soon", 45 s before expiry, link `#/r/<host>/<run>`; per-device `notify_cache_cold` (default off); one per idle period, cancelled by a new turn, `working` again or the run ending, and skipped while the run has an open interaction; own tag `vibeke:<host id>:cache:<run>` |
 
 - One notification per host (`tag = vibeke:<host id>`), merged: one item shows its own text, several show "3 agents need you". `renotify` only when a new item is added.
-- Visible notifications only (WebKit revokes push permission for silent pushes). When items resolve, the app closes stale notifications on its next foreground via `registration.getNotifications()`; no "clear" pushes.
+- Visible notifications only (WebKit revokes push permission for silent pushes). When items resolve, the app closes stale notifications on its next foreground via `registration.getNotifications()`. A device whose app said `push.subscribe {supports_clear: true}` also gets `{kind: "clear", tag: "vibeke:<host id>", host}` when every item its current notification showed is resolved (answered on another device or at the desk). A notification that a "finished" push or a notice replaced is never cleared this way. Apps opt in only where closing a notification from a push is allowed.
 - **Privacy levels** per device (default `summary`): `full` (command/summary through `vk-redact`), `summary` (harness, workspace, kind), `minimal` ("Vibeke: 1 agent needs you"). Payloads are RFC 8291-encrypted regardless.
 - DND (host-wide, existing phone-companion semantics) **suppresses** pushes; nothing is queued. Quiet devices reconcile on foreground.
 - Delivery: TTL 6 h, urgency `high` for interactions, `normal` otherwise; 404/410 deletes the subscription; 5 consecutive failures disable it and show a banner on next foreground; 429 honours `Retry-After`.

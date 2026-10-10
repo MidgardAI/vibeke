@@ -116,17 +116,19 @@ pub fn hidden(app: &App, mi: usize, r: &AgentRun) -> bool {
 /// The displayed name and its style after token rules.
 pub fn styled_name(app: &App, mi: usize, r: &AgentRun, label: &str) -> (String, Style) {
     let m = &app.machines[mi];
+    // Rules match the name or harness as before; the session title is only for display.
     let name = r.name.clone().unwrap_or_else(|| r.harness.clone());
+    let shown = crate::draw::truncate(r.label(), crate::draw::RUN_LABEL_MAX);
     match token_for(app, m, r, &format!("{name} {label}")) {
         Some(tok) => (
-            tok.label.clone().unwrap_or(name),
+            tok.label.clone().unwrap_or(shown),
             tok.color
                 .as_deref()
                 .and_then(|c| color(app, c))
                 .map(|c| app.theme.s(c))
                 .unwrap_or_else(|| app.theme.text()),
         ),
-        None => (name, app.theme.text()),
+        None => (shown, app.theme.text()),
     }
 }
 

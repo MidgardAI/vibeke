@@ -322,7 +322,7 @@ pub fn working_from_model(app: &App, mi: usize) -> Vec<Working> {
             machine: mi,
             run: r.id.clone(),
             pane: r.pane.clone(),
-            name: r.name.clone().unwrap_or_else(|| r.harness.clone()),
+            name: r.label().to_string(),
             task: None,
             working_for_ms: (now - r.execution.since_ms).max(0),
         })
@@ -353,13 +353,7 @@ pub fn fallback_items(app: &App, mi: usize) -> Vec<Item> {
     for i in ints {
         let run = m.model.runs.iter().find(|r| r.id == i.run);
         let who = run
-            .map(|r| {
-                format!(
-                    "{} {}",
-                    harness_icon(&r.harness),
-                    r.name.clone().unwrap_or_else(|| r.harness.clone())
-                )
-            })
+            .map(|r| format!("{} {}", harness_icon(&r.harness), r.label()))
             .unwrap_or_default();
         let age = (now - i.opened_at_ms).max(0);
         v.push(Item {

@@ -1277,6 +1277,9 @@ fn resolve_target(
         Operation::TaskTitle if task.is_none() && run.is_none() => {
             return Err(need("--task or --run"));
         }
+        Operation::ReplySuggestions if pane.is_none() && run.is_none() => {
+            return Err(need("--pane or --run"));
+        }
         _ => {}
     }
     Ok(Target {
@@ -1504,7 +1507,8 @@ async fn gather(
         Operation::Navigate
         | Operation::DecisionCard
         | Operation::StallNotice
-        | Operation::TaskTitle => {
+        | Operation::TaskTitle
+        | Operation::ReplySuggestions => {
             kinds = gather_ext::gather(server, ctx, op, t, &mut sources, &mut targets).await?;
         }
         Operation::Briefing | Operation::BackgroundSummary => {

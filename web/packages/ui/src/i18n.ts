@@ -71,7 +71,7 @@ export const en = {
     answeredBy: (who: string) => `Answered by ${who}`,
     openPane: 'Open pane',
     notAnswerable: 'This dialog can only be answered in the pane',
-    hostOffline: 'Host offline — answers are disabled',
+    hostOffline: 'Host offline. Reconnect to answer.',
     readOnly: 'View-only device',
     batchTitle: (n: number, what: string) => `${n} agents want ${what}`,
     batchIn: (repo: string) => `in ${repo}`,
@@ -96,6 +96,7 @@ export const en = {
     pin: 'Pin',
     unpin: 'Unpin',
     rename: 'Rename',
+    renamePane: 'Rename pane',
     renamePrompt: 'Pane name',
     close: 'Close pane',
     closeConfirm: 'Tap again to close',
@@ -129,6 +130,10 @@ export const en = {
     changes: 'Changes',
     terminal: 'Terminal',
     copyScreen: 'Copy screen',
+    copyOutput: 'Copy output',
+    outputEmpty: 'There is no output to copy',
+    exitZen: 'Exit Zen',
+    jumpLatest: 'Jump to latest',
     wrap: 'Wrap',
     textSize: 'Text size',
     zen: 'Zen',
@@ -152,6 +157,51 @@ export const en = {
     clearQueue: 'Clear',
     noCommands: 'No commands for this harness',
     editQuick: 'Edit quick replies in Settings',
+    fKeys: 'F1-F12',
+    mainKeys: 'Keys',
+    editKeys: 'Edit keys',
+    tapAgainKey: 'Tap again to send',
+    leftHand: 'Left-hand mode',
+    keyPad: 'Keys board',
+  },
+
+  keysEditor: {
+    title: 'Edit keys',
+    presets: 'Layouts',
+    presetNames: { default: 'Default', claude: 'Claude Code', vim: 'Vim' } as Record<string, string>,
+    yourKeys: 'Your keys',
+    empty: 'No keys. Add one below or choose a layout.',
+    moveUp: 'Move earlier',
+    moveDown: 'Move later',
+    remove: 'Remove key',
+    width: 'Width',
+    addTitle: 'Add a key',
+    label: 'Label (optional)',
+    keyName: 'Key',
+    keyHint: 'A letter, or a name such as up, enter, esc or f5',
+    addStep: 'Add step',
+    steps: 'Steps (up to 4, sent in order)',
+    noSteps: 'Add at least one step.',
+    badKey: 'This is not a key Vibeke can send.',
+    tooManySteps: 'A key has at most 4 steps.',
+    addToBoard: 'Add to board',
+    boardFull: 'The board is full.',
+    shareTitle: 'Share layout',
+    export: 'Show code',
+    copy: 'Copy code',
+    copied: 'Code copied',
+    importLabel: 'Paste a layout code',
+    import: 'Import',
+    imported: 'Layout imported',
+    errors: {
+      empty: 'Paste a code first.',
+      format: 'This is not a Vibeke layout code.',
+      too_long: 'This code is too long.',
+      invalid: 'This code has a key that Vibeke cannot send.',
+    } as Record<string, string>,
+    dangerous: 'Needs a second tap',
+    leftHand: 'Left-hand mode',
+    leftHandHint: 'Moves the keys, Send and Attach to the left side.',
   },
 
   composer: {
@@ -180,10 +230,12 @@ export const en = {
     password: 'The terminal is asking for a password — what you type will be sent but not shown.',
     readOnly: 'This device can only view this host.',
     approveOnly: 'This device can answer approvals but not type into panes.',
-    offline: 'Host offline — sending is disabled.',
+    offline: 'Host offline. Reconnect to send.',
     sent: 'Sent',
     sendFailed: 'Send failed',
     sendUnknown: 'Connection dropped — check the screen before sending again',
+    dropFiles: 'Drop files to attach',
+    dictation: 'Listening',
   },
 
   history: {
@@ -236,6 +288,39 @@ export const en = {
     create: 'Create tab',
     started: 'Started',
     notDetected: 'not detected',
+    folder: 'Folder',
+    newFolder: 'New folder…',
+    favoriteFolders: 'Favorite folders',
+    recentFolders: 'Recent folders',
+    addFavorite: 'Add to favorites',
+    removeFavorite: 'Remove from favorites',
+    pickFolder: 'Choose a folder on the host',
+    folderRequired: 'Choose a folder first.',
+    worktree: 'New worktree',
+    worktreeHint: 'Works on its own branch in a separate folder.',
+    branch: 'Branch name',
+    startFrom: 'Start from',
+    defaultBranch: (b: string) => `Default branch (${b})`,
+    currentBranch: (b: string) => `Current branch (${b})`,
+    again: 'Again',
+    againLabel: (what: string) => `Again: ${what}`,
+    notInstalled: 'Not installed on this host.',
+    noHarness: 'No agent is installed on this host.',
+    viewOnly: 'This device can only view this host, so it cannot start agents.',
+    limitedFolder: 'This device has limited access. It cannot start agents in new folders or worktrees.',
+    oldHost: 'Update Vibeke on the host to start agents in new folders or worktrees.',
+    notGit: 'This workspace is not a Git repository.',
+    checkingGit: 'Checking the repository…',
+    branchProblem: {
+      empty: 'Enter a branch name.',
+      long: 'The branch name is too long.',
+      chars: 'A branch name cannot contain spaces or the characters ~ ^ : ? * [ \\.',
+      dots: 'A branch name cannot contain ".." or a part that starts with a dot.',
+      slashes: 'A branch name cannot contain "//".',
+      edge: 'A branch name cannot start with "-" or "/", or end with "/" or ".".',
+      lock: 'A part of a branch name cannot end with ".lock".',
+      at: 'A branch name cannot be "@" or contain "@{".',
+    } as Record<string, string>,
   },
 
   pair: {
@@ -439,6 +524,40 @@ export const en = {
     declineConfirm: 'Tap again to decline',
   },
 
+  boundary: {
+    push: (branch: string, remote: string) => `Push branch ${branch} to remote ${remote}`,
+    pushNoBranch: (remote: string) => `Push the task branch to remote ${remote}`,
+    copyOut: (path: string) => `Copy ${path} out of the sandbox`,
+    other: 'Do something outside the sandbox',
+    pane: (name: string) => `Asked by ${name}`,
+    note: 'The run is inside a sandbox. This only happens if you allow it, and only this once.',
+    allowOnce: 'Allow once',
+  },
+
+  live: {
+    watch: 'Watch live',
+    sessions: 'Browser sessions on the host',
+    noSessions: 'No agent browser sessions are open.',
+    loading: 'Loading sessions',
+    connecting: 'Connecting',
+    waiting: 'Waiting for the first picture',
+    stop: 'Stop watching',
+    takeOver: 'Take over',
+    release: 'Release',
+    controller: { you: 'You control this page', someone: 'Another person controls this page', agent: 'The agent controls this page' },
+    needsFull: 'Full access is needed to take over.',
+    tapHint: 'Tap the picture to click.',
+    typePlaceholder: 'Text to type',
+    type: 'Type',
+    typeSubmit: 'Type and press Enter',
+    address: 'Address',
+    go: 'Go',
+    keys: 'Keys',
+    lost: 'The connection to the page was lost.',
+    retry: 'Try again',
+    frameAlt: 'Live picture of the page',
+  },
+
   approve: {
     screenTitle: 'Approval requests',
     /** "Pane w1:p2 asks to send a handoff". */
@@ -468,7 +587,7 @@ export const en = {
     empty: 'No approval requests',
     emptyHint: 'A command typed in a shell pane, like vibeke handoff send, asks here before it runs.',
     readOnly: 'Only a device with full access can decide',
-    hostOffline: 'Host offline — decisions are disabled',
+    hostOffline: 'Host offline. Reconnect to answer.',
   },
 
   crew: {
@@ -540,6 +659,14 @@ export const en = {
     iosInstall: 'On iPhone and iPad, push needs the app on the Home Screen: tap Share, then "Add to Home Screen", and open Vibeke from there.',
     notifyInput: 'When an agent needs you',
     notifyDone: 'When an agent finishes',
+    notifyCacheCold: 'Cache going cold',
+    notifyCacheColdHint: 'Before an idle agent prompt cache expires.',
+    cacheTitle: 'Prompt cache',
+    cacheHint: 'How long an agent keeps its prompt cache after its last turn. Chips count down to this time.',
+    cacheMinutes: (n: number) => `${n} min`,
+    cacheReset: 'Reset',
+    cacheLess: 'Shorter',
+    cacheMore: 'Longer',
     dnd: 'Do not disturb',
     dndUntil: (when: string) => `Quiet until ${when}`,
     dndOff: 'Off',
@@ -578,14 +705,32 @@ export const en = {
   tour: {
     steps: [
       { title: 'Decisions first', body: 'The Inbox collects every approval, question and plan review from all your hosts. Swipe low-risk approvals; risky ones always ask twice.' },
-      { title: 'Your panes', body: 'Panes lists every terminal and agent. Rows that need you are tinted. Hold a row to pin, rename or focus it.' },
-      { title: 'Drive a pane', body: 'Open a pane to see its screen, send keys and quick replies, attach files and talk to the agent. Nothing is sent without your tap.' },
+      { title: 'Your workspaces', body: 'The menu lists every workspace, grouped by what it needs from you. Press and hold a row to pin, rename or close it.' },
+      { title: 'Drive an agent', body: 'Open a workspace to read the agent conversation or switch to its terminal. Send messages, keys and quick replies, and attach files. Nothing is sent without your tap.' },
       { title: 'Stay in the loop', body: 'Turn on push in Settings to hear when an agent needs you. Everything is end-to-end encrypted to your host.' },
     ],
     next: 'Next',
     skip: 'Skip',
     finish: 'Get started',
     enablePush: 'Turn on push',
+  },
+
+  cache: {
+    chip: (label: string) => `Prompt cache: ${label} left`,
+    chipCold: 'Prompt cache: cold',
+    cold: 'cold',
+    sheetTitle: 'Prompt cache',
+    what: 'An agent keeps your conversation in a short-lived cache on its provider. A new message that arrives while the cache is warm is faster and costs less.',
+    left: (label: string) => `About ${label} left before the cache expires.`,
+    lessThanMinute: 'Less than a minute left before the cache expires.',
+    lowHint: 'Send your next message soon to keep it warm.',
+    coldNow: (when: string) => `The cache went cold at ${when}. The next message sends the whole conversation again. It is slower and costs more.`,
+    ttl: (harness: string, min: number) => `${harness} keeps its cache for ${min} ${min === 1 ? 'minute' : 'minutes'} after its last turn.`,
+    change: 'Change in Settings',
+  },
+
+  offline: {
+    asOf: (when: string) => `as of ${when}`,
   },
 
   lock: {
@@ -643,6 +788,72 @@ export const en = {
     theme: (to: string) => `Switch to ${to} theme`,
     lock: 'Lock',
     hint: '↑↓ to move · ↵ to open · esc to close',
+  },
+
+  assist: {
+    title: 'Ask the assistant',
+    notice: 'This request sends text from the host to a model. Check it, then confirm.',
+    model: 'Model',
+    sentTo: 'Sent to',
+    sizeLabel: 'Size',
+    tokens: (n: number) => `About ${n} input tokens`,
+    costLabel: 'Cost',
+    cost: (c: string) => `Up to ${c}`,
+    confirm: 'Confirm and send',
+    cancel: 'Cancel',
+    working: 'Working…',
+    failed: 'The assistant could not finish.',
+    cancelled: 'The request was cancelled.',
+    noPreview: 'The host sent no preview, so nothing was sent.',
+    unsupported: 'This host does not offer the assistant to the app.',
+    noConsent: 'Allow the assistant for this workspace on the host first.',
+    offline: 'The host is not connected.',
+    timeout: 'The assistant took too long.',
+    cached: 'This is a saved answer. Nothing was sent.',
+    close: 'Done',
+  },
+
+  catchUp: {
+    title: 'While you were away',
+    since: (when: string) => `Since ${when}`,
+    turns: (n: number) => plural(n, '1 turn finished', `${n} turns finished`),
+    newRun: 'New agent',
+    waiting: (n: number) => plural(n, '1 request waits for you', `${n} requests wait for you`),
+    files: (n: number) => plural(n, '1 file changed', `${n} files changed`),
+    checks: 'Checks',
+    lastMessage: 'Last message',
+    open: 'Open',
+    dismiss: 'Dismiss',
+    markAll: 'Mark all seen',
+    summarize: 'Summarize',
+    summary: 'Summary',
+    noSummary: 'The assistant returned no summary.',
+    label: 'Catch-up',
+  },
+
+  replies: {
+    suggest: 'Suggest replies',
+    label: 'Suggested replies',
+    hint: 'Tap a reply to put it in the message box. Nothing is sent until you send it.',
+    again: 'Suggest again',
+    none: 'The assistant had no suggestions.',
+  },
+
+  searchAll: {
+    mode: 'Search all agents',
+    jump: 'Jump to',
+    placeholder: 'Search all agents and hosts…',
+    modes: 'Palette mode',
+    typeMore: 'Type at least two characters.',
+    searching: 'Searching…',
+    empty: 'No results',
+    terminal: 'Terminal',
+    session: 'Session',
+    past: 'Past session',
+    line: (n: number) => `line ${n}`,
+    hostFailed: (names: string) => `Could not search ${names}`,
+    pastOnly: 'This session has ended. Open it on the host.',
+    hint: '↑↓ to move · ↵ to open · tab to switch · esc to close',
   },
 
   quick: {
@@ -708,6 +919,15 @@ export const en = {
   },
 
   panel: {
+    viewSource: 'Source',
+    viewPreview: 'Preview',
+    viewMode: 'View mode',
+    jsonShown: (shown: number, total: number) => `Showing ${shown} of ${total} values`,
+    jsonOmitted: (n: number) => `${n} more`,
+    svgAlt: 'Image preview',
+    imageAlt: (name: string) => `Image ${name}`,
+    imageTooLarge: 'This image is too large to preview',
+    previewFailed: 'This file cannot be previewed',
     uncommitted: 'Uncommitted',
     vsBase: (base: string) => `vs ${base}`,
     compare: 'Compare',
@@ -751,6 +971,9 @@ export const en = {
     noTranscript: 'No transcript for this agent',
     noTranscriptHint: 'The terminal tab shows what it is doing.',
     openTerminal: 'Open terminal',
+    imageAlt: 'Image from the conversation',
+    imageOpen: 'Open image',
+    imageFailed: 'Image not available',
     loadingOlder: 'Loading older messages…',
     start: 'Start of the conversation',
     steps: (n: number) => `${n} ${plural(n, 'step', 'steps')}`,
@@ -764,6 +987,14 @@ export const en = {
     working: 'Working…',
     needsYou: (n: number) => `${n} waiting for you`,
     jumpLatest: 'Jump to latest',
+    findPlaceholder: 'Find in conversation',
+    findPrev: 'Previous match',
+    findNext: 'Next match',
+    findLoaded: 'Searching the messages loaded so far',
+    findLoading: 'Loading older messages to search…',
+    findNone: 'No matches in the loaded messages',
+    prevSent: 'Previous message you sent',
+    nextSent: 'Next message you sent',
     showMore: 'Show more',
     showLess: 'Show less',
   },
@@ -787,6 +1018,7 @@ export const en = {
     renamePrompt: 'Tab name',
     closeConfirm: 'Tap again to close the tab and its panes',
     preview: 'Preview',
+    findInConversation: 'Find in conversation',
     previewOpen: 'Open on the host',
     previewBrowser: 'Open in browser',
     previewStatus: { up: 'Running', down: 'Not responding', declared: 'Declared', suggested: 'Detected', gone: 'Gone' } as Record<string, string>,
@@ -810,7 +1042,7 @@ export const en = {
     selected: 'Selected',
     cancel: 'Cancel',
     openTerminal: 'Open terminal',
-    changed: 'The dialog changed. Review the options and choose again.',
+    changed: 'Dialog changed. Refreshing.',
     adjust: (verb: string) => `${verb} with left and right`,
     adjustLabel: (verb: string) => verb,
     unknownTitle: 'The agent is showing a dialog',
@@ -864,6 +1096,39 @@ export const en = {
     truncated: 'Not every folder is shown. Type to narrow the list.',
   },
 
+  drafts: { saveFailed: 'This draft could not be saved. Keep the app open until you have copied or sent it.' },
+
+  language: {
+    label: 'Language',
+    hint: 'More languages will come later.',
+    system: 'System',
+    names: { en: 'English' } as Record<string, string>,
+  },
+
+  appUpdate: {
+    ready: 'New version. Tap to update.',
+    waiting: (why: string) => `New version. It will wait: ${why}.`,
+    reasons: { draft: 'you have unsent text', upload: 'a file is uploading', sheet: 'a sheet is open' } as Record<string, string>,
+    update: 'Update',
+  },
+
+  shareIn: {
+    title: 'Shared with Vibeke',
+    missing: 'This shared content is no longer available. Share it again.',
+    loading: 'Loading shared content…',
+    unsupported: 'Sharing into Vibeke is not available here.',
+    preview: 'What you shared',
+    files: (n: number) => (n === 1 ? '1 file' : `${n} files`),
+    sendTo: 'Send to an agent',
+    noAgents: 'No agents are running. Start a new agent instead.',
+    newAgent: 'Start a new agent with this',
+    newAgentFiles: 'Files are not sent to a new agent. Send them to a running agent instead.',
+    offline: 'That host is offline.',
+    uploadFailed: (name: string) => `Could not upload ${name}`,
+    discard: 'Discard',
+    sent: 'Added to the draft. Review it and send.',
+  },
+
   install: { title: 'Install Vibeke', body: 'Add Vibeke to your home screen for push and a full-screen app.', action: 'Install' },
 
   time: {
@@ -881,3 +1146,34 @@ export const en = {
 
 export type Strings = typeof en;
 export const t: Strings = en;
+
+// ---- languages ----------------------------------------------------------------------------
+// Add a language by adding its code here and a lazy loader below (`() => import('./i18n/xx')`
+// returning a `Strings`). Components still read `t`; wiring a loaded dictionary into `t` comes
+// with the first translation.
+
+export const LANGUAGES = ['en'] as const;
+export type Language = (typeof LANGUAGES)[number];
+export type LanguagePref = 'system' | Language;
+
+const loaders: Record<Language, () => Promise<Strings>> = {
+  en: async () => en,
+};
+
+export const isLanguage = (v: unknown): v is Language => typeof v === 'string' && (LANGUAGES as readonly string[]).includes(v);
+
+/** The language to use for a preference: an explicit one, else the browser's, else English. */
+export function resolveLanguage(pref: LanguagePref | string, navigatorLanguages: readonly string[] | string | undefined): Language {
+  if (isLanguage(pref)) return pref;
+  const list = typeof navigatorLanguages === 'string' ? [navigatorLanguages] : (navigatorLanguages ?? []);
+  for (const tag of list) {
+    const base = tag.toLowerCase().split('-')[0];
+    if (isLanguage(base)) return base;
+  }
+  return 'en';
+}
+
+/** The one place a dictionary is loaded. */
+export function loadStrings(lang: Language): Promise<Strings> {
+  return loaders[lang]();
+}

@@ -119,3 +119,22 @@ describe('turn footer', () => {
     expect(turnHasWork({ n: 2, items: [{ kind: 'text', role: 'user', text: 'q' }] })).toBe(false);
   });
 });
+
+describe('image items', () => {
+  test('a usable image is a block in place; unknown or unusable ones are dropped', () => {
+    const turn: TranscriptTurn = {
+      n: 4,
+      items: [
+        { kind: 'text', role: 'user', text: 'look' },
+        { kind: 'image', mime: 'image/png', ref: '0:0', size: 1200 },
+        { kind: 'image', mime: 'image/svg+xml', ref: '1:0' },
+        { kind: 'image', mime: 'image/png' },
+        { kind: 'hologram', mime: 'image/png', ref: '2:0' },
+        { kind: 'text', role: 'assistant', text: 'seen' },
+      ],
+    };
+    const blocks = turnSteps(turn);
+    expect(blocks.map((b) => b.k)).toEqual(['user', 'image', 'text']);
+    expect(blocks[1]).toEqual({ k: 'image', key: '4:1', mime: 'image/png', ref: '0:0', size: 1200 });
+  });
+});

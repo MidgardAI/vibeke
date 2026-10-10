@@ -4,7 +4,7 @@
 // destructive second-tap guard, attachments (#N chips) and voice (consent first; a transcript
 // is never auto-sent).
 
-import { useEffect, useMemo, useRef, useState, type ClipboardEvent, type Dispatch, type ReactNode, type SetStateAction } from 'react';
+import { useEffect, useMemo, useRef, useState, type ClipboardEvent, type DragEvent, type Dispatch, type ReactNode, type SetStateAction } from 'react';
 import { ArrowUp, Camera, Loader2, Mic, MoreHorizontal, Paperclip, Plus, RotateCcw, ShieldCheck, ShieldOff, Square, X } from 'lucide-react';
 import type { AgentCommand, AgentRun } from '@vibeke/core';
 import { useApp, usePrefs } from '../../app/hooks';
@@ -15,6 +15,8 @@ import { t } from '../../i18n';
 import { errorMessage } from '../../lib/answer';
 import { base64Std } from '../../lib/format';
 import { composerShowsStop, destructiveReason } from '../../lib/guards';
+import { useReloadGuard } from '../../lib/reload-guard';
+import { insertAtCaret } from '../../lib/voice-insert';
 import { CommandCache, commandTap, fallbackCommands, filterCommands, slashQuery } from '../../lib/pickers';
 import type { PaneActions } from './actions';
 import { ModelSwitcher } from './model-switcher';
@@ -27,7 +29,21 @@ interface Attachment {
   name: string;
   path: string | null;
   error: string | null;
+  /** Object URL of the local image (revoked when the chip goes away), else null. */
+  thumb: string | null;
 }
+
+const revokeThumbs = (list: readonly Attachment[]) => {
+  for (const a of list) if (a.thumb) URL.revokeObjectURL(a.thumb);
+};
+
+const makeThumb = (file: File): string | null => {
+  try {
+    return file.type.startsWith('image/') && typeof URL.createObjectURL === 'function' ? URL.createObjectURL(file) : null;
+  } catch {
+    return null;
+  }
+};
 
 const MAX_ATTACHMENT = 8 * 1024 * 1024;
 
@@ -72,6 +88,8 @@ export function Composer({
   const [armed, setArmed] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [atts, setAtts] = useState<Attachment[]>([]);
+  useReloadGuard(text.trim() !== '', 'draft');
+  useReloadGuard(atts.some((a) => a.path === null && a.error === null), 'upload');
   const [voice, setVoice] = useState<'idle' | 'consent' | 'listening' | 'recording' | 'transcribing'>('idle');
   const stopRef = useRef<(() => Promise<void>) | null>(null);
   const cancelRef = useRef<(() => void) | null>(null);
@@ -79,6 +97,11 @@ export function Composer({
   const photoRef = useRef<HTMLInputElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
   const nextN = useRef(1);
+  const attsRef = useRef<Attachment[]>([]);
+  attsRef.current = atts;
+  const [interim, setInterim] = useState('');
+  const [dragging, setDragging] = useState(false);
+  const pendingCaret = useRef<number | null>(null);
 
   useEffect(() => setArmed(null), [text]);
   useEffect(() => {
@@ -87,7 +110,25 @@ export function Composer({
     ta.style.height = 'auto';
     ta.style.height = `${Math.min(ta.scrollHeight, 160)}px`;
   }, [text]);
-  useEffect(() => () => cancelRef.current?.(), []);
+  useEffect(
+    () => () => {
+      cancelRef.current?.();
+      revokeThumbs(attsRef.current);
+    },
+    [],
+  );
+  // After a voice insert, put the caret behind the new words.
+  useEffect(() => {
+    const c = pendingCaret.current;
+    const ta = taRef.current;
+    if (c === null || !ta) return;
+    pendingCaret.current = null;
+    try {
+      ta.setSelectionRange(c, c);
+    } catch {
+      // not selectable right now
+    }
+  }, [text]);
 
   // ---- slash commands ----
   const [cmds, setCmds] = useState<AgentCommand[]>([]);
@@ -142,6 +183,7 @@ export function Composer({
       onSent?.();
       setLastSent(body);
       setText('');
+      revokeThumbs(atts);
       setAtts([]);
       nextN.current = 1;
       setCleared(null);
@@ -152,12 +194,13 @@ export function Composer({
     if (!text) return;
     setCleared(text);
     setText('');
+    revokeThumbs(atts);
     setAtts([]);
   };
 
   const upload = async (file: File) => {
     const n = nextN.current++;
-    setAtts((a) => [...a, { n, name: file.name || `paste-${n}`, path: null, error: null }]);
+    setAtts((a) => [...a, { n, name: file.name || `paste-${n}`, path: null, error: null, thumb: makeThumb(file) }]);
     try {
       if (file.size > MAX_ATTACHMENT) throw new Error('> 8 MiB');
       const data = new Uint8Array(await file.arrayBuffer());
@@ -172,8 +215,18 @@ export function Composer({
   };
 
   const removeAtt = (a: Attachment) => {
+    if (a.thumb) URL.revokeObjectURL(a.thumb);
     setAtts((l) => l.filter((x) => x.n !== a.n));
     if (a.path) setText((cur) => cur.replace(`${a.path} `, '').replace(a.path!, ''));
+  };
+
+  const hasFiles = (e: DragEvent) => [...(e.dataTransfer?.types ?? [])].includes('Files');
+  const onDrop = (e: DragEvent) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    setDragging(false);
+    if (locked) return;
+    [...e.dataTransfer.files].forEach((f) => void upload(f));
   };
 
   const onPaste = (e: ClipboardEvent) => {
@@ -189,17 +242,29 @@ export function Composer({
   const canBrowser = !!speech?.recognizer && !!speech.recognize;
   const canHost = !!speech?.recorder && !!speech.record && sttAvailable;
   const voiceAvailable = canBrowser || canHost;
+  /** Insert a final transcript where the caret was left (over the selection, if any). */
   const append = (s: string) => {
-    if (s.trim()) setText((cur) => `${cur}${cur && !/\s$/.test(cur) ? ' ' : ''}${s.trim()}`);
+    if (!s.trim()) return;
+    const ta = taRef.current;
+    const from = ta?.selectionStart ?? null;
+    const to = ta?.selectionEnd ?? null;
+    setText((cur) => {
+      const r = insertAtCaret(cur, from ?? cur.length, to ?? cur.length, s);
+      pendingCaret.current = r.caret;
+      return r.text;
+    });
   };
 
   const startVoice = async (mode: 'browser' | 'host') => {
     if (mode === 'browser' && speech?.recognize) {
-      const r = speech.recognize(() => {});
+      setInterim('');
+      // The recognizer reports the running transcript: show it as a preview, insert only the final text.
+      const r = speech.recognize((partial) => setInterim(partial));
       setVoice('listening');
       cancelRef.current = r.cancel;
       stopRef.current = async () => {
         const final = await r.stop().catch(() => '');
+        setInterim('');
         append(final);
         setVoice('idle');
       };
@@ -227,6 +292,7 @@ export function Composer({
   };
 
   const voiceTap = () => {
+    if (voice === 'transcribing') return;
     if (voice === 'listening' || voice === 'recording') {
       void stopRef.current?.();
       return;
@@ -243,6 +309,10 @@ export function Composer({
   const modeLabel = run?.permission_mode ? permissionLabel(run.permission_mode) : run?.yolo ? permissionLabel('bypassPermissions') : null;
   const open = run?.yolo || run?.permission_mode === 'bypassPermissions';
   const canStop = composerShowsStop(run, interactions, text);
+  const voiceLive = voice === 'listening' || voice === 'recording';
+  // With an empty draft the microphone takes the Send slot; Stop (agent working) keeps it.
+  const micInSendSlot = !canStop && (voiceLive || (voiceAvailable && !text.trim() && !locked));
+  const left = prefs.leftHand;
 
   return (
     <div className="px-3 pb-3 pt-1 sm:px-4">
@@ -284,15 +354,28 @@ export function Composer({
           </div>
         )}
         <div
+          onDragOver={(e) => {
+            if (!hasFiles(e) || locked) return;
+            e.preventDefault();
+            setDragging(true);
+          }}
+          onDragLeave={(e) => {
+            if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDragging(false);
+          }}
+          onDrop={onDrop}
           className={cx(
-            'rounded-2xl border bg-surface transition-colors focus-within:border-border-strong',
-            armed ? 'border-del/60' : 'border-border',
+            'relative rounded-2xl border bg-surface transition-colors focus-within:border-border-strong',
+            armed ? 'border-del/60' : dragging ? 'border-accent' : 'border-border',
           )}
         >
+          {dragging && (
+            <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-2xl bg-accent/10 text-sm font-medium text-accent">{t.composer.dropFiles}</div>
+          )}
           {atts.length > 0 && (
             <div className="flex flex-wrap gap-1.5 px-3 pt-2.5">
               {atts.map((a) => (
-                <span key={a.n} className={cx('inline-flex h-6 items-center gap-1 rounded-full border px-2 text-xs', a.error ? 'border-danger text-danger' : 'border-border')}>
+                <span key={a.n} className={cx('inline-flex h-7 items-center gap-1 rounded-full border px-2 text-xs', a.error ? 'border-danger text-danger' : 'border-border')}>
+                  {a.thumb && !a.error && <img src={a.thumb} alt="" className="size-5 shrink-0 rounded-sm object-cover" />}
                   <span className="font-semibold">#{a.n}</span>
                   <span className="max-w-32 truncate">{a.error ? `${t.composer.uploadFailed}: ${a.error}` : a.name}</span>
                   {!a.path && !a.error && <Loader2 className="size-3 animate-spin" />}
@@ -308,6 +391,11 @@ export function Composer({
               <span className="size-2 animate-pulse rounded-full bg-danger" />
               {voice === 'listening' ? t.composer.listening : voice === 'recording' ? t.composer.recording : t.composer.transcribing}
             </div>
+          )}
+          {voice === 'listening' && interim && (
+            <p aria-live="polite" aria-label={t.composer.dictation} className="px-3 pt-1 text-sm italic text-faint">
+              {interim}
+            </p>
           )}
           <textarea
             ref={taRef}
@@ -350,11 +438,11 @@ export function Composer({
             spellCheck={false}
             className="block min-h-11 w-full resize-none bg-transparent px-3.5 pb-1 pt-3 text-[16px] leading-snug text-fg outline-none placeholder:text-faint sm:text-[14px]"
           />
-          <div className="flex items-center gap-1 px-2 pb-2">
+          <div className={cx('flex items-center gap-1 px-2 pb-2', left && 'flex-row-reverse')}>
             <MenuButton
               label={t.composer2.attach}
               icon={<Plus />}
-              align="left"
+              align={left ? 'right' : 'left'}
               placement="up"
               items={[
                 { label: t.composer.file, icon: <Paperclip />, onSelect: () => fileRef.current?.click() },
@@ -388,9 +476,9 @@ export function Composer({
               >
                 <RotateCcw />
               </IconButton>
-            ) : (
+            ) : micInSendSlot ? null : (
               <IconButton label={t.composer.voice} onClick={voiceTap} active={voice !== 'idle'} disabled={!voiceAvailable}>
-                {voice === 'listening' || voice === 'recording' ? <Square className="text-danger" /> : <Mic />}
+                {voiceLive ? <Square className="text-danger" /> : <Mic />}
               </IconButton>
             )}
             {canStop ? (
@@ -402,6 +490,20 @@ export function Composer({
                 className="vk-focus inline-flex size-7 shrink-0 items-center justify-center rounded-full bg-fg text-bg pointer-coarse:size-9"
               >
                 <Square className="size-3 fill-current" />
+              </button>
+            ) : micInSendSlot ? (
+              <button
+                type="button"
+                aria-label={t.composer.voice}
+                title={t.composer.voice}
+                aria-pressed={voice !== 'idle'}
+                onClick={voiceTap}
+                className={cx(
+                  'vk-focus inline-flex size-7 shrink-0 items-center justify-center rounded-full pointer-coarse:size-9',
+                  voiceLive ? 'bg-danger text-danger-fg' : 'bg-fg text-bg',
+                )}
+              >
+                {voiceLive ? <Square className="size-3 fill-current" /> : voice === 'transcribing' ? <Loader2 className="size-4 animate-spin" /> : <Mic className="size-4" />}
               </button>
             ) : (
               <button

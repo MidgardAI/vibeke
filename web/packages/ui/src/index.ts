@@ -8,6 +8,8 @@ export type {
   UiPlatform,
   UpdateState,
   UpdatesCapability,
+  AppUpdateCapability,
+  SharedItem,
   NotificationsCapability,
   InstallCapability,
   SpeechCapability,

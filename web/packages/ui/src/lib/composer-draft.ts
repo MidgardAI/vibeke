@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type SetStateAction } from 'react';
 import { useApp } from '../app/hooks';
+import { t } from '../i18n';
 
 /** Keep both views' drafts in memory; only conversation text may reach desktop storage. */
 export function useComposerDraft(host: string, pane: string, persist: boolean) {
@@ -34,7 +35,7 @@ export function useComposerDraft(host: string, pane: string, persist: boolean) {
     if (persist) {
       conversationEdited.current = true;
       void app.platform.drafts?.set(host, pane, s).catch(() => {
-        if (!warned.current) { warned.current = true; app.toast('This draft could not be saved. Keep the app open until you have copied or sent it.', 'warn'); }
+        if (!warned.current) { warned.current = true; app.toast(t.drafts.saveFailed, 'warn'); }
       });
     }
   }, [app, host, pane, persist]);

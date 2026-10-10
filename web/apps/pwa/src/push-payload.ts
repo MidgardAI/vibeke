@@ -2,6 +2,15 @@
 //   {title, body, tag, url, host, count, renotify}
 // `url` is a hash route (`#/i/<host>/<interaction>`, `#/r/<host>/<run>`, `#/approve/<host>/<request>`,
 // `#/inbox`, `#/`). Notifications never carry actions: approving needs an explicit tap in the app.
+//
+// Clear payload: {"kind":"clear","tag":"vibeke:<host>","host":"<host>"}. It shows nothing: the
+// service worker closes the notifications with that tag (or `vibeke:<host>` when only `host` is
+// set). The gateway sends it only to devices that subscribed with `supports_clear: true`, which
+// the app sets on every browser except Apple WebKit (WebKit revokes push for pushes that show no
+// notification).
+//
+// A notification is also skipped when a visible, focused app window already shows the inbox or the
+// target route (never on Apple WebKit, and never when no window is visible).
 // Shared by the service worker and its tests; no DOM.
 
 export interface PushPayload {
@@ -73,4 +82,37 @@ export function parsePushData(data: { json(): unknown; text(): string } | null |
 export function openTarget(scope: string, url: string): string {
   const base = scope.endsWith('/') ? scope : `${scope}/`;
   return `${base}${safeHashUrl(url)}`;
+}
+
+/** The tag to close for a `clear` payload, or null when this is not one. */
+export function parseClear(raw: unknown): { tag: string } | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const p = raw as PushPayload & { kind?: unknown };
+  if (p.kind !== 'clear') return null;
+  const host = str(p.host, 64);
+  const tag = str(p.tag, 128) ?? (host ? `vibeke:${host}` : null);
+  return tag ? { tag } : null;
+}
+
+/** What the service worker knows about one open window. */
+export interface WindowState {
+  url: string;
+  visible: boolean;
+  focused: boolean;
+}
+
+/**
+ * True when a visible, focused window of the app already shows the inbox or the notification's
+ * target route, so a notification would only repeat what the user sees. Windows outside `scope`
+ * and hidden or unfocused windows never count.
+ */
+export function windowShowsTarget(windows: readonly WindowState[], scope: string, targetUrl: string): boolean {
+  const target = safeHashUrl(targetUrl);
+  const base = scope.endsWith('/') ? scope : `${scope}/`;
+  return windows.some((w) => {
+    if (!w.visible || !w.focused || !w.url.startsWith(base)) return false;
+    const i = w.url.indexOf('#');
+    const hash = i >= 0 ? w.url.slice(i) : '#/';
+    return hash === target || hash === '#/inbox' || hash.startsWith('#/inbox?');
+  });
 }

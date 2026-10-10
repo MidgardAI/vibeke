@@ -16,6 +16,87 @@ use vk_assist::stall;
 /// Candidates offered to the model for one navigation query (the rest are reported omitted).
 const NAV_LIMIT: usize = 40;
 
+/// Sources for `reply_suggestions`: the pane's metadata, the agent's recent requests and last
+/// message, its open interaction (if any) and, when selected, a screen excerpt.
+pub(super) async fn reply_sources(
+    server: &Arc<Server>,
+    ctx: &Ctx,
+    t: &Target,
+    sources: &mut Vec<SourceInput>,
+) -> Result<(), RpcError> {
+    if let Some(pane) = &t.pane {
+        let mut meta = format!(
+            "title: {}\ncwd: {}",
+            pane.title.as_deref().unwrap_or(&pane.auto_title),
+            pane.cwd.as_deref().unwrap_or("?"),
+        );
+        if let Some(run) = &t.run {
+            meta.push_str(&format!("\nagent: {}", run.harness));
+        }
+        sources.push(src(
+            "pane",
+            json!({"pane": pane.id}),
+            "pane metadata",
+            meta,
+            None,
+        ));
+    }
+    if let Some(run) = &t.run {
+        sources.extend(turn_sources(server, run, &t.turns, 3));
+        if let Some(m) = &run.last_message {
+            sources.push(src(
+                "agent_message",
+                json!({"run": run.id, "field": "last_message"}),
+                "agent's last message (claim)",
+                clip(m, 2000).0,
+                None,
+            ));
+        }
+        let open = server.with_core(|c| {
+            c.model
+                .interactions
+                .iter()
+                .find(|i| i.run == run.id && i.status == InteractionStatus::Open)
+                .cloned()
+        });
+        if let Some(i) = open {
+            let mut text = format!("kind: {:?}\ntitle: {}\n", i.kind, i.title);
+            if let Some(b) = &i.body_md {
+                text.push_str(&format!("body: {}\n", clip(b, 800).0));
+            }
+            sources.push(src(
+                "interaction",
+                json!({"interaction": i.id, "run": i.run, "decision_rev": i.decision_rev}),
+                format!("open interaction {} ({:?})", i.handle, i.kind),
+                text,
+                Some(i.opened_at_ms),
+            ));
+        }
+    }
+    if t.include_screen
+        && let Some(pane) = &t.pane
+    {
+        let r = read_call(
+            server,
+            ctx,
+            "pane.read",
+            json!({"pane": pane.id, "lines": 40}),
+        )
+        .await?;
+        sources.push(src(
+            "screen",
+            json!({"pane": pane.id, "revision": r["revision"]}),
+            "screen excerpt (inferred, last 40 lines)",
+            r["text"].as_str().unwrap_or(""),
+            Some(now()),
+        ));
+    }
+    if sources.is_empty() {
+        return Err(invalid("nothing to base a reply on"));
+    }
+    Ok(())
+}
+
 /// Gather the sources of one of the new operations. Returns the kind of each target ID
 /// (Vibeke's own record, never the model's).
 pub(super) async fn gather(
@@ -251,6 +332,9 @@ pub(super) async fn gather(
             if sources.is_empty() {
                 return Err(invalid("no task or recorded request to title"));
             }
+        }
+        Operation::ReplySuggestions => {
+            reply_sources(server, ctx, t, sources).await?;
         }
         // Handled with the briefing in the caller.
         Operation::BackgroundSummary => {}

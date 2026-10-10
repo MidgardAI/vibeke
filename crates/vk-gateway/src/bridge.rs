@@ -83,6 +83,7 @@ fn owner() -> Device {
         expires_at: None,
         limit: None,
         peer: None,
+        supports_clear: false,
     }
 }
 

@@ -521,7 +521,7 @@ pub fn draw(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
                     Some(r) => format!(
                         "{} {} · {}",
                         harness_icon(&r.harness),
-                        r.name.clone().unwrap_or_else(|| r.harness.clone()),
+                        r.label(),
                         r.execution.value.as_str()
                     ),
                     None => "peek".into(),
@@ -629,9 +629,7 @@ pub fn draw(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
                     .and_then(|p| m.model.workspaces.iter().find(|w| w.id == p.workspace))
                     .map(|w| w.display_name().to_string())
                     .unwrap_or_default();
-                let who = run
-                    .map(|r| r.name.clone().unwrap_or_else(|| r.harness.clone()))
-                    .unwrap_or_default();
+                let who = run.map(|r| r.label().to_string()).unwrap_or_default();
                 let kind = match it.kind {
                     InteractionKind::Approval => "needs approval",
                     InteractionKind::Question => "question",

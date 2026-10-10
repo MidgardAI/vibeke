@@ -75,6 +75,9 @@ pub struct DevicePrefs {
     pub notify_input: bool,
     #[serde(default)]
     pub notify_done: bool,
+    /// Notify shortly before an idle agent's prompt cache expires (`notify::cache_ttl`).
+    #[serde(default)]
+    pub notify_cache_cold: bool,
 }
 
 fn default_privacy() -> String {
@@ -116,6 +119,10 @@ pub struct Device {
     /// how it introduced itself.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub peer: Option<PeerInfo>,
+    /// The app's service worker closes notifications on a `{kind: "clear"}` push
+    /// (`push.subscribe {supports_clear}`); only such devices are sent one.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub supports_clear: bool,
 }
 
 /// Who a `peer` device is (spec 16 §15.3).
@@ -894,6 +901,7 @@ mod tests {
             expires_at,
             limit: None,
             peer: None,
+            supports_clear: false,
         }
     }
 

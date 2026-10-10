@@ -1409,7 +1409,7 @@ AssistantConsentResult = TypedDict("AssistantConsentResult", {
 })
 
 AssistantGenerateParams = TypedDict("AssistantGenerateParams", {
-    "operation": Literal["suggest_task_details", "review_summary", "pane_title", "briefing", "handoff", "effort_estimate", "navigate", "decision_card", "stall_notice", "background_summary", "task_title"],
+    "operation": Literal["suggest_task_details", "review_summary", "pane_title", "briefing", "handoff", "effort_estimate", "navigate", "decision_card", "stall_notice", "background_summary", "task_title", "reply_suggestions"],
     "profile": NotRequired[str],
     "priority": NotRequired[Literal["interactive", "background"]],
     "stream": NotRequired[bool],
@@ -3591,6 +3591,7 @@ FsListResult = TypedDict("FsListResult", {
 FsReadParams = TypedDict("FsReadParams", {
     "pane": NotRequired["Target"],
     "path": str,
+    "as": NotRequired[Literal["image"]],
 })
 
 FsReadResult = TypedDict("FsReadResult", {
@@ -3600,6 +3601,8 @@ FsReadResult = TypedDict("FsReadResult", {
     "truncated": bool,
     "size": int,
     "secret": bool,
+    "mime": NotRequired[str],
+    "data_b64": NotRequired[str],
 })
 
 GatewayCallParams = TypedDict("GatewayCallParams", {

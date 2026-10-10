@@ -1202,6 +1202,7 @@ mod tests {
             expires_at,
             limit,
             peer: None,
+            supports_clear: false,
         }
     }
 

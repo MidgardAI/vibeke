@@ -95,6 +95,26 @@ const SERVER_READ_ONLY: &[&str] = &[
     "handoff.incoming.get",
     "handoff.jobs",
     "handoff.peers",
+    "agent.turns",
+    "assistant.status",
+    "assistant.get",
+    "desk.search",
+    "search.query",
+    "sandbox.list",
+    "sandbox.status",
+    "browser.list",
+    "browser.status",
+    "browser.screencast_frame",
+];
+
+/// Assistant operations apps may start (`assistant.generate`): catch-up summaries, decision
+/// cards and suggested replies. Each still needs the workspace's consent on the host, and a
+/// preview the app confirms unless the host's config auto-sends that operation.
+pub const APP_ASSIST_OPS: &[&str] = &[
+    "briefing",
+    "background_summary",
+    "decision_card",
+    "reply_suggestions",
 ];
 
 /// Minimum scope per method; `None` = unknown method.
@@ -170,11 +190,31 @@ pub fn required_scope(method: &str) -> Option<Scope> {
         | "share.revoke" => Full,
         // Approved calls (09 §3.2): a pane asks, the owner's apps review and decide.
         "auth.list" | "auth.approve.decide" => Full,
+        // Catch-up, search, sandboxes and live browser previews: reads. Attaching to a
+        // screencast only counts this device as a viewer (screencast.rs).
+        "agent.turns"
+        | "assistant.status"
+        | "assistant.get"
+        | "desk.search"
+        | "search.query"
+        | "sandbox.list"
+        | "sandbox.status"
+        | "browser.list"
+        | "browser.status"
+        | "browser.attach_screencast"
+        | "browser.screencast_frame"
+        | "browser.detach_screencast" => View,
+        // New agents in a new folder or worktree. The assistant costs money and sends content
+        // to a model provider. Taking over a browser session
+        // drives it instead of the agent.
+        "worktree.create" | "workspace.create" | "assistant.generate" | "assistant.confirm"
+        | "assistant.cancel" | "browser.take_over" | "browser.release" | "browser.click"
+        | "browser.type" | "browser.press" | "browser.navigate" => Full,
         _ => return None,
     })
 }
 
-/// Full-scope methods that act on the whole host rather than a pane, workspace, run or task:
+/// Methods that act on or read the whole host rather than a pane, workspace, run or task:
 /// refused to every device limited to a pane or workspace (`check_limit`).
 const HOST_WIDE: &[&str] = &[
     "share.create",
@@ -183,7 +223,28 @@ const HOST_WIDE: &[&str] = &[
     "devices.revoke",
     "auth.list",
     "auth.approve.decide",
+    // A new workspace or worktree is outside any shared one.
+    "worktree.create",
+    "workspace.create",
+    // The desk index covers every repository and harness session on the host.
+    "desk.search",
 ];
+
+/// Method families that are host-wide as a whole: the assistant reads
+/// across workspaces and spends the owner's budget, browser sessions and sandboxes are not tied
+/// to a shared pane in a way the gateway can check.
+const HOST_WIDE_PREFIXES: &[&str] = &[
+    "peer.",
+    "handoff.",
+    "assistant.",
+    "browser.",
+    "sandbox.",
+    "desk.",
+];
+
+pub fn host_wide(method: &str) -> bool {
+    HOST_WIDE.contains(&method) || HOST_WIDE_PREFIXES.iter().any(|p| method.starts_with(p))
+}
 
 /// Full-scope methods without side effects (no op_id needed).
 const FULL_READ_ONLY: &[&str] = &[
@@ -326,7 +387,9 @@ pub fn fingerprint(it: &Value) -> Option<String> {
 }
 
 pub fn batch_eligible(it: &Value) -> bool {
-    s(it, "kind") == Some("approval")
+    // Sandbox boundary requests (a push, a file copied out) are always decided one by one.
+    it.pointer("/action/tool").and_then(|t| t.as_str()) != Some("boundary")
+        && s(it, "kind") == Some("approval")
         && s(it, "status") == Some("open")
         && it.get("answerable").and_then(|v| v.as_bool()) == Some(true)
         && matches!(
@@ -413,6 +476,7 @@ pub fn kind_allows(kind: &str, method: &str) -> bool {
                 // host a VAPID private key or trigger pushes (the app only syncs own hosts).
                 || method.starts_with("push.")
                 || method.starts_with("tab.") && method != "tab.create"
+                || host_wide(method)
                 || matches!(
                     method,
                     "stt.transcribe"
@@ -439,18 +503,23 @@ impl Call<'_> {
         // Re-check authorization right before every side effect: the device may have been
         // revoked (here or by `vibeke-gateway revoke`) while this request was queued.
         if !SERVER_READ_ONLY.contains(&method) {
-            let _ = self.gw.reload_devices();
-            if self.gw.device(&self.device.id).is_none_or(|d| d.expired()) {
-                return Err(ApiError::new(
-                    "forbidden",
-                    "this device is no longer authorized",
-                ));
-            }
+            self.still_authorized()?;
         }
         if SERVER_READ_ONLY.contains(&method) {
             return self.gw.server.call(method, params).await;
         }
         self.gw.server.call_as(&self.actor(), method, params).await
+    }
+
+    fn still_authorized(&self) -> Result<(), ApiError> {
+        let _ = self.gw.reload_devices();
+        if self.gw.device(&self.device.id).is_none_or(|d| d.expired()) {
+            return Err(ApiError::new(
+                "forbidden",
+                "this device is no longer authorized",
+            ));
+        }
+        Ok(())
     }
 
     pub fn actor(&self) -> String {
@@ -470,8 +539,11 @@ impl Call<'_> {
         Ok(it)
     }
 
-    /// Add `harness` and `repo_root` for grouping.
+    /// Add `harness` and `repo_root` for grouping, and `boundary` for a sandbox boundary request.
     async fn enrich(&self, it: &mut Value) {
+        if let Some(b) = boundary_of(it) {
+            it["boundary"] = b;
+        }
         if let Some(run) = s(it, "run").map(str::to_string)
             && let Ok(r) = self.server("agent.get", json!({"target": run})).await
         {
@@ -501,6 +573,17 @@ impl Call<'_> {
             group.is_none_or(|g| batch_eligible(&it) && fingerprint(&it).as_deref() == Some(g));
         if !open || !rev_ok || !group_ok {
             return Err(stale(&it));
+        }
+        // A boundary request runs once on "allow" (sandbox_boundary.rs): no standing rule, no
+        // text answer.
+        if it.get("boundary").is_some()
+            && (!matches!(s(p, "decision"), Some("allow" | "deny"))
+                || p.get("choices").is_some()
+                || p.get("text").is_some())
+        {
+            return Err(ApiError::invalid(
+                "a sandbox boundary request is answered allow (this once) or deny",
+            ));
         }
         let mut params = pick(p, &["decision", "choices", "text"]);
         params["interaction"] = id.into();
@@ -568,6 +651,10 @@ impl Call<'_> {
             return Err(deny());
         }
         match method {
+            // A new worktree or folder is a new workspace, outside the shared one.
+            "agent.start" if p.get("worktree").is_some() || p.get("new_workspace").is_some() => {
+                return Err(deny());
+            }
             "tab.create" | "agent.start" if s(p, "pane").is_none() => {
                 if allowed.pane.is_some() || s(p, "workspace") != allowed.workspace.as_deref() {
                     return Err(deny());
@@ -594,7 +681,7 @@ impl Call<'_> {
             // Host-wide management: a share (even a Control share, full scope within its pane or
             // workspace) never creates or revokes access, moves work between hosts or decides
             // approvals for other panes.
-            m if HOST_WIDE.contains(&m) || m.starts_with("peer.") || m.starts_with("handoff.") => {
+            m if host_wide(m) => {
                 return Err(deny());
             }
             "worktree.list" | "fs.browse" | "repo.candidates" => {
@@ -627,14 +714,15 @@ impl Call<'_> {
         self.check_selectors(allowed, p).await
     }
 
-    /// Every selector present (`pane`, `target`, `interaction`, `task`, `check_run`, `tab`,
-    /// `preview`) must resolve inside the limit, so a request can't pair an allowed pane with an
-    /// outside run, interaction, task, tab or preview.
+    /// Every selector present (`pane`, `target`, `run`, `interaction`, `task`, `check_run`,
+    /// `tab`, `preview`) must resolve inside the limit, so a request can't pair an allowed pane
+    /// with an outside run, interaction, task, tab or preview.
     async fn check_selectors(&self, allowed: &Allowed, p: &Value) -> Result<(), ApiError> {
         let deny = || ApiError::new("forbidden", "outside what was shared with you");
         for key in [
             "pane",
             "target",
+            "run",
             "interaction",
             "task",
             "check_run",
@@ -675,6 +763,11 @@ impl Call<'_> {
                         None => false,
                     }
                 }
+                // A run (`agent.turns`) is located like a `target`.
+                "run" => matches!(
+                    self.locate(&json!({"target": v})).await?,
+                    Some((pane, ws)) if allowed.pane_ok(&pane, ws.as_deref())
+                ),
                 _ => matches!(
                     self.locate(&json!({key: v})).await?,
                     Some((pane, ws)) if allowed.pane_ok(&pane, ws.as_deref())
@@ -781,6 +874,12 @@ impl Call<'_> {
             "preview.list" => {
                 if let Some(list) = r.get_mut("previews").and_then(|v| v.as_array_mut()) {
                     list.retain(|pv| has(panes, s(pv, "pane")));
+                }
+            }
+            // Hits of closed (archived) panes have no live pane to check: dropped.
+            "search.query" => {
+                if let Some(list) = r.get_mut("hits").and_then(|v| v.as_array_mut()) {
+                    list.retain(|h| has(panes, s(h, "pane")));
                 }
             }
             _ => {}
@@ -929,7 +1028,7 @@ impl Call<'_> {
                         });
                     }
                 }
-                "attention.list" | "preview.list" => {
+                "attention.list" | "preview.list" | "search.query" => {
                     let (panes, tasks) = self.visible(a).await?;
                     Self::filter_list(method, &mut r, &panes, &tasks);
                 }
@@ -1019,23 +1118,39 @@ impl Call<'_> {
             "agent.transcript" => {
                 // Server pages natively for gateway clients: {turns:[{n, ts, items}], next_before}.
                 req(&p, "target")?;
-                self.server("agent.transcript", pick(&p, &["target", "before", "limit"]))
-                    .await
+                self.server(
+                    "agent.transcript",
+                    pick(&p, &["target", "before", "limit", "image"]),
+                )
+                .await
             }
             "agent.start" => {
-                let pane = match s(&p, "pane") {
-                    Some(pane) => pane.to_string(),
-                    None => {
-                        let t = self
-                            .server("tab.create", pick(&p, &["workspace", "cwd"]))
-                            .await?;
-                        t.get("root_pane")
-                            .and_then(|r| r.get("id").or(Some(r)))
-                            .and_then(|v| v.as_str())
-                            .ok_or_else(|| {
-                                ApiError::new("internal", "tab.create returned no root pane")
-                            })?
-                            .to_string()
+                let pane = if let Some(wt) = p.get("worktree") {
+                    // A new worktree of the repository at `pane`, `workspace` or `cwd`, opened as
+                    // its own workspace; the agent starts in its first pane.
+                    let mut params = pick(wt, &["branch", "base", "name"]);
+                    req(&params, "branch")?;
+                    params["cwd"] = self.worktree_dir(&p).await?.into();
+                    params["open"] = true.into();
+                    let r = self.server("worktree.create", params).await?;
+                    root_pane_id(&r, "worktree.create")?
+                } else if let Some(nw) = p.get("new_workspace") {
+                    // A new workspace in a folder on the host.
+                    let mut params = pick(nw, &["cwd", "name"]);
+                    // Path pickers show `~/…`; the host takes the folder as given.
+                    let cwd = vk_handoff::expand_home(req(&params, "cwd")?);
+                    params["cwd"] = cwd.to_string_lossy().into_owned().into();
+                    let r = self.server("workspace.create", params).await?;
+                    root_pane_id(&r, "workspace.create")?
+                } else {
+                    match s(&p, "pane") {
+                        Some(pane) => pane.to_string(),
+                        None => {
+                            let t = self
+                                .server("tab.create", pick(&p, &["workspace", "cwd"]))
+                                .await?;
+                            root_pane_id(&t, "tab.create")?
+                        }
                     }
                 };
                 let mut params = pick(&p, &["harness", "prompt", "name"]);
@@ -1147,7 +1262,7 @@ impl Call<'_> {
             }
             "fs.list" | "fs.read" => {
                 req(&p, "pane")?;
-                self.server(method, pick(&p, &["pane", "path"])).await
+                self.server(method, pick(&p, &["pane", "path", "as"])).await
             }
             "attention.list" => {
                 let mut r = self
@@ -1207,6 +1322,186 @@ impl Call<'_> {
             "worktree.list" => {
                 let cwd = self.worktree_dir(&p).await?;
                 self.server(method, json!({"cwd": cwd})).await
+            }
+            // `{branch, base?, name?, open?}` in the repository at `pane`, `workspace` or `cwd`.
+            "worktree.create" => {
+                req(&p, "branch")?;
+                let mut params = pick(&p, &["branch", "base", "name", "open"]);
+                params["cwd"] = self.worktree_dir(&p).await?.into();
+                self.server(method, params).await
+            }
+            // A workspace in a host folder (never a `command` or `layout`).
+            "workspace.create" => {
+                req(&p, "cwd")?;
+                self.server(method, pick(&p, &["cwd", "name"])).await
+            }
+            "agent.turns" => {
+                req(&p, "run")?;
+                self.server(method, pick(&p, &["run", "after_seq", "limit"]))
+                    .await
+            }
+            "assistant.status" => self.server(method, json!({})).await,
+            "assistant.get" | "assistant.cancel" => {
+                req(&p, "request")?;
+                self.server(method, pick(&p, &["request"])).await
+            }
+            "assistant.generate" => {
+                let op = req(&p, "operation")?;
+                if !APP_ASSIST_OPS.contains(&op) {
+                    return Err(ApiError::new(
+                        "forbidden",
+                        format!(
+                            "the {op} operation is not available to apps (only {})",
+                            APP_ASSIST_OPS.join(", ")
+                        ),
+                    ));
+                }
+                // No profile, remote sources or raw `inputs`: the host's defaults and consent
+                // decide what is sent where.
+                let mut params = pick(
+                    &p,
+                    &[
+                        "operation",
+                        "workspace",
+                        "pane",
+                        "run",
+                        "interaction",
+                        "turns",
+                        "include_screen",
+                        "priority",
+                    ],
+                );
+                params["idempotency_key"] = format!("gw:{}:{op_id}", self.device.id).into();
+                self.server(method, params).await
+            }
+            "assistant.confirm" => {
+                req(&p, "request")?;
+                req(&p, "preview_digest")?;
+                self.server(method, pick(&p, &["request", "preview_digest"]))
+                    .await
+            }
+            "desk.search" => {
+                req(&p, "text")?;
+                self.server(
+                    method,
+                    pick(
+                        &p,
+                        &[
+                            "text", "repo", "harness", "since", "until", "session", "limit",
+                            "sort", "fresh",
+                        ],
+                    ),
+                )
+                .await
+                .map(|mut r| {
+                    // Transcript excerpts leave the host: secrets are redacted (the server does
+                    // the same for `search.query` hits of remote clients).
+                    for h in r
+                        .get_mut("hits")
+                        .and_then(|v| v.as_array_mut())
+                        .into_iter()
+                        .flatten()
+                    {
+                        let red = h
+                            .get("snippet")
+                            .and_then(|v| v.as_str())
+                            .map(|t| vk_redact::redact(t).to_string());
+                        if let Some(red) = red {
+                            h["snippet"] = red.into();
+                        }
+                    }
+                    r
+                })
+            }
+            "search.query" => {
+                req(&p, "q")?;
+                let mut params = pick(
+                    &p,
+                    &[
+                        "q",
+                        "pane",
+                        "workspace",
+                        "sources",
+                        "since",
+                        "limit",
+                        "regex",
+                        "context",
+                    ],
+                );
+                // A limited device searches only what was shared (results are filtered again).
+                if let Some(a) = Allowed::of(self.device) {
+                    match (&a.pane, &a.workspace) {
+                        (Some(pane), _) => params["pane"] = pane.clone().into(),
+                        (None, Some(w)) => params["workspace"] = w.clone().into(),
+                        (None, None) => {}
+                    }
+                }
+                self.server(method, params).await
+            }
+            "sandbox.list" | "sandbox.status" | "browser.list" | "browser.status" => {
+                self.server(method, json!({})).await
+            }
+            "browser.attach_screencast" => {
+                let session = req(&p, "session")?;
+                crate::screencast::attach(self.gw, &self.actor(), &self.device.id, session).await
+            }
+            "browser.detach_screencast" => {
+                crate::screencast::detach(self.gw, &self.device.id, req(&p, "session")?).await
+            }
+            "browser.screencast_frame" => {
+                req(&p, "session")?;
+                crate::screencast::frame(
+                    self.gw,
+                    &self.device.id,
+                    pick(&p, &["session", "after_seq"]),
+                )
+                .await
+            }
+            "browser.take_over" | "browser.release" => {
+                let session = req(&p, "session")?;
+                self.still_authorized()?;
+                crate::screencast::control(
+                    self.gw,
+                    &self.actor(),
+                    &self.device.id,
+                    session,
+                    method == "browser.take_over",
+                )
+                .await
+            }
+            "browser.click" | "browser.type" | "browser.press" | "browser.navigate" => {
+                // Input goes to a session this device took over, so the agent is paused meanwhile.
+                let session = req(&p, "session")?;
+                if self.gw.screencasts.controller(session).as_deref()
+                    != Some(self.device.id.as_str())
+                {
+                    return Err(ApiError::new(
+                        "conflict",
+                        "take over this browser session first (browser.take_over)",
+                    ));
+                }
+                let keys: &[&str] = match method {
+                    "browser.click" => &[
+                        "session",
+                        "selector",
+                        "text",
+                        "x",
+                        "y",
+                        "click_count",
+                        "timeout_ms",
+                    ],
+                    "browser.type" => &[
+                        "session",
+                        "text",
+                        "selector",
+                        "clear",
+                        "submit",
+                        "timeout_ms",
+                    ],
+                    "browser.press" => &["session", "key"],
+                    _ => &["session", "url", "path", "wait", "timeout_ms"],
+                };
+                self.server(method, pick(&p, keys)).await
             }
             "fs.browse" => self.server(method, pick(&p, &["path", "prefix"])).await,
             "repo.candidates" => {
@@ -1289,6 +1584,9 @@ impl Call<'_> {
                     ));
                 }
                 let vapid = req(&p, "vapid_private")?.to_string();
+                // The app's service worker closes notifications on a `clear` push (notify.rs).
+                let supports_clear =
+                    p.get("supports_clear").and_then(|v| v.as_bool()) == Some(true);
                 crate::push::vapid_public(
                     &vk_e2e::b64::decode(&vapid).map_err(|_| ApiError::invalid("vapid_private"))?,
                 )
@@ -1296,6 +1594,7 @@ impl Call<'_> {
                 self.gw
                     .update_device(&self.device.id, |d| {
                         d.vapid_private = Some(vapid.clone());
+                        d.supports_clear = supports_clear;
                         d.push.retain(|s| s.endpoint != sub.endpoint);
                         d.push.push(sub.clone());
                         if d.push.len() > 3 {
@@ -1476,6 +1775,54 @@ fn stale(it: &Value) -> ApiError {
         message: "interaction changed; refresh and decide again".into(),
         details: json!({"interaction": it}),
     }
+}
+
+/// The first pane's id of a `tab.create`, `workspace.create` or `worktree.create {open}` result.
+fn root_pane_id(r: &Value, method: &str) -> Result<String, ApiError> {
+    r.get("root_pane")
+        .and_then(|r| r.get("id").or(Some(r)))
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .ok_or_else(|| ApiError::new("internal", format!("{method} returned no root pane")))
+}
+
+/// What a sandbox boundary request (`sandbox.request`, sandbox_boundary.rs) asks for, from the
+/// interaction the server opened: `{kind: push|copy_out, pane, remote?, branch?, path?}`.
+pub fn boundary_of(it: &Value) -> Option<Value> {
+    if it.pointer("/action/tool").and_then(|t| t.as_str()) != Some("boundary") {
+        return None;
+    }
+    // `native_ref` is `boundary:<kind>:<box>`.
+    let kind = s(it, "native_ref")?
+        .strip_prefix("boundary:")?
+        .split(':')
+        .next()?
+        .to_string();
+    let mut b = json!({"kind": kind, "pane": it.get("pane").cloned().unwrap_or(Value::Null)});
+    match kind.as_str() {
+        "push" => {
+            // The summary is `git push <remote> <branch> (from the host, hooks off)`.
+            let summary = it
+                .pointer("/action/summary")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let mut w = summary
+                .strip_prefix("git push ")
+                .unwrap_or("")
+                .split_whitespace();
+            if let (Some(remote), Some(branch)) = (w.next(), w.next()) {
+                b["remote"] = remote.into();
+                b["branch"] = branch.into();
+            }
+        }
+        "copy_out" => {
+            if let Some(path) = it.pointer("/action/paths/0") {
+                b["path"] = path.clone();
+            }
+        }
+        _ => {}
+    }
+    Some(b)
 }
 
 fn required_rev(p: &Value) -> Result<u64, ApiError> {
@@ -1896,6 +2243,24 @@ mod workspace_tests {
                                 "five_minute": {"keys": [{"kind": "interaction", "id": "i2"}, {"kind": "interaction", "id": "i1"}],
                                                 "item_notes": [{"key": {"kind": "interaction", "id": "i2"}, "note": "n"}]}
                             }),
+                            "agent.get" => {
+                                let id = p["target"].as_str().unwrap_or("");
+                                json!({"run": {"id": id, "pane": if id.ends_with('1') { "p1" } else { "p2" }}})
+                            }
+                            "search.query" => json!({"echo": p, "hits": [
+                                {"pane": "p1", "text": "in"}, {"pane": "p2", "text": "secret"},
+                                {"pane": "p9", "text": "archived"}, {"text": "no pane"}
+                            ]}),
+                            "worktree.create" | "workspace.create" => {
+                                json!({"echo": p, "root_pane": {"id": "p9"}})
+                            }
+                            "interaction.get" => json!({"interaction": {
+                                "id": "ib", "status": "Open", "kind": "approval", "decision_rev": 0,
+                                "pane": "p1", "run": "", "answerable": true,
+                                "native_ref": "boundary:copy_out:box1",
+                                "action": {"tool": "boundary", "summary": "copy a.txt to the host outbox",
+                                           "paths": ["a.txt"], "risk": "Medium"}
+                            }}),
                             _ => json!({"echo": p}),
                         };
                         let out = json!({"jsonrpc": "2.0", "id": req["id"], "result": result})
@@ -1926,6 +2291,7 @@ mod workspace_tests {
             expires_at: None,
             limit,
             peer: None,
+            supports_clear: false,
         }
     }
 
@@ -2292,5 +2658,407 @@ mod workspace_tests {
             ),
             json!({"preview": "v1", "split": "down", "actor": "gateway:d1"})
         );
+    }
+
+    /// Methods exposed for the app's catch-up, search, sandbox and preview screens.
+    const VIEW_READS: &[&str] = &[
+        "agent.turns",
+        "assistant.status",
+        "assistant.get",
+        "desk.search",
+        "search.query",
+        "sandbox.list",
+        "sandbox.status",
+        "browser.list",
+        "browser.status",
+        "browser.screencast_frame",
+    ];
+    const FULL_ACTIONS: &[&str] = &[
+        "worktree.create",
+        "workspace.create",
+        "assistant.generate",
+        "assistant.confirm",
+        "assistant.cancel",
+        "browser.take_over",
+        "browser.release",
+        "browser.click",
+        "browser.type",
+        "browser.press",
+        "browser.navigate",
+    ];
+
+    #[test]
+    fn scope_table_for_app_lane_methods() {
+        for m in VIEW_READS {
+            assert_eq!(required_scope(m), Some(Scope::View), "{m}");
+            assert!(!is_mutating(m), "{m}");
+            assert!(SERVER_READ_ONLY.contains(m), "{m} must not need an actor");
+        }
+        // Viewer bookkeeping: no op_id, but not a plain server read either (screencast.rs).
+        for m in ["browser.attach_screencast", "browser.detach_screencast"] {
+            assert_eq!(required_scope(m), Some(Scope::View), "{m}");
+            assert!(!is_mutating(m), "{m}");
+            assert!(!SERVER_READ_ONLY.contains(&m), "{m}");
+        }
+        for m in FULL_ACTIONS {
+            assert_eq!(required_scope(m), Some(Scope::Full), "{m}");
+            assert!(is_mutating(m), "{m} needs an op_id");
+            assert!(
+                !SERVER_READ_ONLY.contains(m),
+                "{m} is re-authorized with an actor"
+            );
+        }
+        // Never exposed: consent, provider settings, goals, raw scripts, box actions.
+        for m in [
+            "assistant.consent",
+            "assistant.revoke",
+            "assistant.test",
+            "assistant.purge",
+            "goal.list",
+            "goal.get",
+            "goal.approve",
+            "goal.cancel",
+            "goal.create",
+            "goal.plan",
+            "goal.plan_submit",
+            "goal.start",
+            "goal.step_done",
+            "browser.eval",
+            "browser.open",
+            "browser.screencast",
+            "sandbox.request",
+            "sandbox.push",
+            "sandbox.copy_out",
+            "desk.open",
+            "desk.resume",
+        ] {
+            assert_eq!(required_scope(m), None, "{m}");
+        }
+        // Host-wide: never for share devices (search.query is filtered instead).
+        for m in VIEW_READS.iter().chain(FULL_ACTIONS) {
+            if *m == "search.query" || *m == "agent.turns" {
+                assert!(kind_allows("share", m), "{m}");
+                continue;
+            }
+            assert!(host_wide(m), "{m}");
+            assert!(!kind_allows("share", m), "{m}");
+            assert!(kind_allows("device", m), "{m}");
+            assert!(!kind_allows("peer", m), "{m}");
+        }
+        assert!(!kind_allows("share", "browser.attach_screencast"));
+    }
+
+    fn limited(id: &str, scope: Scope, workspace: Option<&str>, pane: Option<&str>) -> Device {
+        device(
+            id,
+            scope,
+            "device",
+            Some(Limit {
+                workspace: workspace.map(str::to_string),
+                pane: pane.map(str::to_string),
+            }),
+        )
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn limited_devices_get_no_host_wide_methods() {
+        let t = tempfile::tempdir().unwrap();
+        let gw = gateway(&t).await;
+        // A limited own device (not only shares) is checked the same way.
+        let d = limited("l1", Scope::Full, Some("w1"), None);
+        gw.add_device(d.clone()).unwrap();
+        let call = Call {
+            gw: &gw,
+            device: &d,
+        };
+        for (m, p) in [
+            ("worktree.create", json!({"workspace": "w1", "branch": "b"})),
+            ("workspace.create", json!({"cwd": "/tmp"})),
+            ("desk.search", json!({"text": "x"})),
+            ("assistant.status", json!({})),
+            (
+                "assistant.generate",
+                json!({"operation": "briefing", "workspace": "w1"}),
+            ),
+            ("sandbox.list", json!({})),
+            ("browser.list", json!({})),
+            ("browser.attach_screencast", json!({"session": "b1"})),
+            ("browser.take_over", json!({"session": "b1"})),
+            (
+                "agent.start",
+                json!({"workspace": "w1", "harness": "claude", "worktree": {"branch": "b"}}),
+            ),
+            (
+                "agent.start",
+                json!({"workspace": "w1", "harness": "claude", "new_workspace": {"cwd": "/tmp"}}),
+            ),
+            // A run outside the limit.
+            ("agent.turns", json!({"run": "r2"})),
+            ("search.query", json!({"q": "x", "pane": "p2"})),
+            ("search.query", json!({"q": "x", "workspace": "w2"})),
+        ] {
+            assert_eq!(
+                call.dispatch(m, p.clone()).await.unwrap_err().kind,
+                "forbidden",
+                "{m} {p}"
+            );
+        }
+        // Inside the limit.
+        let r = call
+            .dispatch("agent.turns", json!({"run": "r1", "limit": 5, "x": 1}))
+            .await
+            .unwrap();
+        assert_eq!(r["echo"], json!({"run": "r1", "limit": 5}));
+        // Search is narrowed to the shared workspace and its hits to visible panes.
+        let r = call
+            .dispatch("search.query", json!({"q": "x", "machine": null}))
+            .await
+            .unwrap();
+        assert_eq!(r["echo"]["workspace"], "w1");
+        assert_eq!(r["hits"], json!([{"pane": "p1", "text": "in"}]));
+        assert!(!r.to_string().contains("secret"));
+        // A pane-only device searches its pane.
+        let d = limited("l2", Scope::View, None, Some("p1"));
+        gw.add_device(d.clone()).unwrap();
+        let call = Call {
+            gw: &gw,
+            device: &d,
+        };
+        let r = call
+            .dispatch("search.query", json!({"q": "x"}))
+            .await
+            .unwrap();
+        assert_eq!(r["echo"]["pane"], "p1");
+        assert!(r["echo"].get("workspace").is_none());
+        assert_eq!(r["hits"].as_array().unwrap().len(), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn new_agents_in_a_worktree_or_folder() {
+        let t = tempfile::tempdir().unwrap();
+        let gw = gateway(&t).await;
+        let me = device("d1", Scope::Full, "device", None);
+        gw.add_device(me.clone()).unwrap();
+        let call = Call {
+            gw: &gw,
+            device: &me,
+        };
+        let r = call
+            .dispatch(
+                "agent.start",
+                json!({"pane": "p1", "harness": "claude", "prompt": "hi",
+                       "worktree": {"branch": "feat/x", "base": "main", "path": "/etc"}}),
+            )
+            .await
+            .unwrap();
+        // The worktree's first pane runs the agent.
+        assert_eq!(r["pane"], "p9");
+        assert_eq!(
+            r["echo"],
+            json!({"pane": "p9", "harness": "claude", "prompt": "hi", "actor": "gateway:d1"})
+        );
+        let r = call
+            .dispatch(
+                "agent.start",
+                json!({"harness": "codex", "new_workspace": {"cwd": "/tmp/x", "name": "x", "command": ["sh"]}}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(r["pane"], "p9");
+        // worktree.create runs in the source pane's directory; no path or root override.
+        let r = call
+            .dispatch(
+                "worktree.create",
+                json!({"pane": "p1", "branch": "b", "path": "/etc", "root": "/"}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            r["echo"],
+            json!({"branch": "b", "cwd": "/repo/p1", "actor": "gateway:d1"})
+        );
+        let r = call
+            .dispatch(
+                "workspace.create",
+                json!({"cwd": "/tmp/x", "command": ["sh"], "layout": {}}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(r["echo"], json!({"cwd": "/tmp/x", "actor": "gateway:d1"}));
+        assert_eq!(
+            call.dispatch(
+                "agent.start",
+                json!({"harness": "claude", "worktree": {"base": "main"}, "pane": "p1"})
+            )
+            .await
+            .unwrap_err()
+            .kind,
+            "invalid_params"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn assistant_and_boundary_requests() {
+        let t = tempfile::tempdir().unwrap();
+        let gw = gateway(&t).await;
+        let me = device("d1", Scope::Full, "device", None);
+        gw.add_device(me.clone()).unwrap();
+        let call = Call {
+            gw: &gw,
+            device: &me,
+        };
+        // Only the catch-up and reply operations, with the host's own profile and sources.
+        for op in ["review_summary", "handoff", "navigate", "pane_title"] {
+            assert_eq!(
+                call.dispatch("assistant.generate", json!({"operation": op}))
+                    .await
+                    .unwrap_err()
+                    .kind,
+                "forbidden",
+                "{op}"
+            );
+        }
+        let r = call
+            .dispatch(
+                "assistant.generate",
+                json!({"operation": "reply_suggestions", "pane": "p1", "include_screen": true,
+                       "profile": "expensive", "remote_sources": [{}], "inputs": {"pane": "p2"}, "op_id": "o1"}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            r["echo"],
+            json!({"operation": "reply_suggestions", "pane": "p1", "include_screen": true,
+                   "idempotency_key": "gw:d1:o1", "actor": "gateway:d1"})
+        );
+        // Boundary requests show what is asked and take allow (once) or deny only.
+        let r = call
+            .dispatch("interaction.get", json!({"interaction": "ib"}))
+            .await
+            .unwrap();
+        assert_eq!(
+            r["interaction"]["boundary"],
+            json!({"kind": "copy_out", "pane": "p1", "path": "a.txt"})
+        );
+        assert!(!batch_eligible(&r["interaction"]));
+        for bad in [
+            json!({"interaction": "ib", "decision_rev": 0, "decision": "allow_always"}),
+            json!({"interaction": "ib", "decision_rev": 0, "text": "sure"}),
+            json!({"interaction": "ib", "decision_rev": 0, "decision": "allow", "choices": {}}),
+        ] {
+            assert_eq!(
+                call.dispatch("interaction.answer", bad.clone())
+                    .await
+                    .unwrap_err()
+                    .kind,
+                "invalid_params",
+                "{bad}"
+            );
+        }
+        let r = call
+            .dispatch(
+                "interaction.answer",
+                json!({"interaction": "ib", "decision_rev": 0, "decision": "allow", "op_id": "o2"}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(r["echo"]["decision"], "allow");
+        assert_eq!(r["echo"]["expected_decision_rev"], 0);
+    }
+
+    #[test]
+    fn boundary_push_requests_name_remote_and_branch() {
+        let it = json!({"pane": "p1", "native_ref": "boundary:push:box1",
+                        "action": {"tool": "boundary", "summary": "git push origin feat/x (from the host, hooks off)", "paths": []}});
+        assert_eq!(
+            boundary_of(&it),
+            Some(json!({"kind": "push", "pane": "p1", "remote": "origin", "branch": "feat/x"}))
+        );
+        let mut plain = it.clone();
+        plain["action"]["tool"] = "Bash".into();
+        assert_eq!(boundary_of(&plain), None);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn browser_input_needs_a_take_over_and_previews_need_an_attach() {
+        let t = tempfile::tempdir().unwrap();
+        let gw = gateway(&t).await;
+        let me = device("d1", Scope::Full, "device", None);
+        let other = device("d2", Scope::Full, "device", None);
+        gw.add_device(me.clone()).unwrap();
+        let mut other = other;
+        other.public = "k-other".into();
+        gw.add_device(other.clone()).unwrap();
+        let call = Call {
+            gw: &gw,
+            device: &me,
+        };
+        let theirs = Call {
+            gw: &gw,
+            device: &other,
+        };
+        let conflict = |r: ApiResult| r.unwrap_err().kind;
+        assert_eq!(
+            conflict(
+                call.dispatch("browser.screencast_frame", json!({"session": "b1"}))
+                    .await
+            ),
+            "conflict"
+        );
+        call.dispatch("browser.attach_screencast", json!({"session": "b1"}))
+            .await
+            .unwrap();
+        let f = call
+            .dispatch(
+                "browser.screencast_frame",
+                json!({"session": "b1", "after_seq": 3, "target": "r2"}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(f["echo"], json!({"session": "b1", "after_seq": 3}));
+        assert_eq!(gw.screencasts.live(), vec!["b1".to_string()]);
+        assert_eq!(
+            conflict(
+                call.dispatch("browser.click", json!({"session": "b1", "x": 1, "y": 2}))
+                    .await
+            ),
+            "conflict"
+        );
+        // A device that is not watching cannot take over: its take-over would outlive any lease.
+        assert_eq!(
+            conflict(
+                theirs
+                    .dispatch("browser.take_over", json!({"session": "b1", "op_id": "t"}))
+                    .await
+            ),
+            "conflict"
+        );
+        call.dispatch("browser.take_over", json!({"session": "b1", "op_id": "o"}))
+            .await
+            .unwrap();
+        // Only the device that took over types into the page.
+        assert_eq!(
+            conflict(
+                theirs
+                    .dispatch("browser.type", json!({"session": "b1", "text": "x"}))
+                    .await
+            ),
+            "conflict"
+        );
+        let r = call
+            .dispatch(
+                "browser.type",
+                json!({"session": "b1", "text": "hello", "submit": true, "js": "alert(1)"}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            r["echo"],
+            json!({"session": "b1", "text": "hello", "submit": true, "actor": "gateway:d1"})
+        );
+        // The device goes away: it stops watching and its take-over ends.
+        crate::screencast::device_gone(&gw, "d1").await;
+        assert!(gw.screencasts.live().is_empty());
+        assert_eq!(gw.screencasts.taken_by("b1"), None);
     }
 }

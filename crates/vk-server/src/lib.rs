@@ -1392,6 +1392,30 @@ impl Server {
         self.bump_model();
     }
 
+    /// Record a pane's current cwd ([`Self::pane_cwd`]) in the model, and re-derive its
+    /// workspace's automatic name when it moved. Shells without OSC 7 report a `cd` nowhere
+    /// else, so without this `Pane.cwd` stays where the pane started.
+    pub fn sync_pane_cwd(&self, pane: &str) {
+        let Some(cwd) = self.pane_cwd(pane) else {
+            return;
+        };
+        {
+            let mut c = self.core.lock().unwrap();
+            let Some(mut p) = c.pane(pane).cloned() else {
+                return;
+            };
+            if p.cwd.as_deref() == Some(cwd.as_str()) {
+                return;
+            }
+            p.cwd = Some(cwd.clone());
+            let mut tx = Tx::new();
+            tx.event("pane.cwd_changed", subject_pane(&p), json!({"cwd": cwd}));
+            tx.pane(p);
+            let _ = self.commit(&mut c, tx);
+        }
+        self.refresh_auto_name(pane);
+    }
+
     /// Re-derive the automatic name of the workspace holding `pane` from its focused pane's
     /// cwd (the most recently active client's focus there, else the first tab's focus).
     /// Commits only when the name actually changes.

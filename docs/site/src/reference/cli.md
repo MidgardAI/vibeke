@@ -517,7 +517,7 @@ Use `--json` to print JSON. Non-terminal output also uses JSON.
 | `providers` | - | `assistant.providers` | configured connections and profiles (no secrets) |
 | `consent` | `<workspace>` | `assistant.consent` | [workspace] [--connection c] [--classes selected_text,structured_state,review_package,screen] [--operations op,...] [--auto-send op,...] |
 | `revoke` | `<workspace>` | `assistant.revoke` | [workspace] [--connection c] — also cancels unfinished requests there |
-| `generate` | `<operation>` | `assistant.generate` | suggest_task_details\|review_summary\|pane_title\|briefing\|handoff\|effort_estimate\|navigate\|decision_card\|task_title [--run r] [--turns 3,4] [--pane p] [--task t] [--workspace w] [--query text] [--interaction i] [--stream] [--priority background] [--include-screen] — Show the exact payload. Do not send it. |
+| `generate` | `<operation>` | `assistant.generate` | suggest_task_details\|review_summary\|pane_title\|briefing\|handoff\|effort_estimate\|navigate\|decision_card\|task_title\|reply_suggestions [--run r] [--turns 3,4] [--pane p] [--task t] [--workspace w] [--query text] [--interaction i] [--stream] [--priority background] [--include-screen] — Show the exact payload. Do not send it. |
 | `confirm` | `<request>` `<preview_digest>` | `assistant.confirm` | <request> <preview-digest> — send the previewed payload |
 | `show` | `<request>` | `assistant.get` | <request> — lifecycle, usage, cost, sources and the generated draft |
 | `list` | - | `assistant.list` | [--workspace w] [--state done] [--limit 50] |

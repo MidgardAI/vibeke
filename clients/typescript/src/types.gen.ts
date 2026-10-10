@@ -1346,7 +1346,7 @@ export type AssistantConsentResult = {
 };
 
 export type AssistantGenerateParams = {
-  operation: "suggest_task_details" | "review_summary" | "pane_title" | "briefing" | "handoff" | "effort_estimate" | "navigate" | "decision_card" | "stall_notice" | "background_summary" | "task_title";
+  operation: "suggest_task_details" | "review_summary" | "pane_title" | "briefing" | "handoff" | "effort_estimate" | "navigate" | "decision_card" | "stall_notice" | "background_summary" | "task_title" | "reply_suggestions";
   profile?: string;
   priority?: "interactive" | "background";
   stream?: boolean;
@@ -3346,6 +3346,7 @@ export type FsListResult = {
 export type FsReadParams = {
   pane?: Target;
   path: string;
+  as?: "image";
 };
 
 export type FsReadResult = {
@@ -3355,6 +3356,8 @@ export type FsReadResult = {
   truncated: boolean;
   size: number;
   secret: boolean;
+  mime?: string;
+  data_b64?: string;
 };
 
 export type GatewayCallParams = {

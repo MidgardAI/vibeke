@@ -87,7 +87,7 @@ fn pane_label(app: &App, mi: usize, pane: &str) -> String {
     let name = p.map(|p| {
         let run = m.model.runs.iter().find(|r| r.pane == p.id);
         match run {
-            Some(r) => r.name.clone().unwrap_or_else(|| r.harness.clone()),
+            Some(r) => r.label().to_string(),
             None => p.display_title().to_string(),
         }
     });
