@@ -622,3 +622,23 @@ button[data-nav-item][data-selected] {
     font-size: max(16px, 1em);
   }
 }
+
+/* Rows that open an action sheet on long press: no system callout, a soft hold visual. */
+.vk-press {
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+.vk-press[data-pressing] {
+  background: var(--selected);
+  transform: scale(0.985);
+  transition:
+    transform 0.28s cubic-bezier(0.2, 0.8, 0.2, 1),
+    background-color 0.28s;
+}
+@media (prefers-reduced-motion: reduce) {
+  .vk-press[data-pressing] {
+    transform: none;
+    transition: none;
+  }
+}

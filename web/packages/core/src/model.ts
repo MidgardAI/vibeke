@@ -721,6 +721,8 @@ export interface DevicePrefs {
   privacy: 'full' | 'summary' | 'minimal';
   notify_input: boolean;
   notify_done: boolean;
+  /** Push when an idle agent's prompt cache is about to go cold (host pref; older hosts omit it). */
+  notify_cache_cold?: boolean;
 }
 
 export interface BatchResult {

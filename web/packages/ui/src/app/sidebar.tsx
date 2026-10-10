@@ -3,7 +3,7 @@
 // Inline on wide windows, a drawer on narrow ones. Rows are `data-nav-item`s, so j/k walk them
 // whenever the centre has no list of its own.
 
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   Check,
   Circle,
@@ -19,16 +19,23 @@ import {
   PanelLeft,
   PanelRight,
   Pin,
-  PinOff,
   Plus,
   Search,
   Settings,
   SquareTerminal,
   X,
 } from 'lucide-react';
-import { Badge, HarnessIcon, IconButton, Kbd, RelTime, Row, SectionHeader, Sheet, SheetRow, StatusDot, cx, type Status } from '../components/ui';
+import { CacheChip } from '../components/cache-chip';
+import { PressRow, RowActionSheet } from '../components/pane-row';
+import { Badge, HarnessIcon, IconButton, Kbd, RelTime, Row, SectionHeader, StatusDot, cx, type Status } from '../components/ui';
 import { t } from '../i18n';
 import { UpdateSidebar } from '../components/updates';
+import type { CachedMirror } from '../platform';
+import { agentViewFor } from '../lib/agent-view';
+import { whenText } from '../lib/format';
+import { staleInfo } from '../lib/offline-cache';
+import { prefetchTarget } from '../lib/prefetch';
+import { useScrollMemory } from '../lib/scroll-memory';
 import { keyLabel } from '../lib/shortcuts';
 import type { PaneRow } from '../lib/tree';
 import type { WorkspaceGroupId, WorkspaceRow } from '../lib/workspaces';
@@ -37,6 +44,7 @@ import { navigate, workspaceRoute, type Route } from '../router';
 import { useApprovalCount } from './approval-stores';
 import { useIncoming, useIncomingCount } from './handoff-stores';
 import { useApp, useHosts, useInboxItems, usePrefs } from './hooks';
+import { useStableList } from './stable-list';
 import { emitUi, isMacLike } from './keyboard';
 import { drawerOpen, selectedPane, useWorkspaces, workspacePinKey } from './selection';
 
@@ -68,8 +76,28 @@ export function Sidebar({ route, mode }: { route: Route; mode: 'inline' | 'drawe
   const [query, setQuery] = useState('');
   const [filtering, setFiltering] = useState(false);
   const [options, setOptions] = useState(false);
-  const [menuFor, setMenuFor] = useState<WorkspaceRow | null>(null);
-  const list = useWorkspaces(query);
+  const [menuFor, setMenuFor] = useState<{ row: WorkspaceRow; pane: PaneRow | null } | null>(null);
+  const live = useWorkspaces(query);
+  // Rows keep their place while a finger is on the list (see lib/stable-order.ts).
+  const { list, handlers: listHandlers } = useStableList(live);
+  const listRef = useRef<HTMLDivElement>(null);
+  useScrollMemory('sidebar', listRef);
+  const staleBy = new Map(hosts.map((h) => [h.record.host_id, staleInfo(h)]));
+  const now = app.platform.clock.now();
+  const warmEnv = useMemo(
+    () => ({
+      conn: (h: string) => app.conn(h),
+      now: () => app.platform.clock.now(),
+      mirrors: app.mirrors,
+      saveMirror: app.platform.mirrorCache ? (k: string, v: CachedMirror) => app.platform.mirrorCache!.set(k, v) : undefined,
+    }),
+    [app],
+  );
+  /** A finger landed on a row: fetch what its screen shows first. Reads only, nothing is marked seen. */
+  const warm = (p: PaneRow | null, workspace: string) => {
+    if (!p) return;
+    prefetchTarget(warmEnv, { host: p.host, pane: p.pane.id, run: p.run?.id ?? null, mirror: !p.run || agentViewFor(app.prefs.get(), p.host, workspace) === 'terminal' });
+  };
   const multiHost = hosts.length > 1;
   const collapsed = new Set(prefs.collapsed);
   const inWorkspace = route.name === 'workspace';
@@ -77,7 +105,10 @@ export function Sidebar({ route, mode }: { route: Route; mode: 'inline' | 'drawe
   const close = () => mode === 'drawer' && drawerOpen.set(false);
   const go = (r: Route) => {
     close();
-    navigate(r);
+    // Moving between workspaces replaces the history entry, so Back goes up to where the user
+    // came from (the inbox) instead of walking through every workspace visited.
+    if (r.name === 'workspace' && route.name === 'workspace') navigate(r, { replace: true });
+    else navigate(r);
   };
   const open = (r: WorkspaceRow) => go(workspaceRoute(r.host, r.workspace.id));
   const isActive = (r: WorkspaceRow) => route.name === 'workspace' && route.host === r.host && route.workspace === r.workspace.id;
@@ -110,16 +141,16 @@ export function Sidebar({ route, mode }: { route: Route; mode: 'inline' | 'drawe
           {r.summary}
         </span>,
       );
+    const stale = !!staleBy.get(r.host)?.stale;
     const row = (
-      <Row
+      <PressRow
         key={r.key}
         data-nav-item={r.key}
         active={isActive(r) && r.panes.length < 2}
         onClick={() => open(r)}
-        onContextMenu={(e) => {
-          e.preventDefault();
-          setMenuFor(r);
-        }}
+        onActions={() => setMenuFor({ row: r, pane: r.panes.length === 1 ? r.panes[0]! : null })}
+        onWarm={() => warm(r.primary, r.workspace.id)}
+        className={cx(stale && 'opacity-60')}
         title={r.title}
         leading={
           <span className="relative flex">
@@ -127,7 +158,12 @@ export function Sidebar({ route, mode }: { route: Route; mode: 'inline' | 'drawe
             {status && <StatusDot status={status} ring className="absolute -bottom-1 -right-1 [--ring:var(--sidebar-bg)]" />}
           </span>
         }
-        trailing={r.open > 0 ? <Badge n={r.open} /> : <RelTime ms={r.lastActivityMs} />}
+        trailing={
+          <>
+            <CacheChip run={r.primary?.run} inRow />
+            {r.open > 0 ? <Badge n={r.open} /> : <RelTime ms={r.lastActivityMs} />}
+          </>
+        }
         sub={
           sub.length ? (
             <>
@@ -142,7 +178,7 @@ export function Sidebar({ route, mode }: { route: Route; mode: 'inline' | 'drawe
         }
       >
         <span className={cx(r.unread || r.group === 'needs' ? 'font-medium text-fg' : '')}>{r.title}</span>
-      </Row>
+      </PressRow>
     );
     if (r.panes.length < 2) return row;
     // Several panes: each one under its workspace, opening the workspace on that pane.
@@ -152,19 +188,27 @@ export function Sidebar({ route, mode }: { route: Route; mode: 'inline' | 'drawe
         {r.panes.map((p) => {
           const ps = paneStatus(p);
           return (
-            <Row
+            <PressRow
               key={p.key}
               data-nav-item={p.key}
               compact
               depth={2}
               active={isPaneActive(r, p)}
               onClick={() => go(workspaceRoute(r.host, r.workspace.id, { pane: p.pane.id }))}
+              onActions={() => setMenuFor({ row: r, pane: p })}
+              onWarm={() => warm(p, r.workspace.id)}
+              className={cx(stale && 'opacity-60')}
               title={paneLabel(p)}
               leading={p.run ? <HarnessIcon harness={p.run.harness} /> : <SquareTerminal className="size-3.5 text-muted" strokeWidth={1.75} />}
-              trailing={ps ? <StatusDot status={ps} /> : undefined}
+              trailing={
+                <>
+                  <CacheChip run={p.run} inRow />
+                  {ps ? <StatusDot status={ps} /> : undefined}
+                </>
+              }
             >
               <span className="truncate text-[13px] text-fg/80">{paneLabel(p)}</span>
-            </Row>
+            </PressRow>
           );
         })}
       </div>
@@ -224,7 +268,7 @@ export function Sidebar({ route, mode }: { route: Route; mode: 'inline' | 'drawe
         </Row>
       </div>
 
-      <div className="vk-scroll min-h-0 flex-1 overflow-y-auto border-t border-border px-2 pb-3 pt-2" data-nav-list="sidebar">
+      <div ref={listRef} {...listHandlers} className="vk-scroll min-h-0 flex-1 overflow-y-auto border-t border-border px-2 pb-3 pt-2" data-nav-list="sidebar">
         {list.pinned.length > 0 && section('pinned', t.sidebar.pinned, <Pin className="size-3.5 text-faint" />, list.pinned)}
 
         <div className="group/ws relative flex h-7 items-center gap-0.5 pl-2 pr-0.5 text-xs font-medium text-muted">
@@ -280,7 +324,10 @@ export function Sidebar({ route, mode }: { route: Route; mode: 'inline' | 'drawe
             <div key={h.record.host_id} className="flex h-6 items-center gap-2 px-2 text-xs text-muted">
               <StatusDot status={h.status === 'connecting' ? 'working' : 'offline'} />
               <span className="min-w-0 flex-1 truncate">{h.info?.host_name ?? h.record.name}</span>
-              <span className="text-faint">{h.status === 'connecting' ? t.sidebar.connecting : t.sidebar.offline}</span>
+              <span className="text-faint">
+                {h.status === 'connecting' ? t.sidebar.connecting : t.sidebar.offline}
+                {staleBy.get(h.record.host_id)?.asOf ? ` · ${t.offline.asOf(whenText(staleBy.get(h.record.host_id)!.asOf!, now))}` : ''}
+              </span>
               {h.status !== 'connecting' && (
                 <button type="button" className="vk-focus rounded px-1 text-faint hover:text-fg" onClick={() => app.conn(h.record.host_id)?.reconnectNow()}>
                   {t.sidebar.reconnect}
@@ -315,30 +362,37 @@ export function Sidebar({ route, mode }: { route: Route; mode: 'inline' | 'drawe
         </IconButton>
       </div>
 
-      {menuFor && <RowMenu row={menuFor} onClose={() => setMenuFor(null)} />}
+      {menuFor && <RowMenu row={menuFor.row} pane={menuFor.pane} onClose={() => setMenuFor(null)} />}
     </nav>
   );
 }
 
-function RowMenu({ row, onClose }: { row: WorkspaceRow; onClose(): void }) {
+/**
+ * The long-press / right-click sheet of a sidebar row. A pane row acts on its pane. A workspace
+ * row pins the workspace; with exactly one pane it can also rename or close that pane (the host
+ * has no workspace rename or close).
+ */
+function RowMenu({ row, pane, onClose }: { row: WorkspaceRow; pane: PaneRow | null; onClose(): void }) {
   const app = useApp();
   const prefs = usePrefs();
   const key = workspacePinKey(row.host, row.workspace.id);
   const pinnedHere = prefs.pins.includes(key);
   const pinnedPanes = row.panes.filter((p) => p.pinned).map((p) => p.key);
+  const isWorkspace = !pane || row.panes.length === 1;
+  const togglePin = () => {
+    if (pane && row.panes.length > 1) return app.prefs.togglePin(pane.key);
+    if (row.pinned) app.prefs.patch({ pins: prefs.pins.filter((k) => k !== key && !pinnedPanes.includes(k)) });
+    else if (!pinnedHere) app.prefs.patch({ pins: [...prefs.pins, key] });
+  };
   return (
-    <Sheet open onClose={onClose} title={row.title}>
-      <SheetRow
-        icon={row.pinned ? <PinOff /> : <Pin />}
-        onClick={() => {
-          if (row.pinned) app.prefs.patch({ pins: prefs.pins.filter((k) => k !== key && !pinnedPanes.includes(k)) });
-          else if (!pinnedHere) app.prefs.patch({ pins: [...prefs.pins, key] });
-          onClose();
-        }}
-      >
-        {row.pinned ? t.sidebar.unpin : t.sidebar.pin}
-      </SheetRow>
-    </Sheet>
+    <RowActionSheet
+      title={pane && row.panes.length > 1 ? paneLabel(pane) : row.title}
+      pinned={pane && row.panes.length > 1 ? pane.pinned : row.pinned}
+      onTogglePin={togglePin}
+      target={pane}
+      workspaceLevel={isWorkspace}
+      onClose={onClose}
+    />
   );
 }
 

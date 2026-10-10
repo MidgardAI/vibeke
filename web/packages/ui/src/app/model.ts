@@ -24,6 +24,7 @@ import { t } from '../i18n';
 import { isPickerChanged } from '../lib/pickers';
 import { AnswerStore, classifyError, errorMessage, staleInteraction } from '../lib/answer';
 import { badgeCount, staleTags } from '../lib/notify';
+import { SAVE_EVERY_MS, compactDashboard, shouldSave, type CachedDashboard } from '../lib/offline-cache';
 import { PrefsStore } from '../lib/prefs';
 import { ValueStore } from '../lib/store';
 import { runKey } from '../lib/tree';
@@ -55,6 +56,8 @@ export class AppModel {
   readonly locked = new ValueStore(false);
   readonly toasts = new ValueStore<Toast[]>([]);
   readonly mirrors = new Map<string, CachedMirror>();
+  /** Saved dashboards per host id, loaded at start; shown only for hosts without a live one. */
+  readonly cached = new ValueStore<Record<string, CachedDashboard>>({});
   /**
    * Final state of interactions this device answered. Dashboards only carry open interactions, so
    * once an answered one leaves the snapshot its delivery state comes from `interaction.get`.
@@ -72,6 +75,8 @@ export class AppModel {
   private devicePrivate: Uint8Array | null = null;
   private toastSeq = 0;
   private offs: (() => void)[] = [];
+  private lastSaved = new Map<string, { at: number; dashboard: unknown }>();
+  private saveTimers = new Map<string, TimerHandle>();
 
   constructor(readonly platform: UiPlatform) {
     this.prefs = new PrefsStore(platform.kv);
@@ -116,6 +121,7 @@ export class AppModel {
       this.offs.push(this._manager.subscribe(() => this.onHostsChanged()));
       this.offs.push(p.lifecycle.onVisible(() => void this.housekeeping()));
       void this._push.start();
+      void this.loadCached();
       this.phase.set('ready');
       void this.housekeeping();
     } catch (e) {
@@ -128,6 +134,8 @@ export class AppModel {
     this.stopped = true;
     for (const h of this.deliveryTimers) this.platform.clock.clearTimeout(h);
     this.deliveryTimers.clear();
+    for (const h of this.saveTimers.values()) this.platform.clock.clearTimeout(h);
+    this.saveTimers.clear();
     this.offs.forEach((f) => f());
     this.offs = [];
     this._push?.stop();
@@ -171,6 +179,8 @@ export class AppModel {
     }
     const key = c?.getSnapshot().record.key;
     await this.manager.remove(hostId);
+    this.cached.update((c) => Object.fromEntries(Object.entries(c).filter(([k]) => k !== hostId)));
+    await this.platform.dashboardCache?.remove?.(hostId).catch(() => {});
     // An invitation's own key is useless once its record is gone (the engine drops its own).
     if (key && !this.platform.engine) await this.platform.keystore.delete(key).catch(() => {});
     if (this._push) {
@@ -195,6 +205,47 @@ export class AppModel {
     }
     if (Object.keys(add).length) this.prefs.patch({ seenDone: { ...seen, ...add } });
     this.platform.notifications?.setBadge(badgeCount(this.manager.getSnapshot()));
+    this.saveDashboards();
+  }
+
+  // ---- offline cold start ------------------------------------------------------------------
+
+  private async loadCached(): Promise<void> {
+    const cache = this.platform.dashboardCache;
+    if (!cache || !this._manager) return;
+    const out: Record<string, CachedDashboard> = {};
+    for (const h of this._manager.getSnapshot()) {
+      try {
+        const v = await cache.get(h.record.host_id);
+        if (v && typeof v.at === 'number' && Array.isArray(v.dashboard?.workspaces) && Array.isArray(v.dashboard.panes)) out[h.record.host_id] = v;
+      } catch {
+        // an unreadable copy is just not shown
+      }
+    }
+    if (!this.stopped) this.cached.set(out);
+  }
+
+  /** Save each online host's dashboard when it changed: at most once per `SAVE_EVERY_MS`, with a trailing save. */
+  private saveDashboards(): void {
+    const cache = this.platform.dashboardCache;
+    if (!cache || !this._manager) return;
+    const clock = this.platform.clock;
+    const now = clock.now();
+    for (const h of this._manager.getSnapshot()) {
+      const id = h.record.host_id;
+      const last = this.lastSaved.get(id);
+      if (h.status !== 'online' || !h.dashboard || last?.dashboard === h.dashboard) continue;
+      if (shouldSave(h, last?.at, now)) {
+        this.lastSaved.set(id, { at: now, dashboard: h.dashboard });
+        void cache.set(id, { at: now, dashboard: compactDashboard(h.dashboard) }).catch(() => {});
+      } else if (!this.saveTimers.has(id)) {
+        const handle = clock.setTimeout(() => {
+          this.saveTimers.delete(id);
+          if (!this.stopped) this.saveDashboards();
+        }, SAVE_EVERY_MS);
+        this.saveTimers.set(id, handle);
+      }
+    }
   }
 
   /** Foreground reconciliation (§7.8): close stale notifications, refresh the badge. */

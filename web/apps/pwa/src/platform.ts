@@ -1,7 +1,7 @@
 // The PWA's UiPlatform: IndexedDB keys and hosts, WebSocket transport, Web Push through the
 // service worker, install prompt capture, Web Speech / MediaRecorder, haptics.
 
-import { b64, systemClock, type HostRecord, type HostStore, type KeyStore, type Lifecycle, type PushSubscriptionInfo, type PushSupport } from '@vibeke/core';
+import { b64, systemClock, type Dashboard, type HostRecord, type HostStore, type KeyStore, type Lifecycle, type PushSubscriptionInfo, type PushSupport } from '@vibeke/core';
 import type { InstallCapability, NotificationsCapability, PermissionState, SharedItem, SpeechCapability, UiPlatform } from '@vibeke/ui';
 import { idbAll, idbDelete, idbGet, idbGetOrCreate, idbSet, persist } from './idb';
 import { connectWebSocket } from './ws-socket';
@@ -353,6 +353,12 @@ export function createPwaPlatform(update?: AppUpdate): UiPlatform {
     mirrorCache: {
       get: async (k) => (await idbGet<{ text: string; at: number }>('mirrors', k)) ?? null,
       set: (k, v) => idbSet('mirrors', k, v),
+    },
+    // Saved dashboards share the `mirrors` store (own key prefix): no schema change.
+    dashboardCache: {
+      get: async (host) => (await idbGet<{ at: number; dashboard: Dashboard }>('mirrors', `dashboard:${host}`)) ?? null,
+      set: (host, v) => idbSet('mirrors', `dashboard:${host}`, v),
+      remove: (host) => idbDelete('mirrors', `dashboard:${host}`),
     },
     build: { version: __APP_VERSION__, hash: __BUILD_HASH__, origin: location.origin },
     client: { client: 'vibeke-pwa', version: __APP_VERSION__ },
