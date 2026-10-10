@@ -1,7 +1,7 @@
 // Hash routes (spec 16 §9.3): `#/inbox`, workspaces `#/w/<host>/<workspace>[/t/<pane>]` with
 // `?panel=changes|files|off&file=…&commit=…&base=…&view=diff&show=term|conversation|preview:<id>`, push deep links from the gateway
 // (`#/i/<host>/<interaction>`, `#/r/<host>/<run>`, `#/inbox`, `#/approve/<host>[/<request>]`) and the
-// pairing link `#/pair?d=…`.
+// pairing link `#/pair?d=…` and shared content `#/share-in/<id>`.
 // Older links (`#/h/<host>/p/<pane>[/history|/changes]`, `#/panes`, `#/focus`, `#/changes`) still
 // parse; the app redirects them to a workspace once it knows the dashboard (app/selection.ts).
 
@@ -43,6 +43,8 @@ export type Route =
   | { name: 'approve'; host: string | null; id: string | null }
   | { name: 'settings'; section?: string }
   | { name: 'pair'; d: string | null }
+  /** Content shared into the app (Web Share Target), under a one-time id. */
+  | { name: 'share_in'; id: string }
   | WorkspaceRoute
   | { name: 'pane'; host: string; pane: string; view: PaneView; show?: string | null }
   | { name: 'interaction'; host: string; id: string; preselect: 'allow' | 'deny' | null }
@@ -91,6 +93,9 @@ export function parseRoute(hash: string): Route {
       const m = /(?:^|[?&])d=([^&]*)/.exec(h.slice(q + 1));
       return { name: 'pair', d: q >= 0 && m ? m[1]! : null };
     }
+    case 'share-in':
+      if (b) return { name: 'share_in', id: b };
+      break;
     case 'w':
       if (b && c && (d === undefined || (d === 't' && e))) {
         const p = query.get('panel');
@@ -151,6 +156,8 @@ export function formatRoute(r: Route): string {
       return r.host ? `#/handoffs/${enc(r.host)}${r.id ? `/${enc(r.id)}` : ''}` : '#/handoffs';
     case 'approve':
       return r.host ? `#/approve/${enc(r.host)}${r.id ? `/${enc(r.id)}` : ''}` : '#/approve';
+    case 'share_in':
+      return `#/share-in/${enc(r.id)}`;
     case 'pair':
       return r.d ? `#/pair?d=${r.d}` : '#/pair';
     case 'workspace': {

@@ -83,8 +83,32 @@ export interface UpdatesCapability {
   setAutomatic(enabled: boolean): Promise<void>;
 }
 
+/** A new app version that is installed but not running yet (PWA service worker). */
+export interface AppUpdateCapability {
+  /** True when a new version is waiting to take over. */
+  get(): boolean;
+  subscribe(cb: () => void): () => void;
+  /** Activate the waiting version and reload. Call it only from a user tap. */
+  apply(): void;
+}
+
+/** Content another app shared into Vibeke (Web Share Target). */
+export interface SharedItem {
+  title: string;
+  text: string;
+  url: string;
+  files: { name: string; type: string; blob: Blob }[];
+}
+
 export interface UiPlatform extends Platform {
   updates?: UpdatesCapability;
+  /** A waiting app update, applied on request (PWA). Desktop uses `updates`. */
+  appUpdate?: AppUpdateCapability;
+  /**
+   * Read and delete content shared into the app under a one-time id (route `#/share-in/<id>`).
+   * Resolves to null when the id is unknown or expired.
+   */
+  takeShared?(id: string): Promise<SharedItem | null>;
   /** Optional encrypted persistence for unsent composer text. */
   drafts?: { get(host: string, pane: string): Promise<string>; set(host: string, pane: string, text: string): Promise<void> };
   hostStore: HostStore;

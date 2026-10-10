@@ -15,6 +15,7 @@ import { t } from '../../i18n';
 import { errorMessage } from '../../lib/answer';
 import { base64Std } from '../../lib/format';
 import { composerShowsStop, destructiveReason } from '../../lib/guards';
+import { useReloadGuard } from '../../lib/reload-guard';
 import { CommandCache, commandTap, fallbackCommands, filterCommands, slashQuery } from '../../lib/pickers';
 import type { PaneActions } from './actions';
 import { ModelSwitcher } from './model-switcher';
@@ -72,6 +73,8 @@ export function Composer({
   const [armed, setArmed] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [atts, setAtts] = useState<Attachment[]>([]);
+  useReloadGuard(text.trim() !== '', 'draft');
+  useReloadGuard(atts.some((a) => a.path === null && a.error === null), 'upload');
   const [voice, setVoice] = useState<'idle' | 'consent' | 'listening' | 'recording' | 'transcribing'>('idle');
   const stopRef = useRef<(() => Promise<void>) | null>(null);
   const cancelRef = useRef<(() => void) | null>(null);

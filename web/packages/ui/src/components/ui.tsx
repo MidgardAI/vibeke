@@ -6,6 +6,7 @@ import { Bot, ChevronRight, Loader2, SquareTerminal, X } from 'lucide-react';
 import type { Risk } from '@vibeke/core';
 import { t } from '../i18n';
 import { fmtCount, relTime } from '../lib/format';
+import { useReloadGuard } from '../lib/reload-guard';
 import { Dialog } from './dialog';
 
 export const cx = (...c: (string | false | null | undefined)[]): string => c.filter(Boolean).join(' ');
@@ -234,6 +235,7 @@ export function Card({ children, className }: { children: ReactNode; className?:
  */
 export function Sheet({ open, onClose, title, children, role }: { open: boolean; onClose(): void; title?: ReactNode; children: ReactNode; role?: 'dialog' | 'alertdialog' }) {
   const titleId = useId();
+  useReloadGuard(open, 'sheet');
   return (
     <Dialog
       open={open}

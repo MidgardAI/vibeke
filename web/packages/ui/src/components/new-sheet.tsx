@@ -6,6 +6,7 @@ import { useApp, useHosts } from '../app/hooks';
 import { t } from '../i18n';
 import { errorMessage } from '../lib/answer';
 import { harnessLabel } from '../lib/harness';
+import { takeNewAgentPrefill } from '../lib/new-agent-prefill';
 import { navigate } from '../router';
 import { Button, Notice, Segmented, Sheet, cx } from './ui';
 
@@ -24,6 +25,16 @@ export function NewSheet({ open, onClose, hostId, workspaceId }: { open: boolean
   const h = hosts.find((x) => x.record.host_id === host) ?? hosts[0];
   const workspaces = h?.dashboard?.workspaces ?? [];
   const wsId = ws && workspaces.some((w) => w.id === ws) ? ws : (workspaces[0]?.id ?? null);
+
+  // A prompt handed over by another screen (shared content).
+  useEffect(() => {
+    if (!open) return;
+    const p = takeNewAgentPrefill();
+    if (p) {
+      setMode('agent');
+      setPrompt(p.prompt);
+    }
+  }, [open]);
 
   useEffect(() => {
     if (!open || !h) return;

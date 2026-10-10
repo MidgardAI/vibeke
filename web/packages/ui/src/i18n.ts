@@ -864,6 +864,39 @@ export const en = {
     truncated: 'Not every folder is shown. Type to narrow the list.',
   },
 
+  drafts: { saveFailed: 'This draft could not be saved. Keep the app open until you have copied or sent it.' },
+
+  language: {
+    label: 'Language',
+    hint: 'More languages will come later.',
+    system: 'System',
+    names: { en: 'English' } as Record<string, string>,
+  },
+
+  appUpdate: {
+    ready: 'New version. Tap to update.',
+    waiting: (why: string) => `New version. It will wait: ${why}.`,
+    reasons: { draft: 'you have unsent text', upload: 'a file is uploading', sheet: 'a sheet is open' } as Record<string, string>,
+    update: 'Update',
+  },
+
+  shareIn: {
+    title: 'Shared with Vibeke',
+    missing: 'This shared content is no longer available. Share it again.',
+    loading: 'Loading shared content…',
+    unsupported: 'Sharing into Vibeke is not available here.',
+    preview: 'What you shared',
+    files: (n: number) => (n === 1 ? '1 file' : `${n} files`),
+    sendTo: 'Send to an agent',
+    noAgents: 'No agents are running. Start a new agent instead.',
+    newAgent: 'Start a new agent with this',
+    newAgentFiles: 'Files are not sent to a new agent. Send them to a running agent instead.',
+    offline: 'That host is offline.',
+    uploadFailed: (name: string) => `Could not upload ${name}`,
+    discard: 'Discard',
+    sent: 'Added to the draft. Review it and send.',
+  },
+
   install: { title: 'Install Vibeke', body: 'Add Vibeke to your home screen for push and a full-screen app.', action: 'Install' },
 
   time: {
@@ -881,3 +914,34 @@ export const en = {
 
 export type Strings = typeof en;
 export const t: Strings = en;
+
+// ---- languages ----------------------------------------------------------------------------
+// Add a language by adding its code here and a lazy loader below (`() => import('./i18n/xx')`
+// returning a `Strings`). Components still read `t`; wiring a loaded dictionary into `t` comes
+// with the first translation.
+
+export const LANGUAGES = ['en'] as const;
+export type Language = (typeof LANGUAGES)[number];
+export type LanguagePref = 'system' | Language;
+
+const loaders: Record<Language, () => Promise<Strings>> = {
+  en: async () => en,
+};
+
+export const isLanguage = (v: unknown): v is Language => typeof v === 'string' && (LANGUAGES as readonly string[]).includes(v);
+
+/** The language to use for a preference: an explicit one, else the browser's, else English. */
+export function resolveLanguage(pref: LanguagePref | string, navigatorLanguages: readonly string[] | string | undefined): Language {
+  if (isLanguage(pref)) return pref;
+  const list = typeof navigatorLanguages === 'string' ? [navigatorLanguages] : (navigatorLanguages ?? []);
+  for (const tag of list) {
+    const base = tag.toLowerCase().split('-')[0];
+    if (isLanguage(base)) return base;
+  }
+  return 'en';
+}
+
+/** The one place a dictionary is loaded. */
+export function loadStrings(lang: Language): Promise<Strings> {
+  return loaders[lang]();
+}

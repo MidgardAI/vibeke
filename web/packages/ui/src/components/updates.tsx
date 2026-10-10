@@ -2,6 +2,8 @@ import { useState, useSyncExternalStore } from 'react';
 import { ArrowDownToLine } from 'lucide-react';
 import { useApp } from '../app/hooks';
 import { emitUi } from '../app/keyboard';
+import { t } from '../i18n';
+import { useReloadBlockers } from '../lib/reload-guard';
 import { Button, Notice, Sheet, Toggle } from './ui';
 import type { UpdateState } from '../platform';
 
@@ -60,4 +62,19 @@ export function UpdateControls() {
 export function UpdateSheet({ open, onClose }: { open: boolean; onClose(): void }) {
   if (!useApp().platform.updates) return null;
   return <Sheet open={open} onClose={onClose} title="Update Vibeke"><UpdateControls /><div className="mt-4"><Button variant="ghost" onClick={onClose}>Later</Button></div></Sheet>;
+}
+
+/** PWA: a quiet bar when a new version is waiting. It reloads only on tap, and waits while the app is busy. */
+export function ReloadPrompt() {
+  const cap = useApp().platform.appUpdate;
+  const waiting = useSyncExternalStore(cap?.subscribe ?? noop, cap?.get ?? (() => false));
+  const blockers = useReloadBlockers();
+  if (!cap || !waiting) return null;
+  const busy = blockers.length > 0;
+  const why = blockers.map((r) => t.appUpdate.reasons[r] ?? r).join(', ');
+  return <div role="status" className="flex min-h-9 shrink-0 items-center gap-2 border-b border-info/40 bg-info/10 px-3 py-1 text-xs text-fg">
+    <ArrowDownToLine className="size-4 shrink-0 text-info" />
+    <span className="min-w-0 flex-1">{busy ? t.appUpdate.waiting(why) : t.appUpdate.ready}</span>
+    <Button size="sm" variant="primary" disabled={busy} onClick={() => cap.apply()}>{t.appUpdate.update}</Button>
+  </div>;
 }

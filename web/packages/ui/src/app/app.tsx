@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, type ReactNode } from 'react';
 import { AlertTriangle } from 'lucide-react';
 import { Empty, Spinner, cx } from '../components/ui';
-import { t } from '../i18n';
+import { resolveLanguage, t } from '../i18n';
 import { useStore } from '../lib/store';
 import type { UiPlatform } from '../platform';
 import { mostUrgent, workspaceOfPane } from '../lib/workspaces';
@@ -12,6 +12,8 @@ import { InboxScreen } from '../screens/inbox';
 import { IncomingScreen } from '../screens/incoming';
 import { CrewScreen, IdleLockOverlay, InteractionRoute, RunRoute, Tour, useIdleLock } from '../screens/misc';
 import { PairScreen } from '../screens/pair';
+import { ReloadPrompt } from '../components/updates';
+import { ShareInScreen } from '../screens/share-in';
 import { SettingsScreen } from '../screens/settings';
 import { QuickScreen } from '../screens/quick';
 import { ApprovalScreen } from '../screens/approve';
@@ -127,6 +129,9 @@ function Main() {
   const items = useInboxItems();
   const rows = useWorkspaceRows();
   useThemeEffect(prefs.theme, prefs.termFont);
+  useEffect(() => {
+    document.documentElement.lang = resolveLanguage(prefs.language, typeof navigator === 'undefined' ? undefined : navigator.languages);
+  }, [prefs.language]);
   useIdleLock();
   // Incoming handoffs (nav badge) and outgoing jobs (toasts when a sheet closed early).
   useHandoffStores();
@@ -169,6 +174,7 @@ function Main() {
       <Layout route={route}>
         <ConnectionBanner />
         <BusyBar />
+        <ReloadPrompt />
         <div className="flex min-h-0 flex-1 flex-col">
           <Screen route={route} />
         </div>
@@ -202,6 +208,12 @@ function Screen({ route }: { route: Route }) {
       return (
         <Framed title={t.settings.title} width="narrow">
           <SettingsScreen />
+        </Framed>
+      );
+    case 'share_in':
+      return (
+        <Framed title={t.shareIn.title} width="narrow">
+          <ShareInScreen id={route.id} />
         </Framed>
       );
     case 'handoffs':

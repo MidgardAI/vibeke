@@ -20,7 +20,7 @@ import {
 } from '@vibeke/core';
 import { useAllHosts, useApp, useHosts, useNow, usePrefs } from '../app/hooks';
 import { Button, Card, Dot, Notice, SectionLabel, Segmented, Spinner, TextField, Toggle } from '../components/ui';
-import { t } from '../i18n';
+import { LANGUAGES, t } from '../i18n';
 import { AGENT_VIEWS } from '../lib/agent-view';
 import { errorMessage } from '../lib/answer';
 import { clockTime, whenText } from '../lib/format';
@@ -726,6 +726,14 @@ function About() {
   const b = app.platform.build;
   return (
     <Group title={t.settings.about}>
+      <Row label={t.language.label} hint={t.language.hint}>
+        <Segmented
+          label={t.language.label}
+          value={app.prefs.get().language}
+          onChange={(v) => app.prefs.patch({ language: v })}
+          options={[{ value: 'system', label: t.language.system }, ...LANGUAGES.map((l) => ({ value: l, label: t.language.names[l] ?? l }))]}
+        />
+      </Row>
       {app.platform.updates && <div className="px-4 py-3"><UpdateControls /></div>}
       {inst?.canPrompt() && (
         <Row label={t.install.title} hint={t.install.body}>

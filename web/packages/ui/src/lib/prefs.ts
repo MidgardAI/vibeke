@@ -3,6 +3,7 @@
 // (`prefs.get/set`), DND is host-wide.
 
 import { MAX_VIEW_OVERRIDES, isAgentView, withViewOverride, type AgentView } from './agent-view';
+import { isLanguage, type LanguagePref } from '../i18n';
 import { ValueStore } from './store';
 
 export type Theme = 'system' | 'light' | 'dark';
@@ -12,6 +13,8 @@ export interface Prefs {
   theme: Theme;
   termFont: number;
   beltSize: BeltSize;
+  /** Interface language; `system` follows the browser. */
+  language: LanguagePref;
   haptics: boolean;
   zenLandscape: boolean;
   wrap: boolean;
@@ -50,6 +53,7 @@ export const DEFAULT_PREFS: Prefs = {
   theme: 'dark',
   termFont: 12,
   beltSize: 'm',
+  language: 'system',
   haptics: true,
   zenLandscape: false,
   wrap: true,
@@ -83,6 +87,7 @@ export function parsePrefs(raw: string | null): Prefs {
   if (!isObj(v)) return p;
   if (v.theme === 'light' || v.theme === 'dark' || v.theme === 'system') p.theme = v.theme;
   if (typeof v.termFont === 'number' && v.termFont >= 8 && v.termFont <= 24) p.termFont = v.termFont;
+  if (v.language === 'system' || isLanguage(v.language)) p.language = v.language;
   if (v.beltSize === 's' || v.beltSize === 'm' || v.beltSize === 'l') p.beltSize = v.beltSize;
   for (const k of ['haptics', 'zenLandscape', 'wrap', 'tourDone', 'panelOpen', 'sidebarHidden', 'showDone'] as const) if (typeof v[k] === 'boolean') p[k] = v[k] as boolean;
   if (typeof v.deviceName === 'string') p.deviceName = v.deviceName.slice(0, 64);
