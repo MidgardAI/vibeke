@@ -239,11 +239,28 @@ pub async fn control(
     } else {
         "browser.release"
     };
-    let r = gw
+    // Record the take-over before asking the server: if this request is dropped after the
+    // server took over but before its reply arrives, the lease cleanup still releases it.
+    if take {
+        gw.screencasts.set_taken(session, Some(device));
+    }
+    let r = match gw
         .server
         .call_as(actor, method, json!({"session": session}))
-        .await?;
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            if take {
+                gw.screencasts.set_taken(session, None);
+            }
+            return Err(e);
+        }
+    };
     let handle = r.get("session").and_then(|v| v.as_str()).unwrap_or(session);
+    if handle != session {
+        gw.screencasts.set_taken(session, None);
+    }
     gw.screencasts.set_taken(handle, take.then_some(device));
     Ok(r)
 }
