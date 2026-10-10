@@ -52,6 +52,15 @@ export function requestAgentView(r: AgentViewRequest): boolean {
   return viewBus.size > 0;
 }
 
+/** Set while the shell is mounted: opens the cloud sheet at the app level, so it outlives the
+ * workspace screen whose pane the move closes. */
+let cloudOpener: ((mode: 'send' | 'bring_back', row: PaneRow) => void) | null = null;
+
+/** Open "Send to cloud" or "Bring back" for `row` (the workspace header's cloud button). */
+export function openCloudSheet(mode: 'send' | 'bring_back', row: PaneRow): void {
+  cloudOpener?.(mode, row);
+}
+
 type SheetState = { kind: 'new' } | { kind: 'share'; row: PaneRow } | { kind: 'handoff'; row: PaneRow } | { kind: 'cloud_send'; row: PaneRow } | { kind: 'cloud_back'; host: string; pane?: string } | null;
 
 const TYPING = /^(INPUT|TEXTAREA|SELECT)$/;
@@ -83,6 +92,12 @@ export function KeyboardLayer({ surface }: { surface: Surface }) {
   const [help, setHelp] = useState(false);
   const [updates, setUpdates] = useState(false);
   const [sheet, setSheet] = useState<SheetState>(null);
+  useEffect(() => {
+    cloudOpener = (mode, row) => setSheet(mode === 'send' ? { kind: 'cloud_send', row } : { kind: 'cloud_back', host: row.host, pane: row.pane.id });
+    return () => {
+      cloudOpener = null;
+    };
+  }, []);
   const routeKey = formatRoute(route);
   const rows = useWorkspaceRows();
   const sidebar = useWorkspaces();

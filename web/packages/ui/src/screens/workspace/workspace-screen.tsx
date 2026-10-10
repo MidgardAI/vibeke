@@ -9,10 +9,10 @@ import { useComposerDraft } from '../../lib/composer-draft';
 // and switching tabs stays inside the window.
 
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { ChevronDown, ChevronUp, ClipboardCopy, Minimize2, MonitorPlay, MoreHorizontal, OctagonX, PanelRight, Pencil, PictureInPicture2, Plus, RotateCcw, Search, Send, Server, Share2, Trash2 } from 'lucide-react';
+import { ChevronDown, ChevronUp, ClipboardCopy, Cloud, CloudDownload, Minimize2, MonitorPlay, MoreHorizontal, OctagonX, PanelRight, Pencil, PictureInPicture2, Plus, RotateCcw, Search, Send, Server, Share2, Trash2 } from 'lucide-react';
 import { groupBatches, hostKind, type InboxItem } from '@vibeke/core';
 import { useApp, useHost, useHosts, useInboxItems, usePrefs } from '../../app/hooks';
-import { emitUi, isMacLike, onAgentViewRequest, type AgentViewRequest } from '../../app/keyboard';
+import { emitUi, isMacLike, onAgentViewRequest, openCloudSheet, type AgentViewRequest } from '../../app/keyboard';
 import { effectivePanel, layoutModeFor, rememberTab, selectedPane, togglePanelRoute, useWorkspaceRows } from '../../app/selection';
 import { MenuButton as SidebarButton, useMediaQuery, useWide } from '../../app/shell';
 import { useSurface } from '../../app/surface';
@@ -166,6 +166,8 @@ function Workspace({ route, row, current, locked }: { route: WorkspaceRoute; row
     [locked, route],
   );
   const [sheet, setSheet] = useState<null | 'new' | 'share' | 'handoff' | 'rename-pane' | 'close-pane' | 'rename-tab' | 'close-tab'>(null);
+  const inCloud = current.pane.isolation?.level === 'cloud';
+  const openCloud = () => openCloudSheet(inCloud ? 'bring_back' : 'send', current);
 
   const select = useCallback(
     (x: WsTab) => {
@@ -262,6 +264,7 @@ function Workspace({ route, row, current, locked }: { route: WorkspaceRoute; row
     !!popOut && { label: t.palette.popOut, icon: <PictureInPicture2 />, onSelect: () => popOut(row.host, current.pane.id) },
     narrow && canShare && { label: t.tabs2.share, icon: <Share2 />, onSelect: () => setSheet('share') },
     narrow && canShare && { label: t.tabs2.handoff, icon: <Send />, onSelect: () => setSheet('handoff') },
+    narrow && canShare && { label: inCloud ? t.palette.cloudBringBack : t.palette.cloudSend, icon: inCloud ? <CloudDownload /> : <Cloud />, onSelect: openCloud },
     'sep',
     { label: t.tabs2.closePane, icon: <Trash2 />, tone: 'danger', disabled: !full, onSelect: () => setSheet('close-pane') },
   ];
@@ -302,6 +305,9 @@ function Workspace({ route, row, current, locked }: { route: WorkspaceRoute; row
             </Button>
             <Button size="sm" variant="ghost" icon={<Send />} onClick={() => setSheet('handoff')} className="text-muted hover:text-fg">
               {t.tabs2.handoff}
+            </Button>
+            <Button size="sm" variant="ghost" icon={inCloud ? <CloudDownload /> : <Cloud />} onClick={openCloud} className="text-muted hover:text-fg">
+              {inCloud ? t.tabs2.cloudBringBack : t.tabs2.cloudSend}
             </Button>
           </>
         )}

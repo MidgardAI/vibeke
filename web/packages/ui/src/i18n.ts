@@ -1112,6 +1112,8 @@ export const en = {
     workspaceMenu: 'Workspace options',
     share: 'Share',
     handoff: 'Hand off',
+    cloudSend: 'Cloud',
+    cloudBringBack: 'Bring back',
     renamePane: 'Rename…',
     closePane: 'Close pane',
     closePaneConfirm: 'Close this pane? Whatever runs in it is stopped.',

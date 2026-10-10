@@ -121,7 +121,8 @@ test('sign in, send a pane to the cloud, bring it back, sign in again on needs_a
   // Send the workspace's pane to a new box.
   await page.keyboard.press(`${mod}+2`);
   await expect(page).toHaveURL(/#\/w\/[^/]+\/[^/?]+/);
-  await palette(page, 'Send to cloud', 'Send to cloud…');
+  // The workspace header offers the move for a host pane.
+  await page.getByRole('banner').getByRole('button', { name: 'Cloud', exact: true }).click();
   const send = page.getByRole('dialog', { name: 'Send to cloud' });
   await expect(send).toBeVisible();
   await expect(send.getByRole('button', { name: /Fly\.io Sprites/ })).toBeVisible({ timeout: 20_000 });
@@ -158,7 +159,8 @@ test('sign in, send a pane to the cloud, bring it back, sign in again on needs_a
   // Bring it back from the box's pane with the palette: to this host.
   await box.getByRole('button', { name: 'Open' }).click();
   await expect(page).toHaveURL(/#\/(w|p)\//);
-  await palette(page, 'Bring back', 'Bring back from cloud…');
+  // A pane in a box: the header button brings it back instead.
+  await page.getByRole('banner').getByRole('button', { name: 'Bring back', exact: true }).click();
   const back = page.getByRole('dialog', { name: 'Bring back from cloud' });
   await expect(back).toBeVisible();
   await back.getByRole('button', { name: /This host/ }).click();

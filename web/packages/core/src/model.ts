@@ -232,6 +232,8 @@ export interface Pane {
   pinned: boolean;
   created_by: string;
   recovered: string | null;
+  /** Where the pane's processes run (`level` `cloud` = a cloud sandbox of `provider`). */
+  isolation?: { level: string; provider: string };
 }
 
 export interface Task {
