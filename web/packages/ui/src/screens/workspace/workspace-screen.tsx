@@ -20,6 +20,7 @@ import { CacheChip } from '../../components/cache-chip';
 import { BatchCard } from '../../components/batch-card';
 import { InteractionCard } from '../../components/interaction-card';
 import { NewSheet } from '../../components/new-sheet';
+import { SuggestReplies } from '../../components/suggest-replies';
 import { PaneStateLine } from './pane-state-line';
 import { Button, Empty, IconButton, Notice, Sheet, Spinner, TextField, cx } from '../../components/ui';
 import { t } from '../../i18n';
@@ -495,6 +496,15 @@ function PaneBody({
     focusComposer();
   }, [term, canType]);
 
+  /** A suggested reply replaces the draft; the user edits and sends it. */
+  const fillDraft = useCallback(
+    (s: string) => {
+      setText(s);
+      setTimeout(focusComposer, 0);
+    },
+    [setText, focusComposer],
+  );
+
   const beltEl = (
     <ActionBelt
       tab={term ? belt : (belt ?? 'keys')}
@@ -503,6 +513,7 @@ function PaneBody({
       harness={run?.harness ?? null}
       canType={canType}
       onInsert={(s) => setText((cur) => (cur ? `${cur} ${s}` : s))}
+      suggest={!term && run ? { hostId, pane: row.pane.id, run, fill: fillDraft } : undefined}
       zen={zen}
       setZen={setZen}
     />
@@ -521,7 +532,14 @@ function PaneBody({
           findOpen={findOpen}
           setFindOpen={setFindOpen}
           openFile={openFile}
-          tail={otherCards.length > 0 ? <Approvals items={otherCards} onOpenTerminal={onOpenTerminal} /> : null}
+          tail={
+            otherCards.length > 0 || canType ? (
+              <>
+                {otherCards.length > 0 && <Approvals items={otherCards} onOpenTerminal={onOpenTerminal} />}
+                {canType && otherCards.length === 0 && <SuggestReplies hostId={hostId} pane={row.pane.id} run={run} onPick={fillDraft} />}
+              </>
+            ) : null
+          }
         />
       ) : (
         <>
