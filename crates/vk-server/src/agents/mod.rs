@@ -3142,8 +3142,8 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
             // (no decision, so the nested harness keeps its own behaviour). Enforced claims
             // still deny its edits; steering queued for the pane's run is not handed to it.
             if nested::is_nested(server, &pane, h, pid) {
-                return Some(Ok(if method == "adapter.signal" && event == "PreToolUse" {
-                    crate::collision::signal_reply(server, &pane, h, &event, &payload)
+                return Some(Ok(if method == "adapter.signal" {
+                    crate::collision::nested_reply(server, &pane, h, &event, &payload)
                 } else {
                     json!({})
                 }));

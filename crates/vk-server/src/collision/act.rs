@@ -297,7 +297,7 @@ pub(super) fn hook_output(
 
 /// `collision.enforce_claims`: a *reported* edit tool inside another live run's claim is denied.
 /// A courtesy guardrail: shell commands and non-integrated harnesses are unaffected.
-fn claim_denial(server: &Arc<Server>, run: &AgentRun, p: &Value) -> Option<Value> {
+pub(super) fn claim_denial(server: &Arc<Server>, run: &AgentRun, p: &Value) -> Option<Value> {
     let cfg = super::config(server);
     if !cfg.enabled || !cfg.enforce_claims {
         return None;

@@ -1420,6 +1420,25 @@ pub fn signal_reply(server: &Arc<Server>, pane: &str, h: Harness, event: &str, p
     }
 }
 
+/// [`signal_reply`] for a hook of an agent nested in the pane's agent (`agents::nested`): only
+/// the enforced-claim check of its edits, made for the pane's run but in the nested agent's
+/// checkout (its hook `cwd`). Steering queued for the pane's run is never handed to it.
+pub fn nested_reply(server: &Arc<Server>, pane: &str, h: Harness, event: &str, p: &Value) -> Value {
+    if h.family() != Family::Claude || event != "PreToolUse" {
+        return json!({});
+    }
+    let Some(mut run) = server.with_core(|c| c.run_for_pane(pane).cloned()) else {
+        return json!({});
+    };
+    if let Some(cwd) = p.get("cwd").and_then(Value::as_str) {
+        run.cwd = Some(cwd.to_string());
+    }
+    match act::claim_denial(server, &run, p) {
+        Some(out) => json!({"hook_output": out}),
+        None => json!({}),
+    }
+}
+
 /// `vibeke forget` (09 §9.3, `forget_scope`): remove the collision records (open and closed) with
 /// a run for which `covers(run, first_ms)` holds, the claims of such runs, and their remembered
 /// touches. `dry_run` only counts. Returns the rows (records and claims) removed. Path-set
