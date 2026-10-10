@@ -457,8 +457,7 @@ pub fn available_browsers(cfg: &PreviewConfig) -> Value {
     let window = if cfg.wants_firefox() {
         browser::find_firefox(Some(cfg.browser.as_str()))
     } else {
-        let installed =
-            vk_browser::install::installed_full(&crate::agent_browser::install_root());
+        let installed = vk_browser::install::installed_full(&crate::agent_browser::install_root());
         browser::find_browser_with(
             Some(cfg.browser.as_str()).filter(|b| !b.is_empty()),
             installed.as_deref(),

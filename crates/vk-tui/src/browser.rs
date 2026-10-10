@@ -1741,8 +1741,7 @@ pub fn on_reply(
         Err(e) if matches!(r, Reply::Window { .. }) && e.kind == "unsupported" => {
             if let Reply::Window { machine, .. } = r {
                 app.toast(format!(
-                    "✗ no browser on {machine} for preview windows: install Chrome or Chromium there, or set [preview] browser ({})",
-                    e.message
+                    "✗ no browser on {machine} for preview windows: run `vibeke browser install --full` there, or set [preview] browser"
                 ));
             }
             return;

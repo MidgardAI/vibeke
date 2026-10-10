@@ -2552,20 +2552,16 @@ async fn install(server: &Arc<Server>, p: &Value) -> R {
         .unwrap()
         .clone()
         .unwrap_or_else(install_root);
-    let flavor = match s(p, "flavor") {
-        Some(f) => Some(vk_browser::install::Flavor::parse(f).ok_or_else(|| {
-            invalid(format!("flavor must be full or headless_shell, not {f:?}"))
-        })?),
-        None => None,
-    };
-    let plan = vk_browser::install::plan(
-        &root,
-        s(p, "version"),
-        s(p, "url"),
-        s(p, "sha256"),
-        flavor,
-    )
-    .map_err(|e| invalid(format!("{e:#}")))?;
+    let flavor =
+        match s(p, "flavor") {
+            Some(f) => Some(vk_browser::install::Flavor::parse(f).ok_or_else(|| {
+                invalid(format!("flavor must be full or headless_shell, not {f:?}"))
+            })?),
+            None => None,
+        };
+    let plan =
+        vk_browser::install::plan(&root, s(p, "version"), s(p, "url"), s(p, "sha256"), flavor)
+            .map_err(|e| invalid(format!("{e:#}")))?;
     if !b(p, "confirm").unwrap_or(false) {
         let mut pj = plan.to_json();
         pj["existing"] = existing_browser(&root, plan.flavor);

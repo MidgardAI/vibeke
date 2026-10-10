@@ -58,9 +58,9 @@ Browser panes need Chromium on the machine whose Vibeke server draws them. In a 
 vibeke browser install
 ```
 
-The download is about 100 MB. Vibeke checks the file against a known checksum before it unpacks the browser.
+On a Mac, or on Linux with a display, this installs the full Chrome for Testing (about 190 MB), which also opens browser windows. On a machine without a display, it installs the smaller headless shell (about 100 MB), which is enough for browser panes and agent sessions. Use `--full` or `--headless-shell` to choose. Vibeke checks the file against a known checksum before it unpacks the browser.
 
-Browser windows use a normal Chrome or Chromium installation instead. Install one of these browsers if you want to use windows.
+Browser windows also work with an installed Chrome or Chromium.
 
 ## Previews over vibeke ssh
 

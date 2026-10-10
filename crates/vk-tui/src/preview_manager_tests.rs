@@ -268,7 +268,7 @@ fn banner_and_install_when_the_media_host_has_no_browser() {
     // `i` asks; `y` starts a background install on the media host.
     app.on_key(ch('i'));
     assert!(commands(&mut rxs[0]).is_empty());
-    assert!(screen(&app).contains("about 100 MB"));
+    assert!(screen(&app).contains("100–190 MB"));
     app.on_key(ch('y'));
     let c = commands(&mut rxs[0]);
     let (req, p) = only(&c, "browser.install");

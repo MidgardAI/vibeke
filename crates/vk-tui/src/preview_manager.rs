@@ -18,7 +18,7 @@
 //!   §1.3.1). A server without `available_browsers` shows no banner.
 //! - **Browser banner**: from `preview.status.available_browsers.pane` of the media host:
 //!   `✗ no browser on <machine> …` with `i install`, else a dim `browser on <machine>: <kind>`. The
-//!   install runs `browser.install {confirm, background}` (about 100 MB) and the poll keeps
+//!   install runs `browser.install {confirm, background}` (100–190 MB; the server picks the build for its machine) and the poll keeps
 //!   going until `preview.status.browser_install` reports the outcome as a toast.
 //! - **Sidebar chips**: selecting a sidebar preview row (left click, or `enter` in navigate
 //!   mode) expands `[pane] [window] [proxy] [mirror|unmirror] [copy]` under it (wrapped to the
@@ -424,7 +424,7 @@ fn install(app: &mut App, mi: usize) {
         Pending::Preview(Reply::Install),
     );
     app.toast(format!(
-        "installing a browser on {m} (downloads about 100 MB)…"
+        "installing a browser on {m} (downloads 100–190 MB)…"
     ));
 }
 
@@ -858,7 +858,7 @@ pub fn draw(app: &App, g: &mut Grid) {
         ),
         Some(Confirm::Install(mi)) => (
             format!(
-                "Install Chrome for Testing's headless shell on {} (downloads about 100 MB)?",
+                "Install Chrome for Testing on {} (100–190 MB: the full browser where it has a display)?",
                 app.machines[*mi].label
             ),
             "y install   n cancel".to_string(),
