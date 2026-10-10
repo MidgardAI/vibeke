@@ -118,6 +118,10 @@ export class FakeServer {
 export class FakeHost {
   handlers = new Map<string, ((e: any, c: any) => any)[]>();
   version = "9.9.9";
+  tools: any[] = [];
+  registerTool(t: any) {
+    this.tools.push(t);
+  }
   on(name: string, h: (e: any, c: any) => any) {
     if (!this.handlers.has(name)) this.handlers.set(name, []);
     this.handlers.get(name)!.push(h);

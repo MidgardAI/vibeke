@@ -1,6 +1,7 @@
 // @vibeke/pi-extension: observe-only Vibeke integration for pi and omp.
 // See DESIGN.md (normative) and PROTOCOL.md (wire contract).
 // Runtime imports: node:* only. Host types are declared locally (types.ts).
+import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { boundedPrompt, fileChangePath, preview, RATE_LIMIT_RE, redactInput } from "./describe.js";
 import { type GateAnswer, VibekeClient } from "./protocol.js";
@@ -16,6 +17,8 @@ export interface Options {
   host?: HostKind;
   /** Long-poll the control channel (model list/switch, commands) in TUI mode. Default true. */
   control?: boolean;
+  /** Test hook: replaces running `vibeke` for the `show_image` tool. */
+  runVibeke?: (args: string[]) => Promise<string>;
   /** Test hooks. */
   debounceMs?: number;
   clientOverrides?: Partial<ConstructorParameters<typeof VibekeClient>[0]>;
@@ -425,6 +428,49 @@ export function createExtension(pi: HostApi, opts: Options = {}): Handle | undef
     });
   });
 
+  // ---- show_image tool: the one thing the extension adds for the agent ----
+  function runVibeke(args: string[]): Promise<string> {
+    if (opts.runVibeke) return opts.runVibeke(args);
+    const bin = env.VIBEKE_BIN || "vibeke";
+    return new Promise((resolve, reject) => {
+      execFile(bin, args, { env: env as NodeJS.ProcessEnv, timeout: 60_000 }, (err, stdout, stderr) => {
+        if (err) reject(new Error((stderr || stdout || err.message).toString().trim()));
+        else resolve(stdout.toString().trim());
+      });
+    });
+  }
+
+  function registerShowImage(): void {
+    if (typeof pi.registerTool !== "function") return;
+    try {
+      (pi.registerTool as (t: unknown) => void)({
+        name: "show_image",
+        label: "Show an image to the user",
+        description:
+          "Attach an image file (PNG or JPEG), such as a screenshot you took, so the user can see it in Vibeke on any device: the terminal interface, the desktop app or their phone. Use it whenever you produce screenshots the user should look at.",
+        parameters: {
+          type: "object",
+          properties: {
+            path: { type: "string", description: "Path to the PNG or JPEG file." },
+            caption: { type: "string", description: "Optional short caption shown with the image." },
+          },
+          required: ["path"],
+        },
+        async execute(_id: string, params: { path?: string; caption?: string }) {
+          const path = typeof params?.path === "string" ? params.path : "";
+          if (!path) throw new Error("path is required");
+          const args = ["screenshot", "add", path];
+          if (typeof params.caption === "string" && params.caption) args.push("--caption", params.caption);
+          args.push("--json");
+          const out = await runVibeke(args);
+          return { content: [{ type: "text", text: out || "Image attached." }], details: {} };
+        },
+      });
+    } catch {
+      /* a host without tool registration must still load us */
+    }
+  }
+
   // Must stay synchronous and always return undefined: observe-only.
   on("tool_call", (e) => {
     const id = e?.toolCallId;
@@ -526,6 +572,8 @@ export function createExtension(pi: HostApi, opts: Options = {}): Handle | undef
     await client.flush(300);
     client.close();
   });
+
+  registerShowImage();
 
   // Connect eagerly so the first Snapshot is sent at load.
   try {
