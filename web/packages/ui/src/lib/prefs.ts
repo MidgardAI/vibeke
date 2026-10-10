@@ -5,6 +5,7 @@
 import { MAX_VIEW_OVERRIDES, isAgentView, withViewOverride, type AgentView } from './agent-view';
 import { isLanguage, type LanguagePref } from '../i18n';
 import { cleanLayout, type KeyLayout } from './key-layout';
+import { MAX_FOLDERS, type HostFolders, type LastStart } from './new-agent';
 import { ValueStore } from './store';
 
 export type Theme = 'system' | 'light' | 'dark';
@@ -51,6 +52,10 @@ export interface Prefs {
   leftHand: boolean;
   /** Prompt-cache time-to-live in minutes per harness id; missing = the default (lib/cache-clock.ts). */
   cacheTtl: Record<string, number>;
+  /** Favourite and recent folders for new agents, per host id (8 each). */
+  newAgentFolders: Record<string, HostFolders>;
+  /** The last successful agent start per host id ("Again" on the New sheet). */
+  lastStart: Record<string, LastStart>;
 }
 
 export const PANEL_MIN = 320;
@@ -81,6 +86,8 @@ export const DEFAULT_PREFS: Prefs = {
   keyLayout: null,
   leftHand: false,
   cacheTtl: {},
+  newAgentFolders: {},
+  lastStart: {},
 };
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -123,6 +130,22 @@ export function parsePrefs(raw: string | null): Prefs {
     const c: Record<string, number> = {};
     for (const [k, n] of Object.entries(v.cacheTtl).slice(0, 20)) if (typeof n === 'number' && Number.isFinite(n) && n >= 1 && n <= 120) c[k] = Math.round(n);
     p.cacheTtl = c;
+  }
+  if (isObj(v.newAgentFolders)) {
+    const strs = (x: unknown): string[] => (Array.isArray(x) ? x.filter((s): s is string => typeof s === 'string' && s !== '').slice(0, MAX_FOLDERS) : []);
+    const m: Record<string, HostFolders> = {};
+    for (const [k, f] of Object.entries(v.newAgentFolders).slice(0, 50)) if (isObj(f)) m[k] = { favorites: strs(f.favorites), recent: strs(f.recent) };
+    p.newAgentFolders = m;
+  }
+  if (isObj(v.lastStart)) {
+    const m: Record<string, LastStart> = {};
+    for (const [k, l] of Object.entries(v.lastStart).slice(0, 50)) {
+      if (!isObj(l) || typeof l.harness !== 'string' || !isObj(l.where) || typeof l.worktree !== 'boolean') continue;
+      const w = l.where;
+      if (w.kind === 'workspace' && typeof w.id === 'string') m[k] = { harness: l.harness, where: { kind: 'workspace', id: w.id }, worktree: l.worktree };
+      else if (w.kind === 'folder' && typeof w.cwd === 'string') m[k] = { harness: l.harness, where: { kind: 'folder', cwd: w.cwd }, worktree: l.worktree };
+    }
+    p.lastStart = m;
   }
   if (Array.isArray(v.pins)) p.pins = v.pins.filter((x): x is string => typeof x === 'string').slice(0, 200);
   if (isObj(v.seenDone)) {
