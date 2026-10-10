@@ -83,6 +83,33 @@ vibeke browser network <session> --failed
 vibeke browser screenshot <session> --full-page --out page.png
 ```
 
+## Show an agent image
+
+An agent can attach an image file, such as a screenshot from a test run. You then see the image in Vibeke. The image is stored with your other screenshots.
+
+An agent in a Vibeke pane attaches an image with this command:
+
+```sh
+vibeke screenshot add test-results/login.png --caption "Login page after the fix"
+```
+
+The caption is optional. The command accepts PNG and JPEG files.
+
+An agent can also use the `show_image` tool of `vibeke mcp`. To add this tool to Claude Code, run this command:
+
+```sh
+vibeke integration install claude --mcp
+```
+
+Use `codex` in place of `claude` for Codex. The pi extension adds the same tool by itself. The command shows a plan first. Add `--yes` to write the change.
+
+You can see attached images in these places:
+
+- In the terminal interface, run `:screenshots` to open the gallery. A camera counter next to an agent shows new images.
+- In the desktop app and the phone app, open the **Screenshots** tab in the workspace panel.
+
+The gallery shows the caption of an attached image. It marks the image as "attached by agent". When you use a remote machine, the terminal interface loads the image only when you press `v`.
+
 ## View and control a session
 
 1. Open the agent browser in a pane:

@@ -2,6 +2,8 @@
 
 This is the single extension that gives **pi** (`@earendil-works/pi-coding-agent`, verified against 0.84.1) and **omp** (`@oh-my-pi/pi-coding-agent`, verified against 17.2.12) the **extension transport** to Vibeke (spec 04 §2.1): execution state, session identity and resume, file-change tracking, usage, reconnect snapshots (the `reconcile` capability). **It is observe-only: it never blocks, gates or answers tool calls.** Vibeke does not provide a permission system for pi; users who want approvals install a pi permission extension of their choice, and Vibeke surfaces — and can answer — that extension's dialogs (§4) without replacing pi's own UI. Which capabilities this yields per host version is published in 04 §2.3. The parent spec is `spec/04-harness-adapters.md` §6.3.
 
+One addition: the extension registers a `show_image` tool so the agent can attach an image file for the user (it runs `vibeke screenshot add`). The tool does not affect tool calls, gating or events.
+
 ## 1. Can one extension serve both? Yes, with a small capability layer
 
 | Aspect | pi | omp | Consequence |

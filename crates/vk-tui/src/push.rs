@@ -117,6 +117,8 @@ pub fn on_events(app: &mut App, i: usize, events: Vec<PushedEvent>, lagged: bool
         } else if k == "screenshot.captured" {
             let what = v["data"]["url"]
                 .as_str()
+                .filter(|s| !s.is_empty())
+                .or_else(|| v["data"]["caption"].as_str().filter(|s| !s.is_empty()))
                 .or_else(|| v["subject"]["browser_session"].as_str())
                 .unwrap_or("")
                 .to_string();
