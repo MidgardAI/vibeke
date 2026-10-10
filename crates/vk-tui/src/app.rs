@@ -110,6 +110,8 @@ pub enum Pending {
     Remote(crate::remote_view::Reply),
     /// Batch 2B surfaces (fleet, trust, popups, batch approvals).
     Ux(crate::ux::Reply),
+    /// A path picker's folder listing (`fs.browse` on a remote machine).
+    Path(crate::path_picker::Reply),
 }
 
 /// A JSON-RPC error from a machine (07 canonical errors).
@@ -1548,6 +1550,7 @@ impl App {
             Pending::Preview(r) => crate::browser::on_reply(self, i, r, res),
             Pending::Remote(r) => crate::remote_view::on_reply(self, i, r, res),
             Pending::Ux(r) => crate::ux::on_reply(self, i, r, res),
+            Pending::Path(r) => crate::path_picker::on_reply(self, i, r, res),
         }
     }
 
@@ -2846,16 +2849,13 @@ impl App {
                 }
             }
             PromptKind::NewWorkspace => {
-                let dir = if let Some(rest) = v.strip_prefix("~/") {
-                    format!("{}/{rest}", std::env::var("HOME").unwrap_or_default())
-                } else {
-                    v
-                };
-                self.command(
-                    "workspace.create",
-                    json!({"cwd": dir, "focus": true}),
-                    Pending::Ignore,
-                );
+                // A `~` left in the path is the machine's home folder: its server expands it
+                // (this process's `$HOME` belongs to another machine when the server is remote).
+                let mut params = json!({"focus": true});
+                if !v.is_empty() {
+                    params["cwd"] = v.into();
+                }
+                self.command("workspace.create", params, Pending::Ignore);
             }
             PromptKind::TaskTitle => {
                 if !v.is_empty() {

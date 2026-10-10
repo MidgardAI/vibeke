@@ -9,12 +9,16 @@
 //! chosen row goes into it, `←` (with a row chosen) or `ctrl+backspace` goes to the parent.
 //! `enter` with no row chosen submits the typed path; `esc` drops the choice, then cancels.
 //!
-//! The TUI runs on the host it shows, so it reads the local disk directly through
-//! [`DirSource`]; tests inject a fake one. For a remote machine the list stays empty
-//! ([`NoDirs`]) and the picker is a plain path input.
+//! On this machine the picker reads the local disk directly through [`DirSource`]; tests inject
+//! a fake one. For a remote machine ([`ServerDirs`]) the machine's server lists the folder with
+//! `fs.browse`: the picker asks for a listing when the folder part changes
+//! ([`PathPicker::take_request`]), the caller sends it with [`request`], and the reply fills
+//! the list if the picker still shows that folder ([`on_reply`]). `~` then stays unexpanded
+//! until the server's home folder is known, and the server expands it on submit.
 //!
 //! [`nav::fuzzy`]: crate::nav::fuzzy
 
+use serde_json::{Value, json};
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -23,7 +27,7 @@ use unicode_width::UnicodeWidthStr;
 use vk_proto::input::{Key, KeyEvent, KeyKind, NamedKey};
 use vk_proto::render::{Style, attr};
 
-use crate::app::{App, Mode, Popup, Prompt, PromptKind};
+use crate::app::{App, Mode, Pending, Popup, Prompt, PromptKind, RpcErr};
 use crate::nav::{fuzzy, highlight, list_frame, list_row};
 use crate::screen::{Grid, Rect as SRect};
 
@@ -42,6 +46,10 @@ pub trait DirSource: Send + Sync {
     fn list(&self, dir: &Path, dot: bool) -> Option<Vec<DirEntry>>;
     /// The home folder `~` stands for.
     fn home(&self) -> Option<PathBuf>;
+    /// The machine's server lists the folders (`fs.browse`) instead of [`DirSource::list`].
+    fn on_server(&self) -> bool {
+        false
+    }
 }
 
 /// Most directories read from one folder.
@@ -81,17 +89,24 @@ impl DirSource for LocalDirs {
     }
 }
 
-/// No listing (a remote machine's disk is not ours to read).
-pub struct NoDirs;
+/// A remote machine: its server lists the folders (`fs.browse`, confined to its home folder and
+/// `[handoff] roots`), so this process never reads them.
+pub struct ServerDirs;
 
-impl DirSource for NoDirs {
+impl DirSource for ServerDirs {
     fn list(&self, _: &Path, _: bool) -> Option<Vec<DirEntry>> {
         None
     }
     fn home(&self) -> Option<PathBuf> {
         None
     }
+    fn on_server(&self) -> bool {
+        true
+    }
 }
+
+/// (folder text as typed, dot-directories wanted): what one listing was read for.
+pub type ListKey = (String, bool);
 
 fn sort(v: &mut [DirEntry]) {
     v.sort_by(|a, b| {
@@ -121,7 +136,13 @@ pub struct PathPicker {
     /// The last key was a `tab` that completed nothing.
     tab_stuck: bool,
     /// (folder text, dot) the entries were read for.
-    listed: Option<(String, bool)>,
+    listed: Option<ListKey>,
+    /// A server listing to ask for (taken by [`PathPicker::take_request`]).
+    want: Option<ListKey>,
+    /// A server listing asked for and not answered yet.
+    waiting: Option<ListKey>,
+    /// The server's home folder, learned from a listing of `~/`.
+    server_home: Option<String>,
     entries: Vec<DirEntry>,
     fs: Arc<dyn DirSource>,
 }
@@ -146,6 +167,9 @@ impl PathPicker {
             sel: None,
             tab_stuck: false,
             listed: None,
+            want: None,
+            waiting: None,
+            server_home: None,
             entries: Vec::new(),
             fs,
         };
@@ -163,7 +187,11 @@ impl PathPicker {
 
     /// `~` and `~/…` expanded against the source's home folder.
     pub fn expand(&self, s: &str) -> String {
-        let home = self.fs.home().map(|h| h.to_string_lossy().into_owned());
+        let home = self
+            .fs
+            .home()
+            .map(|h| h.to_string_lossy().into_owned())
+            .or_else(|| self.server_home.clone());
         match (home, s) {
             (Some(h), "~") => h,
             (Some(h), _) if s.starts_with("~/") => {
@@ -185,7 +213,12 @@ impl PathPicker {
         if self.listed.as_ref() == Some(&key) {
             return;
         }
+        self.waiting = None;
         self.entries = if key.0.is_empty() {
+            Vec::new()
+        } else if self.fs.on_server() {
+            // The server expands `~` itself.
+            self.want = Some(key.clone());
             Vec::new()
         } else {
             let path = PathBuf::from(self.expand(&key.0));
@@ -196,6 +229,55 @@ impl PathPicker {
             }
         };
         self.listed = Some(key);
+    }
+
+    /// The `fs.browse` call the picker needs, if any: (what it lists, params). Dot-directories
+    /// are asked for only when the partial name starts with `.` (the server then lists only
+    /// those; the filter narrows them as usual).
+    pub fn take_request(&mut self) -> Option<(ListKey, Value)> {
+        let key = self.want.take()?;
+        if self.listed.as_ref() != Some(&key) {
+            return None;
+        }
+        self.waiting = Some(key.clone());
+        let mut params = json!({"path": key.0});
+        if key.1 {
+            params["prefix"] = ".".into();
+        }
+        Some((key, params))
+    }
+
+    /// An `fs.browse` reply for `key`; dropped when the picker has moved on to another folder.
+    /// A refused or missing folder lists nothing, and the typed path can still be submitted.
+    pub fn set_listing(&mut self, key: &ListKey, res: Result<&Value, &RpcErr>) {
+        if self.listed.as_ref() != Some(key) {
+            return;
+        }
+        self.waiting = None;
+        let Ok(v) = res else {
+            self.entries.clear();
+            return;
+        };
+        if key.0 == "~/"
+            && let Some(home) = v.get("path").and_then(Value::as_str)
+        {
+            self.server_home = Some(home.to_string());
+        }
+        let mut entries: Vec<DirEntry> = v
+            .get("entries")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|e| {
+                Some(DirEntry {
+                    name: e.get("name")?.as_str()?.to_string(),
+                    git_repo: e.get("git_repo").and_then(Value::as_bool).unwrap_or(false),
+                })
+            })
+            .collect();
+        sort(&mut entries);
+        self.entries = entries;
+        self.sel = None;
     }
 
     /// The listed folder's directories matching the partial name, best first: (entry index,
@@ -461,6 +543,8 @@ impl PathPicker {
         if list.is_empty() {
             let msg = if self.split().0.is_empty() || self.listed.is_none() {
                 ""
+            } else if self.waiting.is_some() {
+                "…"
             } else if self.split().1.is_empty() {
                 "no folders here"
             } else {
@@ -484,13 +568,19 @@ pub struct PathPrompt {
     pub picker: PathPicker,
 }
 
-/// Open a picker for `kind` on the current machine (its disk is read only when it is local).
-pub fn open(app: &mut App, kind: PromptKind, title: &str, initial: &str) {
-    let fs: Arc<dyn DirSource> = if app.m().local {
+/// Where a picker reads machine `mi`'s folders: its disk when it is this machine, else its
+/// server.
+pub fn dirs_for(app: &App, mi: usize) -> Arc<dyn DirSource> {
+    if app.machines.get(mi).is_some_and(|m| m.local) {
         Arc::new(LocalDirs)
     } else {
-        Arc::new(NoDirs)
-    };
+        Arc::new(ServerDirs)
+    }
+}
+
+/// Open a picker for `kind` on the current machine.
+pub fn open(app: &mut App, kind: PromptKind, title: &str, initial: &str) {
+    let fs = dirs_for(app, app.cur);
     open_with(app, kind, title, initial, fs);
 }
 
@@ -501,16 +591,62 @@ pub fn open_with(
     initial: &str,
     fs: Arc<dyn DirSource>,
 ) {
+    let mut picker = PathPicker::new(initial, fs);
+    request(app, app.cur, &mut picker, Owner::Popup);
     app.mode = Mode::Popup(Popup::Path(Box::new(PathPrompt {
         kind,
         title: title.into(),
-        picker: PathPicker::new(initial, fs),
+        picker,
     })));
+}
+
+/// Which open picker a listing is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Owner {
+    /// The [`PathPrompt`] popup.
+    Popup,
+    /// The handoff accept overlay's picker.
+    Handoff,
+}
+
+/// An `fs.browse` call in flight.
+#[derive(Debug, Clone)]
+pub struct Reply {
+    pub owner: Owner,
+    pub key: ListKey,
+}
+
+/// Send the listing `picker` asks for (if any) to machine `mi`.
+pub fn request(app: &mut App, mi: usize, picker: &mut PathPicker, owner: Owner) {
+    if let Some((key, params)) = picker.take_request() {
+        app.command_on(mi, "fs.browse", params, Pending::Path(Reply { owner, key }));
+    }
+}
+
+pub fn on_reply(app: &mut App, _mi: usize, r: Reply, res: Result<Value, RpcErr>) {
+    let picker = match (r.owner, &mut app.mode) {
+        (Owner::Popup, Mode::Popup(Popup::Path(p))) => Some(&mut p.picker),
+        (Owner::Handoff, _) => app
+            .ux
+            .handoff
+            .accept
+            .as_mut()
+            .and_then(|a| a.picker.as_mut())
+            .map(|(_, p)| p),
+        _ => None,
+    };
+    if let Some(p) = picker {
+        p.set_listing(&r.key, res.as_ref());
+        app.dirty = true;
+    }
 }
 
 pub fn popup_key(app: &mut App, ev: KeyEvent, mut p: Box<PathPrompt>) {
     match p.picker.key(&ev) {
-        Outcome::Stay => app.mode = Mode::Popup(Popup::Path(p)),
+        Outcome::Stay => {
+            request(app, app.cur, &mut p.picker, Owner::Popup);
+            app.mode = Mode::Popup(Popup::Path(p));
+        }
         Outcome::Cancel => {}
         Outcome::Submit(_) => {
             let PathPrompt {
@@ -622,10 +758,14 @@ mod tests {
         assert_eq!(names(&p), ["code", "dev", "Documents", "notes.d"]);
         let p = PathPicker::new("~/.c", fs());
         assert_eq!(names(&p), [".config"]);
-        // A remote machine: no listing, still a path input.
-        let p = PathPicker::new("~/", Arc::new(NoDirs));
+        // A remote machine: nothing read here; the server is asked, `~` left to it.
+        let mut p = PathPicker::new("~/", Arc::new(ServerDirs));
         assert!(p.matches().is_empty());
         assert_eq!(p.resolved(), "~/");
+        let (k, params) = p.take_request().unwrap();
+        assert_eq!(k, ("~/".to_string(), false));
+        assert_eq!(params, json!({"path": "~/"}));
+        assert!(p.take_request().is_none(), "asked once per folder");
     }
 
     #[test]
@@ -802,22 +942,99 @@ mod tests {
     }
 
     #[test]
-    fn the_binding_opens_the_picker_on_a_local_machine_only() {
-        let (mut app, _rx) = crate::app::test_app(2);
+    fn the_binding_opens_the_picker_on_a_local_machine_without_asking_the_server() {
+        use crate::drafts::tests::{commands, fleet_n};
+        let (mut app, mut rxs) = fleet_n(2);
+        commands(&mut rxs[0]);
         app.action("new_workspace", None);
         let Mode::Popup(Popup::Path(p)) = &app.mode else {
             panic!("no picker: {:?}", app.mode);
         };
         assert_eq!(p.picker.input, "~/");
         assert_eq!(p.kind, PromptKind::NewWorkspace);
-        // A remote machine's disk isn't listed: the picker is a plain path input there.
-        app.mode = Mode::Normal;
+        assert!(commands(&mut rxs[0]).iter().all(|c| c.1 != "fs.browse"));
+    }
+
+    fn picker(app: &App) -> &PathPicker {
+        let Mode::Popup(Popup::Path(p)) = &app.mode else {
+            panic!("picker closed: {:?}", app.mode);
+        };
+        &p.picker
+    }
+
+    #[test]
+    fn a_remote_machine_lists_folders_through_its_server() {
+        use crate::drafts::tests::{commands, fleet_n, only, reply, reply_err};
+        let (mut app, mut rxs) = fleet_n(2);
+        app.cur = 1;
+        commands(&mut rxs[1]);
+        app.action("new_workspace", None);
+        let (home_req, p) = only(&commands(&mut rxs[1]), "fs.browse");
+        assert_eq!(p, json!({"path": "~/"}));
+        assert!(picker(&app).waiting.is_some());
+        reply(
+            &mut app,
+            1,
+            home_req,
+            json!({"path": "/home/r", "parent": "/home", "git_repo": false, "entries": [
+                {"name": "src", "git_repo": false}, {"name": "app", "git_repo": true}],
+                "truncated": false}),
+        );
+        assert_eq!(names(picker(&app)), ["app", "src"]);
+        // Filtering within the folder asks nothing; going into one asks for it.
+        app.on_key(key(Key::Char('s')));
+        assert!(commands(&mut rxs[1]).is_empty());
+        assert_eq!(names(picker(&app)), ["src"]);
+        app.on_key(named(NamedKey::Tab));
+        assert_eq!(picker(&app).input, "~/src/");
+        let (src_req, p) = only(&commands(&mut rxs[1]), "fs.browse");
+        assert_eq!(p, json!({"path": "~/src/"}));
+        // A late reply for another folder is dropped; a refused folder lists nothing.
+        reply(
+            &mut app,
+            1,
+            home_req,
+            json!({"entries": [{"name": "stale"}]}),
+        );
+        assert!(names(picker(&app)).is_empty());
+        reply_err(&mut app, 1, src_req, "permission_denied", json!({}));
+        assert!(names(picker(&app)).is_empty());
+        // Dot-directories are asked for separately.
+        app.on_key(key(Key::Char('.')));
+        let (_, p) = only(&commands(&mut rxs[1]), "fs.browse");
+        assert_eq!(p, json!({"path": "~/src/", "prefix": "."}));
+        // The path goes to that machine with `~` as the server's home (learned from `~/`).
+        app.on_key(named(NamedKey::Backspace));
+        commands(&mut rxs[1]);
+        app.on_key(named(NamedKey::Enter));
+        assert!(
+            commands(&mut rxs[0])
+                .iter()
+                .all(|c| c.1 != "workspace.create")
+        );
+        let (_, p) = only(&commands(&mut rxs[1]), "workspace.create");
+        assert_eq!(p["cwd"], "/home/r/src/");
+    }
+
+    #[test]
+    fn an_unexpanded_tilde_is_left_to_the_server() {
+        use crate::drafts::tests::{commands, fleet_n, only};
+        let (mut app, mut rxs) = fleet_n(2);
         app.cur = 1;
         app.action("new_workspace", None);
-        let Mode::Popup(Popup::Path(p)) = &app.mode else {
-            panic!("no picker: {:?}", app.mode);
-        };
-        assert!(p.picker.matches().is_empty());
+        app.on_paste("code".into());
+        commands(&mut rxs[1]);
+        app.on_key(named(NamedKey::Enter));
+        let (_, p) = only(&commands(&mut rxs[1]), "workspace.create");
+        assert_eq!(p["cwd"], "~/code");
+        // An empty path is the server's home folder.
+        app.action("new_workspace", None);
+        app.on_key(named(NamedKey::Backspace));
+        app.on_key(named(NamedKey::Backspace));
+        commands(&mut rxs[1]);
+        app.on_key(named(NamedKey::Enter));
+        let (_, p) = only(&commands(&mut rxs[1]), "workspace.create");
+        assert!(p.get("cwd").is_none(), "{p}");
     }
 
     #[test]

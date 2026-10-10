@@ -828,9 +828,20 @@ pub async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) 
         }
         "workspace.get" => Ok(json!({"workspace": resolve_ws(server, ctx, s(p, "workspace"))?})),
         "workspace.create" => {
-            let cwd = s(p, "cwd")
-                .map(str::to_string)
-                .unwrap_or_else(|| crate::paths::home().to_string_lossy().into_owned());
+            // `~` is this host's home: a client on another machine can't expand it. A folder
+            // that doesn't exist is an error, not a workspace whose shell lands in `$HOME`.
+            let home = crate::paths::home();
+            let cwd = match s(p, "cwd") {
+                Some(c) => {
+                    let dir = crate::browse_api::expand_home(&home, c);
+                    if !dir.is_dir() {
+                        return Err(err(ErrorKind::NotFound, format!("no such folder: {c}"))
+                            .details(json!({"object": "path", "target": c})));
+                    }
+                    dir.to_string_lossy().into_owned()
+                }
+                None => home.to_string_lossy().into_owned(),
+            };
             let focus = b(p, "focus")
                 .unwrap_or(false)
                 .then_some(ctx.client_id.as_str());

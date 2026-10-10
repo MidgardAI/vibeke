@@ -48,7 +48,7 @@ use crate::app::{App, Connector, Mode, Pending, Popup, RpcErr};
 use crate::draw::truncate;
 use crate::inbox::{Item, ItemKey, fmt_age};
 use crate::nav::{ListKey, fuzzy, highlight, list_frame, list_key, list_row};
-use crate::path_picker::{DirSource, LocalDirs, NoDirs, Outcome, PathPicker};
+use crate::path_picker::{DirSource, Outcome, PathPicker};
 use crate::popups::frame;
 use crate::screen::{Grid, Rect as SRect};
 
@@ -717,16 +717,13 @@ pub fn inbox_items(app: &App) -> Vec<Item> {
     v
 }
 
-/// Where the pickers of machine `mi` read folders: its disk when it is this machine.
+/// Where the pickers of machine `mi` read folders: its disk when it is this machine, else its
+/// server.
 fn dirs(app: &App, mi: usize) -> Arc<dyn DirSource> {
     if let Some(d) = &app.ux.handoff.dirs {
         return d.clone();
     }
-    if app.machines.get(mi).is_some_and(|m| m.local) {
-        Arc::new(LocalDirs)
-    } else {
-        Arc::new(NoDirs)
-    }
+    crate::path_picker::dirs_for(app, mi)
 }
 
 // ---- a long call on its own connection ------------------------------------------------------------
@@ -1280,6 +1277,14 @@ pub fn accept_key(app: &mut App, ev: KeyEvent) {
     };
     let act = overlay_key(a, &ev);
     let (mi, id) = (a.mi, a.id.clone());
+    // A picker on a remote machine asks its server for the folder it shows.
+    if let Some((key, params)) = a.picker.as_mut().and_then(|(_, p)| p.take_request()) {
+        let reply = crate::path_picker::Reply {
+            owner: crate::path_picker::Owner::Handoff,
+            key,
+        };
+        app.command_on(mi, "fs.browse", params, Pending::Path(reply));
+    }
     match act {
         Act::None => {}
         Act::Close => close(app),
