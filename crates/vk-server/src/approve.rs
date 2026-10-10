@@ -3,7 +3,8 @@
 //!
 //! - `auth.approve {method, params, reason?, wait?, timeout_ms?, request?}` (pane scope only).
 //!   [`APPROVABLE`] lists what can be asked for: `handoff.send`, `handoff.cancel` of the pane's
-//!   own jobs, `gateway.call {method: "peer.redeem"}`, and `preview.declare` on a port no pane's
+//!   own jobs, `gateway.call {method: "peer.redeem"}`, `cloud.move` of the pane or a pane of its
+//!   workspace (spec 17 §10), and `preview.declare` on a port no pane's
 //!   process listens on (asked by `preview.declare` itself; approval also remembers the port
 //!   for the pane's process, see `crate::preview`). The params are validated as the
 //!   target method would validate them and frozen; the summary the user reads is computed here
@@ -56,6 +57,7 @@ pub const APPROVABLE: &[&str] = &[
     "handoff.cancel",
     "gateway.call",
     "preview.declare",
+    "cloud.move",
 ];
 /// `gateway.call` methods a pane can ask for.
 pub const APPROVABLE_GATEWAY: &[&str] = &["peer.redeem"];
@@ -370,6 +372,59 @@ async fn prepare(
                 summary,
                 facts,
                 always_allowed: true,
+            })
+        }
+        "cloud.move" => {
+            let (src, dest, after) = crate::cloud_move::check_move(server, ctx, &params)?;
+            let pane = src.pane;
+            let my_ws = server.with_core(|c| c.pane(me).map(|x| x.workspace.clone()));
+            if pane.id != me && my_ws.as_deref() != Some(pane.workspace.as_str()) {
+                return Err(denied(
+                    "a pane can only ask to move itself or a pane of its own workspace",
+                ));
+            }
+            let agent = agent_of(server, &pane.id);
+            let interrupt = params.get("interrupt").and_then(Value::as_bool) == Some(true);
+            let whither = match &dest {
+                crate::cloud_move::Dest::Cloud { provider, .. } => format!(
+                    "to a cloud box ({})",
+                    provider.as_deref().unwrap_or("the default provider")
+                ),
+                crate::cloud_move::Dest::Local => "back from its cloud box to this host".into(),
+                crate::cloud_move::Dest::Peer(p) => format!("from its cloud box to {p}"),
+            };
+            let summary = format!(
+                "Move pane {} (agent: {}) {whither}{}{}",
+                pane.handle,
+                agent.as_deref().unwrap_or("none"),
+                after
+                    .as_deref()
+                    .map(|a| format!(", then {a} the box"))
+                    .unwrap_or_default(),
+                if interrupt && agent.is_some() {
+                    ", interrupting the agent if it is working"
+                } else {
+                    ""
+                }
+            );
+            let mut frozen = json!({"pane": pane.id, "to": dest.json(), "interrupt": interrupt});
+            if let Some(a) = &after {
+                frozen["source_after"] = json!(a);
+            }
+            let facts = json!({
+                "pane": pane.id, "pane_handle": pane.handle, "agent": agent,
+                "to": dest.json(), "from_box": src.box_ref, "task": src.task,
+                "interrupt": interrupt, "source_after": after,
+            });
+            Ok(Frozen {
+                method: method.into(),
+                params: frozen,
+                target: Some(pane.id.clone()),
+                repo: None,
+                peer: None,
+                summary,
+                facts,
+                always_allowed: false,
             })
         }
         "gateway.call" => {
@@ -723,6 +778,9 @@ async fn run_approved(server: &Arc<Server>, approver: &Ctx, r: &Request) -> R {
             crate::handoff_out::send_job(server, &ctx, &f.params, Some(expect))
         }
         "handoff.cancel" => crate::handoff_out::cancel(server, &f.params),
+        "cloud.move" => {
+            crate::cloud_move::start_move(server, &ctx, &f.params, Some(format!("pane:{}", r.pane)))
+        }
         "preview.declare" => {
             crate::preview::declare_approved(server, approver, &r.pane, r.child_pid, &f.params)
         }
@@ -738,7 +796,7 @@ async fn run_approved(server: &Arc<Server>, approver: &Ctx, r: &Request) -> R {
 /// A short form of an approved call's result for events and the audit log.
 fn result_brief(method: &str, v: &Value) -> Value {
     match method {
-        "handoff.send" | "handoff.cancel" => {
+        "handoff.send" | "handoff.cancel" | "cloud.move" => {
             json!({"job": v.pointer("/job/id"), "state": v.pointer("/job/state")})
         }
         "gateway.call" => json!({"peer": v.pointer("/peer/id"), "name": v.pointer("/peer/name")}),
@@ -1253,15 +1311,15 @@ pub fn grants_of(server: &Server, pane: &str) -> usize {
 
 /// Definitions for the schema registry (`api_schema` loads them with its own).
 pub const DEFS: &str = r##"
-ApprovalRequest = {request: string, kind: approval, pane: string, pane_handle: string, workspace: string, method: "handoff.send"|"handoff.cancel"|"gateway.call"|"preview.declare", params: object, summary: string, facts: object, reason: string, reason_verified: bool, peer: {id: string, name: string, owner: string}|null, always_allowed: bool, created_at_ms: int, status: pending|running|approved|failed|denied|withdrawn}
+ApprovalRequest = {request: string, kind: approval, pane: string, pane_handle: string, workspace: string, method: "handoff.send"|"handoff.cancel"|"gateway.call"|"preview.declare"|"cloud.move", params: object, summary: string, facts: object, reason: string, reason_verified: bool, peer: {id: string, name: string, owner: string}|null, always_allowed: bool, created_at_ms: int, status: pending|running|approved|failed|denied|withdrawn}
 ApprovalGrant = {pane: string, method: string, target: string|null, peer: string, peer_name: string, request: string, created_at_ms: int}
 "##;
 
 /// Method shapes (`api_schema` loads them next to its own tables).
 pub const SHAPES: &str = r##"
 # --- approved calls (09 §3.2): a pane asks, the user decides outside it ---
-# pane scope only: handoff.send, handoff.cancel (the pane's own jobs), gateway.call {method: peer.redeem} or preview.declare (a port no pane listens on; preview.declare asks by itself); waits for the decision and returns the target method's result; `wait: false` returns the request; `request` resumes waiting; a standing grant runs it at once
-auth.approve :: {method?: "handoff.send"|"handoff.cancel"|"gateway.call"|"preview.declare", params?: object, reason?: string, wait?: bool = true, timeout_ms?: int = 120000, request?: string}
+# pane scope only: handoff.send, handoff.cancel (the pane's own jobs), cloud.move (the pane or one of its workspace), gateway.call {method: peer.redeem} or preview.declare (a port no pane listens on; preview.declare asks by itself); waits for the decision and returns the target method's result; `wait: false` returns the request; `request` resumes waiting; a standing grant runs it at once
+auth.approve :: {method?: "handoff.send"|"handoff.cancel"|"gateway.call"|"preview.declare"|"cloud.move", params?: object, reason?: string, wait?: bool = true, timeout_ms?: int = 120000, request?: string}
   => ApprovalRequest | object
 # full scope only, never from a pane or an elevated connection; approve runs the frozen call once as the caller; always also grants (pane, method, target pane, peer) until the pane restarts
 auth.approve.decide :: {request: string, decision: approve|always|deny}

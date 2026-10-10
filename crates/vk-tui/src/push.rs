@@ -40,6 +40,10 @@ pub const TYPES: &[&str] = &[
     "pane.scroll_requested",
     // Incoming handoffs and sends (16 §15.2).
     "handoff.*",
+    // Cloud sandboxes (spec 17): moves, box changes and sign-in changes.
+    "cloud.job",
+    "cloud.box.changed",
+    "cloud.auth.changed",
     // Gateway autostart: the supervised gateway's state for the status bar.
     "gateway.status",
 ];
@@ -152,6 +156,8 @@ pub fn on_events(app: &mut App, i: usize, events: Vec<PushedEvent>, lagged: bool
             crate::collision::on_event(app, i, k);
         } else if k.starts_with("handoff.") {
             crate::handoff::on_event(app, i, k, &v);
+        } else if k.starts_with("cloud.") {
+            crate::cloud::on_event(app, i, k, &v);
         }
     }
     if !confirms.is_empty() {

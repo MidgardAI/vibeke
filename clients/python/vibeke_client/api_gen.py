@@ -329,6 +329,51 @@ class Api:
     async def client_list(self, params: "Optional[t.ClientListParams]" = None) -> "t.ClientListResult":
         return await self.call("client.list", params or {})  # type: ignore[arg-type, return-value]
 
+    async def cloud_auth_clear(self, params: "t.CloudAuthClearParams") -> "t.CloudAuthClearResult":
+        return await self.call("cloud.auth.clear", params)  # type: ignore[arg-type, return-value]
+
+    async def cloud_auth_import(self, params: "t.CloudAuthImportParams") -> "t.CloudAuthImportResult":
+        return await self.call("cloud.auth.import", params)  # type: ignore[arg-type, return-value]
+
+    async def cloud_auth_set(self, params: "t.CloudAuthSetParams") -> "t.CloudAuthSetResult":
+        return await self.call("cloud.auth.set", params)  # type: ignore[arg-type, return-value]
+
+    async def cloud_box_adopt(self, params: "t.CloudBoxAdoptParams") -> "t.CloudBoxAdoptResult":
+        return await self.call("cloud.box.adopt", params)  # type: ignore[arg-type, return-value]
+
+    async def cloud_box_checkpoint(self, params: "t.CloudBoxCheckpointParams") -> "t.CloudBoxCheckpointResult":
+        return await self.call("cloud.box.checkpoint", params)  # type: ignore[arg-type, return-value]
+
+    async def cloud_box_destroy(self, params: "t.CloudBoxDestroyParams") -> "t.CloudBoxDestroyResult":
+        return await self.call("cloud.box.destroy", params)  # type: ignore[arg-type, return-value]
+
+    async def cloud_box_forget(self, params: "t.CloudBoxForgetParams") -> "t.CloudBoxForgetResult":
+        return await self.call("cloud.box.forget", params)  # type: ignore[arg-type, return-value]
+
+    async def cloud_box_list(self, params: "Optional[t.CloudBoxListParams]" = None) -> "t.CloudBoxListResult":
+        return await self.call("cloud.box.list", params or {})  # type: ignore[arg-type, return-value]
+
+    async def cloud_box_resume(self, params: "t.CloudBoxResumeParams") -> "t.CloudBoxResumeResult":
+        return await self.call("cloud.box.resume", params)  # type: ignore[arg-type, return-value]
+
+    async def cloud_box_suspend(self, params: "t.CloudBoxSuspendParams") -> "t.CloudBoxSuspendResult":
+        return await self.call("cloud.box.suspend", params)  # type: ignore[arg-type, return-value]
+
+    async def cloud_cancel(self, params: "t.CloudCancelParams") -> "t.CloudCancelResult":
+        return await self.call("cloud.cancel", params)  # type: ignore[arg-type, return-value]
+
+    async def cloud_jobs(self, params: "Optional[t.CloudJobsParams]" = None) -> "t.CloudJobsResult":
+        return await self.call("cloud.jobs", params or {})  # type: ignore[arg-type, return-value]
+
+    async def cloud_move(self, params: "t.CloudMoveParams") -> "t.CloudMoveResult":
+        return await self.call("cloud.move", params)  # type: ignore[arg-type, return-value]
+
+    async def cloud_providers(self, params: "Optional[t.CloudProvidersParams]" = None) -> "t.CloudProvidersResult":
+        return await self.call("cloud.providers", params or {})  # type: ignore[arg-type, return-value]
+
+    async def cloud_prune(self, params: "Optional[t.CloudPruneParams]" = None) -> "t.CloudPruneResult":
+        return await self.call("cloud.prune", params or {})  # type: ignore[arg-type, return-value]
+
     async def collision_claim(self, params: "t.CollisionClaimParams") -> "t.CollisionClaimResult":
         return await self.call("collision.claim", params)  # type: ignore[arg-type, return-value]
 

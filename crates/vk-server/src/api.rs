@@ -399,7 +399,9 @@ pub const PANE_FORBIDDEN: &[&str] = &[
 
 /// Method prefixes whose every method is forbidden for pane scope (14 §9: pane/adapter tokens
 /// get no assistant access).
-pub const PANE_FORBIDDEN_PREFIXES: &[&str] = &["assistant."];
+/// Spec 17 §10: every `cloud.*` method is the user's (an agent asks for `cloud.move` through
+/// `auth.approve`).
+pub const PANE_FORBIDDEN_PREFIXES: &[&str] = &["assistant.", "cloud."];
 
 // Handlers that refuse pane scope only for some params stay `Open`/`OwnTarget` here (their
 // handler checks are authoritative), e.g. `preview.profile {action: "reset"}`, `preview.open`
@@ -441,6 +443,7 @@ pub fn pane_scope_of(method: &str) -> PaneScope {
         || crate::blob_store::PANE_FORBIDDEN.contains(&method)
         || crate::browse_api::PANE_FORBIDDEN.contains(&method)
         || crate::handoff_out::PANE_FORBIDDEN.contains(&method)
+        || crate::cloud_move::PANE_FORBIDDEN.contains(&method)
         || crate::gateway_bridge::PANE_FORBIDDEN.contains(&method)
         || crate::gateway_supervisor::PANE_FORBIDDEN.contains(&method)
         || crate::hardening::PANE_FORBIDDEN.contains(&method)
@@ -524,6 +527,16 @@ pub fn authorize(server: &Server, ctx: &Ctx, method: &str, p: &Value) -> Result<
         return Err(err(
             ErrorKind::PermissionDenied,
             "confirm_host_yolo: a pane cannot confirm yolo on the host; the user confirms with --confirm-host-yolo",
+        )
+        .details(json!({"scope": "pane"})));
+    }
+    // Spec 17: choosing an existing cloud box (`task.create {isolate: cloud, box}`) is the
+    // user's; an agent must not point a task at a box (only `IsoRequest` reads `box` outside
+    // the pane-forbidden `cloud.*` methods).
+    if p.get("box").is_some_and(|v| !v.is_null()) {
+        return Err(err(
+            ErrorKind::PermissionDenied,
+            "box: a pane cannot choose a cloud box; the user picks one",
         )
         .details(json!({"scope": "pane"})));
     }
@@ -649,6 +662,12 @@ pub async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) 
     if let Some(r) = crate::gateway_supervisor::api(server, ctx, method, p).await {
         return r;
     }
+    // Cloud sign-in and boxes (spec 17 §5, §6).
+    if method.starts_with("cloud.")
+        && let Some(r) = Box::pin(crate::cloud_api::api(server, ctx, method, p)).await
+    {
+        return r;
+    }
     // Incoming handoffs (16 §15.2).
     if method.starts_with("handoff.")
         && let Some(r) = Box::pin(crate::handoff::api(server, ctx, method, p)).await
@@ -690,6 +709,9 @@ pub async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) 
         return r;
     }
     if let Some(r) = crate::handoff_out::api(server, ctx, method, p) {
+        return r;
+    }
+    if let Some(r) = crate::cloud_move::api(server, ctx, method, p).await {
         return r;
     }
     if let Some(r) = crate::desk::api(server, ctx, method, p).await {

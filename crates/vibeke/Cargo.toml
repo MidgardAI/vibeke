@@ -29,6 +29,7 @@ path = "tests/timing.rs"
 
 [dependencies]
 vk-gateway.workspace = true
+vk-handoff.workspace = true
 vk-account.workspace = true
 vk-relay.workspace = true
 vk-proto = { workspace = true, features = ["tokio"] }
@@ -44,6 +45,7 @@ vk-agents = { workspace = true }
 vk-sandbox = { workspace = true }
 vk-browser = { workspace = true }
 vk-tasks = { workspace = true }
+vk-cloud.workspace = true
 toml_edit.workspace = true
 base64.workspace = true
 tokio.workspace = true

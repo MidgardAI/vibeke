@@ -109,6 +109,7 @@ pub const EXTERNAL_SECTIONS: &[&str] = &[
     "events",
     "orchestrate",
     "handoff",
+    "cloud",
 ];
 
 const BUILTIN_SEGMENTS: &[&str] = &[

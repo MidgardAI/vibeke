@@ -393,7 +393,8 @@
             "handoff.send",
             "handoff.cancel",
             "gateway.call",
-            "preview.declare"
+            "preview.declare",
+            "cloud.move"
           ]
         },
         "params": {
@@ -813,6 +814,273 @@
         "proxy_port",
         "machine",
         "environment"
+      ]
+    },
+    "CloudAuthMethod": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "paste_token"
+            },
+            "label": {
+              "type": "string"
+            },
+            "help_url": {
+              "type": "string"
+            },
+            "hint": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "label",
+            "help_url",
+            "hint"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "import"
+            },
+            "source": {
+              "type": "string"
+            },
+            "label": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "source",
+            "label"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "env"
+            },
+            "var": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "var"
+          ]
+        }
+      ]
+    },
+    "CloudBoxView": {
+      "type": "object",
+      "properties": {
+        "box": {
+          "type": "string"
+        },
+        "provider": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string"
+        },
+        "ownership": {
+          "type": "string",
+          "enum": [
+            "attached",
+            "idle",
+            "orphaned",
+            "foreign",
+            "missing"
+          ]
+        },
+        "key": {
+          "type": "string"
+        },
+        "task": {
+          "type": "string"
+        },
+        "workspace": {
+          "type": "string"
+        },
+        "panes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "sessions": {
+          "type": "integer"
+        },
+        "created_at": {
+          "type": "integer"
+        },
+        "last_activity_at": {
+          "type": "integer"
+        },
+        "url": {
+          "type": "string"
+        },
+        "unsynced": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CloudUnsynced"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "caps": {
+          "$ref": "#/$defs/CloudCaps"
+        },
+        "host_tag": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "box",
+        "provider",
+        "id",
+        "name",
+        "state",
+        "ownership",
+        "key",
+        "panes",
+        "sessions",
+        "created_at",
+        "last_activity_at",
+        "unsynced",
+        "caps",
+        "host_tag"
+      ]
+    },
+    "CloudCaps": {
+      "type": "object",
+      "properties": {
+        "resize": {
+          "type": "boolean"
+        },
+        "reattach": {
+          "type": "boolean"
+        },
+        "explicit_suspend": {
+          "type": "boolean"
+        },
+        "keeps_memory": {
+          "type": "boolean"
+        },
+        "checkpoints": {
+          "type": "boolean"
+        },
+        "port_urls": {
+          "type": "boolean"
+        },
+        "max_runtime_s": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "resize",
+        "reattach",
+        "explicit_suspend",
+        "keeps_memory",
+        "checkpoints",
+        "port_urls",
+        "max_runtime_s"
+      ]
+    },
+    "CloudProvider": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "caps": {
+          "$ref": "#/$defs/CloudCaps"
+        },
+        "default": {
+          "type": "boolean"
+        },
+        "auth": {
+          "type": "object",
+          "properties": {
+            "state": {
+              "type": "string",
+              "enum": [
+                "missing",
+                "ok",
+                "invalid"
+              ]
+            },
+            "source": {
+              "type": "string"
+            },
+            "account": {
+              "type": "string"
+            },
+            "error": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "state"
+          ]
+        },
+        "methods": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CloudAuthMethod"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "caps",
+        "default",
+        "auth",
+        "methods"
+      ]
+    },
+    "CloudUnsynced": {
+      "type": "object",
+      "properties": {
+        "commits": {
+          "type": "integer"
+        },
+        "dirty": {
+          "type": "integer"
+        },
+        "untracked": {
+          "type": "integer"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "unknown": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "commits",
+        "dirty",
+        "untracked",
+        "summary"
       ]
     },
     "Collision": {
@@ -2037,7 +2305,8 @@
         "host",
         "sandbox",
         "container",
-        "vm"
+        "vm",
+        "cloud"
       ]
     },
     "Item": {
@@ -7655,7 +7924,8 @@
               "handoff.send",
               "handoff.cancel",
               "gateway.call",
-              "preview.declare"
+              "preview.declare",
+              "cloud.move"
             ]
           },
           "params": {
@@ -11535,6 +11805,919 @@
         },
         "required": [
           "clients"
+        ]
+      }
+    },
+    "cloud.auth.clear": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "provider": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "provider": {
+            "type": "string"
+          },
+          "cleared": {
+            "type": "boolean"
+          },
+          "boxes_running": {
+            "type": "integer"
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "provider",
+          "cleared",
+          "boxes_running"
+        ]
+      }
+    },
+    "cloud.auth.import": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "provider": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider",
+          "source"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "provider": {
+            "type": "string"
+          },
+          "account": {
+            "type": "string"
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "provider",
+          "account"
+        ]
+      }
+    },
+    "cloud.auth.set": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "provider": {
+            "type": "string"
+          },
+          "token": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider",
+          "token"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "provider": {
+            "type": "string"
+          },
+          "account": {
+            "type": "string"
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "provider",
+          "account"
+        ]
+      }
+    },
+    "cloud.box.adopt": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "box": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "box"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "box": {
+            "type": "string"
+          },
+          "task": {
+            "type": "string"
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "box",
+          "task"
+        ]
+      }
+    },
+    "cloud.box.checkpoint": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "box": {
+            "type": "string"
+          },
+          "note": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "box"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "box": {
+            "type": "string"
+          },
+          "checkpoint": {
+            "type": "string"
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "box",
+          "checkpoint"
+        ]
+      }
+    },
+    "cloud.box.destroy": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "box": {
+            "type": "string"
+          },
+          "force": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "required": [
+          "box"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "box": {
+            "type": "string"
+          },
+          "destroyed": {
+            "const": true
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "box",
+          "destroyed"
+        ]
+      }
+    },
+    "cloud.box.forget": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "box": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "box"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "box": {
+            "type": "string"
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "box"
+        ]
+      }
+    },
+    "cloud.box.list": {
+      "mutating": false,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "provider": {
+            "type": "string"
+          },
+          "ownership": {
+            "type": "string",
+            "enum": [
+              "attached",
+              "idle",
+              "orphaned",
+              "foreign",
+              "missing"
+            ]
+          },
+          "refresh": {
+            "type": "boolean",
+            "default": false
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "boxes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/CloudBoxView"
+            }
+          },
+          "errors": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "provider": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "provider",
+                "kind",
+                "message"
+              ]
+            }
+          }
+        },
+        "required": [
+          "boxes",
+          "errors"
+        ]
+      }
+    },
+    "cloud.box.resume": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "box": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "box"
+        ]
+      },
+      "result": {
+        "$ref": "#/$defs/CloudBoxView"
+      }
+    },
+    "cloud.box.suspend": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "box": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "box"
+        ]
+      },
+      "result": {
+        "$ref": "#/$defs/CloudBoxView"
+      }
+    },
+    "cloud.cancel": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "job": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "direction": {
+                "type": "string",
+                "enum": [
+                  "send",
+                  "bring_back"
+                ]
+              },
+              "pane": {
+                "type": "string"
+              },
+              "run": {
+                "type": "string"
+              },
+              "box": {
+                "type": "string"
+              },
+              "from": {
+                "type": "object"
+              },
+              "to": {
+                "type": "object"
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "queued",
+                  "waiting_turn",
+                  "creating",
+                  "bootstrapping",
+                  "exporting",
+                  "uploading",
+                  "importing",
+                  "resuming",
+                  "done",
+                  "failed",
+                  "cancelled"
+                ]
+              },
+              "progress": {
+                "type": "object",
+                "properties": {
+                  "done": {
+                    "type": "integer"
+                  },
+                  "total": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "done",
+                  "total"
+                ]
+              },
+              "error": {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string"
+                  },
+                  "message": {
+                    "type": "string"
+                  },
+                  "details": {}
+                },
+                "required": [
+                  "kind",
+                  "message"
+                ]
+              },
+              "result": {
+                "type": "object"
+              },
+              "interrupt": {
+                "type": "boolean"
+              },
+              "source_after": {
+                "type": "string",
+                "enum": [
+                  "keep",
+                  "suspend",
+                  "destroy"
+                ]
+              },
+              "task": {
+                "type": "string"
+              },
+              "by": {
+                "type": "string"
+              },
+              "created_at": {
+                "type": "integer"
+              },
+              "updated_at": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "id",
+              "direction",
+              "from",
+              "to",
+              "state",
+              "interrupt",
+              "created_at",
+              "updated_at"
+            ]
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "job"
+        ]
+      }
+    },
+    "cloud.jobs": {
+      "mutating": false,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "jobs": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "direction": {
+                  "type": "string",
+                  "enum": [
+                    "send",
+                    "bring_back"
+                  ]
+                },
+                "pane": {
+                  "type": "string"
+                },
+                "run": {
+                  "type": "string"
+                },
+                "box": {
+                  "type": "string"
+                },
+                "from": {
+                  "type": "object"
+                },
+                "to": {
+                  "type": "object"
+                },
+                "state": {
+                  "type": "string",
+                  "enum": [
+                    "queued",
+                    "waiting_turn",
+                    "creating",
+                    "bootstrapping",
+                    "exporting",
+                    "uploading",
+                    "importing",
+                    "resuming",
+                    "done",
+                    "failed",
+                    "cancelled"
+                  ]
+                },
+                "progress": {
+                  "type": "object",
+                  "properties": {
+                    "done": {
+                      "type": "integer"
+                    },
+                    "total": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "done",
+                    "total"
+                  ]
+                },
+                "error": {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {}
+                  },
+                  "required": [
+                    "kind",
+                    "message"
+                  ]
+                },
+                "result": {
+                  "type": "object"
+                },
+                "interrupt": {
+                  "type": "boolean"
+                },
+                "source_after": {
+                  "type": "string",
+                  "enum": [
+                    "keep",
+                    "suspend",
+                    "destroy"
+                  ]
+                },
+                "task": {
+                  "type": "string"
+                },
+                "by": {
+                  "type": "string"
+                },
+                "created_at": {
+                  "type": "integer"
+                },
+                "updated_at": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "id",
+                "direction",
+                "from",
+                "to",
+                "state",
+                "interrupt",
+                "created_at",
+                "updated_at"
+              ]
+            }
+          }
+        },
+        "required": [
+          "jobs"
+        ]
+      }
+    },
+    "cloud.move": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "pane": {
+            "$ref": "#/$defs/Target"
+          },
+          "run": {
+            "type": "string"
+          },
+          "box": {
+            "type": "string"
+          },
+          "to": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "cloud",
+                  "local",
+                  "peer"
+                ]
+              },
+              "provider": {
+                "type": "string"
+              },
+              "box": {
+                "type": "string"
+              },
+              "peer": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "interrupt": {
+            "type": "boolean",
+            "default": false
+          },
+          "source_after": {
+            "type": "string",
+            "enum": [
+              "keep",
+              "suspend",
+              "destroy"
+            ]
+          }
+        },
+        "required": [
+          "to"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "job": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "direction": {
+                "type": "string",
+                "enum": [
+                  "send",
+                  "bring_back"
+                ]
+              },
+              "pane": {
+                "type": "string"
+              },
+              "run": {
+                "type": "string"
+              },
+              "box": {
+                "type": "string"
+              },
+              "from": {
+                "type": "object"
+              },
+              "to": {
+                "type": "object"
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "queued",
+                  "waiting_turn",
+                  "creating",
+                  "bootstrapping",
+                  "exporting",
+                  "uploading",
+                  "importing",
+                  "resuming",
+                  "done",
+                  "failed",
+                  "cancelled"
+                ]
+              },
+              "progress": {
+                "type": "object",
+                "properties": {
+                  "done": {
+                    "type": "integer"
+                  },
+                  "total": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "done",
+                  "total"
+                ]
+              },
+              "error": {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string"
+                  },
+                  "message": {
+                    "type": "string"
+                  },
+                  "details": {}
+                },
+                "required": [
+                  "kind",
+                  "message"
+                ]
+              },
+              "result": {
+                "type": "object"
+              },
+              "interrupt": {
+                "type": "boolean"
+              },
+              "source_after": {
+                "type": "string",
+                "enum": [
+                  "keep",
+                  "suspend",
+                  "destroy"
+                ]
+              },
+              "task": {
+                "type": "string"
+              },
+              "by": {
+                "type": "string"
+              },
+              "created_at": {
+                "type": "integer"
+              },
+              "updated_at": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "id",
+              "direction",
+              "from",
+              "to",
+              "state",
+              "interrupt",
+              "created_at",
+              "updated_at"
+            ]
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "job"
+        ]
+      }
+    },
+    "cloud.providers": {
+      "mutating": false,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "verify": {
+            "type": "boolean",
+            "default": false
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "providers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/CloudProvider"
+            }
+          }
+        },
+        "required": [
+          "providers"
+        ]
+      }
+    },
+    "cloud.prune": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "provider": {
+            "type": "string"
+          },
+          "ownership": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "orphaned",
+                "idle",
+                "missing"
+              ]
+            }
+          },
+          "dry_run": {
+            "type": "boolean",
+            "default": false
+          },
+          "force": {
+            "type": "boolean",
+            "default": false
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "candidates": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/CloudBoxView"
+            }
+          },
+          "destroyed": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "skipped": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "box": {
+                  "type": "string"
+                },
+                "reason": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "box",
+                "reason"
+              ]
+            }
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "candidates",
+          "destroyed",
+          "skipped"
         ]
       }
     },
@@ -15681,6 +16864,9 @@
                   "requested_by",
                   "approved_by"
                 ]
+              },
+              "bundle": {
+                "type": "string"
               }
             },
             "required": [
@@ -16007,6 +17193,9 @@
                   "requested_by",
                   "approved_by"
                 ]
+              },
+              "bundle": {
+                "type": "string"
               }
             },
             "required": [
@@ -16133,6 +17322,9 @@
                     "requested_by",
                     "approved_by"
                   ]
+                },
+                "bundle": {
+                  "type": "string"
                 }
               },
               "required": [
@@ -16508,6 +17700,9 @@
                   "requested_by",
                   "approved_by"
                 ]
+              },
+              "bundle": {
+                "type": "string"
               }
             },
             "required": [
@@ -31987,6 +33182,180 @@
         ]
       }
     },
+    "cloud.auth.changed": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "provider": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "state": {
+            "type": "string",
+            "enum": [
+              "missing",
+              "ok",
+              "invalid"
+            ]
+          },
+          "account": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "state"
+        ]
+      }
+    },
+    "cloud.box.changed": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "box": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "box"
+        ]
+      },
+      "data": {
+        "$ref": "#/$defs/CloudBoxView"
+      }
+    },
+    "cloud.job": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "job": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "job"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "direction": {
+            "type": "string",
+            "enum": [
+              "send",
+              "bring_back"
+            ]
+          },
+          "pane": {
+            "type": "string"
+          },
+          "run": {
+            "type": "string"
+          },
+          "box": {
+            "type": "string"
+          },
+          "from": {
+            "type": "object"
+          },
+          "to": {
+            "type": "object"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "queued",
+              "waiting_turn",
+              "creating",
+              "bootstrapping",
+              "exporting",
+              "uploading",
+              "importing",
+              "resuming",
+              "done",
+              "failed",
+              "cancelled"
+            ]
+          },
+          "progress": {
+            "type": "object",
+            "properties": {
+              "done": {
+                "type": "integer"
+              },
+              "total": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "done",
+              "total"
+            ]
+          },
+          "error": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              },
+              "details": {}
+            },
+            "required": [
+              "kind",
+              "message"
+            ]
+          },
+          "result": {
+            "type": "object"
+          },
+          "interrupt": {
+            "type": "boolean"
+          },
+          "source_after": {
+            "type": "string",
+            "enum": [
+              "keep",
+              "suspend",
+              "destroy"
+            ]
+          },
+          "task": {
+            "type": "string"
+          },
+          "by": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "integer"
+          },
+          "updated_at": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "direction",
+          "from",
+          "to",
+          "state",
+          "interrupt",
+          "created_at",
+          "updated_at"
+        ]
+      }
+    },
     "desk.forgotten": {
       "subject": {
         "type": "object",
@@ -32860,6 +34229,9 @@
               "requested_by",
               "approved_by"
             ]
+          },
+          "bundle": {
+            "type": "string"
           }
         },
         "required": [

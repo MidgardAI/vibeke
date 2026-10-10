@@ -23,6 +23,7 @@ vk-sandbox = { workspace = true }
 vk-assist = { workspace = true }
 vk-orchestrate = { workspace = true }
 vk-handoff = { workspace = true }
+vk-cloud = { workspace = true }
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true

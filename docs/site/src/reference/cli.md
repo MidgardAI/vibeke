@@ -579,6 +579,24 @@ Use `--json` to print JSON. Non-terminal output also uses JSON.
 | `cancel` | `<id>` | `handoff.cancel` | <job> — stop an outgoing handoff; the destination drops what it received (inside a pane: only its own, after your approval) |
 | `peers` | - | `handoff.peers` | hosts this one can hand work to (add one with `vibeke gateway peer add <link>`) |
 
+## `vibeke cloud`
+
+| Verb | Positionals | Method | Description |
+|---|---|---|---|
+| `providers` | - | `cloud.providers` | providers: sign-in state and account [--verify] |
+| `logout` | `<provider>` | `cloud.auth.clear` | <provider> — forget the stored credential (running sandboxes keep running) |
+| `ls` | - | `cloud.box.list` | sandboxes of every signed-in provider [--provider P] [--ownership attached\|idle\|orphaned\|foreign\|missing] [--refresh] |
+| `rm` | `<box>` | `cloud.box.destroy` | <provider/id> [--force] — destroy a sandbox; unsynced work needs --force (put --force after the box) |
+| `suspend` | `<box>` | `cloud.box.suspend` | <provider/id> — suspend a sandbox (providers that sleep by themselves refuse) |
+| `resume` | `<box>` | `cloud.box.resume` | <provider/id> — wake a suspended sandbox |
+| `adopt` | `<box>` | `cloud.box.adopt` | <provider/id> — take over an orphaned or foreign sandbox: creates a task and reopens its sessions |
+| `forget` | `<box>` | `cloud.box.forget` | <provider/id> — drop the record of a sandbox the provider no longer lists |
+| `checkpoint` | `<box>` | `cloud.box.checkpoint` | <provider/id> [--note TEXT] — save a checkpoint (providers with checkpoints) |
+| `prune` | - | `cloud.prune` | [--dry-run] [--force] [--provider P] — destroy orphaned and idle sandboxes without unsynced work |
+| `jobs` | - | `cloud.jobs` | moves to and from sandboxes: state, progress, errors |
+| `cancel` | `<id>` | `cloud.cancel` | <job> — stop a move that is still running |
+| `move` | - | `cloud.move` | (--pane P \| --run R \| --box B) --to cloud\|local\|<peer> [--provider X] [--into BOX] [--interrupt] [--source-after keep\|suspend\|destroy] — start a move (`cloud send` and `cloud bring-back` follow it) |
+
 ## `vibeke security`
 
 | Verb | Positionals | Method | Description |

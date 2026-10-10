@@ -533,6 +533,81 @@
       "scope": "pane",
       "pane_scope": "open"
     },
+    "cloud.auth.clear": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "cloud.auth.import": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "cloud.auth.set": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "cloud.box.adopt": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "cloud.box.checkpoint": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "cloud.box.destroy": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "cloud.box.forget": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "cloud.box.list": {
+      "mutating": false,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "cloud.box.resume": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "cloud.box.suspend": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "cloud.cancel": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "cloud.jobs": {
+      "mutating": false,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "cloud.move": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "cloud.providers": {
+      "mutating": false,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "cloud.prune": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
     "collision.claim": {
       "mutating": true,
       "scope": "pane",

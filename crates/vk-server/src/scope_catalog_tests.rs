@@ -43,6 +43,7 @@ fn tables() -> Vec<&'static [(&'static str, bool)]> {
         crate::collision::METHODS,
         crate::orch::METHODS,
         crate::handoff_out::METHODS,
+        crate::cloud_move::METHODS,
         crate::gateway_bridge::METHODS,
         crate::gateway_supervisor::METHODS,
     ]

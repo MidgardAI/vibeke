@@ -23,6 +23,7 @@
 - [Desktop app](desktop.md)
 - [Connect through SSH](remote.md)
 - [Sharing and handoff](handoff.md)
+- [Cloud sandboxes](cloud-sandboxes.md)
 
 # Advanced
 

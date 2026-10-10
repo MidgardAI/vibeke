@@ -237,6 +237,7 @@ const EXTRA: &[(&str, &[&str])] = &[
         ],
     ),
     ("events", &["tail"]),
+    ("cloud", &["login", "send", "bring-back"]),
     (
         "debug",
         &["latency", "bandwidth", "api-schema", "idle", "ptyshot"],

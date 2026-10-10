@@ -232,6 +232,8 @@ export interface Pane {
   pinned: boolean;
   created_by: string;
   recovered: string | null;
+  /** Where the pane's processes run (`level` `cloud` = a cloud sandbox of `provider`). */
+  isolation?: { level: string; provider: string };
 }
 
 export interface Task {
@@ -605,6 +607,77 @@ export interface HandoffJob {
   created_at: number;
   updated_at: number;
 }
+
+// ---- cloud sandboxes (spec 17 §5–§7) -----------------------------------------------------
+
+/** How to sign in to a provider; a client renders whatever kinds it knows and ignores the rest. */
+export type CloudAuthMethod =
+  | { kind: 'paste_token'; label: string; help_url?: string; hint?: string }
+  | { kind: 'import'; source: string; label: string }
+  | { kind: 'env'; var: string };
+
+export type CloudAuthState = 'missing' | 'ok' | 'invalid';
+
+export interface CloudProvider {
+  id: string;
+  label: string;
+  caps: Record<string, boolean> | string[];
+  default: boolean;
+  auth: { state: CloudAuthState; /** `config`, `keychain` or `env:<VAR>`. */ source?: string; account?: string };
+  methods: CloudAuthMethod[];
+}
+
+export type CloudOwnership = 'attached' | 'idle' | 'orphaned' | 'foreign' | 'missing';
+
+export interface CloudUnsynced {
+  commits: number;
+  dirty: number;
+  untracked: number;
+  summary: string;
+}
+
+export interface CloudBox {
+  /** `<provider>/<id>`. */
+  box: string;
+  provider: string;
+  id: string;
+  name: string;
+  /** Provider state (`running`, `suspended`, `destroyed`, …). */
+  state: string;
+  ownership: CloudOwnership;
+  key?: string;
+  task?: string | null;
+  workspace?: string | null;
+  panes: string[];
+  sessions?: number;
+  /** Unix seconds. */
+  created_at?: number;
+  last_activity_at?: number;
+  url?: string | null;
+  unsynced: CloudUnsynced | null;
+  caps: Record<string, boolean> | string[];
+  host_tag?: string;
+}
+
+export type CloudJobState = 'queued' | 'waiting_turn' | 'creating' | 'bootstrapping' | 'exporting' | 'uploading' | 'importing' | 'resuming' | 'done' | 'failed' | 'cancelled';
+
+export interface CloudJob {
+  id: string;
+  direction: 'send' | 'bring_back';
+  pane?: string | null;
+  run?: string | null;
+  box?: string | null;
+  from?: unknown;
+  to?: unknown;
+  state: CloudJobState;
+  progress?: { done: number; total: number } | null;
+  error?: { kind?: string; message?: string; details?: unknown } | null;
+  result?: { pane?: string; task?: string; box?: string; peer_job?: string } | null;
+  created_at: number;
+  updated_at: number;
+}
+
+export type CloudMoveTarget = { kind: 'cloud'; provider?: string; box?: string } | { kind: 'local' } | { kind: 'peer'; peer: string };
 
 /** A host this one can hand work to (`handoff.peers`; no keys or addresses). */
 export interface HandoffPeer {
@@ -1046,6 +1119,32 @@ export interface AppApi {
   'handoff.jobs': { params: Record<string, never>; result: { jobs: HandoffJob[] } };
   /** Stop a queued or running job; the destination drops what it received. */
   'handoff.cancel': { params: { id: string }; result: { job: HandoffJob } };
+  /** Cloud sandboxes (spec 17), full scope. `token` is never logged or echoed. */
+  'cloud.providers': { params: { verify?: boolean }; result: { providers: CloudProvider[] } };
+  'cloud.auth.set': { params: { provider: string; token: string }; result: { provider: string; account?: string } };
+  'cloud.auth.import': { params: { provider: string; source: string }; result: { provider: string; account?: string } };
+  'cloud.auth.clear': { params: { provider: string }; result: { provider: string; cleared: boolean; boxes_running?: number } };
+  'cloud.box.list': {
+    params: { provider?: string; ownership?: CloudOwnership; refresh?: boolean };
+    result: { boxes: CloudBox[]; errors?: { provider: string; kind: string; message: string }[] };
+  };
+  'cloud.box.suspend': { params: { box: string }; result: CloudBox };
+  'cloud.box.resume': { params: { box: string }; result: CloudBox };
+  'cloud.box.checkpoint': { params: { box: string; note?: string }; result: { box: string; checkpoint: unknown } };
+  /** Unsynced work without `force` fails with `conflict`, `details.reason = "unsynced_changes"`. */
+  'cloud.box.destroy': { params: { box: string; force?: boolean }; result: { box: string; destroyed: true } };
+  'cloud.box.adopt': { params: { box: string }; result: { box: string; task?: string } };
+  'cloud.box.forget': { params: { box: string }; result: { box: string } };
+  'cloud.prune': {
+    params: { provider?: string; ownership?: CloudOwnership[]; dry_run?: boolean; force?: boolean };
+    result: { candidates: CloudBox[]; destroyed: string[]; skipped: { box: string; reason: string }[] };
+  };
+  'cloud.move': {
+    params: { pane?: string; run?: string; box?: string; to: CloudMoveTarget; interrupt?: boolean; source_after?: 'keep' | 'suspend' | 'destroy' };
+    result: { job: CloudJob };
+  };
+  'cloud.jobs': { params: Record<string, never>; result: { jobs: CloudJob[] } };
+  'cloud.cancel': { params: { id: string }; result: { job: CloudJob } };
   /** The hosts `handoff.send` can deliver to, as this host's gateway last published them. */
   'handoff.peers': { params: Record<string, never>; result: { peers: HandoffPeer[]; updated_at: number | null } };
   /** A new worktree of the repository at `pane`, `workspace` or `cwd`; `open` makes it a workspace (full scope, own devices). */
@@ -1187,6 +1286,18 @@ export const MUTATING_METHODS: ReadonlySet<string> = new Set([
   'handoff.prefs',
   'handoff.send',
   'handoff.cancel',
+  'cloud.auth.set',
+  'cloud.auth.import',
+  'cloud.auth.clear',
+  'cloud.box.suspend',
+  'cloud.box.resume',
+  'cloud.box.checkpoint',
+  'cloud.box.destroy',
+  'cloud.box.adopt',
+  'cloud.box.forget',
+  'cloud.prune',
+  'cloud.move',
+  'cloud.cancel',
   'auth.approve.decide',
   'worktree.create',
   'workspace.create',

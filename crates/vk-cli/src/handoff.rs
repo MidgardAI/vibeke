@@ -635,7 +635,7 @@ pub fn paired_line(v: &Value) -> String {
 
 /// Ask the user for `method params` through `auth.approve` and wait for the decision (or with
 /// `--no-wait`, print the request id). The waiting call returns the method's own result.
-async fn approved<S>(
+pub async fn approved<S>(
     client: &mut Client<S>,
     g: &Global,
     method: &str,

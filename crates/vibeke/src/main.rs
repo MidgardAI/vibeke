@@ -6,6 +6,7 @@ use vk_cli::client;
 use vk_cli::{EXIT_NO_SERVER, EXIT_OK, EXIT_USAGE, Global};
 
 mod account_cmd;
+mod cloud_cmd;
 mod commands;
 mod config_cmd;
 mod debug;
@@ -14,6 +15,7 @@ mod idle;
 mod integration;
 mod keychain_cmd;
 mod remote;
+mod sandbox_bundle;
 mod setup;
 mod state_backup;
 mod update;
@@ -68,6 +70,16 @@ fn parse_global(args: &mut Vec<String>) -> Result<Global, String> {
     };
     // `vibeke import herdr --session` uses `--session` as a plain flag (08 §12).
     let importing = args.first().map(String::as_str) == Some("import");
+    // The in-box bundle commands (spec 17 §7) take `--session` and arbitrary `--resume-arg`
+    // values of their own and never talk to a server: no global flags.
+    if args.first().map(String::as_str) == Some("sandbox")
+        && matches!(
+            args.get(1).map(String::as_str),
+            Some("export-bundle" | "import-bundle")
+        )
+    {
+        return Ok(g);
+    }
     let mut i = 0;
     while i < args.len() {
         let take = |args: &mut Vec<String>, i: usize| -> Result<String, String> {
@@ -166,6 +178,12 @@ fn main() {
         )
     {
         std::process::exit(vk_sandbox::exec::main(&args[1..]));
+    }
+    // Cloud exec (17 §3.2): its own flags and runtime; `--fake-daemon` forks, so no threads yet.
+    if args.first().map(String::as_str) == Some("cloud")
+        && args.get(1).map(String::as_str) == Some("exec")
+    {
+        std::process::exit(vk_cloud::exec_cli::run(&args[2..]));
     }
     if args.first().map(String::as_str) == Some("debug")
         && args.get(1).map(String::as_str) == Some("fake-chromium")
@@ -318,6 +336,13 @@ async fn dispatch(g: Global, args: Vec<String>) -> i32 {
         Some("sandbox") if args.get(1).map(String::as_str) == Some("bridge") => {
             remote::box_bridge(&args[2..]).await
         }
+        // Cloud moves (spec 17 §7): run inside the box, no server.
+        Some("sandbox") if args.get(1).map(String::as_str) == Some("export-bundle") => {
+            sandbox_bundle::export_bundle(&args[2..]).await
+        }
+        Some("sandbox") if args.get(1).map(String::as_str) == Some("import-bundle") => {
+            sandbox_bundle::import_bundle(&args[2..]).await
+        }
         Some("sandbox") if args.get(1).map(String::as_str) == Some("shell") => {
             let params = match vk_cli::build_params(&["task"], &args[2..]) {
                 Ok(p) => p,
@@ -412,6 +437,11 @@ async fn dispatch(g: Global, args: Vec<String>) -> i32 {
                 vk_cli::handoff::run(&mut c, gr, rest).await
             })
             .await
+        }
+        // `vibeke cloud login|send|bring-back` need the terminal (spec 17 §8). The other cloud
+        // verbs are plain API commands (`vk_cli::COMMANDS`); `cloud exec` is dispatched elsewhere.
+        Some("cloud") if cloud_cmd::handles(args.get(1).map(String::as_str)) => {
+            cloud_cmd::run(&g, &args[1..]).await
         }
         Some("keys") => commands::keys(&g, &args[1..]),
         Some("setup") => setup::setup(&args[1..]),

@@ -13,6 +13,8 @@ mod assist_2d;
 mod auth;
 mod browser;
 mod browser_pane;
+mod cloud;
+mod cloud_move;
 mod compat_herdr;
 mod compat_herdr_diff;
 mod compat_herdr_plugins_ext;
