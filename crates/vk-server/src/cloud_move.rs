@@ -1054,18 +1054,64 @@ async fn send(
             return Err(e);
         }
     };
-    // The agent runs in the box: the source pane goes.
+    // The agent runs in the box: the source pane goes, and the host checkout's uncommitted
+    // changes (now in the box) are stashed, so a later bring-back lands in a clean checkout.
     server.close_pane(pane);
+    let host_stash = stash_sent(&cwd, id, &box_ref).await;
     Ok(json!({
         "pane": new_pane.id,
         "task": task,
         "box": box_ref,
+        "host_stash": host_stash,
         "run": run.as_ref().and_then(|r| r.get("id")).cloned(),
         "cwd": box_cwd,
         "resumed": resumed,
         "not_written": imported.get("not_written").cloned().unwrap_or(json!([])),
         "skipped": imported.get("skipped").cloned().unwrap_or(json!([])),
     }))
+}
+
+/// Stash the uncommitted changes (untracked files included) of the host checkout at `cwd` after
+/// a send: they are in the box now. The stash keeps them recoverable on this host
+/// (`git stash list`). Returns `{stashed, reason?}` for the job result.
+async fn stash_sent(cwd: &str, job: &str, box_ref: &str) -> Value {
+    let git = |args: Vec<String>| {
+        let cwd = cwd.to_string();
+        async move {
+            tokio::process::Command::new("git")
+                .arg("-C")
+                .arg(&cwd)
+                .args(&args)
+                .stdin(std::process::Stdio::null())
+                .output()
+                .await
+        }
+    };
+    let dirty = match git(vec!["status".into(), "--porcelain".into()]).await {
+        Ok(o) if o.status.success() => !o.stdout.is_empty(),
+        Ok(o) => {
+            return json!({"stashed": false, "reason": tail(&o.stderr)});
+        }
+        Err(e) => return json!({"stashed": false, "reason": e.to_string()}),
+    };
+    if !dirty {
+        return json!({"stashed": false, "reason": "the checkout was clean"});
+    }
+    let msg = format!("vibeke: sent to {box_ref} (job {job})");
+    match git(vec![
+        "stash".into(),
+        "push".into(),
+        "-q".into(),
+        "-u".into(),
+        "-m".into(),
+        msg.clone(),
+    ])
+    .await
+    {
+        Ok(o) if o.status.success() => json!({"stashed": true, "message": msg}),
+        Ok(o) => json!({"stashed": false, "reason": tail(&o.stderr)}),
+        Err(e) => json!({"stashed": false, "reason": e.to_string()}),
+    }
 }
 
 /// Bring back, first half: the box pane's work exported in the box into a local file.

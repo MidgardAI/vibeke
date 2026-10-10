@@ -421,6 +421,17 @@ fn a_task_runs_in_a_box_and_moves_between_host_and_box() {
     let j = h.job_done(j["job"]["id"].as_str().unwrap());
     assert_eq!(j["state"], "done", "{j}");
     let box_pane = j["result"]["pane"].as_str().unwrap().to_string();
+    // The host checkout's changes went to the box: they are stashed here, not left behind.
+    assert_eq!(j["result"]["host_stash"]["stashed"], true, "{j}");
+    let st = Command::new("git")
+        .args(["-C", &wt, "status", "--porcelain"])
+        .output()
+        .unwrap();
+    assert!(
+        st.stdout.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&st.stdout)
+    );
     let s = h.run(&box_pane, "cat new.txt; git log --oneline | head -1", "M4");
     assert!(s.contains("host") && s.contains("boxwork"), "{s}");
 
