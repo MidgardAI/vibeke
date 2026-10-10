@@ -74,8 +74,15 @@ codegen-units = 4
 strip = "symbols"
 panic = "unwind"
 
+[profile.dev]
+# Line tables keep file:line in panics and backtraces. Full debug info makes every test binary
+# several times larger and slower to link; a debugger session can set `CARGO_PROFILE_DEV_DEBUG=2`.
+debug = "line-tables-only"
+
 [profile.dev.package."*"]
 opt-level = 2
+# Dependencies are rarely stepped through: no debug info keeps their objects small.
+debug = false
 
 # Chunked encryption over multi-megabyte blobs: its tests take 25 s unoptimized, 3 s at level 1.
 [profile.dev.package.vk-store]
