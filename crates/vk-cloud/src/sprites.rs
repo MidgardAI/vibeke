@@ -694,7 +694,7 @@ fn sprite_cli_token(text: &str) -> Option<String> {
     walk(&serde_json::from_str(text).ok()?, false)
 }
 
-fn sessions_from(v: &Value) -> Vec<SessionInfo> {
+pub(crate) fn sessions_from(v: &Value) -> Vec<SessionInfo> {
     let list = match v {
         Value::Array(a) => a.as_slice(),
         Value::Object(o) => o
@@ -721,11 +721,10 @@ fn sessions_from(v: &Value) -> Vec<SessionInfo> {
                 id,
                 command,
                 tty: s.get("tty").and_then(Value::as_bool).unwrap_or(false),
-                active: s
-                    .get("is_active")
-                    .or_else(|| s.get("active"))
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false),
+                // Sprites' `is_active` means "activity in the last few minutes" (sprites-go
+                // `IsSessionActive`), not liveness. A listed session still runs and can be
+                // attached; only absence from the list (or NotFound on attach) means it ended.
+                active: true,
                 last_activity_at: ts(s.get("last_activity")).max(ts(s.get("created"))),
             })
         })

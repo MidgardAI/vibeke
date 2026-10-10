@@ -11,6 +11,8 @@
 //!   <session dir>` ([`session_daemon_main`]), so they survive the client and can be attached
 //!   again. The daemon owns a real PTY, keeps the last 64 KiB of output for replay, and serves
 //!   one client at a time on `<session dir>/sock` (a newer client replaces the older one).
+//!   When the command ends with no client connected, the daemon keeps its output and exit
+//!   status for the next client (up to [`EXIT_GRACE`]), so a fast command is not lost.
 //!
 //! Daemon socket frames: 1 type byte, a big-endian u32 length, then the payload
 //! ([`frame`]).
@@ -46,6 +48,9 @@ pub const EXE_ENV: &str = "VIBEKE_CLOUD_FAKE_EXE";
 pub const BOX_ENV: &str = "VIBEKE_FAKE_BOX";
 
 const RING: usize = 64 * 1024;
+/// How long a finished terminal session's daemon keeps its output and exit status for a client
+/// that has not connected yet.
+const EXIT_GRACE: Duration = Duration::from_secs(30);
 const MAX_FRAME: usize = 4 * 1024 * 1024;
 
 /// Daemon socket frame types.
@@ -232,19 +237,57 @@ fn alive(pid: i32) -> bool {
     pid > 0 && unsafe { libc::kill(pid, 0) } == 0
 }
 
-/// A daemon that is still running (pid alive and no exit recorded).
-fn session_alive(sdir: &Path) -> bool {
-    !sdir.join("exit").exists() && read_pid(&sdir.join("pid")).is_some_and(alive)
+/// `ps -o <field>=` for one process; `None` when it does not exist.
+fn ps_field(pid: i32, field: &str) -> Option<String> {
+    let out = std::process::Command::new("ps")
+        .args(["-ww", "-o", &format!("{field}="), "-p", &pid.to_string()])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (out.status.success() && !s.is_empty()).then_some(s)
 }
 
+/// Whether `cmdline` is the daemon of `sdir`: `… --fake-daemon <…>/<box>/sessions/<id>`.
+fn is_daemon_cmdline(cmdline: &str, sdir: &Path) -> bool {
+    let comps: Vec<&std::ffi::OsStr> = sdir.iter().collect();
+    let tail: PathBuf = comps[comps.len().saturating_sub(3)..].iter().collect();
+    let tail = tail.to_string_lossy();
+    cmdline.contains("--fake-daemon") && cmdline.trim_end().ends_with(&*tail)
+}
+
+/// The pid of the session's daemon, when the recorded pid still is that daemon (a reused pid
+/// belongs to another command line).
+fn daemon_pid(sdir: &Path) -> Option<i32> {
+    let d = read_pid(&sdir.join("pid")).filter(|p| alive(*p))?;
+    ps_field(d, "command")
+        .is_some_and(|c| is_daemon_cmdline(&c, sdir))
+        .then_some(d)
+}
+
+/// A daemon that is still running (pid alive and no exit recorded).
+fn session_alive(sdir: &Path) -> bool {
+    !sdir.join("exit").exists() && daemon_pid(sdir).is_some()
+}
+
+/// Kill a running session's command and daemon. A session with a recorded exit is left alone
+/// (its pids may belong to other processes by now), and so is any pid that is not verifiably
+/// this session's: the daemon by its command line, the command by being the daemon's child.
+/// A finished daemon that lingers for a late client exits by itself once its box is gone.
 fn kill_session(sdir: &Path) {
-    // SAFETY: plain kill(2) calls; the child is its own process group.
-    unsafe {
-        if let Some(c) = read_pid(&sdir.join("child.pid")).filter(|p| alive(*p)) {
-            libc::kill(-c, libc::SIGKILL);
-            libc::kill(c, libc::SIGKILL);
-        }
-        if let Some(d) = read_pid(&sdir.join("pid")).filter(|p| alive(*p)) {
+    if !sdir.join("exit").exists()
+        && let Some(d) = daemon_pid(sdir)
+    {
+        let child = read_pid(&sdir.join("child.pid"))
+            .filter(|c| alive(*c))
+            .filter(|c| ps_field(*c, "ppid").and_then(|p| p.parse::<i32>().ok()) == Some(d));
+        // SAFETY: plain kill(2) calls on verified pids; the child is its own process group.
+        unsafe {
+            if let Some(c) = child {
+                libc::kill(-c, libc::SIGKILL);
+                libc::kill(c, libc::SIGKILL);
+            }
             libc::kill(d, libc::SIGKILL);
         }
     }
@@ -723,7 +766,9 @@ impl Provider for Fake {
                 return Err(CloudError::not_found("no such session"));
             }
             let sdir = bdir.join("sessions").join(session);
-            if !session_alive(&sdir) {
+            // A finished session's daemon may still hold its last output and exit status for a
+            // short while; connecting then delivers them.
+            if !sdir.join("exit").exists() && !session_alive(&sdir) {
                 return Err(CloudError::not_found("the session has ended"));
             }
             let s = connect(&sdir)
@@ -863,6 +908,9 @@ struct Shared {
     ring: VecDeque<u8>,
     client: Option<(u64, std::os::unix::net::UnixStream)>,
     generation: u64,
+    /// The command's exit code once it ended with no client connected; the next client gets
+    /// the output and this code, then the daemon exits.
+    exit: Option<i32>,
 }
 
 impl Shared {
@@ -946,6 +994,7 @@ fn run_daemon(sdir: &Path, spec: &DaemonSpec) -> std::io::Result<()> {
         ring: VecDeque::new(),
         client: None,
         generation: 0,
+        exit: None,
     }));
 
     // PTY output: into the ring and to the current client; at EOF the command is done.
@@ -978,10 +1027,24 @@ fn run_daemon(sdir: &Path, spec: &DaemonSpec) -> std::io::Result<()> {
             let code = child.wait().map(exit_code).unwrap_or(255);
             let _ = std::fs::write(sdir.join("exit"), code.to_string());
             let mut s = shared.lock().unwrap_or_else(|p| p.into_inner());
-            if let Some((_, c)) = s.client.as_mut() {
-                let _ = write_frame_sync(c, frame::EXIT, &code.to_be_bytes());
-                let _ = c.flush();
+            let delivered = match s.client.as_mut() {
+                Some((_, c)) => {
+                    write_frame_sync(c, frame::EXIT, &code.to_be_bytes()).is_ok()
+                        && c.flush().is_ok()
+                }
+                None => false,
+            };
+            if delivered {
+                let _ = std::fs::remove_file(&sock);
+                std::process::exit(0);
             }
+            // Nobody heard the end (a fast command that finished before the first client
+            // connected, or a detached session): keep the output and code for the next client,
+            // which the accept loop serves, for a short grace period.
+            s.client = None;
+            s.exit = Some(code);
+            drop(s);
+            std::thread::sleep(EXIT_GRACE);
             let _ = std::fs::remove_file(&sock);
             std::process::exit(0);
         });
@@ -1012,6 +1075,17 @@ fn run_daemon(sdir: &Path, spec: &DaemonSpec) -> std::io::Result<()> {
             let mut s = shared.lock().unwrap_or_else(|p| p.into_inner());
             let replay: Vec<u8> = s.ring.iter().copied().collect();
             if !replay.is_empty() && write_frame_sync(&mut c, frame::DATA, &replay).is_err() {
+                continue;
+            }
+            if let Some(code) = s.exit {
+                // The command already ended: hand over its exit status and stop.
+                if write_frame_sync(&mut c, frame::EXIT, &code.to_be_bytes()).is_ok()
+                    && c.flush().is_ok()
+                {
+                    let _ = c.shutdown(std::net::Shutdown::Write);
+                    let _ = std::fs::remove_file(&sock);
+                    std::process::exit(0);
+                }
                 continue;
             }
             s.generation += 1;
@@ -1202,6 +1276,56 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(collect(s).await.2, 127);
+    }
+
+    #[test]
+    fn daemon_identity_is_its_command_line() {
+        let sdir = Path::new("/tmp/vkf1/boxes/vk-h-k/sessions/ab12cd34");
+        assert!(is_daemon_cmdline(
+            "/usr/bin/vibeke cloud exec --fake-daemon /tmp/vkf1/boxes/vk-h-k/sessions/ab12cd34",
+            sdir
+        ));
+        // The same session under another root (a symlinked temp dir) still matches.
+        assert!(is_daemon_cmdline(
+            "vibeke cloud exec --fake-daemon /private/tmp/vkf1/boxes/vk-h-k/sessions/ab12cd34",
+            sdir
+        ));
+        assert!(!is_daemon_cmdline("sleep 30", sdir));
+        assert!(!is_daemon_cmdline(
+            "vibeke cloud exec --fake-daemon /tmp/vkf1/boxes/vk-h-k/sessions/ffffffff",
+            sdir
+        ));
+    }
+
+    #[test]
+    fn destroy_never_signals_unverified_pids() {
+        let d = tempfile::Builder::new()
+            .prefix("vkf")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let sdir = d.path().join("boxes/b/sessions/s1");
+        std::fs::create_dir_all(&sdir).unwrap();
+        // An unrelated process that took over the recorded pids.
+        let mut other = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let pid = other.id().to_string();
+        std::fs::write(sdir.join("pid"), &pid).unwrap();
+        std::fs::write(sdir.join("child.pid"), &pid).unwrap();
+        // A recorded exit: nothing is signalled.
+        std::fs::write(sdir.join("exit"), "0").unwrap();
+        kill_session(&sdir);
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(other.try_wait().unwrap().is_none());
+        // No exit, but the pid is not this session's daemon.
+        std::fs::remove_file(sdir.join("exit")).unwrap();
+        assert!(!session_alive(&sdir));
+        kill_session(&sdir);
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(other.try_wait().unwrap().is_none());
+        let _ = other.kill();
+        let _ = other.wait();
     }
 
     #[test]

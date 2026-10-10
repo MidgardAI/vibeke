@@ -8,7 +8,7 @@
 //! `Display` print a placeholder.
 
 use serde::{Deserialize, Serialize};
-use vk_store::keychain::Keychain;
+use vk_store::keychain::{Keychain, KeychainError};
 
 use crate::config::{CloudConfig, CredentialRef};
 use crate::{CloudError, ErrorKind, Provider, Result};
@@ -109,7 +109,17 @@ pub fn resolve(
     if let Some(r) = cfg.provider(p.id()).credential.as_ref() {
         return r.resolve(kc, env).map(|s| Some((s, Source::Config)));
     }
-    if let Some(v) = kc.get_item(&item(p.id())).map_err(kc_err)? {
+    // The implicit item is optional: a host without a usable keychain (Linux without
+    // `secret-tool`, a locked or refusing keychain) has nothing stored there, so the env method
+    // still applies. An explicit `credential` reference above stays strict.
+    let stored = match kc.get_item(&item(p.id())) {
+        Ok(v) => v,
+        Err(KeychainError::Unsupported(_) | KeychainError::Failed(_) | KeychainError::Timeout) => {
+            None
+        }
+        Err(e) => return Err(kc_err(e)),
+    };
+    if let Some(v) = stored {
         let s = Secret::new(v);
         if !s.is_empty() {
             return Ok(Some((s, Source::Keychain)));
@@ -220,5 +230,38 @@ mod tests {
         let s = Secret::new(" tok ");
         assert_eq!(s.expose(), "tok");
         assert_eq!(format!("{s:?} {s}"), "Secret(***) ***");
+    }
+
+    fn unreadable_keychain(dir: &std::path::Path) -> Keychain {
+        use std::os::unix::fs::PermissionsExt;
+        // A 0600 file that is not a JSON object: the file backend fails with `Failed`, the same
+        // kind the OS backend returns when its tool refuses.
+        let p = dir.join("kc.json");
+        std::fs::write(&p, b"not json").unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600)).unwrap();
+        Keychain::File(p)
+    }
+
+    #[test]
+    fn failing_implicit_keychain_falls_through_to_env() {
+        let dir = tempfile::tempdir().unwrap();
+        let kc = unreadable_keychain(dir.path());
+        let p = crate::fake::Fake::new(dir.path().join("fake"));
+        let cfg = CloudConfig::default();
+        let env = |v: &str| (v == crate::fake::TOKEN_ENV).then(|| "tok".to_string());
+        let (s, src) = resolve(&p, &cfg, &kc, &env).unwrap().unwrap();
+        assert_eq!(s.expose(), "tok");
+        assert_eq!(src, Source::Env(crate::fake::TOKEN_ENV.to_string()));
+    }
+
+    #[test]
+    fn failing_explicit_keychain_reference_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let kc = unreadable_keychain(dir.path());
+        let r = CredentialRef {
+            keychain: Some("vibeke/cloud/fake".into()),
+            ..Default::default()
+        };
+        assert!(r.resolve(&kc, &|_| None).is_err());
     }
 }

@@ -494,6 +494,8 @@ fn sessions_and_checkpoints_parse() {
     assert!(s[0].active && s[0].tty);
     assert_eq!(s[0].last_activity_at, 1_767_326_400);
     assert_eq!(s[1].command, "git status");
+    // `is_active: false` only means quiet: a listed session is alive and attachable.
+    assert!(s[1].active);
     assert_eq!(sessions_from(&json!([{"id": "a"}]))[0].id, "a");
     assert_eq!(
         checkpoint_id(

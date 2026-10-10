@@ -216,49 +216,51 @@ async fn run_pipe(p: Arc<dyn Provider>, cred: Secret, o: Opts) -> i32 {
         Ok(s) => s,
         Err(e) => return fail(&o.provider, &e),
     };
-    let mut stdin = if o.interactive {
-        Some(stdin_reader())
+    // stdin is fed from its own task: a full input channel (the box not reading yet) must not
+    // stop this loop from draining output, or large traffic both ways deadlocks.
+    if o.interactive {
+        let input = s.input.clone();
+        let mut rx = stdin_reader();
+        tokio::spawn(async move {
+            while let Some(d) = rx.recv().await {
+                if input.send(In::Data(d)).await.is_err() {
+                    return;
+                }
+            }
+            let _ = input.send(In::Eof).await;
+        });
     } else {
         let _ = s.input.send(In::Eof).await;
-        None
-    };
+    }
     let mut stdout = tokio::io::stdout();
     let mut stderr = tokio::io::stderr();
     loop {
-        tokio::select! {
-            d = recv_opt(&mut stdin) => match d {
-                Some(d) => {
-                    let _ = s.input.send(In::Data(d)).await;
-                }
-                None => {
-                    stdin = None;
-                    let _ = s.input.send(In::Eof).await;
-                }
-            },
-            out = s.output.recv() => match out {
-                Some(Out::Stdout(d)) => {
-                    if stdout.write_all(&d).await.is_err() || stdout.flush().await.is_err() {
-                        return EXIT_LOST;
-                    }
-                }
-                Some(Out::Stderr(d)) => {
-                    let _ = stderr.write_all(&d).await;
-                    let _ = stderr.flush().await;
-                }
-                Some(Out::Exit(c)) => {
-                    let _ = stdout.flush().await;
-                    return c;
-                }
-                Some(Out::PortOpened { .. }) => {}
-                Some(Out::Lost(m)) => {
-                    eprintln!("vibeke: connection to {}/{} lost: {m}", o.provider, o.box_id);
+        match s.output.recv().await {
+            Some(Out::Stdout(d)) => {
+                if stdout.write_all(&d).await.is_err() || stdout.flush().await.is_err() {
                     return EXIT_LOST;
                 }
-                None => {
-                    eprintln!("vibeke: connection to {}/{} lost", o.provider, o.box_id);
-                    return EXIT_LOST;
-                }
-            },
+            }
+            Some(Out::Stderr(d)) => {
+                let _ = stderr.write_all(&d).await;
+                let _ = stderr.flush().await;
+            }
+            Some(Out::Exit(c)) => {
+                let _ = stdout.flush().await;
+                return c;
+            }
+            Some(Out::PortOpened { .. }) => {}
+            Some(Out::Lost(m)) => {
+                eprintln!(
+                    "vibeke: connection to {}/{} lost: {m}",
+                    o.provider, o.box_id
+                );
+                return EXIT_LOST;
+            }
+            None => {
+                eprintln!("vibeke: connection to {}/{} lost", o.provider, o.box_id);
+                return EXIT_LOST;
+            }
         }
     }
 }
@@ -450,39 +452,39 @@ async fn try_resume(
     }
 }
 
+/// Attach to the session in `--session-file`, or start `CMD` (recording its id there).
+async fn start_tty(
+    p: &dyn Provider,
+    cred: &Secret,
+    o: &Opts,
+    cols: u16,
+    rows: u16,
+) -> Result<Session, crate::CloudError> {
+    if let Some(s) = try_resume(p, cred, o, cols, rows).await? {
+        return Ok(s);
+    }
+    let req = ExecReq {
+        argv: o.cmd.clone(),
+        env: o.env.clone(),
+        cwd: o.workdir.clone(),
+        tty: true,
+        cols,
+        rows,
+        detachable: true,
+    };
+    let s = p.exec(cred, &o.box_id, req).await?;
+    if let Some(f) = &o.session_file
+        && !s.id.is_empty()
+    {
+        write_session_file(f, &s.id);
+    }
+    Ok(s)
+}
+
 async fn run_tty(p: Arc<dyn Provider>, cred: Secret, o: Opts) -> i32 {
     let (cols, rows) = term_size();
-    let mut session = match try_resume(&*p, &cred, &o, cols, rows).await {
-        Ok(Some(s)) => s,
-        Ok(None) => {
-            let req = ExecReq {
-                argv: o.cmd.clone(),
-                env: o.env.clone(),
-                cwd: o.workdir.clone(),
-                tty: true,
-                cols,
-                rows,
-                detachable: true,
-            };
-            match p.exec(&cred, &o.box_id, req).await {
-                Ok(s) => {
-                    if let Some(f) = &o.session_file
-                        && !s.id.is_empty()
-                    {
-                        write_session_file(f, &s.id);
-                    }
-                    s
-                }
-                Err(e) => return fail(&o.provider, &e),
-            }
-        }
-        Err(e) => return fail(&o.provider, &e),
-    };
-    let sid = session.id.clone();
-    let _raw = RawMode::enter();
-    let mut stdin = Some(stdin_reader());
-    let mut stdout = tokio::io::stdout();
-    let mut stderr = tokio::io::stderr();
+    // Signals are handled from the start: a pane closed while the box is still being reached
+    // (startup resume, exec, reattach) must end this process, not wait for the provider.
     let (Ok(mut winch), Ok(mut term), Ok(mut hup)) = (
         signal(SignalKind::window_change()),
         signal(SignalKind::terminate()),
@@ -491,6 +493,20 @@ async fn run_tty(p: Arc<dyn Provider>, cred: Secret, o: Opts) -> i32 {
         eprintln!("vibeke: can't install signal handlers");
         return EXIT_CANT_RUN;
     };
+    let started = tokio::select! {
+        r = start_tty(&*p, &cred, &o, cols, rows) => r,
+        _ = term.recv() => return 143,
+        _ = hup.recv() => return 129,
+    };
+    let mut session = match started {
+        Ok(s) => s,
+        Err(e) => return fail(&o.provider, &e),
+    };
+    let sid = session.id.clone();
+    let _raw = RawMode::enter();
+    let mut stdin = Some(stdin_reader());
+    let mut stdout = tokio::io::stdout();
+    let mut stderr = tokio::io::stderr();
     loop {
         // Bridge until the session ends or the connection drops.
         let lost = loop {
@@ -552,7 +568,12 @@ async fn run_tty(p: Arc<dyn Provider>, cred: Secret, o: Opts) -> i32 {
                 _ = hup.recv() => return 129,
             }
             let (cols, rows) = term_size();
-            match p.attach(&cred, &o.box_id, &sid, cols, rows).await {
+            let attached = tokio::select! {
+                r = p.attach(&cred, &o.box_id, &sid, cols, rows) => r,
+                _ = term.recv() => return 143,
+                _ = hup.recv() => return 129,
+            };
+            match attached {
                 Ok(s) => break s,
                 Err(e) if e.kind == ErrorKind::NeedsAuth => {
                     drop(_raw);
@@ -663,5 +684,15 @@ mod tests {
         ] {
             assert!(c(Err(CloudError::new(k, "x"))).is_err(), "{k:?}");
         }
+    }
+
+    #[test]
+    fn a_quiet_sprites_session_is_attached_not_replaced() {
+        // Sprites reports `is_active: false` for a session without recent output. It still runs.
+        let listed = crate::sprites::sessions_from(&serde_json::json!({"sessions": [
+            {"id": "s1", "command": "bash", "tty": true, "is_active": false,
+             "last_activity": "2026-01-02T04:00:00Z"}
+        ]}));
+        assert_eq!(classify_sessions(Ok(listed), "s1"), Ok(Resume::Attach));
     }
 }

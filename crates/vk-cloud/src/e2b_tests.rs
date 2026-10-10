@@ -130,7 +130,13 @@ async fn get_one(h: HeaderMap, Path(id): Path<String>) -> Response {
     if let Err(e) = auth(&h) {
         return e.into_response();
     }
-    let mut v = listed(&id, "running", vk_meta(BOXKEY));
+    // Ids starting with "paused" are paused sandboxes.
+    let state = if id.starts_with("paused") {
+        "paused"
+    } else {
+        "running"
+    };
+    let mut v = listed(&id, state, vk_meta(BOXKEY));
     v["envdAccessToken"] = json!(ENVD_TOKEN);
     v["domain"] = json!("e2b.test");
     Json(v).into_response()
@@ -216,13 +222,29 @@ async fn rpc(State(m): M, h: HeaderMap, Path(method): Path<String>, body: Bytes)
     }
     assert_eq!(header(&h, "content-type"), "application/json");
     let v: Value = serde_json::from_slice(&body).unwrap();
-    m.record(&method, v);
+    m.record(&method, v.clone());
+    if method == "SendInput" && v["process"]["pid"] == 66 {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"code": "unavailable", "message": "input dropped"})),
+        )
+            .into_response();
+    }
     let resp = match method.as_str() {
-        "List" => json!({"processes": [
-            {"pid": 42, "config": {"cmd": "bash", "args": ["-l"], "envs": {}}, "tag": "vk-tty-abc"},
-            {"pid": 7, "config": {"cmd": "git", "args": ["status"]}, "tag": "vk-pipe-def"},
-            {"pid": 9, "config": {"cmd": "other"}}
-        ]}),
+        "List" => {
+            let mut procs = vec![
+                json!({"pid": 42, "config": {"cmd": "bash", "args": ["-l"], "envs": {}}, "tag": "vk-tty-abc"}),
+                json!({"pid": 7, "config": {"cmd": "git", "args": ["status"]}, "tag": "vk-pipe-def"}),
+                json!({"pid": 9, "config": {"cmd": "other"}}),
+            ];
+            // A `flaky` Start lost its response, but the process runs.
+            for (n, c) in m.calls() {
+                if n == "Start" && c["process"]["cmd"] == "flaky" {
+                    procs.push(json!({"pid": 99, "config": {"cmd": "flaky"}, "tag": c["tag"]}));
+                }
+            }
+            json!({ "processes": procs })
+        }
         _ => json!({}),
     };
     Json(resp).into_response()
@@ -243,6 +265,22 @@ fn stream(m: Arc<Mock>, method: String, req: Value) -> Response {
             return;
         }
         let cmd = req["process"]["cmd"].as_str().unwrap_or("").to_string();
+        let starts = m
+            .calls()
+            .iter()
+            .filter(|(n, c)| n == "Start" && c["process"]["cmd"] == cmd.as_str())
+            .count();
+        if cmd == "flaky" || (cmd == "flaky-gone" && starts == 1) {
+            // The stream drops before the start event: did the process start?
+            return;
+        }
+        if cmd == "badinput" {
+            tx.send(frame(json!({"event": {"start": {"pid": 66}}})))
+                .await
+                .unwrap();
+            m.wait_for(&["SendSignal"]).await;
+            return;
+        }
         if req.get("pty").is_some() {
             tx.send(frame(json!({"event": {"start": {"pid": 42}}})))
                 .await
@@ -669,6 +707,22 @@ fn events_parse() {
         parse_event(&json!({"event": {"end": {"status": "signal: killed"}}})),
         Event::End(137)
     );
+    // envd reports a signal death as exitCode -1 with a `signal: …` status.
+    assert_eq!(
+        parse_event(&json!({"event": {"end": {
+            "exitCode": -1, "exited": false, "status": "signal: terminated"
+        }}})),
+        Event::End(143)
+    );
+    assert_eq!(
+        end_code(&json!({"exitCode": -1, "status": "signal: killed"})),
+        137
+    );
+    assert_eq!(
+        end_code(&json!({"exitCode": -1, "status": "signal: segmentation fault (core dumped)"})),
+        139
+    );
+    assert_eq!(end_code(&json!({"exitCode": -1, "status": "odd"})), 255);
     assert_eq!(
         parse_event(&json!({"event": {"keepalive": {}}})),
         Event::Other
@@ -773,4 +827,90 @@ fn boxes_and_cli_config_parse() {
     );
     assert_eq!(e2b_cli_key(r#"{"tokens":{}}"#), None);
     assert_eq!(e2b_cli_key("not json"), None);
+}
+
+fn cache_token(p: &E2b, id: &str) {
+    p.access.lock().unwrap().insert(
+        id.into(),
+        Access {
+            token: Some(ENVD_TOKEN.into()),
+            domain: "e2b.test".into(),
+        },
+    );
+}
+
+fn starts(m: &Mock) -> usize {
+    m.calls().iter().filter(|(n, _)| n == "Start").count()
+}
+
+fn pipe(cmd: &str) -> ExecReq {
+    ExecReq {
+        argv: vec![cmd.into()],
+        ..Default::default()
+    }
+}
+
+#[tokio::test]
+async fn an_ambiguous_start_attaches_to_the_started_process() {
+    let (p, m) = serve().await;
+    cache_token(&p, "sbx1");
+    let mut s = p.exec(&tok(KEY), "sbx1", pipe("flaky")).await.unwrap();
+    assert_eq!(s.id, "99");
+    assert_eq!(starts(&m), 1, "Start must not run twice");
+    assert!(m.find("List").is_some());
+    assert_eq!(m.find("Connect").unwrap(), json!({"process": {"pid": 99}}));
+    assert_eq!(recv(&mut s).await, Out::Stdout(b"replay".to_vec()));
+}
+
+#[tokio::test]
+async fn an_ambiguous_start_runs_again_only_when_the_process_is_absent() {
+    let (p, m) = serve().await;
+    cache_token(&p, "sbx1");
+    let s = p.exec(&tok(KEY), "sbx1", pipe("flaky-gone")).await.unwrap();
+    assert_eq!(s.id, "8");
+    assert_eq!(starts(&m), 2);
+    assert!(m.find("List").is_some());
+    assert!(m.find("Connect").is_none());
+
+    // With freshly fetched access there is nothing to refresh: the error is returned.
+    let (p, m) = serve().await;
+    let e = p
+        .exec(&tok(KEY), "sbx1", pipe("flaky"))
+        .await
+        .err()
+        .unwrap();
+    assert_eq!(e.kind, ErrorKind::Unavailable);
+    assert_eq!(starts(&m), 1);
+}
+
+#[tokio::test]
+async fn a_failed_input_fails_the_session_without_closing_stdin() {
+    let (p, m) = serve().await;
+    cache_token(&p, "sbx1");
+    let mut s = p.exec(&tok(KEY), "sbx1", pipe("badinput")).await.unwrap();
+    s.input.send(In::Data(b"part".to_vec())).await.unwrap();
+    // The bridge may already have ended on the failed input.
+    let _ = s.input.send(In::Eof).await;
+    assert!(matches!(recv(&mut s).await, Out::Lost(_)));
+    // The pipe session is not detachable: it is killed, never told its input ended.
+    m.wait_for(&["SendSignal"]).await;
+    assert!(m.find("CloseStdin").is_none());
+}
+
+#[tokio::test]
+async fn reattach_does_not_wake_a_paused_sandbox() {
+    let (p, m) = serve().await;
+    let e = p.sessions(&tok(KEY), "paused1").await.unwrap_err();
+    assert_eq!(e.kind, ErrorKind::Unavailable);
+    assert!(e.message.contains("paused"), "{e}");
+    let e = p
+        .attach(&tok(KEY), "paused1", "42", 80, 24)
+        .await
+        .err()
+        .unwrap();
+    assert_eq!(e.kind, ErrorKind::Unavailable);
+    assert!(m.find("connect").is_none());
+    // An explicit resume wakes it.
+    p.resume(&tok(KEY), "paused1").await.unwrap();
+    assert!(m.find("connect").is_some());
 }

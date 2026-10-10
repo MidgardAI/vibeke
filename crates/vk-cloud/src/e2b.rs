@@ -13,8 +13,12 @@
 //!   last one has flag `0x02` and carries the end-of-stream JSON with an optional error.
 //!   `SendInput`, `Update`, `SendSignal`, `CloseStdin` and `List` are unary JSON calls. Bytes
 //!   are base64 in JSON. Files go to `POST /files?path=&username=` as multipart.
-//! - The session id is the process id. Each process gets a tag (`vk-tty-…`/`vk-pipe-…`) so
-//!   [`Provider::sessions`] and [`Provider::attach`] know whether it has a terminal.
+//! - The session id is the process id. Each process gets a unique tag (`vk-tty-…`/`vk-pipe-…`)
+//!   so [`Provider::sessions`] and [`Provider::attach`] know whether it has a terminal, and so
+//!   a `Start` whose answer was lost can be found again instead of run twice.
+//! - Only `exec`, `write_file` and `resume` wake a paused sandbox (connect). `attach` and
+//!   `sessions` read envd access with `GET /sandboxes/{id}` and fail with `unavailable` while
+//!   it is paused, so a reconnecting pane does not undo an explicit suspend.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -72,7 +76,7 @@ pub struct E2b {
     pub cfg: ProviderConfig,
     http: reqwest::Client,
     /// envd access per sandbox id, from create, get and connect. A new process fills it with a
-    /// connect call (which also resumes a paused sandbox).
+    /// connect call (which also resumes a paused sandbox); attach and sessions with get.
     access: Mutex<HashMap<String, Access>>,
     /// Tests: envd base URL instead of `https://49983-{id}.{domain}`.
     envd_url: Option<String>,
@@ -175,7 +179,8 @@ impl E2b {
             .get("envdAccessToken")
             .and_then(Value::as_str)
             .filter(|t| !t.is_empty())
-            .map(str::to_string);
+            .map(str::to_string)
+            .or_else(|| self.cached(id).and_then(|a| a.token));
         let domain = v
             .get("domain")
             .and_then(Value::as_str)
@@ -224,9 +229,36 @@ impl E2b {
         }))
     }
 
-    /// envd access for `id`: the cached one, or a fresh one from connect when `refresh` is set
-    /// or nothing is cached.
-    async fn access_for(&self, cred: &Secret, id: &str, refresh: bool) -> Result<Access> {
+    /// envd access read from `GET /sandboxes/{id}`, which does not wake the sandbox. A paused
+    /// sandbox is an `Unavailable` error: reattaching must not undo an explicit suspend.
+    async fn peek_box(&self, cred: &Secret, id: &str) -> Result<Access> {
+        let b = self.get_box(cred, id).await?;
+        if b.state == BoxState::Paused {
+            return Err(CloudError::unavailable(format!(
+                "the E2B sandbox {id} is paused; resume it to reach its sessions"
+            )));
+        }
+        Ok(self.cached(id).unwrap_or(Access {
+            token: None,
+            domain: self.default_domain(),
+        }))
+    }
+
+    /// envd access for `id`. With `wake`: the cached one, or a fresh one from connect (which
+    /// resumes a paused sandbox) when `refresh` is set or nothing is cached. Without `wake` the
+    /// sandbox's state is always checked first and a paused sandbox is an error.
+    async fn access_for(
+        &self,
+        cred: &Secret,
+        id: &str,
+        refresh: bool,
+        wake: bool,
+    ) -> Result<Access> {
+        if !wake {
+            // Never wake: check the sandbox is not paused, even with access cached (a sandbox
+            // suspended after its access was cached must stay paused).
+            return self.peek_box(cred, id).await;
+        }
         if !refresh && let Some(a) = self.cached(id) {
             return Ok(a);
         }
@@ -247,8 +279,15 @@ impl E2b {
     }
 
     /// Run `op` against envd; when it fails in a way a stale token or a paused sandbox
-    /// explains, refresh the access with connect and try once more.
-    async fn with_envd<T, F, Fut>(&self, cred: &Secret, id: &str, op: F) -> Result<(Envd, T)>
+    /// explains, refresh the access and try once more. `op` must be safe to repeat: `Start`
+    /// goes through [`E2b::start`] instead. `wake` lets the refresh resume a paused sandbox.
+    async fn with_envd<T, F, Fut>(
+        &self,
+        cred: &Secret,
+        id: &str,
+        wake: bool,
+        op: F,
+    ) -> Result<(Envd, T)>
     where
         F: Fn(Envd) -> Fut,
         Fut: std::future::Future<Output = Result<T>>,
@@ -256,55 +295,77 @@ impl E2b {
         let mut refreshed = false;
         loop {
             let fresh = refreshed || self.cached(id).is_none();
-            let a = self.access_for(cred, id, refreshed).await?;
+            let a = self.access_for(cred, id, refreshed, wake).await?;
             let e = self.envd(id, &a);
             match op(e.clone()).await {
                 Ok(t) => return Ok((e, t)),
-                Err(err)
-                    if !fresh
-                        && matches!(
-                            err.kind,
-                            ErrorKind::NeedsAuth | ErrorKind::Unavailable | ErrorKind::NotFound
-                        ) =>
-                {
-                    refreshed = true;
-                }
-                // The API key works (connect succeeded) but envd refused: not a sign-in problem.
-                Err(err) if err.kind == ErrorKind::NeedsAuth => {
-                    return Err(CloudError::unavailable(format!(
-                        "the E2B sandbox refused access: {}",
-                        err.message
-                    )));
-                }
-                Err(err) => return Err(err),
+                Err(err) if !fresh && stale_access(&err) => refreshed = true,
+                Err(err) => return Err(envd_refused(err)),
             }
         }
     }
 
-    /// Open a `Start` or `Connect` stream and start the bridge task.
+    /// Start a process. `Start` is never repeated blindly: when it fails in a way that leaves
+    /// open whether envd started the process (a lost connection, a stale token), the process
+    /// is looked up by its unique tag and attached when present. It starts again only when
+    /// `List` confirms it absent.
+    async fn start(&self, cred: &Secret, id: &str, req: &ExecReq) -> Result<Session> {
+        let tag = new_tag(req.tty);
+        let body = start_request(req, &tag);
+        let fresh = self.cached(id).is_none();
+        let e = self.envd(id, &self.access_for(cred, id, false, true).await?);
+        let err = match handshake(&e, "Start", &body).await {
+            Ok(h) => return Ok(Self::spawn_pump(e, h, req.tty, req.detachable)),
+            Err(err) => err,
+        };
+        if fresh || !stale_access(&err) {
+            return Err(envd_refused(err));
+        }
+        let e = self.envd(id, &self.access_for(cred, id, true, true).await?);
+        let procs = match e.unary("List", &json!({})).await {
+            Ok(v) => procs_from(&v),
+            Err(list_err) => {
+                tracing::debug!(error = %list_err, "e2b list after a failed start failed");
+                return Err(envd_refused(err));
+            }
+        };
+        let h = match procs
+            .iter()
+            .find(|p| p.tag.as_deref() == Some(tag.as_str()))
+        {
+            Some(p) => handshake(&e, "Connect", &json!({"process": {"pid": p.pid}})).await,
+            None => handshake(&e, "Start", &body).await,
+        }
+        .map_err(envd_refused)?;
+        Ok(Self::spawn_pump(e, h, req.tty, req.detachable))
+    }
+
+    /// Open a `Connect` stream (attach) and start the bridge task. Never wakes the sandbox.
     async fn open(
         &self,
         cred: &Secret,
         id: &str,
-        method: &'static str,
         body: Value,
         tty: bool,
-        detachable: bool,
     ) -> Result<(Envd, Session)> {
         let body = &body;
-        let (envd, (resp, frames, pid, pending)) = self
-            .with_envd(
-                cred,
-                id,
-                |e| async move { handshake(&e, method, body).await },
-            )
+        let (envd, h) = self
+            .with_envd(cred, id, false, |e| async move {
+                handshake(&e, "Connect", body).await
+            })
             .await?;
+        Ok((envd.clone(), Self::spawn_pump(envd, h, tty, true)))
+    }
+
+    /// Start the bridge task for a process stream past its start event.
+    fn spawn_pump(envd: Envd, h: Handshake, tty: bool, detachable: bool) -> Session {
+        let (resp, frames, pid, pending) = h;
         let (in_tx, in_rx) = mpsc::channel(64);
         let (out_tx, out_rx) = mpsc::channel(256);
         tokio::spawn(pump(
             Pump {
                 ctl: Ctl {
-                    envd: envd.clone(),
+                    envd,
                     pid,
                     tty,
                     detachable,
@@ -316,24 +377,19 @@ impl E2b {
             in_rx,
             out_tx,
         ));
-        Ok((
-            envd,
-            Session {
-                id: pid.to_string(),
-                tty,
-                input: in_tx,
-                output: out_rx,
-            },
-        ))
+        Session {
+            id: pid.to_string(),
+            tty,
+            input: in_tx,
+            output: out_rx,
+        }
     }
 
     async fn processes(&self, cred: &Secret, id: &str) -> Result<Vec<Proc>> {
         let (_, v) = self
-            .with_envd(
-                cred,
-                id,
-                |e| async move { e.unary("List", &json!({})).await },
-            )
+            .with_envd(cred, id, false, |e| async move {
+                e.unary("List", &json!({})).await
+            })
             .await?;
         Ok(procs_from(&v))
     }
@@ -393,6 +449,23 @@ async fn send(rb: reqwest::RequestBuilder) -> Result<(reqwest::header::HeaderMap
         Ok((headers, body))
     } else {
         Err(http_error(status, &body))
+    }
+}
+
+/// A failure a stale envd token or a sandbox that moved explains; worth one refresh.
+fn stale_access(e: &CloudError) -> bool {
+    matches!(
+        e.kind,
+        ErrorKind::NeedsAuth | ErrorKind::Unavailable | ErrorKind::NotFound
+    )
+}
+
+/// The API key works (the control plane answered) but envd refused: not a sign-in problem.
+fn envd_refused(err: CloudError) -> CloudError {
+    if err.kind == ErrorKind::NeedsAuth {
+        CloudError::unavailable(format!("the E2B sandbox refused access: {}", err.message))
+    } else {
+        err
     }
 }
 
@@ -696,31 +769,61 @@ pub(crate) fn parse_event(v: &Value) -> Event {
     Event::Other
 }
 
-/// Exit code of an `EndEvent`. Protobuf JSON leaves out zero values, so a missing `exitCode`
-/// is 0 unless the status says a signal ended the process.
-fn end_code(e: &Value) -> i32 {
-    if let Some(c) = e
+/// Exit code of an `EndEvent`. envd fills it from Go's `ProcessState`: `exitCode` is -1 and
+/// `status` is `signal: <name>` for a process a signal killed, which becomes the shell's
+/// 128 + signal number. Protobuf JSON leaves out zero values, so a missing `exitCode` is 0
+/// unless the status says otherwise.
+pub(crate) fn end_code(e: &Value) -> i32 {
+    let code = e
         .get("exitCode")
         .or_else(|| e.get("exit_code"))
-        .and_then(Value::as_i64)
+        .and_then(Value::as_i64);
+    if let Some(c) = code
+        && c >= 0
     {
-        return c as i32;
+        return i32::try_from(c).unwrap_or(255);
     }
-    let status = e.get("status").and_then(Value::as_str).unwrap_or("");
+    let status = e.get("status").and_then(Value::as_str).unwrap_or("").trim();
     if let Some(n) = status
         .strip_prefix("exit status ")
         .and_then(|n| n.trim().parse::<i32>().ok())
     {
         return n;
     }
-    match status.strip_prefix("signal: ").map(str::trim) {
-        Some("hangup") => 129,
-        Some("interrupt") => 130,
-        Some("killed") => 137,
-        Some("terminated") => 143,
-        Some(_) => -1,
+    if let Some(sig) = status.strip_prefix("signal: ") {
+        // Go appends " (core dumped)" when there is a core file.
+        let sig = sig.trim().trim_end_matches("(core dumped)").trim();
+        return signal_number(sig).map_or(255, |n| 128 + n);
+    }
+    match code {
+        Some(_) => 255,
         None => 0,
     }
+}
+
+/// Linux signal number of Go's `syscall.Signal` name.
+fn signal_number(name: &str) -> Option<i32> {
+    Some(match name {
+        "hangup" => 1,
+        "interrupt" => 2,
+        "quit" => 3,
+        "illegal instruction" => 4,
+        "trace/breakpoint trap" => 5,
+        "aborted" => 6,
+        "bus error" => 7,
+        "floating point exception" => 8,
+        "killed" => 9,
+        "user defined signal 1" => 10,
+        "segmentation fault" => 11,
+        "user defined signal 2" => 12,
+        "broken pipe" => 13,
+        "alarm clock" => 14,
+        "terminated" => 15,
+        _ => {
+            let n = name.strip_prefix("signal ")?.trim().parse::<i32>().ok()?;
+            return (1..=64).contains(&n).then_some(n);
+        }
+    })
 }
 
 /// A process as `List` reports it.
@@ -948,17 +1051,21 @@ impl Envd {
     }
 }
 
-/// Open a process stream and read up to its start event: the response, the frames read past
-/// it, the pid and any output that came first.
-async fn handshake(
-    envd: &Envd,
-    method: &str,
-    body: &Value,
-) -> Result<(reqwest::Response, Frames, u32, Vec<Out>)> {
-    let mut resp = envd.stream(method, body).await?;
+/// A process stream past its start event: the response, the frames read past it, the pid and
+/// any output that came first.
+type Handshake = (reqwest::Response, Frames, u32, Vec<Out>);
+
+/// Open a process stream and read up to its start event. [`START_WAIT`] bounds all of it:
+/// sending the request, the response headers and the start event.
+async fn handshake(envd: &Envd, method: &str, body: &Value) -> Result<Handshake> {
+    let deadline = tokio::time::Instant::now() + START_WAIT;
+    let mut resp = tokio::time::timeout_at(deadline, envd.stream(method, body))
+        .await
+        .map_err(|_| {
+            CloudError::unavailable("timed out waiting for the E2B sandbox to answer")
+        })??;
     let mut frames = Frames::default();
     let mut pending = Vec::new();
-    let deadline = tokio::time::Instant::now() + START_WAIT;
     loop {
         while let Some((flags, msg)) = frames.next_frame()? {
             let v: Value = serde_json::from_slice(&msg).unwrap_or(Value::Null);
@@ -1047,8 +1154,10 @@ async fn drain(frames: &mut Frames, out: &mpsc::Sender<Out>) -> Flow {
 }
 
 /// Send one input (merging queued data); returns an input taken from the queue that still
-/// needs sending.
-async fn apply(p: &Ctl, i: In, input: &mut mpsc::Receiver<In>) -> Option<In> {
+/// needs sending. A failed stdin write or close is an error: its bytes have left the queue, so
+/// the session can't go on as if they arrived (a later `CloseStdin` would make a truncated
+/// `cat > file` succeed). Failed resizes and signals are only logged.
+async fn apply(p: &Ctl, i: In, input: &mut mpsc::Receiver<In>) -> Result<Option<In>> {
     let mut next = None;
     let i = match i {
         In::Data(mut d) => {
@@ -1069,10 +1178,21 @@ async fn apply(p: &Ctl, i: In, input: &mut mpsc::Receiver<In>) -> Option<In> {
     if let Some((method, body)) = input_request(p.pid, p.tty, &i)
         && let Err(e) = p.envd.unary(method, &body).await
     {
-        // A finished process answers not_found; its stream reports the exit.
         tracing::debug!(method, error = %e, "e2b input call failed");
+        if matches!(i, In::Data(_) | In::Eof) {
+            return Err(e);
+        }
     }
-    next
+    Ok(next)
+}
+
+/// Send `i` and any input it pulled from the queue. `Err` carries the failed stdin call.
+async fn apply_all(p: &Ctl, i: In, input: &mut mpsc::Receiver<In>) -> Result<()> {
+    let mut held = Some(i);
+    while let Some(h) = held.take() {
+        held = apply(p, h, input).await?;
+    }
+    Ok(())
 }
 
 /// Kill a session nobody can attach to again once its client is gone.
@@ -1092,6 +1212,9 @@ async fn pump(p: Pump, mut input: mpsc::Receiver<In>, out: mpsc::Sender<Out>) {
         mut frames,
         pending,
     } = p;
+    // Set once stdin could not be delivered because the process is gone: later input is
+    // dropped (no `CloseStdin` after lost bytes) and the stream reports the exit.
+    let mut input_closed = false;
     for o in pending {
         if out.send(o).await.is_err() {
             kill_if_owned(&ctl).await;
@@ -1120,13 +1243,16 @@ async fn pump(p: Pump, mut input: mpsc::Receiver<In>, out: mpsc::Sender<Out>) {
                     kill_if_owned(&ctl).await;
                     return;
                 }
-                Some(i) => {
-                    let mut held = apply(&ctl, i, &mut input).await;
-                    while let Some(h) = held.take() {
-                        held = apply(&ctl, h, &mut input).await;
+                Some(_) if input_closed => Flow::Continue,
+                Some(i) => match apply_all(&ctl, i, &mut input).await {
+                    Ok(()) => Flow::Continue,
+                    // A finished process answers not_found; its stream reports the exit.
+                    Err(e) if e.kind == ErrorKind::NotFound => {
+                        input_closed = true;
+                        Flow::Continue
                     }
-                    Flow::Continue
-                }
+                    Err(e) => Flow::Lost(format!("sending input failed: {}", e.message)),
+                },
             },
             c = tokio::time::timeout(IDLE_LIMIT, resp.chunk()) => match c {
                 Err(_) => Flow::Lost("no data or keepalive from the E2B sandbox".into()),
@@ -1381,11 +1507,7 @@ impl Provider for E2b {
             if req.argv.is_empty() || req.argv[0].is_empty() {
                 return Err(CloudError::new(ErrorKind::InvalidParams, "empty command"));
             }
-            let body = start_request(&req, &new_tag(req.tty));
-            let (_, s) = self
-                .open(cred, id, "Start", body, req.tty, req.detachable)
-                .await?;
-            Ok(s)
+            self.start(cred, id, &req).await
         })
     }
 
@@ -1409,7 +1531,7 @@ impl Provider for E2b {
             // Sessions without a Vibeke tag are assumed to be terminals (panes attach).
             let tty = proc_.tty().unwrap_or(true);
             let body = json!({"process": {"pid": pid}});
-            let (envd, s) = self.open(cred, id, "Connect", body, tty, true).await?;
+            let (envd, s) = self.open(cred, id, body, tty).await?;
             if tty
                 && cols > 0
                 && rows > 0
@@ -1456,8 +1578,13 @@ impl Provider for E2b {
                 return Err(CloudError::new(ErrorKind::InvalidParams, "empty path"));
             }
             let data = &data;
-            self.with_envd(cred, id, |e| async move { e.upload(path, data).await })
-                .await?;
+            self.with_envd(
+                cred,
+                id,
+                true,
+                |e| async move { e.upload(path, data).await },
+            )
+            .await?;
             let mode = mode & 0o7777;
             if mode != 0o644 {
                 let (code, err) = self

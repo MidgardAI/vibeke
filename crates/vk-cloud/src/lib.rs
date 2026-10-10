@@ -232,6 +232,8 @@ pub struct SessionInfo {
     pub id: String,
     pub command: String,
     pub tty: bool,
+    /// The session still runs and can be attached. This is liveness, not recent output: a
+    /// quiet session is active. `last_activity_at` carries the activity time.
     pub active: bool,
     pub last_activity_at: u64,
 }
