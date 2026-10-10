@@ -1,7 +1,7 @@
 // Cloud sandboxes (spec 17): pure helpers for the stores, the send sheet and the Sandboxes screen.
 // No React and no DOM, so they are unit tested directly.
 
-import { needsAuth, type AppEvent, type CloudAuthMethod, type CloudBox, type CloudJob, type CloudJobState, type CloudProvider } from '@vibeke/core';
+import { needsAuth, type AppEvent, type Dashboard, type CloudAuthMethod, type CloudBox, type CloudJob, type CloudJobState, type CloudProvider } from '@vibeke/core';
 
 const str = (v: unknown): string | undefined => (typeof v === 'string' && v ? v : undefined);
 const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
@@ -112,6 +112,47 @@ export function cloudJobPct(j: CloudJob): number | null {
 
 export const cloudJobError = (j: CloudJob): string | null => (j.error ? (j.error.message ?? j.error.kind ?? 'failed') : null);
 
+/**
+ * A failed job whose error says the provider's credential no longer works
+ * (`error.details.reason = "needs_auth"`, e.g. a revoked token): what to sign in to.
+ */
+export function cloudJobNeedsAuth(j: CloudJob): { provider: string | null; methods: CloudAuthMethod[] } | null {
+  if (j.state !== 'failed') return null;
+  const d = obj(j.error?.details);
+  if (!d || d.reason !== 'needs_auth') return null;
+  return { provider: str(d.provider) ?? null, methods: Array.isArray(d.methods) ? (d.methods as CloudAuthMethod[]) : [] };
+}
+
+/**
+ * The sandboxes "Send to cloud" may offer next to "a new sandbox": only the source task's own
+ * box of that provider. `taskKeys` are the id, handle and slug of the pane's task; without a
+ * known task there is no choice (a new sandbox).
+ */
+export function sendBoxChoices(boxes: readonly CloudBox[], provider: string, taskKeys: readonly string[]): CloudBox[] {
+  if (taskKeys.length === 0) return [];
+  return boxes.filter((b) => b.provider === provider && !!b.task && taskKeys.includes(b.task) && (b.ownership === 'attached' || b.ownership === 'idle') && b.state !== 'destroyed');
+}
+
+/** The id, handle and slug of the task a pane works on (its run's task, else its workspace's). */
+export function paneTaskKeys(d: Pick<Dashboard, 'panes' | 'runs' | 'workspaces' | 'tasks'> | null | undefined, pane: string): string[] {
+  if (!d) return [];
+  const p = d.panes.find((x) => x.id === pane || x.handle === pane);
+  if (!p) return [];
+  const id = d.runs.find((r) => r.pane === p.id && r.task)?.task ?? d.workspaces.find((w) => w.id === p.workspace)?.task ?? null;
+  if (!id) return [];
+  const t = d.tasks.find((x) => x.id === id);
+  return t ? [t.id, t.handle, t.slug].filter(Boolean) : [id];
+}
+
+/** The confirmed "Clean up": only the boxes the dry run showed (the host checks each again). */
+export const confirmedPruneParams = (candidates: readonly CloudBox[]): { ownership: ['orphaned', 'idle']; boxes: string[] } => ({ ownership: ['orphaned', 'idle'], boxes: candidates.map((b) => b.box) });
+
+/** `cloud.box.adopt` needs a repository on this host for a box whose record has none. */
+export const adoptNeedsRepo = (e: unknown): boolean => {
+  const x = e as { kind?: string; message?: string } | null;
+  return !!x && x.kind === 'invalid_params' && /\brepo/i.test(x.message ?? '');
+};
+
 // ---- capabilities and actions --------------------------------------------------------------
 
 /** Capabilities arrive as a flag map; a flag the provider does not mention counts as on. */
@@ -195,6 +236,52 @@ export async function runWithCloudAuth<T>(call: () => Promise<T>, signIn: (provi
     if (!need) throw e;
     if (!(await signIn(need.provider, need.methods))) throw e;
     return await call();
+  }
+}
+
+export interface CloudAuthRequest {
+  /** Unique per request: the form is keyed by it, so state never carries over. */
+  id: number;
+  /** The host connection id. */
+  host: string;
+  provider: string;
+  done(ok: boolean): void;
+}
+
+/**
+ * Sign-in requests, one at a time. A second request waits until the first finishes, so a token
+ * typed for one host and provider never goes to another. `finish` acts only on the request it
+ * names (a late completion of an earlier request is ignored), and a successful sign-in also
+ * settles the queued requests for the same host and provider.
+ */
+export class CloudAuthQueue<R extends CloudAuthRequest> {
+  private items: R[] = [];
+  constructor(private readonly onChange: () => void = () => {}) {}
+
+  get current(): R | null {
+    return this.items[0] ?? null;
+  }
+
+  push(r: R): void {
+    this.items.push(r);
+    this.onChange();
+  }
+
+  finish(id: number, ok: boolean): void {
+    const r = this.items.find((x) => x.id === id);
+    if (!r) return;
+    const settled = ok ? this.items.filter((x) => x.host === r.host && x.provider === r.provider) : [r];
+    this.items = this.items.filter((x) => !settled.includes(x));
+    for (const x of settled) x.done(ok);
+    this.onChange();
+  }
+
+  /** Every pending request fails (the host component went away). */
+  clear(): void {
+    const all = this.items;
+    this.items = [];
+    for (const x of all) x.done(false);
+    if (all.length) this.onChange();
   }
 }
 

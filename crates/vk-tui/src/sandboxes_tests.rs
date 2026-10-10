@@ -225,6 +225,41 @@ fn checkpoint_and_adopt() {
 }
 
 #[test]
+fn adopt_asks_for_a_repository_and_focuses_the_pane() {
+    let (mut app, mut rxs) = opened();
+    app.on_key(ch('j'));
+    app.on_key(ch('a'));
+    let cmds = commands(&mut rxs[0]);
+    let (req, _) = only(&cmds, "cloud.box.adopt");
+    let json = json!({"jsonrpc": "2.0", "id": req, "error": {"code": -32602,
+        "message": "the sandbox names no repo: pass repo", "data": {"kind": "invalid_params"}}})
+    .to_string();
+    app.on_frame(
+        0,
+        vk_proto::render::ServerFrame::CommandResult { req, json },
+    );
+    let s = screen(&app);
+    assert!(s.contains("names no repository"), "{s}");
+    // Typing (q included) goes into the field; a paste too.
+    app.on_key(ch('q'));
+    app.on_key(named(NamedKey::Backspace));
+    app.on_paste("/src/app".into());
+    assert!(screen(&app).contains("/src/app"));
+    app.on_key(named(NamedKey::Enter));
+    let cmds = commands(&mut rxs[0]);
+    let (req, p) = only(&cmds, "cloud.box.adopt");
+    assert_eq!(p, json!({"box": "sprites/b3", "repo": "/src/app"}));
+    reply(
+        &mut app,
+        0,
+        req,
+        json!({"box": "sprites/b3", "task": "T5", "pane": "p2"}),
+    );
+    assert!(matches!(app.mode, Mode::Normal));
+    assert_eq!(app.machines[0].focus.pane.as_deref(), Some("p2"));
+}
+
+#[test]
 fn clean_up_lists_the_dry_run_then_confirms() {
     let (mut app, mut rxs) = opened();
     app.on_key(ch('C'));
@@ -248,7 +283,8 @@ fn clean_up_lists_the_dry_run_then_confirms() {
     app.on_key(ch('y'));
     let cmds = commands(&mut rxs[0]);
     let (req, p) = only(&cmds, "cloud.prune");
-    assert_eq!(p, json!({}));
+    // Only the sandboxes the dry run listed.
+    assert_eq!(p, json!({"boxes": ["sprites/b3"]}));
     reply(
         &mut app,
         0,

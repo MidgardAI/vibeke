@@ -33,8 +33,8 @@ const unknownMethod = (e: unknown): boolean => e instanceof RpcError && (e.kind 
 export class CloudStores {
   readonly hosts = new ValueStore<ReadonlyMap<string, HostCloud>>(new Map());
   private subs = new Map<string, { off: () => void; online: boolean }>();
-  /** `host:job` started from this window. */
-  private mine = new Set<string>();
+  /** `host:job` started from this window, with the hold that keeps the store live until it ends. */
+  private mine = new Map<string, () => void>();
   /** `host:job` a sheet is showing (it reports the outcome itself). */
   private watched = new Map<string, number>();
   private refs = 0;
@@ -115,6 +115,7 @@ export class CloudStores {
       this.set(hostId, (cur) => ({ ...cur, loaded: true, unsupported: true, error: null }));
       return;
     }
+    const before = this.hosts.get().get(hostId)?.jobs ?? [];
     this.set(hostId, (cur) => {
       let jobs = cur.jobs;
       if (j.status === 'fulfilled') for (const x of j.value.jobs ?? []) jobs = upsertCloudJob(jobs, x);
@@ -128,6 +129,12 @@ export class CloudStores {
         error: p.status === 'rejected' ? errorMessage(p.reason) : b.status === 'rejected' ? errorMessage(b.reason) : null,
       };
     });
+    // A missed event: the poll settles this window's jobs too.
+    if (j.status === 'fulfilled')
+      for (const x of j.value.jobs ?? []) {
+        const now = this.job(hostId, x.id);
+        if (now) this.settle(hostId, now, before.find((y) => y.id === x.id));
+      }
   }
 
   async refreshProviders(hostId: string): Promise<void> {
@@ -141,10 +148,17 @@ export class CloudStores {
     }
   }
 
-  /** A job this window started (the `cloud.move` result). */
+  /**
+   * A job this window started (the `cloud.move` result). The store stays live (events and the
+   * poll) until the job ends, even when every sheet closed, so its outcome still shows a toast.
+   */
   trackJob(hostId: string, job: CloudJob): void {
-    this.mine.add(`${hostId}:${job.id}`);
+    const k = `${hostId}:${job.id}`;
+    if (!this.mine.has(k)) this.mine.set(k, this.start());
+    const before = this.job(hostId, job.id);
     this.putJob(hostId, job);
+    const now = this.job(hostId, job.id);
+    if (now) this.settle(hostId, now, before);
   }
 
   /** A sheet shows this job: no toast for it meanwhile. Returns the release. */
@@ -184,7 +198,7 @@ export class CloudStores {
     if (job) {
       const before = this.job(hostId, job.id);
       this.putJob(hostId, job);
-      this.maybeToast(hostId, job, before);
+      this.settle(hostId, job, before);
       return;
     }
     const box = cloudBoxFromEvent(e);
@@ -195,11 +209,15 @@ export class CloudStores {
     if (e.type === 'cloud.auth.changed') void this.refreshProviders(hostId);
   }
 
-  private maybeToast(hostId: string, job: CloudJob, before: CloudJob | undefined): void {
+  /** A job of this window ended: a toast unless a sheet shows it, and the hold is released. */
+  private settle(hostId: string, job: CloudJob, before: CloudJob | undefined): void {
     const k = `${hostId}:${job.id}`;
-    if (!this.mine.has(k) || this.watched.has(k) || !cloudJobFinal(job)) return;
-    if (before && cloudJobFinal(before) && before.state === job.state) return;
+    const hold = this.mine.get(k);
+    if (!hold || !cloudJobFinal(job)) return;
     this.mine.delete(k);
+    hold();
+    if (this.watched.has(k)) return;
+    if (before && cloudJobFinal(before) && before.state === job.state) return;
     if (job.state === 'done') this.app.toast(t.cloud.toastDone, 'ok', 5000);
     else if (job.state === 'failed') this.app.toast(`${t.cloud.states['failed'] ?? ''}: ${cloudJobError(job) ?? ''}`, 'error', 8000);
     else this.app.toast(t.cloud.states['cancelled'] ?? '');

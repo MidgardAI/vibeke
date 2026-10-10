@@ -335,7 +335,8 @@ export function KeyboardLayer({ surface }: { surface: Surface }) {
       {sheet?.kind === 'handoff' && <HandoffSheet row={sheet.row} open onClose={() => setSheet(null)} />}
       {sheet?.kind === 'cloud_send' && <CloudSheet mode="send" host={sheet.row.host} pane={sheet.row.pane.id} open onClose={() => setSheet(null)} />}
       {sheet?.kind === 'cloud_back' && <CloudSheet mode="bring_back" host={sheet.host} pane={sheet.pane} open onClose={() => setSheet(null)} />}
-      {surface === 'full' && <CloudAuthHost />}
+      {/* Every window that can open a cloud sheet (the main one and pop-out panes) signs in here. */}
+      <CloudAuthHost />
     </>
   );
 }

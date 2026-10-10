@@ -2,21 +2,22 @@
 // provider. Each row shows the state, who owns it, its task and panes, its age and last activity,
 // and a marker when it holds work that is not on the host. Row actions follow the box's
 // capabilities. Destroying a box with unsynced work asks first; "Clean up…" previews what
-// `cloud.prune` would destroy before it does.
+// `cloud.prune` would destroy, and the confirm destroys only the boxes the preview showed.
+// "Adopt" makes a host task for an orphaned or foreign box and opens what it reattached.
 
 import { useState } from 'react';
 import { Cloud, RefreshCw, Trash2 } from 'lucide-react';
 import { RpcError, type CloudBox, type CloudProvider, type HostConnectionApi } from '@vibeke/core';
 import { useCloud, useCloudStores, useHostCloud, type HostCloud } from '../app/cloud-stores';
-import { useAllHosts, useApp, useNow } from '../app/hooks';
+import { useAllHosts, useApp, useHost, useNow } from '../app/hooks';
 import { requestCloudAuth, withCloudAuth } from '../components/cloud-auth';
-import { Button, Card, Empty, Notice, Pill, Sheet, Spinner } from '../components/ui';
+import { Button, Card, Empty, Notice, Pill, Sheet, Spinner, TextField } from '../components/ui';
 import { t } from '../i18n';
 import { errorMessage } from '../lib/answer';
-import { authEnvVar, boxActions, boxCounts, groupBoxes, hasUnsynced, tryDestroy, type BoxAction, type ProviderGroup } from '../lib/cloud';
+import { adoptNeedsRepo, authEnvVar, boxActions, boxCounts, confirmedPruneParams, groupBoxes, hasUnsynced, tryDestroy, type BoxAction, type ProviderGroup } from '../lib/cloud';
 import { relTime } from '../lib/format';
 import { isOwnFullHost } from '../lib/handoff-send';
-import { navigate } from '../router';
+import { navigate, workspaceRoute } from '../router';
 import { CloudSheet } from './cloud-send';
 
 // ---- presentation (props only, so it renders in tests) --------------------------------------
@@ -159,12 +160,15 @@ type Dialog =
   | { k: 'destroy'; box: CloudBox; unsynced: string | null }
   | { k: 'bring_back'; box: CloudBox }
   | { k: 'prune'; candidates: CloudBox[]; skipped: { box: string; reason: string }[] }
+  | { k: 'adopt_repo'; box: CloudBox; error: string | null }
   | null;
 
 function HostSandboxes({ hostId, name, many }: { hostId: string; name: string; many: boolean }) {
   const app = useApp();
   const stores = useCloudStores();
   const cloud: HostCloud = useHostCloud(hostId);
+  const dashboard = useHost(hostId)?.dashboard;
+  const [repo, setRepo] = useState('');
   const now = useNow(30_000) ;
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -185,6 +189,7 @@ function HostSandboxes({ hostId, name, many }: { hostId: string; name: string; m
     }
     if (a === 'bring_back') return setDialog({ k: 'bring_back', box: b });
     if (a === 'destroy') return setDialog({ k: 'destroy', box: b, unsynced: hasUnsynced(b) ? b.unsynced!.summary : null });
+    if (a === 'adopt') return void adopt(b);
     setBusy(b.box);
     try {
       const run = () => {
@@ -195,8 +200,6 @@ function HostSandboxes({ hostId, name, many }: { hostId: string; name: string; m
             return c.request('cloud.box.resume', { box: b.box });
           case 'checkpoint':
             return c.request('cloud.box.checkpoint', { box: b.box });
-          case 'adopt':
-            return c.request('cloud.box.adopt', { box: b.box }, { timeoutMs: 120_000 });
           default:
             return c.request('cloud.box.forget', { box: b.box });
         }
@@ -205,6 +208,35 @@ function HostSandboxes({ hostId, name, many }: { hostId: string; name: string; m
       if (a === 'forget') stores.dropBox(hostId, b.box);
       void stores.refresh(hostId);
     } catch (e) {
+      fail(e);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  /**
+   * Adopt: the host makes a task on the box's branch and reopens its live sessions. A box whose
+   * record names no repository needs one from the user (asked once, then sent as `repo`).
+   */
+  const adopt = async (b: CloudBox, repoPath?: string) => {
+    const c = conn();
+    if (!c) return;
+    setError(null);
+    setBusy(b.box);
+    try {
+      const r = await withCloudAuth(c, b.provider, () => c.request('cloud.box.adopt', { box: b.box, ...(repoPath ? { repo: repoPath } : {}) }, { timeoutMs: 180_000 }));
+      setDialog(null);
+      void stores.refresh(hostId);
+      if (r.pane) return navigate({ name: 'pane', host: hostId, pane: r.pane, view: 'term' });
+      const ws = dashboard?.tasks.find((x) => x.id === r.task || x.handle === r.task)?.workspace;
+      if (ws) return navigate(workspaceRoute(hostId, ws));
+      app.toast(t.cloud.adopted(r.task), 'ok');
+    } catch (e) {
+      if (adoptNeedsRepo(e)) {
+        if (!repoPath) setRepo('');
+        return setDialog({ k: 'adopt_repo', box: b, error: repoPath ? errorMessage(e) : null });
+      }
+      setDialog(null);
       fail(e);
     } finally {
       setBusy(null);
@@ -240,11 +272,12 @@ function HostSandboxes({ hostId, name, many }: { hostId: string; name: string; m
     }
   };
 
-  const confirmPrune = async () => {
+  /** Destroy exactly the boxes the preview listed; the host checks each one again. */
+  const confirmPrune = async (candidates: CloudBox[]) => {
     const c = conn();
     if (!c) return;
     try {
-      const r = await c.request('cloud.prune', { ownership: ['orphaned', 'idle'] }, { timeoutMs: 180_000 });
+      const r = await c.request('cloud.prune', confirmedPruneParams(candidates), { timeoutMs: 180_000 });
       app.toast(t.cloud.cleanedUp(r.destroyed?.length ?? 0), 'ok');
       void stores.refresh(hostId, { refresh: true });
     } catch (e) {
@@ -313,6 +346,28 @@ function HostSandboxes({ hostId, name, many }: { hostId: string; name: string; m
           </div>
         </Sheet>
       )}
+      {dialog?.k === 'adopt_repo' && (
+        <Sheet open onClose={() => setDialog(null)} title={t.cloud.adoptRepoTitle}>
+          <form
+            className="space-y-3"
+            onSubmit={(e) => {
+              e.preventDefault();
+              const v = repo.trim();
+              if (v) void adopt(dialog.box, v);
+            }}
+          >
+            <div className="text-sm text-muted">{t.cloud.adoptRepoHint}</div>
+            {dialog.error && <Notice tone="danger">{dialog.error}</Notice>}
+            <TextField label={t.cloud.adoptRepoLabel} value={repo} onChange={(e) => setRepo(e.target.value)} autoComplete="off" autoCapitalize="off" spellCheck={false} placeholder="/path/to/repo" />
+            <Button type="submit" block variant="primary" busy={busy === dialog.box.box} disabled={!repo.trim()}>
+              {t.cloud.adopt}
+            </Button>
+            <Button type="button" block variant="ghost" onClick={() => setDialog(null)}>
+              {t.cancel}
+            </Button>
+          </form>
+        </Sheet>
+      )}
       {dialog?.k === 'bring_back' && <CloudSheet mode="bring_back" host={hostId} box={dialog.box.box} open onClose={() => setDialog(null)} />}
       {dialog?.k === 'prune' && (
         <Sheet open role="alertdialog" onClose={() => setDialog(null)} title={t.cloud.cleanUpTitle}>
@@ -338,7 +393,7 @@ function HostSandboxes({ hostId, name, many }: { hostId: string; name: string; m
               </div>
             )}
             {dialog.candidates.length > 0 && (
-              <Button block variant="danger" onClick={() => void confirmPrune()}>
+              <Button block variant="danger" onClick={() => void confirmPrune(dialog.candidates)}>
                 {t.cloud.destroyAll(dialog.candidates.length)}
               </Button>
             )}

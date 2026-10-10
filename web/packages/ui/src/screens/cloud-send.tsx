@@ -6,18 +6,19 @@
 //   follow the job.
 //
 // The host runs the job, so the sheet can close at any point and the move goes on; a toast
-// reports the end. Nothing mutating is retried by the app, except the one retry after sign-in.
+// reports the end. Nothing mutating is retried by the app, except the one retry after sign-in:
+// either the `cloud.move` call or its job failed with `needs_auth` (a token revoked meanwhile).
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowRight, Check, CheckCircle2, CircleAlert, Cloud, OctagonX, Server, Box } from 'lucide-react';
 import { OutcomeUnknownError, isHandoffBusy, type CloudBox, type CloudJob, type CloudMoveTarget, type CloudProvider, type HandoffPeer } from '@vibeke/core';
 import { useCloudStores, useHostCloud } from '../app/cloud-stores';
-import { useApp } from '../app/hooks';
-import { requestCloudAuth, withCloudAuth } from '../components/cloud-auth';
+import { useApp, useHost } from '../app/hooks';
+import { requestCloudAuth } from '../components/cloud-auth';
 import { Button, Notice, Sheet, Spinner } from '../components/ui';
 import { t } from '../i18n';
 import { errorMessage } from '../lib/answer';
-import { cloudJobError, cloudJobFinal, cloudJobPct } from '../lib/cloud';
+import { cloudJobError, cloudJobFinal, cloudJobNeedsAuth, cloudJobPct, paneTaskKeys, runWithCloudAuth, sendBoxChoices } from '../lib/cloud';
 import { navigate } from '../router';
 
 export type CloudSheetProps =
@@ -39,6 +40,8 @@ type Step =
 
 const JOB_POLL_MS = 3000;
 
+type MoveParams = { to: CloudMoveTarget; box?: string; interrupt?: boolean; source_after?: 'keep' | 'suspend' | 'destroy' };
+
 export function CloudSheet(props: CloudSheetProps) {
   const { host, open, onClose } = props;
   const app = useApp();
@@ -48,6 +51,10 @@ export function CloudSheet(props: CloudSheetProps) {
   const [peers, setPeers] = useState<HandoffPeer[]>([]);
   const gen = useRef(0);
   const send = props.mode === 'send';
+  const dashboard = useHost(host)?.dashboard;
+  const taskKeys = useMemo(() => (send && props.pane ? paneTaskKeys(dashboard, props.pane) : []), [send, props.pane, dashboard]);
+  /** The move the sheet started last, and whether it already had its one retry after sign-in. */
+  const last = useRef<{ params: MoveParams; provider: string; retried: boolean; job: string | null } | null>(null);
 
   useEffect(() => {
     if (!open) {
@@ -74,21 +81,30 @@ export function CloudSheet(props: CloudSheetProps) {
     onClose();
   };
 
-  const move = async (params: { to: CloudMoveTarget; box?: string; interrupt?: boolean; source_after?: 'keep' | 'suspend' | 'destroy' }, provider: string) => {
+  /** Start a move. `retried`: this is the one retry after signing in (no second prompt). */
+  const move = async (params: MoveParams, provider: string, retried = false) => {
     const conn = app.conn(host);
     if (!conn) return;
     const g = gen.current;
     const interrupt = !!params.interrupt;
     setStep({ k: 'starting' });
     const body = { ...(props.pane ? { pane: props.pane } : {}), ...(props.mode === 'bring_back' && props.box && !props.pane ? { box: props.box } : {}), ...params };
+    const cur = { params, provider, retried, job: null as string | null };
+    last.current = cur;
+    const signIn = async (p: string, methods: Parameters<typeof requestCloudAuth>[2]) => {
+      if (cur.retried) return false;
+      cur.retried = true;
+      return requestCloudAuth(conn, p || provider, methods);
+    };
     try {
-      const { job } = await withCloudAuth(conn, provider, () => conn.request('cloud.move', body, { timeoutMs: 60_000 }));
+      const { job } = await runWithCloudAuth(() => conn.request('cloud.move', body, { timeoutMs: 60_000 }), signIn);
       stores.trackJob(host, job);
+      cur.job = job.id;
       if (g !== gen.current) return;
       setStep({ k: 'job', job: job.id });
     } catch (e) {
       if (g !== gen.current) return;
-      if (!interrupt && isHandoffBusy(e)) return setStep({ k: 'busy', retry: () => void move({ ...params, interrupt: true }, provider) });
+      if (!interrupt && isHandoffBusy(e)) return setStep({ k: 'busy', retry: () => void move({ ...params, interrupt: true }, provider, cur.retried) });
       if (e instanceof OutcomeUnknownError) {
         void stores.refresh(host);
         return setStep({ k: 'unknown' });
@@ -97,13 +113,32 @@ export function CloudSheet(props: CloudSheetProps) {
     }
   };
 
+  // The job failed because the sign-in no longer works (e.g. a revoked token): sign in, then
+  // start the same move once more. A second failure of that kind stays a failure.
+  const jobId = step.k === 'job' ? step.job : null;
+  const job = jobId ? cloud.jobs.find((j) => j.id === jobId) : undefined;
+  const authFail = job ? cloudJobNeedsAuth(job) : null;
+  useEffect(() => {
+    const cur = last.current;
+    const conn = app.conn(host);
+    if (!authFail || !job || !cur || cur.job !== job.id || cur.retried || !conn) return;
+    cur.retried = true;
+    const g = gen.current;
+    const provider = authFail.provider ?? cur.provider;
+    const methods = authFail.methods.length ? authFail.methods : (cloud.providers.find((p) => p.id === provider)?.methods ?? []);
+    void requestCloudAuth(conn, provider, methods).then((ok) => {
+      if (ok && g === gen.current) void move(cur.params, cur.provider, true);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authFail, job?.id]);
+
   const title = send ? t.cloud.title : t.cloud.bringBackTitle;
   return (
     <Sheet open={open} onClose={close} title={title}>
       {step.k === 'job' ? (
         <JobView host={host} jobId={step.job} onClose={close} />
       ) : (
-        <Body step={step} send={send} host={host} providers={cloud.providers} boxes={cloud.boxes} peers={peers} setStep={setStep} move={move} onClose={close} />
+        <Body step={step} send={send} host={host} providers={cloud.providers} boxes={cloud.boxes} taskKeys={taskKeys} peers={peers} setStep={setStep} move={move} onClose={close} />
       )}
     </Sheet>
   );
@@ -115,6 +150,7 @@ function Body({
   host,
   providers,
   boxes,
+  taskKeys,
   peers,
   setStep,
   move,
@@ -125,9 +161,11 @@ function Body({
   host: string;
   providers: CloudProvider[];
   boxes: CloudBox[];
+  /** The source pane's task (id, handle, slug): its own box is the only existing one offered. */
+  taskKeys: string[];
   peers: HandoffPeer[];
   setStep(s: Step): void;
-  move(p: { to: CloudMoveTarget; box?: string; interrupt?: boolean; source_after?: 'keep' | 'suspend' | 'destroy' }, provider: string): Promise<void>;
+  move(p: MoveParams, provider: string): Promise<void>;
   onClose(): void;
 }) {
   const app = useApp();
@@ -170,7 +208,7 @@ function Body({
         </div>
       );
     case 'box': {
-      const mine = live.filter((b) => b.provider === step.provider.id);
+      const mine = sendBoxChoices(boxes, step.provider.id, taskKeys);
       return (
         <div className="space-y-2">
           <div className="text-sm text-muted">{t.cloud.chooseBox}</div>

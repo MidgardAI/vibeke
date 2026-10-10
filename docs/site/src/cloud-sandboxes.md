@@ -10,7 +10,7 @@ Vibeke supports these providers: Sprites and E2B.
 
 You sign in to a provider once for each host. Vibeke keeps the token in the system keychain of that host.
 
-- In the terminal interface, open the **Sandboxes** view. Select a provider and choose **Sign in**.
+- In the terminal interface, open **sandboxes** from the command palette. Press `tab` until the provider is marked, then press `s`.
 - From the command line, run `vibeke cloud login sprites`. Vibeke asks for the token without showing it.
 - In the browser or desktop app, open **Sandboxes** and choose **Sign in** next to the provider. Choose **Get a token** to open the provider's page. Paste the token into the field.
 
@@ -20,10 +20,10 @@ Any action that needs a sign-in opens the same screen. After you sign in, the ac
 
 ## Start a task in a sandbox
 
-To run a new task in a sandbox from the start, use the cloud isolation:
+To run a new task in a sandbox from the start, use the cloud isolation. Run this command in your repository, and give the task a title:
 
 ```sh
-vibeke task create --isolate cloud --provider sprites
+vibeke task new "Cloud task" --isolate cloud --provider sprites
 ```
 
 Vibeke creates the sandbox, copies the task's checkout into it, and opens a pane there. The pane looks like any other pane. You can detach, reattach and review changes as usual.
@@ -32,19 +32,22 @@ Vibeke creates the sandbox, copies the task's checkout into it, and opens a pane
 
 You can also move work that is already running.
 
-1. Open the menu of the pane.
-2. Choose **Send to cloud…**. In the command palette, use the same name.
-3. Choose a provider. Sign in if the app asks.
-4. Choose a new sandbox, or an existing sandbox of the same task.
-5. Confirm and follow the progress.
+1. In the browser or desktop app, choose **Cloud** in the header of the workspace. In the terminal interface, open the menu of the pane and choose **send to cloud**. The command palette has the same command in both.
+2. Choose a provider. Sign in if the app asks.
+3. Choose **A new sandbox**. If the task of the pane already has a sandbox at this provider, you can choose that sandbox instead.
+4. Confirm and follow the progress.
 
 Vibeke waits until the agent finishes its current turn. Then it packs the work, uploads it, and starts the agent again in the sandbox. If the agent is busy, you can choose **Interrupt and hand off**. If any step fails, the pane keeps running on your host.
+
+After a successful send, the agent works in the sandbox, and the pane on your host closes. Your uncommitted changes are now in the sandbox. Vibeke stashes them in the checkout on your host, with the message `vibeke: sent to <sandbox>`. A later bring-back then lands in a clean checkout. Run `git stash list` to see the stash.
+
+If the provider rejects the sign-in during the move, for example because you revoked the token, the app asks you to sign in. Then it starts the same move one more time.
 
 From the command line, use `vibeke cloud send`.
 
 ## Bring the work back
 
-Choose **Bring back from cloud…** in the pane menu or the command palette. You can bring the work back to:
+For a pane that runs in a sandbox, the header of the workspace shows **Bring back** instead of **Cloud**. You can also choose **Bring back from cloud…** in the pane menu or the command palette. You can bring the work back to:
 
 - **This host.** The agent continues in a new pane on your host. The task uses your host again.
 - **A paired host.** Vibeke sends the work to another of your hosts. That host needs to be paired with this one. See [Sharing and handoff](handoff.md).
@@ -55,18 +58,36 @@ After the work is back, Vibeke keeps, suspends or destroys the sandbox. The sett
 
 ## See and clean up sandboxes
 
-Open **Sandboxes** in the app (the address `#/sandboxes`), in the terminal interface, or run `vibeke cloud ls`. Vibeke groups sandboxes by provider. Each row shows:
+Open **Sandboxes** in the app (the address `#/sandboxes`) or from the command palette of the terminal interface. On the command line, run `vibeke cloud ls`. Vibeke groups sandboxes by provider. Each row shows:
 
 - the state, such as running or suspended;
 - who owns it: yours, idle, orphaned, from another host, or missing;
 - the task, the panes, the age and the last activity;
 - a **Not synced** mark when the sandbox holds work that is not on your host.
 
-Use the row actions to open, bring back, suspend, resume, checkpoint, adopt or destroy a sandbox. An *orphaned* sandbox is one of yours whose task no longer exists. **Adopt** makes a new task for it. A *missing* sandbox is one that the provider no longer lists. **Forget** removes its record.
+Use the row actions to open, bring back, suspend, resume, checkpoint, adopt or destroy a sandbox. In the terminal interface, select a row with `j` and `k`, and use these keys:
+
+| Key | Action |
+| --- | --- |
+| `enter` | Open the pane of the sandbox |
+| `b` | Bring the work back |
+| `p` | Suspend or resume |
+| `c` | Save a checkpoint |
+| `a` | Adopt |
+| `f` | Forget |
+| `d` | Destroy |
+| `C` | Clean up |
+| `tab` | Mark the next provider |
+| `s` | Sign in to the marked provider |
+| `r` | Read the list again |
+
+An *orphaned* sandbox is one of yours whose task no longer exists. **Adopt** works on orphaned sandboxes and on sandboxes of another host. Vibeke makes a new task on your host. The task uses the branch of the sandbox, and Vibeke pulls that branch from the sandbox. Vibeke opens a pane for each session that still runs in the sandbox, and the app shows that pane. Sometimes the sandbox does not say which repository it holds. Then Vibeke asks for the path of that repository on your host. From the command line, run `vibeke cloud adopt <sandbox>`.
+
+A *missing* sandbox is one that the provider no longer lists. **Forget** removes its record.
 
 When you destroy a sandbox that has work that is not on your host, Vibeke stops and asks. You can choose **Bring back first**, or **Destroy anyway**.
 
-**Clean up…** shows which orphaned and idle sandboxes Vibeke can destroy. Nothing is destroyed until you confirm. From the command line, run `vibeke cloud prune --dry-run` first.
+**Clean up…** shows which orphaned and idle sandboxes Vibeke can destroy. Nothing is destroyed until you confirm. The confirmation destroys only the sandboxes in that list. Vibeke checks each of them again first. It skips a sandbox that no longer qualifies, for example one that now has work that is not on your host. From the command line, run `vibeke cloud prune --dry-run` first.
 
 ## Costs and limits
 

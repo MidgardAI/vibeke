@@ -3,18 +3,18 @@
 // or a note that the host already uses an environment variable.
 //
 // `withCloudAuth(conn, provider, call)` runs any cloud call. When the host answers `needs_auth`
-// it opens the sign-in sheet (mounted once by the shell as <CloudAuthHost/>), and retries the
+// it opens the sign-in sheet (mounted by each window as <CloudAuthHost/>), and retries the
 // call once after a successful sign-in. The token goes to the host in one `cloud.auth.set` call
 // and is dropped from the form at once; it is never stored or logged here.
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Download, ExternalLink, KeyRound } from 'lucide-react';
 import { needsAuth, type CloudAuthMethod, type HostConnectionApi } from '@vibeke/core';
 import { cloudStores, useHostCloud } from '../app/cloud-stores';
 import { useApp } from '../app/hooks';
 import { t } from '../i18n';
 import { errorMessage } from '../lib/answer';
-import { runWithCloudAuth } from '../lib/cloud';
+import { CloudAuthQueue, runWithCloudAuth, type CloudAuthRequest } from '../lib/cloud';
 import { Button, Notice, Sheet, TextField } from './ui';
 
 const safeUrl = (u: string | undefined): string | null => {
@@ -93,21 +93,22 @@ export function CloudAuthForm({ methods, envVar, busy, error, onToken, onImport,
 
 // ---- the sign-in sheet and the retry helper ------------------------------------------------
 
-interface AuthRequest {
+interface AuthRequest extends CloudAuthRequest {
   conn: HostConnectionApi;
-  provider: string;
   label: string;
   methods: CloudAuthMethod[];
-  done(ok: boolean): void;
 }
 
-let handler: ((r: AuthRequest) => void) | null = null;
+let nextId = 1;
+/** The mounted <CloudAuthHost/>s of this window; the newest one shows the requests. */
+const handlers: ((r: AuthRequest) => void)[] = [];
 
 /** Sign in, outside any failed call (the Sandboxes screen's "Sign in"). Resolves true when signed in. */
 export function requestCloudAuth(conn: HostConnectionApi, provider: string, methods: CloudAuthMethod[], label = provider): Promise<boolean> {
   return new Promise((resolve) => {
+    const handler = handlers[handlers.length - 1];
     if (!handler) return resolve(false);
-    handler({ conn, provider, label, methods, done: resolve });
+    handler({ id: nextId++, host: conn.id, conn, provider, label, methods, done: resolve });
   });
 }
 
@@ -119,22 +120,26 @@ export function withCloudAuth<T>(conn: HostConnectionApi, provider: string, call
   return runWithCloudAuth(call, (p, methods) => requestCloudAuth(conn, p || provider, methods));
 }
 
-/** Mounted once by the shell: shows the sign-in sheet for the pending request. */
+/**
+ * Mounted wherever a cloud sheet can open (the main window and pop-out pane windows): shows the
+ * sign-in sheet for one request at a time; later requests wait their turn.
+ */
 export function CloudAuthHost() {
-  const [req, setReq] = useState<AuthRequest | null>(null);
+  const [, setTick] = useState(0);
+  const queue = useMemo(() => new CloudAuthQueue<AuthRequest>(() => setTick((n) => n + 1)), []);
   useEffect(() => {
-    handler = (r) => {
-      setReq((cur) => {
-        cur?.done(false);
-        return r;
-      });
-    };
+    const handler = (r: AuthRequest) => queue.push(r);
+    handlers.push(handler);
     return () => {
-      handler = null;
+      const i = handlers.indexOf(handler);
+      if (i >= 0) handlers.splice(i, 1);
+      queue.clear();
     };
-  }, []);
+  }, [queue]);
+  const req = queue.current;
   if (!req) return null;
-  return <CloudAuthSheet req={req} onFinish={(ok) => (req.done(ok), setReq(null))} />;
+  // Keyed by the request: a new request gets a fresh form (no token or error carries over).
+  return <CloudAuthSheet key={req.id} req={req} onFinish={(ok) => queue.finish(req.id, ok)} />;
 }
 
 function CloudAuthSheet({ req, onFinish }: { req: AuthRequest; onFinish(ok: boolean): void }) {

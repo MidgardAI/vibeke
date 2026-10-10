@@ -6,10 +6,13 @@
 //!
 //! Row keys: `enter` opens the task's pane, `b` brings the sandbox's work back
 //! ([`crate::cloud`]), `p` suspends or resumes (only where the provider can), `c` checkpoints,
-//! `a` adopts an orphaned or foreign sandbox, `f` forgets a missing one, `d` destroys it after a
-//! confirm (a refusal for unsynced work offers *Bring back first* and *Destroy anyway*), and
-//! `C` cleans up: a dry run lists what would go, then one confirm. `cloud.box.changed` events
-//! keep the list current. The footer counts what runs and what is idle.
+//! `a` adopts an orphaned or foreign sandbox (a host task on its branch; the reattached pane is
+//! focused, and a sandbox that names no repository asks for one), `f` forgets a missing one, `d`
+//! destroys it after a confirm (a refusal for unsynced work offers *Bring back first* and
+//! *Destroy anyway*), and `C` cleans up: a dry run lists what would go, then one confirm that
+//! destroys only those sandboxes (`boxes`). `tab` / shift-tab pick the provider that `s` signs
+//! in to. `cloud.box.changed` events keep the list current. The footer counts what runs and
+//! what is idle.
 
 use serde_json::{Value, json};
 use vk_proto::input::{Key, KeyEvent, KeyKind, NamedKey};
@@ -168,9 +171,18 @@ pub enum Confirm {
         name: String,
         summary: String,
     },
-    /// What `cloud.prune {dry_run: true}` would destroy, one line each.
+    /// What `cloud.prune {dry_run: true}` would destroy, one line each; the confirm destroys
+    /// only these `boxes`.
     Prune {
         lines: Vec<String>,
+        boxes: Vec<String>,
+    },
+    /// `cloud.box.adopt` needs a repository on this host: the path typed so far.
+    AdoptRepo {
+        box_id: String,
+        name: String,
+        repo: String,
+        error: Option<String>,
     },
 }
 
@@ -195,7 +207,10 @@ pub enum Call {
         force: bool,
     },
     Adopt {
+        box_id: String,
         name: String,
+        /// The repository path the user gave (a second refusal shows its error).
+        repo: Option<String>,
     },
     Forget {
         box_id: String,
@@ -463,6 +478,34 @@ pub enum Act {
     LeaveAuth,
 }
 
+/// The confirmed clean-up: only the sandboxes the dry run listed (the server checks each again).
+pub fn prune_params(boxes: &[String]) -> Value {
+    json!({"boxes": boxes})
+}
+
+/// `cloud.box.adopt`, with the repository path when the user gave one.
+fn adopt_call(box_id: &str, name: &str, repo: Option<String>) -> Act {
+    let mut params = json!({"box": box_id});
+    if let Some(r) = &repo {
+        params["repo"] = json!(r);
+    }
+    act_call(
+        "cloud.box.adopt",
+        params,
+        Call::Adopt {
+            box_id: box_id.into(),
+            name: name.into(),
+            repo,
+        },
+        format!("adopting {name}…"),
+    )
+}
+
+/// `cloud.box.adopt` refused because the box names no repository: ask for one.
+pub fn adopt_needs_repo(e: &RpcErr) -> bool {
+    e.kind == "invalid_params" && e.message.to_lowercase().contains("repo")
+}
+
 fn act_call(method: &'static str, params: Value, call: Call, busy: String) -> Act {
     Act::Call {
         method,
@@ -517,8 +560,39 @@ pub fn on_key(v: &mut View, ev: &KeyEvent) -> Act {
                 ),
                 _ => Act::None,
             },
-            Confirm::Prune { .. } if yes => {
-                act_call("cloud.prune", json!({}), Call::Prune, "cleaning up…".into())
+            Confirm::Prune { boxes, .. } if yes => act_call(
+                "cloud.prune",
+                prune_params(&boxes),
+                Call::Prune,
+                "cleaning up…".into(),
+            ),
+            Confirm::AdoptRepo {
+                box_id,
+                name,
+                mut repo,
+                error,
+            } => {
+                if esc {
+                    return Act::None;
+                }
+                match ev.key {
+                    Key::Named(NamedKey::Enter) if !repo.trim().is_empty() => {
+                        let path = repo.trim().to_string();
+                        return adopt_call(&box_id, &name, Some(path));
+                    }
+                    Key::Named(NamedKey::Backspace) => {
+                        repo.pop();
+                    }
+                    Key::Char(c) if !ev.mods.ctrl() && !ev.mods.alt() => repo.push(c),
+                    _ => {}
+                }
+                v.confirm = Some(Confirm::AdoptRepo {
+                    box_id,
+                    name,
+                    repo,
+                    error,
+                });
+                Act::None
             }
             // Anything else keeps the sandboxes.
             _ => Act::None,
@@ -617,14 +691,7 @@ pub fn on_key(v: &mut View, ev: &KeyEvent) -> Act {
         }
         Key::Char('a') => {
             if matches!(b.ownership.as_str(), "orphaned" | "foreign") {
-                act_call(
-                    "cloud.box.adopt",
-                    json!({"box": b.box_id}),
-                    Call::Adopt {
-                        name: b.name.clone(),
-                    },
-                    format!("adopting {}…", b.name),
-                )
+                adopt_call(&b.box_id, &b.name, None)
             } else {
                 v.notice = Some("only an orphaned or foreign sandbox can be adopted".into());
                 Act::None
@@ -669,10 +736,14 @@ pub fn key(app: &mut App, ev: KeyEvent) {
 }
 
 pub fn on_paste(app: &mut App, text: &str) {
-    if let Some(v) = app.ux.sandboxes.as_mut()
-        && let Stage::Auth(a) = &mut v.stage
-    {
+    let Some(v) = app.ux.sandboxes.as_mut() else {
+        return;
+    };
+    if let Stage::Auth(a) = &mut v.stage {
         a.paste(text);
+        app.dirty = true;
+    } else if let Some(Confirm::AdoptRepo { repo, .. }) = &mut v.confirm {
+        repo.extend(text.chars().filter(|c| !c.is_control()));
         app.dirty = true;
     }
 }
@@ -925,13 +996,28 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
                 v.notice = Some(format!("✗ {}", err_text(&e)));
             }
         }
-        (Call::Adopt { name }, Ok(x)) => {
+        (Call::Adopt { name, .. }, Ok(x)) => {
             done(v);
+            // The reattached pane: focus it (the server focuses it even before the model has it).
+            if let Some(pane) = s_of(&x, "pane") {
+                close(app);
+                app.focus_pane(mi, &pane);
+                return;
+            }
             let task = s_of(&x, "task")
                 .map(|t| format!(" as task {t}"))
                 .unwrap_or_default();
             v.notice = Some(format!("adopted {name}{task}"));
             list(app);
+        }
+        (Call::Adopt { box_id, name, repo }, Err(e)) if adopt_needs_repo(&e) => {
+            done(v);
+            v.confirm = Some(Confirm::AdoptRepo {
+                box_id,
+                name,
+                error: repo.is_some().then(|| err_text(&e)),
+                repo: repo.unwrap_or_default(),
+            });
         }
         (Call::Forget { box_id }, Ok(_)) => {
             done(v);
@@ -956,10 +1042,19 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
                         .collect()
                 })
                 .unwrap_or_default();
+            let boxes: Vec<String> = x["candidates"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(BoxRow::from_value)
+                        .map(|b| b.box_id)
+                        .collect()
+                })
+                .unwrap_or_default();
             if lines.is_empty() {
                 v.notice = Some("nothing to clean up".into());
             } else {
-                v.confirm = Some(Confirm::Prune { lines });
+                v.confirm = Some(Confirm::Prune { lines, boxes });
             }
         }
         (Call::Prune, Ok(x)) => {
@@ -1167,7 +1262,20 @@ pub fn draw(app: &App, g: &mut Grid) -> Option<(u16, u16)> {
                 t.bold(t.red),
             );
         }
-        Some(Confirm::Prune { lines }) => {
+        Some(Confirm::AdoptRepo {
+            name, repo, error, ..
+        }) => {
+            a.line(
+                &format!("{name} names no repository. Path of its repository on this host:"),
+                t.bold(t.yellow),
+            );
+            a.line(&format!("  {repo}▏"), t.text());
+            if let Some(e) = error {
+                a.line(&format!("✗ {e}"), t.s(t.red));
+            }
+            a.line("[enter] adopt  [esc] cancel", t.dim());
+        }
+        Some(Confirm::Prune { lines, .. }) => {
             a.line(
                 &format!(
                     "Clean up {} sandbox(es)? [y] destroy  [n] keep",

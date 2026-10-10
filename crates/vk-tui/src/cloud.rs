@@ -854,19 +854,23 @@ fn upsert_job(app: &mut App, mi: usize, j: Job) {
     app.dirty = true;
 }
 
-/// The flow's job changed. A job that failed for lack of a sign-in goes to the Auth stage.
+/// The flow's job changed. A job that failed for lack of a sign-in goes to the Auth stage, once
+/// per move the user started; any other end of the job closes that move's retry.
 fn flow_job(app: &mut App, j: Job) {
     let needs = j
         .error
         .as_ref()
         .filter(|e| e.reason() == Some("needs_auth"))
         .map(|e| e.details.clone());
+    let ended = !j.active();
     let Some(f) = app.ux.cloud.flow.as_mut() else {
         return;
     };
     f.job = Some(j);
     if let Some(d) = needs {
         enter_auth(f, &d);
+    } else if ended {
+        f.retried = false;
     }
 }
 
@@ -1401,7 +1405,8 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
         }
         (Call::Move, Ok(v)) => {
             f.busy = None;
-            f.retried = false;
+            // `retried` stays until the job ends: a job that fails with `needs_auth` after the
+            // retry is an error, not another sign-in (one retry per move the user started).
             let job = v.get("job").filter(|j| j.is_object()).unwrap_or(&v);
             match Job::from_value(job) {
                 Some(j) => {

@@ -1133,10 +1133,12 @@ export interface AppApi {
   'cloud.box.checkpoint': { params: { box: string; note?: string }; result: { box: string; checkpoint: unknown } };
   /** Unsynced work without `force` fails with `conflict`, `details.reason = "unsynced_changes"`. */
   'cloud.box.destroy': { params: { box: string; force?: boolean }; result: { box: string; destroyed: true } };
-  'cloud.box.adopt': { params: { box: string }; result: { box: string; task?: string } };
+  /** `repo`: a repository on this host, for a box whose record names none. Opens a pane per live session. */
+  'cloud.box.adopt': { params: { box: string; repo?: string; title?: string }; result: { box: string; task: string; pane?: string | null } };
   'cloud.box.forget': { params: { box: string }; result: { box: string } };
   'cloud.prune': {
-    params: { provider?: string; ownership?: CloudOwnership[]; dry_run?: boolean; force?: boolean };
+    /** `boxes`: only these (each checked again; an ineligible one comes back in `skipped`). */
+    params: { provider?: string; ownership?: CloudOwnership[]; boxes?: string[]; dry_run?: boolean; force?: boolean };
     result: { candidates: CloudBox[]; destroyed: string[]; skipped: { box: string; reason: string }[] };
   };
   'cloud.move': {

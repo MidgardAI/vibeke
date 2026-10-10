@@ -370,7 +370,7 @@ fn bring_back_picks_this_host_or_a_peer() {
 }
 
 #[test]
-fn a_failed_job_for_lack_of_a_sign_in_goes_to_the_auth_stage() {
+fn a_failed_job_for_lack_of_a_sign_in_signs_in_and_retries_once() {
     let (mut app, mut rxs) = fleet();
     commands(&mut rxs[0]);
     app.action("cloud_send", None);
@@ -389,8 +389,35 @@ fn a_failed_job_for_lack_of_a_sign_in_goes_to_the_auth_stage() {
     failed["error"] = json!({"kind": "permission_denied", "message": "sign in",
         "details": {"reason": "needs_auth", "provider": "e2b",
                     "methods": [{"kind": "paste_token", "label": "API key"}]}});
-    push(&mut app, "cloud.job", json!({"job": "j1"}), failed);
+    push(&mut app, "cloud.job", json!({"job": "j1"}), failed.clone());
     assert!(stage_is_auth(&app));
+    // Signing in starts the same move once more.
+    app.on_paste("e2b-key".into());
+    app.on_key(named(NamedKey::Enter));
+    let cmds = commands(&mut rxs[0]);
+    let (req, _) = only(&cmds, "cloud.auth.set");
+    reply(
+        &mut app,
+        0,
+        req,
+        json!({"provider": "e2b", "account": "acme"}),
+    );
+    let cmds = commands(&mut rxs[0]);
+    let (req, _) = only(&cmds, "cloud.move");
+    let mut second = job("creating", 0);
+    second["id"] = json!("j2");
+    second["updated_at"] = json!(3);
+    reply(&mut app, 0, req, second);
+    // That job fails the same way: an error, not another sign-in (no endless prompts).
+    let mut again = failed;
+    again["id"] = json!("j2");
+    again["updated_at"] = json!(4);
+    push(&mut app, "cloud.job", json!({"job": "j2"}), again);
+    assert!(!stage_is_auth(&app));
+    let f = app.ux.cloud.flow.as_ref().unwrap();
+    assert!(f.error.as_deref().unwrap().contains("still not signed in"));
+    assert!(!f.retried);
+    assert!(commands(&mut rxs[0]).is_empty());
 }
 
 #[test]
