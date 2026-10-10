@@ -198,7 +198,21 @@ impl Bridge {
                 .await;
         });
         let features = if device.kind == "share" {
-            json!(["shared_tui"])
+            let mut features = vec!["shared_tui"];
+            if device.scope >= Scope::Approve {
+                features.push("shared_tui.approve");
+            }
+            if device.scope == Scope::Full {
+                features.push("shared_tui.control");
+            }
+            if device
+                .limit
+                .as_ref()
+                .is_some_and(|l| l.pane.is_none() && l.workspace.is_some())
+            {
+                features.push("shared_tui.workspace");
+            }
+            json!(features)
         } else {
             reply.get("features").cloned().unwrap_or(json!([]))
         };

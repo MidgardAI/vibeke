@@ -185,7 +185,21 @@ impl Machine {
             link: None,
         }
     }
+    pub fn capabilities(&self) -> crate::access::Capabilities {
+        crate::access::Capabilities::from_features(&self.features)
+    }
     pub fn send(&self, f: ClientFrame) -> bool {
+        if !self.capabilities().control
+            && matches!(
+                f,
+                ClientFrame::Key { .. }
+                    | ClientFrame::RawInput { .. }
+                    | ClientFrame::Paste { .. }
+                    | ClientFrame::Mouse { .. }
+            )
+        {
+            return false;
+        }
         self.tx.as_ref().is_some_and(|t| t.send(f).is_ok())
     }
     pub fn connected(&self) -> bool {
@@ -1190,6 +1204,9 @@ impl App {
     pub(crate) fn on_connected(&mut self, i: usize) {
         crate::browser::on_connected(self, i);
         crate::inbox::on_connected(self, i);
+        if !self.machines[i].capabilities().host {
+            return;
+        }
         crate::gateway::on_connected(self, i);
         crate::push::on_connected(self, i);
         crate::parity::on_connected(self, i);
@@ -1332,7 +1349,8 @@ impl App {
                 }
                 let empty_here = self.machines[i].model.workspaces.is_empty()
                     && self.machines[i].connected()
-                    && !self.machines[i].auto_ws;
+                    && !self.machines[i].auto_ws
+                    && self.machines[i].capabilities().host;
                 let all_empty = self.machines.iter().all(|m| m.model.workspaces.is_empty());
                 if empty_here && (!self.machines[i].local || all_empty) {
                     // Fresh session: first workspace in the cwd (local) or the remote home.
@@ -2266,6 +2284,10 @@ impl App {
     // ---- actions --------------------------------------------------------------------------
 
     pub fn action(&mut self, action: &str, index: Option<usize>) {
+        if !self.m().capabilities().action(action) {
+            self.toast("This action is not available in this shared session");
+            return;
+        }
         if crate::plugins::action(self, action) || crate::ux::action(self, action) {
             return;
         }
@@ -2701,9 +2723,28 @@ impl App {
     }
 
     pub fn answer(&mut self, mi: usize, interaction: &str, params: Value) {
-        let mut p = params;
+        if !self.machines[mi].capabilities().approve {
+            self.toast("This shared session is view only");
+            return;
+        }
+        let p = self.answer_params(mi, interaction, params, "");
+        self.command_on(
+            mi,
+            "interaction.answer",
+            p,
+            Pending::Toast("answer sent".into()),
+        );
+    }
+
+    /// Both individual and batch answers carry the revision this client decided on.
+    pub(crate) fn answer_params(
+        &self,
+        mi: usize,
+        interaction: &str,
+        mut p: Value,
+        key_prefix: &str,
+    ) -> Value {
         p["interaction"] = json!(interaction);
-        #[cfg(target_arch = "wasm32")]
         if let Some(item) = self.machines[mi]
             .model
             .interactions
@@ -2713,13 +2754,8 @@ impl App {
             // The gateway share API requires the revision the guest actually saw.
             p["decision_rev"] = json!(item.decision_rev);
         }
-        p["idempotency_key"] = json!(format!("{}-{}", self.client_id, interaction));
-        self.command_on(
-            mi,
-            "interaction.answer",
-            p,
-            Pending::Toast("answer sent".into()),
-        );
+        p["idempotency_key"] = json!(format!("{}-{key_prefix}{interaction}", self.client_id));
+        p
     }
 
     fn navigate_key(&mut self, ev: KeyEvent, sel: usize) {

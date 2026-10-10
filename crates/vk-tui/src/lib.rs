@@ -1,5 +1,6 @@
 //! Vibeke TUI client (03 §5–§7, §11; 08).
 
+pub mod access;
 pub mod agent_list;
 pub mod app;
 pub mod appearance;

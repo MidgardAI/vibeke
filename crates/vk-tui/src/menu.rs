@@ -286,6 +286,9 @@ pub fn build(app: &App, seq: &[KeyEvent]) -> Vec<Group> {
         }
         match entry {
             LevelEntry::Action(b) => {
+                if !app.m().capabilities().action(&b.action) {
+                    continue;
+                }
                 if b.index.is_some()
                     && let Some((_, (gi, ii))) = ranged.iter().find(|(a, _)| *a == b.action)
                 {
@@ -308,6 +311,9 @@ pub fn build(app: &App, seq: &[KeyEvent]) -> Vec<Group> {
             LevelEntry::Submenu(n) => {
                 let mut deeper = seq.to_vec();
                 deeper.push(k.clone());
+                if build(app, &deeper).is_empty() {
+                    continue;
+                }
                 let first = app
                     .keymap
                     .level(&deeper)

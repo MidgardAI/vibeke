@@ -238,6 +238,7 @@ pub fn fit(app: &mut App) {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub fn width_path(session: &str, client: &str) -> PathBuf {
     crate::pending::default_dir(session).join(format!("sidebar-{client}.json"))
 }

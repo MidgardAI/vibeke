@@ -55,21 +55,8 @@ impl BrowserTui {
             true,
         );
         app.clipboard_sink = Some(Vec::new());
-        let key = format!("vibeke-tui-pending:{host}");
-        if let Some(storage) = web_sys::window().and_then(|w| w.session_storage().ok().flatten())
-            && let Ok(Some(saved)) = storage.get_item(&key)
-        {
-            app.pending_ops.ops = serde_json::from_str(&saved).map_err(|_| {
-                JsValue::from_str(
-                    "Pending TUI operations could not be read. Keep browser storage for recovery.",
-                )
-            })?;
-        }
-        // This storage key belongs to exactly one host, even if its display name changed.
-        for op in &mut app.pending_ops.ops {
-            op.machine = label.into();
-        }
-        app.pending_ops.browser_key = Some(key);
+        app.pending_ops = crate::pending::PendingStore::open_browser(host, label)
+            .map_err(|e| JsValue::from_str(&e))?;
         let outbox = crate::frame_queue::Sender::default();
         Ok(Self {
             app,

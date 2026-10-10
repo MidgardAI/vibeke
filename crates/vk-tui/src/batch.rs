@@ -56,6 +56,9 @@ pub fn batch_safe_command(cmd: &str) -> bool {
 
 /// Why an interaction can't be batched, or its equivalence key.
 pub fn equivalence(app: &App, mi: usize, it: &Interaction) -> Result<String, &'static str> {
+    if !app.machines[mi].capabilities().approve {
+        return Err("this shared session is view only");
+    }
     if it.kind != InteractionKind::Approval {
         return Err("questions and plan reviews are answered one by one");
     }
@@ -224,9 +227,7 @@ pub fn answer_group(app: &mut App, v: &mut View, gi: usize, decision: &str) {
                 .insert(id.clone(), "no longer pending or changed — skipped".into());
             continue;
         }
-        let mut p = json!({"decision": decision});
-        p["interaction"] = json!(id.1);
-        p["idempotency_key"] = json!(format!("{}-batch-{}", app.client_id, id.1));
+        let p = app.answer_params(id.0, &id.1, json!({"decision": decision}), "batch-");
         app.command_on(
             id.0,
             "interaction.answer",

@@ -203,6 +203,7 @@ fn send(app: &mut App, mi: usize, method: &str, params: Value, r: Reply) {
 pub fn tick(app: &mut App, now: Instant) {
     for mi in 0..app.machines.len() {
         if !app.machines[mi].connected()
+            || !app.machines[mi].capabilities().host
             || app.ux.collision.unsupported.contains(&mi)
             || app.ux.collision.inflight.contains(&mi)
         {
@@ -229,7 +230,11 @@ pub fn tick(app: &mut App, now: Instant) {
 pub fn deadlines(app: &App, d: &mut crate::deadline::Deadlines) {
     let s = &app.ux.collision;
     if let Some(t) = (0..app.machines.len())
-        .filter(|mi| app.machines[*mi].connected() && !s.unsupported.contains(mi))
+        .filter(|mi| {
+            app.machines[*mi].connected()
+                && app.machines[*mi].capabilities().host
+                && !s.unsupported.contains(mi)
+        })
         .filter(|mi| !s.inflight.contains(mi))
         .filter_map(|mi| s.asked.get(&mi).map(|t| *t + REFRESH))
         .min()

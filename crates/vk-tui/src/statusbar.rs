@@ -89,7 +89,11 @@ pub(crate) fn deadlines(app: &App, now: Instant, d: &mut crate::deadline::Deadli
     }
     let mi = app.cur;
     let st = &app.parity.status;
-    if st.inflight || st.unsupported.contains(&mi) || !app.machines[mi].connected() {
+    if st.inflight
+        || st.unsupported.contains(&mi)
+        || !app.machines[mi].connected()
+        || !app.machines[mi].capabilities().host
+    {
         return;
     }
     let at = match st.last_req {
@@ -114,7 +118,11 @@ pub fn tick(app: &mut App) {
     }
     let mi = app.cur;
     let st = &app.parity.status;
-    if st.inflight || st.unsupported.contains(&mi) || !app.machines[mi].connected() {
+    if st.inflight
+        || st.unsupported.contains(&mi)
+        || !app.machines[mi].connected()
+        || !app.machines[mi].capabilities().host
+    {
         return;
     }
     let since = st.last_req.map(|t| t.elapsed());

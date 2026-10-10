@@ -34,9 +34,8 @@ const shareTarget = {
 const tuiEnabled = process.env.VIBEKE_WASM_TUI === '1';
 const tuiModuleUrl = (() => {
   if (!tuiEnabled) return null;
-  const manifest = JSON.parse(readFileSync(new URL('./public/tui/manifest.json', import.meta.url), 'utf8')) as { api: number; moduleUrl: string; sourceRevision: string; sourceDigest: string };
-  const revision = execSync('git rev-parse HEAD').toString().trim();
-  if (manifest.api !== BROWSER_TUI_API || manifest.sourceRevision !== revision || manifest.sourceDigest !== tuiSourceDigest()) throw new Error('The WASM TUI is stale. Run bun run build:tui from web/ before building this app.');
+  const manifest = JSON.parse(readFileSync(new URL('./public/tui/manifest.json', import.meta.url), 'utf8')) as { api: number; moduleUrl: string; sourceRevision: string; sourceDigest: string; sourceInputs: string[] };
+  if (manifest.api !== BROWSER_TUI_API || !manifest.sourceInputs?.length || manifest.sourceDigest !== tuiSourceDigest(manifest.sourceInputs)) throw new Error('The WASM TUI is stale. Run bun run build:tui from web/ before building this app.');
   return manifest.moduleUrl;
 })();
 

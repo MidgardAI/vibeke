@@ -1132,6 +1132,17 @@ async fn shared_tui_commands_use_the_existing_gateway_permissions() {
         let attach = c
             .call("tui.attach", json!({"protocol":vk_proto::render::PROTOCOL}))
             .await;
+        let features = attach["result"]["features"].as_array().unwrap();
+        assert!(features.contains(&json!("shared_tui")));
+        assert_eq!(
+            features.contains(&json!("shared_tui.approve")),
+            scope >= Scope::Approve
+        );
+        assert_eq!(
+            features.contains(&json!("shared_tui.control")),
+            scope == Scope::Full
+        );
+        assert!(!features.contains(&json!("shared_tui.workspace")));
         let stream = attach["result"]["stream"].as_str().unwrap();
         for (req, method, params, permitted) in [
             (

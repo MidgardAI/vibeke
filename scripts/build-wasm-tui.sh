@@ -13,14 +13,15 @@ if [ "$("$wasm_bindgen_cli" --version)" != 'wasm-bindgen 0.2.129' ]; then
 fi
 profile=${WASM_PROFILE:-wasm-release}
 source_revision=$(git rev-parse HEAD)
-source_digest=$(bun web/scripts/tui-source.ts)
+source_inputs=$(bun web/scripts/tui-source.ts inputs)
+source_digest=$(bun web/scripts/tui-source.ts "$source_inputs")
 cargo rustc --locked -p vk-tui --lib --crate-type cdylib --target wasm32-unknown-unknown --profile "$profile"
 out=web/apps/pwa/public/tui
 staging=$(mktemp -d "${TMPDIR:-/tmp}/vibeke-wasm.XXXXXX")
 trap 'rm -rf "$staging"' EXIT HUP INT TERM
 "$wasm_bindgen_cli" --target web --out-dir "$staging" --out-name vk_tui \
     "${CARGO_TARGET_DIR:-target}/wasm32-unknown-unknown/$profile/vk_tui.wasm"
-if [ "$source_digest" != "$(bun web/scripts/tui-source.ts)" ]; then
+if [ "$source_digest" != "$(bun web/scripts/tui-source.ts "$source_inputs")" ]; then
     echo 'Rust sources changed during the WASM build. Build again before packaging.' >&2
     exit 1
 fi
@@ -31,5 +32,5 @@ digest=$(cat "$staging/vk_tui.js" "$staging/vk_tui_bg.wasm" | shasum -a 256 | cu
 rm -rf "$out"
 mkdir -p "$out/$digest"
 cp "$staging"/* "$out/$digest/"
-printf '{"api":%s,"moduleUrl":"/tui/%s/vk_tui.js","sourceRevision":"%s","sourceDigest":"%s"}\n' "$browser_api" "$digest" "$source_revision" "$source_digest" > "$out/manifest.json"
+printf '{"api":%s,"moduleUrl":"/tui/%s/vk_tui.js","sourceRevision":"%s","sourceDigest":"%s","sourceInputs":%s}\n' "$browser_api" "$digest" "$source_revision" "$source_digest" "$source_inputs" > "$out/manifest.json"
 printf 'Browser TUI: %s/%s\n' "$out" "$digest"

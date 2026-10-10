@@ -72,8 +72,9 @@ It can also remember this terminal as the start screen.
 `bun run build:pwa:tui` builds the PWA with this experiment enabled. Ordinary builds leave
 the entry point disabled. WASM assets are generated under `public/tui/` and are not committed.
 They have content-based URLs. They load online and are outside the offline app cache.
-The web build checks the module's source commit and source digest. Rebuild the module after
-changing Rust inputs or making a commit. Keep `VIBEKE_WASM_TUI=1` set for both build and packaging.
+The web build checks the module's source digest. It covers the browser target's Cargo dependencies
+and build scripts. Rebuild after those inputs change. Documentation commits do not require a rebuild.
+The manifest records the source commit for provenance. Keep `VIBEKE_WASM_TUI=1` set for both build and packaging.
 The JavaScript interface has its own `browser_api` version. Bump it with incompatible interface changes.
 
 The TUI shares the paired device's encrypted connection. The relay cannot read its screen
@@ -100,9 +101,10 @@ Do not clear that storage while an operation has an uncertain result.
 If saved operation metadata cannot be read, the browser menu offers a discard action.
 Check the operation on the host before using it. Discarding metadata does not cancel or repeat host work.
 
-After building the host and WASM module, run this check from `web/`:
+After building the host and WASM module, run these checks from `web/`:
 
 ```sh
+bun apps/site/scripts/check-wasm-tui-module.ts
 bun apps/site/scripts/check-wasm-tui.ts
 ```
 

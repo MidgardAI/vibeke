@@ -334,7 +334,7 @@ pub fn on_input(app: &mut App) {
     }
     let at = now_ms();
     for i in 0..app.machines.len() {
-        if app.machines[i].connected() {
+        if app.machines[i].connected() && app.machines[i].capabilities().host {
             app.command_on(
                 i,
                 "client.activity",
@@ -367,7 +367,7 @@ pub fn polling(app: &mut App, i: usize) -> bool {
 
 /// A pushed `client.*` event: refresh the client/device list now.
 pub fn refresh_list(app: &mut App, i: usize) {
-    if !app.machines[i].connected() {
+    if !app.machines[i].connected() || !app.machines[i].capabilities().host {
         return;
     }
     let now = Instant::now();
@@ -415,7 +415,7 @@ pub(crate) fn deadlines(app: &App, now: Instant, d: &mut crate::deadline::Deadli
         retry.max(next.unwrap_or(now))
     };
     for (i, m) in app.machines.iter().enumerate() {
-        if !m.connected() {
+        if !m.connected() || !m.capabilities().host {
             continue;
         }
         let Some(p) = g.per.get(i) else {
@@ -439,7 +439,7 @@ pub fn tick(app: &mut App) {
         app.dirty = true;
     }
     for i in 0..app.machines.len() {
-        if !app.machines[i].connected() {
+        if !app.machines[i].connected() || !app.machines[i].capabilities().host {
             continue;
         }
         let (do_events, do_list, cursor, push) = {
