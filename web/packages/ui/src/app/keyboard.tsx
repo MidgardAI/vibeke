@@ -51,7 +51,7 @@ export function requestAgentView(r: AgentViewRequest): boolean {
 type SheetState = { kind: 'new' } | { kind: 'share'; row: PaneRow } | { kind: 'handoff'; row: PaneRow } | null;
 
 const TYPING = /^(INPUT|TEXTAREA|SELECT)$/;
-const SUBPAGES = new Set<Route['name']>(['pane', 'interaction', 'run', 'settings', 'crew', 'pair', 'not_found']);
+const SUBPAGES = new Set<Route['name']>(['pane', 'interaction', 'run', 'goal', 'goals', 'settings', 'crew', 'pair', 'not_found']);
 
 /** Press the `[data-find]` control of the current screen, or focus its `[data-find-input]`. */
 function find(): boolean {
