@@ -71,6 +71,8 @@ pub const BROKER_METHODS: &[&str] = &[
     "agent.get",
     "pane.current",
     "preview.declare",
+    // Show the user an image file the agent made (a screenshot, a chart); always its own pane.
+    "screenshot.add",
     // Ask the host for a boundary action (push, copy out) behind an Interaction (13 §8).
     "sandbox.request",
 ];
@@ -1018,8 +1020,16 @@ fn start_broker(server: &Arc<Server>, pane_id: &str, path: &Path) {
     ensure_tick(server);
 }
 
-/// Longest request line a sandbox broker connection accepts (hook reports are small).
-pub const BROKER_MAX_LINE: usize = 1024 * 1024;
+/// Longest request line a sandbox broker connection accepts: the control socket's limit, so an
+/// attached image (`screenshot.add`, base64 in the line) fits. A longer line ends the
+/// connection.
+pub const BROKER_MAX_LINE: usize = crate::run::MAX_CONTROL_LINE;
+const _: () =
+    assert!(crate::screenshots::ADD_MAX_BYTES.div_ceil(3) * 4 + 64 * 1024 <= BROKER_MAX_LINE);
+/// Longest request line for every other broker method (hook reports are small).
+pub const BROKER_SMALL_LINE: usize = 1024 * 1024;
+/// The only broker method whose requests may be longer than [`BROKER_SMALL_LINE`].
+const BROKER_LARGE_METHOD: &str = "screenshot.add";
 
 /// One broker connection: pane scope is fixed by the socket, tokens can't change it, and only
 /// [`BROKER_METHODS`] are served.
@@ -1054,6 +1064,12 @@ where
                 if !BROKER_METHODS.contains(&method.as_str()) {
                     let id = req.and_then(|r| r.id).unwrap_or(Value::Null);
                     let r = Response::err(id, err(ErrorKind::PermissionDenied, format!("{method} is not available inside a sandbox (broker, 13 §4.1)")).details(json!({"scope": "broker"})));
+                    let _ = tx.send(serde_json::to_string(&r)?);
+                    continue;
+                }
+                if l.len() > BROKER_SMALL_LINE && method != BROKER_LARGE_METHOD {
+                    let id = req.and_then(|r| r.id).unwrap_or(Value::Null);
+                    let r = Response::err(id, err(ErrorKind::InvalidParams, format!("{method}: request longer than {BROKER_SMALL_LINE} bytes (broker, 13 §4.1)")).details(json!({"scope": "broker"})));
                     let _ = tx.send(serde_json::to_string(&r)?);
                     continue;
                 }
@@ -1129,6 +1145,15 @@ pub fn broker_authorize(
         }
         "agent.report" => {
             if let Some(t) = s(p, "pane")
+                && !pane_is_own(t)
+            {
+                return deny("the pane");
+            }
+        }
+        // `screenshot.add` itself pins a pane-scoped caller to its own pane (an empty `pane`
+        // means its own); the broker refuses a foreign one before the image is decoded.
+        "screenshot.add" => {
+            if let Some(t) = s(p, "pane").filter(|t| !t.is_empty())
                 && !pane_is_own(t)
             {
                 return deny("the pane");

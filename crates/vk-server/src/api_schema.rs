@@ -719,7 +719,7 @@ preview.unmirror :: {preview?: Target|int, port?: int, machine?: string} => {loc
 
 # --- screenshots ---
 screenshot.list :: {task?: Target, preview?: Target, run?: Target, pane?: Target, workspace?: Target, environment?: string, since?: string|int, since_ms?: int, limit?: int = 50} => {screenshots: [ScreenshotMeta], count: int, total: int}
-screenshot.get :: {id: string, inline?: bool} => ScreenshotMeta
+screenshot.get :: {id: string, inline?: bool, thumb?: int} => ScreenshotMeta
 screenshot.open :: {id: string} => ScreenshotMeta
 screenshot.add :: {data_b64: string, caption?: string, name?: string, pane?: Target} => {id: string, handle: string, workspace?: string|null, task?: string|null, pane?: string|null, run?: string|null, mime: string, width: int, height: int, blob: string, environment: object, caption?: string, source_name?: string, path_on_machine: string, exists: bool, duplicate: bool}
 screenshot.delete :: {id: string, force?: bool} => {id: string, handle: string, deleted: bool, blob_removed: bool}

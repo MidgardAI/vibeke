@@ -4368,7 +4368,7 @@
       ],
       "milestone": "M3",
       "spec": "`{id}` (id or `sN`) → `ScreenshotMeta + {path_on_machine, exists, data_b64? (inline)}` — other workspaces' screenshots are `not_found` for panes.",
-      "params": "{id: string, inline?: bool}",
+      "params": "{id: string, inline?: bool, thumb?: int}",
       "result": "ScreenshotMeta"
     },
     {

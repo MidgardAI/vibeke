@@ -23353,6 +23353,9 @@
           },
           "inline": {
             "type": "boolean"
+          },
+          "thumb": {
+            "type": "integer"
           }
         },
         "required": [

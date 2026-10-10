@@ -676,8 +676,11 @@ fn persist_screenshot(
 
 // ---- attached images (screenshot.add) ------------------------------------------------------
 
-/// Largest image file `screenshot.add` accepts.
-const ADD_MAX_BYTES: usize = 16 << 20;
+/// Largest image file `screenshot.add` accepts. Its base64 (4 bytes per 3, about 14.7 MiB)
+/// plus the JSON around it must fit one request line on the control socket and the sandbox
+/// broker (16 MiB, checked below and in `sandbox`).
+pub(crate) const ADD_MAX_BYTES: usize = 11 << 20;
+const _: () = assert!(ADD_MAX_BYTES.div_ceil(3) * 4 + 64 * 1024 <= crate::run::MAX_CONTROL_LINE);
 /// Largest width or height `screenshot.add` accepts.
 const ADD_MAX_DIM: u32 = 16384;
 const CAPTION_MAX_CHARS: usize = 500;
@@ -741,6 +744,18 @@ fn clean_text(s: &str, max: usize) -> Option<String> {
     (!cleaned.is_empty()).then_some(cleaned)
 }
 
+/// An earlier record of the same image (`blob`) for the same pane and workspace.
+fn find_duplicate(
+    server: &Server,
+    blob: &str,
+    pane: &Option<String>,
+    workspace: &Option<String>,
+) -> Option<ScreenshotMeta> {
+    load_all(server)
+        .into_iter()
+        .find(|m| m.blob == blob && &m.pane == pane && &m.workspace == workspace)
+}
+
 /// `screenshot.add {data_b64, caption?, name?, pane?}`: store an image file an agent (or the
 /// user) attached, as a `screenshot` record in the `agent` environment. The caller reads the
 /// file; the server never opens caller-supplied paths.
@@ -781,14 +796,6 @@ async fn add(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         .await
         .map_err(crate::api::internal)??;
     let blob = blake3::hash(&png).to_hex().to_string();
-    if let Some(existing) = load_all(server)
-        .into_iter()
-        .find(|m| m.blob == blob && m.pane == pane)
-    {
-        let mut v = with_path(server, &existing);
-        v["duplicate"] = json!(true);
-        return Ok(v);
-    }
     let agent = ctx.pane_scope.is_some();
     let taken_by = Requester {
         kind: if agent { "agent" } else { "user" }.into(),
@@ -825,6 +832,14 @@ async fn add(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         document: None,
     };
     let origin = resolve_origin(server, &inputs);
+    // The same file attached again from the same pane in the same workspace is the same image.
+    // A pane that moved to another workspace gets a new record: the old one belongs to the old
+    // workspace, and callers limited to the new one must not see it.
+    if let Some(existing) = find_duplicate(server, &blob, &pane, &origin.workspace) {
+        let mut v = with_path(server, &existing);
+        v["duplicate"] = json!(true);
+        return Ok(v);
+    }
     let now = vk_store::now_ms();
     let meta = ScreenshotMeta {
         id: ulid(),
@@ -1122,16 +1137,80 @@ fn list(server: &Server, ctx: &Ctx, p: &Value) -> R {
     }))
 }
 
-fn get(server: &Server, ctx: &Ctx, p: &Value, inline: bool) -> R {
+/// Smallest and largest `thumb` (longest side in pixels) `screenshot.get` honours.
+const THUMB_MIN: u64 = 64;
+const THUMB_MAX: u64 = 1024;
+
+/// `screenshot.get {id, inline?, thumb?}`. With `inline` and `thumb`, `data_b64` is a PNG
+/// scaled down so its longest side is at most `thumb` pixels (never scaled up), with
+/// `thumb_width`/`thumb_height`.
+async fn get(server: &Server, ctx: &Ctx, p: &Value, inline: bool) -> R {
     let t = s(p, "id")
         .or_else(|| s(p, "screenshot"))
         .ok_or_else(|| invalid("missing param `id`"))?;
     let m = find_visible(server, ctx, t)?;
     let mut v = with_path(server, &m);
     if inline || b(p, "inline").unwrap_or(false) {
-        inline_into(&mut v, &m.path(server));
+        match u(p, "thumb") {
+            Some(edge) => {
+                let edge = edge.clamp(THUMB_MIN, THUMB_MAX) as u32;
+                thumb_into(&mut v, m.path(server), edge).await;
+            }
+            None => inline_into(&mut v, &m.path(server)),
+        }
     }
     Ok(v)
+}
+
+/// Put a thumbnail of the blob at `path` into `v` (see [`get`]); on failure `inline_skipped`
+/// says why, like [`inline_into`].
+async fn thumb_into(v: &mut Value, path: PathBuf, edge: u32) {
+    use base64::Engine as _;
+    let made = tokio::task::spawn_blocking(move || {
+        let png = crate::privacy::read_blob(&path).map_err(|e| format!("blob unreadable: {e}"))?;
+        thumbnail_png(&png, edge)
+    })
+    .await
+    .unwrap_or_else(|e| Err(format!("thumbnail failed: {e}")));
+    match made {
+        Ok((data, w, h)) => {
+            v["data_b64"] = json!(base64::engine::general_purpose::STANDARD.encode(&data));
+            v["mime"] = json!("image/png");
+            v["thumb_width"] = json!(w);
+            v["thumb_height"] = json!(h);
+        }
+        Err(e) => v["inline_skipped"] = json!(e),
+    }
+}
+
+/// Scale a PNG down so its longest side is at most `edge` pixels, keeping the aspect ratio.
+/// One that already fits is returned unchanged (never scaled up). Decoding is bounded by
+/// `image::Limits` (sides up to [`ADD_MAX_DIM`], the crate's default allocation cap).
+pub(crate) fn thumbnail_png(png: &[u8], edge: u32) -> Result<(Vec<u8>, u32, u32), String> {
+    use image::{ImageFormat, ImageReader, imageops::FilterType};
+    use std::io::Cursor;
+    let reader = || ImageReader::with_format(Cursor::new(png), ImageFormat::Png);
+    let (w, h) = reader()
+        .into_dimensions()
+        .map_err(|e| format!("not a valid PNG image: {e}"))?;
+    if w.max(h) <= edge {
+        return Ok((png.to_vec(), w, h));
+    }
+    let mut r = reader();
+    #[allow(clippy::field_reassign_with_default)]
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(ADD_MAX_DIM);
+    limits.max_image_height = Some(ADD_MAX_DIM);
+    r.limits(limits);
+    let img = r.decode().map_err(|e| format!("thumbnail failed: {e}"))?;
+    // `resize` keeps the aspect ratio and fits the image inside edge x edge.
+    let small = img.resize(edge, edge, FilterType::Triangle);
+    let (tw, th) = (small.width(), small.height());
+    let mut out = Vec::new();
+    small
+        .write_to(&mut Cursor::new(&mut out), ImageFormat::Png)
+        .map_err(|e| format!("thumbnail failed: {e}"))?;
+    Ok((out, tw, th))
 }
 
 fn delete(server: &Server, ctx: &Ctx, p: &Value) -> R {
@@ -1576,9 +1655,9 @@ pub fn review_evidence(
 pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Option<R> {
     Some(match method {
         "screenshot.list" => list(server, ctx, p),
-        "screenshot.get" => get(server, ctx, p, false),
+        "screenshot.get" => get(server, ctx, p, false).await,
         // `vibeke screenshot open`: the image inline so the CLI can open it locally.
-        "screenshot.open" => get(server, ctx, p, true),
+        "screenshot.open" => get(server, ctx, p, true).await,
         "screenshot.delete" => delete(server, ctx, p),
         "screenshot.add" => add(server, ctx, p).await,
         "browser.diff" => diff(server, ctx, p).await,

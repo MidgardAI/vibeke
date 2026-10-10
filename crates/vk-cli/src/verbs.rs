@@ -10,8 +10,30 @@ pub const EVENTS_TAIL_USAGE: &str = "vibeke events tail [--types 'agent.*,pane.c
 
 pub const SCREENSHOT_ADD_USAGE: &str = "vibeke screenshot add <file>... [--caption TEXT] [--pane P] [--json]\n  attaches PNG or JPEG files so the user can see them in Vibeke on any device (the CLI reads the files; the server never opens your paths)";
 
-/// Largest file `screenshot.add` accepts (the server checks too).
-const ADD_MAX_BYTES: u64 = 16 << 20;
+/// Largest image file `screenshot.add` accepts (the server checks too). Its base64 must fit
+/// one 16 MiB request line.
+pub const ADD_MAX_BYTES: u64 = 11 << 20;
+
+/// Read an image file for `screenshot.add`, refusing one larger than [`ADD_MAX_BYTES`] before
+/// reading it (and while reading, in case it grows). The error is a message for the user.
+pub fn read_image(path: &std::path::Path) -> Result<Vec<u8>, String> {
+    use std::io::Read as _;
+    let shown = path.display();
+    let too_big = || format!("{shown}: image is larger than {} MiB", ADD_MAX_BYTES >> 20);
+    let meta = std::fs::metadata(path).map_err(|e| format!("{shown}: {e}"))?;
+    if meta.len() > ADD_MAX_BYTES {
+        return Err(too_big());
+    }
+    let file = std::fs::File::open(path).map_err(|e| format!("{shown}: {e}"))?;
+    let mut bytes = Vec::with_capacity(meta.len() as usize);
+    file.take(ADD_MAX_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("{shown}: {e}"))?;
+    if bytes.len() as u64 > ADD_MAX_BYTES {
+        return Err(too_big());
+    }
+    Ok(bytes)
+}
 
 /// `vibeke screenshot add <file>...`: read each image file here, with the caller's own
 /// permissions, and attach it with `screenshot.add`. Exit non-zero if any file fails.
@@ -57,12 +79,7 @@ where
     let mut code = EXIT_OK;
     for file in &files {
         let path = std::path::Path::new(file);
-        let bytes = match std::fs::metadata(path) {
-            Ok(m) if m.len() > ADD_MAX_BYTES => Err(format!("{file}: larger than 16 MiB")),
-            Ok(_) => std::fs::read(path).map_err(|e| format!("{file}: {e}")),
-            Err(e) => Err(format!("{file}: {e}")),
-        };
-        let bytes = match bytes {
+        let bytes = match read_image(path) {
             Ok(b) => b,
             Err(e) => {
                 eprintln!("vibeke screenshot add: {e}");

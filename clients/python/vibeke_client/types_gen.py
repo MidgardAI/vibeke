@@ -6181,6 +6181,7 @@ ScreenshotDeleteResult = TypedDict("ScreenshotDeleteResult", {
 ScreenshotGetParams = TypedDict("ScreenshotGetParams", {
     "id": str,
     "inline": NotRequired[bool],
+    "thumb": NotRequired[int],
 })
 
 ScreenshotGetResult: TypeAlias = "ScreenshotMeta"

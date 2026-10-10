@@ -191,16 +191,11 @@ pub fn map_tool(name: &str, args: &Value) -> Option<(&'static str, Value)> {
 /// `screenshot.add` params. The error is the text for a tool result.
 fn show_image_params(args: &Value) -> Result<Value, String> {
     use base64::Engine as _;
-    const MAX: u64 = 16 << 20;
     let path = args["path"]
         .as_str()
         .filter(|p| !p.is_empty())
         .ok_or("missing argument `path`")?;
-    let meta = std::fs::metadata(path).map_err(|e| format!("{path}: {e}"))?;
-    if meta.len() > MAX {
-        return Err(format!("{path}: larger than 16 MiB"));
-    }
-    let bytes = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
+    let bytes = crate::verbs::read_image(std::path::Path::new(path))?;
     let mut p = json!({
         "data_b64": base64::engine::general_purpose::STANDARD.encode(bytes),
         "name": std::path::Path::new(path).file_name().map(|n| n.to_string_lossy().into_owned()),
@@ -607,9 +602,16 @@ mod tests {
         let file = dir.path().join("login.png");
         std::fs::write(&file, b"\x89PNG fake").unwrap();
         let missing = dir.path().join("missing.png");
+        // Over 11 MiB (sparse): refused before it is read, never sent.
+        let big = dir.path().join("big.png");
+        std::fs::File::create(&big)
+            .unwrap()
+            .set_len((11 << 20) + 1)
+            .unwrap();
         let input = [
             line(json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "show_image", "arguments": {"path": file, "caption": "Login page"}}})),
             line(json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "show_image", "arguments": {"path": missing}}})),
+            line(json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "show_image", "arguments": {"path": big}}})),
         ]
         .concat();
         let (r, seen) = session(&input).await;
@@ -622,6 +624,14 @@ mod tests {
         );
         // A missing file is a tool error and never reaches the server.
         assert_eq!(r[1]["result"]["isError"], true);
+        assert_eq!(r[2]["result"]["isError"], true);
+        assert!(
+            r[2]["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("image is larger than 11 MiB"),
+            "{r:#?}"
+        );
         assert_eq!(seen.len(), 2, "{seen:?}");
         assert_eq!(seen[1].0, "screenshot.add");
         assert_eq!(seen[1].1["caption"], "Login page");

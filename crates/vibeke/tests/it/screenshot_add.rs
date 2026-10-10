@@ -123,4 +123,19 @@ fn user_attaches_an_image_to_a_named_pane() {
         .output()
         .unwrap();
     assert!(!out.status.success());
+    // A file over 11 MiB is refused by the CLI before it is read or sent (a sparse file).
+    let big = s.dir.path().join("big.png");
+    std::fs::File::create(&big)
+        .unwrap()
+        .set_len((11 << 20) + 1)
+        .unwrap();
+    let out = s
+        .cmd(&["screenshot", "add", big.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("image is larger than 11 MiB"), "{err}");
+    let list = s.json(&["screenshot", "list", "--environment", "agent"]);
+    assert_eq!(list["count"], 1, "{list}");
 }

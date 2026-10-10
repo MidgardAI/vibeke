@@ -838,6 +838,54 @@ impl Call<'_> {
         Ok((panes, tasks))
     }
 
+    /// Panes visible to a limited device, each with its current workspace.
+    async fn visible_panes(
+        &self,
+        allowed: &Allowed,
+    ) -> Result<Vec<(String, Option<String>)>, ApiError> {
+        let mut snap = self.server("session.snapshot", json!({})).await?;
+        Self::filter_snapshot(allowed, &mut snap);
+        Ok(snap["panes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|p| {
+                s(p, "id").map(|id| (id.to_string(), s(p, "workspace").map(str::to_string)))
+            })
+            .collect())
+    }
+
+    /// A screenshot record inside the limit: its pane is visible, and it was taken while that
+    /// pane was in the pane's current workspace. A pane moved into a shared workspace (or a
+    /// shared pane moved elsewhere) does not carry its older workspace's screenshots along.
+    /// Records without a pane, or of a closed pane, have no live pane to check: dropped.
+    fn screenshot_visible(m: &Value, panes: &[(String, Option<String>)]) -> bool {
+        let Some(pane) = s(m, "pane") else {
+            return false;
+        };
+        panes
+            .iter()
+            .any(|(id, ws)| id == pane && ws.is_some() && ws.as_deref() == s(m, "workspace"))
+    }
+
+    /// Filter a `screenshot.list` result to the limit; dropped records are not counted.
+    fn filter_screenshots(r: &mut Value, panes: &[(String, Option<String>)]) {
+        let mut dropped = 0;
+        let mut kept = 0;
+        if let Some(list) = r.get_mut("screenshots").and_then(|v| v.as_array_mut()) {
+            let before = list.len();
+            list.retain(|m| Self::screenshot_visible(m, panes));
+            kept = list.len();
+            dropped = before - kept;
+        }
+        if r.get("count").is_some() {
+            r["count"] = json!(kept);
+        }
+        if let Some(total) = r.get("total").and_then(|v| v.as_u64()) {
+            r["total"] = json!(total.saturating_sub(dropped as u64));
+        }
+    }
+
     /// Filter list results to the limit: attention items by pane (or task, when they have no
     /// pane), previews by pane. Excluded items are counted, never described.
     fn filter_list(method: &str, r: &mut Value, panes: &[String], tasks: &[String]) {
@@ -878,24 +926,6 @@ impl Call<'_> {
             "preview.list" => {
                 if let Some(list) = r.get_mut("previews").and_then(|v| v.as_array_mut()) {
                     list.retain(|pv| has(panes, s(pv, "pane")));
-                }
-            }
-            // Screenshots (agent images included) by the pane they belong to. Records without a
-            // pane, or of a closed pane, have no live pane to check: dropped.
-            "screenshot.list" => {
-                let mut dropped = 0;
-                let mut kept = 0;
-                if let Some(list) = r.get_mut("screenshots").and_then(|v| v.as_array_mut()) {
-                    let before = list.len();
-                    list.retain(|m| has(panes, s(m, "pane")));
-                    kept = list.len();
-                    dropped = before - kept;
-                }
-                if r.get("count").is_some() {
-                    r["count"] = json!(kept);
-                }
-                if let Some(total) = r.get("total").and_then(|v| v.as_u64()) {
-                    r["total"] = json!(total.saturating_sub(dropped as u64));
                 }
             }
             // Hits of closed (archived) panes have no live pane to check: dropped.
@@ -1050,15 +1080,19 @@ impl Call<'_> {
                         });
                     }
                 }
-                "attention.list" | "preview.list" | "search.query" | "screenshot.list" => {
+                "attention.list" | "preview.list" | "search.query" => {
                     let (panes, tasks) = self.visible(a).await?;
                     Self::filter_list(method, &mut r, &panes, &tasks);
                 }
-                // The record is fetched by id, so its pane is only known afterwards. Another
-                // pane's screenshot answers like a missing one.
+                "screenshot.list" => {
+                    let panes = self.visible_panes(a).await?;
+                    Self::filter_screenshots(&mut r, &panes);
+                }
+                // The record is fetched by id, so its pane and workspace are only known
+                // afterwards. A screenshot outside the limit answers like a missing one.
                 "screenshot.get" => {
-                    let (panes, _) = self.visible(a).await?;
-                    if !s(&r, "pane").is_some_and(|p| panes.iter().any(|x| x == p)) {
+                    let panes = self.visible_panes(a).await?;
+                    if !Self::screenshot_visible(&r, &panes) {
                         return Err(ApiError::new("not_found", "screenshot not found"));
                     }
                 }
@@ -1367,7 +1401,8 @@ impl Call<'_> {
             }
             "screenshot.get" => {
                 req(&p, "id")?;
-                self.server(method, pick(&p, &["id", "inline"])).await
+                self.server(method, pick(&p, &["id", "inline", "thumb"]))
+                    .await
             }
             "preview.open" => {
                 self.server(
@@ -2295,17 +2330,28 @@ mod workspace_tests {
                                 {"id": "v1", "pane": "p1"}, {"id": "v2", "pane": "p2"}, {"id": "v3", "pane": null}
                             ]}),
                             "screenshot.list" => {
-                                json!({"echo": p, "count": 4, "total": 6, "screenshots": [
-                                    {"id": "s1", "pane": "p1", "caption": "in"},
-                                    {"id": "s2", "pane": "p2", "caption": "secret"},
-                                    {"id": "s3", "pane": null, "caption": "no pane"},
-                                    {"id": "s4", "pane": "p9", "caption": "closed pane"}
+                                json!({"echo": p, "count": 5, "total": 7, "screenshots": [
+                                    {"id": "s1", "pane": "p1", "workspace": "w1", "caption": "in"},
+                                    {"id": "s2", "pane": "p2", "workspace": "w2", "caption": "secret"},
+                                    {"id": "s3", "pane": null, "workspace": "w1", "caption": "no pane"},
+                                    {"id": "s4", "pane": "p9", "workspace": "w1", "caption": "closed pane"},
+                                    // Taken while p1 was still in w2; p1 has since moved to w1.
+                                    {"id": "s5", "pane": "p1", "workspace": "w2", "caption": "moved secret"}
                                 ]})
                             }
                             "screenshot.get" => match p["id"].as_str().unwrap_or("") {
-                                "s1" => json!({"id": "s1", "pane": "p1", "data_b64": "aW4="}),
-                                "s2" => json!({"id": "s2", "pane": "p2", "data_b64": "c2VjcmV0"}),
-                                _ => json!({"id": "s3", "pane": null, "data_b64": "bm8="}),
+                                "s1" => {
+                                    json!({"id": "s1", "pane": "p1", "workspace": "w1", "data_b64": "aW4="})
+                                }
+                                "s2" => {
+                                    json!({"id": "s2", "pane": "p2", "workspace": "w2", "data_b64": "c2VjcmV0", "echo": p})
+                                }
+                                "s5" => {
+                                    json!({"id": "s5", "pane": "p1", "workspace": "w2", "data_b64": "bW92ZWQgc2VjcmV0"})
+                                }
+                                _ => {
+                                    json!({"id": "s3", "pane": null, "workspace": "w1", "data_b64": "bm8="})
+                                }
                             },
                             "attention.list" => json!({
                                 "items": [
@@ -2469,20 +2515,22 @@ mod workspace_tests {
             )
             .await
             .unwrap();
-        assert_eq!(ids(&r), ["s1", "s2", "s3", "s4"]);
+        assert_eq!(ids(&r), ["s1", "s2", "s3", "s4", "s5"]);
         assert_eq!(
             r["echo"],
             json!({"environment": "agent", "limit": 5, "since_ms": 10})
         );
-        assert_eq!(r["total"], 6);
+        assert_eq!(r["total"], 7);
         let g = call
             .dispatch(
                 "screenshot.get",
-                json!({"id": "s2", "inline": true, "x": 1}),
+                json!({"id": "s2", "inline": true, "thumb": 256, "x": 1}),
             )
             .await
             .unwrap();
         assert_eq!(g["id"], "s2");
+        // Only the documented parameters reach the server, `thumb` included.
+        assert_eq!(g["echo"], json!({"id": "s2", "inline": true, "thumb": 256}));
         assert_eq!(
             call.dispatch("screenshot.get", json!({}))
                 .await
@@ -2513,7 +2561,8 @@ mod workspace_tests {
                 gw: &gw,
                 device: &share,
             };
-            // Only the visible pane's records; no pane-less or closed-pane ones.
+            // Only the visible pane's records from its current workspace; no pane-less or
+            // closed-pane ones, and none taken before the pane moved into the share (s5).
             let r = call.dispatch("screenshot.list", json!({})).await.unwrap();
             assert_eq!(ids(&r), ["s1"], "{name}");
             assert_eq!(r["count"], 1, "{name}");
@@ -2540,8 +2589,9 @@ mod workspace_tests {
                     "{name} {p}"
                 );
             }
-            // Another pane's (or no pane's) screenshot is not found, never returned.
-            for id in ["s2", "s3"] {
+            // Another pane's (or no pane's, or another workspace's) screenshot is not found,
+            // never returned.
+            for id in ["s2", "s3", "s5"] {
                 let e = call
                     .dispatch("screenshot.get", json!({"id": id, "inline": true}))
                     .await

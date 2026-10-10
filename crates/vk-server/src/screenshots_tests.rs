@@ -1049,6 +1049,18 @@ async fn add_rejects_garbage_and_oversized_images() {
     assert_eq!(err.data.kind, "invalid_params");
     let err = e.call(&ctx, "screenshot.add", json!({})).await.unwrap_err();
     assert_eq!(err.data.kind, "invalid_params");
+    // More than 11 MiB of image: refused before the base64 is decoded.
+    let huge = "A".repeat(ADD_MAX_BYTES.div_ceil(3) * 4 + 16);
+    let err = e
+        .call(&ctx, "screenshot.add", json!({"data_b64": huge}))
+        .await
+        .unwrap_err();
+    assert_eq!(err.data.kind, "invalid_params");
+    assert!(
+        err.message.contains("larger than 11 MiB"),
+        "{}",
+        err.message
+    );
     // 16385 pixels wide: refused before the pixels are decoded.
     let wide = png(16385, 1, |_, _| [0, 0, 0, 255]);
     let err = e
@@ -1117,6 +1129,58 @@ async fn add_is_idempotent_per_blob_and_pane() {
         .unwrap();
     assert_eq!(c["duplicate"], false);
     assert_ne!(c["id"], a["id"]);
+    assert_eq!(load_all(&e.server).len(), 2);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn add_does_not_reuse_a_record_from_the_panes_former_workspace() {
+    let e = Env::new();
+    let data = png(2, 2, |_, _| [7, 7, 7, 255]);
+    let p = json!({"data_b64": b64(&data), "caption": "from ws-a"});
+    let old = e
+        .call(&ctx_pane("pane-a"), "screenshot.add", p.clone())
+        .await
+        .unwrap();
+    assert_eq!(old["workspace"], "ws-a");
+    // The pane moves to another workspace and attaches the same file again.
+    e.server.with_core(|c| {
+        for p in c.model.panes.iter_mut().filter(|p| p.id == "pane-a") {
+            p.workspace = "ws-b".into();
+        }
+    });
+    let again = json!({"data_b64": b64(&data), "caption": "from ws-b"});
+    let new = e
+        .call(&ctx_pane("pane-a"), "screenshot.add", again.clone())
+        .await
+        .unwrap();
+    assert_eq!(new["duplicate"], false, "{new}");
+    assert_ne!(new["id"], old["id"]);
+    assert_eq!(new["workspace"], "ws-b");
+    assert_eq!(new["caption"], "from ws-b");
+    // The pane can read what it got back; the old record stays hidden from it.
+    e.call(
+        &ctx_pane("pane-a"),
+        "screenshot.get",
+        json!({"id": new["id"]}),
+    )
+    .await
+    .unwrap();
+    let err = e
+        .call(
+            &ctx_pane("pane-a"),
+            "screenshot.get",
+            json!({"id": old["id"]}),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.data.kind, "not_found");
+    // Inside the new workspace the attachment is idempotent again.
+    let dup = e
+        .call(&ctx_pane("pane-a"), "screenshot.add", again)
+        .await
+        .unwrap();
+    assert_eq!(dup["duplicate"], true);
+    assert_eq!(dup["id"], new["id"]);
     assert_eq!(load_all(&e.server).len(), 2);
 }
 
@@ -1223,4 +1287,80 @@ async fn list_filters_by_pane_workspace_and_environment() {
         .unwrap();
     assert_eq!(l["count"], 1);
     assert_eq!(l["screenshots"][0]["caption"], "in a");
+}
+
+// ---- screenshot.get thumbnails -----------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn get_returns_a_downscaled_thumbnail() {
+    use base64::Engine as _;
+    let e = Env::new();
+    let data = png(300, 150, |x, y| [x as u8, y as u8, 60, 255]);
+    let r = e
+        .call(
+            &ctx_pane("pane-a"),
+            "screenshot.add",
+            json!({"data_b64": b64(&data)}),
+        )
+        .await
+        .unwrap();
+    let id = r["id"].as_str().unwrap().to_string();
+    let get = async |p: Value| e.call(&ctx_full(), "screenshot.get", p).await.unwrap();
+    let decoded = |v: &Value| {
+        base64::engine::general_purpose::STANDARD
+            .decode(v["data_b64"].as_str().unwrap())
+            .unwrap()
+    };
+    // Aspect ratio kept, longest side at `thumb`.
+    let g = get(json!({"id": id, "inline": true, "thumb": 100})).await;
+    assert_eq!(g["mime"], "image/png");
+    assert_eq!(
+        (g["thumb_width"].clone(), g["thumb_height"].clone()),
+        (json!(100), json!(50))
+    );
+    let small = decoded(&g);
+    assert_eq!(
+        image::load_from_memory_with_format(&small, image::ImageFormat::Png)
+            .map(|i| (i.width(), i.height()))
+            .unwrap(),
+        (100, 50)
+    );
+    // The record's own size is unchanged.
+    assert_eq!(
+        (g["width"].clone(), g["height"].clone()),
+        (json!(300), json!(150))
+    );
+    // Clamped to 64..=1024: a tiny request gives 64 pixels, a huge one never scales up.
+    let g = get(json!({"id": id, "inline": true, "thumb": 1})).await;
+    assert_eq!(
+        (g["thumb_width"].clone(), g["thumb_height"].clone()),
+        (json!(64), json!(32))
+    );
+    let g = get(json!({"id": id, "inline": true, "thumb": 5000})).await;
+    assert_eq!(
+        (g["thumb_width"].clone(), g["thumb_height"].clone()),
+        (json!(300), json!(150))
+    );
+    assert_eq!(decoded(&g), data);
+    // Without `inline` there is no image data; without `thumb` the full image.
+    let g = get(json!({"id": id, "thumb": 100})).await;
+    assert!(
+        g.get("data_b64").is_none() && g.get("thumb_width").is_none(),
+        "{g}"
+    );
+    let g = get(json!({"id": id, "inline": true})).await;
+    assert_eq!(decoded(&g), data);
+    assert!(g.get("thumb_width").is_none());
+}
+
+#[test]
+fn thumbnail_keeps_tall_images_tall_and_refuses_garbage() {
+    let tall = png(40, 400, |_, y| [0, (y % 256) as u8, 0, 255]);
+    let (out, w, h) = thumbnail_png(&tall, 100).unwrap();
+    assert_eq!((w, h), (10, 100));
+    assert_eq!(&out[..8], b"\x89PNG\r\n\x1a\n");
+    let (same, w, h) = thumbnail_png(&tall, 400).unwrap();
+    assert_eq!((w, h), (40, 400));
+    assert_eq!(same, tall);
+    assert!(thumbnail_png(b"not a png", 100).is_err());
 }

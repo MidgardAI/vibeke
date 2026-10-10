@@ -5736,6 +5736,7 @@ export type ScreenshotDeleteResult = {
 export type ScreenshotGetParams = {
   id: string;
   inline?: boolean;
+  thumb?: number;
 };
 
 export type ScreenshotGetResult = ScreenshotMeta;
