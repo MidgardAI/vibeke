@@ -22,6 +22,7 @@ use serde_json::{Value, json};
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use unicode_width::UnicodeWidthStr;
 use vk_proto::input::{Key, KeyEvent, KeyKind, NamedKey};
@@ -126,8 +127,13 @@ pub enum Outcome {
     Submit(String),
 }
 
+/// Ids of opened pickers: a listing reply fills only the picker that asked for it.
+static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+
 #[derive(Clone)]
 pub struct PathPicker {
+    /// Which picker this is (see [`NEXT_ID`]).
+    pub id: u64,
     pub input: String,
     /// Byte offset into `input` (always on a char boundary).
     pub cursor: usize,
@@ -162,6 +168,7 @@ impl PathPicker {
     pub fn new(initial: impl Into<String>, fs: Arc<dyn DirSource>) -> Self {
         let input = initial.into();
         let mut p = PathPicker {
+            id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
             cursor: input.len(),
             input,
             sel: None,
@@ -609,17 +616,39 @@ pub enum Owner {
     Handoff,
 }
 
-/// An `fs.browse` call in flight.
+/// An `fs.browse` call in flight for picker `id`.
 #[derive(Debug, Clone)]
 pub struct Reply {
     pub owner: Owner,
+    pub id: u64,
     pub key: ListKey,
 }
 
 /// Send the listing `picker` asks for (if any) to machine `mi`.
 pub fn request(app: &mut App, mi: usize, picker: &mut PathPicker, owner: Owner) {
     if let Some((key, params)) = picker.take_request() {
-        app.command_on(mi, "fs.browse", params, Pending::Path(Reply { owner, key }));
+        let id = picker.id;
+        app.command_on(
+            mi,
+            "fs.browse",
+            params,
+            Pending::Path(Reply { owner, id, key }),
+        );
+    }
+}
+
+/// [`request`] for the open popup picker (after a paste, which doesn't go through its keys).
+pub fn request_for_popup(app: &mut App) {
+    let Mode::Popup(Popup::Path(p)) = &mut app.mode else {
+        return;
+    };
+    if let Some((key, params)) = p.picker.take_request() {
+        let reply = Reply {
+            owner: Owner::Popup,
+            id: p.picker.id,
+            key,
+        };
+        app.command("fs.browse", params, Pending::Path(reply));
     }
 }
 
@@ -635,7 +664,9 @@ pub fn on_reply(app: &mut App, _mi: usize, r: Reply, res: Result<Value, RpcErr>)
             .map(|(_, p)| p),
         _ => None,
     };
-    if let Some(p) = picker {
+    // A reply for a picker that has since closed (and maybe another one opened, on another
+    // machine) is dropped.
+    if let Some(p) = picker.filter(|p| p.id == r.id) {
         p.set_listing(&r.key, res.as_ref());
         app.dirty = true;
     }
@@ -1014,6 +1045,27 @@ mod tests {
         );
         let (_, p) = only(&commands(&mut rxs[1]), "workspace.create");
         assert_eq!(p["cwd"], "/home/r/src/");
+    }
+
+    #[test]
+    fn a_late_reply_never_fills_another_picker_and_a_paste_asks_for_its_folder() {
+        use crate::drafts::tests::{commands, fleet_n, only, reply};
+        let (mut app, mut rxs) = fleet_n(2);
+        app.cur = 1;
+        app.action("new_workspace", None);
+        let (old, _) = only(&commands(&mut rxs[1]), "fs.browse");
+        app.on_key(named(NamedKey::Escape));
+        app.action("new_workspace", None);
+        let (new, _) = only(&commands(&mut rxs[1]), "fs.browse");
+        let listing = json!({"path": "/elsewhere", "entries": [{"name": "x"}]});
+        reply(&mut app, 1, old, listing.clone());
+        assert!(names(picker(&app)).is_empty());
+        assert!(picker(&app).waiting.is_some());
+        reply(&mut app, 1, new, listing);
+        assert_eq!(names(picker(&app)), ["x"]);
+        app.on_paste("x/".into());
+        let (_, p) = only(&commands(&mut rxs[1]), "fs.browse");
+        assert_eq!(p, json!({"path": "~/x/"}));
     }
 
     #[test]

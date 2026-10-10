@@ -1277,14 +1277,7 @@ pub fn accept_key(app: &mut App, ev: KeyEvent) {
     };
     let act = overlay_key(a, &ev);
     let (mi, id) = (a.mi, a.id.clone());
-    // A picker on a remote machine asks its server for the folder it shows.
-    if let Some((key, params)) = a.picker.as_mut().and_then(|(_, p)| p.take_request()) {
-        let reply = crate::path_picker::Reply {
-            owner: crate::path_picker::Owner::Handoff,
-            key,
-        };
-        app.command_on(mi, "fs.browse", params, Pending::Path(reply));
-    }
+    request_listing(app);
     match act {
         Act::None => {}
         Act::Close => close(app),
@@ -1409,7 +1402,27 @@ pub fn on_paste(app: &mut App, text: &str) {
     } else if a.focus == Row::Branch && a.busy.is_none() {
         a.branch.extend(text.chars().filter(|c| !c.is_whitespace()));
     }
+    request_listing(app);
     app.dirty = true;
+}
+
+/// A picker on a remote machine asks its server for the folder it shows.
+fn request_listing(app: &mut App) {
+    let Some(a) = app.ux.handoff.accept.as_mut() else {
+        return;
+    };
+    let mi = a.mi;
+    let Some((_, p)) = a.picker.as_mut() else {
+        return;
+    };
+    if let Some((key, params)) = p.take_request() {
+        let reply = crate::path_picker::Reply {
+            owner: crate::path_picker::Owner::Handoff,
+            id: p.id,
+            key,
+        };
+        app.command_on(mi, "fs.browse", params, Pending::Path(reply));
+    }
 }
 
 fn human(n: u64) -> String {

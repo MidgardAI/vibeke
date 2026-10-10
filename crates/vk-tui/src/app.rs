@@ -2038,6 +2038,7 @@ impl App {
             Mode::Normal => {}
             Mode::Popup(Popup::Path(p)) => {
                 p.picker.paste(&text);
+                crate::path_picker::request_for_popup(self);
                 return;
             }
             Mode::Popup(Popup::HandoffAccept) => {
