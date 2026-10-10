@@ -680,6 +680,8 @@ pub enum IsolationLevel {
     Sandbox,
     Container,
     Vm,
+    /// A hosted sandbox (spec 17): the task's panes run in a provider box (Sprites, E2B).
+    Cloud,
 }
 
 impl IsolationLevel {
@@ -689,6 +691,7 @@ impl IsolationLevel {
             IsolationLevel::Sandbox => "sandbox",
             IsolationLevel::Container => "container",
             IsolationLevel::Vm => "vm",
+            IsolationLevel::Cloud => "cloud",
         }
     }
     pub fn parse(s: &str) -> Option<IsolationLevel> {
@@ -697,6 +700,7 @@ impl IsolationLevel {
             "sandbox" | "sbx" => IsolationLevel::Sandbox,
             "container" | "ctr" => IsolationLevel::Container,
             "vm" => IsolationLevel::Vm,
+            "cloud" => IsolationLevel::Cloud,
             _ => return None,
         })
     }

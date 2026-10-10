@@ -1324,6 +1324,13 @@ async fn shell(server: &Arc<Server>, p: &Value) -> R {
                 json!({"sandbox": b.key, "level": "vm", "argv": argv, "env": [], "cwd": Value::Null}),
             )
         }
+        BoxRunner::Cloud(cc) => {
+            // `vibeke cloud exec -it` into the task's box, as the user in their terminal.
+            let argv = super::cloud::shell_argv(server, cc, &term);
+            Ok(
+                json!({"sandbox": b.key, "level": "cloud", "argv": argv, "env": [], "cwd": Value::Null}),
+            )
+        }
         BoxRunner::Sandbox(r) => {
             let shell = server
                 .opts

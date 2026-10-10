@@ -66,6 +66,7 @@ pub fn method_tables() -> Vec<(&'static str, &'static [(&'static str, bool)])> {
         ("collision", collision::METHODS),
         ("privacy", privacy::METHODS),
         ("handoff", handoff::METHODS),
+        ("cloud_api", cloud_api::METHODS),
     ]
 }
 
@@ -132,6 +133,7 @@ fn build() -> Result<Registry, Vec<String>> {
         .chain(BATCH_3F_DEFS.lines())
         .chain(BATCH_3A_DEFS.lines())
         .chain(crate::handoff::DEFS.lines())
+        .chain(crate::cloud_api::DEFS.lines())
         .chain(crate::approve::DEFS.lines())
         .chain(crate::gateway_supervisor::DEFS.lines())
     {
@@ -198,6 +200,7 @@ fn build() -> Result<Registry, Vec<String>> {
             crate::gateway_bridge::EVENTS,
             crate::gateway_supervisor::EVENTS,
             crate::approve::EVENTS,
+            crate::cloud_api::EVENTS,
         ],
         "event",
         &mut errs,
@@ -456,7 +459,7 @@ ConfigDiagnostic = {line: int, col: int, message: string}
 ConfigWarning = {key: string, line: int|null, col: int|null, message: string}
 SessionEntry = {name: string, running: bool, socket: string, state: string, current: bool, pid?: int}
 Event = {seq: int, ts: int, v: int, tier: sync|history, type: string, subject: object, actor: object, data: any}
-IsolationLevel = host|sandbox|container|vm
+IsolationLevel = host|sandbox|container|vm|cloud
 Isolation = {level: IsolationLevel, provider: string, network: string, yolo: bool, scope: string, visible_roots: [string]}
 Workspace = {id: string, handle: string, name: string|null, auto_name: string, root_path: string, task: string|null, order: number, branch: string|null}
 LayoutNode = {Leaf: {pane: string}} | {Split: {dir: 'Horizontal'|'Vertical', children: [any]}}
@@ -521,6 +524,7 @@ pub const METHOD_SHAPES: &[&str] = &[
     BATCH_3A_SHAPES,
     crate::handoff::SHAPES,
     crate::approve::SHAPES,
+    crate::cloud_api::SHAPES,
 ];
 
 /// Lane 3E (09 §9.1–9.3): `state.forget` and state encryption.

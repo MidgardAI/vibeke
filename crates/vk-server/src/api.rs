@@ -399,7 +399,9 @@ pub const PANE_FORBIDDEN: &[&str] = &[
 
 /// Method prefixes whose every method is forbidden for pane scope (14 §9: pane/adapter tokens
 /// get no assistant access).
-pub const PANE_FORBIDDEN_PREFIXES: &[&str] = &["assistant."];
+/// Spec 17 §10: every `cloud.*` method is the user's (an agent asks for `cloud.move` through
+/// `auth.approve`).
+pub const PANE_FORBIDDEN_PREFIXES: &[&str] = &["assistant.", "cloud."];
 
 // Handlers that refuse pane scope only for some params stay `Open`/`OwnTarget` here (their
 // handler checks are authoritative), e.g. `preview.profile {action: "reset"}`, `preview.open`
@@ -647,6 +649,12 @@ pub async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) 
         return r;
     }
     if let Some(r) = crate::gateway_supervisor::api(server, ctx, method, p).await {
+        return r;
+    }
+    // Cloud sign-in and boxes (spec 17 §5, §6).
+    if method.starts_with("cloud.")
+        && let Some(r) = Box::pin(crate::cloud_api::api(server, ctx, method, p)).await
+    {
         return r;
     }
     // Incoming handoffs (16 §15.2).

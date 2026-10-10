@@ -3802,6 +3802,7 @@ dependencies = [
  "vk-agents",
  "vk-assist",
  "vk-browser",
+ "vk-cloud",
  "vk-compat",
  "vk-config",
  "vk-handoff",

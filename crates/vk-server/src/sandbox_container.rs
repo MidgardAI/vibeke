@@ -961,6 +961,26 @@ impl BoxLink {
             .unwrap()
             .remove(&vk_sandbox::runner::short_id(pane));
     }
+    /// The in-box end is up on `m`: use it and reopen every pane's broker listener (cloud links,
+    /// `sandbox::cloud`, share this with [`start_link`]).
+    pub(super) fn connect(self: &Arc<Self>, m: vk_remote::Mux) {
+        *self.mux.lock().unwrap() = Some(m.clone());
+        self.connected
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let shorts: Vec<String> = self.panes.lock().unwrap().keys().cloned().collect();
+        for s in shorts {
+            self.open_listen(m.clone(), s);
+        }
+    }
+    /// The in-box end went away: listeners are reopened on the next [`BoxLink::connect`].
+    pub(super) fn disconnect(&self) {
+        *self.mux.lock().unwrap() = None;
+        self.connected
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        for v in self.panes.lock().unwrap().values_mut() {
+            *v = None;
+        }
+    }
 }
 
 /// Keep the link to a running box up: `<runtime> exec -i <box> vibeke sandbox bridge`, the host
