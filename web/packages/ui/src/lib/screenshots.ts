@@ -126,3 +126,18 @@ export class ByteLru<V> {
     return this.total;
   }
 }
+
+/** Thumbnail edge (px) a card asks for: 384, doubled on high-DPR screens, capped at 1024. */
+export const thumbEdge = (dpr: number): number => Math.min(1024, dpr >= 1.5 ? 768 : 384);
+
+/** Thumbnails are small, so a card can drop its image offscreen and refetch it when it is back. */
+export const THUMB_CACHE_BYTES = 24 * 1024 * 1024;
+
+/**
+ * Params of the list request. A device paired through a pane-only share has a limit with a pane but
+ * no workspace, and the gateway refuses a workspace filter there: ask for that pane instead.
+ */
+export function listParams(limit: { workspace?: string | null; pane?: string | null } | null | undefined, workspace: string): { workspace?: string; pane?: string; limit: number } {
+  if (limit?.pane && !limit.workspace) return { pane: limit.pane, limit: LIST_LIMIT };
+  return { workspace, limit: LIST_LIMIT };
+}

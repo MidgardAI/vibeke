@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import type { ScreenshotMeta } from '@vibeke/core';
-import { ByteLru, captionOf, capturedHint, deletedIds, mergeShots, saveName, seenMark, stepIndex, tooBigToInline, unreadSince, INLINE_MAX_BYTES } from '../src/lib/screenshots';
+import { ByteLru, listParams, thumbEdge, captionOf, capturedHint, deletedIds, mergeShots, saveName, seenMark, stepIndex, tooBigToInline, unreadSince, INLINE_MAX_BYTES } from '../src/lib/screenshots';
 
 const shot = (id: string, at: number, extra: Partial<ScreenshotMeta> = {}): ScreenshotMeta => ({ id, handle: `s${id}`, blob: id, mime: 'image/png', width: 10, height: 10, bytes: 100, created_at_ms: at, label: '', ...extra });
 
@@ -51,5 +51,16 @@ describe('screenshot list', () => {
     expect(c.get('a')).toBe('A');
     c.set('d', 'D', 95);
     expect(c.size).toBe(1);
+  });
+  test('list params: a pane-only share asks for its pane, others for the workspace', () => {
+    expect(listParams({ pane: 'p1' }, 'w1')).toEqual({ pane: 'p1', limit: 100 });
+    expect(listParams({ workspace: 'w1' }, 'w1')).toEqual({ workspace: 'w1', limit: 100 });
+    expect(listParams({ workspace: 'w1', pane: 'p1' }, 'w1')).toEqual({ workspace: 'w1', limit: 100 });
+    expect(listParams(null, 'w2')).toEqual({ workspace: 'w2', limit: 100 });
+  });
+  test('thumbnail edge doubles on high-DPR screens and stays within 1024', () => {
+    expect(thumbEdge(1)).toBe(384);
+    expect(thumbEdge(2)).toBe(768);
+    expect(thumbEdge(4)).toBeLessThanOrEqual(1024);
   });
 });

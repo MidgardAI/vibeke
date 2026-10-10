@@ -6,7 +6,7 @@
 
 import { useEffect } from 'react';
 import type { AppEvent, ScreenshotMeta } from '@vibeke/core';
-import { capturedHint, deletedIds, LIST_LIMIT, mergeShots, seenMark, unreadSince, withoutShots } from '../lib/screenshots';
+import { capturedHint, deletedIds, listParams, mergeShots, seenMark, unreadSince, withoutShots } from '../lib/screenshots';
 import { ValueStore, useStore } from '../lib/store';
 import { useApp } from './hooks';
 import type { AppModel } from './model';
@@ -57,6 +57,8 @@ export class ScreenshotStore {
   readonly state = new ValueStore<ReadonlyMap<string, WorkspaceShots>>(new Map());
   private watches = new Map<string, Watch>();
   private subs = new Map<string, { off: () => void; online: boolean }>();
+  private flights = new Map<string, Promise<void>>();
+  private queued = new Set<string>();
   private offManager: (() => void) | null = null;
 
   constructor(private readonly app: AppModel) {}
@@ -109,12 +111,39 @@ export class ScreenshotStore {
     if (cur && cur.unread.size) this.put(k, { ...cur, unread: new Set() });
   }
 
-  async refresh(host: string, ws: string): Promise<void> {
+  /**
+   * Refetch the list. One request per workspace is in flight: a call meanwhile queues exactly one
+   * follow-up, so an older response can never overwrite a newer one.
+   */
+  refresh(host: string, ws: string): Promise<void> {
+    const k = key(host, ws);
+    const cur = this.flights.get(k);
+    if (cur) {
+      this.queued.add(k);
+      return cur;
+    }
+    const run = (async () => {
+      try {
+        do {
+          this.queued.delete(k);
+          await this.fetchList(host, ws);
+        } while (this.queued.has(k));
+      } finally {
+        this.flights.delete(k);
+      }
+    })();
+    this.flights.set(k, run);
+    return run;
+  }
+
+  private async fetchList(host: string, ws: string): Promise<void> {
     const conn = this.app.conn(host);
     if (!conn) return;
     const k = key(host, ws);
     try {
-      const r = await conn.request('screenshot.list', { workspace: ws, limit: LIST_LIMIT });
+      const hs = this.app.manager.getSnapshot().find((h) => h.record.host_id === host);
+      const limit = hs?.record.limit ?? hs?.info?.limit;
+      const r = await conn.request('screenshot.list', listParams(limit, ws));
       const w = this.watches.get(k);
       if (!w) return;
       const cur = this.state.get().get(k) ?? EMPTY;

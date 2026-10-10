@@ -964,10 +964,14 @@ export interface AppApi {
     params: { workspace?: string; pane?: string; task?: string; environment?: string; limit?: number };
     result: { screenshots: ScreenshotMeta[]; count: number; total: number };
   };
-  /** `inline: true` adds the bytes (up to 8 MiB) as `data_b64`. */
+  /**
+   * `inline: true` adds the bytes (up to 8 MiB) as `data_b64`. With `thumb` (64..1024) the image is a PNG
+   * downscaled to at most that many pixels on its longest edge, and `thumb_width` / `thumb_height` say its
+   * size; an older host ignores `thumb` and returns the full image (no `thumb_width`).
+   */
   'screenshot.get': {
-    params: { id: string; inline?: boolean };
-    result: ScreenshotMeta & { data_b64?: string; mime: string };
+    params: { id: string; inline?: boolean; thumb?: number };
+    result: ScreenshotMeta & { data_b64?: string; mime: string; thumb_width?: number; thumb_height?: number };
   };
   'interaction.list': { params: Record<string, unknown>; result: { interactions: Interaction[] } };
   'interaction.get': { params: { interaction: string }; result: { interaction: Interaction } };

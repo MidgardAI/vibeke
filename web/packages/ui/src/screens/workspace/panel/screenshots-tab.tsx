@@ -4,7 +4,7 @@
 // cache; images over 8 MiB are not fetched. New ones arrive from `screenshot.captured` events
 // (app/screenshot-store.ts).
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { ChevronLeft, ChevronRight, Download, ImageOff, Images } from 'lucide-react';
 import type { ScreenshotMeta } from '@vibeke/core';
 import { useApp, useHost, useNow } from '../../../app/hooks';
@@ -14,44 +14,52 @@ import { Button, Empty, IconButton, Spinner, cx } from '../../../components/ui';
 import { t } from '../../../i18n';
 import { ago, byteSize } from '../../../lib/format';
 import { imageDataUrl } from '../../../lib/preview';
-import { ByteLru, captionOf, saveName, stepIndex, tooBigToInline } from '../../../lib/screenshots';
+import { ByteLru, THUMB_CACHE_BYTES, captionOf, saveName, stepIndex, thumbEdge, tooBigToInline } from '../../../lib/screenshots';
 import type { WorkspaceRoute } from '../../../router';
 
-const cache = new ByteLru<string>(48, 64 * 1024 * 1024);
-const cacheKey = (host: string, s: ScreenshotMeta) => `${host}|${s.id}`;
+const thumbCache = new ByteLru<string>(400, THUMB_CACHE_BYTES);
+// The viewer keeps at most the open image and its neighbours.
+const fullCache = new ByteLru<string>(3, 48 * 1024 * 1024);
+const dpr = () => (typeof window === 'undefined' ? 1 : window.devicePixelRatio || 1);
 
-/** The decoded image of one screenshot, fetched once `enabled` (null until then; `failed` on error). */
-function useShotImage(host: string, s: ScreenshotMeta, enabled: boolean): { url: string | null; failed: boolean } {
+/**
+ * One screenshot's decoded image, fetched while `enabled`. A card (`thumb`) asks for a thumbnail and
+ * reads it from the byte-bounded cache on each render, so it holds no data of its own: when `enabled`
+ * turns false (offscreen) the URL is dropped, and an evicted one is fetched again. The viewer asks
+ * for the full image.
+ */
+function useShotImage(host: string, s: ScreenshotMeta, enabled: boolean, thumb: boolean): { url: string | null; failed: boolean } {
   const app = useApp();
-  const key = cacheKey(host, s);
+  const edge = thumb ? thumbEdge(dpr()) : 0;
+  const key = `${host}|${s.id}|${edge}`;
+  const cache = thumb ? thumbCache : fullCache;
   const big = tooBigToInline(s);
-  const [url, setUrl] = useState<string | null>(() => cache.get(key) ?? null);
-  const [failed, setFailed] = useState(false);
-  useEffect(() => {
-    setUrl(cache.get(key) ?? null);
-    setFailed(false);
-  }, [key]);
+  const [, bump] = useReducer((n: number) => n + 1, 0);
+  const [failedKey, setFailedKey] = useState<string | null>(null);
+  const failed = failedKey === key;
+  const url = enabled ? (cache.get(key) ?? null) : null;
   useEffect(() => {
     if (!enabled || big || url || failed) return;
     let live = true;
     app
       .conn(host)
-      ?.request('screenshot.get', { id: s.id, inline: true })
+      ?.request('screenshot.get', thumb ? { id: s.id, inline: true, thumb: edge } : { id: s.id, inline: true })
       .then(
         (r) => {
           if (!live) return;
           const data = imageDataUrl(r.mime || s.mime, r.data_b64);
           if (data) {
+            // A host without `thumb` support sends the full image: it is just counted at its size.
             cache.set(key, data, data.length);
-            setUrl(data);
-          } else setFailed(true);
+            bump();
+          } else setFailedKey(key);
         },
-        () => live && setFailed(true),
+        () => live && setFailedKey(key),
       );
     return () => {
       live = false;
     };
-  }, [app, host, s.id, s.mime, key, enabled, big, url, failed]);
+  }, [app, host, s.id, s.mime, key, enabled, big, url, failed, thumb, edge, cache]);
   return { url, failed };
 }
 
@@ -113,27 +121,26 @@ export function ScreenshotsTab({ route }: { route: WorkspaceRoute }) {
   );
 }
 
-/** True once the element has come near the viewport (or immediately without IntersectionObserver). */
-function useSeen(): [React.RefObject<HTMLDivElement | null>, boolean] {
+/** True while the element is near the viewport (always, without IntersectionObserver). */
+function useVisible(): [React.RefObject<HTMLDivElement | null>, boolean] {
   const ref = useRef<HTMLDivElement>(null);
-  const [seen, setSeen] = useState(false);
+  const [visible, setVisible] = useState(typeof IntersectionObserver === 'undefined');
   useEffect(() => {
     const el = ref.current;
-    if (!el || seen) return;
-    if (typeof IntersectionObserver === 'undefined') {
-      setSeen(true);
-      return;
-    }
-    const io = new IntersectionObserver((es) => es.some((e) => e.isIntersecting) && setSeen(true), { rootMargin: '200px' });
+    if (!el || typeof IntersectionObserver === 'undefined') return;
+    const io = new IntersectionObserver((es) => {
+      const last = es[es.length - 1];
+      if (last) setVisible(last.isIntersecting);
+    }, { rootMargin: '200px' });
     io.observe(el);
     return () => io.disconnect();
-  }, [seen]);
-  return [ref, seen];
+  }, []);
+  return [ref, visible];
 }
 
 function ShotCard({ host, shot, pane, now, onOpen }: { host: string; shot: ScreenshotMeta; pane: string | undefined; now: number; onOpen(): void }) {
-  const [ref, seen] = useSeen();
-  const { url, failed } = useShotImage(host, shot, seen);
+  const [ref, visible] = useVisible();
+  const { url, failed } = useShotImage(host, shot, visible, true);
   const big = tooBigToInline(shot);
   const name = captionOf(shot);
   return (
@@ -218,7 +225,7 @@ function Viewer({
 }
 
 function ViewerBody({ host, shot, pane, now, index, count, go, onClose }: { host: string; shot: ScreenshotMeta; pane: string | undefined; now: number; index: number; count: number; go(d: number): void; onClose(): void }) {
-  const { url, failed } = useShotImage(host, shot, true);
+  const { url, failed } = useShotImage(host, shot, true, false);
   const big = tooBigToInline(shot);
   const name = captionOf(shot);
   const meta = [shot.label && shot.label !== name ? shot.label : null, pane ? t.shots.from(pane) : null, ago(shot.created_at_ms, now), shot.width && shot.height ? `${shot.width}×${shot.height}` : null].filter(Boolean).join(' · ');
