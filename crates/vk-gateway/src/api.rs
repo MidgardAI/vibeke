@@ -88,6 +88,8 @@ const SERVER_READ_ONLY: &[&str] = &[
     "preview.get",
     "preview.url",
     "preview.status",
+    "screenshot.list",
+    "screenshot.get",
     "worktree.list",
     "fs.browse",
     "repo.candidates",
@@ -140,6 +142,8 @@ pub fn required_scope(method: &str) -> Option<Scope> {
         | "preview.get"
         | "preview.url"
         | "preview.status"
+        | "screenshot.list"
+        | "screenshot.get"
         | "worktree.list"
         | "git.log"
         | "fs.list"
@@ -876,6 +880,24 @@ impl Call<'_> {
                     list.retain(|pv| has(panes, s(pv, "pane")));
                 }
             }
+            // Screenshots (agent images included) by the pane they belong to. Records without a
+            // pane, or of a closed pane, have no live pane to check: dropped.
+            "screenshot.list" => {
+                let mut dropped = 0;
+                let mut kept = 0;
+                if let Some(list) = r.get_mut("screenshots").and_then(|v| v.as_array_mut()) {
+                    let before = list.len();
+                    list.retain(|m| has(panes, s(m, "pane")));
+                    kept = list.len();
+                    dropped = before - kept;
+                }
+                if r.get("count").is_some() {
+                    r["count"] = json!(kept);
+                }
+                if let Some(total) = r.get("total").and_then(|v| v.as_u64()) {
+                    r["total"] = json!(total.saturating_sub(dropped as u64));
+                }
+            }
             // Hits of closed (archived) panes have no live pane to check: dropped.
             "search.query" => {
                 if let Some(list) = r.get_mut("hits").and_then(|v| v.as_array_mut()) {
@@ -1028,9 +1050,17 @@ impl Call<'_> {
                         });
                     }
                 }
-                "attention.list" | "preview.list" | "search.query" => {
+                "attention.list" | "preview.list" | "search.query" | "screenshot.list" => {
                     let (panes, tasks) = self.visible(a).await?;
                     Self::filter_list(method, &mut r, &panes, &tasks);
+                }
+                // The record is fetched by id, so its pane is only known afterwards. Another
+                // pane's screenshot answers like a missing one.
+                "screenshot.get" => {
+                    let (panes, _) = self.visible(a).await?;
+                    if !s(&r, "pane").is_some_and(|p| panes.iter().any(|x| x == p)) {
+                        return Err(ApiError::new("not_found", "screenshot not found"));
+                    }
                 }
                 _ => {}
             }
@@ -1307,6 +1337,38 @@ impl Call<'_> {
                 self.server(method, pick(&p, &["preview", "machine"])).await
             }
             "preview.status" => self.server(method, json!({})).await,
+            "screenshot.list" => {
+                let mut params = pick(
+                    &p,
+                    &[
+                        "task",
+                        "pane",
+                        "workspace",
+                        "environment",
+                        "since",
+                        "since_ms",
+                        "limit",
+                    ],
+                );
+                // A limited device asks the server for its own pane or workspace, so `limit`
+                // counts records it may see (`dispatch` filters the result again).
+                if let Some(a) = Allowed::of(self.device)
+                    && params.get("pane").is_none()
+                {
+                    if let Some(pane) = &a.pane {
+                        params["pane"] = pane.clone().into();
+                    } else if let Some(w) = &a.workspace
+                        && params.get("workspace").is_none()
+                    {
+                        params["workspace"] = w.clone().into();
+                    }
+                }
+                self.server(method, params).await
+            }
+            "screenshot.get" => {
+                req(&p, "id")?;
+                self.server(method, pick(&p, &["id", "inline"])).await
+            }
             "preview.open" => {
                 self.server(
                     method,
@@ -2232,6 +2294,19 @@ mod workspace_tests {
                             "preview.list" => json!({"previews": [
                                 {"id": "v1", "pane": "p1"}, {"id": "v2", "pane": "p2"}, {"id": "v3", "pane": null}
                             ]}),
+                            "screenshot.list" => {
+                                json!({"echo": p, "count": 4, "total": 6, "screenshots": [
+                                    {"id": "s1", "pane": "p1", "caption": "in"},
+                                    {"id": "s2", "pane": "p2", "caption": "secret"},
+                                    {"id": "s3", "pane": null, "caption": "no pane"},
+                                    {"id": "s4", "pane": "p9", "caption": "closed pane"}
+                                ]})
+                            }
+                            "screenshot.get" => match p["id"].as_str().unwrap_or("") {
+                                "s1" => json!({"id": "s1", "pane": "p1", "data_b64": "aW4="}),
+                                "s2" => json!({"id": "s2", "pane": "p2", "data_b64": "c2VjcmV0"}),
+                                _ => json!({"id": "s3", "pane": null, "data_b64": "bm8="}),
+                            },
                             "attention.list" => json!({
                                 "items": [
                                     {"key": {"kind": "interaction", "id": "i1"}, "pane": "p1", "title": "in"},
@@ -2318,6 +2393,8 @@ mod workspace_tests {
             "preview.get",
             "preview.url",
             "preview.status",
+            "screenshot.list",
+            "screenshot.get",
             "worktree.list",
             "git.log",
             "fs.list",
@@ -2355,6 +2432,129 @@ mod workspace_tests {
         }
         assert!(kind_allows("share", "tab.create"));
         assert!(kind_allows("share", "fs.read"));
+        // Screenshots: shares read them (filtered to their limit); nobody adds or deletes them
+        // through the gateway.
+        for m in ["screenshot.list", "screenshot.get"] {
+            assert!(kind_allows("share", m), "{m}");
+        }
+        for m in ["screenshot.add", "screenshot.delete", "screenshot.open"] {
+            assert_eq!(required_scope(m), None, "{m}");
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn screenshots_stay_inside_the_share() {
+        let t = tempfile::tempdir().unwrap();
+        let gw = gateway(&t).await;
+        let ids = |r: &Value| -> Vec<String> {
+            r["screenshots"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|m| m["id"].as_str().unwrap().to_string())
+                .collect()
+        };
+
+        // The owner's device sees everything, with the documented parameters only.
+        let me = device("d1", Scope::View, "device", None);
+        gw.add_device(me.clone()).unwrap();
+        let call = Call {
+            gw: &gw,
+            device: &me,
+        };
+        let r = call
+            .dispatch(
+                "screenshot.list",
+                json!({"environment": "agent", "limit": 5, "since_ms": 10, "junk": 1}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(ids(&r), ["s1", "s2", "s3", "s4"]);
+        assert_eq!(
+            r["echo"],
+            json!({"environment": "agent", "limit": 5, "since_ms": 10})
+        );
+        assert_eq!(r["total"], 6);
+        let g = call
+            .dispatch(
+                "screenshot.get",
+                json!({"id": "s2", "inline": true, "x": 1}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(g["id"], "s2");
+        assert_eq!(
+            call.dispatch("screenshot.get", json!({}))
+                .await
+                .unwrap_err()
+                .kind,
+            "invalid_params"
+        );
+
+        for (name, limit) in [
+            (
+                "pane share",
+                Limit {
+                    workspace: None,
+                    pane: Some("p1".into()),
+                },
+            ),
+            (
+                "workspace share",
+                Limit {
+                    workspace: Some("w1".into()),
+                    pane: None,
+                },
+            ),
+        ] {
+            let share = device(&name.replace(' ', "-"), Scope::View, "share", Some(limit));
+            gw.add_device(share.clone()).unwrap();
+            let call = Call {
+                gw: &gw,
+                device: &share,
+            };
+            // Only the visible pane's records; no pane-less or closed-pane ones.
+            let r = call.dispatch("screenshot.list", json!({})).await.unwrap();
+            assert_eq!(ids(&r), ["s1"], "{name}");
+            assert_eq!(r["count"], 1, "{name}");
+            assert_eq!(r["total"], 3, "{name}: dropped records are not counted");
+            assert!(!r.to_string().contains("secret"), "{name}");
+            // The server is asked for the shared pane or workspace only.
+            if name == "pane share" {
+                assert_eq!(r["echo"]["pane"], "p1", "{name}");
+            } else {
+                assert_eq!(r["echo"]["workspace"], "w1", "{name}");
+            }
+            // Filters outside the limit are refused.
+            for p in [
+                json!({"pane": "p2"}),
+                json!({"workspace": "w2"}),
+                json!({"task": "k2"}),
+            ] {
+                assert_eq!(
+                    call.dispatch("screenshot.list", p.clone())
+                        .await
+                        .unwrap_err()
+                        .kind,
+                    "forbidden",
+                    "{name} {p}"
+                );
+            }
+            // Another pane's (or no pane's) screenshot is not found, never returned.
+            for id in ["s2", "s3"] {
+                let e = call
+                    .dispatch("screenshot.get", json!({"id": id, "inline": true}))
+                    .await
+                    .unwrap_err();
+                assert_eq!(e.kind, "not_found", "{name} {id}");
+                assert!(!e.message.contains("secret"), "{name} {id}");
+            }
+            let g = call
+                .dispatch("screenshot.get", json!({"id": "s1", "inline": true}))
+                .await
+                .unwrap();
+            assert_eq!(g["data_b64"], "aW4=", "{name}");
+        }
     }
 
     #[test]
