@@ -90,7 +90,7 @@ vibeke cloud exec [-i] [-t] [-w DIR] [-e K=V]... [--session-file PATH] <provider
 - Exec is a WebSocket on `/sprites/{name}/exec?cmd=..&cmd=..&path=CMD0&tty=&stdin=true&cols=&rows=&dir=&env=K=V&detachable=true`. Attach uses `/sprites/{name}/exec/{session_id}`, and listing sessions is `GET /sprites/{name}/exec`.
   - **TTY mode:** binary frames carry raw bytes. Text frames carry JSON: `resize {cols,rows}`, `signal {signal}`, `session_info`, `exit {exit_code}`, `port_opened`.
   - **Pipe mode:** each binary frame starts with a stream byte: `0x00` stdin, `0x01` stdout, `0x02` stderr, `0x03` exit (code byte follows), `0x04` stdin EOF.
-- Files are written with `PUT /sprites/{name}/fs/write?path=&mode=&mkdir=true` (octet-stream). A checkpoint is `POST /sprites/{name}/checkpoint`.
+- Files are written with `PUT /sprites/{name}/fs/write?path=&mode=&mkdirParents=true` (octet-stream; the parameter names of the official Go SDK). A checkpoint is `POST /sprites/{name}/checkpoint`.
 - Suspend is implicit, because Sprites sleep when idle. Resume is a no-op.
 - Auth methods:
   - a pasted token, from `https://sprites.dev/account`;
@@ -118,9 +118,12 @@ vibeke cloud exec [-i] [-t] [-w DIR] [-e K=V]... [--session-file PATH] <provider
   - a pasted key, from `https://e2b.dev/dashboard?tab=keys`;
   - import `e2b-cli`, which reads `~/.e2b/config.json`;
   - the env var `E2B_API_KEY`.
-- Caps: resize, reattach, explicit_suspend, keeps_memory, port_urls, max_runtime_s 86400.
+- `checkpoint` uses `POST /sandboxes/{id}/snapshots`. A snapshot is a template for new sandboxes, not an in-place restore.
+- Caps: resize, reattach, explicit_suspend, keeps_memory, checkpoints, port_urls, max_runtime_s 86400.
 
-**Fake** (`fake.rs`, enabled by `VIBEKE_CLOUD_FAKE_DIR`). A box is a directory `<dir>/<id>/`, and processes run on the host with that directory as the working directory and `HOME`. Terminal sessions use a real PTY, and they are kept by a tiny per-session daemon so `attach` works. The valid credential is `fake-token`. It exists only for tests: it is not an isolation boundary.
+**Fake** (`fake.rs`, enabled by `VIBEKE_CLOUD_FAKE_DIR`). A box is a directory `<dir>/boxes/<id>/`, and processes run on the host with that directory as the working directory and `HOME`. Terminal sessions use a real PTY, and they are kept by a tiny per-session daemon so `attach` works. The valid credential is `fake-token`. It exists only for tests: it is not an isolation boundary.
+
+**Box root.** `Provider::box_root(id)` is the prefix of every absolute in-box path. It is empty for real providers. For the fake provider it is the box directory, so `/workspace` and `/vibeke` stay inside the box. The server builds every in-box path from it.
 
 ## 4. The `cloud` level in the server
 
@@ -136,7 +139,7 @@ vibeke cloud exec [-i] [-t] [-w DIR] [-e K=V]... [--session-file PATH] <provider
 - Code isolation is always `clone`. Creating the box takes these steps:
   1. `provider.create`.
   2. Detect the architecture with `uname -m`.
-  3. Upload the Linux `vibeke` with `container::linux_vibeke`, falling back to a download of the matching release asset that is verified with `vk_remote` minisign. It goes to `/vibeke/bin/vibeke` (0755).
+  3. Upload the Linux `vibeke`. It comes from `VIBEKE_ARTIFACT_DIR`, the release cache `~/.cache/vibeke/releases/<version>/vibeke-linux-<arch>`, or `container::linux_vibeke`. If none of these has it, `cloud_bin::fetch_linux_vibeke` downloads the release asset. The download is verified against the signed release manifest (minisign, version, SHA-256) and cached atomically. A box that is a host directory (the fake provider) gets the host binary. The binary goes to `/vibeke/bin/vibeke` (0755).
   4. `git init` `/workspace` with `receive.denyCurrentBranch=updateInstead`.
   5. Push the task branch from the host with `--receive-pack "<vibeke> cloud exec -i <box> -- git receive-pack"`, then check it out.
   6. Set the git identity.
@@ -201,6 +204,8 @@ The name is `vk-<host8>-<key10>`. The two parts are hex blake3 prefixes of the h
 | `foreign` | Another host's tag. |
 | `missing` | A local record exists, but the provider does not list the box. |
 
+The reconciler also refreshes `unsynced` for running boxes that Vibeke owns. It skips sleeping boxes, so the check does not wake them. A box whose repository cannot be inspected reports `unsynced.unknown = true`, and the destroy guard treats that as unsynced.
+
 The reconciler is `cloud_reconcile.rs`.
 - It runs at server start, every 10 minutes, and on `cloud.box.list {refresh:true}`.
 - It lists each signed-in provider, merges the result with the records, commits changes and emits `cloud.box.changed`.
@@ -220,7 +225,7 @@ The reconciler is `cloud_reconcile.rs`.
 | `cloud.box.forget` (mutating) | `{box}` | `{box}`. It drops a `missing` record. |
 | `cloud.prune` (mutating) | `{provider?, ownership?: ["orphaned","idle"], dry_run?, force?}` | `{candidates: [BoxView], destroyed: [box], skipped: [{box, reason}]}` |
 
-`box` is `"<provider>/<id>"`.
+`box` is `"<provider>/<id>"`. A task can name only its own recorded box: `task.create {box}` refuses a box that belongs to another task or host (`conflict`, reason `box_not_ours`; use `cloud.box.adopt`), and panes can't pass `box` at all. Destroying a box closes panes and detaches the task context only when it is the task's current box.
 
 `BoxView` has these fields:
 - `box`, `provider`, `id`, `name`;
@@ -261,7 +266,7 @@ Event: `cloud.job {job} => Job`. Jobs are kept in kv `cloud_job/<id>` and listed
 
 **Send** (host to cloud):
 1. Wait for the turn boundary, as handoff does. `interrupt` interrupts the turn instead.
-2. `ensure_for_task`. A pane without a task first gets a task on its checkout's current branch.
+2. `ensure_for_task`. A pane without a task first gets a task on its checkout's current branch. The task's earlier box, if one is on record (for example a box suspended after a bring-back), is reused and woken.
 3. Export the bundle on the host with `vk_handoff::export`. This is the gateway's `export_bundle` core, moved into `vk-handoff`.
 4. Upload it to `/vibeke/in/<job>.tar.zst`.
 5. Import it in the box with `vibeke sandbox import-bundle --bundle <file> --workspace /workspace`, which prints `{cwd, resume_argv}`.
@@ -276,7 +281,13 @@ If any step fails, the source keeps running.
 3. Then, depending on the target:
    - **local:** `task.sync` pulls, then the bundle is imported with the server's handoff import (`handoff::import_local`) into the task's host worktree. A clean worktree at an ancestor of the bundle's head gets the import in place; otherwise the import goes into a new worktree, using handoff's placement. The agent resumes in a new host pane, and the task's isolation becomes `host`.
    - **peer:** the bundle is written to the gateway handoffs directory, and a handoff job is created with `bundle` set. The gateway's `handoff_send` skips the export when `bundle` is set and transfers the file.
-4. Apply `source_after` (default `[cloud] after_bring_back`) to the box with `release_task`.
+4. Mark the box's working tree as synced. This happens only for a local bring-back where the export skipped nothing and the import wrote every file.
+   - Before the export, the job takes a fingerprint of the tree (`TREE_FINGERPRINT`: HEAD, the diff, and the names and contents of untracked files).
+   - After the import, it writes that fingerprint to `.git/vibeke-synced-tree` in the box.
+   - The unsynced report counts the tree's changes as synced only while the fingerprint still matches, so a change made during or after the export counts again.
+   - A peer bring-back never marks the tree, because the peer's import is not confirmed. That box needs `force` to be destroyed.
+   - A later send clears a marked tree before its import, but only while the fingerprint matches.
+5. Apply `source_after` (default `[cloud] after_bring_back`) to the box with `release_task`. `release_task` checks for unsynced work before it suspends, so the check does not wake the box again.
 
 ## 8. Clients
 
