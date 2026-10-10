@@ -179,19 +179,27 @@ pub fn is_ignored_path(rel: &str, extra: &[String]) -> bool {
 }
 
 /// The nearest ancestor of `dir` holding a `.git` entry (directory, or file for a worktree), or
-/// `dir` itself. A cheap filesystem walk: no process is spawned.
-pub fn repo_root_of(dir: &Path) -> std::path::PathBuf {
+/// `None` outside a repository: a directory that is no checkout has no collisions to track. A
+/// cheap filesystem walk: no process is spawned.
+pub fn repo_root_of(dir: &Path) -> Option<std::path::PathBuf> {
     let start = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
     let mut cur = start.as_path();
     loop {
         if cur.join(".git").exists() {
-            return cur.to_path_buf();
+            return Some(cur.to_path_buf());
         }
-        match cur.parent() {
-            Some(p) => cur = p,
-            None => return start,
-        }
+        cur = cur.parent()?;
     }
+}
+
+/// Whether a checkout root is one the tracker follows: not the file-system root and not the home
+/// directory (a dotfiles repository there would make every program's state a "file" of it).
+pub fn trackable_root(root: &Path, home: Option<&Path>) -> bool {
+    if root.parent().is_none() {
+        return false;
+    }
+    let home = home.map(|h| std::fs::canonicalize(h).unwrap_or_else(|_| h.to_path_buf()));
+    home.as_deref() != Some(root)
 }
 
 // ---- git status --porcelain -----------------------------------------------------------------
@@ -408,11 +416,33 @@ mod tests {
         let root = std::fs::canonicalize(dir.path()).unwrap();
         std::fs::create_dir_all(root.join(".git")).unwrap();
         std::fs::create_dir_all(root.join("a/b")).unwrap();
-        assert_eq!(repo_root_of(&root.join("a/b")), root);
+        assert_eq!(repo_root_of(&root.join("a/b")), Some(root.clone()));
         // A worktree's `.git` is a file.
         let wt = root.join("wt");
         std::fs::create_dir_all(&wt).unwrap();
         std::fs::write(wt.join(".git"), "gitdir: x").unwrap();
-        assert_eq!(repo_root_of(&wt), wt);
+        assert_eq!(repo_root_of(&wt), Some(wt));
+    }
+
+    #[test]
+    fn a_directory_outside_any_repository_has_no_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let plain = std::fs::canonicalize(dir.path()).unwrap().join("plain");
+        std::fs::create_dir_all(&plain).unwrap();
+        // Assumes no `.git` above the temp directory, as on CI runners.
+        if plain.ancestors().any(|a| a.join(".git").exists()) {
+            return;
+        }
+        assert_eq!(repo_root_of(&plain), None);
+    }
+
+    #[test]
+    fn home_and_the_filesystem_root_are_never_tracked() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = std::fs::canonicalize(dir.path()).unwrap();
+        assert!(!trackable_root(&home, Some(&home)));
+        assert!(!trackable_root(Path::new("/"), Some(&home)));
+        assert!(trackable_root(&home.join("code/app"), Some(&home)));
+        assert!(trackable_root(&home.join("code/app"), None));
     }
 }

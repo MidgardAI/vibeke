@@ -205,7 +205,8 @@ fn two_runs_on_one_file_raise_a_high_collision_with_event_and_one_notification()
     let n = notifications(&f.s);
     assert_eq!(n.len(), 1);
     assert!(
-        n[0].title.contains("2 agents editing src/auth.ts"),
+        n[0].title
+            .contains("claude and codex both edited src/auth.ts"),
         "{}",
         n[0].title
     );
@@ -488,12 +489,13 @@ fn the_git_poll_attributes_shell_edits_and_catches_a_second_writer() {
     // The first snapshot is the baseline and reports nothing.
     watch::poll_now(&f.s, &cfg, &root, &runs(&f.s), 1000);
     assert!(touches(&f.s, &root).is_empty());
-    // A shell edit by the only working run is attributed to it.
+    // A shell edit by the only working run is attributed to it, as a guess.
     std::fs::write(std::path::Path::new(&root).join("a.txt"), "one\ntwo\n").unwrap();
     watch::poll_now(&f.s, &cfg, &root, &runs(&f.s), 2000);
     let t = touches(&f.s, &root);
     assert_eq!(t.len(), 1);
     assert_eq!(t[0].run.as_deref(), Some("ra"));
+    assert!(t[0].inferred);
     assert_eq!(t[0].source, vc::Source::Git);
     assert_eq!(t[0].path, "a.txt");
     assert!(open(&f.s).is_empty());
@@ -508,8 +510,13 @@ fn the_git_poll_attributes_shell_edits_and_catches_a_second_writer() {
     watch::poll_now(&f.s, &cfg, &root, &runs(&f.s), 3000);
     let recs = open(&f.s);
     assert_eq!(recs.len(), 1, "{recs:?}");
-    assert_eq!(recs[0].severity, vc::Severity::High);
+    assert_eq!(
+        recs[0].severity,
+        vc::Severity::Medium,
+        "two guesses are never high"
+    );
     assert_eq!(recs[0].runs, vec!["ra".to_string(), "rb".to_string()]);
+    assert!(notifications(&f.s).is_empty(), "a guess is never announced");
     // An unchanged tree reports nothing more.
     let n = touches(&f.s, &root).len();
     watch::poll_now(&f.s, &cfg, &root, &runs(&f.s), 4000);
@@ -1251,6 +1258,182 @@ fn claims_and_ignores_survive_a_restart() {
     assert_eq!(g.ignores, vec![ig]);
 }
 
+// ---- scope and noise ------------------------------------------------------------------------
+
+#[test]
+fn runs_outside_a_git_checkout_are_not_tracked() {
+    let f = fx("nogit");
+    // A plain directory, like a home directory where agents are started for chores.
+    let plain = std::path::Path::new(&f.root)
+        .parent()
+        .unwrap()
+        .join("plain");
+    std::fs::create_dir_all(plain.join(".claude")).unwrap();
+    if plain.ancestors().any(|a| a.join(".git").exists()) {
+        return; // a temp dir inside a repository: nothing to prove here
+    }
+    let plain = plain.to_string_lossy().into_owned();
+    let a = add_run_in(&f, "ra", "pa", "claude", Execution::Working, &plain);
+    let b = add_run_in(&f, "rb", "pb", "codex", Execution::Working, &plain);
+    assert_eq!(root_of(&f.s, &a), None);
+    assert!(watch::shared_roots(&f.s).is_empty(), "nothing is watched");
+    for run in [&a, &b] {
+        let p = json!({"tool_name": "Write", "tool_input": {"file_path": format!("{plain}/.claude/settings.json")}});
+        observe(&f.s, run, "PostToolUse", &p);
+    }
+    assert!(open(&f.s).is_empty());
+    assert!(f.s.collision.inner.lock().unwrap().roots.is_empty());
+}
+
+#[test]
+fn a_record_whose_checkout_is_gone_is_cleared_as_out_of_scope() {
+    let f = fx("gone");
+    let (_a, _b, _rec) = collided(&f);
+    std::fs::remove_dir_all(std::path::Path::new(&f.root).join(".git")).unwrap();
+    if std::path::Path::new(&f.root)
+        .ancestors()
+        .any(|a| a.join(".git").exists())
+    {
+        return;
+    }
+    assert_eq!(sweep(&f.s, now_ms()), 1);
+    assert!(open(&f.s).is_empty());
+    assert_eq!(
+        events(&f.s, "task.collision_cleared")[0].data["reason"],
+        "out_of_scope"
+    );
+}
+
+#[test]
+fn a_change_while_many_runs_work_is_not_guessed_at() {
+    let f = fx("crowd");
+    for i in 0..=vc::MAX_CANDIDATES {
+        add_run(
+            &f,
+            &format!("r{i}"),
+            &format!("p{i}"),
+            "claude",
+            Execution::Working,
+        );
+    }
+    let now = now_ms();
+    watch::feed_fs(&f.s, &f.root, "src/x.rs", vc::Op::Modify, now);
+    watch::tick(&f.s, now + 1);
+    assert!(touches(&f.s, &f.root).is_empty());
+}
+
+#[test]
+fn a_writers_own_follow_up_change_is_not_a_collision() {
+    let f = fx("echo");
+    let a = add_run(&f, "ra", "pa", "claude", Execution::Working);
+    let _b = add_run(&f, "rb", "pb", "codex", Execution::Working);
+    post(&f, &a, "Edit", "src/auth.ts");
+    // Later (past the explain window) the file changes again while both work: ra's formatter,
+    // most likely. ra is a candidate, so the change proves no second writer.
+    let later = now_ms() + 60_000;
+    watch::feed_fs(&f.s, &f.root, "src/auth.ts", vc::Op::Modify, later);
+    watch::tick(&f.s, later + 1);
+    assert!(
+        touches(&f.s, &f.root)
+            .iter()
+            .any(|t| t.source == vc::Source::Watcher),
+        "the change was seen"
+    );
+    assert!(open(&f.s).is_empty(), "{:?}", open(&f.s));
+}
+
+#[test]
+fn every_rule_has_a_readable_headline() {
+    let f = fx("headline");
+    let _a = add_run(&f, "ra", "pa", "claude", Execution::Working);
+    let _b = add_run(&f, "rb", "pb", "codex", Execution::Working);
+    let _c = add_run(&f, "rc", "pc", "pi", Execution::Working);
+    let hit = |reason: vc::Reason, sev: vc::Severity, runs: &[&str], amb: bool| {
+        let mut rec = vc::CollisionRec::new("col_h", &f.root, 0);
+        rec.merge(&vc::Finding {
+            severity: sev,
+            reason,
+            paths: vec!["src/a.rs".into()],
+            runs: runs.iter().map(|r| r.to_string()).collect(),
+            ambiguous: amb,
+            at_ms: 1,
+        });
+        headline(&f.s, &rec)
+    };
+    use vc::{Reason, Severity};
+    assert_eq!(
+        hit(Reason::SameFile, Severity::High, &["ra", "rb"], false),
+        "claude and codex both edited src/a.rs"
+    );
+    assert_eq!(
+        hit(
+            Reason::SameFile,
+            Severity::Medium,
+            &["ra", "rb", "rc"],
+            true
+        ),
+        "claude, codex and 1 more may all have edited src/a.rs"
+    );
+    assert_eq!(
+        hit(
+            Reason::ReadThenEdited {
+                editor: Some("rb".into()),
+                reader: "ra".into()
+            },
+            Severity::Medium,
+            &["ra", "rb"],
+            false
+        ),
+        "codex edited src/a.rs after claude read it"
+    );
+    assert_eq!(
+        hit(
+            Reason::Claim {
+                claim: "clm_1".into(),
+                owner: "ra".into(),
+                glob: "src/**".into()
+            },
+            Severity::High,
+            &["ra", "rb"],
+            false
+        ),
+        "codex edited src/a.rs inside claude's claim"
+    );
+    assert_eq!(
+        hit(
+            Reason::SameDir { dir: "src".into() },
+            Severity::Low,
+            &["ra", "rb"],
+            false
+        ),
+        "claude and codex are editing in src/"
+    );
+}
+
+#[test]
+fn a_guess_joining_a_reported_collision_sends_no_notification() {
+    let f = fx("quietguess");
+    let a = add_run(&f, "ra", "pa", "claude", Execution::Working);
+    let b = add_run(&f, "rb", "pb", "codex", Execution::Working);
+    post(&f, &a, "Edit", "src/auth.ts");
+    post(&f, &b, "Edit", "src/auth.ts");
+    assert_eq!(notifications(&f.s).len(), 1);
+    // rb reports another file; later it changes while only ra works: a guess about ra.
+    post(&f, &b, "Edit", "lib.rs");
+    set_exec(&f.s, "rb", Execution::Idle);
+    let later = now_ms() + 60_000;
+    watch::feed_fs(&f.s, &f.root, "lib.rs", vc::Op::Modify, later);
+    watch::tick(&f.s, later + 1);
+    let recs = open(&f.s);
+    assert_eq!(recs.len(), 1);
+    assert!(recs[0].paths.iter().any(|h| h.path == "lib.rs"), "{recs:?}");
+    assert_eq!(
+        notifications(&f.s).len(),
+        1,
+        "the guess is shown, not announced"
+    );
+}
+
 // ---- API surface ----------------------------------------------------------------------------
 
 #[tokio::test]
@@ -1268,11 +1451,9 @@ async fn list_get_and_status() {
         "the list omits timelines"
     );
     assert_eq!(items[0]["run_info"].as_array().unwrap().len(), 2);
-    assert!(
-        items[0]["headline"]
-            .as_str()
-            .unwrap()
-            .contains("2 agents editing src/auth.ts")
+    assert_eq!(
+        items[0]["headline"],
+        "claude (ra) and claude (rb) both edited src/auth.ts"
     );
     // Filters.
     let l = ok(&f.s, &user(), "collision.list", json!({"run": "ra"})).await;

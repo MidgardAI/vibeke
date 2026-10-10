@@ -10724,7 +10724,7 @@ TaskCollisionClearedSubject = TypedDict("TaskCollisionClearedSubject", {
 
 TaskCollisionClearedData = TypedDict("TaskCollisionClearedData", {
     "repo": str,
-    "reason": Literal["quiet", "runs_ended", "ignored", "restart"],
+    "reason": Literal["quiet", "runs_ended", "ignored", "restart", "out_of_scope"],
     "severity": Literal["low", "medium", "high"],
     "runs": List[str],
     "paths": List[str],

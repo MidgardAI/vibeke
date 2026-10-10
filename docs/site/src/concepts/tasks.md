@@ -34,18 +34,24 @@ Use `task depend` to add a blocking or related task link. Vibeke rejects cyclic 
 
 ## Agents sharing one checkout
 
-When several agents work in one directory, Vibeke shows it instead of forbidding it. The collision tracker is advisory: it warns, and it never blocks, reverts, or reassigns a change.
+When several agents work in one git checkout, Vibeke shows it instead of forbidding it. The collision tracker is advisory: it warns, and it never blocks, reverts, or reassigns a change.
+
+Vibeke tracks git checkouts only. It does not track agents that work in a directory outside a repository, or in your home directory. Files there are mostly program state, such as agent settings and databases, and their changes are not agents' collisions.
 
 A collision is raised when:
 
-- two runs write the same file (`high`);
-- a run writes inside a glob another run claimed (`high`);
-- a run edits a file another run read in the last ten minutes (`medium`);
-- two runs write different files of one directory (`low`, a sidebar hint only).
+- two runs report edits of the same file (`high`);
+- a run reports an edit inside a glob another run claimed (`high`);
+- a run reports an edit of a file another run read in the last ten minutes (`medium`);
+- two runs report edits of different files in one directory (`low`).
 
-Reports from the agents are the main signal. For edits no agent reported, such as shell commands and formatters, Vibeke watches the checkout and polls `git status` while an agent works there. It attributes a change to the run that reported a tool call on that path, otherwise to the runs working there, and it marks the change `ambiguous` when more than one run could have made it. A change nobody was working on is not an agent's collision.
+Reports from the agents are the main signal. Some edits are not reported, for example edits by shell commands and formatters. For these edits, Vibeke watches the checkout and polls `git status` while an agent works there. A change is the edit of the run that reported a tool call on that path. Otherwise Vibeke guesses: the change is probably the edit of the only run that was working. When two or three runs were working, the change could be from any of them. When more runs were working, Vibeke does not guess. A change is also not counted when the run on the other side of the collision could have made it, for example when an agent formats a file it just edited.
 
-A pane in a collision shows `⚠`, and the sidebar names the paths ("2 agents editing `src/auth.ts`"). Open the collision view with the `collisions` palette action. It lists the paths, the runs, and a timeline, and offers:
+A guess never raises a `high` collision. It raises at most a `medium` collision, which says that agents "may" have edited a file. Vibeke does not send a notification for a guess. A change nobody was working on is not an agent's collision.
+
+Each path of a collision goes away when no run touches it for 30 minutes (`[collision] window`). The collision closes when it has no paths left, when fewer than two of its runs are still running, or when its checkout is no longer a git checkout.
+
+A pane in a `high` or `medium` collision shows `⚠`. Under the workspace, the sidebar shows one line for the most severe collision, for example "claude and codex both edited `src/auth.ts`". It counts the other collisions as "+N more". The collision view lists every collision, including `low` ones. Open it with the `collisions` palette action. It lists the paths, the runs, and a timeline, and offers:
 
 - **Pause** one run, with the adapter's own interrupt.
 - **Tell the agents** with a short message. Vibeke uses only a native steer or follow-up channel, or Claude's next hook. It never types into a terminal mid-turn. A run with no such channel is told so.

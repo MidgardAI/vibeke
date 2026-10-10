@@ -3,8 +3,10 @@
 //!
 //! - **Pane frame badge.** A pane whose run is in an open `high` or `medium` collision shows a
 //!   `⚠` in its top-left corner.
-//! - **Sidebar.** The workspace shows "2 agents editing `src/auth.ts`" under its agents (a dim
-//!   `~` hint for `low`), and the agent row carries `⚠` (`~` for low).
+//! - **Sidebar.** The workspace shows one line under its agents, the server's headline of its
+//!   most severe collision ("claude and codex both edited `src/auth.ts`"), with a count of any
+//!   others, and the agent row carries `⚠`. `low` (same directory, or a guessed edit of a file
+//!   another run read) is listed in the popup only.
 //! - **Popup** (`collisions` in the palette or bound): paths, runs and a timeline, with
 //!   **p** pause the selected run (the adapter's interrupt), **t** tell the agents (native
 //!   steer only: each run shows how it can be reached, and a run with no such channel is told
@@ -276,32 +278,46 @@ pub fn pane_badge(app: &App, mi: usize, pane: &str) -> Option<&'static str> {
     (pane_rank(app, mi, pane) >= 2).then_some("⚠")
 }
 
-/// The marker on an agent row: `⚠` for high and medium, `~` for low.
+/// The marker on an agent row: `⚠` for high and medium (low is listed in the popup only).
 pub fn agent_marker(app: &App, mi: usize, pane: &str) -> Option<(&'static str, u8)> {
     match pane_rank(app, mi, pane) {
-        0 => None,
-        1 => Some(("~", 1)),
+        0 | 1 => None,
         n => Some(("⚠", n)),
     }
 }
 
-/// Lines for a workspace's sidebar (one per open collision touching one of its panes):
-/// "2 agents editing src/auth.ts", with the severity rank.
+/// The workspace's sidebar line, if any: the headline of its most severe (then most recent)
+/// `high` or `medium` collision, "· +N more" when it has others, with the severity rank.
 pub fn sidebar_lines(app: &App, mi: usize, ws_panes: &[&str]) -> Vec<(String, u8)> {
-    let mut v: Vec<(String, u8)> = open_recs(app, mi)
+    let mut v: Vec<&Rec> = open_recs(app, mi)
         .iter()
+        .filter(|r| rank(&r.severity) >= 2)
         .filter(|r| ws_panes.iter().any(|p| r.has_pane(p)))
-        .map(|r| (r.headline.clone(), rank(&r.severity)))
         .collect();
-    v.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-    v
+    v.sort_by(|a, b| {
+        rank(&b.severity)
+            .cmp(&rank(&a.severity))
+            .then(b.last_ms.cmp(&a.last_ms))
+    });
+    let Some(top) = v.first() else {
+        return vec![];
+    };
+    let line = match v.len() - 1 {
+        0 => top.headline.clone(),
+        n => format!("{} · +{n} more", top.headline),
+    };
+    vec![(line, rank(&top.severity))]
 }
 
-/// The first pane of a workspace in a collision (the click target of its sidebar line).
+/// The first pane of a workspace in a collision the sidebar shows (the click target of its line).
 pub fn sidebar_target(app: &App, mi: usize, ws_panes: &[&str]) -> Option<String> {
     ws_panes
         .iter()
-        .find(|p| open_recs(app, mi).iter().any(|r| r.has_pane(p)))
+        .find(|p| {
+            open_recs(app, mi)
+                .iter()
+                .any(|r| rank(&r.severity) >= 2 && r.has_pane(p))
+        })
         .map(|p| p.to_string())
 }
 

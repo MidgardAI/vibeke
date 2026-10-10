@@ -147,7 +147,7 @@ fn collisions_mark_the_agent_rows_the_sidebar_and_the_pane_frame() {
 }
 
 #[test]
-fn the_same_directory_level_is_a_dim_hint_without_a_frame_badge() {
+fn the_low_level_stays_out_of_the_sidebar_and_the_frame() {
     let (mut app, mut rxs) = setup();
     let low = rec_json(
         "col_2",
@@ -157,17 +157,43 @@ fn the_same_directory_level_is_a_dim_hint_without_a_frame_badge() {
     );
     first_list(&mut app, &mut rxs[0], vec![low]);
     assert_eq!(pane_badge(&app, 0, "p1"), None);
-    assert_eq!(agent_marker(&app, 0, "p1"), Some(("~", 1)));
+    assert_eq!(agent_marker(&app, 0, "p1"), None);
     let rows: Vec<String> = crate::draw::sidebar_rows(&app)
         .iter()
         .map(|r| r.segs.iter().map(|(s, _)| s.as_str()).collect::<String>())
         .collect();
     assert!(
-        rows.iter()
-            .any(|r| r.contains("~ 2 agents editing src/auth/login.ts")),
+        !rows.iter().any(|r| r.contains("src/auth/login.ts")),
         "{rows:#?}"
     );
     assert!(!crate::draw::agent_row_text(&app, 0, "r1").contains('⚠'));
+    // The popup still lists it.
+    assert_eq!(all(&app), vec![(0, "col_2".to_string())]);
+}
+
+#[test]
+fn a_workspace_shows_one_line_for_its_most_severe_collision() {
+    let (mut app, mut rxs) = setup();
+    let medium = rec_json(
+        "col_3",
+        "medium",
+        &[("r1", "a1", "claude", "p1"), ("r3", "a3", "codex", "p3")],
+        "src/other.ts",
+    );
+    first_list(&mut app, &mut rxs[0], vec![medium, high()]);
+    let rows: Vec<String> = crate::draw::sidebar_rows(&app)
+        .iter()
+        .map(|r| r.segs.iter().map(|(s, _)| s.as_str()).collect::<String>())
+        .collect();
+    let lines: Vec<&String> = rows
+        .iter()
+        .filter(|r| r.contains("agents editing"))
+        .collect();
+    assert_eq!(lines.len(), 1, "{rows:#?}");
+    assert!(
+        lines[0].contains("⚠ 2 agents editing src/auth.ts · +1 more"),
+        "{rows:#?}"
+    );
 }
 
 #[test]

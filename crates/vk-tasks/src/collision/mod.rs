@@ -10,12 +10,12 @@ pub mod glob;
 pub mod signals;
 
 pub use engine::{
-    Attribution, Claim, CollisionRec, Finding, Kind, Merge, PathHit, Reason, Rules, RunView,
-    Severity, Source, Status, TIMELINE_MAX, TimelineEntry, Touch, Tracker, attribute, dir_key,
-    path_set_key,
+    Attribution, Claim, CollisionRec, Finding, Kind, MAX_CANDIDATES, Merge, PATHS_MAX, PathHit,
+    Reason, Rules, RunView, Severity, Source, Status, TIMELINE_MAX, TimelineEntry, Touch, Tracker,
+    attribute, dir_key, notable, path_set_key,
 };
 pub use glob::{glob_match, normalize, valid_pattern};
 pub use signals::{
     Op, StatusEntry, edit_paths, fingerprint, is_edit_tool, is_ignored_path, parse_porcelain_z,
-    patch_paths, read_paths, relativize, repo_root_of, status_changes, status_op,
+    patch_paths, read_paths, relativize, repo_root_of, status_changes, status_op, trackable_root,
 };

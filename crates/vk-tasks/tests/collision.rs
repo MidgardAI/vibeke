@@ -175,13 +175,15 @@ fn ambiguous_attribution_is_flagged_and_never_collides_with_itself() {
         t.record(&rules(), &[], Touch { at_ms: 1000, ..amb })
             .is_empty()
     );
-    // A certain write by c meets an ambiguous one that cannot be c: a collision, flagged.
+    // A certain write by c meets an ambiguous one that cannot be c: a possible collision,
+    // flagged, and only medium.
     let f = t.record(&rules(), &[], w("c", "f.rs", 2000));
     let hit = f
         .iter()
         .find(|f| f.reason == Reason::SameFile)
         .expect("collision");
     assert!(hit.ambiguous);
+    assert_eq!(hit.severity, Severity::Medium);
     assert_eq!(
         hit.runs,
         vec!["a".to_string(), "b".to_string(), "c".to_string()]
@@ -192,10 +194,90 @@ fn ambiguous_attribution_is_flagged_and_never_collides_with_itself() {
 fn an_ambiguous_write_that_could_be_the_same_run_is_not_a_collision() {
     let mut t = Tracker::new();
     t.record(&rules(), &[], w("a", "f.rs", 0));
+    // Most likely a's own formatter or build: the change is explained by a.
     let amb = Touch::ambiguous(vec!["a".into(), "b".into()], "f.rs", 1000, Source::Git);
     let f = t.record(&rules(), &[], amb);
-    // It may be a's second edit; the other candidate b cannot be proven.
-    assert!(f.iter().all(|f| f.reason != Reason::SameFile) || f.iter().any(|f| f.ambiguous));
+    assert!(f.iter().all(|f| f.reason != Reason::SameFile), "{f:?}");
+    // The same the other way round: a guess first, then a's report.
+    let mut t = Tracker::new();
+    t.record(
+        &rules(),
+        &[],
+        Touch::ambiguous(vec!["a".into(), "b".into()], "g.rs", 0, Source::Watcher),
+    );
+    let f = t.record(&rules(), &[], w("a", "g.rs", 1000));
+    assert!(f.iter().all(|f| f.reason != Reason::SameFile), "{f:?}");
+}
+
+#[test]
+fn an_inferred_writer_is_at_most_medium() {
+    let mut t = Tracker::new();
+    t.record(&rules(), &[], w("a", "f.rs", 0));
+    // b was the only run working when f.rs changed again.
+    let f = t.record(
+        &rules(),
+        &[],
+        Touch::inferred("b", "f.rs", 1000, Source::Git, "modify"),
+    );
+    let hit = f
+        .iter()
+        .find(|f| f.reason == Reason::SameFile)
+        .expect("collision");
+    assert_eq!(hit.severity, Severity::Medium);
+    assert!(!hit.ambiguous, "one run is named");
+    // Two inferred writers are a guess on both sides: still medium, never high.
+    let mut t = Tracker::new();
+    t.record(
+        &rules(),
+        &[],
+        Touch::inferred("a", "f.rs", 0, Source::Git, "modify"),
+    );
+    let f = t.record(
+        &rules(),
+        &[],
+        Touch::inferred("b", "f.rs", 1000, Source::Git, "modify"),
+    );
+    assert!(f.iter().all(|f| f.severity < Severity::High), "{f:?}");
+    // A guessed write never makes a same-directory hint.
+    let mut t = Tracker::new();
+    t.record(&rules(), &[], w("a", "src/auth/a.rs", 0));
+    let f = t.record(
+        &rules(),
+        &[],
+        Touch::inferred("b", "src/auth/b.rs", 1000, Source::Watcher, "modify"),
+    );
+    assert!(f.is_empty(), "{f:?}");
+    // A guessed edit of a file another run read is low.
+    let mut t = Tracker::new();
+    t.record(&rules(), &[], Touch::read("a", "x.rs", 0));
+    let f = t.record(
+        &rules(),
+        &[],
+        Touch::inferred("b", "x.rs", 1000, Source::Git, "modify"),
+    );
+    assert_eq!(f.len(), 1);
+    assert_eq!(f[0].severity, Severity::Low);
+}
+
+#[test]
+fn a_guessed_write_inside_a_foreign_claim_is_medium() {
+    let claim = Claim {
+        id: "c1".into(),
+        run: "a".into(),
+        root: "/r".into(),
+        glob: "src/**".into(),
+        created_ms: 0,
+        note: None,
+        also: vec![],
+    };
+    let mut t = Tracker::new();
+    let f = t.record(
+        &rules(),
+        std::slice::from_ref(&claim),
+        Touch::inferred("b", "src/x.rs", 10, Source::Watcher, "modify"),
+    );
+    assert_eq!(f.len(), 1);
+    assert_eq!(f[0].severity, Severity::Medium);
 }
 
 #[test]
@@ -238,7 +320,7 @@ fn attribution_prefers_in_flight_then_fd_then_working() {
         in_flight: vec![],
     }];
     assert_eq!(attribute("src/y.rs", &idle, &[]), Attribution::None);
-    // One working run owns it.
+    // One working run is the likely writer: inferred, not reported.
     let one = vec![
         RunView {
             run: "a".into(),
@@ -251,11 +333,20 @@ fn attribution_prefers_in_flight_then_fd_then_working() {
             in_flight: vec![],
         },
     ];
-    assert_eq!(attribute("q", &one, &[]), Attribution::Run("a".into()));
+    assert_eq!(attribute("q", &one, &[]), Attribution::Inferred("a".into()));
+    // With more runs working than MAX_CANDIDATES, "one of them" says nothing.
+    let many: Vec<RunView> = (0..=MAX_CANDIDATES)
+        .map(|i| RunView {
+            run: format!("r{i}"),
+            working: true,
+            in_flight: vec![],
+        })
+        .collect();
+    assert_eq!(attribute("q", &many, &[]), Attribution::None);
 }
 
 #[test]
-fn records_merge_by_run_set_and_keep_the_strongest_hit_per_path() {
+fn records_merge_by_checkout_and_keep_the_strongest_hit_per_path() {
     let mut t = Tracker::new();
     t.record(&rules(), &[], w("a", "src/a.rs", 0));
     let f1 = t.record(&rules(), &[], w("b", "src/a.rs", 1000));
@@ -288,12 +379,74 @@ fn records_merge_by_run_set_and_keep_the_strongest_hit_per_path() {
     assert!(rec.accepts("/r", &f3));
     let m = rec.merge(&f3);
     assert_eq!(m.new_runs, vec!["c".to_string()]);
-    // A disjoint pair does not.
+    // A disjoint pair in the same checkout merges as well: one record per checkout.
     let f4 = Finding {
         runs: vec!["x".into(), "y".into()],
         ..f3.clone()
     };
-    assert!(!rec.accepts("/r", &f4));
+    assert!(rec.accepts("/r", &f4));
+}
+
+#[test]
+fn paths_decay_one_by_one_and_take_their_runs_with_them() {
+    let mut rec = CollisionRec::new("c", "/r", 0);
+    rec.merge(&Finding {
+        severity: Severity::High,
+        reason: Reason::SameFile,
+        paths: vec!["old.rs".into()],
+        runs: vec!["a".into(), "b".into()],
+        ambiguous: false,
+        at_ms: 0,
+    });
+    rec.merge(&Finding {
+        severity: Severity::Medium,
+        reason: Reason::SameFile,
+        paths: vec!["new.rs".into()],
+        runs: vec!["c".into(), "d".into()],
+        ambiguous: true,
+        at_ms: 20 * MIN,
+    });
+    assert_eq!(rec.runs.len(), 4);
+    assert!(!rec.expire(25 * MIN, 30 * MIN), "nothing is old yet");
+    assert!(rec.expire(31 * MIN, 30 * MIN));
+    assert_eq!(rec.paths.len(), 1);
+    assert_eq!(rec.paths[0].path, "new.rs");
+    assert_eq!(rec.runs, vec!["c".to_string(), "d".to_string()]);
+    assert_eq!(rec.severity, Severity::Medium);
+    assert!(rec.ambiguous);
+    assert!(!rec.notable(), "a guess is never announced");
+    assert!(rec.expire(51 * MIN, 30 * MIN));
+    assert!(rec.paths.is_empty());
+}
+
+#[test]
+fn a_record_keeps_at_most_paths_max_paths() {
+    let mut rec = CollisionRec::new("c", "/r", 0);
+    for i in 0..(PATHS_MAX as i64 + 10) {
+        rec.merge(&Finding {
+            severity: Severity::Low,
+            reason: Reason::SameDir { dir: "src".into() },
+            paths: vec![format!("src/f{i}.rs")],
+            runs: vec!["a".into(), "b".into()],
+            ambiguous: false,
+            at_ms: i,
+        });
+    }
+    let m = rec.merge(&Finding {
+        severity: Severity::High,
+        reason: Reason::SameFile,
+        paths: vec!["src/hot.rs".into()],
+        runs: vec!["a".into(), "b".into()],
+        ambiguous: false,
+        at_ms: 1,
+    });
+    assert_eq!(rec.paths.len(), PATHS_MAX);
+    assert_eq!(m.new_paths, vec!["src/hot.rs".to_string()]);
+    assert!(rec.paths.iter().any(|h| h.path == "src/hot.rs"));
+    assert!(
+        !rec.paths.iter().any(|h| h.path == "src/f0.rs"),
+        "oldest low went first"
+    );
 }
 
 #[test]
@@ -409,4 +562,76 @@ fn the_touch_cap_drops_the_oldest() {
     }
     assert_eq!(t.len(), 3);
     assert_eq!(t.touches().next().unwrap().path, "f7");
+}
+
+#[test]
+fn a_weaker_hit_never_adds_its_runs_to_a_stronger_path() {
+    let mut rec = CollisionRec::new("c", "/r", 0);
+    rec.merge(&Finding {
+        severity: Severity::High,
+        reason: Reason::SameFile,
+        paths: vec!["src/a.rs".into()],
+        runs: vec!["a".into(), "b".into()],
+        ambiguous: false,
+        at_ms: 1,
+    });
+    // c wrote a neighbour: the same-directory hint names src/a.rs too.
+    let m = rec.merge(&Finding {
+        severity: Severity::Low,
+        reason: Reason::SameDir { dir: "src".into() },
+        paths: vec!["src/b.rs".into(), "src/a.rs".into()],
+        runs: vec!["a".into(), "c".into()],
+        ambiguous: false,
+        at_ms: 2,
+    });
+    let a = rec.paths.iter().find(|h| h.path == "src/a.rs").unwrap();
+    assert_eq!(a.runs, vec!["a".to_string(), "b".to_string()]);
+    assert_eq!(a.severity, Severity::High);
+    assert_eq!(
+        m.new_runs,
+        vec!["c".to_string()],
+        "c is in the record via src/b.rs"
+    );
+    // A guess on the same file leaves the reported pair alone.
+    rec.merge(&Finding {
+        severity: Severity::Medium,
+        reason: Reason::SameFile,
+        paths: vec!["src/a.rs".into()],
+        runs: vec!["a".into(), "d".into(), "e".into()],
+        ambiguous: true,
+        at_ms: 3,
+    });
+    let a = rec.paths.iter().find(|h| h.path == "src/a.rs").unwrap();
+    assert_eq!(a.runs, vec!["a".to_string(), "b".to_string()]);
+    assert!(!a.ambiguous);
+}
+
+#[test]
+fn a_guess_joining_a_notified_record_is_not_announced() {
+    let mut rec = CollisionRec::new("c", "/r", 0);
+    let high = Finding {
+        severity: Severity::High,
+        reason: Reason::SameFile,
+        paths: vec!["a.rs".into()],
+        runs: vec!["x".into(), "y".into()],
+        ambiguous: false,
+        at_ms: 1,
+    };
+    assert!(high.notable());
+    rec.merge(&high);
+    assert!(rec.should_notify(0, 30 * MIN));
+    let guess = Finding {
+        severity: Severity::Medium,
+        reason: Reason::SameFile,
+        paths: vec!["b.rs".into()],
+        runs: vec!["x".into(), "z".into()],
+        ambiguous: true,
+        at_ms: 2,
+    };
+    assert!(!guess.notable());
+    rec.merge(&guess);
+    assert!(
+        !rec.should_notify(MIN, 30 * MIN),
+        "the notable path set did not change"
+    );
 }

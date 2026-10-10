@@ -262,12 +262,11 @@ fn agent_row(app: &App, mi: usize, r: &AgentRun, indent: &str) -> SideRow {
         segs.push((format!("{mark} "), t.s(c)));
     }
     segs.push((label, t.dim()));
-    // Another agent is editing the same files in this checkout (05 §10; `~` = same directory).
+    // Another agent is editing the same files in this checkout (05 §10).
     if let Some((mark, rank)) = crate::collision::agent_marker(app, mi, &r.pane) {
         let c = match rank {
             3 => t.red,
-            2 => t.yellow,
-            _ => t.muted,
+            _ => t.yellow,
         };
         segs.push((format!(" {mark}"), t.bold(c)));
     }
@@ -554,12 +553,11 @@ fn workspace_rows_at(app: &App, mi: usize, w: &Workspace, depth: usize, rows: &m
             rows.push(agent_row(app, mi, r, &format!("{pad}    ")));
         }
     }
-    // "2 agents editing src/auth.ts" (05 §10); a dim `~` hint for the same-directory level.
+    // "claude and codex both edited src/auth.ts" (05 §10): the workspace's most severe one.
     for (line, rank) in crate::collision::sidebar_lines(app, mi, &ws_panes) {
         let (mark, c) = match rank {
             3 => ("⚠", t.red),
-            2 => ("⚠", t.yellow),
-            _ => ("~", t.muted),
+            _ => ("⚠", t.yellow),
         };
         rows.push(SideRow {
             segs: vec![(format!("{pad}    {mark} {line}"), t.s(c))],

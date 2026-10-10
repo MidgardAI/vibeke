@@ -4,6 +4,12 @@
 //! **Advisory.** A touch is evidence that a run attempted or reported an edit (adapter) or that
 //! a path changed while the run was working (watcher, `git status`); it is not proof of who owns
 //! the content. Findings warn; nothing here blocks, reverts or reassigns a change.
+//!
+//! **Confidence.** A touch is *reported* (the run's own tool call, or its process seen writing
+//! the file), *inferred* (a change while that run was the only one working) or *ambiguous* (a
+//! change while a few runs were working). Only reported evidence on both sides is `high`; a
+//! guess on either side is at most `medium` and never notifies. A guess that the run on the
+//! other side could have made itself explains nothing and raises nothing.
 
 use super::glob::glob_match;
 use serde::{Deserialize, Serialize};
@@ -13,11 +19,13 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Severity {
-    /// Same directory/module: a sidebar hint only.
+    /// Same directory/module, or a guessed edit of a file another run read: shown in the
+    /// collision view only.
     Low,
-    /// One run modified a file another run has read recently.
+    /// One run modified a file another run has read recently, or a same-file or claim hit where
+    /// one side is a guess.
     Medium,
-    /// The same file written by two runs, or a write inside a foreign claim.
+    /// The same file written by two runs, or a write inside a foreign claim, all reported.
     High,
 }
 
@@ -81,6 +89,9 @@ pub struct Touch {
     pub at_ms: i64,
     pub source: Source,
     pub op: String,
+    /// `run` was inferred (the only run working when the change was seen), not reported.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub inferred: bool,
 }
 
 impl Touch {
@@ -93,6 +104,14 @@ impl Touch {
             at_ms,
             source,
             op: op.into(),
+            inferred: false,
+        }
+    }
+    /// A write by `run` inferred from a change seen while it was the only run working.
+    pub fn inferred(run: &str, path: &str, at_ms: i64, source: Source, op: &str) -> Touch {
+        Touch {
+            inferred: true,
+            ..Touch::write(run, path, at_ms, source, op)
         }
     }
     pub fn read(run: &str, path: &str, at_ms: i64) -> Touch {
@@ -104,6 +123,7 @@ impl Touch {
             at_ms,
             source: Source::Adapter,
             op: "read".into(),
+            inferred: false,
         }
     }
     pub fn ambiguous(candidates: Vec<String>, path: &str, at_ms: i64, source: Source) -> Touch {
@@ -115,10 +135,16 @@ impl Touch {
             at_ms,
             source,
             op: "modify".into(),
+            inferred: false,
         }
     }
+    /// One run is named (reported or inferred).
     pub fn is_certain(&self) -> bool {
         self.run.is_some()
+    }
+    /// The run reported this itself (or was seen writing): not a guess.
+    pub fn is_reported(&self) -> bool {
+        self.run.is_some() && !self.inferred
     }
     /// Every run this touch may belong to.
     pub fn who(&self) -> Vec<&str> {
@@ -189,6 +215,13 @@ impl Reason {
     }
 }
 
+/// Whether a hit is announced: reported `high`, or a reported edit of a file another run read
+/// (`medium` for that rule means reported). Guesses are shown, never announced.
+pub fn notable(severity: Severity, reason: &Reason) -> bool {
+    severity == Severity::High
+        || (severity == Severity::Medium && matches!(reason, Reason::ReadThenEdited { .. }))
+}
+
 /// One rule hit for one touch.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Finding {
@@ -200,6 +233,13 @@ pub struct Finding {
     /// Attribution of at least one involved touch was ambiguous: "possibly".
     pub ambiguous: bool,
     pub at_ms: i64,
+}
+
+impl Finding {
+    /// Whether this hit is evidence worth a notification ([`notable`]).
+    pub fn notable(&self) -> bool {
+        notable(self.severity, &self.reason)
+    }
 }
 
 /// Rule parameters (from `[collision]`).
@@ -324,44 +364,36 @@ impl Tracker {
         }
         let in_window = |o: &&Touch| t.at_ms.saturating_sub(o.at_ms) <= rules.window_ms;
 
-        // Same file: two runs wrote it. Needs at least one certain side.
+        // Same file: two runs wrote it. Needs at least one certain side; `high` needs both
+        // sides reported.
         let mut file_runs: BTreeSet<String> = BTreeSet::new();
-        let mut file_amb = false;
+        let mut file_strong = false;
+        let mut file_named = false;
         for o in self
             .touches
             .iter()
             .filter(in_window)
             .filter(|o| o.kind == Kind::Write && o.path == t.path)
         {
-            if !(t.is_certain() || o.is_certain()) {
+            if !distinct_writers(t, o) {
                 continue;
             }
-            let other: BTreeSet<&str> = o.who().into_iter().collect();
-            // Another writer is certain only when the sides cannot be one and the same run.
-            let distinct = if t.is_certain() && o.is_certain() {
-                t.run != o.run
-            } else if t.is_certain() {
-                other.iter().any(|r| !mine.contains(r))
-            } else {
-                mine.iter().any(|r| !other.contains(r))
-            };
-            if !distinct {
-                continue;
-            }
-            for r in mine.iter().chain(other.iter()) {
-                file_runs.insert((*r).to_string());
-            }
-            if !t.is_certain() || !o.is_certain() {
-                file_amb = true;
-            }
+            file_runs.extend(t.who().into_iter().map(str::to_string));
+            file_runs.extend(o.who().into_iter().map(str::to_string));
+            file_strong |= t.is_reported() && o.is_reported();
+            file_named |= t.is_certain() && o.is_certain();
         }
         if file_runs.len() >= 2 {
             out.push(Finding {
-                severity: Severity::High,
+                severity: if file_strong {
+                    Severity::High
+                } else {
+                    Severity::Medium
+                },
                 reason: Reason::SameFile,
                 paths: vec![t.path.clone()],
                 runs: file_runs.into_iter().collect(),
-                ambiguous: file_amb,
+                ambiguous: !file_named,
                 at_ms: t.at_ms,
             });
         }
@@ -376,7 +408,11 @@ impl Tracker {
             let mut runs: BTreeSet<String> = mine.iter().map(|r| (*r).to_string()).collect();
             runs.extend(c.owners().map(str::to_string));
             out.push(Finding {
-                severity: Severity::High,
+                severity: if t.is_reported() {
+                    Severity::High
+                } else {
+                    Severity::Medium
+                },
                 reason: Reason::Claim {
                     claim: c.id.clone(),
                     owner: c.run.clone(),
@@ -406,7 +442,11 @@ impl Tracker {
             let mut runs: BTreeSet<String> = mine.iter().map(|r| (*r).to_string()).collect();
             runs.insert(reader.clone());
             out.push(Finding {
-                severity: Severity::Medium,
+                severity: if t.is_reported() {
+                    Severity::Medium
+                } else {
+                    Severity::Low
+                },
                 reason: Reason::ReadThenEdited {
                     editor: t.run.clone(),
                     reader,
@@ -418,54 +458,55 @@ impl Tracker {
             });
         }
 
-        // Same directory/module: another run wrote a different file below the same key.
-        if let Some(key) = dir_key(&t.path, rules.dir_depth) {
-            let mut by_path: BTreeMap<String, (BTreeSet<String>, bool)> = BTreeMap::new();
+        // Same directory/module: another run wrote a different file below the same key. Reported
+        // writes only: a guess about a neighbouring file says nothing.
+        if t.is_reported()
+            && let Some(key) = dir_key(&t.path, rules.dir_depth)
+        {
+            let mut by_path: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
             for o in self
                 .touches
                 .iter()
                 .filter(in_window)
-                .filter(|o| o.kind == Kind::Write && o.path != t.path)
+                .filter(|o| o.kind == Kind::Write && o.path != t.path && o.is_reported())
+                .filter(|o| o.run != t.run)
                 .filter(|o| dir_key(&o.path, rules.dir_depth).as_deref() == Some(key.as_str()))
             {
-                if !(t.is_certain() || o.is_certain()) {
-                    continue;
-                }
-                let other: BTreeSet<&str> = o.who().into_iter().collect();
-                let distinct = if t.is_certain() && o.is_certain() {
-                    t.run != o.run
-                } else if t.is_certain() {
-                    other.iter().any(|r| !mine.contains(r))
-                } else {
-                    mine.iter().any(|r| !other.contains(r))
-                };
-                if !distinct {
-                    continue;
-                }
-                let e = by_path.entry(o.path.clone()).or_default();
-                e.0.extend(other.iter().map(|r| (*r).to_string()));
-                e.1 |= !t.is_certain() || !o.is_certain();
+                by_path
+                    .entry(o.path.clone())
+                    .or_default()
+                    .extend(o.run.clone());
             }
             if !by_path.is_empty() {
                 let mut runs: BTreeSet<String> = mine.iter().map(|r| (*r).to_string()).collect();
                 let mut paths = vec![t.path.clone()];
-                let mut amb = !t.is_certain();
-                for (p, (rs, a)) in by_path {
+                for (p, rs) in by_path {
                     paths.push(p);
                     runs.extend(rs);
-                    amb |= a;
                 }
                 out.push(Finding {
                     severity: Severity::Low,
                     reason: Reason::SameDir { dir: key },
                     paths,
                     runs: runs.into_iter().collect(),
-                    ambiguous: amb,
+                    ambiguous: false,
                     at_ms: t.at_ms,
                 });
             }
         }
         out
+    }
+}
+
+/// Whether two writes of one path are evidence of two different writers. Two guesses never are;
+/// a guess whose candidates include the named writer on the other side is most likely that
+/// writer again (an agent formatting or rebuilding what it just edited).
+fn distinct_writers(t: &Touch, o: &Touch) -> bool {
+    match (&t.run, &o.run) {
+        (Some(a), Some(b)) => a != b,
+        (Some(a), None) => !o.candidates.contains(a),
+        (None, Some(b)) => !t.candidates.contains(b),
+        (None, None) => false,
     }
 }
 
@@ -482,10 +523,18 @@ pub struct RunView {
     pub in_flight: Vec<String>,
 }
 
+/// Most runs a change seen by the watcher or `git status` is guessed between. With more runs
+/// working in one checkout, "one of them" says nothing and the change is dropped.
+pub const MAX_CANDIDATES: usize = 3;
+
 /// The result of attributing a file-system change.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Attribution {
+    /// Reported: an in-flight tool call of the run, or its process seen writing the file.
     Run(String),
+    /// The only run working when the change was seen.
+    Inferred(String),
+    /// One of a few runs working when the change was seen.
     Ambiguous(Vec<String>),
     /// No run was working there: a person, a formatter, a build: not an agent's collision.
     None,
@@ -503,8 +552,8 @@ fn pick(mut v: Vec<String>) -> Option<Attribution> {
 
 /// Attribute a changed `path` (05 §10 signal 2): (a) a run that reported an in-flight tool call
 /// touching that path; (b) the runs open-file sampling saw writing it (`fd_writers`, empty unless
-/// `fs_attribution = "aggressive"` found any); (c) the runs working in that cwd at that moment,
-/// ambiguous with more than one.
+/// `fs_attribution = "aggressive"` found any); (c) the runs working in that cwd at that moment:
+/// inferred for one, ambiguous for up to [`MAX_CANDIDATES`], nothing for more.
 pub fn attribute(path: &str, runs: &[RunView], fd_writers: &[String]) -> Attribution {
     let a: Vec<String> = runs
         .iter()
@@ -528,7 +577,12 @@ pub fn attribute(path: &str, runs: &[RunView], fd_writers: &[String]) -> Attribu
         .filter(|r| r.working)
         .map(|r| r.run.clone())
         .collect();
-    pick(c).unwrap_or(Attribution::None)
+    match pick(c) {
+        Some(Attribution::Run(r)) => Attribution::Inferred(r),
+        Some(Attribution::Ambiguous(v)) if v.len() > MAX_CANDIDATES => Attribution::None,
+        Some(a) => a,
+        None => Attribution::None,
+    }
 }
 
 // ---- records --------------------------------------------------------------------------------
@@ -538,7 +592,8 @@ pub fn attribute(path: &str, runs: &[RunView], fd_writers: &[String]) -> Attribu
 #[serde(rename_all = "snake_case")]
 pub enum Status {
     Open,
-    /// No new touches for a window, or fewer than two of its runs are still alive.
+    /// Every path went quiet for a window, fewer than two of its runs are still alive, or its
+    /// checkout is no longer tracked.
     Cleared,
     /// The user ignored every path of it.
     Ignored,
@@ -622,6 +677,8 @@ impl Merge {
 
 /// Most timeline entries kept in a record.
 pub const TIMELINE_MAX: usize = 200;
+/// Most paths kept in a record: the weakest and oldest go first.
+pub const PATHS_MAX: usize = 50;
 
 impl CollisionRec {
     pub fn new(id: &str, root: &str, now_ms: i64) -> CollisionRec {
@@ -642,15 +699,10 @@ impl CollisionRec {
         }
     }
 
-    /// Whether `f` belongs to this record: an open record of the same root whose run set holds
-    /// the finding's runs or is held by them.
-    pub fn accepts(&self, root: &str, f: &Finding) -> bool {
-        if self.status != Status::Open || self.root != root {
-            return false;
-        }
-        let mine: BTreeSet<&String> = self.runs.iter().collect();
-        let theirs: BTreeSet<&String> = f.runs.iter().collect();
-        theirs.is_subset(&mine) || mine.is_subset(&theirs)
+    /// Whether `f` belongs to this record: the open record of the same checkout. One record per
+    /// checkout keeps one warning per place, whichever runs are involved.
+    pub fn accepts(&self, root: &str, _f: &Finding) -> bool {
+        self.status == Status::Open && self.root == root
     }
 
     /// Merge a finding. Severity only goes up while the record is open; paths are keyed by name
@@ -658,21 +710,20 @@ impl CollisionRec {
     pub fn merge(&mut self, f: &Finding) -> Merge {
         let mut m = Merge::default();
         let before = (!self.paths.is_empty()).then_some(self.severity);
-        for r in &f.runs {
-            if !self.runs.contains(r) {
-                self.runs.push(r.clone());
-                m.new_runs.push(r.clone());
-            }
-        }
-        self.runs.sort();
+        let runs_before = self.runs.clone();
         for p in &f.paths {
             match self.paths.iter_mut().find(|h| &h.path == p) {
-                Some(h) => {
+                // A path names the runs and the confidence of its strongest evidence only: a
+                // weaker hit (a guess, a same-directory hint) never adds its runs to it.
+                Some(h) if f.severity > h.severity => {
                     h.last_ms = h.last_ms.max(f.at_ms);
-                    if f.severity > h.severity {
-                        h.severity = f.severity;
-                        h.reason = f.reason.clone();
-                    }
+                    h.severity = f.severity;
+                    h.reason = f.reason.clone();
+                    h.runs = f.runs.clone();
+                    h.ambiguous = f.ambiguous;
+                }
+                Some(h) if f.severity == h.severity => {
+                    h.last_ms = h.last_ms.max(f.at_ms);
                     for r in &f.runs {
                         if !h.runs.contains(r) {
                             h.runs.push(r.clone());
@@ -681,6 +732,7 @@ impl CollisionRec {
                     h.runs.sort();
                     h.ambiguous &= f.ambiguous;
                 }
+                Some(_) => {}
                 None => {
                     self.paths.push(PathHit {
                         path: p.clone(),
@@ -695,17 +747,62 @@ impl CollisionRec {
                 }
             }
         }
+        if self.paths.len() > PATHS_MAX {
+            self.paths
+                .sort_by(|a, b| b.severity.cmp(&a.severity).then(b.last_ms.cmp(&a.last_ms)));
+            self.paths.truncate(PATHS_MAX);
+            m.new_paths
+                .retain(|p| self.paths.iter().any(|h| &h.path == p));
+        }
+        self.refresh();
+        m.new_runs = self
+            .runs
+            .iter()
+            .filter(|r| !runs_before.contains(r))
+            .cloned()
+            .collect();
+        m.severity_raised = before.is_some_and(|b| self.severity > b);
+        m.created = before.is_none();
+        self.last_ms = self.last_ms.max(f.at_ms);
+        m
+    }
+
+    /// Recompute severity, runs and the "possibly" flag from the paths.
+    fn refresh(&mut self) {
         self.severity = self
             .paths
             .iter()
             .map(|h| h.severity)
             .max()
-            .unwrap_or(f.severity);
-        m.severity_raised = before.is_some_and(|b| self.severity > b);
-        m.created = before.is_none();
+            .unwrap_or(Severity::Low);
+        let runs: BTreeSet<String> = self
+            .paths
+            .iter()
+            .flat_map(|h| h.runs.iter().cloned())
+            .collect();
+        self.runs = runs.into_iter().collect();
         self.ambiguous = self.paths.iter().all(|h| h.ambiguous);
-        self.last_ms = self.last_ms.max(f.at_ms);
-        m
+    }
+
+    /// Drop paths with no new hit for `window_ms` and the runs only they named. Returns whether
+    /// anything was dropped; a record left with no path is quiet and should be cleared.
+    pub fn expire(&mut self, now_ms: i64, window_ms: i64) -> bool {
+        let n = self.paths.len();
+        self.paths
+            .retain(|h| now_ms.saturating_sub(h.last_ms) <= window_ms);
+        if self.paths.len() == n {
+            return false;
+        }
+        if !self.paths.is_empty() {
+            self.refresh();
+        }
+        true
+    }
+
+    /// Whether any path is worth a notification: reported evidence of `high`, or a reported
+    /// edit of a file another run read. Guesses are shown, never announced.
+    pub fn notable(&self) -> bool {
+        self.paths.iter().any(|h| notable(h.severity, &h.reason))
     }
 
     /// Append a timeline entry (bounded).
@@ -741,12 +838,7 @@ impl CollisionRec {
         if self.paths.is_empty() {
             self.status = Status::Ignored;
         } else {
-            self.severity = self
-                .paths
-                .iter()
-                .map(|h| h.severity)
-                .max()
-                .unwrap_or(Severity::Low);
+            self.refresh();
         }
         true
     }
@@ -771,10 +863,12 @@ impl CollisionRec {
     /// Whether a notification for this path set was already raised inside `window_ms`; records
     /// the key when not.
     pub fn should_notify(&mut self, now_ms: i64, window_ms: i64) -> bool {
+        // Keyed on the notable paths only: a guess joining the record changes nothing.
         let key = path_set_key(
             &self
                 .paths
                 .iter()
+                .filter(|h| notable(h.severity, &h.reason))
                 .map(|h| h.path.clone())
                 .collect::<Vec<_>>(),
             self.severity,

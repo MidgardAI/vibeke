@@ -6,9 +6,12 @@
 //! attribution is (a) a run with an in-flight reported tool call on that path, (b) with
 //! `fs_attribution = "aggressive"`, the run whose process held the file open for writing (Linux
 //! `/proc/*/fd`, best effort: the writer has usually closed the file by the time the event
-//! arrives), (c) the runs working in that checkout, `ambiguous` with more than one. A change an
-//! adapter already reported (a certain touch of that path moments ago) is explained by that
-//! report and adds nothing.
+//! arrives), (c) the runs working in that checkout: `inferred` for one, `ambiguous` for a few,
+//! dropped for more (see `vc::MAX_CANDIDATES`). A change an adapter already reported (a certain
+//! touch of that path moments ago) is explained by that report and adds nothing.
+//!
+//! Only git checkouts are followed (`super::root_of`), never the home directory: a directory
+//! that is no repository would make every program's state file look like an agent's edit.
 //!
 //! The worker is one thread holding a `Weak<Server>`; [`tick`] is the deterministic body tests
 //! call directly, with [`feed_fs`] standing in for the platform watcher (`watcher = "none"`).
@@ -443,6 +446,12 @@ fn attribute_and_record(
             cfg,
             root,
             vc::Touch::write(&r, rel, at, source, op.as_str()),
+        ),
+        vc::Attribution::Inferred(r) => record(
+            server,
+            cfg,
+            root,
+            vc::Touch::inferred(&r, rel, at, source, op.as_str()),
         ),
         vc::Attribution::Ambiguous(c) => {
             let mut t = vc::Touch::ambiguous(c, rel, at, source);

@@ -10554,7 +10554,7 @@ export type TaskCollisionClearedSubject = {
 
 export type TaskCollisionClearedData = {
   repo: string;
-  reason: "quiet" | "runs_ended" | "ignored" | "restart";
+  reason: "quiet" | "runs_ended" | "ignored" | "restart" | "out_of_scope";
   severity: "low" | "medium" | "high";
   runs: string[];
   paths: string[];

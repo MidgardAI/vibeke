@@ -1455,7 +1455,7 @@ collision.claim_release :: {claim?: string, run?: Target, glob?: string} => {rel
 
 const BATCH_3A_EVENT_SHAPES: &str = r##"
 task.collision_detected :: {collision: string} => {repo: string, severity: low|medium|high, reason: same_file|same_dir|read_then_edited|claim, paths: [string], new_paths: [string], runs: [string], new_runs: [string], ambiguous: bool, created: bool, raised: bool}
-task.collision_cleared :: {collision: string} => {repo: string, reason: quiet|runs_ended|ignored|restart, severity: low|medium|high, runs: [string], paths: [string]}
+task.collision_cleared :: {collision: string} => {repo: string, reason: quiet|runs_ended|ignored|restart|out_of_scope, severity: low|medium|high, runs: [string], paths: [string]}
 task.collision_action :: {collision?: string|null} => {action: ignore|pause|tell|tell_delivered|start_task|claim_denied, path?: string, repo?: string, ignore?: string, run?: string, by?: string, results?: [object], text?: string, via?: string, messages?: int, base?: string, task?: any, source_run?: string|null, claim?: string, owner?: string}
 task.collision_claim_added :: {claim: string, run: string} => {glob: string, repo: string, note: string|null, conflicts: [string], by: string}
 task.collision_claim_released :: {claim: string, run: string} => {glob: string, repo: string, reason: released|run_ended}

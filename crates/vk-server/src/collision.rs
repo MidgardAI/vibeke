@@ -16,7 +16,11 @@
 //! 3. `git status --porcelain` polled every `poll_interval` while an agent in the repo works.
 //!
 //! The watcher and the poll only run for a checkout two or more live runs share (or one with a
-//! claim): a lone agent cannot collide, and an idle machine pays nothing.
+//! claim): a lone agent cannot collide, and an idle machine pays nothing. A checkout is a git
+//! work tree other than the home directory ([`root_of`]); runs anywhere else are not tracked.
+//!
+//! Evidence has a confidence (`vk_tasks::collision` module docs): only reported edits on both
+//! sides are `high`; a guess is at most `medium`, shown as "may" and never notified.
 //!
 //! Records (`collision` entities) group findings by repo root and run set; `task.collision_detected`
 //! is emitted when a record is created, gains a path or a run, or its severity rises, and a
@@ -220,6 +224,7 @@ pub(crate) fn live_runs(server: &Server) -> Vec<AgentRun> {
 }
 
 /// The checkout (git work tree root) a run works in: its cwd, else its pane's, else its task's.
+/// `None` outside a git work tree, and for the home directory or `/` even when they hold one.
 pub(crate) fn root_of(server: &Server, run: &AgentRun) -> Option<String> {
     let cwd = run
         .cwd
@@ -238,11 +243,19 @@ pub(crate) fn root_of(server: &Server, run: &AgentRun) -> Option<String> {
     if cwd.is_empty() {
         return None;
     }
-    Some(
-        vc::repo_root_of(Path::new(&cwd))
-            .to_string_lossy()
-            .into_owned(),
-    )
+    tracked_root(Path::new(&cwd))
+}
+
+/// The tracked checkout holding `dir`, if any.
+pub(crate) fn tracked_root(dir: &Path) -> Option<String> {
+    let root = vc::repo_root_of(dir)?;
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    vc::trackable_root(&root, home.as_deref()).then(|| root.to_string_lossy().into_owned())
+}
+
+/// Whether an open record's checkout is still one the tracker follows.
+fn root_still_tracked(root: &str) -> bool {
+    tracked_root(Path::new(root)).as_deref() == Some(root)
 }
 
 pub(crate) fn run_label(r: &AgentRun) -> String {
@@ -417,10 +430,9 @@ fn apply_finding(
             }
         }
         rec.note(touch);
-        let notify = cfg.notify
-            && merge.changed()
-            && rec.severity >= vc::Severity::Medium
-            && rec.should_notify(now, window_ms);
+        // Guesses are shown, never announced: only a notable finding notifies.
+        let notify =
+            cfg.notify && merge.changed() && f.notable() && rec.should_notify(now, window_ms);
         g.open.push(rec.clone());
         (rec, merge, notify)
     };
@@ -461,21 +473,103 @@ fn persist(server: &Server, rec: &vc::CollisionRec, event: Option<(&str, Value)>
     let _ = server.commit(&mut c, tx);
 }
 
-pub(crate) fn headline(rec: &vc::CollisionRec) -> String {
-    let n = rec.runs.len();
-    let paths = rec.headline_paths(1);
-    let first = paths.first().cloned().unwrap_or_default();
-    let more = rec.paths.len().saturating_sub(1);
-    let what = if rec.ambiguous {
-        "possibly editing"
-    } else {
-        "editing"
+/// What the sidebar, the list and the notification call a record: who did what to which file,
+/// e.g. "claude and codex both edited src/auth.ts (+2 more)". `label` names a run.
+pub(crate) fn headline_with(rec: &vc::CollisionRec, label: &dyn Fn(&str) -> String) -> String {
+    let Some(top) = rec
+        .headline_paths(1)
+        .first()
+        .and_then(|p| rec.paths.iter().find(|h| &h.path == p))
+    else {
+        return String::new();
     };
+    let names = |ids: &[String]| -> String {
+        let v: Vec<String> = ids.iter().map(|id| label(id.as_str())).collect();
+        match v.len() {
+            0 => "agents".into(),
+            1 => v[0].clone(),
+            2 => format!("{} and {}", v[0], v[1]),
+            n => format!("{}, {} and {} more", v[0], v[1], n - 2),
+        }
+    };
+    let others = |except: &str| -> Vec<String> {
+        top.runs
+            .iter()
+            .filter(|r| r.as_str() != except)
+            .cloned()
+            .collect()
+    };
+    let path = &top.path;
+    let maybe = top.ambiguous || top.severity < vc::Severity::High;
+    let what = match &top.reason {
+        vc::Reason::SameFile => {
+            let both = if top.runs.len() > 2 { "all" } else { "both" };
+            if maybe {
+                format!("{} may {both} have edited {path}", names(&top.runs))
+            } else {
+                format!("{} {both} edited {path}", names(&top.runs))
+            }
+        }
+        vc::Reason::ReadThenEdited { editor, reader } => {
+            let editor = match editor {
+                Some(e) => label(e.as_str()),
+                None => format!("{} (one of them)", names(&others(reader.as_str()))),
+            };
+            let verb = if top.severity >= vc::Severity::Medium {
+                "edited"
+            } else {
+                "may have edited"
+            };
+            format!(
+                "{editor} {verb} {path} after {} read it",
+                label(reader.as_str())
+            )
+        }
+        vc::Reason::Claim { owner, .. } => {
+            let verb = if top.severity >= vc::Severity::High {
+                "edited"
+            } else {
+                "may have edited"
+            };
+            format!(
+                "{} {verb} {path} inside {}'s claim",
+                names(&others(owner.as_str())),
+                label(owner.as_str())
+            )
+        }
+        vc::Reason::SameDir { dir } => format!("{} are editing in {dir}/", names(&top.runs)),
+    };
+    let more = rec.paths.len().saturating_sub(1);
     if more > 0 {
-        format!("{n} agents {what} {first} (+{more} more)")
+        format!("{what} (+{more} more)")
     } else {
-        format!("{n} agents {what} {first}")
+        what
     }
+}
+
+/// [`headline_with`] naming runs by their name or harness, with the handle when two would read
+/// the same.
+pub(crate) fn headline(server: &Server, rec: &vc::CollisionRec) -> String {
+    let runs: Vec<(String, String, String)> = server.with_core(|c| {
+        rec.runs
+            .iter()
+            .map(|id| match c.run(id) {
+                Some(r) => (id.clone(), run_label(r), r.handle.clone()),
+                None => (id.clone(), "agent".into(), id.clone()),
+            })
+            .collect()
+    });
+    let label = |id: &str| -> String {
+        let Some((_, l, h)) = runs.iter().find(|(r, _, _)| r == id) else {
+            return id.to_string();
+        };
+        if runs.iter().filter(|(_, x, _)| x == l).count() > 1 {
+            format!("{l} ({h})")
+        } else {
+            l.clone()
+        }
+    };
+    headline_with(rec, &label)
 }
 
 fn notify_collision(server: &Server, rec: &vc::CollisionRec) {
@@ -503,7 +597,13 @@ fn notify_collision(server: &Server, rec: &vc::CollisionRec) {
             names.join(" and ")
         }
     );
-    server.notify("collision", pane.as_deref(), &headline(rec), &body, urgency);
+    server.notify(
+        "collision",
+        pane.as_deref(),
+        &headline(server, rec),
+        &body,
+        urgency,
+    );
 }
 
 /// Close a record (`cleared` or `ignored`) and emit `task.collision_cleared`.
@@ -535,9 +635,10 @@ pub fn start(server: &Arc<Server>) {
     watch::spawn(server);
 }
 
-/// The periodic sweep (also run by [`watch`]'s worker): clear quiet records and records with
-/// fewer than two live runs, forget touches and in-flight calls of ended runs, release their
-/// claims, drop expired ignores. Returns the number of records cleared.
+/// The periodic sweep (also run by [`watch`]'s worker): drop paths quiet for a window, clear
+/// records left with none, with fewer than two live runs or whose checkout is no longer tracked,
+/// forget touches and in-flight calls of ended runs, release their claims, drop expired ignores.
+/// Returns the number of records cleared.
 pub(crate) fn sweep(server: &Server, now: i64) -> usize {
     ensure_loaded(server);
     let cfg = config(server);
@@ -545,21 +646,46 @@ pub(crate) fn sweep(server: &Server, now: i64) -> usize {
     let live: std::collections::HashSet<String> =
         live_runs(server).into_iter().map(|r| r.id).collect();
     let rl = rules(&cfg);
-    let (cleared, released, expired) = {
+    // Checked before the lock: it reads the file system.
+    let untracked: std::collections::HashSet<String> = {
+        let roots: std::collections::BTreeSet<String> = server
+            .collision
+            .inner
+            .lock()
+            .unwrap()
+            .open
+            .iter()
+            .map(|r| r.root.clone())
+            .collect();
+        roots
+            .into_iter()
+            .filter(|r| !root_still_tracked(r))
+            .collect()
+    };
+    let (cleared, shrunk, released, expired) = {
         let mut g = server.collision.inner.lock().unwrap();
         let mut cleared = Vec::new();
+        let mut shrunk = Vec::new();
         let mut keep = Vec::new();
-        for rec in std::mem::take(&mut g.open) {
+        for mut rec in std::mem::take(&mut g.open) {
+            // Paths decay one by one: a record does not live on through unrelated noise.
+            let changed = rec.expire(now, window_ms);
             let alive = rec.runs.iter().filter(|r| live.contains(*r)).count();
-            if now.saturating_sub(rec.last_ms) > window_ms {
+            if untracked.contains(&rec.root) {
+                cleared.push((rec, "out_of_scope"));
+            } else if rec.paths.is_empty() || now.saturating_sub(rec.last_ms) > window_ms {
                 cleared.push((rec, "quiet"));
             } else if alive < 2 {
                 cleared.push((rec, "runs_ended"));
             } else {
+                if changed {
+                    shrunk.push(rec.clone());
+                }
                 keep.push(rec);
             }
         }
         g.open = keep;
+        g.roots.retain(|root, _| !untracked.contains(root));
         g.in_flight.retain(|f| {
             live.contains(&f.run)
                 && match f.ended_ms {
@@ -588,11 +714,14 @@ pub(crate) fn sweep(server: &Server, now: i64) -> usize {
                 false
             }
         });
-        (cleared, released, expired)
+        (cleared, shrunk, released, expired)
     };
     let n = cleared.len();
     for (rec, why) in cleared {
         clear_record(server, rec, why, now);
+    }
+    for rec in shrunk {
+        persist(server, &rec, None);
     }
     for c in released {
         release_claim_store(server, &c, "run_ended");
@@ -659,7 +788,7 @@ pub(crate) fn collision_json(server: &Server, rec: &vc::CollisionRec, timeline: 
         "ambiguous": rec.ambiguous,
         "first_ms": rec.first_ms,
         "last_ms": rec.last_ms,
-        "headline": headline(rec),
+        "headline": headline(server, rec),
         "cleared_ms": rec.cleared_ms,
         "cleared_reason": rec.cleared_reason,
     });
@@ -868,7 +997,7 @@ fn status(server: &Arc<Server>) -> Value {
         "claims": claims,
         "ignores": ignores,
         "pending_context": pending,
-        "note": "Collision detection is advisory: it warns, and never blocks, reverts or reassigns changes. A watcher and a git poll run only for a checkout that two or more live runs share (or that holds a claim).",
+        "note": "Collision detection is advisory: it warns, and never blocks, reverts or reassigns changes. Only git checkouts are tracked, never the home directory. A watcher and a git poll run only for a checkout that two or more live runs share (or that holds a claim).",
     })
 }
 
@@ -1138,11 +1267,10 @@ fn claim_add(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     let run = resolve_claim_run(server, ctx, p)?;
     let glob_in = req(p, "glob")?;
     let root = match s(p, "root") {
-        Some(r) => vc::repo_root_of(Path::new(r))
-            .to_string_lossy()
-            .into_owned(),
+        Some(r) => tracked_root(Path::new(r))
+            .ok_or_else(|| invalid("root: not inside a tracked git checkout"))?,
         None => root_of(server, &run)
-            .ok_or_else(|| invalid("the run has no known working directory: pass `root`"))?,
+            .ok_or_else(|| invalid("the run does not work in a git checkout: pass `root`"))?,
     };
     // An absolute path inside the root is made relative.
     let glob = vc::relativize(Path::new(&root), glob_in)
@@ -1230,9 +1358,7 @@ fn claims_list(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         claims.retain(|c| c.owners().any(|o| o == id));
     }
     if let Some(r) = s(p, "root") {
-        let root = vc::repo_root_of(Path::new(r))
-            .to_string_lossy()
-            .into_owned();
+        let root = tracked_root(Path::new(r)).unwrap_or_else(|| r.to_string());
         claims.retain(|c| c.root == root);
     }
     // An agent sees the claims of its own checkout.

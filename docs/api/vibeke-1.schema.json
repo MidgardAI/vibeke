@@ -38018,7 +38018,8 @@
               "quiet",
               "runs_ended",
               "ignored",
-              "restart"
+              "restart",
+              "out_of_scope"
             ]
           },
           "severity": {
