@@ -3139,9 +3139,14 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
                 .and_then(Value::as_u64)
                 .and_then(|v| u32::try_from(v).ok());
             // An agent started by the pane's agent: neither replaces the pane's run nor gates
-            // (no decision, so the nested harness keeps its own behaviour).
+            // (no decision, so the nested harness keeps its own behaviour). Enforced claims
+            // still deny its edits; steering queued for the pane's run is not handed to it.
             if nested::is_nested(server, &pane, h, pid) {
-                return Some(Ok(json!({})));
+                return Some(Ok(if method == "adapter.signal" && event == "PreToolUse" {
+                    crate::collision::signal_reply(server, &pane, h, &event, &payload)
+                } else {
+                    json!({})
+                }));
             }
             if method == "adapter.signal" {
                 route::signal(server, &pane, h, &event, &payload);
