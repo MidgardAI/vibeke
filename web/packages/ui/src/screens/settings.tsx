@@ -20,11 +20,12 @@ import {
 } from '@vibeke/core';
 import { useAllHosts, useApp, useHosts, useNow, usePrefs } from '../app/hooks';
 import { Button, Card, Dot, Notice, SectionLabel, Segmented, Spinner, TextField, Toggle } from '../components/ui';
-import { t } from '../i18n';
+import { LANGUAGES, t } from '../i18n';
 import { AGENT_VIEWS } from '../lib/agent-view';
+import { CACHE_TTL_MIN_RANGE, cacheTtlMs } from '../lib/cache-clock';
 import { errorMessage } from '../lib/answer';
 import { clockTime, whenText } from '../lib/format';
-import { DEFAULT_QUICK_REPLIES } from '../lib/harness';
+import { DEFAULT_QUICK_REPLIES, harnessLabel } from '../lib/harness';
 import { useStore } from '../lib/store';
 import { navigate } from '../router';
 import { ReceiveHandoff } from './share';
@@ -116,6 +117,13 @@ export function SettingsScreen() {
 
       {Ext && <Ext />}
 
+      <Group title={t.settings.cacheTitle}>
+        <div className="px-4 pt-2 text-xs text-muted">{t.settings.cacheHint}</div>
+        {(['claude', 'codex'] as const).map((h) => (
+          <CacheTtlRow key={h} harness={h} />
+        ))}
+      </Group>
+
       <Group title={t.settings.device}>
         <div className="px-4 py-2">
           <TextField label={t.settings.deviceName} value={prefs.deviceName} onChange={(e) => app.prefs.patch({ deviceName: e.target.value })} maxLength={64} />
@@ -203,6 +211,33 @@ function PushControl() {
   );
 }
 
+function CacheTtlRow({ harness }: { harness: string }) {
+  const app = useApp();
+  const prefs = usePrefs();
+  const minutes = Math.round((cacheTtlMs(harness, prefs.cacheTtl) ?? 0) / 60_000);
+  const custom = prefs.cacheTtl[harness] !== undefined;
+  const set = (n: number | null) => {
+    const next = { ...prefs.cacheTtl };
+    if (n === null) delete next[harness];
+    else next[harness] = Math.min(CACHE_TTL_MIN_RANGE.max, Math.max(CACHE_TTL_MIN_RANGE.min, n));
+    app.prefs.patch({ cacheTtl: next });
+  };
+  const step = (d: number) => set(minutes + d);
+  return (
+    <Row label={harnessLabel(harness)} hint={custom ? <button type="button" className="vk-focus rounded-sm text-accent hover:underline" onClick={() => set(null)}>{t.settings.cacheReset}</button> : undefined}>
+      <div className="flex items-center gap-2">
+        <Button size="sm" variant="outline" aria-label={t.settings.cacheLess} disabled={minutes <= CACHE_TTL_MIN_RANGE.min} onClick={() => step(minutes > 10 ? -5 : -1)}>
+          −
+        </Button>
+        <span className="w-14 text-center tabular-nums">{t.settings.cacheMinutes(minutes)}</span>
+        <Button size="sm" variant="outline" aria-label={t.settings.cacheMore} disabled={minutes >= CACHE_TTL_MIN_RANGE.max} onClick={() => step(minutes >= 10 ? 5 : 1)}>
+          +
+        </Button>
+      </div>
+    </Row>
+  );
+}
+
 function Alerts({ hosts }: { hosts: readonly HostState[] }) {
   return (
     <Group title={t.settings.alerts}>
@@ -227,7 +262,13 @@ function HostAlertPrefs({ h, showName }: { h: HostState; showName: boolean }) {
     if (!online || !conn) return;
     conn.request('prefs.get', {}).then(
       (r) => {
-        setPrefs({ privacy: (r.device.privacy as DevicePrefs['privacy']) ?? 'summary', notify_input: r.device.notify_input ?? true, notify_done: r.device.notify_done ?? false });
+        setPrefs({
+          privacy: (r.device.privacy as DevicePrefs['privacy']) ?? 'summary',
+          notify_input: r.device.notify_input ?? true,
+          notify_done: r.device.notify_done ?? false,
+          // Only sent back when the host reports it, so an older host never sees an unknown key.
+          ...(typeof r.device.notify_cache_cold === 'boolean' ? { notify_cache_cold: r.device.notify_cache_cold } : {}),
+        });
         setDnd(r.host.dnd_until ?? 0);
       },
       (e) => setErr(errorMessage(e)),
@@ -266,6 +307,9 @@ function HostAlertPrefs({ h, showName }: { h: HostState; showName: boolean }) {
       </Row>
       <Row label={t.settings.notifyDone}>
         <Toggle label={t.settings.notifyDone} checked={prefs.notify_done} onChange={(v) => void save({ ...prefs, notify_done: v })} />
+      </Row>
+      <Row label={t.settings.notifyCacheCold} hint={t.settings.notifyCacheColdHint}>
+        <Toggle label={t.settings.notifyCacheCold} checked={prefs.notify_cache_cold ?? false} onChange={(v) => void save({ ...prefs, notify_cache_cold: v })} />
       </Row>
       <Row label={t.settings.privacy} hint={t.settings.privacyHint}>
         <Segmented
@@ -726,6 +770,14 @@ function About() {
   const b = app.platform.build;
   return (
     <Group title={t.settings.about}>
+      <Row label={t.language.label} hint={t.language.hint}>
+        <Segmented
+          label={t.language.label}
+          value={app.prefs.get().language}
+          onChange={(v) => app.prefs.patch({ language: v })}
+          options={[{ value: 'system', label: t.language.system }, ...LANGUAGES.map((l) => ({ value: l, label: t.language.names[l] ?? l }))]}
+        />
+      </Row>
       {app.platform.updates && <div className="px-4 py-3"><UpdateControls /></div>}
       {inst?.canPrompt() && (
         <Row label={t.install.title} hint={t.install.body}>

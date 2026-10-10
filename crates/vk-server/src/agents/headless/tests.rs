@@ -1,6 +1,6 @@
 //! Adapter state machines against protocol frames written from the protocol descriptions in
 //! spec 04 (§6.1.3 stream-json, §6.2 app-server, §6.3 pi RPC, §6.6 ACP). No processes: the
-//! end-to-end runs with fake harness binaries are in `crates/vibeke/tests/headless.rs`.
+//! end-to-end runs with fake harness binaries are in `crates/vibeke/tests/it/headless.rs`.
 
 use super::*;
 

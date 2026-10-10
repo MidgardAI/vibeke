@@ -553,7 +553,7 @@
       ],
       "milestone": "14; as built 2026-10-06, batch 2D extensions the same day",
       "spec": "`{operation: suggest_task_details\\|review_summary\\|pane_title\\|briefing\\|handoff\\|effort_estimate\\|navigate\\|decision_card\\|stall_notice\\|background_summary\\|task_title, profile?, priority?: interactive\\|background, stream?, idempotency_key?, retry_of?, inputs \\| top-level: {run?, turns?: [n], pane?, task?, workspace?, interaction?, query?, remote_sources?: [...], include_screen?}}` → `{request, preview?: {digest, system, user, model, adapter, endpoint_host, execution_machine, max_output_tokens, bytes, estimated_input_tokens, estimated_max_cost_usd?, sources, omitted, redactions, notice, priority, coverage_notes}, requires_confirmation, confirm_with?, deduplicated?, coalesced?, cached?}`. Consent is checked before content is retrieved. Nothing is sent unless the operation is in both `[assistant] auto_send` and the workspace consent's `auto_send`",
-      "params": "{operation: suggest_task_details|review_summary|pane_title|briefing|handoff|effort_estimate|navigate|decision_card|stall_notice|background_summary|task_title, profile?: string, priority?: interactive|background, stream?: bool, idempotency_key?: string, retry_of?: string, inputs?: object, run?: Target, turns?: [int], pane?: Target, task?: Target, workspace?: Target, interaction?: Target, query?: string, remote_sources?: [object], include_screen?: bool}",
+      "params": "{operation: suggest_task_details|review_summary|pane_title|briefing|handoff|effort_estimate|navigate|decision_card|stall_notice|background_summary|task_title|reply_suggestions, profile?: string, priority?: interactive|background, stream?: bool, idempotency_key?: string, retry_of?: string, inputs?: object, run?: Target, turns?: [int], pane?: Target, task?: Target, workspace?: Target, interaction?: Target, query?: string, remote_sources?: [object], include_screen?: bool}",
       "result": "{request: object, preview?: {digest: string, system?: string, user?: string, model?: string, adapter?: string, endpoint_host?: string, execution_machine?: string, max_output_tokens?: int, bytes?: int, estimated_input_tokens?: int, estimated_max_cost_usd?: number|null, sources?: [object], omitted?: any, redactions?: any, notice?: string, priority?: string, coverage_notes?: [string]}, requires_confirmation?: bool, confirm_with?: object|null, deduplicated?: bool, coalesced?: bool, cached?: bool, note?: string}"
     },
     {
@@ -2151,8 +2151,8 @@
       ],
       "milestone": "16 G2",
       "spec": "`{pane, path}` → `{path, text?, binary, truncated, size, secret}` — at most 512 KiB of a regular file (`truncated` when larger, cut on a character boundary). `binary` (NUL in the first 8 KiB) returns no text. Secret-looking files return `{secret: true}` without content",
-      "params": "{pane?: Target, path: string}",
-      "result": "{path: string, text?: string, binary: bool, truncated: bool, size: int, secret: bool}"
+      "params": "{pane?: Target, path: string, as?: image}",
+      "result": "{path: string, text?: string, binary: bool, truncated: bool, size: int, secret: bool, mime?: string, data_b64?: string}"
     },
     {
       "name": "gateway.call",

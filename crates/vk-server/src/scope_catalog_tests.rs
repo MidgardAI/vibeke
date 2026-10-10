@@ -15,7 +15,7 @@ use std::time::Duration;
 use vk_proto::model::*;
 use vk_proto::rpc::{ErrorKind, RpcError};
 
-/// Every method table in the server (the same set `crates/vibeke/tests/api_docs.rs` catalogs).
+/// Every method table in the server (the same set `crates/vibeke/tests/it/api_docs.rs` catalogs).
 fn tables() -> Vec<&'static [(&'static str, bool)]> {
     vec![
         crate::api::METHODS,

@@ -4,6 +4,7 @@
 import type { ComponentType } from 'react';
 import type { HostManagerApi, HostRecord, HostStore, PairingLink, Platform } from '@vibeke/core';
 import type { Segment } from './lib/ansi';
+import type { CachedDashboard } from './lib/offline-cache';
 import type { KV } from './lib/prefs';
 
 export type PermissionState = 'default' | 'granted' | 'denied' | 'unsupported';
@@ -55,6 +56,16 @@ export interface MirrorCache {
   set(key: string, value: CachedMirror): Promise<void>;
 }
 
+/**
+ * The last dashboard of each host (open interactions removed), so a cold start with the host
+ * offline can show the saved workspace rows. Optional: without it the list starts empty.
+ */
+export interface DashboardCache {
+  get(host: string): Promise<CachedDashboard | null>;
+  set(host: string, value: CachedDashboard): Promise<void>;
+  remove?(host: string): Promise<void>;
+}
+
 export interface BuildInfo {
   version: string;
   hash: string;
@@ -83,14 +94,39 @@ export interface UpdatesCapability {
   setAutomatic(enabled: boolean): Promise<void>;
 }
 
+/** A new app version that is installed but not running yet (PWA service worker). */
+export interface AppUpdateCapability {
+  /** True when a new version is waiting to take over. */
+  get(): boolean;
+  subscribe(cb: () => void): () => void;
+  /** Activate the waiting version and reload. Call it only from a user tap. */
+  apply(): void;
+}
+
+/** Content another app shared into Vibeke (Web Share Target). */
+export interface SharedItem {
+  title: string;
+  text: string;
+  url: string;
+  files: { name: string; type: string; blob: Blob }[];
+}
+
 export interface UiPlatform extends Platform {
   updates?: UpdatesCapability;
+  /** A waiting app update, applied on request (PWA). Desktop uses `updates`. */
+  appUpdate?: AppUpdateCapability;
+  /**
+   * Read and delete content shared into the app under a one-time id (route `#/share-in/<id>`).
+   * Resolves to null when the id is unknown or expired.
+   */
+  takeShared?(id: string): Promise<SharedItem | null>;
   /** Optional encrypted persistence for unsent composer text. */
   drafts?: { get(host: string, pane: string): Promise<string>; set(host: string, pane: string, text: string): Promise<void> };
   hostStore: HostStore;
   /** Small non-secret key-value storage (prefs, pins). */
   kv: KV;
   mirrorCache?: MirrorCache;
+  dashboardCache?: DashboardCache;
   haptics?(kind: HapticKind): void;
   clipboard: { writeText(text: string): Promise<void>; readText?(): Promise<string> };
   /** Open an http(s) URL outside the app. */

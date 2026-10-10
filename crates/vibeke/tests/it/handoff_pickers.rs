@@ -3,12 +3,10 @@
 //! `repo.candidates` finding an open workspace's clone by its origin, and `handoff.cancel`
 //! stopping a queued `handoff.send` job to a peer the gateway published.
 
-mod support;
-
+use crate::support::{Rpc, Session};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use support::{Rpc, Session};
 
 fn git(dir: &Path, args: &[&str]) {
     let ok = Command::new("git")

@@ -1,11 +1,14 @@
 // The PWA's UiPlatform: IndexedDB keys and hosts, WebSocket transport, Web Push through the
 // service worker, install prompt capture, Web Speech / MediaRecorder, haptics.
 
-import { b64, systemClock, type HostRecord, type HostStore, type KeyStore, type Lifecycle, type PushSubscriptionInfo, type PushSupport } from '@vibeke/core';
-import type { InstallCapability, NotificationsCapability, PermissionState, SpeechCapability, UiPlatform } from '@vibeke/ui';
+import { b64, systemClock, type Dashboard, type HostRecord, type HostStore, type KeyStore, type Lifecycle, type PushSubscriptionInfo, type PushSupport } from '@vibeke/core';
+import type { InstallCapability, NotificationsCapability, PermissionState, SharedItem, SpeechCapability, UiPlatform } from '@vibeke/ui';
 import { idbAll, idbDelete, idbGet, idbGetOrCreate, idbSet, persist } from './idb';
 import { connectWebSocket } from './ws-socket';
-import { detectPlatform } from './detect';
+import { detectPlatform, isAppleWebKit } from './detect';
+import type { AppUpdate } from './app-update';
+import { createDrafts } from './drafts';
+import { isExpired, isSharedRecord } from './share-store';
 
 declare const __BUILD_HASH__: string;
 declare const __APP_VERSION__: string;
@@ -106,6 +109,8 @@ function subInfo(s: PushSubscription): PushSubscriptionInfo {
 function pushSupport(): PushSupport | undefined {
   if (!('serviceWorker' in navigator) || !('PushManager' in window)) return undefined;
   return {
+    // Browsers other than Apple WebKit accept pushes that show nothing, so hosts may send `clear`.
+    supportsClear: !isAppleWebKit(navigator.userAgent, navigator.platform, navigator.maxTouchPoints),
     async getSubscription() {
       const reg = await swReady()!;
       const s = await reg.pushManager.getSubscription();
@@ -284,8 +289,30 @@ function speech(): SpeechCapability {
   };
 }
 
-export function createPwaPlatform(): UiPlatform {
+const drafts = createDrafts(() => localStorage, Date.now);
+
+/** Read and delete shared content (Web Share Target); null when unknown or older than an hour. */
+async function takeShared(id: string): Promise<SharedItem | null> {
+  const now = Date.now();
+  const rec = await idbGet<unknown>('shared', id);
+  await idbDelete('shared', id).catch(() => {});
+  if (!isSharedRecord(rec) || isExpired(rec, now)) return null;
+  return { title: rec.title ?? '', text: rec.text ?? '', url: rec.url ?? '', files: rec.files };
+}
+
+/** Delete shared content that nobody opened within the hour. */
+function sweepShared(): void {
+  void idbAll<unknown>('shared')
+    .then(async (all) => {
+      for (const r of all) if (isSharedRecord(r) && isExpired(r, Date.now())) await idbDelete('shared', r.id);
+    })
+    .catch(() => {});
+}
+
+export function createPwaPlatform(update?: AppUpdate): UiPlatform {
   persist();
+  drafts.sweep();
+  sweepShared();
   const p = detectPlatform(navigator.userAgent, navigator.platform, navigator.maxTouchPoints);
   return {
     keystore,
@@ -298,6 +325,9 @@ export function createPwaPlatform(): UiPlatform {
     platformName: p.name,
     defaultDeviceName: p.device,
     push: pushSupport(),
+    drafts: { get: drafts.get, set: drafts.set },
+    appUpdate: update,
+    takeShared,
     notifications: notifications(p),
     install: install(p),
     speech: speech(),
@@ -323,6 +353,12 @@ export function createPwaPlatform(): UiPlatform {
     mirrorCache: {
       get: async (k) => (await idbGet<{ text: string; at: number }>('mirrors', k)) ?? null,
       set: (k, v) => idbSet('mirrors', k, v),
+    },
+    // Saved dashboards share the `mirrors` store (own key prefix): no schema change.
+    dashboardCache: {
+      get: async (host) => (await idbGet<{ at: number; dashboard: Dashboard }>('mirrors', `dashboard:${host}`)) ?? null,
+      set: (host, v) => idbSet('mirrors', `dashboard:${host}`, v),
+      remove: (host) => idbDelete('mirrors', `dashboard:${host}`),
     },
     build: { version: __APP_VERSION__, hash: __BUILD_HASH__, origin: location.origin },
     client: { client: 'vibeke-pwa', version: __APP_VERSION__ },

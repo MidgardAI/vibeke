@@ -13,6 +13,8 @@ import {
   Bot,
   Brain,
   ChevronRight,
+  ChevronsDown,
+  ChevronsUp,
   Copy,
   FilePen,
   FilePlus2,
@@ -29,14 +31,20 @@ import {
 } from 'lucide-react';
 import { NotConnectedError, RpcError, applyLatest, applyOlder, emptyTranscript, type AgentRun, type AppApi, type TranscriptItem, type TranscriptState, type TranscriptTurn } from '@vibeke/core';
 import { useApp, useHost, useVisible } from '../../app/hooks';
+import { FindBar } from '../../components/find-bar';
+import { LinkContext, linkifyText, useLinks } from '../../components/link-context';
 import { Markdown } from '../../components/markdown';
 import { Button, Chip, DiffCount, Empty, IconButton, Spinner, cx } from '../../components/ui';
 import { t } from '../../i18n';
 import { errorMessage } from '../../lib/answer';
+import { ImageSourceContext, TranscriptImage } from '../../components/transcript-image';
 import { turnBlocks, turnHasWork, turnStats, turnText, workedFor, type ConvBlock, type Step, type ToolStep } from '../../lib/conversation';
 import { toolSummary, type ToolKind } from '../../lib/tool-summary';
+import { takePrefetchedTranscript } from '../../lib/prefetch';
 import { EVENT_DEBOUNCE_MS, LatestFeed, SAFETY_POLL_MS, watchRunEvents } from '../../lib/live-transcript';
 import { useGitStatus } from '../../lib/use-git-status';
+import { MAX_HITS, findMatches, locateRange, stepHit, turnSearchText, userJumpTarget } from '../../lib/conv-find';
+import { usePathLinks } from './use-path-links';
 
 const FIRST_PAGE = 20;
 const LIVE_PAGE = 2;
@@ -44,6 +52,18 @@ const OLDER_PAGE = 20;
 const DEBOUNCE_MS = 250;
 const WORKING_POLL_MS = 4000;
 const LONG_USER = 600;
+/** Older pages loaded on its own while a search finds nothing (20 turns each). */
+const MAX_AUTO_PAGES = 15;
+/** Text of the newest turns scanned for file paths to link. */
+const LINK_SCAN_CHARS = 60_000;
+
+/** The block-level element a text node sits in (a hit never spans two). */
+const blockOf = (n: Node): Element | null => n.parentElement?.closest('p,li,pre,h1,h2,h3,h4,blockquote,[data-find-scope]') ?? null;
+
+const highlightsApi = (): { set(k: string, v: unknown): void; delete(k: string): void } | null => {
+  const hl = typeof CSS !== 'undefined' ? (CSS as unknown as { highlights?: { set(k: string, v: unknown): void; delete(k: string): void } }).highlights : undefined;
+  return hl && typeof (globalThis as { Highlight?: unknown }).Highlight === 'function' ? hl : null;
+};
 
 /** What changes on the run when a turn starts / ends or its state moves (drives a refetch). */
 export const runRevision = (run: AgentRun): string =>
@@ -71,6 +91,9 @@ export function Conversation({
   refreshKey,
   onOpenTerminal,
   tail,
+  findOpen = false,
+  setFindOpen,
+  openFile,
 }: {
   hostId: string;
   pane: string;
@@ -81,6 +104,11 @@ export function Conversation({
   onOpenTerminal(): void;
   /** Rendered after the last turn (open approvals). */
   tail?: ReactNode;
+  /** The find bar (header search icon, `/`, ⌘F) and its setter. */
+  findOpen?: boolean;
+  setFindOpen?(v: boolean): void;
+  /** Open a workspace file in the viewer; without it paths in the text are not links. */
+  openFile?: (path: string, line?: number) => void;
 }) {
   const app = useApp();
   const visible = useVisible();
@@ -98,6 +126,8 @@ export function Conversation({
   const runRef = useRef(run.id);
   runRef.current = run.id;
 
+  const imageSource = useMemo(() => ({ host: hostId, target: run.id }), [hostId, run.id]);
+
   const nearBottom = () => {
     const el = listRef.current;
     return !el || el.scrollHeight - el.scrollTop - el.clientHeight < 64;
@@ -112,7 +142,9 @@ export function Conversation({
           const conn = app.conn(hostId);
           if (!conn) throw new NotConnectedError(hostId);
           const have = trRef.current.turns.length > 0 && trRef.current.run === target;
-          const r = await conn.request('agent.transcript', { target, limit: have ? LIVE_PAGE : FIRST_PAGE });
+          // The first page may already be here: a finger on the row started the fetch (lib/prefetch.ts).
+          const warm = have ? null : takePrefetchedTranscript(hostId, target, app.platform.clock.now());
+          const r = warm ?? (await conn.request('agent.transcript', { target, limit: have ? LIVE_PAGE : FIRST_PAGE }));
           return { r, have };
         },
         apply: (target, { r, have }) => {
@@ -253,6 +285,189 @@ export function Conversation({
   const turns = tr.turns;
   const lastN = turns.length ? turns[turns.length - 1]!.n : -1;
 
+  // ---- links: URLs and workspace files in the text ----
+  const linkText = useMemo(() => {
+    let out = '';
+    for (let i = turns.length - 1; i >= 0 && out.length < LINK_SCAN_CHARS; i--) out += `${turnSearchText(turns[i]!)}\n`;
+    return out;
+  }, [turns]);
+  const links = usePathLinks(hostId, pane, cwd, linkText, openFile);
+
+  // ---- find: hits are ranges over the rendered text, marked with the CSS Highlight API (a
+  // class on the hit's element where the browser lacks it). The newest hit comes first; going
+  // back past the first one loads older messages, and so does a search that finds nothing.
+  const [query, setQuery] = useState('');
+  const [hit, setHit] = useState(0);
+  const [count, setCount] = useState(0);
+  const [scanned, setScanned] = useState<TranscriptState | null>(null);
+  const [seek, setSeek] = useState<{ from: number } | null>(null);
+  const ranges = useRef<Range[]>([]);
+  const fresh = useRef(false);
+  const autoPages = useRef(0);
+  const marked = useRef<Element | null>(null);
+  const scrolledFor = useRef('');
+
+  const clearMarks = useCallback(() => {
+    const hl = highlightsApi();
+    hl?.delete('vk-find');
+    hl?.delete('vk-find-current');
+    marked.current?.classList.remove('find-fallback');
+    marked.current = null;
+  }, []);
+  useEffect(() => clearMarks, [clearMarks]);
+
+  const onQuery = (q: string) => {
+    setQuery(q);
+    setHit(0);
+    fresh.current = true;
+    autoPages.current = 0;
+    scrolledFor.current = '';
+    setSeek(null);
+  };
+  const closeFind = () => {
+    setFindOpen?.(false);
+    setQuery('');
+    setSeek(null);
+  };
+
+  useEffect(() => {
+    const list = listRef.current;
+    if (!findOpen || !query || !list) {
+      ranges.current = [];
+      clearMarks();
+      setCount(0);
+      setScanned(tr);
+      return;
+    }
+    const found: Range[] = [];
+    for (const scope of list.querySelectorAll('[data-find-scope]')) {
+      const nodes: (Text | null)[] = [];
+      const lengths: number[] = [];
+      let full = '';
+      let prev: Element | null | undefined;
+      const walker = document.createTreeWalker(scope, NodeFilter.SHOW_TEXT);
+      for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+        const b = blockOf(n);
+        // A new block reads as a line break, so a hit never joins the end of one paragraph to the next.
+        if (prev !== undefined && b !== prev) {
+          nodes.push(null);
+          lengths.push(1);
+          full += '\n';
+        }
+        prev = b;
+        const v = (n as Text).data;
+        nodes.push(n as Text);
+        lengths.push(v.length);
+        full += v;
+      }
+      for (const [a, b] of findMatches(full, query)) {
+        const loc = locateRange(lengths, a, b);
+        const from = loc ? nodes[loc.startNode] : null;
+        const to = loc ? nodes[loc.endNode] : null;
+        if (!loc || !from || !to) continue;
+        const r = document.createRange();
+        r.setStart(from, loc.startOffset);
+        r.setEnd(to, loc.endOffset);
+        found.push(r);
+        if (found.length >= MAX_HITS) break;
+      }
+      if (found.length >= MAX_HITS) break;
+    }
+    ranges.current = found;
+    const hl = highlightsApi();
+    const Hl = (globalThis as unknown as { Highlight?: new (...r: Range[]) => unknown }).Highlight;
+    if (hl && Hl) hl.set('vk-find', new Hl(...found));
+    setCount(found.length);
+    setScanned(tr);
+    if (fresh.current) {
+      fresh.current = false;
+      setHit(Math.max(0, found.length - 1));
+    }
+  }, [tr, query, findOpen, phase, clearMarks]);
+
+  // The current hit: marked, and scrolled to the middle when the hit (not just the text) changed.
+  useEffect(() => {
+    const r = ranges.current[hit];
+    const hl = highlightsApi();
+    const Hl = (globalThis as unknown as { Highlight?: new (...r: Range[]) => unknown }).Highlight;
+    marked.current?.classList.remove('find-fallback');
+    marked.current = null;
+    if (!findOpen || !query || !r) {
+      hl?.delete('vk-find-current');
+      return;
+    }
+    if (hl && Hl) hl.set('vk-find-current', new Hl(r));
+    else {
+      marked.current = r.startContainer.parentElement;
+      marked.current?.classList.add('find-fallback');
+    }
+    const key = `${hit}:${query}`;
+    const list = listRef.current;
+    if (!list || scrolledFor.current === key) return;
+    scrolledFor.current = key;
+    const rect = r.getBoundingClientRect();
+    const box = list.getBoundingClientRect();
+    list.scrollTop += rect.top - box.top - (box.height - rect.height) / 2;
+  }, [hit, count, scanned, findOpen, query]);
+
+  // Seeking: look further back for hits until one turns up (or the start is reached).
+  useEffect(() => {
+    if (!findOpen || !query || olderBusy || scanned !== tr) return;
+    if (!seek) {
+      if (count === 0 && tr.nextBefore !== null && autoPages.current < MAX_AUTO_PAGES) setSeek({ from: 0 });
+      return;
+    }
+    if (count > seek.from) {
+      setHit(count - seek.from - 1);
+      setSeek(null);
+    } else if (tr.nextBefore !== null && autoPages.current < MAX_AUTO_PAGES) {
+      autoPages.current++;
+      void loadOlder();
+    } else {
+      setSeek(null);
+      if (count > 0) setHit(count - 1);
+    }
+  }, [findOpen, query, olderBusy, scanned, tr, seek, count, loadOlder]);
+
+  const stepFind = (dir: 1 | -1) => {
+    if (!count) return;
+    if (dir < 0 && hit <= 0 && tr.nextBefore !== null) {
+      autoPages.current = 0;
+      setSeek({ from: count });
+      return;
+    }
+    setHit((h) => stepHit(h, count, dir));
+  };
+  const findNote = !query ? (tr.nextBefore !== null ? t.conv.findLoaded : null) : seek || olderBusy ? t.conv.findLoading : count === 0 ? t.conv.findNone : tr.nextBefore !== null ? t.conv.findLoaded : null;
+
+  // ---- jumps between the messages the user sent ----
+  const jumpAfterLoad = useRef(false);
+  const jumpUser = useCallback(
+    (dir: 1 | -1, load = true) => {
+      const list = listRef.current;
+      if (!list) return;
+      const nodes = [...list.querySelectorAll<HTMLElement>('[data-role="user"]')];
+      const box = list.getBoundingClientRect();
+      const tops = nodes.map((n) => n.getBoundingClientRect().top);
+      const i = userJumpTarget(tops, box.top, dir);
+      if (i === null) {
+        if (load && dir < 0 && trRef.current.nextBefore !== null) {
+          jumpAfterLoad.current = true;
+          void loadOlder();
+        }
+        return;
+      }
+      const calm = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+      list.scrollTo({ top: list.scrollTop + tops[i]! - box.top - 8, behavior: calm ? 'auto' : 'smooth' });
+    },
+    [loadOlder],
+  );
+  useEffect(() => {
+    if (!jumpAfterLoad.current || olderBusy) return;
+    jumpAfterLoad.current = false;
+    jumpUser(-1, false);
+  }, [tr, olderBusy, jumpUser]);
+
   if (phase === 'none')
     return (
       <div className="flex min-h-0 flex-1 flex-col">
@@ -271,7 +486,12 @@ export function Conversation({
     );
 
   return (
+    <LinkContext.Provider value={links}>
+    <ImageSourceContext.Provider value={imageSource}>
     <div className="relative flex min-h-0 flex-1 flex-col">
+      {findOpen && (
+        <FindBar query={query} onQuery={onQuery} index={hit} count={count} onStep={stepFind} onClose={closeFind} placeholder={t.conv.findPlaceholder} note={findNote} />
+      )}
       <div ref={listRef} onScroll={onScroll} className="vk-scroll min-h-0 flex-1 overflow-y-auto" role="log" aria-label={t.conv.label} aria-busy={phase === 'loading'}>
         <div ref={contentRef} className="mx-auto w-full max-w-[780px] px-4 pb-6 pt-3 sm:px-6">
           <div className="flex h-8 items-center justify-center text-xs text-faint">
@@ -325,7 +545,25 @@ export function Conversation({
           <ArrowDown className="size-4" />
         </button>
       )}
+      {turns.length > 1 && (
+        <div className="absolute bottom-3 right-3 flex flex-col gap-1">
+          {([-1, 1] as const).map((dir) => (
+            <button
+              key={dir}
+              type="button"
+              aria-label={dir < 0 ? t.conv.prevSent : t.conv.nextSent}
+              title={dir < 0 ? t.conv.prevSent : t.conv.nextSent}
+              onClick={() => jumpUser(dir)}
+              className="vk-focus inline-flex size-8 items-center justify-center rounded-full border border-border bg-surface-2 text-muted opacity-80 shadow-[var(--shadow)] hover:text-fg hover:opacity-100 pointer-coarse:size-10"
+            >
+              {dir < 0 ? <ChevronsUp className="size-4" /> : <ChevronsDown className="size-4" />}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
+    </ImageSourceContext.Provider>
+    </LinkContext.Provider>
   );
 }
 
@@ -391,17 +629,26 @@ function groupSteps(blocks: ConvBlock[]): (ConvBlock | StepBlock[])[] {
 
 function BlockView({ block }: { block: ConvBlock }) {
   if (block.k === 'user') return <UserMessage text={block.text} />;
-  if (block.k === 'text') return <Markdown text={block.text} className="text-[14px] leading-[1.65] text-fg" />;
+  if (block.k === 'image') return <TranscriptImage mime={block.mime} imageRef={block.ref} size={block.size} />;
+  if (block.k === 'text')
+    return (
+      <div data-find-scope>
+        <Markdown text={block.text} className="text-[14px] leading-[1.65] text-fg" />
+      </div>
+    );
   return null;
 }
 
 function UserMessage({ text }: { text: string }) {
+  const ops = useLinks();
   const long = text.length > LONG_USER || text.split('\n').length > 10;
   const [open, setOpen] = useState(!long);
   return (
     <div className="flex justify-end pt-1" data-role="user">
       <div className="max-w-[85%] rounded-2xl bg-surface-2 px-3.5 py-2 text-[14px] leading-relaxed text-fg">
-        <div className={cx('whitespace-pre-wrap break-words', !open && 'line-clamp-6')}>{text}</div>
+        <div data-find-scope className={cx('whitespace-pre-wrap break-words', !open && 'line-clamp-6')}>
+          {ops ? linkifyText(text, ops) : text}
+        </div>
         {long && (
           <button type="button" className="mt-1 text-xs text-muted hover:text-fg" onClick={() => setOpen(!open)}>
             {open ? t.conv.showLess : t.conv.showMore}

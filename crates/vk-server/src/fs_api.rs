@@ -27,6 +27,9 @@ const MAX_ENTRIES: usize = 2000;
 /// Entries read from one directory before sorting; beyond this the listing is truncated.
 const MAX_SCAN: usize = 100_000;
 const MAX_READ: u64 = 512 * 1024;
+/// Largest image `fs.read` with `as: "image"` returns inline (base64 grows it by a third; the
+/// gateway channel carries messages up to 16 MiB).
+const MAX_IMAGE: u64 = 4 * 1024 * 1024;
 const MAX_DIFF: usize = 512 * 1024;
 const SNIFF: usize = 8 * 1024;
 
@@ -444,8 +447,23 @@ async fn list(root: PathBuf, p: Value) -> R {
     Ok(json!({"path": path, "entries": out, "truncated": truncated}))
 }
 
+/// MIME type for a png, jpeg, gif or webp file: the extension must name the type and the
+/// leading bytes must agree, so a renamed file is never served as an image.
+pub(crate) fn image_mime(name: &str, head: &[u8]) -> Option<&'static str> {
+    let ext = name.rsplit_once('.')?.1.to_ascii_lowercase();
+    match ext.as_str() {
+        "png" if head.starts_with(b"\x89PNG\r\n\x1a\n") => Some("image/png"),
+        "jpg" | "jpeg" if head.starts_with(&[0xFF, 0xD8, 0xFF]) => Some("image/jpeg"),
+        "gif" if head.starts_with(b"GIF87a") || head.starts_with(b"GIF89a") => Some("image/gif"),
+        "webp" if head.len() >= 12 && &head[..4] == b"RIFF" && &head[8..12] == b"WEBP" => {
+            Some("image/webp")
+        }
+        _ => None,
+    }
+}
+
 /// Read up to [`MAX_READ`] bytes of a regular file under `root` (no symlink anywhere).
-fn read_file(root: &Path, rel: &str) -> Result<(u64, Vec<u8>), RpcError> {
+fn read_file_capped(root: &Path, rel: &str, cap: u64) -> Result<(u64, Vec<u8>), RpcError> {
     let f = open_nofollow(root, rel)?;
     let md = f
         .metadata()
@@ -457,7 +475,7 @@ fn read_file(root: &Path, rel: &str) -> Result<(u64, Vec<u8>), RpcError> {
         return Err(err(ErrorKind::PermissionDenied, "not a regular file"));
     }
     let mut buf = Vec::new();
-    std::io::Read::read_to_end(&mut std::io::Read::take(&f, MAX_READ), &mut buf)
+    std::io::Read::read_to_end(&mut std::io::Read::take(&f, cap), &mut buf)
         .map_err(|e| err(ErrorKind::Internal, e.to_string()))?;
     Ok((md.len(), buf))
 }
@@ -470,10 +488,31 @@ async fn read(root: PathBuf, p: Value) -> R {
             json!({"path": path, "secret": true, "binary": false, "truncated": false, "size": Value::Null}),
         );
     }
+    let want_image = s(&p, "as") == Some("image");
     let (root2, rel) = (root.clone(), path.to_string());
-    let (size, bytes) = tokio::task::spawn_blocking(move || read_file(&root2, &rel))
-        .await
-        .map_err(|e| err(ErrorKind::Internal, e.to_string()))??;
+    let (size, bytes) = tokio::task::spawn_blocking(move || {
+        read_file_capped(&root2, &rel, if want_image { MAX_IMAGE } else { MAX_READ })
+    })
+    .await
+    .map_err(|e| err(ErrorKind::Internal, e.to_string()))??;
+    if want_image && let Some(mime) = image_mime(path, &bytes) {
+        if size > bytes.len() as u64 {
+            // Too big to send inline: the caller sees a binary file without data.
+            return Ok(
+                json!({"path": path, "binary": true, "truncated": true, "size": size, "secret": false, "mime": mime}),
+            );
+        }
+        use base64::Engine;
+        let data_b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+        return Ok(
+            json!({"path": path, "binary": true, "truncated": false, "size": size, "secret": false, "mime": mime, "data_b64": data_b64}),
+        );
+    }
+    let bytes = if bytes.len() as u64 > MAX_READ {
+        bytes[..MAX_READ as usize].to_vec()
+    } else {
+        bytes
+    };
     let truncated = size > bytes.len() as u64;
     if bytes[..bytes.len().min(SNIFF)].contains(&0) {
         return Ok(
@@ -804,6 +843,63 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn read_returns_images_on_request() {
+        use base64::Engine;
+        let (_t, root) = fixture();
+        // A real PNG header: the signature, then the IHDR chunk length with its NUL bytes.
+        let png = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDRrest";
+        std::fs::write(root.join("pic.png"), png).unwrap();
+        // Without the option an image is plain binary.
+        let v = read(root.clone(), json!({"path": "pic.png"}))
+            .await
+            .unwrap();
+        assert_eq!(v["binary"], true);
+        assert!(v.get("data_b64").is_none());
+        let v = read(root.clone(), json!({"path": "pic.png", "as": "image"}))
+            .await
+            .unwrap();
+        assert_eq!(v["mime"], "image/png");
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(v["data_b64"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(bytes, png);
+        // A text file renamed to .png is not served as an image.
+        std::fs::write(root.join("fake.png"), "hello").unwrap();
+        let v = read(root.clone(), json!({"path": "fake.png", "as": "image"}))
+            .await
+            .unwrap();
+        assert!(v.get("data_b64").is_none());
+        assert_eq!(v["text"], "hello");
+        // Over the cap: size reported, no data.
+        let mut big = png.to_vec();
+        big.resize(MAX_IMAGE as usize + 10, 0);
+        std::fs::write(root.join("big.png"), &big).unwrap();
+        let v = read(root.clone(), json!({"path": "big.png", "as": "image"}))
+            .await
+            .unwrap();
+        assert_eq!(v["truncated"], true);
+        assert_eq!(v["size"], big.len());
+        assert!(v.get("data_b64").is_none());
+        // Symlinks stay refused.
+        std::os::unix::fs::symlink(root.join("pic.png"), root.join("l.png")).unwrap();
+        assert!(
+            read(root.clone(), json!({"path": "l.png", "as": "image"}))
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            image_mime("a.JPG", &[0xFF, 0xD8, 0xFF, 0xE0]),
+            Some("image/jpeg")
+        );
+        assert_eq!(
+            image_mime("a.webp", b"RIFF\0\0\0\0WEBPVP8 "),
+            Some("image/webp")
+        );
+        assert_eq!(image_mime("a.gif", b"GIF89a.."), Some("image/gif"));
+        assert_eq!(image_mime("a.svg", b"<svg"), None);
+    }
+
+    #[tokio::test]
     async fn read_guards_and_caps() {
         let (_t, root) = fixture();
         let v = read(root.clone(), json!({"path": "a.txt"})).await.unwrap();
@@ -822,10 +918,15 @@ mod tests {
             .unwrap();
         assert_eq!(v["binary"], true);
         assert!(v.get("text").is_none());
-        for secret in [".env", "certs/server.pem"] {
-            let v = read(root.clone(), json!({"path": secret})).await.unwrap();
+        for locked in [".env", "certs/server.pem"] {
+            let v = read(root.clone(), json!({"path": locked})).await.unwrap();
             assert_eq!(v["secret"], true);
-            assert!(v.get("text").is_none(), "{secret}");
+            assert!(v.get("text").is_none());
+            let v = read(root.clone(), json!({"path": locked, "as": "image"}))
+                .await
+                .unwrap();
+            assert_eq!(v["secret"], true);
+            assert!(v.get("data_b64").is_none());
         }
         // Big file: capped at 512 KiB, multi-byte boundary kept valid.
         let big = "é".repeat(400 * 1024);

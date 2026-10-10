@@ -2,6 +2,7 @@
 //! holder crash, `log_epoch` identity across restarts, and a client that stops reading.
 //! Each is quick enough for the PR run; `VIBEKE_CHAOS_ITER` repeats the loops for the nightly.
 
+#[path = "it/support/mod.rs"]
 mod support;
 
 use serde_json::{Value, json};

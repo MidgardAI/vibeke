@@ -4,13 +4,11 @@
 //! `remote_unavailable`; `gateway.reply` is for gateway clients only; and only the allow-listed
 //! methods go through.
 
-mod support;
-
+use crate::support::{Rpc, Session};
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::time::Duration;
-use support::{Rpc, Session};
 
 fn kind(e: &Value) -> String {
     e.pointer("/error/kind")

@@ -8,7 +8,8 @@ export type Inline =
   | { t: 'strong'; c: Inline[] }
   | { t: 'em'; c: Inline[] }
   | { t: 'del'; c: Inline[] }
-  | { t: 'link'; href: string; c: Inline[] };
+  /** `rel`: a relative file link (`docs/a.md`); the renderer shows it as a link only where it can open files. */
+  | { t: 'link'; href: string; c: Inline[]; rel?: true };
 
 export type Block =
   | { t: 'h'; level: number; c: Inline[] }
@@ -42,6 +43,13 @@ export function safeHref(href: string): string | null {
   } catch {
     return null;
   }
+}
+
+/** A relative file link: no scheme, not protocol-relative, not an anchor. Returned as written. */
+export function relativeHref(href: string): string | null {
+  const h = href.trim();
+  if (!h || h.length > 500 || h.startsWith('#') || h.startsWith('//') || h.includes('\\') || /^[a-z][a-z0-9+.-]*:/i.test(h) || /[\u0000-\u001f]/.test(h)) return null;
+  return h;
 }
 
 export function parseInline(s: string, depth = 0, budget: Budget = new Budget()): Inline[] {
@@ -109,7 +117,9 @@ export function parseInline(s: string, depth = 0, budget: Budget = new Budget())
       const m = /^\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/.exec(s.slice(i));
       if (m) {
         const href = safeHref(m[2]!);
+        const rel = href ? null : relativeHref(m[2]!);
         if (href) push({ t: 'link', href, c: sub(m[1]!) });
+        else if (rel) push({ t: 'link', href: rel, rel: true, c: sub(m[1]!) });
         else {
           text += m[1];
         }

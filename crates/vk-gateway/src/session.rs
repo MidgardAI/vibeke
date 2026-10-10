@@ -370,6 +370,10 @@ async fn device_loop(gw: Arc<Gateway>, ws: impl Ws, session: Session, device_id:
     // Closes this connection's entry in the live list before the report reads it.
     drop(cmd_rx);
     gw.conn_closed();
+    // Its last connection gone, the device stops watching browser sessions.
+    if !gw.has_live_conn(&device_id) {
+        crate::screencast::device_gone(&gw, &device_id).await;
+    }
     drop(out);
     let _ = tokio::time::timeout(Duration::from_secs(2), writer).await;
     tracing::info!(device = %device_id, "device disconnected");
@@ -383,6 +387,14 @@ fn features(gw: &Gateway) -> Vec<&'static str> {
         "git",
         "transcript",
         "workspace_views",
+        // New agents in a worktree or folder, catch-up (`agent.turns`, the assistant), search,
+        // browser previews, `clear` pushes and prompt-cache notices.
+        "agent_new_workspace",
+        "catch_up",
+        "search",
+        "browser_preview",
+        "push_clear",
+        "cache_cold",
     ];
     if gw.cfg.stt.is_some() {
         f.push("stt");

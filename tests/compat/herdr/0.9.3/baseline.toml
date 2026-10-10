@@ -1,6 +1,6 @@
 # Pinned Herdr baseline for the compatibility layer (spec 07 §8.0).
 # Captures marked "pending" must be made from the reference binary in an isolated HOME
-# (crates/vibeke/tests/compat_herdr_diff.rs) before M5 can pass; nothing here was produced by
+# (crates/vibeke/tests/it/compat_herdr_diff.rs) before M5 can pass; nothing here was produced by
 # running Herdr.
 
 version = "0.9.3"
@@ -23,6 +23,6 @@ plugin_manifests = "manifests/"    # 99 real manifests, sha256-verified against 
 
 [differential]
 # Gated: VIBEKE_HERDR_DIFF=1 VIBEKE_HERDR_BIN=/abs/path/herdr [VIBEKE_HERDR_SHA256=…]
-#        cargo test -p vibeke --test compat_herdr_diff
-harness = "crates/vibeke/tests/compat_herdr_diff.rs"
+#        cargo test -p vibeke --test it compat_herdr_diff::
+harness = "crates/vibeke/tests/it/compat_herdr_diff.rs"
 status = "not run"

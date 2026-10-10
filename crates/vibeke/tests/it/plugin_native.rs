@@ -4,12 +4,10 @@
 //! over the API, search against a `file://` index, export/import. Fakes only: no network, no
 //! real configuration.
 
-mod support;
-
+use crate::support::{Rpc, Session};
 use serde_json::{Value, json};
 use std::path::Path;
 use std::time::{Duration, Instant};
-use support::{Rpc, Session};
 
 const PROCESS: &str = r#"read line
 printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"contributions":[{"kind":"status_segment","id":"ci","text":"CI ok","on_click":"ping"},{"kind":"pane","id":"tail","title":"Tail","command":["sh","-c","sleep 30"]}]}}'

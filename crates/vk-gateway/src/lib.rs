@@ -17,6 +17,7 @@ pub mod peer_client;
 pub mod peers;
 pub mod push;
 pub mod relay_client;
+pub mod screencast;
 pub mod server;
 pub mod session;
 pub mod state;
@@ -69,6 +70,8 @@ pub struct Gateway {
     relay_ctl: Mutex<Option<mpsc::UnboundedSender<vk_e2e::relay::Ctrl>>>,
     /// Account logins started from the TUI (`account.*` on the server bridge).
     pub logins: Arc<account::Logins>,
+    /// Devices watching agent browser sessions (`browser.attach_screencast`).
+    pub screencasts: screencast::Screencasts,
 }
 
 #[derive(Debug, Clone)]
@@ -143,6 +146,7 @@ impl Gateway {
             status,
             relay_ctl: Mutex::new(None),
             logins: Arc::default(),
+            screencasts: screencast::Screencasts::default(),
         }))
     }
 
@@ -302,6 +306,15 @@ impl Gateway {
         drop(live);
         self.conns_changed.notify_one();
         Ok(())
+    }
+
+    /// Whether `device` still has an open connection.
+    pub fn has_live_conn(&self, device: &str) -> bool {
+        self.live
+            .lock()
+            .unwrap()
+            .get(device)
+            .is_some_and(|v| v.iter().any(|c| !c.is_closed()))
     }
 
     /// A device connection ended (its `ConnCmd` receiver is gone).
@@ -508,6 +521,7 @@ pub async fn run(gw: Arc<Gateway>) -> Result<()> {
                 gw.state.sweep_pairings();
                 let _ = gw.reload_devices();
                 gw.status.set_devices(gw.devices().len());
+                screencast::sweep(&gw).await;
             }
         }
     });

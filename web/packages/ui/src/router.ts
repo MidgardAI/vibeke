@@ -1,7 +1,7 @@
 // Hash routes (spec 16 §9.3): `#/inbox`, workspaces `#/w/<host>/<workspace>[/t/<pane>]` with
 // `?panel=changes|files|off&file=…&commit=…&base=…&view=diff&show=term|conversation|preview:<id>`, push deep links from the gateway
 // (`#/i/<host>/<interaction>`, `#/r/<host>/<run>`, `#/inbox`, `#/approve/<host>[/<request>]`) and the
-// pairing link `#/pair?d=…`.
+// pairing link `#/pair?d=…` and shared content `#/share-in/<id>`.
 // Older links (`#/h/<host>/p/<pane>[/history|/changes]`, `#/panes`, `#/focus`, `#/changes`) still
 // parse; the app redirects them to a workspace once it knows the dashboard (app/selection.ts).
 
@@ -43,6 +43,8 @@ export type Route =
   | { name: 'approve'; host: string | null; id: string | null }
   | { name: 'settings'; section?: string }
   | { name: 'pair'; d: string | null }
+  /** Content shared into the app (Web Share Target), under a one-time id. */
+  | { name: 'share_in'; id: string }
   | WorkspaceRoute
   | { name: 'pane'; host: string; pane: string; view: PaneView; show?: string | null }
   | { name: 'interaction'; host: string; id: string; preselect: 'allow' | 'deny' | null }
@@ -91,6 +93,9 @@ export function parseRoute(hash: string): Route {
       const m = /(?:^|[?&])d=([^&]*)/.exec(h.slice(q + 1));
       return { name: 'pair', d: q >= 0 && m ? m[1]! : null };
     }
+    case 'share-in':
+      if (b) return { name: 'share_in', id: b };
+      break;
     case 'w':
       if (b && c && (d === undefined || (d === 't' && e))) {
         const p = query.get('panel');
@@ -151,6 +156,8 @@ export function formatRoute(r: Route): string {
       return r.host ? `#/handoffs/${enc(r.host)}${r.id ? `/${enc(r.id)}` : ''}` : '#/handoffs';
     case 'approve':
       return r.host ? `#/approve/${enc(r.host)}${r.id ? `/${enc(r.id)}` : ''}` : '#/approve';
+    case 'share_in':
+      return `#/share-in/${enc(r.id)}`;
     case 'pair':
       return r.d ? `#/pair?d=${r.d}` : '#/pair';
     case 'workspace': {
@@ -203,7 +210,29 @@ export function navigate(to: Route | string, opts: { replace?: boolean } = {}): 
     window.history.replaceState(window.history.state, '', hash);
     window.dispatchEvent(new HashChangeEvent('hashchange'));
   } else if (window.location.hash !== hash) {
-    window.location.hash = hash;
+    // pushState (not `location.hash =`) so every entry carries the marker `ensureParentEntry` checks.
+    window.history.pushState({ vkNav: 1 }, '', hash);
+    window.dispatchEvent(new HashChangeEvent('hashchange'));
+  }
+}
+
+/** Routes that are one level below the inbox: Back from them goes up to it. */
+export const isDeepRoute = (r: Route): boolean => r.name === 'workspace' || r.name === 'interaction' || r.name === 'run' || r.name === 'pane' || (r.name === 'approve' && !!r.id) || (r.name === 'handoffs' && !!r.id);
+
+/**
+ * After a cold start at a deep link (a notification, a shared link), put `parent` below it in the
+ * history so Back goes up one level instead of leaving the app. Entries made by this app carry a
+ * marker, so a reload or a normal visit adds nothing.
+ */
+export function ensureParentEntry(parent: Route): void {
+  if (!hasWindow) return;
+  try {
+    if ((window.history.state as { vkNav?: number } | null)?.vkNav) return;
+    const here = window.location.href;
+    window.history.replaceState({ vkNav: 1 }, '', formatRoute(parent));
+    window.history.pushState({ vkNav: 1 }, '', here);
+  } catch {
+    // history is locked down (sandboxed frame): Back just leaves
   }
 }
 

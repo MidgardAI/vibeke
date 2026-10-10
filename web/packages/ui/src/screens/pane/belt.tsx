@@ -1,21 +1,21 @@
 // Action belt (spec 16 §9.1): Keys (sticky modifiers, chord mode, echo ✓), Quick replies, Agent
 // slash commands, Display.
 
-import { useState, type ReactNode } from 'react';
-import { Check, Minus, Plus, Send, Trash2, WrapText } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { Check, Minus, Pencil, Plus, Send, Trash2, WrapText } from 'lucide-react';
+import type { AgentRun } from '@vibeke/core';
 import { useApp, usePrefs } from '../../app/hooks';
+import { SuggestReplies } from '../../components/suggest-replies';
 import { Button, Segmented, Toggle, cx } from '../../components/ui';
 import { t } from '../../i18n';
 import { quickRepliesFor, slashCommandsFor, type SlashCommand } from '../../lib/harness';
-import { NO_MODS, cycleMod, keyLabel, press, queueAdd, queueRemoveAt, type Modifier, type Mods } from '../../lib/keys';
+import { HoldRepeater } from '../../lib/hold-repeat';
+import { DEFAULT_LAYOUT, FUNCTION_KEYS, isDangerous, isRepeatable, packRows, padId, padLabel, resolvePad, type PlacedKey } from '../../lib/key-layout';
+import { NO_MODS, cycleMod, keyLabel, queueAdd, queueRemoveAt, type Modifier, type Mods } from '../../lib/keys';
 import type { PaneActions } from './actions';
+import { KeysEditor } from './keys-editor';
 
 export type BeltTab = 'keys' | 'quick' | 'agent' | 'display';
-
-const KEYPAD: { key: string; label?: string }[][] = [
-  [{ key: 'esc' }, { key: 'tab' }, { key: 'shift+tab', label: '⇧⇥' }, { key: 'up' }, { key: 'ctrl+c', label: '^C' }, { key: 'ctrl+d', label: '^D' }],
-  [{ key: 'space' }, { key: 'left' }, { key: 'down' }, { key: 'right' }, { key: 'backspace' }, { key: 'enter' }],
-];
 
 const H = { s: 'h-9', m: 'h-11', l: 'h-13' } as const;
 
@@ -26,6 +26,7 @@ export function ActionBelt({
   harness,
   canType,
   onInsert,
+  suggest,
   zen,
   setZen,
 }: {
@@ -35,10 +36,13 @@ export function ActionBelt({
   harness: string | null;
   canType: boolean;
   onInsert(text: string): void;
+  /** Where "Suggest replies" applies (an agent pane); `fill` puts a chosen reply in the message box. */
+  suggest?: { hostId: string; pane: string; run: AgentRun | null; fill(text: string): void };
   /** Zen (screen only) where the host screen offers it; omitted = no Zen row. */
   zen?: boolean;
   setZen?(v: boolean): void;
 }) {
+  const prefs = usePrefs();
   const tabs: { id: BeltTab; label: string; hide?: boolean }[] = [
     { id: 'keys', label: t.belt.keys, hide: !canType },
     { id: 'quick', label: t.belt.quick, hide: !canType },
@@ -48,10 +52,10 @@ export function ActionBelt({
   return (
     <div className="border-t border-border bg-surface">
       {tab === 'keys' && <KeysPanel actions={actions} />}
-      {tab === 'quick' && <QuickPanel actions={actions} harness={harness} />}
+      {tab === 'quick' && <QuickPanel actions={actions} harness={harness} suggest={suggest} />}
       {tab === 'agent' && <AgentPanel actions={actions} harness={harness} onInsert={onInsert} />}
       {tab === 'display' && <DisplayPanel zen={zen} setZen={setZen} />}
-      <div className="flex gap-1 px-2 py-1">
+      <div className={cx('flex gap-1 px-2 py-1', prefs.leftHand && 'flex-row-reverse')}>
         {tabs
           .filter((x) => !x.hide)
           .map((x) => (
@@ -88,6 +92,68 @@ function KeyButton({ children, onClick, active, locked, h }: { children: ReactNo
   );
 }
 
+function PadKeyButton({
+  placed,
+  h,
+  armed,
+  repeat,
+  send,
+  onTap,
+}: {
+  placed: PlacedKey;
+  h: string;
+  armed: boolean;
+  /** Arrow keys repeat while held (not in chord mode). */
+  repeat: boolean;
+  /** One press, resolving to whether it was sent (repeating stops on a failure). */
+  send(): Promise<boolean>;
+  onTap(): void;
+}) {
+  const sendRef = useRef(send);
+  sendRef.current = send;
+  const rep = useMemo(() => new HoldRepeater(() => sendRef.current()), []);
+  const viaPointer = useRef(false);
+  useEffect(() => () => rep.stop(), [rep]);
+  const label = padLabel(placed.key);
+  return (
+    <button
+      type="button"
+      aria-label={armed ? `${label}. ${t.belt.tapAgainKey}` : undefined}
+      style={{ gridColumn: `${placed.start} / span ${placed.span}`, touchAction: 'manipulation' }}
+      onPointerDown={(e) => {
+        if (!repeat || (e.pointerType === 'mouse' && e.button !== 0)) return;
+        viaPointer.current = true;
+        rep.start();
+      }}
+      onPointerUp={() => rep.stop()}
+      onPointerCancel={() => {
+        viaPointer.current = false;
+        rep.stop();
+      }}
+      onPointerLeave={() => {
+        if (rep.active) viaPointer.current = false;
+        rep.stop();
+      }}
+      onContextMenu={repeat ? (e) => e.preventDefault() : undefined}
+      onClick={() => {
+        // A repeating key was already sent on press; the click that follows only ends the press.
+        if (viaPointer.current) {
+          viaPointer.current = false;
+          return;
+        }
+        onTap();
+      }}
+      className={cx(
+        'min-w-0 select-none truncate rounded-lg border font-mono text-sm active:bg-surface-2',
+        h,
+        armed ? 'border-danger bg-danger/15 text-danger' : 'border-border bg-bg text-fg',
+      )}
+    >
+      {label}
+    </button>
+  );
+}
+
 function KeysPanel({ actions }: { actions: PaneActions }) {
   const app = useApp();
   const prefs = usePrefs();
@@ -96,29 +162,64 @@ function KeysPanel({ actions }: { actions: PaneActions }) {
   const [queue, setQueue] = useState<{ keys: string[] }>({ keys: [] });
   const [echo, setEcho] = useState<{ label: string; ok: boolean | null } | null>(null);
   const [char, setChar] = useState('');
+  const [fKeys, setFKeys] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [armed, setArmed] = useState<string | null>(null);
+  const armTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const modsRef = useRef(mods);
+  modsRef.current = mods;
   const h = H[prefs.beltSize];
+  const left = prefs.leftHand;
+  const keys = fKeys ? FUNCTION_KEYS : (prefs.keyLayout ?? DEFAULT_LAYOUT).keys;
+  const rows = useMemo(() => packRows(keys, left), [keys, left]);
+  useEffect(
+    () => () => {
+      if (armTimer.current) clearTimeout(armTimer.current);
+    },
+    [],
+  );
 
-  const hit = async (base: string) => {
-    // Keypad entries that already carry a modifier (shift+tab, ctrl+c) are sent as-is.
-    const r = /^[a-z]+\+/.test(base) ? { key: base, mods } : press(base, mods);
+  const arm = (id: string | null) => {
+    if (armTimer.current) clearTimeout(armTimer.current);
+    setArmed(id);
+    if (id) armTimer.current = setTimeout(() => setArmed(null), 3000);
+  };
+
+  const sendKeys = async (list: string[]): Promise<boolean> => {
+    const label = list.map(keyLabel).join(' ');
+    setEcho({ label, ok: null });
+    const ok = await actions.keys(list);
+    setEcho({ label, ok });
+    setTimeout(() => setEcho((e) => (e && e.label === label ? null : e)), 1200);
+    return ok;
+  };
+
+  /** Press a pad key; resolves to whether it was sent. A dangerous key only arms on the first tap. */
+  const hit = async (key: { steps: string[] }, id: string): Promise<boolean> => {
+    if (!chord && isDangerous(key) && armed !== id) {
+      arm(id);
+      app.haptic('warning');
+      return false;
+    }
+    arm(null);
+    const r = resolvePad(key, modsRef.current);
     setMods(r.mods);
+    modsRef.current = r.mods;
     app.haptic('tap');
     if (chord) {
-      setQueue((q) => queueAdd(q, r.key));
-      return;
+      setQueue((q) => r.keys.reduce(queueAdd, q));
+      return true;
     }
-    setEcho({ label: keyLabel(r.key), ok: null });
-    const ok = await actions.keys([r.key]);
-    setEcho({ label: keyLabel(r.key), ok });
-    setTimeout(() => setEcho((e) => (e && e.label === keyLabel(r.key) ? null : e)), 1200);
+    return sendKeys(r.keys);
   };
 
   const mod = (m: Modifier) => setMods((cur) => ({ ...cur, [m]: cycleMod(cur[m]) }));
+  const queueDanger = isDangerous({ steps: queue.keys });
 
   return (
     <div className="space-y-1.5 px-2 pt-2">
       {chord && (
-        <div className="flex min-h-9 items-center gap-1.5 overflow-x-auto no-scrollbar">
+        <div className={cx('flex min-h-9 items-center gap-1.5 overflow-x-auto no-scrollbar', left && 'flex-row-reverse')}>
           {queue.keys.length === 0 && <span className="text-xs text-faint">{t.belt.chordHint}</span>}
           {queue.keys.map((k, i) => (
             <button key={i} type="button" className="h-7 shrink-0 rounded-md bg-surface-2 px-2 font-mono text-xs" onClick={() => setQueue((q) => queueRemoveAt(q, i))}>
@@ -133,31 +234,47 @@ function KeysPanel({ actions }: { actions: PaneActions }) {
               </Button>
               <Button
                 size="sm"
-                variant="primary"
+                variant={armed === 'queue' ? 'danger' : 'primary'}
                 icon={<Send className="size-3.5" />}
                 onClick={async () => {
-                  const keys = queue.keys;
+                  if (queueDanger && armed !== 'queue') {
+                    arm('queue');
+                    app.haptic('warning');
+                    return;
+                  }
+                  arm(null);
+                  const list = queue.keys;
                   setQueue({ keys: [] });
-                  const ok = await actions.keys(keys);
-                  setEcho({ label: keys.map(keyLabel).join(' '), ok });
+                  await sendKeys(list);
                 }}
               >
-                {t.belt.sendKeys}
+                {armed === 'queue' ? t.belt.tapAgainKey : t.belt.sendKeys}
               </Button>
             </>
           )}
         </div>
       )}
-      {KEYPAD.map((row, i) => (
-        <div key={i} className="flex gap-1.5">
-          {row.map((k) => (
-            <KeyButton key={k.key} h={h} onClick={() => void hit(k.key)}>
-              {k.label ?? keyLabel(k.key)}
-            </KeyButton>
-          ))}
-        </div>
-      ))}
-      <div className="flex gap-1.5">
+      <div className="space-y-1.5" role="group" aria-label={t.belt.keyPad}>
+        {rows.map((row, i) => (
+          <div key={i} className="grid grid-cols-6 gap-1.5">
+            {row.map((p) => {
+              const id = fKeys ? `f:${p.index}` : padId(p.key, p.index);
+              return (
+                <PadKeyButton
+                  key={id}
+                  placed={p}
+                  h={h}
+                  armed={armed === id}
+                  repeat={isRepeatable(p.key) && !chord}
+                  send={() => hit(p.key, id)}
+                  onTap={() => void hit(p.key, id)}
+                />
+              );
+            })}
+          </div>
+        ))}
+      </div>
+      <div className={cx('flex gap-1.5', left && 'flex-row-reverse')}>
         {(['ctrl', 'alt', 'shift'] as Modifier[]).map((m) => (
           <KeyButton key={m} h={h} active={mods[m] === 'once'} locked={mods[m] === 'locked'} onClick={() => mod(m)}>
             {keyLabel(m)} {m}
@@ -173,33 +290,51 @@ function KeysPanel({ actions }: { actions: PaneActions }) {
           onChange={(e) => {
             const c = e.target.value.slice(-1);
             setChar('');
-            if (c) void hit(c === ' ' ? 'space' : c);
+            if (c) {
+              const base = c === ' ' ? 'space' : c;
+              void hit({ steps: [base] }, `char:${base}`);
+            }
           }}
           className={cx('w-12 rounded-lg border border-border bg-bg text-center font-mono text-sm', h)}
         />
         <KeyButton h={h} active={chord} onClick={() => setChord(!chord)}>
           {t.belt.chord}
         </KeyButton>
+        <KeyButton h={h} active={fKeys} onClick={() => setFKeys(!fKeys)}>
+          <span className="text-xs">{fKeys ? t.belt.mainKeys : t.belt.fKeys}</span>
+        </KeyButton>
       </div>
-      <div className="h-5 text-center text-xs text-muted">
-        {echo && (
-          <span className="inline-flex items-center gap-1 font-mono">
-            {echo.label} {echo.ok === true && <Check className="size-3.5 text-ok" />}
-            {echo.ok === false && <span className="text-danger">✕</span>}
-          </span>
-        )}
+      <div className={cx('flex min-h-9 items-center gap-2 text-xs text-muted', left && 'flex-row-reverse')}>
+        <button type="button" aria-label={t.belt.editKeys} title={t.belt.editKeys} onClick={() => setEditing(true)} className="inline-flex size-9 shrink-0 items-center justify-center rounded-md active:bg-surface-2 pointer-coarse:size-11">
+          <Pencil className="size-3.5" />
+        </button>
+        <div className="min-w-0 flex-1 text-center">
+          {armed && armed !== 'queue' ? (
+            <span className="text-danger">{t.belt.tapAgainKey}</span>
+          ) : (
+            echo && (
+              <span className="inline-flex items-center gap-1 font-mono">
+                {echo.label} {echo.ok === true && <Check className="size-3.5 text-ok" />}
+                {echo.ok === false && <span className="text-danger">✕</span>}
+              </span>
+            )
+          )}
+        </div>
+        <span className="size-9 shrink-0 pointer-coarse:size-11" aria-hidden />
       </div>
+      {editing && <KeysEditor open onClose={() => setEditing(false)} />}
     </div>
   );
 }
 
-function QuickPanel({ actions, harness }: { actions: PaneActions; harness: string | null }) {
+function QuickPanel({ actions, harness, suggest }: { actions: PaneActions; harness: string | null; suggest?: { hostId: string; pane: string; run: AgentRun | null; fill(text: string): void } }) {
   const prefs = usePrefs();
   const app = useApp();
   const replies = quickRepliesFor(harness, prefs.quickReplies);
   const [tapped, setTapped] = useState<string | null>(null);
   return (
     <div className="px-2 pt-2">
+      {suggest && <SuggestReplies hostId={suggest.hostId} pane={suggest.pane} run={suggest.run} onPick={suggest.fill} className="pb-2" />}
       <div className="flex flex-wrap gap-1.5">
         {replies.map((r) => (
           <button
@@ -290,6 +425,10 @@ function DisplayPanel({ zen, setZen }: { zen?: boolean; setZen?(v: boolean): voi
           onChange={(v) => app.prefs.patch({ beltSize: v })}
           options={(['s', 'm', 'l'] as const).map((v) => ({ value: v, label: t.settings.sizes[v]! }))}
         />
+      </div>
+      <div className="flex items-center justify-between">
+        <span className="text-sm">{t.belt.leftHand}</span>
+        <Toggle label={t.belt.leftHand} checked={prefs.leftHand} onChange={(v) => app.prefs.patch({ leftHand: v })} />
       </div>
       {setZen && (
         <div className="flex items-center justify-between">

@@ -1717,7 +1717,7 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         "generate",
         "assistant.generate",
         &["operation"],
-        "suggest_task_details|review_summary|pane_title|briefing|handoff|effort_estimate|navigate|decision_card|task_title [--run r] [--turns 3,4] [--pane p] [--task t] [--workspace w] [--query text] [--interaction i] [--stream] [--priority background] [--include-screen] — Show the exact payload. Do not send it.",
+        "suggest_task_details|review_summary|pane_title|briefing|handoff|effort_estimate|navigate|decision_card|task_title|reply_suggestions [--run r] [--turns 3,4] [--pane p] [--task t] [--workspace w] [--query text] [--interaction i] [--stream] [--priority background] [--include-screen] — Show the exact payload. Do not send it.",
     ),
     (
         "assist",

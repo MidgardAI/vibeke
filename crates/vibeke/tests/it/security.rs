@@ -6,15 +6,13 @@
 //! dirs, and `debug bundle`. In-pane commands write their output to files in the session dir,
 //! so nothing depends on scraping the screen.
 
-mod support;
-
+use crate::support::{Rpc, Session};
 use serde_json::Value;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
-use support::{Rpc, Session};
 
 /// `vibeke` with the session's dirs, harness configs redirected into the session dir (never the
 /// user's real ones) and a known umask (022) for the server it may spawn.

@@ -1,7 +1,6 @@
 //! Real installation/restart, isolated from the user's installation. A local development
 //! artifact explicitly opts into the unsigned test path; online updates never use that path.
-mod support;
-use support::{Session, alive};
+use crate::support::{Session, alive};
 
 #[test]
 fn update_restarts_the_server_without_replacing_pane_processes() {

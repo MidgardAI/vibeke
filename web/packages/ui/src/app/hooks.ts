@@ -2,6 +2,7 @@ import { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import { groupBatches, rankInbox, type Batch, type HostState, type InboxItem } from '@vibeke/core';
 import { useStore } from '../lib/store';
 import { buildTree, runForPane, type PaneTree } from '../lib/tree';
+import { overlayHosts, type HostView } from '../lib/offline-cache';
 import type { Prefs } from '../lib/prefs';
 import type { AppModel } from './model';
 
@@ -19,12 +20,18 @@ export function useAllHosts(): readonly HostState[] {
   return useStore(app.manager);
 }
 
-/** Hosts with dashboards (panes, inbox, banners): every paired host. */
-export function useHosts(): readonly HostState[] {
-  return useAllHosts();
+/**
+ * Hosts with dashboards (panes, inbox, banners): every paired host. A host that has not answered
+ * yet shows its saved dashboard (`cachedAt` is set), so a cold start offline still lists rows.
+ */
+export function useHosts(): readonly HostView[] {
+  const app = useApp();
+  const all = useAllHosts();
+  const cached = useStore(app.cached);
+  return useMemo(() => overlayHosts(all, cached), [all, cached]);
 }
 
-export function useHost(hostId: string): HostState | undefined {
+export function useHost(hostId: string): HostView | undefined {
   return useHosts().find((h) => h.record.host_id === hostId);
 }
 

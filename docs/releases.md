@@ -171,7 +171,7 @@ The compatibility test rejects removals or changes to protected access flags. Ad
 Before a release, review the catalog changes. Then update the snapshot:
 
 ```sh
-VIBEKE_UPDATE_API_FREEZE=1 cargo test -p vibeke --test api_docs vibeke_1_freeze
+VIBEKE_UPDATE_API_FREEZE=1 cargo test -p vibeke --test it api_docs::vibeke_1_freeze
 ```
 
 Use `VIBEKE_API_FREEZE_ALLOW_BREAK=1` only for a deliberate compatibility change before version 1.0.
@@ -179,7 +179,7 @@ Use `VIBEKE_API_FREEZE_ALLOW_BREAK=1` only for a deliberate compatibility change
 After a method, command, or configuration change, regenerate the reference:
 
 ```sh
-VIBEKE_UPDATE_DOCS=1 cargo test -p vibeke --test api_docs
+VIBEKE_UPDATE_DOCS=1 cargo test -p vibeke --test it api_docs::
 ```
 
 Commit the generated files in `docs/api/` and `docs/site/src/reference/`.

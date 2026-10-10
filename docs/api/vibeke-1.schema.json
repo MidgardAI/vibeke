@@ -6032,7 +6032,8 @@
               "decision_card",
               "stall_notice",
               "background_summary",
-              "task_title"
+              "task_title",
+              "reply_suggestions"
             ]
           },
           "profile": {
@@ -14127,6 +14128,9 @@
           },
           "path": {
             "type": "string"
+          },
+          "as": {
+            "const": "image"
           }
         },
         "required": [
@@ -14153,6 +14157,12 @@
           },
           "secret": {
             "type": "boolean"
+          },
+          "mime": {
+            "type": "string"
+          },
+          "data_b64": {
+            "type": "string"
           }
         },
         "required": [

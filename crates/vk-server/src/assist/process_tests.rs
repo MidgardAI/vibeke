@@ -571,6 +571,41 @@ fn navigation_offers_only_the_consented_workspaces_objects() {
     assert!(!c.iter().any(|x| x.id == "i1"));
 }
 
+#[tokio::test]
+async fn reply_suggestions_read_the_pane_its_agent_and_its_open_question() {
+    let e = Env::new();
+    let w1 = e.ws("w1");
+    e.pane("p1", "w1");
+    e.run("r1", "p1", Execution::Idle, "login agent");
+    e.interaction("i1", "r1", "p1", InteractionStatus::Open);
+    let ctx = Ctx {
+        client_id: "c-user".into(),
+        kind: "user".into(),
+        pane_scope: None,
+        remote: false,
+    };
+    let mut t = target(&e, w1.clone());
+    t.query = None;
+    t.pane = e.server.with_core(|c| c.pane("p1").cloned());
+    t.run = e.server.with_core(|c| c.run("r1").cloned());
+    let mut sources = vec![];
+    gather_ext::reply_sources(&e.server, &ctx, &t, &mut sources)
+        .await
+        .unwrap();
+    let kinds: Vec<&str> = sources.iter().map(|s| s.kind.as_str()).collect();
+    assert_eq!(kinds, ["pane", "interaction"], "{kinds:?}");
+    assert!(sources[0].text.contains("agent: claude"));
+    assert!(sources[1].text.contains("Run rm -rf dist"));
+    // Nothing selected: refused rather than sending an empty request.
+    let mut none = vec![];
+    let empty = target(&e, w1);
+    assert!(
+        gather_ext::reply_sources(&e.server, &ctx, &empty, &mut none)
+            .await
+            .is_err()
+    );
+}
+
 // ---- remote sources -------------------------------------------------------------------------------------------
 
 fn grant_for(workspace: &str, r: &Resolved) -> Grant {

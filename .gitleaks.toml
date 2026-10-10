@@ -10,7 +10,7 @@ useDefault = true
 description = "Reviewed public value or synthetic redaction fixture"
 condition = "AND"
 targetRules = ["aws-access-token"]
-paths = ["(^|/)crates/vibeke/tests/compat_herdr_slice2\\.rs$", "(^|/)web/packages/core/test/redact\\.test\\.ts$"]
+paths = ["(^|/)crates/vibeke/tests/it/compat_herdr_slice2\\.rs$", "(^|/)web/packages/core/test/redact\\.test\\.ts$"]
 regexes = ["^\\QAKIAABCDEFGHIJKLMNOP\\E$"]
 
 [[allowlists]]
@@ -80,7 +80,7 @@ regexes = ["^\\Qsk-live-123456789012345678901234\\E$"]
 description = "Reviewed public value or synthetic redaction fixture"
 condition = "AND"
 targetRules = ["generic-api-key"]
-paths = ["(^|/)crates/vibeke/tests/assist_2d\\.rs$", "(^|/)crates/vk\\-assist/src/config\\.rs$", "(^|/)crates/vk\\-assist/src/diagnose\\.rs$", "(^|/)crates/vk\\-assist/src/keychain\\.rs$", "(^|/)crates/vk\\-config/src/default_config\\.toml$", "(^|/)crates/vk\\-store/src/keychain\\.rs$", "(^|/)docs/site/src/reference/config\\.md$", "(^|/)spec/08\\-ux\\-config\\-and\\-keybindings\\.md$", "(^|/)spec/09\\-security\\-and\\-privacy\\.md$", "(^|/)spec/14\\-llm\\-assistance\\.md$"]
+paths = ["(^|/)crates/vibeke/tests/it/assist_2d\\.rs$", "(^|/)crates/vk\\-assist/src/config\\.rs$", "(^|/)crates/vk\\-assist/src/diagnose\\.rs$", "(^|/)crates/vk\\-assist/src/keychain\\.rs$", "(^|/)crates/vk\\-config/src/default_config\\.toml$", "(^|/)crates/vk\\-store/src/keychain\\.rs$", "(^|/)docs/site/src/reference/config\\.md$", "(^|/)spec/08\\-ux\\-config\\-and\\-keybindings\\.md$", "(^|/)spec/09\\-security\\-and\\-privacy\\.md$", "(^|/)spec/14\\-llm\\-assistance\\.md$"]
 regexes = ["^\\Qvibeke/assistant/primary\\E$"]
 
 [[allowlists]]

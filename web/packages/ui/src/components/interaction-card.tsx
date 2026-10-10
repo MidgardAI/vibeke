@@ -4,7 +4,7 @@
 
 import { useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import { AlertTriangle, Check, CircleHelp, ClipboardList, ExternalLink, FileText, ListChecks, Loader2, RefreshCw, ShieldAlert, X } from 'lucide-react';
-import { displayName, interactionRisk, paneTitle, swipeAllowed, type Decision, type InboxItem, type Interaction } from '@vibeke/core';
+import { displayName, interactionRisk, paneTitle, swipeAllowed, type BoundaryRequest, type Decision, type InboxItem, type Interaction } from '@vibeke/core';
 import { useAnswers, useApp, useHost, useNow } from '../app/hooks';
 import { t } from '../i18n';
 import { deliveryView, needsPane, type DeliveryView } from '../lib/answer';
@@ -134,6 +134,23 @@ function ActionPreview({ it }: { it: Interaction }) {
   );
 }
 
+/** What a sandboxed run asks for across the boundary, in plain words. */
+export function boundarySentence(b: BoundaryRequest): string {
+  if (b.kind === 'push' && b.remote) return b.branch ? t.boundary.push(b.branch, b.remote) : t.boundary.pushNoBranch(b.remote);
+  if (b.kind === 'copy_out' && b.path) return t.boundary.copyOut(b.path);
+  return t.boundary.other;
+}
+
+function BoundaryBody({ b, paneName }: { b: BoundaryRequest; paneName: string }) {
+  return (
+    <div className="space-y-2" data-boundary={b.kind}>
+      <div className="text-sm font-medium">{boundarySentence(b)}</div>
+      <div className="text-xs text-muted">{t.boundary.pane(paneName)}</div>
+      <div className="text-xs text-muted">{t.boundary.note}</div>
+    </div>
+  );
+}
+
 export function DeliveryLine({ view, error, onOpenPane, onRefresh }: { view: DeliveryView; error?: string; onOpenPane(): void; onRefresh(): void }) {
   const map: Record<DeliveryView, { text: string; tone: 'muted' | 'ok' | 'warn' | 'danger'; spin?: boolean }> = {
     sending: { text: t.inbox.sending, tone: 'muted', spin: true },
@@ -213,7 +230,7 @@ export function InteractionCard({
   };
 
   // Swipe (low/medium approvals only).
-  const canSwipe = it.kind === 'approval' && swipeAllowed(it) && !disabled;
+  const canSwipe = it.kind === 'approval' && !it.boundary && swipeAllowed(it) && !disabled;
   const [dx, setDx] = useState(0);
   const start = useRef<{ x: number; y: number; id: number } | null>(null);
   const horizontal = useRef(false);
@@ -270,7 +287,8 @@ export function InteractionCard({
         >
           <CardHeader item={item} showHost={showHost} hideOpen={compact} />
           <div className={cx('font-medium leading-snug', compact ? 'text-sm' : 'text-base')}>{it.title}</div>
-          {it.kind === 'approval' && <ActionPreview it={it} />}
+          {it.kind === 'approval' && it.boundary && <BoundaryBody b={it.boundary} paneName={item.pane ? paneTitle(item.pane) : it.boundary.pane} />}
+          {it.kind === 'approval' && !it.boundary && <ActionPreview it={it} />}
           {it.kind === 'question' && <QuestionBody it={it} disabled={disabled} locked={locked} onSubmit={(c, tx) => send({ ...(c ? { choices: c } : {}), ...(tx ? { text: tx } : {}) }, 'answer')} />}
           {it.kind === 'plan_review' && <PlanBody it={it} disabled={disabled} locked={locked} onApprove={() => send({ decision: 'allow' }, 'approve')} onChanges={(tx) => send({ decision: 'deny', text: tx }, 'changes')} />}
           {it.kind === 'picker' && <PickerBody it={it} disabled={disabled} locked={locked} onAnswer={send} onOpenTerminal={openTerminal} />}
@@ -294,9 +312,11 @@ export function InteractionCard({
               >
                 {t.inbox.deny}
               </Button>
-              <Button variant="outline" className="flex-1" disabled={disabled} data-act="allow_always" aria-keyshortcuts="Shift+A" onClick={() => decide('allow_always')}>
-                {t.inbox.allowAlways}
-              </Button>
+              {!it.boundary && (
+                <Button variant="outline" className="flex-1" disabled={disabled} data-act="allow_always" aria-keyshortcuts="Shift+A" onClick={() => decide('allow_always')}>
+                  {t.inbox.allowAlways}
+                </Button>
+              )}
               <Button
                 variant="ok"
                 className={cx('flex-1', preselect === 'allow' && 'outline-2 outline-offset-2 outline-ok')}
@@ -306,7 +326,7 @@ export function InteractionCard({
                 aria-keyshortcuts="a"
                 onClick={() => decide('allow')}
               >
-                {t.inbox.allow}
+                {it.boundary ? t.boundary.allowOnce : t.inbox.allow}
               </Button>
             </div>
           )}

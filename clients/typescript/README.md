@@ -30,4 +30,4 @@ for await (const e of events) {                    // events are an async iterat
 - Needs Node >= 22.18 (native type stripping), Bun, or any TS-aware bundler; no runtime dependencies.
 
 Tests: `node --test "test/*.test.ts"`. Regenerate the types after a registry change with
-`VIBEKE_UPDATE_CLIENTS=1 cargo test -p vibeke --test api_clients`.
+`VIBEKE_UPDATE_CLIENTS=1 cargo test -p vibeke --test it api_clients::`.

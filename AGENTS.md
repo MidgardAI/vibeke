@@ -6,7 +6,7 @@ Preserve unrelated changes in the shared checkout. Check `git status` and the cu
 
 ## Repository map
 
-- `crates/vibeke`: main binary, setup/doctor/update commands, and integration tests in `crates/vibeke/tests/`.
+- `crates/vibeke`: main binary, setup/doctor/update commands, and integration tests in `crates/vibeke/tests/`. Most of them are modules of one test binary, `it` (`tests/it/main.rs`, one module per file). `chaos`, `chaos_gaps` and `timing` stay separate because the nightly and weekly workflows run them in release mode.
 - `crates/vk-server`: state actor, JSON-RPC API (`api.rs`), schema registry (`api_schema.rs`), render stream, agents, gateway supervisor. `vk-hold` is the per-pane holder that owns the PTY and survives server restarts. `vk-store` holds SQLite state and scrollback.
 - `crates/vk-proto`: wire types. JSON-RPC is `vibeke/1`; the render stream is postcard with `render::PROTOCOL`; `holder.rs` is the holder protocol.
 - `crates/vk-term`: VT engine over vendored libghostty-vt, built with Zig by `build.rs` (pin and patches in `vendor/`).
@@ -19,14 +19,15 @@ Preserve unrelated changes in the shared checkout. Check `git status` and the cu
 ## Build and test
 
 - Toolchains are pinned in `mise.toml`. The system `cargo` may be older than the workspace `rust-version`; use `cargo +<pinned version>` or `mise exec -- cargo …`. `vk-term` needs the pinned Zig on `PATH` or in `ZIG`. Its build script caches the built libghostty-vt in `~/.cache/vibeke/libghostty-vt` (`VK_TERM_CACHE_DIR`), so new worktrees and clippy runs skip the Zig build.
+- Each worktree has its own `target/`, so its first build is cold. Set `sccache` as `build.rustc-wrapper` in your user `~/.cargo/config.toml` so worktrees and sessions share compiled crates. Avoid several cold builds at once, and run `cargo clean` in worktrees you no longer build. Dev builds keep line tables only; set `CARGO_PROFILE_DEV_DEBUG=2` for a debugger session.
 - A new worktree needs `mise trust` before its first build; otherwise cargo falls back to an older toolchain and fails to load the manifest.
-- Rust checks: `mise run ci` (fmt, clippy `-D warnings`, cargo-deny, nextest). While iterating, run targeted tests: `cargo nextest run -p <crate> <filter>` or `cargo test -p vibeke --test <file> <name>`. In a shared checkout, format with `cargo fmt -p <crate>`, not `--all`. For releases, GitHub CI replaces local full runs (see below).
+- Rust checks: `mise run ci` (fmt, clippy `-D warnings`, cargo-deny, nextest). While iterating, run targeted tests: `cargo nextest run -p <crate> <filter>` or `cargo test -p vibeke --test it <file>::<name>`. For one file of the `it` binary, use `cargo test -p vibeke --test it <file>::` or `cargo nextest run -p vibeke -E 'test(/^<file>::/)'`. A new integration test file needs a `mod <file>;` line in `crates/vibeke/tests/it/main.rs`. In a shared checkout, format with `cargo fmt -p <crate>`, not `--all`. For releases, GitHub CI replaces local full runs (see below).
 - Web checks, from `web/`: `bun install --frozen-lockfile`, `bun run typecheck`, `bun run test`. `bun run build` builds the PWA; use `build:site` and `build:desktop` for the others. Commit `web/bun.lock` when dependencies or workspace versions change.
 - Generated files fail their tests when stale. Regenerate in this order, then rerun without the variables:
-  1. `VIBEKE_UPDATE_DOCS=1 cargo test -p vibeke --test api_docs` (API schema and site reference; `api_clients` compares against it)
-  2. `VIBEKE_UPDATE_CLIENTS=1 cargo test -p vibeke --test api_clients` (Python and TypeScript clients)
+  1. `VIBEKE_UPDATE_DOCS=1 cargo test -p vibeke --test it api_docs::` (API schema and site reference; `api_clients` compares against it)
+  2. `VIBEKE_UPDATE_CLIENTS=1 cargo test -p vibeke --test it api_clients::` (Python and TypeScript clients)
   3. `mise run pi-extension` (`integrations/pi-extension/dist/vibeke.js` is committed and embedded)
-- A new API method needs an entry in the method tables of `api_schema.rs` (with its `mutating` flag), a deliberate pane scope (`api::pane_scope_of`), and an integration test or a reasoned entry in `crates/vibeke/tests/api_method_allowlist.txt` (checked by `api_method_coverage.rs`).
+- A new API method needs an entry in the method tables of `api_schema.rs` (with its `mutating` flag), a deliberate pane scope (`api::pane_scope_of`), and an integration test or a reasoned entry in `crates/vibeke/tests/api_method_allowlist.txt` (checked by `tests/it/api_method_coverage.rs`).
 
 ## Compatibility rules
 
@@ -37,7 +38,7 @@ Preserve unrelated changes in the shared checkout. Check `git status` and the cu
 ## Code and test conventions
 
 - All state mutations go through `Core::commit` (`vk-server/src/core.rs`): it writes entities and events in one SQLite transaction and only then updates memory.
-- Many unit tests sit in sibling `*_tests.rs` files. Most integration tests use `crates/vibeke/tests/support/mod.rs::Session`, which runs the real binary in isolated `VIBEKE_*` directories.
+- Many unit tests sit in sibling `*_tests.rs` files. Most integration tests use `crates/vibeke/tests/it/support/mod.rs::Session`, which runs the real binary in isolated `VIBEKE_*` directories.
 - Unix socket paths must stay under 104 bytes (macOS limit). Tests create short directories under `/tmp`; do not root test sockets in a long `TMPDIR`.
 - Fix flaky tests at the cause: wait for a condition instead of sleeping, use relative time bounds and free ports, and assume a loaded machine.
 - Redact sensitive output with `vk-redact` before it reaches logs, events or debug bundles; event storage does not redact for you.
@@ -88,7 +89,7 @@ Discover the deployment team from the local Vercel project link or authenticated
 - Describe only released UI actions, or ones the maintainer says are about to ship. Device pairing uses the TUI **Devices** view (`prefix+alt+d`, palette **Pair a phone**) or `vibeke gateway pair`; the server manages the gateway after setup. The desktop app offers local connection and gateway-start controls.
 - Leave out filler: maturity labels such as "pre-1.0" or "pre-release", statements about what readers do not need (a GitHub account, `sudo`, building the app, starting the gateway by hand), internal build or provenance details (generated-from-source notes, `spec/` references), and sentences that repeat another line or page. Keep real limitations, prerequisites and security warnings.
 - Keep host CLI platforms distinct from desktop client platforms. Do not imply that the desktop package bundles the CLI.
-- CLI, configuration, and API references are generated. Regenerate them with `VIBEKE_UPDATE_DOCS=1 cargo test -p vibeke --test api_docs` when their source changes.
+- CLI, configuration, and API references are generated. Regenerate them with `VIBEKE_UPDATE_DOCS=1 cargo test -p vibeke --test it api_docs::` when their source changes.
 - Use `docs/desktop-downloads.md` as the shared desktop download table. The installation and desktop guides include it. Update it with each release.
 
 ## New release workflow

@@ -4,10 +4,28 @@ description = "Vibeke: a terminal workspace for supervising coding agents"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+# One merged integration test binary (`it`) plus the release-mode ones listed below.
+autotests = false
 
 [[bin]]
 name = "vibeke"
 path = "src/main.rs"
+
+[[test]]
+name = "it"
+path = "tests/it/main.rs"
+
+[[test]]
+name = "chaos"
+path = "tests/chaos.rs"
+
+[[test]]
+name = "chaos_gaps"
+path = "tests/chaos_gaps.rs"
+
+[[test]]
+name = "timing"
+path = "tests/timing.rs"
 
 [dependencies]
 vk-gateway.workspace = true

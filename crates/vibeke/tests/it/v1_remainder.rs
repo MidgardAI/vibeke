@@ -5,13 +5,11 @@
 //! and `config reset-keys`, `shell-integration`, audit rotation and offline audit records.
 //! Every successful call and every event of the session is validated against the schema.
 
-mod support;
-
+use crate::support::Session;
 use serde_json::{Value, json};
 use std::path::Path;
 use std::process::Stdio;
 use std::time::{Duration, Instant};
-use support::Session;
 use vk_server::api_schema::{validate_event, validate_params, validate_result};
 
 fn wait_until(what: &str, timeout: Duration, mut f: impl FnMut() -> bool) {
@@ -26,7 +24,7 @@ fn kind(e: &Value) -> &str {
     e["data"]["kind"].as_str().unwrap_or("")
 }
 
-struct Rpc(support::Rpc);
+struct Rpc(crate::support::Rpc);
 
 impl Rpc {
     fn call(&mut self, method: &str, params: Value) -> Result<Value, Value> {
@@ -71,7 +69,7 @@ impl Drop for Rpc {
 
 fn rpc(s: &Session) -> Rpc {
     s.json(&["server", "status"]);
-    Rpc(support::Rpc::connect(&s.socket()))
+    Rpc(crate::support::Rpc::connect(&s.socket()))
 }
 
 fn events_of(r: &mut Rpc, ty: &str) -> Vec<Value> {
@@ -231,7 +229,7 @@ fn task_adopt_ports_recreate_forget_archive_and_pr_hint() {
         .output()
         .unwrap();
     assert!(st.status.success());
-    let mut r = Rpc(support::Rpc::connect(&s.socket()));
+    let mut r = Rpc(crate::support::Rpc::connect(&s.socket()));
 
     let wt = s.dir.path().join("repo-feat");
     git(
@@ -328,7 +326,7 @@ fn config_layers_edit_and_reset_keys() {
         .output()
         .unwrap();
     assert!(st.status.success());
-    let mut r = Rpc(support::Rpc::connect(&s.socket()));
+    let mut r = Rpc(crate::support::Rpc::connect(&s.socket()));
     let v = r.call("config.get", json!({"key": "ui.animate"})).unwrap();
     assert_eq!(
         (v["value"].clone(), v["source"].clone()),

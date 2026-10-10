@@ -77,6 +77,7 @@ export function Layout({ route, children }: { route: Route; children: ReactNode 
           open={mode === 'narrow' && drawer}
           onClose={() => drawerOpen.set(false)}
           label={t.sidebar.label}
+          closeOnNavigate
           className="vk-scrim fixed inset-0 z-50 flex"
           panelClassName="animate-drawer-l flex h-full w-[300px] max-w-[86vw] flex-col shadow-[var(--shadow)] outline-none"
         >

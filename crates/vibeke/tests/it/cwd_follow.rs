@@ -1,10 +1,8 @@
 //! A `cd` in a shell that sends no OSC 7 changes no process, yet the pane's cwd and its
 //! workspace's automatic name follow it without another command being run.
 
-mod support;
-
+use crate::support::Session;
 use std::time::{Duration, Instant};
-use support::Session;
 
 #[test]
 fn cd_without_osc7_moves_the_pane_cwd_and_workspace_name() {

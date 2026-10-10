@@ -128,7 +128,7 @@ test('agent view: toggle, typing into the terminal, shortcut, palette, settings 
   await expect(strip.getByRole('tab', { name: 'Conversation' })).toHaveCount(0);
   await expect(strip.getByRole('tab', { selected: true })).toHaveAttribute('data-tab', /^a:/);
   await expect(page).not.toHaveURL(/show=/);
-  await expect(page.locator('[data-belt]').getByRole('button', { name: 'Keys' })).toBeVisible();
+  await expect(page.locator('[data-belt]').getByRole('button', { name: 'Keys', exact: true })).toBeVisible();
   const box = page.getByRole('textbox', { name: 'Type into the agent’s terminal' });
   await expect(box).toBeVisible();
   await expect(box).toBeFocused();
@@ -139,9 +139,9 @@ test('agent view: toggle, typing into the terminal, shortcut, palette, settings 
   await host.until(() => host.cli(['pane', 'read', hero.pane]).split(`${marker}-ok`).length > 2, 15_000, 'typed text did not reach the pane');
   await expect(screen).toContainText(`${marker}-ok`, { timeout: 10_000 });
   // Clicking the screen hands typing focus back to the composer.
-  await page.locator('[data-belt]').getByRole('button', { name: 'Keys' }).click();
+  await page.locator('[data-belt]').getByRole('button', { name: 'Keys', exact: true }).click();
   await expect(page.locator('[data-belt]').getByText('Chord')).toBeVisible();
-  await page.locator('[data-belt]').getByRole('button', { name: 'Keys' }).click();
+  await page.locator('[data-belt]').getByRole('button', { name: 'Keys', exact: true }).click();
   await screen.click({ position: { x: 300, y: 300 } });
   await expect(box).toBeFocused();
   // The view is remembered per workspace: away and back, still the terminal.

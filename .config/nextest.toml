@@ -3,26 +3,26 @@
 [[profile.default.overrides]]
 # 15-30 s each.
 filter = """
-test(=live_results_and_events_match_the_registry)
-| test(=doctor_rebuild_index_and_server_startup_exclude_each_other)
-| test(=pane_scope_matrix)
-| test(=drag_and_double_click_over_shell_output_write_osc52)
-| test(=copy_mode_prompt_jump_selects_the_last_command_output)
+test(=api_schema_live::live_results_and_events_match_the_registry)
+| test(=scrollback_forget::doctor_rebuild_index_and_server_startup_exclude_each_other)
+| test(=auth::pane_scope_matrix)
+| test(=mouse_select::drag_and_double_click_over_shell_output_write_osc52)
+| test(=osc_marks::copy_mode_prompt_jump_selects_the_last_command_output)
 | test(=scope_catalog_tests::open_methods_are_not_refused_to_panes)
-| test(=batch_view_allows_two_equivalent_approvals_at_once)
+| test(=onboarding::batch_view_allows_two_equivalent_approvals_at_once)
 """
 priority = 100
 
 [[profile.default.overrides]]
 # 8-12 s each.
 filter = """
-test(=an_approved_goal_fans_out_and_advances_as_steps_finish)
-| test(=process_plugin_actions_kv_and_ui_end_to_end)
-| test(=repo_manifests_need_trust_and_are_namespaced)
+test(=orchestrate::an_approved_goal_fans_out_and_advances_as_steps_finish)
+| test(=plugin_native::process_plugin_actions_kv_and_ui_end_to_end)
+| test(=harnesses::repo_manifests_need_trust_and_are_namespaced)
 | test(=proxy::tests::cross_origin_requests_are_refused)
-| test(=repository_installs_pin_the_commit_and_updates_need_a_new_trust_decision)
-| test(=agents_wait_for_setup_and_follow_the_setup_flags)
-| test(=discovery_finds_server_after_output_while_backed_off)
+| test(=compat_herdr_plugins_ext::repository_installs_pin_the_commit_and_updates_need_a_new_trust_decision)
+| test(=task_workspace::agents_wait_for_setup_and_follow_the_setup_flags)
+| test(=idle_timers::discovery_finds_server_after_output_while_backed_off)
 | test(=review::tests::failed_check_never_ready_then_red_green_and_flake)
 """
 priority = 50

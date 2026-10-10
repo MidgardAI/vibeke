@@ -4,14 +4,12 @@
 //! pane request budgets and spawn depth limits, read-only attach, and the CLI verbs
 //! `events tail`, `api call`, `completion` and `--dry-run`.
 
-mod support;
-
+use crate::support::{Session, alive};
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::time::{Duration, Instant};
-use support::{Session, alive};
 use vk_proto::render::{AckStatus, ClientFrame, ServerFrame};
 use vk_server::api_schema::{validate_event, validate_params, validate_result};
 
@@ -31,11 +29,11 @@ fn kind(e: &Value) -> &str {
 
 /// A raw connection whose successful calls (params and result) and, at the end of the test,
 /// every event of the session are validated against the schema registry.
-struct Rpc(support::Rpc);
+struct Rpc(crate::support::Rpc);
 
 impl Rpc {
     fn connect(path: &Path) -> Rpc {
-        Rpc(support::Rpc::connect(path))
+        Rpc(crate::support::Rpc::connect(path))
     }
     fn call(&mut self, method: &str, params: Value) -> Result<Value, Value> {
         let r = self.0.call(method, params.clone());
