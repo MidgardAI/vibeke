@@ -583,6 +583,7 @@ mod tests {
                     email: None,
                 }),
             }),
+            supports_clear: false,
         }
     }
 

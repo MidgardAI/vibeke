@@ -283,6 +283,7 @@ pub async fn claim(
         expires_at: current.share.as_ref().and_then(|sh| sh.device_expiry()),
         limit: current.share.as_ref().and_then(|sh| sh.limit.clone()),
         peer,
+        supports_clear: false,
     };
     let consumed = confirmed
         && (|| -> anyhow::Result<bool> {
