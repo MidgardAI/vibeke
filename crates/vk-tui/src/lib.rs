@@ -24,6 +24,8 @@ pub mod elevate;
 pub mod event;
 pub mod fleet;
 pub mod floats;
+#[cfg(any(target_arch = "wasm32", test))]
+pub mod frame_queue;
 pub mod gallery;
 pub mod gateway;
 pub mod groups;

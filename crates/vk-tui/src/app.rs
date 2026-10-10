@@ -20,6 +20,7 @@ use std::path::PathBuf;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 #[cfg(target_arch = "wasm32")]
 use tokio::io::{AsyncRead, AsyncWrite};
+#[cfg(not(target_arch = "wasm32"))]
 use tokio::sync::mpsc;
 #[cfg(not(target_arch = "wasm32"))]
 use vk_proto::frame::asyncio;
@@ -29,6 +30,11 @@ use vk_proto::input::{
 use vk_proto::layout::{self, Direction, Rect};
 use vk_proto::model::*;
 use vk_proto::render::*;
+
+#[cfg(not(target_arch = "wasm32"))]
+pub type FrameSender = mpsc::UnboundedSender<ClientFrame>;
+#[cfg(target_arch = "wasm32")]
+pub type FrameSender = crate::frame_queue::Sender;
 
 pub struct PaneBuf {
     pub epoch: u32,
@@ -60,7 +66,7 @@ impl PaneBuf {
 pub struct Machine {
     pub label: String,
     pub local: bool,
-    pub tx: Option<mpsc::UnboundedSender<ClientFrame>>,
+    pub tx: Option<FrameSender>,
     pub model: SessionModel,
     pub focus: ClientFocus,
     pub seen: HashMap<String, u64>,
@@ -554,7 +560,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> AsyncReadWrite for T {}
 pub enum Incoming {
     Frame(usize, ServerFrame),
     /// Render stream up, with the server's `render.attach` features.
-    Connected(usize, mpsc::UnboundedSender<ClientFrame>, Vec<String>),
+    Connected(usize, FrameSender, Vec<String>),
     Disconnected(usize, String),
     /// Progress from a transfer task (separate connection, see `upload`).
     Upload(crate::upload::UploadEvent),

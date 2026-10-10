@@ -223,6 +223,8 @@ async fn device_loop(gw: Arc<Gateway>, ws: impl Ws, session: Session, device_id:
     let started = Instant::now();
     let mut events_task: Option<tokio::task::JoinHandle<()>> = None;
     let mut tui: Option<crate::tui::Bridge> = None;
+    type Attach = tokio::task::JoinHandle<Result<(crate::tui::Bridge, Value), ApiError>>;
+    let mut attaching: Option<(Attach, Option<Value>)> = None;
     tracing::info!(device = %device_id, "device connected");
 
     let mut tasks = tokio::task::JoinSet::new();
@@ -233,11 +235,28 @@ async fn device_loop(gw: Arc<Gateway>, ws: impl Ws, session: Session, device_id:
         let remaining = IDLE.saturating_sub(last_auth.elapsed());
         let msg = tokio::select! {
             m = tokio::time::timeout(remaining, stream.next()) => m,
+            joined = async { (&mut attaching.as_mut().unwrap().0).await }, if attaching.is_some() => {
+                let (_, id) = attaching.take().unwrap();
+                let result = match joined {
+                    Ok(Ok((bridge, result))) => {
+                        match gw.device(&device_id).ok_or_else(|| ApiError::new("forbidden", "Device was revoked"))
+                            .and_then(|d| crate::tui::authorize(&d)) {
+                            Ok(()) => { tui = Some(bridge); Ok(result) }
+                            Err(error) => Err(error),
+                        }
+                    }
+                    Ok(Err(error)) => Err(error),
+                    Err(_) => Err(ApiError::unavailable("TUI attach was interrupted")),
+                };
+                respond(&out, id, result).await;
+                continue;
+            }
             Some(cmd) = cmd_rx.recv() => {
                 match cmd {
                     ConnCmd::Revoked => {
                         // Revoked: nothing this device queued may still run.
                         tasks.abort_all();
+                        if let Some((task, _)) = attaching.take() { task.abort(); }
                         tui.take();
                         out.notify("device.revoked", json!({})).await;
                     }
@@ -310,16 +329,29 @@ async fn device_loop(gw: Arc<Gateway>, ws: impl Ws, session: Session, device_id:
                 Ok(()) => match method.as_str() {
                     "tui.attach" => {
                         tui.take();
-                        let protocol = params.get("protocol").and_then(Value::as_u64).unwrap_or(0);
-                        match crate::tui::Bridge::attach(gw.clone(), &device, out.clone(), protocol)
-                            .await
-                        {
-                            Ok((bridge, result)) => {
-                                tui = Some(bridge);
-                                Ok(result)
-                            }
-                            Err(e) => Err(e),
+                        if let Some((task, id)) = attaching.take() {
+                            task.abort();
+                            respond(
+                                &out,
+                                id,
+                                Err(ApiError::new(
+                                    "cancelled",
+                                    "A newer terminal attach replaced this request",
+                                )),
+                            )
+                            .await;
                         }
+                        let protocol = params.get("protocol").and_then(Value::as_u64).unwrap_or(0);
+                        let (gw, out) = (gw.clone(), out.clone());
+                        // The device loop keeps serving pings and revocation during the
+                        // server handshake. Replacing the sole handle prevents stale installs.
+                        attaching = Some((
+                            tokio::spawn(async move {
+                                crate::tui::Bridge::attach(gw, &device, out, protocol).await
+                            }),
+                            id,
+                        ));
+                        continue;
                     }
                     "tui.send" => tui
                         .as_ref()
@@ -407,6 +439,10 @@ async fn device_loop(gw: Arc<Gateway>, ws: impl Ws, session: Session, device_id:
     if let Some(t) = events_task {
         t.abort();
     }
+    if let Some((task, _)) = attaching {
+        task.abort();
+    }
+    tui.take();
     gw.set_visible(&device_id, false);
     // Closes this connection's entry in the live list before the report reads it.
     drop(cmd_rx);

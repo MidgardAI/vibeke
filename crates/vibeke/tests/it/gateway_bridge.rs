@@ -288,7 +288,7 @@ fn gateway_render_stream_keeps_remote_authorization_and_actor_requirements() {
         (
             1,
             "client.hello",
-            json!({"client":"browser-tui-test", "kind":"gateway", "remote":true, "api":"vibeke/1"}),
+            json!({"client":"browser-tui-test", "kind":"gateway-tui", "remote":true, "api":"vibeke/1"}),
         ),
         (
             2,
@@ -336,6 +336,19 @@ fn gateway_render_stream_keeps_remote_authorization_and_actor_requirements() {
             .contains("confirmations are answered from the TUI"),
         "{denied}"
     );
+    for (req, method) in [
+        (20, "handoff.peers.set"),
+        (21, "handoff.job.update"),
+        (22, "gateway.reply"),
+        (23, "client.devices"),
+        (24, "handoff.incoming.add"),
+    ] {
+        let denied = command(req, method, json!({"actor":"gateway:Browser"}));
+        assert_eq!(
+            denied["error"]["data"]["kind"], "permission_denied",
+            "{method}: {denied}"
+        );
+    }
     let missing_actor = command(
         11,
         "pane.rename",

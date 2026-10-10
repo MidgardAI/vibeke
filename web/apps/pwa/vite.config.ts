@@ -1,9 +1,11 @@
 import { execSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { readFileSync, rmSync } from 'node:fs';
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import { defineConfig } from 'vite';
 import { VitePWA } from 'vite-plugin-pwa';
+import { tuiSourceDigest } from '../../scripts/tui-source';
+import { BROWSER_TUI_API } from '../../packages/ui/src/lib/tui-api';
 
 const pkg = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')) as { version: string };
 const hash = (() => {
@@ -29,9 +31,14 @@ const shareTarget = {
     files: [{ name: 'files', accept: ['image/*', 'text/*', '.md', '.txt', '.log', '.json', '.diff', '.patch'] }],
   },
 };
-const tuiModuleUrl = process.env.VIBEKE_WASM_TUI === '1'
-  ? (JSON.parse(readFileSync(new URL('./public/tui/manifest.json', import.meta.url), 'utf8')) as { moduleUrl: string }).moduleUrl
-  : null;
+const tuiEnabled = process.env.VIBEKE_WASM_TUI === '1';
+const tuiModuleUrl = (() => {
+  if (!tuiEnabled) return null;
+  const manifest = JSON.parse(readFileSync(new URL('./public/tui/manifest.json', import.meta.url), 'utf8')) as { api: number; moduleUrl: string; sourceRevision: string; sourceDigest: string };
+  const revision = execSync('git rev-parse HEAD').toString().trim();
+  if (manifest.api !== BROWSER_TUI_API || manifest.sourceRevision !== revision || manifest.sourceDigest !== tuiSourceDigest()) throw new Error('The WASM TUI is stale. Run bun run build:tui from web/ before building this app.');
+  return manifest.moduleUrl;
+})();
 
 export default defineConfig({
   base: '/',
@@ -41,6 +48,7 @@ export default defineConfig({
     __APP_VERSION__: JSON.stringify(pkg.version),
   },
   plugins: [
+    { name: 'optional-tui-assets', closeBundle() { if (!tuiEnabled) rmSync(new URL('./dist/tui/', import.meta.url), { recursive: true, force: true }); } },
     react(),
     tailwindcss(),
     VitePWA({

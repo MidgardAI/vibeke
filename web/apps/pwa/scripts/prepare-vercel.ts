@@ -9,7 +9,9 @@ mkdirSync(output, { recursive: true });
 cpSync(new URL('dist/', root), new URL('static/', output), { recursive: true });
 // Same policy as the desktop app (apps/desktop/src/main/protocol.ts), except that relays and hosts are
 // user-paired, so connect-src also allows any secure WebSocket. React style props need inline styles.
-const wasm = existsSync(new URL('dist/tui/manifest.json', root));
+const wasm = process.env.VIBEKE_WASM_TUI === '1';
+if (wasm && !existsSync(new URL('dist/tui/manifest.json', root))) throw new Error('Build the WASM-enabled PWA before packaging it.');
+if (!wasm && existsSync(new URL('dist/tui/manifest.json', root))) throw new Error('This dist enables WASM. Package it with VIBEKE_WASM_TUI=1, or rebuild without the flag.');
 const CSP = [
   "default-src 'self'",
   wasm ? "script-src 'self' 'wasm-unsafe-eval'" : "script-src 'self'",
@@ -40,6 +42,8 @@ writeFileSync(new URL('config.json', output), JSON.stringify({
   routes: [
     { src: '/(.*)', headers: SECURITY_HEADERS, continue: true },
     { src: '/(?:|index.html|sw.js|manifest.webmanifest)', headers: { 'Cache-Control': 'no-cache' }, continue: true },
+    { src: '/tui/manifest.json', headers: { 'Cache-Control': 'no-cache' }, continue: true },
+    { src: '/tui/[a-f0-9]{16}/.*', headers: { 'Cache-Control': 'public, max-age=31536000, immutable' }, continue: true },
     { src: '/assets/.*', headers: { 'Cache-Control': 'public, max-age=31536000, immutable' }, continue: true },
     { handle: 'filesystem' },
   ],

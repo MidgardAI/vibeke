@@ -64,6 +64,25 @@ fn fake_server(path: PathBuf) -> Reports {
                     let req: Value = serde_json::from_str(&line).unwrap();
                     let id = req["id"].clone();
                     let p = &req["params"];
+                    if req["method"] == "client.hello"
+                        && p["client"] == "vibeke-browser-tui"
+                        && reports
+                            .lock()
+                            .unwrap()
+                            .iter()
+                            .any(|v| v["tui"] == "delay-attach")
+                    {
+                        reports
+                            .lock()
+                            .unwrap()
+                            .push(json!({"tui":"attach-started"}));
+                        assert!(lines.next_line().await.unwrap().is_none());
+                        reports
+                            .lock()
+                            .unwrap()
+                            .push(json!({"tui":"attach-cancelled"}));
+                        return;
+                    }
                     if req["method"] == "render.attach" {
                         assert_eq!(p["remote"], true);
                         reports.lock().unwrap().push(json!({"tui":"attached"}));
@@ -95,6 +114,26 @@ fn fake_server(path: PathBuf) -> Reports {
                             }
                         }
                         reports.lock().unwrap().push(json!({"tui":"closed"}));
+                        return;
+                    }
+                    if req["method"] == "client.hello"
+                        && p["client"] == "vibeke-browser-tui-command"
+                    {
+                        assert_eq!(p["kind"], "gateway-tui");
+                        assert_eq!(p["remote"], true);
+                        reports.lock().unwrap().push(json!({"tui":"control-hello"}));
+                    }
+                    if req["method"] == "handoff.test_slow" {
+                        reports
+                            .lock()
+                            .unwrap()
+                            .push(json!({"tui":"control-started", "actor":p["actor"]}));
+                        // Withhold the command response until the gateway closes its reader.
+                        assert!(lines.next_line().await.unwrap().is_none());
+                        reports
+                            .lock()
+                            .unwrap()
+                            .push(json!({"tui":"control-closed"}));
                         return;
                     }
                     let result = match req["method"].as_str().unwrap() {
@@ -852,9 +891,9 @@ async fn browser_tui_is_encrypted_scoped_and_closed_on_revocation() {
     state.save_config(&cfg).unwrap();
     let key = DeviceKey::generate();
     let device: vk_gateway::state::Device = serde_json::from_value(json!({
-        "id":"browser", "name":"Browser", "public":vk_e2e::b64::encode(&key.public()), "scope":"full", "paired_at":0
+        "id":"browser", "name":"Browser", "public":vk_e2e::b64::encode(key.public()), "scope":"full", "paired_at":0
     })).unwrap();
-    state.save_devices(&[device.clone()]).unwrap();
+    state.save_devices(std::slice::from_ref(&device)).unwrap();
     let gw = Gateway::new(state, server::Server::new(sock)).unwrap();
     tokio::spawn(vk_gateway::run(gw.clone()));
     let host = gw.keys.host_id();
@@ -926,10 +965,46 @@ async fn browser_tui_is_encrypted_scoped_and_closed_on_revocation() {
             break;
         }
     }
+    let mut input = vk_proto::frame::encode(&ClientFrame::Command {
+        req: 89,
+        json: json!({"jsonrpc":"2.0", "id":89, "method":"handoff.test_slow", "params":{"actor":"spoofed"}}).to_string(),
+    }).unwrap();
+    input.extend(vk_proto::frame::encode(&ClientFrame::Ping { nonce: 456 }).unwrap());
+    c.send(json!({"jsonrpc":"2.0","id":1001,"method":"tui.send","params":{"stream":stream,"data":vk_e2e::b64::encode(&input)}})).await;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let v = c.recv().await;
+            if v["method"] != "tui.frame" {
+                continue;
+            }
+            decoded.push(&vk_e2e::b64::decode(v["params"]["data"].as_str().unwrap()).unwrap());
+            if let Some(ServerFrame::Pong { nonce: 456, .. }) =
+                decoded.next_frame::<ServerFrame>().unwrap()
+            {
+                break;
+            }
+        }
+        loop {
+            if reports
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|v| v["tui"] == "control-started" && v["actor"] == "gateway:Browser (browser)")
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("slow command must not block render traffic");
     gw.revoke("browser").await.unwrap();
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
-            if reports.lock().unwrap().iter().any(|v| v["tui"] == "closed") {
+            if ["closed", "control-closed"]
+                .iter()
+                .all(|kind| reports.lock().unwrap().iter().any(|v| v["tui"] == *kind))
+            {
                 break;
             }
             tokio::task::yield_now().await;
@@ -941,7 +1016,9 @@ async fn browser_tui_is_encrypted_scoped_and_closed_on_revocation() {
     // Scope is checked before a server socket is opened.
     let mut limited = device;
     limited.scope = Scope::Approve;
-    gw.state.save_devices(&[limited]).unwrap();
+    gw.state
+        .save_devices(std::slice::from_ref(&limited))
+        .unwrap();
     gw.reload_devices().unwrap();
     let mut c = Client::open(
         relay,
@@ -966,4 +1043,38 @@ async fn browser_tui_is_encrypted_scoped_and_closed_on_revocation() {
             .count(),
         1
     );
+    limited.scope = Scope::Full;
+    gw.state
+        .save_devices(std::slice::from_ref(&limited))
+        .unwrap();
+    gw.reload_devices().unwrap();
+    reports.lock().unwrap().push(json!({"tui":"delay-attach"}));
+    c.send(json!({"jsonrpc":"2.0", "id":700, "method":"tui.attach", "params":{"protocol":vk_proto::render::PROTOCOL}})).await;
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while !reports
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|v| v["tui"] == "attach-started")
+        {
+            tokio::task::yield_now().await;
+        }
+        let hello = c.call("hello", json!({})).await;
+        assert_eq!(hello["result"]["scope"], "full");
+    })
+    .await
+    .expect("a stalled attach must not block other device RPCs");
+    gw.revoke("browser").await.unwrap();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while !reports
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|v| v["tui"] == "attach-cancelled")
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("revocation cancels the pending attach socket promptly");
 }

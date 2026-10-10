@@ -160,11 +160,14 @@ function Main() {
   useEffect(() => {
     if (route.name !== 'home') return;
     if (hosts.length === 0) return navigate({ name: 'pair', d: null }, { replace: true });
+    if (app.platform.tui && prefs.preferredTuiHost && hosts.some((h) => h.record.host_id === prefs.preferredTuiHost)) {
+      return navigate({ name: 'tui', host: prefs.preferredTuiHost }, { replace: true });
+    }
     if (!ready && !decided.current) return;
     decided.current = true;
     const top = mostUrgent(rows);
     navigate(items.length || approvals || !top ? { name: 'inbox' } : workspaceRoute(top.host, top.workspace.id), { replace: true });
-  }, [route.name, hosts.length, ready, items.length, approvals, rows]);
+  }, [route.name, hosts.length, ready, items.length, approvals, rows, prefs.preferredTuiHost]);
 
   // Old routes (Panes, Focus, Changes tabs; pane links) → their workspace.
   const routeKey = formatRoute(route);
@@ -181,7 +184,7 @@ function Main() {
 
   return (
     <>
-      {route.name === 'tui' ? <Suspense fallback={<Spinner />}><TuiScreen host={route.host} /></Suspense> : <Layout route={route}>
+      {route.name === 'tui' ? <Suspense fallback={<Spinner />}><TuiScreen host={route.host} workspace={route.workspace} pane={route.pane} /></Suspense> : <Layout route={route}>
         <ConnectionBanner />
         <BusyBar />
         <ReloadPrompt />

@@ -35,7 +35,7 @@ export interface WorkspaceRoute {
 
 export type Route =
   | { name: 'home' }
-  | { name: 'tui'; host: string }
+  | { name: 'tui'; host: string; workspace?: string; pane?: string }
   | { name: Tab }
   | { name: 'crew' }
   /** Incoming handoffs: every host's list, one host's, or one handoff's accept view. */
@@ -83,7 +83,7 @@ export function parseRoute(hash: string): Route {
     case 'crew':
       return { name: 'crew' };
     case 'tui':
-      if (b && !c) return { name: 'tui', host: b };
+      if (b && !c) return { name: 'tui', host: b, ...(opt('workspace') ? { workspace: opt('workspace')! } : {}), ...(opt('pane') ? { pane: opt('pane')! } : {}) };
       break;
     case 'handoffs':
       return { name: 'handoffs', host: b || null, id: (b && c) || null };
@@ -149,7 +149,7 @@ export function formatRoute(r: Route): string {
     case 'home':
       return '#/';
     case 'tui':
-      return `#/tui/${enc(r.host)}`;
+      return `#/tui/${enc(r.host)}` + (r.workspace || r.pane ? '?' + new URLSearchParams({ ...(r.workspace ? { workspace: r.workspace } : {}), ...(r.pane ? { pane: r.pane } : {}) }) : '');
     case 'inbox':
     case 'panes':
     case 'focus':

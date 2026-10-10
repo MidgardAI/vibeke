@@ -19,7 +19,7 @@ type Phase =
   | { k: 'form' }
   | { k: 'connecting' }
   | { k: 'pending'; fingerprint: string }
-  | { k: 'done'; host: string; kind: 'device' | 'share' }
+  | { k: 'done'; host: string; id: string; terminal: boolean; kind: 'device' | 'share' }
   /** A handoff invitation redeemed by one of the user's hosts (`on`) for the teammate's `to`. */
   | { k: 'redeemed'; on: string; to: string }
   | { k: 'error'; message: string };
@@ -110,7 +110,7 @@ export function PairScreen({ d }: { d: string | null }) {
     try {
       const rec = await app.pair(link, name.trim() || app.platform.defaultDeviceName, (f) => setPhase({ k: 'pending', fingerprint: f }));
       app.haptic('success');
-      setPhase({ k: 'done', host: rec.name, kind: rec.kind ?? 'device' });
+      setPhase({ k: 'done', host: rec.name, id: rec.host_id, terminal: rec.scope === 'full' && !rec.limit && !rec.until, kind: rec.kind ?? 'device' });
       setRaw(null);
     } catch (e) {
       app.haptic('error');
@@ -126,7 +126,11 @@ export function PairScreen({ d }: { d: string | null }) {
           <div className="text-lg font-medium">
             {phase.kind === 'share' ? t.pair.doneShare(phase.host) : t.pair.done(phase.host)}
           </div>
-          <Button variant="primary" block size="lg" onClick={() => navigate({ name: 'home' })}>
+          {app.platform.tui && phase.terminal && phase.kind === 'device' && <Button variant="primary" block size="lg" onClick={() => {
+            app.prefs.patch({ preferredTuiHost: phase.id });
+            navigate({ name: 'tui', host: phase.id });
+          }}>Open terminal</Button>}
+          <Button variant={app.platform.tui && phase.terminal && phase.kind === 'device' ? 'secondary' : 'primary'} block size="lg" onClick={() => { app.prefs.patch({ preferredTuiHost: null }); navigate({ name: 'home' }); }}>
             {t.pair.openApp}
           </Button>
         </Card>

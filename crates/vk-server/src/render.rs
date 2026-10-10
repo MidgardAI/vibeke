@@ -525,7 +525,7 @@ impl Session {
             client_id: self.client_id.clone(),
             // Gateway, elevated, and plugin callers keep their identity. Remote restrictions
             // and authorization still apply; only a plain user client becomes "tui".
-            kind: if self.auth.kind == "gateway"
+            kind: if matches!(self.auth.kind.as_str(), "gateway" | "gateway-tui")
                 || self.auth.kind.starts_with(crate::auth::ELEVATED_KIND)
                 || crate::plugin_native::is_plugin_kind(&self.auth.kind)
             {

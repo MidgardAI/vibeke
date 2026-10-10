@@ -94,3 +94,13 @@ inherits = "dev"
 opt-level = 1
 debug = 0
 panic = "abort"
+
+# Compact browser distribution; native release settings stay independent.
+[profile.wasm-release]
+inherits = "release"
+opt-level = "s"
+lto = "thin"
+codegen-units = 1
+debug = 0
+strip = "debuginfo"
+panic = "abort"

@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use serde_json::{Value, json};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tokio::sync::mpsc;
 use vk_e2e::b64;
@@ -86,7 +86,7 @@ impl Bridge {
         // Keep the gateway identity on the render stream so server audit and remote redaction
         // also apply to commands from this client. The browser cannot choose this identity.
         let hello = json!({"jsonrpc":"2.0", "id":1, "method":"client.hello", "params":{
-            "client":"vibeke-browser-tui", "kind":"gateway", "remote":true, "api":"vibeke/1"}});
+            "client":"vibeke-browser-tui", "kind":"gateway-tui", "remote":true, "api":"vibeke/1"}});
         request(&mut rd, &mut wr, hello).await?;
         let reply = request(
             &mut rd,
@@ -114,6 +114,9 @@ impl Bridge {
                 }
             }));
             let mut check = tokio::time::interval(Duration::from_secs(1));
+            // Long commands own control sockets. Dropping this JoinSet on disconnect or
+            // revocation cancels their readers; outcomes are never automatically retried.
+            let mut commands = tokio::task::JoinSet::new();
             let result: anyhow::Result<()> = async {
                 loop {
                     let allowed = gw.device(&device_id).is_some_and(|d| authorize(&d).is_ok());
@@ -124,16 +127,27 @@ impl Bridge {
                             let Some(frames) = frames else { break; };
                             for mut f in frames {
                                 prepare(&mut f, &actor)?;
+                                if let ClientFrame::Command { req, json } = &f
+                                    && separate_command(json)
+                                {
+                                    if commands.len() >= 4 {
+                                        emit(&out, &stream_id, command_error(*req, "Too many long operations are already running", "busy")).await?;
+                                        continue;
+                                    }
+                                    let (path, req, json) = (gw.server.path().clone(), *req, json.clone());
+                                    commands.spawn(async move { control_command(path, req, json).await });
+                                    continue;
+                                }
                                 asyncio::write_frame(&mut wr, &f).await?;
                             }
                             wr.flush().await?;
                         }
                         f = frames_rx.recv() => {
                             let f = f.ok_or_else(|| anyhow::anyhow!("Render stream closed"))??;
-                            let data = frame::encode(&f)?;
-                            for part in data.chunks(CHUNK) {
-                                anyhow::ensure!(out.notify("tui.frame", json!({"stream":stream_id, "data":b64::encode(part)})).await, "Device disconnected");
-                            }
+                            emit(&out, &stream_id, f).await?;
+                        }
+                        Some(result) = commands.join_next(), if !commands.is_empty() => {
+                            emit(&out, &stream_id, result?).await?;
                         }
                     }
                 }
@@ -162,6 +176,74 @@ impl Bridge {
         self.tx
             .try_send(frames)
             .map_err(|_| ApiError::unavailable("TUI input queue is full or closed"))
+    }
+}
+
+async fn emit(out: &Out, id: &str, f: ServerFrame) -> anyhow::Result<()> {
+    let data = frame::encode(&f)?;
+    for part in data.chunks(CHUNK) {
+        anyhow::ensure!(
+            out.notify("tui.frame", json!({"stream":id, "data":b64::encode(part)}))
+                .await,
+            "Device disconnected"
+        );
+    }
+    Ok(())
+}
+
+fn separate_command(json: &str) -> bool {
+    serde_json::from_str::<Value>(json)
+        .ok()
+        .and_then(|v| {
+            v["method"]
+                .as_str()
+                .map(|s| s.starts_with("handoff.") || s == "gateway.call")
+        })
+        .unwrap_or(false)
+}
+
+fn command_error(req: u64, message: &str, kind: &str) -> ServerFrame {
+    ServerFrame::CommandResult {
+        req,
+        json: json!({"jsonrpc":"2.0", "id":req,
+        "error": {"code":-32000, "message":message, "data":{"kind":kind}}})
+        .to_string(),
+    }
+}
+
+async fn control_command(path: std::path::PathBuf, req: u64, json: String) -> ServerFrame {
+    let operation = async {
+        let socket = UnixStream::connect(path).await?;
+        let (rd, mut wr) = socket.into_split();
+        let mut rd = BufReader::new(rd);
+        // Same remote authority as the render connection. Actor was replaced in prepare().
+        let hello = json!({"jsonrpc":"2.0", "id":0, "method":"client.hello", "params":{
+            "client":"vibeke-browser-tui-command", "kind":"gateway-tui", "remote":true, "api":"vibeke/1"}});
+        request(&mut rd, &mut wr, hello)
+            .await
+            .map_err(|e| anyhow::anyhow!(e.message))?;
+        wr.write_all(json.as_bytes()).await?;
+        wr.write_all(b"\n").await?;
+        wr.flush().await?;
+        // Handoff responses are metadata, not blobs. Bound a broken peer's response.
+        let mut line = String::new();
+        (&mut rd).take(2 * 1024 * 1024).read_line(&mut line).await?;
+        anyhow::ensure!(line.ends_with('\n'), "Incomplete command response");
+        let response: Value = serde_json::from_str(&line)?;
+        anyhow::ensure!(
+            response.get("result").is_some() || response.get("error").is_some(),
+            "Invalid command response"
+        );
+        Ok::<_, anyhow::Error>(line)
+    };
+    match tokio::time::timeout(Duration::from_secs(30 * 60), operation).await {
+        Ok(Ok(json)) => ServerFrame::CommandResult { req, json },
+        // These errors are deliberately ambiguous: the operation may have reached the server.
+        _ => command_error(
+            req,
+            "Connection lost or operation timed out. The result is unknown; check the operation before trying again.",
+            "remote_unavailable",
+        ),
     }
 }
 
@@ -229,6 +311,20 @@ fn prepare(frame: &mut ClientFrame, actor: &str) -> anyhow::Result<()> {
         let object = v
             .as_object_mut()
             .ok_or_else(|| anyhow::anyhow!("Invalid TUI command"))?;
+        // A full remote terminal is a user client, never the gateway's control plane.
+        // The distinct gateway-tui identity also enforces this at the server boundary.
+        let method = object.get("method").and_then(Value::as_str).unwrap_or("");
+        anyhow::ensure!(
+            !matches!(
+                method,
+                "handoff.peers.set"
+                    | "handoff.job.update"
+                    | "handoff.incoming.add"
+                    | "gateway.reply"
+                    | "client.devices"
+            ),
+            "Gateway control methods are not available to a terminal client"
+        );
         let params = object.entry("params").or_insert_with(|| json!({}));
         let params = params
             .as_object_mut()
@@ -247,13 +343,32 @@ mod tests {
     use super::*;
     #[test]
     fn input_rejects_truncation_and_oversized_length_before_allocation() {
-        assert!(decode_input(&b64::encode(&u32::MAX.to_le_bytes())).is_err());
-        assert!(decode_input(&b64::encode(&[1, 2])).is_err());
+        assert!(decode_input(&b64::encode(u32::MAX.to_le_bytes())).is_err());
+        assert!(decode_input(&b64::encode([1, 2])).is_err());
         let data = frame::encode(&ClientFrame::Ping { nonce: 42 }).unwrap();
         assert!(matches!(
             decode_input(&b64::encode(&data)).unwrap()[0],
             ClientFrame::Ping { nonce: 42 }
         ));
+    }
+    #[test]
+    fn terminal_cannot_send_gateway_control_commands() {
+        for method in [
+            "handoff.peers.set",
+            "handoff.job.update",
+            "handoff.incoming.add",
+            "gateway.reply",
+            "client.devices",
+        ] {
+            let mut command = ClientFrame::Command {
+                req: 1,
+                json: json!({"method":method,"params":{}}).to_string(),
+            };
+            assert!(
+                prepare(&mut command, "gateway:Browser").is_err(),
+                "{method}"
+            );
+        }
     }
     #[test]
     fn command_actor_cannot_be_spoofed() {

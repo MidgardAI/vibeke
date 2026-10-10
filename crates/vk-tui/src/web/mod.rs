@@ -3,11 +3,16 @@ use crate::app::{App, Machine};
 use crate::event::Event;
 use crate::screen::{Grid, HostCaps};
 use crate::time::Instant;
-use tokio::sync::mpsc;
-use vk_proto::frame::{self, FrameBuf};
+use vk_proto::frame::FrameBuf;
 use vk_proto::input::{Key, KeyEvent, KeyKind, Mods, NamedKey};
 use vk_proto::render::{ClientFrame, ServerFrame};
 use wasm_bindgen::prelude::*;
+
+/// Version of the JavaScript-facing browser interface, independent of the render wire protocol.
+#[wasm_bindgen]
+pub fn browser_api() -> u32 {
+    2
+}
 
 #[wasm_bindgen]
 pub fn render_protocol() -> u32 {
@@ -17,10 +22,12 @@ pub fn render_protocol() -> u32 {
 #[wasm_bindgen]
 pub struct BrowserTui {
     app: App,
-    rx: mpsc::UnboundedReceiver<ClientFrame>,
+    outbox: crate::frame_queue::Sender,
     frames: FrameBuf,
     decoder: crate::input::Decoder,
     last_bytes: Option<Instant>,
+    target: Option<(String, String)>,
+    hidden: bool,
 }
 
 #[wasm_bindgen]
@@ -63,25 +70,34 @@ impl BrowserTui {
             op.machine = label.into();
         }
         app.pending_ops.browser_key = Some(key);
-        let (_, rx) = mpsc::unbounded_channel();
+        let outbox = crate::frame_queue::Sender::default();
         Ok(Self {
             app,
-            rx,
+            outbox,
             frames: FrameBuf::default(),
             decoder: Default::default(),
             last_bytes: None,
+            target: None,
+            hidden: false,
         })
     }
 
     pub fn connected(&mut self, client_id: &str, features: &str) -> Result<(), JsValue> {
+        if self.target.is_none() {
+            let focus = &self.app.machines[0].focus;
+            self.target = Some((
+                focus.workspace.clone().unwrap_or_default(),
+                focus.pane.clone().unwrap_or_default(),
+            ));
+        }
         let features = serde_json::from_str(features).map_err(js_error)?;
-        let (tx, rx) = mpsc::unbounded_channel();
-        self.rx = rx;
+        self.outbox = crate::frame_queue::Sender::default();
+        self.outbox.set_hidden(self.hidden);
         self.frames = FrameBuf::default();
         self.app.client_id = client_id.into();
         self.app.quit = None;
         let m = &mut self.app.machines[0];
-        m.tx = Some(tx);
+        m.tx = Some(self.outbox.clone());
         m.status = "connected".into();
         m.features = features;
         m.panes.clear();
@@ -96,7 +112,8 @@ impl BrowserTui {
         self.app.machines[0].tx = None;
         self.app.machines[0].status = reason.into();
         self.app.on_disconnected(0);
-        while self.rx.try_recv().is_ok() {}
+        self.outbox = crate::frame_queue::Sender::default();
+        self.outbox.set_hidden(self.hidden);
         self.frames = FrameBuf::default();
         self.decoder = Default::default();
         self.last_bytes = None;
@@ -109,7 +126,26 @@ impl BrowserTui {
         }
         self.frames.push(bytes);
         while let Some(f) = self.frames.next_frame::<ServerFrame>().map_err(js_error)? {
+            let model = matches!(&f, ServerFrame::Model { .. });
             self.app.on_frame(0, f);
+            if model && let Some((workspace, pane)) = self.target.take() {
+                if !pane.is_empty()
+                    && self.app.machines[0]
+                        .model
+                        .panes
+                        .iter()
+                        .any(|p| p.id == pane)
+                {
+                    self.app.focus_pane(0, &pane);
+                } else if !workspace.is_empty() {
+                    self.app.command_on(
+                        0,
+                        "workspace.focus",
+                        serde_json::json!({"workspace": workspace}),
+                        crate::app::Pending::Ignore,
+                    );
+                }
+            }
             self.app.dirty = true;
         }
         Ok(())
@@ -195,12 +231,13 @@ impl BrowserTui {
         true
     }
 
-    pub fn resize(&mut self, cols: u16, rows: u16, cell_w: u16, cell_h: u16) {
+    pub fn resize(&mut self, cols: u16, rows: u16, cell_w: u16, cell_h: u16, dpr_x100: u16) {
+        self.app.caps.dpr_x100 = dpr_x100.clamp(25, 800);
         self.app.caps.cell_w = cell_w.max(1);
         self.app.caps.cell_h = cell_h.max(1);
         crate::term::set_cell_px(cell_w, cell_h);
         self.app
-            .on_event(Event::Resize(cols.clamp(20, 500), rows.clamp(5, 300)));
+            .on_event(Event::Resize(cols.clamp(2, 500), rows.clamp(1, 300)));
     }
     pub fn focus(&mut self, focused: bool) {
         self.app.on_event(if focused {
@@ -220,7 +257,17 @@ impl BrowserTui {
         self.app.quit.clone()
     }
 
-    pub fn render(&mut self) -> Vec<u8> {
+    pub fn focus_target(&mut self, workspace: &str, pane: &str) {
+        self.target = Some((workspace.into(), pane.into()));
+    }
+
+    pub fn location(&self) -> String {
+        let f = &self.app.machines[0].focus;
+        serde_json::json!({"workspace":f.workspace, "pane":f.pane}).to_string()
+    }
+
+    /// Protocol deadlines do not depend on requestAnimationFrame or xterm write completion.
+    pub fn tick(&mut self) -> Option<u32> {
         let now = Instant::now();
         if let Some(at) = self.last_bytes
             && self
@@ -237,6 +284,22 @@ impl BrowserTui {
         if self.app.next_deadline(now).is_some_and(|t| t <= now) {
             self.app.on_deadline(now);
         }
+        let deadline = self.app.next_deadline(now);
+        let decoder = self
+            .last_bytes
+            .and_then(|at| self.decoder.wait().map(|wait| at + wait));
+        deadline.into_iter().chain(decoder).min().map(|at| {
+            at.saturating_duration_since(now)
+                .as_millis()
+                .clamp(5, 2_147_483_647) as u32
+        })
+    }
+
+    pub fn dirty(&self) -> bool {
+        self.app.dirty
+    }
+
+    pub fn render(&mut self) -> Vec<u8> {
         if self.app.dirty {
             self.app.draw_bytes()
         } else {
@@ -245,22 +308,37 @@ impl BrowserTui {
     }
 
     pub fn outgoing(&mut self) -> Result<Vec<u8>, JsValue> {
-        let mut out = Vec::new();
-        // Bound each gateway batch. Remaining frames are drained on the next browser frame.
-        for _ in 0..64 {
-            let Ok(f) = self.rx.try_recv() else {
-                break;
-            };
-            let bytes = frame::encode(&f).map_err(js_error)?;
-            if bytes.len() > 256 * 1024 {
-                return Err(JsValue::from_str("TUI input frame is too large"));
-            }
-            out.extend(bytes);
-            if out.len() >= 256 * 1024 {
-                break;
-            }
+        self.outbox.drain().map_err(js_error)
+    }
+
+    pub fn appearance(&mut self, light: bool) {
+        self.app.config.theme.mode = if light {
+            vk_config::ThemeMode::Light
+        } else {
+            vk_config::ThemeMode::Dark
+        };
+        crate::appearance::apply(&mut self.app, true);
+    }
+
+    /// Stop cell/media subscriptions while hidden. Restore them on the next visible draw.
+    pub fn visible(&mut self, visible: bool) {
+        self.hidden = !visible;
+        self.outbox.set_hidden(self.hidden);
+        if !visible {
+            self.app.machines[0].send(ClientFrame::ViewHint {
+                panes: vec![],
+                active: false,
+            });
+            self.app.machines[0].send(ClientFrame::MediaView {
+                panes: vec![],
+                shm: false,
+                key_releases: false,
+            });
         }
-        Ok(out)
+        crate::browser::on_connected(&mut self.app, 0);
+        self.app.machines[0].last_hint.clear();
+        self.app.prev = Grid::new(0, 0);
+        self.app.dirty = true;
     }
 
     pub fn take_url(&mut self) -> Option<String> {

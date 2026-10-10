@@ -60,15 +60,21 @@ bun install --frozen-lockfile
 bun run dev:tui
 ```
 
+`WASM_PROFILE=wasm` selects the faster development build. The default `wasm-release` profile
+optimizes the browser module for distribution.
 `WASM_BINDGEN` can point to a downloaded CLI executable of the same version.
 Pair through a relay as described above. For local development, set the pairing command's
 `--app-url` to `http://localhost:5173`. Use the binary built from this branch for the host.
-Open **Settings → Hosts → Open TUI** on a paired host with full access.
-The route is `#/tui/<host-id>`.
+Choose **Open terminal** after pairing, or **Settings → Hosts → Open TUI** on a paired host with full access.
+The route is `#/tui/<host-id>`. The browser menu can copy a link to the current workspace and pane.
+It can also remember this terminal as the start screen.
 
 `bun run build:pwa:tui` builds the PWA with this experiment enabled. Ordinary builds leave
 the entry point disabled. WASM assets are generated under `public/tui/` and are not committed.
 They have content-based URLs. They load online and are outside the offline app cache.
+The web build checks the module's source commit and source digest. Rebuild the module after
+changing Rust inputs or making a commit. Keep `VIBEKE_WASM_TUI=1` set for both build and packaging.
+The JavaScript interface has its own `browser_api` version. Bump it with incompatible interface changes.
 
 The TUI shares the paired device's encrypted connection. The relay cannot read its screen
 or input. View-only devices, approval-only devices, shares, and peers cannot attach.
@@ -76,13 +82,23 @@ The browser and host must use the same render protocol version. Closing the TUI 
 its render connection. Closing the tab leaves host processes running.
 
 The browser version currently uses the default TUI configuration and one host per view.
-Browser shortcuts can take priority over terminal shortcuts. The toolbar opens the command
-palette and pastes text through the browser clipboard permission prompt.
+Browser shortcuts can take priority over terminal shortcuts. The small **Browser menu** button
+opens clipboard actions, font size, theme, and screen reader settings. Press **Ctrl+Shift+.**
+to open it from the keyboard. Settings persist on this device. Mac Option produces normal
+keyboard-layout text unless you enable **Use Option as Alt on Mac**.
+Option letter shortcuts follow the keyboard layout. Shifted punctuation follows xterm's terminal mappings.
+If clipboard access is denied, the menu offers a text field for manual copy or paste.
+Links and screenshots appear as clickable actions so browsers do not block them as popups.
+Hidden tabs stop screen subscriptions. They request a fresh screen when visible again.
+Long handoff operations use separate control connections. Input queues have fixed limits.
+A lost connection never replays input. If the queue overflows, check the pane before reconnecting.
 Text pastes are limited to 128 KiB. Native integrations such as local file uploads, external
 editors, local shell shortcuts, local configuration writes, and CLI self-update are unavailable.
 Security confirmations that require a local TUI still require that local client.
 Pending task operations use the tab's session storage for reconnect and reload recovery.
 Do not clear that storage while an operation has an uncertain result.
+If saved operation metadata cannot be read, the browser menu offers a discard action.
+Check the operation on the host before using it. Discarding metadata does not cancel or repeat host work.
 
 After building the host and WASM module, run this check from `web/`:
 
@@ -90,7 +106,11 @@ After building the host and WASM module, run this check from `web/`:
 bun apps/site/scripts/check-wasm-tui.ts
 ```
 
-It needs Playwright Chromium (`bun apps/site/node_modules/@playwright/test/cli.js install chromium`).
+It needs Playwright browsers (`bun apps/site/node_modules/@playwright/test/cli.js install chromium firefox webkit`).
+Set `VIBEKE_TUI_BROWSER=firefox` or `VIBEKE_TUI_BROWSER=webkit` to test another engine.
+WebKit checks do not replace testing Safari or a real screen reader. The test prints WASM initialization time.
+Run `bun scripts/measure-tui.ts` from `web/` to measure raw, gzip, and Brotli asset sizes.
+Set `VIBEKE_TUI_DPR=2` to test a high-density display.
 It starts an isolated host and relay under `/tmp`, pairs a fresh browser, and checks rendering,
 shell input, Unicode, the command palette, resize, reconnect, reload, and revocation.
 It stops its processes when done. It does not use an existing Vibeke session.
