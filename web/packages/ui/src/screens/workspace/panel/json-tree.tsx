@@ -29,7 +29,7 @@ function NodeView({ n, depth }: { n: JsonNode; depth: number }) {
   return (
     <div className="break-all py-px pl-3.5">
       {key}
-      <span className={VALUE_CLS[n.kind]}>{n.kind === 'string' ? JSON.stringify(n.text) : n.text}</span>
+      <span className={VALUE_CLS[n.kind]}>{'text' in n ? (n.kind === 'string' ? JSON.stringify(n.text) : n.text) : null}</span>
     </div>
   );
 }

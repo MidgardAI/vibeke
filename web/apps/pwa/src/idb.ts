@@ -76,5 +76,7 @@ export function idbGetOrCreate<T>(store: StoreName, key: string, valid: (v: unkn
 
 /** Ask the browser not to evict our keys (best effort; Safari ignores it). */
 export function persist(): void {
-  void navigator.storage?.persist?.().catch(() => {});
+  // `persist` is window-only; the service worker build sees this file through its WebWorker lib.
+  const storage = navigator.storage as { persist?: () => Promise<boolean> } | undefined;
+  void storage?.persist?.().catch(() => {});
 }

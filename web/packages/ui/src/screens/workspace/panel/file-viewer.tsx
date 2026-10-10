@@ -88,7 +88,7 @@ export default function FileViewer({ host, pane, path, onBack, onOpen }: { host:
           <Segmented
             label={t.panel.viewMode}
             value={shown}
-            onChange={setMode}
+            onChange={(v: Mode) => setMode(v)}
             options={[
               { value: 'source', label: t.panel.viewSource },
               { value: 'preview', label: t.panel.viewPreview },

@@ -20,7 +20,7 @@ const hash = (() => {
 // (src/sw.ts) and opens `#/share-in/<id>`.
 const shareTarget = {
   action: '/share-target',
-  method: 'POST',
+  method: 'POST' as const,
   enctype: 'multipart/form-data',
   params: {
     title: 'title',
@@ -60,7 +60,7 @@ export default defineConfig({
         orientation: 'any',
         background_color: '#0f1012',
         theme_color: '#0f1012',
-        ...{ share_target: shareTarget },
+        share_target: shareTarget,
         icons: [
           { src: '/icons/icon-192.png', sizes: '192x192', type: 'image/png' },
           { src: '/icons/icon-512.png', sizes: '512x512', type: 'image/png' },
