@@ -665,6 +665,12 @@ function HostSharing({ h, hostName }: { h: HostState; hostName: string }) {
         </Button>
       </Row>
 
+      <Row label={t.cloud.sandboxes} hint={t.cloud.sandboxesHint}>
+        <Button size="sm" variant="outline" onClick={() => navigate({ name: 'sandboxes' })}>
+          {t.open}
+        </Button>
+      </Row>
+
       <ReceiveHandoff hostId={id} hostName={hostName} onCreated={() => void load()} />
 
       {!data && !err && (

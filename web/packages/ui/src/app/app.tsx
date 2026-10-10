@@ -13,6 +13,7 @@ import { InboxScreen } from '../screens/inbox';
 import { IncomingScreen } from '../screens/incoming';
 import { CrewScreen, IdleLockOverlay, InteractionRoute, RunRoute, Tour, useIdleLock } from '../screens/misc';
 import { PairScreen } from '../screens/pair';
+import { SandboxesScreen } from '../screens/sandboxes';
 import { ReloadPrompt } from '../components/updates';
 import { ShareInScreen } from '../screens/share-in';
 import { SettingsScreen } from '../screens/settings';
@@ -234,6 +235,12 @@ function Screen({ route }: { route: Route }) {
       return (
         <Framed title={t.approve.screenTitle} width="narrow">
           <ApprovalScreen host={route.host} id={route.id} />
+        </Framed>
+      );
+    case 'sandboxes':
+      return (
+        <Framed title={t.cloud.sandboxes} width="narrow">
+          <SandboxesScreen />
         </Framed>
       );
     case 'crew':

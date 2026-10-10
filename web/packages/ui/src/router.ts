@@ -37,6 +37,8 @@ export type Route =
   | { name: 'home' }
   | { name: Tab }
   | { name: 'crew' }
+  /** Cloud sandboxes of the own hosts (spec 17). */
+  | { name: 'sandboxes' }
   /** Incoming handoffs: every host's list, one host's, or one handoff's accept view. */
   | { name: 'handoffs'; host: string | null; id: string | null }
   /** Approval requests from panes: every host's, one host's, or one request's review. */
@@ -81,6 +83,8 @@ export function parseRoute(hash: string): Route {
       return { name: a };
     case 'crew':
       return { name: 'crew' };
+    case 'sandboxes':
+      return { name: 'sandboxes' };
     case 'handoffs':
       return { name: 'handoffs', host: b || null, id: (b && c) || null };
     case 'approve':
@@ -149,6 +153,7 @@ export function formatRoute(r: Route): string {
     case 'focus':
     case 'changes':
     case 'crew':
+    case 'sandboxes':
       return `#/${r.name}`;
     case 'settings':
       return r.section ? `#/settings/${enc(r.section)}` : '#/settings';
