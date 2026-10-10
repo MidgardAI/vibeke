@@ -296,7 +296,8 @@ impl Host {
     fn run(&self, pane: &str, cmd: &str, mark: &str) -> String {
         self.ok(
             "pane.send_text",
-            json!({"pane": pane, "text": format!("{cmd}; echo {mark}-$((1+1))\r")}),
+            // Raw: a bracketed paste would leave the final Enter unrun in bash 5.
+            json!({"pane": pane, "text": format!("{cmd}; echo {mark}-$((1+1))\r"), "paste": "raw"}),
         );
         let want = format!("{mark}-2");
         let end = std::time::Instant::now() + std::time::Duration::from_secs(60);
