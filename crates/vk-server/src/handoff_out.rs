@@ -97,6 +97,11 @@ pub struct Job {
     /// the gateway against the export.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expect: Option<Expect>,
+    /// A bundle the server exported already (absolute path under the server's state
+    /// directory): the gateway sends this file instead of exporting the pane (a cloud box's work
+    /// brought back to a peer, spec 17 §7). Never taken from request params.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bundle: Option<String>,
 }
 
 /// The repository facts an approved `handoff.send` was approved for, recorded when the pane
@@ -322,6 +327,22 @@ fn send(server: &Server, ctx: &Ctx, p: &Value) -> R {
 /// `handoff.send`; `expect` is set for a send a pane asked for and the user approved
 /// (`auth.approve`).
 pub(crate) fn send_job(server: &Server, ctx: &Ctx, p: &Value, expect: Option<Expect>) -> R {
+    send_job_with(server, ctx, p, expect, None)
+}
+
+/// `handoff.send` of a bundle the server exported already (`cloud.move` to a peer, spec 17 §7).
+/// The gateway transfers `bundle` (an absolute path it removes when the job ends) as it is.
+pub(crate) fn send_bundle(server: &Server, ctx: &Ctx, p: &Value, bundle: String) -> R {
+    send_job_with(server, ctx, p, None, Some(bundle))
+}
+
+fn send_job_with(
+    server: &Server,
+    ctx: &Ctx,
+    p: &Value,
+    expect: Option<Expect>,
+    bundle: Option<String>,
+) -> R {
     let (pane, peer) = check_send(server, ctx, p)?;
     let want = req(p, "peer")?;
     // The gateway runs the job: start it if it is set up but not running.
@@ -349,6 +370,7 @@ pub(crate) fn send_job(server: &Server, ctx: &Ctx, p: &Value, expect: Option<Exp
         updated_at: now,
         by: Some(by),
         expect,
+        bundle,
     };
     let mut c = server.core.lock().unwrap();
     let jobs = c.store.load::<Job>(K_JOB).map_err(internal)?;
@@ -459,15 +481,15 @@ fn update(server: &Server, p: &Value) -> R {
 pub const SHAPES: &str = r##"
 # --- outgoing handoffs (spec 16 §15.2): jobs the host's gateway runs; full scope, never from a pane (a pane asks with auth.approve) ---
 handoff.send :: {pane?: Target, peer: string, interrupt?: bool = false}
-  => {job: {id: string, pane: string, peer: string, peer_name: string, interrupt: bool, state: queued|exporting|sending|delivered|failed|cancelled, sent: int, total: int, incoming?: string, incoming_state?: string, error?: string, created_at: int, updated_at: int, by?: string, expect?: {repo_root: string, branch: string|null, head: string, request: string, requested_by: string, approved_by: string}}}
+  => {job: {id: string, pane: string, peer: string, peer_name: string, interrupt: bool, state: queued|exporting|sending|delivered|failed|cancelled, sent: int, total: int, incoming?: string, incoming_state?: string, error?: string, created_at: int, updated_at: int, by?: string, expect?: {repo_root: string, branch: string|null, head: string, request: string, requested_by: string, approved_by: string}, bundle?: string}}
 # newest first; finished jobs for 7 days
 handoff.jobs :: {}
-  => {jobs: [{id: string, pane: string, peer: string, peer_name: string, interrupt: bool, state: queued|exporting|sending|delivered|failed|cancelled, sent: int, total: int, incoming?: string, incoming_state?: string, error?: string, created_at: int, updated_at: int, by?: string, expect?: {repo_root: string, branch: string|null, head: string, request: string, requested_by: string, approved_by: string}}]}
+  => {jobs: [{id: string, pane: string, peer: string, peer_name: string, interrupt: bool, state: queued|exporting|sending|delivered|failed|cancelled, sent: int, total: int, incoming?: string, incoming_state?: string, error?: string, created_at: int, updated_at: int, by?: string, expect?: {repo_root: string, branch: string|null, head: string, request: string, requested_by: string, approved_by: string}, bundle?: string}]}
 handoff.cancel :: {id: string}
-  => {job: {id: string, pane: string, peer: string, peer_name: string, interrupt: bool, state: queued|exporting|sending|delivered|failed|cancelled, sent: int, total: int, incoming?: string, incoming_state?: string, error?: string, created_at: int, updated_at: int, by?: string, expect?: {repo_root: string, branch: string|null, head: string, request: string, requested_by: string, approved_by: string}}}
+  => {job: {id: string, pane: string, peer: string, peer_name: string, interrupt: bool, state: queued|exporting|sending|delivered|failed|cancelled, sent: int, total: int, incoming?: string, incoming_state?: string, error?: string, created_at: int, updated_at: int, by?: string, expect?: {repo_root: string, branch: string|null, head: string, request: string, requested_by: string, approved_by: string}, bundle?: string}}
 # gateway clients only: progress and outcome; a finished or cancelled job refuses updates (conflict)
 handoff.job.update :: {id: string, state?: queued|exporting|sending|delivered|failed|cancelled, sent?: int, total?: int, incoming?: string, incoming_state?: string, error?: string}
-  => {job: {id: string, pane: string, peer: string, peer_name: string, interrupt: bool, state: queued|exporting|sending|delivered|failed|cancelled, sent: int, total: int, incoming?: string, incoming_state?: string, error?: string, created_at: int, updated_at: int, by?: string, expect?: {repo_root: string, branch: string|null, head: string, request: string, requested_by: string, approved_by: string}}}
+  => {job: {id: string, pane: string, peer: string, peer_name: string, interrupt: bool, state: queued|exporting|sending|delivered|failed|cancelled, sent: int, total: int, incoming?: string, incoming_state?: string, error?: string, created_at: int, updated_at: int, by?: string, expect?: {repo_root: string, branch: string|null, head: string, request: string, requested_by: string, approved_by: string}, bundle?: string}}
 # the hosts handoff.send can deliver to, as the gateway last published them
 handoff.peers :: {} => {peers: [{id: string, name: string, owner: self|teammate, added_at: int|null, expires_at: int|null, expired: bool}], updated_at: int|null}
 # gateway clients only
@@ -475,7 +497,7 @@ handoff.peers.set :: {peers: [{id: string, name: string, owner?: string, added_a
 "##;
 
 pub const EVENTS: &str = r##"
-handoff.job :: {job: string} => {id: string, pane: string, peer: string, peer_name: string, interrupt: bool, state: queued|exporting|sending|delivered|failed|cancelled, sent: int, total: int, incoming?: string, incoming_state?: string, error?: string, created_at: int, updated_at: int, by?: string, expect?: {repo_root: string, branch: string|null, head: string, request: string, requested_by: string, approved_by: string}}
+handoff.job :: {job: string} => {id: string, pane: string, peer: string, peer_name: string, interrupt: bool, state: queued|exporting|sending|delivered|failed|cancelled, sent: int, total: int, incoming?: string, incoming_state?: string, error?: string, created_at: int, updated_at: int, by?: string, expect?: {repo_root: string, branch: string|null, head: string, request: string, requested_by: string, approved_by: string}, bundle?: string}
 handoff.peers_changed :: {} => {peers: int}
 "##;
 

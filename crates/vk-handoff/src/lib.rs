@@ -1,11 +1,12 @@
 //! Handoff bundles (spec 16 §15.2): the pure parts shared by every host that exports or imports
-//! an agent's work. Export and transport live with the caller; this crate packs, unpacks and runs
-//! the repository-side import as one transaction.
+//! an agent's work. Transport and the turn boundary live with the caller; this crate exports
+//! (`export`), packs, unpacks and runs the repository-side import as one transaction.
 //!
 //! The bundle is a zstd-compressed tar: `manifest.json`, `repo.bundle` (optional), `changes.patch`,
 //! `untracked/<path>`, `transcript.jsonl` (optional) and `sidechain/<path>` (a Claude session's
 //! `<session>/` directory, optional).
 
+mod export;
 mod git;
 mod import;
 mod transcript;
@@ -16,8 +17,9 @@ use std::path::{Component, Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+pub use export::{ExportInput, Packed, Pin, export, pin};
 pub use git::{git, git_line, set_child_umask};
-pub use import::{Imported, NotWritten, import, verify};
+pub use import::{Imported, NotWritten, import, import_in_place, verify};
 pub use transcript::{
     Installed, export_transcript, install_transcript, install_transcript_in, redact_lines,
     rewrite_paths, rewrite_session,
@@ -348,6 +350,29 @@ pub fn unpack(bundle: &Path, out: &Path) -> std::io::Result<Manifest> {
     Ok(m)
 }
 
+/// Only the manifest of a packed bundle (the first entry `pack` writes), without unpacking the
+/// rest.
+pub fn read_manifest(bundle: &Path) -> std::io::Result<Manifest> {
+    let mut dec = zstd::Decoder::new(std::fs::File::open(bundle)?)?;
+    dec.window_log_max(27)?;
+    let mut ar = tar::Archive::new(dec);
+    for entry in ar.entries()?.take(1) {
+        let e = entry?;
+        if e.header().entry_type() != tar::EntryType::Regular
+            || e.path()?.to_string_lossy() != "manifest.json"
+            || e.size() > 1024 * 1024
+        {
+            break;
+        }
+        let mut data = Vec::new();
+        e.take(1024 * 1024 + 1).read_to_end(&mut data)?;
+        return Ok(serde_json::from_slice(&data)?);
+    }
+    Err(std::io::Error::other(
+        "the bundle does not start with a manifest",
+    ))
+}
+
 /// `(size, sha256 hex)` of a file.
 pub fn hash_file(p: &Path) -> std::io::Result<(u64, String)> {
     let mut f = std::fs::File::open(p)?;
@@ -593,6 +618,7 @@ mod tests {
         pack(&b, &work, &root, &m, false).unwrap();
         let got = unpack(&b, &out).unwrap();
         assert_eq!(got.head, m.head);
+        assert_eq!(read_manifest(&b).unwrap().head, m.head);
         assert_eq!(
             std::fs::read_to_string(out.join("sidechain/subagents/a.jsonl")).unwrap(),
             "{\"a\":1}\n"

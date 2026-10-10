@@ -8,20 +8,17 @@
 //! the incoming records live in the server (`handoff.incoming.*`, `handoff.accept`). This module
 //! does the export and forwards the receiver's own methods to the server.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use serde_json::{Value, json};
-use vk_handoff::{
-    MAX_BUNDLE, MAX_UNTRACKED, Manifest, Skipped, git, git_line, hash_file, regular_under,
-    safe_relative, secret_path,
-};
+use vk_handoff::Manifest;
 
 pub use vk_handoff::claude_project_dir;
 
 use crate::Gateway;
 use crate::api::{ApiError, ApiResult, normalize};
-use crate::state::{Device, now_s};
+use crate::state::Device;
 
 impl From<vk_handoff::Error> for ApiError {
     fn from(e: vk_handoff::Error) -> Self {
@@ -162,76 +159,16 @@ pub async fn export_bundle(
         }
     }
 
-    let root = git_line(&cwd, &["rev-parse", "--show-toplevel"])
-        .await
-        .map(PathBuf::from)
-        .ok_or_else(|| err("not_found", "not_a_repo"))?;
-    let head = git_line(&root, &["rev-parse", "HEAD"])
-        .await
-        .ok_or_else(|| err("conflict", "repository has no commits"))?;
-    let branch = git_line(&root, &["rev-parse", "--abbrev-ref", "HEAD"])
-        .await
-        .filter(|b| b != "HEAD");
+    let pinned = vk_handoff::pin(&cwd).await?;
     // An approved send: the repository must still be where the user approved it.
     if let Some(e) = expect {
-        e.check(&root.display().to_string(), branch.as_deref(), &head)?;
-    }
-    // Every checkout appends to HEAD's reflog, even one that later returns to `head`.
-    let head_log = head_fingerprint(&root).await;
-    let origin = git_line(&root, &["remote", "get-url", "origin"]).await;
-    let has_remotes = git_line(&root, &["remote"]).await.is_some();
-
-    let id = ulid::Ulid::new().to_string().to_lowercase();
-    let work = tempfile::Builder::new()
-        .prefix("handoff-")
-        .tempdir_in(dir(gw)?)
-        .map_err(|e| err("internal", e.to_string()))?;
-    let w = work.path().to_path_buf();
-
-    // Repository objects, then uncommitted tracked changes, both pinned to `head`.
-    let bundle_path = w.join("repo.bundle");
-    let bundle_kind = repo_objects(&root, &head, has_remotes && !full, &bundle_path).await?;
-    if (std::fs::metadata(&bundle_path)
-        .map(|m| m.len())
-        .unwrap_or(0))
-        > MAX_BUNDLE
-    {
-        return Err(err("too_large", "repository bundle exceeds 200 MiB"));
-    }
-    let patch = tracked_changes(&root, &head).await?;
-    std::fs::write(w.join("changes.patch"), &patch).map_err(|e| err("internal", e.to_string()))?;
-
-    // Untracked files.
-    let listed = git(&root, &["ls-files", "--others", "--exclude-standard", "-z"]).await?;
-    let mut untracked = Vec::new();
-    let mut skipped = Vec::new();
-    for raw in listed.split(|&b| b == 0).filter(|r| !r.is_empty()) {
-        let rel = String::from_utf8_lossy(raw).to_string();
-        let reason = if !safe_relative(&rel) {
-            Some("unsafe path")
-        } else if secret_path(&rel) {
-            Some("secret")
-        } else {
-            match regular_under(&root, &rel) {
-                None => Some("not a regular file"),
-                Some(md) if md.len() > MAX_UNTRACKED => Some("larger than 5 MiB"),
-                Some(_) => None,
-            }
-        };
-        match reason {
-            Some(r) => skipped.push(Skipped {
-                path: rel,
-                reason: r.into(),
-            }),
-            None => untracked.push(rel),
-        }
+        e.check(
+            &pinned.root.display().to_string(),
+            pinned.branch.as_deref(),
+            &pinned.head,
+        )?;
     }
 
-    // Transcript (and Claude's sidechain files), redacted line by line.
-    let (harness, session_id) = (
-        s(&run, "harness").map(str::to_string),
-        s(&run, "harness_session_id").map(str::to_string),
-    );
     let resume_args: Vec<String> = run
         .get("resume_argv")
         .and_then(|v| v.as_array())
@@ -242,86 +179,27 @@ pub async fn export_bundle(
                 .collect()
         })
         .unwrap_or_default();
-    let mut redactions = 0;
-    let mut transcript_rel = None;
-    if let Some(tp) = s(&run, "transcript_path") {
-        let (h, tp, w2) = (
-            harness.clone().unwrap_or_default(),
-            PathBuf::from(tp),
-            w.clone(),
-        );
-        if let Some((rel, n)) =
-            blocking(move || vk_handoff::export_transcript(&h, &tp, &w2)).await?
-        {
-            transcript_rel = Some(rel);
-            redactions = n;
-        }
-    }
-
-    let cwd_rel = cwd
-        .strip_prefix(&root)
-        .map(|p| p.display().to_string())
-        .unwrap_or_default();
-    let manifest = Manifest {
-        v: 1,
-        source_host: gw.host_name.clone(),
-        repo_name: root
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| "repo".into()),
-        origin,
-        branch,
-        head,
-        bundle: bundle_kind.into(),
-        cwd_rel,
-        source_cwd: cwd.display().to_string(),
-        source_root: root.display().to_string(),
-        harness,
-        session_id,
+    let input = vk_handoff::ExportInput {
+        cwd,
+        pin: Some(pinned),
+        harness: s(&run, "harness").map(str::to_string),
+        session_id: s(&run, "harness_session_id").map(str::to_string),
+        transcript: s(&run, "transcript_path").map(PathBuf::from),
         resume_args,
-        transcript_rel,
-        last_message: s(&run, "last_message").map(|m| m.chars().take(500).collect()),
-        untracked: untracked.clone(),
-        skipped,
-        redactions,
-        created_at: now_s(),
+        last_message: s(&run, "last_message").map(str::to_string),
+        source_host: gw.host_name.clone(),
         source_job: source_job.map(str::to_string),
+        full,
     };
-
-    // Pack.
+    let id = ulid::Ulid::new().to_string().to_lowercase();
     let out_path = dir(gw)?.join(format!("{id}.out.tar.zst"));
-    let (root2, w2, m2, out2) = (root.clone(), w.clone(), manifest.clone(), out_path.clone());
-    let bundle_present = bundle_kind != "none";
-    let (size, sha) = blocking(move || {
-        vk_handoff::pack(&out2, &w2, &root2, &m2, bundle_present)?;
-        hash_file(&out2)
-    })
-    .await?;
-    if size > MAX_BUNDLE {
-        let _ = std::fs::remove_file(&out_path);
-        return Err(err("too_large", "handoff bundle exceeds 200 MiB"));
-    }
-    // The working-tree diff and untracked files were read live: HEAD and the branch must not
-    // have moved while they were.
-    // A checkout to elsewhere and back leaves HEAD as it was, but not its reflog.
-    let moved = match still_at(&root, manifest.branch.as_deref(), &manifest.head).await {
-        Err(e) => Some(e),
-        Ok(()) if head_fingerprint(&root).await != head_log => Some(err(
-            "conflict",
-            "repo_moved: the repository was checked out during the export; nothing was sent, try again",
-        )),
-        Ok(()) => None,
-    };
-    if let Some(e) = moved {
-        let _ = std::fs::remove_file(&out_path);
-        return Err(e);
-    }
+    let packed = vk_handoff::export(&input, &out_path).await?;
     Ok(Exported {
         id,
         path: out_path,
-        size,
-        sha256: sha,
-        manifest,
+        size: packed.size,
+        sha256: packed.sha256,
+        manifest: packed.manifest,
     })
 }
 
@@ -376,150 +254,6 @@ fn at(root: &str, branch: Option<&str>, head: &str) -> String {
     )
 }
 
-fn moved_during_export(
-    root: &Path,
-    was: (Option<&str>, &str),
-    now: (Option<&str>, &str),
-) -> ApiError {
-    let r = root.display().to_string();
-    err(
-        "conflict",
-        format!(
-            "repo_moved: the repository's HEAD changed during the export (was: {}; now: {}); nothing was sent, try again",
-            at(&r, was.0, was.1),
-            at(&r, now.0, now.1)
-        ),
-    )
-}
-
-/// The repository's objects for `head` in `bundle_path`: `thin` (only what the remotes lack),
-/// `none` (the remotes have it all; no file) or `full`. `git bundle` can only bundle the named
-/// `HEAD`, so the bundle's recorded HEAD is verified to be `head`: a HEAD that moved since it
-/// was read fails the export (`repo_moved`) instead of bundling another commit.
-async fn repo_objects(
-    root: &Path,
-    head: &str,
-    thin: bool,
-    bundle_path: &Path,
-) -> Result<&'static str, ApiError> {
-    let was = |now: &str| {
-        let short = |h: &str| h.chars().take(12).collect::<String>();
-        err(
-            "conflict",
-            format!(
-                "repo_moved: {}'s HEAD moved from {} to {} during the export; nothing was sent, try again",
-                root.display(),
-                short(head),
-                if now.is_empty() {
-                    "nothing".to_string()
-                } else {
-                    short(now)
-                }
-            ),
-        )
-    };
-    let bp = bundle_path.to_str().unwrap_or_default();
-    let kind = if thin {
-        // Decided for the pinned commit, not for whatever HEAD is when the bundle is made.
-        let unpushed = git(
-            root,
-            &[
-                "rev-list",
-                "--max-count=1",
-                head,
-                "--not",
-                "--remotes",
-                "--",
-            ],
-        )
-        .await?;
-        if unpushed.iter().all(|b| b.is_ascii_whitespace()) {
-            return Ok("none");
-        }
-        match git(
-            root,
-            &["bundle", "create", bp, "HEAD", "--not", "--remotes"],
-        )
-        .await
-        {
-            Ok(_) => "thin",
-            // HEAD moved onto pushed history since it was read.
-            Err(e) if e.message.contains("empty bundle") => {
-                let now = git_line(root, &["rev-parse", "HEAD"])
-                    .await
-                    .unwrap_or_default();
-                return Err(was(&now));
-            }
-            Err(e) => return Err(e.into()),
-        }
-    } else {
-        git(root, &["bundle", "create", bp, "HEAD"]).await?;
-        "full"
-    };
-    let heads = git(root, &["bundle", "list-heads", bp]).await?;
-    let heads = String::from_utf8_lossy(&heads);
-    let bundled = heads
-        .lines()
-        .filter_map(|l| l.split_once(' '))
-        .find(|(_, r)| *r == "HEAD")
-        .map(|(sha, _)| sha.to_string())
-        .unwrap_or_default();
-    if bundled != head {
-        let _ = std::fs::remove_file(bundle_path);
-        return Err(was(&bundled));
-    }
-    Ok(kind)
-}
-
-/// Uncommitted tracked changes against `head` (not `HEAD`).
-async fn tracked_changes(root: &Path, head: &str) -> Result<Vec<u8>, ApiError> {
-    git(
-        root,
-        &[
-            "diff",
-            "--binary",
-            "--no-ext-diff",
-            "--no-textconv",
-            head,
-            "--",
-        ],
-    )
-    .await
-    .map_err(ApiError::from)
-}
-
-/// What a checkout always changes, even one that returns to the same commit: the length of
-/// HEAD's reflog (absent with `core.logAllRefUpdates=false`) and the HEAD file's modification
-/// time (a checkout rewrites it).
-async fn head_fingerprint(root: &Path) -> (Option<u64>, Option<std::time::SystemTime>) {
-    let meta = |name: &'static str| async move {
-        let rel = git_line(root, &["rev-parse", "--git-path", name]).await?;
-        std::fs::metadata(root.join(rel)).ok()
-    };
-    (
-        meta("logs/HEAD").await.map(|m| m.len()),
-        meta("HEAD").await.and_then(|m| m.modified().ok()),
-    )
-}
-
-/// `repo_moved` unless the repository is still on `branch` at `head`.
-async fn still_at(root: &Path, branch: Option<&str>, head: &str) -> Result<(), ApiError> {
-    let now = git_line(root, &["rev-parse", "HEAD"])
-        .await
-        .unwrap_or_default();
-    let now_branch = git_line(root, &["rev-parse", "--abbrev-ref", "HEAD"])
-        .await
-        .filter(|b| b != "HEAD");
-    if now == head && now_branch.as_deref() == branch {
-        return Ok(());
-    }
-    Err(moved_during_export(
-        root,
-        (branch, head),
-        (now_branch.as_deref(), &now),
-    ))
-}
-
 // ---------------------------------------------------------------------------------------------
 // incoming handoffs on this host (full-scope devices)
 
@@ -558,120 +292,6 @@ async fn incoming(gw: &Arc<Gateway>, dev: &Device, method: &str, p: &Value) -> A
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn sh(dir: &Path, args: &[&str]) -> String {
-        let out = std::process::Command::new("git")
-            .args(args)
-            .current_dir(dir)
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .env("GIT_AUTHOR_NAME", "t")
-            .env("GIT_AUTHOR_EMAIL", "t@example.com")
-            .env("GIT_COMMITTER_NAME", "t")
-            .env("GIT_COMMITTER_EMAIL", "t@example.com")
-            .output()
-            .unwrap();
-        assert!(out.status.success(), "git {args:?} in {}", dir.display());
-        String::from_utf8_lossy(&out.stdout).trim().to_string()
-    }
-
-    /// A repository with `main` at commit A and `feature` at B (adds `b.txt`), on `feature`.
-    fn setup(t: &Path) -> (PathBuf, String, String) {
-        let repo = t.join("repo");
-        std::fs::create_dir_all(&repo).unwrap();
-        sh(&repo, &["init", "-q", "-b", "main"]);
-        std::fs::write(repo.join("a.txt"), "one\n").unwrap();
-        sh(&repo, &["add", "-A"]);
-        sh(&repo, &["commit", "-qm", "a"]);
-        let a = sh(&repo, &["rev-parse", "HEAD"]);
-        sh(&repo, &["checkout", "-qb", "feature"]);
-        std::fs::write(repo.join("b.txt"), "two\n").unwrap();
-        sh(&repo, &["add", "-A"]);
-        sh(&repo, &["commit", "-qm", "b"]);
-        let b = sh(&repo, &["rev-parse", "HEAD"]);
-        (repo.canonicalize().unwrap(), a, b)
-    }
-
-    #[tokio::test]
-    async fn a_pinned_export_uses_the_given_commit() {
-        let t = tempfile::tempdir().unwrap();
-        let (repo, a, b) = setup(t.path());
-        let bp = t.path().join("repo.bundle");
-
-        // HEAD is B: a bundle pinned to B carries B.
-        assert_eq!(repo_objects(&repo, &b, false, &bp).await.unwrap(), "full");
-        let heads = sh(&repo, &["bundle", "list-heads", bp.to_str().unwrap()]);
-        assert!(heads.lines().any(|l| l == format!("{b} HEAD")), "{heads}");
-
-        // HEAD moved off the pinned commit: the export fails rather than bundle B for A.
-        std::fs::remove_file(&bp).unwrap();
-        let e = repo_objects(&repo, &a, false, &bp).await.unwrap_err();
-        assert_eq!(e.kind, "conflict");
-        assert!(e.message.starts_with("repo_moved"), "{}", e.message);
-        assert!(!bp.exists());
-
-        // The working-tree diff is taken against the given commit, not HEAD.
-        assert!(tracked_changes(&repo, &b).await.unwrap().is_empty());
-        let vs_a = String::from_utf8(tracked_changes(&repo, &a).await.unwrap()).unwrap();
-        assert!(vs_a.contains("b.txt"), "{vs_a}");
-    }
-
-    #[tokio::test]
-    async fn a_thin_export_is_decided_for_the_pinned_commit() {
-        let t = tempfile::tempdir().unwrap();
-        let (repo, a, b) = setup(t.path());
-        sh(&repo, &["update-ref", "refs/remotes/origin/main", &a]);
-        let bp = t.path().join("repo.bundle");
-        // A is pushed: nothing to bundle, whatever HEAD is.
-        assert_eq!(repo_objects(&repo, &a, true, &bp).await.unwrap(), "none");
-        assert!(!bp.exists());
-        // B is not: a thin bundle with B as HEAD.
-        assert_eq!(repo_objects(&repo, &b, true, &bp).await.unwrap(), "thin");
-        // B pinned but HEAD moved to the pushed A: refused, not "none".
-        std::fs::remove_file(&bp).unwrap();
-        sh(&repo, &["checkout", "-q", "main"]);
-        let e = repo_objects(&repo, &b, true, &bp).await.unwrap_err();
-        assert!(e.message.starts_with("repo_moved"), "{}", e.message);
-    }
-
-    #[tokio::test]
-    async fn the_recheck_after_export_catches_a_branch_switch() {
-        let t = tempfile::tempdir().unwrap();
-        let (repo, a, b) = setup(t.path());
-        assert!(still_at(&repo, Some("feature"), &b).await.is_ok());
-        sh(&repo, &["checkout", "-q", "main"]);
-        let e = still_at(&repo, Some("feature"), &b).await.unwrap_err();
-        assert_eq!(e.kind, "conflict");
-        assert!(e.message.starts_with("repo_moved"), "{}", e.message);
-        // Same commit, other branch name: still moved.
-        sh(&repo, &["checkout", "-qb", "other", &a]);
-        assert!(still_at(&repo, Some("main"), &a).await.is_err());
-        // Detached at the same commit: moved too.
-        sh(&repo, &["checkout", "-q", "--detach", &a]);
-        assert!(still_at(&repo, Some("other"), &a).await.is_err());
-        assert!(still_at(&repo, None, &a).await.is_ok());
-    }
-
-    #[tokio::test]
-    async fn a_checkout_elsewhere_and_back_changes_the_head_reflog() {
-        let t = tempfile::tempdir().unwrap();
-        let (repo, _a, b) = setup(t.path());
-        let before = head_fingerprint(&repo).await;
-        assert!(before.0.is_some() && before.1.is_some());
-        assert_eq!(head_fingerprint(&repo).await, before);
-        sh(&repo, &["checkout", "-q", "main"]);
-        sh(&repo, &["checkout", "-q", "feature"]);
-        assert!(still_at(&repo, Some("feature"), &b).await.is_ok());
-        assert_ne!(head_fingerprint(&repo).await, before);
-        // Without a reflog the HEAD file's rewrite still shows.
-        sh(&repo, &["config", "core.logAllRefUpdates", "false"]);
-        std::fs::remove_file(repo.join(".git/logs/HEAD")).unwrap();
-        let before = head_fingerprint(&repo).await;
-        assert!(before.0.is_none());
-        std::thread::sleep(std::time::Duration::from_millis(20));
-        sh(&repo, &["checkout", "-q", "main"]);
-        sh(&repo, &["checkout", "-q", "feature"]);
-        assert_ne!(head_fingerprint(&repo).await, before);
-    }
 
     #[test]
     fn an_expectation_matches_only_the_approved_repository_branch_and_commit() {

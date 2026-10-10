@@ -3384,6 +3384,7 @@ dependencies = [
  "vk-compat",
  "vk-config",
  "vk-gateway",
+ "vk-handoff",
  "vk-hold",
  "vk-proto",
  "vk-relay",

@@ -5,7 +5,9 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
-use crate::{Error, Manifest, Result, git, install_transcript, safe_relative, write_new_file};
+use crate::{
+    Error, Manifest, Result, git, git_line, install_transcript, safe_relative, write_new_file,
+};
 
 /// A file the import could not write; the rest of the import went ahead.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -242,6 +244,82 @@ pub async fn import(
         }),
         Err(e) => {
             rollback(root, &wt, &br).await;
+            Err(e)
+        }
+    }
+}
+
+/// Import the unpacked bundle into the existing checkout `wt` in place (spec 17 §7): its tracked
+/// files must be clean and its HEAD must be the bundle's commit or an ancestor of it. HEAD (and
+/// the branch it is on) fast-forwards to the commit, then the uncommitted changes, the untracked
+/// files and the transcript follow. A failure puts the checkout back at its old commit.
+pub async fn import_in_place(work: &Path, m: &Manifest, wt: &Path) -> Result<Imported> {
+    check(m)?;
+    let old = git_line(wt, &["rev-parse", "HEAD"])
+        .await
+        .ok_or_else(|| Error::new("conflict", format!("{} has no commits", wt.display())))?;
+    let dirty = git(wt, &["status", "--porcelain", "--untracked-files=no"]).await?;
+    if !dirty.iter().all(|b| b.is_ascii_whitespace()) {
+        return Err(Error::new(
+            "conflict",
+            format!(
+                "{} has uncommitted changes; commit or sync them first",
+                wt.display()
+            ),
+        ));
+    }
+    if m.bundle != "none" {
+        let bundle = work.join("repo.bundle");
+        let bs = bundle.to_str().unwrap_or_default();
+        let heads = git(work, &["bundle", "list-heads", bs]).await?;
+        if !String::from_utf8_lossy(&heads)
+            .lines()
+            .any(|l| l.starts_with(&m.head))
+        {
+            return Err(Error::new(
+                "conflict",
+                "bundle HEAD does not match the manifest",
+            ));
+        }
+        git(wt, &["fetch", "--no-tags", bs, "HEAD"]).await?;
+    }
+    if !has_commit(wt, &m.head).await {
+        return Err(Error::new(
+            "conflict",
+            "the handed-off commit is not available",
+        ));
+    }
+    if old != m.head {
+        if git(wt, &["merge-base", "--is-ancestor", &old, &m.head])
+            .await
+            .is_err()
+        {
+            return Err(Error::new(
+                "conflict",
+                format!(
+                    "{} has commits the handed-off work does not; sync them first",
+                    wt.display()
+                ),
+            ));
+        }
+        git(wt, &["merge", "--ff-only", "-q", &m.head]).await?;
+    }
+    let branch = git_line(wt, &["rev-parse", "--abbrev-ref", "HEAD"])
+        .await
+        .unwrap_or_else(|| "HEAD".into());
+    match fill(work, m, wt).await {
+        Ok((cwd, not_written, installed)) => Ok(Imported {
+            worktree: wt.to_path_buf(),
+            branch,
+            cwd,
+            resumed: installed.is_some(),
+            resume_args: installed,
+            not_written,
+        }),
+        Err(e) => {
+            if old != m.head {
+                let _ = git(wt, &["reset", "-q", "--hard", &old]).await;
+            }
             Err(e)
         }
     }
