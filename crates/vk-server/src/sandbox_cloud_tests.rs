@@ -235,6 +235,17 @@ fn unsynced_report_parses_and_combines_with_the_host() {
     let empty = parse_report("head=\nahead=0\ndirty=0\nuntracked=0\nstashes=0\n");
     assert!(combine(&empty, None).is_clean());
     assert!(parse_report("missing=1\n").missing);
+    // A missing or unreadable repository is unknown, never clean, and says so additively.
+    let u = Unsynced::unknown("the box repository is missing");
+    assert!(!u.is_clean());
+    assert_eq!(serde_json::to_value(&u).unwrap()["unknown"], true);
+    let clean = Unsynced::from_counts(0, 0, 0, 0);
+    assert!(
+        serde_json::to_value(&clean)
+            .unwrap()
+            .get("unknown")
+            .is_none()
+    );
     // Stashes count as dirty and are named in the summary.
     let s = Unsynced::from_counts(1, 0, 2, 1);
     assert_eq!(s.dirty, 1);

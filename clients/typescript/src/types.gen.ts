@@ -241,6 +241,7 @@ export type CloudUnsynced = {
   dirty: number;
   untracked: number;
   summary: string;
+  unknown?: boolean;
 };
 
 export type Collision = {

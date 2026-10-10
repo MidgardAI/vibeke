@@ -45,7 +45,7 @@ const PRUNABLE: &[&str] = &["orphaned", "idle", "missing"];
 pub const DEFS: &str = r##"
 CloudCaps = {resize: bool, reattach: bool, explicit_suspend: bool, keeps_memory: bool, checkpoints: bool, port_urls: bool, max_runtime_s: int}
 CloudAuthMethod = {kind: paste_token, label: string, help_url: string, hint: string} | {kind: import, source: string, label: string} | {kind: env, var: string}
-CloudUnsynced = {commits: int, dirty: int, untracked: int, summary: string}
+CloudUnsynced = {commits: int, dirty: int, untracked: int, summary: string, unknown?: bool}
 CloudBoxView = {box: string, provider: string, id: string, name: string, state: string, ownership: attached|idle|orphaned|foreign|missing, key: string, task?: string, workspace?: string, panes: [string], sessions: int, created_at: int, last_activity_at: int, url?: string, unsynced: CloudUnsynced|null, caps: CloudCaps, host_tag: string}
 CloudProvider = {id: string, label: string, caps: CloudCaps, default: bool, auth: {state: missing|ok|invalid, source?: string, account?: string, error?: string}, methods: [CloudAuthMethod]}
 "##;
@@ -387,9 +387,11 @@ async fn box_checkpoint(server: &Arc<Server>, p: &Value) -> R {
 }
 
 /// Close the panes of `rec`'s task that run in the box, and stop serving the task from it. A
-/// task that is still active keeps its level and fails closed for new panes.
-fn close_and_detach(server: &Arc<Server>, rec: &BoxRecord) {
-    if rec.key.is_empty() {
+/// task that is still active keeps its level and fails closed for new panes. Only for the box
+/// the task runs in now (`current`, [`cl::is_current_box`]): destroying an older box of a task
+/// that moved on to another box leaves the task's panes and context alone.
+fn close_and_detach(server: &Arc<Server>, rec: &BoxRecord, current: bool) {
+    if rec.key.is_empty() || !current {
         return;
     }
     let (panes, checkout, active) = server.with_core(|c| {
@@ -446,8 +448,9 @@ pub(crate) async fn destroy_record(
             return Err(cl::unsynced_conflict(&rec.box_ref(), &u));
         }
     }
-    close_and_detach(server, rec);
-    cl::destroy_box(server, &c).await
+    let current = cl::is_current_box(server, &rec.key, &rec.box_ref());
+    close_and_detach(server, rec, current);
+    cl::destroy_box_with(server, &c, current).await
 }
 
 async fn box_destroy(server: &Arc<Server>, p: &Value) -> R {

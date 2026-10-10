@@ -262,6 +262,7 @@ CloudUnsynced = TypedDict("CloudUnsynced", {
     "dirty": int,
     "untracked": int,
     "summary": str,
+    "unknown": NotRequired[bool],
 })
 
 Collision = TypedDict("Collision", {

@@ -52,6 +52,10 @@ pub struct Unsynced {
     pub dirty: u32,
     pub untracked: u32,
     pub summary: String,
+    /// The box repository could not be inspected (missing or unreadable): the counts say
+    /// nothing, and the box is not clean.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub unknown: bool,
 }
 
 impl Unsynced {
@@ -80,10 +84,20 @@ impl Unsynced {
             } else {
                 format!("{} not on the host", parts.join(", "))
             },
+            unknown: false,
         }
     }
+    /// The box repository is missing or unreadable: what it holds is unknown.
+    pub fn unknown(why: &str) -> Unsynced {
+        Unsynced {
+            summary: format!("{why}: cannot check for work that is not on the host"),
+            unknown: true,
+            ..Default::default()
+        }
+    }
+    /// Nothing unsynced, as far as the box could be checked: an unknown state is never clean.
     pub fn is_clean(&self) -> bool {
-        self.commits == 0 && self.dirty == 0 && self.untracked == 0
+        !self.unknown && self.commits == 0 && self.dirty == 0 && self.untracked == 0
     }
 }
 
@@ -772,8 +786,21 @@ pub async fn exec_capture(
     stdin: Vec<u8>,
     timeout: Duration,
 ) -> Result<Captured, RpcError> {
+    exec_capture_env(server, c, argv, &[], stdin, timeout).await
+}
+
+/// [`exec_capture`] with a non-secret env for the command (the panes' [`CloudRunner::exec_env`]
+/// for commands that must see the same harness directories, such as the bundle commands).
+pub async fn exec_capture_env(
+    server: &Arc<Server>,
+    c: &CloudCtx,
+    argv: &[String],
+    env: &[(String, String)],
+    stdin: Vec<u8>,
+    timeout: Duration,
+) -> Result<Captured, RpcError> {
     let (p, cred) = credential(server, &c.provider)?;
-    exec_on(p.as_ref(), &cred, &c.box_id, argv, stdin, timeout).await
+    exec_on_env(p.as_ref(), &cred, &c.box_id, argv, env, stdin, timeout).await
 }
 
 async fn exec_on(
@@ -784,7 +811,19 @@ async fn exec_on(
     stdin: Vec<u8>,
     timeout: Duration,
 ) -> Result<Captured, RpcError> {
-    match tokio::time::timeout(timeout, exec_session(p, cred, id, argv, stdin)).await {
+    exec_on_env(p, cred, id, argv, &[], stdin, timeout).await
+}
+
+async fn exec_on_env(
+    p: &dyn Provider,
+    cred: &Secret,
+    id: &str,
+    argv: &[String],
+    env: &[(String, String)],
+    stdin: Vec<u8>,
+    timeout: Duration,
+) -> Result<Captured, RpcError> {
+    match tokio::time::timeout(timeout, exec_session(p, cred, id, argv, env, stdin)).await {
         Ok(r) => r,
         Err(_) => Err(err(
             ErrorKind::Timeout,
@@ -802,11 +841,12 @@ async fn exec_session(
     cred: &Secret,
     id: &str,
     argv: &[String],
+    env: &[(String, String)],
     stdin: Vec<u8>,
 ) -> Result<Captured, RpcError> {
     let req = ExecReq {
         argv: argv.to_vec(),
-        env: vec![],
+        env: env.to_vec(),
         cwd: None,
         tty: false,
         cols: 0,
@@ -987,6 +1027,9 @@ pub async fn build(server: &Arc<Server>, i: BuildIn<'_>) -> Result<CloudCtx, Rpc
     }
     let (p, cred) = credential(server, &prov_id)?;
     let host = host_id(server);
+    if let Some(id) = &box_id {
+        check_explicit_box(server, &host, key, &format!("{prov_id}/{id}"))?;
+    }
     let tags = vk_cloud::naming::Tags::new(&host, key);
     // The task's own box from before (a bring-back kept or suspended it): use it again.
     let reuse = box_id.is_none().then(|| {
@@ -1089,6 +1132,38 @@ pub async fn build(server: &Arc<Server>, i: BuildIn<'_>) -> Result<CloudCtx, Rpc
     Ok(c)
 }
 
+/// A box the caller named (`task.create {box}`) must already be task `key`'s own box: one this
+/// host recorded for that key, with this host's owner tag. Taking any other box would
+/// bootstrap (reset) another task's clone; such boxes are taken over with `cloud.box.adopt`.
+fn check_explicit_box(
+    server: &Server,
+    host_id: &str,
+    key: &str,
+    box_ref: &str,
+) -> Result<(), RpcError> {
+    let rec = load_record(server, box_ref);
+    let why = match &rec {
+        None => Some("this host has no record of it"),
+        Some(r)
+            if r.tags
+                .as_ref()
+                .is_some_and(|t| t.host != vk_cloud::naming::host_tag(host_id)) =>
+        {
+            Some("another host owns it")
+        }
+        Some(r) if r.key != key => Some("it belongs to another task"),
+        Some(_) => None,
+    };
+    match why {
+        None => Ok(()),
+        Some(why) => Err(err(
+            ErrorKind::Conflict,
+            format!("cannot use cloud box {box_ref} for this task: {why}; take a box over with cloud.box.adopt"),
+        )
+        .details(json!({"reason": "box_not_ours", "box": box_ref}))),
+    }
+}
+
 /// `uname -sm` → (os, arch) with the arch normalized to `x86_64` / `aarch64`.
 pub fn parse_uname(s: &str) -> (String, String) {
     let mut it = s.split_whitespace();
@@ -1109,8 +1184,19 @@ pub fn linux_vibeke_path(home: &Path, arch: &str) -> PathBuf {
         .join(format!("vibeke-linux-{arch}"))
 }
 
-/// The `vibeke` binary for a box that runs `os`/`arch`.
-fn box_vibeke(server: &Server, os: &str, arch: &str) -> Result<PathBuf, RpcError> {
+/// The `vibeke` binary for a box that runs `os`/`arch`: a local build or cached release first,
+/// else the release asset of this version, downloaded and verified (`crate::cloud_bin`).
+/// `host_dir`: the box is a directory on this host (a non-empty [`CloudCtx::root`], the `fake`
+/// provider), so the host binary runs there whatever the box reports.
+async fn box_vibeke(
+    server: &Arc<Server>,
+    host_dir: bool,
+    os: &str,
+    arch: &str,
+) -> Result<PathBuf, RpcError> {
+    if host_dir {
+        return Ok(server.opts.bin.clone());
+    }
     let home = server.sandbox.home();
     let host_os = match std::env::consts::OS {
         "macos" => "Darwin",
@@ -1134,18 +1220,14 @@ fn box_vibeke(server: &Server, os: &str, arch: &str) -> Result<PathBuf, RpcError
         {
             return Ok(p);
         }
+        return crate::cloud_bin::fetch_linux_vibeke(server, arch).await;
     } else if os == host_os && arch == std::env::consts::ARCH {
         // The box is a directory on this host (the `fake` provider): the host binary runs there.
         return Ok(server.opts.bin.clone());
     }
-    // TODO(spec 17 §4 step 3): download the matching release asset and verify it with the
-    // vk_remote minisign key.
     Err(err(
         ErrorKind::Unsupported,
-        format!(
-            "the box runs {os} {arch}, and no matching vibeke binary is on this host: expected {}",
-            linux_vibeke_path(&home, arch).display()
-        ),
+        format!("the box runs {os} {arch}; vibeke releases exist for Linux boxes only"),
     ))
 }
 
@@ -1266,7 +1348,7 @@ async fn bootstrap(
         return Err(fail("prepare /vibeke and /workspace", &o));
     }
     let (os, arch) = parse_uname(o.out().lines().last().unwrap_or_default());
-    let bin = box_vibeke(server, &os, &arch)?;
+    let bin = box_vibeke(server, !c.root.is_empty(), &os, &arch).await?;
     let data = tokio::fs::read(&bin).await.map_err(internal)?;
     p.write_file(cred, &c.box_id, &c.bin, data, 0o755)
         .await
@@ -1588,6 +1670,7 @@ pub fn unsynced_script(workdir: &str, branch: Option<&str>, base: Option<&str>) 
         .unwrap_or_else(|| "''".into());
     format!(
         "cd {w} 2>/dev/null && [ -d .git ] || {{ echo missing=1; exit 0; }}\n\
+git status --porcelain >/dev/null 2>&1 || {{ echo missing=1; exit 0; }}\n\
 h=$(git rev-parse -q --verify HEAD 2>/dev/null || true)\n\
 echo \"head=$h\"\n\
 r={host}; b={base}\n\
@@ -1678,7 +1761,7 @@ pub async fn unsynced(server: &Arc<Server>, c: &CloudCtx) -> Result<Unsynced, Rp
     }
     let r = parse_report(&o.out());
     if r.missing {
-        return Ok(Unsynced::from_counts(0, 0, 0, 0));
+        return Ok(Unsynced::unknown("the box repository is missing"));
     }
     let host = match (&r.head, c.clone.as_ref()) {
         (Some(h), Some(cl)) if cl.repo.is_dir() => {
@@ -1727,8 +1810,35 @@ pub fn unsynced_conflict(box_ref: &str, u: &Unsynced) -> RpcError {
     .details(json!({"reason": "unsynced_changes", "unsynced": u}))
 }
 
-/// Destroy the box (no checks) and drop its record and host dirs.
+/// Whether `box_ref` is the box task `key` runs in now: its live context names that box, or
+/// (no live context) the task has no other box on record. Only then do the task's panes,
+/// context and host dirs belong to the box; an older box of the task kept after a bring-back is
+/// not the current one once the task runs in another.
+pub fn is_current_box(server: &Server, key: &str, box_ref: &str) -> bool {
+    if key.is_empty() {
+        return false;
+    }
+    match server.sandbox.get(key) {
+        Some(tb) => ctx(&tb).is_some_and(|c| c.box_ref() == box_ref),
+        None => !list_records(server)
+            .iter()
+            .any(|r| r.key == key && r.state != "destroyed" && r.box_ref() != box_ref),
+    }
+}
+
+/// Destroy the box (no checks) and drop its record, and its task's host dirs when it is the
+/// task's current box ([`is_current_box`]).
 pub async fn destroy_box(server: &Arc<Server>, c: &CloudCtx) -> Result<(), RpcError> {
+    let current = is_current_box(server, &c.key, &c.box_ref());
+    destroy_box_with(server, c, current).await
+}
+
+/// [`destroy_box`]; `remove_dirs` says whether the task's host dirs go with it.
+pub async fn destroy_box_with(
+    server: &Arc<Server>,
+    c: &CloudCtx,
+    remove_dirs: bool,
+) -> Result<(), RpcError> {
     let (p, cred) = credential(server, &c.provider)?;
     p.destroy(&cred, &c.box_id)
         .await
@@ -1741,7 +1851,7 @@ pub async fn destroy_box(server: &Arc<Server>, c: &CloudCtx) -> Result<(), RpcEr
         ..Default::default()
     });
     drop_record(server, &rec);
-    if !c.key.is_empty() {
+    if remove_dirs && !c.key.is_empty() {
         let _ = std::fs::remove_dir_all(sbx_root(&c.key));
         let _ = std::fs::remove_dir_all(&c.run_dir);
     }
@@ -1864,7 +1974,11 @@ async fn release(
                 destroy_box(server, c).await.map(|()| "destroyed")
             }
         },
-        "suspend" => suspend_box(server, c).await.map(|()| "suspended"),
+        "suspend" => {
+            // Inspect first: asking a suspended box would wake it again.
+            unsynced_now = unsynced(server, c).await.ok();
+            suspend_box(server, c).await.map(|()| "suspended")
+        }
         _ => Ok("kept"),
     };
     let action = match outcome {
@@ -1879,6 +1993,8 @@ async fn release(
     {
         match unsynced_now.clone() {
             Some(u) => rec.unsynced = Some(u),
+            // Never after a suspend: the check would wake the box.
+            None if action == "suspended" => {}
             None => {
                 if let Ok(u) = unsynced(server, c).await {
                     rec.unsynced = Some(u);

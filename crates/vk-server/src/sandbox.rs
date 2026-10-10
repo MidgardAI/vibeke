@@ -285,7 +285,7 @@ impl State {
         i.failed.remove(key);
         i.failed_checkouts.retain(|(_, k)| k != key);
     }
-    fn home(&self) -> PathBuf {
+    pub(crate) fn home(&self) -> PathBuf {
         self.inner
             .lock()
             .unwrap()

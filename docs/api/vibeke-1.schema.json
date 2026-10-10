@@ -1071,6 +1071,9 @@
         },
         "summary": {
           "type": "string"
+        },
+        "unknown": {
+          "type": "boolean"
         }
       },
       "required": [

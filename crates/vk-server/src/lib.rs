@@ -14,6 +14,7 @@ pub mod blob_store;
 pub mod browse_api;
 pub mod browser_pane;
 pub mod cloud_api;
+pub mod cloud_bin;
 pub mod cloud_move;
 pub mod cloud_reconcile;
 pub mod collision;

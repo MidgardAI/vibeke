@@ -530,6 +530,16 @@ pub fn authorize(server: &Server, ctx: &Ctx, method: &str, p: &Value) -> Result<
         )
         .details(json!({"scope": "pane"})));
     }
+    // Spec 17: choosing an existing cloud box (`task.create {isolate: cloud, box}`) is the
+    // user's; an agent must not point a task at a box (only `IsoRequest` reads `box` outside
+    // the pane-forbidden `cloud.*` methods).
+    if p.get("box").is_some_and(|v| !v.is_null()) {
+        return Err(err(
+            ErrorKind::PermissionDenied,
+            "box: a pane cannot choose a cloud box; the user picks one",
+        )
+        .details(json!({"scope": "pane"})));
+    }
     crate::preview::authorize_pane_machine(server, ctx, method, p)?;
     let owns = |pane: &Pane| &pane.id == scope || pane.created_by == format!("agent:{scope}");
     let pane_targeted = is_pane_targeted(method);

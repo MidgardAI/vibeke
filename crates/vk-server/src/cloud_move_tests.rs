@@ -223,6 +223,17 @@ async fn leftover_jobs_fail_once_and_panes_cannot_move() {
         .unwrap_err();
         assert_eq!(e.data.kind, "permission_denied", "{m}");
     }
+    // Nor can a pane point a new task at an existing cloud box.
+    let e = dispatch(
+        &s,
+        &pane_ctx("p1"),
+        "task.create",
+        &json!({"title": "t", "isolate": "cloud", "box": "fake/other"}),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(e.data.kind, "permission_denied", "{e:?}");
+    assert!(e.message.contains("cloud box"), "{}", e.message);
     // A host pane can't be brought back; bad destinations are refused before anything runs.
     let e = dispatch(
         &s,
@@ -242,4 +253,23 @@ async fn leftover_jobs_fail_once_and_panes_cannot_move() {
     .await
     .unwrap_err();
     assert_eq!(e.data.kind, "invalid_params");
+}
+
+#[test]
+fn bring_back_stashes_only_what_moved() {
+    assert_eq!(keep_leftovers_reason(0, 0), None);
+    assert!(
+        keep_leftovers_reason(1, 0)
+            .unwrap()
+            .contains("not exported")
+    );
+    assert!(keep_leftovers_reason(0, 2).unwrap().contains("not written"));
+    assert!(keep_leftovers_reason(1, 2).is_some());
+    let m = brought_back_message("01JOB");
+    // The in-box unsynced report ignores these stashes by their prefix.
+    assert!(
+        m.starts_with(crate::sandbox::cloud::BROUGHT_BACK_STASH),
+        "{m}"
+    );
+    assert!(m.contains("01JOB"), "{m}");
 }
