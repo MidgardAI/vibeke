@@ -15,7 +15,10 @@ import { SHORTCUTS, keyLabel, shortcutFor, type ShortcutAction } from '../lib/sh
 import type { PaneRow } from '../lib/tree';
 import type { UiCommand } from '../platform';
 import { formatRoute, goBack, navigate, useRoute, workspaceRoute, type Route } from '../router';
+import { CloudAuthHost } from '../components/cloud-auth';
+import { CloudSheet } from '../screens/cloud-send';
 import { HandoffSheet } from '../screens/handoff';
+import { isOwnFullHost } from '../lib/handoff-send';
 import { ShareSheet } from '../screens/share';
 import { useApp, usePrefs, useTree } from './hooks';
 import { useTogglePanel } from './layout';
@@ -49,10 +52,10 @@ export function requestAgentView(r: AgentViewRequest): boolean {
   return viewBus.size > 0;
 }
 
-type SheetState = { kind: 'new' } | { kind: 'share'; row: PaneRow } | { kind: 'handoff'; row: PaneRow } | null;
+type SheetState = { kind: 'new' } | { kind: 'share'; row: PaneRow } | { kind: 'handoff'; row: PaneRow } | { kind: 'cloud_send'; row: PaneRow } | { kind: 'cloud_back'; host: string; pane?: string } | null;
 
 const TYPING = /^(INPUT|TEXTAREA|SELECT)$/;
-const SUBPAGES = new Set<Route['name']>(['pane', 'interaction', 'run', 'settings', 'crew', 'pair', 'not_found']);
+const SUBPAGES = new Set<Route['name']>(['pane', 'interaction', 'run', 'settings', 'crew', 'sandboxes', 'pair', 'not_found']);
 
 /** Press the `[data-find]` control of the current screen, or focus its `[data-find-input]`. */
 function find(): boolean {
@@ -274,6 +277,14 @@ export function KeyboardLayer({ surface }: { surface: Surface }) {
     if (app.platform.updates) out.push(c('updates', 'Check for updates…', () => { setUpdates(true); void app.platform.updates!.check(); }, undefined, 'update upgrade release'));
     // Lock pauses polling until "Resume": only the main window has that overlay.
     if (surface === 'full') out.push(c('lock', t.palette.lock, () => app.locked.set(true)));
+    // Cloud sandboxes (spec 17): full-scope hosts only.
+    const cloudHost = app.manager.getSnapshot().find(isOwnFullHost)?.record.host_id;
+    if (cloudHost) {
+      const paneFull = paneRow && (app.conn(paneRow.host)?.getSnapshot().info?.scope ?? 'view') === 'full';
+      if (paneRow && paneFull) out.unshift(c('cloud-send', t.palette.cloudSend, () => setSheet({ kind: 'cloud_send', row: paneRow }), undefined, 'sandbox remote move'));
+      out.unshift(c('cloud-back', t.palette.cloudBringBack, () => setSheet({ kind: 'cloud_back', host: paneFull ? paneRow!.host : cloudHost, ...(paneFull ? { pane: paneRow!.pane.id } : {}) }), undefined, 'sandbox remote return'));
+      out.push(c('sandboxes', t.palette.sandboxes, () => navigate({ name: 'sandboxes' }), undefined, 'cloud boxes machines'));
+    }
     if (paneRow) {
       const full = paneRow && (app.conn(paneRow.host)?.getSnapshot().info?.scope ?? 'view') === 'full';
       if (full) {
@@ -307,6 +318,9 @@ export function KeyboardLayer({ surface }: { surface: Surface }) {
       <NewSheet open={sheet?.kind === 'new'} onClose={() => setSheet(null)} />
       {sheet?.kind === 'share' && <ShareSheet row={sheet.row} open onClose={() => setSheet(null)} />}
       {sheet?.kind === 'handoff' && <HandoffSheet row={sheet.row} open onClose={() => setSheet(null)} />}
+      {sheet?.kind === 'cloud_send' && <CloudSheet mode="send" host={sheet.row.host} pane={sheet.row.pane.id} open onClose={() => setSheet(null)} />}
+      {sheet?.kind === 'cloud_back' && <CloudSheet mode="bring_back" host={sheet.host} pane={sheet.pane} open onClose={() => setSheet(null)} />}
+      {surface === 'full' && <CloudAuthHost />}
     </>
   );
 }

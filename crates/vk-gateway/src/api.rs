@@ -95,6 +95,9 @@ const SERVER_READ_ONLY: &[&str] = &[
     "handoff.incoming.get",
     "handoff.jobs",
     "handoff.peers",
+    "cloud.providers",
+    "cloud.box.list",
+    "cloud.jobs",
     "agent.turns",
     "assistant.status",
     "assistant.get",
@@ -185,6 +188,22 @@ pub fn required_scope(method: &str) -> Option<Scope> {
         "handoff.offer" | "handoff.status" | "handoff.write" | "handoff.commit"
         | "handoff.discard" | "handoff.send" | "handoff.jobs" | "handoff.cancel"
         | "handoff.peers" => Full,
+        // Cloud sandboxes (spec 17): sign-in, boxes and moves belong to the owner's apps.
+        "cloud.providers"
+        | "cloud.auth.set"
+        | "cloud.auth.import"
+        | "cloud.auth.clear"
+        | "cloud.box.list"
+        | "cloud.box.suspend"
+        | "cloud.box.resume"
+        | "cloud.box.checkpoint"
+        | "cloud.box.destroy"
+        | "cloud.box.adopt"
+        | "cloud.box.forget"
+        | "cloud.prune"
+        | "cloud.move"
+        | "cloud.jobs"
+        | "cloud.cancel" => Full,
         // Host-to-host trust and invitation management (spec 16 §15.3–§15.4, peers.rs).
         "peer.invite" | "peer.redeem" | "peer.list" | "peer.remove" | "share.list"
         | "share.revoke" => Full,
@@ -236,6 +255,7 @@ const HOST_WIDE: &[&str] = &[
 const HOST_WIDE_PREFIXES: &[&str] = &[
     "peer.",
     "handoff.",
+    "cloud.",
     "assistant.",
     "browser.",
     "sandbox.",
@@ -251,6 +271,9 @@ const FULL_READ_ONLY: &[&str] = &[
     "handoff.status",
     "handoff.jobs",
     "handoff.peers",
+    "cloud.providers",
+    "cloud.box.list",
+    "cloud.jobs",
     "handoff.incoming.list",
     "handoff.incoming.get",
     "peer.list",
@@ -1636,6 +1659,61 @@ impl Call<'_> {
                 self.server(method, pick(&p, &["id"])).await
             }
             "handoff.jobs" | "handoff.peers" => self.server(method, json!({})).await,
+            // Cloud sandboxes (spec 17). Params are allowlisted; the server redacts `token`
+            // and this gateway never logs params (the audit entry records the method only).
+            "cloud.providers" => self.server(method, pick(&p, &["verify"])).await,
+            "cloud.auth.set" => {
+                req(&p, "provider")?;
+                req(&p, "token")?;
+                self.server(method, pick(&p, &["provider", "token"])).await
+            }
+            "cloud.auth.import" => {
+                req(&p, "provider")?;
+                req(&p, "source")?;
+                self.server(method, pick(&p, &["provider", "source"])).await
+            }
+            "cloud.auth.clear" => {
+                req(&p, "provider")?;
+                self.server(method, pick(&p, &["provider"])).await
+            }
+            "cloud.box.list" => {
+                self.server(method, pick(&p, &["provider", "ownership", "refresh"]))
+                    .await
+            }
+            "cloud.box.suspend" | "cloud.box.resume" | "cloud.box.adopt" | "cloud.box.forget" => {
+                req(&p, "box")?;
+                self.server(method, pick(&p, &["box"])).await
+            }
+            "cloud.box.checkpoint" => {
+                req(&p, "box")?;
+                self.server(method, pick(&p, &["box", "note"])).await
+            }
+            "cloud.box.destroy" => {
+                req(&p, "box")?;
+                self.server(method, pick(&p, &["box", "force"])).await
+            }
+            "cloud.prune" => {
+                self.server(
+                    method,
+                    pick(&p, &["provider", "ownership", "dry_run", "force"]),
+                )
+                .await
+            }
+            "cloud.move" => {
+                self.server(
+                    method,
+                    pick(
+                        &p,
+                        &["pane", "run", "box", "to", "interrupt", "source_after"],
+                    ),
+                )
+                .await
+            }
+            "cloud.jobs" => self.server(method, json!({})).await,
+            "cloud.cancel" => {
+                req(&p, "id")?;
+                self.server(method, pick(&p, &["id"])).await
+            }
             // Approved calls (09 §3.2): only the approval requests and standing grants, never
             // the elevation tokens and revocations `auth.list` also returns.
             "auth.list" => {
@@ -2158,6 +2236,31 @@ mod share_tests {
             );
             assert!(kind_allows("device", m), "{m}");
         }
+        // Cloud sandboxes: Full scope, never for shares, peers or limited devices.
+        for m in [
+            "cloud.providers",
+            "cloud.auth.set",
+            "cloud.auth.import",
+            "cloud.auth.clear",
+            "cloud.box.list",
+            "cloud.box.suspend",
+            "cloud.box.resume",
+            "cloud.box.checkpoint",
+            "cloud.box.destroy",
+            "cloud.box.adopt",
+            "cloud.box.forget",
+            "cloud.prune",
+            "cloud.move",
+            "cloud.jobs",
+            "cloud.cancel",
+        ] {
+            assert_eq!(required_scope(m), Some(Scope::Full), "{m}");
+            assert!(host_wide(m), "{m}");
+            assert!(!kind_allows("share", m) && !kind_allows("peer", m), "{m}");
+            assert!(kind_allows("device", m), "{m}");
+        }
+        assert!(is_mutating("cloud.auth.set") && is_mutating("cloud.move"));
+        assert!(!is_mutating("cloud.box.list") && !is_mutating("cloud.jobs"));
         assert!(is_mutating("handoff.send") && is_mutating("handoff.cancel"));
         assert!(is_mutating("handoff.offer") && is_mutating("handoff.commit"));
         assert!(!is_mutating("handoff.jobs") && !is_mutating("handoff.status"));
