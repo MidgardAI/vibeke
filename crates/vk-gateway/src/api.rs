@@ -1680,9 +1680,14 @@ impl Call<'_> {
                 self.server(method, pick(&p, &["provider", "ownership", "refresh"]))
                     .await
             }
-            "cloud.box.suspend" | "cloud.box.resume" | "cloud.box.adopt" | "cloud.box.forget" => {
+            "cloud.box.suspend" | "cloud.box.resume" | "cloud.box.forget" => {
                 req(&p, "box")?;
                 self.server(method, pick(&p, &["box"])).await
+            }
+            "cloud.box.adopt" => {
+                req(&p, "box")?;
+                self.server(method, pick(&p, &["box", "repo", "title"]))
+                    .await
             }
             "cloud.box.checkpoint" => {
                 req(&p, "box")?;
@@ -1695,7 +1700,7 @@ impl Call<'_> {
             "cloud.prune" => {
                 self.server(
                     method,
-                    pick(&p, &["provider", "ownership", "dry_run", "force"]),
+                    pick(&p, &["provider", "ownership", "boxes", "dry_run", "force"]),
                 )
                 .await
             }

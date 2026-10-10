@@ -60,25 +60,50 @@ pub struct Unsynced {
 
 impl Unsynced {
     pub fn from_counts(commits: u32, dirty: u32, untracked: u32, stashes: u32) -> Unsynced {
+        Unsynced::from_parts(Parts {
+            commits,
+            dirty,
+            untracked,
+            stashes,
+            ..Default::default()
+        })
+    }
+    /// The counts of one report. `commits` counts the commits of the task branch and of other
+    /// branches or tags; `dirty` counts changed files, changed submodules and stashes.
+    pub fn from_parts(p: Parts) -> Unsynced {
         let plural =
             |n: u32, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
         let mut parts = Vec::new();
-        if commits > 0 {
-            parts.push(plural(commits, "commit", "commits"));
+        if p.commits > 0 {
+            parts.push(plural(p.commits, "commit", "commits"));
         }
-        if dirty > 0 {
-            parts.push(plural(dirty, "changed file", "changed files"));
+        if p.other_commits > 0 {
+            parts.push(plural(
+                p.other_commits,
+                "commit on other branches or tags",
+                "commits on other branches or tags",
+            ));
         }
-        if stashes > 0 {
-            parts.push(plural(stashes, "stash", "stashes"));
+        if p.dirty > 0 {
+            parts.push(plural(p.dirty, "changed file", "changed files"));
         }
-        if untracked > 0 {
-            parts.push(plural(untracked, "untracked file", "untracked files"));
+        if p.submodules > 0 {
+            parts.push(plural(
+                p.submodules,
+                "changed submodule",
+                "changed submodules",
+            ));
+        }
+        if p.stashes > 0 {
+            parts.push(plural(p.stashes, "stash", "stashes"));
+        }
+        if p.untracked > 0 {
+            parts.push(plural(p.untracked, "untracked file", "untracked files"));
         }
         Unsynced {
-            commits,
-            dirty: dirty + stashes,
-            untracked,
+            commits: p.commits + p.other_commits,
+            dirty: p.dirty + p.submodules + p.stashes,
+            untracked: p.untracked,
             summary: if parts.is_empty() {
                 "clean".into()
             } else {
@@ -99,6 +124,21 @@ impl Unsynced {
     pub fn is_clean(&self) -> bool {
         !self.unknown && self.commits == 0 && self.dirty == 0 && self.untracked == 0
     }
+}
+
+/// The counts behind an [`Unsynced`] summary.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Parts {
+    /// Commits of the task branch the host has no ref for.
+    pub commits: u32,
+    /// Commits on other branches or tags of the box that no host ref reaches.
+    pub other_commits: u32,
+    pub dirty: u32,
+    /// Submodules with changes (new commits, changed or untracked files): a bundle never
+    /// carries them.
+    pub submodules: u32,
+    pub untracked: u32,
+    pub stashes: u32,
 }
 
 /// One box Vibeke knows about (kv `cloud_box/<provider>/<id>`). Never holds a credential.
@@ -130,6 +170,9 @@ pub struct BoxRecord {
     pub worktree: Option<String>,
     pub branch: Option<String>,
     pub base: Option<String>,
+    /// This host took the box over with `cloud.box.adopt`. The box name and tags keep the
+    /// creating host's tag, so ownership follows the record (`key`, `task`), not the tag.
+    pub adopted: bool,
 }
 
 impl BoxRecord {
@@ -139,6 +182,14 @@ impl BoxRecord {
     /// Created by this host for a task (as opposed to a box only seen in a listing).
     pub fn ours(&self) -> bool {
         !self.key.is_empty() && self.task.is_some()
+    }
+    /// The owner host tag the reconciler compares with this host's: none for an adopted box,
+    /// which is ours whatever its name says.
+    pub fn owner_tag(&self) -> Option<&str> {
+        if self.adopted {
+            return None;
+        }
+        self.tags.as_ref().map(|t| t.host.as_str())
     }
 }
 
@@ -725,11 +776,9 @@ fn make_ctx(
     }
 }
 
-/// A context for a recorded box without creating or contacting anything (box API, release of
-/// a box whose task context is gone).
-pub fn ctx_from_record(server: &Server, rec: &BoxRecord) -> Result<CloudCtx, RpcError> {
-    let p = provider(&rec.provider)?;
-    let clone = match (&rec.repo, &rec.worktree, &rec.branch) {
+/// The task clone a record names (host repo, worktree, branch, base), when it names one.
+pub fn clone_of(rec: &BoxRecord) -> Option<CloudClone> {
+    match (&rec.repo, &rec.worktree, &rec.branch) {
         (Some(r), Some(w), Some(b)) => Some(CloudClone {
             repo: r.into(),
             worktree: w.into(),
@@ -737,7 +786,14 @@ pub fn ctx_from_record(server: &Server, rec: &BoxRecord) -> Result<CloudCtx, Rpc
             base: rec.base.clone().unwrap_or_default(),
         }),
         _ => None,
-    };
+    }
+}
+
+/// A context for a recorded box without creating or contacting anything (box API, release of
+/// a box whose task context is gone).
+pub fn ctx_from_record(server: &Server, rec: &BoxRecord) -> Result<CloudCtx, RpcError> {
+    let p = provider(&rec.provider)?;
+    let clone = clone_of(rec);
     Ok(make_ctx(
         server,
         p.id(),
@@ -958,6 +1014,19 @@ fn clone_info(server: &Server, task: &str, checkout: &Path) -> Result<CloudClone
     })
 }
 
+/// [`clone_info`] off the async runtime.
+async fn derive_clone(
+    server: &Arc<Server>,
+    task: &str,
+    checkout: &Path,
+) -> Result<CloudClone, RpcError> {
+    let srv = server.clone();
+    let (t2, co) = (task.to_string(), checkout.to_path_buf());
+    tokio::task::spawn_blocking(move || clone_info(&srv, &t2, &co))
+        .await
+        .map_err(internal)?
+}
+
 /// Build (and with `start`, create and bootstrap) the cloud context of task `key`.
 pub async fn build(server: &Arc<Server>, i: BuildIn<'_>) -> Result<CloudCtx, RpcError> {
     let BuildIn {
@@ -997,13 +1066,10 @@ pub async fn build(server: &Arc<Server>, i: BuildIn<'_>) -> Result<CloudCtx, Rpc
     for d in [&root, &run_dir] {
         mkdir_private(d).map_err(internal)?;
     }
-    let srv = server.clone();
-    let (t2, co) = (task.to_string(), checkout.to_path_buf());
-    let clone = tokio::task::spawn_blocking(move || clone_info(&srv, &t2, &co))
-        .await
-        .map_err(internal)??;
     if !start {
-        // Restore: the record names the box; nothing is created or contacted.
+        // Restore: the record names the box and its clone; nothing is created or contacted.
+        // The clone comes from the record, not from the host checkout as it is now (the
+        // checkout may have moved on); only records from before clones were recorded derive it.
         let p = provider(&prov_id)?;
         let id = box_id.ok_or_else(|| {
             err(
@@ -1013,6 +1079,10 @@ pub async fn build(server: &Arc<Server>, i: BuildIn<'_>) -> Result<CloudCtx, Rpc
         })?;
         let rec = load_record(server, &format!("{prov_id}/{id}"));
         let name = rec.as_ref().map(|r| r.name.clone()).unwrap_or_default();
+        let clone = match rec.as_ref().and_then(clone_of) {
+            Some(c) => c,
+            None => derive_clone(server, task, checkout).await?,
+        };
         return Ok(make_ctx(
             server,
             p.id(),
@@ -1032,13 +1102,17 @@ pub async fn build(server: &Arc<Server>, i: BuildIn<'_>) -> Result<CloudCtx, Rpc
     }
     let tags = vk_cloud::naming::Tags::new(&host, key);
     // The task's own box from before (a bring-back kept or suspended it): use it again.
-    let reuse = box_id.is_none().then(|| {
-        list_records(server)
+    let own = match &box_id {
+        Some(id) => load_record(server, &format!("{prov_id}/{id}")),
+        None => list_records(server)
             .into_iter()
-            .find(|r| r.key == key && r.provider == prov_id && r.ownership != "missing")
-            .map(|r| r.id)
-    });
-    let found = match reuse.flatten() {
+            .find(|r| r.key == key && r.provider == prov_id && r.ownership != "missing"),
+    };
+    let reuse = box_id
+        .is_none()
+        .then(|| own.as_ref().map(|r| r.id.clone()))
+        .flatten();
+    let found = match reuse {
         Some(id) => match p.get(&cred, &id).await {
             Ok(rb) => Some(rb),
             Err(e) if e.kind == vk_cloud::ErrorKind::NotFound => None,
@@ -1046,10 +1120,17 @@ pub async fn build(server: &Arc<Server>, i: BuildIn<'_>) -> Result<CloudCtx, Rpc
         },
         None => None,
     };
-    let (rb, created) = match (&box_id, found) {
-        (_, Some(rb)) => (rb, false),
-        (Some(id), None) => (p.get(&cred, id).await.map_err(map_err(p.as_ref()))?, false),
+    let (rb, created, derived) = match (&box_id, found) {
+        (_, Some(rb)) => (rb, false, None),
+        (Some(id), None) => (
+            p.get(&cred, id).await.map_err(map_err(p.as_ref()))?,
+            false,
+            None,
+        ),
         (None, None) => {
+            // A new box: its clone is the task's checkout as it is now (checked before the box
+            // exists).
+            let derived = derive_clone(server, task, checkout).await?;
             let pc = cfg.provider(&prov_id);
             let spec = vk_cloud::CreateSpec {
                 name: vk_cloud::naming::box_name(&tags),
@@ -1062,8 +1143,14 @@ pub async fn build(server: &Arc<Server>, i: BuildIn<'_>) -> Result<CloudCtx, Rpc
             (
                 p.create(&cred, &spec).await.map_err(map_err(p.as_ref()))?,
                 true,
+                Some(derived),
             )
         }
+    };
+    // A box taken up again keeps the clone it was created with (its record).
+    let clone = match derived.or_else(|| own.as_ref().and_then(clone_of)) {
+        Some(c) => c,
+        None => derive_clone(server, task, checkout).await?,
     };
     // A box that sleeps (a suspended box taken up again) is woken before panes start in it.
     let mut rb = rb;
@@ -1127,6 +1214,7 @@ pub async fn build(server: &Arc<Server>, i: BuildIn<'_>) -> Result<CloudCtx, Rpc
         worktree: Some(clone.worktree.to_string_lossy().into_owned()),
         branch: Some(clone.branch.clone()),
         base: Some(clone.base.clone()),
+        adopted: prior.as_ref().is_some_and(|r| r.adopted && r.key == key),
     };
     save_record(server, &rec);
     Ok(c)
@@ -1145,9 +1233,8 @@ fn check_explicit_box(
     let why = match &rec {
         None => Some("this host has no record of it"),
         Some(r)
-            if r.tags
-                .as_ref()
-                .is_some_and(|t| t.host != vk_cloud::naming::host_tag(host_id)) =>
+            if r.owner_tag()
+                .is_some_and(|t| t != vk_cloud::naming::host_tag(host_id)) =>
         {
             Some("another host owns it")
         }
@@ -1487,13 +1574,37 @@ pub async fn ensure_for_task(
 
 // ---- the link -----------------------------------------------------------------------------------
 
+/// Make the pane `pane_id` of task `key` attach to the box's exec session `session` when it
+/// spawns: its session file ([`SESSION_FILE`]) names the session before the pane exists.
+pub fn preset_session(key: &str, pane_id: &str, session: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let ctl = control_dir(&sbx_root(key), pane_id)?;
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(ctl.join(SESSION_FILE))?;
+    f.write_all(session.as_bytes())
+}
+
+/// A provider session that counts as use of the box: a live terminal session (a pane's shell
+/// or agent). Vibeke's own management processes (the bridge link, git services, scripts) run
+/// without a terminal and never keep a box active.
+pub fn user_session(s: &vk_cloud::SessionInfo) -> bool {
+    s.active && s.tty && !s.command.contains("/vibeke/bin/vibeke sandbox")
+}
+
 /// Whether task `key` has a pane in its box (the link only runs then, so an idle box can sleep).
 fn has_cloud_panes(server: &Server, key: &str) -> bool {
     server.with_core(|c| !cloud_panes(c, Some(key)).1.is_empty())
 }
 
 /// Keep the bridge link to the box up while the task has cloud panes: brokers of its panes
-/// are served in the box. Reconnects with backoff (0.5 s doubling to 10 s). Abort to stop.
+/// are served in the box. Reconnects with backoff (0.5 s doubling to 10 s), and disconnects
+/// once the task has no box pane left. Abort to stop.
 pub fn start_link(
     server: &Arc<Server>,
     c: &CloudCtx,
@@ -1540,11 +1651,26 @@ pub fn start_link(
                     Some(vk_remote::boxlink::host_acceptor(None, run_dir.clone())),
                 );
                 l2.connect(m.clone());
+                // The link goes when the task's last box pane closes: the bridge is a session
+                // in the box, and providers count it as activity, so an idle box would never
+                // sleep (or meet its idle policy) while it runs.
+                let unwanted = async {
+                    loop {
+                        tokio::time::sleep(Duration::from_secs(2)).await;
+                        match weak.upgrade() {
+                            Some(srv) if has_cloud_panes(&srv, &key) => {}
+                            _ => break,
+                        }
+                    }
+                };
                 tokio::select! {
                     _ = m.closed() => {}
                     _ = child.wait() => {}
+                    _ = unwanted => {}
                 }
                 l2.disconnect();
+                let _ = child.start_kill();
+                let _ = child.wait().await;
             }
             if started.elapsed() > Duration::from_secs(30) {
                 backoff = Duration::from_millis(500);
@@ -1651,9 +1777,14 @@ pub struct Report {
     pub dirty: u32,
     pub untracked: u32,
     pub stashes: u32,
+    /// Commits on other local branches or tags that neither HEAD, the host refs nor the base
+    /// reach.
+    pub other: u32,
+    /// Submodules with changes ([`SUBMODULE_CHANGES`]); counted even when the tree is marked
+    /// synced, since no bring-back carries them.
+    pub submodules: u32,
 }
 
-/// In-box script printing `key=value` lines about the box repo.
 /// File in the box repo naming the working tree a bring-back carried to a host (its
 /// [`TREE_FINGERPRINT`]). While the tree still has that fingerprint, its uncommitted changes
 /// are on the host; any later change makes them unsynced again.
@@ -1674,13 +1805,18 @@ pub fn fingerprint_script(workdir: &str) -> String {
 }
 
 /// In-box script recording `fp` as the tree a bring-back carried away ([`SYNCED_MARK`]).
+/// Exits [`MARK_SUBMODULES_EXIT`] without marking when a submodule has changes: the bundle
+/// did not carry them, so the tree must stay unsynced.
 pub fn mark_synced_script(workdir: &str, fp: &str) -> String {
     format!(
-        "cd {} && printf '%s\\n' {} > {SYNCED_MARK}",
+        "cd {} || exit 3\n{SUBMODULE_CHANGES}\n[ \"$sm\" = 0 ] || {{ echo \"submodules=$sm\"; exit {MARK_SUBMODULES_EXIT}; }}\nprintf '%s\\n' {} > {SYNCED_MARK}",
         sh_quote(workdir),
         sh_quote(fp)
     )
 }
+
+/// Exit code of [`mark_synced_script`] when submodule changes keep the tree unsynced.
+pub const MARK_SUBMODULES_EXIT: i32 = 4;
 
 /// In-box script that drops the uncommitted changes of a tree a bring-back carried to the host
 /// ([`SYNCED_MARK`]), but only while the tree's fingerprint still matches: anything changed
@@ -1692,6 +1828,12 @@ if [ -n \"$fp\" ] && [ \"$(cat {SYNCED_MARK})\" = \"$fp\" ]; then git reset -q -
         sh_quote(workdir)
     )
 }
+
+/// Shell that sets `$sm` to the number of submodules with changes: new commits, changed or
+/// untracked files (porcelain v2 entries whose submodule field starts with `S`). A bundle never
+/// carries submodule work.
+pub const SUBMODULE_CHANGES: &str = "sm=$(git status --porcelain=v2 --ignore-submodules=none 2>/dev/null \
+| awk '($1==\"1\"||$1==\"2\")&&substr($3,1,1)==\"S\"{n++} END{print n+0}')";
 
 pub fn unsynced_script(workdir: &str, branch: Option<&str>, base: Option<&str>) -> String {
     let w = sh_quote(workdir);
@@ -1713,9 +1855,14 @@ elif [ -n \"$b\" ]; then a=$(git rev-list --count \"$b..HEAD\" 2>/dev/null || ec
 elif [ -n \"$h\" ]; then a=$(git rev-list --count HEAD 2>/dev/null || echo 0)\n\
 else a=0; fi\n\
 echo \"ahead=$a\"\n\
+x=; if [ -n \"$b\" ] && git rev-parse -q --verify \"$b^{{commit}}\" >/dev/null 2>&1; then x=$b; fi\n\
+o=$(git rev-list --count --branches --tags --not ${{h:+HEAD}} --glob='refs/vibeke/host/*' ${{x:+\"$x\"}} 2>/dev/null || echo 0)\n\
+echo \"other=$o\"\n\
+{SUBMODULE_CHANGES}\n\
+echo \"submodules=$sm\"\n\
 {TREE_FINGERPRINT}\n\
 if [ -n \"$fp\" ] && [ \"$(cat {SYNCED_MARK} 2>/dev/null)\" = \"$fp\" ]; then echo dirty=0; echo untracked=0\n\
-else echo \"dirty=$(git status --porcelain --untracked-files=no 2>/dev/null | wc -l)\"\n\
+else echo \"dirty=$(git status --porcelain --untracked-files=no --ignore-submodules=all 2>/dev/null | wc -l)\"\n\
 echo \"untracked=$(git ls-files --others --exclude-standard 2>/dev/null | wc -l)\"; fi\n\
 echo \"stashes=$(git stash list 2>/dev/null | wc -l)\"\n"
     )
@@ -1736,6 +1883,8 @@ pub fn parse_report(s: &str) -> Report {
             "dirty" => r.dirty = n(),
             "untracked" => r.untracked = n(),
             "stashes" => r.stashes = n(),
+            "other" => r.other = n(),
+            "submodules" => r.submodules = n(),
             _ => {}
         }
     }
@@ -1778,7 +1927,14 @@ pub fn combine(r: &Report, host_missing: Option<Option<u32>>) -> Unsynced {
         // No host repo to compare with.
         (Some(_), None) => r.ahead,
     };
-    Unsynced::from_counts(commits, r.dirty, r.untracked, r.stashes)
+    Unsynced::from_parts(Parts {
+        commits,
+        other_commits: r.other,
+        dirty: r.dirty,
+        submodules: r.submodules,
+        untracked: r.untracked,
+        stashes: r.stashes,
+    })
 }
 
 /// What the box has that the host does not (spec 17 §6.3).

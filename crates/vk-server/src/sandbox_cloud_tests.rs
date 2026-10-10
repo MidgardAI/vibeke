@@ -256,6 +256,28 @@ fn unsynced_report_parses_and_combines_with_the_host() {
 }
 
 #[test]
+fn other_branches_and_submodules_count_as_unsynced() {
+    let r =
+        parse_report("head=abc\nahead=0\nother=2\nsubmodules=1\ndirty=0\nuntracked=0\nstashes=0\n");
+    assert_eq!((r.other, r.submodules), (2, 1));
+    let u = combine(&r, Some(Some(0)));
+    assert!(!u.is_clean());
+    assert_eq!((u.commits, u.dirty), (2, 1));
+    assert_eq!(
+        u.summary,
+        "2 commits on other branches or tags, 1 changed submodule not on the host"
+    );
+    // The script asks for both, outside the synced-tree check.
+    let s = unsynced_script("/workspace", Some("main"), Some("abc"));
+    assert!(s.contains("--branches --tags --not"), "{s}");
+    assert!(s.contains("refs/vibeke/host/*"), "{s}");
+    assert!(s.contains("echo \"other=$o\""), "{s}");
+    assert!(s.contains("echo \"submodules=$sm\""), "{s}");
+    let mark = s.find(SYNCED_MARK).unwrap();
+    assert!(s.find("submodules=$sm").unwrap() < mark, "{s}");
+}
+
+#[test]
 fn scripts_quote_branches() {
     let s = init_script("/workspace", "vk/it's");
     assert!(s.contains("receive.denyCurrentBranch updateInstead"));
@@ -351,4 +373,29 @@ fn records_round_trip_without_secrets() {
     // Older or partial records still load.
     let partial: BoxRecord = serde_json::from_str(r#"{"provider":"e2b","id":"x"}"#).unwrap();
     assert!(!partial.ours());
+}
+
+#[test]
+fn only_terminal_sessions_keep_a_box_active() {
+    let s = |command: &str, tty: bool, active: bool| vk_cloud::SessionInfo {
+        id: "1".into(),
+        command: command.into(),
+        tty,
+        active,
+        last_activity_at: 0,
+    };
+    assert!(user_session(&s("bash -l", true, true)));
+    assert!(!user_session(&s("bash -l", true, false)));
+    // The bridge link, git services and scripts run without a terminal.
+    assert!(!user_session(&s(
+        "/vibeke/bin/vibeke sandbox bridge --brokers /tmp/vibeke-brokers",
+        false,
+        true
+    )));
+    assert!(!user_session(&s("git upload-pack /workspace", false, true)));
+    assert!(!user_session(&s(
+        "/vibeke/bin/vibeke sandbox bridge",
+        true,
+        true
+    )));
 }

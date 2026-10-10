@@ -391,6 +391,13 @@ pub(crate) fn cancel(server: &Server, p: &Value) -> R {
     let job = modify(server, id, |job| match job.state.as_str() {
         "cancelled" => Ok(false),
         st if terminal(st) => Err(conflict(format!("the move is already {st}"), job)),
+        // The commit point: the work is at the destination and the agent is starting there.
+        // Checked under the same lock as the runner's step to `resuming`.
+        "resuming" => Err(conflict(
+            "too late to cancel: the work already moved and the agent is resuming",
+            job,
+        )
+        .details(json!({"job": job.id, "state": job.state, "reason": "too_late"}))),
         _ => {
             job.state = "cancelled".into();
             Ok(true)
@@ -880,13 +887,132 @@ async fn task_for(server: &Arc<Server>, pane: &str) -> Result<String, RpcError> 
         .ok_or_else(|| internal("task.adopt returned no task"))
 }
 
-/// Send: host pane → cloud box.
+/// What a send changed before its commit point, so a failure can undo it ([`roll_back_send`]).
+#[derive(Debug, Default)]
+struct SendUndo {
+    /// The task whose context this send created.
+    task: Option<String>,
+    /// The task's isolation before the send.
+    prior: Option<Isolation>,
+    /// The task had no box on record before: the send created it.
+    new_box: bool,
+    /// The box's import ran (it may hold the work now): the box is kept.
+    imported: bool,
+    /// The source pane closed: the move is done, nothing is undone any more.
+    committed: bool,
+}
+
+/// Send: host pane → cloud box. A failure or a cancel before the source pane closes puts the
+/// task back on the host ([`roll_back_send`]), so the move can be tried again.
 async fn send(
     server: &Arc<Server>,
     job: &Job,
     pane: &str,
     provider: Option<&str>,
     want_box: Option<&str>,
+) -> R {
+    let mut undo = SendUndo::default();
+    let out = send_steps(server, job, pane, provider, want_box, &mut undo).await;
+    if out.is_err() && !undo.committed && undo.task.is_some() {
+        let rb = roll_back_send(server, &undo).await;
+        tracing::info!(job = %job.id, rollback = %rb, "cloud send rolled back");
+        note(server, &job.id, json!({"rollback": rb}));
+    }
+    out
+}
+
+/// Undo what a failed send did to its task: stop serving the task from the box, restore the
+/// task's isolation, and destroy the box when this send created it and nothing was imported
+/// into it (a box that existed before, or holds an import, is kept). Returns
+/// `{box?, box_action}` for the job result.
+async fn roll_back_send(server: &Arc<Server>, undo: &SendUndo) -> Value {
+    let Some(task) = undo.task.as_deref() else {
+        return json!({});
+    };
+    let ctx = server
+        .sandbox
+        .get(task)
+        .as_deref()
+        .and_then(crate::sandbox::cloud::ctx)
+        .cloned();
+    // Box panes of the task (a destination pane that did not close yet) go with the context.
+    let panes = server.with_core(|c| crate::sandbox::cloud::cloud_panes(c, Some(task)).1);
+    for p in panes {
+        server.close_pane(&p);
+    }
+    crate::sandbox::cloud::detach(server, task);
+    if let Some(prior) = undo.prior.clone() {
+        let mut c = server.core.lock().unwrap();
+        if let Some(mut t) = c.task(task).cloned()
+            && t.isolation != prior
+        {
+            t.isolation = prior;
+            let mut tx = Tx::new();
+            tx.event(
+                "task.updated",
+                json!({"task": t.id}),
+                json!({"isolation": t.isolation.level.as_str()}),
+            );
+            tx.task(t);
+            let _ = server.commit(&mut c, tx);
+        }
+    }
+    let Some(c) = ctx else {
+        return json!({"box_action": "none"});
+    };
+    let box_ref = c.box_ref();
+    if undo.new_box && !undo.imported {
+        match crate::sandbox::cloud::destroy_box(server, &c).await {
+            Ok(()) => json!({"box": box_ref, "box_action": "destroyed"}),
+            Err(e) => {
+                json!({"box": box_ref, "box_action": "kept", "error": error_json(&e)})
+            }
+        }
+    } else {
+        json!({"box": box_ref, "box_action": "kept"})
+    }
+}
+
+/// How long a resumed agent in the box gets to come up after `start_in_pane_opts` returned.
+const AGENT_UP_WAIT: Duration = Duration::from_secs(60);
+
+/// The destination agent runs: its run exists, has not exited and left `starting`.
+async fn confirm_agent(server: &Arc<Server>, run: Option<&Value>) -> Result<(), RpcError> {
+    let failed = |why: &str| {
+        err(
+            ErrorKind::Conflict,
+            format!("the agent did not start in the box: {why}"),
+        )
+        .details(json!({"reason": "agent_not_started"}))
+    };
+    let id = run
+        .and_then(|r| r.get("id"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| failed("no run was recorded"))?
+        .to_string();
+    let deadline = Instant::now() + AGENT_UP_WAIT;
+    loop {
+        match server.with_core(|c| c.run(&id).map(|r| r.execution.value.clone())) {
+            None | Some(Execution::Exited) => return Err(failed("it exited")),
+            Some(
+                Execution::Idle | Execution::Working | Execution::Error | Execution::RateLimited,
+            ) => return Ok(()),
+            Some(_) => {}
+        }
+        if Instant::now() > deadline {
+            return Err(failed("it did not report itself in time"));
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+}
+
+async fn send_steps(
+    server: &Arc<Server>,
+    job: &Job,
+    pane: &str,
+    provider: Option<&str>,
+    want_box: Option<&str>,
+    undo: &mut SendUndo,
 ) -> R {
     let id = job.id.as_str();
     let run = turn_boundary(server, id, pane, job.interrupt).await?;
@@ -898,7 +1024,15 @@ async fn send(
     let task = task_for(server, pane).await?;
     note(server, id, json!({"task": task}));
     check_cancel(server, id)?;
+    // Only a context this send creates is rolled back.
+    if server.sandbox.get(&task).is_none() {
+        undo.prior = server.with_core(|c| c.task(&task).map(|t| t.isolation.clone()));
+        undo.new_box = crate::sandbox::cloud::record_for_key(server, &task).is_none();
+    }
     let tb = crate::sandbox::cloud::ensure_for_task(server, &task, provider).await?;
+    if undo.prior.is_some() {
+        undo.task = Some(task.clone());
+    }
     let c = crate::sandbox::cloud::ctx(&tb)
         .ok_or_else(|| internal("the task's box is not a cloud box"))?;
     // LANE-B NEEDED: `CloudCtx { provider, box_id, workdir, bin, .. }` as plain `String`s.
@@ -977,6 +1111,7 @@ async fn send(
     ];
     // The panes' env: the transcript goes where the box's agent looks for it
     // (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, ...).
+    undo.imported = true;
     let cap = crate::sandbox::cloud::exec_capture_env(
         server,
         c,
@@ -1047,6 +1182,15 @@ async fn send(
         .await
     }
     .await;
+    // An agent must run at the destination before its source closes; a plain shell pane
+    // only needs its new pane.
+    let started = match started {
+        Ok(r) if !resume_argv.is_empty() => match confirm_agent(server, r.as_ref()).await {
+            Ok(()) => Ok(r),
+            Err(e) => Err(e),
+        },
+        other => other,
+    };
     let run = match started {
         Ok(r) => r,
         Err(e) => {
@@ -1056,6 +1200,7 @@ async fn send(
     };
     // The agent runs in the box: the source pane goes, and the host checkout's uncommitted
     // changes (now in the box) are stashed, so a later bring-back lands in a clean checkout.
+    undo.committed = true;
     server.close_pane(pane);
     let host_stash = stash_sent(&cwd, id, &box_ref).await;
     Ok(json!({
@@ -1265,6 +1410,10 @@ async fn mark_brought_back(
         .await
     {
         Ok(o) if o.code == 0 => json!({"marked": true}),
+        // A bundle never carries submodule work: the box keeps it as unsynced.
+        Ok(o) if o.code == crate::sandbox::cloud::MARK_SUBMODULES_EXIT => {
+            json!({"marked": false, "reason": "submodule changes were not carried; the box keeps them as unsynced work"})
+        }
         Ok(o) => {
             json!({"marked": false, "reason": format!("recording the synced tree failed: {}", tail(&o.stderr))})
         }

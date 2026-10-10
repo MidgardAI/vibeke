@@ -153,6 +153,11 @@ async fn steps_cancel_and_finish() {
     // Cancelling again is a no-op; a finished job can't be cancelled.
     cancel(&s, &json!({"id": "j1"})).unwrap();
     record(&s, &sample("j2", "resuming"));
+    // Past the commit point a move can no longer be cancelled.
+    let e = cancel(&s, &json!({"id": "j2"})).unwrap_err();
+    assert_eq!(e.data.kind, "conflict");
+    assert_eq!(e.data.details["reason"], "too_late");
+    assert_eq!(get(&s, "j2").unwrap().state, "resuming");
     finish(&s, "j2", Ok(json!({"pane": "p9"})));
     let j2 = get(&s, "j2").unwrap();
     assert_eq!(j2.state, "done");
@@ -268,4 +273,17 @@ fn bring_back_marks_only_what_moved() {
     let m = crate::sandbox::cloud::mark_synced_script("/workspace", "abc");
     assert!(m.contains(crate::sandbox::cloud::SYNCED_MARK), "{m}");
     assert!(m.contains("abc"), "{m}");
+    // Submodule work is never carried: the mark is refused while a submodule has changes.
+    assert!(m.contains("--porcelain=v2"), "{m}");
+    assert!(
+        m.contains(&format!(
+            "exit {}",
+            crate::sandbox::cloud::MARK_SUBMODULES_EXIT
+        )),
+        "{m}"
+    );
+    assert!(
+        m.find("exit 4").unwrap() < m.find(crate::sandbox::cloud::SYNCED_MARK).unwrap(),
+        "{m}"
+    );
 }

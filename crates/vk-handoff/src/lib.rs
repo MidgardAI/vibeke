@@ -126,6 +126,30 @@ pub fn safe_relative(path: &str) -> bool {
             .all(|c| matches!(c, Component::Normal(_)))
 }
 
+/// A path component that names, or that some file system resolves to, a git directory: `.git`
+/// in any case, with trailing dots or spaces, with characters HFS+ ignores, or as the NTFS short
+/// name `git~1`.
+pub fn git_dir_component(seg: &str) -> bool {
+    let folded: String = seg
+        .chars()
+        .filter(|c| {
+            !matches!(
+                *c as u32,
+                0x200C..=0x200F | 0x202A..=0x202E | 0x206A..=0x206F | 0xFEFF
+            )
+        })
+        .collect::<String>()
+        .to_lowercase();
+    let trimmed = folded.trim_end_matches(['.', ' ']);
+    trimmed == ".git" || trimmed == "git~1"
+}
+
+/// A relative path inside a working tree that a handoff may write: [`safe_relative`], and no
+/// component is a git directory (so a bundle can never reach repository metadata).
+pub fn safe_tree_path(path: &str) -> bool {
+    safe_relative(path) && !path.split('/').any(git_dir_component)
+}
+
 /// Regular file below `root`, no symlink at any component.
 pub fn regular_under(root: &Path, rel: &str) -> Option<std::fs::Metadata> {
     let mut p = root.to_path_buf();
@@ -569,6 +593,36 @@ mod tests {
         );
         assert_eq!(resume_args("claude", Some("../../etc")), None);
         assert_eq!(resume_args("evil", Some("x")), None);
+    }
+
+    #[test]
+    fn tree_paths_never_reach_git_metadata() {
+        for bad in [
+            ".git/config",
+            ".GIT/hooks/pre-commit",
+            "./.git/config",
+            "a/../.git/config",
+            "sub/.git/config",
+            ".git",
+            ".Git./config",
+            ".git /config",
+            ".g\u{200c}it/config",
+            "GIT~1/config",
+            "/etc/passwd",
+            "",
+            "a//b",
+        ] {
+            assert!(!safe_tree_path(bad), "{bad:?} must be refused");
+        }
+        for ok in [
+            "src/main.rs",
+            ".gitignore",
+            "a/.github/x",
+            "git/config",
+            "x.git",
+        ] {
+            assert!(safe_tree_path(ok), "{ok:?} must be allowed");
+        }
     }
 
     #[test]

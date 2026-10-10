@@ -132,6 +132,8 @@ pub async fn export(input: &ExportInput, out: &Path) -> Result<Packed> {
         let rel = String::from_utf8_lossy(raw).to_string();
         let reason = if !safe_relative(&rel) {
             Some("unsafe path")
+        } else if !crate::safe_tree_path(&rel) {
+            Some("git metadata")
         } else if secret_path(&rel) {
             Some("secret")
         } else {

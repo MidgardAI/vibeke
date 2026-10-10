@@ -165,7 +165,7 @@ pub async fn run(server: &Arc<Server>, only: Option<&str>) -> Vec<Value> {
                 && rb.state == BoxState::Running
                 && let Ok(s) = p.sessions(&cred, &rb.id).await
             {
-                sessions = s.iter().filter(|s| s.active).count() as u32;
+                sessions = s.iter().filter(|s| cl::user_session(s)).count() as u32;
             }
             // Work not on the host yet, for the overview and the destroy guard. Only running
             // boxes are asked: the check would wake a sleeping one.
@@ -191,7 +191,8 @@ pub async fn run(server: &Arc<Server>, only: Option<&str>) -> Vec<Value> {
             let idle_for_s = now.saturating_sub(rec.last_activity_at);
             rec.ownership = ownership(&OwnIn {
                 our_host: &our_host,
-                box_host: rec.tags.as_ref().map(|t| t.host.as_str()),
+                // An adopted box is ours by its record, whatever host its name was tagged with.
+                box_host: rec.owner_tag(),
                 listed: true,
                 ours: rec.ours(),
                 task_exists,

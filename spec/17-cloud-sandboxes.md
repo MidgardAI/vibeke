@@ -204,7 +204,7 @@ The name is `vk-<host8>-<key10>`. The two parts are hex blake3 prefixes of the h
 | `foreign` | Another host's tag. |
 | `missing` | A local record exists, but the provider does not list the box. |
 
-The reconciler also refreshes `unsynced` for running boxes that Vibeke owns. It skips sleeping boxes, so the check does not wake them. A box whose repository cannot be inspected reports `unsynced.unknown = true`, and the destroy guard treats that as unsynced.
+Only live terminal sessions count as activity; Vibeke's own processes (the bridge link, git services, scripts) do not, and the bridge link disconnects when the task's last box pane closes. The reconciler also refreshes `unsynced` for running boxes that Vibeke owns. Commits on other branches or tags of the box that no host ref reaches count as unsynced commits, and submodules with changes count as dirty. It skips sleeping boxes, so the check does not wake them. A box whose repository cannot be inspected reports `unsynced.unknown = true`, and the destroy guard treats that as unsynced.
 
 The reconciler is `cloud_reconcile.rs`.
 - It runs at server start, every 10 minutes, and on `cloud.box.list {refresh:true}`.
@@ -221,9 +221,9 @@ The reconciler is `cloud_reconcile.rs`.
 | `cloud.box.suspend` / `cloud.box.resume` (mutating) | `{box}` | `BoxView` |
 | `cloud.box.checkpoint` (mutating) | `{box, note?}` | `{box, checkpoint}` |
 | `cloud.box.destroy` (mutating) | `{box, force?}` | `{box, destroyed: true}`. With unsynced work and no `force`, it fails with `conflict` and `details {reason:"unsynced_changes", unsynced}`. Its panes close first. |
-| `cloud.box.adopt` (mutating) | `{box}` | `{box, task}`. It works on orphaned and foreign boxes: it creates a host task with a worktree on the box's branch, which is pulled from the box, and it reattaches by opening a pane for each live session. |
+| `cloud.box.adopt` (mutating) | `{box, repo?, title?, root?}` | `{box, task, panes, sessions, repo, branch, worktree}`. It works on orphaned and foreign boxes: it pulls the box's branch into `repo` (default: the recorded repository, when it is on this host; otherwise `invalid_params`, reason `repo_required`), creates a host task with a worktree on it (a new `<branch>-adopted` branch when the host has that branch checked out or with other history), records the box for the task (`adopted`: the name keeps the old host tag, ownership follows the record), attaches the box and opens a pane for each live terminal session (attached to it), or one new pane. |
 | `cloud.box.forget` (mutating) | `{box}` | `{box}`. It drops a `missing` record. |
-| `cloud.prune` (mutating) | `{provider?, ownership?: ["orphaned","idle"], dry_run?, force?}` | `{candidates: [BoxView], destroyed: [box], skipped: [{box, reason}]}` |
+| `cloud.prune` (mutating) | `{provider?, ownership?: ["orphaned","idle"], boxes?: [box], dry_run?, force?}`. `boxes` limits the prune to those boxes; a named box that is no longer a candidate is reported in `skipped`. | `{candidates: [BoxView], destroyed: [box], skipped: [{box, reason}]}` |
 
 `box` is `"<provider>/<id>"`. A task can name only its own recorded box: `task.create {box}` refuses a box that belongs to another task or host (`conflict`, reason `box_not_ours`; use `cloud.box.adopt`), and panes can't pass `box` at all. Destroying a box closes panes and detaches the task context only when it is the task's current box.
 
@@ -249,7 +249,7 @@ When a task closes, `on_task_close` decides what happens: `ask` opens the existi
 |---|---|---|
 | `cloud.move` (mutating) | `{pane? \| run? \| box?, to: {kind:"cloud", provider?, box?} \| {kind:"local"} \| {kind:"peer", peer}, interrupt?, source_after?: keep\|suspend\|destroy}` | `Job` |
 | `cloud.jobs` | `{}` | `{jobs: [Job]}` |
-| `cloud.cancel` (mutating) | `{id}` | `Job` |
+| `cloud.cancel` (mutating) | `{id}` | `Job`. A job that reached `resuming` (the commit point) can no longer be cancelled: `conflict`, reason `too_late`. |
 
 `Job` has these fields:
 - `id`;
@@ -273,7 +273,7 @@ Event: `cloud.job {job} => Job`. Jobs are kept in kv `cloud_job/<id>` and listed
 6. Open a box pane in the task and type the resume command.
 7. Close the source run's pane.
 
-If any step fails, the source keeps running.
+If any step fails, the source keeps running, and the send is rolled back: the task's box context is detached, the task gets its earlier isolation back, and a box the send created is destroyed when nothing was imported into it (the job result's `rollback`). A retry then works. When the source runs an agent, its pane closes only after the agent's run in the box is confirmed (it left `starting` and has not exited).
 
 **Bring back** (cloud to this host or a peer):
 1. Wait for the turn boundary in the box pane.
@@ -285,6 +285,7 @@ If any step fails, the source keeps running.
    - Before the export, the job takes a fingerprint of the tree (`TREE_FINGERPRINT`: HEAD, the diff, and the names and contents of untracked files).
    - After the import, it writes that fingerprint to `.git/vibeke-synced-tree` in the box.
    - The unsynced report counts the tree's changes as synced only while the fingerprint still matches, so a change made during or after the export counts again.
+   - A tree with submodule changes is never marked: a bundle does not carry them.
    - A peer bring-back never marks the tree, because the peer's import is not confirmed. That box needs `force` to be destroyed.
    - A later send clears a marked tree before its import, but only while the fingerprint matches.
 5. Apply `source_after` (default `[cloud] after_bring_back`) to the box with `release_task`. `release_task` checks for unsynced work before it suspends, so the check does not wake the box again.

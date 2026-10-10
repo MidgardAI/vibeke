@@ -8,15 +8,27 @@ use std::process::Command;
 
 struct Host {
     dir: tempfile::TempDir,
+    /// The fake provider's boxes (`VIBEKE_CLOUD_FAKE_DIR`); two hosts may share them.
+    fake: std::path::PathBuf,
 }
 
 impl Host {
     fn new() -> Host {
+        Host::with_fake(None)
+    }
+
+    /// A second host on the same provider account: it sees `other`'s boxes as foreign.
+    fn sharing(other: &Host) -> Host {
+        Host::with_fake(Some(other.fake.clone()))
+    }
+
+    fn with_fake(fake: Option<std::path::PathBuf>) -> Host {
         let dir = tempfile::Builder::new()
             .prefix("vkcloud")
             .tempdir_in("/tmp")
             .unwrap();
-        std::fs::create_dir_all(dir.path().join("fake")).unwrap();
+        let fake = fake.unwrap_or_else(|| dir.path().join("fake"));
+        std::fs::create_dir_all(&fake).unwrap();
         let kc = dir.path().join("keychain.json");
         std::fs::write(
             dir.path().join("config.toml"),
@@ -26,7 +38,7 @@ impl Host {
             ),
         )
         .unwrap();
-        Host { dir }
+        Host { dir, fake }
     }
 
     fn cmd(&self, args: &[&str]) -> Command {
@@ -36,7 +48,7 @@ impl Host {
             .env("VIBEKE_STATE_DIR", d.join("state"))
             .env("VIBEKE_CONFIG", d.join("config.toml"))
             .env("VIBEKE_GATEWAY_DIR", d.join("gateway"))
-            .env("VIBEKE_CLOUD_FAKE_DIR", d.join("fake"));
+            .env("VIBEKE_CLOUD_FAKE_DIR", &self.fake);
         for k in [
             "VIBEKE",
             "VIBEKE_SOCKET",
@@ -445,4 +457,155 @@ fn a_task_runs_in_a_box_and_moves_between_host_and_box() {
     assert_eq!(r["destroyed"], true, "{r}");
     let l = h.ok("cloud.box.list", json!({"refresh": true}));
     assert_eq!(l["boxes"], json!([]), "{l}");
+}
+
+/// A send that fails after its task got a box puts the task back on the host: the new box is
+/// destroyed, the source pane keeps running, and the move can be tried again.
+#[test]
+fn a_failed_send_rolls_back_and_can_be_retried() {
+    let h = Host::new();
+    let repo = h.repo();
+    h.ok(
+        "cloud.auth.set",
+        json!({"provider": "fake", "token": "fake-token"}),
+    );
+    let t = h.ok(
+        "task.create",
+        json!({"title": "retry", "repo": repo, "root": h.dir.path().join("wt")}),
+    );
+    let task = t["task"]["id"].as_str().unwrap().to_string();
+    let pane = t["panes"][0]["id"].as_str().unwrap().to_string();
+    h.run(&pane, "echo host-shell", "R1");
+
+    // Moving into a box the task does not own fails after the task's own box was made.
+    let j = h.ok(
+        "cloud.move",
+        json!({"pane": pane, "to": {"kind": "cloud", "provider": "fake", "box": "fake/vk-nope"}}),
+    );
+    let j = h.job_done(j["job"]["id"].as_str().unwrap());
+    assert_eq!(j["state"], "failed", "{j}");
+    assert_eq!(j["result"]["rollback"]["box_action"], "destroyed", "{j}");
+    let tk = h.ok("task.get", json!({"task": task}));
+    assert_eq!(tk["task"]["isolation"]["level"], "host", "{tk}");
+    let l = h.ok("cloud.box.list", json!({"refresh": true}));
+    assert_eq!(l["boxes"], json!([]), "{l}");
+    // The source pane still runs on the host.
+    let s = h.run(&pane, "echo still-$((40+2))", "R2");
+    assert!(s.contains("still-42"), "{s}");
+
+    // The retry is not refused as already in the cloud.
+    let j = h.ok(
+        "cloud.move",
+        json!({"pane": pane, "to": {"kind": "cloud", "provider": "fake"}}),
+    );
+    let j = h.job_done(j["job"]["id"].as_str().unwrap());
+    assert_eq!(j["state"], "done", "{j}");
+    let box_pane = j["result"]["pane"].as_str().unwrap().to_string();
+    let s = h.run(&box_pane, "pwd", "R3");
+    assert!(s.contains("/workspace"), "{s}");
+    let b = h.only_box();
+    h.ok("cloud.box.destroy", json!({"box": b["box"], "force": true}));
+}
+
+/// Another host on the same account adopts a box: the box branch comes into its repository,
+/// a task gets a worktree on it, and its pane runs in the box.
+#[test]
+fn a_foreign_box_is_adopted_into_a_host_task() {
+    let a = Host::new();
+    let repo = a.repo();
+    a.ok(
+        "cloud.auth.set",
+        json!({"provider": "fake", "token": "fake-token"}),
+    );
+    let t = a.ok(
+        "task.create",
+        json!({"title": "boxed", "repo": repo, "isolate": "cloud", "provider": "fake",
+               "root": a.dir.path().join("wt")}),
+    );
+    let pane = t["panes"][0]["id"].as_str().unwrap().to_string();
+    a.run(
+        &pane,
+        "echo boxwork > b.txt && git add b.txt && git -c user.name=t -c user.email=t@example.com commit -qm boxwork",
+        "A1",
+    );
+    let box_ref = a.only_box()["box"].as_str().unwrap().to_string();
+    // The first host goes away; its box stays.
+    let _ = a.cmd(&["server", "stop", "--kill-panes"]).output().unwrap();
+
+    let b = Host::sharing(&a);
+    b.ok(
+        "cloud.auth.set",
+        json!({"provider": "fake", "token": "fake-token"}),
+    );
+    // A clone of the repository on the second host.
+    let clone = b.dir.path().join("repo");
+    let o = Command::new("git")
+        .args(["clone", "-q"])
+        .arg(&repo)
+        .arg(&clone)
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{o:?}");
+    let seen = b.only_box();
+    assert_eq!(seen["box"], box_ref.as_str(), "{seen}");
+    assert_eq!(seen["ownership"], "foreign", "{seen}");
+
+    // Without a repository on this host, adopting asks for one.
+    let e = b
+        .api("cloud.box.adopt", json!({"box": box_ref}))
+        .unwrap_err();
+    assert_eq!(kind(&e), "invalid_params", "{e}");
+    assert_eq!(reason(&e), "repo_required", "{e}");
+
+    let r = b.ok(
+        "cloud.box.adopt",
+        json!({"box": box_ref, "repo": clone, "title": "adopted",
+               "root": b.dir.path().join("wt")}),
+    );
+    let task = r["task"].as_str().unwrap().to_string();
+    let wt = r["worktree"].as_str().unwrap().to_string();
+    // The box's commit is on this host now.
+    let log = Command::new("git")
+        .args(["-C", &wt, "log", "--oneline"])
+        .output()
+        .unwrap();
+    assert!(
+        String::from_utf8_lossy(&log.stdout).contains("boxwork"),
+        "{r}"
+    );
+    let tk = b.ok("task.get", json!({"task": task}));
+    assert_eq!(tk["task"]["isolation"]["level"], "cloud", "{tk}");
+    let bp = r["panes"][0].as_str().unwrap().to_string();
+    let s = b.run(&bp, "pwd; cat b.txt", "B1");
+    assert!(s.contains("/workspace") && s.contains("boxwork"), "{s}");
+    // The box is this host's now, recorded for the new task.
+    let v = b.only_box();
+    assert_eq!(v["ownership"], "attached", "{v}");
+    assert_eq!(v["task"], task.as_str(), "{v}");
+    b.ok("cloud.box.destroy", json!({"box": box_ref, "force": true}));
+}
+
+/// `cloud.prune {boxes}` acts only on the named boxes, and reports a named box that is not a
+/// candidate.
+#[test]
+fn prune_takes_only_the_named_boxes() {
+    let h = Host::new();
+    h.ok(
+        "cloud.auth.set",
+        json!({"provider": "fake", "token": "fake-token"}),
+    );
+    let r = h.ok(
+        "cloud.prune",
+        json!({"provider": "fake", "boxes": ["fake/vk-none"], "dry_run": true}),
+    );
+    assert_eq!(r["candidates"], json!([]), "{r}");
+    assert_eq!(r["skipped"][0]["box"], "fake/vk-none", "{r}");
+    assert_eq!(r["skipped"][0]["reason"], "not_found", "{r}");
+    let e = h
+        .api(
+            "cloud.prune",
+            json!({"provider": "fake", "boxes": "fake/x"}),
+        )
+        .unwrap_err();
+    assert_eq!(kind(&e), "invalid_params", "{e}");
 }

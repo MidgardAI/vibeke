@@ -67,11 +67,13 @@ cloud.box.resume :: {box: string} => CloudBoxView
 cloud.box.checkpoint :: {box: string, note?: string} => {box: string, checkpoint: string}
 # closes the box's panes first; unsynced work without force fails conflict, details {reason: unsynced_changes, unsynced}
 cloud.box.destroy :: {box: string, force?: bool = false} => {box: string, destroyed: true}
-# not available yet: unsupported
-cloud.box.adopt :: {box: string} => {box: string, task: string}
+# takes over an orphaned or foreign box: pulls its branch into repo (default: the recorded repo on this host), creates a task with a worktree on it, attaches the box and opens a pane per live terminal session
+cloud.box.adopt :: {box: string, repo?: string, title?: string, root?: string}
+  => {box: string, task: string, panes: [string], sessions: int, repo: string, branch: string, worktree: string}
 # drops the record of a box the provider no longer lists (ownership missing)
 cloud.box.forget :: {box: string} => {box: string}
-cloud.prune :: {provider?: string, ownership?: [orphaned|idle|missing], dry_run?: bool = false, force?: bool = false}
+# boxes: only these boxes (for example the ones a dry run listed); one that is no longer eligible is reported in skipped
+cloud.prune :: {provider?: string, ownership?: [orphaned|idle|missing], boxes?: [string], dry_run?: bool = false, force?: bool = false}
   => {candidates: [CloudBoxView], destroyed: [string], skipped: [{box: string, reason: string}]}
 "##;
 
@@ -463,17 +465,324 @@ async fn box_destroy(server: &Arc<Server>, p: &Value) -> R {
     Ok(json!({"box": box_ref, "destroyed": true}))
 }
 
+/// A git command in the host repo `repo` (hardened like task sync); stdout on success.
+fn host_git(repo: &std::path::Path, args: &[&str]) -> Result<String, RpcError> {
+    let o = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(vk_tasks::sync::HARDEN)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(crate::api::internal)?;
+    if o.status.success() {
+        Ok(String::from_utf8_lossy(&o.stdout).trim().to_string())
+    } else {
+        Err(err(
+            ErrorKind::Conflict,
+            format!(
+                "git {} failed: {}",
+                args.first().copied().unwrap_or_default(),
+                String::from_utf8_lossy(&o.stderr).trim()
+            ),
+        ))
+    }
+}
+
+fn host_branch_exists(repo: &std::path::Path, branch: &str) -> bool {
+    host_git(
+        repo,
+        &[
+            "rev-parse",
+            "--verify",
+            "-q",
+            &format!("refs/heads/{branch}"),
+        ],
+    )
+    .is_ok()
+}
+
+/// `<branch>-adopted`, `<branch>-adopted-2`, ...: a branch name the host repo does not have.
+fn free_branch(repo: &std::path::Path, branch: &str) -> Result<String, RpcError> {
+    (1..100)
+        .map(|n| match n {
+            1 => format!("{branch}-adopted"),
+            n => format!("{branch}-adopted-{n}"),
+        })
+        .find(|b| !host_branch_exists(repo, b))
+        .ok_or_else(|| {
+            err(
+                ErrorKind::Conflict,
+                format!("no free branch name for {branch}"),
+            )
+        })
+}
+
+/// Pull the box branch into the host repo for an adopted task. Returns the host branch (the
+/// box's own name, or a new `-adopted` name when the host has that branch checked out or with
+/// other history) and the commit it points at.
+fn pull_for_adopt(
+    repo: &std::path::Path,
+    remote: &vk_tasks::sync::BoxRemote,
+    box_branch: &str,
+    ns: &str,
+) -> Result<(String, String), RpcError> {
+    use vk_tasks::sync::SyncStatus;
+    let conflict = |e: vk_tasks::Error| err(ErrorKind::Conflict, e.to_string());
+    // Never move a branch someone has checked out on this host.
+    let mut host_branch = box_branch.to_string();
+    if vk_tasks::find_worktree_by_branch(repo, box_branch).is_ok() {
+        host_branch = free_branch(repo, box_branch)?;
+    }
+    let o = vk_tasks::sync::sync_pull(repo, remote, box_branch, &host_branch, ns, false)
+        .map_err(conflict)?;
+    let head =
+        o.to.clone()
+            .ok_or_else(|| err(ErrorKind::Conflict, "the box branch has no commit"))?;
+    if matches!(o.status, SyncStatus::Diverged | SyncStatus::CheckedOutDirty) {
+        // The host branch has history the box does not: the box's work gets its own branch.
+        host_branch = free_branch(repo, box_branch)?;
+        host_git(repo, &["branch", "--no-track", &host_branch, &head])?;
+    }
+    Ok((host_branch, head))
+}
+
+/// `cloud.box.adopt {box, repo?, title?, root?}`: take over an orphaned or foreign box (spec 17
+/// §6.3). The box branch is pulled into the host repo (`repo`, or the recorded one when it is
+/// on this host), a host task gets a worktree on it, the box is recorded for that task (an
+/// adopted box keeps its name and tags; the record makes it ours), the task's context attaches
+/// to the box, and one pane opens per live terminal session (attached to it), or one new pane.
 async fn box_adopt(server: &Arc<Server>, p: &Value) -> R {
     let box_ref = req(p, "box")?;
     let (pid, id) = parse_box_ref(box_ref)?;
     let (prov, cred) = credential(server, &pid)?;
-    record_or_remote(server, prov.as_ref(), &cred, box_ref, &id).await?;
-    // TODO(spec 17 §6.3): create a host task with a worktree on the box's branch (pulled from
-    // the box), then open a pane per live session.
-    Err(err(
-        ErrorKind::Unsupported,
-        "adopting a cloud box is not available yet; destroy it with cloud.box.destroy or keep it",
-    ))
+    let mut rec = record_or_remote(server, prov.as_ref(), &cred, box_ref, &id).await?;
+    if let Some(t) = rec
+        .task
+        .as_deref()
+        .filter(|t| server.with_core(|c| c.task(t).is_some_and(|t| t.status == "active")))
+    {
+        return Err(err(
+            ErrorKind::Conflict,
+            format!("{box_ref} already belongs to task {t} on this host"),
+        )
+        .details(json!({"reason": "attached", "box": box_ref, "task": t})));
+    }
+    if rec.ownership == "missing" {
+        return Err(err(
+            ErrorKind::NotFound,
+            format!("{box_ref} is no longer listed by {pid}"),
+        ));
+    }
+    // The repository on this host the work goes to.
+    let repo = match s(p, "repo").filter(|r| !r.is_empty()) {
+        Some(r) => std::path::PathBuf::from(r),
+        None => match rec
+            .repo
+            .as_deref()
+            .filter(|r| std::path::Path::new(r).is_dir())
+        {
+            Some(r) => std::path::PathBuf::from(r),
+            None => {
+                return Err(invalid(format!(
+                    "{box_ref} has no repository on this host; pass repo (the host path of the repository to adopt it into)"
+                ))
+                .details(json!({"reason": "repo_required", "box": box_ref})));
+            }
+        },
+    };
+    let repo = vk_tasks::repo_root(&repo)
+        .map(|r| r.root)
+        .ok_or_else(|| invalid(format!("{} is not a git repository", repo.display())))?;
+
+    // Wake the box: the branch is read and pulled from it.
+    let rb = prov
+        .get(&cred, &id)
+        .await
+        .map_err(cl::map_err(prov.as_ref()))?;
+    if !matches!(
+        rb.state,
+        vk_cloud::BoxState::Running | vk_cloud::BoxState::Creating
+    ) {
+        prov.resume(&cred, &id)
+            .await
+            .map_err(cl::map_err(prov.as_ref()))?;
+    }
+    let probe = ctx_from_record(server, &rec)?;
+    let box_branch = match rec.branch.clone() {
+        Some(b) => b,
+        None => {
+            let w = vk_sandbox::container::sh_quote(&probe.workdir);
+            let o = cl::exec_capture(
+                server,
+                &probe,
+                &[
+                    "sh".into(),
+                    "-c".into(),
+                    format!("git -C {w} symbolic-ref --short -q HEAD"),
+                ],
+                vec![],
+                std::time::Duration::from_secs(60),
+            )
+            .await?;
+            if !o.ok() {
+                return Err(err(
+                    ErrorKind::Conflict,
+                    format!("{box_ref} has no branch checked out in its workspace"),
+                ));
+            }
+            o.out().trim().to_string()
+        }
+    };
+    let valid = !box_branch.is_empty()
+        && !box_branch.starts_with('-')
+        && host_git(&repo, &["check-ref-format", "--branch", &box_branch]).is_ok();
+    if !valid {
+        return Err(invalid(format!(
+            "the box branch {:?} is not a valid branch name",
+            vk_handoff::clean(&box_branch, 100)
+        )));
+    }
+    let remote = cl::box_remote(&probe);
+    let ns = vk_sandbox::runner::short_id(&rec.name);
+    let (r2, bb) = (repo.clone(), box_branch.clone());
+    let (host_branch, head) =
+        tokio::task::spawn_blocking(move || pull_for_adopt(&r2, &remote, &bb, &ns))
+            .await
+            .map_err(crate::api::internal)??;
+
+    // The host task, with its worktree on that branch.
+    let title = s(p, "title")
+        .filter(|t| !t.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("Adopted {}", rec.name));
+    let mut create = json!({"title": title, "repo": repo, "branch": host_branch,
+                            "setup": false, "fetch": false});
+    if let Some(root) = s(p, "root") {
+        create["root"] = json!(root);
+    }
+    let t = crate::orch::call(server, "task.create", create).await?;
+    let task_id = t
+        .pointer("/task/id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| crate::api::internal("task.create returned no task"))?
+        .to_string();
+    let worktree = t
+        .pointer("/task/worktree_path")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let ws = t
+        .pointer("/workspace/id")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let host_panes: Vec<String> = t["panes"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x["id"].as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // The box follows the host branch name, and knows the host has `head`.
+    let w = vk_sandbox::container::sh_quote(&probe.workdir);
+    let q = vk_sandbox::container::sh_quote;
+    let mut script = vec!["set -e".to_string(), format!("cd {w}")];
+    if host_branch != box_branch {
+        script.push(format!(
+            "git branch -m {} {}",
+            q(&box_branch),
+            q(&host_branch)
+        ));
+    }
+    script.push(format!(
+        "git update-ref {} {}",
+        q(&vk_tasks::sync::host_ref(&host_branch)),
+        q(&head)
+    ));
+    let o = cl::exec_capture(
+        server,
+        &probe,
+        &["sh".into(), "-c".into(), script.join("\n")],
+        vec![],
+        std::time::Duration::from_secs(60),
+    )
+    .await?;
+    if !o.ok() {
+        return Err(err(
+            ErrorKind::Conflict,
+            format!(
+                "could not take over the box branch: {}; task {task_id} was created on this host",
+                o.err_text()
+            ),
+        )
+        .details(json!({"reason": "box_branch", "task": task_id})));
+    }
+
+    // Record the box for the new task: from now on it is ours by its record.
+    let our_tag = vk_cloud::naming::host_tag(&cl::host_id(server));
+    rec.adopted = rec.tags.as_ref().is_some_and(|t| t.host != our_tag) || rec.adopted;
+    rec.key = task_id.clone();
+    rec.task = Some(task_id.clone());
+    rec.repo = Some(repo.to_string_lossy().into_owned());
+    rec.worktree = Some(worktree.clone());
+    rec.branch = Some(host_branch.clone());
+    rec.base = Some(head.clone());
+    rec.ownership = "attached".into();
+    rec.unsynced = None;
+    cl::save_record(server, &rec);
+    let attach = cl::ensure_for_task(server, &task_id, Some(&pid)).await;
+    if let Err(e) = attach {
+        return Err(e.details(json!({"reason": "attach_failed", "task": task_id})));
+    }
+
+    // One pane per live terminal session, attached to it; else one new pane.
+    let sessions: Vec<String> = prov
+        .sessions(&cred, &id)
+        .await
+        .map(|v| {
+            v.into_iter()
+                .filter(cl::user_session)
+                .map(|s| s.id)
+                .collect()
+        })
+        .unwrap_or_default();
+    let title = Some(format!("☁ {pid}"));
+    let mut panes = Vec::new();
+    for sid in &sessions {
+        let pane_id = crate::core::ulid();
+        if let Err(e) = cl::preset_session(&task_id, &pane_id, sid) {
+            tracing::info!(box_ref, error = %e, "cloud adopt: session file");
+            continue;
+        }
+        match server.create_tab_as(
+            &ws,
+            Some(&worktree),
+            title.clone(),
+            None,
+            None,
+            Some(pane_id),
+        ) {
+            Ok((_, pane)) => panes.push(pane.id),
+            Err(e) => tracing::info!(box_ref, error = %e, "cloud adopt: pane"),
+        }
+    }
+    if panes.is_empty() {
+        let (_, pane) = server
+            .create_tab(&ws, Some(&worktree), title, None, None)
+            .map_err(crate::api::internal)?;
+        panes.push(pane.id);
+    }
+    // The first pane of the new task started on the host before the box attached.
+    for p in host_panes {
+        server.close_pane(&p);
+    }
+    Ok(json!({
+        "box": box_ref, "task": task_id, "panes": panes, "sessions": sessions.len(),
+        "repo": repo, "branch": host_branch, "worktree": worktree,
+    }))
 }
 
 fn box_forget(server: &Arc<Server>, p: &Value) -> R {
@@ -527,6 +836,25 @@ async fn prune(server: &Arc<Server>, p: &Value) -> R {
             .collect::<Result<_, _>>()?,
         Some(_) => return Err(invalid("ownership is a list")),
     };
+    // `boxes`: only these (the ones a dry run previewed); each must still be eligible.
+    let only: Option<Vec<String>> = match p.get("boxes") {
+        None | Some(Value::Null) => None,
+        Some(Value::Array(a)) => Some(
+            a.iter()
+                .map(|v| {
+                    v.as_str()
+                        .map(str::to_string)
+                        .ok_or_else(|| invalid("boxes is a list of <provider>/<id>"))
+                })
+                .collect::<Result<_, _>>()?,
+        ),
+        Some(_) => return Err(invalid("boxes is a list of <provider>/<id>")),
+    };
+    if let Some(list) = &only {
+        for bx in list {
+            parse_box_ref(bx)?;
+        }
+    }
     let dry_run = b(p, "dry_run").unwrap_or(false);
     let force = b(p, "force").unwrap_or(false);
     match provider {
@@ -544,10 +872,21 @@ async fn prune(server: &Arc<Server>, p: &Value) -> R {
         .into_iter()
         .filter(|r| provider.is_none_or(|x| r.provider == x))
         .filter(|r| owns.contains(&r.ownership))
+        .filter(|r| only.as_ref().is_none_or(|l| l.contains(&r.box_ref())))
         .collect();
     let views: Vec<Value> = candidates.iter().map(|r| view(server, r)).collect();
     let mut destroyed = Vec::new();
     let mut skipped = Vec::new();
+    // Named boxes that are no longer candidates (adopted, attached again, gone) are left alone.
+    for bx in only.iter().flatten() {
+        if !candidates.iter().any(|r| &r.box_ref() == bx) {
+            let reason = match load_record(server, bx) {
+                None => "not_found".to_string(),
+                Some(r) => format!("not_eligible: {}", r.ownership),
+            };
+            skipped.push(json!({"box": bx, "reason": reason}));
+        }
+    }
     if !dry_run {
         for r in &candidates {
             if r.ownership == "missing" {

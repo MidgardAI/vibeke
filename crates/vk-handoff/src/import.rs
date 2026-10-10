@@ -6,7 +6,8 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 
 use crate::{
-    Error, Manifest, Result, git, git_line, install_transcript, safe_relative, write_new_file,
+    Error, Manifest, Result, git, git_line, install_transcript, safe_relative, safe_tree_path,
+    write_new_file,
 };
 
 /// A file the import could not write; the rest of the import went ahead.
@@ -48,6 +49,23 @@ fn check(m: &Manifest) -> Result<()> {
         return Err(Error::new(
             "invalid_params",
             "manifest cwd is not a relative path inside the repository",
+        ));
+    }
+    // A crafted bundle must never write repository metadata (`.git/config`, hooks, ...): refuse
+    // the whole bundle before anything is created.
+    if let Some(bad) = m.untracked.iter().find(|rel| !safe_tree_path(rel)) {
+        return Err(Error::new(
+            "invalid_params",
+            format!(
+                "the bundle lists an untracked file outside the working tree: {}",
+                crate::clean(bad, 200)
+            ),
+        ));
+    }
+    if !m.cwd_rel.is_empty() && !safe_tree_path(&m.cwd_rel) {
+        return Err(Error::new(
+            "invalid_params",
+            "manifest cwd is inside the git directory",
         ));
     }
     Ok(())
@@ -346,7 +364,7 @@ async fn fill(work: &Path, m: &Manifest, wt: &Path) -> Result<Filled> {
     tokio::task::spawn_blocking(move || {
         let mut not_written = Vec::new();
         for rel in &m.untracked {
-            if !safe_relative(rel) {
+            if !safe_tree_path(rel) {
                 not_written.push(NotWritten {
                     path: rel.clone(),
                     reason: "unsafe path".into(),
@@ -549,6 +567,49 @@ mod tests {
         let mut other = m.clone();
         other.branch = Some("x".into());
         assert!(verify(&m, &other).is_err());
+    }
+
+    #[tokio::test]
+    async fn bundles_never_write_git_metadata() {
+        for bad in [
+            ".git/hooks/post-checkout",
+            ".GIT/config",
+            "./.git/config",
+            "app/../.git/config",
+            "app/.git/config",
+        ] {
+            let t = tempfile::tempdir().unwrap();
+            let (repo, work, mut m) = setup(t.path(), "");
+            std::fs::create_dir_all(work.join("untracked/.git/hooks")).unwrap();
+            std::fs::write(work.join("untracked/.git/hooks/post-checkout"), "pwned").unwrap();
+            m.untracked.push(bad.into());
+            let e = import(&work, &m, &repo, None, None).await.unwrap_err();
+            assert_eq!(e.kind, "invalid_params", "{bad}");
+            assert!(!repo.parent().unwrap().join("repo-handoff-feature").exists());
+            let e = import_in_place(&work, &m, &repo).await.unwrap_err();
+            assert_eq!(e.kind, "invalid_params", "{bad}");
+            assert!(!repo.join(".git/hooks/post-checkout").exists(), "{bad}");
+            assert!(
+                !repo.join("app/new.txt").exists(),
+                "nothing imported for {bad}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn untracked_files_never_follow_a_symlink_into_git() {
+        let t = tempfile::tempdir().unwrap();
+        let (repo, work, mut m) = setup(t.path(), "");
+        std::os::unix::fs::symlink(".git", repo.join("lnk")).unwrap();
+        sh(&repo, &["add", "lnk"]);
+        sh(&repo, &["commit", "-qm", "link"]);
+        m.head = sh(&repo, &["rev-parse", "HEAD"]);
+        std::fs::create_dir_all(work.join("untracked/lnk/hooks")).unwrap();
+        std::fs::write(work.join("untracked/lnk/hooks/post-checkout"), "pwned").unwrap();
+        m.untracked = vec!["lnk/hooks/post-checkout".into()];
+        let r = import_in_place(&work, &m, &repo).await.unwrap();
+        assert_eq!(r.not_written.len(), 1);
+        assert!(!repo.join(".git/hooks/post-checkout").exists());
     }
 
     #[tokio::test]
