@@ -2792,11 +2792,19 @@ export type CloudAuthSetResult = {
 
 export type CloudBoxAdoptParams = {
   box: string;
+  repo?: string;
+  title?: string;
+  root?: string;
 };
 
 export type CloudBoxAdoptResult = {
   box: string;
   task: string;
+  panes: string[];
+  sessions: number;
+  repo: string;
+  branch: string;
+  worktree: string;
   cursor?: Cursor;
 };
 
@@ -2978,6 +2986,7 @@ export type CloudProvidersResult = {
 export type CloudPruneParams = {
   provider?: string;
   ownership?: ("orphaned" | "idle" | "missing")[];
+  boxes?: string[];
   dry_run?: boolean;
   force?: boolean;
 };

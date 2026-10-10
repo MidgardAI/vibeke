@@ -11931,6 +11931,15 @@
         "properties": {
           "box": {
             "type": "string"
+          },
+          "repo": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "root": {
+            "type": "string"
           }
         },
         "required": [
@@ -11946,13 +11955,36 @@
           "task": {
             "type": "string"
           },
+          "panes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "sessions": {
+            "type": "integer"
+          },
+          "repo": {
+            "type": "string"
+          },
+          "branch": {
+            "type": "string"
+          },
+          "worktree": {
+            "type": "string"
+          },
           "cursor": {
             "$ref": "#/$defs/Cursor"
           }
         },
         "required": [
           "box",
-          "task"
+          "task",
+          "panes",
+          "sessions",
+          "repo",
+          "branch",
+          "worktree"
         ]
       }
     },
@@ -12665,6 +12697,12 @@
                 "idle",
                 "missing"
               ]
+            }
+          },
+          "boxes": {
+            "type": "array",
+            "items": {
+              "type": "string"
             }
           },
           "dry_run": {

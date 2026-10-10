@@ -3009,11 +3009,19 @@ CloudAuthSetResult = TypedDict("CloudAuthSetResult", {
 
 CloudBoxAdoptParams = TypedDict("CloudBoxAdoptParams", {
     "box": str,
+    "repo": NotRequired[str],
+    "title": NotRequired[str],
+    "root": NotRequired[str],
 })
 
 CloudBoxAdoptResult = TypedDict("CloudBoxAdoptResult", {
     "box": str,
     "task": str,
+    "panes": List[str],
+    "sessions": int,
+    "repo": str,
+    "branch": str,
+    "worktree": str,
     "cursor": NotRequired["Cursor"],
 })
 
@@ -3217,6 +3225,7 @@ CloudProvidersResult = TypedDict("CloudProvidersResult", {
 CloudPruneParams = TypedDict("CloudPruneParams", {
     "provider": NotRequired[str],
     "ownership": NotRequired[List[Literal["orphaned", "idle", "missing"]]],
+    "boxes": NotRequired[List[str]],
     "dry_run": NotRequired[bool],
     "force": NotRequired[bool],
 })
