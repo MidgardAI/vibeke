@@ -42,6 +42,9 @@ pub enum Operation {
     BackgroundSummary,
     /// 14 §2 automatic task titles: an editable suggestion, never applied.
     TaskTitle,
+    /// A few short replies the user could send to an agent pane in its current state. Drafts
+    /// only: the user picks or edits one and sends it with `agent.prompt`.
+    ReplySuggestions,
 }
 
 pub const ALL: &[Operation] = &[
@@ -56,6 +59,7 @@ pub const ALL: &[Operation] = &[
     Operation::StallNotice,
     Operation::BackgroundSummary,
     Operation::TaskTitle,
+    Operation::ReplySuggestions,
 ];
 
 /// Context classes a workspace consent can grant (14 §6, §7.1).
@@ -86,6 +90,7 @@ impl Operation {
             Operation::StallNotice => "stall_notice",
             Operation::BackgroundSummary => "background_summary",
             Operation::TaskTitle => "task_title",
+            Operation::ReplySuggestions => "reply_suggestions",
         }
     }
 
@@ -117,7 +122,7 @@ impl Operation {
                 &["structured_state", "selected_text"]
             }
             Operation::BackgroundSummary => &["structured_state"],
-            Operation::TaskTitle => &["selected_text"],
+            Operation::TaskTitle | Operation::ReplySuggestions => &["selected_text"],
         }
     }
 
@@ -144,6 +149,7 @@ impl Operation {
                 "Background summary (generated — check the linked items)"
             }
             Operation::TaskTitle => "Suggested task title (generated — not applied)",
+            Operation::ReplySuggestions => "Suggested replies (generated — not sent)",
         }
     }
 
@@ -191,6 +197,9 @@ impl Operation {
             Operation::TaskTitle => {
                 "Suggest a short, specific title (at most 80 characters) for this task from its objective or the selected request. Prefer the user's own words."
             }
+            Operation::ReplySuggestions => {
+                "Suggest three to five short replies (each at most 120 characters, one line) the user could send to this agent next, based on its last message, the recent requests and any open question. Order them from most to least likely. Each reply is a draft the user may edit; never suggest approving a risky action without saying what it is."
+            }
             Operation::EffortEstimate => {
                 "Estimate how much of the user's attention reviewing this task's current change needs: quick (about a minute), minutes (a few minutes) or deep (a careful review). Base it on the diff size, the files touched, failing or missing checks and criteria needing human judgment. It is a coarse estimate, not a promise; give a short rationale citing the sources."
             }
@@ -230,6 +239,9 @@ impl Operation {
             }
             Operation::TaskTitle => {
                 r#"{"title": string (<=80 chars), "rationale": string (<=300 chars)}"#
+            }
+            Operation::ReplySuggestions => {
+                r#"{"replies": [string (<=120 chars, one line)] (3 to 5 items)}"#
             }
         }
     }
@@ -313,6 +325,7 @@ impl Operation {
                 &["stalled"],
             ),
             Operation::TaskTitle => obj(json!({"title": s(), "rationale": s()}), &["title"]),
+            Operation::ReplySuggestions => obj(json!({"replies": list(s())}), &["replies"]),
         }
     }
 
@@ -677,6 +690,25 @@ pub fn validate(
             out.insert("applied".into(), json!(false));
             out.insert("preserves_user_title".into(), json!(true));
         }
+        Operation::ReplySuggestions => {
+            if !raw.get("replies").is_some_and(Value::is_array) {
+                return Err(invalid("field `replies` missing or not a list"));
+            }
+            let mut replies: Vec<String> = vec![];
+            for r in v.strings(&raw, "replies", 5, 120)? {
+                let line = r.lines().next().unwrap_or("").trim().to_string();
+                if !line.is_empty() && !replies.contains(&line) {
+                    replies.push(line);
+                }
+            }
+            if replies.is_empty() {
+                return Err(invalid("field `replies` has no usable reply"));
+            }
+            out.insert("replies".into(), json!(replies));
+            // Drafts only: the user picks or edits one and sends it as a prompt.
+            out.insert("draft_only".into(), json!(true));
+            out.insert("send_with".into(), json!({"method": "agent.prompt"}));
+        }
         Operation::Handoff => {
             let cited = |k: &str| {
                 v.list(&raw, k, 20, |c| {
@@ -949,6 +981,45 @@ mod tests {
         assert!(Operation::BackgroundSummary.background_only());
         assert!(Operation::StallNotice.background_only());
         assert!(!Operation::Briefing.background_only());
+    }
+
+    #[test]
+    fn reply_suggestions_are_bounded_one_line_drafts() {
+        let long = "x".repeat(300);
+        let reply = format!(
+            r#"{{"replies":["Yes, go ahead","Run the tests first\nthen commit","Yes, go ahead","  ","{long}","Stop here","Explain the plan","one too many"],"send":true}}"#
+        );
+        let out = validate(Operation::ReplySuggestions, &reply, &[], &[]).unwrap();
+        let replies: Vec<&str> = out["replies"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r.as_str().unwrap())
+            .collect();
+        // At most five taken, blanks and duplicates dropped, one line each, bounded.
+        assert_eq!(replies[0], "Yes, go ahead");
+        assert_eq!(replies[1], "Run the tests first");
+        assert_eq!(replies.len(), 3);
+        assert!(replies[2].chars().count() <= 121);
+        assert_eq!(out["draft_only"], true);
+        assert_eq!(out["send_with"]["method"], "agent.prompt");
+        assert!(out.get("send").is_none());
+        assert!(out["label"].as_str().unwrap().contains("not sent"));
+        for bad in [
+            r#"{"replies":[]}"#,
+            r#"{"replies":"yes"}"#,
+            r#"{"text":"x"}"#,
+        ] {
+            assert!(
+                validate(Operation::ReplySuggestions, bad, &[], &[]).is_err(),
+                "{bad}"
+            );
+        }
+        assert_eq!(
+            Operation::parse("reply_suggestions"),
+            Some(Operation::ReplySuggestions)
+        );
+        assert!(!Operation::ReplySuggestions.background_only());
     }
 
     #[test]
