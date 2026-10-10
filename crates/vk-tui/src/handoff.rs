@@ -1408,21 +1408,7 @@ pub fn on_paste(app: &mut App, text: &str) {
 
 /// A picker on a remote machine asks its server for the folder it shows.
 fn request_listing(app: &mut App) {
-    let Some(a) = app.ux.handoff.accept.as_mut() else {
-        return;
-    };
-    let mi = a.mi;
-    let Some((_, p)) = a.picker.as_mut() else {
-        return;
-    };
-    if let Some((key, params)) = p.take_request() {
-        let reply = crate::path_picker::Reply {
-            owner: crate::path_picker::Owner::Handoff,
-            id: p.id,
-            key,
-        };
-        app.command_on(mi, "fs.browse", params, Pending::Path(reply));
-    }
+    crate::path_picker::send_request(app, crate::path_picker::Owner::Handoff);
 }
 
 fn human(n: u64) -> String {

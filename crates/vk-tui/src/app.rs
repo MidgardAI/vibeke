@@ -1168,6 +1168,7 @@ impl App {
         crate::plugins::on_connected(self, i);
         crate::remote_view::on_connected(self, i);
         crate::ux::on_connected(self, i);
+        crate::path_picker::on_connected(self, i);
         // Another client of this session may have crashed since we started: adopt its pending
         // operations (never a live client's) so their outcomes get asked for too.
         let n = self.pending_ops.adopt_orphans();
@@ -1189,6 +1190,7 @@ impl App {
         crate::remote_view::on_disconnected(self, i);
         crate::taskbadge::on_disconnected(self, i);
         crate::collision::on_disconnected(self, i);
+        crate::path_picker::on_disconnected(self, i);
         if self.inbox.outstanding.is_empty()
             && let Some(f) = self.inbox.next_after.take()
         {
@@ -2038,7 +2040,7 @@ impl App {
             Mode::Normal => {}
             Mode::Popup(Popup::Path(p)) => {
                 p.picker.paste(&text);
-                crate::path_picker::request_for_popup(self);
+                crate::path_picker::send_request(self, crate::path_picker::Owner::Popup);
                 return;
             }
             Mode::Popup(Popup::HandoffAccept) => {

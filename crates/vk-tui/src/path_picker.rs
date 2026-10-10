@@ -106,8 +106,9 @@ impl DirSource for ServerDirs {
     }
 }
 
-/// (folder text as typed, dot-directories wanted): what one listing was read for.
-pub type ListKey = (String, bool);
+/// (folder text as typed, name prefix): what one listing was read for. The prefix is `.` for
+/// dot-directories, or the typed name in a folder too big for one server listing.
+pub type ListKey = (String, String);
 
 fn sort(v: &mut [DirEntry]) {
     v.sort_by(|a, b| {
@@ -149,6 +150,8 @@ pub struct PathPicker {
     waiting: Option<ListKey>,
     /// The server's home folder, learned from a listing of `~/`.
     server_home: Option<String>,
+    /// A folder (as typed) whose full server listing was cut off: it is asked for by name.
+    truncated: Option<String>,
     entries: Vec<DirEntry>,
     fs: Arc<dyn DirSource>,
 }
@@ -177,6 +180,7 @@ impl PathPicker {
             want: None,
             waiting: None,
             server_home: None,
+            truncated: None,
             entries: Vec::new(),
             fs,
         };
@@ -216,7 +220,14 @@ impl PathPicker {
     /// Re-read the folder when the folder part (or the dot-directory need) changed.
     fn refresh(&mut self) {
         let (dir, name) = self.split();
-        let key = (dir.to_string(), name.starts_with('.'));
+        let prefix = if self.truncated.as_deref() == Some(dir) && !name.is_empty() {
+            name.to_string()
+        } else if name.starts_with('.') {
+            ".".to_string()
+        } else {
+            String::new()
+        };
+        let key = (dir.to_string(), prefix);
         if self.listed.as_ref() == Some(&key) {
             return;
         }
@@ -230,7 +241,9 @@ impl PathPicker {
         } else {
             let path = PathBuf::from(self.expand(&key.0));
             if path.is_absolute() {
-                self.fs.list(&path, key.1).unwrap_or_default()
+                self.fs
+                    .list(&path, key.1.starts_with('.'))
+                    .unwrap_or_default()
             } else {
                 Vec::new()
             }
@@ -248,10 +261,17 @@ impl PathPicker {
         }
         self.waiting = Some(key.clone());
         let mut params = json!({"path": key.0});
-        if key.1 {
-            params["prefix"] = ".".into();
+        if !key.1.is_empty() {
+            params["prefix"] = key.1.clone().into();
         }
         Some((key, params))
+    }
+
+    /// The connection dropped: a listing asked for will never come, so ask again.
+    pub fn retry(&mut self) {
+        if self.waiting.take().is_some() {
+            self.want = self.listed.clone();
+        }
     }
 
     /// An `fs.browse` reply for `key`; dropped when the picker has moved on to another folder.
@@ -285,6 +305,13 @@ impl PathPicker {
         sort(&mut entries);
         self.entries = entries;
         self.sel = None;
+        // Cut off at the server's limit: the typed name narrows the next listing.
+        if v.get("truncated").and_then(Value::as_bool) == Some(true)
+            && (key.1.is_empty() || key.1 == ".")
+        {
+            self.truncated = Some(key.0.clone());
+            self.refresh();
+        }
     }
 
     /// The listed folder's directories matching the partial name, best first: (entry index,
@@ -572,6 +599,8 @@ impl PathPicker {
 pub struct PathPrompt {
     pub kind: PromptKind,
     pub title: String,
+    /// The machine the path is on.
+    pub mi: usize,
     pub picker: PathPicker,
 }
 
@@ -598,13 +627,13 @@ pub fn open_with(
     initial: &str,
     fs: Arc<dyn DirSource>,
 ) {
-    let mut picker = PathPicker::new(initial, fs);
-    request(app, app.cur, &mut picker, Owner::Popup);
     app.mode = Mode::Popup(Popup::Path(Box::new(PathPrompt {
         kind,
         title: title.into(),
-        picker,
+        mi: app.cur,
+        picker: PathPicker::new(initial, fs),
     })));
+    send_request(app, Owner::Popup);
 }
 
 /// Which open picker a listing is for.
@@ -624,72 +653,92 @@ pub struct Reply {
     pub key: ListKey,
 }
 
-/// Send the listing `picker` asks for (if any) to machine `mi`.
-pub fn request(app: &mut App, mi: usize, picker: &mut PathPicker, owner: Owner) {
-    if let Some((key, params)) = picker.take_request() {
-        let id = picker.id;
-        app.command_on(
-            mi,
-            "fs.browse",
-            params,
-            Pending::Path(Reply { owner, id, key }),
-        );
-    }
-}
-
-/// [`request`] for the open popup picker (after a paste, which doesn't go through its keys).
-pub fn request_for_popup(app: &mut App) {
-    let Mode::Popup(Popup::Path(p)) = &mut app.mode else {
-        return;
-    };
-    if let Some((key, params)) = p.picker.take_request() {
-        let reply = Reply {
-            owner: Owner::Popup,
-            id: p.picker.id,
-            key,
-        };
-        app.command("fs.browse", params, Pending::Path(reply));
-    }
-}
-
-pub fn on_reply(app: &mut App, _mi: usize, r: Reply, res: Result<Value, RpcErr>) {
-    let picker = match (r.owner, &mut app.mode) {
-        (Owner::Popup, Mode::Popup(Popup::Path(p))) => Some(&mut p.picker),
-        (Owner::Handoff, _) => app
+/// The open picker `owner` names, with the machine it lists.
+fn picker_mut(app: &mut App, owner: Owner) -> Option<(usize, &mut PathPicker)> {
+    match owner {
+        Owner::Popup => match &mut app.mode {
+            Mode::Popup(Popup::Path(p)) => Some((p.mi, &mut p.picker)),
+            _ => None,
+        },
+        Owner::Handoff => app
             .ux
             .handoff
             .accept
             .as_mut()
-            .and_then(|a| a.picker.as_mut())
-            .map(|(_, p)| p),
-        _ => None,
+            .and_then(|a| Some((a.mi, &mut a.picker.as_mut()?.1))),
+    }
+}
+
+/// Send the listing the open picker `owner` asks for (if any) to its machine.
+pub fn send_request(app: &mut App, owner: Owner) {
+    let Some((mi, p)) = picker_mut(app, owner) else {
+        return;
     };
+    let Some((key, params)) = p.take_request() else {
+        return;
+    };
+    let id = p.id;
+    app.command_on(
+        mi,
+        "fs.browse",
+        params,
+        Pending::Path(Reply { owner, id, key }),
+    );
+}
+
+pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) {
     // A reply for a picker that has since closed (and maybe another one opened, on another
     // machine) is dropped.
-    if let Some(p) = picker.filter(|p| p.id == r.id) {
-        p.set_listing(&r.key, res.as_ref());
-        app.dirty = true;
+    let Some((_, p)) = picker_mut(app, r.owner).filter(|(m, p)| *m == mi && p.id == r.id) else {
+        return;
+    };
+    p.set_listing(&r.key, res.as_ref());
+    app.dirty = true;
+    // A cut-off listing asks again by name.
+    send_request(app, r.owner);
+}
+
+/// Machine `mi` dropped: its pickers' outstanding listings are asked for again on reconnect.
+pub fn on_disconnected(app: &mut App, mi: usize) {
+    for owner in [Owner::Popup, Owner::Handoff] {
+        if let Some((m, p)) = picker_mut(app, owner)
+            && m == mi
+        {
+            p.retry();
+        }
+    }
+}
+
+pub fn on_connected(app: &mut App, mi: usize) {
+    for owner in [Owner::Popup, Owner::Handoff] {
+        if picker_mut(app, owner).is_some_and(|(m, _)| m == mi) {
+            send_request(app, owner);
+        }
     }
 }
 
 pub fn popup_key(app: &mut App, ev: KeyEvent, mut p: Box<PathPrompt>) {
     match p.picker.key(&ev) {
         Outcome::Stay => {
-            request(app, app.cur, &mut p.picker, Owner::Popup);
             app.mode = Mode::Popup(Popup::Path(p));
+            send_request(app, Owner::Popup);
         }
         Outcome::Cancel => {}
         Outcome::Submit(_) => {
             let PathPrompt {
                 kind,
                 title,
+                mi,
                 picker,
             } = *p;
+            // The path belongs to the machine the picker listed, even if the view moved on.
+            let saved = std::mem::replace(&mut app.cur, mi);
             app.submit_prompt(Prompt {
                 kind,
                 label: title,
                 input: picker.resolved(),
             });
+            app.cur = saved;
         }
     }
 }
@@ -794,7 +843,7 @@ mod tests {
         assert!(p.matches().is_empty());
         assert_eq!(p.resolved(), "~/");
         let (k, params) = p.take_request().unwrap();
-        assert_eq!(k, ("~/".to_string(), false));
+        assert_eq!(k, ("~/".to_string(), String::new()));
         assert_eq!(params, json!({"path": "~/"}));
         assert!(p.take_request().is_none(), "asked once per folder");
     }
@@ -1066,6 +1115,64 @@ mod tests {
         app.on_paste("x/".into());
         let (_, p) = only(&commands(&mut rxs[1]), "fs.browse");
         assert_eq!(p, json!({"path": "~/x/"}));
+    }
+
+    #[test]
+    fn the_picker_stays_with_its_machine_and_survives_a_reconnect() {
+        use crate::drafts::tests::{commands, fleet_n, only, reply};
+        let (mut app, mut rxs) = fleet_n(2);
+        app.cur = 1;
+        app.action("new_workspace", None);
+        commands(&mut rxs[1]);
+        // The connection drops with the listing outstanding: it is asked for again.
+        app.on_disconnected(1);
+        app.on_connected(1);
+        let (req, p) = only(&commands(&mut rxs[1]), "fs.browse");
+        assert_eq!(p, json!({"path": "~/"}));
+        // The view moves to another machine: the reply and the path stay with machine 1.
+        app.cur = 0;
+        commands(&mut rxs[0]);
+        reply(
+            &mut app,
+            1,
+            req,
+            json!({"path": "/home/r", "entries": [{"name": "src"}]}),
+        );
+        assert_eq!(names(picker(&app)), ["src"]);
+        app.on_key(named(NamedKey::Enter));
+        assert!(
+            commands(&mut rxs[0])
+                .iter()
+                .all(|c| c.1 != "workspace.create")
+        );
+        let (_, p) = only(&commands(&mut rxs[1]), "workspace.create");
+        assert_eq!(p["cwd"], "/home/r");
+        assert_eq!(app.cur, 0);
+    }
+
+    #[test]
+    fn a_cut_off_listing_is_asked_for_again_by_name() {
+        use crate::drafts::tests::{commands, fleet_n, only, reply};
+        let (mut app, mut rxs) = fleet_n(2);
+        app.cur = 1;
+        app.action("new_workspace", None);
+        app.on_paste("z".into());
+        let (req, _) = only(&commands(&mut rxs[1]), "fs.browse");
+        reply(
+            &mut app,
+            1,
+            req,
+            json!({"path": "/home/r", "entries": [{"name": "a"}], "truncated": true}),
+        );
+        let (req, p) = only(&commands(&mut rxs[1]), "fs.browse");
+        assert_eq!(p, json!({"path": "~/", "prefix": "z"}));
+        reply(
+            &mut app,
+            1,
+            req,
+            json!({"path": "/home/r", "entries": [{"name": "zebra"}], "truncated": false}),
+        );
+        assert_eq!(names(picker(&app)), ["zebra"]);
     }
 
     #[test]
