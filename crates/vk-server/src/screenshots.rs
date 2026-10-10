@@ -52,6 +52,7 @@ pub const METHODS: &[(&str, bool)] = &[
     ("screenshot.get", false),
     ("screenshot.open", false),
     ("screenshot.delete", true),
+    ("screenshot.add", true),
     ("browser.diff", true),
 ];
 
@@ -126,6 +127,8 @@ pub enum EnvKind {
     Window,
     /// The user's normal browser through the authenticated reverse proxy (B4).
     LocalProxy,
+    /// An image file an agent attached (`screenshot.add`); no browser involved.
+    Agent,
 }
 
 impl EnvKind {
@@ -135,6 +138,7 @@ impl EnvKind {
             EnvKind::LocalPane => "local_pane",
             EnvKind::Window => "window",
             EnvKind::LocalProxy => "local_proxy",
+            EnvKind::Agent => "agent",
         }
     }
 }
@@ -179,6 +183,7 @@ impl Environment {
             EnvKind::LocalPane => parts.push("your browser pane".into()),
             EnvKind::Window => parts.push("your browser window".into()),
             EnvKind::LocalProxy => parts.push("your browser via proxy".into()),
+            EnvKind::Agent => return "attached by agent".into(),
         }
         if let Some(p) = &self.profile {
             parts.push(format!("profile {p}"));
@@ -253,6 +258,12 @@ pub struct ScreenshotMeta {
     /// What the captured document said about itself at capture time (Codex review follow-up).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub document: Option<DocumentIdentity>,
+    /// What the agent said the image shows (`screenshot.add`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caption: Option<String>,
+    /// Base name of the file an agent attached (`screenshot.add`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_name: Option<String>,
 }
 
 /// The captured document's identity, read from the page itself.
@@ -563,7 +574,7 @@ pub async fn record_screenshot(
     }
     let (width, height) = crate::agent_browser::png_size(png);
     let id = ulid();
-    let mut meta = ScreenshotMeta {
+    let meta = ScreenshotMeta {
         id: id.clone(),
         handle: String::new(),
         kind: "screenshot".into(),
@@ -595,7 +606,19 @@ pub async fn record_screenshot(
         binding,
         binding_reason,
         document: doc.as_ref().and_then(|d| d.identity().cloned()),
+        caption: None,
+        source_name: None,
     };
+    persist_screenshot(server, png, meta)
+}
+
+/// Allocate the handle, write the entity and event in one commit, store the blob and enforce
+/// the per-task cap. Shared by [`record_screenshot`] and `screenshot.add`.
+fn persist_screenshot(
+    server: &Arc<Server>,
+    png: &[u8],
+    mut meta: ScreenshotMeta,
+) -> Result<ScreenshotMeta, RpcError> {
     // Handle allocation and the entity write under one core lock.
     let srv = server.clone();
     let meta = {
@@ -624,6 +647,8 @@ pub async fn record_screenshot(
                 "label": meta.label,
                 "blob": meta.blob,
                 "preview": meta.preview,
+                "pane": meta.pane,
+                "caption": meta.caption,
                 "head_sha": meta.code.as_ref().and_then(|c| c.head_sha.clone()),
             }),
         );
@@ -647,6 +672,289 @@ pub async fn record_screenshot(
         });
     }
     Ok(meta)
+}
+
+// ---- attached images (screenshot.add) ------------------------------------------------------
+
+/// Largest image file `screenshot.add` accepts. Its base64 (4 bytes per 3, about 14.7 MiB)
+/// plus the JSON around it must fit one request line on the control socket and the sandbox
+/// broker (16 MiB, checked below and in `sandbox`).
+pub(crate) const ADD_MAX_BYTES: usize = 11 << 20;
+const _: () = assert!(ADD_MAX_BYTES.div_ceil(3) * 4 + 64 * 1024 <= crate::run::MAX_CONTROL_LINE);
+/// Largest width or height `screenshot.add` accepts.
+const ADD_MAX_DIM: u32 = 16384;
+const CAPTION_MAX_CHARS: usize = 500;
+const NAME_MAX_CHARS: usize = 200;
+
+/// Allocation cap for one image decode: the JPEG transcode in `screenshot.add` and the
+/// thumbnails of `screenshot.get`. A larger image is refused before its pixels are allocated.
+pub(crate) const DECODE_MAX_ALLOC: u64 = 256 << 20;
+/// Image decodes that may run at once in this process, so their memory stays bounded in
+/// total (each one up to [`DECODE_MAX_ALLOC`] plus its output).
+const DECODE_PERMITS: usize = 2;
+static DECODE_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(DECODE_PERMITS);
+
+/// Run the decode job `f` on the blocking pool once a decode slot is free. The slot is held
+/// until the job ends, even when the caller stops waiting.
+async fn decode_job<T: Send + 'static>(
+    f: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, tokio::task::JoinError> {
+    // The semaphore is never closed.
+    let permit = DECODE_SLOTS.acquire().await.ok();
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        f()
+    })
+    .await
+}
+
+/// Decoder limits: sides up to [`ADD_MAX_DIM`], at most `max_alloc` bytes allocated.
+pub(crate) fn decode_limits(max_alloc: u64) -> image::Limits {
+    #[allow(clippy::field_reassign_with_default)]
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(ADD_MAX_DIM);
+    limits.max_image_height = Some(ADD_MAX_DIM);
+    limits.max_alloc = Some(max_alloc);
+    limits
+}
+
+/// Why [`decode_bounded`] failed.
+#[derive(Debug)]
+pub(crate) enum DecodeFailure {
+    /// The decode would exceed the limits.
+    TooLarge,
+    Invalid(String),
+}
+
+/// Decode `bytes` as `format` within [`decode_limits`]`(max_alloc)`.
+pub(crate) fn decode_bounded(
+    bytes: &[u8],
+    format: image::ImageFormat,
+    max_alloc: u64,
+) -> Result<image::DynamicImage, DecodeFailure> {
+    let mut reader = image::ImageReader::with_format(std::io::Cursor::new(bytes), format);
+    reader.limits(decode_limits(max_alloc));
+    reader.decode().map_err(|e| match e {
+        image::ImageError::Limits(_) => DecodeFailure::TooLarge,
+        e => DecodeFailure::Invalid(e.to_string()),
+    })
+}
+
+const TOO_LARGE_TO_PROCESS: &str = "image is too large to process";
+
+/// Validate an attached image and return PNG bytes with the pixel size. PNG is kept as-is
+/// (only its header is read); JPEG is decoded within `max_alloc` bytes and re-encoded as PNG.
+/// Anything else is refused. Callers run JPEG through [`decode_job`].
+fn normalize_image(bytes: Vec<u8>, max_alloc: u64) -> Result<(Vec<u8>, u32, u32), RpcError> {
+    use image::{ImageFormat, ImageReader};
+    use std::io::Cursor;
+    let unsupported = || invalid("only PNG and JPEG images are supported");
+    if bytes.len() > ADD_MAX_BYTES {
+        return Err(invalid(format!(
+            "image is larger than {} MiB",
+            ADD_MAX_BYTES >> 20
+        )));
+    }
+    let format = image::guess_format(&bytes).map_err(|_| unsupported())?;
+    let too_big = |w: u32, h: u32| {
+        invalid(format!(
+            "image is {w}x{h}; the largest side allowed is {ADD_MAX_DIM}"
+        ))
+    };
+    match format {
+        ImageFormat::Png => {
+            // Only the fixed-size IHDR chunk: a decoder would also inflate metadata chunks
+            // (iCCP …) outside the decode budget.
+            let (w, h) = png_header_size(&bytes)
+                .ok_or_else(|| invalid("not a valid PNG image: missing IHDR header"))?;
+            if w == 0 || h == 0 || w > ADD_MAX_DIM || h > ADD_MAX_DIM {
+                return Err(too_big(w, h));
+            }
+            Ok((bytes, w, h))
+        }
+        ImageFormat::Jpeg => {
+            // The header first, so an oversized side gets its own message.
+            let (w, h) = ImageReader::with_format(Cursor::new(&bytes), ImageFormat::Jpeg)
+                .into_dimensions()
+                .map_err(|e| invalid(format!("not a valid JPEG image: {e}")))?;
+            if w == 0 || h == 0 || w > ADD_MAX_DIM || h > ADD_MAX_DIM {
+                return Err(too_big(w, h));
+            }
+            let img =
+                decode_bounded(&bytes, ImageFormat::Jpeg, max_alloc).map_err(|e| match e {
+                    DecodeFailure::TooLarge => invalid(TOO_LARGE_TO_PROCESS),
+                    DecodeFailure::Invalid(e) => invalid(format!("not a valid JPEG image: {e}")),
+                })?;
+            let (w, h) = (img.width(), img.height());
+            let mut out = Vec::new();
+            img.write_to(&mut Cursor::new(&mut out), ImageFormat::Png)
+                .map_err(crate::api::internal)?;
+            Ok((out, w, h))
+        }
+        _ => Err(unsupported()),
+    }
+}
+
+/// Width and height from a PNG's IHDR chunk (signature, then IHDR first, as the format
+/// requires), without inflating anything.
+fn png_header_size(b: &[u8]) -> Option<(u32, u32)> {
+    const SIG: &[u8] = b"\x89PNG\r\n\x1a\n";
+    if b.len() < 24 || &b[..8] != SIG || &b[12..16] != b"IHDR" {
+        return None;
+    }
+    let w = u32::from_be_bytes(b[16..20].try_into().ok()?);
+    let h = u32::from_be_bytes(b[20..24].try_into().ok()?);
+    Some((w, h))
+}
+
+/// Control characters removed, trimmed, cut to `max` characters; `None` when nothing is left.
+fn clean_text(s: &str, max: usize) -> Option<String> {
+    let cleaned: String = s.chars().filter(|c| !c.is_control()).collect();
+    let cleaned: String = cleaned.trim().chars().take(max).collect();
+    (!cleaned.is_empty()).then_some(cleaned)
+}
+
+/// An earlier record of the same image (`blob`) for the same pane and workspace.
+fn find_duplicate(
+    server: &Server,
+    blob: &str,
+    pane: &Option<String>,
+    workspace: &Option<String>,
+) -> Option<ScreenshotMeta> {
+    load_all(server)
+        .into_iter()
+        .find(|m| m.blob == blob && &m.pane == pane && &m.workspace == workspace)
+}
+
+/// `screenshot.add {data_b64, caption?, name?, pane?}`: store an image file an agent (or the
+/// user) attached, as a `screenshot` record in the `agent` environment. The caller reads the
+/// file; the server never opens caller-supplied paths.
+async fn add(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
+    use base64::Engine as _;
+    let data_b64 = crate::api::req(p, "data_b64")?;
+    // Cheap bound before decoding: base64 is 4 bytes per 3.
+    if data_b64.len() > ADD_MAX_BYTES / 3 * 4 + 8 {
+        return Err(invalid(format!(
+            "image is larger than {} MiB",
+            ADD_MAX_BYTES >> 20
+        )));
+    }
+    let raw = base64::engine::general_purpose::STANDARD
+        .decode(data_b64.trim())
+        .map_err(|e| invalid(format!("data_b64 is not valid base64: {e}")))?;
+    // A pane-scoped caller always attaches to its own pane.
+    let pane = match (&ctx.pane_scope, s(p, "pane").filter(|t| !t.is_empty())) {
+        (Some(own), target) => {
+            let pane = crate::api::resolve_pane(server, ctx, target.or(Some(own.as_str())))?;
+            if &pane.id != own {
+                return Err(err(
+                    ErrorKind::PermissionDenied,
+                    "an agent can attach images to its own pane only",
+                )
+                .details(json!({"scope": "pane"})));
+            }
+            Some(pane.id)
+        }
+        (None, Some(target)) => Some(crate::api::resolve_pane(server, ctx, Some(target))?.id),
+        (None, None) => None,
+    };
+    let caption = s(p, "caption").and_then(|c| clean_text(c, CAPTION_MAX_CHARS));
+    let source_name = s(p, "name")
+        .and_then(|n| n.rsplit(['/', '\\']).next())
+        .and_then(|n| clean_text(n, NAME_MAX_CHARS));
+    // PNG is kept as-is after a header check; only JPEG is decoded, in a decode slot.
+    let (png, width, height) = if image::guess_format(&raw).ok() == Some(image::ImageFormat::Jpeg) {
+        decode_job(move || normalize_image(raw, DECODE_MAX_ALLOC))
+            .await
+            .map_err(crate::api::internal)??
+    } else {
+        normalize_image(raw, DECODE_MAX_ALLOC)?
+    };
+    let blob = blake3::hash(&png).to_hex().to_string();
+    let agent = ctx.pane_scope.is_some();
+    let taken_by = Requester {
+        kind: if agent { "agent" } else { "user" }.into(),
+        pane: pane.clone(),
+        run: None,
+        client: (!agent).then(|| ctx.client_id.clone()),
+    };
+    let environment = Environment {
+        kind: EnvKind::Agent,
+        machine: server.opts.machine.clone(),
+        runner: "host".into(),
+        browser: String::new(),
+        browser_version: None,
+        viewport: Viewport { width, height },
+        dpr: 1.0,
+        color_scheme: None,
+        device: None,
+        fresh_context: false,
+        profile: None,
+    };
+    let inputs = ShotInputs {
+        environment: environment.clone(),
+        url: String::new(),
+        final_url: None,
+        title: None,
+        preview: None,
+        session: None,
+        taken_by: taken_by.clone(),
+        full_page: false,
+        selector: None,
+        checkout: None,
+        runtime: None,
+        probe_runtime: false,
+        document: None,
+    };
+    let origin = resolve_origin(server, &inputs);
+    // The same file attached again from the same pane in the same workspace is the same image.
+    // A pane that moved to another workspace gets a new record: the old one belongs to the old
+    // workspace, and callers limited to the new one must not see it.
+    if let Some(existing) = find_duplicate(server, &blob, &pane, &origin.workspace) {
+        let mut v = with_path(server, &existing);
+        v["duplicate"] = json!(true);
+        return Ok(v);
+    }
+    let now = vk_store::now_ms();
+    let meta = ScreenshotMeta {
+        id: ulid(),
+        handle: String::new(),
+        kind: "screenshot".into(),
+        blob,
+        mime: "image/png".into(),
+        width,
+        height,
+        bytes: png.len() as u64,
+        created_at_ms: now,
+        taken_at: now,
+        label: environment.label(),
+        environment,
+        url: String::new(),
+        final_url: None,
+        title: None,
+        preview: None,
+        preview_id: None,
+        session: None,
+        full_page: false,
+        selector: None,
+        taken_by,
+        pane: origin.pane,
+        run: origin.run,
+        task: origin.task,
+        workspace: origin.workspace,
+        code: None,
+        code_note: Some("attached file".into()),
+        runtime: RuntimeIdentity::unknown("attached file", now),
+        binding: Binding::Illustrative,
+        binding_reason: "Attached from a file by an agent; not tied to a running build".into(),
+        document: None,
+        caption,
+        source_name,
+    };
+    let meta = persist_screenshot(server, &png, meta)?;
+    let mut v = with_path(server, &meta);
+    v["duplicate"] = json!(false);
+    Ok(v)
 }
 
 // ---- running-build probe --------------------------------------------------------------------
@@ -859,6 +1167,18 @@ fn list(server: &Server, ctx: &Ctx, p: &Value) -> R {
     });
     let preview = s(p, "preview");
     let run = s(p, "run");
+    // A deleted pane or workspace can still have screenshots: fall back to the literal id.
+    let pane = s(p, "pane").filter(|t| !t.is_empty()).map(|t| {
+        crate::api::resolve_pane(server, ctx, Some(t))
+            .map(|p| p.id)
+            .unwrap_or_else(|_| t.to_string())
+    });
+    let workspace = s(p, "workspace").filter(|t| !t.is_empty()).map(|t| {
+        crate::api::resolve_ws(server, ctx, Some(t))
+            .map(|w| w.id)
+            .unwrap_or_else(|_| t.to_string())
+    });
+    let environment = s(p, "environment").filter(|t| !t.is_empty());
     let since = since_ms(p);
     let limit = u(p, "limit").unwrap_or(50).clamp(1, 1000) as usize;
     let mut v: Vec<ScreenshotMeta> = load_all(server)
@@ -873,6 +1193,13 @@ fn list(server: &Server, ctx: &Ctx, p: &Value) -> R {
         .filter(|m| {
             run.is_none_or(|r| m.run.as_deref() == Some(r) || m.taken_by.run.as_deref() == Some(r))
         })
+        .filter(|m| pane.as_ref().is_none_or(|t| m.pane.as_deref() == Some(t)))
+        .filter(|m| {
+            workspace
+                .as_ref()
+                .is_none_or(|w| m.workspace.as_deref() == Some(w))
+        })
+        .filter(|m| environment.is_none_or(|e| m.environment.kind.as_str() == e))
         .filter(|m| since.is_none_or(|t| m.created_at_ms >= t))
         .collect();
     v.sort_by(|a, b| b.created_at_ms.cmp(&a.created_at_ms).then(b.id.cmp(&a.id)));
@@ -885,16 +1212,80 @@ fn list(server: &Server, ctx: &Ctx, p: &Value) -> R {
     }))
 }
 
-fn get(server: &Server, ctx: &Ctx, p: &Value, inline: bool) -> R {
+/// Smallest and largest `thumb` (longest side in pixels) `screenshot.get` honours.
+const THUMB_MIN: u64 = 64;
+const THUMB_MAX: u64 = 1024;
+
+/// `screenshot.get {id, inline?, thumb?}`. With `inline` and `thumb`, `data_b64` is a PNG
+/// scaled down so its longest side is at most `thumb` pixels (never scaled up), with
+/// `thumb_width`/`thumb_height`.
+async fn get(server: &Server, ctx: &Ctx, p: &Value, inline: bool) -> R {
     let t = s(p, "id")
         .or_else(|| s(p, "screenshot"))
         .ok_or_else(|| invalid("missing param `id`"))?;
     let m = find_visible(server, ctx, t)?;
     let mut v = with_path(server, &m);
     if inline || b(p, "inline").unwrap_or(false) {
-        inline_into(&mut v, &m.path(server));
+        match u(p, "thumb") {
+            Some(edge) => {
+                let edge = edge.clamp(THUMB_MIN, THUMB_MAX) as u32;
+                thumb_into(&mut v, m.path(server), edge).await;
+            }
+            None => inline_into(&mut v, &m.path(server)),
+        }
     }
     Ok(v)
+}
+
+/// Put a thumbnail of the blob at `path` into `v` (see [`get`]); on failure `inline_skipped`
+/// says why, like [`inline_into`].
+async fn thumb_into(v: &mut Value, path: PathBuf, edge: u32) {
+    use base64::Engine as _;
+    let made = decode_job(move || {
+        let png = crate::privacy::read_blob(&path).map_err(|e| format!("blob unreadable: {e}"))?;
+        thumbnail_png(&png, edge, DECODE_MAX_ALLOC)
+    })
+    .await
+    .unwrap_or_else(|e| Err(format!("thumbnail failed: {e}")));
+    match made {
+        Ok((data, w, h)) => {
+            v["data_b64"] = json!(base64::engine::general_purpose::STANDARD.encode(&data));
+            v["mime"] = json!("image/png");
+            v["thumb_width"] = json!(w);
+            v["thumb_height"] = json!(h);
+        }
+        Err(e) => v["inline_skipped"] = json!(e),
+    }
+}
+
+/// Scale a PNG down so its longest side is at most `edge` pixels, keeping the aspect ratio.
+/// One that already fits is returned unchanged (never scaled up). Decoding is bounded by
+/// [`decode_limits`]`(max_alloc)`; callers run it through [`decode_job`].
+pub(crate) fn thumbnail_png(
+    png: &[u8],
+    edge: u32,
+    max_alloc: u64,
+) -> Result<(Vec<u8>, u32, u32), String> {
+    use image::{ImageFormat, ImageReader, imageops::FilterType};
+    use std::io::Cursor;
+    let (w, h) = ImageReader::with_format(Cursor::new(png), ImageFormat::Png)
+        .into_dimensions()
+        .map_err(|e| format!("not a valid PNG image: {e}"))?;
+    if w.max(h) <= edge {
+        return Ok((png.to_vec(), w, h));
+    }
+    let img = decode_bounded(png, ImageFormat::Png, max_alloc).map_err(|e| match e {
+        DecodeFailure::TooLarge => TOO_LARGE_TO_PROCESS.to_string(),
+        DecodeFailure::Invalid(e) => format!("thumbnail failed: {e}"),
+    })?;
+    // `resize` keeps the aspect ratio and fits the image inside edge x edge.
+    let small = img.resize(edge, edge, FilterType::Triangle);
+    let (tw, th) = (small.width(), small.height());
+    let mut out = Vec::new();
+    small
+        .write_to(&mut Cursor::new(&mut out), ImageFormat::Png)
+        .map_err(|e| format!("thumbnail failed: {e}"))?;
+    Ok((out, tw, th))
 }
 
 fn delete(server: &Server, ctx: &Ctx, p: &Value) -> R {
@@ -1339,10 +1730,11 @@ pub fn review_evidence(
 pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Option<R> {
     Some(match method {
         "screenshot.list" => list(server, ctx, p),
-        "screenshot.get" => get(server, ctx, p, false),
+        "screenshot.get" => get(server, ctx, p, false).await,
         // `vibeke screenshot open`: the image inline so the CLI can open it locally.
-        "screenshot.open" => get(server, ctx, p, true),
+        "screenshot.open" => get(server, ctx, p, true).await,
         "screenshot.delete" => delete(server, ctx, p),
+        "screenshot.add" => add(server, ctx, p).await,
         "browser.diff" => diff(server, ctx, p).await,
         _ => return None,
     })

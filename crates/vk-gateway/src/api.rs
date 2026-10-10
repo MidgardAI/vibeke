@@ -88,6 +88,8 @@ const SERVER_READ_ONLY: &[&str] = &[
     "preview.get",
     "preview.url",
     "preview.status",
+    "screenshot.list",
+    "screenshot.get",
     "worktree.list",
     "fs.browse",
     "repo.candidates",
@@ -140,6 +142,8 @@ pub fn required_scope(method: &str) -> Option<Scope> {
         | "preview.get"
         | "preview.url"
         | "preview.status"
+        | "screenshot.list"
+        | "screenshot.get"
         | "worktree.list"
         | "git.log"
         | "fs.list"
@@ -333,6 +337,28 @@ fn req<'a>(p: &'a Value, k: &str) -> Result<&'a str, ApiError> {
     s(p, k)
         .filter(|v| !v.is_empty())
         .ok_or_else(|| ApiError::invalid(format!("{k} is required")))
+}
+
+/// Parameters `screenshot.list` passes to the server.
+const SCREENSHOT_LIST_PARAMS: &[&str] = &[
+    "task",
+    "pane",
+    "workspace",
+    "environment",
+    "since",
+    "since_ms",
+    "limit",
+];
+
+/// `screenshot.list` selectors are strings (or absent/null). Another type would pass the share
+/// checks, which read strings only, and then be ignored by the server.
+fn screenshot_list_selectors_ok(p: &Value) -> Result<(), ApiError> {
+    for k in ["pane", "workspace", "task", "environment"] {
+        if p.get(k).is_some_and(|v| !v.is_null() && !v.is_string()) {
+            return Err(ApiError::invalid(format!("{k} must be a string")));
+        }
+    }
+    Ok(())
 }
 
 /// Like [`pick`] but keeps explicit nulls (`attention.update {snooze_until_ms: null}` clears).
@@ -834,6 +860,105 @@ impl Call<'_> {
         Ok((panes, tasks))
     }
 
+    /// Panes visible to a limited device, each with its current workspace.
+    async fn visible_panes(
+        &self,
+        allowed: &Allowed,
+    ) -> Result<Vec<(String, Option<String>)>, ApiError> {
+        let mut snap = self.server("session.snapshot", json!({})).await?;
+        Self::filter_snapshot(allowed, &mut snap);
+        Ok(snap["panes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|p| {
+                s(p, "id").map(|id| (id.to_string(), s(p, "workspace").map(str::to_string)))
+            })
+            .collect())
+    }
+
+    /// The workspace and pane a limited device's screenshots must match. A workspace share sees
+    /// the records taken in its workspace; a pane share sees its pane's records taken in the
+    /// pane's current workspace (a pane moved between workspaces does not carry its older
+    /// workspace's screenshots along). `None`: nothing is visible (the shared pane is gone).
+    async fn screenshot_scope(
+        &self,
+        allowed: &Allowed,
+    ) -> Result<Option<(String, Option<String>)>, ApiError> {
+        if let Some(pane) = &allowed.pane {
+            let panes = self.visible_panes(allowed).await?;
+            return Ok(panes
+                .into_iter()
+                .find(|(id, _)| id == pane)
+                .and_then(|(id, ws)| ws.map(|ws| (ws, Some(id)))));
+        }
+        Ok(allowed.workspace.clone().map(|w| (w, None)))
+    }
+
+    fn screenshot_visible(m: &Value, scope: &(String, Option<String>)) -> bool {
+        let (ws, pane) = scope;
+        s(m, "workspace") == Some(ws.as_str())
+            && pane.as_deref().is_none_or(|p| s(m, "pane") == Some(p))
+    }
+
+    /// `screenshot.list` for a limited device. The scope is expressed as server filters, so the
+    /// server's paging, `count` and `total` cover exactly the records the device may see; the
+    /// result is checked again here.
+    async fn limited_screenshot_list(&self, allowed: &Allowed, p: &Value) -> ApiResult {
+        let Some(scope) = self.screenshot_scope(allowed).await? else {
+            return Ok(json!({"screenshots": [], "count": 0, "total": 0}));
+        };
+        let mut params = pick(p, SCREENSHOT_LIST_PARAMS);
+        // `check_limit` has refused an explicit pane or workspace outside the limit.
+        params["workspace"] = scope.0.clone().into();
+        if let Some(pane) = &scope.1 {
+            params["pane"] = pane.clone().into();
+        }
+        let mut r = self.server("screenshot.list", params).await?;
+        if !r.is_object() {
+            r = json!({});
+        }
+        let mut list = match r.get_mut("screenshots").map(Value::take) {
+            Some(Value::Array(list)) => list,
+            _ => Vec::new(),
+        };
+        let before = list.len();
+        list.retain(|m| Self::screenshot_visible(m, &scope));
+        if list.len() != before {
+            // The server ignored a filter (an older host): never describe what was dropped.
+            r["total"] = list.len().into();
+        }
+        r["count"] = list.len().into();
+        r["screenshots"] = Value::Array(list);
+        Ok(r)
+    }
+
+    /// `screenshot.get` for a limited device. The record is fetched first without image data,
+    /// so the host reads or scales no image outside the limit; only then is the image asked
+    /// for, by the record's immutable id (a handle could name another record by then).
+    async fn limited_screenshot_get(&self, allowed: &Allowed, p: &Value) -> ApiResult {
+        let not_found = || ApiError::new("not_found", "screenshot not found");
+        let id = req(p, "id")?;
+        let meta = self.server("screenshot.get", json!({"id": id})).await?;
+        let scope = self
+            .screenshot_scope(allowed)
+            .await?
+            .ok_or_else(not_found)?;
+        if !Self::screenshot_visible(&meta, &scope) {
+            return Err(not_found());
+        }
+        let mut params = pick(p, &["inline", "thumb"]);
+        if params.as_object().is_none_or(|o| o.is_empty()) {
+            return Ok(meta);
+        }
+        params["id"] = s(&meta, "id").ok_or_else(not_found)?.into();
+        let r = self.server("screenshot.get", params).await?;
+        if s(&r, "id") != s(&meta, "id") || !Self::screenshot_visible(&r, &scope) {
+            return Err(not_found());
+        }
+        Ok(r)
+    }
+
     /// Filter list results to the limit: attention items by pane (or task, when they have no
     /// pane), previews by pane. Excluded items are counted, never described.
     fn filter_list(method: &str, r: &mut Value, panes: &[String], tasks: &[String]) {
@@ -1000,8 +1125,16 @@ impl Call<'_> {
 
     pub async fn dispatch(&self, method: &str, p: Value) -> ApiResult {
         let allowed = Allowed::of(self.device);
+        if method == "screenshot.list" {
+            screenshot_list_selectors_ok(&p)?;
+        }
         if let Some(a) = &allowed {
             self.check_limit(a, method, &p).await?;
+            match method {
+                "screenshot.list" => return self.limited_screenshot_list(a, &p).await,
+                "screenshot.get" => return self.limited_screenshot_get(a, &p).await,
+                _ => {}
+            }
         }
         let mut r = self.dispatch_inner(method, p).await?;
         if let Some(a) = &allowed {
@@ -1307,6 +1440,13 @@ impl Call<'_> {
                 self.server(method, pick(&p, &["preview", "machine"])).await
             }
             "preview.status" => self.server(method, json!({})).await,
+            // Limited devices are served by `limited_screenshot_list`/`_get` (see `dispatch`).
+            "screenshot.list" => self.server(method, pick(&p, SCREENSHOT_LIST_PARAMS)).await,
+            "screenshot.get" => {
+                req(&p, "id")?;
+                self.server(method, pick(&p, &["id", "inline", "thumb"]))
+                    .await
+            }
             "preview.open" => {
                 self.server(
                     method,
@@ -2190,6 +2330,9 @@ mod workspace_tests {
     use crate::state::{Limit, StateDir};
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
+    /// Params of every `screenshot.get` the fake server answered.
+    static SHOT_GETS: std::sync::Mutex<Vec<Value>> = std::sync::Mutex::new(Vec::new());
+
     fn fake_server(path: std::path::PathBuf) {
         let listener = tokio::net::UnixListener::bind(&path).unwrap();
         tokio::spawn(async move {
@@ -2232,6 +2375,51 @@ mod workspace_tests {
                             "preview.list" => json!({"previews": [
                                 {"id": "v1", "pane": "p1"}, {"id": "v2", "pane": "p2"}, {"id": "v3", "pane": null}
                             ]}),
+                            // Filters by workspace and pane, pages like the server.
+                            "screenshot.list" => {
+                                let all = json!([
+                                    {"id": "s1", "pane": "p1", "workspace": "w1", "caption": "in"},
+                                    {"id": "s2", "pane": "p2", "workspace": "w2", "caption": "secret"},
+                                    {"id": "s3", "pane": null, "workspace": "w1", "caption": "no pane"},
+                                    {"id": "s4", "pane": "p9", "workspace": "w1", "caption": "closed pane"},
+                                    // Taken while p1 was still in w2; p1 has since moved to w1.
+                                    {"id": "s5", "pane": "p1", "workspace": "w2", "caption": "moved secret"},
+                                    {"id": "s6", "pane": "p1", "workspace": "w1", "caption": "in too"},
+                                    {"id": "s7", "pane": "p1", "workspace": "w1", "caption": "in three"}
+                                ]);
+                                let mut list: Vec<Value> = all
+                                    .as_array()
+                                    .unwrap()
+                                    .iter()
+                                    .filter(|m| {
+                                        ["workspace", "pane"].iter().all(|k| {
+                                            p[k].as_str().is_none_or(|v| m[k].as_str() == Some(v))
+                                        })
+                                    })
+                                    .cloned()
+                                    .collect();
+                                let total = list.len();
+                                list.truncate(
+                                    p["limit"].as_u64().unwrap_or(50).clamp(1, 1000) as usize
+                                );
+                                json!({"echo": p, "count": list.len(), "total": total, "screenshots": list})
+                            }
+                            // Every call is logged; image data only comes with `inline`.
+                            "screenshot.get" => {
+                                SHOT_GETS.lock().unwrap().push(p.clone());
+                                let (id, pane, ws, data) = match p["id"].as_str().unwrap_or("") {
+                                    "s1" | "h1" => ("s1", json!("p1"), "w1", "aW4="),
+                                    "s2" => ("s2", json!("p2"), "w2", "c2VjcmV0"),
+                                    "s5" => ("s5", json!("p1"), "w2", "bW92ZWQgc2VjcmV0"),
+                                    _ => ("s3", Value::Null, "w1", "bm8="),
+                                };
+                                let mut r =
+                                    json!({"id": id, "pane": pane, "workspace": ws, "echo": p});
+                                if p["inline"] == true {
+                                    r["data_b64"] = data.into();
+                                }
+                                r
+                            }
                             "attention.list" => json!({
                                 "items": [
                                     {"key": {"kind": "interaction", "id": "i1"}, "pane": "p1", "title": "in"},
@@ -2318,6 +2506,8 @@ mod workspace_tests {
             "preview.get",
             "preview.url",
             "preview.status",
+            "screenshot.list",
+            "screenshot.get",
             "worktree.list",
             "git.log",
             "fs.list",
@@ -2355,6 +2545,216 @@ mod workspace_tests {
         }
         assert!(kind_allows("share", "tab.create"));
         assert!(kind_allows("share", "fs.read"));
+        // Screenshots: shares read them (filtered to their limit); nobody adds or deletes them
+        // through the gateway.
+        for m in ["screenshot.list", "screenshot.get"] {
+            assert!(kind_allows("share", m), "{m}");
+        }
+        for m in ["screenshot.add", "screenshot.delete", "screenshot.open"] {
+            assert_eq!(required_scope(m), None, "{m}");
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn screenshots_stay_inside_the_share() {
+        let t = tempfile::tempdir().unwrap();
+        let gw = gateway(&t).await;
+        let ids = |r: &Value| -> Vec<String> {
+            r["screenshots"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|m| m["id"].as_str().unwrap().to_string())
+                .collect()
+        };
+
+        // The owner's device sees everything, with the documented parameters only.
+        let me = device("d1", Scope::View, "device", None);
+        gw.add_device(me.clone()).unwrap();
+        let call = Call {
+            gw: &gw,
+            device: &me,
+        };
+        let r = call
+            .dispatch(
+                "screenshot.list",
+                json!({"environment": "agent", "limit": 5, "since_ms": 10, "junk": 1}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(ids(&r), ["s1", "s2", "s3", "s4", "s5"]);
+        assert_eq!(
+            r["echo"],
+            json!({"environment": "agent", "limit": 5, "since_ms": 10})
+        );
+        assert_eq!(r["total"], 7);
+        let g = call
+            .dispatch(
+                "screenshot.get",
+                json!({"id": "s2", "inline": true, "thumb": 256, "x": 1}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(g["id"], "s2");
+        // Only the documented parameters reach the server, `thumb` included.
+        assert_eq!(g["echo"], json!({"id": "s2", "inline": true, "thumb": 256}));
+        assert_eq!(
+            call.dispatch("screenshot.get", json!({}))
+                .await
+                .unwrap_err()
+                .kind,
+            "invalid_params"
+        );
+        // Selectors are strings, for every device.
+        for p in [
+            json!({"workspace": false}),
+            json!({"pane": 1}),
+            json!({"task": ["k1"]}),
+            json!({"environment": {"kind": "agent"}}),
+        ] {
+            assert_eq!(
+                call.dispatch("screenshot.list", p.clone())
+                    .await
+                    .unwrap_err()
+                    .kind,
+                "invalid_params",
+                "{p}"
+            );
+        }
+
+        for (name, limit) in [
+            (
+                "pane share",
+                Limit {
+                    workspace: None,
+                    pane: Some("p1".into()),
+                },
+            ),
+            (
+                "workspace share",
+                Limit {
+                    workspace: Some("w1".into()),
+                    pane: None,
+                },
+            ),
+        ] {
+            let share = device(&name.replace(' ', "-"), Scope::View, "share", Some(limit));
+            gw.add_device(share.clone()).unwrap();
+            let call = Call {
+                gw: &gw,
+                device: &share,
+            };
+            // A pane share: its pane's records from the pane's current workspace (not s5, taken
+            // before the pane moved). A workspace share: every record taken in the workspace.
+            // The scope is sent as server filters, so `count` and `total` count only those.
+            let (visible, hidden): (&[&str], &[&str]) = if name == "pane share" {
+                (&["s1", "s6", "s7"], &["s2", "s3", "s5"])
+            } else {
+                (&["s1", "s3", "s4", "s6", "s7"], &["s2", "s5"])
+            };
+            let r = call.dispatch("screenshot.list", json!({})).await.unwrap();
+            assert_eq!(ids(&r), visible, "{name}");
+            assert_eq!(
+                (r["count"].clone(), r["total"].clone()),
+                (json!(visible.len()), json!(visible.len())),
+                "{name}"
+            );
+            assert!(!r.to_string().contains("secret"), "{name}");
+            assert_eq!(r["echo"]["workspace"], "w1", "{name}");
+            if name == "pane share" {
+                assert_eq!(r["echo"]["pane"], "p1", "{name}");
+            }
+            // `limit` pages the visible records; `total` still counts all of them.
+            let r = call
+                .dispatch("screenshot.list", json!({"limit": 2}))
+                .await
+                .unwrap();
+            assert_eq!(ids(&r), visible[..2], "{name}");
+            assert_eq!(
+                (r["count"].clone(), r["total"].clone()),
+                (json!(2), json!(visible.len())),
+                "{name}"
+            );
+            let r = call
+                .dispatch("screenshot.list", json!({"limit": 0}))
+                .await
+                .unwrap();
+            assert_eq!(ids(&r), ["s1"], "{name}: limit is at least 1");
+            // A non-string selector neither slips past the share checks nor drops the scope:
+            // it is refused, so the global total never leaks.
+            for p in [
+                json!({"workspace": false, "limit": 1}),
+                json!({"pane": true, "limit": 1}),
+                json!({"task": 0}),
+            ] {
+                let e = call
+                    .dispatch("screenshot.list", p.clone())
+                    .await
+                    .unwrap_err();
+                assert_eq!(e.kind, "invalid_params", "{name} {p}");
+            }
+            // Filters outside the limit are refused.
+            for p in [
+                json!({"pane": "p2"}),
+                json!({"workspace": "w2"}),
+                json!({"task": "k2"}),
+            ] {
+                assert_eq!(
+                    call.dispatch("screenshot.list", p.clone())
+                        .await
+                        .unwrap_err()
+                        .kind,
+                    "forbidden",
+                    "{name} {p}"
+                );
+            }
+            // Another pane's (or no pane's, or another workspace's) screenshot is not found,
+            // never returned, and the host is never asked for its image.
+            SHOT_GETS.lock().unwrap().clear();
+            for id in hidden {
+                for p in [
+                    json!({"id": id, "inline": true}),
+                    json!({"id": id, "inline": true, "thumb": 128}),
+                ] {
+                    let e = call.dispatch("screenshot.get", p).await.unwrap_err();
+                    assert_eq!(e.kind, "not_found", "{name} {id}");
+                    assert!(!e.message.contains("secret"), "{name} {id}");
+                }
+            }
+            let asked = std::mem::take(&mut *SHOT_GETS.lock().unwrap());
+            assert!(!asked.is_empty(), "{name}");
+            for p in &asked {
+                assert_eq!(p.as_object().map(|o| o.len()), Some(1), "{name}: {p}");
+            }
+            // A visible one: the record first, then its image by the record's id (not the
+            // handle that named it).
+            let g = call
+                .dispatch(
+                    "screenshot.get",
+                    json!({"id": "h1", "inline": true, "thumb": 128}),
+                )
+                .await
+                .unwrap();
+            assert_eq!(g["data_b64"], "aW4=", "{name}");
+            let asked = std::mem::take(&mut *SHOT_GETS.lock().unwrap());
+            assert_eq!(
+                asked,
+                [
+                    json!({"id": "h1"}),
+                    json!({"id": "s1", "inline": true, "thumb": 128})
+                ],
+                "{name}"
+            );
+            // Without `inline` one call is enough.
+            let g = call
+                .dispatch("screenshot.get", json!({"id": "s1"}))
+                .await
+                .unwrap();
+            assert_eq!(g["id"], "s1", "{name}");
+            assert!(g.get("data_b64").is_none(), "{name}");
+            assert_eq!(SHOT_GETS.lock().unwrap().len(), 1, "{name}");
+            SHOT_GETS.lock().unwrap().clear();
+        }
     }
 
     #[test]

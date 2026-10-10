@@ -3436,6 +3436,22 @@
         },
         "code": {
           "type": "object"
+        },
+        "pane": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "caption": {
+          "type": "string"
+        },
+        "source_name": {
+          "type": "string"
         }
       },
       "required": [
@@ -23159,6 +23175,127 @@
         ]
       }
     },
+    "screenshot.add": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "params": {
+        "type": "object",
+        "properties": {
+          "data_b64": {
+            "type": "string"
+          },
+          "caption": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "pane": {
+            "$ref": "#/$defs/Target"
+          }
+        },
+        "required": [
+          "data_b64"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "handle": {
+            "type": "string"
+          },
+          "workspace": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "task": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "pane": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "run": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "mime": {
+            "type": "string"
+          },
+          "width": {
+            "type": "integer"
+          },
+          "height": {
+            "type": "integer"
+          },
+          "blob": {
+            "type": "string"
+          },
+          "environment": {
+            "type": "object"
+          },
+          "caption": {
+            "type": "string"
+          },
+          "source_name": {
+            "type": "string"
+          },
+          "path_on_machine": {
+            "type": "string"
+          },
+          "exists": {
+            "type": "boolean"
+          },
+          "duplicate": {
+            "type": "boolean"
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "id",
+          "handle",
+          "mime",
+          "width",
+          "height",
+          "blob",
+          "environment",
+          "path_on_machine",
+          "exists",
+          "duplicate"
+        ]
+      }
+    },
     "screenshot.delete": {
       "mutating": true,
       "scope": "full",
@@ -23213,6 +23350,12 @@
         "properties": {
           "id": {
             "type": "string"
+          },
+          "inline": {
+            "type": "boolean"
+          },
+          "thumb": {
+            "type": "integer"
           }
         },
         "required": [
@@ -23238,6 +23381,15 @@
           },
           "run": {
             "$ref": "#/$defs/Target"
+          },
+          "pane": {
+            "$ref": "#/$defs/Target"
+          },
+          "workspace": {
+            "$ref": "#/$defs/Target"
+          },
+          "environment": {
+            "type": "string"
           },
           "since": {
             "anyOf": [

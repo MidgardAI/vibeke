@@ -746,6 +746,9 @@ ScreenshotMeta = TypedDict("ScreenshotMeta", {
     "blob": NotRequired[str],
     "environment": NotRequired[Dict[str, Any]],
     "code": NotRequired[Dict[str, Any]],
+    "pane": NotRequired[Optional[str]],
+    "caption": NotRequired[str],
+    "source_name": NotRequired[str],
 })
 
 SessionEntry = TypedDict("SessionEntry", {
@@ -6135,6 +6138,33 @@ SandboxStopResult = TypedDict("SandboxStopResult", {
     "cursor": NotRequired["Cursor"],
 })
 
+ScreenshotAddParams = TypedDict("ScreenshotAddParams", {
+    "data_b64": str,
+    "caption": NotRequired[str],
+    "name": NotRequired[str],
+    "pane": NotRequired["Target"],
+})
+
+ScreenshotAddResult = TypedDict("ScreenshotAddResult", {
+    "id": str,
+    "handle": str,
+    "workspace": NotRequired[Optional[str]],
+    "task": NotRequired[Optional[str]],
+    "pane": NotRequired[Optional[str]],
+    "run": NotRequired[Optional[str]],
+    "mime": str,
+    "width": int,
+    "height": int,
+    "blob": str,
+    "environment": Dict[str, Any],
+    "caption": NotRequired[str],
+    "source_name": NotRequired[str],
+    "path_on_machine": str,
+    "exists": bool,
+    "duplicate": bool,
+    "cursor": NotRequired["Cursor"],
+})
+
 ScreenshotDeleteParams = TypedDict("ScreenshotDeleteParams", {
     "id": str,
     "force": NotRequired[bool],
@@ -6150,6 +6180,8 @@ ScreenshotDeleteResult = TypedDict("ScreenshotDeleteResult", {
 
 ScreenshotGetParams = TypedDict("ScreenshotGetParams", {
     "id": str,
+    "inline": NotRequired[bool],
+    "thumb": NotRequired[int],
 })
 
 ScreenshotGetResult: TypeAlias = "ScreenshotMeta"
@@ -6158,6 +6190,9 @@ ScreenshotListParams = TypedDict("ScreenshotListParams", {
     "task": NotRequired["Target"],
     "preview": NotRequired["Target"],
     "run": NotRequired["Target"],
+    "pane": NotRequired["Target"],
+    "workspace": NotRequired["Target"],
+    "environment": NotRequired[str],
     "since": NotRequired[Union[str, int]],
     "since_ms": NotRequired[int],
     "limit": NotRequired[int],
@@ -8342,6 +8377,7 @@ METHODS: Dict[str, Dict[str, Any]] = {
     "sandbox.start": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "sandbox.status": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "sandbox.stop": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "screenshot.add": {"mutating": True, "scope": "pane", "pane_scope": "open"},
     "screenshot.delete": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "screenshot.get": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "screenshot.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},

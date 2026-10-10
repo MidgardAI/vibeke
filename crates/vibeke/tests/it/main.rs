@@ -35,6 +35,7 @@ mod plugin_native;
 mod preview;
 mod remote_machine;
 mod review;
+mod screenshot_add;
 mod scrollback_forget;
 mod security;
 mod state_backup;

@@ -323,7 +323,7 @@ fn kitty_local_reads_file_remote_waits_for_v() {
     reply(&mut app, 1, req, list());
     app.on_key(named(NamedKey::Enter));
     assert!(commands(&mut rxs[1]).is_empty());
-    assert!(screen(&app).contains("[v] fetch the image from the remote machine"));
+    assert!(screen(&app).contains("[v] view image"));
     app.on_key(ch('v'));
     let (req, p) = only(&commands(&mut rxs[1]), "screenshot.get");
     assert_eq!(p, json!({"id": "S3", "inline": true}));
@@ -405,4 +405,46 @@ fn png_goes_through_a_private_temp_file_unless_ssh() {
     transmit_png(&mut app, &mut out, &h, &png);
     assert!(String::from_utf8_lossy(&out).contains("t=d"));
     assert_eq!(std::fs::read_dir(&real).unwrap().count(), 0);
+}
+
+#[test]
+fn agent_images_show_caption_not_url() {
+    let (mut app, mut rxs) = fleet();
+    app.action("screenshots", None);
+    let (req, _) = only(&commands(&mut rxs[0]), "screenshot.list");
+    let mut a = shot(
+        "S7",
+        "s7",
+        "agent",
+        "attached by agent",
+        "illustrative",
+        "/nonexistent/s7.png",
+        7,
+    );
+    a["url"] = json!("");
+    a["caption"] = json!("Login page after the fix");
+    a["source_name"] = json!("login.png");
+    a["code"] = json!({});
+    let mut b = a.clone();
+    b["id"] = json!("S8");
+    b["handle"] = json!("s8");
+    b["caption"] = Value::Null;
+    reply(
+        &mut app,
+        0,
+        req,
+        json!({"screenshots": [a, b], "count": 2, "total": 2}),
+    );
+    let s = screen(&app);
+    assert!(s.contains("Login page after the fix"), "{s}");
+    assert!(s.contains("login.png"), "{s}");
+    assert!(s.contains("attached by agent"), "{s}");
+    assert!(!s.contains("no checkout"), "{s}");
+    assert!(!s.contains("illustrative"), "{s}");
+    app.on_key(named(NamedKey::Enter));
+    let s = screen(&app);
+    assert!(s.contains("Login page after the fix"), "{s}");
+    app.on_key(ch('j'));
+    let s = screen(&app);
+    assert!(s.contains("login.png"), "{s}");
 }

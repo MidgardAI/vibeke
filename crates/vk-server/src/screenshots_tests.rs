@@ -942,3 +942,452 @@ async fn pane_scope_sees_only_its_workspace() {
     );
     assert_eq!(l["screenshots"][0]["id"], b.id);
 }
+
+// ---- screenshot.add (images attached by agents) ----------------------------------------------
+
+fn b64(data: &[u8]) -> String {
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD.encode(data)
+}
+
+fn jpeg(w: u32, h: u32) -> Vec<u8> {
+    let img = image::RgbImage::from_fn(w, h, |x, y| image::Rgb([(x * 7) as u8, (y * 5) as u8, 90]));
+    let mut v = Vec::new();
+    image::DynamicImage::ImageRgb8(img)
+        .write_to(&mut std::io::Cursor::new(&mut v), image::ImageFormat::Jpeg)
+        .unwrap();
+    v
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn add_stores_a_png_as_an_agent_image() {
+    let e = Env::new();
+    let data = png(3, 2, |x, y| [x as u8 * 40, y as u8 * 90, 7, 255]);
+    let r = e
+        .call(
+            &ctx_pane("pane-a"),
+            "screenshot.add",
+            json!({"data_b64": b64(&data), "caption": "Login page", "name": "/tmp/work/shots/login.png"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(r["duplicate"], false);
+    assert_eq!(r["exists"], true);
+    assert_eq!(r["handle"], "s1");
+    assert_eq!(r["environment"]["kind"], "agent");
+    assert_eq!(r["environment"]["runner"], "host");
+    assert_eq!(r["environment"]["machine"], "testbox");
+    assert_eq!(r["label"], "attached by agent");
+    assert_eq!(r["caption"], "Login page");
+    assert_eq!(r["source_name"], "login.png");
+    assert_eq!(
+        (r["width"].as_u64(), r["height"].as_u64()),
+        (Some(3), Some(2))
+    );
+    assert_eq!(r["url"], "");
+    assert_eq!(r["binding"], "illustrative");
+    assert_eq!(r["code_note"], "attached file");
+    assert_eq!(r["taken_by"]["kind"], "agent");
+    assert_eq!(r["pane"], "pane-a");
+    assert_eq!(r["workspace"], "ws-a");
+    // Stored as-is.
+    let m = find(&e.server, "s1").unwrap();
+    assert_eq!(std::fs::read(m.path(&e.server)).unwrap(), data);
+    let ev = e.events("screenshot.captured");
+    assert_eq!(ev.len(), 1);
+    assert_eq!(ev[0].data["caption"], "Login page");
+    assert_eq!(ev[0].data["environment"], "agent");
+    assert_eq!(ev[0].data["pane"], "pane-a");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn add_transcodes_jpeg_to_png() {
+    let e = Env::new();
+    let data = jpeg(16, 8);
+    let r = e
+        .call(
+            &ctx_pane("pane-a"),
+            "screenshot.add",
+            json!({"data_b64": b64(&data), "name": "photo.jpg"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(r["mime"], "image/png");
+    assert_eq!(
+        (r["width"].as_u64(), r["height"].as_u64()),
+        (Some(16), Some(8))
+    );
+    let m = find(&e.server, "s1").unwrap();
+    let stored = std::fs::read(m.path(&e.server)).unwrap();
+    assert_eq!(&stored[..8], b"\x89PNG\r\n\x1a\n");
+    assert_eq!(
+        image::guess_format(&stored).unwrap(),
+        image::ImageFormat::Png
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn add_rejects_garbage_and_oversized_images() {
+    let e = Env::new();
+    let ctx = ctx_pane("pane-a");
+    for bad in [
+        b64(b"this is not an image"),
+        b64(b"GIF89a\x01\x00\x01\x00"),
+        b64(b"\x89PNG\r\n\x1a\ntruncated"),
+        b64(b""),
+    ] {
+        let err = e
+            .call(&ctx, "screenshot.add", json!({"data_b64": bad}))
+            .await
+            .unwrap_err();
+        assert_eq!(err.data.kind, "invalid_params");
+    }
+    let err = e
+        .call(&ctx, "screenshot.add", json!({"data_b64": "***"}))
+        .await
+        .unwrap_err();
+    assert_eq!(err.data.kind, "invalid_params");
+    let err = e.call(&ctx, "screenshot.add", json!({})).await.unwrap_err();
+    assert_eq!(err.data.kind, "invalid_params");
+    // More than 11 MiB of image: refused before the base64 is decoded.
+    let huge = "A".repeat(ADD_MAX_BYTES.div_ceil(3) * 4 + 16);
+    let err = e
+        .call(&ctx, "screenshot.add", json!({"data_b64": huge}))
+        .await
+        .unwrap_err();
+    assert_eq!(err.data.kind, "invalid_params");
+    assert!(
+        err.message.contains("larger than 11 MiB"),
+        "{}",
+        err.message
+    );
+    // 16385 pixels wide: refused before the pixels are decoded.
+    let wide = png(16385, 1, |_, _| [0, 0, 0, 255]);
+    let err = e
+        .call(&ctx, "screenshot.add", json!({"data_b64": b64(&wide)}))
+        .await
+        .unwrap_err();
+    assert_eq!(err.data.kind, "invalid_params");
+    assert!(load_all(&e.server).is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn add_cleans_caption_and_name() {
+    let e = Env::new();
+    let data = png(2, 2, |_, _| [1, 2, 3, 255]);
+    let long = "x".repeat(900);
+    let r = e
+        .call(
+            &ctx_pane("pane-a"),
+            "screenshot.add",
+            json!({"data_b64": b64(&data), "caption": format!("a\u{1b}[31mb\nc{long}"), "name": format!("C:\\dir\\{}.png", "n".repeat(300))}),
+        )
+        .await
+        .unwrap();
+    let caption = r["caption"].as_str().unwrap();
+    assert_eq!(caption.chars().count(), 500);
+    assert!(caption.starts_with("a[31mbcxxx"));
+    assert!(!caption.chars().any(char::is_control));
+    assert_eq!(r["source_name"].as_str().unwrap().chars().count(), 200);
+    // Empty caption and name are dropped.
+    let other = png(2, 2, |_, _| [9, 9, 9, 255]);
+    let r = e
+        .call(
+            &ctx_pane("pane-a"),
+            "screenshot.add",
+            json!({"data_b64": b64(&other), "caption": "  \n ", "name": "dir/"}),
+        )
+        .await
+        .unwrap();
+    assert!(r.get("caption").is_none());
+    assert!(r.get("source_name").is_none());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn add_is_idempotent_per_blob_and_pane() {
+    let e = Env::new();
+    let data = png(2, 2, |_, _| [4, 5, 6, 255]);
+    let p = json!({"data_b64": b64(&data), "caption": "first"});
+    let a = e
+        .call(&ctx_pane("pane-a"), "screenshot.add", p.clone())
+        .await
+        .unwrap();
+    let b = e
+        .call(&ctx_pane("pane-a"), "screenshot.add", p.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        (a["duplicate"].clone(), b["duplicate"].clone()),
+        (json!(false), json!(true))
+    );
+    assert_eq!(a["id"], b["id"]);
+    assert_eq!(e.events("screenshot.captured").len(), 1);
+    // The same bytes from another pane are a separate record.
+    let c = e
+        .call(&ctx_pane("pane-b"), "screenshot.add", p.clone())
+        .await
+        .unwrap();
+    assert_eq!(c["duplicate"], false);
+    assert_ne!(c["id"], a["id"]);
+    assert_eq!(load_all(&e.server).len(), 2);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn add_does_not_reuse_a_record_from_the_panes_former_workspace() {
+    let e = Env::new();
+    let data = png(2, 2, |_, _| [7, 7, 7, 255]);
+    let p = json!({"data_b64": b64(&data), "caption": "from ws-a"});
+    let old = e
+        .call(&ctx_pane("pane-a"), "screenshot.add", p.clone())
+        .await
+        .unwrap();
+    assert_eq!(old["workspace"], "ws-a");
+    // The pane moves to another workspace and attaches the same file again.
+    e.server.with_core(|c| {
+        for p in c.model.panes.iter_mut().filter(|p| p.id == "pane-a") {
+            p.workspace = "ws-b".into();
+        }
+    });
+    let again = json!({"data_b64": b64(&data), "caption": "from ws-b"});
+    let new = e
+        .call(&ctx_pane("pane-a"), "screenshot.add", again.clone())
+        .await
+        .unwrap();
+    assert_eq!(new["duplicate"], false, "{new}");
+    assert_ne!(new["id"], old["id"]);
+    assert_eq!(new["workspace"], "ws-b");
+    assert_eq!(new["caption"], "from ws-b");
+    // The pane can read what it got back; the old record stays hidden from it.
+    e.call(
+        &ctx_pane("pane-a"),
+        "screenshot.get",
+        json!({"id": new["id"]}),
+    )
+    .await
+    .unwrap();
+    let err = e
+        .call(
+            &ctx_pane("pane-a"),
+            "screenshot.get",
+            json!({"id": old["id"]}),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.data.kind, "not_found");
+    // Inside the new workspace the attachment is idempotent again.
+    let dup = e
+        .call(&ctx_pane("pane-a"), "screenshot.add", again)
+        .await
+        .unwrap();
+    assert_eq!(dup["duplicate"], true);
+    assert_eq!(dup["id"], new["id"]);
+    assert_eq!(load_all(&e.server).len(), 2);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn add_forces_a_pane_scoped_caller_to_its_own_pane() {
+    let e = Env::new();
+    let data = png(2, 2, |_, _| [8, 8, 8, 255]);
+    let err = e
+        .call(
+            &ctx_pane("pane-a"),
+            "screenshot.add",
+            json!({"data_b64": b64(&data), "pane": "pane-b"}),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.data.kind, "permission_denied");
+    assert!(load_all(&e.server).is_empty());
+    // Naming its own pane (or @current) is fine.
+    for target in ["pane-a", "@current"] {
+        let r = e
+            .call(
+                &ctx_pane("pane-a"),
+                "screenshot.add",
+                json!({"data_b64": b64(&data), "pane": target}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(r["pane"], "pane-a");
+    }
+    // A full-scope caller may name any pane, or none; it is recorded as the user's.
+    let other = png(2, 2, |_, _| [3, 3, 3, 255]);
+    let r = e
+        .call(
+            &ctx_full(),
+            "screenshot.add",
+            json!({"data_b64": b64(&other), "pane": "pane-b"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        (r["pane"].clone(), r["workspace"].clone()),
+        (json!("pane-b"), json!("ws-b"))
+    );
+    assert_eq!(r["taken_by"]["kind"], "user");
+    let none = png(2, 2, |_, _| [2, 2, 2, 255]);
+    let r = e
+        .call(
+            &ctx_full(),
+            "screenshot.add",
+            json!({"data_b64": b64(&none)}),
+        )
+        .await
+        .unwrap();
+    assert!(r["pane"].is_null());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn list_filters_by_pane_workspace_and_environment() {
+    let e = Env::new();
+    let a = png(2, 2, |_, _| [1, 1, 1, 255]);
+    let b = png(2, 2, |_, _| [2, 2, 2, 255]);
+    let browser = png(2, 2, |_, _| [3, 3, 3, 255]);
+    e.call(
+        &ctx_pane("pane-a"),
+        "screenshot.add",
+        json!({"data_b64": b64(&a), "caption": "in a"}),
+    )
+    .await
+    .unwrap();
+    e.call(
+        &ctx_pane("pane-b"),
+        "screenshot.add",
+        json!({"data_b64": b64(&b), "caption": "in b"}),
+    )
+    .await
+    .unwrap();
+    e.shot(&browser, e.inputs("pane-a", EnvKind::RemoteHeadless))
+        .await;
+    let count = async |p: Value| {
+        let l = e.call(&ctx_full(), "screenshot.list", p).await.unwrap();
+        l["count"].as_u64().unwrap()
+    };
+    assert_eq!(count(json!({})).await, 3);
+    assert_eq!(count(json!({"environment": "agent"})).await, 2);
+    assert_eq!(count(json!({"environment": "remote_headless"})).await, 1);
+    assert_eq!(count(json!({"pane": "pane-a"})).await, 2);
+    assert_eq!(
+        count(json!({"pane": "pane-a", "environment": "agent"})).await,
+        1
+    );
+    assert_eq!(count(json!({"workspace": "ws-b"})).await, 1);
+    assert_eq!(
+        count(json!({"workspace": "ws-b", "environment": "agent"})).await,
+        1
+    );
+    // A pane-scoped caller still sees only its own workspace.
+    let l = e
+        .call(
+            &ctx_pane("pane-a"),
+            "screenshot.list",
+            json!({"environment": "agent"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(l["count"], 1);
+    assert_eq!(l["screenshots"][0]["caption"], "in a");
+}
+
+// ---- screenshot.get thumbnails -----------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn get_returns_a_downscaled_thumbnail() {
+    use base64::Engine as _;
+    let e = Env::new();
+    let data = png(300, 150, |x, y| [x as u8, y as u8, 60, 255]);
+    let r = e
+        .call(
+            &ctx_pane("pane-a"),
+            "screenshot.add",
+            json!({"data_b64": b64(&data)}),
+        )
+        .await
+        .unwrap();
+    let id = r["id"].as_str().unwrap().to_string();
+    let get = async |p: Value| e.call(&ctx_full(), "screenshot.get", p).await.unwrap();
+    let decoded = |v: &Value| {
+        base64::engine::general_purpose::STANDARD
+            .decode(v["data_b64"].as_str().unwrap())
+            .unwrap()
+    };
+    // Aspect ratio kept, longest side at `thumb`.
+    let g = get(json!({"id": id, "inline": true, "thumb": 100})).await;
+    assert_eq!(g["mime"], "image/png");
+    assert_eq!(
+        (g["thumb_width"].clone(), g["thumb_height"].clone()),
+        (json!(100), json!(50))
+    );
+    let small = decoded(&g);
+    assert_eq!(
+        image::load_from_memory_with_format(&small, image::ImageFormat::Png)
+            .map(|i| (i.width(), i.height()))
+            .unwrap(),
+        (100, 50)
+    );
+    // The record's own size is unchanged.
+    assert_eq!(
+        (g["width"].clone(), g["height"].clone()),
+        (json!(300), json!(150))
+    );
+    // Clamped to 64..=1024: a tiny request gives 64 pixels, a huge one never scales up.
+    let g = get(json!({"id": id, "inline": true, "thumb": 1})).await;
+    assert_eq!(
+        (g["thumb_width"].clone(), g["thumb_height"].clone()),
+        (json!(64), json!(32))
+    );
+    let g = get(json!({"id": id, "inline": true, "thumb": 5000})).await;
+    assert_eq!(
+        (g["thumb_width"].clone(), g["thumb_height"].clone()),
+        (json!(300), json!(150))
+    );
+    assert_eq!(decoded(&g), data);
+    // Without `inline` there is no image data; without `thumb` the full image.
+    let g = get(json!({"id": id, "thumb": 100})).await;
+    assert!(
+        g.get("data_b64").is_none() && g.get("thumb_width").is_none(),
+        "{g}"
+    );
+    let g = get(json!({"id": id, "inline": true})).await;
+    assert_eq!(decoded(&g), data);
+    assert!(g.get("thumb_width").is_none());
+}
+
+#[test]
+fn thumbnail_keeps_tall_images_tall_and_refuses_garbage() {
+    let tall = png(40, 400, |_, y| [0, (y % 256) as u8, 0, 255]);
+    let (out, w, h) = thumbnail_png(&tall, 100, DECODE_MAX_ALLOC).unwrap();
+    assert_eq!((w, h), (10, 100));
+    assert_eq!(&out[..8], b"\x89PNG\r\n\x1a\n");
+    let (same, w, h) = thumbnail_png(&tall, 400, DECODE_MAX_ALLOC).unwrap();
+    assert_eq!((w, h), (40, 400));
+    assert_eq!(same, tall);
+    assert!(thumbnail_png(b"not a png", 100, DECODE_MAX_ALLOC).is_err());
+}
+
+#[test]
+fn decodes_are_bounded_by_the_allocation_limit() {
+    let limits = decode_limits(DECODE_MAX_ALLOC);
+    assert_eq!(limits.max_alloc, Some(256 << 20));
+    assert_eq!(
+        (limits.max_image_width, limits.max_image_height),
+        (Some(ADD_MAX_DIM), Some(ADD_MAX_DIM))
+    );
+    // 40x400 RGBA needs 64000 bytes: a 1000-byte cap refuses it before decoding.
+    let tall = png(40, 400, |_, y| [0, (y % 256) as u8, 0, 255]);
+    assert_eq!(
+        thumbnail_png(&tall, 100, 1000).unwrap_err(),
+        "image is too large to process"
+    );
+    // Under the cap the same image decodes.
+    assert!(thumbnail_png(&tall, 100, 1 << 20).is_ok());
+    // A JPEG transcode in `screenshot.add` hits the same cap.
+    let e = normalize_image(jpeg(64, 64), 1000).unwrap_err();
+    assert_eq!(e.message, "image is too large to process");
+    let (out, w, h) = normalize_image(jpeg(64, 64), DECODE_MAX_ALLOC).unwrap();
+    assert_eq!((w, h), (64, 64));
+    assert_eq!(&out[..8], b"\x89PNG\r\n\x1a\n");
+    // PNG is only checked, never decoded: the cap does not apply to it.
+    let (same, w, h) = normalize_image(tall.clone(), 1).unwrap();
+    assert_eq!((w, h, same), (40, 400, tall));
+}

@@ -938,6 +938,9 @@ class Api:
     async def sandbox_stop(self, params: "t.SandboxStopParams") -> "t.SandboxStopResult":
         return await self.call("sandbox.stop", params)  # type: ignore[arg-type, return-value]
 
+    async def screenshot_add(self, params: "t.ScreenshotAddParams") -> "t.ScreenshotAddResult":
+        return await self.call("screenshot.add", params)  # type: ignore[arg-type, return-value]
+
     async def screenshot_delete(self, params: "t.ScreenshotDeleteParams") -> "t.ScreenshotDeleteResult":
         return await self.call("screenshot.delete", params)  # type: ignore[arg-type, return-value]
 

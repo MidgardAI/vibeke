@@ -259,6 +259,32 @@ export interface Notification {
   read: boolean;
 }
 
+/** A stored screenshot (`screenshot.list` / `screenshot.get`); agent-attached images use `environment.kind: "agent"`. */
+export interface ScreenshotMeta {
+  id: string;
+  /** `s<N>`. */
+  handle: string;
+  blob: string;
+  mime: string;
+  width: number;
+  height: number;
+  bytes: number;
+  created_at_ms: number;
+  environment?: { kind?: string };
+  /** Environment label for lists (`attached by agent`, `devbox · headless`). */
+  label: string;
+  /** Agent images have no URL. */
+  url?: string;
+  title?: string | null;
+  /** What an agent says the image shows (`screenshot.add`). */
+  caption?: string | null;
+  /** Base name of the attached file. */
+  source_name?: string | null;
+  pane?: string | null;
+  task?: string | null;
+  workspace?: string | null;
+}
+
 export const displayName = (w: Workspace): string => w.name ?? w.auto_name;
 export const paneTitle = (p: Pane): string => p.title ?? p.auto_title;
 
@@ -934,6 +960,19 @@ export interface AppApi {
   'tab.close': { params: { tab: string }; result: unknown };
   'tab.focus': { params: { tab: string }; result: unknown };
   'preview.open': { params: { preview?: string; url?: string; pane?: string; focus?: boolean }; result: unknown };
+  'screenshot.list': {
+    params: { workspace?: string; pane?: string; task?: string; environment?: string; limit?: number };
+    result: { screenshots: ScreenshotMeta[]; count: number; total: number };
+  };
+  /**
+   * `inline: true` adds the bytes (up to 8 MiB) as `data_b64`. With `thumb` (64..1024) the image is a PNG
+   * downscaled to at most that many pixels on its longest edge, and `thumb_width` / `thumb_height` say its
+   * size; an older host ignores `thumb` and returns the full image (no `thumb_width`).
+   */
+  'screenshot.get': {
+    params: { id: string; inline?: boolean; thumb?: number };
+    result: ScreenshotMeta & { data_b64?: string; mime: string; thumb_width?: number; thumb_height?: number };
+  };
   'interaction.list': { params: Record<string, unknown>; result: { interactions: Interaction[] } };
   'interaction.get': { params: { interaction: string }; result: { interaction: Interaction } };
   'interaction.answer': {

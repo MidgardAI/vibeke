@@ -485,7 +485,7 @@ BrowserSession = {session: string, session_id: string, owner: {pane: string, pan
 Appearance = {known: bool, dark: bool, mode: string, theme: string, source: string}
 PaneLive = {pane: string, progress: {state: normal|error|indeterminate|paused, pct: int|null}|null, last_exit: {code: int, at_ms: int}|null, user_vars: [[string]]}
 LayoutSpec = object
-ScreenshotMeta = {id: string, handle?: string, workspace?: string, task?: string|null, run?: string|null, preview?: string|null, mime?: string, width?: int, height?: int, ts?: int, blob?: string, environment?: object, code?: object}
+ScreenshotMeta = {id: string, handle?: string, workspace?: string, task?: string|null, run?: string|null, preview?: string|null, mime?: string, width?: int, height?: int, ts?: int, blob?: string, environment?: object, code?: object, pane?: string|null, caption?: string, source_name?: string}
 AgentSummary = {working: int, needs_input: int, done: int, idle: int}
 RpcErrorData = {kind: string, details?: any, retryable: bool}
 RpcError = {code: int, message: string, data: RpcErrorData}
@@ -718,9 +718,10 @@ preview.mirror :: {preview: Target, machine?: string} => {machine: string, previ
 preview.unmirror :: {preview?: Target|int, port?: int, machine?: string} => {local_port: int, machine: string, preview: string}
 
 # --- screenshots ---
-screenshot.list :: {task?: Target, preview?: Target, run?: Target, since?: string|int, since_ms?: int, limit?: int = 50} => {screenshots: [ScreenshotMeta], count: int, total: int}
-screenshot.get :: {id: string} => ScreenshotMeta
+screenshot.list :: {task?: Target, preview?: Target, run?: Target, pane?: Target, workspace?: Target, environment?: string, since?: string|int, since_ms?: int, limit?: int = 50} => {screenshots: [ScreenshotMeta], count: int, total: int}
+screenshot.get :: {id: string, inline?: bool, thumb?: int} => ScreenshotMeta
 screenshot.open :: {id: string} => ScreenshotMeta
+screenshot.add :: {data_b64: string, caption?: string, name?: string, pane?: Target} => {id: string, handle: string, workspace?: string|null, task?: string|null, pane?: string|null, run?: string|null, mime: string, width: int, height: int, blob: string, environment: object, caption?: string, source_name?: string, path_on_machine: string, exists: bool, duplicate: bool}
 screenshot.delete :: {id: string, force?: bool} => {id: string, handle: string, deleted: bool, blob_removed: bool}
 "##;
 

@@ -8,7 +8,7 @@
     "proto": 2,
     "min": 1
   },
-  "method_count": 421,
+  "method_count": 422,
   "methods": [
     {
       "name": "adapter.control",
@@ -4330,6 +4330,20 @@
       "result": "{state: string}"
     },
     {
+      "name": "screenshot.add",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "screenshots"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{data_b64: string, caption?: string, name?: string, pane?: Target}",
+      "result": "{id: string, handle: string, workspace?: string|null, task?: string|null, pane?: string|null, run?: string|null, mime: string, width: int, height: int, blob: string, environment: object, caption?: string, source_name?: string, path_on_machine: string, exists: bool, duplicate: bool}"
+    },
+    {
       "name": "screenshot.delete",
       "mutating": true,
       "scope": "full",
@@ -4354,7 +4368,7 @@
       ],
       "milestone": "M3",
       "spec": "`{id}` (id or `sN`) → `ScreenshotMeta + {path_on_machine, exists, data_b64? (inline)}` — other workspaces' screenshots are `not_found` for panes.",
-      "params": "{id: string}",
+      "params": "{id: string, inline?: bool, thumb?: int}",
       "result": "ScreenshotMeta"
     },
     {
@@ -4368,7 +4382,7 @@
       ],
       "milestone": "M3",
       "spec": "`{task?, preview?, run?, since?: ms \\| \"1h\", since_ms?, limit?: 50}` → `{screenshots: [ScreenshotMeta + {path_on_machine, exists}], count, total}` — newest first. Pane scope: only screenshots whose `workspace` is the pane's workspace.",
-      "params": "{task?: Target, preview?: Target, run?: Target, since?: string|int, since_ms?: int, limit?: int = 50}",
+      "params": "{task?: Target, preview?: Target, run?: Target, pane?: Target, workspace?: Target, environment?: string, since?: string|int, since_ms?: int, limit?: int = 50}",
       "result": "{screenshots: [ScreenshotMeta], count: int, total: int}"
     },
     {
