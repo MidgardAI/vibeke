@@ -348,7 +348,9 @@ fn a_task_runs_in_a_box_and_moves_between_host_and_box() {
     // A task in a fresh box: the branch is pushed in and the pane's shell runs there.
     let t = h.ok(
         "task.create",
-        json!({"title": "cloudy", "repo": repo, "isolate": "cloud", "provider": "fake"}),
+        // Worktrees go under the test dir, not the user's ~/.vibeke.
+        json!({"title": "cloudy", "repo": repo, "isolate": "cloud", "provider": "fake",
+               "root": h.dir.path().join("wt")}),
     );
     assert_eq!(t["task"]["isolation"]["level"], "cloud", "{t}");
     let task = t["task"]["id"].as_str().unwrap().to_string();
