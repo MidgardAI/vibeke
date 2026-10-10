@@ -22,6 +22,7 @@ export interface WorkspaceShots {
 const EMPTY: WorkspaceShots = { list: [], loaded: false, error: false, unread: new Set() };
 const SEEN_PREFIX = 'vk.shots.seen.';
 const REFRESH_DELAY_MS = 250;
+const MAX_TOMBSTONES = 500;
 
 const key = (host: string, ws: string) => `${host}/${ws}`;
 
@@ -59,6 +60,8 @@ export class ScreenshotStore {
   private subs = new Map<string, { off: () => void; online: boolean }>();
   private flights = new Map<string, Promise<void>>();
   private queued = new Set<string>();
+  /** Recently deleted ids per host, so a list fetched before the deletion cannot bring them back. */
+  private tombstones = new Map<string, Set<string>>();
   private offManager: (() => void) | null = null;
 
   constructor(private readonly app: AppModel) {}
@@ -147,7 +150,8 @@ export class ScreenshotStore {
       const w = this.watches.get(k);
       if (!w) return;
       const cur = this.state.get().get(k) ?? EMPTY;
-      const list = r.screenshots ?? [];
+      const dead = this.tombstones.get(host);
+      const list = (r.screenshots ?? []).filter((s) => !dead?.has(s.id));
       let unread = new Set(cur.unread);
       if (w.baseline === undefined) {
         // First list: whatever arrived since the tab was last open is unread.
@@ -198,6 +202,19 @@ export class ScreenshotStore {
     const gone = deletedIds(e);
     if (gone) {
       const ids = new Set(gone);
+      let dead = this.tombstones.get(host);
+      if (!dead) this.tombstones.set(host, (dead = new Set()));
+      for (const id of ids) {
+        dead.delete(id);
+        dead.add(id);
+      }
+      // Bounded: drop the oldest beyond the limit (Sets keep insertion order).
+      for (const old of dead) {
+        if (dead.size <= MAX_TOMBSTONES) break;
+        dead.delete(old);
+      }
+      // A refresh already in flight may carry the deleted ids: run one more after it.
+      for (const [k, w] of this.watches) if (w.host === host && this.flights.has(k)) this.queued.add(k);
       this.state.update((m) => {
         const next = new Map(m);
         for (const [k, v] of m) if (k.startsWith(`${host}/`) && v.list.some((s) => ids.has(s.id))) next.set(k, { ...v, list: withoutShots(v.list, ids), unread: new Set([...v.unread].filter((i) => !ids.has(i))) });

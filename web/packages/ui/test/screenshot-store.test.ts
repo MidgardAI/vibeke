@@ -38,4 +38,25 @@ describe('screenshot store refresh', () => {
     expect(store.get('h', 'w').list.map((s) => s.id)).toEqual(['2', '1']);
     off();
   });
+  test('a list fetched before a deletion cannot restore the deleted screenshot', async () => {
+    const { store, pending, reply } = setup();
+    const off = store.watch('h', 'w');
+    reply(0, [shot('1', 10), shot('2', 20)]);
+    for (let n = 0; n < 5; n++) await Promise.resolve();
+    // Start a refresh, then the deletion event arrives while it is in flight.
+    const inflight = store.refresh('h', 'w');
+    const idx = pending.length - 1;
+    (store as unknown as { onEvent(h: string, e: unknown): void }).onEvent('h', { type: 'screenshot.deleted', data: { ids: ['2'] } });
+    expect(store.get('h', 'w').list.map((s) => s.id)).toEqual(['1']);
+    // The stale response still contains the deleted id.
+    reply(idx, [shot('1', 10), shot('2', 20)]);
+    for (let n = 0; n < 5; n++) await Promise.resolve();
+    expect(store.get('h', 'w').list.map((s) => s.id)).toEqual(['1']);
+    // One follow-up refresh was queued by the deletion.
+    expect(pending.length).toBe(idx + 2);
+    reply(idx + 1, [shot('1', 10)]);
+    await inflight;
+    expect(store.get('h', 'w').list.map((s) => s.id)).toEqual(['1']);
+    off();
+  });
 });
