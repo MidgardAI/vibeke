@@ -59,7 +59,7 @@ impl Capabilities {
             | "focus_agent" => true,
             "batch_approvals" => self.approve,
             "rename_pane" | "close_pane" | "paste_buffer" => self.control,
-            "new_tab" | "rename_tab" | "close_tab" => self.control && self.workspace,
+            "new_tab" => self.control && self.workspace,
             _ => false,
         }
     }
@@ -69,6 +69,24 @@ impl Capabilities {
 mod tests {
     use crate::app::{self, Mode};
     use vk_proto::render::{ClientFrame, ServerFrame};
+
+    #[test]
+    fn workspace_control_share_only_offers_supported_tab_actions() {
+        let (mut app, mut rxs) = app::test_app(1);
+        app.machines[0].features = vec![
+            "shared_tui".into(),
+            "shared_tui.control".into(),
+            "shared_tui.workspace".into(),
+        ];
+        let entries = crate::nav::palette_entries(&app);
+        assert!(entries.iter().any(|e| e.id == "new_tab"));
+        for action in ["rename_tab", "close_tab", "tab_renumber"] {
+            assert!(!entries.iter().any(|e| e.id == action));
+            app.action(action, None);
+            assert!(matches!(app.mode, Mode::Normal));
+        }
+        assert!(rxs[0].try_recv().is_err());
+    }
 
     #[test]
     fn shares_do_not_start_host_services_or_offer_host_actions() {

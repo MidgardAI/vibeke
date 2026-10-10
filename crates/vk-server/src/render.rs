@@ -593,7 +593,7 @@ impl Session {
         if self.auth.share.is_some() {
             return;
         }
-        if !self.auth.readonly && self.auth.share.is_none() {
+        if !self.auth.readonly {
             *self.server.geometry_leader.lock().unwrap() = Some(self.client_id.clone());
         }
         if let Some(st) = self.server.clients.lock().unwrap().get_mut(&self.client_id) {

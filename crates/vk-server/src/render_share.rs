@@ -27,7 +27,8 @@ impl Share {
         })
     }
     pub fn model(&self, source: &SessionModel, focus: &ClientFocus) -> (SessionModel, ClientFocus) {
-        // Construct an allowlist: newly added host model fields stay private by default.
+        // Select the shared entities. Their fields are copied in full, except for the
+        // host-only references and pane-share layout removed below.
         let panes: Vec<_> = source
             .panes
             .iter()

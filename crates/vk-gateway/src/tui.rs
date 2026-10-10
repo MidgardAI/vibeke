@@ -111,16 +111,6 @@ impl Bridge {
             }}),
         )
         .await?;
-        if !share.is_null()
-            && !reply["features"]
-                .as_array()
-                .is_some_and(|f| f.iter().any(|v| v == "scoped_share"))
-        {
-            return Err(ApiError::new(
-                "unsupported",
-                "Update the host to use shared terminals",
-            ));
-        }
         let (tx, mut rx) = mpsc::channel::<Vec<ClientFrame>>(32);
         let device_id = device.id.clone();
         let actor = format!("gateway:{} ({})", device.name, device.id);
@@ -151,7 +141,13 @@ impl Bridge {
                             let Some(frames) = frames else { break; };
                             for mut f in frames {
                                 if !share.is_null() && let ClientFrame::Command { req, json } = &f {
-                                    let v: Value = serde_json::from_str(json)?;
+                                    let v: Value = match serde_json::from_str(json) {
+                                        Ok(v) => v,
+                                        Err(_) => {
+                                            emit(&out, &stream_id, command_error(*req, "Invalid TUI command JSON", "invalid_params")).await?;
+                                            continue;
+                                        }
+                                    };
                                     let method = v["method"].as_str().unwrap_or("");
                                     if !matches!(method, "workspace.focus" | "tab.focus" | "pane.focus") {
                                         if commands.len() >= 4 {
@@ -163,7 +159,12 @@ impl Bridge {
                                         continue;
                                     }
                                 }
-                                prepare(&mut f, &actor)?;
+                                if let Err(error) = prepare(&mut f, &actor) {
+                                    if let ClientFrame::Command { req, .. } = &f {
+                                        emit(&out, &stream_id, command_error(*req, &error.message, &error.kind)).await?;
+                                    }
+                                    continue;
+                                }
                                 if let ClientFrame::Command { req, json } = &f
                                     && separate_command(json)
                                 {
@@ -403,30 +404,33 @@ fn decode_input(data: &str) -> Result<Vec<ClientFrame>, ApiError> {
     Ok(frames)
 }
 
-fn prepare(frame: &mut ClientFrame, actor: &str) -> anyhow::Result<()> {
+fn prepare(frame: &mut ClientFrame, actor: &str) -> Result<(), ApiError> {
     if let ClientFrame::Command { json, .. } = frame {
-        let mut v: Value = serde_json::from_str(json)?;
+        let mut v: Value = serde_json::from_str(json)
+            .map_err(|_| ApiError::invalid("Invalid TUI command JSON"))?;
         let object = v
             .as_object_mut()
-            .ok_or_else(|| anyhow::anyhow!("Invalid TUI command"))?;
+            .ok_or_else(|| ApiError::invalid("Invalid TUI command"))?;
         // A full remote terminal is a user client, never the gateway's control plane.
         // The distinct gateway-tui identity also enforces this at the server boundary.
         let method = object.get("method").and_then(Value::as_str).unwrap_or("");
-        anyhow::ensure!(
-            !matches!(
-                method,
-                "handoff.peers.set"
-                    | "handoff.job.update"
-                    | "handoff.incoming.add"
-                    | "gateway.reply"
-                    | "client.devices"
-            ),
-            "Gateway control methods are not available to a terminal client"
-        );
+        if matches!(
+            method,
+            "handoff.peers.set"
+                | "handoff.job.update"
+                | "handoff.incoming.add"
+                | "gateway.reply"
+                | "client.devices"
+        ) {
+            return Err(ApiError::new(
+                "forbidden",
+                "Gateway control methods are not available to a terminal client",
+            ));
+        }
         let params = object.entry("params").or_insert_with(|| json!({}));
         let params = params
             .as_object_mut()
-            .ok_or_else(|| anyhow::anyhow!("Invalid TUI command parameters"))?;
+            .ok_or_else(|| ApiError::invalid("Invalid TUI command parameters"))?;
         params.insert("actor".into(), actor.into());
         *json = v.to_string();
     }

@@ -1108,7 +1108,9 @@ pub fn key(app: &mut App, ev: KeyEvent) {
         }
         Key::Char('s') => {
             let it = sel.unwrap();
-            if it.key.kind == "handoff" {
+            if !app.machines[it.key.machine].capabilities().host {
+                app.inbox.notice = Some("Snooze is unavailable in a shared terminal".into());
+            } else if it.key.kind == "handoff" {
                 app.inbox.notice =
                     Some("a handoff waits until it is accepted, declined or expires".into());
             } else if it.stale || it.fallback {
@@ -1479,8 +1481,20 @@ pub fn draw(app: &App, g: &mut Grid) {
         }
         Sub::None => {}
     }
-    let keys = "j/k move · enter open · y/n/1-9 answer · A batch · o open pane · s snooze · e effort · f 5-minute view · esc close";
-    g.put_str(r.x + 1, bottom, keys, t.dim(), r.w.saturating_sub(2));
+    let mut keys = String::from("j/k move · enter open");
+    let caps = v
+        .items
+        .get(app.inbox.sel_idx)
+        .map(|it| app.machines[it.key.machine].capabilities());
+    if caps.is_some_and(|c| c.approve) {
+        keys.push_str(" · y/n/1-9 answer · A batch");
+    }
+    keys.push_str(" · o open pane");
+    if caps.is_some_and(|c| c.host) {
+        keys.push_str(" · s snooze · e effort");
+    }
+    keys.push_str(" · f 5-minute view · esc close");
+    g.put_str(r.x + 1, bottom, &keys, t.dim(), r.w.saturating_sub(2));
 }
 
 /// One **Also working** footer row.
@@ -1935,6 +1949,11 @@ mod tests {
         assert_eq!(upd.1["params"]["key"], json!({"kind": "review", "id": "a"}));
         assert!(upd.1["params"]["snooze_until_ms"].as_i64().unwrap() > now_ms());
         assert!(matches!(app.mode, Mode::Popup(Popup::Inbox)));
+        app.machines[0].features = vec!["shared_tui".into(), "shared_tui.control".into()];
+        app.on_key(key(Key::Char('s')));
+        assert!(matches!(app.inbox.sub, Sub::None));
+        assert!(commands(&mut rxs[0]).is_empty());
+        assert!(app.inbox.notice.as_deref().unwrap().contains("unavailable"));
     }
 
     #[test]

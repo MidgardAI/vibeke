@@ -878,6 +878,43 @@ async fn account_login_brings_the_gateway_online() {
     assert_eq!(accounts.with(|s| s.host_tokens.clone()), ["h1"]);
 }
 
+async fn assert_tui_rejects_command(c: &mut Client, stream: &str, command: &str, kind: &str) {
+    use vk_proto::render::{ClientFrame, ServerFrame};
+    let mut data = vk_proto::frame::encode(&ClientFrame::Command {
+        req: 87,
+        json: command.into(),
+    })
+    .unwrap();
+    data.extend(vk_proto::frame::encode(&ClientFrame::Ping { nonce: 789 }).unwrap());
+    c.send(json!({"jsonrpc":"2.0","id":987,"method":"tui.send","params":{"stream":stream,"data":vk_e2e::b64::encode(data)}})).await;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let mut decoded = vk_proto::frame::FrameBuf::default();
+        let (mut rejected, mut pong) = (false, false);
+        while !rejected || !pong {
+            let message = c.recv().await;
+            assert_ne!(message["method"], "tui.closed", "{message}");
+            if message["method"] != "tui.frame" {
+                continue;
+            }
+            decoded
+                .push(&vk_e2e::b64::decode(message["params"]["data"].as_str().unwrap()).unwrap());
+            while let Some(frame) = decoded.next_frame::<ServerFrame>().unwrap() {
+                match frame {
+                    ServerFrame::CommandResult { req: 87, json } => {
+                        let response: Value = serde_json::from_str(&json).unwrap();
+                        assert_eq!(response["error"]["data"]["kind"], kind, "{response}");
+                        rejected = true;
+                    }
+                    ServerFrame::Pong { nonce: 789, .. } => pong = true,
+                    _ => {}
+                }
+            }
+        }
+    })
+    .await
+    .expect("rejected command must not close or block render traffic");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn browser_tui_is_encrypted_scoped_and_closed_on_revocation() {
     use vk_proto::render::{ClientFrame, ServerFrame};
@@ -935,6 +972,14 @@ async fn browser_tui_is_encrypted_scoped_and_closed_on_revocation() {
         .as_str()
         .expect("TUI attached")
         .to_string();
+    assert_tui_rejects_command(&mut c, &stream, "{", "invalid_params").await;
+    assert_tui_rejects_command(
+        &mut c,
+        &stream,
+        r#"{"method":"client.devices"}"#,
+        "forbidden",
+    )
+    .await;
     let input = vk_proto::frame::encode(&ClientFrame::Ping { nonce: 123 }).unwrap();
     c.send(json!({"jsonrpc":"2.0","id":999,"method":"tui.send","params":{"stream":stream,"data":vk_e2e::b64::encode(&input)}})).await;
     let mut decoded = vk_proto::frame::FrameBuf::default();
@@ -1144,6 +1189,7 @@ async fn shared_tui_commands_use_the_existing_gateway_permissions() {
         );
         assert!(!features.contains(&json!("shared_tui.workspace")));
         let stream = attach["result"]["stream"].as_str().unwrap();
+        assert_tui_rejects_command(&mut c, stream, "{", "invalid_params").await;
         for (req, method, params, permitted) in [
             (
                 1,
