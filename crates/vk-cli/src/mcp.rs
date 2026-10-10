@@ -282,7 +282,7 @@ pub async fn handle(msg: &Value, backend: &mut dyn Backend) -> Option<Value> {
                 "protocolVersion": version,
                 "capabilities": {"tools": {"listChanged": false}},
                 "serverInfo": {"name": "vibeke", "title": "Vibeke", "version": vk_proto::VERSION},
-                "instructions": "Vibeke previews and a headless browser on this machine. After starting a dev server, call preview_declare (or preview_list). Then browser_open {preview} → browser_snapshot to find elements → browser_click/browser_type → browser_screenshot to verify. Check browser_console/browser_network for errors. Requests outside this machine's declared previews are blocked by policy (see the error reason). If a call fails with human_control, the user has taken over the session: wait and retry later.",
+                "instructions": "Vibeke previews and a headless browser on this machine. After starting a dev server, call preview_declare (or preview_list). Then browser_open {preview} → browser_snapshot to find elements → browser_click/browser_type → browser_screenshot to verify. Check browser_console/browser_network for errors. Requests outside this machine's declared previews are blocked by policy (see the error reason). If a call fails with human_control, the user has taken over the session: wait and retry later. When you produce an image the user should see (a screenshot from tests or a tool, a chart, a rendered page), call show_image {path, caption} so it appears in Vibeke on every device the user watches from.",
             })
         }
         "ping" => json!({}),
