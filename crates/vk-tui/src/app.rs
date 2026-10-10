@@ -263,6 +263,8 @@ pub enum Popup {
     Drafts,
     /// Assist preview → confirm → editable draft (14); state in `App::assist`.
     Assist,
+    /// Preview manager (`preview_list`, 06 B2/B4); state in `App::preview_mgr`.
+    Previews,
     /// Pending client operations with unknown outcomes (15 §10.3).
     PendingOps {
         sel: usize,
@@ -364,6 +366,11 @@ pub enum Action {
     ForgetTask {
         machine: usize,
         task: String,
+    },
+    /// Mirror a remote preview to this machine's loopback (`preview.mirror`, 06 B4).
+    MirrorPreview {
+        machine: usize,
+        preview: String,
     },
 }
 
@@ -505,6 +512,8 @@ pub struct App {
     pub gallery: crate::gallery::GalleryState,
     /// `!N` console-error badges and sidebar preview thumbnails.
     pub previews_ui: crate::preview_ui::State,
+    /// Preview manager popup and sidebar preview chips (06 B2/B4).
+    pub preview_mgr: crate::preview_manager::State,
     pub desk: Option<crate::desk::Desk>,
     pub drafts: Option<crate::drafts::DraftsView>,
     pub assist: Option<crate::assist::Flow>,
@@ -920,6 +929,7 @@ impl App {
             parity: Default::default(),
             gallery: Default::default(),
             previews_ui: Default::default(),
+            preview_mgr: Default::default(),
             desk: None,
             drafts: None,
             assist: None,
@@ -1797,6 +1807,7 @@ impl App {
         crate::parity::on_tick(self);
         crate::assist::tick(self);
         crate::browser::tick(self);
+        crate::preview_manager::tick(self);
         crate::plugins::report_scroll(self, now);
         crate::selection::tick(self, now);
         crate::remote_view::release_due(self, now);
@@ -1837,6 +1848,7 @@ impl App {
         crate::statusbar::deadlines(self, now, &mut d);
         crate::assist::deadlines(self, now, &mut d);
         crate::browser::deadlines(self, now, &mut d);
+        crate::preview_manager::deadlines(self, now, &mut d);
         crate::plugins::deadlines(self, now, &mut d);
         crate::selection::deadlines(self, &mut d);
         crate::remote_view::deadlines(self, &mut d);
@@ -2115,6 +2127,10 @@ impl App {
         if crate::popup_pane::on_mouse(self, &me) {
             return;
         }
+        // The preview manager popup: clicks select and open its rows.
+        if crate::preview_manager::on_mouse(self, &me) {
+            return;
+        }
         // Plugin popups are modal; overlay headers and popup frames are chrome.
         if crate::plugins::on_mouse(self, me.column, me.row) {
             return;
@@ -2238,7 +2254,10 @@ impl App {
         if crate::plugins::action(self, action) || crate::ux::action(self, action) {
             return;
         }
-        if crate::browser::action_name(self, action) || crate::parity::action(self, action) {
+        if crate::browser::action_name(self, action)
+            || crate::preview_manager::action(self, action)
+            || crate::parity::action(self, action)
+        {
             return;
         }
         // Gallery, desk, drafts/notes and assist palette commands (08 §6.7, 06 B8, 14).
@@ -2674,7 +2693,10 @@ impl App {
     }
 
     fn navigate_key(&mut self, ev: KeyEvent, sel: usize) {
-        if crate::ux::navigate_key(self, &ev, sel) || crate::groups::navigate_key(self, &ev, sel) {
+        if crate::preview_manager::navigate_key(self, &ev, sel)
+            || crate::ux::navigate_key(self, &ev, sel)
+            || crate::groups::navigate_key(self, &ev, sel)
+        {
             return;
         }
         let rows = draw::sidebar_targets(self);
@@ -2918,6 +2940,9 @@ impl App {
             }
             Action::Detach => self.quit = Some("detached".into()),
             Action::ForgetTask { machine, task } => crate::taskbadge::forget(self, machine, &task),
+            Action::MirrorPreview { machine, preview } => {
+                crate::preview_manager::mirror_confirmed(self, machine, &preview)
+            }
         }
     }
 

@@ -251,11 +251,17 @@ pub fn draw_thumbs(app: &App, g: &mut Grid, sx: u16, w: u16) {
     }
     let entries = crate::browser::preview_entries(app);
     let rows = crate::draw::sidebar_rows(app);
-    let Some(first) = rows.len().checked_sub(entries.len()) else {
-        return;
-    };
     let need = THUMB_COLS + 1;
-    for (k, (mi, p)) in entries.iter().enumerate() {
+    for (row, r) in rows.iter().enumerate() {
+        // Preview rows only (not an expanded row's chips).
+        let Some((mi, p)) = r
+            .preview
+            .as_ref()
+            .filter(|_| r.chips.is_empty())
+            .and_then(|(mi, id)| entries.iter().find(|(m, p)| m == mi && &p.id == id))
+        else {
+            continue;
+        };
         let key = (*mi, p.handle.clone());
         let Some(id) = app.previews_ui.ids.get(&key) else {
             continue;
@@ -268,12 +274,12 @@ pub fn draw_thumbs(app: &App, g: &mut Grid, sx: u16, w: u16) {
         {
             continue;
         }
-        let y = (first + k) as u16 + 1;
+        let y = row as u16 + 1;
         if y >= app.size.1 {
             continue;
         }
         // Only where the row's own text leaves room.
-        let used: usize = rows[first + k]
+        let used: usize = r
             .segs
             .iter()
             .map(|(s, _)| unicode_width::UnicodeWidthStr::width(s.as_str()))

@@ -141,7 +141,7 @@ pub struct MirrorInfo {
 }
 
 impl MirrorInfo {
-    fn parse(v: &serde_json::Value) -> Option<MirrorInfo> {
+    pub(crate) fn parse(v: &serde_json::Value) -> Option<MirrorInfo> {
         Some(MirrorInfo {
             machine: v.get("machine")?.as_str()?.to_string(),
             preview: v.get("preview")?.as_str()?.to_string(),
@@ -162,6 +162,21 @@ pub enum Reply {
     Mirrors,
     /// `browser.pane.console`: the console split opened or closed.
     ConsoleSplit,
+    /// `preview.status` for the preview manager (mirrors, proxy routes, browsers).
+    Status,
+    /// `browser.install` from the preview manager.
+    Install,
+    /// `preview.open {window: true}` on the machine labelled `machine`.
+    Window {
+        machine: String,
+        handle: String,
+    },
+}
+
+/// The browser pane's launch error when its media host has no Chromium (this server's
+/// wording and older ones').
+pub fn is_no_browser(e: &str) -> bool {
+    e.contains("no Chromium found for the browser pane")
 }
 
 /// Open `url` with the OS opener, detached, output discarded. `VIBEKE_NO_OPEN` disables it.
@@ -767,6 +782,17 @@ pub fn on_state(app: &mut App, mi: usize, pane: String, st: BrowserStatus) {
     if let Some(n) = &st.notice {
         app.toast(n.clone());
     }
+    // No Chromium on the media host: name it and the fix, once per new error.
+    if st.error.as_deref().is_some_and(is_no_browser)
+        && app
+            .browser
+            .panes
+            .get(&pane)
+            .and_then(|p| p.status.error.as_deref())
+            != st.error.as_deref()
+    {
+        crate::preview_manager::no_browser_toast(app, mi);
+    }
     // Remote owners persist navigation through us (the local media host can't reach their
     // layout); local owners are updated by the media host itself.
     if let Some(owner) = app
@@ -1276,13 +1302,20 @@ pub fn on_mouse(app: &mut App, me: &CtMouse, px: Option<(u32, u32)>) -> bool {
     // Sidebar preview rows.
     let right = matches!(me.kind, MouseEventKind::Down(CtButton::Right));
     if crate::chrome::in_sidebar(app, x) {
+        let sx = crate::chrome::sidebar_x(app).unwrap_or(0);
+        // The expanded row's action chips (06 B2).
+        if down && let Some((mi, p, c)) = crate::preview_manager::chip_hit(app, x - sx, y) {
+            crate::preview_manager::run_chip(app, mi, &p, c);
+            return true;
+        }
         if (down || right)
             && let Some((mi, p)) = preview_hit(app, y)
         {
             if right {
                 preview_menu(app, mi, &p);
             } else {
-                open_preview(app, mi, &p, p.pane.clone());
+                // Left click expands the row's chips; a double-click opens it.
+                crate::preview_manager::sidebar_click(app, mi, &p);
             }
             return true;
         }
@@ -1548,11 +1581,15 @@ pub fn open_preview(app: &mut App, mi: usize, p: &Preview, source: Option<String
         } else {
             format!("{}/{}", app.machines[mi].label, p.handle)
         };
+        let machine = app.machines[local].label.clone();
         app.command_on(
             local,
             "preview.open",
             json!({"preview": target, "window": true}),
-            Pending::Toast(format!("opened {} in a window", p.handle)),
+            Pending::Preview(Reply::Window {
+                machine,
+                handle: p.handle.clone(),
+            }),
         );
         return;
     }
@@ -1565,7 +1602,7 @@ pub fn open_preview(app: &mut App, mi: usize, p: &Preview, source: Option<String
 
 /// The local machine (the one whose server runs windows, the proxy and mirrors) and the
 /// preview's name there: its handle, or `<machine>/<handle>` for a remote's.
-fn local_target(app: &App, mi: usize, p: &Preview) -> (usize, String) {
+pub(crate) fn local_target(app: &App, mi: usize, p: &Preview) -> (usize, String) {
     let local = app.machines.iter().position(|m| m.local).unwrap_or(mi);
     let target = if local == mi {
         p.handle.clone()
@@ -1618,18 +1655,22 @@ fn take_target(app: &mut App) -> Option<(usize, Preview)> {
 pub(crate) fn preview_window(app: &mut App, mi: usize, p: &Preview) {
     crate::preview_ui::clear(app, mi, &p.handle);
     let (local, target) = local_target(app, mi, p);
+    let machine = app.machines[local].label.clone();
     app.command_on(
         local,
         "preview.open",
         json!({"preview": target, "window": true}),
-        Pending::Toast(format!("opened {} in a window", p.handle)),
+        Pending::Preview(Reply::Window {
+            machine,
+            handle: p.handle.clone(),
+        }),
     );
 }
 
 /// Open a preview in the user's normal browser through the reverse proxy (06 B4). The server
 /// returns the one-time URL to this full-scope client (`no_open`: the server never opens it
 /// for us); only this explicit action hands it to the OS opener.
-fn preview_proxy(app: &mut App, mi: usize, p: &Preview) {
+pub(crate) fn preview_proxy(app: &mut App, mi: usize, p: &Preview) {
     crate::preview_ui::clear(app, mi, &p.handle);
     if app.caps.host_remote {
         // The proxy listens on the server's loopback; a browser here could not reach it.
@@ -1648,7 +1689,7 @@ fn preview_proxy(app: &mut App, mi: usize, p: &Preview) {
     );
 }
 
-fn preview_mirror(app: &mut App, mi: usize, p: &Preview) {
+pub(crate) fn preview_mirror(app: &mut App, mi: usize, p: &Preview) {
     let (local, target) = local_target(app, mi, p);
     if local == mi {
         app.toast(format!(
@@ -1665,7 +1706,7 @@ fn preview_mirror(app: &mut App, mi: usize, p: &Preview) {
     );
 }
 
-fn preview_unmirror(app: &mut App, mi: usize, p: &Preview) {
+pub(crate) fn preview_unmirror(app: &mut App, mi: usize, p: &Preview) {
     let (local, target) = local_target(app, mi, p);
     let Some(m) = mirror_of(app, mi, p) else {
         app.toast(format!("{} is not mirrored", p.handle));
@@ -1683,14 +1724,29 @@ fn preview_unmirror(app: &mut App, mi: usize, p: &Preview) {
 /// Replies to the preview commands (see [`Reply`]).
 pub fn on_reply(
     app: &mut App,
-    _mi: usize,
+    mi: usize,
     r: Reply,
     res: Result<serde_json::Value, crate::app::RpcErr>,
 ) {
+    if matches!(r, Reply::Install) {
+        crate::preview_manager::on_install(app, mi, res);
+        app.dirty = true;
+        return;
+    }
     let v = match res {
         Ok(v) => v,
         // A server without the mirror list is not an error worth a toast.
-        Err(_) if matches!(r, Reply::Mirrors) => return,
+        Err(_) if matches!(r, Reply::Mirrors | Reply::Status) => return,
+        // No window browser on the viewing machine: say where, and what helps.
+        Err(e) if matches!(r, Reply::Window { .. }) && e.kind == "unsupported" => {
+            if let Reply::Window { machine, .. } = r {
+                app.toast(format!(
+                    "✗ no browser on {machine} for preview windows: install Chrome or Chromium there, or set [preview] browser ({})",
+                    e.message
+                ));
+            }
+            return;
+        }
         Err(e) => {
             app.toast(format!("✗ {}", e.message));
             return;
@@ -1733,6 +1789,9 @@ pub fn on_reply(
             }
         }
         Reply::ConsoleSplit => crate::browser_io::on_console_reply(app, &v),
+        Reply::Status => crate::preview_manager::on_status(app, mi, v),
+        Reply::Install => {}
+        Reply::Window { handle, .. } => app.toast(format!("opened {handle} in a window")),
         Reply::Mirrors => {
             let list: Vec<MirrorInfo> = v["mirrors"]
                 .as_array()
@@ -2043,16 +2102,17 @@ pub fn preview_segs(app: &App, mi: usize, p: &Preview) -> Vec<(String, Style)> {
     segs
 }
 
-/// The preview whose sidebar row is at host row `y` (the section is the last one).
+/// The preview whose sidebar row is at host row `y` (not its chips row).
 pub fn preview_hit(app: &App, y: u16) -> Option<(usize, Preview)> {
-    let rows = crate::draw::sidebar_rows(app).len();
-    let entries = preview_entries(app);
-    let i = (y as usize).checked_sub(1)?;
-    let first = rows.checked_sub(entries.len())?;
-    if i < first || i >= rows {
+    let rows = crate::draw::sidebar_rows(app);
+    let r = rows.get((y as usize).checked_sub(1)?)?;
+    if !r.chips.is_empty() {
         return None;
     }
-    entries.into_iter().nth(i - first)
+    let (mi, id) = r.preview.clone()?;
+    preview_entries(app)
+        .into_iter()
+        .find(|(m, p)| *m == mi && p.id == id)
 }
 
 /// Chips for previews of panes in the focused tab: (machine, preview, label, x0, x1), placed

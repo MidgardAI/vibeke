@@ -554,7 +554,10 @@ pub const ACTION_INFO: &[(&str, &str)] = &[
         "Forget a task marked missing (nothing on disk is touched)",
     ),
     ("new_task", "New task (git worktree)"),
-    ("preview_list", "Previews"),
+    (
+        "preview_list",
+        "Previews: every machine's previews and how to view them (pane, window, proxy, mirror)",
+    ),
     ("cancel_transfer", "Cancel file transfers"),
     ("review_clipboard", "Review clipboard requests"),
     ("url_hints", "Label URLs and IDs in the pane (open / copy)"),

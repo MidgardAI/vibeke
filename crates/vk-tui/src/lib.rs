@@ -53,6 +53,7 @@ pub mod plugin_ui;
 pub mod plugins;
 pub mod popup_pane;
 pub mod popups;
+pub mod preview_manager;
 pub mod preview_ui;
 pub mod push;
 pub mod remote_view;

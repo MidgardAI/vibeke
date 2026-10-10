@@ -15,12 +15,27 @@ pub struct SideRow {
     /// A workspace group row (machine, group id): selectable in navigate mode, collapses on
     /// enter/click (08 §2.1, M4).
     pub group: Option<(usize, String)>,
+    /// A preview row (machine, preview id) of the Previews section; with `chips`, a line of
+    /// its expanded action chips instead (06 B2).
+    pub preview: Option<(usize, String)>,
+    /// Chips on this line and their x ranges, relative to the sidebar's left edge.
+    pub chips: Vec<(crate::preview_manager::Chip, u16, u16)>,
 }
 
 impl SideRow {
-    /// Navigate mode can select it (a pane target or a group).
+    /// Navigate mode can select it (a pane target, a group or a preview row).
     pub fn selectable(&self) -> bool {
-        self.target.is_some() || self.group.is_some()
+        self.target.is_some()
+            || self.group.is_some()
+            || (self.preview.is_some() && self.chips.is_empty())
+    }
+
+    /// What navigate mode selects on this row (pane, group or preview id).
+    fn selection(&self) -> Option<(usize, String)> {
+        self.target
+            .clone()
+            .or(self.group.clone())
+            .or(self.preview.clone().filter(|_| self.chips.is_empty()))
     }
 }
 
@@ -408,13 +423,27 @@ pub fn sidebar_rows(app: &App) -> Vec<SideRow> {
             focused: false,
             ..Default::default()
         });
+        let width = app.sidebar_w.saturating_sub(1);
         for (mi, p) in &previews {
+            let key = (*mi, p.id.clone());
             rows.push(SideRow {
                 segs: crate::browser::preview_segs(app, *mi, p),
                 target: None,
                 focused: false,
+                preview: Some(key.clone()),
                 ..Default::default()
             });
+            // The selected row's action chips, right under it.
+            if app.preview_mgr.expanded.as_ref() == Some(&key) {
+                for (segs, chips) in crate::preview_manager::chip_rows(app, *mi, p, width) {
+                    rows.push(SideRow {
+                        segs,
+                        preview: Some(key.clone()),
+                        chips,
+                        ..Default::default()
+                    });
+                }
+            }
         }
     }
     rows
@@ -573,7 +602,7 @@ fn workspace_rows_at(app: &App, mi: usize, w: &Workspace, depth: usize, rows: &m
 pub fn sidebar_targets(app: &App) -> Vec<(usize, String)> {
     sidebar_rows(app)
         .into_iter()
-        .filter_map(|r| r.target.or(r.group))
+        .filter_map(|r| r.selection())
         .collect()
 }
 
