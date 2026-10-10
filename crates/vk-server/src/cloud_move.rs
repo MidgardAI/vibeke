@@ -578,6 +578,17 @@ pub(crate) fn check_move(
         }
         _ => {}
     }
+    // Sign-in is checked now, so clients get `needs_auth` and can prompt before a job exists.
+    let provider = match (&dest, &src.box_ref) {
+        (Dest::Cloud { provider, .. }, _) => provider
+            .clone()
+            .unwrap_or_else(|| vk_cloud::CloudConfig::load().default_provider),
+        (_, Some(b)) => b.split('/').next().unwrap_or_default().to_string(),
+        _ => String::new(),
+    };
+    if !provider.is_empty() {
+        crate::sandbox::cloud::credential(server, &provider)?;
+    }
     let jobs = server
         .with_core(|c| c.store.load::<Job>(K_JOB))
         .map_err(internal)?;
