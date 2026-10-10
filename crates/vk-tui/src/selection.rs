@@ -27,8 +27,8 @@
 //! ([`crate::scrollback::on_mouse`]) with the same gestures and [`word_class`].
 
 use crate::app::{App, Mode};
-use crossterm::event::{KeyModifiers, MouseButton as CtButton, MouseEvent, MouseEventKind};
-use std::time::{Duration, Instant};
+use crate::event::{KeyModifiers, MouseButton as CtButton, MouseEvent, MouseEventKind};
+use crate::time::{Duration, Instant};
 use vk_proto::layout::Rect;
 
 /// Presses this close together on the same cell count as a double/triple click.

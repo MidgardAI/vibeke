@@ -20,10 +20,10 @@
 
 use crate::app::App;
 use crate::draw::SideRow;
+use crate::event::{MouseButton as CtButton, MouseEvent, MouseEventKind};
 use crate::screen::{Grid, Rect as SRect};
-use crossterm::event::{MouseButton as CtButton, MouseEvent, MouseEventKind};
+use crate::time::Instant;
 use std::path::PathBuf;
-use std::time::Instant;
 use vk_proto::model::*;
 use vk_proto::render::{Color, Style};
 
@@ -159,7 +159,7 @@ pub(crate) fn deadlines(app: &App, now: Instant, d: &mut crate::deadline::Deadli
     if working {
         let ms = 500 - (crate::drafts::now_ms().rem_euclid(500)) as u64;
         // Same class as the working age label it decorates.
-        d.redraw("ages", now + std::time::Duration::from_millis(ms.max(1)));
+        d.redraw("ages", now + crate::time::Duration::from_millis(ms.max(1)));
     }
 }
 

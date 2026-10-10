@@ -16,7 +16,7 @@
 //!   says so in a toast; nothing changes locally.
 
 use crate::app::{Action, App, Mode, Pending, Popup, RpcErr};
-use crossterm::event::{MouseButton as CtButton, MouseEvent, MouseEventKind};
+use crate::event::{MouseButton as CtButton, MouseEvent, MouseEventKind};
 use serde_json::{Value, json};
 use vk_proto::model::Tab;
 

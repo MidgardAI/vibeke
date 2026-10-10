@@ -154,6 +154,9 @@ fn store(archive: &Path, entry: &Path) {
 }
 
 fn main() {
+    if std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() == Ok("wasm32") {
+        return;
+    }
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let vendor = manifest_dir.join("../../vendor");
     let src = vendor.join("libghostty-vt");

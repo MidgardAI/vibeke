@@ -101,7 +101,7 @@ pub fn action(app: &mut App, action: &str) -> bool {
 }
 
 /// Mouse on float frames, sidebar groups and the status bar. True when consumed.
-pub fn on_mouse(app: &mut App, me: &crossterm::event::MouseEvent) -> bool {
+pub fn on_mouse(app: &mut App, me: &crate::event::MouseEvent) -> bool {
     crate::floats::on_mouse(app, me)
         || crate::groups::on_mouse(app, me)
         || crate::statusbar::on_mouse(app, me)

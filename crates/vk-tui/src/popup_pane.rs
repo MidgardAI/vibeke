@@ -17,8 +17,8 @@
 //!   `always` allows it on explicit invocation.
 
 use crate::app::{App, Mode, Pending, Popup, RpcErr};
+use crate::event::{MouseButton as CtButton, MouseEvent, MouseEventKind};
 use crate::screen::Grid;
-use crossterm::event::{MouseButton as CtButton, MouseEvent, MouseEventKind};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use vk_config::InteractionOverlay;

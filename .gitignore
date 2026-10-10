@@ -10,3 +10,6 @@
 /goals/
 /reviews/
 /research/
+
+# wasm-bindgen output for the optional browser TUI.
+/web/apps/pwa/public/tui/

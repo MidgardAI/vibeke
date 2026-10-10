@@ -17,10 +17,12 @@
 //! started sequence or UTF-8 character waits much longer for a split read (ssh), and when one is
 //! given up on, its late tail is dropped instead of arriving as typed text.
 
-use crossterm::event::{
+use crate::event::{
     Event, KeyModifiers, MouseButton as CtButton, MouseEvent as CtMouse, MouseEventKind,
 };
-use std::time::{Duration, Instant};
+use crate::time::Duration;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::time::Instant;
 use vk_proto::input::{Key, KeyEvent, KeyKind, Mods, NamedKey};
 
 /// One decoded host input.
@@ -69,6 +71,7 @@ impl Policy {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn host_erase() -> Option<u8> {
     // SAFETY: tcgetattr fills the zeroed termios for fd 0 (or fails and leaves it unused).
     let mut t: libc::termios = unsafe { std::mem::zeroed() };
@@ -938,6 +941,7 @@ fn find(h: &[u8], n: &[u8]) -> Option<usize> {
 /// Reads the host's input on a thread (stdin, `poll` with a stop pipe: no timer wake-ups while
 /// idle), decodes it, and resizes from `SIGWINCH`. Dropping it stops reading (the external
 /// editor and the appearance re-probe need stdin).
+#[cfg(not(target_arch = "wasm32"))]
 pub struct Reader {
     rx: tokio::sync::mpsc::UnboundedReceiver<Input>,
     stop_w: libc::c_int,
@@ -945,6 +949,7 @@ pub struct Reader {
     winch: Option<tokio::signal::unix::Signal>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Reader {
     pub fn new() -> Reader {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
@@ -980,12 +985,14 @@ impl Reader {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Default for Reader {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Drop for Reader {
     fn drop(&mut self) {
         if self.stop_w >= 0 {
@@ -1001,6 +1008,7 @@ impl Drop for Reader {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn read_loop(tx: tokio::sync::mpsc::UnboundedSender<Input>, stop_r: libc::c_int, policy: Policy) {
     let mut dec = Decoder::with_policy(policy);
     // When what is pending now started waiting: the wait is counted from there, so input that
@@ -1571,4 +1579,9 @@ mod tests {
         assert_eq!(km(&k[0]), (Key::Char('['), Mods::ALT));
         assert_eq!(k[1].key, Key::Named(NamedKey::Enter));
     }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn host_erase() -> Option<u8> {
+    None
 }

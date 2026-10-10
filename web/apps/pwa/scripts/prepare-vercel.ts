@@ -1,6 +1,6 @@
 // Package the already-built PWA for its independent Vercel project.
 // Run after `bun run build`, then `vercel deploy --prebuilt --prod --scope your-team`.
-import { cpSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 
 const root = new URL('../', import.meta.url);
 const output = new URL('.vercel/output/', root);
@@ -9,9 +9,10 @@ mkdirSync(output, { recursive: true });
 cpSync(new URL('dist/', root), new URL('static/', output), { recursive: true });
 // Same policy as the desktop app (apps/desktop/src/main/protocol.ts), except that relays and hosts are
 // user-paired, so connect-src also allows any secure WebSocket. React style props need inline styles.
+const wasm = existsSync(new URL('dist/tui/manifest.json', root));
 const CSP = [
   "default-src 'self'",
-  "script-src 'self'",
+  wasm ? "script-src 'self' 'wasm-unsafe-eval'" : "script-src 'self'",
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: blob:",
   "font-src 'self' data:",

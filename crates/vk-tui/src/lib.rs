@@ -21,6 +21,7 @@ pub mod devices;
 pub mod drafts;
 pub mod draw;
 pub mod elevate;
+pub mod event;
 pub mod fleet;
 pub mod floats;
 pub mod gallery;
@@ -72,9 +73,16 @@ pub mod taskbadge;
 pub mod tasks;
 pub mod tasks_2c;
 pub mod tasks_t4;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod term;
+#[cfg(target_arch = "wasm32")]
+#[path = "web/term.rs"]
 pub mod term;
 pub mod theme;
+pub mod time;
 pub mod trust;
 pub mod updates;
 pub mod upload;
 pub mod ux;
+#[cfg(target_arch = "wasm32")]
+mod web;

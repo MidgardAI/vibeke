@@ -13,6 +13,9 @@
   },
   "dependencies": {
     "@vibeke/core": "workspace:*",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/addon-image": "^0.9.0",
+    "@xterm/xterm": "^6.0.0",
     "lucide-react": "*",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",

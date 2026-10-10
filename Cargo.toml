@@ -87,3 +87,10 @@ debug = false
 # Chunked encryption over multi-megabyte blobs: its tests take 25 s unoptimized, 3 s at level 1.
 [profile.dev.package.vk-store]
 opt-level = 1
+
+# Fast enough to iterate on the browser experiment without a native release rebuild.
+[profile.wasm]
+inherits = "dev"
+opt-level = 1
+debug = 0
+panic = "abort"

@@ -17,14 +17,12 @@
 //!   and Ctrl/Alt+click on a `http://localhost:<port>` URL printed in a pane.
 
 use crate::app::{App, Mode, Pending, Prompt, PromptKind};
+use crate::event::{KeyModifiers, MouseButton as CtButton, MouseEvent as CtMouse, MouseEventKind};
 use crate::screen::{Grid, HostCaps, Rect as SRect};
+use crate::time::{Duration, Instant};
 use base64::Engine as _;
-use crossterm::event::{
-    KeyModifiers, MouseButton as CtButton, MouseEvent as CtMouse, MouseEventKind,
-};
 use serde_json::json;
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
 use unicode_width::UnicodeWidthStr;
 use vk_browser::frame::Rgba;
 use vk_browser::kitty::{self, DIACRITICS, Header, PLACEHOLDER, PixelFormat};

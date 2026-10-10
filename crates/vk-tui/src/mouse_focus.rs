@@ -4,8 +4,8 @@
 //! (the hover is cancelled when the pointer leaves the pane or another event changes the mode).
 
 use crate::app::{App, Mode};
-use crossterm::event::{MouseEvent, MouseEventKind};
-use std::time::{Duration, Instant};
+use crate::event::{MouseEvent, MouseEventKind};
+use crate::time::{Duration, Instant};
 
 #[derive(Debug, Default, Clone)]
 pub struct State {
@@ -73,7 +73,7 @@ pub fn deadlines(app: &App, d: &mut crate::deadline::Deadlines) {
 mod tests {
     use super::*;
     use crate::drafts::tests::fleet;
-    use crossterm::event::KeyModifiers;
+    use crate::event::KeyModifiers;
 
     fn moved(app: &mut App, column: u16, row: u16) {
         app.on_mouse(MouseEvent {

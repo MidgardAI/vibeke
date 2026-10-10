@@ -1,6 +1,6 @@
 // Root component: shells mount <VibekeApp platform={…}/> and nothing else (spec 16 §9.3).
 
-import { useEffect, useMemo, useRef, type ReactNode } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useRef, type ReactNode } from 'react';
 import { AlertTriangle } from 'lucide-react';
 import { Empty, Spinner, cx } from '../components/ui';
 import { useScrollMemory } from '../lib/scroll-memory';
@@ -27,6 +27,8 @@ import { Layout, WorkspaceScreen } from './layout';
 import { lastWorkspace, rememberTab, resolveLegacy, useWorkspaceRows } from './selection';
 import { BusyBar, ConnectionBanner, Toasts, TopBar, useThemeEffect } from './shell';
 import { SurfaceContext } from './surface';
+
+const TuiScreen = lazy(() => import('../screens/tui'));
 
 /**
  * `surface`: `full` (the app), `quick` (menu-bar quick approvals: inbox only, Esc closes) or
@@ -179,18 +181,18 @@ function Main() {
 
   return (
     <>
-      <Layout route={route}>
+      {route.name === 'tui' ? <Suspense fallback={<Spinner />}><TuiScreen host={route.host} /></Suspense> : <Layout route={route}>
         <ConnectionBanner />
         <BusyBar />
         <ReloadPrompt />
         <div className="flex min-h-0 flex-1 flex-col">
           <Screen route={route} />
         </div>
-      </Layout>
+      </Layout>}
       <Toasts />
       <IdleLockOverlay />
       {hosts.length > 0 && (route.name === 'inbox' || route.name === 'workspace') && <Tour />}
-      <KeyboardLayer surface="full" />
+      {route.name !== 'tui' && <KeyboardLayer surface="full" />}
     </>
   );
 }

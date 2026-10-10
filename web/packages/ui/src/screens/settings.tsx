@@ -438,6 +438,9 @@ function HostCard({ h }: { h: HostState }) {
         <div className="min-w-0 flex-1 font-medium">{h.info?.host_name ?? h.record.name}</div>
         <span className="text-xs text-muted">{statusText}</span>
       </div>
+      {app.platform.tui && conn?.openTui && scope === 'full' && kind === 'device' && (
+        <div className="px-4 pt-3"><Button onClick={() => navigate({ name: 'tui', host: h.record.host_id })}>Open TUI</Button></div>
+      )}
       {kind !== 'device' && (
         <div className="px-4 pt-1 text-xs text-muted">
           {[

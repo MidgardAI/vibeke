@@ -9,9 +9,9 @@
 use crate::app::{App, Mode, Pending, Popup, RpcErr};
 use crate::draw::truncate;
 use crate::screen::{Grid, Rect as SRect};
+use crate::time::{Duration, Instant};
 use serde_json::{Value, json};
 use std::collections::HashSet;
-use std::time::{Duration, Instant};
 use unicode_width::UnicodeWidthStr;
 use vk_proto::input::{Key, KeyEvent, NamedKey};
 use vk_proto::model::*;
@@ -74,8 +74,8 @@ pub fn sidebar_marker(l: Option<&str>) -> (&'static str, u8) {
 }
 
 fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    crate::time::SystemTime::now()
+        .duration_since(crate::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
 }

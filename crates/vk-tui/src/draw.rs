@@ -51,7 +51,7 @@ pub fn harness_icon(h: &str) -> &'static str {
 /// Repaint when an age on screen changes: a working agent's `working · 12s` (sidebar, peek,
 /// tiles) and, while one is open, the inbox / desk / gallery / pending-operations ages. Idle,
 /// done and waiting agents show static labels and arm nothing (spec 10 §1.3.1).
-pub(crate) fn deadlines(app: &App, now: std::time::Instant, d: &mut crate::deadline::Deadlines) {
+pub(crate) fn deadlines(app: &App, now: crate::time::Instant, d: &mut crate::deadline::Deadlines) {
     use crate::app::Popup;
     let wall = vk_now();
     let mut next: Option<u64> = None;
@@ -71,7 +71,7 @@ pub(crate) fn deadlines(app: &App, now: std::time::Instant, d: &mut crate::deadl
         next = Some(next.map_or(ms, |n| n.min(ms)));
     }
     if let Some(ms) = next {
-        d.redraw("ages", now + std::time::Duration::from_millis(ms));
+        d.redraw("ages", now + crate::time::Duration::from_millis(ms));
     }
 }
 
@@ -163,8 +163,8 @@ pub fn run_state(
 }
 
 fn vk_now() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    crate::time::SystemTime::now()
+        .duration_since(crate::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
 }
@@ -949,7 +949,7 @@ fn right_cluster(app: &App) -> Vec<(String, Style)> {
         right.insert(0, (b, t.bold(t.accent)));
     }
     if let Some(p) = app.focused_pane()
-        && let Some(badge) = crate::osc::exit_badge(app, app.cur, &p, std::time::Instant::now())
+        && let Some(badge) = crate::osc::exit_badge(app, app.cur, &p, crate::time::Instant::now())
     {
         right.insert(0, (badge, t.bold(t.red)));
     }
@@ -1085,7 +1085,7 @@ fn draw_pane_at(
     // A failed command's exit code for 5 s (03 §8): in the corner of unfocused panes; the
     // focused pane's shows in the tab bar instead (the focused pane is the agent's, 08 §0).
     if focused != Some(pid)
-        && let Some(badge) = crate::osc::exit_badge(app, app.cur, pid, std::time::Instant::now())
+        && let Some(badge) = crate::osc::exit_badge(app, app.cur, pid, crate::time::Instant::now())
     {
         let w = unicode_width::UnicodeWidthStr::width(badge.as_str()) as u16;
         g.put_str(r.x + r.w.saturating_sub(w), r.y, &badge, t.bold(t.red), w);
@@ -1106,7 +1106,7 @@ fn draw_pane_at(
     if let Some(p) = app.m().model.panes.iter().find(|p| p.id == pid)
         && let Some(rec) = p.recovered.as_deref()
         && let Some(badge) =
-            crate::osc::recovery_badge(app, app.cur, pid, rec, std::time::Instant::now())
+            crate::osc::recovery_badge(app, app.cur, pid, rec, crate::time::Instant::now())
     {
         let w = badge.chars().count() as u16;
         g.put_str(r.x + r.w.saturating_sub(w), r.y, badge, t.dim(), w);

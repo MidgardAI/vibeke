@@ -115,6 +115,8 @@ fn sanitize(client: &str) -> String {
 
 #[derive(Debug, Default)]
 pub struct PendingStore {
+    #[cfg(target_arch = "wasm32")]
+    pub browser_key: Option<String>,
     /// This client's own file. `None`: memory only (tests that don't care about persistence).
     pub path: Option<PathBuf>,
     pub ops: Vec<PendingOp>,
@@ -285,11 +287,24 @@ impl PendingStore {
                 return;
             }
             self.adopt_orphans();
-            std::thread::sleep(std::time::Duration::from_millis(5));
+            std::thread::sleep(crate::time::Duration::from_millis(5));
         }
     }
 
     fn save(&self) -> std::io::Result<()> {
+        #[cfg(target_arch = "wasm32")]
+        if let Some(key) = &self.browser_key {
+            let storage = web_sys::window()
+                .and_then(|w| w.session_storage().ok().flatten())
+                .ok_or_else(|| {
+                    std::io::Error::other("Browser storage is unavailable; operation was not sent")
+                })?;
+            return storage
+                .set_item(key, &serde_json::to_string(&self.ops)?)
+                .map_err(|_| {
+                    std::io::Error::other("Could not save the pending operation; it was not sent")
+                });
+        }
         let Some(path) = &self.path else {
             return Ok(());
         };

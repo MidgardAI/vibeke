@@ -35,6 +35,7 @@ export interface WorkspaceRoute {
 
 export type Route =
   | { name: 'home' }
+  | { name: 'tui'; host: string }
   | { name: Tab }
   | { name: 'crew' }
   /** Incoming handoffs: every host's list, one host's, or one handoff's accept view. */
@@ -81,6 +82,9 @@ export function parseRoute(hash: string): Route {
       return { name: a };
     case 'crew':
       return { name: 'crew' };
+    case 'tui':
+      if (b && !c) return { name: 'tui', host: b };
+      break;
     case 'handoffs':
       return { name: 'handoffs', host: b || null, id: (b && c) || null };
     case 'approve':
@@ -144,6 +148,8 @@ export function formatRoute(r: Route): string {
   switch (r.name) {
     case 'home':
       return '#/';
+    case 'tui':
+      return `#/tui/${enc(r.host)}`;
     case 'inbox':
     case 'panes':
     case 'focus':

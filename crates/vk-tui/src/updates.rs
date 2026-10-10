@@ -1,9 +1,12 @@
 //! Update UI. A dedicated CLI worker owns downloads and installation; pane input is untouched.
-use crate::app::{App, Incoming, Mode, Pending, Popup};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::app::Incoming;
+use crate::app::{App, Mode, Pending, Popup};
 use crate::screen::Grid;
+use crate::time::{Duration, Instant};
 use serde_json::{Value, json};
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
+#[cfg(not(target_arch = "wasm32"))]
 use tokio::sync::mpsc;
 use vk_proto::input::{Key, KeyEvent, KeyKind, NamedKey};
 
@@ -22,6 +25,9 @@ pub struct State {
     prefs: Option<PathBuf>,
     resume: Option<Value>,
 }
+#[cfg(target_arch = "wasm32")]
+struct Worker;
+#[cfg(not(target_arch = "wasm32"))]
 struct Worker {
     exe: PathBuf,
     args: Vec<String>,
@@ -32,6 +38,7 @@ pub enum Event {
     Finished(Result<Value, String>),
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub fn init(app: &mut App, args: Option<Vec<String>>, inc: mpsc::UnboundedSender<Incoming>) {
     let Some(args) = args else {
         return;
@@ -92,6 +99,7 @@ fn save(app: &App, checked: bool) {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn start(app: &mut App, install: bool, background: bool) {
     let u = &mut app.ux.updates;
     if u.busy {
@@ -131,6 +139,7 @@ fn start(app: &mut App, install: bool, background: bool) {
     });
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 async fn worker(
     exe: PathBuf,
     args: Vec<String>,
@@ -216,6 +225,7 @@ pub fn on_event(app: &mut App, event: Event) {
 }
 
 /// Called after leaving raw mode. The new client receives the original invocation and focus.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn relaunch(reason: &str) -> Option<String> {
     use std::os::unix::process::CommandExt;
     let v: Value = serde_json::from_str(reason.strip_prefix("update:")?).ok()?;
@@ -464,4 +474,9 @@ mod tests {
         assert_eq!(v["machine"], app.m().label);
         assert_eq!(v["pane"], json!(app.m().focus.pane));
     }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn start(app: &mut App, _: bool, _: bool) {
+    app.toast("Update the browser app by reloading it. Update the host from its terminal.");
 }

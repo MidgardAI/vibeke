@@ -5,9 +5,9 @@
 
 use crate::app::{App, Mode, Pending, Popup, Prompt, PromptKind, RpcErr};
 use crate::draw::SideRow;
+use crate::event::{MouseButton as CtButton, MouseEvent, MouseEventKind};
 use crate::parity::Reply;
 use crate::screen::Grid;
-use crossterm::event::{MouseButton as CtButton, MouseEvent, MouseEventKind};
 use serde_json::{Value, json};
 use std::collections::HashSet;
 use vk_proto::input::{Key, KeyEvent, KeyKind, NamedKey};

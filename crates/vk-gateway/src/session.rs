@@ -222,6 +222,7 @@ async fn device_loop(gw: Arc<Gateway>, ws: impl Ws, session: Session, device_id:
     let inflight = Arc::new(Semaphore::new(gw.limits.max_inflight));
     let started = Instant::now();
     let mut events_task: Option<tokio::task::JoinHandle<()>> = None;
+    let mut tui: Option<crate::tui::Bridge> = None;
     tracing::info!(device = %device_id, "device connected");
 
     let mut tasks = tokio::task::JoinSet::new();
@@ -237,6 +238,7 @@ async fn device_loop(gw: Arc<Gateway>, ws: impl Ws, session: Session, device_id:
                     ConnCmd::Revoked => {
                         // Revoked: nothing this device queued may still run.
                         tasks.abort_all();
+                        tui.take();
                         out.notify("device.revoked", json!({})).await;
                     }
                 }
@@ -297,6 +299,45 @@ async fn device_loop(gw: Arc<Gateway>, ws: impl Ws, session: Session, device_id:
                 )),
             )
             .await;
+            continue;
+        }
+        if method.starts_with("tui.") {
+            let result = match crate::tui::authorize(&device) {
+                Err(e) => Err(e),
+                Ok(()) if payload.is_some() => {
+                    Err(ApiError::invalid("TUI calls take no binary payload"))
+                }
+                Ok(()) => match method.as_str() {
+                    "tui.attach" => {
+                        tui.take();
+                        let protocol = params.get("protocol").and_then(Value::as_u64).unwrap_or(0);
+                        match crate::tui::Bridge::attach(gw.clone(), &device, out.clone(), protocol)
+                            .await
+                        {
+                            Ok((bridge, result)) => {
+                                tui = Some(bridge);
+                                Ok(result)
+                            }
+                            Err(e) => Err(e),
+                        }
+                    }
+                    "tui.send" => tui
+                        .as_ref()
+                        .ok_or_else(|| ApiError::unavailable("TUI is not attached"))
+                        .and_then(|t| t.send(&params))
+                        .map(|()| json!({})),
+                    "tui.detach" => {
+                        if tui.as_ref().is_some_and(|t| {
+                            params.get("stream").and_then(Value::as_str) == Some(&t.id)
+                        }) {
+                            tui.take();
+                        }
+                        Ok(json!({}))
+                    }
+                    _ => Err(ApiError::new("method_not_found", "Unknown TUI method")),
+                },
+            };
+            respond(&out, id, result).await;
             continue;
         }
         match method.as_str() {
@@ -395,6 +436,7 @@ fn features(gw: &Gateway) -> Vec<&'static str> {
         "browser_preview",
         "push_clear",
         "cache_cold",
+        "wasm_tui",
     ];
     if gw.cfg.stt.is_some() {
         f.push("stt");

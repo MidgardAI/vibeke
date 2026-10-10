@@ -219,6 +219,8 @@ pub struct GalleryState {
     pub sent: Option<(String, u16, u16, u16, u16)>,
     /// Files handed to the OS opener (tests read this instead of spawning).
     pub opened: Vec<String>,
+    #[cfg(target_arch = "wasm32")]
+    pub downloads: Vec<(String, Vec<u8>)>,
     /// Directory for `t=t` temp files (`None`: `$TMPDIR/vibeke-gfx-<uid>`; tests point it at a
     /// temp dir of their own).
     pub gfx_dir: Option<std::path::PathBuf>,
@@ -757,6 +759,12 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
                     .and_then(|b| base64::engine::general_purpose::STANDARD.decode(b).ok());
                 let id = st(&x, "id").replace(['/', '\\', '.'], "_");
                 match data {
+                    #[cfg(target_arch = "wasm32")]
+                    Some(d) => {
+                        app.gallery.downloads.push((format!("{id}.png"), d));
+                        app.toast("Screenshot ready to download");
+                    }
+                    #[cfg(not(target_arch = "wasm32"))]
                     Some(d) => {
                         let dir = std::env::temp_dir().join("vibeke-screenshots");
                         let path = dir.join(format!("{id}.png"));
@@ -855,6 +863,7 @@ pub fn transmit_png(app: &mut App, out: &mut Vec<u8>, h: &vk_browser::kitty::Hea
 
 /// A directory only this user can use (0700, ours, not a symlink); stale files from terminals
 /// that never read them are removed.
+#[cfg(not(target_arch = "wasm32"))]
 fn private_gfx_dir(custom: Option<&std::path::Path>) -> Option<std::path::PathBuf> {
     use std::os::unix::fs::{DirBuilderExt, MetadataExt};
     // SAFETY: geteuid has no preconditions.
@@ -876,7 +885,7 @@ fn private_gfx_dir(custom: Option<&std::path::Path>) -> Option<std::path::PathBu
                 .ok()
                 .and_then(|m| m.modified().ok())
                 .and_then(|t| t.elapsed().ok())
-                .is_some_and(|age| age > std::time::Duration::from_secs(120));
+                .is_some_and(|age| age > crate::time::Duration::from_secs(120));
             if old {
                 let _ = std::fs::remove_file(e.path());
             }
@@ -1152,3 +1161,8 @@ fn draw_image_or_hint(app: &App, a: &mut Area, kitty: bool, local: bool, diff: b
 #[cfg(test)]
 #[path = "gallery_tests.rs"]
 mod tests;
+
+#[cfg(target_arch = "wasm32")]
+fn private_gfx_dir(_: Option<&std::path::Path>) -> Option<std::path::PathBuf> {
+    None
+}

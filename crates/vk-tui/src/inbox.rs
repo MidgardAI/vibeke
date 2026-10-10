@@ -8,9 +8,9 @@
 use crate::app::{App, Mode, Pending, Popup, RpcErr};
 use crate::draw::{harness_icon, truncate};
 use crate::screen::{Grid, Rect as SRect};
+use crate::time::{Duration, Instant};
 use serde_json::{Value, json};
 use std::collections::HashSet;
-use std::time::{Duration, Instant};
 use vk_proto::input::{Key, KeyEvent, NamedKey};
 use vk_proto::model::*;
 use vk_proto::render::Style;
@@ -161,8 +161,8 @@ pub enum Reply {
 }
 
 fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    crate::time::SystemTime::now()
+        .duration_since(crate::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
 }
@@ -973,6 +973,7 @@ pub fn parse_custom(s: &str, now_ms: i64) -> Option<i64> {
 }
 
 /// Local wall-clock time `days` days after `now_ms` at `hh:mm`.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn local_at(now_ms: i64, days: i32, hh: i32, mm: i32) -> i64 {
     let t = (now_ms / 1000) as libc::time_t;
     // SAFETY: localtime_r/mktime with valid pointers to stack values.
@@ -2196,4 +2197,15 @@ mod tests {
         assert_eq!(w[0].run, "r1");
         assert!(working_line(&app, &w[0]).contains("working"));
     }
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn local_at(now_ms: i64, days: i32, hh: i32, mm: i32) -> i64 {
+    let date = js_sys::Date::new(&wasm_bindgen::JsValue::from_f64(now_ms as f64));
+    date.set_date((date.get_date() as i32 + days) as u32);
+    date.set_hours(hh as u32);
+    date.set_minutes(mm as u32);
+    date.set_seconds(0);
+    date.set_milliseconds(0);
+    date.get_time() as i64
 }

@@ -233,6 +233,7 @@ fn check_binding(path: String, raw: &str, errs: &mut Vec<Problem>, warns: &mut V
 }
 
 /// The uid owning `$HOME` (the user the config belongs to), if it can be read.
+#[cfg(not(target_arch = "wasm32"))]
 fn home_owner() -> Option<u32> {
     use std::os::unix::fs::MetadataExt;
     let home = std::env::var_os("HOME")?;
@@ -242,6 +243,7 @@ fn home_owner() -> Option<u32> {
 /// A warning (never an error) when the config file at `path` is group- or world-writable, or
 /// owned by someone other than `owner`: another account could then change what this user's
 /// server runs.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn permission_warning(path: &Path, owner: Option<u32>) -> Option<Warning> {
     use std::os::unix::fs::MetadataExt;
     let m = std::fs::metadata(path).ok()?;
@@ -952,4 +954,13 @@ mod permission_tests {
         std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o602)).unwrap();
         assert!(permission_warning(&f, Some(me)).is_some());
     }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn home_owner() -> Option<u32> {
+    None
+}
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn permission_warning(_: &Path, _: Option<u32>) -> Option<Warning> {
+    None
 }

@@ -13,6 +13,7 @@ mod types;
 mod preview;
 pub mod repo;
 mod units;
+#[cfg(not(target_arch = "wasm32"))]
 mod watch;
 
 pub use binding::{Binding, parse_binding, parse_prefix_key};
@@ -33,4 +34,5 @@ pub use preview::{
 pub use repo::{REPO_CONFIG, RepoConfig};
 pub use types::*;
 pub use units::{ByteSize, Dur, PortRange};
+#[cfg(not(target_arch = "wasm32"))]
 pub use watch::{ConfigWatcher, ReloadEvent, watch};

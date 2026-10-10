@@ -16,10 +16,10 @@
 //! "[devbox] While you were away: 2 agents finished, 1 needs approval".
 
 use crate::app::{App, Pending, RpcErr};
+use crate::time::{Duration, Instant};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 use vk_proto::render::ClientFrame;
 
 /// Steady-state cap for unfocused remote panes (06 A7).
@@ -85,8 +85,8 @@ pub struct State {
 }
 
 fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    crate::time::SystemTime::now()
+        .duration_since(crate::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
 }

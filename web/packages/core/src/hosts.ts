@@ -1,3 +1,4 @@
+import { openTuiStream, type TuiCallbacks, type TuiStream } from './tui';
 // Multi-host manager (spec 16 §4.4, §5, §7.5, §9.3): one live connection per paired host, with
 // reconnect/backoff, visibility hooks, event-stream resume by cursor and a subscribable
 // snapshot per host (shaped for React's useSyncExternalStore).
@@ -263,6 +264,12 @@ export class HostConnection implements HostConnectionApi {
     if (this.rpc && this.state.status === 'online') {
       this.rpc.request('client.visibility', { visible }).catch(() => {});
     }
+  }
+
+  openTui(protocol: number, callbacks: TuiCallbacks, signal?: AbortSignal): Promise<TuiStream> {
+    const rpc = this.rpc;
+    if (!rpc || this.state.status !== 'online') return Promise.reject(new NotConnectedError(this.id));
+    return openTuiStream(rpc, protocol, callbacks, signal);
   }
 
   /** Typed app-API call. Mutating methods get an op_id automatically. */
@@ -571,6 +578,7 @@ export class HostConnection implements HostConnectionApi {
  * the connections elsewhere (Electron: the main process) hand the UI a proxy with the same shape.
  */
 export interface HostConnectionApi {
+  openTui?(protocol: number, callbacks: TuiCallbacks, signal?: AbortSignal): Promise<TuiStream>;
   readonly id: string;
   getSnapshot(): HostState;
   subscribe(cb: () => void): () => void;

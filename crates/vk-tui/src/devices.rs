@@ -26,8 +26,8 @@
 //! Without a gateway (or without a relay/app URL) the server answers with a message that the view
 //! shows as it is.
 
+use crate::time::{Duration, Instant};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use vk_proto::input::{Key, KeyEvent, KeyKind, NamedKey};
@@ -65,8 +65,8 @@ const SCOPES: [(&str, &str, &str); 3] = [
 ];
 
 fn now_s() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    crate::time::SystemTime::now()
+        .duration_since(crate::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
 }
@@ -1146,8 +1146,8 @@ fn status_line(app: &App, a: &mut crate::drafts::Area<'_>, v: &View) {
 
 fn draw_list(app: &App, a: &mut crate::drafts::Area<'_>, v: &View) {
     let t = app.theme;
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    let now_ms = crate::time::SystemTime::now()
+        .duration_since(crate::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0);
     a.line("Your paired phones and apps", t.bold(t.fg));

@@ -3,19 +3,25 @@
 //! to the agent: Vibeke draws over it only for popups the user explicitly opened.
 
 use crate::copy::CopyMode;
+use crate::event::{Event, MouseButton as CtButton, MouseEventKind};
 use crate::keymap::{self, Keymap};
 use crate::screen::{Grid, HostCaps};
 use crate::theme::Theme;
+use crate::time::{Duration, Instant};
 use crate::{draw, paste, term};
-use anyhow::{Context, Result};
-use crossterm::event::{Event, MouseButton as CtButton, MouseEventKind};
+#[cfg(not(target_arch = "wasm32"))]
+use anyhow::Context;
+use anyhow::Result;
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
+#[cfg(not(target_arch = "wasm32"))]
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
+#[cfg(target_arch = "wasm32")]
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc;
+#[cfg(not(target_arch = "wasm32"))]
 use vk_proto::frame::asyncio;
 use vk_proto::input::{
     InputEvent, Key, KeyEvent, KeyKind, Mods, MouseButton, MouseEvent, MouseKind, NamedKey,
@@ -557,6 +563,7 @@ pub enum Incoming {
 
 /// Attach the render stream on `stream` for machine `idx`: JSON-RPC `render.attach`, then
 /// binary frames. Spawns reader/writer tasks feeding `inc`.
+#[cfg(not(target_arch = "wasm32"))]
 pub async fn attach_stream(
     idx: usize,
     stream: Stream,
@@ -569,6 +576,7 @@ pub async fn attach_stream(
 }
 
 /// [`attach_stream`] with an explicit frame cap (RTT-driven for remote links, 06 A7).
+#[cfg(not(target_arch = "wasm32"))]
 pub async fn attach_stream_fps(
     idx: usize,
     stream: Stream,
@@ -655,6 +663,7 @@ pub struct MachineSpec {
 }
 
 /// Run the TUI until detach or the last machine goes away.
+#[cfg(not(target_arch = "wasm32"))]
 pub async fn run(opts: Opts, machines: Vec<MachineSpec>) -> Result<String> {
     term::raw()?;
     let (mut probe, gcaps) = term::probe();
@@ -672,6 +681,7 @@ pub async fn run(opts: Opts, machines: Vec<MachineSpec>) -> Result<String> {
     result
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 async fn run_inner(
     opts: Opts,
     specs: Vec<MachineSpec>,
@@ -943,9 +953,10 @@ impl App {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn rand_suffix() -> String {
-    let t = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    let t = crate::time::SystemTime::now()
+        .duration_since(crate::time::UNIX_EPOCH)
         .map(|d| d.subsec_nanos())
         .unwrap_or(0);
     format!("{t:x}")
@@ -953,6 +964,7 @@ fn rand_suffix() -> String {
 
 /// (Re)connect machine `i` with exponential backoff from 0.5 s to a 30 s cap, ±20% jitter
 /// (06 A7). `link.0` = remote; `link.1` = its link probe, whose RTT sets the attach frame cap.
+#[cfg(not(target_arch = "wasm32"))]
 fn spawn_connect(
     i: usize,
     c: std::sync::Arc<Connector>,
@@ -1092,8 +1104,8 @@ impl App {
     /// A fresh caller-scoped idempotency key.
     pub(crate) fn new_idempotency_key(&mut self, what: &str) -> String {
         let n = self.next_ui_id();
-        let t = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        let t = crate::time::SystemTime::now()
+            .duration_since(crate::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or(0);
         format!("{}-{what}-{t:x}-{n}", self.client_id)
@@ -1816,7 +1828,7 @@ impl App {
 
     /// A deadline woke the loop: repaint when a redraw-only one passed (an age label, the
     /// confirm countdown, the clock); `on_tick` follows and handles the rest.
-    fn on_deadline(&mut self, now: Instant) {
+    pub(crate) fn on_deadline(&mut self, now: Instant) {
         if self.deadlines(now).redraw_due(now) {
             self.dirty = true;
         }
@@ -1866,7 +1878,7 @@ impl App {
 
     /// Host input from [`crate::input::Reader`]: keys the client decoded itself, or events
     /// (mouse, paste, focus, resize).
-    fn on_input(&mut self, i: crate::input::Input) {
+    pub(crate) fn on_input(&mut self, i: crate::input::Input) {
         match i {
             crate::input::Input::Event(ev) => self.on_event(ev),
             crate::input::Input::Key(k) => {
@@ -1878,7 +1890,7 @@ impl App {
         }
     }
 
-    fn on_event(&mut self, ev: Event) {
+    pub(crate) fn on_event(&mut self, ev: Event) {
         self.dirty = true;
         if matches!(ev, Event::Key(_) | Event::Mouse(_) | Event::Paste(_)) {
             crate::gateway::on_input(self);
@@ -2121,7 +2133,7 @@ impl App {
         });
     }
 
-    pub(crate) fn on_mouse(&mut self, me: crossterm::event::MouseEvent) {
+    pub(crate) fn on_mouse(&mut self, me: crate::event::MouseEvent) {
         let (me, px) = crate::browser::cellify(self, me);
         // Moving/resizing a popup by its frame (08 §5).
         if crate::popup_pane::on_mouse(self, &me) {
@@ -2187,7 +2199,7 @@ impl App {
             return;
         };
         let mouse_mode = self.m().panes.get(&pane).is_some_and(|b| b.modes.mouse);
-        let shift = me.modifiers.contains(crossterm::event::KeyModifiers::SHIFT);
+        let shift = me.modifiers.contains(crate::event::KeyModifiers::SHIFT);
         if let MouseEventKind::Down(b) = me.kind
             && self.focused_pane().as_deref() != Some(&pane)
         {
@@ -2213,7 +2225,7 @@ impl App {
     }
 
     /// Send a host mouse event to the app in `pane` (content rect `r`) as a pane-local event.
-    pub(crate) fn forward_mouse(&mut self, pane: &str, me: &crossterm::event::MouseEvent, r: Rect) {
+    pub(crate) fn forward_mouse(&mut self, pane: &str, me: &crate::event::MouseEvent, r: Rect) {
         let (kind, button) = match me.kind {
             MouseEventKind::Down(b) => (MouseKind::Press, btn(b)),
             MouseEventKind::Up(b) => (MouseKind::Release, btn(b)),
@@ -2225,13 +2237,10 @@ impl App {
             MouseEventKind::ScrollRight => (MouseKind::Press, MouseButton::WheelRight),
         };
         let mut mods = Mods::empty();
-        if me
-            .modifiers
-            .contains(crossterm::event::KeyModifiers::CONTROL)
-        {
+        if me.modifiers.contains(crate::event::KeyModifiers::CONTROL) {
             mods = mods | Mods::CTRL;
         }
-        if me.modifiers.contains(crossterm::event::KeyModifiers::ALT) {
+        if me.modifiers.contains(crate::event::KeyModifiers::ALT) {
             mods = mods | Mods::ALT;
         }
         let id = self.input_id();
@@ -2560,6 +2569,11 @@ impl App {
         };
         let cmd = vec!["/bin/sh".to_string(), "-c".into(), c.command.clone()];
         match c.kind {
+            #[cfg(target_arch = "wasm32")]
+            vk_config::CommandType::Shell => {
+                self.toast("Local shell shortcuts are unavailable in the browser")
+            }
+            #[cfg(not(target_arch = "wasm32"))]
             vk_config::CommandType::Shell => {
                 let _ = std::process::Command::new("/bin/sh")
                     .arg("-c")
@@ -2975,7 +2989,17 @@ impl App {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn draw(&mut self) -> Result<()> {
+        let out = self.draw_bytes();
+        let mut stdout = std::io::stdout();
+        stdout.write_all(&out)?;
+        stdout.flush()?;
+        Ok(())
+    }
+
+    /// Compose one frame without choosing the host output device.
+    pub(crate) fn draw_bytes(&mut self) -> Vec<u8> {
         self.dirty = false;
         self.send_view_hints(false);
         crate::browser::update_views(self);
@@ -3005,16 +3029,13 @@ impl App {
         }
         self.prev = grid;
         crate::browser::after_write(self, &mut out);
-        let mut stdout = std::io::stdout();
-        stdout.write_all(&out)?;
-        stdout.flush()?;
-        Ok(())
+        out
     }
 }
 
 fn vk_now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    crate::time::SystemTime::now()
+        .duration_since(crate::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
 }

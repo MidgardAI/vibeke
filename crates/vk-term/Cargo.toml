@@ -6,7 +6,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-vk-proto = { workspace = true, features = ["tokio"] }
+vk-proto.workspace = true
 serde.workspace = true
 postcard.workspace = true
 anyhow.workspace = true
@@ -17,3 +17,6 @@ thiserror.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+vk-proto = { workspace = true, features = ["tokio"] }

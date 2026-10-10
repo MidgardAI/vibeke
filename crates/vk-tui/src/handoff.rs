@@ -39,12 +39,17 @@ use std::path::Path;
 use std::sync::Arc;
 
 use serde_json::{Value, json};
+#[cfg(not(target_arch = "wasm32"))]
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use unicode_width::UnicodeWidthStr;
 use vk_proto::input::{Key, KeyEvent, KeyKind, NamedKey};
-use vk_proto::render::{ServerFrame, Style, attr};
+#[cfg(not(target_arch = "wasm32"))]
+use vk_proto::render::ServerFrame;
+use vk_proto::render::{Style, attr};
 
-use crate::app::{App, Connector, Mode, Pending, Popup, RpcErr};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::app::Connector;
+use crate::app::{App, Mode, Pending, Popup, RpcErr};
 use crate::draw::truncate;
 use crate::inbox::{Item, ItemKey, fmt_age};
 use crate::nav::{ListKey, fuzzy, highlight, list_frame, list_key, list_row};
@@ -56,8 +61,8 @@ use crate::screen::{Grid, Rect as SRect};
 const KNOWN_HARNESSES: &[&str] = &["claude", "codex", "pi", "omp"];
 
 fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    crate::time::SystemTime::now()
+        .duration_since(crate::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
 }
@@ -523,8 +528,8 @@ pub fn badge(app: &App) -> Option<String> {
 }
 
 /// A left click on the badge opens the handoffs list.
-pub fn on_mouse(app: &mut App, me: &crossterm::event::MouseEvent) -> bool {
-    use crossterm::event::{MouseButton, MouseEventKind};
+pub fn on_mouse(app: &mut App, me: &crate::event::MouseEvent) -> bool {
+    use crate::event::{MouseButton, MouseEventKind};
     if !matches!(me.kind, MouseEventKind::Down(MouseButton::Left)) {
         return false;
     }
@@ -737,6 +742,7 @@ fn call_long(app: &mut App, mi: usize, method: &str, params: Value, reply: Reply
 
 /// [`call_long`] with any reply route (the Sharing view's `gateway.call`s use it too: a call
 /// through the gateway may wait up to its `timeout_ms`).
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn call_long_pending(
     app: &mut App,
     mi: usize,
@@ -771,6 +777,7 @@ pub(crate) fn call_long_pending(
     });
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 async fn call_once(conn: &Arc<Connector>, line: &str, req: u64) -> Result<String, String> {
     let stream = (conn)().await.map_err(|e| format!("connect: {e}"))?;
     let (rd, mut wr) = tokio::io::split(stream);
@@ -2902,3 +2909,14 @@ pub fn action(app: &mut App, action: &str) -> bool {
 #[cfg(test)]
 #[path = "handoff_tests.rs"]
 mod tests;
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn call_long_pending(
+    app: &mut App,
+    mi: usize,
+    method: &str,
+    params: Value,
+    pending: Pending,
+) {
+    app.command_on(mi, method, params, pending);
+}

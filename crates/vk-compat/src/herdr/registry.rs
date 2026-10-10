@@ -557,6 +557,8 @@ impl RegistryLock {
     }
 
     pub(crate) fn acquire_mode(dirs: &PluginDirs, exclusive: bool) -> io::Result<Self> {
+        #[cfg(not(unix))]
+        let _ = exclusive;
         if let Some(d) = dirs.registry.parent() {
             std::fs::create_dir_all(d)?;
         }
@@ -620,9 +622,8 @@ pub(crate) fn copy_tree(from: &Path, to: &Path) -> io::Result<()> {
         let (src, dst) = (e.path(), to.join(&name));
         let ft = e.file_type()?;
         if ft.is_symlink() {
-            let target = std::fs::read_link(&src)?;
             #[cfg(unix)]
-            std::os::unix::fs::symlink(target, &dst)?;
+            std::os::unix::fs::symlink(std::fs::read_link(&src)?, &dst)?;
         } else if ft.is_dir() {
             copy_tree(&src, &dst)?;
         } else {

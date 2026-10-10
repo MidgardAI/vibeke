@@ -272,3 +272,87 @@ fn reported_devices_last_as_long_as_the_gateway_connection() {
     }
     panic!("the devices outlived their gateway");
 }
+
+#[test]
+fn gateway_render_stream_keeps_remote_authorization_and_actor_requirements() {
+    use vk_proto::frame;
+    use vk_proto::render::{ClientFrame, ServerFrame};
+    let s = Session::new();
+    let pane = s.workspace("/bin/sh");
+    let sock = UnixStream::connect(s.socket()).unwrap();
+    sock.set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let mut wr = sock.try_clone().unwrap();
+    let mut rd = BufReader::new(sock);
+    for (id, method, params) in [
+        (
+            1,
+            "client.hello",
+            json!({"client":"browser-tui-test", "kind":"gateway", "remote":true, "api":"vibeke/1"}),
+        ),
+        (
+            2,
+            "render.attach",
+            json!({"client_id":"browser-tui-test", "protocol":vk_proto::render::PROTOCOL, "remote":true}),
+        ),
+    ] {
+        writeln!(
+            wr,
+            "{}",
+            json!({"jsonrpc":"2.0","id":id,"method":method,"params":params})
+        )
+        .unwrap();
+        let mut line = String::new();
+        rd.read_line(&mut line).unwrap();
+        let v: Value = serde_json::from_str(&line).unwrap();
+        assert!(v.get("error").is_none(), "{v}");
+    }
+    let mut command = |req, method: &str, params: Value| {
+        frame::write_frame(
+            &mut wr,
+            &ClientFrame::Command {
+                req,
+                json: json!({"jsonrpc":"2.0","id":req,"method":method,"params":params}).to_string(),
+            },
+        )
+        .unwrap();
+        loop {
+            if let ServerFrame::CommandResult { req: r, json } = frame::read_frame(&mut rd).unwrap()
+                && r == req
+            {
+                break serde_json::from_str::<Value>(&json).unwrap();
+            }
+        }
+    };
+    let denied = command(
+        10,
+        "client.confirm_answer",
+        json!({"confirm":"none","choice":"yes","actor":"gateway:Browser"}),
+    );
+    assert!(
+        denied["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("confirmations are answered from the TUI"),
+        "{denied}"
+    );
+    let missing_actor = command(
+        11,
+        "pane.rename",
+        json!({"pane":pane,"title":"Remote name"}),
+    );
+    assert!(
+        missing_actor["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("must pass `actor`"),
+        "{missing_actor}"
+    );
+    let renamed = command(
+        12,
+        "pane.rename",
+        json!({"pane":pane,"title":"Remote name","actor":"gateway:Browser"}),
+    );
+    assert!(renamed.get("error").is_none_or(Value::is_null), "{renamed}");
+    assert_eq!(s.pane(&pane)["title"], "Remote name");
+}

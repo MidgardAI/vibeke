@@ -8,20 +8,26 @@
 
 use crate::app::{App, Connector, Incoming, Popup};
 use crate::paste::{self, ParsedPaste};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::time::Duration;
+#[cfg(not(target_arch = "wasm32"))]
 use base64::Engine;
+#[cfg(not(target_arch = "wasm32"))]
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+#[cfg(not(target_arch = "wasm32"))]
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::mpsc;
 use vk_proto::input::{Key, KeyEvent, NamedKey};
 use vk_proto::render::ClientFrame;
 
 /// Raw bytes per `blob.append` (the server accepts up to 1 MiB).
+#[cfg(not(target_arch = "wasm32"))]
 const CHUNK: usize = 512 * 1024;
+#[cfg(not(target_arch = "wasm32"))]
 const RPC_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Unique per transfer: the machine and pane it was started for plus a client-wide counter.
@@ -104,6 +110,7 @@ fn max_bytes(app: &App) -> u64 {
 
 /// Pack a dropped directory (regular files and directories; symlinks and special files are
 /// skipped and reported) within `budget` bytes.
+#[cfg(not(target_arch = "wasm32"))]
 fn pack_dir(dir: &Path, budget: u64) -> Result<(Item, vk_remote::inbox::PackReport), String> {
     let mut tar = Vec::new();
     let rep = vk_remote::inbox::pack_dir(dir, &mut tar, budget).map_err(|e| format!("{e:#}"))?;
@@ -231,6 +238,7 @@ pub fn begin(
     start(app, machine, pane, original, parsed, items, false)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn start(
     app: &mut App,
     machine: usize,
@@ -266,6 +274,7 @@ fn start(
         items.len(),
         app.machines[machine].label
     ));
+    #[cfg(not(target_arch = "wasm32"))]
     if let Some(w) = &app.uploads.worker
         && let Some(conn) = w.connectors.get(machine).cloned()
     {
@@ -286,6 +295,7 @@ fn start(
 
 /// The `target_namespace` of a translated paste: `ssh:<machine>` for a remote machine,
 /// `local` for a pane on this machine that cannot see the file (sandbox, container).
+#[cfg(not(target_arch = "wasm32"))]
 fn namespace(app: &App, machine: usize) -> String {
     match app.machines.get(machine) {
         Some(m) if !m.local => format!("ssh:{}", m.label),
@@ -392,8 +402,8 @@ pub fn image_paste(app: &mut App) {
             let ext = if mime.contains("jpeg") { "jpg" } else { "png" };
             let name = format!(
                 "clipboard-{}.{ext}",
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
+                crate::time::SystemTime::now()
+                    .duration_since(crate::time::UNIX_EPOCH)
                     .map(|d| d.as_secs())
                     .unwrap_or(0)
             );
@@ -569,6 +579,7 @@ fn send_paste(app: &mut App, machine: usize, pane: &str, text: String) -> bool {
 
 // ---- transfer task -------------------------------------------------------------------------
 
+#[cfg(not(target_arch = "wasm32"))]
 async fn rpc<R, W>(
     rd: &mut R,
     wr: &mut W,
@@ -608,6 +619,7 @@ where
 
 /// `how.0` = commit stage (`browser`), `how.1` = the paste's target namespace, which makes
 /// the task record `paste.translated` once every file landed.
+#[cfg(not(target_arch = "wasm32"))]
 async fn run_transfer(
     conn: Arc<Connector>,
     inc: mpsc::UnboundedSender<Incoming>,
@@ -627,6 +639,7 @@ async fn run_transfer(
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 async fn transfer_items(
     conn: &Arc<Connector>,
     emit: &impl Fn(UploadEvent),
@@ -730,6 +743,7 @@ async fn transfer_items(
 
 /// The next chunk of an opened file at `offset` (positional, never past `size`); after the
 /// last byte, a file that grew since it was checked is refused (the size read must match).
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn read_snapshot(
     f: &std::fs::File,
     offset: u64,
@@ -755,6 +769,7 @@ pub(crate) fn read_snapshot(
 
 /// Stream one item in chunks. `Ok(false)` means cancelled.
 #[allow(clippy::too_many_arguments)]
+#[cfg(not(target_arch = "wasm32"))]
 async fn send_item<R, W>(
     rd: &mut R,
     wr: &mut W,
@@ -1269,4 +1284,34 @@ mod worker_tests {
             "no local paths leave the client in the event"
         );
     }
+}
+
+#[cfg(target_arch = "wasm32")]
+struct PackReport {
+    skipped_links: usize,
+    skipped_special: usize,
+}
+#[cfg(target_arch = "wasm32")]
+fn pack_dir(_: &Path, _: u64) -> Result<(Item, PackReport), String> {
+    Err("Local file uploads are unavailable in the browser TUI".into())
+}
+
+#[cfg(target_arch = "wasm32")]
+fn start(
+    app: &mut App,
+    machine: usize,
+    pane: &str,
+    _original: String,
+    _parsed: Option<ParsedPaste>,
+    _items: Vec<Item>,
+    _browser: bool,
+) -> TransferId {
+    app.toast("Local file uploads are unavailable in the browser TUI");
+    let id = TransferId {
+        machine,
+        pane: pane.into(),
+        seq: app.uploads.next_seq,
+    };
+    app.uploads.next_seq += 1;
+    id
 }

@@ -4,9 +4,9 @@
 
 use crate::app::{App, Pending, RpcErr};
 use crate::screen::Grid;
+use crate::time::{Duration, Instant};
 use serde_json::{Value, json};
 use std::collections::{HashSet, VecDeque};
-use std::time::{Duration, Instant};
 use vk_proto::input::{Key, KeyEvent, KeyKind, NamedKey};
 use vk_proto::model::{Interaction, InteractionStatus};
 
@@ -319,8 +319,8 @@ pub fn on_model(app: &mut App, i: usize) {
 }
 
 fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    crate::time::SystemTime::now()
+        .duration_since(crate::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
 }

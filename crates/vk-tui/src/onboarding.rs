@@ -279,6 +279,7 @@ pub fn starter_config(existing: Option<&str>, c: &Choices) -> Result<String, Str
 }
 
 /// Write the config atomically (temp file + rename), 0600, creating the directory.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn write_config(path: &Path, text: &str) -> std::io::Result<()> {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
@@ -843,3 +844,10 @@ pub fn draw(app: &App, g: &mut Grid) {
 #[cfg(test)]
 #[path = "onboarding_tests.rs"]
 mod tests;
+
+#[cfg(target_arch = "wasm32")]
+pub fn write_config(_: &Path, _: &str) -> std::io::Result<()> {
+    Err(std::io::Error::other(
+        "Edit the host configuration from its terminal",
+    ))
+}

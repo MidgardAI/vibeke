@@ -4,10 +4,10 @@
 //! `render.attach` so the server can raise this terminal on click-to-focus.
 
 use crate::app::{App, Toast};
+use crate::time::{Duration, Instant};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::io::Write;
-use std::time::{Duration, Instant};
 
 #[derive(Default)]
 pub struct State {

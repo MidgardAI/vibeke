@@ -1955,6 +1955,7 @@ pub fn open_url(app: &mut App, mi: usize, pane: &str, url: &str) {
         return;
     }
     app.nav.opened.push(url.to_string());
+    #[cfg(not(target_arch = "wasm32"))]
     if !cfg!(test) {
         let opener = if cfg!(target_os = "macos") {
             "open"

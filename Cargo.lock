@@ -3842,9 +3842,12 @@ version = "0.9.1"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
+ "bitflags",
  "blake3",
  "crossterm",
  "futures",
+ "getrandom 0.3.4",
+ "js-sys",
  "libc",
  "qrcode",
  "regex",
@@ -3862,6 +3865,9 @@ dependencies = [
  "vk-proto",
  "vk-remote",
  "vk-term",
+ "wasm-bindgen",
+ "web-sys",
+ "web-time",
 ]
 
 [[package]]

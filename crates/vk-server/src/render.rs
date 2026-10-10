@@ -523,9 +523,10 @@ impl Session {
     fn ctx(&self) -> Ctx {
         Ctx {
             client_id: self.client_id.clone(),
-            // An elevated or plugin caller keeps its identity (expiry and revocation end the
-            // session); only a plain user client becomes "tui".
-            kind: if self.auth.kind.starts_with(crate::auth::ELEVATED_KIND)
+            // Gateway, elevated, and plugin callers keep their identity. Remote restrictions
+            // and authorization still apply; only a plain user client becomes "tui".
+            kind: if self.auth.kind == "gateway"
+                || self.auth.kind.starts_with(crate::auth::ELEVATED_KIND)
                 || crate::plugin_native::is_plugin_kind(&self.auth.kind)
             {
                 self.auth.kind.clone()

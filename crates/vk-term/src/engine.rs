@@ -9,6 +9,7 @@
 //! `scrolled_total` counter. [`Tracker`] reads the two sequences Ghostty parses but drops.
 
 use crate::ghostty_sys as sys;
+pub use crate::limits::{LINK_URI_MAX, MAX_IMAGE_BYTES, MAX_IMAGE_BYTES_CAP, MAX_IMAGES_PER_PANE};
 use crate::tracker::{Tracked, Tracker};
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
@@ -75,18 +76,6 @@ pub enum Effect {
 
 pub const USER_VAR_NAME_MAX: usize = 64;
 pub const USER_VAR_VALUE_MAX: usize = 4096;
-/// Longest OSC 8 URI kept on a row; longer links render as plain text.
-pub const LINK_URI_MAX: usize = 2048;
-/// Default largest decoded image a pane may store (03 §9 `graphics.max_image_bytes`): bigger
-/// kitty transmissions and PNGs are refused by the engine.
-pub const MAX_IMAGE_BYTES: usize = 32 << 20;
-/// Default kitty image storage per pane screen (03 §9 `graphics.max_total_per_pane`); the
-/// engine evicts the oldest images beyond it.
-pub const MAX_IMAGES_PER_PANE: u64 = 256 << 20;
-/// Upper bound for `graphics.max_image_bytes`: an image's base64 APC must fit the snapshot
-/// continuation limit.
-pub const MAX_IMAGE_BYTES_CAP: usize = 48 << 20;
-
 static GRAPHICS_MAX_IMAGE: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(MAX_IMAGE_BYTES);
 static GRAPHICS_MAX_TOTAL: std::sync::atomic::AtomicU64 =

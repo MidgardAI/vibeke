@@ -112,6 +112,8 @@ export interface SharedItem {
 }
 
 export interface UiPlatform extends Platform {
+  /** Browser TUI module built from the same Rust revision as the host. */
+  tui?: { moduleUrl: string };
   updates?: UpdatesCapability;
   /** A waiting app update, applied on request (PWA). Desktop uses `updates`. */
   appUpdate?: AppUpdateCapability;

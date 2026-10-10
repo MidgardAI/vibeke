@@ -9,8 +9,8 @@
 //! the server reports that this client lagged.
 
 use crate::app::App;
+use crate::time::Instant;
 use serde_json::{Value, json};
-use std::time::Instant;
 use vk_proto::render::{ClientFrame, PushedEvent};
 
 pub const FEATURE: &str = "event_push";
@@ -179,8 +179,8 @@ pub fn on_events(app: &mut App, i: usize, events: Vec<PushedEvent>, lagged: bool
 }
 
 fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    crate::time::SystemTime::now()
+        .duration_since(crate::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
 }

@@ -21,7 +21,10 @@
     "e2e:desktop": "bun run --cwd apps/desktop e2e",
     "test": "bun test packages apps",
     "typecheck": "bun run --filter '*' typecheck",
-    "icons": "bun scripts/brand-icons.ts && bun apps/pwa/scripts/gen-icons.ts && bun apps/desktop/scripts/gen-icons.ts"
+    "icons": "bun scripts/brand-icons.ts && bun apps/pwa/scripts/gen-icons.ts && bun apps/desktop/scripts/gen-icons.ts",
+    "build:tui": "mise exec -- sh ../scripts/build-wasm-tui.sh",
+    "dev:tui": "bun run build:tui && VIBEKE_WASM_TUI=1 bun run dev",
+    "build:pwa:tui": "bun run build:tui && VIBEKE_WASM_TUI=1 bun run build"
   },
   "devDependencies": {
     "@types/bun": "^1.4.2",

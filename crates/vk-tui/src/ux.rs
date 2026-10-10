@@ -36,8 +36,8 @@
 
 use crate::app::{App, Popup, RpcErr};
 use crate::screen::Grid;
+use crate::time::Instant;
 use serde_json::Value;
-use std::time::Instant;
 use vk_proto::input::KeyEvent;
 
 #[derive(Default)]
@@ -177,7 +177,7 @@ pub fn popup_draw(app: &App, g: &mut Grid, p: &Popup) {
 
 /// Mouse events 2B handles before the rest: tab drags and clicks, the sidebar border drag and
 /// rail, popup frames, focus follows mouse. True when consumed.
-pub fn on_mouse(app: &mut App, me: &crossterm::event::MouseEvent) -> bool {
+pub fn on_mouse(app: &mut App, me: &crate::event::MouseEvent) -> bool {
     if crate::popup_pane::on_mouse(app, me)
         || crate::handoff::on_mouse(app, me)
         || crate::sidebar::on_mouse(app, me)

@@ -15,9 +15,9 @@
 //!   focused task. A server without these methods says so; nothing is retried on its own.
 
 use crate::app::{Action, App, Mode, Pending, Popup, RpcErr};
+use crate::time::{Duration, Instant};
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
-use std::time::{Duration, Instant};
 use vk_proto::input::{Key, KeyEvent, KeyKind};
 use vk_proto::model::Task;
 use vk_proto::render::Style;

@@ -29,10 +29,14 @@ const shareTarget = {
     files: [{ name: 'files', accept: ['image/*', 'text/*', '.md', '.txt', '.log', '.json', '.diff', '.patch'] }],
   },
 };
+const tuiModuleUrl = process.env.VIBEKE_WASM_TUI === '1'
+  ? (JSON.parse(readFileSync(new URL('./public/tui/manifest.json', import.meta.url), 'utf8')) as { moduleUrl: string }).moduleUrl
+  : null;
 
 export default defineConfig({
   base: '/',
   define: {
+    __WASM_TUI_MODULE_URL__: JSON.stringify(tuiModuleUrl),
     __BUILD_HASH__: JSON.stringify(process.env.VIBEKE_BUILD_HASH ?? hash),
     __APP_VERSION__: JSON.stringify(pkg.version),
   },
@@ -48,6 +52,8 @@ export default defineConfig({
       injectManifest: {
         rollupFormat: 'iife',
         globPatterns: ['**/*.{js,css,html,svg,png,ico,webmanifest}'],
+        // The optional WASM module loads online; keep its glue out of the offline shell.
+        globIgnores: ['tui/**'],
       },
       manifest: {
         name: 'Vibeke',

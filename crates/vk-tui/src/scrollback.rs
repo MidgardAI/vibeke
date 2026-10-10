@@ -45,6 +45,7 @@ pub struct TempFile {
 }
 
 impl TempFile {
+    #[cfg(not(target_arch = "wasm32"))]
     fn new(path: PathBuf) -> Self {
         Self { path, armed: true }
     }
@@ -206,6 +207,7 @@ pub fn ansi_text(
 }
 
 /// Private per-user temp directory for editor copies.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn default_dir() -> PathBuf {
     // SAFETY: getuid has no preconditions.
     let uid = unsafe { libc::getuid() };
@@ -442,6 +444,7 @@ pub fn editor_argv(editor: &[String], file: &Path, line: usize) -> Vec<String> {
 
 /// Write `text` to a new read-only file in the private directory `dir` (0700). The file is
 /// removed again if any step fails, and when the returned guard drops.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn write_private(dir: &Path, pane: &str, text: &str) -> std::io::Result<TempFile> {
     use std::io::Write as _;
     use std::os::unix::fs::PermissionsExt;
@@ -455,14 +458,16 @@ pub fn write_private(dir: &Path, pane: &str, text: &str) -> std::io::Result<Temp
 
 /// Copies older than this are leftovers of a TUI that was killed (SIGKILL, SIGHUP without
 /// unwinding) while an editor had one open; no editor session lasts this long in practice.
-const STALE_AFTER: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
+#[cfg(not(target_arch = "wasm32"))]
+const STALE_AFTER: crate::time::Duration = crate::time::Duration::from_secs(24 * 3600);
 
 /// Remove `scrollback-*.txt` files in `dir` last modified more than `age` ago (best effort).
-fn sweep_stale(dir: &Path, age: std::time::Duration) {
+#[cfg(not(target_arch = "wasm32"))]
+fn sweep_stale(dir: &Path, age: crate::time::Duration) {
     let Ok(rd) = std::fs::read_dir(dir) else {
         return;
     };
-    let now = std::time::SystemTime::now();
+    let now = crate::time::SystemTime::now();
     for e in rd.flatten() {
         let name = e.file_name();
         let name = name.to_string_lossy();
@@ -483,6 +488,7 @@ fn sweep_stale(dir: &Path, age: std::time::Duration) {
 }
 
 /// [`write_private`] with the write and finishing (chmod) steps supplied by the caller.
+#[cfg(not(target_arch = "wasm32"))]
 fn create_private(
     dir: &Path,
     pane: &str,
@@ -512,8 +518,8 @@ fn create_private(
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
         .collect();
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    let nanos = crate::time::SystemTime::now()
+        .duration_since(crate::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
     let path = dir.join(format!("scrollback-{safe}-{nanos:x}.txt"));
@@ -686,6 +692,7 @@ pub fn run_external(x: &External) -> Result<(), String> {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn remove_file(p: &Path) {
     use std::os::unix::fs::PermissionsExt;
     let _ = std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o600));
@@ -955,8 +962,8 @@ pub fn selection_text(v: &ScrollbackView) -> String {
 /// The mouse over the viewer (03 §11.1): a drag selects (copied on release with
 /// `copy_on_select`, else kept for `y`), a double/triple click selects a word/line, dragging
 /// past the top/bottom scrolls, the wheel scrolls. True while the viewer is open (it is modal).
-pub fn on_mouse(app: &mut App, me: &crossterm::event::MouseEvent) -> bool {
-    use crossterm::event::{MouseButton as B, MouseEventKind as K};
+pub fn on_mouse(app: &mut App, me: &crate::event::MouseEvent) -> bool {
+    use crate::event::{MouseButton as B, MouseEventKind as K};
     if !matches!(app.mode, Mode::Popup(Popup::Scrollback)) {
         return false;
     }
@@ -975,7 +982,7 @@ pub fn on_mouse(app: &mut App, me: &crossterm::event::MouseEvent) -> bool {
                 "\u{0}scrollback",
                 me.column,
                 me.row,
-                std::time::Instant::now(),
+                crate::time::Instant::now(),
             );
             let v = app.scrollback.as_mut().unwrap();
             let line = &v.lines[p.0].1;
@@ -1077,8 +1084,8 @@ mod cleanup_tests {
         assert!(left.exists());
         drop(second);
         // Stale: swept (other files in the directory are never touched).
-        std::thread::sleep(std::time::Duration::from_millis(20));
-        sweep_stale(&dir, std::time::Duration::ZERO);
+        std::thread::sleep(crate::time::Duration::from_millis(20));
+        sweep_stale(&dir, crate::time::Duration::ZERO);
         assert!(!left.exists());
         assert!(other.exists());
     }
@@ -1207,3 +1214,16 @@ mod cleanup_tests {
         assert!(entries(&dir).is_empty());
     }
 }
+
+#[cfg(target_arch = "wasm32")]
+pub fn default_dir() -> PathBuf {
+    PathBuf::new()
+}
+#[cfg(target_arch = "wasm32")]
+pub fn write_private(_: &Path, _: &str, _: &str) -> std::io::Result<TempFile> {
+    Err(std::io::Error::other(
+        "Use Copy to copy scrollback in the browser",
+    ))
+}
+#[cfg(target_arch = "wasm32")]
+fn remove_file(_: &Path) {}
