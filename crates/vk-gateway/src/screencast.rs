@@ -308,7 +308,7 @@ mod tests {
         let t0 = Instant::now();
         s.add_viewer("b1", "phone", t0);
         s.add_viewer("b1", "tablet", t0);
-        assert!(!s.is_viewer("b1", "tablet"));
+        assert!(s.is_viewer("b1", "tablet") && !s.is_viewer("b1", "watch"));
         s.set_taken("b1", Some("phone"));
         assert_eq!(s.taken_by("b1").as_deref(), Some("phone"));
         // The phone leaves: control goes back, but the tablet still watches.

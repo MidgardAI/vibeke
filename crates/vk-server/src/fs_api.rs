@@ -918,15 +918,15 @@ mod tests {
             .unwrap();
         assert_eq!(v["binary"], true);
         assert!(v.get("text").is_none());
-        for secret in [".env", "certs/server.pem"] {
-            let v = read(root.clone(), json!({"path": secret})).await.unwrap();
+        for locked in [".env", "certs/server.pem"] {
+            let v = read(root.clone(), json!({"path": locked})).await.unwrap();
             assert_eq!(v["secret"], true);
-            assert!(v.get("text").is_none(), "{secret}");
-            let v = read(root.clone(), json!({"path": secret, "as": "image"}))
+            assert!(v.get("text").is_none());
+            let v = read(root.clone(), json!({"path": locked, "as": "image"}))
                 .await
                 .unwrap();
             assert_eq!(v["secret"], true);
-            assert!(v.get("data_b64").is_none(), "{secret}");
+            assert!(v.get("data_b64").is_none());
         }
         // Big file: capped at 512 KiB, multi-byte boundary kept valid.
         let big = "é".repeat(400 * 1024);
