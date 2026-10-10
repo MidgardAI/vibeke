@@ -75,7 +75,7 @@ export function Screencast({ hostId, session: initial, canControl, onClose }: { 
       if (live) timer = setTimeout(() => void tick(), frameDelayMs(FRAME_FPS));
     };
     void attach()
-      .then(() => live && tick())
+      .then(() => (live ? tick() : undefined))
       .catch(() => {
         if (live) setLost(true);
       });
