@@ -15,6 +15,7 @@ pub mod browse_api;
 pub mod browser_pane;
 pub mod cloud_api;
 pub mod cloud_reconcile;
+pub mod cloud_move;
 pub mod collision;
 pub mod compat;
 pub mod config_api;

@@ -3,7 +3,8 @@
 //! runs them:
 //!
 //! 1. `handoff.job.update {state: exporting}`, then export the pane's work at a turn boundary
-//!    ([`crate::handoff::export_bundle`], interrupting the agent only when the job says so);
+//!    ([`crate::handoff::export_bundle`], interrupting the agent only when the job says so), or
+//!    take the job's `bundle`, a file the server exported already (spec 17 §7);
 //! 2. connect to the peer (`peers.json`) with backoff, `handoff.offer`, and stream 1 MiB binary
 //!    chunks with `handoff.write` from the offset the peer reports;
 //! 3. `handoff.commit`, then `handoff.job.update {state: delivered, incoming_state}`.
@@ -306,6 +307,21 @@ async fn send(
     // A send approved from a pane (`auth.approve`): deliver only what the user approved. The
     // export is pinned to the approved commit and re-checks HEAD and the branch after packing.
     let expect = job.get("expect").and_then(Expected::from_json);
+    // A bundle the server exported already (a cloud box's work brought back to a peer, spec 17
+    // §7): no pane export, the file is transferred as it is.
+    if let Some(path) = s(job, "bundle") {
+        let ex = pre_exported(id, path).await?;
+        let _cleanup = Cleanup(ex.path.clone());
+        if let Some(e) = &expect {
+            check_expected(e, &ex.manifest)?;
+        }
+        if cancel.load(Ordering::SeqCst) {
+            return Err(cancelled());
+        }
+        rep.update(json!({"state": "sending", "sent": 0, "total": ex.size}))
+            .await?;
+        return transfer(&rec, &ex, cancel, rep).await;
+    }
     let ex = export_bundle(
         gw,
         &format!("gateway:handoff {id}"),
@@ -327,6 +343,33 @@ async fn send(
     rep.update(json!({"state": "sending", "sent": 0, "total": ex.size}))
         .await?;
     transfer(&rec, &ex, cancel, rep).await
+}
+
+/// A job's pre-exported bundle (`bundle`): an absolute `.tar.zst` path the server wrote. Its
+/// manifest is read from the file; size and checksum are taken now.
+async fn pre_exported(id: &str, path: &str) -> Result<Exported, ApiError> {
+    let p = std::path::PathBuf::from(path);
+    if !p.is_absolute() || !path.ends_with(".tar.zst") {
+        return Err(ApiError::invalid(
+            "the job's bundle is not an absolute .tar.zst path",
+        ));
+    }
+    let p2 = p.clone();
+    let (manifest, (size, sha256)) = blocking(move || {
+        let m = vk_handoff::read_manifest(&p2)?;
+        Ok((m, vk_handoff::hash_file(&p2)?))
+    })
+    .await?;
+    if size > vk_handoff::MAX_BUNDLE {
+        return Err(ApiError::new("too_large", "handoff bundle exceeds 200 MiB"));
+    }
+    Ok(Exported {
+        id: id.to_string(),
+        path: p,
+        size,
+        sha256,
+        manifest,
+    })
 }
 
 /// The export of an approved send must come from the repository, branch and commit the user

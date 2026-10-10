@@ -443,6 +443,7 @@ pub fn pane_scope_of(method: &str) -> PaneScope {
         || crate::blob_store::PANE_FORBIDDEN.contains(&method)
         || crate::browse_api::PANE_FORBIDDEN.contains(&method)
         || crate::handoff_out::PANE_FORBIDDEN.contains(&method)
+        || crate::cloud_move::PANE_FORBIDDEN.contains(&method)
         || crate::gateway_bridge::PANE_FORBIDDEN.contains(&method)
         || crate::gateway_supervisor::PANE_FORBIDDEN.contains(&method)
         || crate::hardening::PANE_FORBIDDEN.contains(&method)
@@ -698,6 +699,9 @@ pub async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) 
         return r;
     }
     if let Some(r) = crate::handoff_out::api(server, ctx, method, p) {
+        return r;
+    }
+    if let Some(r) = crate::cloud_move::api(server, ctx, method, p).await {
         return r;
     }
     if let Some(r) = crate::desk::api(server, ctx, method, p).await {

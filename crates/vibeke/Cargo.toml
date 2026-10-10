@@ -29,6 +29,7 @@ path = "tests/timing.rs"
 
 [dependencies]
 vk-gateway.workspace = true
+vk-handoff.workspace = true
 vk-account.workspace = true
 vk-relay.workspace = true
 vk-proto = { workspace = true, features = ["tokio"] }

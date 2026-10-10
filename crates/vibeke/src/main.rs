@@ -15,6 +15,7 @@ mod idle;
 mod integration;
 mod keychain_cmd;
 mod remote;
+mod sandbox_bundle;
 mod setup;
 mod state_backup;
 mod update;
@@ -69,6 +70,16 @@ fn parse_global(args: &mut Vec<String>) -> Result<Global, String> {
     };
     // `vibeke import herdr --session` uses `--session` as a plain flag (08 §12).
     let importing = args.first().map(String::as_str) == Some("import");
+    // The in-box bundle commands (spec 17 §7) take `--session` and arbitrary `--resume-arg`
+    // values of their own and never talk to a server: no global flags.
+    if args.first().map(String::as_str) == Some("sandbox")
+        && matches!(
+            args.get(1).map(String::as_str),
+            Some("export-bundle" | "import-bundle")
+        )
+    {
+        return Ok(g);
+    }
     let mut i = 0;
     while i < args.len() {
         let take = |args: &mut Vec<String>, i: usize| -> Result<String, String> {
@@ -324,6 +335,13 @@ async fn dispatch(g: Global, args: Vec<String>) -> i32 {
         Some("bridge") => commands::bridge(&g, &args[1..]).await,
         Some("sandbox") if args.get(1).map(String::as_str) == Some("bridge") => {
             remote::box_bridge(&args[2..]).await
+        }
+        // Cloud moves (spec 17 §7): run inside the box, no server.
+        Some("sandbox") if args.get(1).map(String::as_str) == Some("export-bundle") => {
+            sandbox_bundle::export_bundle(&args[2..]).await
+        }
+        Some("sandbox") if args.get(1).map(String::as_str) == Some("import-bundle") => {
+            sandbox_bundle::import_bundle(&args[2..]).await
         }
         Some("sandbox") if args.get(1).map(String::as_str) == Some("shell") => {
             let params = match vk_cli::build_params(&["task"], &args[2..]) {

@@ -1401,6 +1401,90 @@ async fn resume(server: &Arc<Server>, p: &Value) -> R {
 }
 
 // ---------------------------------------------------------------------------------------------
+// local import (a cloud box's work brought back, spec 17 §7)
+
+/// Where [`import_local`] put the work.
+#[derive(Debug, Clone, Serialize)]
+pub struct LocalImport {
+    pub worktree: PathBuf,
+    pub branch: String,
+    /// The agent's working directory.
+    pub cwd: PathBuf,
+    /// Imported into the given checkout itself (else into a new worktree next to it).
+    pub in_place: bool,
+    pub harness: Option<String>,
+    pub resumed: bool,
+    /// `[harness, args...]` to resume (or start) the agent; `None` without a known harness.
+    pub resume_argv: Option<Vec<String>>,
+    pub not_written: Vec<vk_handoff::NotWritten>,
+    pub manifest: Manifest,
+}
+
+/// Import the bundle at `bundle` on this host, into `worktree` (a task's host checkout): in place
+/// when that checkout is clean and at the bundle's commit or an ancestor of it, otherwise as a
+/// new worktree of its repository with the same placement as an accepted handoff
+/// (`<repo>-handoff-<branch>` next to it). The work directory sits next to the bundle; the bundle
+/// itself is left to the caller. Nothing is started here.
+pub async fn import_local(
+    _server: &Server,
+    bundle: &Path,
+    worktree: &Path,
+) -> Result<LocalImport, RpcError> {
+    let parent = bundle.parent().unwrap_or(Path::new("/")).to_path_buf();
+    let b = bundle.to_path_buf();
+    let (work, m) = blocking(move || {
+        let work = workdir(&parent)?;
+        let m =
+            vk_handoff::unpack(&b, work.path()).map_err(|e| invalid(format!("bad bundle: {e}")))?;
+        Ok((work, m))
+    })
+    .await?;
+    let imported = match vk_handoff::import_in_place(work.path(), &m, worktree).await {
+        Ok(i) => (i, true),
+        // The checkout has changes or commits of its own: a new worktree instead.
+        Err(e) if e.kind == "conflict" => {
+            tracing::info!(
+                "cloud bring-back: {} can't take the work in place ({}); importing into a new worktree",
+                worktree.display(),
+                e.message
+            );
+            let root = repo_root(worktree).await.ok_or_else(|| {
+                err(
+                    ErrorKind::NotFound,
+                    format!("{} is not a git repository", worktree.display()),
+                )
+            })?;
+            let i = vk_handoff::import(work.path(), &m, &root, None, None)
+                .await
+                .map_err(bump)?;
+            (i, false)
+        }
+        Err(e) => return Err(bump(e)),
+    };
+    drop(work);
+    let (i, in_place) = imported;
+    let harness = m.harness.clone().filter(|h| known_harness(h));
+    let resume_argv = harness.as_ref().map(|h| {
+        let mut v = vec![h.clone()];
+        if i.resumed {
+            v.extend(i.resume_args.clone().unwrap_or_default());
+        }
+        v
+    });
+    Ok(LocalImport {
+        worktree: i.worktree,
+        branch: i.branch,
+        cwd: i.cwd,
+        in_place,
+        harness,
+        resumed: i.resumed,
+        resume_argv,
+        not_written: i.not_written,
+        manifest: m,
+    })
+}
+
+// ---------------------------------------------------------------------------------------------
 // trust
 
 fn which(bin: &str) -> Option<PathBuf> {
