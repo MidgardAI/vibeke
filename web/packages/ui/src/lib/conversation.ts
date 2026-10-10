@@ -3,6 +3,7 @@
 // "N steps" so a busy turn reads as a few lines; the latest steps stay visible.
 
 import type { TranscriptItem, TranscriptTurn } from '@vibeke/core';
+import { isRasterMime } from './preview';
 
 export interface ToolStep {
   k: 'tool';
@@ -21,6 +22,7 @@ export type Step = ToolStep | ThinkingStep;
 
 export type ConvBlock =
   | { k: 'user'; key: string; text: string }
+  | { k: 'image'; key: string; mime: string; ref: string; size: number | null }
   | { k: 'text'; key: string; text: string }
   | Step
   | { k: 'steps'; key: string; steps: Step[] };
@@ -66,6 +68,11 @@ export function turnSteps(turn: TranscriptTurn): ConvBlock[] {
       case 'thinking': {
         const text = (it.text ?? it.summary ?? '').trim();
         if (text) out.push({ k: 'thinking', key, text });
+        return;
+      }
+      case 'image': {
+        // Unusable items (no ref, a type that is not a raster image) are dropped.
+        if (it.ref && isRasterMime(it.mime)) out.push({ k: 'image', key, mime: it.mime, ref: it.ref, size: typeof it.size === 'number' ? it.size : null });
         return;
       }
       case 'tool_call': {

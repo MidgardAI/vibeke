@@ -429,6 +429,9 @@ export interface FsRead {
   truncated: boolean;
   size: number | null;
   secret: boolean;
+  /** Request `as: 'image'`: png, jpeg, gif or webp up to 4 MiB come back as `mime` + `data_b64`; a larger one has `truncated` and no data. Older servers omit both. */
+  mime?: string | null;
+  data_b64?: string | null;
 }
 
 export interface Worktree {
@@ -440,7 +443,7 @@ export interface Worktree {
   main: boolean;
 }
 
-export type TranscriptItemKind = 'text' | 'thinking' | 'tool_call' | 'tool_result';
+export type TranscriptItemKind = 'text' | 'thinking' | 'tool_call' | 'tool_result' | 'image';
 
 /** One item of a transcript turn (server gateway_api.rs `line_items`). */
 export interface TranscriptItem {
@@ -458,6 +461,12 @@ export interface TranscriptItem {
   error?: boolean | null;
   /** Epoch ms of the transcript line (null when the line has none; older servers omit it). */
   ts?: number | null;
+  /** `image`: png, jpeg, gif or webp (`image/…`). */
+  mime?: string | null;
+  /** `image`: pass as `image` to `agent.transcript` to fetch the bytes. */
+  ref?: string | null;
+  /** `image`: decoded size in bytes (approximate). */
+  size?: number | null;
 }
 
 /** One transcript turn (`agent.transcript`): a user prompt and everything up to the next one. */
@@ -474,9 +483,19 @@ export interface TranscriptTurn {
   subagent_count?: number | null;
 }
 
+/** One image fetched by `agent.transcript` with `image: <ref>`. */
+export interface TranscriptImage {
+  mime: string;
+  size: number;
+  /** Standard base64. */
+  data_b64: string;
+}
+
 export interface TranscriptPage {
   run: string;
   turns: TranscriptTurn[];
+  /** Only for a request with `image`. */
+  image?: TranscriptImage;
   /** Pass as `before` to load older turns; null/absent = this page reaches the start. */
   next_before?: number | null;
 }
@@ -914,8 +933,8 @@ export interface AppApi {
   'agent.set_model': { params: { target: string; model: string; scope?: 'session' | 'default' }; result: { run: AgentRun } };
   'agent.interrupt': { params: { target: string }; result: Record<string, never> };
   'agent.transcript': {
-    /** `limit` ≤ 200; `before` = a page's `next_before` (turns with n < before). */
-    params: { target: string; limit?: number; before?: number };
+    /** `limit` ≤ 200; `before` = a page's `next_before` (turns with n < before). `image` = an image item's `ref`: the result then has `image` (≤ 4 MiB) and no `turns`; older servers ignore it and return a page. */
+    params: { target: string; limit?: number; before?: number; image?: string };
     result: TranscriptPage;
   };
   'agent.start': {
@@ -968,7 +987,7 @@ export interface AppApi {
   'git.diff': { params: GitDiffParams; result: GitDiff & Partial<GitRevFiles> };
   'git.log': { params: { pane: string; base?: string; limit?: number }; result: GitLog };
   'fs.list': { params: { pane: string; path?: string }; result: FsList };
-  'fs.read': { params: { pane: string; path: string }; result: FsRead };
+  'fs.read': { params: { pane: string; path: string; as?: 'image' }; result: FsRead };
   'worktree.list': { params: { pane: string } | { workspace: string }; result: { worktrees: Worktree[] } };
   /** Host directories for path pickers: `path` absolute or `~`; `prefix` filters names (a leading `.` shows dot-folders). */
   'fs.browse': { params: { path?: string; prefix?: string }; result: BrowseResult };
