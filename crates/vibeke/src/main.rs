@@ -486,6 +486,14 @@ async fn dispatch(g: Global, args: Vec<String>) -> i32 {
             })
             .await
         }
+        Some("screenshot") if args.get(1).map(String::as_str) == Some("add") => {
+            let gr = &g;
+            let rest = &args[2..];
+            with_client(gr, |mut c| async move {
+                vk_cli::verbs::screenshot_add(&mut c, gr, rest).await
+            })
+            .await
+        }
         Some("screenshot") if args.get(1).map(String::as_str) == Some("code-state") => {
             vk_cli::code_state(&args[2..])
         }

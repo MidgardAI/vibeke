@@ -1,5 +1,5 @@
-//! CLI verbs that are more than one API call (07 §5.3): `vibeke events tail [--follow]` and
-//! `vibeke completion <shell>`.
+//! CLI verbs that are more than one API call (07 §5.3): `vibeke events tail [--follow]`,
+//! `vibeke screenshot add <file>...` and `vibeke completion <shell>`.
 
 use crate::client::{CallError, Client};
 use crate::{COMMANDS, EXIT_OK, EXIT_USAGE, Global, build_params, exit_code_for, print_error};
@@ -7,6 +7,104 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
 pub const EVENTS_TAIL_USAGE: &str = "vibeke events tail [--types 'agent.*,pane.created'] [--after-seq N | --lines N] [--follow]\n  one JSON event per line; without --after-seq the last N (default 20) events are shown first";
+
+pub const SCREENSHOT_ADD_USAGE: &str = "vibeke screenshot add <file>... [--caption TEXT] [--pane P] [--json]\n  attaches PNG or JPEG files so the user can see them in Vibeke on any device (the CLI reads the files; the server never opens your paths)";
+
+/// Largest file `screenshot.add` accepts (the server checks too).
+const ADD_MAX_BYTES: u64 = 16 << 20;
+
+/// `vibeke screenshot add <file>...`: read each image file here, with the caller's own
+/// permissions, and attach it with `screenshot.add`. Exit non-zero if any file fails.
+pub async fn screenshot_add<S>(client: &mut Client<S>, g: &Global, args: &[String]) -> i32
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    use base64::Engine as _;
+    let p = match build_params(&["files..."], args) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("{e}\n{SCREENSHOT_ADD_USAGE}");
+            return EXIT_USAGE;
+        }
+    };
+    let files: Vec<String> = match p.get("files") {
+        Some(Value::Array(a)) => a
+            .iter()
+            .map(|v| {
+                v.as_str()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| v.to_string())
+            })
+            .collect(),
+        _ => vec![],
+    };
+    if files.is_empty() {
+        eprintln!("{SCREENSHOT_ADD_USAGE}");
+        return EXIT_USAGE;
+    }
+    let text = |k: &str| match p.get(k) {
+        Some(Value::String(s)) => Some(s.clone()),
+        Some(Value::Array(a)) => a.first().and_then(Value::as_str).map(str::to_string),
+        _ => None,
+    };
+    let caption = text("caption");
+    let pane = text("pane");
+    let as_json = g.json == Some(true);
+    if let Err(e) = client.hello("cli").await {
+        print_error(&e);
+        return exit_code_for(&e);
+    }
+    let mut code = EXIT_OK;
+    for file in &files {
+        let path = std::path::Path::new(file);
+        let bytes = match std::fs::metadata(path) {
+            Ok(m) if m.len() > ADD_MAX_BYTES => Err(format!("{file}: larger than 16 MiB")),
+            Ok(_) => std::fs::read(path).map_err(|e| format!("{file}: {e}")),
+            Err(e) => Err(format!("{file}: {e}")),
+        };
+        let bytes = match bytes {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("vibeke screenshot add: {e}");
+                code = EXIT_USAGE;
+                continue;
+            }
+        };
+        let mut params = json!({
+            "data_b64": base64::engine::general_purpose::STANDARD.encode(&bytes),
+            "name": path.file_name().map(|n| n.to_string_lossy().into_owned()),
+        });
+        if let Some(c) = &caption {
+            params["caption"] = json!(c);
+        }
+        if let Some(pn) = &pane {
+            params["pane"] = json!(pn);
+        }
+        match client.call("screenshot.add", params).await {
+            Ok(mut r) => {
+                let handle = r["handle"].as_str().unwrap_or("").to_string();
+                let dup = r["duplicate"].as_bool().unwrap_or(false);
+                if as_json {
+                    r["file"] = json!(file);
+                    println!("{}", serde_json::to_string(&r).unwrap_or_default());
+                } else {
+                    let note = if dup {
+                        "(already shown to the user)"
+                    } else {
+                        "(shown to the user)"
+                    };
+                    println!("{handle}  {file}  {note}");
+                }
+            }
+            Err(e) => {
+                eprint!("{file}: ");
+                print_error(&e);
+                code = exit_code_for(&e);
+            }
+        }
+    }
+    code
+}
 
 fn print_event(e: &Value) {
     println!("{}", serde_json::to_string(e).unwrap_or_default());

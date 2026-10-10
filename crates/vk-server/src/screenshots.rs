@@ -52,6 +52,7 @@ pub const METHODS: &[(&str, bool)] = &[
     ("screenshot.get", false),
     ("screenshot.open", false),
     ("screenshot.delete", true),
+    ("screenshot.add", true),
     ("browser.diff", true),
 ];
 
@@ -126,6 +127,8 @@ pub enum EnvKind {
     Window,
     /// The user's normal browser through the authenticated reverse proxy (B4).
     LocalProxy,
+    /// An image file an agent attached (`screenshot.add`); no browser involved.
+    Agent,
 }
 
 impl EnvKind {
@@ -135,6 +138,7 @@ impl EnvKind {
             EnvKind::LocalPane => "local_pane",
             EnvKind::Window => "window",
             EnvKind::LocalProxy => "local_proxy",
+            EnvKind::Agent => "agent",
         }
     }
 }
@@ -179,6 +183,7 @@ impl Environment {
             EnvKind::LocalPane => parts.push("your browser pane".into()),
             EnvKind::Window => parts.push("your browser window".into()),
             EnvKind::LocalProxy => parts.push("your browser via proxy".into()),
+            EnvKind::Agent => return "attached by agent".into(),
         }
         if let Some(p) = &self.profile {
             parts.push(format!("profile {p}"));
@@ -253,6 +258,12 @@ pub struct ScreenshotMeta {
     /// What the captured document said about itself at capture time (Codex review follow-up).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub document: Option<DocumentIdentity>,
+    /// What the agent said the image shows (`screenshot.add`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caption: Option<String>,
+    /// Base name of the file an agent attached (`screenshot.add`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_name: Option<String>,
 }
 
 /// The captured document's identity, read from the page itself.
@@ -595,7 +606,19 @@ pub async fn record_screenshot(
         binding,
         binding_reason,
         document: doc.as_ref().and_then(|d| d.identity().cloned()),
+        caption: None,
+        source_name: None,
     };
+    persist_screenshot(server, png, meta)
+}
+
+/// Allocate the handle, write the entity and event in one commit, store the blob and enforce
+/// the per-task cap. Shared by [`record_screenshot`] and `screenshot.add`.
+fn persist_screenshot(
+    server: &Arc<Server>,
+    png: &[u8],
+    mut meta: ScreenshotMeta,
+) -> Result<ScreenshotMeta, RpcError> {
     // Handle allocation and the entity write under one core lock.
     let srv = server.clone();
     let meta = {
@@ -624,6 +647,8 @@ pub async fn record_screenshot(
                 "label": meta.label,
                 "blob": meta.blob,
                 "preview": meta.preview,
+                "pane": meta.pane,
+                "caption": meta.caption,
                 "head_sha": meta.code.as_ref().and_then(|c| c.head_sha.clone()),
             }),
         );
@@ -647,6 +672,199 @@ pub async fn record_screenshot(
         });
     }
     Ok(meta)
+}
+
+// ---- attached images (screenshot.add) ------------------------------------------------------
+
+/// Largest image file `screenshot.add` accepts.
+const ADD_MAX_BYTES: usize = 16 << 20;
+/// Largest width or height `screenshot.add` accepts.
+const ADD_MAX_DIM: u32 = 16384;
+const CAPTION_MAX_CHARS: usize = 500;
+const NAME_MAX_CHARS: usize = 200;
+
+/// Validate an attached image and return PNG bytes with the pixel size. PNG is kept as-is;
+/// JPEG is decoded and re-encoded as PNG. Anything else is refused.
+fn normalize_image(bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), RpcError> {
+    use image::{ImageFormat, ImageReader};
+    use std::io::Cursor;
+    let unsupported = || invalid("only PNG and JPEG images are supported");
+    if bytes.len() > ADD_MAX_BYTES {
+        return Err(invalid(format!(
+            "image is larger than {} MiB",
+            ADD_MAX_BYTES >> 20
+        )));
+    }
+    let format = image::guess_format(bytes).map_err(|_| unsupported())?;
+    let too_big = |w: u32, h: u32| {
+        invalid(format!(
+            "image is {w}x{h}; the largest side allowed is {ADD_MAX_DIM}"
+        ))
+    };
+    match format {
+        ImageFormat::Png => {
+            let (w, h) = ImageReader::with_format(Cursor::new(bytes), ImageFormat::Png)
+                .into_dimensions()
+                .map_err(|e| invalid(format!("not a valid PNG image: {e}")))?;
+            if w == 0 || h == 0 || w > ADD_MAX_DIM || h > ADD_MAX_DIM {
+                return Err(too_big(w, h));
+            }
+            Ok((bytes.to_vec(), w, h))
+        }
+        ImageFormat::Jpeg => {
+            let mut reader = ImageReader::with_format(Cursor::new(bytes), ImageFormat::Jpeg);
+            #[allow(clippy::field_reassign_with_default)]
+            let mut limits = image::Limits::default();
+            limits.max_image_width = Some(ADD_MAX_DIM);
+            limits.max_image_height = Some(ADD_MAX_DIM);
+            reader.limits(limits);
+            let img = reader
+                .decode()
+                .map_err(|e| invalid(format!("not a valid JPEG image: {e}")))?;
+            let (w, h) = (img.width(), img.height());
+            if w == 0 || h == 0 || w > ADD_MAX_DIM || h > ADD_MAX_DIM {
+                return Err(too_big(w, h));
+            }
+            let mut out = Vec::new();
+            img.write_to(&mut Cursor::new(&mut out), ImageFormat::Png)
+                .map_err(crate::api::internal)?;
+            Ok((out, w, h))
+        }
+        _ => Err(unsupported()),
+    }
+}
+
+/// Control characters removed, trimmed, cut to `max` characters; `None` when nothing is left.
+fn clean_text(s: &str, max: usize) -> Option<String> {
+    let cleaned: String = s.chars().filter(|c| !c.is_control()).collect();
+    let cleaned: String = cleaned.trim().chars().take(max).collect();
+    (!cleaned.is_empty()).then_some(cleaned)
+}
+
+/// `screenshot.add {data_b64, caption?, name?, pane?}`: store an image file an agent (or the
+/// user) attached, as a `screenshot` record in the `agent` environment. The caller reads the
+/// file; the server never opens caller-supplied paths.
+async fn add(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
+    use base64::Engine as _;
+    let data_b64 = crate::api::req(p, "data_b64")?;
+    // Cheap bound before decoding: base64 is 4 bytes per 3.
+    if data_b64.len() > ADD_MAX_BYTES / 3 * 4 + 8 {
+        return Err(invalid(format!(
+            "image is larger than {} MiB",
+            ADD_MAX_BYTES >> 20
+        )));
+    }
+    let raw = base64::engine::general_purpose::STANDARD
+        .decode(data_b64.trim())
+        .map_err(|e| invalid(format!("data_b64 is not valid base64: {e}")))?;
+    // A pane-scoped caller always attaches to its own pane.
+    let pane = match (&ctx.pane_scope, s(p, "pane").filter(|t| !t.is_empty())) {
+        (Some(own), target) => {
+            let pane = crate::api::resolve_pane(server, ctx, target.or(Some(own.as_str())))?;
+            if &pane.id != own {
+                return Err(err(
+                    ErrorKind::PermissionDenied,
+                    "an agent can attach images to its own pane only",
+                )
+                .details(json!({"scope": "pane"})));
+            }
+            Some(pane.id)
+        }
+        (None, Some(target)) => Some(crate::api::resolve_pane(server, ctx, Some(target))?.id),
+        (None, None) => None,
+    };
+    let caption = s(p, "caption").and_then(|c| clean_text(c, CAPTION_MAX_CHARS));
+    let source_name = s(p, "name")
+        .and_then(|n| n.rsplit(['/', '\\']).next())
+        .and_then(|n| clean_text(n, NAME_MAX_CHARS));
+    let (png, width, height) = tokio::task::spawn_blocking(move || normalize_image(&raw))
+        .await
+        .map_err(crate::api::internal)??;
+    let blob = blake3::hash(&png).to_hex().to_string();
+    if let Some(existing) = load_all(server)
+        .into_iter()
+        .find(|m| m.blob == blob && m.pane == pane)
+    {
+        let mut v = with_path(server, &existing);
+        v["duplicate"] = json!(true);
+        return Ok(v);
+    }
+    let agent = ctx.pane_scope.is_some();
+    let taken_by = Requester {
+        kind: if agent { "agent" } else { "user" }.into(),
+        pane: pane.clone(),
+        run: None,
+        client: (!agent).then(|| ctx.client_id.clone()),
+    };
+    let environment = Environment {
+        kind: EnvKind::Agent,
+        machine: server.opts.machine.clone(),
+        runner: "host".into(),
+        browser: String::new(),
+        browser_version: None,
+        viewport: Viewport { width, height },
+        dpr: 1.0,
+        color_scheme: None,
+        device: None,
+        fresh_context: false,
+        profile: None,
+    };
+    let inputs = ShotInputs {
+        environment: environment.clone(),
+        url: String::new(),
+        final_url: None,
+        title: None,
+        preview: None,
+        session: None,
+        taken_by: taken_by.clone(),
+        full_page: false,
+        selector: None,
+        checkout: None,
+        runtime: None,
+        probe_runtime: false,
+        document: None,
+    };
+    let origin = resolve_origin(server, &inputs);
+    let now = vk_store::now_ms();
+    let meta = ScreenshotMeta {
+        id: ulid(),
+        handle: String::new(),
+        kind: "screenshot".into(),
+        blob,
+        mime: "image/png".into(),
+        width,
+        height,
+        bytes: png.len() as u64,
+        created_at_ms: now,
+        taken_at: now,
+        label: environment.label(),
+        environment,
+        url: String::new(),
+        final_url: None,
+        title: None,
+        preview: None,
+        preview_id: None,
+        session: None,
+        full_page: false,
+        selector: None,
+        taken_by,
+        pane: origin.pane,
+        run: origin.run,
+        task: origin.task,
+        workspace: origin.workspace,
+        code: None,
+        code_note: Some("attached file".into()),
+        runtime: RuntimeIdentity::unknown("attached file", now),
+        binding: Binding::Illustrative,
+        binding_reason: "Attached from a file by an agent; not tied to a running build".into(),
+        document: None,
+        caption,
+        source_name,
+    };
+    let meta = persist_screenshot(server, &png, meta)?;
+    let mut v = with_path(server, &meta);
+    v["duplicate"] = json!(false);
+    Ok(v)
 }
 
 // ---- running-build probe --------------------------------------------------------------------
@@ -859,6 +1077,18 @@ fn list(server: &Server, ctx: &Ctx, p: &Value) -> R {
     });
     let preview = s(p, "preview");
     let run = s(p, "run");
+    // A deleted pane or workspace can still have screenshots: fall back to the literal id.
+    let pane = s(p, "pane").filter(|t| !t.is_empty()).map(|t| {
+        crate::api::resolve_pane(server, ctx, Some(t))
+            .map(|p| p.id)
+            .unwrap_or_else(|_| t.to_string())
+    });
+    let workspace = s(p, "workspace").filter(|t| !t.is_empty()).map(|t| {
+        crate::api::resolve_ws(server, ctx, Some(t))
+            .map(|w| w.id)
+            .unwrap_or_else(|_| t.to_string())
+    });
+    let environment = s(p, "environment").filter(|t| !t.is_empty());
     let since = since_ms(p);
     let limit = u(p, "limit").unwrap_or(50).clamp(1, 1000) as usize;
     let mut v: Vec<ScreenshotMeta> = load_all(server)
@@ -873,6 +1103,13 @@ fn list(server: &Server, ctx: &Ctx, p: &Value) -> R {
         .filter(|m| {
             run.is_none_or(|r| m.run.as_deref() == Some(r) || m.taken_by.run.as_deref() == Some(r))
         })
+        .filter(|m| pane.as_ref().is_none_or(|t| m.pane.as_deref() == Some(t)))
+        .filter(|m| {
+            workspace
+                .as_ref()
+                .is_none_or(|w| m.workspace.as_deref() == Some(w))
+        })
+        .filter(|m| environment.is_none_or(|e| m.environment.kind.as_str() == e))
         .filter(|m| since.is_none_or(|t| m.created_at_ms >= t))
         .collect();
     v.sort_by(|a, b| b.created_at_ms.cmp(&a.created_at_ms).then(b.id.cmp(&a.id)));
@@ -1343,6 +1580,7 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
         // `vibeke screenshot open`: the image inline so the CLI can open it locally.
         "screenshot.open" => get(server, ctx, p, true),
         "screenshot.delete" => delete(server, ctx, p),
+        "screenshot.add" => add(server, ctx, p).await,
         "browser.diff" => diff(server, ctx, p).await,
         _ => return None,
     })

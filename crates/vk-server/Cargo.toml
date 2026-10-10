@@ -42,9 +42,9 @@ futures.workspace = true
 url.workspace = true
 notify.workspace = true
 tempfile.workspace = true
-# PNG pane screenshots (07 §2.6): `image` (PNG only) is already in the graph through vk-browser;
+# PNG pane screenshots (07 §2.6): `image` (JPEG only transcodes attached agent images) is already in the graph through vk-browser;
 # font8x8 is a dependency-free 8x8 bitmap font (MIT).
-image = { version = "0.25", default-features = false, features = ["png"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 font8x8 = "0.3"
 unicode-width = { workspace = true }
 # TranscriptTailer (04 §10): FSEvents/inotify on transcript directories.

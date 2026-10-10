@@ -1519,7 +1519,7 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         "list",
         "screenshot.list",
         &[],
-        "[--task t] [--preview v4] [--run r] [--since 1h] [--limit 50]",
+        "[--task t] [--preview v4] [--run r] [--pane p] [--workspace w] [--environment agent] [--since 1h] [--limit 50]",
     ),
     (
         "screenshot",
@@ -1541,6 +1541,13 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         "browser.diff",
         &["a", "b"],
         "<shotA> <shotB> [--threshold 0.1] [--force] [--out diff.png]",
+    ),
+    (
+        "screenshot",
+        "add",
+        "screenshot.add",
+        &["files..."],
+        "<file>... [--caption text] [--pane p] — attach PNG or JPEG files so the user can see them (terminal, desktop app, phone)",
     ),
     (
         "screenshot",
