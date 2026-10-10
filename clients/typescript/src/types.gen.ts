@@ -96,7 +96,7 @@ export type ApprovalRequest = {
   pane: string;
   pane_handle: string;
   workspace: string;
-  method: "handoff.send" | "handoff.cancel" | "gateway.call" | "preview.declare";
+  method: "handoff.send" | "handoff.cancel" | "gateway.call" | "preview.declare" | "cloud.move";
   params: Record<string, unknown>;
   summary: string;
   facts: Record<string, unknown>;
@@ -176,6 +176,71 @@ export type BrowserSession = {
   status?: number | null;
   final_url?: string;
   title?: string;
+};
+
+export type CloudAuthMethod = {
+  kind: "paste_token";
+  label: string;
+  help_url: string;
+  hint: string;
+} | {
+  kind: "import";
+  source: string;
+  label: string;
+} | {
+  kind: "env";
+  var: string;
+};
+
+export type CloudBoxView = {
+  box: string;
+  provider: string;
+  id: string;
+  name: string;
+  state: string;
+  ownership: "attached" | "idle" | "orphaned" | "foreign" | "missing";
+  key: string;
+  task?: string;
+  workspace?: string;
+  panes: string[];
+  sessions: number;
+  created_at: number;
+  last_activity_at: number;
+  url?: string;
+  unsynced: CloudUnsynced | null;
+  caps: CloudCaps;
+  host_tag: string;
+};
+
+export type CloudCaps = {
+  resize: boolean;
+  reattach: boolean;
+  explicit_suspend: boolean;
+  keeps_memory: boolean;
+  checkpoints: boolean;
+  port_urls: boolean;
+  max_runtime_s: number;
+};
+
+export type CloudProvider = {
+  id: string;
+  label: string;
+  caps: CloudCaps;
+  default: boolean;
+  auth: {
+    state: "missing" | "ok" | "invalid";
+    source?: string;
+    account?: string;
+    error?: string;
+  };
+  methods: CloudAuthMethod[];
+};
+
+export type CloudUnsynced = {
+  commits: number;
+  dirty: number;
+  untracked: number;
+  summary: string;
 };
 
 export type Collision = {
@@ -415,7 +480,7 @@ export type Isolation = {
   visible_roots: string[];
 };
 
-export type IsolationLevel = "host" | "sandbox" | "container" | "vm";
+export type IsolationLevel = "host" | "sandbox" | "container" | "vm" | "cloud";
 
 export type Item = {
   id: string;
@@ -1706,7 +1771,7 @@ export type AuditVerifyResult = {
 };
 
 export type AuthApproveParams = {
-  method?: "handoff.send" | "handoff.cancel" | "gateway.call" | "preview.declare";
+  method?: "handoff.send" | "handoff.cancel" | "gateway.call" | "preview.declare" | "cloud.move";
   params?: Record<string, unknown>;
   reason?: string;
   wait?: boolean;
@@ -2689,6 +2754,241 @@ export type ClientListResult = {
     };
     focused_pane: string | null;
   }[];
+};
+
+export type CloudAuthClearParams = {
+  provider: string;
+};
+
+export type CloudAuthClearResult = {
+  provider: string;
+  cleared: boolean;
+  boxes_running: number;
+  cursor?: Cursor;
+};
+
+export type CloudAuthImportParams = {
+  provider: string;
+  source: string;
+};
+
+export type CloudAuthImportResult = {
+  provider: string;
+  account: string;
+  cursor?: Cursor;
+};
+
+export type CloudAuthSetParams = {
+  provider: string;
+  token: string;
+};
+
+export type CloudAuthSetResult = {
+  provider: string;
+  account: string;
+  cursor?: Cursor;
+};
+
+export type CloudBoxAdoptParams = {
+  box: string;
+};
+
+export type CloudBoxAdoptResult = {
+  box: string;
+  task: string;
+  cursor?: Cursor;
+};
+
+export type CloudBoxCheckpointParams = {
+  box: string;
+  note?: string;
+};
+
+export type CloudBoxCheckpointResult = {
+  box: string;
+  checkpoint: string;
+  cursor?: Cursor;
+};
+
+export type CloudBoxDestroyParams = {
+  box: string;
+  force?: boolean;
+};
+
+export type CloudBoxDestroyResult = {
+  box: string;
+  destroyed: true;
+  cursor?: Cursor;
+};
+
+export type CloudBoxForgetParams = {
+  box: string;
+};
+
+export type CloudBoxForgetResult = {
+  box: string;
+  cursor?: Cursor;
+};
+
+export type CloudBoxListParams = {
+  provider?: string;
+  ownership?: "attached" | "idle" | "orphaned" | "foreign" | "missing";
+  refresh?: boolean;
+};
+
+export type CloudBoxListResult = {
+  boxes: CloudBoxView[];
+  errors: {
+    provider: string;
+    kind: string;
+    message: string;
+  }[];
+};
+
+export type CloudBoxResumeParams = {
+  box: string;
+};
+
+export type CloudBoxResumeResult = CloudBoxView;
+
+export type CloudBoxSuspendParams = {
+  box: string;
+};
+
+export type CloudBoxSuspendResult = CloudBoxView;
+
+export type CloudCancelParams = {
+  id: string;
+};
+
+export type CloudCancelResult = {
+  job: {
+    id: string;
+    direction: "send" | "bring_back";
+    pane?: string;
+    run?: string;
+    box?: string;
+    from: Record<string, unknown>;
+    to: Record<string, unknown>;
+    state: "queued" | "waiting_turn" | "creating" | "bootstrapping" | "exporting" | "uploading" | "importing" | "resuming" | "done" | "failed" | "cancelled";
+    progress?: {
+      done: number;
+      total: number;
+    };
+    error?: {
+      kind: string;
+      message: string;
+      details?: unknown;
+    };
+    result?: Record<string, unknown>;
+    interrupt: boolean;
+    source_after?: "keep" | "suspend" | "destroy";
+    task?: string;
+    by?: string;
+    created_at: number;
+    updated_at: number;
+  };
+  cursor?: Cursor;
+};
+
+export type CloudJobsParams = Record<string, unknown>;
+
+export type CloudJobsResult = {
+  jobs: {
+    id: string;
+    direction: "send" | "bring_back";
+    pane?: string;
+    run?: string;
+    box?: string;
+    from: Record<string, unknown>;
+    to: Record<string, unknown>;
+    state: "queued" | "waiting_turn" | "creating" | "bootstrapping" | "exporting" | "uploading" | "importing" | "resuming" | "done" | "failed" | "cancelled";
+    progress?: {
+      done: number;
+      total: number;
+    };
+    error?: {
+      kind: string;
+      message: string;
+      details?: unknown;
+    };
+    result?: Record<string, unknown>;
+    interrupt: boolean;
+    source_after?: "keep" | "suspend" | "destroy";
+    task?: string;
+    by?: string;
+    created_at: number;
+    updated_at: number;
+  }[];
+};
+
+export type CloudMoveParams = {
+  pane?: Target;
+  run?: string;
+  box?: string;
+  to: {
+    kind: "cloud" | "local" | "peer";
+    provider?: string;
+    box?: string;
+    peer?: string;
+  };
+  interrupt?: boolean;
+  source_after?: "keep" | "suspend" | "destroy";
+};
+
+export type CloudMoveResult = {
+  job: {
+    id: string;
+    direction: "send" | "bring_back";
+    pane?: string;
+    run?: string;
+    box?: string;
+    from: Record<string, unknown>;
+    to: Record<string, unknown>;
+    state: "queued" | "waiting_turn" | "creating" | "bootstrapping" | "exporting" | "uploading" | "importing" | "resuming" | "done" | "failed" | "cancelled";
+    progress?: {
+      done: number;
+      total: number;
+    };
+    error?: {
+      kind: string;
+      message: string;
+      details?: unknown;
+    };
+    result?: Record<string, unknown>;
+    interrupt: boolean;
+    source_after?: "keep" | "suspend" | "destroy";
+    task?: string;
+    by?: string;
+    created_at: number;
+    updated_at: number;
+  };
+  cursor?: Cursor;
+};
+
+export type CloudProvidersParams = {
+  verify?: boolean;
+};
+
+export type CloudProvidersResult = {
+  providers: CloudProvider[];
+};
+
+export type CloudPruneParams = {
+  provider?: string;
+  ownership?: ("orphaned" | "idle" | "missing")[];
+  dry_run?: boolean;
+  force?: boolean;
+};
+
+export type CloudPruneResult = {
+  candidates: CloudBoxView[];
+  destroyed: string[];
+  skipped: {
+    box: string;
+    reason: string;
+  }[];
+  cursor?: Cursor;
 };
 
 export type CollisionClaimParams = {
@@ -3770,6 +4070,7 @@ export type HandoffCancelResult = {
       requested_by: string;
       approved_by: string;
     };
+    bundle?: string;
   };
   cursor?: Cursor;
 };
@@ -3851,6 +4152,7 @@ export type HandoffJobUpdateResult = {
       requested_by: string;
       approved_by: string;
     };
+    bundle?: string;
   };
   cursor?: Cursor;
 };
@@ -3881,6 +4183,7 @@ export type HandoffJobsResult = {
       requested_by: string;
       approved_by: string;
     };
+    bundle?: string;
   }[];
 };
 
@@ -3972,6 +4275,7 @@ export type HandoffSendResult = {
       requested_by: string;
       approved_by: string;
     };
+    bundle?: string;
   };
   cursor?: Cursor;
 };
@@ -7552,6 +7856,21 @@ export interface Methods {
   "client.focus": { params: ClientFocusParams; result: ClientFocusResult };
   "client.hello": { params: ClientHelloParams; result: ClientHelloResult };
   "client.list": { params: ClientListParams; result: ClientListResult };
+  "cloud.auth.clear": { params: CloudAuthClearParams; result: CloudAuthClearResult };
+  "cloud.auth.import": { params: CloudAuthImportParams; result: CloudAuthImportResult };
+  "cloud.auth.set": { params: CloudAuthSetParams; result: CloudAuthSetResult };
+  "cloud.box.adopt": { params: CloudBoxAdoptParams; result: CloudBoxAdoptResult };
+  "cloud.box.checkpoint": { params: CloudBoxCheckpointParams; result: CloudBoxCheckpointResult };
+  "cloud.box.destroy": { params: CloudBoxDestroyParams; result: CloudBoxDestroyResult };
+  "cloud.box.forget": { params: CloudBoxForgetParams; result: CloudBoxForgetResult };
+  "cloud.box.list": { params: CloudBoxListParams; result: CloudBoxListResult };
+  "cloud.box.resume": { params: CloudBoxResumeParams; result: CloudBoxResumeResult };
+  "cloud.box.suspend": { params: CloudBoxSuspendParams; result: CloudBoxSuspendResult };
+  "cloud.cancel": { params: CloudCancelParams; result: CloudCancelResult };
+  "cloud.jobs": { params: CloudJobsParams; result: CloudJobsResult };
+  "cloud.move": { params: CloudMoveParams; result: CloudMoveResult };
+  "cloud.providers": { params: CloudProvidersParams; result: CloudProvidersResult };
+  "cloud.prune": { params: CloudPruneParams; result: CloudPruneResult };
   "collision.claim": { params: CollisionClaimParams; result: CollisionClaimResult };
   "collision.claim_release": { params: CollisionClaimReleaseParams; result: CollisionClaimReleaseResult };
   "collision.claims": { params: CollisionClaimsParams; result: CollisionClaimsResult };
@@ -7979,6 +8298,21 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "client.focus": { mutating: true, scope: "full", paneScope: "forbidden" },
   "client.hello": { mutating: false, scope: "pane", paneScope: "open" },
   "client.list": { mutating: false, scope: "pane", paneScope: "open" },
+  "cloud.auth.clear": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "cloud.auth.import": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "cloud.auth.set": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "cloud.box.adopt": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "cloud.box.checkpoint": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "cloud.box.destroy": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "cloud.box.forget": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "cloud.box.list": { mutating: false, scope: "full", paneScope: "forbidden" },
+  "cloud.box.resume": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "cloud.box.suspend": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "cloud.cancel": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "cloud.jobs": { mutating: false, scope: "full", paneScope: "forbidden" },
+  "cloud.move": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "cloud.providers": { mutating: false, scope: "full", paneScope: "forbidden" },
+  "cloud.prune": { mutating: true, scope: "full", paneScope: "forbidden" },
   "collision.claim": { mutating: true, scope: "pane", paneScope: "open" },
   "collision.claim_release": { mutating: true, scope: "pane", paneScope: "open" },
   "collision.claims": { mutating: false, scope: "pane", paneScope: "open" },
@@ -8845,6 +9179,52 @@ export type ClientWindowTitleChangedData = {
   title: string | null;
 };
 
+export type CloudAuthChangedSubject = {
+  provider: string;
+};
+
+export type CloudAuthChangedData = {
+  state: "missing" | "ok" | "invalid";
+  account?: string;
+};
+
+export type CloudBoxChangedSubject = {
+  box: string;
+};
+
+export type CloudBoxChangedData = CloudBoxView;
+
+export type CloudJobSubject = {
+  job: string;
+};
+
+export type CloudJobData = {
+  id: string;
+  direction: "send" | "bring_back";
+  pane?: string;
+  run?: string;
+  box?: string;
+  from: Record<string, unknown>;
+  to: Record<string, unknown>;
+  state: "queued" | "waiting_turn" | "creating" | "bootstrapping" | "exporting" | "uploading" | "importing" | "resuming" | "done" | "failed" | "cancelled";
+  progress?: {
+    done: number;
+    total: number;
+  };
+  error?: {
+    kind: string;
+    message: string;
+    details?: unknown;
+  };
+  result?: Record<string, unknown>;
+  interrupt: boolean;
+  source_after?: "keep" | "suspend" | "destroy";
+  task?: string;
+  by?: string;
+  created_at: number;
+  updated_at: number;
+};
+
 export type DeskForgottenSubject = {
   scope: unknown;
 };
@@ -9115,6 +9495,7 @@ export type HandoffJobData = {
     requested_by: string;
     approved_by: string;
   };
+  bundle?: string;
 };
 
 export type HandoffPeersChangedSubject = Record<string, unknown>;
@@ -11027,6 +11408,9 @@ export interface EventMap {
   "client.detached": { subject: ClientDetachedSubject; data: ClientDetachedData };
   "client.devices_changed": { subject: ClientDevicesChangedSubject; data: ClientDevicesChangedData };
   "client.window_title_changed": { subject: ClientWindowTitleChangedSubject; data: ClientWindowTitleChangedData };
+  "cloud.auth.changed": { subject: CloudAuthChangedSubject; data: CloudAuthChangedData };
+  "cloud.box.changed": { subject: CloudBoxChangedSubject; data: CloudBoxChangedData };
+  "cloud.job": { subject: CloudJobSubject; data: CloudJobData };
   "desk.forgotten": { subject: DeskForgottenSubject; data: DeskForgottenData };
   "draft.created": { subject: DraftCreatedSubject; data: DraftCreatedData };
   "draft.deleted": { subject: DraftDeletedSubject; data: DraftDeletedData };

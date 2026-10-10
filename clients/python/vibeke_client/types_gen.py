@@ -103,7 +103,7 @@ ApprovalRequest = TypedDict("ApprovalRequest", {
     "pane": str,
     "pane_handle": str,
     "workspace": str,
-    "method": Literal["handoff.send", "handoff.cancel", "gateway.call", "preview.declare"],
+    "method": Literal["handoff.send", "handoff.cancel", "gateway.call", "preview.declare", "cloud.move"],
     "params": Dict[str, Any],
     "summary": str,
     "facts": Dict[str, Any],
@@ -189,6 +189,79 @@ BrowserSession = TypedDict("BrowserSession", {
     "status": NotRequired[Optional[int]],
     "final_url": NotRequired[str],
     "title": NotRequired[str],
+})
+
+CloudAuthMethodXV0 = TypedDict("CloudAuthMethodXV0", {
+    "kind": Literal["paste_token"],
+    "label": str,
+    "help_url": str,
+    "hint": str,
+})
+
+CloudAuthMethodXV1 = TypedDict("CloudAuthMethodXV1", {
+    "kind": Literal["import"],
+    "source": str,
+    "label": str,
+})
+
+CloudAuthMethodXV2 = TypedDict("CloudAuthMethodXV2", {
+    "kind": Literal["env"],
+    "var": str,
+})
+
+CloudAuthMethod: TypeAlias = Union["CloudAuthMethodXV0", "CloudAuthMethodXV1", "CloudAuthMethodXV2"]
+
+CloudBoxView = TypedDict("CloudBoxView", {
+    "box": str,
+    "provider": str,
+    "id": str,
+    "name": str,
+    "state": str,
+    "ownership": Literal["attached", "idle", "orphaned", "foreign", "missing"],
+    "key": str,
+    "task": NotRequired[str],
+    "workspace": NotRequired[str],
+    "panes": List[str],
+    "sessions": int,
+    "created_at": int,
+    "last_activity_at": int,
+    "url": NotRequired[str],
+    "unsynced": Optional["CloudUnsynced"],
+    "caps": "CloudCaps",
+    "host_tag": str,
+})
+
+CloudCaps = TypedDict("CloudCaps", {
+    "resize": bool,
+    "reattach": bool,
+    "explicit_suspend": bool,
+    "keeps_memory": bool,
+    "checkpoints": bool,
+    "port_urls": bool,
+    "max_runtime_s": int,
+})
+
+CloudProviderAuth = TypedDict("CloudProviderAuth", {
+    "state": Literal["missing", "ok", "invalid"],
+    "source": NotRequired[str],
+    "account": NotRequired[str],
+    "error": NotRequired[str],
+})
+
+CloudProvider = TypedDict("CloudProvider", {
+    "id": str,
+    "label": str,
+    "caps": "CloudCaps",
+    "default": bool,
+    "auth": "CloudProviderAuth",
+    "methods": List["CloudAuthMethod"],
+})
+
+CloudUnsynced = TypedDict("CloudUnsynced", {
+    "commits": int,
+    "dirty": int,
+    "untracked": int,
+    "summary": str,
 })
 
 Collision = TypedDict("Collision", {
@@ -432,7 +505,7 @@ Isolation = TypedDict("Isolation", {
     "visible_roots": List[str],
 })
 
-IsolationLevel: TypeAlias = Literal["host", "sandbox", "container", "vm"]
+IsolationLevel: TypeAlias = Literal["host", "sandbox", "container", "vm", "cloud"]
 
 Item = TypedDict("Item", {
     "id": str,
@@ -1819,7 +1892,7 @@ AuditVerifyResult = TypedDict("AuditVerifyResult", {
 })
 
 AuthApproveParams = TypedDict("AuthApproveParams", {
-    "method": NotRequired[Literal["handoff.send", "handoff.cancel", "gateway.call", "preview.declare"]],
+    "method": NotRequired[Literal["handoff.send", "handoff.cancel", "gateway.call", "preview.declare", "cloud.move"]],
     "params": NotRequired[Dict[str, Any]],
     "reason": NotRequired[str],
     "wait": NotRequired[bool],
@@ -2898,6 +2971,265 @@ ClientListResultClientsItem = TypedDict("ClientListResultClientsItem", {
 
 ClientListResult = TypedDict("ClientListResult", {
     "clients": List["ClientListResultClientsItem"],
+})
+
+CloudAuthClearParams = TypedDict("CloudAuthClearParams", {
+    "provider": str,
+})
+
+CloudAuthClearResult = TypedDict("CloudAuthClearResult", {
+    "provider": str,
+    "cleared": bool,
+    "boxes_running": int,
+    "cursor": NotRequired["Cursor"],
+})
+
+CloudAuthImportParams = TypedDict("CloudAuthImportParams", {
+    "provider": str,
+    "source": str,
+})
+
+CloudAuthImportResult = TypedDict("CloudAuthImportResult", {
+    "provider": str,
+    "account": str,
+    "cursor": NotRequired["Cursor"],
+})
+
+CloudAuthSetParams = TypedDict("CloudAuthSetParams", {
+    "provider": str,
+    "token": str,
+})
+
+CloudAuthSetResult = TypedDict("CloudAuthSetResult", {
+    "provider": str,
+    "account": str,
+    "cursor": NotRequired["Cursor"],
+})
+
+CloudBoxAdoptParams = TypedDict("CloudBoxAdoptParams", {
+    "box": str,
+})
+
+CloudBoxAdoptResult = TypedDict("CloudBoxAdoptResult", {
+    "box": str,
+    "task": str,
+    "cursor": NotRequired["Cursor"],
+})
+
+CloudBoxCheckpointParams = TypedDict("CloudBoxCheckpointParams", {
+    "box": str,
+    "note": NotRequired[str],
+})
+
+CloudBoxCheckpointResult = TypedDict("CloudBoxCheckpointResult", {
+    "box": str,
+    "checkpoint": str,
+    "cursor": NotRequired["Cursor"],
+})
+
+CloudBoxDestroyParams = TypedDict("CloudBoxDestroyParams", {
+    "box": str,
+    "force": NotRequired[bool],
+})
+
+CloudBoxDestroyResult = TypedDict("CloudBoxDestroyResult", {
+    "box": str,
+    "destroyed": Literal[True],
+    "cursor": NotRequired["Cursor"],
+})
+
+CloudBoxForgetParams = TypedDict("CloudBoxForgetParams", {
+    "box": str,
+})
+
+CloudBoxForgetResult = TypedDict("CloudBoxForgetResult", {
+    "box": str,
+    "cursor": NotRequired["Cursor"],
+})
+
+CloudBoxListParams = TypedDict("CloudBoxListParams", {
+    "provider": NotRequired[str],
+    "ownership": NotRequired[Literal["attached", "idle", "orphaned", "foreign", "missing"]],
+    "refresh": NotRequired[bool],
+})
+
+CloudBoxListResultErrorsItem = TypedDict("CloudBoxListResultErrorsItem", {
+    "provider": str,
+    "kind": str,
+    "message": str,
+})
+
+CloudBoxListResult = TypedDict("CloudBoxListResult", {
+    "boxes": List["CloudBoxView"],
+    "errors": List["CloudBoxListResultErrorsItem"],
+})
+
+CloudBoxResumeParams = TypedDict("CloudBoxResumeParams", {
+    "box": str,
+})
+
+CloudBoxResumeResult: TypeAlias = "CloudBoxView"
+
+CloudBoxSuspendParams = TypedDict("CloudBoxSuspendParams", {
+    "box": str,
+})
+
+CloudBoxSuspendResult: TypeAlias = "CloudBoxView"
+
+CloudCancelParams = TypedDict("CloudCancelParams", {
+    "id": str,
+})
+
+CloudCancelResultJobProgress = TypedDict("CloudCancelResultJobProgress", {
+    "done": int,
+    "total": int,
+})
+
+CloudCancelResultJobError = TypedDict("CloudCancelResultJobError", {
+    "kind": str,
+    "message": str,
+    "details": NotRequired[Any],
+})
+
+CloudCancelResultJob = TypedDict("CloudCancelResultJob", {
+    "id": str,
+    "direction": Literal["send", "bring_back"],
+    "pane": NotRequired[str],
+    "run": NotRequired[str],
+    "box": NotRequired[str],
+    "from": Dict[str, Any],
+    "to": Dict[str, Any],
+    "state": Literal["queued", "waiting_turn", "creating", "bootstrapping", "exporting", "uploading", "importing", "resuming", "done", "failed", "cancelled"],
+    "progress": NotRequired["CloudCancelResultJobProgress"],
+    "error": NotRequired["CloudCancelResultJobError"],
+    "result": NotRequired[Dict[str, Any]],
+    "interrupt": bool,
+    "source_after": NotRequired[Literal["keep", "suspend", "destroy"]],
+    "task": NotRequired[str],
+    "by": NotRequired[str],
+    "created_at": int,
+    "updated_at": int,
+})
+
+CloudCancelResult = TypedDict("CloudCancelResult", {
+    "job": "CloudCancelResultJob",
+    "cursor": NotRequired["Cursor"],
+})
+
+CloudJobsParams: TypeAlias = Dict[str, Any]
+
+CloudJobsResultJobsItemProgress = TypedDict("CloudJobsResultJobsItemProgress", {
+    "done": int,
+    "total": int,
+})
+
+CloudJobsResultJobsItemError = TypedDict("CloudJobsResultJobsItemError", {
+    "kind": str,
+    "message": str,
+    "details": NotRequired[Any],
+})
+
+CloudJobsResultJobsItem = TypedDict("CloudJobsResultJobsItem", {
+    "id": str,
+    "direction": Literal["send", "bring_back"],
+    "pane": NotRequired[str],
+    "run": NotRequired[str],
+    "box": NotRequired[str],
+    "from": Dict[str, Any],
+    "to": Dict[str, Any],
+    "state": Literal["queued", "waiting_turn", "creating", "bootstrapping", "exporting", "uploading", "importing", "resuming", "done", "failed", "cancelled"],
+    "progress": NotRequired["CloudJobsResultJobsItemProgress"],
+    "error": NotRequired["CloudJobsResultJobsItemError"],
+    "result": NotRequired[Dict[str, Any]],
+    "interrupt": bool,
+    "source_after": NotRequired[Literal["keep", "suspend", "destroy"]],
+    "task": NotRequired[str],
+    "by": NotRequired[str],
+    "created_at": int,
+    "updated_at": int,
+})
+
+CloudJobsResult = TypedDict("CloudJobsResult", {
+    "jobs": List["CloudJobsResultJobsItem"],
+})
+
+CloudMoveParamsTo = TypedDict("CloudMoveParamsTo", {
+    "kind": Literal["cloud", "local", "peer"],
+    "provider": NotRequired[str],
+    "box": NotRequired[str],
+    "peer": NotRequired[str],
+})
+
+CloudMoveParams = TypedDict("CloudMoveParams", {
+    "pane": NotRequired["Target"],
+    "run": NotRequired[str],
+    "box": NotRequired[str],
+    "to": "CloudMoveParamsTo",
+    "interrupt": NotRequired[bool],
+    "source_after": NotRequired[Literal["keep", "suspend", "destroy"]],
+})
+
+CloudMoveResultJobProgress = TypedDict("CloudMoveResultJobProgress", {
+    "done": int,
+    "total": int,
+})
+
+CloudMoveResultJobError = TypedDict("CloudMoveResultJobError", {
+    "kind": str,
+    "message": str,
+    "details": NotRequired[Any],
+})
+
+CloudMoveResultJob = TypedDict("CloudMoveResultJob", {
+    "id": str,
+    "direction": Literal["send", "bring_back"],
+    "pane": NotRequired[str],
+    "run": NotRequired[str],
+    "box": NotRequired[str],
+    "from": Dict[str, Any],
+    "to": Dict[str, Any],
+    "state": Literal["queued", "waiting_turn", "creating", "bootstrapping", "exporting", "uploading", "importing", "resuming", "done", "failed", "cancelled"],
+    "progress": NotRequired["CloudMoveResultJobProgress"],
+    "error": NotRequired["CloudMoveResultJobError"],
+    "result": NotRequired[Dict[str, Any]],
+    "interrupt": bool,
+    "source_after": NotRequired[Literal["keep", "suspend", "destroy"]],
+    "task": NotRequired[str],
+    "by": NotRequired[str],
+    "created_at": int,
+    "updated_at": int,
+})
+
+CloudMoveResult = TypedDict("CloudMoveResult", {
+    "job": "CloudMoveResultJob",
+    "cursor": NotRequired["Cursor"],
+})
+
+CloudProvidersParams = TypedDict("CloudProvidersParams", {
+    "verify": NotRequired[bool],
+})
+
+CloudProvidersResult = TypedDict("CloudProvidersResult", {
+    "providers": List["CloudProvider"],
+})
+
+CloudPruneParams = TypedDict("CloudPruneParams", {
+    "provider": NotRequired[str],
+    "ownership": NotRequired[List[Literal["orphaned", "idle", "missing"]]],
+    "dry_run": NotRequired[bool],
+    "force": NotRequired[bool],
+})
+
+CloudPruneResultSkippedItem = TypedDict("CloudPruneResultSkippedItem", {
+    "box": str,
+    "reason": str,
+})
+
+CloudPruneResult = TypedDict("CloudPruneResult", {
+    "candidates": List["CloudBoxView"],
+    "destroyed": List[str],
+    "skipped": List["CloudPruneResultSkippedItem"],
+    "cursor": NotRequired["Cursor"],
 })
 
 CollisionClaimParams = TypedDict("CollisionClaimParams", {
@@ -4052,6 +4384,7 @@ HandoffCancelResultJob = TypedDict("HandoffCancelResultJob", {
     "updated_at": int,
     "by": NotRequired[str],
     "expect": NotRequired["HandoffCancelResultJobExpect"],
+    "bundle": NotRequired[str],
 })
 
 HandoffCancelResult = TypedDict("HandoffCancelResult", {
@@ -4139,6 +4472,7 @@ HandoffJobUpdateResultJob = TypedDict("HandoffJobUpdateResultJob", {
     "updated_at": int,
     "by": NotRequired[str],
     "expect": NotRequired["HandoffJobUpdateResultJobExpect"],
+    "bundle": NotRequired[str],
 })
 
 HandoffJobUpdateResult = TypedDict("HandoffJobUpdateResult", {
@@ -4173,6 +4507,7 @@ HandoffJobsResultJobsItem = TypedDict("HandoffJobsResultJobsItem", {
     "updated_at": int,
     "by": NotRequired[str],
     "expect": NotRequired["HandoffJobsResultJobsItemExpect"],
+    "bundle": NotRequired[str],
 })
 
 HandoffJobsResult = TypedDict("HandoffJobsResult", {
@@ -4274,6 +4609,7 @@ HandoffSendResultJob = TypedDict("HandoffSendResultJob", {
     "updated_at": int,
     "by": NotRequired[str],
     "expect": NotRequired["HandoffSendResultJobExpect"],
+    "bundle": NotRequired[str],
 })
 
 HandoffSendResult = TypedDict("HandoffSendResult", {
@@ -8139,6 +8475,21 @@ METHODS: Dict[str, Dict[str, Any]] = {
     "client.focus": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "client.hello": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "client.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
+    "cloud.auth.clear": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "cloud.auth.import": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "cloud.auth.set": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "cloud.box.adopt": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "cloud.box.checkpoint": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "cloud.box.destroy": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "cloud.box.forget": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "cloud.box.list": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
+    "cloud.box.resume": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "cloud.box.suspend": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "cloud.cancel": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "cloud.jobs": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
+    "cloud.move": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "cloud.providers": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
+    "cloud.prune": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "collision.claim": {"mutating": True, "scope": "pane", "pane_scope": "open"},
     "collision.claim_release": {"mutating": True, "scope": "pane", "pane_scope": "open"},
     "collision.claims": {"mutating": False, "scope": "pane", "pane_scope": "open"},
@@ -9007,6 +9358,56 @@ ClientWindowTitleChangedData = TypedDict("ClientWindowTitleChangedData", {
     "title": Optional[str],
 })
 
+CloudAuthChangedSubject = TypedDict("CloudAuthChangedSubject", {
+    "provider": str,
+})
+
+CloudAuthChangedData = TypedDict("CloudAuthChangedData", {
+    "state": Literal["missing", "ok", "invalid"],
+    "account": NotRequired[str],
+})
+
+CloudBoxChangedSubject = TypedDict("CloudBoxChangedSubject", {
+    "box": str,
+})
+
+CloudBoxChangedData: TypeAlias = "CloudBoxView"
+
+CloudJobSubject = TypedDict("CloudJobSubject", {
+    "job": str,
+})
+
+CloudJobDataProgress = TypedDict("CloudJobDataProgress", {
+    "done": int,
+    "total": int,
+})
+
+CloudJobDataError = TypedDict("CloudJobDataError", {
+    "kind": str,
+    "message": str,
+    "details": NotRequired[Any],
+})
+
+CloudJobData = TypedDict("CloudJobData", {
+    "id": str,
+    "direction": Literal["send", "bring_back"],
+    "pane": NotRequired[str],
+    "run": NotRequired[str],
+    "box": NotRequired[str],
+    "from": Dict[str, Any],
+    "to": Dict[str, Any],
+    "state": Literal["queued", "waiting_turn", "creating", "bootstrapping", "exporting", "uploading", "importing", "resuming", "done", "failed", "cancelled"],
+    "progress": NotRequired["CloudJobDataProgress"],
+    "error": NotRequired["CloudJobDataError"],
+    "result": NotRequired[Dict[str, Any]],
+    "interrupt": bool,
+    "source_after": NotRequired[Literal["keep", "suspend", "destroy"]],
+    "task": NotRequired[str],
+    "by": NotRequired[str],
+    "created_at": int,
+    "updated_at": int,
+})
+
 DeskForgottenSubject = TypedDict("DeskForgottenSubject", {
     "scope": Any,
 })
@@ -9281,6 +9682,7 @@ HandoffJobData = TypedDict("HandoffJobData", {
     "updated_at": int,
     "by": NotRequired[str],
     "expect": NotRequired["HandoffJobDataExpect"],
+    "bundle": NotRequired[str],
 })
 
 HandoffPeersChangedSubject: TypeAlias = Dict[str, Any]
@@ -11201,6 +11603,9 @@ EVENT_TYPES = (
     "client.detached",
     "client.devices_changed",
     "client.window_title_changed",
+    "cloud.auth.changed",
+    "cloud.box.changed",
+    "cloud.job",
     "desk.forgotten",
     "draft.created",
     "draft.deleted",
