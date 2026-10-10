@@ -42,6 +42,7 @@ import { ActionBelt, type BeltTab } from '../pane/belt';
 import { Composer } from '../pane/composer';
 import { ShareSheet } from '../share';
 import { Conversation } from './conversation';
+import { useWorkspaceShots } from '../../app/screenshot-store';
 import { showsCentreDiff } from './panel';
 import { MenuButton, type MenuItem } from './menu';
 import { PreviewTab } from './preview-tab';
@@ -99,6 +100,8 @@ export function currentTabId(current: PaneRow, show: string | null | undefined, 
 }
 
 function Workspace({ route, row, current, locked }: { route: WorkspaceRoute; row: WorkspaceRow; current: PaneRow; locked: boolean }) {
+  // Keeps the workspace's screenshots live so the panel button can show that something new arrived.
+  const unreadShots = useWorkspaceShots(locked ? null : row.host, locked ? null : row.workspace.id).unread.size;
   const app = useApp();
   const prefs = usePrefs();
   const host = useHost(row.host);
@@ -309,8 +312,9 @@ function Workspace({ route, row, current, locked }: { route: WorkspaceRoute; row
           </>
         )}
         {!locked && (
-          <IconButton label={`${t.sidebar.togglePanel} (${keyLabel(mac, 'mod+3')})`} active={panelOpen} onClick={togglePanel}>
+          <IconButton label={`${t.sidebar.togglePanel} (${keyLabel(mac, 'mod+3')})`} active={panelOpen} onClick={togglePanel} className="relative">
             <PanelRight />
+            {unreadShots > 0 && !panelOpen && <span aria-hidden className="absolute right-1 top-1 size-2 rounded-full bg-need" />}
           </IconButton>
         )}
       </header>

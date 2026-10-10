@@ -9,7 +9,7 @@ const ev = (type: string, extra: Partial<AppEvent> = {}): AppEvent => ({ seq: 7,
 
 describe('host event forwarding (main → renderer)', () => {
   test('only the types the UI needs cross the bridge', () => {
-    for (const t of ['agent.turn_started', 'agent.state_changed', 'agent.usage', 'interaction.opened', 'notification.created', 'task.updated', 'preview.up', 'tab.created', 'pane.closed', 'handoff.job', 'handoff.incoming', 'handoff.updated', 'handoff.expired', 'auth.approval_requested', 'auth.approval_granted', 'auth.approval_denied', 'auth.approval_withdrawn'])
+    for (const t of ['agent.turn_started', 'agent.state_changed', 'agent.usage', 'interaction.opened', 'notification.created', 'task.updated', 'preview.up', 'tab.created', 'pane.closed', 'handoff.job', 'handoff.incoming', 'handoff.updated', 'handoff.expired', 'screenshot.captured', 'screenshot.deleted', 'auth.approval_requested', 'auth.approval_granted', 'auth.approval_denied', 'auth.approval_withdrawn'])
       expect(isForwardedEventType(t)).toBe(true);
     for (const t of ['auth.elevate_requested', 'auth.elevate_granted', 'auth.revoked', 'notification.read', 'session.started', 'workspace.created', 'device.revoked', 'push.sent', 'agent', '', 'Agent.x', 'agent.<script>', 1, null])
       expect(isForwardedEventType(t)).toBe(false);

@@ -1,5 +1,5 @@
 // Hash routes (spec 16 §9.3): `#/inbox`, workspaces `#/w/<host>/<workspace>[/t/<pane>]` with
-// `?panel=changes|files|off&file=…&commit=…&base=…&view=diff&show=term|conversation|preview:<id>`, push deep links from the gateway
+// `?panel=changes|files|screenshots|off&file=…&commit=…&base=…&view=diff&show=term|conversation|preview:<id>`, push deep links from the gateway
 // (`#/i/<host>/<interaction>`, `#/r/<host>/<run>`, `#/inbox`, `#/approve/<host>[/<request>]`) and the
 // pairing link `#/pair?d=…` and shared content `#/share-in/<id>`.
 // Older links (`#/h/<host>/p/<pane>[/history|/changes]`, `#/panes`, `#/focus`, `#/changes`) still
@@ -9,7 +9,7 @@ import { useSyncExternalStore } from 'react';
 
 export type Tab = 'inbox' | 'panes' | 'focus' | 'changes';
 export type PaneView = 'term' | 'history' | 'changes';
-export type PanelKind = 'changes' | 'files';
+export type PanelKind = 'changes' | 'files' | 'screenshots';
 
 export interface WorkspaceRoute {
   name: 'workspace';
@@ -108,7 +108,7 @@ export function parseRoute(hash: string): Route {
           host: b,
           workspace: c,
           pane: d === 't' ? e! : null,
-          panel: p === 'changes' || p === 'files' || p === 'off' ? p : null,
+          panel: p === 'changes' || p === 'files' || p === 'screenshots' || p === 'off' ? p : null,
           file: opt('file'),
           commit: opt('commit'),
           base: opt('base'),
