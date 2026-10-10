@@ -2282,8 +2282,9 @@ fn adjust(method: &str, p: &mut Value) {
         }
         "cloud.move" => {
             // `--to local|cloud|<peer>` (with `--provider`, `--into`) becomes the `to` object.
-            if let Some(v) = o.remove("to") {
-                let t = v.as_str().unwrap_or_default().to_string();
+            // An object (`api call`) is already the target.
+            if let Some(Value::String(t)) = o.get("to").cloned() {
+                o.remove("to");
                 let provider = o.remove("provider");
                 let into = o.remove("into");
                 let to = match t.as_str() {
@@ -3995,6 +3996,10 @@ mod tests {
             p,
             json!({"pane": "p1", "to": {"kind": "peer", "peer": "marvin"}})
         );
+        // `api call` passes the target object itself: it is kept as given.
+        let mut p = json!({"pane": "p1", "to": {"kind": "local"}});
+        adjust(m, &mut p);
+        assert_eq!(p, json!({"pane": "p1", "to": {"kind": "local"}}));
     }
 
     #[test]

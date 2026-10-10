@@ -1116,6 +1116,34 @@ fn after_of(job: &Job) -> String {
         .unwrap_or_else(|| vk_cloud::CloudConfig::load().after_bring_back)
 }
 
+/// The box's uncommitted work is on the other host now: stash it in the box, where it stays
+/// recoverable, so the box no longer counts it as unsynced (and can be destroyed later).
+async fn stash_brought_back(server: &Arc<Server>, task: &str) {
+    let Some(tb) = server.sandbox.get(task) else {
+        return;
+    };
+    let Some(c) = crate::sandbox::cloud::ctx(&tb) else {
+        return;
+    };
+    let script = format!(
+        "cd {} && git stash push -q -u -m {}",
+        vk_sandbox::container::sh_quote(&c.workdir),
+        vk_sandbox::container::sh_quote(crate::sandbox::cloud::BROUGHT_BACK_STASH)
+    );
+    let argv = vec!["/bin/sh".into(), "-c".into(), script];
+    match crate::sandbox::cloud::exec_capture(server, c, &argv, vec![], Duration::from_secs(60))
+        .await
+    {
+        Ok(o) if o.code == 0 => {}
+        Ok(o) => tracing::info!(
+            task,
+            code = o.code,
+            "cloud bring-back: stash in the box failed"
+        ),
+        Err(e) => tracing::info!(task, "cloud bring-back: stash in the box: {}", e.message),
+    }
+}
+
 /// Release the box after a bring-back. A refused suspend or destroy (unsynced work the bundle
 /// did not carry, say) keeps the box instead; the result says so.
 async fn release(server: &Arc<Server>, task: &str, after: &str) -> Result<Value, RpcError> {
@@ -1214,6 +1242,7 @@ async fn bring_back_local(server: &Arc<Server>, job: &Job, pane: &str) -> R {
 
     // From here on the work is on this host: no more cancelling.
     step(server, id, "resuming")?;
+    stash_brought_back(server, &task).await;
     let released = release(server, &task, &after_of(job))
         .await
         .map_err(|e| e.details(json!({"reason": "release_failed", "imported": imp.worktree})))?;
@@ -1327,6 +1356,7 @@ async fn bring_back_peer(server: &Arc<Server>, job: &Job, pane: &str, peer: &str
     step(server, id, "resuming")?;
     // The agent continues on the peer: the box pane goes, then the box is released.
     server.close_pane(pane);
+    stash_brought_back(server, &task).await;
     let released = release(server, &task, &after_of(job)).await?;
     Ok(json!({
         "task": task,

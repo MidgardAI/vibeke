@@ -167,6 +167,15 @@ pub async fn run(server: &Arc<Server>, only: Option<&str>) -> Vec<Value> {
             {
                 sessions = s.iter().filter(|s| s.active).count() as u32;
             }
+            // Work not on the host yet, for the overview and the destroy guard. Only running
+            // boxes are asked: the check would wake a sleeping one.
+            if rec.ours()
+                && rb.state == BoxState::Running
+                && let Ok(c) = cl::ctx_from_record(server, &rec)
+                && let Ok(u) = cl::unsynced(server, &c).await
+            {
+                rec.unsynced = Some(u);
+            }
             let now = vk_cloud::now_s();
             let live = !panes.is_empty() || sessions > 0;
             rec.sessions = sessions;

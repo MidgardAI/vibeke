@@ -1540,7 +1540,12 @@ pub struct Report {
 }
 
 /// In-box script printing `key=value` lines about the box repo.
+/// Stash message of the leftovers a bring-back already carried to a host (`cloud_move`).
+/// Those stashes are not unsynced work.
+pub const BROUGHT_BACK_STASH: &str = "vibeke: brought back";
+
 pub fn unsynced_script(workdir: &str, branch: Option<&str>, base: Option<&str>) -> String {
+    let bb = sh_quote(BROUGHT_BACK_STASH);
     let w = sh_quote(workdir);
     let host = branch
         .map(|b| sh_quote(&sync::host_ref(b)))
@@ -1561,7 +1566,7 @@ else a=0; fi\n\
 echo \"ahead=$a\"\n\
 echo \"dirty=$(git status --porcelain --untracked-files=no 2>/dev/null | wc -l)\"\n\
 echo \"untracked=$(git ls-files --others --exclude-standard 2>/dev/null | wc -l)\"\n\
-echo \"stashes=$(git stash list 2>/dev/null | wc -l)\"\n"
+echo \"stashes=$(git stash list 2>/dev/null | grep -vc {bb})\"\n"
     )
 }
 
