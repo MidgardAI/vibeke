@@ -56,8 +56,8 @@ The desktop app connects to a Vibeke host. It does not bundle the host CLI.
 For local use on a supported Mac or Linux computer, install the CLI too.
 Windows and Intel Macs can connect to a supported remote host. This release has no host CLI for those platforms.
 
-The macOS app is ad-hoc signed and is not notarized. The Windows installer is not publisher-signed.
-Operating-system security checks can require approval.
+The macOS app is signed with an Apple Developer ID and notarized by Apple. The Windows installer is not publisher-signed.
+Windows can ask you to approve it.
 
 Continue with the [desktop connection guide](desktop.md).
 
