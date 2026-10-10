@@ -19,39 +19,154 @@ struct Open {
 #[derive(Clone)]
 struct Item {
     title: String,
+    /// The title at the `summary` privacy level, when stripping the command is not enough.
+    summary: Option<String>,
     url: String,
     urgent: bool,
     /// Pane the item belongs to (share devices only see their own panes' items).
     pane: Option<String>,
 }
 
+impl Item {
+    fn new(title: String, url: String, urgent: bool, pane: Option<String>) -> Item {
+        Item {
+            title,
+            summary: None,
+            url,
+            urgent,
+            pane,
+        }
+    }
+}
+
+/// Which kind of push a send is: it picks the device pref that allows it and the tag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Push {
+    /// Open items that need the user (`notify_input`); one merged notification per host.
+    NeedsYou,
+    /// A run finished (`notify_done`); replaces the host's notification.
+    Done,
+    /// An idle run's prompt cache expires soon (`notify_cache_cold`); its own notification.
+    CacheCold,
+}
+
+/// How long a harness keeps an idle conversation's prompt cache. `None`: no notice.
+pub fn cache_ttl(harness: &str) -> Option<Duration> {
+    match harness {
+        "claude" | "codex" => Some(Duration::from_secs(300)),
+        _ => None,
+    }
+}
+
+/// The cache notice comes this long before the cache expires.
+const CACHE_LEAD: Duration = Duration::from_secs(45);
+
+/// When to send the cache notice after a run went idle.
+pub fn cache_notice_after(harness: &str) -> Option<Duration> {
+    cache_ttl(harness).map(|ttl| ttl.saturating_sub(CACHE_LEAD))
+}
+
+/// Per device, the open item keys its current needs-you notification shows. When none of them
+/// is open any more (answered on another device or at the desk), a device whose app can close
+/// notifications gets a `clear` push.
+#[derive(Default)]
+struct Shown {
+    by_device: HashMap<String, Vec<String>>,
+}
+
+impl Shown {
+    /// Record what a send put on each device's screen.
+    fn sent(&mut self, kind: Push, sent: Vec<(String, Vec<String>)>) {
+        for (device, keys) in sent {
+            match kind {
+                // A note shares the tag but is no needs-you item: never cleared.
+                Push::NeedsYou if keys.iter().all(|k| !k.starts_with("note:")) => {
+                    self.by_device.insert(device, keys);
+                }
+                Push::NeedsYou | Push::Done => {
+                    self.by_device.remove(&device);
+                }
+                Push::CacheCold => {}
+            }
+        }
+    }
+
+    /// Devices whose notification shows only items that are no longer open.
+    fn resolved(&mut self, open: &Open) -> Vec<String> {
+        let gone: Vec<String> = self
+            .by_device
+            .iter()
+            .filter(|(_, keys)| keys.iter().all(|k| !open.items.contains_key(k)))
+            .map(|(d, _)| d.clone())
+            .collect();
+        for d in &gone {
+            self.by_device.remove(d);
+        }
+        gone
+    }
+}
+
+/// The `clear` push: closes this host's notification on a device that supports it.
+fn clear_payload(host_id: &str) -> Value {
+    json!({"kind": "clear", "tag": format!("vibeke:{host_id}"), "host": host_id})
+}
+
+async fn send_clears(gw: &Arc<Gateway>, shown: &mut Shown, open: &Open) {
+    for device in shown.resolved(open) {
+        let Some(d) = gw.device(&device) else {
+            continue;
+        };
+        if !d.supports_clear || d.push.is_empty() || d.vapid_private.is_none() {
+            continue;
+        }
+        let gw = gw.clone();
+        let p = clear_payload(&gw.keys.host_id());
+        tokio::spawn(async move {
+            gw.push_to(&d.id, &p, "normal").await;
+        });
+    }
+}
+
+fn str_at<'a>(v: &'a Value, k: &str) -> Option<&'a str> {
+    v.get(k).and_then(|x| x.as_str())
+}
+
 pub async fn run(gw: Arc<Gateway>) {
     let mut rx = gw.hub.subscribe();
     let mut open = Open::default();
+    let mut shown = Shown::default();
     // Pending "finished" checks: run id → debounce generation.
     let mut finished: HashMap<String, u64> = HashMap::new();
     let (done_tx, mut done_rx) = tokio::sync::mpsc::channel::<(String, u64)>(64);
+    // Pending prompt-cache notices: run id → generation (one per idle period).
+    let mut cold: HashMap<String, u64> = HashMap::new();
+    let (cold_tx, mut cold_rx) = tokio::sync::mpsc::channel::<(String, u64)>(64);
     let mut gen_counter = 0u64;
+    let host = gw.keys.host_id();
     loop {
         tokio::select! {
             ev = rx.recv() => {
                 let ev = match ev {
                     Ok(Fanout::Event(e)) => e,
-                    Ok(Fanout::Reset) => { open.items.clear(); continue; }
+                    // Events were lost: what is open is unknown, so nothing is cleared either.
+                    Ok(Fanout::Reset) => { open.items.clear(); shown = Shown::default(); continue; }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                     Err(_) => return,
                 };
                 let ty = ev.get("type").and_then(|t| t.as_str()).unwrap_or("");
                 let subject = ev.get("subject").cloned().unwrap_or_default();
                 let data = ev.get("data").cloned().unwrap_or_default();
+                let pane = str_at(&subject, "pane").map(str::to_string);
+                let before = open.items.len();
                 match ty {
                     "interaction.opened" => {
                         let kind = data.get("kind").and_then(|k| k.as_str()).unwrap_or("");
                         if !matches!(kind, "approval" | "question" | "plan_review" | "Approval" | "Question" | "PlanReview") { continue; }
                         let Some(id) = subject.get("interaction").and_then(|i| i.as_str()) else { continue };
                         let title = describe_interaction(&gw, id).await;
-                        open.items.insert(id.to_string(), Item { title, url: format!("#/i/{}/{id}", gw.keys.host_id()), urgent: true, pane: subject.get("pane").and_then(|p| p.as_str()).map(str::to_string) });
-                        send(&gw, &open, false).await;
+                        open.items.insert(id.to_string(), Item::new(title, format!("#/i/{host}/{id}"), true, pane));
+                        let sent = send(&gw, &open, Push::NeedsYou).await;
+                        shown.sent(Push::NeedsYou, sent);
                     }
                     "interaction.decided" | "interaction.cancelled" | "interaction.expired" | "interaction.delivered" => {
                         if let Some(id) = subject.get("interaction").and_then(|i| i.as_str()) {
@@ -77,20 +192,44 @@ pub async fn run(gw: Arc<Gateway>) {
                             "idle" if from == "working" => {
                                 gen_counter += 1;
                                 finished.insert(run.to_string(), gen_counter);
-                                let (tx, run, g) = (done_tx.clone(), run.to_string(), gen_counter);
+                                let (tx, r, g) = (done_tx.clone(), run.to_string(), gen_counter);
                                 tokio::spawn(async move {
                                     tokio::time::sleep(Duration::from_secs(30)).await;
-                                    let _ = tx.send((run, g)).await;
+                                    let _ = tx.send((r, g)).await;
                                 });
+                                // The prompt cache starts to age now; only looked up when a
+                                // device wants the notice.
+                                if gw.devices().iter().any(|d| d.prefs.notify_cache_cold)
+                                    && let Ok(r) = gw.server.call("agent.get", json!({"target": run})).await
+                                    && let Some(after) = r.pointer("/run/harness").and_then(|h| h.as_str()).and_then(cache_notice_after)
+                                {
+                                    cold.insert(run.to_string(), gen_counter);
+                                    let (tx, r, g) = (cold_tx.clone(), run.to_string(), gen_counter);
+                                    tokio::spawn(async move {
+                                        tokio::time::sleep(after).await;
+                                        let _ = tx.send((r, g)).await;
+                                    });
+                                }
                             }
-                            "working" => { finished.remove(run); open.items.remove(&format!("run:{run}")); }
+                            "working" => {
+                                finished.remove(run);
+                                cold.remove(run);
+                                open.items.remove(&format!("run:{run}"));
+                            }
                             "error" | "rate_limited" => {
                                 let what = if to == "error" { "stopped with an error" } else { "is rate limited" };
                                 let title = format!("{} {what}", describe_run(&gw, run).await);
-                                open.items.insert(format!("run:{run}"), Item { title, url: format!("#/r/{}/{run}", gw.keys.host_id()), urgent: false, pane: subject.get("pane").and_then(|p| p.as_str()).map(str::to_string) });
-                                send(&gw, &open, false).await;
+                                open.items.insert(format!("run:{run}"), Item::new(title, format!("#/r/{host}/{run}"), false, pane));
+                                let sent = send(&gw, &open, Push::NeedsYou).await;
+                                shown.sent(Push::NeedsYou, sent);
                             }
                             _ => {}
+                        }
+                    }
+                    // A new turn or the end of the run: no cache notice for this idle period.
+                    "agent.turn_started" | "agent.exited" | "agent.session_ended" => {
+                        if let Some(run) = subject.get("run").and_then(|r| r.as_str()) {
+                            cold.remove(run);
                         }
                     }
                     // A pane asks the user to approve one call (09 §3.2 "Approved calls"): the
@@ -101,12 +240,31 @@ pub async fn run(gw: Arc<Gateway>) {
                         let Some(id) = subject.get("request").and_then(|i| i.as_str()) else { continue };
                         let method = data.get("method").and_then(|m| m.as_str()).unwrap_or("");
                         let title = format!("A pane asks to {}", approval_verb(method));
-                        open.items.insert(format!("approval:{id}"), Item { title, url: format!("#/approve/{}/{id}", gw.keys.host_id()), urgent: true, pane: None });
-                        send(&gw, &open, false).await;
+                        open.items.insert(format!("approval:{id}"), Item::new(title, format!("#/approve/{host}/{id}"), true, None));
+                        let sent = send(&gw, &open, Push::NeedsYou).await;
+                        shown.sent(Push::NeedsYou, sent);
                     }
                     "auth.approval_granted" | "auth.approval_denied" | "auth.approval_withdrawn" => {
                         if let Some(id) = subject.get("request").and_then(|i| i.as_str()) {
                             open.items.remove(&format!("approval:{id}"));
+                        }
+                    }
+                    // A goal's plan waits for approval (12 "Goal -> plan -> tasks"). Goals span
+                    // repositories, so share devices never see it (no pane on the item).
+                    "goal.planned" => {
+                        let Some(id) = subject.get("goal").and_then(|i| i.as_str()) else { continue };
+                        let Ok(g) = gw.server.call("goal.get", json!({"goal": id})).await else { continue };
+                        if g.pointer("/goal/state").and_then(|s| s.as_str()) != Some("planned") { continue; }
+                        let name = g.pointer("/goal/title").and_then(|s| s.as_str()).unwrap_or("a goal");
+                        let mut item = Item::new(format!("The plan for {} waits for approval", truncate(name, 80)), format!("#/g/{host}/{id}"), true, None);
+                        item.summary = Some("A plan waits for approval".into());
+                        open.items.insert(format!("goal:{id}"), item);
+                        let sent = send(&gw, &open, Push::NeedsYou).await;
+                        shown.sent(Push::NeedsYou, sent);
+                    }
+                    "goal.approved" | "goal.cancelled" | "goal.finished" | "goal.planning_started" => {
+                        if let Some(id) = subject.get("goal").and_then(|i| i.as_str()) {
+                            open.items.remove(&format!("goal:{id}"));
                         }
                     }
                     "notification.created" => {
@@ -120,16 +278,21 @@ pub async fn run(gw: Arc<Gateway>) {
                         let id = data.get("id").and_then(|i| i.as_str()).unwrap_or("n").to_string();
                         // Incoming handoffs open the host's handoff list in the app.
                         let url = match kind {
-                            "handoff" => format!("#/handoffs/{}", gw.keys.host_id()),
+                            "handoff" => format!("#/handoffs/{host}"),
                             // A standing approval was used: the host's approvals screen.
-                            "auth.approve" => format!("#/approve/{}", gw.keys.host_id()),
+                            "auth.approve" => format!("#/approve/{host}"),
                             _ => "#/inbox".into(),
                         };
-                        open.items.insert(format!("note:{id}"), Item { title, url, urgent: false, pane: subject.get("pane").and_then(|p| p.as_str()).map(str::to_string) });
-                        send(&gw, &open, false).await;
+                        open.items.insert(format!("note:{id}"), Item::new(title, url, false, pane));
+                        let sent = send(&gw, &open, Push::NeedsYou).await;
+                        shown.sent(Push::NeedsYou, sent);
                         open.items.remove(&format!("note:{id}"));
+                        continue;
                     }
                     _ => {}
+                }
+                if open.items.len() < before {
+                    send_clears(&gw, &mut shown, &open).await;
                 }
             }
             Some((run, g)) = done_rx.recv() => {
@@ -145,8 +308,26 @@ pub async fn run(gw: Arc<Gateway>) {
                     let title = format!("{} finished", describe_run(&gw, &run).await);
                     let mut done = Open::default();
                     let pane = r.pointer("/run/pane").and_then(|p| p.as_str()).map(str::to_string);
-                    done.items.insert(format!("run:{run}"), Item { title, url: format!("#/r/{}/{run}", gw.keys.host_id()), urgent: false, pane });
-                    send(&gw, &done, true).await;
+                    done.items.insert(format!("run:{run}"), Item::new(title, format!("#/r/{host}/{run}"), false, pane));
+                    let sent = send(&gw, &done, Push::Done).await;
+                    shown.sent(Push::Done, sent);
+                }
+            }
+            Some((run, g)) = cold_rx.recv() => {
+                if cold.get(&run) != Some(&g) { continue; }
+                cold.remove(&run);
+                let Ok(r) = gw.server.call("agent.get", json!({"target": run})).await else { continue };
+                let mut r = r;
+                normalize(&mut r);
+                let idle = r.pointer("/run/execution/value").and_then(|v| v.as_str()) == Some("idle");
+                let open_its = r.get("open_interactions").and_then(|v| v.as_u64()).unwrap_or(0);
+                // A run waiting on the user already has its own notification.
+                if idle && open_its == 0 {
+                    let title = format!("{}: prompt cache expires soon", describe_run(&gw, &run).await);
+                    let mut note = Open::default();
+                    let pane = r.pointer("/run/pane").and_then(|p| p.as_str()).map(str::to_string);
+                    note.items.insert(format!("cache:{run}"), Item::new(title, format!("#/r/{host}/{run}"), false, pane));
+                    send(&gw, &note, Push::CacheCold).await;
                 }
             }
         }
@@ -197,6 +378,11 @@ async fn describe_interaction(gw: &Gateway, id: &str) -> String {
         None => "An agent".into(),
     };
     let what = match it.get("kind").and_then(|k| k.as_str()) {
+        // A sandbox boundary request (push, copy out): its title says what.
+        Some("approval") if crate::api::boundary_of(&it).is_some() => {
+            let t = it.get("title").and_then(|t| t.as_str()).unwrap_or("");
+            format!("asks the host: {}", truncate(t, 80))
+        }
         Some("approval") => match it.pointer("/action/command").and_then(|c| c.as_str()) {
             Some(cmd) => format!("wants to run `{}`", truncate(cmd, 80)),
             None => match it.pointer("/action/tool").and_then(|t| t.as_str()) {
@@ -255,7 +441,9 @@ fn payload(gw: &Gateway, open: &Open, privacy: &str) -> Value {
             let t = if privacy == "full" {
                 vk_redact::redact(&it.title).to_string()
             } else {
-                strip_command(&it.title)
+                it.summary
+                    .clone()
+                    .unwrap_or_else(|| strip_command(&it.title))
             };
             (t, host.clone())
         }
@@ -302,9 +490,12 @@ async fn user_at_desk(gw: &Gateway) -> bool {
     last > 0 && now - last < AT_DESK_MS
 }
 
-async fn send(gw: &Arc<Gateway>, open: &Open, is_done: bool) {
+/// Push `open` to every device allowed to see it. Returns each device sent to, with the item
+/// keys its notification shows.
+async fn send(gw: &Arc<Gateway>, open: &Open, kind: Push) -> Vec<(String, Vec<String>)> {
+    let mut sent = vec![];
     if open.items.is_empty() || gw.dnd() || user_at_desk(gw).await {
-        return;
+        return sent;
     }
     // Pane → workspace, fetched only if a limited (share) device needs it.
     let mut pane_ws: Option<Vec<(String, Option<String>)>> = None;
@@ -368,13 +559,23 @@ async fn send(gw: &Arc<Gateway>, open: &Open, is_done: bool) {
             continue;
         }
         let urgent = visible.items.values().any(|i| i.urgent);
-        if is_done && !d.prefs.notify_done {
+        let wanted = match kind {
+            Push::Done => d.prefs.notify_done,
+            Push::CacheCold => d.prefs.notify_cache_cold,
+            Push::NeedsYou => !urgent || d.prefs.notify_input,
+        };
+        if !wanted {
             continue;
         }
-        if !is_done && urgent && !d.prefs.notify_input {
-            continue;
+        let mut p = payload(gw, &visible, &d.prefs.privacy);
+        if kind == Push::CacheCold
+            && let Some(key) = visible.items.keys().next()
+        {
+            // Its own notification: it must not replace what needs the user.
+            p["tag"] = format!("vibeke:{}:{key}", gw.keys.host_id()).into();
+            p["renotify"] = false.into();
         }
-        let p = payload(gw, &visible, &d.prefs.privacy);
+        sent.push((d.id.clone(), visible.items.keys().cloned().collect()));
         let gw = gw.clone();
         tokio::spawn(async move {
             // push_to re-checks that the device still exists and hasn't expired.
@@ -382,11 +583,79 @@ async fn send(gw: &Arc<Gateway>, open: &Open, is_done: bool) {
                 .await;
         });
     }
+    sent
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn open(keys: &[&str]) -> Open {
+        let mut o = Open::default();
+        for k in keys {
+            o.items.insert(
+                k.to_string(),
+                Item::new("t".into(), "#/".into(), true, None),
+            );
+        }
+        o
+    }
+
+    #[test]
+    fn clear_follows_the_items_a_device_was_shown() {
+        let mut shown = Shown::default();
+        shown.sent(
+            Push::NeedsYou,
+            vec![
+                ("phone".into(), vec!["i1".into(), "i2".into()]),
+                ("tablet".into(), vec!["i1".into()]),
+            ],
+        );
+        // i1 answered elsewhere: the tablet's notification only showed i1.
+        assert_eq!(shown.resolved(&open(&["i2"])), vec!["tablet".to_string()]);
+        // Asked again: nothing more until the phone's last item goes.
+        assert!(shown.resolved(&open(&["i2"])).is_empty());
+        assert_eq!(shown.resolved(&open(&[])), vec!["phone".to_string()]);
+        assert!(shown.resolved(&open(&[])).is_empty());
+    }
+
+    #[test]
+    fn other_notifications_on_the_host_tag_are_never_cleared() {
+        let mut shown = Shown::default();
+        shown.sent(Push::NeedsYou, vec![("phone".into(), vec!["i1".into()])]);
+        // A "finished" push replaced the notification (same tag): keep it.
+        shown.sent(Push::Done, vec![("phone".into(), vec!["run:r1".into()])]);
+        assert!(shown.resolved(&open(&[])).is_empty());
+        // A note merged into the notification: keep it too.
+        shown.sent(
+            Push::NeedsYou,
+            vec![("phone".into(), vec!["i2".into(), "note:n1".into()])],
+        );
+        assert!(shown.resolved(&open(&[])).is_empty());
+        // A cache notice has its own tag and changes nothing.
+        shown.sent(Push::NeedsYou, vec![("phone".into(), vec!["i3".into()])]);
+        shown.sent(
+            Push::CacheCold,
+            vec![("phone".into(), vec!["cache:r1".into()])],
+        );
+        assert_eq!(shown.resolved(&open(&[])), vec!["phone".to_string()]);
+        assert_eq!(
+            clear_payload("h1"),
+            json!({"kind": "clear", "tag": "vibeke:h1", "host": "h1"})
+        );
+    }
+
+    #[test]
+    fn cache_notice_comes_before_the_harness_cache_expires() {
+        for h in ["claude", "codex"] {
+            assert_eq!(cache_ttl(h), Some(Duration::from_secs(300)), "{h}");
+            let after = cache_notice_after(h).unwrap();
+            assert!(after < Duration::from_secs(300) && after >= Duration::from_secs(200));
+        }
+        for h in ["pi", "opencode", "gemini", ""] {
+            assert_eq!(cache_notice_after(h), None, "{h}");
+        }
+    }
 
     #[test]
     fn summary_hides_command() {

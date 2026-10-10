@@ -96,10 +96,12 @@ export const swipeAllowed = (i: Interaction): boolean => batchEligible(i);
 
 // ---- batching ------------------------------------------------------------------------------
 
-/** §7.6: approval, open, answerable, low/medium risk, with an action. */
+/** §7.6: approval, open, answerable, low/medium risk, with an action; never a sandbox boundary request. */
 export function batchEligible(i: Interaction): boolean {
   return (
     i.kind === 'approval' &&
+    !i.boundary &&
+    i.action?.tool !== 'boundary' &&
     i.status === 'open' &&
     i.answerable &&
     i.action !== null &&

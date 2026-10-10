@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import {
   answerParams,
   batchAnswerParams,
+  batchEligible,
   batchFingerprint,
   groupBatches,
   rankInbox,
@@ -159,6 +160,29 @@ describe('batching', () => {
     const b = item(ix({ run: 'r2', command: 'echo harmless\nrm notes.txt' }), run('r2', 'working'));
     const c = item(ix({ run: 'r3', command: 'echo harmless  rm notes.txt' }), run('r3', 'working'));
     expect(groupBatches([a, b, c])).toEqual([]);
+  });
+});
+
+describe('sandbox boundary requests', () => {
+  test('are never batched', () => {
+    const copy = ix({ risk: 'medium', command: null, paths: ['a.txt'] });
+    expect(batchEligible(copy)).toBe(true);
+    const boundary = {
+      ...copy,
+      action: { ...copy.action!, tool: 'boundary' },
+      boundary: { kind: 'copy_out', pane: 'p1', path: 'a.txt' },
+    };
+    expect(batchEligible(boundary)).toBe(false);
+    expect(batchEligible({ ...copy, boundary: { kind: 'push', pane: 'p1' } })).toBe(false);
+  });
+  test('new app methods carry an op_id when they change something', async () => {
+    const { MUTATING_METHODS } = await import('../src/model');
+    for (const m of ['worktree.create', 'assistant.generate', 'goal.approve', 'goal.cancel', 'browser.take_over', 'browser.click']) {
+      expect(MUTATING_METHODS.has(m)).toBe(true);
+    }
+    for (const m of ['agent.turns', 'goal.get', 'search.query', 'browser.attach_screencast', 'browser.screencast_frame']) {
+      expect(MUTATING_METHODS.has(m)).toBe(false);
+    }
   });
 });
 

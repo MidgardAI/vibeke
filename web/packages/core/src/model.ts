@@ -132,6 +132,19 @@ export interface Interaction {
   harness?: string;
   /** Added by the gateway: repo root of the run's cwd. */
   repo_root?: string;
+  /** Added by the gateway for a sandbox boundary request (`sandbox.request`): answer `allow` (once) or `deny`. */
+  boundary?: BoundaryRequest;
+}
+
+/** What a contained run asks the host to do across the sandbox boundary. */
+export interface BoundaryRequest {
+  kind: 'push' | 'copy_out' | string;
+  pane: string;
+  /** `push`: the remote and the task branch that would be pushed. */
+  remote?: string;
+  branch?: string;
+  /** `copy_out`: the file (relative to the checkout) copied to the host outbox. */
+  path?: string;
 }
 
 export interface Facet<T> {
@@ -721,8 +734,139 @@ export interface DevicePrefs {
   privacy: 'full' | 'summary' | 'minimal';
   notify_input: boolean;
   notify_done: boolean;
-  /** Push when an idle agent's prompt cache is about to go cold (host pref; older hosts omit it). */
+  /** Notify shortly before an idle Claude or Codex run's prompt cache expires (older gateways omit it). */
   notify_cache_cold?: boolean;
+}
+
+/** One recorded turn of a run (`agent.turns`; the server's Turn record, passed through). */
+export interface AgentTurn {
+  n: number;
+  prompt?: string;
+  started_at_ms?: number;
+  ended_at_ms?: number | null;
+  [k: string]: unknown;
+}
+
+/** The repository worktree `worktree.create` made (`open` also returns its workspace and first pane). */
+export interface CreatedWorktree {
+  path: string;
+  branch: string | null;
+  base_ref?: string | null;
+  repo_root?: string;
+  created_branch?: boolean;
+}
+
+/** Assistant operations an app may request (`assistant.generate`). */
+export type AppAssistOperation = 'briefing' | 'background_summary' | 'decision_card' | 'reply_suggestions';
+
+/** An assistant request record (`assistant.get`); `output` is the validated draft once `state` is `done`. */
+export interface AssistantRequest {
+  id: string;
+  operation: string;
+  state: 'awaiting_confirmation' | 'queued' | 'running' | 'done' | 'failed' | 'cancelled' | 'interrupted' | string;
+  output?: Record<string, unknown> | null;
+  error?: { category?: string; message?: string } | null;
+  [k: string]: unknown;
+}
+
+/** The exact payload a request would send, shown before the app confirms it. */
+export interface AssistantPreview {
+  digest: string;
+  model?: string;
+  endpoint_host?: string;
+  estimated_input_tokens?: number;
+  estimated_max_cost_usd?: number | null;
+  notice?: string;
+  [k: string]: unknown;
+}
+
+/** `reply_suggestions` output: one-line drafts the user may edit, then send with `agent.prompt`. */
+export interface ReplySuggestions {
+  replies: string[];
+  draft_only: true;
+  label: string;
+}
+
+export type GoalState = 'draft' | 'planned' | 'approved' | 'running' | 'done' | 'failed' | 'cancelled';
+
+export interface GoalStep {
+  id: string;
+  title: string;
+  prompt?: string;
+  [k: string]: unknown;
+}
+
+export interface Goal {
+  id: string;
+  handle: string;
+  title: string;
+  text: string;
+  repo: string;
+  state: GoalState;
+  plan: { steps: GoalStep[]; [k: string]: unknown } | null;
+  /** Pass to `goal.approve` as `plan_rev`: a changed plan is refused (`stale`). */
+  plan_rev: number;
+  approved_rev: number | null;
+  [k: string]: unknown;
+}
+
+export interface GoalView {
+  goal: Goal;
+  progress: { done: number; total: number };
+}
+
+/** A `search.query` hit (scrollback of live and archived panes; redacted for apps). */
+export interface SearchHit {
+  pane?: string;
+  pane_handle?: string;
+  workspace?: string;
+  title?: string;
+  run?: string | null;
+  source: string;
+  line?: number;
+  text: string;
+  ts?: number;
+  context?: { before?: string[]; after?: string[] };
+}
+
+/** A `desk.search` hit: one turn of a harness session on this host (snippet redacted). */
+export interface DeskHit {
+  session: string;
+  harness: string;
+  repo?: string | null;
+  cwd?: string | null;
+  turn: number;
+  role: string;
+  kind: string;
+  ts: number;
+  snippet: string;
+  status?: string;
+  live?: { run?: string | null; pane?: string | null };
+  [k: string]: unknown;
+}
+
+/** An agent browser session (`browser.list`); pass `session` to the other `browser.*` calls. */
+export interface BrowserSession {
+  session: string;
+  session_id: string;
+  owner: { pane: string; pane_handle?: string | null; run?: string | null } | { user: string };
+  url: string;
+  viewport: { width: number; height: number };
+  human_control: boolean;
+  screencast: boolean;
+  [k: string]: unknown;
+}
+
+/** The latest screencast frame; `data_b64` is null when nothing newer than `after_seq` arrived. */
+export type BrowserFrame =
+  | { session: string; seq: number; mime: string; width: number | null; height: number | null; received_ms: number; data_b64: string }
+  | { session: string; seq: number | null; data_b64: null };
+
+export interface SandboxInfo {
+  sandbox: string;
+  task?: string;
+  level: string;
+  [k: string]: unknown;
 }
 
 export interface BatchResult {
@@ -775,7 +919,21 @@ export interface AppApi {
     result: TranscriptPage;
   };
   'agent.start': {
-    params: { workspace: string; cwd?: string; harness: string; prompt?: string };
+    /**
+     * Where the agent starts, first match wins: `worktree` (a new worktree of the repository at
+     * `pane`, `workspace` or `cwd`, opened as its own workspace), `new_workspace` (a workspace in a
+     * host folder), `pane`, or a new tab in `workspace` (at `cwd`).
+     */
+    params: {
+      workspace?: string;
+      pane?: string;
+      cwd?: string;
+      harness: string;
+      prompt?: string;
+      name?: string;
+      worktree?: { branch: string; base?: string; name?: string };
+      new_workspace?: { cwd: string; name?: string };
+    };
     /** `pane` is the new pane id (the gateway returns the server's agent.start result + pane). */
     result: { run?: AgentRun; pane: string; [k: string]: unknown };
   };
@@ -828,7 +986,12 @@ export interface AppApi {
   'prefs.get': { params: Record<string, never>; result: { device: DevicePrefs; host: { dnd_until?: number } } };
   'prefs.set': { params: { device?: DevicePrefs; host?: { dnd_until: number } }; result: unknown };
   'push.subscribe': {
-    params: { subscription: { endpoint: string; keys: { p256dh: string; auth: string } }; vapid_private: string; supports_clear?: boolean };
+    /** `supports_clear`: the service worker closes this host's notification on a `{kind: "clear", tag, host}` push. */
+    params: {
+      subscription: { endpoint: string; keys: { p256dh: string; auth: string } };
+      vapid_private: string;
+      supports_clear?: boolean;
+    };
     result: Record<string, never>;
   };
   /** Fresh relay ticket for this device (`exp` unix seconds). */
@@ -894,6 +1057,91 @@ export interface AppApi {
   'handoff.cancel': { params: { id: string }; result: { job: HandoffJob } };
   /** The hosts `handoff.send` can deliver to, as this host's gateway last published them. */
   'handoff.peers': { params: Record<string, never>; result: { peers: HandoffPeer[]; updated_at: number | null } };
+  /** A new worktree of the repository at `pane`, `workspace` or `cwd`; `open` makes it a workspace (full scope, own devices). */
+  'worktree.create': {
+    params: ({ pane: string } | { workspace: string } | { cwd: string }) & { branch: string; base?: string; name?: string; open?: boolean };
+    result: { worktree: CreatedWorktree; workspace?: Workspace; tab?: Tab; root_pane?: Pane; warnings?: string[] };
+  };
+  /** A workspace in a host folder (full scope, own devices). */
+  'workspace.create': { params: { cwd: string; name?: string }; result: { workspace: Workspace; tab: Tab; root_pane: Pane } };
+  /** A run's recorded turns, oldest first; page with `after_seq = next_after_seq`. */
+  'agent.turns': {
+    params: { run: string; after_seq?: number; limit?: number };
+    result: { run: string; turns: AgentTurn[]; next_after_seq: number | null };
+  };
+  'assistant.status': { params: Record<string, never>; result: { enabled: boolean; configured: boolean; [k: string]: unknown } };
+  /**
+   * Start an assistant request (full scope, own devices; the workspace needs the host's assistant
+   * consent). Unless the host auto-sends the operation, the result is a preview: show it, then
+   * `assistant.confirm` with its digest. Poll `assistant.get` until `state` is `done`.
+   */
+  'assistant.generate': {
+    params: {
+      operation: AppAssistOperation;
+      workspace?: string;
+      pane?: string;
+      run?: string;
+      interaction?: string;
+      turns?: number[];
+      include_screen?: boolean;
+      priority?: 'interactive' | 'background';
+    };
+    result: {
+      request: AssistantRequest;
+      preview?: AssistantPreview;
+      requires_confirmation?: boolean;
+      deduplicated?: boolean;
+      cached?: boolean;
+      note?: string;
+    };
+  };
+  'assistant.confirm': { params: { request: string; preview_digest: string }; result: { request: AssistantRequest } };
+  'assistant.get': { params: { request: string }; result: { request: AssistantRequest } };
+  'assistant.cancel': { params: { request: string }; result: { request: AssistantRequest } };
+  'goal.list': { params: Record<string, never>; result: { goals: GoalView[] } };
+  'goal.get': { params: { goal: string }; result: GoalView };
+  /** Approve the plan revision the user reviewed (`stale` when it changed); `start` (default true) starts its ready steps. */
+  'goal.approve': { params: { goal: string; plan_rev: number; start?: boolean }; result: GoalView };
+  /** Cancel (also: reject a submitted plan); `stop_tasks` parks running step tasks. */
+  'goal.cancel': { params: { goal: string; stop_tasks?: boolean }; result: GoalView & { parked: string[] } };
+  /** Harness sessions on this host (own devices without a limit). */
+  'desk.search': {
+    params: { text: string; repo?: string; harness?: string; since?: string | number; until?: string | number; limit?: number; sort?: 'relevance' | 'recent' };
+    result: { hits: DeskHit[]; index: Record<string, unknown> };
+  };
+  /** Pane scrollback search; limited devices search only what was shared. */
+  'search.query': {
+    params: { q: string; pane?: string; workspace?: string; sources?: ('live' | 'archive')[]; since?: string | number; limit?: number; regex?: boolean; context?: number };
+    result: { hits: SearchHit[]; redacted?: boolean };
+  };
+  'sandbox.list': { params: Record<string, never>; result: { sandboxes: SandboxInfo[]; global_allow?: string[] } };
+  'sandbox.status': { params: Record<string, never>; result: { levels: { level: string; available: boolean; hint?: string }[]; [k: string]: unknown } };
+  'browser.list': { params: Record<string, never>; result: { sessions: BrowserSession[]; browser: Record<string, unknown>; machine: string } };
+  'browser.status': { params: Record<string, never>; result: Record<string, unknown> };
+  /** Start watching; then poll `browser.screencast_frame` (a device that stops polling for 30 s is detached). */
+  'browser.attach_screencast': {
+    params: { session: string };
+    result: { session: string; delivery: string; width: number; height: number; poll: string };
+  };
+  'browser.screencast_frame': { params: { session: string; after_seq?: number }; result: BrowserFrame };
+  'browser.detach_screencast': { params: { session: string }; result: { session: string; detached: boolean } };
+  /** Pause the agent's use of the session and drive it from this device; ends with `browser.release` or when this device stops watching. */
+  'browser.take_over': { params: { session: string }; result: { session: string; human_control: boolean } };
+  'browser.release': { params: { session: string }; result: { session: string; human_control: boolean } };
+  /** Input needs this device's take-over (`conflict` otherwise). */
+  'browser.click': {
+    params: { session: string; selector?: string; text?: string; x?: number; y?: number; click_count?: number; timeout_ms?: number };
+    result: { session: string; x: number; y: number; element: { tag: string; text: string } | null };
+  };
+  'browser.type': {
+    params: { session: string; text: string; selector?: string; clear?: boolean; submit?: boolean; timeout_ms?: number };
+    result: { session: string; typed: number };
+  };
+  'browser.press': { params: { session: string; key: string }; result: { session: string; key: string } };
+  'browser.navigate': {
+    params: { session: string; url?: string; path?: string; wait?: string; timeout_ms?: number };
+    result: { session: string; status: number | null; final_url: string; title: string };
+  };
   /** Open approval requests from panes and the standing grants (the gateway passes only these parts of the host's `auth.list`). */
   'auth.list': { params: Record<string, never>; result: { approvals?: ApprovalRequest[]; grants?: ApprovalGrant[] } };
   /**
@@ -955,6 +1203,19 @@ export const MUTATING_METHODS: ReadonlySet<string> = new Set([
   'handoff.send',
   'handoff.cancel',
   'auth.approve.decide',
+  'worktree.create',
+  'workspace.create',
+  'assistant.generate',
+  'assistant.confirm',
+  'assistant.cancel',
+  'goal.approve',
+  'goal.cancel',
+  'browser.take_over',
+  'browser.release',
+  'browser.click',
+  'browser.type',
+  'browser.press',
+  'browser.navigate',
 ]);
 
 // ---- normalization ------------------------------------------------------------------------
