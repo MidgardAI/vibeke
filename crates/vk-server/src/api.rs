@@ -716,7 +716,7 @@ pub async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) 
             "session": server.opts.session,
             "machine": server.opts.machine,
             "capabilities": if ctx.pane_scope.is_some() { json!(["pane"]) } else { json!(["*"]) },
-            "features": ["render.v1", "events.v1"],
+            "features": ["render.v1", "events.v1", "render.scoped_share"],
             "client_id": ctx.client_id,
         })),
         "client.list" => {

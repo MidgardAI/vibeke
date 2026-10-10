@@ -77,7 +77,7 @@ changing Rust inputs or making a commit. Keep `VIBEKE_WASM_TUI=1` set for both b
 The JavaScript interface has its own `browser_api` version. Bump it with incompatible interface changes.
 
 The TUI shares the paired device's encrypted connection. The relay cannot read its screen
-or input. View-only devices, approval-only devices, shares, and peers cannot attach.
+or input. Full paired devices and scoped shares can attach. Other device roles and peers cannot attach.
 The browser and host must use the same render protocol version. Closing the TUI releases
 its render connection. Closing the tab leaves host processes running.
 
@@ -120,3 +120,19 @@ To check the packaged PWA and its security headers, run from `web/`:
 VIBEKE_WASM_TUI=1 bun run --cwd apps/pwa build:vercel
 VIBEKE_TUI_PRODUCTION=1 bun apps/site/scripts/check-wasm-tui.ts
 ```
+
+### Shared browser terminals
+
+With the WASM build enabled, existing pane and workspace invitations open a terminal after
+acceptance. The same View, View + approve, and Control permissions apply. The guest can switch
+to Conversation to use the app's agent interface. People remains the place to revoke access.
+The host and gateway must both support scoped terminal rendering. Older hosts refuse this lane.
+
+Guest focus and window size do not change the owner's focus, unread marks, or terminal size.
+A smaller guest window can crop the terminal. Enlarge the window or reduce the font size to see more.
+Expiry and revocation close the terminal and remove its display. The terminal shows live cells
+and in-memory scrollback, including any secrets printed there, just as the existing styled
+terminal view does. It does not apply the plain-text API redactor. Guests cannot read older
+archived rows through the terminal stream. Browser panes, host notifications, synchronized
+input, and host management are unavailable in a shared terminal. Control runs commands with
+the pane's process permissions. Pane scope is not a filesystem sandbox.

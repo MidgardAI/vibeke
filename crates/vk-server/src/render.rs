@@ -61,6 +61,7 @@ pub struct Session {
 pub struct Auth {
     pub kind: String,
     pub readonly: bool,
+    pub share: Option<crate::render_share::Share>,
 }
 
 impl Default for Auth {
@@ -68,6 +69,7 @@ impl Default for Auth {
         Auth {
             kind: "tui".into(),
             readonly: false,
+            share: None,
         }
     }
 }
@@ -78,7 +80,7 @@ fn image_key(h: &[u8; 16]) -> String {
 }
 
 /// The `render.attach` features this server supports (listed in the attach result).
-pub const FEATURES: &[&str] = &["event_push", "scroll_report", "sync_input"];
+pub const FEATURES: &[&str] = &["event_push", "scroll_report", "sync_input", "scoped_share"];
 
 /// Most events replayed for a `Subscribe { after }` (older ones: `events.read`).
 const PUSH_BACKLOG: usize = 1000;
@@ -259,16 +261,23 @@ where
             .flatten()
             .and_then(|s| serde_json::from_str(&s).ok())
     });
+    let last_focus = if let Some(share) = &auth.share {
+        Some(server.with_core(|c| share.model(&c.model, &Default::default()).1))
+    } else {
+        last_focus
+    };
     {
         let mut clients = server.clients.lock().unwrap();
         let st = clients.entry(client_id.clone()).or_default();
-        st.kind = if crate::plugin_native::is_plugin_kind(&auth.kind) {
+        st.kind = if auth.share.is_some() {
+            "share".into()
+        } else if crate::plugin_native::is_plugin_kind(&auth.kind) {
             auth.kind.clone()
         } else {
             "tui".into()
         };
         st.attached_at_ms = vk_store::now_ms();
-        st.last_active = Some(Instant::now());
+        st.last_active = auth.share.is_none().then(Instant::now);
         if st.focus.pane.is_none() {
             // Restore the last focus of any client, else the first pane.
             st.focus = last_focus.unwrap_or_default();
@@ -277,7 +286,7 @@ where
     server.fix_client_focus();
     client_event(&server, "client.attached", &client_id, remote);
     // A read-only observer never takes the geometry lease (it can't resize other clients' PTYs).
-    if !auth.readonly {
+    if !auth.readonly && auth.share.is_none() {
         *server.geometry_leader.lock().unwrap() = Some(client_id.clone());
     }
     let mut revoked = crate::auth::revocations(&server);
@@ -310,10 +319,12 @@ where
     let mut ui_rx = server.ui.subscribe();
     let media_wake = s.media.notify.clone();
     let result: Result<()> = async {
+        s.auth_ok().map_err(anyhow::Error::msg)?;
         s.send_model(&mut wr).await?;
         wr.flush().await?;
         loop {
             let mut deadline = s.next_deadline();
+            if s.auth.share.is_some() { deadline = deadline.min(tokio::time::Instant::now() + Duration::from_secs(1)); }
             if let Some(ms) = crate::auth::elevation_expiry(&server, &s.auth.kind) {
                 let left = Duration::from_millis((ms - vk_store::now_ms()).max(0) as u64 + 1);
                 deadline = deadline.min(tokio::time::Instant::now() + left);
@@ -397,15 +408,17 @@ where
     s.media.close(&server);
     // Remember focus for the next attach.
     let focus = server.client_focus(&client_id);
-    server.with_core(|c| {
-        let mut tx = crate::core::Tx::new();
-        tx.m.kv(
-            "server",
-            "last_focus",
-            Some(serde_json::to_string(&focus).unwrap_or_default()),
-        );
-        let _ = c.commit(tx);
-    });
+    if s.auth.share.is_none() {
+        server.with_core(|c| {
+            let mut tx = crate::core::Tx::new();
+            tx.m.kv(
+                "server",
+                "last_focus",
+                Some(serde_json::to_string(&focus).unwrap_or_default()),
+            );
+            let _ = c.commit(tx);
+        });
+    }
     server.clients.lock().unwrap().remove(&client_id);
     client_event(&server, "client.detached", &client_id, remote);
     result
@@ -438,6 +451,9 @@ impl Session {
     }
 
     async fn on_ui<W: AsyncWrite + Unpin>(&mut self, ev: UiEvent, wr: &mut W) -> Result<bool> {
+        if self.auth.share.is_some() && !matches!(&ev, UiEvent::Goodbye(_)) {
+            return Ok(true);
+        }
         let f = match ev {
             UiEvent::Bell { pane } => ServerFrame::Bell { pane },
             UiEvent::Clipboard {
@@ -495,11 +511,15 @@ impl Session {
 
     async fn send_model<W: AsyncWrite + Unpin>(&mut self, wr: &mut W) -> Result<()> {
         self.model_rev = *self.server.model_rev.borrow();
-        let model = self.server.with_core(|c| c.model.clone());
-        let seen = self
+        let mut model = self.server.with_core(|c| c.model.clone());
+        let mut seen = self
             .server
             .with_core(|c| c.store.reads("local").unwrap_or_default());
-        let focus = self.server.client_focus(&self.client_id);
+        let mut focus = self.server.client_focus(&self.client_id);
+        if let Some(share) = &self.auth.share {
+            (model, focus) = share.model(&model, &focus);
+            seen.clear();
+        }
         self.focused = focus.pane.clone();
         asyncio::write_frame(
             wr,
@@ -516,6 +536,14 @@ impl Session {
     /// The attaching caller is still authorized (an elevation that expired or was revoked ends
     /// the session); `Err` carries the goodbye reason.
     fn auth_ok(&self) -> Result<(), String> {
+        if self
+            .auth
+            .share
+            .as_ref()
+            .is_some_and(|s| s.expires_at <= (vk_store::now_ms() / 1000) as u64)
+        {
+            return Err("This share has expired".into());
+        }
         crate::auth::authorize(&self.server, &self.ctx(), "render.attach").map_err(|e| e.message)
     }
 
@@ -538,8 +566,34 @@ impl Session {
         }
     }
 
+    fn focus_pane(&self, pane: &str) {
+        if let Some(share) = &self.auth.share {
+            let focus = self.server.with_core(|c| {
+                c.model
+                    .panes
+                    .iter()
+                    .find(|p| p.id == pane && share.allows(&c.model, pane))
+                    .map(|p| vk_proto::model::ClientFocus {
+                        pane: Some(p.id.clone()),
+                        tab: Some(p.tab.clone()),
+                        workspace: Some(p.workspace.clone()),
+                    })
+            });
+            if let Some(focus) = focus
+                && let Some(st) = self.server.clients.lock().unwrap().get_mut(&self.client_id)
+            {
+                st.focus = focus;
+            }
+        } else {
+            self.server.focus_pane(&self.client_id, pane);
+        }
+    }
+
     fn touch(&self) {
-        if !self.auth.readonly {
+        if self.auth.share.is_some() {
+            return;
+        }
+        if !self.auth.readonly && self.auth.share.is_none() {
             *self.server.geometry_leader.lock().unwrap() = Some(self.client_id.clone());
         }
         if let Some(st) = self.server.clients.lock().unwrap().get_mut(&self.client_id) {
@@ -558,6 +612,58 @@ impl Session {
             wr.flush().await?;
             return Ok(false);
         }
+        if let Some(share) = &self.auth.share {
+            // Focus is local to this observer. Never run native commands for a guest.
+            if let ClientFrame::Command { req, json } = &f {
+                let v: serde_json::Value = serde_json::from_str(json)?;
+                let method = v["method"].as_str().unwrap_or("");
+                if matches!(method, "workspace.focus" | "tab.focus" | "pane.focus") {
+                    let pane = self.server.with_core(|c| {
+                        c.model
+                            .panes
+                            .iter()
+                            .find(|p| {
+                                share.allows(&c.model, &p.id)
+                                    && match method {
+                                        "workspace.focus" => {
+                                            v["params"]["workspace"].as_str() == Some(&p.workspace)
+                                        }
+                                        "tab.focus" => v["params"]["tab"].as_str() == Some(&p.tab),
+                                        _ => v["params"]["pane"].as_str() == Some(&p.id),
+                                    }
+                            })
+                            .map(|p| p.id.clone())
+                    });
+                    if let Some(pane) = pane {
+                        self.focus_pane(&pane);
+                        self.send_model(wr).await?;
+                        asyncio::write_frame(
+                            wr,
+                            &ServerFrame::CommandResult {
+                                req: *req,
+                                json: serde_json::json!({"jsonrpc":"2.0","id":req,"result":{}})
+                                    .to_string(),
+                            },
+                        )
+                        .await?;
+                        return Ok(true);
+                    }
+                }
+            }
+        }
+        let f = if let Some(share) = &self.auth.share {
+            match self.server.with_core(|c| share.filter(&c.model, f)) {
+                Ok(f) => f,
+                Err(reply) => {
+                    if let Some(r) = reply {
+                        asyncio::write_frame(wr, &r).await?;
+                    }
+                    return Ok(true);
+                }
+            }
+        } else {
+            f
+        };
         let f = match crate::session_api::readonly_filter(&self.client_id, f) {
             Ok(f) => f,
             Err(reply) => {
@@ -647,9 +753,9 @@ impl Session {
             ClientFrame::Focus { pane } => {
                 self.touch();
                 let prev = self.focused.clone();
-                self.server.focus_pane(&self.client_id, &pane);
+                self.focus_pane(&pane);
                 // Focus events to apps that asked for them (03 §7.2).
-                if prev.as_deref() != Some(&pane) {
+                if self.auth.share.is_none() && prev.as_deref() != Some(&pane) {
                     if let Some(p) = prev {
                         let b = encode::encode_focus(false, &input_modes(&self.server, &p));
                         if !b.is_empty()
@@ -674,6 +780,9 @@ impl Session {
                     }
                 }
                 self.focused = Some(pane);
+                if self.auth.share.is_some() {
+                    self.send_model(wr).await?;
+                }
             }
             ClientFrame::ViewHint { panes, active } => {
                 if active {
@@ -687,7 +796,9 @@ impl Session {
                         }
                     }
                 }
-                if let Some(st) = self.server.clients.lock().unwrap().get_mut(&self.client_id) {
+                if self.auth.share.is_none()
+                    && let Some(st) = self.server.clients.lock().unwrap().get_mut(&self.client_id)
+                {
                     st.visible = panes.iter().map(|p| p.pane.clone()).collect();
                     st.host_focused = active;
                 }
@@ -792,7 +903,9 @@ impl Session {
             // Don't wait for the holder ack on the hot path: a small task forwards it to the
             // session loop once the holder confirms the PTY write (07 §3.2), so the client
             // can drop the input from its resend ledger.
-            crate::sync_input::mirror(&self.server, pane, &bytes);
+            if self.auth.share.is_none() {
+                crate::sync_input::mirror(&self.server, pane, &bytes);
+            }
             let id = holder_input_id(&self.client_id, input_id);
             *rt.last_input.lock().unwrap() = Some(Instant::now());
             // Typing into an idle-suspended (paused) box wakes it (13 §11).
@@ -834,8 +947,15 @@ impl Session {
         // Archived rows (older than memory) are addressed after in-memory ones by the client:
         // index space = [archive rows .. memory rows], oldest first.
         let archived: u32 = first_mem_abs.min(u32::MAX as u64) as u32;
-        let total = archived + mem;
-        let end = (start + count).min(total);
+        let total = archived.saturating_add(mem);
+        let end = start.saturating_add(count).min(total);
+        // Keep absolute positions stable as memory rolls over. Shares can fetch only
+        // in-memory styled rows, as with the existing styled pane API.
+        let start = if self.auth.share.is_some() {
+            start.max(archived)
+        } else {
+            start
+        };
         let mut lines = Vec::new();
         if start < archived {
             let a_end = end.min(archived);
@@ -889,6 +1009,14 @@ impl Session {
     async fn send_panes<W: AsyncWrite + Unpin>(&mut self, wr: &mut W) -> Result<()> {
         let now = Instant::now();
         for v in self.visible.clone() {
+            if self
+                .auth
+                .share
+                .as_ref()
+                .is_some_and(|s| !self.server.with_core(|c| s.allows(&c.model, &v.pane)))
+            {
+                continue;
+            }
             let Some(rt) = self.server.pane_rt(&v.pane) else {
                 continue;
             };

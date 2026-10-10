@@ -2,12 +2,12 @@ import { expect, test } from 'bun:test';
 import type { HostConnection, TuiCallbacks, TuiStream } from '@vibeke/core';
 import { FakeClock, flush } from '../../core/test/helpers';
 import { TuiConnection, type TuiState } from '../src/lib/tui-connection';
-function harness(open?: (cb: TuiCallbacks) => Promise<TuiStream>) {
+function harness(open?: (cb: TuiCallbacks) => Promise<TuiStream>, info = { scope: 'full', kind: 'device', features: ['wasm_tui'] } as Record<string, unknown>) {
   const clock = new FakeClock(); const states: TuiState[] = []; const notices: string[] = []; const crashes: unknown[] = [];
   let callback!: TuiCallbacks, changed!: () => void, status = 'online', calls = 0, resets = 0;
   const outgoing: Uint8Array[] = []; const sent: Uint8Array[] = []; const resolve: Array<() => void> = [];
   const stream: TuiStream = { id: 's', clientId: 'c', features: [], start() {}, close() {}, send(data) { sent.push(data); return new Promise<void>((r) => resolve.push(r)); } };
-  const host = { getSnapshot: () => ({ status, info: { scope: 'full', kind: 'device', features: ['wasm_tui'] } }), subscribe(fn: () => void) { changed = fn; return () => {}; }, reconnectNow() {}, async openTui(_protocol: number, cb: TuiCallbacks) { calls++; callback = cb; return open ? open(cb) : stream; } } as unknown as HostConnection;
+  const host = { getSnapshot: () => ({ status, info }), subscribe(fn: () => void) { changed = fn; return () => {}; }, reconnectNow() {}, async openTui(_protocol: number, cb: TuiCallbacks) { calls++; callback = cb; return open ? open(cb) : stream; } } as unknown as HostConnection;
   const runtime = { connected() {}, disconnected() { resets++; outgoing.length = 0; }, receive() {}, outgoing: () => outgoing.shift() ?? new Uint8Array() };
   const connection = new TuiConnection({ host, runtime, protocol: 7, clock, random: () => 0.5, state: (s) => states.push(s), wake() {}, notice: (n) => notices.push(n), crashed: (e) => crashes.push(e) });
   return { connection, runtime, crashes, stream, outgoing, sent, resolve, notices, states, clock, get calls() { return calls; }, get resets() { return resets; }, receive() { callback.frame(new Uint8Array()); }, closed() { callback.closed('lost'); }, status(s: string) { status = s; changed(); } };
@@ -67,4 +67,18 @@ test('host status changes preserve the reason a terminal is blocked', async () =
   h.status('offline'); h.status('online');
   expect(h.states.at(-1)).toEqual({ kind: 'blocked', message: 'Input was discarded' });
   expect(h.calls).toBe(1); h.connection.dispose();
+});
+
+test('scoped shares attach only to hosts that advertise the scoped terminal boundary', async () => {
+  for (const scope of ['view', 'approve', 'full']) {
+    const h = harness(undefined, { scope, kind: 'share', limit: { pane: 'p1' }, features: ['wasm_tui', 'wasm_tui_share'] });
+    h.connection.start(); await flush(); expect(h.calls).toBe(1); expect(h.states.at(-1)?.kind).toBe('connected'); h.connection.dispose();
+  }
+  for (const info of [
+    { scope: 'view', kind: 'share', limit: { pane: 'p1' }, features: ['wasm_tui'] },
+    { scope: 'full', kind: 'peer', features: ['wasm_tui', 'wasm_tui_share'] },
+    { scope: 'full', kind: 'share', features: ['wasm_tui', 'wasm_tui_share'] },
+  ]) {
+    const h = harness(undefined, info); h.connection.start(); await flush(); expect(h.calls).toBe(0); expect(h.states.at(-1)?.kind).toBe('blocked'); h.connection.dispose();
+  }
 });

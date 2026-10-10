@@ -110,13 +110,22 @@ export function PairScreen({ d }: { d: string | null }) {
     try {
       const rec = await app.pair(link, name.trim() || app.platform.defaultDeviceName, (f) => setPhase({ k: 'pending', fingerprint: f }));
       app.haptic('success');
-      setPhase({ k: 'done', host: rec.name, id: rec.host_id, terminal: rec.scope === 'full' && !rec.limit && !rec.until, kind: rec.kind ?? 'device' });
+      setPhase({ k: 'done', host: rec.name, id: rec.host_id, terminal: rec.kind === 'share' || (rec.scope === 'full' && !rec.limit && !rec.until), kind: rec.kind ?? 'device' });
       setRaw(null);
+
     } catch (e) {
       app.haptic('error');
       setPhase({ k: 'error', message: pairingErrorMessage(e) });
     }
   };
+
+  useEffect(() => {
+    if (phase.k !== 'done' || phase.kind !== 'share' || !app.platform.tui) return;
+    const host = hosts.find((h) => h.record.host_id === phase.id);
+    if (host?.status === 'online' && host.info?.features.includes('wasm_tui_share')) {
+      navigate({ name: 'tui', host: phase.id, workspace: host.record.limit?.workspace, pane: host.record.limit?.pane }, { replace: true });
+    }
+  }, [phase, hosts, app]);
 
   return (
     <div className="mx-auto max-w-md space-y-4 px-4 py-5">
@@ -126,11 +135,11 @@ export function PairScreen({ d }: { d: string | null }) {
           <div className="text-lg font-medium">
             {phase.kind === 'share' ? t.pair.doneShare(phase.host) : t.pair.done(phase.host)}
           </div>
-          {app.platform.tui && phase.terminal && phase.kind === 'device' && <Button variant="primary" block size="lg" onClick={() => {
-            app.prefs.patch({ preferredTuiHost: phase.id });
+          {app.platform.tui && phase.terminal && (phase.kind !== 'share' || app.conn(phase.id)?.getSnapshot().info?.features.includes('wasm_tui_share')) && <Button variant="primary" block size="lg" onClick={() => {
+            app.prefs.patch({ preferredTuiHost: phase.kind === 'device' ? phase.id : null });
             navigate({ name: 'tui', host: phase.id });
           }}>Open terminal</Button>}
-          <Button variant={app.platform.tui && phase.terminal && phase.kind === 'device' ? 'secondary' : 'primary'} block size="lg" onClick={() => { app.prefs.patch({ preferredTuiHost: null }); navigate({ name: 'home' }); }}>
+          <Button variant={app.platform.tui && phase.terminal && (phase.kind !== 'share' || app.conn(phase.id)?.getSnapshot().info?.features.includes('wasm_tui_share')) ? 'secondary' : 'primary'} block size="lg" onClick={() => { app.prefs.patch({ preferredTuiHost: null }); navigate({ name: 'home' }); }}>
             {t.pair.openApp}
           </Button>
         </Card>

@@ -160,7 +160,7 @@ function Main() {
   useEffect(() => {
     if (route.name !== 'home') return;
     if (hosts.length === 0) return navigate({ name: 'pair', d: null }, { replace: true });
-    if (app.platform.tui && prefs.preferredTuiHost && hosts.some((h) => h.record.host_id === prefs.preferredTuiHost)) {
+    if (app.platform.tui && prefs.preferredTuiHost && hosts.some((h) => h.record.host_id === prefs.preferredTuiHost && (h.info?.kind ?? h.record.kind ?? 'device') === 'device')) {
       return navigate({ name: 'tui', host: prefs.preferredTuiHost }, { replace: true });
     }
     if (!ready && !decided.current) return;
@@ -194,7 +194,7 @@ function Main() {
       </Layout>}
       <Toasts />
       <IdleLockOverlay />
-      {hosts.length > 0 && (route.name === 'inbox' || route.name === 'workspace') && <Tour />}
+      {hosts.some((h) => (h.info?.kind ?? h.record.kind ?? 'device') === 'device') && (route.name === 'inbox' || route.name === 'workspace') && <Tour />}
       {route.name !== 'tui' && <KeyboardLayer surface="full" />}
     </>
   );

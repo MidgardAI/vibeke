@@ -473,6 +473,7 @@ fn features(gw: &Gateway) -> Vec<&'static str> {
         "push_clear",
         "cache_cold",
         "wasm_tui",
+        "wasm_tui_share",
     ];
     if gw.cfg.stt.is_some() {
         f.push("stt");
@@ -489,7 +490,7 @@ async fn respond(out: &Out, id: Option<Value>, r: api::ApiResult) {
     out.send(v).await;
 }
 
-async fn handle(
+pub(crate) async fn handle(
     gw: &Arc<Gateway>,
     device: &crate::state::Device,
     method: &str,

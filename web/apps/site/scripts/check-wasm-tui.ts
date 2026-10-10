@@ -233,6 +233,65 @@ try {
   console.log('WASM memory bytes:', memory);
   console.log('Startup measurements:', await page.evaluate(() => performance.getEntriesByName('vibeke-tui-initialize').map((e) => ({ durationMs: Math.round(e.duration) }))));
   await page.screenshot({ path: process.env.VIBEKE_TUI_SCREENSHOT ?? '/tmp/vibeke-wasm-tui.png' });
+  // Real guest identities, existing invitations, and scoped WASM rendering.
+  const privateWs = JSON.parse(cli('workspace', 'create', '--cwd', temp, '--command', '/bin/sh', '--name', 'PRIVATE_WORKSPACE_SENTINEL'));
+  for (const [scope, workspaceShare] of [['view', false], ['approve', false], ['full', false], ['full', true]] as const) {
+    const invitation = JSON.parse(cli('api', 'call', 'gateway.call', JSON.stringify({ method: 'share.create', params: { kind: 'share', scope, ...(workspaceShare ? { workspace: ws.workspace.id } : { pane }), ttl_s: 3600, label: `Guest ${scope}` } })));
+    const guestContext = await browser.newContext({ viewport: { width: 1000, height: 700 } });
+    guestContext.setDefaultTimeout(15_000);
+    const guest = await guestContext.newPage();
+    guest.on('pageerror', (e) => errors.push(String(e)));
+    await guest.goto(invitation.link);
+    await guest.getByRole('button', { name: 'Accept invitation', exact: true }).click();
+    // The reconnect smoke above and every guest share one loopback IP. Respect the
+    // relay's admission bucket by retrying only its transient pairing refusal.
+    await expect.poll(async () => {
+      if (await guest.getByRole('status').filter({ hasText: /^Connected$/ }).isVisible()) return true;
+      if (await guest.getByRole('status').filter({ hasText: /Could not reach the host/ }).isVisible())
+        await guest.getByRole('button', { name: 'Accept invitation', exact: true }).click();
+      return false;
+    }, { timeout: 90_000, intervals: [1000, 3000, 7000] }).toBe(true);
+    await expect(guest.getByTestId('share-access')).toContainText(scope === 'full' ? 'Control' : scope === 'approve' ? 'View + approve' : 'View only');
+    await guest.getByRole('button', { name: 'Browser menu', exact: true }).click();
+    await expect(guest.getByRole('checkbox', { name: 'Open this terminal when I launch the app', exact: true })).toHaveCount(0);
+    if (scope !== 'full') await expect(guest.getByRole('button', { name: 'Paste', exact: true })).toBeDisabled();
+    await guest.getByRole('checkbox', { name: 'Screen reader support', exact: true }).check();
+    await guest.getByRole('button', { name: 'Close', exact: true }).click();
+    const guestTerminal = guest.locator('.xterm-accessibility-tree');
+    await expect(guestTerminal).toContainText('WASM experiment', { timeout: 20_000 });
+    await expect(guestTerminal).not.toContainText('PRIVATE_WORKSPACE_SENTINEL');
+    if (scope === 'view') {
+      await guest.getByRole('button', { name: 'Conversation', exact: true }).click();
+      await guest.getByRole('button', { name: 'Open terminal', exact: true }).click();
+      await expect(guest.getByRole('status').filter({ hasText: /^Connected$/ })).toBeVisible({ timeout: 30_000 });
+    }
+    const beforeSize = JSON.parse(cli('pane', 'get', pane)).pane;
+    await guest.setViewportSize({ width: 700, height: 500 });
+    // A guest cannot resize the PTY. Restore room for the owner's full terminal before
+    // asserting prompt output; a smaller guest viewport crops that fixed-size screen.
+    await guest.setViewportSize({ width: 1600, height: 1000 });
+    await guest.locator('.xterm-helper-textarea').focus();
+    await guest.keyboard.type(`printf 'GUEST_${scope}_%s\\n' OK`); await guest.keyboard.press('Enter');
+    if (scope === 'full') await expect(guestTerminal).toContainText('GUEST_full_OK', { timeout: 20_000 });
+    else {
+      // An owner-generated barrier proves the guest's earlier input has had time to arrive.
+      cli('pane', 'send-text', pane, `printf 'BARRIER_${scope}_%s\\n' OK`); cli('pane', 'send-keys', pane, 'enter');
+      await expect(guestTerminal).toContainText(`BARRIER_${scope}_OK`, { timeout: 20_000 });
+      expect(cli('pane', 'read', pane, '--lines', '200')).not.toContain(`GUEST_${scope}_OK`);
+    }
+    const afterSize = JSON.parse(cli('pane', 'get', pane)).pane;
+    expect([afterSize.cols, afterSize.rows]).toEqual([beforeSize.cols, beforeSize.rows]);
+    const all = JSON.parse(readFileSync(`${temp}/gateway/devices.json`, 'utf8'));
+    const guestDevice = (Array.isArray(all) ? all : all.devices).find((d: { kind?: string; scope?: string }) => d.kind === 'share' && d.scope === scope);
+    if (workspaceShare) await guest.clock.setFixedTime(new Date((guestDevice.expires_at + 1) * 1000));
+    else cli('gateway', 'revoke', guestDevice.id);
+    await expect(guest.getByRole('status')).toHaveText('This shared session has ended.', { timeout: 15_000 });
+    await expect(guest.locator('.xterm')).toHaveCount(0);
+    await guestContext.close();
+    console.log(`Guest ${scope} ${workspaceShare ? 'workspace expiry' : 'pane revocation'} passed`);
+  }
+  expect(privateWs.root_pane.id).not.toBe(pane);
+  console.log('PASS: guest View/Approve/Control shares, scoped model, owner geometry and revocation');
   const devices = JSON.parse(readFileSync(`${temp}/gateway/devices.json`, 'utf8'));
   const device = (Array.isArray(devices) ? devices : devices.devices)[0];
   cli('gateway', 'revoke', device.id);
@@ -240,7 +299,7 @@ try {
   expect(errors).toEqual([]);
   console.log('PASS: pairing, Rust WASM rendering, shell/Unicode input, palette, split, resize, reconnect, offline recovery, reload, preferences, two clients, visibility recovery, revocation');
 } catch (e) {
-  const page = browser.contexts()[0]?.pages()[0];
+  const page = browser.contexts().at(-1)?.pages()[0];
   if (page) {
     await page.screenshot({ path: '/tmp/vibeke-wasm-tui-failed.png' }).catch(() => {});
     console.error((await page.locator('body').innerText().catch(() => '')).slice(-5000));

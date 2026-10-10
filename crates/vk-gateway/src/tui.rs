@@ -1,6 +1,6 @@
 //! An authenticated render stream for the browser's WebAssembly TUI.
 //!
-//! This is a full host client. Restricted devices never reach the server socket. The bridge
+//! Full devices use the native lane; shares use scoped rendering and the existing API permissions. The bridge
 //! belongs to one encrypted device connection and is dropped on disconnect or revocation.
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -42,14 +42,17 @@ impl Drop for Bridge {
 }
 
 pub fn authorize(device: &Device) -> Result<(), ApiError> {
-    if device.kind != "device"
-        || device.scope != Scope::Full
-        || device.limit.is_some()
-        || device.expired()
-    {
+    let full = device.kind == "device" && device.scope == Scope::Full && device.limit.is_none();
+    let share = device.kind == "share"
+        && device.expires_at.is_some()
+        && device.limit.as_ref().is_some_and(|l| {
+            l.pane.as_ref().is_some_and(|s| !s.is_empty())
+                || l.workspace.as_ref().is_some_and(|s| !s.is_empty())
+        });
+    if device.expired() || !(full || share) {
         return Err(ApiError::new(
             "forbidden",
-            "The TUI needs a paired device with full host access",
+            "The terminal needs a paired device or a valid pane or workspace share",
         ));
     }
     Ok(())
@@ -69,6 +72,7 @@ impl Bridge {
                 "The browser TUI and host use different render protocols. Rebuild the browser app and update the host together.",
             ));
         }
+        let share = share_grant(device);
         let id = format!(
             "web-tui-{}-{}",
             device.id,
@@ -87,16 +91,36 @@ impl Bridge {
         // also apply to commands from this client. The browser cannot choose this identity.
         let hello = json!({"jsonrpc":"2.0", "id":1, "method":"client.hello", "params":{
             "client":"vibeke-browser-tui", "kind":"gateway-tui", "remote":true, "api":"vibeke/1"}});
-        request(&mut rd, &mut wr, hello).await?;
+        let hello = request(&mut rd, &mut wr, hello).await?;
+        if !share.is_null()
+            && !hello["features"]
+                .as_array()
+                .is_some_and(|f| f.iter().any(|v| v == "render.scoped_share"))
+        {
+            return Err(ApiError::new(
+                "unsupported",
+                "Update the host to use shared terminals",
+            ));
+        }
         let reply = request(
             &mut rd,
             &mut wr,
             json!({"jsonrpc":"2.0", "id":2, "method":"render.attach", "params":{
-                "client_id":id, "protocol":protocol, "remote":true,
+                "client_id":id, "protocol":protocol, "remote":true, "share":share,
                 "caps":{"max_fps":60, "kitty_keyboard":true, "osc52":true, "truecolor":true}
             }}),
         )
         .await?;
+        if !share.is_null()
+            && !reply["features"]
+                .as_array()
+                .is_some_and(|f| f.iter().any(|v| v == "scoped_share"))
+        {
+            return Err(ApiError::new(
+                "unsupported",
+                "Update the host to use shared terminals",
+            ));
+        }
         let (tx, mut rx) = mpsc::channel::<Vec<ClientFrame>>(32);
         let device_id = device.id.clone();
         let actor = format!("gateway:{} ({})", device.name, device.id);
@@ -119,13 +143,26 @@ impl Bridge {
             let mut commands = tokio::task::JoinSet::new();
             let result: anyhow::Result<()> = async {
                 loop {
-                    let allowed = gw.device(&device_id).is_some_and(|d| authorize(&d).is_ok());
-                    anyhow::ensure!(allowed, "Device no longer has full host access");
+                    let allowed = gw.device(&device_id).is_some_and(|d| authorize(&d).is_ok() && share_grant(&d) == share);
+                    anyhow::ensure!(allowed, "This terminal access has ended");
                     tokio::select! {
                         _ = check.tick() => {}
                         frames = rx.recv() => {
                             let Some(frames) = frames else { break; };
                             for mut f in frames {
+                                if !share.is_null() && let ClientFrame::Command { req, json } = &f {
+                                    let v: Value = serde_json::from_str(json)?;
+                                    let method = v["method"].as_str().unwrap_or("");
+                                    if !matches!(method, "workspace.focus" | "tab.focus" | "pane.focus") {
+                                        if commands.len() >= 4 {
+                                            emit(&out, &stream_id, command_error(*req, "Too many operations are running", "busy")).await?;
+                                        } else {
+                                            let (gw, device_id, req, v) = (gw.clone(), device_id.clone(), *req, v.clone());
+                                            commands.spawn(async move { share_command(gw, device_id, req, v).await });
+                                        }
+                                        continue;
+                                    }
+                                }
                                 prepare(&mut f, &actor)?;
                                 if let ClientFrame::Command { req, json } = &f
                                     && separate_command(json)
@@ -160,7 +197,12 @@ impl Bridge {
             out.notify("tui.closed", json!({"stream":stream_id, "reason":reason}))
                 .await;
         });
-        let result = json!({"stream":id, "client_id":id, "protocol":protocol, "features":reply.get("features").cloned().unwrap_or(json!([]))});
+        let features = if device.kind == "share" {
+            json!(["shared_tui"])
+        } else {
+            reply.get("features").cloned().unwrap_or(json!([]))
+        };
+        let result = json!({"stream":id, "client_id":id, "protocol":protocol, "features":features});
         Ok((Self { id, tx, task }, result))
     }
 
@@ -176,6 +218,48 @@ impl Bridge {
         self.tx
             .try_send(frames)
             .map_err(|_| ApiError::unavailable("TUI input queue is full or closed"))
+    }
+}
+
+fn share_grant(device: &Device) -> Value {
+    if device.kind != "share" {
+        return Value::Null;
+    }
+    let limit = device.limit.as_ref();
+    json!({"scope": device.scope.as_str(), "pane": limit.and_then(|l| l.pane.as_ref()),
+        "workspace": limit.and_then(|l| l.workspace.as_ref()), "expires_at": device.expires_at})
+}
+
+async fn share_command(gw: Arc<Gateway>, device_id: String, req: u64, v: Value) -> ServerFrame {
+    let result = async {
+        let device = gw
+            .device(&device_id)
+            .ok_or_else(|| ApiError::new("forbidden", "Share revoked"))?;
+        authorize(&device)?;
+        let method = v["method"].as_str().unwrap_or("");
+        let mut params = v.get("params").cloned().unwrap_or(json!({}));
+        let object = params
+            .as_object_mut()
+            .ok_or_else(|| ApiError::invalid("Invalid command parameters"))?;
+        // Native TUI commands do not all carry app operation IDs. Give each received command
+        // one identity; never replay an ambiguous command after reconnect.
+        object.entry("op_id").or_insert_with(|| {
+            json!(format!(
+                "tui-{}-{}-{req}",
+                crate::state::now_s(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ))
+        });
+        crate::session::handle(&gw, &device, method, params).await
+    }
+    .await;
+    let response = match result {
+        Ok(result) => json!({"jsonrpc":"2.0", "id":req, "result":result}),
+        Err(error) => json!({"jsonrpc":"2.0", "id":req, "error":error.to_json()}),
+    };
+    ServerFrame::CommandResult {
+        req,
+        json: response.to_string(),
     }
 }
 
@@ -385,7 +469,7 @@ mod tests {
         assert_eq!(v["params"]["actor"], "gateway:Browser");
     }
     #[test]
-    fn only_unrestricted_full_devices_can_attach() {
+    fn only_full_devices_or_scoped_expiring_shares_can_attach() {
         let base = json!({"id":"d1", "name":"Browser", "public":"", "scope":"full", "paired_at":0});
         let mut d: Device = serde_json::from_value(base).unwrap();
         assert!(authorize(&d).is_ok());
@@ -398,7 +482,16 @@ mod tests {
             d.kind = kind.into();
             assert!(authorize(&d).is_err());
         }
-        d.kind = "device".into();
+        d.kind = "share".into();
+        d.limit = Some(crate::state::Limit {
+            pane: Some("p1".into()),
+            workspace: None,
+        });
+        d.expires_at = Some(u64::MAX);
+        for scope in [Scope::View, Scope::Approve, Scope::Full] {
+            d.scope = scope;
+            assert!(authorize(&d).is_ok());
+        }
         d.expires_at = Some(1);
         assert!(authorize(&d).is_err());
     }

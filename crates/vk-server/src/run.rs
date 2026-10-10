@@ -666,6 +666,27 @@ where
             wr.flush().await?;
             return Ok(());
         }
+        let share = if let Some(value) = req.params.get("share").filter(|v| !v.is_null()) {
+            let share = serde_json::from_value::<crate::render_share::Share>(value.clone())
+                .ok()
+                .filter(|s| ctx.kind == "gateway-tui" && s.valid());
+            let Some(share) = share else {
+                let r = Response::err(
+                    req.id.clone().unwrap_or(Value::Null),
+                    err(
+                        ErrorKind::InvalidParams,
+                        "Invalid or unauthorized terminal share",
+                    ),
+                );
+                wr.write_all(serde_json::to_string(&r)?.as_bytes()).await?;
+                wr.write_all(b"\n").await?;
+                wr.flush().await?;
+                return Ok(());
+            };
+            Some(share)
+        } else {
+            None
+        };
         let max_fps = req
             .params
             .get("caps")
@@ -688,6 +709,7 @@ where
         let auth = render::Auth {
             kind: ctx.kind.clone(),
             readonly,
+            share,
         };
         let r = render::serve_as(
             server.clone(),

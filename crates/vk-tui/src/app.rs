@@ -2703,6 +2703,16 @@ impl App {
     pub fn answer(&mut self, mi: usize, interaction: &str, params: Value) {
         let mut p = params;
         p["interaction"] = json!(interaction);
+        #[cfg(target_arch = "wasm32")]
+        if let Some(item) = self.machines[mi]
+            .model
+            .interactions
+            .iter()
+            .find(|item| item.id == interaction)
+        {
+            // The gateway share API requires the revision the guest actually saw.
+            p["decision_rev"] = json!(item.decision_rev);
+        }
         p["idempotency_key"] = json!(format!("{}-{}", self.client_id, interaction));
         self.command_on(
             mi,

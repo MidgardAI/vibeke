@@ -295,6 +295,9 @@ function Workspace({ route, row, current, locked }: { route: WorkspaceRoute; row
           </IconButton>
         )}
         {previewButton}
+        {!locked && app.platform.tui && host?.status === 'online' && host.info?.kind === 'share' && host.info.features.includes('wasm_tui_share') && (
+          <Button size="sm" variant="ghost" onClick={() => navigate({ name: 'tui', host: row.host, workspace: row.workspace.id, pane: current.pane.id })}>Open terminal</Button>
+        )}
         {!narrow && canShare && (
           <>
             <Button size="sm" variant="ghost" icon={<Share2 />} onClick={() => setSheet('share')} className="text-muted hover:text-fg">

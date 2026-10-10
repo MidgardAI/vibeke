@@ -3,10 +3,10 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { ImageAddon } from '@xterm/addon-image';
 import { MoreHorizontal } from 'lucide-react';
-import { useApp, useHosts, usePrefs } from '../app/hooks';
+import { useApp, useHosts, usePrefs, useNow } from '../app/hooks';
 import { Button } from '../components/ui';
 import { Dialog } from '../components/dialog';
-import { formatRoute, navigate } from '../router';
+import { formatRoute, navigate, workspaceRoute } from '../router';
 import { createWasmLoader, publishedTuiModule } from '../lib/wasm-loader';
 import { createTuiKeyboard } from '../lib/tui-keyboard';
 import { TuiConnection, type TuiState } from '../lib/tui-connection';
@@ -32,6 +32,19 @@ export default function TuiScreen({ host, workspace, pane }: { host: string; wor
   const prefs = usePrefs();
   const preferences = useRef(prefs); preferences.current = prefs;
   const h = hosts.find((h) => h.record.host_id === host);
+  const shared = (h?.info?.kind ?? h?.record.kind) === 'share';
+  const scope = h?.info?.scope ?? h?.record.scope;
+  const until = h?.info?.expires_at ?? h?.record.until;
+  const now = useNow(1000);
+  const ended = shared && (h?.status === 'revoked' || h?.status === 'expired' || h?.status === 'ticket_expired' || (!!until && now >= until * 1000));
+  const permission = scope === 'full' ? 'Control' : scope === 'approve' ? 'View + approve' : 'View only';
+  const conversation = () => {
+    const limit = h?.info?.limit ?? h?.record.limit;
+    const target = h?.dashboard?.panes.find((p) => p.id === limit?.pane) ?? h?.dashboard?.panes[0];
+    const ws = limit?.workspace ?? target?.workspace;
+    app.prefs.patch({ preferredTuiHost: null });
+    navigate(ws ? workspaceRoute(host, ws, { pane: target?.id, show: 'conversation' }) : { name: 'home' });
+  };
   const mount = useRef<HTMLDivElement>(null);
   const runtime = useRef<Runtime | null>(null);
   const [state, setState] = useState<TuiState>({ kind: 'connecting', message: 'Loading terminal…' });
@@ -53,6 +66,7 @@ export default function TuiScreen({ host, workspace, pane }: { host: string; wor
   const leave = () => { app.prefs.patch({ preferredTuiHost: null }); navigate({ name: 'settings', section: 'system' }); };
 
   useEffect(() => {
+    if (ended) { setMenu(false); setCopyText(null); setDownload(null); setLink(null); setNotice(null); setManualPaste(''); setState({ kind: 'blocked', message: 'This shared session has ended.' }); return; }
     if (!moduleUrl || !conn?.openTui || !mount.current) {
       setState({ kind: 'blocked', message: !conn ? 'This host is not paired. Open host settings to pair it.' : 'The browser terminal is unavailable in this app.' });
       return;
@@ -238,7 +252,7 @@ export default function TuiScreen({ host, workspace, pane }: { host: string; wor
       document.title = oldTitle;
       terminal.dispose(); try { tui?.free(); } catch { /* Already trapped. */ } tui = null;
     };
-  }, [app, host, workspace, pane, conn, moduleUrl]);
+  }, [app, host, workspace, pane, conn, moduleUrl, ended]);
 
   useEffect(() => { runtime.current?.appearance(); }, [prefs.theme, prefs.termFont, prefs.tuiScreenReader, prefs.tuiOptionMeta]);
   useEffect(() => { setFontDraft(String(prefs.termFont)); }, [prefs.termFont]);
@@ -255,14 +269,15 @@ export default function TuiScreen({ host, workspace, pane }: { host: string; wor
   const connectionIssue = state.kind !== 'connected';
   return (
     <div className="relative h-full min-h-0 w-full" data-testid="browser-tui">
-      <div ref={mount} className="h-full min-h-0 min-w-0 overflow-hidden" aria-label={`${label} terminal`} />
+      <div ref={mount} className={`h-full min-h-0 min-w-0 overflow-hidden ${ended ? "invisible" : ""}`} aria-label={`${label} terminal`} />
+      {shared && !ended && <div className="absolute bottom-1 left-2 z-20 rounded bg-surface/95 px-2 py-1 text-xs" data-testid="share-access">{permission}{until ? ` · Ends ${new Date(until * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : ''}<button className="ml-3 underline" onClick={conversation}>Conversation</button></div>}
       <span className="sr-only" role="status" aria-live="polite">{state.message}</span>
       <span className="sr-only" aria-live="polite" aria-atomic="true">{notice}{link ? ' Link ready. Use Open link.' : ''}{download ? ' Screenshot ready. Use Save screenshot.' : ''}</span>
       <button type="button" aria-label="Browser menu" aria-haspopup="dialog" aria-expanded={menu} title="Browser menu (Ctrl+Shift+.)"
         className="absolute bottom-1 right-1 z-20 flex h-6 w-7 items-center justify-center rounded border border-border bg-surface text-muted shadow-sm hover:text-fg focus-visible:outline-2 focus-visible:outline-accent pointer-coarse:h-10 pointer-coarse:w-10"
         onClick={() => setMenu(true)}><MoreHorizontal className="size-4" /></button>
       {(connectionIssue || notice || link || download || !prefs.tuiHintDismissed) && <div className="absolute left-1/2 top-3 z-20 flex max-w-[calc(100%-2rem)] -translate-x-1/2 flex-wrap items-center gap-2 rounded-lg border border-border bg-surface/95 px-3 py-2 text-sm text-fg shadow-lg" data-testid="terminal-notice">
-        {connectionIssue ? <><span>{state.message}</span><Button size="sm" onClick={retry}>{crashed ? 'Reload terminal' : 'Retry'}</Button>{pendingRecovery && <Button size="sm" onClick={() => setMenu(true)}>Review saved operations</Button>}<Button size="sm" onClick={leave}>Host settings</Button></> : <>
+        {connectionIssue ? <><span>{state.message}</span>{!ended && <Button size="sm" onClick={retry}>{crashed ? 'Reload terminal' : 'Retry'}</Button>}{pendingRecovery && <Button size="sm" onClick={() => setMenu(true)}>Review saved operations</Button>}<Button size="sm" onClick={leave}>Host settings</Button></> : <>
           {notice && <span>{notice}</span>}
           {link && <a className="underline" href={link} target="_blank" rel="noopener noreferrer" onClick={() => setLink(null)}>Open link</a>}
           {download && <a className="underline" href={download.url} download={download.name}>Save screenshot</a>}
@@ -274,7 +289,8 @@ export default function TuiScreen({ host, workspace, pane }: { host: string; wor
         className="fixed inset-0 z-50 flex items-end justify-end bg-black/25 p-3"
         panelClassName="max-h-[90dvh] w-full max-w-sm space-y-4 overflow-y-auto rounded-xl border border-border bg-surface p-4 text-fg shadow-xl">
         <div className="flex items-center justify-between"><strong>{label}</strong><Button size="sm" onClick={() => setMenu(false)}>Close</Button></div>
-        <p className="text-sm text-muted">{state.message}</p>
+        <p className="text-sm text-muted">{shared ? `${permission} · ${state.message}` : state.message}</p>
+        {shared && <Button onClick={conversation}>Open conversation</Button>}
         {pendingRecovery && <div className="space-y-2 rounded border border-border p-3 text-sm">
           <p>Saved operation metadata cannot be read. Check task status on the host before discarding it. Discarding removes this tab’s recovery metadata for this host. It does not cancel or repeat host operations.</p>
           <Button onClick={() => {
@@ -284,7 +300,7 @@ export default function TuiScreen({ host, workspace, pane }: { host: string; wor
         </div>}
         <div className="flex flex-wrap gap-2">
           <Button onClick={() => action('command_palette')}>Commands</Button><Button onClick={() => action('inbox')}>Inbox</Button>
-          <Button onClick={() => {
+          <Button disabled={shared && h?.info?.scope !== 'full'} onClick={() => {
             const target = runtime.current;
             const read = app.platform.clipboard.readText;
             if (!read) { setPasteFallback(true); return; }
@@ -300,8 +316,8 @@ export default function TuiScreen({ host, workspace, pane }: { host: string; wor
         <label className="flex items-center justify-between gap-3 text-sm">Theme<select aria-label="Terminal theme" className="rounded border border-border bg-bg p-1" value={prefs.theme} onChange={(e) => app.prefs.patch({ theme: e.target.value as 'light' | 'dark' | 'system' })}><option value="system">System</option><option value="dark">Dark</option><option value="light">Light</option></select></label>
         <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={prefs.tuiScreenReader} onChange={(e) => app.prefs.patch({ tuiScreenReader: e.target.checked })} />Screen reader support</label>
         <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={prefs.tuiOptionMeta} onChange={(e) => app.prefs.patch({ tuiOptionMeta: e.target.checked })} />Use Option as Alt on Mac</label>
-        <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={prefs.preferredTuiHost === host} onChange={(e) => app.prefs.patch({ preferredTuiHost: e.target.checked ? host : null })} />Open this terminal when I launch the app</label>
-        <p className="text-xs text-muted">Ctrl+B opens the prefix menu. Ctrl+B, then : opens commands. Shift-drag selects text in the browser. Other clients can control a pane’s size; focus the pane to request control.</p>
+        {!shared && <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={prefs.preferredTuiHost === host} onChange={(e) => app.prefs.patch({ preferredTuiHost: e.target.checked ? host : null })} />Open this terminal when I launch the app</label>}
+        <p className="text-xs text-muted">Ctrl+B opens the prefix menu. Ctrl+B, then : opens commands. Shift-drag selects text in the browser. {shared ? "The owner controls terminal size. Access applies only to the shared panes." : "Other clients can control a pane’s size; focus the pane to request control."}</p>
         <div className="flex flex-wrap gap-2"><Button onClick={() => { retry(); setMenu(false); }}>{crashed ? 'Reload terminal' : 'Reconnect'}</Button><Button onClick={leave}>Leave terminal</Button></div>
       </Dialog>
     </div>

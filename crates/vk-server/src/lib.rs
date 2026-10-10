@@ -50,6 +50,7 @@ pub mod preview_ca;
 pub mod preview_console;
 pub mod preview_fabric;
 pub mod render;
+mod render_share;
 pub mod repo_config;
 pub mod review;
 pub mod run;

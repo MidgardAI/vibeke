@@ -369,3 +369,224 @@ fn gateway_render_stream_keeps_remote_authorization_and_actor_requirements() {
     assert!(renamed.get("error").is_none_or(Value::is_null), "{renamed}");
     assert_eq!(s.pane(&pane)["title"], "Remote name");
 }
+
+/// Test malicious wire frames against the real host, not just the browser's disabled controls.
+#[test]
+fn shared_render_filters_model_input_history_commands_and_geometry() {
+    use vk_proto::frame;
+    use vk_proto::render::{AckStatus, ClientFrame, PaneRect, ServerFrame};
+    let s = Session::new();
+    let pane = s.workspace("/bin/sh");
+    let sibling = s.json(&[
+        "pane",
+        "split",
+        &pane,
+        "--direction",
+        "right",
+        "--command",
+        "/bin/sh",
+    ])["pane"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let other = s.workspace("/bin/sh");
+    let mut owner = Rpc::connect(&s.socket());
+    owner
+        .call("client.hello", json!({"kind":"tui","api":"vibeke/1"}))
+        .unwrap();
+    owner.call("pane.focus", json!({"pane":other})).unwrap();
+    owner
+        .call(
+            "render.attach",
+            json!({"protocol":vk_proto::render::PROTOCOL}),
+        )
+        .unwrap();
+    let original = s.pane(&pane);
+    for (scope, workspace_share) in [
+        ("view", false),
+        ("approve", false),
+        ("full", false),
+        ("view", true),
+        ("approve", true),
+        ("full", true),
+    ] {
+        let limit = if workspace_share {
+            json!({"pane":null,"workspace":original["workspace"],"scope":scope,"expires_at":u64::MAX})
+        } else {
+            json!({"pane":pane,"workspace":original["workspace"],"scope":scope,"expires_at":u64::MAX})
+        };
+        let sock = UnixStream::connect(s.socket()).unwrap();
+        sock.set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let mut wr = sock.try_clone().unwrap();
+        let mut rd = BufReader::new(sock);
+        for (id, method, params) in [
+            (
+                1,
+                "client.hello",
+                json!({"kind":"gateway-tui","remote":true,"api":"vibeke/1"}),
+            ),
+            (
+                2,
+                "render.attach",
+                json!({"client_id":format!("share-{scope}-{workspace_share}"),"protocol":vk_proto::render::PROTOCOL,"remote":true,
+                "share":limit}),
+            ),
+        ] {
+            writeln!(
+                wr,
+                "{}",
+                json!({"jsonrpc":"2.0","id":id,"method":method,"params":params})
+            )
+            .unwrap();
+            let mut line = String::new();
+            rd.read_line(&mut line).unwrap();
+            assert!(
+                serde_json::from_str::<Value>(&line)
+                    .unwrap()
+                    .get("error")
+                    .is_none(),
+                "{line}"
+            );
+        }
+        loop {
+            if let ServerFrame::Model { model, focus, seen } = frame::read_frame(&mut rd).unwrap() {
+                assert_eq!(model.panes.len(), if workspace_share { 2 } else { 1 });
+                assert_eq!(model.panes[0].id, pane);
+                assert_eq!(model.workspaces.len(), 1);
+                assert_eq!(model.tabs.len(), 1);
+                if !workspace_share {
+                    assert_eq!(model.tabs[0].layout.panes(), vec![pane.clone()]);
+                }
+                assert_eq!(focus.pane.as_deref(), Some(pane.as_str()));
+                assert!(
+                    model.groups.is_empty()
+                        && model.tasks.is_empty()
+                        && model.previews.is_empty()
+                        && seen.is_empty()
+                );
+                assert!(!serde_json::to_string(&model).unwrap().contains(&other));
+                if !workspace_share {
+                    assert!(!serde_json::to_string(&model).unwrap().contains(&sibling));
+                }
+                break;
+            }
+        }
+        for f in [
+            ClientFrame::ViewHint {
+                panes: vec![
+                    PaneRect {
+                        pane: pane.clone(),
+                        cols: 20,
+                        rows: 5,
+                    },
+                    PaneRect {
+                        pane: other.clone(),
+                        cols: 20,
+                        rows: 5,
+                    },
+                ],
+                active: true,
+            },
+            ClientFrame::FetchHistory {
+                req: 1,
+                pane: other.clone(),
+                start: 0,
+                count: 100,
+            },
+            ClientFrame::Subscribe {
+                types: vec!["*".into()],
+                after: Some(0),
+            },
+            ClientFrame::RawInput {
+                input_id: 1,
+                pane: other.clone(),
+                bytes: b"echo UNSHARED\n".to_vec(),
+            },
+            ClientFrame::RawInput {
+                input_id: 2,
+                pane: pane.clone(),
+                bytes: vec![],
+            },
+            ClientFrame::Command {
+                req: 3,
+                json: json!({"method":"session.snapshot","params":{}}).to_string(),
+            },
+            ClientFrame::Focus {
+                pane: other.clone(),
+            },
+            ClientFrame::Focus { pane: pane.clone() },
+            ClientFrame::Ping { nonce: 99 },
+        ] {
+            frame::write_frame(&mut wr, &f).unwrap();
+        }
+        let mut acks = Vec::new();
+        let mut denied = false;
+        loop {
+            match frame::read_frame::<_, ServerFrame>(&mut rd).unwrap() {
+                ServerFrame::InputAck { input_id, status } => acks.push((input_id, status)),
+                ServerFrame::CommandResult { req: 3, json } => {
+                    assert_eq!(
+                        serde_json::from_str::<Value>(&json).unwrap()["error"]["data"]["kind"],
+                        "forbidden"
+                    );
+                    denied = true;
+                }
+                ServerFrame::PaneFull { pane: p, .. } | ServerFrame::PaneDiff { pane: p, .. } => {
+                    assert_eq!(p, pane)
+                }
+                ServerFrame::History { .. } | ServerFrame::Events { .. } => {
+                    panic!("private history/events leaked")
+                }
+                ServerFrame::Pong { nonce: 99, .. } => break,
+                _ => {}
+            }
+        }
+        assert!(denied);
+        assert!(acks.contains(&(1, AckStatus::Rejected)));
+        assert!(acks.contains(&(
+            2,
+            if scope == "full" {
+                AckStatus::Written
+            } else {
+                AckStatus::Rejected
+            }
+        )));
+        let clients = api(&s, "client.list", json!({})).unwrap();
+        let guest_id = format!("share-{scope}-{workspace_share}");
+        let guest = clients["clients"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|v| v["id"] == guest_id)
+            .unwrap();
+        assert_eq!(guest["kind"], "share");
+        assert_eq!(s.json(&["pane", "get", "@focused"])["pane"]["id"], other);
+        let after = s.pane(&pane);
+        assert_eq!(
+            (after["cols"].clone(), after["rows"].clone()),
+            (original["cols"].clone(), original["rows"].clone())
+        );
+    }
+}
+
+#[test]
+fn shared_render_rejects_untrusted_and_invalid_grants() {
+    let s = Session::new();
+    let pane = s.workspace("/bin/sh");
+    for (kind, scope) in [("cli", "view"), ("gateway-tui", "owner")] {
+        let mut rpc = Rpc::connect(&s.socket());
+        rpc.call("client.hello", json!({"kind":kind,"api":"vibeke/1"}))
+            .unwrap();
+        let error = rpc
+            .call(
+                "render.attach",
+                json!({
+                    "protocol":vk_proto::render::PROTOCOL,
+                    "share":{"pane":pane,"scope":scope,"expires_at":u64::MAX}
+                }),
+            )
+            .unwrap_err();
+        assert_eq!(error["code"], -32602, "{error}");
+    }
+}

@@ -70,8 +70,10 @@ export class TuiConnection {
     if (this.disposed || this.blocked || this.attempt || this.stream) return;
     const state = this.o.host.getSnapshot();
     if (state.status !== 'online') return this.hostChanged();
-    if (state.info?.scope !== 'full' || (state.info.kind ?? 'device') !== 'device' || state.info.limit) return this.fail('The terminal needs a paired device with full host access.');
-    if (!state.info.features.includes('wasm_tui') || !this.o.host.openTui) return this.fail('Update Vibeke on this host to use the browser terminal.');
+    const shared = state.info?.kind === 'share' && !!(state.info.limit?.pane || state.info.limit?.workspace);
+    if (!shared && (state.info?.scope !== 'full' || (state.info.kind ?? 'device') !== 'device' || state.info.limit)) return this.fail('The terminal needs a paired device or a pane or workspace share.');
+    if (shared && !state.info?.features.includes('wasm_tui_share')) return this.fail('Update Vibeke on this host to open shared terminals.');
+    if (!state.info?.features.includes('wasm_tui') || !this.o.host.openTui) return this.fail('Update Vibeke on this host to use the browser terminal.');
     const generation = ++this.generation;
     const controller = new AbortController(); this.attempt = controller;
     this.o.state({ kind: 'connecting', message: 'Connecting…' });
