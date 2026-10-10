@@ -49,7 +49,7 @@ description = "Report-only: run the latency/throughput/bandwidth measurements an
 run = "sh scripts/perf-budgets.sh"
 
 [tasks.docs]
-description = "Build the docs site (docs/site) with mdBook if installed; otherwise print how to get it. Reference chapters are regenerated with VIBEKE_UPDATE_DOCS=1 cargo test -p vibeke --test api_docs"
+description = "Build the docs site (docs/site) with mdBook if installed; otherwise print how to get it. Reference chapters are regenerated with VIBEKE_UPDATE_DOCS=1 cargo test -p vibeke --test it api_docs::"
 run = "if command -v mdbook >/dev/null 2>&1; then mdbook build docs/site; else echo 'mdbook not found: install it (cargo install mdbook, or mise use -g mdbook) and re-run; the source is docs/site/src'; fi"
 
 [tasks.repro-check]

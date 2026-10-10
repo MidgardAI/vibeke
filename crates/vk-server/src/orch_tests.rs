@@ -3,7 +3,7 @@
 //! quota scheduling, the goal planner and the VM API on the fake backend. The server is built
 //! with `/bin/false` as its binary, so no holder, harness or VM is ever started. Flows that need
 //! `task.create` (best-of-N, split, goal fan-out, `--isolate vm`) run end to end in
-//! `crates/vibeke/tests/orchestrate.rs`.
+//! `crates/vibeke/tests/it/orchestrate.rs`.
 
 use super::*;
 use crate::ServerOpts;

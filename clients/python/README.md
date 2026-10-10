@@ -33,4 +33,4 @@ asyncio.run(main())
 - Unknown event types and notifications are ignored, never an error (07 §1.5).
 
 Tests: `python3 -m unittest discover -s tests`. Regenerate after a registry change with
-`VIBEKE_UPDATE_CLIENTS=1 cargo test -p vibeke --test api_clients`.
+`VIBEKE_UPDATE_CLIENTS=1 cargo test -p vibeke --test it api_clients::`.

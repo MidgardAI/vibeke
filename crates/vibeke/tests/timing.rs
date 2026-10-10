@@ -5,6 +5,7 @@
 //! `VIBEKE_TIMING_REPORT` names a file, appends `name<TAB>milliseconds` lines to it for the
 //! perf gate.
 
+#[path = "it/support/mod.rs"]
 mod support;
 
 use serde_json::json;

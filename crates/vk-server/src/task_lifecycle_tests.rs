@@ -1,7 +1,7 @@
 //! In-process tests of `task.setup_log`, `task.forget`, `task.recreate` refusals, `task.ports`,
 //! pane-scope visibility, the PR-merged cleanup hint and `pane.sync_input` (no panes running:
 //! the server is built with `/bin/false` as its binary). Port leases are not exercised here
-//! (they use the machine-wide state root); `crates/vibeke/tests/v1_remainder.rs` covers
+//! (they use the machine-wide state root); `crates/vibeke/tests/it/v1_remainder.rs` covers
 //! `task.adopt`, `task.archive`, `task.recreate` and `task.ports.re_lease` in an isolated session.
 
 use super::*;

@@ -3,7 +3,7 @@
 # the agent over stdio and maps it onto Vibeke signals; permission requests are answered natively
 # through ACP. `acp:<name>` ids are synthesized from this manifest (`extends = "acp"`).
 # Capabilities are protocol-level and covered by the fake-agent tests (crates/vk-server
-# agents/acp.rs, crates/vibeke/tests/harnesses.rs), not by live third-party agents.
+# agents/acp.rs, crates/vibeke/tests/it/harnesses.rs), not by live third-party agents.
 schema = 1
 id = "acp"
 name = "ACP agent"

@@ -10,7 +10,7 @@
 //! exists, fails too, so entries are removed as tests arrive.
 //!
 //! Regenerate the allowlist skeleton for a batch of new exceptions with
-//! `VIBEKE_PRINT_UNCOVERED=1 cargo test -p vibeke --test api_method_coverage -- --nocapture`.
+//! `VIBEKE_PRINT_UNCOVERED=1 cargo test -p vibeke --test it api_method_coverage:: -- --nocapture`.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
