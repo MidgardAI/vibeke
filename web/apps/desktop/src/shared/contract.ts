@@ -9,6 +9,9 @@ export const INVOKE = {
   boot: 'vk:boot',
   draftGet: 'vk:draft.get',
   draftSet: 'vk:draft.set',
+  /** Offline copies (`kind`: dashboard | mirror, `host`, `pane` for a mirror): JSON text or null. */
+  cacheGet: 'vk:cache.get',
+  cacheSet: 'vk:cache.set',
   updatesGet: 'vk:updates.get',
   updatesCheck: 'vk:updates.check',
   updatesDownload: 'vk:updates.download',
@@ -120,6 +123,23 @@ export const RENDERER_METHODS = [
   'handoff.peers',
   'auth.list',
   'auth.approve.decide',
+  'assistant.status',
+  'assistant.generate',
+  'assistant.confirm',
+  'assistant.get',
+  'assistant.cancel',
+  'search.query',
+  'desk.search',
+  'browser.list',
+  'browser.attach_screencast',
+  'browser.screencast_frame',
+  'browser.detach_screencast',
+  'browser.take_over',
+  'browser.release',
+  'browser.click',
+  'browser.type',
+  'browser.press',
+  'browser.navigate',
 ] as const satisfies readonly AppMethod[];
 
 export type RendererMethod = (typeof RENDERER_METHODS)[number];

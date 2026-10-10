@@ -9,11 +9,13 @@ import { toWire, type Engine } from './engine';
 import * as v from './validate';
 import type { Updates } from './updater';
 import type { DraftStore } from './drafts';
+import { MAX_ENTRY, type CacheStore } from './cache';
 import type { Windows } from './windows';
 
 export interface IpcDeps {
   updates: Updates;
   drafts: DraftStore;
+  cache: CacheStore;
   engine: Engine;
   /** A window starts / stops receiving one host's events. */
   setHostEvents(wc: WebContents, hostId: string, on: boolean): void;
@@ -65,11 +67,26 @@ export function registerIpc(d: IpcDeps): void {
       return ok(null);
     } catch (e) { return err(e); }
   });
+  const cacheScope = (kind: unknown, host: unknown, pane: unknown) => {
+    const h = v.hostId(host);
+    if (kind === 'dashboard' && pane === null) return { kind, host: h, key: h } as const;
+    if (kind === 'mirror' && typeof pane === 'string' && /^[a-zA-Z0-9_.:-]{1,160}$/.test(pane)) return { kind, host: h, key: `${h}/${pane}` } as const;
+    throw new Error('Invalid cache scope');
+  };
+  handle(INVOKE.cacheGet, async (_e, kind, host, pane) => {
+    const c = cacheScope(kind, host, pane);
+    try { return ok(await d.cache.get(c.kind, c.key)); } catch (e) { return err(e); }
+  });
+  handle(INVOKE.cacheSet, async (_e, kind, host, pane, value) => {
+    const c = cacheScope(kind, host, pane);
+    if (typeof value !== 'string' || value.length > MAX_ENTRY * 2) throw new Error('Invalid cache value');
+    try { await d.cache.set(c.kind, c.host, c.key, value); return ok(null); } catch (e) { return err(e); }
+  });
   for (const [channel, action] of [
     [INVOKE.updatesGet, () => d.updates.snapshot()],
     [INVOKE.updatesCheck, () => d.updates.check()],
     [INVOKE.updatesDownload, () => d.updates.download()],
-    [INVOKE.updatesInstall, async () => { await d.drafts.flush(); d.updates.install(); }],
+    [INVOKE.updatesInstall, async () => { await d.drafts.flush(); await d.cache.flush().catch(() => {}); d.updates.install(); }],
   ] as const) {
     handle(channel, async (_e, ...args) => {
       if (args.length) throw new Error('Update actions take no arguments');
@@ -120,6 +137,7 @@ export function registerIpc(d: IpcDeps): void {
       const id = v.hostId(host);
       await d.engine.remove(id);
       await d.drafts.removeHost(id).catch((e) => console.warn('Draft cleanup after host removal failed', e));
+      await d.cache.removeHost(id).catch((e) => console.warn('Cache cleanup after host removal failed', e));
       return ok(null);
     } catch (e) {
       return err(e);
