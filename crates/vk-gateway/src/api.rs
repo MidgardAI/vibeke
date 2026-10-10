@@ -1134,8 +1134,10 @@ impl Call<'_> {
                     root_pane_id(&r, "worktree.create")?
                 } else if let Some(nw) = p.get("new_workspace") {
                     // A new workspace in a folder on the host.
-                    let params = pick(nw, &["cwd", "name"]);
-                    req(&params, "cwd")?;
+                    let mut params = pick(nw, &["cwd", "name"]);
+                    // Path pickers show `~/…`; the host takes the folder as given.
+                    let cwd = vk_handoff::expand_home(req(&params, "cwd")?);
+                    params["cwd"] = cwd.to_string_lossy().into_owned().into();
                     let r = self.server("workspace.create", params).await?;
                     root_pane_id(&r, "workspace.create")?
                 } else {
