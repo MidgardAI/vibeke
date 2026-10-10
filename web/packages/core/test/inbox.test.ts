@@ -177,10 +177,10 @@ describe('sandbox boundary requests', () => {
   });
   test('new app methods carry an op_id when they change something', async () => {
     const { MUTATING_METHODS } = await import('../src/model');
-    for (const m of ['worktree.create', 'assistant.generate', 'goal.approve', 'goal.cancel', 'browser.take_over', 'browser.click']) {
+    for (const m of ['worktree.create', 'assistant.generate', 'browser.take_over', 'browser.click']) {
       expect(MUTATING_METHODS.has(m)).toBe(true);
     }
-    for (const m of ['agent.turns', 'goal.get', 'search.query', 'browser.attach_screencast', 'browser.screencast_frame']) {
+    for (const m of ['agent.turns', 'search.query', 'browser.attach_screencast', 'browser.screencast_frame']) {
       expect(MUTATING_METHODS.has(m)).toBe(false);
     }
   });

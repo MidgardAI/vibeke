@@ -249,24 +249,6 @@ pub async fn run(gw: Arc<Gateway>) {
                             open.items.remove(&format!("approval:{id}"));
                         }
                     }
-                    // A goal's plan waits for approval (12 "Goal -> plan -> tasks"). Goals span
-                    // repositories, so share devices never see it (no pane on the item).
-                    "goal.planned" => {
-                        let Some(id) = subject.get("goal").and_then(|i| i.as_str()) else { continue };
-                        let Ok(g) = gw.server.call("goal.get", json!({"goal": id})).await else { continue };
-                        if g.pointer("/goal/state").and_then(|s| s.as_str()) != Some("planned") { continue; }
-                        let name = g.pointer("/goal/title").and_then(|s| s.as_str()).unwrap_or("a goal");
-                        let mut item = Item::new(format!("The plan for {} waits for approval", truncate(name, 80)), format!("#/g/{host}/{id}"), true, None);
-                        item.summary = Some("A plan waits for approval".into());
-                        open.items.insert(format!("goal:{id}"), item);
-                        let sent = send(&gw, &open, Push::NeedsYou).await;
-                        shown.sent(Push::NeedsYou, sent);
-                    }
-                    "goal.approved" | "goal.cancelled" | "goal.finished" | "goal.planning_started" => {
-                        if let Some(id) = subject.get("goal").and_then(|i| i.as_str()) {
-                            open.items.remove(&format!("goal:{id}"));
-                        }
-                    }
                     "notification.created" => {
                         let urgency = data.get("urgency").and_then(|u| u.as_str()).unwrap_or("normal");
                         let kind = data.get("kind").and_then(|u| u.as_str()).unwrap_or("");

@@ -1,47 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import type { Goal } from '@vibeke/core';
-import { goalFromStale, goalTone, planSteps, planWaits, progressFraction, sortGoals, stepStatus } from '../src/lib/goals';
 import { controllerOf, fitFrame, frameDelayMs, frameSrc, needsReattach, nextSeq, normalizeUrl, sessionsFor, tapToPage } from '../src/lib/screencast';
-import { formatRoute, isDeepRoute, parseRoute } from '../src/router';
-
-const goal = (state: string, extra: Partial<Goal> = {}): Goal => ({ id: `g-${state}`, handle: 'g1', title: 'T', text: '', repo: '/r', state: state as Goal['state'], plan: null, plan_rev: 1, approved_rev: null, ...extra });
-
-describe('goal routes', () => {
-  test('push link parses and formats', () => {
-    expect(parseRoute('#/g/host1/goal 2')).toEqual({ name: 'goal', host: 'host1', goal: 'goal 2' });
-    expect(formatRoute({ name: 'goal', host: 'host1', goal: 'goal 2' })).toBe('#/g/host1/goal%202');
-    expect(parseRoute('#/goals')).toEqual({ name: 'goals' });
-    expect(parseRoute('#/g/host1').name).toBe('not_found');
-    expect(isDeepRoute({ name: 'goal', host: 'h', goal: 'g' })).toBe(true);
-  });
-});
-
-describe('goal helpers', () => {
-  test('plan waits only when planned with a plan', () => {
-    expect(planWaits(goal('planned', { plan: { steps: [] } }))).toBe(true);
-    expect(planWaits(goal('planned'))).toBe(false);
-    expect(planWaits(goal('running', { plan: { steps: [] } }))).toBe(false);
-  });
-  test('steps and statuses', () => {
-    const g = goal('running', { plan: { steps: [{ id: 'a', title: 'A', status: 'done' }, { id: 'b', title: 'B' }] } });
-    expect(planSteps(g).map((s) => s.id)).toEqual(['a', 'b']);
-    expect(stepStatus(planSteps(g)[0]!)).toBe('done');
-    expect(stepStatus(planSteps(g)[1]!)).toBeNull();
-    expect(planSteps(goal('draft'))).toEqual([]);
-  });
-  test('progress, tone and order', () => {
-    expect(progressFraction({ done: 1, total: 4 })).toBe(0.25);
-    expect(progressFraction({ done: 0, total: 0 })).toBeNull();
-    expect(goalTone('planned')).toBe('need');
-    const sorted = sortGoals([{ goal: goal('done') }, { goal: goal('running') }, { goal: goal('planned') }]);
-    expect(sorted.map((v) => v.goal.state)).toEqual(['planned', 'running', 'done']);
-  });
-  test('stale error data carries the current goal', () => {
-    expect(goalFromStale({ goal: goal('planned') })?.state).toBe('planned');
-    expect(goalFromStale({})).toBeNull();
-    expect(goalFromStale(undefined)).toBeNull();
-  });
-});
 
 describe('frame math', () => {
   test('fit keeps the aspect ratio inside the box', () => {

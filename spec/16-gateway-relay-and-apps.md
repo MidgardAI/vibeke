@@ -293,9 +293,6 @@ Default for `pair` is `full` (your own phone); `approve`/`view` are for shared o
 | `assistant.status` / `assistant.get` | `{}` / `{request}` | view | server; refused to limited devices |
 | `assistant.generate` | `{operation, workspace?, pane?, run?, interaction?, turns?, include_screen?, priority?, op_id}` → server result (a preview to confirm unless auto-sent) | full | server with `idempotency_key = "gw:<device_id>:<op_id>"`; operations `briefing`, `background_summary`, `decision_card`, `reply_suggestions` only; no `profile`, `remote_sources` or `inputs`; the host's workspace consent applies; refused to limited devices |
 | `assistant.confirm` / `assistant.cancel` | `{request, preview_digest, op_id}` / `{request, op_id}` | full | server; refused to limited devices |
-| `goal.list` / `goal.get` | `{}` / `{goal}` | view | server; refused to limited devices |
-| `goal.approve` | `{goal, plan_rev, start?, op_id}` | full | gateway checks the goal is `planned` at `plan_rev` (`stale` otherwise), then `goal.approve {by: actor}`; refused to limited devices |
-| `goal.cancel` | `{goal, stop_tasks?, op_id}` | full | server; also how an app rejects a plan; refused to limited devices |
 | `desk.search` | `{text, repo?, harness?, since?, until?, limit?, sort?}` → `{hits, index}` | view | server; snippets redacted with `vk-redact`; refused to limited devices |
 | `search.query` | `{q, pane?, workspace?, sources?, since?, limit?, regex?, context?}` → `{hits}` | view | server (redacts hits for remote clients); a limited device's search is narrowed to its pane or workspace and hits outside its live panes are dropped |
 | `sandbox.list` / `sandbox.status` | `{}` | view | server; refused to limited devices |
@@ -374,7 +371,6 @@ Git execution rules (git can run configured programs):
 | `agent.state_changed` to `error` / `rate_limited` | "Claude · dashboard stopped: rate limited" |
 | `auth.approval_requested` (a pane asks to run one call, 09 §3.2) | "A pane asks to send a handoff", urgent, link `#/approve/<host>/<request>`; owner devices only; ended by `auth.approval_granted|denied|withdrawn` |
 | `notification.created` with urgency ≥ normal and **not** generated for an interaction already pushed (nor the high-urgency `auth.approve` one, pushed above) | title/body |
-| `goal.planned` while the goal is `planned` | "The plan for … waits for approval", urgent, link `#/g/<host>/<goal>`; owner devices only; ended by `goal.approved`, `goal.cancelled`, `goal.finished` or a new plan |
 | `agent.state_changed` from `working` to `idle`, harness with a known prompt-cache lifetime (Claude and Codex: 300 s) | "Claude · backend: prompt cache expires soon", 45 s before expiry, link `#/r/<host>/<run>`; per-device `notify_cache_cold` (default off); one per idle period, cancelled by a new turn, `working` again or the run ending, and skipped while the run has an open interaction; own tag `vibeke:<host id>:cache:<run>` |
 
 - One notification per host (`tag = vibeke:<host id>`), merged: one item shows its own text, several show "3 agents need you". `renotify` only when a new item is added.

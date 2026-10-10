@@ -806,34 +806,6 @@ export interface ReplySuggestions {
   label: string;
 }
 
-export type GoalState = 'draft' | 'planned' | 'approved' | 'running' | 'done' | 'failed' | 'cancelled';
-
-export interface GoalStep {
-  id: string;
-  title: string;
-  prompt?: string;
-  [k: string]: unknown;
-}
-
-export interface Goal {
-  id: string;
-  handle: string;
-  title: string;
-  text: string;
-  repo: string;
-  state: GoalState;
-  plan: { steps: GoalStep[]; [k: string]: unknown } | null;
-  /** Pass to `goal.approve` as `plan_rev`: a changed plan is refused (`stale`). */
-  plan_rev: number;
-  approved_rev: number | null;
-  [k: string]: unknown;
-}
-
-export interface GoalView {
-  goal: Goal;
-  progress: { done: number; total: number };
-}
-
 /** A `search.query` hit (scrollback of live and archived panes; redacted for apps). */
 export interface SearchHit {
   pane?: string;
@@ -1117,12 +1089,6 @@ export interface AppApi {
   'assistant.confirm': { params: { request: string; preview_digest: string }; result: { request: AssistantRequest } };
   'assistant.get': { params: { request: string }; result: { request: AssistantRequest } };
   'assistant.cancel': { params: { request: string }; result: { request: AssistantRequest } };
-  'goal.list': { params: Record<string, never>; result: { goals: GoalView[] } };
-  'goal.get': { params: { goal: string }; result: GoalView };
-  /** Approve the plan revision the user reviewed (`stale` when it changed); `start` (default true) starts its ready steps. */
-  'goal.approve': { params: { goal: string; plan_rev: number; start?: boolean }; result: GoalView };
-  /** Cancel (also: reject a submitted plan); `stop_tasks` parks running step tasks. */
-  'goal.cancel': { params: { goal: string; stop_tasks?: boolean }; result: GoalView & { parked: string[] } };
   /** Harness sessions on this host (own devices without a limit). */
   'desk.search': {
     params: { text: string; repo?: string; harness?: string; since?: string | number; until?: string | number; limit?: number; sort?: 'relevance' | 'recent' };
@@ -1227,8 +1193,6 @@ export const MUTATING_METHODS: ReadonlySet<string> = new Set([
   'assistant.generate',
   'assistant.confirm',
   'assistant.cancel',
-  'goal.approve',
-  'goal.cancel',
   'browser.take_over',
   'browser.release',
   'browser.click',

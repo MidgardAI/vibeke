@@ -37,9 +37,6 @@ export type Route =
   | { name: 'home' }
   | { name: Tab }
   | { name: 'crew' }
-  /** Goals: every host's list, or one goal (push link `#/g/<host>/<goal>`). */
-  | { name: 'goals' }
-  | { name: 'goal'; host: string; goal: string }
   /** Incoming handoffs: every host's list, one host's, or one handoff's accept view. */
   | { name: 'handoffs'; host: string | null; id: string | null }
   /** Approval requests from panes: every host's, one host's, or one request's review. */
@@ -84,11 +81,6 @@ export function parseRoute(hash: string): Route {
       return { name: a };
     case 'crew':
       return { name: 'crew' };
-    case 'goals':
-      return { name: 'goals' };
-    case 'g':
-      if (b && c) return { name: 'goal', host: b, goal: c };
-      break;
     case 'handoffs':
       return { name: 'handoffs', host: b || null, id: (b && c) || null };
     case 'approve':
@@ -157,10 +149,7 @@ export function formatRoute(r: Route): string {
     case 'focus':
     case 'changes':
     case 'crew':
-    case 'goals':
       return `#/${r.name}`;
-    case 'goal':
-      return `#/g/${enc(r.host)}/${enc(r.goal)}`;
     case 'settings':
       return r.section ? `#/settings/${enc(r.section)}` : '#/settings';
     case 'handoffs':
@@ -228,7 +217,7 @@ export function navigate(to: Route | string, opts: { replace?: boolean } = {}): 
 }
 
 /** Routes that are one level below the inbox: Back from them goes up to it. */
-export const isDeepRoute = (r: Route): boolean => r.name === 'workspace' || r.name === 'interaction' || r.name === 'run' || r.name === 'goal' || r.name === 'pane' || (r.name === 'approve' && !!r.id) || (r.name === 'handoffs' && !!r.id);
+export const isDeepRoute = (r: Route): boolean => r.name === 'workspace' || r.name === 'interaction' || r.name === 'run' || r.name === 'pane' || (r.name === 'approve' && !!r.id) || (r.name === 'handoffs' && !!r.id);
 
 /**
  * After a cold start at a deep link (a notification, a shared link), put `parent` below it in the

@@ -124,7 +124,6 @@ Files go only to a running agent.
 
 - **Long-press a row** in the workspace menu to **Pin**, **Rename** or **Close pane**. Tap **Close pane** twice to confirm.
 - **Search all agents** is a mode of the command palette. It searches terminals, sessions and past sessions on all your hosts. Type at least two characters.
-- **Goals** lists goals planned on the host. Open a goal to read its plan and steps. Use **Approve plan** to start it, or **Cancel goal** to refuse it. A device needs full access to approve a plan.
 
 ## Start an agent
 

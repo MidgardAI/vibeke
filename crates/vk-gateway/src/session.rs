@@ -387,11 +387,10 @@ fn features(gw: &Gateway) -> Vec<&'static str> {
         "git",
         "transcript",
         "workspace_views",
-        // New agents in a worktree or folder, catch-up (`agent.turns`, the assistant), goals,
-        // search, browser previews, `clear` pushes and prompt-cache notices.
+        // New agents in a worktree or folder, catch-up (`agent.turns`, the assistant), search,
+        // browser previews, `clear` pushes and prompt-cache notices.
         "agent_new_workspace",
         "catch_up",
-        "goals",
         "search",
         "browser_preview",
         "push_clear",

@@ -18,7 +18,6 @@ import {
   PackageOpen,
   PanelLeft,
   PanelRight,
-  Target,
   Pin,
   Plus,
   Search,
@@ -44,7 +43,6 @@ import { paneLabel, paneStatus } from '../screens/workspace/tab-strip';
 import { navigate, workspaceRoute, type Route } from '../router';
 import { useApprovalCount } from './approval-stores';
 import { useIncoming, useIncomingCount } from './handoff-stores';
-import { useGoalLists } from './goals';
 import { useApp, useHosts, useInboxItems, usePrefs } from './hooks';
 import { useStableList } from './stable-list';
 import { emitUi, isMacLike } from './keyboard';
@@ -73,7 +71,6 @@ export function Sidebar({ route, mode }: { route: Route; mode: 'inline' | 'drawe
   const incoming = useIncoming();
   const handoffs = useIncomingCount();
   const approvals = useApprovalCount();
-  const anyGoals = useGoalLists(60_000).lists.some((l) => l.goals.length > 0);
   const anyHandoffs = [...incoming.values()].some((h) => h.list.length > 0);
   const mac = isMacLike(app.platform.mac);
   const [query, setQuery] = useState('');
@@ -264,11 +261,6 @@ export function Sidebar({ route, mode }: { route: Route; mode: 'inline' | 'drawe
             onClick={() => go({ name: 'handoffs', host: null, id: null })}
           >
             {t.sidebar.handoffs}
-          </Row>
-        )}
-        {(anyGoals || route.name === 'goals' || route.name === 'goal') && (
-          <Row leading={<Target className="size-4" />} active={route.name === 'goals' || route.name === 'goal'} onClick={() => go({ name: 'goals' })}>
-            {t.sidebar.goals}
           </Row>
         )}
         <Row leading={<Search className="size-4" />} trailing={<Kbd>{keyLabel(mac, 'mod+k')}</Kbd>} onClick={() => (close(), emitUi('palette'))}>

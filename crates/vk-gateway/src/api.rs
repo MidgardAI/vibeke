@@ -98,8 +98,6 @@ const SERVER_READ_ONLY: &[&str] = &[
     "agent.turns",
     "assistant.status",
     "assistant.get",
-    "goal.list",
-    "goal.get",
     "desk.search",
     "search.query",
     "sandbox.list",
@@ -192,13 +190,11 @@ pub fn required_scope(method: &str) -> Option<Scope> {
         | "share.revoke" => Full,
         // Approved calls (09 §3.2): a pane asks, the owner's apps review and decide.
         "auth.list" | "auth.approve.decide" => Full,
-        // Catch-up, goals, search, sandboxes and live browser previews: reads. Attaching to a
+        // Catch-up, search, sandboxes and live browser previews: reads. Attaching to a
         // screencast only counts this device as a viewer (screencast.rs).
         "agent.turns"
         | "assistant.status"
         | "assistant.get"
-        | "goal.list"
-        | "goal.get"
         | "desk.search"
         | "search.query"
         | "sandbox.list"
@@ -209,12 +205,11 @@ pub fn required_scope(method: &str) -> Option<Scope> {
         | "browser.screencast_frame"
         | "browser.detach_screencast" => View,
         // New agents in a new folder or worktree. The assistant costs money and sends content
-        // to a model provider. Approving a plan starts its tasks. Taking over a browser session
+        // to a model provider. Taking over a browser session
         // drives it instead of the agent.
         "worktree.create" | "workspace.create" | "assistant.generate" | "assistant.confirm"
-        | "assistant.cancel" | "goal.approve" | "goal.cancel" | "browser.take_over"
-        | "browser.release" | "browser.click" | "browser.type" | "browser.press"
-        | "browser.navigate" => Full,
+        | "assistant.cancel" | "browser.take_over" | "browser.release" | "browser.click"
+        | "browser.type" | "browser.press" | "browser.navigate" => Full,
         _ => return None,
     })
 }
@@ -235,14 +230,13 @@ const HOST_WIDE: &[&str] = &[
     "desk.search",
 ];
 
-/// Method families that are host-wide as a whole: goals span repositories, the assistant reads
+/// Method families that are host-wide as a whole: the assistant reads
 /// across workspaces and spends the owner's budget, browser sessions and sandboxes are not tied
 /// to a shared pane in a way the gateway can check.
 const HOST_WIDE_PREFIXES: &[&str] = &[
     "peer.",
     "handoff.",
     "assistant.",
-    "goal.",
     "browser.",
     "sandbox.",
     "desk.",
@@ -509,18 +503,23 @@ impl Call<'_> {
         // Re-check authorization right before every side effect: the device may have been
         // revoked (here or by `vibeke-gateway revoke`) while this request was queued.
         if !SERVER_READ_ONLY.contains(&method) {
-            let _ = self.gw.reload_devices();
-            if self.gw.device(&self.device.id).is_none_or(|d| d.expired()) {
-                return Err(ApiError::new(
-                    "forbidden",
-                    "this device is no longer authorized",
-                ));
-            }
+            self.still_authorized()?;
         }
         if SERVER_READ_ONLY.contains(&method) {
             return self.gw.server.call(method, params).await;
         }
         self.gw.server.call_as(&self.actor(), method, params).await
+    }
+
+    fn still_authorized(&self) -> Result<(), ApiError> {
+        let _ = self.gw.reload_devices();
+        if self.gw.device(&self.device.id).is_none_or(|d| d.expired()) {
+            return Err(ApiError::new(
+                "forbidden",
+                "this device is no longer authorized",
+            ));
+        }
+        Ok(())
     }
 
     pub fn actor(&self) -> String {
@@ -1381,33 +1380,6 @@ impl Call<'_> {
                 self.server(method, pick(&p, &["request", "preview_digest"]))
                     .await
             }
-            "goal.list" => self.server(method, json!({})).await,
-            "goal.get" | "goal.cancel" => {
-                req(&p, "goal")?;
-                self.server(method, pick(&p, &["goal", "stop_tasks"])).await
-            }
-            "goal.approve" => {
-                // The plan revision the user reviewed must still be the current one: the server
-                // approves whatever plan the goal holds.
-                let goal = req(&p, "goal")?;
-                let rev = p.get("plan_rev").and_then(|v| v.as_u64()).ok_or_else(|| {
-                    ApiError::invalid("plan_rev is required (the plan revision you reviewed)")
-                })?;
-                let cur = self.server("goal.get", json!({"goal": goal})).await?;
-                if cur.pointer("/goal/plan_rev").and_then(|v| v.as_u64()) != Some(rev)
-                    || cur.pointer("/goal/state").and_then(|v| v.as_str()) != Some("planned")
-                {
-                    return Err(ApiError {
-                        kind: "stale".into(),
-                        message: "the plan changed; refresh and review it again".into(),
-                        details: json!({"goal": cur.get("goal")}),
-                    });
-                }
-                let mut params = pick(&p, &["start"]);
-                params["goal"] = goal.into();
-                params["by"] = self.actor().into();
-                self.server(method, params).await
-            }
             "desk.search" => {
                 req(&p, "text")?;
                 self.server(
@@ -1487,13 +1459,15 @@ impl Call<'_> {
             }
             "browser.take_over" | "browser.release" => {
                 let session = req(&p, "session")?;
-                let r = self.server(method, json!({"session": session})).await?;
-                let handle = s(&r, "session").unwrap_or(session);
-                self.gw.screencasts.set_taken(
-                    handle,
-                    (method == "browser.take_over").then_some(self.device.id.as_str()),
-                );
-                Ok(r)
+                self.still_authorized()?;
+                crate::screencast::control(
+                    self.gw,
+                    &self.actor(),
+                    &self.device.id,
+                    session,
+                    method == "browser.take_over",
+                )
+                .await
             }
             "browser.click" | "browser.type" | "browser.press" | "browser.navigate" => {
                 // Input goes to a session this device took over, so the agent is paused meanwhile.
@@ -2276,9 +2250,6 @@ mod workspace_tests {
                                 {"pane": "p1", "text": "in"}, {"pane": "p2", "text": "secret"},
                                 {"pane": "p9", "text": "archived"}, {"text": "no pane"}
                             ]}),
-                            "goal.get" => {
-                                json!({"goal": {"id": p["goal"], "plan_rev": 2, "state": "planned"}})
-                            }
                             "worktree.create" | "workspace.create" => {
                                 json!({"echo": p, "root_pane": {"id": "p9"}})
                             }
@@ -2688,13 +2659,11 @@ mod workspace_tests {
         );
     }
 
-    /// Methods exposed for the app's catch-up, goals, search, sandbox and preview screens.
+    /// Methods exposed for the app's catch-up, search, sandbox and preview screens.
     const VIEW_READS: &[&str] = &[
         "agent.turns",
         "assistant.status",
         "assistant.get",
-        "goal.list",
-        "goal.get",
         "desk.search",
         "search.query",
         "sandbox.list",
@@ -2709,8 +2678,6 @@ mod workspace_tests {
         "assistant.generate",
         "assistant.confirm",
         "assistant.cancel",
-        "goal.approve",
-        "goal.cancel",
         "browser.take_over",
         "browser.release",
         "browser.click",
@@ -2740,12 +2707,16 @@ mod workspace_tests {
                 "{m} is re-authorized with an actor"
             );
         }
-        // Never exposed: consent, provider settings, plan editing, raw scripts, box actions.
+        // Never exposed: consent, provider settings, goals, raw scripts, box actions.
         for m in [
             "assistant.consent",
             "assistant.revoke",
             "assistant.test",
             "assistant.purge",
+            "goal.list",
+            "goal.get",
+            "goal.approve",
+            "goal.cancel",
             "goal.create",
             "goal.plan",
             "goal.plan_submit",
@@ -2808,8 +2779,6 @@ mod workspace_tests {
                 "assistant.generate",
                 json!({"operation": "briefing", "workspace": "w1"}),
             ),
-            ("goal.list", json!({})),
-            ("goal.approve", json!({"goal": "g1", "plan_rev": 2})),
             ("sandbox.list", json!({})),
             ("browser.list", json!({})),
             ("browser.attach_screencast", json!({"session": "b1"})),
@@ -2928,7 +2897,7 @@ mod workspace_tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn assistant_goals_and_boundary_requests() {
+    async fn assistant_and_boundary_requests() {
         let t = tempfile::tempdir().unwrap();
         let gw = gateway(&t).await;
         let me = device("d1", Scope::Full, "device", None);
@@ -2960,30 +2929,6 @@ mod workspace_tests {
             r["echo"],
             json!({"operation": "reply_suggestions", "pane": "p1", "include_screen": true,
                    "idempotency_key": "gw:d1:o1", "actor": "gateway:d1"})
-        );
-        // A plan is approved only at the revision the user reviewed.
-        let e = call
-            .dispatch("goal.approve", json!({"goal": "g1", "plan_rev": 1}))
-            .await
-            .unwrap_err();
-        assert_eq!(e.kind, "stale");
-        assert_eq!(
-            call.dispatch("goal.approve", json!({"goal": "g1"}))
-                .await
-                .unwrap_err()
-                .kind,
-            "invalid_params"
-        );
-        let r = call
-            .dispatch(
-                "goal.approve",
-                json!({"goal": "g1", "plan_rev": 2, "by": "someone else", "start": false}),
-            )
-            .await
-            .unwrap();
-        assert_eq!(
-            r["echo"],
-            json!({"goal": "g1", "start": false, "by": "gateway:d1", "actor": "gateway:d1"})
         );
         // Boundary requests show what is asked and take allow (once) or deny only.
         let r = call
@@ -3074,6 +3019,15 @@ mod workspace_tests {
         assert_eq!(
             conflict(
                 call.dispatch("browser.click", json!({"session": "b1", "x": 1, "y": 2}))
+                    .await
+            ),
+            "conflict"
+        );
+        // A device that is not watching cannot take over: its take-over would outlive any lease.
+        assert_eq!(
+            conflict(
+                theirs
+                    .dispatch("browser.take_over", json!({"session": "b1", "op_id": "t"}))
                     .await
             ),
             "conflict"
