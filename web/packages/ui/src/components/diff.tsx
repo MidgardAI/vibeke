@@ -80,7 +80,7 @@ export const DiffView = memo(function DiffView({
 });
 
 /** Read-only file text with line numbers and the same colouring (Files viewer). */
-export const CodeView = memo(function CodeView({ text, path, fontSize = 12, wrap = false, maxLines = 20_000 }: { text: string; path: string; fontSize?: number; wrap?: boolean; maxLines?: number }) {
+export const CodeView = memo(function CodeView({ text, path, fontSize = 12, wrap = false, maxLines = 20_000, focusLine }: { text: string; path: string; fontSize?: number; wrap?: boolean; maxLines?: number; focusLine?: number | null }) {
   const lang = langOf(path);
   const lines = useMemo(() => {
     const all = text.split('\n');
@@ -92,7 +92,7 @@ export const CodeView = memo(function CodeView({ text, path, fontSize = 12, wrap
       <table className="w-full border-collapse">
         <tbody>
           {lines.map((l, i) => (
-            <tr key={i}>
+            <tr key={i} data-line={i + 1} className={focusLine === i + 1 ? 'line-focus' : undefined}>
               <td className="w-0 min-w-[3.5ch] select-none pl-2.5 pr-3 text-right align-top tabular-nums text-faint">{i + 1}</td>
               <td className={cx('pr-2 align-top', wrap ? 'whitespace-pre-wrap break-all' : 'whitespace-pre')}>
                 {tokenize(l, lang).map((tk, j) => (

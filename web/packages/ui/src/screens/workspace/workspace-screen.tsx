@@ -9,7 +9,7 @@ import { useComposerDraft } from '../../lib/composer-draft';
 // and switching tabs stays inside the window.
 
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { ChevronDown, ChevronUp, MonitorPlay, MoreHorizontal, OctagonX, PanelRight, Pencil, PictureInPicture2, Plus, RotateCcw, Search, Send, Server, Share2, Trash2 } from 'lucide-react';
+import { ChevronDown, ChevronUp, ClipboardCopy, Minimize2, MonitorPlay, MoreHorizontal, OctagonX, PanelRight, Pencil, PictureInPicture2, Plus, RotateCcw, Search, Send, Server, Share2, Trash2 } from 'lucide-react';
 import { groupBatches, hostKind, type InboxItem } from '@vibeke/core';
 import { useApp, useHost, useHosts, useInboxItems, usePrefs } from '../../app/hooks';
 import { emitUi, isMacLike, onAgentViewRequest, type AgentViewRequest } from '../../app/keyboard';
@@ -19,11 +19,14 @@ import { useSurface } from '../../app/surface';
 import { BatchCard } from '../../components/batch-card';
 import { InteractionCard } from '../../components/interaction-card';
 import { NewSheet } from '../../components/new-sheet';
+import { PaneStateLine } from './pane-state-line';
 import { Button, Empty, IconButton, Notice, Sheet, Spinner, TextField, cx } from '../../components/ui';
 import { t } from '../../i18n';
 import { agentViewFor, hasViewOverride, otherView, paneTabId, showFor, tabBody, type AgentView } from '../../lib/agent-view';
 import { errorMessage } from '../../lib/answer';
 import { composerShowsStop } from '../../lib/guards';
+import { requestFileLine } from '../../lib/file-focus';
+import { useSoftKeyboard } from '../../lib/use-soft-keyboard';
 import { TAB_PANEL_ID, tabDomId } from '../../lib/tabs-nav';
 import { keyLabel } from '../../lib/shortcuts';
 import { noteUnsupported, supported } from '../../lib/supports';
@@ -116,9 +119,50 @@ function Workspace({ route, row, current, locked }: { route: WorkspaceRoute; row
   const tab: WsTab | null = allTabs.find((x) => x.id === tabId) ?? (current.run && /^[tc]:/.test(tabId) ? (allTabs.find((x) => x.id === `a:${current.pane.id}`) ?? null) : null);
   const body = tabBody(tabId, view);
   const hasAgents = locked ? !!current.run : row.panes.some((p) => p.run);
+  /** Find works in the terminal and in an agent's conversation. */
+  const findable = body === 'terminal' || (body === 'conversation' && !!current.run);
   /** What the toggle shows as on: the agent body on screen, else the workspace's view. */
   const shownView: AgentView = current.run && body !== 'preview' ? body : view;
   const [findOpen, setFindOpen] = useState(false);
+  const keyboard = useSoftKeyboard();
+  const copyRef = useRef<(() => string) | null>(null);
+  // Zen: only the screen (or conversation), full size. Never kept: another pane starts without it.
+  const [zen, setZen] = useState(false);
+  useEffect(() => setZen(false), [current.pane.id]);
+  useEffect(() => {
+    if (!zen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || e.defaultPrevented) return;
+      const el = e.target instanceof HTMLElement ? e.target : null;
+      if (el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName))) return;
+      if (document.querySelector('[role="dialog"],[role="alertdialog"]')) return;
+      e.preventDefault();
+      setZen(false);
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, [zen]);
+  // With "Zen in landscape" on, turning a touch device sideways enters Zen and turning it back leaves.
+  useEffect(() => {
+    if (!prefs.zenLandscape || typeof window === 'undefined' || !window.matchMedia) return;
+    const touch = window.matchMedia('(pointer: coarse)');
+    const landscape = window.matchMedia('(orientation: landscape)');
+    const on = (e: MediaQueryListEvent) => {
+      if (touch.matches) setZen(e.matches);
+    };
+    landscape.addEventListener('change', on);
+    return () => landscape.removeEventListener('change', on);
+  }, [prefs.zenLandscape]);
+  const openFile = useMemo(
+    () =>
+      locked
+        ? undefined
+        : (path: string, line?: number) => {
+            requestFileLine(path, line);
+            navigate({ ...route, panel: 'files', file: path, commit: null, base: null, view: null });
+          },
+    [locked, route],
+  );
   const [sheet, setSheet] = useState<null | 'new' | 'share' | 'handoff' | 'rename-pane' | 'close-pane' | 'rename-tab' | 'close-tab'>(null);
 
   const select = useCallback(
@@ -201,7 +245,16 @@ function Workspace({ route, row, current, locked }: { route: WorkspaceRoute; row
   const wsMenu: (MenuItem | 'sep' | false)[] = [
     { label: t.tabs2.renamePane, icon: <Pencil />, disabled: !full, onSelect: () => setSheet('rename-pane') },
     hasAgents && overridden && { label: t.tabs2.useDefaultView(t.settings.agentViews[prefs.agentView]!), icon: <RotateCcw />, onSelect: () => setView(null) },
-    body === 'terminal' && { label: t.tabs2.findInTerminal, icon: <Search />, onSelect: () => setFindOpen(true) },
+    findable && { label: body === 'terminal' ? t.tabs2.findInTerminal : t.tabs2.findInConversation, icon: <Search />, onSelect: () => setFindOpen(true) },
+    body === 'terminal' && {
+      label: t.pane.copyOutput,
+      icon: <ClipboardCopy />,
+      onSelect: () => {
+        const text = copyRef.current?.() ?? '';
+        if (!text) return app.toast(t.pane.outputEmpty, 'error');
+        void app.platform.clipboard.writeText(text).then(() => app.toast(t.copied, 'ok'));
+      },
+    },
     !!popOut && { label: t.palette.popOut, icon: <PictureInPicture2 />, onSelect: () => popOut(row.host, current.pane.id) },
     narrow && canShare && { label: t.tabs2.share, icon: <Share2 />, onSelect: () => setSheet('share') },
     narrow && canShare && { label: t.tabs2.handoff, icon: <Send />, onSelect: () => setSheet('handoff') },
@@ -222,13 +275,14 @@ function Workspace({ route, row, current, locked }: { route: WorkspaceRoute; row
   );
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-bg pt-safe">
+    <div className={cx('flex h-full min-h-0 flex-col bg-bg pt-safe', zen && 'fixed inset-0 z-40 px-safe pb-safe')}>
+      {!zen && (
       <header className={cx('titlebar flex h-11 shrink-0 items-center gap-1 border-b border-border pl-3 pr-2', !wide && 'titlebar-inset pl-1.5', narrow && 'h-12')}>
         {!wide && !locked && <SidebarButton />}
         {titleBlock}
         <MenuButton label={t.tabs2.workspaceMenu} icon={<MoreHorizontal />} align={narrow ? 'right' : 'left'} items={wsMenu} />
         {!narrow && <span className="flex-1" />}
-        {body === 'terminal' && (
+        {findable && (
           <IconButton label={t.pane.find} data-find aria-keyshortcuts="/" onClick={() => setFindOpen(true)} className={cx(narrow && 'hidden')}>
             <Search />
           </IconButton>
@@ -250,6 +304,21 @@ function Workspace({ route, row, current, locked }: { route: WorkspaceRoute; row
           </IconButton>
         )}
       </header>
+      )}
+      {zen ? (
+        <button
+          type="button"
+          onClick={() => setZen(false)}
+          aria-label={t.pane.exitZen}
+          className="vk-focus fixed bottom-[max(0.75rem,env(safe-area-inset-bottom))] left-[max(0.75rem,env(safe-area-inset-left))] z-50 inline-flex h-8 items-center gap-1.5 rounded-full border border-border bg-surface-2/90 px-3 text-xs text-muted opacity-70 shadow-[var(--shadow)] backdrop-blur hover:text-fg hover:opacity-100 pointer-coarse:h-11 pointer-coarse:text-sm"
+        >
+          <Minimize2 className="size-3.5" />
+          {t.pane.exitZen}
+        </button>
+      ) : keyboard ? (
+        // The soft keyboard leaves little room: the tabs give way, the status stays.
+        <PaneStateLine row={current} label={tab?.label ?? ''} />
+      ) : (
       <TabStrip
         tabs={tabs}
         current={tab?.id ?? tabId}
@@ -260,6 +329,7 @@ function Workspace({ route, row, current, locked }: { route: WorkspaceRoute; row
         locked={locked}
         viewToggle={hasAgents ? { value: shownView, mac, onChange: (v) => setView(v) } : null}
       />
+      )}
       <div role="tabpanel" id={TAB_PANEL_ID} aria-labelledby={tab && tabs.some((x) => x.id === tab.id) ? tabDomId(tab.id) : undefined} className="flex min-h-0 flex-1 flex-col">
         {!locked && showsCentreDiff(route) ? (
           <Suspense
@@ -282,6 +352,10 @@ function Workspace({ route, row, current, locked }: { route: WorkspaceRoute; row
             findOpen={findOpen}
             setFindOpen={setFindOpen}
             onOpenTerminal={openTerminal}
+            zen={zen}
+            setZen={setZen}
+            openFile={openFile}
+            copyRef={copyRef}
           />
         )}
       </div>
@@ -338,6 +412,10 @@ function PaneBody({
   findOpen,
   setFindOpen,
   onOpenTerminal,
+  zen,
+  setZen,
+  openFile,
+  copyRef,
 }: {
   hostId: string;
   row: PaneRow;
@@ -346,6 +424,10 @@ function PaneBody({
   findOpen: boolean;
   setFindOpen(v: boolean): void;
   onOpenTerminal(): void;
+  zen: boolean;
+  setZen(v: boolean): void;
+  openFile?: (path: string, line?: number) => void;
+  copyRef: { current: (() => string) | null };
 }) {
   const app = useApp();
   const host = useHost(hostId);
@@ -417,6 +499,8 @@ function PaneBody({
       harness={run?.harness ?? null}
       canType={canType}
       onInsert={(s) => setText((cur) => (cur ? `${cur} ${s}` : s))}
+      zen={zen}
+      setZen={setZen}
     />
   );
 
@@ -430,6 +514,9 @@ function PaneBody({
           cwd={run.cwd ?? row.pane.cwd}
           refreshKey={refreshKey}
           onOpenTerminal={onOpenTerminal}
+          findOpen={findOpen}
+          setFindOpen={setFindOpen}
+          openFile={openFile}
           tail={otherCards.length > 0 ? <Approvals items={otherCards} onOpenTerminal={onOpenTerminal} /> : null}
         />
       ) : (
@@ -442,18 +529,22 @@ function PaneBody({
             setFindOpen={setFindOpen}
             onNoEcho={setNoEcho}
             burstRef={burstRef}
-            onActivate={canType ? focusComposer : undefined}
+            onActivate={canType && !zen ? focusComposer : undefined}
+            cwd={run?.cwd ?? row.pane.cwd}
+            openFile={openFile}
+            copyRef={copyRef}
           />
           {cards.length > 0 && <ApprovalDock items={cards} onOpenTerminal={onOpenTerminal} />}
         </>
       )}
-      <div className="shrink-0 pb-safe">
+      <div className={cx('shrink-0', !zen && 'pb-safe')}>
         {dialogs.length > 0 && (
           <div ref={dialogsRef} className="mx-auto max-h-[55vh] w-full max-w-[780px] overflow-y-auto px-3 pb-2 sm:px-4" data-dialogs>
             <Approvals items={dialogs} onOpenTerminal={onOpenTerminal} />
           </div>
         )}
-        <div className="mx-auto w-full max-w-[780px] space-y-1 px-3 empty:hidden sm:px-4">
+        {/* Zen keeps open pickers (the agent waits for them) and hides the rest. */}
+        <div className={cx('mx-auto w-full max-w-[780px] space-y-1 px-3 empty:hidden sm:px-4', zen && 'hidden')}>
           {term && noEcho && canType && <Notice tone="warn">{t.composer.password}</Notice>}
           {!online && <Notice tone="warn">{t.composer.offline}</Notice>}
           {online && scope === 'view' && <Notice>{t.composer.readOnly}</Notice>}
@@ -472,8 +563,8 @@ function PaneBody({
           )}
         </div>
         {/* Terminal: the key belt stays on screen (keys, quick replies, agent commands). */}
-        {term && <div data-belt>{beltEl}</div>}
-        {canType && (
+        {!zen && term && <div data-belt>{beltEl}</div>}
+        {!zen && canType && (
           <div ref={composerRef}>
             <Composer
               hostId={hostId}

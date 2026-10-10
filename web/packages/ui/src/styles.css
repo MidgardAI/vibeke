@@ -622,3 +622,48 @@ button[data-nav-item][data-selected] {
     font-size: max(16px, 1em);
   }
 }
+
+/* Links in output: URLs and workspace files. */
+.vk-link {
+  color: var(--accent, inherit);
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.vk-link:hover,
+.vk-link:focus-visible {
+  text-decoration-style: solid;
+}
+
+/* Find in the conversation: marks drawn over the text without changing it. */
+::highlight(vk-find) {
+  background: color-mix(in srgb, var(--warn) 45%, transparent);
+  color: inherit;
+}
+::highlight(vk-find-current) {
+  background: var(--warn);
+  color: #000;
+}
+.find-fallback {
+  outline: 2px solid var(--warn);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* A transparency checkerboard behind SVG previews. */
+.checker {
+  background-color: #fff;
+  background-image:
+    linear-gradient(45deg, #d4d4d8 25%, transparent 25%, transparent 75%, #d4d4d8 75%),
+    linear-gradient(45deg, #d4d4d8 25%, transparent 25%, transparent 75%, #d4d4d8 75%);
+  background-size: 16px 16px;
+  background-position:
+    0 0,
+    8px 8px;
+}
+
+/* The line a file link points at. */
+tr[data-line].line-focus > td {
+  background: color-mix(in srgb, var(--warn) 22%, transparent);
+}
