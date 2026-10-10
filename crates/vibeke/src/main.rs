@@ -167,6 +167,12 @@ fn main() {
     {
         std::process::exit(vk_sandbox::exec::main(&args[1..]));
     }
+    // Cloud exec (17 §3.2): its own flags and runtime; `--fake-daemon` forks, so no threads yet.
+    if args.first().map(String::as_str) == Some("cloud")
+        && args.get(1).map(String::as_str) == Some("exec")
+    {
+        std::process::exit(vk_cloud::exec_cli::run(&args[2..]));
+    }
     if args.first().map(String::as_str) == Some("debug")
         && args.get(1).map(String::as_str) == Some("fake-chromium")
     {
