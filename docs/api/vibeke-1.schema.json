@@ -9312,6 +9312,9 @@
               "headless_shell"
             ]
           },
+          "background": {
+            "type": "boolean"
+          },
           "version": {
             "type": "string"
           },
@@ -9448,6 +9451,28 @@
             "required": [
               "installed",
               "binary",
+              "plan"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "started": {
+                "type": "boolean"
+              },
+              "running": {
+                "type": "boolean"
+              },
+              "plan": {
+                "type": "object"
+              },
+              "cursor": {
+                "$ref": "#/$defs/Cursor"
+              }
+            },
+            "required": [
+              "started",
+              "running",
               "plan"
             ]
           }
@@ -21730,6 +21755,99 @@
             "items": {
               "$ref": "#/$defs/PreviewMirror"
             }
+          },
+          "available_browsers": {
+            "type": "object",
+            "properties": {
+              "pane": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "binary": {
+                        "type": "string"
+                      },
+                      "kind": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "binary",
+                      "kind"
+                    ]
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "window": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "binary": {
+                        "type": "string"
+                      },
+                      "kind": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "binary",
+                      "kind"
+                    ]
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "pane",
+              "window"
+            ]
+          },
+          "browser_install": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "running": {
+                    "type": "boolean"
+                  },
+                  "binary": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "error": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "running",
+                  "binary",
+                  "error"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -21739,7 +21857,9 @@
           "accepted",
           "rejected",
           "proxy",
-          "mirrors"
+          "mirrors",
+          "available_browsers",
+          "browser_install"
         ]
       }
     },

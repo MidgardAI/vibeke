@@ -1113,8 +1113,8 @@
       ],
       "milestone": "M3",
       "spec": "`{confirm?, version?, url?, sha256?}` → without `confirm`: `{plan: {version, platform, url, sha256, checksum_known, dir, binary, installed}, confirm_required: true}`. With `confirm`: downloads, verifies, installs → `{installed, binary, plan}`. Full scope only.",
-      "params": "{confirm?: bool, flavor?: full|headless_shell, version?: string, url?: string, sha256?: string}",
-      "result": "{plan: {flavor: full|headless_shell, build: string, reason: string, windows: bool, version: string, platform: string, url: string, sha256: string|null, checksum_known: bool, dir: string, binary: string, installed: bool, existing: {binary: string, kind: string}|null}, confirm_required: bool} | {installed: bool, binary: string, plan: object}"
+      "params": "{confirm?: bool, flavor?: full|headless_shell, background?: bool, version?: string, url?: string, sha256?: string}",
+      "result": "{plan: {flavor: full|headless_shell, build: string, reason: string, windows: bool, version: string, platform: string, url: string, sha256: string|null, checksum_known: bool, dir: string, binary: string, installed: bool, existing: {binary: string, kind: string}|null}, confirm_required: bool} | {installed: bool, binary: string, plan: object} | {started: bool, running: bool, plan: object}"
     },
     {
       "name": "browser.list",
@@ -4005,7 +4005,7 @@
       "milestone": "M3",
       "spec": "`{}` → `{socks_port?, browsers: [{profile, machine, route, pid, running}], links: [{machine, connected, bytes_in, bytes_out, rtt_ms}], accepted, rejected}`. `server.status` also carries `preview: {socks_port, browsers, previews}`.",
       "params": "{}",
-      "result": "{socks_port: int|null, browsers: [{profile: string, machine: string, route: string, pid: int, running: bool}], links: [{machine: string, connected: bool, bytes_in: int|null, bytes_out: int|null, rtt_ms: int|null}], accepted: int, rejected: int, proxy: {port: int, tls: bool, routes: [{host: string, machine: string, preview: string, handle: string, port: int, scheme: http|https, tls: bool}], stats: {requests: int, denied: int, websockets: int}}|null, mirrors: [PreviewMirror]}"
+      "result": "{socks_port: int|null, browsers: [{profile: string, machine: string, route: string, pid: int, running: bool}], links: [{machine: string, connected: bool, bytes_in: int|null, bytes_out: int|null, rtt_ms: int|null}], accepted: int, rejected: int, proxy: {port: int, tls: bool, routes: [{host: string, machine: string, preview: string, handle: string, port: int, scheme: http|https, tls: bool}], stats: {requests: int, denied: int, websockets: int}}|null, mirrors: [PreviewMirror], available_browsers: {pane: {binary: string, kind: string}|null, window: {binary: string, kind: string}|null}, browser_install: {running: bool, binary: string|null, error: string|null}|null}"
     },
     {
       "name": "preview.unmirror",

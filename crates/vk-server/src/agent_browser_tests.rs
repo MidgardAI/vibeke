@@ -1654,3 +1654,68 @@ async fn printed_url_attribution_is_not_ownership() {
     assert_eq!(status(), Some(PreviewStatus::Up));
     drop(l);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn background_install_reports_through_preview_status() {
+    if vk_browser::install::platform().is_none() {
+        return;
+    }
+    let e = Env::new();
+    let dir = tempfile::tempdir().unwrap();
+    let fetched = Arc::new(AtomicUsize::new(0));
+    let n = fetched.clone();
+    e.server.agent_browser.set_install(
+        Arc::new(move |_url: &str, dest: &std::path::Path| {
+            n.fetch_add(1, Ordering::SeqCst);
+            std::fs::write(dest, b"not the pinned build")?;
+            Ok(())
+        }),
+        dir.path().to_path_buf(),
+    );
+    // A pane may not install.
+    assert!(
+        e.call(
+            &ctx_pane("pane-a"),
+            "browser.install",
+            json!({"confirm": true, "background": true})
+        )
+        .await
+        .is_err()
+    );
+    // Without `confirm` it only plans, background or not.
+    let r = e
+        .call(&ctx_full(), "browser.install", json!({"background": true}))
+        .await
+        .unwrap();
+    assert_eq!(r["confirm_required"], true);
+    assert_eq!(fetched.load(Ordering::SeqCst), 0);
+    let r = e
+        .call(
+            &ctx_full(),
+            "browser.install",
+            json!({"confirm": true, "background": true}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(r["started"], true, "{r}");
+    // The download fails its checksum; the job says so and nothing is installed.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let job = loop {
+        let st = crate::preview::api(&e.server, &ctx_full(), "preview.status", &json!({}))
+            .await
+            .unwrap()
+            .unwrap();
+        if st["browser_install"]["running"] == false {
+            break st["browser_install"].clone();
+        }
+        assert!(Instant::now() < deadline, "{st}");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    assert_eq!(fetched.load(Ordering::SeqCst), 1);
+    assert!(
+        job["error"].as_str().unwrap().contains("checksum mismatch"),
+        "{job}"
+    );
+    assert_eq!(job["binary"], Value::Null);
+    assert!(vk_browser::install::installed(dir.path()).is_none());
+}

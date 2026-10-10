@@ -2137,6 +2137,7 @@ export type BrowserEvalResult = {
 export type BrowserInstallParams = {
   confirm?: boolean;
   flavor?: "full" | "headless_shell";
+  background?: boolean;
   version?: string;
   url?: string;
   sha256?: string;
@@ -2166,6 +2167,11 @@ export type BrowserInstallResult = {
 } | {
   installed: boolean;
   binary: string;
+  plan: Record<string, unknown>;
+  cursor?: Cursor;
+} | {
+  started: boolean;
+  running: boolean;
   plan: Record<string, unknown>;
   cursor?: Cursor;
 };
@@ -5327,6 +5333,21 @@ export type PreviewStatusResult = {
     };
   } | null;
   mirrors: PreviewMirror[];
+  available_browsers: {
+    pane: {
+      binary: string;
+      kind: string;
+    } | null;
+    window: {
+      binary: string;
+      kind: string;
+    } | null;
+  };
+  browser_install: {
+    running: boolean;
+    binary: string | null;
+    error: string | null;
+  } | null;
 };
 
 export type PreviewUnmirrorParams = {

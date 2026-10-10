@@ -2288,6 +2288,7 @@ BrowserEvalResult = TypedDict("BrowserEvalResult", {
 BrowserInstallParams = TypedDict("BrowserInstallParams", {
     "confirm": NotRequired[bool],
     "flavor": NotRequired[Literal["full", "headless_shell"]],
+    "background": NotRequired[bool],
     "version": NotRequired[str],
     "url": NotRequired[str],
     "sha256": NotRequired[str],
@@ -2327,7 +2328,14 @@ BrowserInstallResultXV1 = TypedDict("BrowserInstallResultXV1", {
     "cursor": NotRequired["Cursor"],
 })
 
-BrowserInstallResult: TypeAlias = Union["BrowserInstallResultXV0", "BrowserInstallResultXV1"]
+BrowserInstallResultXV2 = TypedDict("BrowserInstallResultXV2", {
+    "started": bool,
+    "running": bool,
+    "plan": Dict[str, Any],
+    "cursor": NotRequired["Cursor"],
+})
+
+BrowserInstallResult: TypeAlias = Union["BrowserInstallResultXV0", "BrowserInstallResultXV1", "BrowserInstallResultXV2"]
 
 BrowserListParams: TypeAlias = Dict[str, Any]
 
@@ -5720,6 +5728,27 @@ PreviewStatusResultProxyV0 = TypedDict("PreviewStatusResultProxyV0", {
     "stats": "PreviewStatusResultProxyV0Stats",
 })
 
+PreviewStatusResultAvailableBrowsersPaneV0 = TypedDict("PreviewStatusResultAvailableBrowsersPaneV0", {
+    "binary": str,
+    "kind": str,
+})
+
+PreviewStatusResultAvailableBrowsersWindowV0 = TypedDict("PreviewStatusResultAvailableBrowsersWindowV0", {
+    "binary": str,
+    "kind": str,
+})
+
+PreviewStatusResultAvailableBrowsers = TypedDict("PreviewStatusResultAvailableBrowsers", {
+    "pane": Optional["PreviewStatusResultAvailableBrowsersPaneV0"],
+    "window": Optional["PreviewStatusResultAvailableBrowsersWindowV0"],
+})
+
+PreviewStatusResultBrowserInstallV0 = TypedDict("PreviewStatusResultBrowserInstallV0", {
+    "running": bool,
+    "binary": Optional[str],
+    "error": Optional[str],
+})
+
 PreviewStatusResult = TypedDict("PreviewStatusResult", {
     "socks_port": Optional[int],
     "browsers": List["PreviewStatusResultBrowsersItem"],
@@ -5728,6 +5757,8 @@ PreviewStatusResult = TypedDict("PreviewStatusResult", {
     "rejected": int,
     "proxy": Optional["PreviewStatusResultProxyV0"],
     "mirrors": List["PreviewMirror"],
+    "available_browsers": "PreviewStatusResultAvailableBrowsers",
+    "browser_install": Optional["PreviewStatusResultBrowserInstallV0"],
 })
 
 PreviewUnmirrorParams = TypedDict("PreviewUnmirrorParams", {

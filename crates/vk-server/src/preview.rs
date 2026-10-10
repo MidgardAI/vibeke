@@ -444,6 +444,30 @@ pub fn start(server: &Arc<Server>) {
 }
 
 /// Fields shown in `server.status`.
+/// The binaries this server would launch (`preview.status.available_browsers`): `pane` for
+/// browser panes it hosts media for (06 B3.2), `window` for headful profile windows (B3.4).
+/// `null` = none found; `vibeke browser install` fixes both where it installs the full browser
+/// (a machine with a display), the pane one only where it installs the headless shell (B5).
+pub fn available_browsers(cfg: &PreviewConfig) -> Value {
+    let pane = crate::browser_pane::find_pane_browser(
+        Some(cfg.pane_browser.as_str()),
+        &crate::agent_browser::install_root(),
+    )
+    .map(|b| json!({"binary": b.path, "kind": b.kind}));
+    let window = if cfg.wants_firefox() {
+        browser::find_firefox(Some(cfg.browser.as_str()))
+    } else {
+        let installed =
+            vk_browser::install::installed_full(&crate::agent_browser::install_root());
+        browser::find_browser_with(
+            Some(cfg.browser.as_str()).filter(|b| !b.is_empty()),
+            installed.as_deref(),
+        )
+    }
+    .map(|b| json!({"binary": b.path, "kind": b.kind}));
+    json!({"pane": pane, "window": window})
+}
+
 pub fn status_json(server: &Server) -> Value {
     let port = server.previews.socks_port.try_lock().ok().and_then(|g| *g);
     json!({
@@ -1433,6 +1457,8 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
                 "rejected": server.previews.rejected.load(Ordering::Relaxed),
                 "proxy": crate::preview_fabric::proxy_status(server, ctx).await,
                 "mirrors": crate::preview_fabric::mirrors_status(server),
+                "available_browsers": available_browsers(&PreviewConfig::load()),
+                "browser_install": server.agent_browser.install_job().map(|j| j.json()),
             }))
         }
         "preview.profile" if s(p, "action").unwrap_or("list") == "list" => Ok(profile_list(server)),

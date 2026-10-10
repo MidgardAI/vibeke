@@ -368,6 +368,29 @@ pub struct AgentBrowsers {
     pub denied: AtomicU64,
     /// `preview.console_error` limiter (shared with browser panes).
     pub console_errors: crate::preview_console::Limiter,
+    /// The last `browser.install {background: true}` (reported by `preview.status`).
+    install_job: Arc<Mutex<Option<InstallJob>>>,
+    /// Test hooks: where `browser.install` downloads from and installs into.
+    install_fetch: Mutex<Option<InstallFetch>>,
+    install_root_override: Mutex<Option<PathBuf>>,
+}
+
+/// A download function for `browser.install` (`curl` unless a test sets one).
+pub type InstallFetch = Arc<dyn Fn(&str, &std::path::Path) -> anyhow::Result<()> + Send + Sync>;
+
+/// A background `browser.install` (06 B5): the TUI starts it and polls `preview.status`, so
+/// the ~100 MB download never holds up the connection that asked for it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstallJob {
+    pub running: bool,
+    pub binary: Option<String>,
+    pub error: Option<String>,
+}
+
+impl InstallJob {
+    pub fn json(&self) -> Value {
+        json!({"running": self.running, "binary": self.binary, "error": self.error})
+    }
 }
 
 impl AgentBrowsers {
@@ -386,6 +409,17 @@ impl AgentBrowsers {
     /// Test hook / embedding: how the browser is started.
     pub fn set_launcher(&self, l: Launcher) {
         *self.launcher.lock().unwrap() = Some(l);
+    }
+
+    /// Test hook: `browser.install` downloads with `f` into `root`.
+    pub fn set_install(&self, f: InstallFetch, root: PathBuf) {
+        *self.install_fetch.lock().unwrap() = Some(f);
+        *self.install_root_override.lock().unwrap() = Some(root);
+    }
+
+    /// The last background install, if any.
+    pub fn install_job(&self) -> Option<InstallJob> {
+        self.install_job.lock().unwrap().clone()
     }
 
     fn session(&self, target: &str) -> Option<Arc<Session>> {
@@ -1312,7 +1346,7 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
         },
         "browser.list" => Ok(list(server, ctx).await),
         "browser.status" => Ok(status(server).await),
-        "browser.install" => install(p).await,
+        "browser.install" => install(server, p).await,
         "browser.take_over" | "browser.release" => {
             let t = match session_param(p) {
                 Some(t) => t,
@@ -2510,18 +2544,28 @@ fn existing_browser(root: &std::path::Path, flavor: vk_browser::install::Flavor)
     )
 }
 
-async fn install(p: &Value) -> R {
-    let root = install_root();
-    let flavor =
-        match s(p, "flavor") {
-            Some(f) => Some(vk_browser::install::Flavor::parse(f).ok_or_else(|| {
-                invalid(format!("flavor must be full or headless_shell, not {f:?}"))
-            })?),
-            None => None,
-        };
-    let plan =
-        vk_browser::install::plan(&root, s(p, "version"), s(p, "url"), s(p, "sha256"), flavor)
-            .map_err(|e| invalid(format!("{e:#}")))?;
+async fn install(server: &Arc<Server>, p: &Value) -> R {
+    let ab = &server.agent_browser;
+    let root = ab
+        .install_root_override
+        .lock()
+        .unwrap()
+        .clone()
+        .unwrap_or_else(install_root);
+    let flavor = match s(p, "flavor") {
+        Some(f) => Some(vk_browser::install::Flavor::parse(f).ok_or_else(|| {
+            invalid(format!("flavor must be full or headless_shell, not {f:?}"))
+        })?),
+        None => None,
+    };
+    let plan = vk_browser::install::plan(
+        &root,
+        s(p, "version"),
+        s(p, "url"),
+        s(p, "sha256"),
+        flavor,
+    )
+    .map_err(|e| invalid(format!("{e:#}")))?;
     if !b(p, "confirm").unwrap_or(false) {
         let mut pj = plan.to_json();
         pj["existing"] = existing_browser(&root, plan.flavor);
@@ -2536,13 +2580,57 @@ async fn install(p: &Value) -> R {
         ))
         .details(json!({"plan": plan.to_json()})));
     }
+    let fetch = ab.install_fetch.lock().unwrap().clone();
     let pl = plan.clone();
-    let bin = tokio::task::spawn_blocking(move || {
-        vk_browser::install::install(&pl, &vk_browser::install::curl_fetch)
-    })
-    .await
-    .map_err(|e| err(ErrorKind::Internal, e.to_string()))?
-    .map_err(|e| err(ErrorKind::Internal, format!("{e:#}")))?;
+    let run = move || match &fetch {
+        Some(f) => vk_browser::install::install(&pl, &|u: &str, d: &std::path::Path| f(u, d)),
+        None => vk_browser::install::install(&pl, &vk_browser::install::curl_fetch),
+    };
+    if b(p, "background").unwrap_or(false) {
+        // One at a time; the result shows up in `preview.status.browser_install`.
+        {
+            let mut g = ab.install_job.lock().unwrap();
+            if g.as_ref().is_some_and(|j| j.running) {
+                return Ok(json!({"started": false, "running": true, "plan": plan.to_json()}));
+            }
+            *g = Some(InstallJob {
+                running: true,
+                binary: None,
+                error: None,
+            });
+        }
+        let job = ab.install_job.clone();
+        tokio::spawn(async move {
+            let r = tokio::task::spawn_blocking(run)
+                .await
+                .map_err(|e| anyhow::anyhow!("{e}"))
+                .and_then(|r| r);
+            let done = match r {
+                Ok(bin) => {
+                    tracing::info!(binary = %bin.display(), "browser install finished");
+                    InstallJob {
+                        running: false,
+                        binary: Some(bin.display().to_string()),
+                        error: None,
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(error = %format!("{e:#}"), "browser install failed");
+                    InstallJob {
+                        running: false,
+                        binary: None,
+                        error: Some(format!("{e:#}")),
+                    }
+                }
+            };
+            *job.lock().unwrap() = Some(done);
+        });
+        return Ok(json!({"started": true, "running": true, "plan": plan.to_json()}));
+    }
+    let bin = tokio::task::spawn_blocking(run)
+        .await
+        .map_err(|e| err(ErrorKind::Internal, e.to_string()))?
+        .map_err(|e| err(ErrorKind::Internal, format!("{e:#}")))?;
     Ok(json!({"installed": true, "binary": bin, "plan": plan.to_json()}))
 }
 

@@ -109,16 +109,71 @@ pub struct ChromiumLauncher {
     pub binary: Option<PathBuf>,
 }
 
-/// `[preview] pane_browser`, `$VIBEKE_CHROMIUM`, Playwright headless shell, then any
-/// Chromium-family browser found for the window.
-pub fn find_pane_browser(configured: Option<&str>) -> Option<PathBuf> {
+/// The Chromium a browser pane launches on this machine (the media host): `[preview]
+/// pane_browser`, `$VIBEKE_CHROMIUM`, a build installed by `vibeke browser install` under
+/// `install_root`, Playwright (headless shell first), then the window's Chromium-family browser.
+/// `kind` is `config`, `env`, `installed`, `playwright-shell`, `playwright` or the window
+/// browser's kind.
+pub fn find_pane_browser(
+    configured: Option<&str>,
+    install_root: &std::path::Path,
+) -> Option<vk_browser::headless::HeadlessBin> {
+    if let Some(c) = configured.filter(|c| !c.is_empty()) {
+        return pick_pane_browser(Some(c), None, None, Vec::new(), None);
+    }
+    let env = std::env::var_os("VIBEKE_CHROMIUM")
+        .filter(|e| !e.is_empty())
+        .map(PathBuf::from);
+    if env.is_some() {
+        return pick_pane_browser(None, env, None, Vec::new(), None);
+    }
+    if let Some(p) = vk_browser::install::installed(install_root) {
+        return pick_pane_browser(None, None, Some(p), Vec::new(), None);
+    }
+    let playwright = vk_browser::headless::playwright_builds();
+    let system = if playwright.is_empty() {
+        vk_preview::browser::find_browser(None)
+    } else {
+        None
+    };
+    pick_pane_browser(None, None, None, playwright, system)
+}
+
+/// [`find_pane_browser`]'s order over what was found on disk.
+fn pick_pane_browser(
+    configured: Option<&str>,
+    env: Option<PathBuf>,
+    installed: Option<PathBuf>,
+    playwright: Vec<(bool, PathBuf)>,
+    system: Option<vk_preview::browser::BrowserBin>,
+) -> Option<vk_browser::headless::HeadlessBin> {
+    use vk_browser::headless::HeadlessBin;
+    let bin = |path: PathBuf, kind: &str| HeadlessBin {
+        path,
+        kind: kind.into(),
+    };
     if let Some(c) = configured.filter(|c| !c.is_empty()) {
         let p = PathBuf::from(c);
-        return p.is_file().then_some(p);
+        return p.is_file().then(|| bin(p, "config"));
     }
-    vk_browser::cdp::discover_chromium(true)
-        .or_else(|| vk_preview::browser::find_browser(None).map(|b| b.path))
+    if let Some(p) = env {
+        return Some(bin(p, "env"));
+    }
+    if let Some(p) = installed {
+        return Some(bin(p, "installed"));
+    }
+    // The headless shell of any revision before a full Playwright Chromium.
+    if let Some((_, p)) = playwright.iter().find(|(shell, _)| *shell) {
+        return Some(bin(p.clone(), "playwright-shell"));
+    }
+    if let Some((_, p)) = playwright.into_iter().next() {
+        return Some(bin(p, "playwright"));
+    }
+    system.map(|b| bin(b.path, &b.kind))
 }
+
+/// The browser-pane launch error when no Chromium exists on the media host.
+pub const NO_PANE_BROWSER: &str = "no Chromium found for the browser pane on this machine: run `vibeke browser install` here (or set [preview] pane_browser or VIBEKE_CHROMIUM)";
 
 /// Chromium flags for a pane browser.
 fn pane_launch_options(bin: &std::path::Path, req: &LaunchReq) -> vk_browser::cdp::LaunchOptions {
@@ -151,8 +206,10 @@ impl Launcher for ChromiumLauncher {
         let bin = self
             .binary
             .clone()
-            .or_else(|| find_pane_browser(None))
-            .ok_or_else(|| anyhow!("no Chromium found for the browser pane (install Playwright's chromium-headless-shell or set VIBEKE_CHROMIUM)"))?;
+            .or_else(|| {
+                find_pane_browser(None, &crate::agent_browser::install_root()).map(|b| b.path)
+            })
+            .ok_or_else(|| anyhow!(NO_PANE_BROWSER))?;
         tracing::info!(bin = %bin.display(), profile = %req.profile, "browser pane: launching");
         let o = pane_launch_options(&bin, req);
         let mut b = vk_browser::cdp::Browser::launch(&o)?;
@@ -510,7 +567,11 @@ impl Host {
         }
         let cfg = PreviewConfig::load();
         Arc::new(ChromiumLauncher {
-            binary: find_pane_browser(Some(cfg.pane_browser.as_str()).filter(|b| !b.is_empty())),
+            binary: find_pane_browser(
+                Some(cfg.pane_browser.as_str()),
+                &crate::agent_browser::install_root(),
+            )
+            .map(|b| b.path),
         })
     }
 
@@ -3171,6 +3232,69 @@ mod tests {
             status_json(&server)["browsers"].as_array().unwrap().len(),
             0
         );
+    }
+
+    #[test]
+    fn pane_browser_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = dir.path().join("my-chrome");
+        std::fs::write(&cfg, b"").unwrap();
+        let p = |s: &str| PathBuf::from(s);
+        let sys = || {
+            Some(vk_preview::browser::BrowserBin {
+                path: p("/Applications/Chrome"),
+                kind: "chrome".into(),
+            })
+        };
+        let pw = || vec![(false, p("/pw/chromium-9")), (true, p("/pw/shell-8"))];
+        let pick = |c: Option<&str>, e: Option<PathBuf>, i: Option<PathBuf>, w, s| {
+            pick_pane_browser(c, e, i, w, s).map(|b| (b.path, b.kind))
+        };
+        // Config first; a configured path that does not exist finds nothing.
+        let c = cfg.to_str().unwrap();
+        assert_eq!(
+            pick(Some(c), Some(p("/env")), Some(p("/inst")), pw(), sys()),
+            Some((cfg.clone(), "config".into()))
+        );
+        assert_eq!(pick(Some("/nope"), None, None, pw(), sys()), None);
+        // Then $VIBEKE_CHROMIUM, then `vibeke browser install`, before Playwright.
+        assert_eq!(
+            pick(None, Some(p("/env")), Some(p("/inst")), pw(), sys()),
+            Some((p("/env"), "env".into()))
+        );
+        assert_eq!(
+            pick(Some(""), None, Some(p("/inst")), pw(), sys()),
+            Some((p("/inst"), "installed".into()))
+        );
+        // Playwright's headless shell beats a newer full Chromium, which beats the system one.
+        assert_eq!(
+            pick(None, None, None, pw(), sys()),
+            Some((p("/pw/shell-8"), "playwright-shell".into()))
+        );
+        assert_eq!(
+            pick(None, None, None, vec![(false, p("/pw/c"))], sys()),
+            Some((p("/pw/c"), "playwright".into()))
+        );
+        assert_eq!(
+            pick(None, None, None, vec![], sys()),
+            Some((p("/Applications/Chrome"), "chrome".into()))
+        );
+        assert_eq!(pick(None, None, None, vec![], None), None);
+        // The real lookup finds a build `vibeke browser install` left in the install root.
+        if std::env::var_os("VIBEKE_CHROMIUM").is_none()
+            && let Some(plat) = vk_browser::install::platform()
+        {
+            let root = dir.path().join("browsers");
+            let bin = root
+                .join(format!("chrome-headless-shell-1.2.3-{plat}"))
+                .join(format!("chrome-headless-shell-{plat}"))
+                .join("chrome-headless-shell");
+            std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
+            std::fs::write(&bin, b"").unwrap();
+            let found = find_pane_browser(None, &root).unwrap();
+            assert_eq!((found.path, found.kind.as_str()), (bin, "installed"));
+        }
+        assert!(NO_PANE_BROWSER.contains("vibeke browser install"));
     }
 }
 

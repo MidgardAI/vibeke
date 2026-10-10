@@ -405,6 +405,14 @@ async fn proxy_mode_for_a_local_preview() {
     assert_eq!(st["proxy"]["port"], json!(pport));
     assert_eq!(st["proxy"]["routes"][0]["host"], json!(host));
     assert_eq!(st["mirrors"], json!([]));
+    // What this server would launch for panes and windows (null = none on this machine).
+    for k in ["pane", "window"] {
+        let b = &st["available_browsers"][k];
+        assert!(
+            b.is_null() || (b["binary"].is_string() && b["kind"].is_string()),
+            "{st}"
+        );
+    }
     // Re-opening rotates the origin: a new unguessable host, the old one and its session gone.
     let r2 = e
         .call(
@@ -1332,4 +1340,30 @@ async fn tls_origin_per_preview_and_repo_defaults() {
     assert!(web["url"].as_str().unwrap().starts_with("https://"));
     assert_eq!(api["tls_origin"], false, "{api}");
     assert!(api["url"].as_str().unwrap().starts_with("http://"));
+}
+
+#[test]
+fn available_browsers_follow_the_config() {
+    let dir = tempfile::tempdir().unwrap();
+    let shell = dir.path().join("chrome-headless-shell");
+    let chrome = dir.path().join("chrome");
+    std::fs::write(&shell, b"").unwrap();
+    std::fs::write(&chrome, b"").unwrap();
+    let cfg = crate::preview::PreviewConfig {
+        pane_browser: shell.display().to_string(),
+        browser: chrome.display().to_string(),
+        ..Default::default()
+    };
+    let v = crate::preview::available_browsers(&cfg);
+    assert_eq!(
+        v,
+        json!({"pane": {"binary": shell, "kind": "config"}, "window": {"binary": chrome, "kind": "config"}})
+    );
+    let cfg = crate::preview::PreviewConfig {
+        pane_browser: dir.path().join("missing").display().to_string(),
+        browser: dir.path().join("missing").display().to_string(),
+        ..Default::default()
+    };
+    let v = crate::preview::available_browsers(&cfg);
+    assert_eq!(v, json!({"pane": null, "window": null}));
 }
