@@ -1,38 +1,55 @@
-import { memo, useMemo, type ReactNode } from 'react';
+import { Fragment, memo, useMemo, type ReactNode } from 'react';
 import { parseMarkdown, type Block, type Inline } from '../lib/markdown';
 import { tokenize } from '../lib/highlight';
 import { useApp } from '../app/hooks';
 import { ErrorBoundary } from './error-boundary';
+import { FileLink, linkifyText, resolveHref, useLinks } from './link-context';
 
-function InlineView({ nodes }: { nodes: Inline[] }) {
+function InlineView({ nodes, inLink = false }: { nodes: Inline[]; inLink?: boolean }) {
   const app = useApp();
+  const ops = useLinks();
   return (
     <>
       {nodes.map((n, i): ReactNode => {
         switch (n.t) {
           case 'text':
-            return n.v;
+            return ops && !inLink ? <Fragment key={i}>{linkifyText(n.v, ops)}</Fragment> : n.v;
           case 'code':
-            return <code key={i}>{n.v}</code>;
+            return <code key={i}>{ops && !inLink ? linkifyText(n.v, ops) : n.v}</code>;
           case 'strong':
             return (
               <strong key={i}>
-                <InlineView nodes={n.c} />
+                <InlineView nodes={n.c} inLink={inLink} />
               </strong>
             );
           case 'em':
             return (
               <em key={i}>
-                <InlineView nodes={n.c} />
+                <InlineView nodes={n.c} inLink={inLink} />
               </em>
             );
           case 'del':
             return (
               <del key={i}>
-                <InlineView nodes={n.c} />
+                <InlineView nodes={n.c} inLink={inLink} />
               </del>
             );
-          case 'link':
+          case 'link': {
+            if (n.rel) {
+              // A relative file link: a link only where a screen can open files.
+              const file = ops && !inLink ? resolveHref(ops, n.href) : null;
+              if (!file || !ops)
+                return (
+                  <Fragment key={i}>
+                    <InlineView nodes={n.c} inLink={inLink} />
+                  </Fragment>
+                );
+              return (
+                <FileLink key={i} path={file.path} line={file.line} ops={ops}>
+                  <InlineView nodes={n.c} inLink />
+                </FileLink>
+              );
+            }
             return (
               <a
                 key={i}
@@ -44,9 +61,10 @@ function InlineView({ nodes }: { nodes: Inline[] }) {
                   app.platform.openExternal(n.href);
                 }}
               >
-                <InlineView nodes={n.c} />
+                <InlineView nodes={n.c} inLink />
               </a>
             );
+          }
         }
       })}
     </>

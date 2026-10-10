@@ -125,7 +125,7 @@ export function FilesTab({ route, pane }: { route: WorkspaceRoute; pane: string 
           </div>
         }
       >
-        <FileViewer host={host} pane={pane} path={route.file} onBack={() => navigate({ ...route, file: null }, { replace: true })} />
+        <FileViewer host={host} pane={pane} path={route.file} onBack={() => navigate({ ...route, file: null }, { replace: true })} onOpen={(p) => navigate({ ...route, file: p, view: null })} />
       </Suspense>
     );
   }

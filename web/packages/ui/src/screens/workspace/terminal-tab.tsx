@@ -2,16 +2,20 @@
 // note with the last screen's age, and the password-prompt warning for the composer. Clicking the
 // screen (without selecting text) hands typing focus to the composer.
 
-import { useEffect, useMemo, useState } from 'react';
-import { ChevronDown, ChevronUp, Search, X } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { ArrowDown } from 'lucide-react';
 import { useHost, useNow, usePrefs } from '../../app/hooks';
+import { FindBar } from '../../components/find-bar';
 import { countMatches, TerminalMirror } from '../../components/terminal';
-import { IconButton, Notice } from '../../components/ui';
+import { Notice } from '../../components/ui';
 import { t } from '../../i18n';
 import { stripAnsi } from '../../lib/ansi';
+import { plainOutput } from '../../lib/copy-output';
 import { ago } from '../../lib/format';
 import { isNoEchoPrompt } from '../../lib/guards';
+import { stepHit } from '../../lib/conv-find';
 import { useMirror } from '../pane/use-mirror';
+import { usePathLinks } from './use-path-links';
 
 export function TerminalTab({
   hostId,
@@ -22,6 +26,9 @@ export function TerminalTab({
   onNoEcho,
   burstRef,
   onActivate,
+  cwd,
+  openFile,
+  copyRef,
 }: {
   hostId: string;
   pane: string;
@@ -34,6 +41,12 @@ export function TerminalTab({
   burstRef: { current: (() => void) | null };
   /** A click on the screen that selected nothing: focus the composer. */
   onActivate?: () => void;
+  /** The pane's directory, to resolve relative paths in the output. */
+  cwd?: string | null;
+  /** Open a workspace file in the viewer; without it paths in the output are not links. */
+  openFile?: (path: string, line?: number) => void;
+  /** Filled with a function returning the visible text as plain text (Copy output). */
+  copyRef?: { current: (() => string) | null };
 }) {
   const prefs = usePrefs();
   const host = useHost(hostId);
@@ -45,6 +58,18 @@ export function TerminalTab({
   const plain = useMemo(() => stripAnsi(mirror.text), [mirror.text]);
   const matches = useMemo(() => countMatches(plain, query), [plain, query]);
   const noEcho = useMemo(() => isNoEchoPrompt(plain), [plain]);
+  const links = usePathLinks(hostId, pane, cwd, plain, openFile);
+  const [atBottom, setAtBottom] = useState(true);
+  const jumpRef = useRef<(() => void) | null>(null);
+  const plainRef = useRef(plain);
+  plainRef.current = plain;
+  useEffect(() => {
+    if (!copyRef) return;
+    copyRef.current = () => plainOutput(plainRef.current);
+    return () => {
+      copyRef.current = null;
+    };
+  }, [copyRef]);
 
   useEffect(() => {
     burstRef.current = mirror.burst;
@@ -58,39 +83,21 @@ export function TerminalTab({
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       {findOpen && (
-        <div className="flex items-center gap-1 border-b border-border bg-surface px-2 py-1">
-          <Search className="size-4 text-muted" />
-          <input
-            autoFocus
-            data-find-input
-            value={query}
-            onChange={(e) => {
-              setQuery(e.target.value);
-              setHit(0);
-            }}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && matches) setHit((h) => (e.shiftKey ? (h - 1 + matches) % matches : (h + 1) % matches));
-            }}
-            placeholder={t.pane.findPlaceholder}
-            className="h-8 min-w-0 flex-1 bg-transparent text-sm outline-none"
-          />
-          <span className="text-xs tabular-nums text-muted">{query ? `${matches ? hit + 1 : 0}/${matches}` : ''}</span>
-          <IconButton label="previous" disabled={!matches} onClick={() => setHit((h) => (h - 1 + matches) % matches)}>
-            <ChevronUp />
-          </IconButton>
-          <IconButton label="next" disabled={!matches} onClick={() => setHit((h) => (h + 1) % matches)}>
-            <ChevronDown />
-          </IconButton>
-          <IconButton
-            label={t.close}
-            onClick={() => {
-              setFindOpen(false);
-              setQuery('');
-            }}
-          >
-            <X />
-          </IconButton>
-        </div>
+        <FindBar
+          query={query}
+          onQuery={(q) => {
+            setQuery(q);
+            setHit(0);
+          }}
+          index={hit}
+          count={matches}
+          onStep={(dir) => setHit((h) => stepHit(h, matches, dir))}
+          onClose={() => {
+            setFindOpen(false);
+            setQuery('');
+          }}
+          placeholder={t.pane.findPlaceholder}
+        />
       )}
       {!online && mirror.at && <Notice tone="warn" className="m-2">{t.pane.offlineMirror(ago(mirror.at, now))}</Notice>}
       <div
@@ -98,6 +105,7 @@ export function TerminalTab({
         data-terminal-screen
         onMouseUp={(e) => {
           if (!onActivate || e.button !== 0) return;
+          if ((e.target as HTMLElement).closest?.('[data-link]')) return;
           const sel = window.getSelection?.();
           if (sel && !sel.isCollapsed && sel.toString()) return;
           onActivate();
@@ -110,10 +118,24 @@ export function TerminalTab({
             wrap={prefs.wrap}
             fontSize={prefs.termFont}
             find={query ? { query, current: hit } : undefined}
+            links={links}
+            onAtBottom={setAtBottom}
+            jumpRef={jumpRef}
             className="absolute inset-0"
           />
         ) : (
           <div className="term absolute inset-0 flex items-center justify-center text-sm text-faint">{online ? t.loading : t.pane.noMirror}</div>
+        )}
+        {!atBottom && mirror.text && (
+          <button
+            type="button"
+            aria-label={t.pane.jumpLatest}
+            title={t.pane.jumpLatest}
+            onClick={() => jumpRef.current?.()}
+            className="vk-focus absolute bottom-3 left-1/2 inline-flex size-9 -translate-x-1/2 items-center justify-center rounded-full border border-border bg-surface-2 text-muted shadow-[var(--shadow)] hover:text-fg pointer-coarse:size-11"
+          >
+            <ArrowDown className="size-4" />
+          </button>
         )}
       </div>
     </div>
