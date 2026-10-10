@@ -739,3 +739,24 @@ describe("control channel", () => {
     expect(server.calls("adapter.control").length).toBe(1);
   });
 });
+
+describe("show_image tool", () => {
+  test("registers show_image and runs `vibeke screenshot add`", async () => {
+    const calls: string[][] = [];
+    const { pi } = setup(server, "pi", {
+      runVibeke: async (args) => {
+        calls.push(args);
+        return '{"id":"S1"}';
+      },
+    });
+    expect(pi.tools.map((t: any) => t.name)).toEqual(["show_image"]);
+    const tool = pi.tools[0];
+    expect(tool.parameters.required).toEqual(["path"]);
+    const r = await tool.execute("c1", { path: "/tmp/a.png", caption: "Login page" });
+    expect(calls[0]).toEqual(["screenshot", "add", "/tmp/a.png", "--caption", "Login page", "--json"]);
+    expect(r.content[0].text).toContain("S1");
+    await tool.execute("c2", { path: "/tmp/b.png" });
+    expect(calls[1]).toEqual(["screenshot", "add", "/tmp/b.png", "--json"]);
+    await expect(tool.execute("c3", {})).rejects.toThrow("path is required");
+  });
+});

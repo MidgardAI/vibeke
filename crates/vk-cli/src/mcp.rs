@@ -148,6 +148,9 @@ pub fn tools() -> Vec<Value> {
         json!({"name": "browser_close", "title": "Close the session",
                "description": "Close a browser session (its cookies and storage are discarded).",
                "inputSchema": obj(json!({"session": s()}), &["session"])}),
+        json!({"name": "show_image", "title": "Show an image to the user",
+               "description": "Attach an image file (PNG or JPEG), such as a screenshot you took, so the user can see it in Vibeke on any device: the terminal interface, the desktop app or their phone. Use it whenever you produce screenshots the user should look at.",
+               "inputSchema": obj(json!({"path": {"type": "string", "description": "Path of the image file. Relative paths are resolved from the current directory."}, "caption": {"type": "string", "description": "A short note on what the image shows."}}), &["path"])}),
     ]
 }
 
@@ -182,6 +185,25 @@ pub fn map_tool(name: &str, args: &Value) -> Option<(&'static str, Value)> {
         _ => return None,
     };
     Some((method, a))
+}
+
+/// `show_image`: read the file here (the server never opens agent-supplied paths) and build the
+/// `screenshot.add` params. The error is the text for a tool result.
+fn show_image_params(args: &Value) -> Result<Value, String> {
+    use base64::Engine as _;
+    let path = args["path"]
+        .as_str()
+        .filter(|p| !p.is_empty())
+        .ok_or("missing argument `path`")?;
+    let bytes = crate::verbs::read_image(std::path::Path::new(path))?;
+    let mut p = json!({
+        "data_b64": base64::engine::general_purpose::STANDARD.encode(bytes),
+        "name": std::path::Path::new(path).file_name().map(|n| n.to_string_lossy().into_owned()),
+    });
+    if let Some(c) = args["caption"].as_str().filter(|c| !c.is_empty()) {
+        p["caption"] = json!(c);
+    }
+    Ok(p)
 }
 
 fn text(t: impl Into<String>) -> Value {
@@ -255,7 +277,7 @@ pub async fn handle(msg: &Value, backend: &mut dyn Backend) -> Option<Value> {
                 "protocolVersion": version,
                 "capabilities": {"tools": {"listChanged": false}},
                 "serverInfo": {"name": "vibeke", "title": "Vibeke", "version": vk_proto::VERSION},
-                "instructions": "Vibeke previews and a headless browser on this machine. After starting a dev server, call preview_declare (or preview_list). Then browser_open {preview} → browser_snapshot to find elements → browser_click/browser_type → browser_screenshot to verify. Check browser_console/browser_network for errors. Requests outside this machine's declared previews are blocked by policy (see the error reason). If a call fails with human_control, the user has taken over the session: wait and retry later.",
+                "instructions": "Vibeke previews and a headless browser on this machine. After starting a dev server, call preview_declare (or preview_list). Then browser_open {preview} → browser_snapshot to find elements → browser_click/browser_type → browser_screenshot to verify. Check browser_console/browser_network for errors. Requests outside this machine's declared previews are blocked by policy (see the error reason). If a call fails with human_control, the user has taken over the session: wait and retry later. When you produce an image the user should see (a screenshot from tests or a tool, a chart, a rendered page), call show_image {path, caption} so it appears in Vibeke on every device the user watches from.",
             })
         }
         "ping" => json!({}),
@@ -263,6 +285,24 @@ pub async fn handle(msg: &Value, backend: &mut dyn Backend) -> Option<Value> {
         "tools/call" => {
             let name = params["name"].as_str().unwrap_or("");
             let args = params.get("arguments").cloned().unwrap_or(json!({}));
+            if name == "show_image" {
+                let result = match show_image_params(&args) {
+                    Err(e) => json!({"content": [text(e)], "isError": true}),
+                    Ok(p) => match backend.call("screenshot.add", p).await {
+                        Ok(v) => {
+                            let handle = v["handle"].as_str().unwrap_or("");
+                            let note = if v["duplicate"] == true {
+                                "was already shown"
+                            } else {
+                                "is now shown"
+                            };
+                            json!({"content": [text(format!("Image {handle} {note} to the user in Vibeke."))], "isError": false})
+                        }
+                        e => tool_result(name, e),
+                    },
+                };
+                return Some(json!({"jsonrpc": "2.0", "id": id, "result": result}));
+            }
             let Some((m, p)) = map_tool(name, &args) else {
                 return Some(rpc_error(id, -32602, &format!("unknown tool: {name}")));
             };
@@ -335,6 +375,9 @@ mod tests {
                     }
                     "browser.screenshot" => {
                         json!({"result": {"session": "b1", "blob": "abc", "mime": "image/png", "data_b64": "iVBORw0KGgo=", "meta": {"environment": {"kind": "remote_headless"}}}})
+                    }
+                    "screenshot.add" => {
+                        json!({"result": {"id": "01X", "handle": "s7", "duplicate": false}})
                     }
                     "browser.snapshot" => {
                         json!({"result": {"format": "a11y", "url": "http://localhost:5173/", "content": "button \"Save\"\n", "truncated": false}})
@@ -431,6 +474,7 @@ mod tests {
             "browser_network",
             "browser_close",
             "browser_diff",
+            "show_image",
         ] {
             assert!(names.contains(&want), "{want}");
         }
@@ -550,6 +594,53 @@ mod tests {
             .unwrap();
         assert_eq!(v["session"], "b1");
         assert_eq!(*connects.lock().unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn show_image_reads_the_file_and_attaches_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("login.png");
+        std::fs::write(&file, b"\x89PNG fake").unwrap();
+        let missing = dir.path().join("missing.png");
+        // Over 11 MiB (sparse): refused before it is read, never sent.
+        let big = dir.path().join("big.png");
+        std::fs::File::create(&big)
+            .unwrap()
+            .set_len((11 << 20) + 1)
+            .unwrap();
+        let input = [
+            line(json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "show_image", "arguments": {"path": file, "caption": "Login page"}}})),
+            line(json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "show_image", "arguments": {"path": missing}}})),
+            line(json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "show_image", "arguments": {"path": big}}})),
+        ]
+        .concat();
+        let (r, seen) = session(&input).await;
+        assert_eq!(r[0]["result"]["isError"], false, "{r:#?}");
+        assert!(
+            r[0]["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("s7")
+        );
+        // A missing file is a tool error and never reaches the server.
+        assert_eq!(r[1]["result"]["isError"], true);
+        assert_eq!(r[2]["result"]["isError"], true);
+        assert!(
+            r[2]["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("image is larger than 11 MiB"),
+            "{r:#?}"
+        );
+        assert_eq!(seen.len(), 2, "{seen:?}");
+        assert_eq!(seen[1].0, "screenshot.add");
+        assert_eq!(seen[1].1["caption"], "Login page");
+        assert_eq!(seen[1].1["name"], "login.png");
+        assert!(
+            seen[1].1["data_b64"]
+                .as_str()
+                .is_some_and(|d| !d.is_empty())
+        );
     }
 
     #[test]

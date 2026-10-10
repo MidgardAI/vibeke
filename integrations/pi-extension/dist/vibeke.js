@@ -1,4 +1,5 @@
 // src/index.ts
+import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 
 // src/describe.ts
@@ -898,6 +899,49 @@ function createExtension(pi, opts = {}) {
       ...u.cost?.total !== undefined ? { cost: u.cost.total } : {}
     });
   });
+  function runVibeke(args) {
+    if (opts.runVibeke)
+      return opts.runVibeke(args);
+    const bin = env.VIBEKE_BIN || "vibeke";
+    return new Promise((resolve2, reject) => {
+      execFile(bin, args, { env, timeout: 60000 }, (err, stdout, stderr) => {
+        if (err)
+          reject(new Error((stderr || stdout || err.message).toString().trim()));
+        else
+          resolve2(stdout.toString().trim());
+      });
+    });
+  }
+  function registerShowImage() {
+    if (typeof pi.registerTool !== "function")
+      return;
+    try {
+      pi.registerTool({
+        name: "show_image",
+        label: "Show an image to the user",
+        description: "Attach an image file (PNG or JPEG), such as a screenshot you took, so the user can see it in Vibeke on any device: the terminal interface, the desktop app or their phone. Use it whenever you produce screenshots the user should look at.",
+        parameters: {
+          type: "object",
+          properties: {
+            path: { type: "string", description: "Path to the PNG or JPEG file." },
+            caption: { type: "string", description: "Optional short caption shown with the image." }
+          },
+          required: ["path"]
+        },
+        async execute(_id, params) {
+          const path = typeof params?.path === "string" ? params.path : "";
+          if (!path)
+            throw new Error("path is required");
+          const args = ["screenshot", "add", path];
+          if (typeof params.caption === "string" && params.caption)
+            args.push("--caption", params.caption);
+          args.push("--json");
+          const out = await runVibeke(args);
+          return { content: [{ type: "text", text: out || "Image attached." }], details: {} };
+        }
+      });
+    } catch {}
+  }
   on("tool_call", (e) => {
     const id = e?.toolCallId;
     if (typeof id !== "string")
@@ -994,6 +1038,7 @@ function createExtension(pi, opts = {}) {
     await client.flush(300);
     client.close();
   });
+  registerShowImage();
   try {
     client.start();
   } catch {}

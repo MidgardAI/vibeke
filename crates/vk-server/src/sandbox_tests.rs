@@ -755,6 +755,112 @@ async fn broker_enforces_ownership_of_explicit_targets() {
     assert_eq!(r["result"]["status"], "pending", "{r}");
 }
 
+/// Agents in a sandbox show images through the broker: `screenshot.add` is served for the
+/// broker's own pane only, and only it may send a request line longer than the small-request
+/// budget (an 11 MiB image is about 15 MiB of base64).
+#[tokio::test]
+async fn broker_attaches_images_to_its_own_pane_only() {
+    use base64::Engine as _;
+    let e = Env::new();
+    let mine = e.task_with_pane("task-bi", Isolation::default());
+    let theirs = e.task_with_pane("task-bj", Isolation::default());
+    let (client, server_side) = tokio::io::duplex(64 * 1024);
+    tokio::spawn(broker_connection(
+        e.server.clone(),
+        server_side,
+        mine.clone(),
+    ));
+    let (rd, mut wr) = tokio::io::split(client);
+    let mut rd = BufReader::new(rd);
+    let mut call = async |id: u64, method: &str, params: Value| -> Value {
+        let l = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}).to_string();
+        wr.write_all(format!("{l}\n").as_bytes()).await.unwrap();
+        let mut line = String::new();
+        rd.read_line(&mut line).await.unwrap();
+        serde_json::from_str(&line).unwrap()
+    };
+    let mut png = Vec::new();
+    image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+        2,
+        2,
+        image::Rgba([10, 20, 30, 255]),
+    ))
+    .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+    .unwrap();
+    let data = base64::engine::general_purpose::STANDARD.encode(&png);
+    // Another pane is refused by the broker itself.
+    let r = call(
+        1,
+        "screenshot.add",
+        json!({"data_b64": data, "pane": theirs}),
+    )
+    .await;
+    assert_eq!(r["error"]["data"]["kind"], "permission_denied", "{r}");
+    assert_eq!(r["error"]["data"]["details"]["scope"], "broker", "{r}");
+    // Its own pane, named or implied, works and is recorded as the agent's.
+    for (id, params) in [
+        (2, json!({"data_b64": data, "caption": "chart"})),
+        (3, json!({"data_b64": data, "pane": mine})),
+    ] {
+        let r = call(id, "screenshot.add", params).await;
+        assert!(r.get("error").is_none(), "{r}");
+        assert_eq!(r["result"]["pane"], json!(mine), "{r}");
+        assert_eq!(r["result"]["taken_by"]["kind"], "agent", "{r}");
+        assert_eq!(r["result"]["environment"]["kind"], "agent", "{r}");
+    }
+    // A request line over the small budget reaches `screenshot.add` (which judges the bytes)...
+    let big = "A".repeat(BROKER_SMALL_LINE + 1024);
+    let r = call(4, "screenshot.add", json!({"data_b64": big})).await;
+    assert_eq!(r["error"]["data"]["kind"], "invalid_params", "{r}");
+    assert!(
+        !r["error"]["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("request longer than"),
+        "{r}"
+    );
+    // ...but no other method may send one, and the connection stays usable.
+    let r = call(5, "agent.report", json!({"state": "idle", "note": big})).await;
+    assert_eq!(r["error"]["data"]["kind"], "invalid_params", "{r}");
+    assert!(
+        r["error"]["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("request longer than"),
+        "{r}"
+    );
+    let r = call(6, "agent.report", json!({"pane": mine, "state": "idle"})).await;
+    assert!(r.get("error").is_none(), "{r}");
+    // `call` is done with the stream here. The size check reads only the method and id: an
+    // oversized line is refused even when its params come first and nest deeper than a full
+    // parse allows (128 levels), and the method is last.
+    let nested = format!("{}{}", "[".repeat(200), "]".repeat(200));
+    let l = format!(
+        r#"{{"jsonrpc":"2.0","params":{{"note":"{big}","deep":{nested}}},"id":"big-7","method":"agent.report"}}"#
+    );
+    wr.write_all(format!("{l}\n").as_bytes()).await.unwrap();
+    let mut line = String::new();
+    rd.read_line(&mut line).await.unwrap();
+    let r: Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(r["id"], "big-7", "{r}");
+    assert_eq!(r["error"]["data"]["kind"], "invalid_params", "{r}");
+    assert!(
+        r["error"]["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("request longer than"),
+        "{r}"
+    );
+    // The connection still serves requests.
+    let l = json!({"jsonrpc": "2.0", "id": 8, "method": "agent.report", "params": {"pane": mine, "state": "idle"}});
+    wr.write_all(format!("{l}\n").as_bytes()).await.unwrap();
+    let mut line = String::new();
+    rd.read_line(&mut line).await.unwrap();
+    let r: Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(r["id"], 8, "{r}");
+    assert!(r.get("error").is_none(), "{r}");
+}
+
 #[path = "sandbox_container_tests.rs"]
 mod container_tests;
 

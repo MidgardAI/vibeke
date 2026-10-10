@@ -777,6 +777,9 @@ export type ScreenshotMeta = {
   blob?: string;
   environment?: Record<string, unknown>;
   code?: Record<string, unknown>;
+  pane?: string | null;
+  caption?: string;
+  source_name?: string;
 };
 
 export type SessionEntry = {
@@ -6005,6 +6008,33 @@ export type SandboxStopResult = {
   cursor?: Cursor;
 };
 
+export type ScreenshotAddParams = {
+  data_b64: string;
+  caption?: string;
+  name?: string;
+  pane?: Target;
+};
+
+export type ScreenshotAddResult = {
+  id: string;
+  handle: string;
+  workspace?: string | null;
+  task?: string | null;
+  pane?: string | null;
+  run?: string | null;
+  mime: string;
+  width: number;
+  height: number;
+  blob: string;
+  environment: Record<string, unknown>;
+  caption?: string;
+  source_name?: string;
+  path_on_machine: string;
+  exists: boolean;
+  duplicate: boolean;
+  cursor?: Cursor;
+};
+
 export type ScreenshotDeleteParams = {
   id: string;
   force?: boolean;
@@ -6020,6 +6050,8 @@ export type ScreenshotDeleteResult = {
 
 export type ScreenshotGetParams = {
   id: string;
+  inline?: boolean;
+  thumb?: number;
 };
 
 export type ScreenshotGetResult = ScreenshotMeta;
@@ -6028,6 +6060,9 @@ export type ScreenshotListParams = {
   task?: Target;
   preview?: Target;
   run?: Target;
+  pane?: Target;
+  workspace?: Target;
+  environment?: string;
   since?: string | number;
   since_ms?: number;
   limit?: number;
@@ -8085,6 +8120,7 @@ export interface Methods {
   "sandbox.start": { params: SandboxStartParams; result: SandboxStartResult };
   "sandbox.status": { params: SandboxStatusParams; result: SandboxStatusResult };
   "sandbox.stop": { params: SandboxStopParams; result: SandboxStopResult };
+  "screenshot.add": { params: ScreenshotAddParams; result: ScreenshotAddResult };
   "screenshot.delete": { params: ScreenshotDeleteParams; result: ScreenshotDeleteResult };
   "screenshot.get": { params: ScreenshotGetParams; result: ScreenshotGetResult };
   "screenshot.list": { params: ScreenshotListParams; result: ScreenshotListResult };
@@ -8527,6 +8563,7 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "sandbox.start": { mutating: true, scope: "full", paneScope: "forbidden" },
   "sandbox.status": { mutating: false, scope: "pane", paneScope: "open" },
   "sandbox.stop": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "screenshot.add": { mutating: true, scope: "pane", paneScope: "open" },
   "screenshot.delete": { mutating: true, scope: "full", paneScope: "forbidden" },
   "screenshot.get": { mutating: false, scope: "pane", paneScope: "open" },
   "screenshot.list": { mutating: false, scope: "pane", paneScope: "open" },

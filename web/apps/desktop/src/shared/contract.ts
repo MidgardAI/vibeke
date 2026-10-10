@@ -82,6 +82,8 @@ export const RENDERER_METHODS = [
   'tab.close',
   'tab.focus',
   'preview.open',
+  'screenshot.list',
+  'screenshot.get',
   'interaction.list',
   'interaction.get',
   'interaction.answer',

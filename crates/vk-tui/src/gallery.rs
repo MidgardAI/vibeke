@@ -75,6 +75,8 @@ pub struct Shot {
     pub binding: String,
     pub binding_reason: String,
     pub env_kind: String,
+    pub caption: Option<String>,
+    pub source_name: Option<String>,
     pub head_sha: Option<String>,
     pub dirty_state: Option<String>,
     pub task: Option<String>,
@@ -128,6 +130,8 @@ impl Shot {
                     .and_then(Value::as_str)
                     .unwrap_or(""),
             ),
+            caption: opt(v, "caption"),
+            source_name: opt(v, "source_name"),
             head_sha: opt(&code, "head_sha"),
             dirty_state: opt(&code, "dirty_state"),
             task: opt(v, "task"),
@@ -143,6 +147,27 @@ impl Shot {
             height: v.get("height").and_then(Value::as_u64).unwrap_or(0) as u32,
             bytes: v.get("bytes").and_then(Value::as_u64).unwrap_or(0),
         })
+    }
+
+    pub fn is_agent(&self) -> bool {
+        self.env_kind == "agent"
+    }
+
+    /// What a row and the full view show instead of a URL for an image an agent attached.
+    pub fn agent_text(&self) -> String {
+        self.caption
+            .clone()
+            .or_else(|| self.source_name.clone())
+            .unwrap_or_else(|| "attached image".into())
+    }
+
+    /// The environment label; an attached image has no browser environment.
+    pub fn label_text(&self) -> &str {
+        if self.is_agent() {
+            "attached by agent"
+        } else {
+            &self.label
+        }
     }
 
     pub fn code_text(&self) -> String {
@@ -942,13 +967,17 @@ fn meta_lines(app: &App, s: &Shot, a: &mut Area) {
         &format!(
             "{} · {} · {}×{} · {} ago",
             s.handle,
-            s.label,
+            s.label_text(),
             s.width,
             s.height,
             age(s.created_at_ms)
         ),
         t.bold(t.fg),
     );
+    if s.is_agent() {
+        a.line(&s.agent_text(), t.text());
+        return;
+    }
     let bstyle = if s.binding == "bound" {
         t.s(t.green)
     } else {
@@ -1090,12 +1119,18 @@ pub fn draw(app: &App, g: &mut Grid) {
                     " "
                 };
                 let bind = if s.binding == "bound" { "✓" } else { "~" };
+                let last = if s.is_agent() {
+                    s.agent_text()
+                } else {
+                    s.url.clone()
+                };
+                let bind = if s.is_agent() { " " } else { bind };
                 let row = format!(
                     "{mark} {:<5} {:>4} {bind} {:<38} {}",
                     s.handle,
                     age(s.created_at_ms),
-                    truncate(&s.label, 38),
-                    s.url
+                    truncate(s.label_text(), 38),
+                    last
                 );
                 a.line(&row, if i == gv.sel { t.sel(t.fg) } else { t.text() });
             }
@@ -1151,7 +1186,7 @@ fn draw_image_or_hint(app: &App, a: &mut Area, kitty: bool, local: bool, diff: b
             if diff {
                 "[v] fetch the diff image from the remote machine"
             } else {
-                "[v] fetch the image from the remote machine (not transferred until you ask)"
+                "[v] view image — fetched from the remote machine only when you ask"
             },
             t.dim(),
         ),
