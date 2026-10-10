@@ -194,7 +194,11 @@ fn a_send_signs_in_picks_a_sandbox_and_follows_the_job() {
     done["result"] = json!({"pane": "p2", "box": "sprites/b1"});
     push(&mut app, "cloud.job", json!({"job": "j1"}), done);
     assert_eq!(status(&app), None);
-    assert!(screen(&app).contains("New pane: p2"));
+    let s = screen(&app);
+    assert!(
+        s.contains("New pane: ") && s.contains("(enter opens it)"),
+        "{s}"
+    );
     // Enter opens the new pane.
     app.on_key(named(NamedKey::Enter));
     assert!(matches!(app.mode, Mode::Normal));

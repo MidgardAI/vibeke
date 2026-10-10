@@ -343,3 +343,33 @@ fn an_action_that_needs_a_sign_in_signs_in_and_repeats() {
     let cmds = commands(&mut rxs[0]);
     assert_eq!(only(&cmds, "cloud.box.suspend").1, json!({"box": "e2b/x1"}));
 }
+
+#[test]
+fn tab_focuses_a_provider_and_s_signs_in_to_it() {
+    let (mut app, _rxs) = opened();
+    // The first sandbox (Sprites) is selected, so Sprites is focused.
+    assert!(screen(&app).contains("▸ Sprites"), "{}", screen(&app));
+    app.on_key(named(NamedKey::Tab));
+    let v = app.ux.sandboxes.as_ref().unwrap();
+    assert_eq!(v.focused().as_deref(), Some("e2b"));
+    assert_eq!(v.selected().map(|b| b.provider.as_str()), Some("e2b"));
+    assert!(screen(&app).contains("▸ E2B"), "{}", screen(&app));
+    app.on_key(ch('s'));
+    let v = app.ux.sandboxes.as_ref().unwrap();
+    match &v.stage {
+        Stage::Auth(a) => assert_eq!(a.provider, "e2b"),
+        _ => panic!("expected the sign-in stage"),
+    }
+}
+
+#[test]
+fn tab_reaches_a_provider_without_sandboxes() {
+    let (mut app, _rxs) = opened();
+    // Shift-tab from Sprites wraps around to the last provider.
+    let mut back = named(NamedKey::Tab);
+    back.mods = vk_proto::input::Mods::SHIFT;
+    app.on_key(back);
+    let v = app.ux.sandboxes.as_ref().unwrap();
+    let last = v.provider_order().last().cloned();
+    assert_eq!(v.focused(), last);
+}

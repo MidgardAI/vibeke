@@ -230,6 +230,9 @@ pub struct View {
     pub providers: Vec<ProviderRow>,
     pub errors: Vec<ListError>,
     pub sel: usize,
+    /// Provider that `s` signs in to and the header marked `›`: the selected sandbox's, or one
+    /// picked with tab / shift-tab (← →), which also works when a provider has no sandboxes.
+    pub focus: Option<String>,
     pub loading: bool,
     pub notice: Option<String>,
     pub busy: Option<String>,
@@ -248,6 +251,7 @@ impl View {
             providers: Vec::new(),
             errors: Vec::new(),
             sel: 0,
+            focus: None,
             loading: true,
             notice: None,
             busy: None,
@@ -307,10 +311,52 @@ impl View {
         self.rows.get(self.sel)
     }
 
-    /// The provider `s` signs in to: the selected row's, else the first one without a sign-in.
+    /// Provider ids in display order: the listed providers, then any only boxes name.
+    pub fn provider_order(&self) -> Vec<String> {
+        let mut order: Vec<String> = self.providers.iter().map(|p| p.id.clone()).collect();
+        for b in &self.rows {
+            if !order.contains(&b.provider) {
+                order.push(b.provider.clone());
+            }
+        }
+        order
+    }
+
+    /// The focused provider: picked with tab, else the selected sandbox's, else the first.
+    pub fn focused(&self) -> Option<String> {
+        self.focus
+            .clone()
+            .or_else(|| self.selected().map(|b| b.provider.clone()))
+            .or_else(|| self.provider_order().into_iter().next())
+    }
+
+    /// Focus the next (`step` 1) or previous (`step` -1) provider; the selection moves to its
+    /// first sandbox when it has one.
+    fn cycle_focus(&mut self, step: isize) {
+        let order = self.provider_order();
+        if order.is_empty() {
+            return;
+        }
+        let at = self
+            .focused()
+            .and_then(|f| order.iter().position(|p| *p == f));
+        let n = order.len() as isize;
+        let next = match at {
+            Some(i) => (i as isize + step).rem_euclid(n),
+            None if step < 0 => n - 1,
+            None => 0,
+        } as usize;
+        let id = order[next].clone();
+        if let Some(i) = self.rows.iter().position(|b| b.provider == id) {
+            self.sel = i;
+        }
+        self.focus = Some(id);
+    }
+
+    /// The provider `s` signs in to: the focused one, else the first one without a sign-in.
     fn sign_in_provider(&self) -> Option<&ProviderRow> {
-        self.selected()
-            .and_then(|b| self.providers.iter().find(|p| p.id == b.provider))
+        self.focused()
+            .and_then(|f| self.providers.iter().find(|p| p.id == f))
             .or_else(|| self.providers.iter().find(|p| !p.signed_in()))
             .or_else(|| self.providers.first())
     }
@@ -488,10 +534,18 @@ pub fn on_key(v: &mut View, ev: &KeyEvent) -> Act {
     }
     if down {
         v.sel = (v.sel + 1).min(n.saturating_sub(1));
+        v.focus = v.selected().map(|b| b.provider.clone());
         return Act::None;
     }
     if up {
         v.sel = v.sel.saturating_sub(1);
+        v.focus = v.selected().map(|b| b.provider.clone());
+        return Act::None;
+    }
+    let back = matches!(ev.key, Key::Named(NamedKey::Left))
+        || (matches!(ev.key, Key::Named(NamedKey::Tab)) && ev.mods.shift());
+    if back || matches!(ev.key, Key::Named(NamedKey::Tab | NamedKey::Right)) {
+        v.cycle_focus(if back { -1 } else { 1 });
         return Act::None;
     }
     if !plain {
@@ -1044,30 +1098,31 @@ pub fn draw(app: &App, g: &mut Grid) -> Option<(u16, u16)> {
         return auth.draw(app, &mut a);
     }
     let now = now_ms();
-    let mut order: Vec<String> = v.providers.iter().map(|p| p.id.clone()).collect();
-    for b in &v.rows {
-        if !order.contains(&b.provider) {
-            order.push(b.provider.clone());
-        }
-    }
+    let order = v.provider_order();
+    let focused = v.focused();
     if order.is_empty() && v.loading {
         a.line("  loading…", t.dim());
     }
     for id in &order {
         let prow = v.providers.iter().find(|p| &p.id == id);
         let name = prow.map_or(id.as_str(), |p| p.label.as_str());
+        let mark = if focused.as_deref() == Some(id.as_str()) {
+            "▸ "
+        } else {
+            "  "
+        };
         match prow {
             Some(p) if p.signed_in() => {
-                a.line(&format!("{name} — {}", p.auth_line()), t.bold(t.fg));
+                a.line(&format!("{mark}{name} — {}", p.auth_line()), t.bold(t.fg));
             }
             Some(p) => {
                 a.line(
-                    &format!("{name} — {} (s signs in)", p.auth_line()),
+                    &format!("{mark}{name} — {} (s signs in)", p.auth_line()),
                     t.bold(t.yellow),
                 );
             }
             None => {
-                a.line(name, t.bold(t.fg));
+                a.line(&format!("{mark}{name}"), t.bold(t.fg));
             }
         }
         for e in v.errors.iter().filter(|e| &e.provider == id) {
@@ -1140,7 +1195,7 @@ pub fn draw(app: &App, g: &mut Grid) -> Option<(u16, u16)> {
         a.line(&format!("⏳ {b}"), t.s(t.yellow));
     }
     a.footer(
-        "j/k · enter open · b bring back · p suspend/resume · c checkpoint · a adopt · d destroy · C clean up · s sign in · r · esc",
+        "j/k · tab provider · enter open · b bring back · p suspend/resume · c checkpoint · a adopt · d destroy · C clean up · s sign in · r · esc",
         t.dim(),
     );
     None

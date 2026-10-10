@@ -1685,7 +1685,13 @@ pub fn draw(app: &App, g: &mut Grid) -> Option<(u16, u16)> {
                     if j.state == "done"
                         && let Some(p) = s_of(&j.result, "pane")
                     {
-                        a.line(&format!("New pane: {p}"), t.text());
+                        // The pane's handle (`w1:p3`) once the model has it.
+                        let handle = app
+                            .machines
+                            .get(f.mi)
+                            .and_then(|m| m.model.panes.iter().find(|x| x.id == p))
+                            .map_or(p.as_str(), |x| x.handle.as_str());
+                        a.line(&format!("New pane: {handle} (enter opens it)"), t.text());
                     }
                 }
             }
