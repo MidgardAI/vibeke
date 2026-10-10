@@ -237,16 +237,31 @@ fn alive(pid: i32) -> bool {
     pid > 0 && unsafe { libc::kill(pid, 0) } == 0
 }
 
-/// `ps -o <field>=` for one process; `None` when it does not exist.
-fn ps_field(pid: i32, field: &str) -> Option<String> {
-    let out = std::process::Command::new("ps")
+/// The `ps` program. Tests point it elsewhere to simulate an inspection failure.
+fn ps_program() -> String {
+    #[cfg(test)]
+    if let Some(p) = tests::PS_OVERRIDE.with(|p| p.borrow().clone()) {
+        return p;
+    }
+    "ps".into()
+}
+
+/// `ps -o <field>=` for one process: `Ok(None)` when it does not exist, `Err(())` when it can't
+/// be told (`ps` is missing or denied, or answers nothing for a process that still exists).
+fn ps_field(pid: i32, field: &str) -> std::result::Result<Option<String>, ()> {
+    let out = std::process::Command::new(ps_program())
         .args(["-ww", "-o", &format!("{field}="), "-p", &pid.to_string()])
         .stdin(Stdio::null())
         .stderr(Stdio::null())
         .output()
-        .ok()?;
+        .map_err(|_| ())?;
     let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    (out.status.success() && !s.is_empty()).then_some(s)
+    if out.status.success() && !s.is_empty() {
+        return Ok(Some(s));
+    }
+    // `ps -p` fails for a missing process; a process that is still there means `ps` itself
+    // failed.
+    if alive(pid) { Err(()) } else { Ok(None) }
 }
 
 /// Whether `cmdline` is the daemon of `sdir`: `… --fake-daemon <…>/<box>/sessions/<id>`.
@@ -257,31 +272,62 @@ fn is_daemon_cmdline(cmdline: &str, sdir: &Path) -> bool {
     cmdline.contains("--fake-daemon") && cmdline.trim_end().ends_with(&*tail)
 }
 
-/// The pid of the session's daemon, when the recorded pid still is that daemon (a reused pid
-/// belongs to another command line).
-fn daemon_pid(sdir: &Path) -> Option<i32> {
-    let d = read_pid(&sdir.join("pid")).filter(|p| alive(*p))?;
-    ps_field(d, "command")
-        .is_some_and(|c| is_daemon_cmdline(&c, sdir))
-        .then_some(d)
+/// What the recorded daemon pid of a session is now.
+#[derive(Debug, PartialEq, Eq)]
+enum Daemon {
+    /// The recorded pid still is this session's daemon.
+    Running(i32),
+    /// No such process, or a reused pid that belongs to another command line.
+    Gone,
+    /// The process exists but could not be inspected: neither running nor ended is proven.
+    Unknown,
 }
 
-/// A daemon that is still running (pid alive and no exit recorded).
-fn session_alive(sdir: &Path) -> bool {
-    !sdir.join("exit").exists() && daemon_pid(sdir).is_some()
+fn daemon_state(sdir: &Path) -> Daemon {
+    let Some(d) = read_pid(&sdir.join("pid")).filter(|p| alive(*p)) else {
+        return Daemon::Gone;
+    };
+    match ps_field(d, "command") {
+        Ok(Some(c)) if is_daemon_cmdline(&c, sdir) => Daemon::Running(d),
+        Ok(_) => Daemon::Gone,
+        Err(()) => Daemon::Unknown,
+    }
+}
+
+/// Whether a session's daemon is still running (pid verified and no exit recorded). An
+/// inspection failure is a transient error, never "ended": that would let a caller start the
+/// command a second time while the first still runs.
+fn session_alive(sdir: &Path) -> Result<bool> {
+    if sdir.join("exit").exists() {
+        return Ok(false);
+    }
+    match daemon_state(sdir) {
+        Daemon::Running(_) => Ok(true),
+        Daemon::Gone => Ok(false),
+        Daemon::Unknown => Err(CloudError::unavailable(
+            "could not inspect the fake session's process; try again",
+        )),
+    }
 }
 
 /// Kill a running session's command and daemon. A session with a recorded exit is left alone
 /// (its pids may belong to other processes by now), and so is any pid that is not verifiably
 /// this session's: the daemon by its command line, the command by being the daemon's child.
+/// A pid that can't be inspected is not signalled.
 /// A finished daemon that lingers for a late client exits by itself once its box is gone.
 fn kill_session(sdir: &Path) {
     if !sdir.join("exit").exists()
-        && let Some(d) = daemon_pid(sdir)
+        && let Daemon::Running(d) = daemon_state(sdir)
     {
         let child = read_pid(&sdir.join("child.pid"))
             .filter(|c| alive(*c))
-            .filter(|c| ps_field(*c, "ppid").and_then(|p| p.parse::<i32>().ok()) == Some(d));
+            .filter(|c| {
+                ps_field(*c, "ppid")
+                    .ok()
+                    .flatten()
+                    .and_then(|p| p.parse::<i32>().ok())
+                    == Some(d)
+            });
         // SAFETY: plain kill(2) calls on verified pids; the child is its own process group.
         unsafe {
             if let Some(c) = child {
@@ -768,7 +814,7 @@ impl Provider for Fake {
             let sdir = bdir.join("sessions").join(session);
             // A finished session's daemon may still hold its last output and exit status for a
             // short while; connecting then delivers them.
-            if !sdir.join("exit").exists() && !session_alive(&sdir) {
+            if !sdir.join("exit").exists() && !session_alive(&sdir)? {
                 return Err(CloudError::not_found("the session has ended"));
             }
             let s = connect(&sdir)
@@ -793,28 +839,33 @@ impl Provider for Fake {
             let Ok(rd) = std::fs::read_dir(bdir.join("sessions")) else {
                 return Ok(vec![]);
             };
-            let mut v: Vec<SessionInfo> = rd
-                .flatten()
-                .filter_map(|e| {
-                    let sdir = e.path();
-                    let spec: DaemonSpec =
-                        serde_json::from_slice(&std::fs::read(sdir.join("spec.json")).ok()?)
-                            .ok()?;
-                    let last = std::fs::metadata(sdir.join("spec.json"))
-                        .and_then(|m| m.modified())
-                        .ok()
-                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                        .map(|d| d.as_secs())
-                        .unwrap_or(0);
-                    Some(SessionInfo {
-                        id: e.file_name().to_str()?.to_string(),
-                        command: spec.argv.join(" "),
-                        tty: true,
-                        active: session_alive(&sdir),
-                        last_activity_at: last,
-                    })
-                })
-                .collect();
+            let mut v = Vec::new();
+            for e in rd.flatten() {
+                let sdir = e.path();
+                let Some(spec) = std::fs::read(sdir.join("spec.json"))
+                    .ok()
+                    .and_then(|b| serde_json::from_slice::<DaemonSpec>(&b).ok())
+                else {
+                    continue;
+                };
+                let Some(id) = e.file_name().to_str().map(str::to_string) else {
+                    continue;
+                };
+                let last = std::fs::metadata(sdir.join("spec.json"))
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                v.push(SessionInfo {
+                    id,
+                    command: spec.argv.join(" "),
+                    tty: true,
+                    // Unknown is an error, not "ended": a caller would run the command again.
+                    active: session_alive(&sdir)?,
+                    last_activity_at: last,
+                });
+            }
             v.sort_by(|a, b| a.id.cmp(&b.id));
             Ok(v)
         })
@@ -1152,6 +1203,12 @@ fn client_loop(
 mod tests {
     use super::*;
 
+    thread_local! {
+        /// Replaces `ps` for the current test thread.
+        pub(super) static PS_OVERRIDE: std::cell::RefCell<Option<String>> =
+            const { std::cell::RefCell::new(None) };
+    }
+
     fn fake() -> (tempfile::TempDir, Fake) {
         let d = tempfile::Builder::new()
             .prefix("vkf")
@@ -1320,12 +1377,49 @@ mod tests {
         assert!(other.try_wait().unwrap().is_none());
         // No exit, but the pid is not this session's daemon.
         std::fs::remove_file(sdir.join("exit")).unwrap();
-        assert!(!session_alive(&sdir));
+        assert!(!session_alive(&sdir).unwrap());
         kill_session(&sdir);
         std::thread::sleep(Duration::from_millis(100));
         assert!(other.try_wait().unwrap().is_none());
         let _ = other.kill();
         let _ = other.wait();
+    }
+
+    #[test]
+    fn a_failed_inspection_is_unknown_not_ended() {
+        let d = tempfile::Builder::new()
+            .prefix("vkf")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let sdir = d.path().join("boxes/b/sessions/s1");
+        std::fs::create_dir_all(&sdir).unwrap();
+        let mut other = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let pid = other.id().to_string();
+        std::fs::write(sdir.join("pid"), &pid).unwrap();
+        std::fs::write(sdir.join("child.pid"), &pid).unwrap();
+        // `ps` missing, then `ps` failing for a process that exists.
+        for ps in ["/nonexistent/vk-ps", "false"] {
+            PS_OVERRIDE.with(|p| *p.borrow_mut() = Some(ps.into()));
+            assert_eq!(daemon_state(&sdir), Daemon::Unknown, "{ps}");
+            let e = session_alive(&sdir).unwrap_err();
+            assert_eq!(e.kind, ErrorKind::Unavailable);
+            // Unknown is never a reason to signal.
+            kill_session(&sdir);
+            std::thread::sleep(Duration::from_millis(100));
+            assert!(other.try_wait().unwrap().is_none(), "{ps}");
+        }
+        PS_OVERRIDE.with(|p| *p.borrow_mut() = None);
+        // A working `ps` proves the pid is not this session's daemon.
+        assert_eq!(daemon_state(&sdir), Daemon::Gone);
+        let _ = other.kill();
+        let _ = other.wait();
+        // A process that is gone is ended, whatever `ps` does.
+        PS_OVERRIDE.with(|p| *p.borrow_mut() = Some("false".into()));
+        assert!(!session_alive(&sdir).unwrap());
+        PS_OVERRIDE.with(|p| *p.borrow_mut() = None);
     }
 
     #[test]

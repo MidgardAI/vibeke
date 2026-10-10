@@ -305,38 +305,64 @@ impl E2b {
         }
     }
 
-    /// Start a process. `Start` is never repeated blindly: when it fails in a way that leaves
-    /// open whether envd started the process (a lost connection, a stale token), the process
-    /// is looked up by its unique tag and attached when present. It starts again only when
-    /// `List` confirms it absent.
+    /// Start a process. `Start` is never repeated once it may have reached envd: after a
+    /// failure that leaves open whether envd started the process (a lost connection, a
+    /// timeout, a server error), the process is looked up by its unique tag and attached when
+    /// present. Absence proves nothing (a process that already finished is no longer listed),
+    /// so it is an error that says the command may have run. `Start` is sent again only after a
+    /// failure that proves envd never acted on it (no connection, or envd refused it, such as
+    /// a stale token).
     async fn start(&self, cred: &Secret, id: &str, req: &ExecReq) -> Result<Session> {
         let tag = new_tag(req.tty);
         let body = start_request(req, &tag);
         let fresh = self.cached(id).is_none();
         let e = self.envd(id, &self.access_for(cred, id, false, true).await?);
-        let err = match handshake(&e, "Start", &body).await {
+        let f = match handshake(&e, "Start", &body).await {
             Ok(h) => return Ok(Self::spawn_pump(e, h, req.tty, req.detachable)),
-            Err(err) => err,
+            Err(f) => f,
         };
-        if fresh || !stale_access(&err) {
-            return Err(envd_refused(err));
+        let refresh = !fresh && stale_access(&f.err);
+        if !f.maybe_ran {
+            if !refresh {
+                return Err(envd_refused(f.err));
+            }
+            let e = self.envd(id, &self.access_for(cred, id, true, true).await?);
+            let h = handshake(&e, "Start", &body).await.map_err(|f| {
+                if f.maybe_ran {
+                    maybe_started(&f.err)
+                } else {
+                    envd_refused(f.err)
+                }
+            })?;
+            return Ok(Self::spawn_pump(e, h, req.tty, req.detachable));
         }
-        let e = self.envd(id, &self.access_for(cred, id, true, true).await?);
+        let e = if refresh {
+            match self.access_for(cred, id, true, true).await {
+                Ok(a) => self.envd(id, &a),
+                Err(a_err) => {
+                    tracing::debug!(error = %a_err, "e2b access refresh after a failed start failed");
+                    return Err(maybe_started(&f.err));
+                }
+            }
+        } else {
+            e
+        };
         let procs = match e.unary("List", &json!({})).await {
             Ok(v) => procs_from(&v),
             Err(list_err) => {
                 tracing::debug!(error = %list_err, "e2b list after a failed start failed");
-                return Err(envd_refused(err));
+                return Err(maybe_started(&f.err));
             }
         };
-        let h = match procs
+        let Some(p) = procs
             .iter()
             .find(|p| p.tag.as_deref() == Some(tag.as_str()))
-        {
-            Some(p) => handshake(&e, "Connect", &json!({"process": {"pid": p.pid}})).await,
-            None => handshake(&e, "Start", &body).await,
-        }
-        .map_err(envd_refused)?;
+        else {
+            return Err(maybe_started(&f.err));
+        };
+        let h = handshake(&e, "Connect", &json!({"process": {"pid": p.pid}}))
+            .await
+            .map_err(|f| envd_refused(f.err))?;
         Ok(Self::spawn_pump(e, h, req.tty, req.detachable))
     }
 
@@ -351,7 +377,7 @@ impl E2b {
         let body = &body;
         let (envd, h) = self
             .with_envd(cred, id, false, |e| async move {
-                handshake(&e, "Connect", body).await
+                handshake(&e, "Connect", body).await.map_err(|f| f.err)
             })
             .await?;
         Ok((envd.clone(), Self::spawn_pump(envd, h, tty, true)))
@@ -467,6 +493,15 @@ fn envd_refused(err: CloudError) -> CloudError {
     } else {
         err
     }
+}
+
+/// A `Start` that failed after it may have reached envd, with no running process found.
+fn maybe_started(err: &CloudError) -> CloudError {
+    CloudError::unavailable(format!(
+        "the command may or may not have started in the E2B sandbox; check before running it \
+         again: {}",
+        err.message
+    ))
 }
 
 fn transport(e: reqwest::Error) -> CloudError {
@@ -988,7 +1023,11 @@ impl Envd {
     }
 
     /// Open a server-streaming Connect call; the response body carries envelopes.
-    async fn stream(&self, method: &str, body: &Value) -> Result<reqwest::Response> {
+    async fn stream(
+        &self,
+        method: &str,
+        body: &Value,
+    ) -> std::result::Result<reqwest::Response, Failed> {
         let auth = format!("Basic {}", b64(format!("{USER}:").as_bytes()));
         let resp = self
             .post(&self.rpc_url(method))
@@ -999,11 +1038,21 @@ impl Envd {
             .body(envelope(0, body.to_string().as_bytes()))
             .send()
             .await
-            .map_err(envd_transport)?;
+            .map_err(|e| Failed {
+                // Only a connection that was never made proves the request was not sent.
+                // `is_request` is not enough: it also covers a connection lost after sending.
+                maybe_ran: !(e.is_connect() || e.is_builder()),
+                err: envd_transport(e),
+            })?;
         let status = resp.status().as_u16();
         if status != 200 {
             let bytes = resp.bytes().await.unwrap_or_default();
-            return Err(envd_http_error(status, &bytes));
+            return Err(Failed {
+                // envd refuses a request (4xx) before acting on it. A 5xx may come from a proxy
+                // that lost the connection after forwarding it.
+                maybe_ran: status >= 500,
+                err: envd_http_error(status, &bytes),
+            });
         }
         Ok(resp)
     }
@@ -1055,24 +1104,51 @@ impl Envd {
 /// any output that came first.
 type Handshake = (reqwest::Response, Frames, u32, Vec<Out>);
 
+/// A failed [`handshake`]. `maybe_ran` is false only when envd provably did not act on the
+/// request: no connection was made, or envd answered it with an error.
+struct Failed {
+    err: CloudError,
+    maybe_ran: bool,
+}
+
+impl Failed {
+    fn maybe(err: CloudError) -> Self {
+        Failed {
+            err,
+            maybe_ran: true,
+        }
+    }
+}
+
 /// Open a process stream and read up to its start event. [`START_WAIT`] bounds all of it:
 /// sending the request, the response headers and the start event.
-async fn handshake(envd: &Envd, method: &str, body: &Value) -> Result<Handshake> {
+async fn handshake(
+    envd: &Envd,
+    method: &str,
+    body: &Value,
+) -> std::result::Result<Handshake, Failed> {
     let deadline = tokio::time::Instant::now() + START_WAIT;
     let mut resp = tokio::time::timeout_at(deadline, envd.stream(method, body))
         .await
         .map_err(|_| {
-            CloudError::unavailable("timed out waiting for the E2B sandbox to answer")
+            Failed::maybe(CloudError::unavailable(
+                "timed out waiting for the E2B sandbox to answer",
+            ))
         })??;
     let mut frames = Frames::default();
     let mut pending = Vec::new();
     loop {
-        while let Some((flags, msg)) = frames.next_frame()? {
+        while let Some((flags, msg)) = frames.next_frame().map_err(Failed::maybe)? {
             let v: Value = serde_json::from_slice(&msg).unwrap_or(Value::Null);
             if flags & FLAG_END_STREAM != 0 {
-                return Err(end_stream_error(&v).unwrap_or_else(|| {
-                    CloudError::unavailable("the E2B process ended before it started")
-                }));
+                // envd ended the call before any start event: it reports why the process did
+                // not start.
+                return Err(Failed {
+                    err: end_stream_error(&v).unwrap_or_else(|| {
+                        CloudError::unavailable("the E2B process ended before it started")
+                    }),
+                    maybe_ran: false,
+                });
             }
             match parse_event(&v) {
                 Event::Start(pid) => return Ok((resp, frames, pid, pending)),
@@ -1083,15 +1159,15 @@ async fn handshake(envd: &Envd, method: &str, body: &Value) -> Result<Handshake>
         }
         match tokio::time::timeout_at(deadline, resp.chunk()).await {
             Err(_) => {
-                return Err(CloudError::unavailable(
+                return Err(Failed::maybe(CloudError::unavailable(
                     "timed out waiting for the E2B process to start",
-                ));
+                )));
             }
-            Ok(Err(e)) => return Err(envd_transport(e)),
+            Ok(Err(e)) => return Err(Failed::maybe(envd_transport(e))),
             Ok(Ok(None)) => {
-                return Err(CloudError::unavailable(
+                return Err(Failed::maybe(CloudError::unavailable(
                     "the E2B sandbox closed the stream before the process started",
-                ));
+                )));
             }
             Ok(Ok(Some(b))) => frames.push(&b),
         }
@@ -1099,6 +1175,7 @@ async fn handshake(envd: &Envd, method: &str, body: &Value) -> Result<Handshake>
 }
 
 /// What the bridge needs to send calls for one process.
+#[derive(Clone)]
 struct Ctl {
     envd: Envd,
     pid: u32,
@@ -1204,17 +1281,54 @@ async fn kill_if_owned(p: &Ctl) {
     }
 }
 
-/// Bridge the process stream and the session channels until exit, loss or detach.
-async fn pump(p: Pump, mut input: mpsc::Receiver<In>, out: mpsc::Sender<Out>) {
+/// Why the input task stopped.
+enum InputEnd {
+    /// The client dropped its input sender: detach.
+    Detached,
+    /// A stdin call failed; its bytes are lost.
+    Failed(String),
+}
+
+/// Send the session's input to envd, one call at a time and in order. It runs apart from the
+/// output stream: envd's stdin calls block while the process does not read, and the process
+/// may not read until its output is drained.
+async fn feed(ctl: Ctl, mut input: mpsc::Receiver<In>) -> InputEnd {
+    // Set once stdin could not be delivered because the process is gone: later input is
+    // dropped (no `CloseStdin` after lost bytes) and the stream reports the exit.
+    let mut closed = false;
+    while let Some(i) = input.recv().await {
+        if closed {
+            continue;
+        }
+        match apply_all(&ctl, i, &mut input).await {
+            Ok(()) => {}
+            // A finished process answers not_found; its stream reports the exit.
+            Err(e) if e.kind == ErrorKind::NotFound => closed = true,
+            Err(e) => return InputEnd::Failed(format!("sending input failed: {}", e.message)),
+        }
+    }
+    InputEnd::Detached
+}
+
+/// Aborts the input task when the bridge ends.
+struct Feeder(tokio::task::JoinHandle<InputEnd>);
+
+impl Drop for Feeder {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+/// Bridge the process stream and the session channels until exit, loss or detach. Input goes
+/// through [`feed`] on its own task, so reading output never waits on an input call.
+async fn pump(p: Pump, input: mpsc::Receiver<In>, out: mpsc::Sender<Out>) {
     let Pump {
         ctl,
         mut resp,
         mut frames,
         pending,
     } = p;
-    // Set once stdin could not be delivered because the process is gone: later input is
-    // dropped (no `CloseStdin` after lost bytes) and the stream reports the exit.
-    let mut input_closed = false;
+    let mut feeder = Feeder(tokio::spawn(feed(ctl.clone(), input)));
     for o in pending {
         if out.send(o).await.is_err() {
             kill_if_owned(&ctl).await;
@@ -1231,28 +1345,23 @@ async fn pump(p: Pump, mut input: mpsc::Receiver<In>, out: mpsc::Sender<Out>) {
                 return;
             }
             Flow::Lost(m) => {
+                // Stop sending input first: no `CloseStdin` may follow a failed write.
+                feeder.0.abort();
                 let _ = out.send(Out::Lost(m)).await;
                 kill_if_owned(&ctl).await;
                 return;
             }
         }
         flow = tokio::select! {
-            i = input.recv() => match i {
+            // The input task ends only on detach or a failed input; both end the bridge, so
+            // its handle is never polled again after it completes.
+            r = &mut feeder.0 => match r {
+                Ok(InputEnd::Failed(m)) => Flow::Lost(m),
                 // Input dropped: detach. A detachable process keeps running.
-                None => {
+                Ok(InputEnd::Detached) | Err(_) => {
                     kill_if_owned(&ctl).await;
                     return;
                 }
-                Some(_) if input_closed => Flow::Continue,
-                Some(i) => match apply_all(&ctl, i, &mut input).await {
-                    Ok(()) => Flow::Continue,
-                    // A finished process answers not_found; its stream reports the exit.
-                    Err(e) if e.kind == ErrorKind::NotFound => {
-                        input_closed = true;
-                        Flow::Continue
-                    }
-                    Err(e) => Flow::Lost(format!("sending input failed: {}", e.message)),
-                },
             },
             c = tokio::time::timeout(IDLE_LIMIT, resp.chunk()) => match c {
                 Err(_) => Flow::Lost("no data or keepalive from the E2B sandbox".into()),

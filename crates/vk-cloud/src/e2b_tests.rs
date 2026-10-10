@@ -223,6 +223,10 @@ async fn rpc(State(m): M, h: HeaderMap, Path(method): Path<String>, body: Bytes)
     assert_eq!(header(&h, "content-type"), "application/json");
     let v: Value = serde_json::from_slice(&body).unwrap();
     m.record(&method, v.clone());
+    if method == "SendInput" && v["process"]["pid"] == 77 {
+        // envd blocks a stdin write while the process does not read.
+        std::future::pending::<()>().await;
+    }
     if method == "SendInput" && v["process"]["pid"] == 66 {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -272,6 +276,20 @@ fn stream(m: Arc<Mock>, method: String, req: Value) -> Response {
             .count();
         if cmd == "flaky" || (cmd == "flaky-gone" && starts == 1) {
             // The stream drops before the start event: did the process start?
+            return;
+        }
+        if cmd == "stall" {
+            tx.send(frame(json!({"event": {"start": {"pid": 77}}})))
+                .await
+                .unwrap();
+            // The process writes while its stdin write is still blocked.
+            m.wait_for(&["SendInput"]).await;
+            tx.send(frame(data("stdout", b"out"))).await.unwrap();
+            tx.send(frame(
+                json!({"event": {"end": {"exitCode": 0, "exited": true}}}),
+            ))
+            .await
+            .unwrap();
             return;
         }
         if cmd == "badinput" {
@@ -863,24 +881,76 @@ async fn an_ambiguous_start_attaches_to_the_started_process() {
 }
 
 #[tokio::test]
-async fn an_ambiguous_start_runs_again_only_when_the_process_is_absent() {
+async fn an_ambiguous_start_never_runs_again() {
+    // The process is not listed: it may have run and finished. Starting it again could run
+    // the command twice, so the start fails and says so.
     let (p, m) = serve().await;
     cache_token(&p, "sbx1");
-    let s = p.exec(&tok(KEY), "sbx1", pipe("flaky-gone")).await.unwrap();
-    assert_eq!(s.id, "8");
-    assert_eq!(starts(&m), 2);
-    assert!(m.find("List").is_some());
-    assert!(m.find("Connect").is_none());
-
-    // With freshly fetched access there is nothing to refresh: the error is returned.
-    let (p, m) = serve().await;
     let e = p
-        .exec(&tok(KEY), "sbx1", pipe("flaky"))
+        .exec(&tok(KEY), "sbx1", pipe("flaky-gone"))
         .await
         .err()
         .unwrap();
     assert_eq!(e.kind, ErrorKind::Unavailable);
+    assert!(e.message.contains("may or may not have started"), "{e}");
     assert_eq!(starts(&m), 1);
+    assert!(m.find("List").is_some());
+    assert!(m.find("Connect").is_none());
+
+    // With freshly fetched access the process is still looked up, not started again.
+    let (p, m) = serve().await;
+    let s = p.exec(&tok(KEY), "sbx1", pipe("flaky")).await.unwrap();
+    assert_eq!(s.id, "99");
+    assert_eq!(starts(&m), 1);
+}
+
+#[tokio::test]
+async fn only_a_request_envd_never_acted_on_is_safe_to_repeat() {
+    let (p, _m) = serve().await;
+    let envd = |base: String, token: &str| Envd {
+        http: reqwest::Client::new(),
+        base,
+        token: Some(token.into()),
+        sandbox: "sbx1".into(),
+    };
+    let body = json!({"process": {"cmd": "true"}});
+    // No connection: the request was never sent.
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let closed = format!("http://{}", l.local_addr().unwrap());
+    drop(l);
+    let f = handshake(&envd(closed, ENVD_TOKEN), "Start", &body)
+        .await
+        .err()
+        .unwrap();
+    assert!(!f.maybe_ran, "{}", f.err);
+    // envd refused it (a stale token).
+    let base = p.envd_url.clone().unwrap();
+    let f = handshake(&envd(base.clone(), "stale"), "Start", &body)
+        .await
+        .err()
+        .unwrap();
+    assert!(!f.maybe_ran, "{}", f.err);
+    // The stream dropped before the start event: envd may have started it.
+    let f = handshake(
+        &envd(base, ENVD_TOKEN),
+        "Start",
+        &json!({"process": {"cmd": "flaky"}}),
+    )
+    .await
+    .err()
+    .unwrap();
+    assert!(f.maybe_ran, "{}", f.err);
+}
+
+#[tokio::test]
+async fn output_flows_while_a_stdin_write_is_blocked() {
+    let (p, m) = serve().await;
+    cache_token(&p, "sbx1");
+    let mut s = p.exec(&tok(KEY), "sbx1", pipe("stall")).await.unwrap();
+    s.input.send(In::Data(b"big".to_vec())).await.unwrap();
+    assert_eq!(recv(&mut s).await, Out::Stdout(b"out".to_vec()));
+    assert_eq!(recv(&mut s).await, Out::Exit(0));
+    assert!(m.find("CloseStdin").is_none());
 }
 
 #[tokio::test]

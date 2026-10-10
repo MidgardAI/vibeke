@@ -12,6 +12,8 @@
 //!   transient errors while checking that session are retried for up to a minute; a new
 //!   `CMD` starts only when the provider reports the session gone (else exit 125).
 //! - `-i` without `-t`: pipe mode. stdin is sent, then EOF; stdout and stderr stay separate.
+//!   A local `SIGTERM` or `SIGHUP` stops the remote command: it gets `TERM` and EOF, then
+//!   `KILL` if it has not exited within two seconds; this process exits 143 or 129.
 //! - Exit codes: the remote command's code; 125 when it can't run (no credential: stderr
 //!   `vibeke: needs_auth <provider>`); 255 when the connection is lost in pipe mode.
 //!
@@ -32,6 +34,10 @@ pub const USAGE: &str = "usage: vibeke cloud exec [-i] [-t] [-w DIR] [-e K=V]...
 
 const EXIT_CANT_RUN: i32 = 125;
 const EXIT_LOST: i32 = 255;
+/// How long pipe mode waits for the remote command to exit after a local `SIGTERM`/`SIGHUP`:
+/// first after `TERM`, then the rest after `KILL`.
+const STOP_WAIT: Duration = Duration::from_millis(1500);
+const KILL_WAIT: Duration = Duration::from_millis(500);
 
 #[derive(Debug, Default, PartialEq, Eq)]
 struct Opts {
@@ -212,30 +218,45 @@ async fn run_pipe(p: Arc<dyn Provider>, cred: Secret, o: Opts) -> i32 {
         rows: 0,
         detachable: false,
     };
+    // Installed before the command starts: a signal that arrives while it starts is kept and
+    // stops the command once it runs (dropping a half-done start could leave it running).
+    let (Ok(mut term), Ok(mut hup)) = (
+        signal(SignalKind::terminate()),
+        signal(SignalKind::hangup()),
+    ) else {
+        eprintln!("vibeke: can't install signal handlers");
+        return EXIT_CANT_RUN;
+    };
     let mut s = match p.exec(&cred, &o.box_id, req).await {
         Ok(s) => s,
         Err(e) => return fail(&o.provider, &e),
     };
     // stdin is fed from its own task: a full input channel (the box not reading yet) must not
     // stop this loop from draining output, or large traffic both ways deadlocks.
-    if o.interactive {
+    let feeder = if o.interactive {
         let input = s.input.clone();
         let mut rx = stdin_reader();
-        tokio::spawn(async move {
+        Some(tokio::spawn(async move {
             while let Some(d) = rx.recv().await {
                 if input.send(In::Data(d)).await.is_err() {
                     return;
                 }
             }
             let _ = input.send(In::Eof).await;
-        });
+        }))
     } else {
         let _ = s.input.send(In::Eof).await;
-    }
+        None
+    };
     let mut stdout = tokio::io::stdout();
     let mut stderr = tokio::io::stderr();
     loop {
-        match s.output.recv().await {
+        let out = tokio::select! {
+            out = s.output.recv() => out,
+            _ = term.recv() => return stop_remote(&mut s, feeder, 143, STOP_WAIT, KILL_WAIT).await,
+            _ = hup.recv() => return stop_remote(&mut s, feeder, 129, STOP_WAIT, KILL_WAIT).await,
+        };
+        match out {
             Some(Out::Stdout(d)) => {
                 if stdout.write_all(&d).await.is_err() || stdout.flush().await.is_err() {
                     return EXIT_LOST;
@@ -263,6 +284,76 @@ async fn run_pipe(p: Arc<dyn Provider>, cred: Secret, o: Opts) -> i32 {
             }
         }
     }
+}
+
+/// Stop a pipe session's remote command on a local signal, so it does not outlive this
+/// process: stop feeding stdin, send `TERM` and EOF, wait up to `term_wait` for the exit
+/// (still forwarding output), then send `KILL` and wait up to `kill_wait`. Returns `code`.
+async fn stop_remote(
+    s: &mut Session,
+    feeder: Option<tokio::task::JoinHandle<()>>,
+    code: i32,
+    term_wait: Duration,
+    kill_wait: Duration,
+) -> i32 {
+    // No more local stdin: EOF must be the last input the command gets.
+    if let Some(f) = feeder {
+        f.abort();
+    }
+    let input = s.input.clone();
+    let exited = wait_exit(s, term_wait, async move {
+        let _ = input.send(In::Signal("TERM".into())).await;
+        let _ = input.send(In::Eof).await;
+    })
+    .await;
+    if !exited {
+        let input = s.input.clone();
+        wait_exit(s, kill_wait, async move {
+            let _ = input.send(In::Signal("KILL".into())).await;
+        })
+        .await;
+    }
+    code
+}
+
+/// Run `send` and forward output until the session ends or `limit` passes; whether it ended.
+async fn wait_exit(
+    s: &mut Session,
+    limit: Duration,
+    send: impl std::future::Future<Output = ()>,
+) -> bool {
+    let mut stdout = tokio::io::stdout();
+    let mut stderr = tokio::io::stderr();
+    let drain = async {
+        loop {
+            match s.output.recv().await {
+                Some(Out::Stdout(d)) => {
+                    let _ = stdout.write_all(&d).await;
+                    let _ = stdout.flush().await;
+                }
+                Some(Out::Stderr(d)) => {
+                    let _ = stderr.write_all(&d).await;
+                    let _ = stderr.flush().await;
+                }
+                Some(Out::PortOpened { .. }) => {}
+                Some(Out::Exit(_) | Out::Lost(_)) | None => return,
+            }
+        }
+    };
+    // Output keeps draining while the input is sent: a full output channel must not hold up
+    // the signal.
+    let both = async {
+        tokio::pin!(send);
+        tokio::pin!(drain);
+        let mut sent = false;
+        loop {
+            tokio::select! {
+                _ = &mut send, if !sent => sent = true,
+                _ = &mut drain => return,
+            }
+        }
+    };
+    tokio::time::timeout(limit, both).await.is_ok()
 }
 
 /// Next chunk from an optional receiver; pending forever once it is gone.
@@ -694,5 +785,79 @@ mod tests {
              "last_activity": "2026-01-02T04:00:00Z"}
         ]}));
         assert_eq!(classify_sessions(Ok(listed), "s1"), Ok(Resume::Attach));
+    }
+
+    /// A session whose box side is `box_side`, fed the session's input in order.
+    fn session_with<F, Fut>(box_side: F) -> Session
+    where
+        F: FnOnce(mpsc::Receiver<In>, mpsc::Sender<Out>) -> Fut,
+        Fut: std::future::Future<Output = ()> + Send + 'static,
+    {
+        let (in_tx, in_rx) = mpsc::channel(16);
+        let (out_tx, out_rx) = mpsc::channel(16);
+        tokio::spawn(box_side(in_rx, out_tx));
+        Session {
+            id: "1".into(),
+            tty: false,
+            input: in_tx,
+            output: out_rx,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_local_signal_terms_the_remote_command_then_closes_its_stdin() {
+        let (seen_tx, mut seen) = mpsc::unbounded_channel();
+        let mut s = session_with(|mut rx, out| async move {
+            while let Some(i) = rx.recv().await {
+                let eof = i == In::Eof;
+                let _ = seen_tx.send(i);
+                if eof {
+                    let _ = out.send(Out::Exit(143)).await;
+                }
+            }
+        });
+        // Local stdin still flowing: it stops before the signal is sent.
+        let input = s.input.clone();
+        let feeder = tokio::spawn(async move {
+            std::future::pending::<()>().await;
+            let _ = input.send(In::Data(b"late".to_vec())).await;
+        });
+        let started = std::time::Instant::now();
+        let code = stop_remote(
+            &mut s,
+            Some(feeder),
+            129,
+            Duration::from_secs(10),
+            Duration::from_secs(10),
+        )
+        .await;
+        assert_eq!(code, 129);
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert_eq!(seen.recv().await, Some(In::Signal("TERM".into())));
+        assert_eq!(seen.recv().await, Some(In::Eof));
+    }
+
+    #[tokio::test]
+    async fn a_remote_command_ignoring_term_is_killed() {
+        let (seen_tx, mut seen) = mpsc::unbounded_channel();
+        let mut s = session_with(|mut rx, out| async move {
+            // The output stays open: the command never exits.
+            let _out = out;
+            while let Some(i) = rx.recv().await {
+                let _ = seen_tx.send(i);
+            }
+        });
+        let code = stop_remote(
+            &mut s,
+            None,
+            143,
+            Duration::from_millis(100),
+            Duration::from_millis(100),
+        )
+        .await;
+        assert_eq!(code, 143);
+        assert_eq!(seen.recv().await, Some(In::Signal("TERM".into())));
+        assert_eq!(seen.recv().await, Some(In::Eof));
+        assert_eq!(seen.recv().await, Some(In::Signal("KILL".into())));
     }
 }
