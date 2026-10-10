@@ -135,7 +135,7 @@ Vibeke reloads the file after a change. If parsing fails, it keeps the previous 
 # toggle_floats            = "prefix+shift+f"
 # sync_input               = "prefix+shift+s"
 # new_task                 = "prefix+shift+k"
-# preview_list             = "prefix+shift+o"
+# preview_list             = "prefix+shift+o" # previews on every machine: pane, window, proxy, mirror
 # last_workspace           = "prefix+shift+l" # toggle to the previously focused workspace
 # url_hints                = "prefix+shift+u" # label URLs/IDs in the focused pane: open or copy
 # sync_input_pane          = "prefix+alt+s"   # add/remove the focused pane from the tab's sync set
