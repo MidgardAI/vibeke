@@ -1139,10 +1139,10 @@ export interface AppApi {
   };
   'cloud.move': {
     params: { pane?: string; run?: string; box?: string; to: CloudMoveTarget; interrupt?: boolean; source_after?: 'keep' | 'suspend' | 'destroy' };
-    result: CloudJob;
+    result: { job: CloudJob };
   };
   'cloud.jobs': { params: Record<string, never>; result: { jobs: CloudJob[] } };
-  'cloud.cancel': { params: { id: string }; result: CloudJob };
+  'cloud.cancel': { params: { id: string }; result: { job: CloudJob } };
   /** The hosts `handoff.send` can deliver to, as this host's gateway last published them. */
   'handoff.peers': { params: Record<string, never>; result: { peers: HandoffPeer[]; updated_at: number | null } };
   /** A new worktree of the repository at `pane`, `workspace` or `cwd`; `open` makes it a workspace (full scope, own devices). */

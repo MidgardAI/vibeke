@@ -82,7 +82,7 @@ export function CloudSheet(props: CloudSheetProps) {
     setStep({ k: 'starting' });
     const body = { ...(props.pane ? { pane: props.pane } : {}), ...(props.mode === 'bring_back' && props.box && !props.pane ? { box: props.box } : {}), ...params };
     try {
-      const job = await withCloudAuth(conn, provider, () => conn.request('cloud.move', body, { timeoutMs: 60_000 }));
+      const { job } = await withCloudAuth(conn, provider, () => conn.request('cloud.move', body, { timeoutMs: 60_000 }));
       stores.trackJob(host, job);
       if (g !== gen.current) return;
       setStep({ k: 'job', job: job.id });
