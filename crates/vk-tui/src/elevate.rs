@@ -509,7 +509,7 @@ pub fn label_of(app: &App, mi: usize, pane: &str) -> String {
         .runs
         .iter()
         .find(|r| r.pane == p.id && r.ended_at_ms.is_none())
-        .map(|r| r.name.clone().unwrap_or_else(|| r.harness.clone()));
+        .map(|r| r.label().to_string());
     let ws = m
         .model
         .workspaces

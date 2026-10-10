@@ -615,7 +615,7 @@ pub fn tab_layout(app: &App) -> crate::tabbar::Laid {
                 .as_ref()
                 .and_then(|p| m.model.runs.iter().find(|r| &r.pane == p));
             match run {
-                Some(r) => r.name.clone().unwrap_or_else(|| r.harness.clone()),
+                Some(r) => truncate(r.label(), RUN_LABEL_MAX),
                 None => fp
                     .and_then(|p| m.model.panes.iter().find(|x| x.id == p))
                     .map(|p| p.display_title().to_string())
@@ -1172,6 +1172,9 @@ pub fn degraded_label(d: &str) -> String {
         truncate(d, 30)
     }
 }
+
+/// Widest a run's label gets in the sidebar and tab bar (session titles run to 80 characters).
+pub const RUN_LABEL_MAX: usize = 28;
 
 pub fn truncate(s: &str, n: usize) -> String {
     if s.chars().count() <= n {

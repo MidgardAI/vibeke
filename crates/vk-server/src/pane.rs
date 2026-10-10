@@ -66,6 +66,8 @@ fn graphics_config() -> bool {
 }
 const SNAPSHOT_IDLE: Duration = Duration::from_secs(2);
 const SNAPSHOT_MAX_INTERVAL: Duration = Duration::from_secs(30);
+/// How long after output a pane's live cwd is checked (and so how often, at most).
+const CWD_CHECK_DELAY: Duration = Duration::from_millis(200);
 /// How long a caller awaiting a holder ack waits. Acks now follow the PTY write, so a
 /// child that isn't reading can legitimately delay them.
 const INPUT_ACK_TIMEOUT: Duration = Duration::from_secs(30);
@@ -120,6 +122,8 @@ pub struct PaneRt {
     pub last_input: Mutex<Option<Instant>>,
     /// The holder runs in pipe mode (headless harness; learned from `HelloOk`).
     pipe: std::sync::atomic::AtomicBool,
+    /// A cwd check is scheduled ([`CWD_CHECK_DELAY`] after output).
+    cwd_check: std::sync::atomic::AtomicBool,
 }
 
 impl PaneRt {
@@ -143,6 +147,7 @@ impl PaneRt {
             want_size: Mutex::new((cols, rows)),
             last_input: Mutex::new(None),
             pipe: std::sync::atomic::AtomicBool::new(false),
+            cwd_check: std::sync::atomic::AtomicBool::new(false),
         });
         (rt, cmd_rx)
     }
@@ -779,7 +784,7 @@ impl PaneLoop {
             FromHolder::Status(st) => {
                 self.server.pane_status(&self.rt.id, &st);
                 *self.rt.status.lock().unwrap() = Some(st);
-                // A `cd` in a shell without OSC 7 shows up only in the live process cwd.
+                self.server.sync_pane_cwd(&self.rt.id);
                 self.server.refresh_auto_name(&self.rt.id);
             }
             FromHolder::FgChanged => {
@@ -948,6 +953,21 @@ impl PaneLoop {
         }
     }
 
+    /// A `cd` in a shell without OSC 7 changes no process, so nothing reports it: look at the
+    /// live cwd shortly after output (the prompt redraw), at most once per [`CWD_CHECK_DELAY`].
+    fn check_cwd_soon(&self) {
+        use std::sync::atomic::Ordering;
+        if self.rt.cwd_check.swap(true, Ordering::Relaxed) {
+            return;
+        }
+        let (server, rt) = (self.server.clone(), self.rt.clone());
+        tokio::spawn(async move {
+            tokio::time::sleep(CWD_CHECK_DELAY).await;
+            rt.cwd_check.store(false, Ordering::Relaxed);
+            server.sync_pane_cwd(&rt.id);
+        });
+    }
+
     async fn feed(&mut self, offset: u64, bytes: &[u8], replay: bool) -> Result<()> {
         let mut replies = Vec::new();
         let mut archive = Vec::new();
@@ -995,6 +1015,7 @@ impl PaneLoop {
             .await?;
         }
         if !replaying {
+            self.check_cwd_soon();
             // Preview URL/banner detection (06 B2): line split only; parsing is off this path.
             self.server
                 .previews

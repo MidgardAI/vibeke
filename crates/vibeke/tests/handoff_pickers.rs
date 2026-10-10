@@ -232,3 +232,31 @@ fn cancel_stops_a_queued_send() {
     let e = h.api("handoff.cancel", json!({"id": "nope"})).unwrap_err();
     assert_eq!(Host::kind(&e), "not_found", "{e}");
 }
+
+/// A TUI on another machine sends `~` unexpanded: `workspace.create` expands it with the
+/// server's home folder and refuses a folder that does not exist (rather than starting the
+/// shell in `$HOME` under a workspace rooted somewhere else).
+#[test]
+fn workspace_create_expands_tilde_and_refuses_a_missing_folder() {
+    let h = Host::new();
+    std::fs::create_dir_all(h.home.join("code/app")).unwrap();
+    let ws = h
+        .api(
+            "workspace.create",
+            json!({"cwd": "~/code/app", "command": ["sleep", "600"]}),
+        )
+        .unwrap();
+    assert_eq!(
+        ws["workspace"]["root_path"],
+        h.home.join("code/app").to_str().unwrap(),
+        "{ws}"
+    );
+    let e = h
+        .api("workspace.create", json!({"cwd": "~/missing"}))
+        .unwrap_err();
+    assert_eq!(Host::kind(&e), "not_found", "{e}");
+    let e = h
+        .api("workspace.create", json!({"cwd": "/no/such/folder"}))
+        .unwrap_err();
+    assert_eq!(Host::kind(&e), "not_found", "{e}");
+}

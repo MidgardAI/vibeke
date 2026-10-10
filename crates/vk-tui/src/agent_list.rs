@@ -67,7 +67,7 @@ pub fn entries(app: &App) -> Vec<Entry> {
                 .filter(|i| i.run == r.id && i.status == InteractionStatus::Open)
                 .min_by_key(|i| i.opened_at_ms);
             let (glyph, state, _, _) = crate::draw::run_state(app, m, r);
-            let name = r.name.clone().unwrap_or_else(|| r.harness.clone());
+            let name = r.label().to_string();
             let on = if multi {
                 format!("{} · ", m.label)
             } else {

@@ -3087,6 +3087,16 @@ where
         );
         return EXIT_OK;
     }
+    // A browser Vibeke can already use (config, env, Playwright, the system Chrome) makes the
+    // download optional; an older server without `browser.status` just skips the note.
+    let existing = client
+        .call("browser.status", json!({}))
+        .await
+        .ok()
+        .and_then(|v| {
+            let bin = v["binary"].as_str()?.to_string();
+            Some((bin, v["kind"].as_str().unwrap_or("").to_string()))
+        });
     let where_ = g.machine.as_deref().unwrap_or("this machine");
     eprintln!(
         "vibeke browser install will download chrome-headless-shell {} ({}) onto {where_}:\n  from {}\n  into {}\n  sha256 {}",
@@ -3094,11 +3104,23 @@ where
         plan["platform"].as_str().unwrap_or("?"),
         plan["url"].as_str().unwrap_or("?"),
         plan["dir"].as_str().unwrap_or("?"),
-        plan["sha256"]
-            .as_str()
-            .unwrap_or("(none recorded: pass --sha256 <hex> after verifying the download)"),
+        plan["sha256"].as_str().unwrap_or("(none recorded)"),
     );
+    if let Some((bin, kind)) = &existing {
+        // Discovery order (06 B5): config → env → installed build → Playwright → system.
+        let after = if matches!(kind.as_str(), "config" | "env") {
+            "it keeps priority over the download"
+        } else {
+            "after the install Vibeke uses the pinned build instead"
+        };
+        eprintln!(
+            "\nVibeke can already use a browser on {where_}: {bin} ({kind}).\nThe download is optional; {after}."
+        );
+    }
     if plan["checksum_known"] != true {
+        eprintln!(
+            "\nnot installing: no recorded SHA-256 for this build. Verify the archive out of band and rerun with --sha256 <hex>."
+        );
         return EXIT_USAGE;
     }
     if !yes {
@@ -3106,7 +3128,14 @@ where
             eprintln!("not a terminal: rerun with --yes to download");
             return EXIT_USAGE;
         }
-        eprint!("Download and install? [y/N] ");
+        eprint!(
+            "{} ",
+            if existing.is_some() {
+                "Download and install anyway? [y/N]"
+            } else {
+                "Download and install? [y/N]"
+            }
+        );
         let mut answer = String::new();
         if std::io::stdin().read_line(&mut answer).is_err()
             || !matches!(answer.trim(), "y" | "Y" | "yes")

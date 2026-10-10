@@ -389,7 +389,7 @@ pub fn draw(app: &App, g: &mut Grid) {
                     .runs
                     .iter()
                     .find(|r| r.id == it.run)
-                    .map(|r| r.name.clone().unwrap_or_else(|| r.harness.clone()))
+                    .map(|r| r.label().to_string())
                     .unwrap_or_default();
                 let ws = m
                     .model

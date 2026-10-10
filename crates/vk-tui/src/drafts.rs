@@ -753,7 +753,7 @@ fn targets(app: &App, v: &DraftsView) -> Vec<Target> {
                 label: format!(
                     "{} {} · pane {handle}",
                     crate::draw::harness_icon(&r.harness),
-                    r.name.clone().unwrap_or_else(|| r.harness.clone())
+                    r.label()
                 ),
             }
         })
