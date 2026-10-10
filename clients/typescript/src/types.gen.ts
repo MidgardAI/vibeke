@@ -2136,6 +2136,7 @@ export type BrowserEvalResult = {
 
 export type BrowserInstallParams = {
   confirm?: boolean;
+  flavor?: "full" | "headless_shell";
   version?: string;
   url?: string;
   sha256?: string;
@@ -2143,6 +2144,10 @@ export type BrowserInstallParams = {
 
 export type BrowserInstallResult = {
   plan: {
+    flavor: "full" | "headless_shell";
+    build: string;
+    reason: string;
+    windows: boolean;
     version: string;
     platform: string;
     url: string;
@@ -2151,6 +2156,10 @@ export type BrowserInstallResult = {
     dir: string;
     binary: string;
     installed: boolean;
+    existing: {
+      binary: string;
+      kind: string;
+    } | null;
   };
   confirm_required: boolean;
   cursor?: Cursor;

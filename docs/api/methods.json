@@ -1113,8 +1113,8 @@
       ],
       "milestone": "M3",
       "spec": "`{confirm?, version?, url?, sha256?}` → without `confirm`: `{plan: {version, platform, url, sha256, checksum_known, dir, binary, installed}, confirm_required: true}`. With `confirm`: downloads, verifies, installs → `{installed, binary, plan}`. Full scope only.",
-      "params": "{confirm?: bool, version?: string, url?: string, sha256?: string}",
-      "result": "{plan: {version: string, platform: string, url: string, sha256: string|null, checksum_known: bool, dir: string, binary: string, installed: bool}, confirm_required: bool} | {installed: bool, binary: string, plan: object}"
+      "params": "{confirm?: bool, flavor?: full|headless_shell, version?: string, url?: string, sha256?: string}",
+      "result": "{plan: {flavor: full|headless_shell, build: string, reason: string, windows: bool, version: string, platform: string, url: string, sha256: string|null, checksum_known: bool, dir: string, binary: string, installed: bool, existing: {binary: string, kind: string}|null}, confirm_required: bool} | {installed: bool, binary: string, plan: object}"
     },
     {
       "name": "browser.list",

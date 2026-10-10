@@ -9305,6 +9305,13 @@
           "confirm": {
             "type": "boolean"
           },
+          "flavor": {
+            "type": "string",
+            "enum": [
+              "full",
+              "headless_shell"
+            ]
+          },
           "version": {
             "type": "string"
           },
@@ -9324,6 +9331,22 @@
               "plan": {
                 "type": "object",
                 "properties": {
+                  "flavor": {
+                    "type": "string",
+                    "enum": [
+                      "full",
+                      "headless_shell"
+                    ]
+                  },
+                  "build": {
+                    "type": "string"
+                  },
+                  "reason": {
+                    "type": "string"
+                  },
+                  "windows": {
+                    "type": "boolean"
+                  },
                   "version": {
                     "type": "string"
                   },
@@ -9354,9 +9377,35 @@
                   },
                   "installed": {
                     "type": "boolean"
+                  },
+                  "existing": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "binary": {
+                            "type": "string"
+                          },
+                          "kind": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "binary",
+                          "kind"
+                        ]
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
                   }
                 },
                 "required": [
+                  "flavor",
+                  "build",
+                  "reason",
+                  "windows",
                   "version",
                   "platform",
                   "url",
@@ -9364,7 +9413,8 @@
                   "checksum_known",
                   "dir",
                   "binary",
-                  "installed"
+                  "installed",
+                  "existing"
                 ]
               },
               "confirm_required": {

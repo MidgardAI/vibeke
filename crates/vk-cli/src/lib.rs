@@ -1462,7 +1462,7 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         "install",
         "browser.install",
         &[],
-        "[--yes] [--sha256 hex] [--url u] — asks before downloading Chrome for Testing",
+        "[--yes] [--full | --headless-shell] [--sha256 hex] [--url u] — asks before downloading Chrome for Testing (default: the full browser where a display is available, else the headless shell)",
     ),
     (
         "browser",
@@ -3069,6 +3069,25 @@ where
         .and_then(|o| o.remove("yes").or_else(|| o.remove("y")))
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+    // `--full` / `--headless-shell` → `flavor`; neither lets the server pick for its machine.
+    let flag = |params: &mut Value, k: &str| {
+        params
+            .as_object_mut()
+            .and_then(|o| o.remove(k))
+            .is_some_and(|v| v.as_bool().unwrap_or(false))
+    };
+    match (
+        flag(&mut params, "full"),
+        flag(&mut params, "headless_shell"),
+    ) {
+        (true, true) => {
+            eprintln!("--full and --headless-shell are exclusive");
+            return EXIT_USAGE;
+        }
+        (true, false) => params["flavor"] = json!("full"),
+        (false, true) => params["flavor"] = json!("headless_shell"),
+        (false, false) => {}
+    }
     if let Err(e) = client.hello("cli").await {
         print_error(&e);
         return exit_code_for(&e);
@@ -3087,34 +3106,45 @@ where
         );
         return EXIT_OK;
     }
-    // A browser Vibeke can already use (config, env, Playwright, the system Chrome) makes the
-    // download optional; an older server without `browser.status` just skips the note.
-    let existing = client
-        .call("browser.status", json!({}))
-        .await
-        .ok()
-        .and_then(|v| {
-            let bin = v["binary"].as_str()?.to_string();
-            Some((bin, v["kind"].as_str().unwrap_or("").to_string()))
-        });
+    // A browser Vibeke can already use for what this build adds makes the download optional:
+    // the plan's `existing` (a window-capable browser for the full build), or on an older server
+    // `browser.status` (the agent browser's binary).
+    let existing = match plan.get("existing") {
+        Some(e) => e["binary"]
+            .as_str()
+            .map(|b| (b.to_string(), e["kind"].as_str().unwrap_or("").to_string())),
+        None => client
+            .call("browser.status", json!({}))
+            .await
+            .ok()
+            .and_then(|v| {
+                let bin = v["binary"].as_str()?.to_string();
+                Some((bin, v["kind"].as_str().unwrap_or("").to_string()))
+            }),
+    };
+    let windows = plan["windows"] == true;
     let where_ = g.machine.as_deref().unwrap_or("this machine");
     eprintln!(
-        "vibeke browser install will download chrome-headless-shell {} ({}) onto {where_}:\n  from {}\n  into {}\n  sha256 {}",
+        "vibeke browser install will download {} {} ({}) onto {where_}:{}\n  from {}\n  into {}\n  sha256 {}",
+        plan["build"].as_str().unwrap_or("chrome-headless-shell"),
         plan["version"].as_str().unwrap_or("?"),
         plan["platform"].as_str().unwrap_or("?"),
+        plan["reason"]
+            .as_str()
+            .map(|r| format!("\n  why  {r}"))
+            .unwrap_or_default(),
         plan["url"].as_str().unwrap_or("?"),
         plan["dir"].as_str().unwrap_or("?"),
         plan["sha256"].as_str().unwrap_or("(none recorded)"),
     );
     if let Some((bin, kind)) = &existing {
-        // Discovery order (06 B5): config → env → installed build → Playwright → system.
-        let after = if matches!(kind.as_str(), "config" | "env") {
-            "it keeps priority over the download"
+        let what = if windows {
+            "for preview windows and browser panes"
         } else {
-            "after the install Vibeke uses the pinned build instead"
+            "for browser panes and agent sessions"
         };
         eprintln!(
-            "\nVibeke can already use a browser on {where_}: {bin} ({kind}).\nThe download is optional; {after}."
+            "\nVibeke can already use a browser on {where_} {what}: {bin} ({kind}).\nThe download is optional."
         );
     }
     if plan["checksum_known"] != true {

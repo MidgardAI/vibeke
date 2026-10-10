@@ -96,6 +96,16 @@ fn installed() -> Vec<(PathBuf, &'static str)> {
 /// Find a browser: `configured` (config `preview.browser`), `$VIBEKE_BROWSER`, Playwright
 /// Chromium, then installed Chromium/Chrome/Brave/Edge.
 pub fn find_browser(configured: Option<&str>) -> Option<BrowserBin> {
+    find_browser_with(configured, None)
+}
+
+/// [`find_browser`] that also knows the full browser `vibeke browser install` put on this
+/// machine (`vk_browser::install::installed_full`), tried after Playwright and before the
+/// system browsers.
+pub fn find_browser_with(
+    configured: Option<&str>,
+    vibeke_installed: Option<&Path>,
+) -> Option<BrowserBin> {
     if let Some(c) = configured.filter(|c| !c.is_empty()) {
         let p = PathBuf::from(c);
         return p.is_file().then(|| BrowserBin {
@@ -116,6 +126,12 @@ pub fn find_browser(configured: Option<&str>) -> Option<BrowserBin> {
         return Some(BrowserBin {
             path: p,
             kind: "playwright".into(),
+        });
+    }
+    if let Some(p) = vibeke_installed.filter(|p| p.is_file()) {
+        return Some(BrowserBin {
+            path: p.to_path_buf(),
+            kind: "installed".into(),
         });
     }
     installed()

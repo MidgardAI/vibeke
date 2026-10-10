@@ -2085,15 +2085,18 @@ pub(crate) async fn open(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
             .details(json!({"fallback": "profile_browser = \"auto\" (Chromium)"}))
         })?
     } else {
-        browser::find_browser(Some(cfg.browser.as_str()).filter(|b| !b.is_empty())).ok_or_else(
-            || {
-                err(
-                    ErrorKind::Unsupported,
-                    "no Chromium-family browser found (set [preview] browser = \"/path/to/chrome\")",
-                )
-                .details(json!({"fallback": "install Chromium or Chrome"}))
-            },
-        )?
+        let installed = vk_browser::install::installed_full(&crate::agent_browser::install_root());
+        browser::find_browser_with(
+            Some(cfg.browser.as_str()).filter(|b| !b.is_empty()),
+            installed.as_deref(),
+        )
+        .ok_or_else(|| {
+            err(
+                ErrorKind::Unsupported,
+                "no browser that can open a window on this machine: run `vibeke browser install --full` (or set [preview] browser = \"/path/to/chrome\")",
+            )
+            .details(json!({"fallback": "vibeke browser install --full"}))
+        })?
     };
     if firefox {
         // A Firefox profile never shares a directory with the Chromium profile (browser panes

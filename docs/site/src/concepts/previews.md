@@ -12,7 +12,7 @@ A **browser pane** shows an interactive Chromium page inside the terminal. It us
    vibeke browser status
    ```
 
-2. If Chromium is unavailable, run `vibeke browser install`. Confirm the download when prompted.
+2. If Chromium is unavailable, run `vibeke browser install`. Confirm the download when prompted. On a Mac, or on Linux with a display, it installs the full Chrome for Testing, which also opens preview windows; on a headless machine it installs the smaller headless shell. Use `--full` or `--headless-shell` to choose.
 3. Open a browser pane for your app:
 
    ```sh

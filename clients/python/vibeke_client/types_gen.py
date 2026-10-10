@@ -2287,12 +2287,22 @@ BrowserEvalResult = TypedDict("BrowserEvalResult", {
 
 BrowserInstallParams = TypedDict("BrowserInstallParams", {
     "confirm": NotRequired[bool],
+    "flavor": NotRequired[Literal["full", "headless_shell"]],
     "version": NotRequired[str],
     "url": NotRequired[str],
     "sha256": NotRequired[str],
 })
 
+BrowserInstallResultXV0PlanExistingV0 = TypedDict("BrowserInstallResultXV0PlanExistingV0", {
+    "binary": str,
+    "kind": str,
+})
+
 BrowserInstallResultXV0Plan = TypedDict("BrowserInstallResultXV0Plan", {
+    "flavor": Literal["full", "headless_shell"],
+    "build": str,
+    "reason": str,
+    "windows": bool,
     "version": str,
     "platform": str,
     "url": str,
@@ -2301,6 +2311,7 @@ BrowserInstallResultXV0Plan = TypedDict("BrowserInstallResultXV0Plan", {
     "dir": str,
     "binary": str,
     "installed": bool,
+    "existing": Optional["BrowserInstallResultXV0PlanExistingV0"],
 })
 
 BrowserInstallResultXV0 = TypedDict("BrowserInstallResultXV0", {

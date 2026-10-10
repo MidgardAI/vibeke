@@ -2493,17 +2493,46 @@ async fn status(server: &Arc<Server>) -> Value {
     }
 }
 
+/// A browser this machine can already use for what `flavor` would add: one that opens preview
+/// windows for the full browser, one for headless use for the shell. Config overrides are not
+/// consulted (the plan only informs the "install anyway?" question).
+fn existing_browser(root: &std::path::Path, flavor: vk_browser::install::Flavor) -> Value {
+    let found = match flavor {
+        vk_browser::install::Flavor::Full => {
+            vk_preview::browser::find_browser(None).map(|b| (b.path.display().to_string(), b.kind))
+        }
+        vk_browser::install::Flavor::HeadlessShell => vk_browser::headless::discover(None, root)
+            .map(|b| (b.path.display().to_string(), b.kind)),
+    };
+    found.map_or(
+        Value::Null,
+        |(binary, kind)| json!({"binary": binary, "kind": kind}),
+    )
+}
+
 async fn install(p: &Value) -> R {
     let root = install_root();
-    let plan = vk_browser::install::plan(&root, s(p, "version"), s(p, "url"), s(p, "sha256"))
-        .map_err(|e| invalid(format!("{e:#}")))?;
+    let flavor =
+        match s(p, "flavor") {
+            Some(f) => Some(vk_browser::install::Flavor::parse(f).ok_or_else(|| {
+                invalid(format!("flavor must be full or headless_shell, not {f:?}"))
+            })?),
+            None => None,
+        };
+    let plan =
+        vk_browser::install::plan(&root, s(p, "version"), s(p, "url"), s(p, "sha256"), flavor)
+            .map_err(|e| invalid(format!("{e:#}")))?;
     if !b(p, "confirm").unwrap_or(false) {
-        return Ok(json!({"plan": plan.to_json(), "confirm_required": true}));
+        let mut pj = plan.to_json();
+        pj["existing"] = existing_browser(&root, plan.flavor);
+        return Ok(json!({"plan": pj, "confirm_required": true}));
     }
     if plan.sha256.is_none() {
         return Err(invalid(format!(
-            "no recorded SHA-256 for chrome-headless-shell {} ({}); pass `sha256` after verifying the download",
-            plan.version, plan.platform
+            "no recorded SHA-256 for {} {} ({}); pass `sha256` after verifying the download",
+            plan.flavor.build(),
+            plan.version,
+            plan.platform
         ))
         .details(json!({"plan": plan.to_json()})));
     }

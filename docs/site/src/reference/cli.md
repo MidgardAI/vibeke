@@ -453,7 +453,7 @@ Use `--json` to print JSON. Non-terminal output also uses JSON.
 | `close` | `<session>` | `browser.close` |  |
 | `list` | - | `browser.list` | sessions you can see + browser status |
 | `status` | - | `browser.status` |  |
-| `install` | - | `browser.install` | [--yes] [--sha256 hex] [--url u] — asks before downloading Chrome for Testing |
+| `install` | - | `browser.install` | [--yes] [--full \| --headless-shell] [--sha256 hex] [--url u] — asks before downloading Chrome for Testing (default: the full browser where a display is available, else the headless shell) |
 | `take-over` | `<session>` | `browser.take_over` | agent calls fail with human_control until release |
 | `release` | `<session>` | `browser.release` |  |
 | `watch` | `<session>` | `browser.watch` | <session> [--pane p] [--split right\|down\|tab] — View an agent session in a read-only browser pane. Press prefix+t to take control. |
