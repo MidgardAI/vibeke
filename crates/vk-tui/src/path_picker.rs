@@ -669,11 +669,16 @@ fn picker_mut(app: &mut App, owner: Owner) -> Option<(usize, &mut PathPicker)> {
     }
 }
 
-/// Send the listing the open picker `owner` asks for (if any) to its machine.
+/// Send the listing the open picker `owner` asks for (if any) to its machine. While the
+/// machine is offline the request stays queued for [`on_connected`].
 pub fn send_request(app: &mut App, owner: Owner) {
+    let online: Vec<bool> = app.machines.iter().map(|m| m.connected()).collect();
     let Some((mi, p)) = picker_mut(app, owner) else {
         return;
     };
+    if !online.get(mi).copied().unwrap_or(false) {
+        return;
+    }
     let Some((key, params)) = p.take_request() else {
         return;
     };
@@ -1035,6 +1040,12 @@ mod tests {
         assert!(commands(&mut rxs[0]).iter().all(|c| c.1 != "fs.browse"));
     }
 
+    fn typ_app(app: &mut App, s: &str) {
+        for c in s.chars() {
+            app.on_key(key(Key::Char(c)));
+        }
+    }
+
     fn picker(app: &App) -> &PathPicker {
         let Mode::Popup(Popup::Path(p)) = &app.mode else {
             panic!("picker closed: {:?}", app.mode);
@@ -1126,6 +1137,12 @@ mod tests {
         commands(&mut rxs[1]);
         // The connection drops with the listing outstanding: it is asked for again.
         app.on_disconnected(1);
+        // Typing while offline keeps the request for the reconnect.
+        let tx = app.machines[1].tx.take();
+        typ_app(&mut app, "x/");
+        app.on_key(named(NamedKey::Backspace));
+        app.on_key(named(NamedKey::Backspace));
+        app.machines[1].tx = tx;
         app.on_connected(1);
         let (req, p) = only(&commands(&mut rxs[1]), "fs.browse");
         assert_eq!(p, json!({"path": "~/"}));
