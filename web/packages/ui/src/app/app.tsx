@@ -12,6 +12,7 @@ import { ensureParentEntry, formatRoute, hashFromUrl, isDeepRoute, navigate, use
 import { InboxScreen } from '../screens/inbox';
 import { IncomingScreen } from '../screens/incoming';
 import { CrewScreen, IdleLockOverlay, InteractionRoute, RunRoute, Tour, useIdleLock } from '../screens/misc';
+import { GoalScreen, GoalsScreen } from '../screens/goal';
 import { PairScreen } from '../screens/pair';
 import { ReloadPrompt } from '../components/updates';
 import { ShareInScreen } from '../screens/share-in';
@@ -234,6 +235,18 @@ function Screen({ route }: { route: Route }) {
       return (
         <Framed title={t.approve.screenTitle} width="narrow">
           <ApprovalScreen host={route.host} id={route.id} />
+        </Framed>
+      );
+    case 'goals':
+      return (
+        <Framed title={t.goals.title} width="narrow" scrollKey="goals">
+          <GoalsScreen />
+        </Framed>
+      );
+    case 'goal':
+      return (
+        <Framed title={t.goals.title} width="narrow">
+          <GoalScreen host={route.host} goal={route.goal} />
         </Framed>
       );
     case 'crew':
