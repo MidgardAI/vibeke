@@ -196,7 +196,7 @@ pub async fn ssh(g: &Global, args: &[String]) -> i32 {
         eprintln!("vibeke: {e:#}");
         return EXIT_USAGE;
     }
-    let upgrade = args.iter().any(|a| a == "--upgrade" || a == "--yes");
+    let mut upgrade = args.iter().any(|a| a == "--upgrade" || a == "--yes");
     let allow_downgrade = args.iter().any(|a| a == "--allow-downgrade");
     let cfg = crate::commands::load_config();
     let target = target_for(&cfg, host);
@@ -232,6 +232,19 @@ pub async fn ssh(g: &Global, args: &[String]) -> i32 {
             "vibeke: {}",
             bootstrap::unsigned_warning(&a.path, &a.sha256)
         );
+    }
+    if !upgrade
+        && !auto_upgrade
+        && (remote_download || artifact.is_some())
+        && let Some(have) = probe.version.as_deref()
+        && bootstrap::version_older(have, vk_proto::VERSION)
+    {
+        upgrade = ask(&format!(
+            "{} runs vibeke {have}, this machine has {}. Upgrade {} now? Panes keep running.",
+            target.label,
+            vk_proto::VERSION,
+            target.label
+        ));
     }
     let ensured = if remote_download {
         ensure_via_download(&target, &probe, upgrade || auto_upgrade, allow_downgrade).await
@@ -304,6 +317,23 @@ pub async fn ssh(g: &Global, args: &[String]) -> i32 {
             EXIT_API
         }
     }
+}
+
+/// Ask a yes/no question on the terminal (default yes). False without a terminal, so
+/// scripts keep the explicit `--upgrade`.
+fn ask(question: &str) -> bool {
+    use std::io::{BufRead, IsTerminal, Write};
+    if !std::io::stdin().is_terminal() || !std::io::stderr().is_terminal() {
+        return false;
+    }
+    eprint!("{question} [Y/n] ");
+    let _ = std::io::stderr().flush();
+    let mut line = String::new();
+    // EOF (Ctrl-D) or a read error is a no.
+    if !matches!(std::io::stdin().lock().read_line(&mut line), Ok(n) if n > 0) {
+        return false;
+    }
+    !matches!(line.trim().to_lowercase().as_str(), "n" | "no")
 }
 
 /// Connection for `--machine` CLI forwarding: a channel to the remote server; no local fallback.

@@ -24,7 +24,10 @@ Vibeke downloads and verifies the signed release manifest on your computer.
 The remote host downloads the matching binary and checks its checksum before installation.
 The host needs `curl` and outbound access to GitHub release downloads.
 
-For an existing installation that needs an upgrade, review the version change and run `vibeke ssh devbox --upgrade`.
+When the host runs an older version, `vibeke ssh` asks if it should upgrade the host.
+Press Enter or `y` to upgrade. Your panes keep running during the upgrade.
+In scripts, which cannot answer the question, run `vibeke ssh devbox --upgrade`.
+When the host runs a newer version, run `vibeke update` on your computer first.
 
 ## Use a local release cache
 

@@ -591,7 +591,7 @@ pub fn downgrade_check(label: &str, have: Option<&str>, want: &str, allow: bool)
         && !allow
     {
         bail!(
-            "{label} runs vibeke {have}, newer than {want}; refusing to downgrade (pass --allow-downgrade to do it on purpose)"
+            "{label} runs vibeke {have}, newer than {want}; refusing to downgrade. Run `vibeke update` here to match it, or pass --allow-downgrade to downgrade on purpose"
         );
     }
     Ok(())
