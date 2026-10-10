@@ -179,3 +179,23 @@ mod tests {
         assert_eq!(c.on_task_close, "ask");
     }
 }
+
+#[cfg(test)]
+mod load_tests {
+    use super::*;
+
+    #[test]
+    fn reads_the_cloud_table_from_a_config_file() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("config.toml");
+        std::fs::write(
+            &p,
+            "[security]\nkeychain = \"file:/tmp/x.json\"\n\n[cloud]\ndefault_provider = \"fake\"\n",
+        )
+        .unwrap();
+        let (cfg, _) = vk_config::Config::load(&p).unwrap();
+        let (c, e) = CloudConfig::from_config(&cfg);
+        assert_eq!(e, None);
+        assert_eq!(c.default_provider, "fake");
+    }
+}
