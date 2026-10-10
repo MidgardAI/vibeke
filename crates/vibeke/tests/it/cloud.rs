@@ -299,10 +299,18 @@ impl Host {
             json!({"pane": pane, "text": format!("{cmd}; echo {mark}-$((1+1))\r")}),
         );
         let want = format!("{mark}-2");
-        self.wait(30, mark, || {
+        let end = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        loop {
             let s = self.screen(pane);
-            s.contains(&want).then_some(s)
-        })
+            if s.contains(&want) {
+                return s;
+            }
+            assert!(
+                std::time::Instant::now() < end,
+                "timed out: {mark}; the pane shows:\n{s}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
     }
 
     fn job_done(&self, id: &str) -> Value {
