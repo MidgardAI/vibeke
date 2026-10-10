@@ -6,6 +6,7 @@ use vk_cli::client;
 use vk_cli::{EXIT_NO_SERVER, EXIT_OK, EXIT_USAGE, Global};
 
 mod account_cmd;
+mod cloud_cmd;
 mod commands;
 mod config_cmd;
 mod debug;
@@ -412,6 +413,11 @@ async fn dispatch(g: Global, args: Vec<String>) -> i32 {
                 vk_cli::handoff::run(&mut c, gr, rest).await
             })
             .await
+        }
+        // `vibeke cloud login|send|bring-back` need the terminal (spec 17 §8). The other cloud
+        // verbs are plain API commands (`vk_cli::COMMANDS`); `cloud exec` is dispatched elsewhere.
+        Some("cloud") if cloud_cmd::handles(args.get(1).map(String::as_str)) => {
+            cloud_cmd::run(&g, &args[1..]).await
         }
         Some("keys") => commands::keys(&g, &args[1..]),
         Some("setup") => setup::setup(&args[1..]),
