@@ -574,7 +574,7 @@ pub async fn record_screenshot(
     }
     let (width, height) = crate::agent_browser::png_size(png);
     let id = ulid();
-    let mut meta = ScreenshotMeta {
+    let meta = ScreenshotMeta {
         id: id.clone(),
         handle: String::new(),
         kind: "screenshot".into(),

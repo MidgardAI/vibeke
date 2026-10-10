@@ -443,7 +443,7 @@ fn agent_images_show_caption_not_url() {
     assert!(!s.contains("illustrative"), "{s}");
     app.on_key(named(NamedKey::Enter));
     let s = screen(&app);
-    assert!(s.contains("login.png"), "{s}");
+    assert!(s.contains("Login page after the fix"), "{s}");
     app.on_key(ch('j'));
     let s = screen(&app);
     assert!(s.contains("login.png"), "{s}");

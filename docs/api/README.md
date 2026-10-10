@@ -351,6 +351,7 @@ Clients must accept new fields and event types. The API can change before versio
 | `sandbox.start` | Write | Full |
 | `sandbox.status` | Read | Pane |
 | `sandbox.stop` | Write | Full |
+| `screenshot.add` | Write | Pane |
 | `screenshot.delete` | Write | Full |
 | `screenshot.get` | Read | Pane |
 | `screenshot.list` | Read | Pane |
