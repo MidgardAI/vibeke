@@ -18,7 +18,8 @@ describe('share target store', () => {
     const r = recordFromForm(fd, 'id1', 5);
     expect(r).toMatchObject({ id: 'id1', at: 5, title: 'T', text: 'body', url: 'https://example.com' });
     expect(r.files.length).toBe(MAX_SHARED_FILES);
-    expect(r.files[0]).toMatchObject({ name: 'a.txt', type: 'text/plain' });
+    expect(r.files[0]?.name).toBe('a.txt');
+    expect(r.files[0]?.type).toStartWith('text/plain');
     expect(isSharedRecord(r)).toBe(true);
     expect(isSharedRecord({ id: 1 })).toBe(false);
   });

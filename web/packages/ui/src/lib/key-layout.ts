@@ -63,7 +63,9 @@ export const DEFAULT_LAYOUT: KeyLayout = preset('default');
 /** F1 to F12 for the function key panel. */
 export const FUNCTION_KEYS: PadKey[] = Array.from({ length: 12 }, (_, i) => k(`f${i + 1}`, `F${i + 1}`));
 
-export const cloneKey = (key: PadKey): PadKey => ({ steps: [...key.steps], label: key.label, span: key.span });
+export function cloneKey(key: PadKey): PadKey {
+  return { steps: [...key.steps], label: key.label, span: key.span };
+}
 
 // ---- validation -------------------------------------------------------------------------------
 

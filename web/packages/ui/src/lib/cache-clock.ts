@@ -35,7 +35,7 @@ export interface CacheStatus {
 /** Where the cache stands `nowMs` when the last turn ended at `sinceMs`. */
 export function cacheStatus(sinceMs: number, nowMs: number, ttlMs: number): CacheStatus {
   const left = sinceMs + ttlMs - nowMs;
-  if (left <= 0) return { state: 'cold', remainingMs: 0, coldForMs: -left, fraction: 0 };
+  if (left <= 0) return { state: 'cold', remainingMs: 0, coldForMs: Math.abs(left), fraction: 0 };
   const fraction = Math.min(1, left / ttlMs);
   return { state: fraction <= LOW_FRACTION ? 'low' : 'warm', remainingMs: left, coldForMs: 0, fraction };
 }
