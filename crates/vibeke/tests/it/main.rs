@@ -19,6 +19,7 @@ mod compat_herdr_plugins_ext;
 mod compat_herdr_review;
 mod compat_herdr_slice2;
 mod compat_herdr_surfaces;
+mod cwd_follow;
 mod desk;
 mod gateway_bridge;
 mod handoff_pickers;
