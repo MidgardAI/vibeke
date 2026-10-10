@@ -108,6 +108,7 @@ pub async fn serve(server: Arc<Server>, listener: UnixListener) -> Result<()> {
     crate::orch::start(&server);
     crate::machines::start(&server);
     crate::handoff::start(&server);
+    crate::cloud_reconcile::start(&server);
     // Uploads made before the blob stores were unified are ingested off the async threads.
     let adopt = server.clone();
     tokio::task::spawn_blocking(move || {

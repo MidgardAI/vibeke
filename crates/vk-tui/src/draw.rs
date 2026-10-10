@@ -192,6 +192,7 @@ pub fn isolation_glyph(app: &App, iso: &Isolation) -> Option<String> {
         IsolationLevel::Sandbox => g.sandbox.clone(),
         IsolationLevel::Container => g.container.clone(),
         IsolationLevel::Vm => g.vm.clone(),
+        IsolationLevel::Cloud => "cl".to_string(),
     };
     if base.is_empty() {
         return None;

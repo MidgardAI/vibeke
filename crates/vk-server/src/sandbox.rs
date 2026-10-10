@@ -30,6 +30,8 @@ use vk_sandbox::runner::{Runner, SandboxRunner, SandboxSetup, SpawnRequest};
 
 #[path = "sandbox_boundary.rs"]
 pub mod boundary;
+#[path = "sandbox_cloud.rs"]
+pub mod cloud;
 #[path = "sandbox_container.rs"]
 pub mod container;
 #[path = "sandbox_extras.rs"]
@@ -106,6 +108,13 @@ pub struct IsoRequest {
     /// container and the storage dirs instead of the task.
     #[serde(default)]
     pub slot: Option<String>,
+    /// Cloud provider id (`sprites`, `e2b`; spec 17 §4); `None` = `[cloud] default_provider`.
+    #[serde(default)]
+    pub provider: Option<String>,
+    /// The cloud box (`<provider>/<id>`) this context runs in: chosen by the caller, or recorded
+    /// once the box is created so a restart restores it without creating another.
+    #[serde(default)]
+    pub cloud_box: Option<String>,
 }
 
 impl IsoRequest {
@@ -119,7 +128,7 @@ impl IsoRequest {
         let level = match s(p, "isolate") {
             Some(l) => IsolationLevel::parse(l).ok_or_else(|| {
                 invalid(format!(
-                    "unknown isolation level {l} (host|sandbox|container|vm)"
+                    "unknown isolation level {l} (host|sandbox|container|vm|cloud)"
                 ))
             })?,
             None if yolo => cfg.yolo_level(),
@@ -135,8 +144,14 @@ impl IsoRequest {
         };
         let code = s(p, "code").or(s(p, "checkout"));
         match code {
+            Some("worktree") if level == IsolationLevel::Cloud => {
+                return Err(invalid(
+                    "cloud boxes always work on a private clone (code isolation `clone`)",
+                ));
+            }
             None | Some("worktree") => {}
-            Some("clone") if level == IsolationLevel::Container => {}
+            Some("clone") if matches!(level, IsolationLevel::Container | IsolationLevel::Cloud) => {
+            }
             Some("clone") => {
                 return Err(invalid(
                     "clone code isolation needs --isolate container (13 §6)",
@@ -161,6 +176,8 @@ impl IsoRequest {
             devcontainer: s(p, "devcontainer").map(str::to_string),
             build: p.get("build").and_then(Value::as_bool).unwrap_or(false),
             slot: None,
+            provider: s(p, "provider").map(str::to_string),
+            cloud_box: s(p, "box").map(str::to_string),
         })
     }
 }
@@ -170,6 +187,8 @@ pub enum BoxRunner {
     Container(Box<container::CtrBox>),
     /// The `vm` level (13 §2.1): off unless `[isolation.vm] enabled` (`orch_vm.rs`).
     Vm(Box<vk_sandbox::vm::VmBoxRunner>),
+    /// The `cloud` level (spec 17 §4): a hosted provider box (`sandbox_cloud.rs`).
+    Cloud(Box<cloud::CloudCtx>),
 }
 
 impl BoxRunner {
@@ -178,6 +197,7 @@ impl BoxRunner {
             BoxRunner::Sandbox(r) => r.as_ref(),
             BoxRunner::Container(c) => &c.runner,
             BoxRunner::Vm(v) => v.as_ref(),
+            BoxRunner::Cloud(c) => &c.runner,
         }
     }
 }
@@ -471,7 +491,11 @@ pub async fn prepare_box_opts(
         .canonicalize()
         .unwrap_or_else(|_| checkout.to_path_buf());
     // Container boxes see the code at their own workdir; the trust dialog is pre-accepted there.
-    let code = container::code_mode(req.code.as_deref(), &cfg, task.is_some());
+    let code = if req.level == IsolationLevel::Cloud {
+        "clone"
+    } else {
+        container::code_mode(req.code.as_deref(), &cfg, task.is_some())
+    };
     // The contained process can write the checkout itself (sandbox level, container worktree
     // mode, a VM — its workspace is the checkout, mounted writable): it must not be $HOME, `/`
     // or contain protected state (13 §5), the files host git executes from it are
@@ -488,7 +512,10 @@ pub async fn prepare_box_opts(
         vec![]
     };
     let mut proxy = None;
-    if req.level != IsolationLevel::Host && req.network.uses_proxy() {
+    // A cloud box uses its provider's network (spec 17 §1 non-goals): no egress proxy.
+    if !matches!(req.level, IsolationLevel::Host | IsolationLevel::Cloud)
+        && req.network.uses_proxy()
+    {
         let mut pol = EgressPolicy::new(req.network);
         pol.ports.extend(cfg.sandbox.ports.iter().copied());
         pol.extra_allow
@@ -566,13 +593,13 @@ pub async fn prepare_box_opts(
         proxy = Some(p);
     }
     let box_wd = PathBuf::from(container::workdir(code, &checkout, None));
-    let trust = req
-        .yolo
-        .then_some(if req.level == IsolationLevel::Container {
+    let trust = req.yolo.then_some(
+        if matches!(req.level, IsolationLevel::Container | IsolationLevel::Cloud) {
             box_wd.as_path()
         } else {
             checkout.as_path()
-        });
+        },
+    );
     let projection =
         project_all(server, &req.harnesses, &root.join("shared"), trust).map_err(internal)?;
     let projection_names = projection.summary();
@@ -685,14 +712,36 @@ pub async fn prepare_box_opts(
             let prov = r.provider();
             (BoxRunner::Vm(Box::new(r)), prov)
         }
+        IsolationLevel::Cloud => {
+            let c = cloud::build(
+                server,
+                cloud::BuildIn {
+                    key,
+                    task,
+                    checkout: &checkout,
+                    req: &mut req,
+                    projection: &projection,
+                    shared: &root.join("shared"),
+                    start,
+                },
+            )
+            .await?;
+            let prov = c.runner.provider();
+            (BoxRunner::Cloud(Box::new(c)), prov)
+        }
         IsolationLevel::Host => {
             return Err(invalid("host needs no sandbox context"));
         }
     };
+    let network = if req.level == IsolationLevel::Cloud {
+        cloud::NETWORK.to_string()
+    } else {
+        req.network.as_str().to_string()
+    };
     let isolation = Isolation {
         level: req.level,
         provider: provider.to_string(),
-        network: req.network.as_str().to_string(),
+        network: network.clone(),
         yolo: req.yolo,
         scope: if task.is_some() {
             "pane".into()
@@ -739,7 +788,7 @@ pub async fn prepare_box_opts(
         tx.event(
             "sandbox.created",
             json!({"task": task, "sandbox": key}),
-            json!({"level": req.level.as_str(), "provider": provider, "network": req.network.as_str(), "yolo": req.yolo, "proxy_port": req.proxy_port, "credentials": projection_names}),
+            json!({"level": req.level.as_str(), "provider": provider, "network": network, "yolo": req.yolo, "proxy_port": req.proxy_port, "credentials": projection_names}),
         );
         let _ = server.commit(&mut c, tx);
     }
@@ -749,7 +798,7 @@ pub async fn prepare_box_opts(
             key,
             task,
             req.level,
-            req.network.as_str(),
+            &network,
             &req.harnesses,
             &projection_names,
         );
@@ -766,6 +815,21 @@ pub async fn prepare_box_opts(
     {
         let port = b.proxy.as_ref().map(|p| p.port);
         let (link, h) = container::start_link(c.b().clone(), port);
+        if let Some((_, old)) = server
+            .sandbox
+            .inner
+            .lock()
+            .unwrap()
+            .links
+            .insert(key.to_string(), (link, h))
+        {
+            old.abort();
+        }
+    }
+    if let BoxRunner::Cloud(c) = &b.runner
+        && tokio::runtime::Handle::try_current().is_ok()
+    {
+        let (link, h) = cloud::start_link(server, c);
         if let Some((_, old)) = server
             .sandbox
             .inner
@@ -1702,6 +1766,19 @@ pub fn teardown(server: &Arc<Server>, key: &str) {
             );
         });
     } else if let Some(b) = removed.clone()
+        && matches!(b.runner, BoxRunner::Cloud(_))
+    {
+        // The box outlives its task context: `[cloud] on_task_close` decides (spec 17 §6.3).
+        release_checkout(server, &b.checkout);
+        {
+            let mut c = server.core.lock().unwrap();
+            let mut tx = Tx::new();
+            tx.m.kv("sandbox", key, None);
+            let _ = server.commit(&mut c, tx);
+        }
+        cloud::on_task_close(server, b);
+        return;
+    } else if let Some(b) = removed.clone()
         && matches!(b.runner, BoxRunner::Container(_))
     {
         let srv = server.clone();
@@ -1969,7 +2046,7 @@ pub async fn restore(server: &Arc<Server>) {
             .filter(|p| {
                 matches!(
                     p.isolation.level,
-                    IsolationLevel::Sandbox | IsolationLevel::Container
+                    IsolationLevel::Sandbox | IsolationLevel::Container | IsolationLevel::Cloud
                 ) && p.isolation.scope == "pane"
             })
             .map(|p| {
@@ -1997,6 +2074,15 @@ pub async fn restore(server: &Arc<Server>) {
             BoxRunner::Container(c) => {
                 let sock = c
                     .b()
+                    .run_dir
+                    .join(format!("{}.sock", vk_sandbox::runner::short_id(&pane)));
+                start_broker(server, &pane, &sock);
+                if let Some(l) = link(server, &b.key) {
+                    l.add_pane(&pane);
+                }
+            }
+            BoxRunner::Cloud(c) => {
+                let sock = c
                     .run_dir
                     .join(format!("{}.sock", vk_sandbox::runner::short_id(&pane)));
                 start_broker(server, &pane, &sock);
@@ -2129,6 +2215,9 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
                         if let BoxRunner::Container(c) = &b.runner {
                             v["container"] = container::describe(c);
                         }
+                        if let BoxRunner::Cloud(c) = &b.runner {
+                            v["cloud"] = json!({"box": c.box_ref(), "name": c.name, "workdir": c.workdir});
+                        }
                         if let Some(Value::Object(m)) = extra.get(&b.key) {
                             for (k, x) in m {
                                 v[k] = x.clone();
@@ -2148,6 +2237,11 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
                     ErrorKind::PermissionDenied,
                     format!("{method} needs a user client"),
                 )));
+            }
+            if method == "task.sync"
+                && let Some(r) = cloud::task_sync(server, p).await
+            {
+                return Some(r);
             }
             if matches!(method, "sandbox.stop" | "sandbox.remove")
                 && let Some(t) = s(p, "task")
