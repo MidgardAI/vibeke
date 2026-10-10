@@ -1,6 +1,6 @@
 # Desktop app
 
-The desktop app gives you native notifications, menu-bar approvals, and separate pane windows.
+The desktop app gives you native notifications, a menu-bar agent list, and separate pane windows.
 Choose the download for your operating system and processor.
 
 {{#include ../../desktop-downloads.md}}
@@ -26,6 +26,18 @@ If the CLI is not found, use **Choose…** to select the `vibeke` executable.
 On the remote host, follow the [pairing instructions](mobile.md#pair-your-device).
 Paste the resulting pairing link into the desktop app. Confirm the device fingerprint on the host.
 The connection uses the public relay. The remote host needs no inbound port.
+
+## Menu bar
+
+The Vibeke icon stays in the menu bar (the system tray on Windows and Linux) while the app runs.
+On macOS, the icon gets a dot when an agent needs you. A number next to it shows how many agents need you.
+An agent needs you when it waits for an approval or an answer, or when it stops with an error.
+An agent that finished its work also counts until you open the list.
+
+Click the icon to open the list. Open requests come first. You can answer them directly.
+Below them, the list shows every agent on every connected host, with its state and how long it has been in that state.
+Select an agent to open its pane in the main window.
+Set a keyboard shortcut for the list in the app settings.
 
 ## Notifications and updates
 

@@ -1,10 +1,12 @@
-// Quick approvals (spec 16 §16.2): the menu-bar popover's compact inbox. Same cards, batches and
-// keyboard as the Inbox; Esc closes; "Approve…" from a notification lands here with a confirm.
+// The menu-bar popover (spec 16 §16.2): the compact inbox, then every agent on every connected
+// host. Same cards, batches and keyboard as the Inbox (j/k also walk the agents); Esc closes;
+// "Approve…" from a notification lands here with a confirm.
 
 import { useEffect, useState } from 'react';
 import { AppWindow, Check } from 'lucide-react';
 import { interactionRisk, type InboxItem } from '@vibeke/core';
-import { useApp, useInboxItems } from '../app/hooks';
+import { useApprovalCount } from '../app/approval-stores';
+import { useApp, useInboxItems, useTree } from '../app/hooks';
 import { ConnectionBanner, Toasts } from '../app/shell';
 import { CardHeader } from '../components/interaction-card';
 import { Button, IconButton, RiskBadge, Sheet } from '../components/ui';
@@ -12,10 +14,13 @@ import { t } from '../i18n';
 import { listNav } from '../lib/list-nav';
 import { formatRoute, navigate, useRoute } from '../router';
 import { InboxScreen } from './inbox';
+import { QuickAgents } from './quick-agents';
 
 export function QuickScreen() {
   const app = useApp();
   const items = useInboxItems();
+  const tree = useTree();
+  const approvals = useApprovalCount();
   const route = useRoute();
   const [confirm, setConfirm] = useState<InboxItem | null>(null);
   const [gone, setGone] = useState(false);
@@ -41,7 +46,7 @@ export function QuickScreen() {
     app.platform.windows?.close?.();
   }, [route, items, app]);
 
-  const n = items.length;
+  const working = tree.all.filter((r) => r.attention === 'working').length;
   const it = confirm?.interaction;
   const risky = it ? interactionRisk(it) === 'high' || interactionRisk(it) === 'unknown' : false;
   const what = it ? (it.action?.command ? `\`${it.action.command}\`` : it.title) : '';
@@ -52,7 +57,8 @@ export function QuickScreen() {
         <div className="min-w-0 flex-1">
           <div className="text-sm font-semibold leading-tight">{t.quick.title}</div>
           <div className="text-xs text-muted" aria-live="polite">
-            {t.quick.needYou(n)}
+            {t.quick.needYou(tree.needYou.length)}
+            {working > 0 && ` · ${t.quick.working(working)}`}
           </div>
         </div>
         <IconButton label={t.quick.openApp} onClick={() => (app.platform.windows?.openMain?.('#/inbox'), app.platform.windows?.close?.())}>
@@ -60,9 +66,15 @@ export function QuickScreen() {
         </IconButton>
       </header>
       <ConnectionBanner />
-      <main className="min-h-0 flex-1 overflow-y-auto">
+      {/* One list for j/k: the inbox cards, then the agent rows. */}
+      <main className="min-h-0 flex-1 overflow-y-auto" data-nav-list>
         {gone && <div className="px-4 pt-3 text-sm text-muted">{t.quick.gone}</div>}
-        <InboxScreen />
+        {(items.length > 0 || approvals > 0) && (
+          <section aria-label={t.quick.approvals} className="border-b border-border">
+            <InboxScreen />
+          </section>
+        )}
+        <QuickAgents tree={tree} />
       </main>
       <footer className="shrink-0 border-t border-border px-3 py-1.5 text-center text-2xs text-faint">j / k · a {t.inbox.allow.toLowerCase()} · d {t.inbox.deny.toLowerCase()} · ↵ {t.open.toLowerCase()} · esc</footer>
       <Toasts />

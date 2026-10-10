@@ -2,7 +2,7 @@
 // pairs over the gateway's Unix socket → the dashboard shows the session → approvals opened by
 // Claude-style hooks in panes reach the Inbox → keyboard answers land on the card the user is on
 // (focus follows, held keys and auto-advance never answer) → the hooks get their decisions. Also
-// the modal palette (focus trap, inert background, focus restored), the quick-approvals popover,
+// the modal palette (focus trap, inert background, focus restored), the menu-bar popover,
 // a popped-out pane window bound to its pane, and light/dark screenshots of each surface.
 
 import { expect, test, type Page } from '@playwright/test';
@@ -88,6 +88,8 @@ test('connect to this Mac, keyboard approvals, palette, popover, pane window', a
   await page.evaluate(() => (window as unknown as { vibeke: { invoke(c: string, o: unknown): Promise<unknown> } }).vibeke.invoke('vk:window', { op: 'quick' }));
   const quick = await app.waitForEvent('window', { predicate: (p) => p.url().includes('surface=quick'), timeout: 15_000 });
   await expect(quick.locator('[data-nav-item]').filter({ hasText: 'echo hello-alpha' })).toBeVisible();
+  // …and below them every agent on the host, with its state.
+  await expect(quick.locator('[data-quick-agents] [data-nav-item^="agent:"]').first()).toBeVisible();
   await shoot(app, quick, 'quick-popover');
   await quick.keyboard.press('Escape');
 

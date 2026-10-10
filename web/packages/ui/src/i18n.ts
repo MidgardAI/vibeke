@@ -857,8 +857,16 @@ export const en = {
   },
 
   quick: {
-    title: 'Quick approvals',
+    title: 'Agents and approvals',
     needYou: (n: number) => (n === 0 ? 'Nothing needs you' : `${n} ${plural(n, 'needs', 'need')} you`),
+    working: (n: number) => `${n} working`,
+    approvals: 'Needs you',
+    agents: 'Agents',
+    noAgents: 'No agents are running.',
+    noAgentsHint: 'Start Claude, Codex or another agent in a Vibeke pane. It appears here.',
+    noHosts: 'No hosts are connected.',
+    hostState: { connecting: 'connecting…', offline: 'offline', idle: 'not connected' } as Record<string, string>,
+    hostProblem: 'not connected',
     openApp: 'Open Vibeke',
     confirmTitle: 'Approve?',
     confirmBody: (what: string) => `Allow ${what}?`,

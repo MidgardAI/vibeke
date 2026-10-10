@@ -35,6 +35,7 @@ import { APP_ORIGIN, CSP, handleAppProtocol, registerScheme } from './protocol';
 import { loadSettings, writeJson } from './store';
 import { connectNode } from './transport';
 import { AppTray } from './tray';
+import { TrayTracker } from './tray-state';
 import { startUpdates, type Updates } from './updater';
 import { externalUrl, isTrustedUrl } from './validate';
 import { Vault } from './vault';
@@ -149,6 +150,11 @@ const windows: Windows = new Windows({
     if (stale.delete(win.webContents)) win.webContents.send(EVENT.hosts, engine.fullPatch());
   },
   trayBounds: () => tray.bounds(),
+  onQuickShow: () => {
+    // Opening the popover shows the user every agent: finished ones stop counting as new.
+    trayState.markSeen(engine.snapshot());
+    tray.setSummary(trayState.summary(engine.snapshot()));
+  },
   onNewDocument: (wc) => eventSubs.clear(wc),
   onVisibilityChange: () => {
     // Each window learns its own shown/hidden state (renderers pause display timers while hidden).
@@ -169,8 +175,9 @@ const windows: Windows = new Windows({
 });
 
 const iconDir = join(outDir, 'main/assets');
+const trayState = new TrayTracker();
 const tray = new AppTray(
-  { template: join(iconDir, 'trayTemplate.png'), color: join(iconDir, 'tray.png') },
+  { template: join(iconDir, 'trayTemplate.png'), badgeTemplate: join(iconDir, 'trayBadgeTemplate.png'), color: join(iconDir, 'tray.png') },
   {
     toggleQuick: () => windows.toggleQuick(),
     openMain: (hash) => windows.showMain(hash),
@@ -197,9 +204,7 @@ engine.onPatch((patch) => {
   for (const s of patch.changed) if (s.status === 'online' && s.dashboard) {
     void drafts.retainPanes(s.record.host_id, s.dashboard.panes.filter((p) => !p.exited).map((p) => p.id)).catch((e) => log(`draft cleanup: ${(e as Error).message}`));
   }
-  let open = 0;
-  for (const s of engine.snapshot()) open += s.dashboard?.interactions.filter((i) => i.status === 'open').length ?? 0;
-  tray.setCount(open);
+  tray.setSummary(trayState.summary(engine.snapshot()));
   for (const w of windows.all()) {
     // Hidden windows catch up when shown: no work while hidden beyond the sockets (§16.3).
     if (w.isVisible()) w.webContents.send(EVENT.hosts, patch);
