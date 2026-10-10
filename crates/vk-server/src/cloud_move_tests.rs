@@ -256,7 +256,7 @@ async fn leftover_jobs_fail_once_and_panes_cannot_move() {
 }
 
 #[test]
-fn bring_back_stashes_only_what_moved() {
+fn bring_back_marks_only_what_moved() {
     assert_eq!(keep_leftovers_reason(0, 0), None);
     assert!(
         keep_leftovers_reason(1, 0)
@@ -265,11 +265,7 @@ fn bring_back_stashes_only_what_moved() {
     );
     assert!(keep_leftovers_reason(0, 2).unwrap().contains("not written"));
     assert!(keep_leftovers_reason(1, 2).is_some());
-    let m = brought_back_message("01JOB");
-    // The in-box unsynced report ignores these stashes by their prefix.
-    assert!(
-        m.starts_with(crate::sandbox::cloud::BROUGHT_BACK_STASH),
-        "{m}"
-    );
-    assert!(m.contains("01JOB"), "{m}");
+    let m = crate::sandbox::cloud::mark_synced_script("/workspace", "abc");
+    assert!(m.contains(crate::sandbox::cloud::SYNCED_MARK), "{m}");
+    assert!(m.contains("abc"), "{m}");
 }

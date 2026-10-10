@@ -957,6 +957,15 @@ async fn send(
     set_progress(server, id, packed.size, packed.size);
 
     step(server, id, "importing")?;
+    // Changes an earlier bring-back already carried to the host would block the import: they
+    // are dropped, but only while the tree is exactly the one that was carried.
+    let clear = crate::sandbox::cloud::clear_synced_script(&c.workdir);
+    let argv = vec!["/bin/sh".into(), "-c".into(), clear];
+    if let Err(e) =
+        crate::sandbox::cloud::exec_capture(server, c, &argv, vec![], Duration::from_secs(60)).await
+    {
+        tracing::info!(job = %id, "cloud send: clearing brought-back changes: {}", e.message);
+    }
     let argv: Vec<String> = vec![
         c.bin.clone(),
         "sandbox".into(),
@@ -1064,7 +1073,7 @@ async fn export_from_box(
     server: &Arc<Server>,
     job: &Job,
     pane: &str,
-) -> Result<(PathBuf, String), RpcError> {
+) -> Result<(PathBuf, String, Option<String>), RpcError> {
     let id = job.id.as_str();
     let run = turn_boundary(server, id, pane, job.interrupt).await?;
     let task = pane_task(server, pane)
@@ -1078,6 +1087,9 @@ async fn export_from_box(
         .ok_or_else(|| invalid("the pane's task does not run in a cloud box"))?;
 
     step(server, id, "exporting")?;
+    // The working tree as it is before the export: a successful bring-back marks exactly this
+    // tree as synced, so a change made during or after the export still counts as unsynced.
+    let fp = tree_fingerprint(server, c).await;
     // The pane reports its cwd in the box (OSC 7); anything else means the box's workspace.
     let box_cwd = server
         .pane_cwd(pane)
@@ -1134,7 +1146,25 @@ async fn export_from_box(
         .await
         .map_err(internal)?
         .map_err(internal)?;
-    Ok((path, task))
+    Ok((path, task, fp))
+}
+
+/// Fingerprint of the box repo's working tree ([`crate::sandbox::cloud::TREE_FINGERPRINT`]).
+async fn tree_fingerprint(
+    server: &Arc<Server>,
+    c: &crate::sandbox::cloud::CloudCtx,
+) -> Option<String> {
+    let script = crate::sandbox::cloud::fingerprint_script(&c.workdir);
+    let argv = vec!["/bin/sh".into(), "-c".into(), script];
+    let o = crate::sandbox::cloud::exec_capture(server, c, &argv, vec![], Duration::from_secs(60))
+        .await
+        .ok()
+        .filter(|o| o.code == 0)?;
+    String::from_utf8_lossy(&o.stdout)
+        .lines()
+        .find_map(|l| l.strip_prefix("fp="))
+        .map(|f| f.trim().to_string())
+        .filter(|f| !f.is_empty())
 }
 
 /// `source_after`, else `[cloud] after_bring_back`.
@@ -1142,13 +1172,6 @@ fn after_of(job: &Job) -> String {
     job.source_after
         .clone()
         .unwrap_or_else(|| vk_cloud::CloudConfig::load().after_bring_back)
-}
-
-/// Stash message of a bring-back's leftovers in the box: [`BROUGHT_BACK_STASH`] and the job.
-///
-/// [`BROUGHT_BACK_STASH`]: crate::sandbox::cloud::BROUGHT_BACK_STASH
-pub(crate) fn brought_back_message(job: &str) -> String {
-    format!("{} (job {job})", crate::sandbox::cloud::BROUGHT_BACK_STASH)
 }
 
 /// Why the box's leftovers must stay unsynced after a bring-back, if they must: the export
@@ -1166,49 +1189,40 @@ pub(crate) fn keep_leftovers_reason(skipped: usize, not_written: usize) -> Optio
     }
 }
 
-/// The box's uncommitted work is on the other host now: stash it in the box, where it stays
-/// recoverable, so the box no longer counts it as unsynced (and can be destroyed later). When
-/// the move did not carry everything ([`keep_leftovers_reason`]), nothing is stashed: the box
-/// keeps counting the work as unsynced, so the destroy guard keeps the box. Returns
-/// `{stashed, reason?}` for the job result.
-async fn stash_brought_back(
+/// The box's uncommitted work is on this host now: record the working tree the export saw
+/// (`fp`) as synced in the box ([`crate::sandbox::cloud::SYNCED_MARK`]), so the box no longer
+/// counts it as unsynced while the tree stays exactly that. Nothing is recorded when the move
+/// did not carry everything ([`keep_leftovers_reason`]) or the tree was not fingerprinted: the
+/// destroy guard then keeps the box. Returns `{marked, reason?}` for the job result.
+async fn mark_brought_back(
     server: &Arc<Server>,
     task: &str,
-    job: &str,
+    fp: Option<&str>,
     skipped: usize,
     not_written: usize,
 ) -> Value {
     if let Some(reason) = keep_leftovers_reason(skipped, not_written) {
-        return json!({"stashed": false, "reason": format!("{reason}; the box keeps them as unsynced work")});
+        return json!({"marked": false, "reason": format!("{reason}; the box keeps them as unsynced work")});
     }
+    let Some(fp) = fp else {
+        return json!({"marked": false, "reason": "the box's working tree could not be fingerprinted; its changes stay unsynced"});
+    };
     let Some(tb) = server.sandbox.get(task) else {
-        return json!({"stashed": false, "reason": "the box is not attached"});
+        return json!({"marked": false, "reason": "the box is not attached"});
     };
     let Some(c) = crate::sandbox::cloud::ctx(&tb) else {
-        return json!({"stashed": false, "reason": "the task does not run in a cloud box"});
+        return json!({"marked": false, "reason": "the task does not run in a cloud box"});
     };
-    let script = format!(
-        "cd {} && git stash push -q -u -m {}",
-        vk_sandbox::container::sh_quote(&c.workdir),
-        vk_sandbox::container::sh_quote(&brought_back_message(job))
-    );
+    let script = crate::sandbox::cloud::mark_synced_script(&c.workdir, fp);
     let argv = vec!["/bin/sh".into(), "-c".into(), script];
     match crate::sandbox::cloud::exec_capture(server, c, &argv, vec![], Duration::from_secs(60))
         .await
     {
-        Ok(o) if o.code == 0 => json!({"stashed": true}),
+        Ok(o) if o.code == 0 => json!({"marked": true}),
         Ok(o) => {
-            tracing::info!(
-                task,
-                code = o.code,
-                "cloud bring-back: stash in the box failed"
-            );
-            json!({"stashed": false, "reason": format!("git stash failed: {}", tail(&o.stderr))})
+            json!({"marked": false, "reason": format!("recording the synced tree failed: {}", tail(&o.stderr))})
         }
-        Err(e) => {
-            tracing::info!(task, "cloud bring-back: stash in the box: {}", e.message);
-            json!({"stashed": false, "reason": e.message})
-        }
+        Err(e) => json!({"marked": false, "reason": e.message}),
     }
 }
 
@@ -1284,7 +1298,7 @@ fn host_pane_for_task(server: &Arc<Server>, task: &str, cwd: &str) -> Result<Pan
 /// Bring back to this host.
 async fn bring_back_local(server: &Arc<Server>, job: &Job, pane: &str) -> R {
     let id = job.id.as_str();
-    let (bundle, task) = export_from_box(server, job, pane).await?;
+    let (bundle, task, fp) = export_from_box(server, job, pane).await?;
     let _cleanup = Cleanup(bundle.clone());
 
     step(server, id, "importing")?;
@@ -1310,10 +1324,10 @@ async fn bring_back_local(server: &Arc<Server>, job: &Job, pane: &str) -> R {
 
     // From here on the work is on this host: no more cancelling.
     step(server, id, "resuming")?;
-    let stash = stash_brought_back(
+    let synced = mark_brought_back(
         server,
         &task,
-        id,
+        fp.as_deref(),
         imp.manifest.skipped.len(),
         imp.not_written.len(),
     )
@@ -1362,7 +1376,7 @@ async fn bring_back_local(server: &Arc<Server>, job: &Job, pane: &str) -> R {
         "run": run.as_ref().and_then(|r| r.get("id")).cloned(),
         "not_written": imp.not_written,
         "skipped": imp.manifest.skipped,
-        "box_stash": stash,
+        "box_synced": synced,
         "release": released,
     }))
 }
@@ -1370,7 +1384,7 @@ async fn bring_back_local(server: &Arc<Server>, job: &Job, pane: &str) -> R {
 /// Bring back to a paired host: the gateway delivers the bundle as a handoff.
 async fn bring_back_peer(server: &Arc<Server>, job: &Job, pane: &str, peer: &str) -> R {
     let id = job.id.as_str();
-    let (bundle, task) = export_from_box(server, job, pane).await?;
+    let (bundle, task, _fp) = export_from_box(server, job, pane).await?;
     // What the export left out; the gateway takes the file, so read it now.
     let b2 = bundle.clone();
     let skipped = match tokio::task::spawn_blocking(move || vk_handoff::read_manifest(&b2)).await {
@@ -1445,15 +1459,18 @@ async fn bring_back_peer(server: &Arc<Server>, job: &Job, pane: &str, peer: &str
     step(server, id, "resuming")?;
     // The agent continues on the peer: the box pane goes, then the box is released.
     server.close_pane(pane);
-    // What the peer's import writes is not known here: only the export's omissions count.
-    let stash = stash_brought_back(server, &task, id, skipped, 0).await;
+    // Whether the peer's import wrote everything is not known here, so the box keeps its
+    // uncommitted work as unsynced: destroying it needs `force` (or a later bring-back here).
+    let synced = json!({"marked": false, "reason": format!(
+        "the paired host's import is not confirmed here ({skipped} file(s) were not exported); the box keeps its uncommitted work as unsynced"
+    )});
     let released = release(server, &task, &after_of(job)).await?;
     Ok(json!({
         "task": task,
         "peer_job": hjob,
         "incoming": delivered.incoming,
         "incoming_state": delivered.incoming_state,
-        "box_stash": stash,
+        "box_synced": synced,
         "release": released,
     }))
 }

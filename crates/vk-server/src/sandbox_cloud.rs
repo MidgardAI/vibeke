@@ -1654,12 +1654,46 @@ pub struct Report {
 }
 
 /// In-box script printing `key=value` lines about the box repo.
-/// Stash message of the leftovers a bring-back already carried to a host (`cloud_move`).
-/// Those stashes are not unsynced work.
-pub const BROUGHT_BACK_STASH: &str = "vibeke: brought back";
+/// File in the box repo naming the working tree a bring-back carried to a host (its
+/// [`TREE_FINGERPRINT`]). While the tree still has that fingerprint, its uncommitted changes
+/// are on the host; any later change makes them unsynced again.
+pub const SYNCED_MARK: &str = ".git/vibeke-synced-tree";
+
+/// Shell that sets `$fp` to a fingerprint of the working tree: HEAD, the diff against it and the
+/// names and contents of untracked files (`git hash-object` works in every box).
+pub const TREE_FINGERPRINT: &str = "fp=$({ git rev-parse -q --verify HEAD; git diff HEAD --binary; \
+git ls-files -o --exclude-standard; git ls-files -o --exclude-standard -z | xargs -0 git hash-object --; } \
+2>/dev/null | git hash-object --stdin)";
+
+/// In-box script printing `fp=<fingerprint>` of the box repo's working tree.
+pub fn fingerprint_script(workdir: &str) -> String {
+    format!(
+        "cd {} && [ -d .git ] || exit 3\n{TREE_FINGERPRINT}\necho \"fp=$fp\"",
+        sh_quote(workdir)
+    )
+}
+
+/// In-box script recording `fp` as the tree a bring-back carried away ([`SYNCED_MARK`]).
+pub fn mark_synced_script(workdir: &str, fp: &str) -> String {
+    format!(
+        "cd {} && printf '%s\\n' {} > {SYNCED_MARK}",
+        sh_quote(workdir),
+        sh_quote(fp)
+    )
+}
+
+/// In-box script that drops the uncommitted changes of a tree a bring-back carried to the host
+/// ([`SYNCED_MARK`]), but only while the tree's fingerprint still matches: anything changed
+/// since stays. Ignored files are kept.
+pub fn clear_synced_script(workdir: &str) -> String {
+    format!(
+        "cd {} && [ -f {SYNCED_MARK} ] || exit 0\n{TREE_FINGERPRINT}\n\
+if [ -n \"$fp\" ] && [ \"$(cat {SYNCED_MARK})\" = \"$fp\" ]; then git reset -q --hard && git clean -qfd && rm -f {SYNCED_MARK}; fi",
+        sh_quote(workdir)
+    )
+}
 
 pub fn unsynced_script(workdir: &str, branch: Option<&str>, base: Option<&str>) -> String {
-    let bb = sh_quote(BROUGHT_BACK_STASH);
     let w = sh_quote(workdir);
     let host = branch
         .map(|b| sh_quote(&sync::host_ref(b)))
@@ -1679,9 +1713,11 @@ elif [ -n \"$b\" ]; then a=$(git rev-list --count \"$b..HEAD\" 2>/dev/null || ec
 elif [ -n \"$h\" ]; then a=$(git rev-list --count HEAD 2>/dev/null || echo 0)\n\
 else a=0; fi\n\
 echo \"ahead=$a\"\n\
-echo \"dirty=$(git status --porcelain --untracked-files=no 2>/dev/null | wc -l)\"\n\
-echo \"untracked=$(git ls-files --others --exclude-standard 2>/dev/null | wc -l)\"\n\
-echo \"stashes=$(git stash list 2>/dev/null | grep -vc {bb})\"\n"
+{TREE_FINGERPRINT}\n\
+if [ -n \"$fp\" ] && [ \"$(cat {SYNCED_MARK} 2>/dev/null)\" = \"$fp\" ]; then echo dirty=0; echo untracked=0\n\
+else echo \"dirty=$(git status --porcelain --untracked-files=no 2>/dev/null | wc -l)\"\n\
+echo \"untracked=$(git ls-files --others --exclude-standard 2>/dev/null | wc -l)\"; fi\n\
+echo \"stashes=$(git stash list 2>/dev/null | wc -l)\"\n"
     )
 }
 
