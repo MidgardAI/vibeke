@@ -408,3 +408,142 @@ async fn a_gated_question_whose_gate_is_not_yet_registered_stays_open() {
     );
     assert_eq!(status(&e, &q), InteractionStatus::Open);
 }
+
+/// Run `gate` for a Claude permission request as if it came on a hook connection, and wait
+/// until its gate is held.
+async fn held_gate(
+    e: &Env,
+    pane: &str,
+    tool_use: &str,
+) -> (crate::run::ConnCancel, tokio::task::JoinHandle<R>, String) {
+    let cancel = crate::run::ConnCancel::default();
+    let srv = e.server.clone();
+    let p = json!({"tool_name": "Bash", "tool_use_id": tool_use, "tool_input": {"command": "cargo test"}});
+    let pane_s = pane.to_string();
+    let task =
+        tokio::spawn(cancel.scope(async move {
+            gate(&srv, &pane_s, Harness::Claude, "PermissionRequest", &p).await
+        }));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let id = loop {
+        let held = e.server.with_core(|c| {
+            c.model
+                .interactions
+                .iter()
+                .find(|i| i.pane == pane && i.native_ref.as_deref() == Some(tool_use))
+                .map(|i| i.id.clone())
+        });
+        if let Some(id) = held
+            && e.server
+                .agents
+                .inner
+                .lock()
+                .unwrap()
+                .gates
+                .contains_key(&id)
+        {
+            break id;
+        }
+        assert!(Instant::now() < deadline, "gate was never held");
+        tokio::task::yield_now().await;
+    };
+    (cancel, task, id)
+}
+
+fn interaction(e: &Env, id: &str) -> Interaction {
+    e.server
+        .with_core(|c| c.interaction(id).cloned())
+        .expect("open interaction")
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_closed_hook_connection_releases_its_gate() {
+    let e = env();
+    let _run = add_run(&e, "r-hook", "p-hook", |_| {});
+    let (cancel, task, id) = held_gate(&e, "p-hook", "toolu_g").await;
+    assert!(interaction(&e, &id).gate);
+    // The hook process was killed: its connection closes.
+    cancel.cancel();
+    let reply = task.await.unwrap().unwrap();
+    assert!(reply["decision"].is_null());
+    assert!(
+        !e.server
+            .agents
+            .inner
+            .lock()
+            .unwrap()
+            .gates
+            .contains_key(&id),
+        "gate released"
+    );
+    let it = interaction(&e, &id);
+    assert!(!it.gate, "a later answer is typed, not sent to a dead hook");
+    assert_eq!(it.status, InteractionStatus::Open);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_hook_that_dies_before_its_ack_leaves_the_delivery_unknown() {
+    let e = env();
+    let _run = add_run(&e, "r-ack", "p-ack", |_| {});
+    let (cancel, task, id) = held_gate(&e, "p-ack", "toolu_k").await;
+    // What `interaction.answer` does for a held gate.
+    let (native, key) = record_decision(
+        &e.server,
+        &id,
+        Answer {
+            decision: Some(Decision::Allow),
+            choices: vec![],
+            text: None,
+        },
+        "tui:tester",
+        None,
+        None,
+        None,
+    )
+    .unwrap()
+    .unwrap();
+    let g = e
+        .server
+        .agents
+        .inner
+        .lock()
+        .unwrap()
+        .gates
+        .remove(&id)
+        .unwrap();
+    set_delivery(&e.server, &id, DeliveryState::Delivering, None);
+    assert!(g.tx.send(GateReply::Decision { json: native, key }).is_ok());
+    let reply = task.await.unwrap().unwrap();
+    assert!(reply["decision"].is_object());
+    // No ack arrives; the connection closes.
+    cancel.cancel();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while interaction(&e, &id).delivery != DeliveryState::DeliveryUnknown {
+        assert!(Instant::now() < deadline, "delivery stayed Delivering");
+        tokio::task::yield_now().await;
+    }
+    // The harness moving on later does not turn it into a confirmed delivery.
+    resolve(
+        &e.server,
+        &id,
+        InteractionStatus::ResolvedElsewhere,
+        "tool ran",
+    );
+    assert_eq!(
+        interaction_any(&e, &id).delivery,
+        DeliveryState::DeliveryUnknown
+    );
+}
+
+fn interaction_any(e: &Env, id: &str) -> Interaction {
+    e.server
+        .with_core(|c| {
+            c.interaction(id).cloned().or_else(|| {
+                c.store
+                    .find::<Interaction>("interaction", id)
+                    .ok()
+                    .flatten()
+            })
+        })
+        .expect("interaction record")
+}

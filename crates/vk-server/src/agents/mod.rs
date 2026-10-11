@@ -2064,32 +2064,109 @@ async fn gate(server: &Arc<Server>, pane: &str, h: Harness, event: &str, p: &Val
             pane: pane.to_string(),
         },
     );
-    let reply = tokio::time::timeout(GATE_TIMEOUT, rx_reply).await;
+    // The gate belongs to the hook's connection: when the hook is killed (the harness was
+    // interrupted, or its own hook timeout fired) nobody can print a decision any more.
+    let mut rx_reply = rx_reply;
+    let reply = tokio::select! {
+        r = tokio::time::timeout(GATE_TIMEOUT, &mut rx_reply) => Some(r),
+        _ = crate::run::connection_closed() => None,
+    };
     match reply {
-        Ok(Ok(GateReply::Decision { json, key })) => {
+        Some(Ok(Ok(GateReply::Decision { json, key }))) => {
+            watch_hook_delivery(server, &it.id, &key);
             Ok(json!({"decision": json, "interaction": it.id, "idempotency_key": key}))
         }
-        Ok(Ok(GateReply::NoDecision)) | Ok(Err(_)) => {
+        Some(Ok(Ok(GateReply::NoDecision))) | Some(Ok(Err(_))) => {
             Ok(json!({"decision": null, "interaction": it.id}))
         }
-        Err(_) => {
+        Some(Err(_)) => {
             server.agents.inner.lock().unwrap().gates.remove(&it.id);
             // Harness-backed approval: no decision → the native dialog appears (§2.7).
-            let mut c = server.core.lock().unwrap();
-            if let Some(mut x) = c.interaction(&it.id).cloned() {
-                x.gate = false;
-                let mut tx = Tx::new();
-                tx.event(
-                    "interaction.updated",
-                    json!({"interaction": x.id}),
-                    json!({"gate": false, "reason": "gate_timeout"}),
-                );
-                tx.interaction(x);
-                let _ = server.commit(&mut c, tx);
-            }
+            release_gate_flag(server, &it.id, "gate_timeout");
+            Ok(json!({"decision": null, "interaction": it.id}))
+        }
+        None => {
+            hook_gone(server, &it.id, rx_reply);
             Ok(json!({"decision": null, "interaction": it.id}))
         }
     }
+}
+
+/// The hook holding the gate of `id` disconnected. The interaction stays open without a gate:
+/// the harness shows its own dialog (or has moved on, which closes the item), and a later
+/// answer is typed into the pane instead of being reported as delivered through a dead hook.
+/// A decision that was handed to the gate just before the hook went away never reached the
+/// harness for sure: it is recorded as `DeliveryUnknown`.
+fn hook_gone(server: &Server, id: &str, mut rx: oneshot::Receiver<GateReply>) {
+    server.agents.inner.lock().unwrap().gates.remove(id);
+    // Close the channel first: an answer that took the gate concurrently then fails its send
+    // and records the unknown delivery itself (`answer`).
+    rx.close();
+    if let Ok(GateReply::Decision { .. }) = rx.try_recv() {
+        set_delivery(
+            server,
+            id,
+            DeliveryState::DeliveryUnknown,
+            Some("hook disconnected before the agent received the answer".into()),
+        );
+        return;
+    }
+    release_gate_flag(server, id, "hook_disconnected");
+}
+
+/// Mark an open interaction as no longer held by a gate (`reason` in the event).
+fn release_gate_flag(server: &Server, id: &str, reason: &str) {
+    let mut c = server.core.lock().unwrap();
+    if let Some(mut x) = c.interaction(id).cloned()
+        && x.gate
+    {
+        x.gate = false;
+        let mut tx = Tx::new();
+        tx.event(
+            "interaction.updated",
+            json!({"interaction": x.id, "pane": x.pane}),
+            json!({"gate": false, "reason": reason}),
+        );
+        tx.interaction(x);
+        let _ = server.commit(&mut c, tx);
+    }
+}
+
+/// How long the hook has to confirm a decision it received before its connection closing
+/// stops counting as a lost delivery.
+const HOOK_ACK_WINDOW: Duration = Duration::from_secs(120);
+
+/// After a gate returned a decision, the hook prints it and acks on the same connection
+/// (`adapter.delivery_ack`). If the connection closes while the interaction is still
+/// `Delivering` with this decision, the hook died before the harness took the answer: record
+/// `DeliveryUnknown` instead of letting a later "tool ran" turn it into `Delivered`.
+fn watch_hook_delivery(server: &Arc<Server>, id: &str, key: &str) {
+    let Some(cancel) = crate::run::ConnCancel::current() else {
+        return;
+    };
+    let (server, id, key) = (server.clone(), id.to_string(), key.to_string());
+    tokio::spawn(async move {
+        if tokio::time::timeout(HOOK_ACK_WINDOW, cancel.cancelled())
+            .await
+            .is_err()
+        {
+            return;
+        }
+        let pending = server.with_core(|c| {
+            c.interaction(&id).is_some_and(|i| {
+                i.delivery == DeliveryState::Delivering
+                    && format!("{}:{}", i.id, i.decision_rev) == key
+            })
+        });
+        if pending {
+            set_delivery(
+                &server,
+                &id,
+                DeliveryState::DeliveryUnknown,
+                Some("hook disconnected before it confirmed the answer".into()),
+            );
+        }
+    });
 }
 
 fn match_policy(server: &Server, it: &Interaction) -> Option<(String, String)> {
