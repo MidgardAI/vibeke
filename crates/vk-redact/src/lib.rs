@@ -85,6 +85,12 @@ static RULES: LazyLock<Vec<Rule>> = LazyLock::new(|| {
         Rule::Whole(re(
             r"\beyJ[A-Za-z0-9_\-]{6,}\.eyJ[A-Za-z0-9_\-]{6,}\.[A-Za-z0-9_\-]*",
         )),
+        // Vibeke pairing and invitation links (`<app>/#/pair?d=<base64url json>`): the payload
+        // carries the pairing secret and a relay ticket. Keep the prefix so the log still shows
+        // that a link was there.
+        Rule::KeepPrefix(re(
+            r"((?:#/)?pair\?(?:[A-Za-z0-9_]+=[^&\s]*&)*d=)[A-Za-z0-9_\-]{16,}={0,2}",
+        )),
         // Authorization header or field (any scheme).
         Rule::KeepPrefix(re(
             r#"(?i)(\bauthorization["']?\s*[:=]\s*["']?)(?:(?:bearer|basic|token)\s+)?[^\s"',;]{4,}"#,
@@ -274,6 +280,24 @@ mod tests {
             redact("sk-learn is a task-name sk-short"),
             "sk-learn is a task-name sk-short"
         );
+    }
+
+    #[test]
+    fn pairing_links() {
+        let d = "eyJ2IjoxLCJyZWxheSI6IndzczovL3JlbGF5LmV4YW1wbGUiLCJwc2siOiJ4eHh4In0";
+        let url = format!("open https://app.example/#/pair?d={d} on your phone");
+        let out = redact(&url);
+        assert!(!out.contains(d), "leaked pairing payload in {out:?}");
+        assert!(
+            out.contains("https://app.example/#/pair?d=[REDACTED]"),
+            "{out}"
+        );
+        assert!(out.ends_with(" on your phone"), "{out}");
+        // Other query parameters before `d` do not hide it.
+        let out = redact(&format!("https://app.example/#/pair?x=1&d={d}"));
+        assert!(!out.contains(d), "{out}");
+        // A pair route without a payload is left alone.
+        assert_eq!(redact("see #/pair?d=short"), "see #/pair?d=short");
     }
 
     #[test]
