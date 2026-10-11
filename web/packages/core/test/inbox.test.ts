@@ -4,6 +4,8 @@ import {
   batchAnswerParams,
   batchEligible,
   batchFingerprint,
+  compareInteractions,
+  interactionRisk,
   groupBatches,
   rankInbox,
   rankRuns,
@@ -114,7 +116,8 @@ describe('ranking', () => {
 describe('batching', () => {
   test('eligibility', () => {
     expect(swipeAllowed(ix({ risk: 'low' }))).toBe(true);
-    expect(swipeAllowed(ix({ risk: 'medium' }))).toBe(true);
+    expect(swipeAllowed(ix({ risk: 'medium' }))).toBe(false); // medium needs a tap
+    expect(batchEligible(ix({ risk: 'medium' }))).toBe(true); // but can still be batched
     expect(swipeAllowed(ix({ risk: 'high' }))).toBe(false);
     expect(swipeAllowed(ix({ risk: 'unknown' }))).toBe(false);
     expect(swipeAllowed(ix({ answerable: false }))).toBe(false);
@@ -209,6 +212,19 @@ describe('normalization', () => {
       'allow_always',
     ]);
     expect(normalizeInteraction(i)).toEqual(i); // idempotent
+  });
+  test('an unknown risk level becomes unknown and ranks with high', () => {
+    for (const risk of ['critical', 'HIGHEST', '', 42, null, undefined]) {
+      const i = normalizeInteraction({ ...ix(), action: { ...ix().action!, risk } });
+      expect(i.action!.risk).toBe('unknown');
+      expect(swipeAllowed(i)).toBe(false);
+      expect(batchEligible(i)).toBe(false);
+    }
+    const odd = ix({ risk: 'critical' as Risk, opened_at_ms: 1 });
+    const low = ix({ risk: 'low', opened_at_ms: 0 });
+    expect(interactionRisk(odd)).toBe('unknown');
+    expect(Number.isNaN(compareInteractions(odd, low))).toBe(false);
+    expect(compareInteractions(odd, low)).toBeLessThan(0);
   });
 });
 

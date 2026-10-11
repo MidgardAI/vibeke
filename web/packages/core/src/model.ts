@@ -1450,6 +1450,17 @@ export function snake(s: string): string {
 
 const snakeOr = <T>(v: unknown): T => (typeof v === 'string' ? (snake(v) as T) : (v as T));
 
+const RISKS: ReadonlySet<string> = new Set(['low', 'medium', 'high']);
+
+/**
+ * Any risk other than low/medium/high becomes `unknown`: a new or misspelled level must never
+ * skip the confirmation that `unknown` gets, nor break the inbox order.
+ */
+export function normalizeRisk(v: unknown): Risk {
+  const r = typeof v === 'string' ? snake(v) : '';
+  return RISKS.has(r) ? (r as Risk) : 'unknown';
+}
+
 export function normalizeInteraction(raw: unknown): Interaction {
   const i = { ...(raw as Record<string, unknown>) } as unknown as Interaction;
   i.kind = snakeOr(i.kind);
@@ -1457,7 +1468,7 @@ export function normalizeInteraction(raw: unknown): Interaction {
   i.delivery = snakeOr(i.delivery);
   i.source = snakeOr(i.source);
   i.answer_channel = snakeOr(i.answer_channel);
-  if (i.action) i.action = { ...i.action, risk: snakeOr(i.action.risk) };
+  if (i.action) i.action = { ...i.action, risk: normalizeRisk(i.action.risk) };
   if (i.answer) i.answer = { ...i.answer, decision: i.answer.decision === null ? null : snakeOr(i.answer.decision) };
   return i;
 }

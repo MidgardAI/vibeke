@@ -1,5 +1,5 @@
 // One open interaction as a card (spec 16 §9.2): approvals with Allow / Allow always / Deny and
-// swipe for low/medium risk, questions with options and free text, plan reviews, and the delivery
+// swipe for low risk, questions with options and free text, plan reviews, and the delivery
 // state after answering.
 
 import { useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
@@ -231,7 +231,7 @@ export function InteractionCard({
     void app.conn(item.host_id)?.refresh().catch(() => {});
   };
 
-  // Swipe (low/medium approvals only).
+  // Swipe (low-risk approvals only).
   const canSwipe = it.kind === 'approval' && !it.boundary && swipeAllowed(it) && !disabled;
   const [dx, setDx] = useState(0);
   const start = useRef<{ x: number; y: number; id: number } | null>(null);
@@ -265,6 +265,13 @@ export function InteractionCard({
     if (was > SWIPE_AT) send({ decision: 'allow' }, 'allow');
     else if (was < -SWIPE_AT) send({ decision: 'deny' }, 'deny');
   };
+  // The browser took the pointer (scroll, system gesture, lost capture): put the card back and
+  // decide nothing, however far it travelled.
+  const onCancel = () => {
+    start.current = null;
+    horizontal.current = false;
+    setDx(0);
+  };
 
   return (
     <div className={cx('relative', leaving && 'animate-leave')} data-nav-item={key} data-interaction={it.id} data-kind={it.kind} tabIndex={-1} aria-label={it.title}>
@@ -283,7 +290,8 @@ export function InteractionCard({
           onPointerDown={onDown}
           onPointerMove={onMove}
           onPointerUp={onUp}
-          onPointerCancel={onUp}
+          onPointerCancel={onCancel}
+          onLostPointerCapture={(e) => start.current?.id === e.pointerId && horizontal.current && onCancel()}
           style={dx ? { transform: `translateX(${dx}px)`, transition: 'none' } : { transition: 'transform .15s' }}
           className="space-y-2.5"
         >

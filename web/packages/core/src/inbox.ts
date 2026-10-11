@@ -12,7 +12,10 @@ import type { AgentRun, Decision, Interaction, Pane, Risk } from './model';
  */
 const RISK_RANK: Record<Risk, number> = { high: 0, unknown: 1, medium: 2, low: 3 };
 
-export const interactionRisk = (i: Interaction): Risk => i.action?.risk ?? 'unknown';
+export const interactionRisk = (i: Interaction): Risk => {
+  const r = i.action?.risk;
+  return typeof r === 'string' && Object.hasOwn(RISK_RANK, r) ? r : 'unknown';
+};
 
 /** Open interactions first by risk, then longest-waiting first. */
 export function compareInteractions(a: Interaction, b: Interaction): number {
@@ -91,8 +94,11 @@ export function rankInbox(items: readonly InboxItem[]): InboxItem[] {
     .sort((a, b) => compareInteractions(a.interaction, b.interaction) || a.host_id.localeCompare(b.host_id));
 }
 
-/** Low/medium approvals may be swiped; high/unknown need button + confirm (§9.2). */
-export const swipeAllowed = (i: Interaction): boolean => batchEligible(i);
+/**
+ * Only low-risk approvals may be swiped. Medium ones need a button tap (they can still be
+ * batched), and high/unknown need a button and a confirmation (§9.2).
+ */
+export const swipeAllowed = (i: Interaction): boolean => batchEligible(i) && i.action?.risk === 'low';
 
 // ---- batching ------------------------------------------------------------------------------
 
