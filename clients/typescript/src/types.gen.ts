@@ -55,6 +55,8 @@ export type AgentRun = {
   usage?: RunUsage;
   rate_limit?: RateLimitInfo | null;
   title?: string | null;
+  bg_tasks?: BgTask[];
+  bg_level_ms?: number;
 };
 
 export type AgentState = "starting" | "working" | "idle" | "error" | "rate_limited" | "exited" | "unknown";
@@ -121,6 +123,15 @@ export type AuditEntry = {
   data: unknown;
   prev_hash: string;
   hash: string;
+};
+
+export type BgTask = {
+  id: string;
+  kind: string;
+  label: string;
+  since_ms: number;
+  source: string;
+  tool_use_id?: string | null;
 };
 
 export type BrowserPane = {
@@ -8787,6 +8798,16 @@ export type AdapterHealthChangedData = {
   reason?: string;
 };
 
+export type AgentBgTasksChangedSubject = {
+  run: string;
+  pane: string;
+};
+
+export type AgentBgTasksChangedData = {
+  count: number;
+  ids: string[];
+};
+
 export type AgentCwdChangedSubject = {
   run: string;
   pane: string;
@@ -11505,6 +11526,7 @@ export type WorktreeRemovedData = {
 export interface EventMap {
   "adapter.disagreement": { subject: AdapterDisagreementSubject; data: AdapterDisagreementData };
   "adapter.health_changed": { subject: AdapterHealthChangedSubject; data: AdapterHealthChangedData };
+  "agent.bg_tasks_changed": { subject: AgentBgTasksChangedSubject; data: AgentBgTasksChangedData };
   "agent.cwd_changed": { subject: AgentCwdChangedSubject; data: AgentCwdChangedData };
   "agent.detected": { subject: AgentDetectedSubject; data: AgentDetectedData };
   "agent.drift_detected": { subject: AgentDriftDetectedSubject; data: AgentDriftDetectedData };

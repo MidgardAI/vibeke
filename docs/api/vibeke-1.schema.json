@@ -192,6 +192,15 @@
               "type": "null"
             }
           ]
+        },
+        "bg_tasks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/BgTask"
+          }
+        },
+        "bg_level_ms": {
+          "type": "integer"
         }
       },
       "required": [
@@ -507,6 +516,43 @@
         "data",
         "prev_hash",
         "hash"
+      ]
+    },
+    "BgTask": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "since_ms": {
+          "type": "integer"
+        },
+        "source": {
+          "type": "string"
+        },
+        "tool_use_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "label",
+        "since_ms",
+        "source"
       ]
     },
     "BrowserPane": {
@@ -31969,6 +32015,41 @@
         },
         "required": [
           "to"
+        ]
+      }
+    },
+    "agent.bg_tasks_changed": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "run": {
+            "type": "string"
+          },
+          "pane": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "run",
+          "pane"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "count": {
+            "type": "integer"
+          },
+          "ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "count",
+          "ids"
         ]
       }
     },
