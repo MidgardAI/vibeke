@@ -547,3 +547,42 @@ fn interaction_any(e: &Env, id: &str) -> Interaction {
         })
         .expect("interaction record")
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cancelling_an_answer_in_flight_never_reports_it_delivered() {
+    let e = env();
+    let run = add_run(&e, "r-fly", "p-fly", |_| {});
+    let q = approval(&e, &run, "toolu_f");
+    record_decision(
+        &e.server,
+        &q,
+        Answer {
+            decision: Some(Decision::Allow),
+            choices: vec![],
+            text: None,
+        },
+        "tui:tester",
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+    set_delivery(&e.server, &q, DeliveryState::Delivering, None);
+    // `interaction.cancel` / an inbox dismissal while the answer is being delivered.
+    resolve(&e.server, &q, InteractionStatus::Cancelled, "dismissed");
+    assert_eq!(
+        interaction_any(&e, &q).delivery,
+        DeliveryState::DeliveryUnknown
+    );
+    // The harness moving on is still not taken as proof for an unknown delivery.
+    resolve(
+        &e.server,
+        &q,
+        InteractionStatus::ResolvedElsewhere,
+        "tool ran",
+    );
+    assert_eq!(
+        interaction_any(&e, &q).delivery,
+        DeliveryState::DeliveryUnknown
+    );
+}

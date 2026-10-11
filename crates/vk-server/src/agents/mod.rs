@@ -1004,6 +1004,18 @@ fn resolve(server: &Server, id: &str, status: InteractionStatus, reason: &str) {
         return;
     }
     let event = if it.delivery == DeliveryState::Delivering {
+        if status != InteractionStatus::ResolvedElsewhere {
+            // A dismissal or expiry says nothing about the answer in flight: never report it
+            // as delivered. The inbox keeps it as a delivery problem until it is confirmed.
+            drop(c);
+            set_delivery(
+                server,
+                id,
+                DeliveryState::DeliveryUnknown,
+                Some(format!("{reason} before the delivery was confirmed")),
+            );
+            return;
+        }
         // The harness moved on after our decision: native confirmation of delivery.
         it.delivery = DeliveryState::Delivered;
         "interaction.delivered"
