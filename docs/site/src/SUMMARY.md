@@ -2,28 +2,30 @@
 
 [Introduction](introduction.md)
 
-# Getting started
+# Start here
 
-- [Install](install.md)
-- [Quickstart](quickstart.md)
+- [Installation](install.md)
+- [Your first workspace](quickstart.md)
 - [Using the terminal](terminal.md)
 
-# Concepts
+# Core concepts
 
-- [Sessions, workspaces, tabs and panes](concepts/layout.md)
-- [Holders and durability](concepts/holders.md)
-- [Agents and interactions](concepts/agents.md)
-- [Tasks and review](concepts/tasks.md)
-- [Previews and browsers](concepts/previews.md)
-- [Sandboxes and execution levels](concepts/sandboxes.md)
+- [Workspaces & panes](concepts/layout.md)
+- [Agents & interactions](concepts/agents.md)
+- [Process durability](concepts/holders.md)
+- [Tasks & review](concepts/tasks.md)
+- [Remote & previews](concepts/previews.md)
+- [Execution & isolation](concepts/sandboxes.md)
 
 # Guides
 
-- [Phone and browser access](mobile.md)
+- [Phone & browser](mobile.md)
 - [Desktop app](desktop.md)
 - [Connect through SSH](remote.md)
-- [Sharing and handoff](handoff.md)
+- [Transfers & shared access](handoff.md)
 - [Cloud sandboxes](cloud-sandboxes.md)
+- [Host assistant](assistant.md)
+- [Moving from Herdr](migrating-from-herdr.md)
 
 # Advanced
 
@@ -32,15 +34,8 @@
 
 # Reference
 
-- [CLI](reference/cli.md)
+- [CLI reference](reference/cli.md)
 - [Configuration](reference/config.md)
 - [Control API](reference/api.md)
-- [Releases and reproducible builds](reference/releases.md)
-
-# Security
-
 - [Security model](security.md)
-
-# Migrating
-
-- [From Herdr](migrating-from-herdr.md)
+- [Releases](reference/releases.md)

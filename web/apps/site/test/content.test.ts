@@ -21,9 +21,10 @@ describe('canonical documentation pipeline', () => {
     }
   })
 
-  test('included release and migration chapters retain their content and source links', () => {
+  test('release and migration chapters retain their content and source links', () => {
     expect(docs.find(doc => doc.slug === 'releases')?.body).toContain('VIBEKE_ALLOW_UNSIGNED=1')
-    expect(docs.find(doc => doc.slug === 'releases')?.body).toContain('https://github.com/MidgardAI/vibeke/blob/main/docs/hardening.md')
+    expect(docs.find(doc => doc.slug === 'releases')?.body).toContain('https://github.com/MidgardAI/vibeke/blob/main/docs/releases.md')
+    expect(docs.find(doc => doc.slug === 'releases')?.body).not.toContain('reproducible')
     expect(docs.find(doc => doc.slug === 'migrating-from-herdr')?.body).toContain('vibeke import herdr --dry-run')
     expect(docs.find(doc => doc.slug === 'cli')?.body).toContain('](/docs/api)')
   })

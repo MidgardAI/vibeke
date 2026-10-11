@@ -4,6 +4,8 @@ A **cloud sandbox** is a machine that a cloud provider runs for you. An agent wo
 
 Cloud sandboxes help when you want an agent to run for a long time, run many agents at once, or work away from your own files.
 
+Cloud sandboxes are a preview. Sprites has been tested with a real account. E2B has been tested only against simulated responses, so it may not work with your account. Expect rough edges.
+
 Vibeke supports these providers: Sprites and E2B.
 
 ## Sign in
@@ -33,13 +35,13 @@ Vibeke creates the sandbox, copies the task's checkout into it, and opens a pane
 You can also move work that is already running.
 
 1. In the browser or desktop app, choose **Cloud** in the header of the workspace. In the terminal interface, open the menu of the pane and choose **send to cloud**. The command palette has the same command in both.
-2. Choose a provider. Sign in if the app asks.
+2. Choose a provider. Sign in if the app asks. If the pane works in your main checkout, Vibeke offers to create a task first. The task gives the sandbox its own branch to bring back.
 3. Choose **A new sandbox**. If the task of the pane already has a sandbox at this provider, you can choose that sandbox instead.
 4. Confirm and follow the progress.
 
 Vibeke waits until the agent finishes its current turn. Then it packs the work, uploads it, and starts the agent again in the sandbox. If the agent is busy, you can choose **Interrupt and hand off**. If any step fails, the pane keeps running on your host.
 
-After a successful send, the agent works in the sandbox, and the pane on your host closes. Your uncommitted changes are now in the sandbox. Vibeke stashes them in the checkout on your host, with the message `vibeke: sent to <sandbox>`. A later bring-back then lands in a clean checkout. Run `git stash list` to see the stash.
+When the agent starts again, Vibeke tells it that its earlier turns came from the sandbox. After a successful send, the agent works in the sandbox, and the pane on your host closes. Your uncommitted changes are now in the sandbox. Vibeke stashes them in the checkout on your host, with the message `vibeke: sent to <sandbox>`. A later bring-back then lands in a clean checkout. Run `git stash list` to see the stash.
 
 If the provider rejects the sign-in during the move, for example because you revoked the token, the app asks you to sign in. Then it starts the same move one more time.
 
@@ -51,6 +53,8 @@ For a pane that runs in a sandbox, the header of the workspace shows **Bring bac
 
 - **This host.** The agent continues in a new pane on your host. The task uses your host again.
 - **A paired host.** Vibeke sends the work to another of your hosts. That host needs to be paired with this one. See [Sharing and handoff](handoff.md).
+
+Before Vibeke applies the work to your host, it shows a review. The review lists the changed files and any warning. You can choose **Apply**, **Code only** or **Cancel**. **Code only** brings the files. It does not resume the agent from the sandbox. The pane is a plain shell. The warning explains that the agent ran with full permissions, so its files and conversation may carry instructions from untrusted code.
 
 From the command line, use `vibeke cloud bring-back`.
 
@@ -104,7 +108,7 @@ The provider bills you for sandboxes, not Vibeke. A running sandbox costs money.
 
 ## Security
 
-- A sandbox is a different machine on a different network. It sees only the clone of the task and the agent credentials that Vibeke copies for the agent in that pane.
+- A sandbox is a different machine on a different network. Its provider can see what runs there. It sees only the clone of the task and the agent credentials that Vibeke copies for the agent in that pane.
 - Your provider token stays on your host, in the keychain. It never goes into the sandbox.
 - The token does not appear in logs, events, command arguments or environment variables.
 - A pane cannot send itself to the cloud. An agent that asks to move work needs your approval first.

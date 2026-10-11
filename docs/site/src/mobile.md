@@ -16,38 +16,23 @@ No browser is needed on the host, so this works over SSH. Use `vibeke whoami` to
 ## Pair your device
 
 1. [Install the CLI](install.md) on your host and start a session with `vibeke`.
-2. In a shell on that host, run:
+2. In the terminal interface, press **Ctrl+Q** then `d` to open **Connections** on its **Devices** tab. You can also run **Pair a phone** from the command palette.
+3. Choose the access level and press `enter`. The first time, Vibeke saves the connection settings, turns on gateway autostart and starts the gateway. It uses the default relay `relay.vibeke.dev` and the browser app `app.vibeke.dev`.
+4. Scan the QR code on your phone, or open the printed link in your browser.
+5. The device shows a check code. The terminal shows a check code too. Pair only if both codes are the same. Then confirm in the prompt in the terminal.
 
-   ```sh
-   vibeke gateway pair \
-     --relay https://cloud.vibeke.dev \
-     --app-url https://app.vibeke.dev
-   ```
-
-   If you have not signed in, this command starts the login flow first.
-   With `--relay https://relay.vibeke.dev` no account is needed.
-   It saves the connection settings, enables gateway autostart, and asks the server to start it.
-   Keep the command running while you pair.
-
-3. Scan the QR code on your phone, or open the printed link in your browser.
-4. Compare the device fingerprint with the fingerprint shown by the pairing command.
-5. Confirm pairing on the device and in the terminal when prompted.
-
-After the first setup, pair another device from the TUI or the shell.
-
-In the TUI, press **Ctrl+Q** then `d` to open **Connections** on its **Devices** tab, or run **Pair a phone** from the command palette.
-Choose the access level and press `enter`.
 When the relay needs a Vibeke account and you are not signed in, the view first shows a sign-in code with a QR code.
-Open the link on any device, sign in with GitHub and confirm the code; the pairing link follows by itself.
+Open the link on any device, sign in with GitHub and confirm the code. The pairing link follows by itself.
 The list also shows the signed-in account, and `s` starts the sign-in on its own.
-Scan the QR code, then confirm the fingerprint in the prompt that appears in the TUI.
 Press `c` to copy the link, or `esc` to cancel it.
 
-From a shell:
+You can also pair from a shell on the host:
 
 ```sh
 vibeke gateway pair
 ```
+
+This works with the built-in defaults. Keep the command running while you pair. To use another relay or browser app, add `--relay` and `--app-url`, for example `vibeke gateway pair --relay https://cloud.vibeke.dev --app-url https://app.vibeke.dev`.
 
 For limited access, use `vibeke gateway pair --scope approve` or `vibeke gateway pair --scope view`.
 Each invitation is temporary and can be used once.

@@ -121,5 +121,5 @@ shasum -a 256 -c SHA256SUMS --ignore-missing
 
 The first command prints the trusted comment. It must name the version you downloaded, for example `vibeke v0.12.0`.
 
-For mirrors, offline installation, signatures, and development builds, see [release verification](reference/releases.md).
+For mirrors, offline installation, signatures, and development builds, see [Verify a release](reference/releases.md).
 To contribute code, see [building from source](development.md).

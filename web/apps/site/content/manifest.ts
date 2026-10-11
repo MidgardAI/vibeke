@@ -14,6 +14,7 @@ export const docManifest = [
   { slug: 'remote', title: 'Connect through SSH', group: 'Guides', file: 'remote.md', description: 'Install a signed release on your host and connect through SSH.' },
   { slug: 'handoff', title: 'Transfers & shared access', group: 'Guides', file: 'handoff.md', description: 'Transfer work to another host or teammate. Share access to a pane.' },
   { slug: 'cloud-sandboxes', title: 'Cloud sandboxes', group: 'Guides', file: 'cloud-sandboxes.md', description: 'Run agents on a cloud machine. Send work there and bring it back.' },
+  { slug: 'assistant', title: 'Host assistant', group: 'Guides', file: 'assistant.md', description: 'Set up the optional language model assistant. See what it sends.' },
   { slug: 'migrating-from-herdr', title: 'Moving from Herdr', group: 'Guides', file: 'migrating-from-herdr.md', description: 'Import supported configuration and layouts from Herdr.' },
   { slug: 'self-hosting', title: 'Self-hosting', group: 'Advanced', file: 'self-hosting.md', description: 'Operate your own relay or browser app.' },
   { slug: 'development', title: 'Build from source', group: 'Advanced', file: 'development.md', description: 'Build the CLI and apps for development.' },
@@ -21,7 +22,7 @@ export const docManifest = [
   { slug: 'config', title: 'Configuration', group: 'Reference', file: 'reference/config.md', description: 'The complete configuration, generated from code.' },
   { slug: 'api', title: 'Control API', group: 'Reference', file: 'reference/api.md', description: 'Call methods. Check access, parameters, and results.' },
   { slug: 'security', title: 'Security model', group: 'Reference', file: 'security.md', description: 'Trust boundaries, permissions, data, and release verification.' },
-  { slug: 'releases', title: 'Releases & hardening', group: 'Reference', file: 'reference/releases.md', description: 'Check release files and build results. Read current limits.' },
+  { slug: 'releases', title: 'Releases', group: 'Reference', file: 'reference/releases.md', description: 'Check release files and signatures. Install without a network.' },
 ] as const
 
 export interface Doc {

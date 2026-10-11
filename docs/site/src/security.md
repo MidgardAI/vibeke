@@ -2,7 +2,7 @@
 
 ## Host execution
 
-Agents in host mode use your user permissions. Pane tokens, scopes, rate limits, and audit records limit misuse through the Vibeke API.
+Agents in host mode use your user permissions. Vibeke does not enforce policy in host mode. Pane tokens, scopes, rate limits, and audit records limit misuse through the Vibeke API. Rules and claims there are advice for cooperative agents.
 
 Pane scope is a guardrail for cooperative or prompt-injected agents. It is not a security boundary. A process running as your user can escape it, for example by detaching from the pane, and it can access state files, holder sockets, or hook configuration outside the API. On Linux, Vibeke keeps detached descendants attributed to their pane. On macOS it cannot.
 
@@ -10,9 +10,15 @@ Only [isolated execution](#isolated-execution) is a boundary.
 
 ## Isolated execution
 
-Supported sandbox, container, and VM providers restrict access to host resources. A broker provides the APIs permitted for a pane. The agent cannot access privileged Vibeke sockets or files through that boundary.
+Supported sandbox and container providers restrict access to host resources. A broker provides the APIs permitted for a pane. The agent cannot access privileged Vibeke sockets or files through that boundary.
+
+The `vm` level is experimental and not verified on every host. The `cloud` level is a preview. Cloud sandboxes run on another machine, and their tests use mocks for some providers. Do not rely on either level as your only protection.
+
+The Linux sandbox needs Landlock ABI 6, which means Linux 6.12 or newer. On an older kernel, Vibeke refuses to start the task.
 
 If the required isolation is unavailable, Vibeke refuses to start the process. It does not substitute host mode.
+
+Vibeke runs setup commands and checks for a sandbox or container task inside that task's box. It refuses a container or cloud check when it cannot reach the box. Host checks drop credential variables unless the check names them. Review reads files and Git data. It does not run code from the repository.
 
 ## Threats and controls
 
@@ -24,7 +30,7 @@ If the required isolation is unavailable, Vibeke refuses to start the process. I
 | Malicious plugins | Explicit trust, identity checks, broker access, and audit records. |
 | Compromised remote hosts | Remote input cannot directly execute local commands. |
 | Network and preview content | Authentication, connection policy, and isolated preview origins. |
-| Release file changes | Minisign signatures, checksums, and reproducibility checks. |
+| Release file changes | Minisign signatures and checksums. |
 
 Root access and malware with your user permissions outside Vibeke are outside this security boundary.
 
@@ -99,6 +105,6 @@ Telemetry is disabled.
 
 ## Releases
 
-Release files have checksums and Minisign signatures. Sigstore provenance is not yet provided. Linux musl reproducibility checks use `scripts/repro-check.sh`.
+Release files have checksums and Minisign signatures. Vibeke does not yet publish build provenance.
 
-See [release verification](reference/releases.md) for current results and limits.
+See [Verify a release](reference/releases.md) for the checks and their limits.

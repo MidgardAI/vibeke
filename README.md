@@ -27,11 +27,11 @@
 - **Agents outlive the server.** Each pane runs under its own holder process, so a server crash, restart or upgrade doesn't stop running agents. [Process durability →](https://vibeke.dev/docs/holders)
 - **One task, one workspace.** `vibeke task new` gives an agent its own worktree, branch and port range, then collects the diff, checks and transcript evidence for review. [Tasks and review →](https://vibeke.dev/docs/tasks)
 - **Remote work that feels local.** Connect SSH machines, forward dev servers, and open previews, screenshots and a real browser pane from the devbox in your local terminal. [Remote and previews →](https://vibeke.dev/docs/previews)
-- **Isolation when you want it.** Run a task on the host, in an OS sandbox, a container or a VM. If the provider you picked isn't available, the task doesn't start. [Execution and isolation →](https://vibeke.dev/docs/sandboxes)
+- **Isolation when you want it.** Run a task on the host, in an OS sandbox or in a container. VM and cloud sandbox providers are experimental. Host mode has no enforcement. If the provider you picked is not available, the task does not start. On Linux, the sandbox needs Linux 6.12 or newer. [Execution and isolation →](https://vibeke.dev/docs/sandboxes)
 - **Your phone in the loop.** Pair the web or desktop app with a QR code. Traffic goes through an end-to-end encrypted relay, so the dev host needs no open ports. [Phone and browser →](https://vibeke.dev/docs/mobile)
-- **Bring your own harness.** Claude Code, Codex, pi, omp, OpenCode, Gemini CLI, any ACP agent, or your own wrapper described in a TOML manifest.
+- **Bring your own harness.** Claude Code, Codex, pi and omp have tested integrations. OpenCode, Gemini CLI and other ACP agents are experimental. You can also describe your own wrapper in a TOML manifest.
 - **Built to be scripted.** A versioned JSON-RPC API (`vibeke/1`), a CLI on top of it, and an MCP server for agents. [Control API →](https://vibeke.dev/docs/api)
-- **Plugins.** Native plugins with declared capabilities. Coming from Herdr? Import your config and layouts and keep your plugins. [Moving from Herdr →](https://vibeke.dev/docs/migrating-from-herdr)
+- **Plugins.** Native plugins with declared capabilities. Coming from Herdr? Import your config and layouts. Some Herdr plugins also work. [Moving from Herdr →](https://vibeke.dev/docs/migrating-from-herdr)
 - **One Rust binary.** Ghostty's VT engine inside, and it runs in the terminal you already use.
 
 ---
@@ -81,11 +81,9 @@ mise run ci      # formatting, lints and tests, as CI runs them
 
 Vibeke is licensed under the [Apache License 2.0](LICENSE).
 
-## Inspiration and related work
+## Related work
 
-Vibeke takes inspiration from [Herdr](https://herdr.dev/), particularly its approach to organizing coding agents in terminal workspaces and its plugin ecosystem.
-
-There is a rich body of related work here. [cmux](https://cmux.com/) brings agent notifications and a programmable browser into terminal workspaces. [Paseo](https://paseo.sh/) makes coding agents accessible across machines and devices. [Conductor](https://www.conductor.build/docs), [Emdash](https://emdash.com/docs), and [Superset](https://docs.superset.sh/overview) explore parallel agents, isolated workspaces, and review workflows. [Solo](https://soloterm.com/docs) brings agent CLIs and development services together, while [Warp](https://www.warp.dev/) explores integrated terminal and agent workflows. These projects deserve recognition alongside the foundations established by [tmux](https://github.com/tmux/tmux/wiki) and [Zellij](https://zellij.dev/).
+Other projects explore similar ideas. [cmux](https://cmux.com/) brings agent notifications and a programmable browser into terminal workspaces. [Emdash](https://emdash.com/docs) and [Superset](https://docs.superset.sh/overview) explore parallel agents, isolated workspaces and review workflows. [Solo](https://soloterm.com/docs) brings agent CLIs and development services together. [Warp](https://www.warp.dev/) explores integrated terminal and agent workflows. These projects build on the foundations of [tmux](https://github.com/tmux/tmux/wiki) and [Zellij](https://zellij.dev/).
 
 We created Vibeke to bring together the workflow we wanted: keep using our usual agent commands, run work on our own laptops and remote machines, and follow up from a terminal, browser, or phone. Its built-in, end-to-end encrypted relay makes hosts reachable without opening inbound ports or configuring a VPN.
 

@@ -69,6 +69,8 @@ Measure on a representative developer workload against a 2-week baseline of the 
 
 If M1 misses the first two targets materially, stop and re-evaluate (sidecar fallback above).
 
+**Status: not measured.** No two-week baseline or comparison run has been done, so the M1 gate has not been passed or failed. Plan: (1) export two weeks of the previous setup's audit log and state timings; (2) run Vibeke on the same workload for two weeks; (3) compute each metric above from the audit log, the input log and interaction delivery records; (4) record the result per metric in [11](11-milestones.md). Until then, treat the targets as goals, not results.
+
 ## Non-goals (Phase 1)
 
 The basic M1 interaction list is specified in 08. [15](15-task-outcomes-review-and-attention.md) separately stages the richer desktop task/review/inbox workflow after Goal 01, without making it an SSH daily-driver prerequisite or requiring the mobile gateway first.
@@ -79,6 +81,18 @@ The basic M1 interaction list is specified in 08. [15](15-task-outcomes-review-a
 - Cloud-hosted sandboxes (Phase 2). Local OS sandbox, container and VM levels are Phase 1 ([13](13-sandboxes-and-vms.md)).
 - Windows as a first-class host before M6 (the architecture must not preclude it — ConPTY, named pipes).
 - Before 1.0 unless demanded: QUIC/predictive echo, plugin marketplace, policy learning, best-of-N comparison UI, automatic shared-cwd "split into task" migration, synchronized input. Herdr's private binary TUI/transport interoperability is outside the public plugin/automation compatibility contract (07 §8.0).
+
+## What shipped beyond the original non-goals
+
+The non-goals above describe the plan for Phase 1. These items shipped later and are no longer non-goals:
+
+- Cloud-hosted sandboxes (preview; Sprites tested live, E2B against mocks only). See [13](13-sandboxes-and-vms.md).
+- GUI clients: a desktop app and a browser app that share one UI.
+- Orchestration (best-of-N, split, merge queue, goals, quota), experimental and off by default.
+- Synchronized input.
+- The mobile and web decision surface, with an attention inbox and push notifications through the relay.
+
+Plugin marketplace, policy learning and QUIC/predictive echo remain unbuilt.
 
 ## Users
 

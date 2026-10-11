@@ -44,13 +44,15 @@ Agents:
 - `AgentState` with source/confidence, `Interaction` objects with the delivery state machine, interaction cards for unfocused agents (the focused pane always shows the agent's own UI; gate-mode release-on-focus), inbox view, **peek and reply without attaching**, batch answer for identical native approvals.
 - `agent start|prompt|wait|read|send-keys|get|list`, names, resume after reboot.
 - `vibeke integration install|status|uninstall|doctor` for Claude, pi/omp, Codex (coexists with existing hooks).
-- Yolo detection for user-typed flags (13 §3.1); `deny` policy rules via pre-tool hooks.
+- Yolo detection for user-typed flags (13 §3.1). *Removed (commit 206ef2f1):* `deny` policy rules via pre-tool hooks. Vibeke no longer enforces policy for yolo on the host; host rules are advisory.
 - Policy engine basics (allow/deny/ask rules; repo policy requires trust); decision log recorded.
 
 Tasks:
 - `vibeke task new` with **git worktree** isolation, env file copy, setup script, machine-wide port leases, async removal, branch status in the sidebar. Advisory collision warnings for shared-cwd agents (no automatic migration).
 
 **Gate:** M1 exit gates in 10 **and** the product metrics in 00 (operator interventions −70%, blocked time −50%, approval delivery failures < 1%) over two weeks of the maintainer's real use versus the baseline. Failing materially → re-evaluate before M2.
+
+*Status: the metrics gate has not been measured.* See the plan in [00](00-vision-and-scope.md) (success metrics).
 
 ## M2 — Safe yolo + more harnesses
 

@@ -35,7 +35,7 @@ The default `bootstrap = "push"` mode uploads a verified binary from your local 
 Place the target host binary, `SHA256SUMS`, and `SHA256SUMS.minisig` together under `~/.cache/vibeke/releases/<version>/`.
 Use the same release version as your local CLI.
 
-See [release verification](reference/releases.md) for offline installation and development builds.
+See [Verify a release](reference/releases.md) for offline installation and unsigned builds.
 
 ## Work on the host
 

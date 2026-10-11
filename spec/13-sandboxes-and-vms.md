@@ -154,6 +154,9 @@ Agents need model credentials inside the box, and should get nothing else.
 
 ## 10. Policy interplay
 
+> **Update:** enforcement of `deny` rules through pre-tool hooks for yolo on the host was removed (commit 206ef2f1). Host mode has no enforced policy. The rows and the M1 line below describe the original plan. Today the isolated levels enforce boundary policy; the `vm` level is experimental and `cloud` is a preview.
+
+
 | Level | Approvals inside | Vibeke policy engine (02 §4) | Classification (§2.2) |
 |---|---|---|---|
 | `host` (non-yolo) | harness asks; Vibeke uses `gate`/`answer_native` where the capability matrix allows (04 §2.3) | allow/deny/ask rules | cooperative guardrail |

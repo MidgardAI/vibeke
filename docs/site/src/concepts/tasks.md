@@ -22,6 +22,10 @@ The task collects diffs, check results, and transcript evidence.
 
 Agents can report observations. They cannot confirm task intent, authorize checks, or accept reviews.
 
+## Where setup and checks run
+
+Setup commands and checks for a sandbox, container or VM task run inside the task's own box. Vibeke refuses a container or cloud check when the box is not available. It does not run that check on your host. A check on the host drops credential variables unless the check names them. Review reads files and Git data. It does not run code from the repository. See [execution levels](sandboxes.md).
+
 ## Review agents
 
 `task reviewer` prepares a request and shows its prompt. It does not start an agent.
@@ -31,6 +35,29 @@ After you confirm the request, use `task reviewer-start` to start the review age
 ## Task dependencies
 
 Use `task depend` to add a blocking or related task link. Vibeke rejects cyclic dependencies. The attention list orders tasks that need a decision.
+
+## Experimental: orchestration
+
+Orchestration is experimental. Every feature is off by default, and its commands can change. A command for a feature that is off fails and names the setting to turn on. Turn features on in your configuration:
+
+```toml
+[orchestrate.best_of_n]
+enabled = true   # task new --agents claude:2,codex:1; task compare; task pick; vibeke family
+
+[orchestrate.split]
+enabled = true   # task split: move a running agent's changes into a new task
+
+[orchestrate.merge]
+enabled = true   # vibeke claim, vibeke merge: conflict prediction and a merge queue
+
+[orchestrate.planner]
+enabled = true   # vibeke goal: plan a goal as tasks. Nothing starts before goal approve.
+
+[orchestrate.quota]
+enabled = true   # vibeke quota: pause low-priority work near a usage limit
+```
+
+Run `vibeke --default-config` to see every option of each feature.
 
 ## Agents sharing one checkout
 
