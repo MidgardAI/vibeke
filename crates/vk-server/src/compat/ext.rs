@@ -26,6 +26,9 @@ pub const METHODS: &[&str] = &[
     "layout.apply",
     "layout.set_split_ratio",
     "pane.layout",
+    "pane.neighbor",
+    "pane.edges",
+    "pane.focus_direction",
     "pane.process_info",
     "pane.move",
     "pane.swap",
@@ -41,6 +44,7 @@ pub const METHODS: &[&str] = &[
     "agent.rename",
     "worktree.create",
     "worktree.open",
+    "worktree.remove",
     "plugin.link",
     "plugin.unlink",
     "plugin.enable",
@@ -369,6 +373,117 @@ pub fn tab_snapshot(sn: &Snap, t: &Tab) -> Value {
         "panes": panes,
         "splits": splits,
     })
+}
+
+// ---- directional navigation (`pane.neighbor`, `pane.edges`, `pane.focus_direction`) ----------
+
+/// Herdr's `PaneDirection` from `direction`.
+fn pane_direction(p: &Value) -> Result<&'static str, WireError> {
+    match p.get("direction") {
+        None | Some(Value::Null) => Err(invalid("direction is required")),
+        Some(Value::String(d)) => match d.as_str() {
+            "left" => Ok("left"),
+            "right" => Ok("right"),
+            "up" => Ok("up"),
+            "down" => Ok("down"),
+            other => Err(invalid(format!(
+                "unknown variant `{other}`, expected one of `left`, `right`, `up`, `down`"
+            ))),
+        },
+        Some(_) => Err(invalid("direction must be a string")),
+    }
+}
+
+/// Herdr's `ranges_overlap`.
+fn spans_overlap(a: u16, a_len: u16, b: u16, b_len: u16) -> bool {
+    let (a, a_len, b, b_len) = (a as u32, a_len as u32, b as u32, b_len as u32);
+    a < b + b_len && a + a_len > b
+}
+
+/// Herdr's `range_overlap_amount`.
+fn span_overlap(a: u16, a_len: u16, b: u16, b_len: u16) -> u32 {
+    let (a, a_len, b, b_len) = (a as u32, a_len as u32, b as u32, b_len as u32);
+    (a + a_len).min(b + b_len).saturating_sub(a.max(b))
+}
+
+/// Herdr's `range_center_distance` (doubled centres, so no rounding).
+fn span_center_distance(a: u16, a_len: u16, b: u16, b_len: u16) -> u32 {
+    (2 * a as u32 + a_len as u32).abs_diff(2 * b as u32 + b_len as u32)
+}
+
+/// Herdr's `find_in_direction`: of the panes entirely on that side of `src` whose span overlaps
+/// it, the one with the smallest edge distance, then the largest overlap, then the closest
+/// centre, then the first in layout order.
+fn find_in_direction(panes: &[(String, Area)], src: &str, dir: &str) -> Option<String> {
+    let f = panes.iter().find(|(id, _)| id == src)?.1;
+    let (fx, fy, fw, fh) = (f.x as u32, f.y as u32, f.width as u32, f.height as u32);
+    let horizontal = matches!(dir, "left" | "right");
+    panes
+        .iter()
+        .enumerate()
+        .filter(|(_, (id, _))| id != src)
+        .filter(|(_, (_, r))| {
+            let (x, y, w, h) = (r.x as u32, r.y as u32, r.width as u32, r.height as u32);
+            match dir {
+                "left" => x + w <= fx && spans_overlap(r.y, r.height, f.y, f.height),
+                "right" => x >= fx + fw && spans_overlap(r.y, r.height, f.y, f.height),
+                "up" => y + h <= fy && spans_overlap(r.x, r.width, f.x, f.width),
+                _ => y >= fy + fh && spans_overlap(r.x, r.width, f.x, f.width),
+            }
+        })
+        .min_by_key(|(i, (_, r))| {
+            let (x, y, w, h) = (r.x as u32, r.y as u32, r.width as u32, r.height as u32);
+            let edge = match dir {
+                "left" => fx.saturating_sub(x + w),
+                "right" => x.saturating_sub(fx + fw),
+                "up" => fy.saturating_sub(y + h),
+                _ => y.saturating_sub(fy + fh),
+            };
+            let (overlap, centre) = if horizontal {
+                (
+                    span_overlap(r.y, r.height, f.y, f.height),
+                    span_center_distance(r.y, r.height, f.y, f.height),
+                )
+            } else {
+                (
+                    span_overlap(r.x, r.width, f.x, f.width),
+                    span_center_distance(r.x, r.width, f.x, f.width),
+                )
+            };
+            (edge, std::cmp::Reverse(overlap), centre, *i)
+        })
+        .map(|(_, (id, _))| id.clone())
+}
+
+/// Which outer edges of `area` the rect touches (Herdr's `PaneEdgesResult`).
+fn edges_of(r: Area, area: Area) -> [bool; 4] {
+    let (rx, ry, rw, rh) = (r.x as u32, r.y as u32, r.width as u32, r.height as u32);
+    let (ax, ay, aw, ah) = (
+        area.x as u32,
+        area.y as u32,
+        area.width as u32,
+        area.height as u32,
+    );
+    [rx <= ax, rx + rw >= ax + aw, ry <= ay, ry + rh >= ay + ah]
+}
+
+/// The pane a navigation request names (`pane_id`, else the caller's or focused pane), its
+/// tab and the tab's pane rects.
+fn nav_target<'a>(
+    caller: &Caller,
+    sn: &'a Snap,
+    p: &Value,
+) -> Result<(&'a Pane, &'a Tab, Area, Geometry), WireError> {
+    let id = pane_target(caller, sn, p)?;
+    let x = sn
+        .pane(&id)
+        .ok_or_else(|| WireError::new("pane_not_found", format!("pane {id} not found")))?;
+    let t = sn
+        .tab(&x.tab)
+        .ok_or_else(|| WireError::new("pane_layout_unavailable", "pane layout unavailable"))?;
+    let area = tab_area(sn, t);
+    let g = geometry(&t.layout, area);
+    Ok((x, t, area, g))
 }
 
 /// Parse a split path given as Herdr's `split_<n>_<0/1…>` id (from `pane.layout`), Vibeke's
@@ -1067,26 +1182,72 @@ fn reg_err(e: RegistryError) -> WireError {
 }
 
 fn plugin_json(id: &str) -> Value {
-    super::plugin_list()
+    super::herdr_plugin_list(Some(id))
         .into_iter()
-        .find(|p| p["plugin_id"] == id)
+        .next()
         .unwrap_or(Value::Null)
 }
 
-/// Apply a registry change and answer `kind` (`plugin_linked`, `plugin_enabled`,
-/// `plugin_disabled`) with the plugin's `InstalledPluginInfo`.
-fn registry_change(
-    caller: &Caller,
-    kind: &str,
-    f: impl FnOnce(&mut Registry) -> Result<String, RegistryError>,
-) -> Result<Value, WireError> {
-    if caller.ctx.pane_scope.is_some() {
-        return Err(denied(
-            "plugin registrations cannot be changed from a pane; ask the user to run it",
-        ));
+/// Herdr `plugin.link {path, enabled?}`, `plugin.unlink`, `plugin.enable` and
+/// `plugin.disable {plugin_id}` on the per-user registry, answered as Herdr answers:
+/// `plugin_linked|plugin_enabled|plugin_disabled {plugin: InstalledPluginInfo}` and
+/// `plugin_unlinked {plugin_id, removed}` (`removed: false` for an unknown plugin). Shared by
+/// the socket and the CLI shim, which changes the registry without a server as Herdr's CLI
+/// does. The caller checks who may change the registry.
+pub fn registry_op(method: &str, p: &Value) -> Result<Value, WireError> {
+    let id_param = || {
+        sp(p, "plugin_id")
+            .or(sp(p, "plugin"))
+            .map(str::to_string)
+            .ok_or_else(|| invalid("plugin_id is required"))
+    };
+    match method {
+        "plugin.link" => {
+            let path = req_s(p, "path")?.to_string();
+            let enabled = p.get("enabled").and_then(Value::as_bool).unwrap_or(true);
+            let id = Registry::update(&plugin_dirs(), |reg| {
+                let id = reg.link(std::path::Path::new(&path)).map(|(e, _)| e.id)?;
+                if !enabled {
+                    reg.set_enabled(&id, false)?;
+                }
+                Ok(id)
+            })
+            .map_err(reg_err)?;
+            Ok(typed("plugin_linked", json!({"plugin": plugin_json(&id)})))
+        }
+        "plugin.unlink" => {
+            let id = id_param()?;
+            let removed = match Registry::update(&plugin_dirs(), |reg| reg.unlink(&id)) {
+                Ok(_) => true,
+                Err(RegistryError::NotFound(_)) => false,
+                Err(e) => return Err(reg_err(e)),
+            };
+            Ok(typed(
+                "plugin_unlinked",
+                json!({"plugin_id": id, "removed": removed}),
+            ))
+        }
+        "plugin.enable" | "plugin.disable" => {
+            let id = id_param()?;
+            let on = method == "plugin.enable";
+            let kind = if on {
+                "plugin_enabled"
+            } else {
+                "plugin_disabled"
+            };
+            let id = Registry::update(&plugin_dirs(), |reg| reg.set_enabled(&id, on).map(|e| e.id))
+                .map_err(reg_err)?;
+            Ok(typed(kind, json!({"plugin": plugin_json(&id)})))
+        }
+        "plugin.list" => Ok(typed(
+            "plugin_list",
+            json!({"plugins": super::herdr_plugin_list(sp(p, "plugin_id"))}),
+        )),
+        other => Err(WireError::new(
+            "method_not_found",
+            format!("unknown method: {other}"),
+        )),
     }
-    let id = Registry::update(&plugin_dirs(), f).map_err(reg_err)?;
-    Ok(typed(kind, json!({"plugin": plugin_json(&id)})))
 }
 
 /// The wrapper that runs a plugin pane's command inside a Vibeke pane: the private launcher
@@ -1655,6 +1816,115 @@ fn agent_info(server: &Server, run_id: &str) -> Value {
     })
 }
 
+// ---- worktree.remove ----------------------------------------------------------------------------
+
+/// Herdr's `is_dirty_worktree_remove_error`.
+fn dirty_remove_error(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    (lower.contains("contains modified or untracked files")
+        && lower.contains("use --force to delete it"))
+        || lower.contains("working trees containing submodules cannot be moved or removed")
+}
+
+/// Herdr `worktree.remove {workspace_id, force?, trust_repository?}`: the workspace must be a
+/// linked worktree checkout (`not_linked_worktree`); `git worktree remove [--force] <path>`
+/// runs in the main repository (`dirty_worktree_requires_force` or `worktree_remove_failed`
+/// with git's message); then the workspace closes (`workspace.closed`), `worktree.removed`
+/// follows, and the answer is `worktree_removed {workspace_id, path, forced}`.
+async fn worktree_remove(
+    server: &Arc<Server>,
+    caller: &Caller,
+    sn: &Snap,
+    p: &Value,
+) -> Result<Value, WireError> {
+    let w = ws_target(sn, p)?;
+    let force = p.get("force").and_then(Value::as_bool).unwrap_or(false);
+    let space = super::git_space(&w.root_path).ok_or_else(|| {
+        WireError::new(
+            "not_linked_worktree",
+            "workspace is not a Herdr-managed worktree checkout",
+        )
+    })?;
+    if space["is_linked_worktree"] != true {
+        return Err(WireError::new(
+            "not_linked_worktree",
+            "workspace is not a linked worktree checkout",
+        ));
+    }
+    let repo_root = space["repo_root"].as_str().unwrap_or_default().to_string();
+    let path = w.root_path.clone();
+    let (root, checkout) = (repo_root.clone(), path.clone());
+    let (branch, out) = tokio::task::spawn_blocking(move || {
+        let branch = std::process::Command::new("git")
+            .args([
+                "-C",
+                checkout.as_str(),
+                "symbolic-ref",
+                "--quiet",
+                "--short",
+                "HEAD",
+            ])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .filter(|b| !b.is_empty());
+        let mut args = vec!["-C", root.as_str(), "worktree", "remove"];
+        if force {
+            args.push("--force");
+        }
+        args.push(checkout.as_str());
+        let out = std::process::Command::new("git").args(&args).output();
+        (branch, out)
+    })
+    .await
+    .map_err(internal)?;
+    let out = out.map_err(|e| WireError::new("worktree_remove_failed", e.to_string()))?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        let message = if stderr.is_empty() {
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        } else {
+            stderr
+        };
+        let code = if !force && dirty_remove_error(&message) {
+            "dirty_worktree_requires_force"
+        } else {
+            "worktree_remove_failed"
+        };
+        return Err(WireError::new(code, message));
+    }
+    // The workspace snapshot from before the close travels with the event.
+    let ws_info = sn.ws_json(&w);
+    native(
+        server,
+        caller,
+        "workspace.close",
+        json!({"workspace": w.id}),
+    )
+    .await?;
+    {
+        let mut c = server.core.lock().unwrap();
+        let mut tx = Tx::new();
+        tx.event(
+            "worktree.removed",
+            json!({"workspace": w.id, "path": path}),
+            json!({
+                "path": path,
+                "branch": branch,
+                "repo_root": repo_root,
+                "forced": force,
+                "herdr_workspace": ws_info,
+            }),
+        );
+        let _ = server.commit(&mut c, tx);
+    }
+    Ok(typed(
+        "worktree_removed",
+        json!({"workspace_id": w.handle, "path": path, "forced": force}),
+    ))
+}
+
 pub async fn call(
     server: &Arc<Server>,
     caller: &Caller,
@@ -1790,6 +2060,59 @@ pub async fn call(
                 .and_then(|x| sn.tab(&x.tab))
                 .ok_or_else(|| WireError::new("pane_not_found", "pane not found"))?;
             Ok(typed("pane_layout", json!({"layout": tab_snapshot(sn, t)})))
+        }
+        "pane.neighbor" => {
+            let dir = pane_direction(p)?;
+            let (x, t, _, g) = nav_target(caller, sn, p)?;
+            let mut neighbor = json!({"pane_id": x.handle, "direction": dir});
+            if let Some(n) = find_in_direction(&g.panes, &x.id, dir).and_then(|n| sn.pane(&n)) {
+                neighbor["neighbor_pane_id"] = json!(n.handle);
+            }
+            neighbor["layout"] = tab_snapshot(sn, t);
+            Ok(typed("pane_neighbor", json!({"neighbor": neighbor})))
+        }
+        "pane.edges" => {
+            let (x, t, area, g) = nav_target(caller, sn, p)?;
+            let r = g
+                .panes
+                .iter()
+                .find(|(id, _)| id == &x.id)
+                .map(|(_, r)| *r)
+                .ok_or_else(|| {
+                    WireError::new("pane_not_found", format!("pane {} not found", x.handle))
+                })?;
+            let [left, right, up, down] = edges_of(r, area);
+            Ok(typed(
+                "pane_edges",
+                json!({"edges": {
+                    "pane_id": x.handle,
+                    "left": left,
+                    "right": right,
+                    "up": up,
+                    "down": down,
+                    "layout": tab_snapshot(sn, t),
+                }}),
+            ))
+        }
+        "pane.focus_direction" => {
+            let dir = pane_direction(p)?;
+            let (x, t, _, g) = nav_target(caller, sn, p)?;
+            let target = find_in_direction(&g.panes, &x.id, dir);
+            if let Some(to) = &target {
+                native(server, caller, "pane.focus", json!({"pane": to})).await?;
+            }
+            let sn2 = snap(server);
+            let t2 = sn2.tab(&t.id).unwrap_or(t);
+            let mut focus = json!({"changed": target.is_some()});
+            if target.is_none() {
+                focus["reason"] = json!("no_neighbor");
+            }
+            focus["source_pane_id"] = json!(x.handle);
+            if let Some(f) = tab_focus(t2).and_then(|f| sn2.pane(&f)) {
+                focus["focused_pane_id"] = json!(f.handle);
+            }
+            focus["layout"] = tab_snapshot(&sn2, t2);
+            Ok(typed("pane_focus_direction", json!({"focus": focus})))
         }
         "pane.process_info" => {
             let id = pane_target(caller, sn, p)?;
@@ -2051,50 +2374,18 @@ pub async fn call(
                 }),
             ))
         }
+        "worktree.remove" => worktree_remove(server, caller, sn, p).await,
         // ---- plugin registry ---------------------------------------------------------------
-        "plugin.link" => {
-            let path = req_s(p, "path")?.to_string();
-            let r = registry_change(caller, "plugin_linked", |reg| {
-                reg.link(std::path::Path::new(&path)).map(|(e, _)| e.id)
-            })?;
-            super::views::registry_changed(server);
-            Ok(r)
-        }
-        "plugin.unlink" => {
-            let id = sp(p, "plugin_id")
-                .or(sp(p, "plugin"))
-                .ok_or_else(|| invalid("plugin_id is required"))?
-                .to_string();
+        "plugin.link" | "plugin.unlink" | "plugin.enable" | "plugin.disable" => {
             if caller.ctx.pane_scope.is_some() {
-                return Err(denied("plugin registrations cannot be changed from a pane"));
+                return Err(denied(
+                    "plugin registrations cannot be changed from a pane; ask the user to run it",
+                ));
             }
-            // Herdr answers an unknown plugin with `removed: false`, not an error.
-            let removed = match Registry::update(&plugin_dirs(), |reg| reg.unlink(&id)) {
-                Ok(_) => true,
-                Err(RegistryError::NotFound(_)) => false,
-                Err(e) => return Err(reg_err(e)),
-            };
-            if removed {
+            let r = registry_op(method, p)?;
+            if r["removed"] != false {
                 super::views::registry_changed(server);
             }
-            Ok(typed(
-                "plugin_unlinked",
-                json!({"plugin_id": id, "removed": removed}),
-            ))
-        }
-        "plugin.enable" | "plugin.disable" => {
-            let id = sp(p, "plugin_id")
-                .or(sp(p, "plugin"))
-                .ok_or_else(|| invalid("plugin_id is required"))?
-                .to_string();
-            let on = method == "plugin.enable";
-            let kind = if on {
-                "plugin_enabled"
-            } else {
-                "plugin_disabled"
-            };
-            let r = registry_change(caller, kind, |reg| reg.set_enabled(&id, on).map(|e| e.id))?;
-            super::views::registry_changed(server);
             Ok(r)
         }
         // ---- plugin panes ----------------------------------------------------------------
@@ -2458,6 +2749,72 @@ mod tests {
         assert_eq!(split_path_digits("s01"), Some(b"01".to_vec()));
         assert_eq!(split_path_digits("split_3"), None);
         assert_eq!(split_path_digits("x"), None);
+    }
+
+    #[test]
+    fn directional_navigation_follows_herdrs_find_in_direction() {
+        // [a | (b / c)] in 100x40: a 50x40, b 50x20, c 50x20.
+        let panes = vec![
+            ("a".to_string(), area(0, 0, 50, 40)),
+            ("b".to_string(), area(50, 0, 50, 20)),
+            ("c".to_string(), area(50, 20, 50, 20)),
+        ];
+        let go = |src: &str, dir: &str| find_in_direction(&panes, src, dir);
+        // Equal edge distance, overlap and centre distance: layout order decides.
+        assert_eq!(go("a", "right").as_deref(), Some("b"));
+        assert_eq!(go("b", "left").as_deref(), Some("a"));
+        assert_eq!(go("c", "left").as_deref(), Some("a"));
+        assert_eq!(go("c", "up").as_deref(), Some("b"));
+        assert_eq!(go("b", "down").as_deref(), Some("c"));
+        assert_eq!(go("a", "left"), None);
+        assert_eq!(go("b", "right"), None);
+        assert_eq!(go("x", "right"), None);
+        // The larger overlap wins before layout order.
+        let uneven = vec![
+            ("a".to_string(), area(0, 0, 50, 40)),
+            ("b".to_string(), area(50, 0, 50, 10)),
+            ("c".to_string(), area(50, 10, 50, 30)),
+        ];
+        assert_eq!(
+            find_in_direction(&uneven, "a", "right").as_deref(),
+            Some("c")
+        );
+        // A nearer pane wins over a larger overlap.
+        let far = vec![
+            ("a".to_string(), area(0, 0, 10, 10)),
+            ("near".to_string(), area(10, 8, 10, 2)),
+            ("far".to_string(), area(30, 0, 10, 10)),
+        ];
+        assert_eq!(
+            find_in_direction(&far, "a", "right").as_deref(),
+            Some("near")
+        );
+        let whole = area(0, 0, 100, 40);
+        assert_eq!(edges_of(panes[0].1, whole), [true, false, true, true]);
+        assert_eq!(edges_of(panes[1].1, whole), [false, true, true, false]);
+        assert_eq!(edges_of(panes[2].1, whole), [false, true, false, true]);
+        assert_eq!(pane_direction(&json!({"direction": "up"})).unwrap(), "up");
+        assert_eq!(
+            pane_direction(&json!({"direction": "north"}))
+                .unwrap_err()
+                .code,
+            "invalid_params"
+        );
+        assert_eq!(
+            pane_direction(&json!({})).unwrap_err().code,
+            "invalid_params"
+        );
+    }
+
+    #[test]
+    fn dirty_worktree_errors_match_herdr() {
+        assert!(dirty_remove_error(
+            "fatal: '/x' contains modified or untracked files, use --force to delete it"
+        ));
+        assert!(dirty_remove_error(
+            "fatal: working trees containing submodules cannot be moved or removed"
+        ));
+        assert!(!dirty_remove_error("fatal: '/x' is not a working tree"));
     }
 
     #[test]

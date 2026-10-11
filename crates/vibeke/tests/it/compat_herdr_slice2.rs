@@ -266,9 +266,9 @@ fn layout_pane_move_swap_metadata_and_their_events() {
     assert_eq!(splits[0]["direction"], "right");
     assert_eq!(splits[0]["ratio"], 0.5);
     assert_eq!(splits[0]["rect"], *area);
-    let snap = s_.herdr(&["session", "snapshot"]);
+    let snap = s_.herdr(&["api", "snapshot"]);
     assert!(
-        snap["layouts"]
+        snap["snapshot"]["layouts"]
             .as_array()
             .unwrap()
             .iter()

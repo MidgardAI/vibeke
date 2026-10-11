@@ -181,6 +181,7 @@ pub fn listener_path(server: &Server) -> PathBuf {
     )
 }
 
+pub use ext::registry_op as herdr_registry_op;
 pub use gap::{extend_pane_env, listener_for};
 
 fn private_dir(p: &Path) -> std::io::Result<()> {
@@ -505,6 +506,7 @@ pub fn sandbox_allows(method: &str) -> bool {
             | "workspace.list"
             | "workspace.get"
             | "tab.list"
+            | "tab.get"
             | "pane.list"
             | "pane.get"
             | "pane.current"
@@ -512,6 +514,8 @@ pub fn sandbox_allows(method: &str) -> bool {
             | "agent.get"
             | "layout.export"
             | "pane.layout"
+            | "pane.neighbor"
+            | "pane.edges"
             | "events.subscribe"
             | "events.wait"
             | "plugin.list"
@@ -553,9 +557,12 @@ fn read_only(method: &str) -> bool {
             | "workspace.list"
             | "workspace.get"
             | "tab.list"
+            | "tab.get"
             | "pane.list"
             | "pane.get"
             | "pane.current"
+            | "pane.neighbor"
+            | "pane.edges"
             | "pane.read"
             | "pane.wait_for_output"
             | "pane.process_info"
@@ -1520,14 +1527,32 @@ fn event_data(
                     json!(
                         w.map(|w| w.handle.clone())
                             .or(ids.ws.clone())
+                            .or_else(|| ev.data["herdr_workspace"]["workspace_id"]
+                                .as_str()
+                                .map(str::to_string))
                             .unwrap_or_default()
                     ),
                 );
-                if let Some(w) = w {
-                    d.insert("workspace".into(), sn.ws_json(w));
+                // `worktree.remove` closes the workspace first and carries its last snapshot.
+                match (w, ev.data.get("herdr_workspace")) {
+                    (Some(w), _) => {
+                        d.insert("workspace".into(), sn.ws_json(w));
+                    }
+                    (None, Some(v)) if v.is_object() => {
+                        d.insert("workspace".into(), v.clone());
+                    }
+                    _ => {}
                 }
                 d.insert("worktree".into(), info);
-                d.insert("forced".into(), json!(false));
+                d.insert(
+                    "forced".into(),
+                    json!(
+                        ev.data
+                            .get("forced")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false)
+                    ),
+                );
             } else {
                 d.insert("workspace".into(), sn.ws_json(w?));
                 d.insert("worktree".into(), info);
@@ -1774,6 +1799,14 @@ fn pane_target(caller: &Caller, sn: &Snap, p: &Value) -> Result<String, WireErro
         .ok_or_else(|| WireError::new("invalid_params", "pane_id is required (no focused pane)"))
 }
 
+/// The pane a Herdr `PaneTarget` names: `pane_id` is required (no focus fallback).
+fn herdr_pane(sn: &Snap, p: &Value) -> Result<Pane, WireError> {
+    let id = req_s(p, "pane_id")?;
+    sn.pane(id)
+        .cloned()
+        .ok_or_else(|| WireError::new("pane_not_found", format!("pane {id} not found")))
+}
+
 fn ws_target(sn: &Snap, p: &Value) -> Result<Workspace, WireError> {
     let id = req_s(p, "workspace_id")?;
     sn.ws(id)
@@ -1823,9 +1856,24 @@ pub async fn call(
     }
     let sn = snap(server);
     match method {
+        // Herdr `pong {version, protocol, capabilities}`; Vibeke adds who answers.
         "ping" => Ok(typed(
             "pong",
-            json!({"version": herdr::BASELINE_VERSION, "emulator": "vibeke", "vibeke_version": vk_proto::VERSION, "compatibility": "partial"}),
+            json!({
+                "version": herdr::BASELINE_VERSION,
+                "protocol": herdr::cli::PROTOCOL_VERSION,
+                "capabilities": {
+                    "live_handoff": false,
+                    "detached_server_daemon": false,
+                    "ssh_agent_registration": false,
+                    "surface_interest": false,
+                    "health_check": false,
+                    "endpoint_protocol_generation": herdr::cli::ENDPOINT_PROTOCOL_GENERATION,
+                },
+                "emulator": "vibeke",
+                "vibeke_version": vk_proto::VERSION,
+                "compatibility": "partial",
+            }),
         )),
         "api.schema" => Ok(typed(
             "api_schema",
@@ -1835,24 +1883,10 @@ pub async fn call(
                 "events": hev::BASELINE_EVENTS,
             }),
         )),
-        "session.snapshot" => {
-            let (fw, ft, fp) = sn.focused();
-            Ok(typed(
-                "session_snapshot",
-                json!({
-                    "version": herdr::BASELINE_VERSION,
-                    "protocol": herdr::BASELINE_VERSION,
-                    "workspaces": sn.ws.iter().map(|w| sn.ws_json(w)).collect::<Vec<_>>(),
-                    "tabs": sn.tabs.iter().map(|t| sn.tab_json(t)).collect::<Vec<_>>(),
-                    "panes": sn.panes.iter().map(|x| sn.pane_json(server, x)).collect::<Vec<_>>(),
-                    "agents": sn.pane_run.values().map(|r| sn.agent_json(server, r)).collect::<Vec<_>>(),
-                    "layouts": sn.tabs.iter().map(|t| ext::tab_snapshot(&sn, t)).collect::<Vec<_>>(),
-                    "focused_workspace_id": fw,
-                    "focused_tab_id": ft,
-                    "focused_pane_id": fp,
-                }),
-            ))
-        }
+        "session.snapshot" => Ok(typed(
+            "session_snapshot",
+            json!({"snapshot": session_snapshot(server, &sn)}),
+        )),
         // ---- workspaces ------------------------------------------------------------------
         "workspace.list" => Ok(typed(
             "workspace_list",
@@ -1949,6 +1983,7 @@ pub async fn call(
             .await?;
             Ok(ok())
         }
+        "workspace.move_block" => workspace_move_block(server, caller, &sn, p).await,
         // ---- tabs ------------------------------------------------------------------------
         "tab.list" => {
             let ws = match sp(p, "workspace_id") {
@@ -2041,6 +2076,10 @@ pub async fn call(
             let t = tab_target(&sn, p)?;
             native(server, caller, "tab.close", json!({"tab": t.id})).await?;
             Ok(ok())
+        }
+        "tab.get" => {
+            let t = tab_target(&sn, p)?;
+            Ok(typed("tab_info", json!({"tab": sn.tab_json(&t)})))
         }
         // ---- panes -----------------------------------------------------------------------
         "pane.list" => {
@@ -2268,6 +2307,115 @@ pub async fn call(
             native(server, caller, "pane.zoom", np).await?;
             Ok(ok())
         }
+        "pane.input.set" => {
+            // Herdr routes right clicks to the pane's program (`pane`) or to its own menu
+            // (`herdr`). Vibeke's clients have no per-pane right-click routing: the setting is
+            // validated and acknowledged only.
+            herdr_pane(&sn, p)?;
+            match sp(p, "right_click") {
+                Some("herdr" | "pane") => {}
+                Some(o) => {
+                    return Err(WireError::new(
+                        "invalid_params",
+                        format!("unknown variant `{o}`, expected `herdr` or `pane`"),
+                    ));
+                }
+                None => return Err(WireError::new("invalid_params", "right_click is required")),
+            }
+            Ok(ok())
+        }
+        "pane.release_agent" | "pane.clear_agent_authority" => {
+            let x = herdr_pane(&sn, p)?;
+            if let Some(scope) = &caller.ctx.pane_scope
+                && &x.id != scope
+                && x.created_by != format!("agent:{scope}")
+            {
+                return Err(WireError::new(
+                    "permission_denied",
+                    "self-report is limited to your own pane",
+                ));
+            }
+            if method == "pane.release_agent" {
+                req_s(p, "source")?;
+                let agent = req_s(p, "agent")?;
+                if agent.trim().is_empty() {
+                    return Err(WireError::new(
+                        "invalid_agent",
+                        "agent label must not be empty",
+                    ));
+                }
+            }
+            // The hook says its agent left the pane (release) or gives up its authority
+            // (clear): a run that only self-reports ends, so detection takes over again.
+            if let Some(r) = sn.pane_run.get(&x.id)
+                && r.ended_at_ms.is_none()
+                && r.integration == "self_report"
+            {
+                server.agents.end_run(server, &r.id, "released");
+            }
+            Ok(ok())
+        }
+        "pane.scroll" => {
+            let x = herdr_pane(&sn, p)?;
+            let want = p
+                .get("offset_from_bottom")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| {
+                    WireError::new("invalid_params", "offset_from_bottom is required")
+                })?;
+            let now = native(
+                server,
+                caller,
+                "pane.scroll",
+                json!({"pane": x.id, "delta": 0}),
+            )
+            .await?;
+            let cur = now["scroll"]["offset"].as_u64().unwrap_or(0);
+            let total = now["scroll"]["total"].as_u64().unwrap_or(0);
+            let to = want.min(total);
+            if to != cur {
+                native(
+                    server,
+                    caller,
+                    "pane.scroll",
+                    json!({"pane": x.id, "delta": to as i64 - cur as i64}),
+                )
+                .await?;
+            }
+            scroll_changed(
+                server,
+                "api",
+                &x.id,
+                u32::try_from(to).unwrap_or(u32::MAX),
+                u32::try_from(total).unwrap_or(u32::MAX),
+            );
+            let sn = snap(server);
+            let x = sn
+                .pane(&x.id)
+                .ok_or_else(|| WireError::new("pane_not_found", x.handle.clone()))?;
+            Ok(typed("pane_info", json!({"pane": sn.pane_json(server, x)})))
+        }
+        // Herdr behaviours that need its own client or state; answered as Herdr answers when
+        // that state is absent, or `unsupported` with the reason.
+        "server.ssh_agent.register" => Err(WireError::new(
+            "connection_local_only",
+            "SSH agent registration requires a persistent local JSON API connection",
+        )),
+        "release_notes.dismiss" => {
+            req_s(p, "version")?;
+            Err(WireError::new(
+                "stale_release_notes",
+                "the release notes are no longer current",
+            ))
+        }
+        "product_announcement.dismiss" => {
+            req_s(p, "version")?;
+            req_s(p, "id")?;
+            Err(WireError::new(
+                "stale_announcement",
+                "the product announcement is no longer current",
+            ))
+        }
         // ---- agents ----------------------------------------------------------------------
         "agent.list" => Ok(typed(
             "agent_list",
@@ -2304,6 +2452,38 @@ pub async fn call(
                 "pane_read",
                 json!({"read": {"text": rr["text"], "truncated": false, "revision": rr["revision"]}}),
             ))
+        }
+        "agent.focus" => {
+            // Herdr: focus the agent's pane (and its tab and workspace), answer `agent_info`.
+            let r = run_target(&sn, p)?;
+            native(server, caller, "pane.focus", json!({"pane": r.pane})).await?;
+            let sn = snap(server);
+            let r = sn.pane_run.get(&r.pane).cloned().unwrap_or(r);
+            Ok(typed(
+                "agent_info",
+                json!({"agent": sn.agent_json(server, &r)}),
+            ))
+        }
+        "agent.send_keys" => {
+            let r = run_target(&sn, p)?;
+            if r.ended_at_ms.is_some() {
+                return Err(WireError::new(
+                    "agent_not_ready",
+                    format!("agent {} is not an active named agent", r.handle),
+                ));
+            }
+            let k = match p.get("keys") {
+                Some(Value::Array(a)) => Value::Array(a.clone()),
+                _ => return Err(WireError::new("invalid_params", "keys is required")),
+            };
+            native(
+                server,
+                caller,
+                "pane.send_keys",
+                json!({"pane": r.pane, "keys": k}),
+            )
+            .await?;
+            Ok(ok())
         }
         // ---- worktrees, notifications, server --------------------------------------------
         "worktree.list" => {
@@ -2345,10 +2525,13 @@ pub async fn call(
             "events.subscribe streams on its own socket connection",
         )),
         // ---- plugins ---------------------------------------------------------------------
-        "plugin.list" => Ok(typed("plugin_list", json!({"plugins": plugin_list()}))),
+        "plugin.list" => Ok(typed(
+            "plugin_list",
+            json!({"plugins": herdr_plugin_list(sp(p, "plugin_id"))}),
+        )),
         "plugin.action.list" => Ok(typed(
             "plugin_action_list",
-            json!({"actions": action_list(sp(p, "plugin_id"))?}),
+            json!({"actions": herdr_action_list(sp(p, "plugin_id"))?}),
         )),
         "plugin.action.invoke" => {
             // Baseline: `action_id` is the qualified `<plugin>.<action>` id (as listed in
@@ -2395,12 +2578,14 @@ pub async fn call(
                 ctx,
                 "api",
             )?;
-            // Herdr `plugin_action_invoked {action: PluginActionInfo, context, log}`.
-            let mut info = action_list(Some(&plugin))?
+            // Herdr `plugin_action_invoked {action: PluginActionInfo, context, log}`; the
+            // action's `command` is the manifest argv, as in `plugin.action.list`.
+            let info = herdr_action_list(Some(&plugin))?
                 .into_iter()
                 .find(|a| a["action_id"] == action.as_str())
-                .unwrap_or_else(|| json!({"plugin_id": plugin, "action_id": action}));
-            info["command"] = log.get("command").cloned().unwrap_or_else(|| json!([]));
+                .unwrap_or_else(|| {
+                    json!({"plugin_id": plugin, "action_id": action, "title": action, "command": log.get("command").cloned().unwrap_or_else(|| json!([]))})
+                });
             let context = log.get("context").cloned().unwrap_or_else(|| json!({}));
             Ok(typed(
                 "plugin_action_invoked",
@@ -2425,8 +2610,11 @@ pub async fn call(
             Some(_) => Err(WireError::new(
                 "unsupported",
                 format!(
-                    "{other} is part of the Herdr {} surface but not implemented by Vibeke yet (see docs/herdr-compat-inventory.md)",
-                    herdr::BASELINE_VERSION
+                    "{other} is part of the Herdr {} surface but Vibeke does not serve it: {}",
+                    herdr::BASELINE_VERSION,
+                    inventory::method_note(other)
+                        .unwrap_or("see docs/herdr-compat-inventory.md")
+                        .trim_start_matches("`unsupported`: ")
                 ),
             )),
             None => Err(WireError::new(
@@ -2437,11 +2625,228 @@ pub async fn call(
     }
 }
 
+/// Herdr `workspace.move_block {workspace_ids, before_workspace_id?}`: move the listed
+/// workspaces, in the listed order, as one block before `before_workspace_id` (else to the
+/// end); answers `workspace_list`. Vibeke moves them one at a time, so subscribers see
+/// `workspace.moved` per workspace that changed place (Herdr: one `workspace.reordered`).
+async fn workspace_move_block(
+    server: &Arc<Server>,
+    caller: &Caller,
+    sn: &Snap,
+    p: &Value,
+) -> Result<Value, WireError> {
+    let failed = |m: String| WireError::new("workspace_move_block_failed", m);
+    let ids = p
+        .get("workspace_ids")
+        .and_then(Value::as_array)
+        .ok_or_else(|| WireError::new("invalid_params", "workspace_ids is required"))?;
+    if ids.is_empty() {
+        return Err(failed("workspace_ids must not be empty".into()));
+    }
+    let not_found =
+        |id: &str| WireError::new("workspace_not_found", format!("workspace {id} not found"));
+    let mut block: Vec<String> = Vec::new();
+    for v in ids {
+        let id = v
+            .as_str()
+            .ok_or_else(|| WireError::new("invalid_params", "workspace_ids must be strings"))?;
+        let w = sn.ws(id).ok_or_else(|| not_found(id))?;
+        if block.contains(&w.id) {
+            return Err(failed(format!("workspace {id} appears more than once")));
+        }
+        block.push(w.id.clone());
+    }
+    let before = match sp(p, "before_workspace_id") {
+        Some(id) => {
+            let w = sn.ws(id).ok_or_else(|| not_found(id))?;
+            if block.contains(&w.id) {
+                return Err(failed(
+                    "before_workspace_id must not be part of workspace_ids".into(),
+                ));
+            }
+            Some(w.id.clone())
+        }
+        None => None,
+    };
+    let mut cur: Vec<String> = sn.ws.iter().map(|w| w.id.clone()).collect();
+    let mut want: Vec<String> = cur
+        .iter()
+        .filter(|w| !block.contains(*w))
+        .cloned()
+        .collect();
+    let at = before
+        .as_ref()
+        .and_then(|b| want.iter().position(|w| w == b))
+        .unwrap_or(want.len());
+    for (i, id) in block.iter().enumerate() {
+        want.insert(at + i, id.clone());
+    }
+    for (k, id) in want.iter().enumerate() {
+        let Some(pos) = cur.iter().position(|w| w == id) else {
+            continue;
+        };
+        if pos != k {
+            native(
+                server,
+                caller,
+                "workspace.move",
+                json!({"workspace": id, "delta": k as i64 - pos as i64}),
+            )
+            .await?;
+            let w = cur.remove(pos);
+            cur.insert(k, w);
+        }
+    }
+    let sn = snap(server);
+    Ok(typed(
+        "workspace_list",
+        json!({"workspaces": sn.ws.iter().map(|w| sn.ws_json(w)).collect::<Vec<_>>()}),
+    ))
+}
+
+/// Herdr's `SessionSnapshot`: `version`, the integer `protocol`, the focused ids (left out
+/// when unknown), every workspace, tab and live pane, one `PaneLayoutSnapshot` per tab (in
+/// workspace then tab order) and every agent.
+fn session_snapshot(server: &Server, sn: &Snap) -> Value {
+    let (fw, ft, fp) = sn.focused();
+    let mut v = Map::new();
+    v.insert("version".into(), json!(herdr::BASELINE_VERSION));
+    v.insert("protocol".into(), json!(herdr::cli::PROTOCOL_VERSION));
+    for (k, x) in [
+        ("focused_workspace_id", fw),
+        ("focused_tab_id", ft),
+        ("focused_pane_id", fp),
+    ] {
+        if let Some(x) = x {
+            v.insert(k.into(), json!(x));
+        }
+    }
+    v.insert(
+        "workspaces".into(),
+        json!(sn.ws.iter().map(|w| sn.ws_json(w)).collect::<Vec<_>>()),
+    );
+    // Tabs and layouts in workspace order, as Herdr walks them.
+    let tabs: Vec<&Tab> = sn
+        .ws
+        .iter()
+        .flat_map(|w| sn.tabs.iter().filter(move |t| t.workspace == w.id))
+        .collect();
+    v.insert(
+        "tabs".into(),
+        json!(tabs.iter().map(|t| sn.tab_json(t)).collect::<Vec<_>>()),
+    );
+    v.insert(
+        "panes".into(),
+        json!(
+            sn.panes
+                .iter()
+                .filter(|x| !x.exited)
+                .map(|x| sn.pane_json(server, x))
+                .collect::<Vec<_>>()
+        ),
+    );
+    v.insert(
+        "layouts".into(),
+        json!(
+            tabs.iter()
+                .map(|t| ext::tab_snapshot(sn, t))
+                .collect::<Vec<_>>()
+        ),
+    );
+    v.insert(
+        "agents".into(),
+        json!(
+            sn.pane_run
+                .values()
+                .map(|r| sn.agent_json(server, r))
+                .collect::<Vec<_>>()
+        ),
+    );
+    Value::Object(v)
+}
+
 fn keys(p: &Value) -> Result<Value, WireError> {
     match p.get("keys") {
         Some(Value::Array(a)) => Ok(Value::Array(a.clone())),
         Some(Value::String(s)) => Ok(json!(s.split_whitespace().collect::<Vec<_>>())),
         _ => Err(WireError::new("invalid_params", "keys is required")),
+    }
+}
+
+/// Herdr's `pane_agent_status_changed` data for `pane` now: `pane_id`, `workspace_id`,
+/// `agent_status` and the presentation fields `PaneInfo` carries.
+fn agent_status_data(server: &Server, sn: &Snap, x: &Pane) -> Value {
+    let mut d = Map::new();
+    d.insert("pane_id".into(), json!(x.handle));
+    d.insert(
+        "workspace_id".into(),
+        json!(sn.ws_handle(&x.workspace).unwrap_or_default()),
+    );
+    d.insert(
+        "agent_status".into(),
+        json!(sn.pane_status(&x.id).unwrap_or("unknown")),
+    );
+    let pj = sn.pane_json(server, x);
+    for k in ["agent", "title", "display_agent", "state_labels"] {
+        if let Some(v) = pj.get(k) {
+            d.insert(k.into(), v.clone());
+        }
+    }
+    Value::Object(d)
+}
+
+/// Herdr `events.wait {match_event: {event: "pane_agent_status_changed", pane_id,
+/// agent_status}, timeout_ms?}`: `wait_matched {event: EventEnvelope}` as soon as the pane has
+/// that status (at once when it already has it). Herdr waits without a deadline when
+/// `timeout_ms` is absent; `timeout` with Herdr's message otherwise.
+async fn status_wait(server: &Arc<Server>, caller: &Caller, p: &Value) -> Result<Value, WireError> {
+    let want = hev::parse_event_match(p).map_err(|(c, m)| WireError::new(c, m))?;
+    let matched = |data: Value| {
+        typed(
+            "wait_matched",
+            json!({"event": hev::envelope("pane.agent_status_changed", data)}),
+        )
+    };
+    // Subscribe before reading the current status so no change slips between the two.
+    let mut rx = server.events.subscribe();
+    let mut proj = seeded_projector(server);
+    let sn = snap(server);
+    let x = sn.pane(&want.pane_id).cloned().ok_or_else(|| {
+        WireError::new("pane_not_found", format!("pane {} not found", want.pane_id))
+    })?;
+    if sn.pane_status(&x.id).unwrap_or("unknown") == want.agent_status {
+        return Ok(matched(agent_status_data(server, &sn, &x)));
+    }
+    let deadline = want
+        .timeout_ms
+        .map(|ms| tokio::time::Instant::now() + Duration::from_millis(ms));
+    loop {
+        let next = match deadline {
+            Some(d) => match tokio::time::timeout_at(d, rx.recv()).await {
+                Ok(r) => r,
+                Err(_) => {
+                    return Err(WireError::new(
+                        "timeout",
+                        "timed out waiting for event match",
+                    ));
+                }
+            },
+            None => rx.recv().await,
+        };
+        let ev = match next {
+            Ok(e) => e,
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+            Err(_) => return Err(WireError::new("internal_error", "event stream closed")),
+        };
+        check_broker(server, caller)?;
+        for (name, pane, data) in project_event(server, &mut proj, &ev) {
+            if name == "pane.agent_status_changed"
+                && pane.as_deref() == Some(x.handle.as_str())
+                && data["agent_status"] == want.agent_status.as_str()
+            {
+                return Ok(matched(data));
+            }
+        }
     }
 }
 
@@ -2451,6 +2856,10 @@ async fn events_wait(server: &Arc<Server>, caller: &Caller, p: &Value) -> Result
             "unsupported",
             "events.wait is not available to plugins across sessions",
         ));
+    }
+    // Herdr 0.9.3: `{match_event, timeout_ms?}`; Vibeke's older `{subscriptions}` form stays.
+    if p.get("match_event").is_some() || p.get("subscriptions").is_none() {
+        return status_wait(server, caller, p).await;
     }
     let subs = hev::parse_subscriptions(p).map_err(|(c, m)| WireError::new(c, m))?;
     let timeout = Duration::from_millis(
@@ -2618,6 +3027,236 @@ fn plugin_list() -> Vec<Value> {
             })
         })
         .collect()
+}
+
+/// Herdr's `PluginSourceInfo` of a registration: `github` with owner, repo, subdirectory,
+/// ref, commit and managed checkout for repository installs; `local` otherwise.
+fn herdr_source(e: &Entry) -> Value {
+    if e.origin.kind != "git" {
+        return json!({"kind": "local"});
+    }
+    let mut v = Map::new();
+    v.insert("kind".into(), json!("github"));
+    if let Some(r) = &e.origin.repo {
+        let mut parts = r.splitn(3, '/');
+        for k in ["owner", "repo", "subdir"] {
+            if let Some(x) = parts.next().filter(|x| !x.is_empty()) {
+                v.insert(k.into(), json!(x));
+            }
+        }
+    }
+    if let Some(r) = &e.origin.requested_ref {
+        v.insert("requested_ref".into(), json!(r));
+    }
+    if let Some(c) = &e.origin.commit {
+        v.insert("resolved_commit".into(), json!(c));
+    }
+    if e.managed {
+        v.insert("managed_path".into(), json!(e.root.display().to_string()));
+    }
+    if e.installed_at_ms > 0 {
+        v.insert("installed_unix_ms".into(), json!(e.installed_at_ms));
+    }
+    Value::Object(v)
+}
+
+/// Herdr's `PluginManifestAction` (`id`, `title`, `description?`, declared `contexts`,
+/// `platforms?`, `command`).
+fn herdr_manifest_action(a: &herdr::manifest::Action) -> Value {
+    let mut v = Map::new();
+    v.insert("id".into(), json!(a.id));
+    v.insert("title".into(), json!(a.title));
+    if let Some(d) = &a.description {
+        v.insert("description".into(), json!(d));
+    }
+    if a.contexts_declared && !a.contexts.is_empty() {
+        v.insert("contexts".into(), json!(a.contexts));
+    }
+    if let Some(p) = &a.platforms {
+        v.insert("platforms".into(), json!(p));
+    }
+    v.insert("command".into(), json!(a.command));
+    Value::Object(v)
+}
+
+/// Herdr's `InstalledPluginInfo` of a registration: manifest fields in Herdr's order (actions
+/// and panes by id, events by name then command), empty lists left out, `source` as
+/// `PluginSourceInfo`, `warnings` with `manifest unavailable: …` for a manifest that no longer
+/// loads.
+fn herdr_installed_info(e: &Entry) -> Value {
+    let manifest_path = e.root.join(herdr::MANIFEST_FILE);
+    let manifest_path = std::fs::canonicalize(&manifest_path).unwrap_or(manifest_path);
+    let (_, m) = registry::entry_status(e);
+    let mut v = Map::new();
+    v.insert("plugin_id".into(), json!(e.id));
+    v.insert(
+        "name".into(),
+        json!(
+            m.as_ref()
+                .and_then(|m| m.name.clone())
+                .unwrap_or_else(|| e.id.clone())
+        ),
+    );
+    v.insert(
+        "version".into(),
+        json!(
+            m.as_ref()
+                .and_then(|m| m.version.clone())
+                .unwrap_or_default()
+        ),
+    );
+    v.insert(
+        "min_herdr_version".into(),
+        json!(
+            m.as_ref()
+                .and_then(|m| m.min_herdr_version.clone())
+                .unwrap_or_default()
+        ),
+    );
+    if let Some(d) = m.as_ref().and_then(|m| m.description.clone()) {
+        v.insert("description".into(), json!(d));
+    }
+    v.insert(
+        "manifest_path".into(),
+        json!(manifest_path.display().to_string()),
+    );
+    v.insert("plugin_root".into(), json!(e.root.display().to_string()));
+    v.insert("enabled".into(), json!(e.enabled));
+    let mut warnings = Vec::new();
+    match &m {
+        Some(m) => {
+            if let Some(p) = &m.platforms {
+                v.insert("platforms".into(), json!(p));
+            }
+            let mut put = |k: &str, x: Value| {
+                if x.as_array().is_some_and(|a| !a.is_empty()) {
+                    v.insert(k.into(), x);
+                }
+            };
+            put("build", json!(m.build));
+            put("startup", json!(m.startup));
+            let mut actions: Vec<&herdr::manifest::Action> = m.actions.iter().collect();
+            actions.sort_by(|a, b| a.id.cmp(&b.id));
+            put(
+                "actions",
+                json!(
+                    actions
+                        .iter()
+                        .map(|a| herdr_manifest_action(a))
+                        .collect::<Vec<_>>()
+                ),
+            );
+            let mut events: Vec<&herdr::manifest::EventHook> = m.events.iter().collect();
+            events.sort_by(|a, b| a.on.cmp(&b.on).then_with(|| a.command.cmp(&b.command)));
+            put(
+                "events",
+                json!(
+                    events
+                        .iter()
+                        .map(|h| {
+                            let mut x = json!({"on": h.on, "command": h.command});
+                            if let Some(p) = &h.platforms {
+                                x["platforms"] = json!(p);
+                            }
+                            x
+                        })
+                        .collect::<Vec<_>>()
+                ),
+            );
+            let mut panes: Vec<&herdr::manifest::PaneDecl> = m.panes.iter().collect();
+            panes.sort_by(|a, b| a.id.cmp(&b.id));
+            put("panes", json!(panes));
+            put("link_handlers", json!(m.link_handlers));
+            warnings.extend(m.warnings.iter().cloned());
+            if m.platforms.is_none() {
+                warnings.push(
+                    "manifest does not declare platforms; platform support unknown".to_string(),
+                );
+            }
+        }
+        None => {
+            let why = registry::read_manifest(&e.root)
+                .err()
+                .map(|e| e.to_string())
+                .unwrap_or_else(|| "manifest does not load".to_string());
+            warnings.push(format!("manifest unavailable: {why}"));
+        }
+    }
+    v.insert("source".into(), herdr_source(e));
+    if !warnings.is_empty() {
+        v.insert("warnings".into(), json!(warnings));
+    }
+    Value::Object(v)
+}
+
+/// `plugin.list` and the registry results for the Herdr surface: Herdr's `InstalledPluginInfo`
+/// over Vibeke's own record, whose extra fields (`status`, `trust`, `managed`, `origin`,
+/// `config_dir`, …) Herdr clients ignore.
+pub fn herdr_plugin_list(filter: Option<&str>) -> Vec<Value> {
+    let dirs = plugin_dirs();
+    let Ok(reg) = Registry::load(&dirs) else {
+        return vec![];
+    };
+    let mut extras: HashMap<String, Value> = plugin_list()
+        .into_iter()
+        .filter_map(|p| Some((p["plugin_id"].as_str()?.to_string(), p)))
+        .collect();
+    reg.plugins
+        .values()
+        .filter(|e| filter.is_none_or(|f| f == e.id))
+        .map(|e| {
+            let mut v = extras.remove(&e.id).unwrap_or_else(|| json!({}));
+            if let (Value::Object(v), Value::Object(h)) = (&mut v, herdr_installed_info(e)) {
+                v.extend(h);
+            }
+            v
+        })
+        .collect()
+}
+
+/// Herdr `plugin.action.list`: every action of every plugin whose manifest loads, sorted by
+/// qualified id, as `PluginActionInfo` (`command` is the manifest argv, `platforms` the
+/// action's or else the plugin's). Vibeke adds `qualified_id`, `available` and `status`.
+fn herdr_action_list(plugin: Option<&str>) -> Result<Vec<Value>, WireError> {
+    let reg = Registry::load(&plugin_dirs())
+        .map_err(|e| WireError::new("plugin_registry_load_failed", e.to_string()))?;
+    let pf = herdr::current_platform();
+    let mut out = Vec::new();
+    for e in reg
+        .plugins
+        .values()
+        .filter(|e| plugin.is_none_or(|p| p == e.id))
+    {
+        let (st, m) = registry::entry_status(e);
+        let Some(m) = m else { continue };
+        for a in &m.actions {
+            let mut v = herdr_manifest_action(a);
+            let platforms = a.platforms.as_ref().or(m.platforms.as_ref());
+            if let Value::Object(o) = &mut v {
+                let id = o.remove("id").unwrap_or_default();
+                o.insert("plugin_id".into(), json!(e.id));
+                o.insert("action_id".into(), id);
+                o.remove("platforms");
+                if let Some(p) = platforms {
+                    o.insert("platforms".into(), json!(p));
+                }
+                o.insert("qualified_id".into(), json!(format!("{}.{}", e.id, a.id)));
+                o.insert(
+                    "available".into(),
+                    json!(st == Status::Active && m.entry_on(a.platforms.as_ref(), pf)),
+                );
+                o.insert("status".into(), json!(st.as_str()));
+            }
+            out.push(v);
+        }
+    }
+    out.sort_by(|a, b| {
+        a["qualified_id"]
+            .as_str()
+            .unwrap_or("")
+            .cmp(b["qualified_id"].as_str().unwrap_or(""))
+    });
+    Ok(out)
 }
 
 /// Actions of active plugins (inactive plugins are listed with `available: false` so the
@@ -4122,8 +4761,36 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(v["type"], "session_snapshot");
-        assert_eq!(v["version"], herdr::BASELINE_VERSION);
-        assert!(v["focused_pane_id"].is_null());
+        let snap = &v["snapshot"];
+        assert_eq!(snap["version"], herdr::BASELINE_VERSION);
+        assert_eq!(snap["protocol"], herdr::cli::PROTOCOL_VERSION);
+        assert!(snap.get("focused_pane_id").is_none(), "{v}");
+        for k in ["workspaces", "tabs", "panes", "layouts", "agents"] {
+            assert!(snap[k].as_array().is_some_and(|a| a.is_empty()), "{k}: {v}");
+        }
+        let v = call(&srv, &user(), "ping", &json!({})).await.unwrap();
+        assert_eq!(v["type"], "pong");
+        assert_eq!(v["protocol"], herdr::cli::PROTOCOL_VERSION);
+        assert_eq!(v["capabilities"]["live_handoff"], false);
+        // Herdr's `events.wait {match_event}` waits only for agent status matches.
+        let e = call(
+            &srv,
+            &user(),
+            "events.wait",
+            &json!({"match_event": {"event": "tab_created"}}),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(e.code, "unsupported_event_wait_match");
+        let e = call(
+            &srv,
+            &user(),
+            "events.wait",
+            &json!({"match_event": {"event": "pane_agent_status_changed", "pane_id": "w9:p9", "agent_status": "idle"}, "timeout_ms": 10}),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(e.code, "pane_not_found");
         let e = call(
             &srv,
             &user(),
