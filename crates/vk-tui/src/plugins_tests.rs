@@ -118,10 +118,10 @@ fn popup_and_overlay_geometry() {
     let (o, i) = geometry(&p, area).unwrap();
     assert_eq!((o.w, o.h), (60, 10), "60% wide, 10 cells high");
     assert_eq!((o.x, o.y), (10 + 20, 1 + 15), "centred");
-    assert_eq!((i.x, i.y, i.w, i.h), (o.x + 1, o.y + 1, 58, 8));
+    assert_eq!((i.x, i.y, i.w, i.h), (o.x + 1, o.y + 1, 57, 8));
     let d = PluginSurface::parse("plugin-surface:popup:::a/b").unwrap();
     let (o, _) = geometry(&d, area).unwrap();
-    assert_eq!((o.w, o.h), (80, 32), "default 80%×80%");
+    assert_eq!((o.w, o.h), (50, 20), "default half the area");
     let big = PluginSurface::parse("plugin-surface:popup:500:500:a/b").unwrap();
     assert_eq!(
         geometry(&big, area).unwrap().0,
