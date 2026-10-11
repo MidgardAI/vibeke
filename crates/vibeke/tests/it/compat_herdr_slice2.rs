@@ -224,7 +224,8 @@ fn layout_pane_move_swap_metadata_and_their_events() {
         "{r}"
     );
     let e = ev.until("layout_updated");
-    assert_eq!(e["data"]["tab_id"], t1.as_str());
+    assert_eq!(e["data"]["type"], "layout_updated", "{e}");
+    assert_eq!(e["data"]["layout"]["tab_id"], t1.as_str(), "{e}");
     assert_eq!(e["data"]["layout"]["root"]["type"], "split", "{e}");
     let apply = json!({
         "tab_id": t1,
@@ -255,7 +256,9 @@ fn layout_pane_move_swap_metadata_and_their_events() {
     let v = s_.herdr(&["pane", "swap", &p1, &p2]);
     assert_eq!(v["type"], "pane_list");
     let e = ev.until("pane_moved");
-    assert!(e["data"]["pane_id"] == p1.as_str() || e["data"]["pane_id"] == p2.as_str());
+    let moved_id = &e["data"]["pane"]["pane_id"];
+    assert!(moved_id == p1.as_str() || moved_id == p2.as_str(), "{e}");
+    assert_eq!(e["data"]["previous_pane_id"], *moved_id, "{e}");
     let tab2 = s_.herdr(&["tab", "create", "--workspace-id", &ws, "--label", "two"]);
     let t2 = s(&tab2["tab"]["tab_id"]);
     let moved = s_.herdr(&["pane", "move", &p2, "--tab-id", &t2, "--direction", "down"]);
@@ -267,8 +270,10 @@ fn layout_pane_move_swap_metadata_and_their_events() {
     );
     loop {
         let e = ev.until("pane_moved");
-        if e["data"]["pane_id"] == p2.as_str() && e["data"]["to_tab_id"] == t2.as_str() {
-            assert_eq!(e["data"]["from_tab_id"], t1.as_str());
+        if e["data"]["pane"]["pane_id"] == p2.as_str() && e["data"]["pane"]["tab_id"] == t2.as_str()
+        {
+            assert_eq!(e["data"]["previous_tab_id"], t1.as_str(), "{e}");
+            assert_eq!(e["data"]["previous_workspace_id"], ws.as_str(), "{e}");
             break;
         }
     }
@@ -295,8 +300,11 @@ fn layout_pane_move_swap_metadata_and_their_events() {
         "15000",
     ]);
     assert_eq!(m["type"], "pane_output_matched");
-    let e = ev.until("pane_output_matched");
+    // A pane-scoped subscription event keeps its dotted name (Herdr
+    // `SubscriptionEventEnvelope`).
+    let e = ev.until("pane.output_matched");
     assert_eq!(e["data"]["pane_id"], p1.as_str());
+    assert_eq!(e["data"]["read"]["pane_id"], p1.as_str(), "{e}");
     let pi = s_.herdr(&["pane", "process-info", &p1]);
     assert_eq!(pi["type"], "pane_process_info", "{pi}");
     assert!(pi["pid"].as_u64().unwrap() > 0);
@@ -378,9 +386,24 @@ fn worktree_create_open_and_worktree_events_reach_streams_and_hooks() {
         ws.starts_with('w'),
         "worktree.create opens a workspace: {r}"
     );
+    // Herdr's `EventEnvelope`: `data.type`, `WorkspaceInfo` with `worktree`, `WorktreeInfo`.
     let e = ev.until("worktree_created");
+    assert_eq!(e["data"]["type"], "worktree_created", "{e}");
     assert_eq!(e["data"]["worktree"]["path"], path.as_str(), "{e}");
-    assert_eq!(e["data"]["workspace_id"], ws.as_str());
+    assert_eq!(e["data"]["worktree"]["branch"], "feat/compat", "{e}");
+    assert_eq!(e["data"]["worktree"]["is_linked_worktree"], true, "{e}");
+    assert_eq!(e["data"]["worktree"]["is_detached"], false, "{e}");
+    assert_eq!(e["data"]["worktree"]["label"], "repo", "{e}");
+    assert_eq!(
+        e["data"]["worktree"]["open_workspace_id"],
+        ws.as_str(),
+        "{e}"
+    );
+    assert_eq!(e["data"]["workspace"]["workspace_id"], ws.as_str(), "{e}");
+    let wt = &e["data"]["workspace"]["worktree"];
+    assert_eq!(wt["repo_name"], "repo", "{e}");
+    assert_eq!(wt["checkout_path"], path.as_str(), "{e}");
+    assert_eq!(wt["is_linked_worktree"], true, "{e}");
 
     // Opening the same worktree reuses its workspace.
     let o = s_.herdr(&["worktree", "open", &path]);
@@ -389,6 +412,7 @@ fn worktree_create_open_and_worktree_events_reach_streams_and_hooks() {
     assert_eq!(o["workspace"]["workspace_id"], ws.as_str());
     let e = ev.until("worktree_opened");
     assert_eq!(e["data"]["worktree"]["branch"], "feat/compat");
+    assert_eq!(e["data"]["already_open"], true, "{e}");
 
     let state = s_.path("state/plugins/state/acme.wt/ev.txt");
     wait_for("worktree hooks", 15000, || {
@@ -400,6 +424,10 @@ fn worktree_create_open_and_worktree_events_reach_streams_and_hooks() {
     assert!(
         t.contains("feat/compat"),
         "event JSON reaches the hook: {t}"
+    );
+    assert!(
+        t.contains(r#"{"event":"worktree_created","data":{"type":"worktree_created","workspace":"#),
+        "the hook gets Herdr's whole event envelope: {t}"
     );
 
     let (_, e) = s_.herdr_fail(&["worktree", "open", "/tmp/definitely-not-a-worktree"]);
@@ -757,6 +785,90 @@ fn plugin_panes_audit_events_and_redacted_logs() {
         "viewer",
     ]);
     wait_for("plugin pane gone with its broker", 15000, || {
+        s_.json(&["compat", "status"])["brokers"] == 0
+    });
+    // Herdr's `plugin.pane.open` rules (params, codes and messages) and `env`.
+    let call = |params: Value| {
+        s_.json(&[
+            "api",
+            "call",
+            "compat.herdr.call",
+            &json!({"method": "plugin.pane.open", "params": params}).to_string(),
+        ])
+    };
+    let base = json!({"plugin_id": "acme.daemon", "entrypoint": "viewer"});
+    let with = |extra: Value| {
+        let mut v = base.clone();
+        v.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        v
+    };
+    for (extra, message) in [
+        (
+            json!({"placement": "tab", "target_pane_id": pane}),
+            "tab plugin panes support workspace_id but not target_pane_id or direction",
+        ),
+        (
+            json!({"placement": "split", "workspace_id": "w1"}),
+            "split and zoomed plugin panes target an existing pane; use target_pane_id",
+        ),
+        (
+            json!({"placement": "overlay", "direction": "down"}),
+            "overlay and popup plugin panes target the active pane",
+        ),
+        (
+            json!({"placement": "split", "width": 40}),
+            "width and height are only supported when placement is popup",
+        ),
+    ] {
+        let r = call(with(extra));
+        assert_eq!(r["error"]["code"], "invalid_params", "{r}");
+        assert_eq!(r["error"]["message"], message, "{r}");
+    }
+    let r = call(with(json!({"env": {"BAD=KEY": "x"}})));
+    assert_eq!(r["error"]["code"], "invalid_env", "{r}");
+    let _ = std::fs::remove_file(st.join("viewer-env.txt"));
+    let r = call(with(json!({
+        "target_pane_id": pane,
+        "env": {"HERDR_TEST_PICK": "tab", "HERDR_PLUGIN_ID": "evil"},
+    })));
+    assert_eq!(r["result"]["type"], "plugin_pane_opened", "{r}");
+    wait_for("viewer pane with env", 15000, || {
+        read(&st.join("viewer-env.txt")).contains("HERDR_PLUGIN_ID=")
+    });
+    let env = read(&st.join("viewer-env.txt"));
+    assert!(
+        env.contains("HERDR_TEST_PICK=tab"),
+        "caller env applied: {env}"
+    );
+    assert!(
+        env.contains("HERDR_PLUGIN_ID=acme.daemon"),
+        "protected: {env}"
+    );
+    assert!(!env.contains("evil"), "protected: {env}");
+    let ctx_line = env
+        .lines()
+        .find_map(|l| l.strip_prefix("HERDR_PLUGIN_CONTEXT_JSON="))
+        .unwrap();
+    let ctx: Value = serde_json::from_str(ctx_line).unwrap();
+    assert_eq!(
+        ctx["focused_pane_id"],
+        pane.as_str(),
+        "the target's context: {ctx}"
+    );
+    assert_eq!(ctx["correlation_id"], "plugin-pane", "{ctx}");
+    assert_eq!(ctx["invocation_source"], "api", "{ctx}");
+    s_.herdr(&[
+        "plugin",
+        "pane",
+        "close",
+        "--plugin",
+        "acme.daemon",
+        "--entrypoint",
+        "viewer",
+    ]);
+    wait_for("second plugin pane gone with its broker", 15000, || {
         s_.json(&["compat", "status"])["brokers"] == 0
     });
     // Popups open (without a pane identity) and close with `popup.close`; the TUI side is

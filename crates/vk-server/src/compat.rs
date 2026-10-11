@@ -96,6 +96,33 @@ struct State {
     queues: Mutex<HashMap<String, VecDeque<limits::Queued>>>,
     /// Plugin-provided agent views (`agent.view.set`).
     views: Mutex<views::Views>,
+    /// Where the user's focus was last (Herdr keeps one focus without a client attached).
+    focus_mem: Mutex<FocusMem>,
+    /// Herdr ids (Vibeke handles) by Vibeke id, kept after the object is gone so close events
+    /// still carry its Herdr id.
+    handles: Mutex<HashMap<String, String>>,
+}
+
+/// The server-side focus memory: the workspace a client focused last, and per workspace its
+/// last focused tab and pane (Vibeke ids). Plugin contexts and Herdr's "active" workspace, tab
+/// and pane use it when no TUI client is attached (Herdr `current_plugin_context`).
+#[derive(Debug, Clone, Default)]
+struct FocusMem {
+    workspace: Option<String>,
+    tabs: HashMap<String, String>,
+    panes: HashMap<String, String>,
+}
+
+impl FocusMem {
+    fn record(&mut self, ws: &str, tab: Option<&str>, pane: Option<&str>) {
+        self.workspace = Some(ws.to_string());
+        if let Some(t) = tab {
+            self.tabs.insert(ws.to_string(), t.to_string());
+        }
+        if let Some(p) = pane {
+            self.panes.insert(ws.to_string(), p.to_string());
+        }
+    }
 }
 
 static STATES: LazyLock<Mutex<HashMap<String, Arc<State>>>> =
@@ -728,7 +755,9 @@ pub async fn serve_wire(server: Arc<Server>, stream: UnixStream, caller: Caller)
                 if check_broker(&server, &caller).is_err() {
                     return;
                 }
-                if write_line(&mut wr, &wire::event_line(name, data))
+                // Herdr's `EventEnvelope`, or for the pane-scoped subscriptions its
+                // `SubscriptionEventEnvelope` (dotted name, no `type`).
+                if write_line(&mut wr, &hev::stream_event(name, data).to_string())
                     .await
                     .is_err()
                 {
@@ -761,7 +790,10 @@ struct Snap {
     panes: Vec<Pane>,
     pane_run: HashMap<String, AgentRun>,
     blocked: HashSet<String>,
+    /// The most recently active TUI client's focus (empty without one).
     focus: ClientFocus,
+    /// The server-side focus memory ([`FocusMem`]).
+    last: FocusMem,
     meta: ext::Meta,
 }
 
@@ -779,7 +811,15 @@ fn snap(server: &Server) -> Snap {
             .get(&p)
             .and_then(|pp| pp.prev_focus.clone());
     }
-    server.with_core(|c| {
+    let st = state(server);
+    let last = {
+        let mut m = st.focus_mem.lock().unwrap();
+        if let Some(w) = focus.workspace.as_deref() {
+            m.record(w, focus.tab.as_deref(), focus.pane.as_deref());
+        }
+        m.clone()
+    };
+    let sn = server.with_core(|c| {
         let mut ws = c.model.workspaces.clone();
         ws.sort_by(|a, b| a.order.total_cmp(&b.order));
         let mut tabs = c.model.tabs.clone();
@@ -810,9 +850,28 @@ fn snap(server: &Server) -> Snap {
             pane_run,
             blocked,
             focus,
+            last,
             meta,
         }
-    })
+    });
+    {
+        let mut h = st.handles.lock().unwrap();
+        if h.len() > 8192 {
+            h.clear();
+        }
+        let ids = sn.ws.iter().map(|w| (&w.id, &w.handle));
+        let ids = ids.chain(sn.tabs.iter().map(|t| (&t.id, &t.handle)));
+        let ids = ids.chain(sn.panes.iter().map(|p| (&p.id, &p.handle)));
+        for (id, handle) in ids {
+            h.insert(id.clone(), handle.clone());
+        }
+    }
+    sn
+}
+
+/// The Herdr id of a Vibeke object, also after it closed.
+fn known_handle(server: &Server, id: &str) -> Option<String> {
+    state(server).handles.lock().unwrap().get(id).cloned()
 }
 
 /// A plugin popup's pane (live, by its tag, or one that already closed).
@@ -884,51 +943,175 @@ impl Snap {
     fn pane_status(&self, pane: &str) -> Option<&'static str> {
         self.pane_run.get(pane).map(|r| self.run_status(r))
     }
+    /// Herdr's active workspace: the most recent client's, else the one a client focused last,
+    /// else the first.
+    fn active_ws(&self) -> Option<&Workspace> {
+        self.focus
+            .workspace
+            .as_deref()
+            .and_then(|w| self.ws(w))
+            .or_else(|| self.last.workspace.as_deref().and_then(|w| self.ws(w)))
+            .or(self.ws.first())
+    }
+    /// A workspace's active tab (same fallbacks as [`Self::active_ws`]).
+    fn active_tab(&self, w: &Workspace) -> Option<&Tab> {
+        let mine = |t: &&Tab| t.workspace == w.id;
+        self.focus
+            .tab
+            .as_deref()
+            .and_then(|t| self.tab(t))
+            .filter(mine)
+            .or_else(|| {
+                self.last
+                    .tabs
+                    .get(&w.id)
+                    .and_then(|t| self.tab(t))
+                    .filter(mine)
+            })
+            .or_else(|| self.tabs.iter().find(|t| t.workspace == w.id))
+    }
+    /// A tab's focused pane: the client's, the remembered one, the tab's own, else its first.
+    fn tab_focus(&self, t: &Tab) -> Option<&Pane> {
+        let mine = |p: &&Pane| p.tab == t.id;
+        self.focus
+            .pane
+            .as_deref()
+            .and_then(|p| self.pane(p))
+            .filter(mine)
+            .or_else(|| {
+                self.last
+                    .panes
+                    .get(&t.workspace)
+                    .and_then(|p| self.pane(p))
+                    .filter(mine)
+            })
+            .or_else(|| {
+                t.focused_pane
+                    .as_deref()
+                    .and_then(|p| self.pane(p))
+                    .filter(mine)
+            })
+            .or_else(|| self.panes.iter().find(|p| p.tab == t.id && !p.exited))
+    }
+    fn tab_is_active(&self, t: &Tab) -> bool {
+        self.active_ws().is_some_and(|w| w.id == t.workspace)
+            && self
+                .ws(&t.workspace)
+                .and_then(|w| self.active_tab(w))
+                .is_some_and(|a| a.id == t.id)
+    }
+    fn pane_is_focused(&self, p: &Pane) -> bool {
+        self.tab(&p.tab)
+            .filter(|t| self.tab_is_active(t))
+            .and_then(|t| self.tab_focus(t))
+            .is_some_and(|f| f.id == p.id)
+    }
+    /// Herdr's tab label: the custom name, else the tab's position in its workspace.
+    fn tab_label(&self, t: &Tab) -> String {
+        t.title
+            .clone()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| {
+                let i = self
+                    .tabs
+                    .iter()
+                    .filter(|x| x.workspace == t.workspace)
+                    .position(|x| x.id == t.id)
+                    .unwrap_or(0);
+                (i + 1).to_string()
+            })
+    }
+    /// Herdr `WorkspaceInfo`, plus Vibeke's `cwd` and reported `metadata`.
     fn ws_json(&self, w: &Workspace) -> Value {
         let idx = self.ws.iter().position(|x| x.id == w.id).unwrap_or(0);
-        let tabs: Vec<&Tab> = self.tabs.iter().filter(|t| t.workspace == w.id).collect();
-        let active = tabs
-            .iter()
-            .find(|t| self.focus.tab.as_deref() == Some(&t.id))
-            .or(tabs.first())
-            .map(|t| t.handle.clone());
+        let tabs = self.tabs.iter().filter(|t| t.workspace == w.id).count();
         let statuses: Vec<&str> = self
             .panes
             .iter()
             .filter(|p| p.workspace == w.id)
             .filter_map(|p| self.pane_status(&p.id))
             .collect();
-        let mut v = json!({
-            "workspace_id": w.handle,
-            "number": idx + 1,
-            "label": w.display_name(),
-            "focused": self.focus.workspace.as_deref() == Some(&w.id),
-            "pane_count": self.panes.iter().filter(|p| p.workspace == w.id).count(),
-            "tab_count": tabs.len(),
-            "active_tab_id": active,
-            "agent_status": status::most_urgent(statuses),
-            "cwd": w.root_path,
-        });
-        if let Some(m) = self.meta.workspaces.get(&w.id) {
-            v["metadata"] = json!(m);
+        let mut v = Map::new();
+        v.insert("workspace_id".into(), json!(w.handle));
+        v.insert("number".into(), json!(idx + 1));
+        v.insert("label".into(), json!(w.display_name()));
+        v.insert(
+            "focused".into(),
+            json!(self.active_ws().is_some_and(|a| a.id == w.id)),
+        );
+        v.insert(
+            "pane_count".into(),
+            json!(self.panes.iter().filter(|p| p.workspace == w.id).count()),
+        );
+        v.insert("tab_count".into(), json!(tabs));
+        v.insert(
+            "active_tab_id".into(),
+            json!(self.active_tab(w).map(|t| t.handle.clone())),
+        );
+        v.insert(
+            "agent_status".into(),
+            json!(status::most_urgent(statuses).unwrap_or("unknown")),
+        );
+        let meta = self.meta.workspaces.get(&w.id);
+        if let Some(t) = meta.and_then(|m| tokens(m.get("tokens"))) {
+            v.insert("tokens".into(), t);
         }
-        v
+        if let Some(wt) = git_space(&w.root_path) {
+            v.insert("worktree".into(), wt);
+        }
+        v.insert("cwd".into(), json!(w.root_path));
+        if let Some(m) = meta {
+            v.insert("metadata".into(), json!(m));
+        }
+        Value::Object(v)
     }
+    /// Herdr `TabInfo`, plus Vibeke's `focused_pane_id`.
     fn tab_json(&self, t: &Tab) -> Value {
+        let statuses: Vec<&str> = self
+            .panes
+            .iter()
+            .filter(|p| p.tab == t.id)
+            .filter_map(|p| self.pane_status(&p.id))
+            .collect();
         json!({
             "tab_id": t.handle,
             "workspace_id": self.ws_handle(&t.workspace),
             "number": t.number,
-            "label": t.title.clone().unwrap_or_default(),
-            "focused": self.focus.tab.as_deref() == Some(&t.id),
+            "label": self.tab_label(t),
+            "focused": self.tab_is_active(t),
             "pane_count": self.panes.iter().filter(|p| p.tab == t.id).count(),
+            "agent_status": status::most_urgent(statuses).unwrap_or("unknown"),
             "focused_pane_id": t.focused_pane.as_deref().and_then(|p| self.pane(p)).map(|p| p.handle.clone()),
         })
     }
+    /// Herdr `PaneInfo` (absent optional fields left out, as Herdr does), plus Vibeke's
+    /// reported `metadata`. `title`, `display_agent`, `state_labels` and `tokens` come from
+    /// `pane.report_metadata`; `scroll` is the most recent client's viewport offset over the
+    /// pane's scrollback.
     fn pane_json(&self, server: &Server, p: &Pane) -> Value {
         let run = self.pane_run.get(&p.id);
         let cwd = server.pane_cwd(&p.id).or_else(|| p.cwd.clone());
-        let rev = server.pane_rt(&p.id).map(|r| r.rev()).unwrap_or(0);
+        let rt = server.pane_rt(&p.id);
+        let rev = rt.as_ref().map(|r| r.rev()).unwrap_or(0);
+        let (terminal_title, scroll) = match &rt {
+            Some(rt) => {
+                let sc = rt.screen.lock().unwrap();
+                let title = sc.engine.title();
+                // The offset is the client's view; the server's own scrollback may be
+                // shorter (a client keeps more), so the maximum is at least the offset.
+                let offset = u64::from(self.meta.scroll.get(&p.id).copied().unwrap_or(0));
+                let max = (sc.engine.history_len() as u64).max(offset);
+                (
+                    (!title.is_empty()).then_some(title),
+                    Some(json!({
+                        "offset_from_bottom": offset,
+                        "max_offset_from_bottom": max,
+                        "viewport_rows": sc.engine.rows(),
+                    })),
+                )
+            }
+            None => (None, None),
+        };
         let session = run.and_then(|r| {
             r.harness_session_id
                 .as_ref()
@@ -938,27 +1121,55 @@ impl Snap {
                     json!({"source": "vibeke", "agent": status::herdr_agent_name(&r.harness), "kind": kind, "value": value})
                 })
         });
-        let mut v = json!({
-            "pane_id": p.handle,
-            "terminal_id": p.handle,
-            "workspace_id": self.ws_handle(&p.workspace),
-            "tab_id": self.tab_handle(&p.tab),
-            "focused": self.focus.pane.as_deref() == Some(&p.id),
-            "cwd": cwd,
-            "foreground_cwd": cwd,
-            "agent": run.map(|r| status::herdr_agent_name(&r.harness).to_string()),
-            "agent_status": run.map(|r| self.run_status(r)),
-            "agent_session": session,
-            "revision": rev,
-            "scroll": self.meta.scroll.get(&p.id).copied().unwrap_or(0),
-        });
-        if let Some(t) = &p.title {
-            v["label"] = json!(t);
+        let meta = self.meta.panes.get(&p.id);
+        let ms = |k: &str| {
+            meta.and_then(|m| m.get(k))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        };
+        let mut v = Map::new();
+        let opt = |v: &mut Map<String, Value>, k: &str, x: Option<Value>| {
+            if let Some(x) = x {
+                v.insert(k.into(), x);
+            }
+        };
+        v.insert("pane_id".into(), json!(p.handle));
+        v.insert("terminal_id".into(), json!(p.handle));
+        v.insert("workspace_id".into(), json!(self.ws_handle(&p.workspace)));
+        v.insert("tab_id".into(), json!(self.tab_handle(&p.tab)));
+        v.insert("focused".into(), json!(self.pane_is_focused(p)));
+        opt(&mut v, "cwd", cwd.clone().map(Value::String));
+        opt(&mut v, "foreground_cwd", cwd.map(Value::String));
+        opt(&mut v, "label", p.title.clone().map(Value::String));
+        opt(
+            &mut v,
+            "agent",
+            run.map(|r| json!(status::herdr_agent_name(&r.harness))),
+        );
+        opt(&mut v, "title", ms("title").map(Value::String));
+        opt(&mut v, "terminal_title", terminal_title.map(Value::String));
+        opt(
+            &mut v,
+            "display_agent",
+            ms("display_agent").map(Value::String),
+        );
+        v.insert(
+            "agent_status".into(),
+            json!(run.map(|r| self.run_status(r)).unwrap_or("unknown")),
+        );
+        opt(
+            &mut v,
+            "state_labels",
+            meta.and_then(|m| tokens(m.get("state_labels"))),
+        );
+        opt(&mut v, "tokens", meta.and_then(|m| tokens(m.get("tokens"))));
+        opt(&mut v, "agent_session", session);
+        opt(&mut v, "scroll", scroll);
+        v.insert("revision".into(), json!(rev));
+        if let Some(m) = meta {
+            v.insert("metadata".into(), json!(m));
         }
-        if let Some(m) = self.meta.panes.get(&p.id) {
-            v["metadata"] = json!(m);
-        }
-        v
+        Value::Object(v)
     }
     fn agent_json(&self, server: &Server, r: &AgentRun) -> Value {
         json!({
@@ -970,20 +1181,179 @@ impl Snap {
             "pane": self.pane(&r.pane).map(|p| self.pane_json(server, p)),
         })
     }
+    /// Herdr's focused workspace, tab and pane ids (session-wide, see [`Self::active_ws`]).
     fn focused(&self) -> (Option<String>, Option<String>, Option<String>) {
+        let w = self.active_ws();
+        let t = w.and_then(|w| self.active_tab(w));
+        let p = t.and_then(|t| self.tab_focus(t));
         (
-            self.focus
-                .workspace
-                .as_deref()
-                .and_then(|x| self.ws_handle(x)),
-            self.focus.tab.as_deref().and_then(|x| self.tab_handle(x)),
-            self.focus
-                .pane
-                .as_deref()
-                .and_then(|x| self.pane(x))
-                .map(|p| p.handle.clone()),
+            w.map(|w| w.handle.clone()),
+            t.map(|t| t.handle.clone()),
+            p.map(|p| p.handle.clone()),
         )
     }
+
+    // ---- plugin invocation contexts (Herdr `src/app/api/plugins/context.rs`) ----------------
+
+    /// Herdr `plugin_context_from_parts`.
+    fn ctx_parts(
+        &self,
+        server: &Server,
+        w: &Workspace,
+        t: Option<&Tab>,
+        p: Option<&Pane>,
+        correlation: &str,
+    ) -> InvokeContext {
+        let pane_cwd = p.and_then(|x| server.pane_cwd(&x.id).or_else(|| x.cwd.clone()));
+        InvokeContext {
+            workspace_id: Some(w.handle.clone()),
+            workspace_label: Some(w.display_name().to_string()),
+            workspace_cwd: pane_cwd.clone().or_else(|| Some(w.root_path.clone())),
+            worktree: git_space(&w.root_path),
+            tab_id: t.map(|t| t.handle.clone()),
+            tab_label: t.map(|t| self.tab_label(t)),
+            focused_pane_id: p.map(|x| x.handle.clone()),
+            focused_pane_cwd: pane_cwd,
+            focused_pane_agent: p
+                .and_then(|x| self.pane_run.get(&x.id))
+                .map(|r| status::herdr_agent_name(&r.harness).to_string()),
+            focused_pane_status: p
+                .map(|x| self.pane_status(&x.id).unwrap_or("unknown").to_string()),
+            ..InvokeContext::empty(correlation)
+        }
+    }
+    /// Herdr `plugin_context_for_workspace`: its active tab and that tab's focused pane.
+    fn ctx_for_ws(&self, server: &Server, w: &Workspace, correlation: &str) -> InvokeContext {
+        let t = self.active_tab(w);
+        let p = t.and_then(|t| self.tab_focus(t));
+        self.ctx_parts(server, w, t, p, correlation)
+    }
+    /// Herdr `plugin_context_for_tab_id`.
+    fn ctx_for_tab(&self, server: &Server, t: &Tab, correlation: &str) -> Option<InvokeContext> {
+        let w = self.ws(&t.workspace)?;
+        Some(self.ctx_parts(server, w, Some(t), self.tab_focus(t), correlation))
+    }
+    /// Herdr `plugin_context_for_pane`: the pane is the focused pane.
+    fn ctx_for_pane(&self, server: &Server, p: &Pane, correlation: &str) -> Option<InvokeContext> {
+        let w = self.ws(&p.workspace)?;
+        Some(self.ctx_parts(server, w, self.tab(&p.tab), Some(p), correlation))
+    }
+    /// Herdr `current_plugin_context`: the active workspace and its focused pane.
+    fn current_ctx(&self, server: &Server, correlation: &str) -> InvokeContext {
+        match self.active_ws() {
+            Some(w) => self.ctx_for_ws(server, w, correlation),
+            None => InvokeContext::empty(correlation),
+        }
+    }
+    /// Herdr `plugin_context_for_event` for a projected event (`name` dotted, `d` its Herdr
+    /// data); the correlation id is the event name, as in Herdr.
+    fn ctx_for_event(&self, server: &Server, name: &str, d: &Value) -> InvokeContext {
+        let s = |v: &Value, k: &str| v.get(k).and_then(Value::as_str).map(str::to_string);
+        let inner = |o: &str, k: &str| d.get(o).and_then(|v| s(v, k));
+        let pane = s(d, "pane_id").or_else(|| inner("pane", "pane_id"));
+        let tab = s(d, "tab_id")
+            .or_else(|| inner("tab", "tab_id"))
+            .or_else(|| inner("layout", "tab_id"));
+        let ws = s(d, "workspace_id")
+            .or_else(|| inner("workspace", "workspace_id"))
+            .or_else(|| inner("tab", "workspace_id"))
+            .or_else(|| inner("pane", "workspace_id"))
+            .or_else(|| inner("layout", "workspace_id"))
+            .or_else(|| {
+                d.get("workspace_ids")
+                    .and_then(|a| a.get(0))
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            });
+        let empty = || {
+            let mut c = InvokeContext::empty(name);
+            c.workspace_id = ws.clone();
+            c.tab_id = tab.clone();
+            c.focused_pane_id = pane.clone();
+            if name == "worktree.removed" {
+                c.workspace_label = inner("worktree", "label");
+                c.workspace_cwd = inner("worktree", "path");
+            }
+            c
+        };
+        // Closed objects: only their ids (Herdr builds no context for them).
+        if matches!(name, "pane.closed" | "tab.closed") {
+            return empty();
+        }
+        pane.as_deref()
+            .and_then(|p| self.pane(p))
+            .and_then(|p| self.ctx_for_pane(server, p, name))
+            .or_else(|| {
+                tab.as_deref()
+                    .and_then(|t| self.tab(t))
+                    .and_then(|t| self.ctx_for_tab(server, t, name))
+            })
+            .or_else(|| {
+                ws.as_deref()
+                    .and_then(|w| self.ws(w))
+                    .map(|w| self.ctx_for_ws(server, w, name))
+            })
+            .unwrap_or_else(empty)
+    }
+}
+
+/// A reported `{key: "value"}` map with removed (`null`) keys left out; `None` when empty
+/// (Herdr omits empty `tokens` and `state_labels`).
+fn tokens(v: Option<&Value>) -> Option<Value> {
+    let m: Map<String, Value> = v?
+        .as_object()?
+        .iter()
+        .filter(|(_, x)| x.is_string())
+        .map(|(k, x)| (k.clone(), x.clone()))
+        .collect();
+    (!m.is_empty()).then_some(Value::Object(m))
+}
+
+/// Herdr's `WorkspaceWorktreeInfo` for a workspace rooted at a git checkout, read from its
+/// `.git` entry without running git: `repo_key` is the shared git directory, `repo_name` the
+/// main checkout's directory name, `repo_root` the main checkout. `None` when the root is not
+/// a checkout's top directory.
+fn git_space(root: &str) -> Option<Value> {
+    let checkout = Path::new(root);
+    let dot = checkout.join(".git");
+    let meta = std::fs::metadata(&dot).ok()?;
+    let canon = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    let (common, linked) = if meta.is_dir() {
+        (canon(&dot), false)
+    } else {
+        let text = std::fs::read_to_string(&dot).ok()?;
+        let gitdir = checkout.join(text.lines().find_map(|l| l.strip_prefix("gitdir:"))?.trim());
+        // A linked worktree's git dir names the shared one in `commondir`; a submodule's has none.
+        match std::fs::read_to_string(gitdir.join("commondir")) {
+            Ok(c) => (canon(&gitdir.join(c.trim())), true),
+            Err(_) => (canon(&gitdir), false),
+        }
+    };
+    let main = if common.file_name().is_some_and(|n| n == ".git") {
+        common.parent().map(Path::to_path_buf)
+    } else {
+        None
+    };
+    let name = main
+        .as_deref()
+        .unwrap_or(common.as_path())
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("repo")
+        .to_string();
+    let repo_root = if linked {
+        main.map(|m| m.display().to_string())
+            .unwrap_or_else(|| root.to_string())
+    } else {
+        root.to_string()
+    };
+    Some(json!({
+        "repo_key": common.display().to_string(),
+        "repo_name": name,
+        "repo_root": repo_root,
+        "checkout_path": root,
+        "is_linked_worktree": linked,
+    }))
 }
 
 fn seeded_projector(server: &Server) -> Projector {
@@ -1002,15 +1372,27 @@ fn seeded_projector(server: &Server) -> Projector {
     p
 }
 
-/// Herdr events for one Vibeke event: `(dotted name, Herdr pane id, data)`.
+/// Herdr events for one Vibeke event: `(dotted name, Herdr pane id, data)`. `data` holds
+/// Herdr's per-event fields (schema `EventData`, without `type`); [`hev::envelope`] and
+/// [`hev::stream_event`] wrap it.
 fn project_event(
     server: &Server,
     proj: &mut Projector,
     ev: &vk_store::Event,
 ) -> Vec<(&'static str, Option<String>, Value)> {
     let subj = &ev.subject;
-    let sn = snap(server);
     let sid = |k: &str| subj.get(k).and_then(Value::as_str);
+    // Remember the focus (Herdr has one even without a client attached).
+    if ev.kind == "pane.focused"
+        && let (Some(w), Some(p)) = (sid("workspace"), sid("pane"))
+    {
+        state(server)
+            .focus_mem
+            .lock()
+            .unwrap()
+            .record(w, sid("tab"), Some(p));
+    }
+    let sn = snap(server);
     // Popups have no pane lifecycle in the compat API (07 §7.7).
     if let Some(p) = sid("pane")
         && is_popup_pane(server, &sn.meta, p)
@@ -1018,18 +1400,28 @@ fn project_event(
         return vec![];
     }
     // Subject ids are ULIDs; translate to Herdr ids (handles), falling back to the handle the
-    // subject carries for objects already gone.
+    // subject carries or the one remembered for objects already gone.
+    let known = |id: Option<&str>| id.and_then(|i| known_handle(server, i));
     let pane = sid("pane")
         .and_then(|p| sn.pane(p))
         .map(|p| p.handle.clone())
-        .or_else(|| sid("pane_handle").map(str::to_string));
+        .or_else(|| sid("pane_handle").map(str::to_string))
+        .or_else(|| known(sid("pane")));
     let pane_obj = sid("pane").and_then(|p| sn.pane(p));
     let tab = sid("tab")
         .and_then(|t| sn.tab_handle(t))
-        .or_else(|| pane_obj.and_then(|p| sn.tab_handle(&p.tab)));
+        .or_else(|| pane_obj.and_then(|p| sn.tab_handle(&p.tab)))
+        .or_else(|| known(sid("tab")));
     let ws = sid("workspace")
         .and_then(|w| sn.ws_handle(w))
-        .or_else(|| pane_obj.and_then(|p| sn.ws_handle(&p.workspace)));
+        .or_else(|| pane_obj.and_then(|p| sn.ws_handle(&p.workspace)))
+        .or_else(|| known(sid("workspace")))
+        .or_else(|| {
+            // A tab handle (`w1:t2`) names its workspace.
+            tab.as_deref()
+                .and_then(|t| t.split_once(':'))
+                .map(|(w, _)| w.to_string())
+        });
     let status_after = sid("pane").and_then(|p| sn.pane_status(p));
     let input = hev::Input {
         kind: &ev.kind,
@@ -1040,93 +1432,294 @@ fn project_event(
         at_ms: ev.ts.max(0) as u64,
     };
     let names = proj.project(&input);
+    let ids = Ids {
+        ws: ws.clone(),
+        tab: tab.clone(),
+        pane: pane.clone(),
+    };
     names
         .into_iter()
-        .map(|name| {
-            let mut d = Map::new();
-            if let Some(w) = &ws {
-                d.insert("workspace_id".into(), json!(w));
-            }
-            if let Some(t) = &tab {
-                d.insert("tab_id".into(), json!(t));
-            }
-            if let Some(p) = &pane {
-                d.insert("pane_id".into(), json!(p));
-            }
-            if name.starts_with("workspace.")
-                && let Some(w) = sid("workspace").and_then(|w| sn.ws(w))
-            {
-                d.insert("workspace".into(), sn.ws_json(w));
-            }
-            if name.starts_with("tab.")
-                && let Some(t) = sid("tab").and_then(|t| sn.tab(t))
-            {
-                d.insert("tab".into(), sn.tab_json(t));
-            }
-            if name.starts_with("pane.")
-                && let Some(p) = pane_obj
-            {
-                d.insert("pane".into(), sn.pane_json(server, p));
-            }
-            if name == "pane.agent_status_changed" || name == "pane.agent_detected" {
-                d.insert("agent_status".into(), json!(status_after));
-                d.insert(
-                    "agent".into(),
-                    json!(
-                        pane_obj
-                            .and_then(|p| sn.pane_run.get(&p.id))
-                            .map(|r| status::herdr_agent_name(&r.harness))
-                    ),
-                );
-            }
-            match name {
-                "worktree.created" | "worktree.opened" | "worktree.removed" => {
-                    let mut wt = ev.data.clone();
-                    if let Some(o) = wt.as_object_mut() {
-                        o.retain(|k, _| matches!(k.as_str(), "path" | "branch" | "repo_root"));
-                    }
-                    d.insert("worktree".into(), wt);
-                    d.insert("data".into(), ev.data.clone());
-                }
-                "pane.moved" => {
-                    for k in [
-                        "from_tab_id",
-                        "to_tab_id",
-                        "from_workspace_id",
-                        "to_workspace_id",
-                    ] {
-                        if let Some(v) = ev.data.get(k) {
-                            d.insert(k.into(), v.clone());
-                        }
-                    }
-                }
-                "tab.moved" => {
-                    if let Some(i) = ev.data.get("index") {
-                        d.insert("insert_index".into(), i.clone());
-                    }
-                }
-                "layout.updated" => {
-                    if let Some(t) = sid("tab").and_then(|t| sn.tab(t)) {
-                        d.insert("layout".into(), ext::tab_snapshot(&sn, t));
-                    }
-                }
-                "pane.scroll_changed" => {
-                    if let Some(v) = ev.data.get("offset") {
-                        d.insert("scroll".into(), v.clone());
-                    }
-                }
-                "pane.output_matched" => {
-                    for k in ["matched", "revision"] {
-                        if let Some(v) = ev.data.get(k) {
-                            d.insert(k.into(), v.clone());
-                        }
-                    }
-                }
-                _ => {}
-            }
-            (name, pane.clone(), Value::Object(d))
+        .filter_map(|name| {
+            event_data(server, &sn, ev, name, &ids, pane_obj).map(|d| (name, pane.clone(), d))
         })
         .collect()
+}
+
+/// The Herdr ids of a Vibeke event's subject.
+struct Ids {
+    ws: Option<String>,
+    tab: Option<String>,
+    pane: Option<String>,
+}
+
+/// Herdr's `EventData` fields of one projected event (schema `event.$defs.EventData`). `None`
+/// when an object the event must carry is gone.
+fn event_data(
+    server: &Server,
+    sn: &Snap,
+    ev: &vk_store::Event,
+    name: &str,
+    ids: &Ids,
+    pane_obj: Option<&Pane>,
+) -> Option<Value> {
+    let sid = |k: &str| ev.subject.get(k).and_then(Value::as_str);
+    let ws_id = || json!(ids.ws.clone().unwrap_or_default());
+    let tab_id = || json!(ids.tab.clone().unwrap_or_default());
+    let pane_id = || json!(ids.pane.clone().unwrap_or_default());
+    let ws_obj = || sid("workspace").and_then(|w| sn.ws(w));
+    let tab_obj = || sid("tab").and_then(|t| sn.tab(t));
+    let pane_json = || pane_obj.map(|p| sn.pane_json(server, p));
+    let mut d = Map::new();
+    match name {
+        "workspace.created" | "workspace.updated" | "workspace.metadata_updated" => {
+            d.insert("workspace".into(), sn.ws_json(ws_obj()?));
+        }
+        "workspace.closed" | "workspace.focused" => {
+            d.insert("workspace_id".into(), ws_id());
+        }
+        "workspace.renamed" => {
+            d.insert("workspace_id".into(), ws_id());
+            d.insert(
+                "label".into(),
+                json!(ws_obj().map(|w| w.display_name().to_string())),
+            );
+        }
+        "workspace.moved" => {
+            let w = ws_obj()?;
+            d.insert("workspace_id".into(), ws_id());
+            d.insert(
+                "insert_index".into(),
+                json!(sn.ws.iter().position(|x| x.id == w.id).unwrap_or(0)),
+            );
+            d.insert(
+                "workspaces".into(),
+                json!(sn.ws.iter().map(|w| sn.ws_json(w)).collect::<Vec<_>>()),
+            );
+        }
+        "workspace.reordered" => {
+            d.insert(
+                "workspace_ids".into(),
+                json!(sn.ws.iter().map(|w| w.handle.clone()).collect::<Vec<_>>()),
+            );
+            d.insert(
+                "workspaces".into(),
+                json!(sn.ws.iter().map(|w| sn.ws_json(w)).collect::<Vec<_>>()),
+            );
+        }
+        "worktree.created" | "worktree.opened" | "worktree.removed" => {
+            let w = ws_obj().or_else(|| {
+                let path = ev.data.get("path").and_then(Value::as_str)?;
+                sn.ws.iter().find(|w| w.root_path == path)
+            });
+            let info = worktree_info(sn, ev, w);
+            if name == "worktree.removed" {
+                d.insert(
+                    "workspace_id".into(),
+                    json!(
+                        w.map(|w| w.handle.clone())
+                            .or(ids.ws.clone())
+                            .unwrap_or_default()
+                    ),
+                );
+                if let Some(w) = w {
+                    d.insert("workspace".into(), sn.ws_json(w));
+                }
+                d.insert("worktree".into(), info);
+                d.insert("forced".into(), json!(false));
+            } else {
+                d.insert("workspace".into(), sn.ws_json(w?));
+                d.insert("worktree".into(), info);
+                if name == "worktree.opened" {
+                    let created = ev
+                        .data
+                        .get("created_workspace")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false);
+                    d.insert("already_open".into(), json!(!created));
+                }
+            }
+        }
+        "tab.created" => {
+            d.insert("tab".into(), sn.tab_json(tab_obj()?));
+        }
+        "tab.closed" | "tab.focused" => {
+            d.insert("tab_id".into(), tab_id());
+            d.insert("workspace_id".into(), ws_id());
+        }
+        "tab.renamed" => {
+            d.insert("tab_id".into(), tab_id());
+            d.insert("workspace_id".into(), ws_id());
+            d.insert("label".into(), json!(tab_obj().map(|t| sn.tab_label(t))));
+        }
+        "tab.moved" => {
+            let t = tab_obj()?;
+            d.insert("tab_id".into(), tab_id());
+            d.insert("workspace_id".into(), ws_id());
+            let tabs: Vec<&Tab> = sn
+                .tabs
+                .iter()
+                .filter(|x| x.workspace == t.workspace)
+                .collect();
+            d.insert(
+                "insert_index".into(),
+                json!(tabs.iter().position(|x| x.id == t.id).unwrap_or(0)),
+            );
+            d.insert(
+                "tabs".into(),
+                json!(tabs.iter().map(|x| sn.tab_json(x)).collect::<Vec<_>>()),
+            );
+        }
+        "pane.created" | "pane.updated" => {
+            d.insert("pane".into(), pane_json()?);
+        }
+        "pane.closed" | "pane.focused" | "pane.exited" => {
+            d.insert("pane_id".into(), pane_id());
+            d.insert("workspace_id".into(), ws_id());
+        }
+        "pane.moved" => {
+            // Vibeke keeps a pane's id when it moves: the previous id is the same.
+            let from = ev.data.get("from_tab_id").and_then(Value::as_str);
+            d.insert("previous_pane_id".into(), pane_id());
+            d.insert(
+                "previous_workspace_id".into(),
+                json!(
+                    from.and_then(|t| sn.tab(t))
+                        .and_then(|t| sn.ws_handle(&t.workspace))
+                        .or_else(|| from
+                            .and_then(|t| t.split_once(':'))
+                            .map(|(w, _)| w.to_string()))
+                        .or(ids.ws.clone())
+                        .unwrap_or_default()
+                ),
+            );
+            d.insert(
+                "previous_tab_id".into(),
+                json!(
+                    from.map(str::to_string)
+                        .or(ids.tab.clone())
+                        .unwrap_or_default()
+                ),
+            );
+            d.insert("pane".into(), pane_json()?);
+        }
+        "pane.agent_detected" => {
+            d.insert("pane_id".into(), pane_id());
+            d.insert("workspace_id".into(), ws_id());
+            if let Some(r) = pane_obj.and_then(|p| sn.pane_run.get(&p.id)) {
+                d.insert("agent".into(), json!(status::herdr_agent_name(&r.harness)));
+            }
+        }
+        "pane.agent_status_changed" => {
+            let p = pane_json();
+            d.insert("pane_id".into(), pane_id());
+            d.insert("workspace_id".into(), ws_id());
+            d.insert(
+                "agent_status".into(),
+                json!(
+                    sid("pane")
+                        .and_then(|x| sn.pane_status(x))
+                        .unwrap_or("unknown")
+                ),
+            );
+            for k in ["agent", "title", "display_agent", "state_labels"] {
+                if let Some(v) = p.as_ref().and_then(|p| p.get(k)) {
+                    d.insert(k.into(), v.clone());
+                }
+            }
+        }
+        "layout.updated" => {
+            d.insert("layout".into(), ext::tab_snapshot(sn, tab_obj()?));
+        }
+        // Pane-scoped subscription events (Herdr `SubscriptionEventData`).
+        "pane.scroll_changed" => {
+            let mut scroll = pane_json()
+                .and_then(|p| p.get("scroll").cloned())
+                .unwrap_or_else(|| json!({"offset_from_bottom": 0, "max_offset_from_bottom": 0, "viewport_rows": 0}));
+            if let Some(o) = ev.data.get("offset") {
+                scroll["offset_from_bottom"] = o.clone();
+            }
+            d.insert("pane_id".into(), pane_id());
+            d.insert("workspace_id".into(), ws_id());
+            d.insert("scroll".into(), scroll);
+        }
+        "pane.output_matched" => {
+            let line = match ev.data.get("matched") {
+                Some(Value::String(s)) => s.clone(),
+                Some(Value::Null) | None => String::new(),
+                Some(v) => v.to_string(),
+            };
+            d.insert("pane_id".into(), pane_id());
+            d.insert("matched_line".into(), json!(line));
+            d.insert(
+                "read".into(),
+                json!({
+                    "pane_id": pane_id(),
+                    "workspace_id": ws_id(),
+                    "tab_id": tab_id(),
+                    "source": "recent",
+                    "format": "text",
+                    "text": line,
+                    "revision": ev.data.get("revision").and_then(Value::as_u64).unwrap_or(0),
+                    "truncated": false,
+                }),
+            );
+        }
+        _ => {}
+    }
+    Some(Value::Object(d))
+}
+
+/// Herdr's `WorktreeInfo` for a worktree event (`path`, `branch` from the Vibeke event).
+fn worktree_info(sn: &Snap, ev: &vk_store::Event, w: Option<&Workspace>) -> Value {
+    let path = ev
+        .data
+        .get("path")
+        .or_else(|| ev.subject.get("path"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or_else(|| w.map(|w| w.root_path.clone()))
+        .unwrap_or_default();
+    let branch = ev
+        .data
+        .get("branch")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let space = git_space(&path);
+    let linked = space
+        .as_ref()
+        .and_then(|s| s["is_linked_worktree"].as_bool())
+        .unwrap_or(true);
+    let label = space
+        .as_ref()
+        .and_then(|s| s["repo_name"].as_str().map(str::to_string))
+        .or_else(|| {
+            ev.data
+                .get("repo_root")
+                .and_then(Value::as_str)
+                .and_then(|r| Path::new(r).file_name())
+                .and_then(|n| n.to_str())
+                .map(str::to_string)
+        })
+        .unwrap_or_default();
+    let open = sn
+        .ws
+        .iter()
+        .find(|x| x.root_path == path)
+        .map(|x| x.handle.clone());
+    let mut v = Map::new();
+    v.insert("path".into(), json!(path));
+    if let Some(b) = &branch {
+        v.insert("branch".into(), json!(b));
+    }
+    v.insert("is_bare".into(), json!(false));
+    v.insert("is_detached".into(), json!(branch.is_none()));
+    v.insert("is_prunable".into(), json!(false));
+    v.insert("is_linked_worktree".into(), json!(linked));
+    if let Some(o) = open {
+        v.insert("open_workspace_id".into(), json!(o));
+    }
+    v.insert("label".into(), json!(label));
+    Value::Object(v)
 }
 
 // ---- method mapping ---------------------------------------------------------------------------
@@ -1789,7 +2382,9 @@ pub async fn call(
                     ));
                 }
             }
-            let ctx = InvokeContext::from_params(&sn, p, caller);
+            // Herdr: the current context merged with the request's `context`; the
+            // correlation id defaults to the invocation's log id (Herdr uses the request id).
+            let ctx = InvokeContext::from_params(server, &sn, p, "api", "");
             let log = invoke_action(
                 server,
                 caller.ctx.pane_scope.as_deref(),
@@ -1798,7 +2393,17 @@ pub async fn call(
                 ctx,
                 "api",
             )?;
-            Ok(typed("plugin_action_started", json!({"log": log})))
+            // Herdr `plugin_action_invoked {action: PluginActionInfo, context, log}`.
+            let mut info = action_list(Some(&plugin))?
+                .into_iter()
+                .find(|a| a["action_id"] == action.as_str())
+                .unwrap_or_else(|| json!({"plugin_id": plugin, "action_id": action}));
+            info["command"] = log.get("command").cloned().unwrap_or_else(|| json!([]));
+            let context = log.get("context").cloned().unwrap_or_else(|| json!({}));
+            Ok(typed(
+                "plugin_action_invoked",
+                json!({"action": info, "context": context, "log": log}),
+            ))
         }
         "plugin.log.list" => {
             // A restricted plugin sees its own records only.
@@ -1865,10 +2470,7 @@ async fn events_wait(server: &Arc<Server>, caller: &Caller, p: &Value) -> Result
         check_broker(server, caller)?;
         for (name, pane, data) in project_event(server, &mut proj, &ev) {
             if subs.iter().any(|s| hev::matches(s, name, pane.as_deref())) {
-                return Ok(typed(
-                    "event",
-                    json!({"event": hev::wire_name(name), "data": data}),
-                ));
+                return Ok(typed("event", hev::stream_event(name, data)));
             }
         }
     }
@@ -2125,8 +2727,9 @@ fn open_link(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> Result<Value, WireEr
         .resolve_action(&l.action)
         .map(|a| a.id.clone())
         .ok_or_else(|| WireError::new("plugin_action_not_found", l.action.clone()))?;
+    // Herdr: the clicked pane's context, source and correlation `link_click`.
     let sn = snap(server);
-    let mut ictx = InvokeContext::from_params(&sn, p, &Caller::user(ctx.clone()));
+    let mut ictx = InvokeContext::from_params(server, &sn, p, "link_click", "link_click");
     ictx.clicked_url = Some(url.to_string());
     ictx.link_handler_id = Some(l.id.clone());
     invoke_action(
@@ -2156,50 +2759,129 @@ fn split_qualified(q: &str) -> Result<(String, String), WireError> {
         })
 }
 
-/// Invocation context (`PluginInvocationContext` subset).
-#[derive(Debug, Clone, Default)]
+/// Herdr's `PluginInvocationContext` (schema `PluginInvocationContext`, Herdr
+/// `src/app/api/plugins/context.rs`): `HERDR_PLUGIN_CONTEXT_JSON` and the `context` of
+/// `plugin_action_invoked`. Absent fields are left out of the JSON, as in Herdr.
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct InvokeContext {
-    pub workspace: Option<String>,
-    pub tab: Option<String>,
-    pub pane: Option<String>,
+    pub workspace_id: Option<String>,
+    pub workspace_label: Option<String>,
+    pub workspace_cwd: Option<String>,
+    /// `WorkspaceWorktreeInfo`.
+    pub worktree: Option<Value>,
+    pub tab_id: Option<String>,
+    pub tab_label: Option<String>,
+    pub focused_pane_id: Option<String>,
+    pub focused_pane_cwd: Option<String>,
+    pub focused_pane_agent: Option<String>,
+    /// `AgentStatus`.
+    pub focused_pane_status: Option<String>,
+    pub selected_text: Option<String>,
+    pub invocation_source: Option<String>,
+    pub correlation_id: Option<String>,
     /// Link handler invocations (07 §7.7): the activated URL and the handler's id.
     pub clicked_url: Option<String>,
     pub link_handler_id: Option<String>,
 }
 
 impl InvokeContext {
-    /// Explicit `workspace_id/tab_id/pane_id` (Herdr ids or Vibeke handles), else the caller's
-    /// pane, else the focus of the most recently active client.
-    fn from_params(sn: &Snap, p: &Value, caller: &Caller) -> Self {
-        let ctx = p.get("context").unwrap_or(p);
-        let pane = sp(ctx, "pane_id")
-            .or(sp(ctx, "pane"))
-            .and_then(|x| sn.pane(x))
-            .or_else(|| caller.default_pane.as_deref().and_then(|x| sn.pane(x)))
-            .or_else(|| caller.ctx.pane_scope.as_deref().and_then(|x| sn.pane(x)))
-            .or_else(|| {
-                if sp(ctx, "workspace_id").or(sp(ctx, "workspace")).is_some() {
-                    None
-                } else {
-                    sn.focus.pane.as_deref().and_then(|x| sn.pane(x))
-                }
-            });
-        let ws = sp(ctx, "workspace_id")
-            .or(sp(ctx, "workspace"))
-            .and_then(|x| sn.ws(x))
-            .map(|w| w.handle.clone())
-            .or_else(|| pane.and_then(|x| sn.ws_handle(&x.workspace)));
-        let tab = sp(ctx, "tab_id")
-            .or(sp(ctx, "tab"))
-            .and_then(|x| sn.tab(x))
-            .map(|t| t.handle.clone())
-            .or_else(|| pane.and_then(|x| sn.tab_handle(&x.tab)));
+    /// Herdr `empty_plugin_context`.
+    fn empty(correlation: &str) -> Self {
         InvokeContext {
-            workspace: ws,
-            tab,
-            pane: pane.map(|x| x.handle.clone()),
+            invocation_source: Some("api".into()),
+            correlation_id: Some(correlation.into()),
             ..Default::default()
         }
+    }
+
+    /// The JSON object, in Herdr's field order.
+    pub fn to_json(&self) -> Map<String, Value> {
+        let mut m = Map::new();
+        let mut put = |k: &str, v: &Option<String>| {
+            if let Some(v) = v {
+                m.insert(k.into(), json!(v));
+            }
+        };
+        put("workspace_id", &self.workspace_id);
+        put("workspace_label", &self.workspace_label);
+        put("workspace_cwd", &self.workspace_cwd);
+        if let Some(w) = &self.worktree {
+            m.insert("worktree".into(), w.clone());
+        }
+        let mut put = |k: &str, v: &Option<String>| {
+            if let Some(v) = v {
+                m.insert(k.into(), json!(v));
+            }
+        };
+        put("tab_id", &self.tab_id);
+        put("tab_label", &self.tab_label);
+        put("focused_pane_id", &self.focused_pane_id);
+        put("focused_pane_cwd", &self.focused_pane_cwd);
+        put("focused_pane_agent", &self.focused_pane_agent);
+        put("focused_pane_status", &self.focused_pane_status);
+        put("selected_text", &self.selected_text);
+        put("invocation_source", &self.invocation_source);
+        put("correlation_id", &self.correlation_id);
+        put("clicked_url", &self.clicked_url);
+        put("link_handler_id", &self.link_handler_id);
+        m
+    }
+
+    /// Herdr `merge_plugin_context`: every field the caller provided replaces the base's.
+    fn merge(mut self, provided: &Value) -> Self {
+        let over = |dst: &mut Option<String>, k: &str| {
+            if let Some(v) = provided.get(k).and_then(Value::as_str) {
+                *dst = Some(v.to_string());
+            }
+        };
+        over(&mut self.workspace_id, "workspace_id");
+        over(&mut self.workspace_label, "workspace_label");
+        over(&mut self.workspace_cwd, "workspace_cwd");
+        if let Some(w) = provided.get("worktree").filter(|w| w.is_object()) {
+            self.worktree = Some(w.clone());
+        }
+        over(&mut self.tab_id, "tab_id");
+        over(&mut self.tab_label, "tab_label");
+        over(&mut self.focused_pane_id, "focused_pane_id");
+        over(&mut self.focused_pane_cwd, "focused_pane_cwd");
+        over(&mut self.focused_pane_agent, "focused_pane_agent");
+        over(&mut self.focused_pane_status, "focused_pane_status");
+        over(&mut self.selected_text, "selected_text");
+        over(&mut self.invocation_source, "invocation_source");
+        over(&mut self.correlation_id, "correlation_id");
+        over(&mut self.clicked_url, "clicked_url");
+        over(&mut self.link_handler_id, "link_handler_id");
+        self
+    }
+
+    /// The context of an action run through the API: Herdr's current context (the active
+    /// workspace and its focused pane, kept server-side without a client) merged with the
+    /// request's `context` field by field. Vibeke's own callers (TUI, `vibeke plugin action
+    /// run`, link handlers) may name the pane, tab or workspace as top-level `pane`, `tab` or
+    /// `workspace`: the base context is then built for that object instead.
+    fn from_params(server: &Server, sn: &Snap, p: &Value, source: &str, correlation: &str) -> Self {
+        let base = sp(p, "pane")
+            .and_then(|x| sn.pane(x))
+            .and_then(|x| sn.ctx_for_pane(server, x, correlation))
+            .or_else(|| {
+                sp(p, "tab")
+                    .and_then(|x| sn.tab(x))
+                    .and_then(|x| sn.ctx_for_tab(server, x, correlation))
+            })
+            .or_else(|| {
+                sp(p, "workspace")
+                    .and_then(|x| sn.ws(x))
+                    .map(|x| sn.ctx_for_ws(server, x, correlation))
+            })
+            .unwrap_or_else(|| sn.current_ctx(server, correlation));
+        let mut ctx = InvokeContext {
+            invocation_source: Some(source.to_string()),
+            ..base
+        };
+        if let Some(c) = p.get("context").filter(|c| c.is_object()) {
+            ctx = ctx.merge(c);
+        }
+        ctx
     }
 }
 
@@ -2651,22 +3333,22 @@ fn spawn_invocation(
         .as_ref()
         .map(|g| g.manifest_sha256.clone())
         .unwrap_or_default();
-    let context = json!({
-        "source": sp_.source,
-        "correlation_id": log_id,
-        "plugin_id": entry.id,
-        "action_id": sp_.action,
-        "event": sp_.event.as_ref().map(|e| e.0.clone()),
-        "workspace_id": sp_.ctx.workspace,
-        "tab_id": sp_.ctx.tab,
-        "pane_id": sp_.ctx.pane,
-        "plugin_version": m.version,
-    });
-    let mut context = context;
-    if let Some(u) = &sp_.ctx.clicked_url {
-        context["clicked_url"] = json!(u);
-        context["link_handler_id"] = json!(sp_.ctx.link_handler_id);
+    // Herdr's `PluginInvocationContext`, then Vibeke-only keys (Herdr clients ignore them).
+    let mut ictx = sp_.ctx.clone();
+    if ictx.correlation_id.as_deref().is_none_or(str::is_empty) {
+        ictx.correlation_id = Some(log_id.clone());
     }
+    let mut context = ictx.to_json();
+    context.insert("source".into(), json!(sp_.source));
+    context.insert("plugin_id".into(), json!(entry.id));
+    context.insert("plugin_version".into(), json!(m.version));
+    if let Some(a) = &sp_.action {
+        context.insert("action_id".into(), json!(a));
+    }
+    if let Some((e, _)) = &sp_.event {
+        context.insert("event".into(), json!(e));
+    }
+    let context = Value::Object(context);
     let started = now_ms();
     let mut rec = json!({
         "log_id": log_id,
@@ -2750,7 +3432,7 @@ fn spawn_invocation(
         path: broker.clone(),
         plugin_id: entry.id.clone(),
         digest,
-        default_pane: sp_.ctx.pane.clone(),
+        default_pane: ictx.focused_pane_id.clone(),
         entrypoint: sp_.entrypoint.clone(),
         source: sp_.source.to_string(),
         log_id: Some(log_id.clone()),
@@ -2777,14 +3459,21 @@ fn spawn_invocation(
         socket_path: broker.clone(),
         bin_path: launcher(server),
         context,
-        workspace_id: sp_.ctx.workspace.clone(),
-        tab_id: sp_.ctx.tab.clone(),
-        pane_id: sp_.ctx.pane.clone(),
+        // Herdr `start_plugin_command`: ids from the context; the event name for hooks and
+        // startup, its envelope for hooks; never an entrypoint id (plugin panes only).
+        workspace_id: ictx.workspace_id.clone(),
+        tab_id: ictx.tab_id.clone(),
+        pane_id: ictx.focused_pane_id.clone(),
         action_id: sp_.action.clone(),
-        event: sp_.event.clone(),
-        entrypoint_id: sp_.entrypoint.clone(),
-        clicked_url: sp_.ctx.clicked_url.clone(),
-        link_handler_id: sp_.ctx.link_handler_id.clone(),
+        event: sp_.event.as_ref().map(|e| e.0.clone()),
+        event_json: sp_
+            .event
+            .as_ref()
+            .map(|e| e.1.clone())
+            .filter(|v| !v.is_null()),
+        entrypoint_id: None,
+        clicked_url: ictx.clicked_url.clone(),
+        link_handler_id: ictx.link_handler_id.clone(),
         broker_token: token,
     };
     let argv = launch::resolve_argv(&entry.root, command);
@@ -2969,6 +3658,10 @@ fn run_startup_hooks(server: &Arc<Server>) {
         return;
     };
     let pf = herdr::current_platform();
+    // Herdr `run_plugin_startup_hooks`: the current context with source `startup` and
+    // correlation `plugin.startup`; `HERDR_PLUGIN_EVENT=startup` without event JSON.
+    let mut ctx = snap(server).current_ctx(server, "plugin.startup");
+    ctx.invocation_source = Some("startup".into());
     for (entry, m) in reg.active() {
         for (i, s) in m.startup_on(pf).into_iter().enumerate() {
             spawn_invocation(
@@ -2979,9 +3672,9 @@ fn run_startup_hooks(server: &Arc<Server>) {
                 Spawn {
                     source: "startup",
                     action: None,
-                    event: None,
+                    event: Some(("startup".into(), Value::Null)),
                     entrypoint: Some(format!("startup[{i}]")),
-                    ctx: InvokeContext::default(),
+                    ctx: ctx.clone(),
                     long_lived: true,
                 },
                 None,
@@ -3042,23 +3735,21 @@ async fn hook_dispatcher(server: Arc<Server>) {
             continue;
         }
         for (name, _pane, data) in projected {
+            // Herdr runs hooks for `PLUGIN_HOOK_EVENT_KINDS` only.
+            if !hev::HOOK_EVENTS.contains(&name) {
+                continue;
+            }
+            if !active
+                .iter()
+                .any(|(_, m)| !m.hooks_for(name, pf).is_empty())
+            {
+                continue;
+            }
+            // Herdr `plugin_context_for_event`, and the whole `EventEnvelope` as JSON.
+            let ctx = snap(&server).ctx_for_event(&server, name, &data);
+            let envelope = hev::envelope(name, data);
             for (entry, m) in &active {
                 for (i, h) in m.hooks_for(name, pf).into_iter().enumerate() {
-                    let ctx = InvokeContext {
-                        workspace: data
-                            .get("workspace_id")
-                            .and_then(Value::as_str)
-                            .map(str::to_string),
-                        tab: data
-                            .get("tab_id")
-                            .and_then(Value::as_str)
-                            .map(str::to_string),
-                        pane: data
-                            .get("pane_id")
-                            .and_then(Value::as_str)
-                            .map(str::to_string),
-                        ..Default::default()
-                    };
                     limits::dispatch_hook(
                         &server,
                         limits::Queued {
@@ -3066,11 +3757,11 @@ async fn hook_dispatcher(server: Arc<Server>) {
                             m: m.clone(),
                             command: h.command.clone(),
                             source: "event".into(),
-                            event: Some((name.to_string(), data.clone())),
+                            event: Some((name.to_string(), envelope.clone())),
                             entrypoint: Some(
                                 h.id.clone().unwrap_or_else(|| format!("events[{i}]")),
                             ),
-                            ctx,
+                            ctx: ctx.clone(),
                         },
                     );
                 }
@@ -3132,12 +3823,19 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
                     ));
                 }
             };
-            let sn = snap(server);
-            let ictx = InvokeContext::from_params(&sn, p, &Caller::user(ctx.clone()));
             // Where the user started it (TUI palette, key binding); anything else is `cli`.
             let source = s("source")
                 .filter(|x| matches!(*x, "palette" | "keybinding"))
                 .unwrap_or("cli");
+            // Herdr uses the correlation id `keybinding` for key bindings; other runs get
+            // their log id.
+            let sn = snap(server);
+            let corr = if source == "keybinding" {
+                "keybinding"
+            } else {
+                ""
+            };
+            let ictx = InvokeContext::from_params(server, &sn, p, source, corr);
             invoke_action(
                 server,
                 ctx.pane_scope.as_deref(),
@@ -3813,12 +4511,220 @@ mod tests {
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].0, "pane.scroll_changed");
         assert_eq!(out[0].1.as_deref(), Some("w1:p1"));
-        assert_eq!(out[0].2["scroll"], 12);
+        assert_eq!(out[0].2["scroll"]["offset_from_bottom"], 12);
         let sn = snap(&srv);
         let p1 = sn.pane("P1").unwrap();
-        assert_eq!(sn.pane_json(&srv, p1)["scroll"], 12);
+        // Herdr omits `scroll` without terminal metrics (this pane has no runtime).
+        assert!(sn.pane_json(&srv, p1).get("scroll").is_none());
+        assert_eq!(state(&srv).meta.lock().unwrap().scroll.get("P1"), Some(&12));
         scroll_changed(&srv, "c-tui", "P1", 0, 300);
         assert_eq!(state(&srv).meta.lock().unwrap().scroll.get("P1"), None);
+    }
+
+    /// A workspace `w1` (root `repo`, a git checkout) with tab `w1:t1` holding panes `w1:p1`
+    /// and `w1:p2` (the tab's own focus); no client attached.
+    fn one_workspace(srv: &Server, root: &str) {
+        srv.with_core(|c| {
+            c.model.workspaces.push(Workspace {
+                id: "W".into(),
+                handle: "w1".into(),
+                name: Some("demo".into()),
+                auto_name: "auto".into(),
+                root_path: root.into(),
+                task: None,
+                order: 0.0,
+                branch: None,
+            });
+            c.model.tabs.push(Tab {
+                id: "T".into(),
+                handle: "w1:t1".into(),
+                workspace: "W".into(),
+                title: None,
+                number: 1,
+                layout: LayoutNode::Leaf { pane: "P1".into() },
+                focused_pane: Some("P2".into()),
+                zoomed_pane: None,
+                order: 0.0,
+                floating: vec![],
+                floats_hidden: false,
+            });
+            c.model.panes.push(model_pane("P1", "w1:p1", "user"));
+            c.model.panes.push(model_pane("P2", "w1:p2", "user"));
+        });
+    }
+
+    fn event(kind: &str, subject: Value) -> vk_store::Event {
+        vk_store::Event {
+            seq: 1,
+            ts: 0,
+            v: 1,
+            tier: "sync".into(),
+            kind: kind.into(),
+            subject,
+            actor: json!({}),
+            data: json!({}),
+        }
+    }
+
+    #[tokio::test]
+    async fn contexts_follow_herdr_without_a_client() {
+        let (srv, d) = server();
+        let repo = d.path().join("repo");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        let root = repo.to_string_lossy().into_owned();
+        one_workspace(&srv, &root);
+
+        // Herdr `current_plugin_context`: the active workspace, its tab and focused pane.
+        let sn = snap(&srv);
+        let c = sn.current_ctx(&srv, "corr");
+        assert_eq!(c.workspace_id.as_deref(), Some("w1"));
+        assert_eq!(c.workspace_label.as_deref(), Some("demo"));
+        assert_eq!(c.workspace_cwd.as_deref(), Some(root.as_str()));
+        assert_eq!(c.tab_id.as_deref(), Some("w1:t1"));
+        assert_eq!(c.tab_label.as_deref(), Some("1"));
+        assert_eq!(
+            c.focused_pane_id.as_deref(),
+            Some("w1:p2"),
+            "the tab's focus"
+        );
+        assert_eq!(c.focused_pane_status.as_deref(), Some("unknown"));
+        assert_eq!(c.invocation_source.as_deref(), Some("api"));
+        assert_eq!(c.correlation_id.as_deref(), Some("corr"));
+        let wt = c.worktree.clone().unwrap();
+        assert_eq!(wt["checkout_path"], root.as_str());
+        assert_eq!(wt["repo_root"], root.as_str());
+        assert_eq!(wt["repo_name"], "repo");
+        assert_eq!(wt["is_linked_worktree"], false);
+        let keys: Vec<String> = c.to_json().keys().cloned().collect();
+        assert_eq!(
+            keys,
+            [
+                "workspace_id",
+                "workspace_label",
+                "workspace_cwd",
+                "worktree",
+                "tab_id",
+                "tab_label",
+                "focused_pane_id",
+                "focused_pane_status",
+                "invocation_source",
+                "correlation_id",
+            ],
+            "Herdr's order; absent fields left out"
+        );
+
+        // A focus change is remembered without a client (`pane.focused`).
+        let mut proj = Projector::new();
+        let out = project_event(
+            &srv,
+            &mut proj,
+            &event(
+                "pane.focused",
+                json!({"pane": "P1", "pane_handle": "w1:p1", "tab": "T", "workspace": "W"}),
+            ),
+        );
+        let names: Vec<&str> = out.iter().map(|o| o.0).collect();
+        assert_eq!(names, ["workspace.focused", "tab.focused", "pane.focused"]);
+        assert_eq!(out[2].2, json!({"pane_id": "w1:p1", "workspace_id": "w1"}));
+        assert_eq!(out[1].2, json!({"tab_id": "w1:t1", "workspace_id": "w1"}));
+        let sn = snap(&srv);
+        let c = sn.current_ctx(&srv, "corr");
+        assert_eq!(c.focused_pane_id.as_deref(), Some("w1:p1"));
+        assert_eq!(sn.focused().2.as_deref(), Some("w1:p1"));
+        let p1 = sn.pane("P1").unwrap();
+        let pj = sn.pane_json(&srv, p1);
+        assert_eq!(pj["focused"], true);
+        assert_eq!(pj["agent_status"], "unknown");
+        assert!(pj.get("cwd").is_none(), "absent, not null: {pj}");
+        let p2 = sn.pane("P2").unwrap();
+        assert_eq!(sn.pane_json(&srv, p2)["focused"], false);
+        let w = sn.ws_json(sn.ws("W").unwrap());
+        assert_eq!(w["focused"], true);
+        assert_eq!(w["agent_status"], "unknown");
+        assert_eq!(w["active_tab_id"], "w1:t1");
+        assert_eq!(w["worktree"]["repo_name"], "repo");
+        let t = sn.tab_json(sn.tab("T").unwrap());
+        assert_eq!(t["label"], "1");
+        assert_eq!(t["agent_status"], "unknown");
+        assert_eq!(t["focused"], true);
+
+        // Herdr `merge_plugin_context`: the caller's fields replace the current ones.
+        let m = InvokeContext::from_params(
+            &srv,
+            &sn,
+            &json!({"context": {"workspace_id": "w9", "selected_text": "hi", "invocation_source": "cli"}}),
+            "api",
+            "c1",
+        );
+        assert_eq!(m.workspace_id.as_deref(), Some("w9"));
+        assert_eq!(m.focused_pane_id.as_deref(), Some("w1:p1"), "kept");
+        assert_eq!(m.selected_text.as_deref(), Some("hi"));
+        assert_eq!(m.invocation_source.as_deref(), Some("cli"));
+        assert_eq!(m.correlation_id.as_deref(), Some("c1"));
+        // Vibeke's own callers may name the pane.
+        let m = InvokeContext::from_params(&srv, &sn, &json!({"pane": "w1:p2"}), "cli", "");
+        assert_eq!(m.focused_pane_id.as_deref(), Some("w1:p2"));
+        assert_eq!(m.tab_id.as_deref(), Some("w1:t1"));
+
+        // Herdr `plugin_context_for_event`.
+        let c = sn.ctx_for_event(
+            &srv,
+            "pane.closed",
+            &json!({"pane_id": "w1:p7", "workspace_id": "w1"}),
+        );
+        assert_eq!(c.focused_pane_id.as_deref(), Some("w1:p7"));
+        assert_eq!(c.workspace_id.as_deref(), Some("w1"));
+        assert!(c.workspace_label.is_none() && c.tab_id.is_none());
+        assert_eq!(c.correlation_id.as_deref(), Some("pane.closed"));
+        let c = sn.ctx_for_event(
+            &srv,
+            "tab.created",
+            &json!({"tab": {"tab_id": "w1:t1", "workspace_id": "w1"}}),
+        );
+        assert_eq!(c.tab_id.as_deref(), Some("w1:t1"));
+        assert_eq!(c.workspace_label.as_deref(), Some("demo"));
+
+        // Close events keep the closed object's Herdr id.
+        srv.with_core(|c| c.model.panes.retain(|p| p.id != "P2"));
+        let out = project_event(
+            &srv,
+            &mut proj,
+            &event(
+                "pane.closed",
+                json!({"pane": "P2", "tab": "T", "workspace": "W"}),
+            ),
+        );
+        assert_eq!(out[0].0, "pane.closed");
+        assert_eq!(out[0].2, json!({"pane_id": "w1:p2", "workspace_id": "w1"}));
+        // Hooks get Herdr's whole envelope.
+        assert_eq!(
+            hev::envelope("pane.closed", out[0].2.clone()).to_string(),
+            r#"{"event":"pane_closed","data":{"type":"pane_closed","pane_id":"w1:p2","workspace_id":"w1"}}"#
+        );
+    }
+
+    #[test]
+    fn git_space_reads_linked_worktrees() {
+        let d = tempfile::tempdir().unwrap();
+        let main = d.path().join("proj");
+        let gitdir = main.join(".git/worktrees/feat");
+        std::fs::create_dir_all(&gitdir).unwrap();
+        std::fs::write(gitdir.join("commondir"), "../..\n").unwrap();
+        let wt = d.path().join("proj-feat");
+        std::fs::create_dir_all(&wt).unwrap();
+        std::fs::write(wt.join(".git"), format!("gitdir: {}\n", gitdir.display())).unwrap();
+        let v = git_space(&wt.to_string_lossy()).unwrap();
+        assert_eq!(v["is_linked_worktree"], true, "{v}");
+        assert_eq!(v["repo_name"], "proj", "{v}");
+        assert_eq!(v["checkout_path"], wt.to_string_lossy().to_string(), "{v}");
+        let canon = main.canonicalize().unwrap();
+        assert_eq!(v["repo_root"], canon.to_string_lossy().to_string(), "{v}");
+        assert_eq!(
+            v["repo_key"],
+            canon.join(".git").to_string_lossy().to_string(),
+            "{v}"
+        );
+        assert!(git_space(&d.path().to_string_lossy()).is_none());
     }
 
     #[tokio::test]
