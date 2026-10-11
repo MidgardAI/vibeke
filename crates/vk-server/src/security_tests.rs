@@ -1059,7 +1059,7 @@ async fn approved_calls_run_once_as_the_user_after_a_decision_outside_the_pane()
     // Only the allow-listed calls can be asked for, validated as the method would.
     for bad in [
         json!({"method": "policy.add", "params": {}}),
-        json!({"method": "gateway.call", "params": {"method": "peer.invite", "params": {}}}),
+        json!({"method": "gateway.call", "params": {"method": "devices.revoke", "params": {}}}),
         json!({"method": "gateway.call", "params": {"method": "peer.redeem", "params": {}}}),
     ] {
         let r = e
@@ -1384,6 +1384,118 @@ async fn always_covers_the_same_call_until_the_pane_restarts() {
         err.message
     );
     assert!(!e.events("auth.approval_denied").is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn panes_ask_before_handing_out_access() {
+    let (e, _repo) = approval_env().await;
+    let ask = |inner: &str, params: Value| {
+        json!({"method": "gateway.call", "wait": false,
+               "params": {"method": inner, "params": params}})
+    };
+    // Pairing a phone: the summary says what the access level can do, and it is never
+    // always-allowed.
+    let pair = e
+        .call(
+            &pane_ctx("pane-a"),
+            "auth.approve",
+            ask("pair.create", json!({"scope": "full", "ttl_s": 600})),
+        )
+        .await
+        .unwrap();
+    assert_eq!(pair["always_allowed"], false);
+    let summary = pair["summary"].as_str().unwrap();
+    assert!(
+        summary.contains("can run any command as you on this host"),
+        "{summary}"
+    );
+    assert!(summary.contains("10 minutes"), "{summary}");
+    let r = e
+        .call(
+            &user(),
+            "auth.approve.decide",
+            json!({"request": pair["request"], "decision": "always"}),
+        )
+        .await;
+    assert_eq!(kind(&r.unwrap_err()), ErrorKind::InvalidParams);
+    e.ok(
+        "auth.approve.decide",
+        json!({"request": pair["request"], "decision": "deny"}),
+    )
+    .await;
+    // Bad scopes and shares of unknown panes are refused before anyone is asked.
+    for (inner, params, want) in [
+        (
+            "pair.create",
+            json!({"scope": "root"}),
+            ErrorKind::InvalidParams,
+        ),
+        (
+            "share.create",
+            json!({"kind": "share"}),
+            ErrorKind::InvalidParams,
+        ),
+        (
+            "share.create",
+            json!({"kind": "peer"}),
+            ErrorKind::InvalidParams,
+        ),
+        (
+            "share.create",
+            json!({"kind": "share", "pane": "nope"}),
+            ErrorKind::NotFound,
+        ),
+    ] {
+        let r = e
+            .call(
+                &pane_ctx("pane-a"),
+                "auth.approve",
+                ask(inner, params.clone()),
+            )
+            .await;
+        assert_eq!(kind(&r.unwrap_err()), want, "{inner} {params}");
+    }
+    // A share names the pane by its handle and the access it gives.
+    let share = e
+        .call(
+            &pane_ctx("pane-a"),
+            "auth.approve",
+            ask(
+                "share.create",
+                json!({"kind": "share", "scope": "approve", "pane": "pane-b", "ttl_s": 7200}),
+            ),
+        )
+        .await
+        .unwrap();
+    let summary = share["summary"].as_str().unwrap();
+    assert!(summary.starts_with("Share pane "), "{summary}");
+    assert!(summary.contains("2 hours"), "{summary}");
+    assert!(summary.contains("always allow"), "{summary}");
+    assert_eq!(share["params"]["params"]["pane"], "pane-b");
+    // A peer invitation.
+    let invite = e
+        .call(
+            &pane_ctx("pane-a"),
+            "auth.approve",
+            ask("peer.invite", json!({})),
+        )
+        .await
+        .unwrap();
+    assert!(
+        invite["summary"]
+            .as_str()
+            .unwrap()
+            .starts_with("Create a peer invitation"),
+        "{invite}"
+    );
+    // Without a gateway, approving fails cleanly (and the pane hears why).
+    let d = e
+        .ok(
+            "auth.approve.decide",
+            json!({"request": invite["request"], "decision": "approve"}),
+        )
+        .await;
+    assert_eq!(d["ok"], false);
 }
 
 #[tokio::test(flavor = "multi_thread")]

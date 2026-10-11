@@ -3,7 +3,9 @@
 //!
 //! - `auth.approve {method, params, reason?, wait?, timeout_ms?, request?}` (pane scope only).
 //!   [`APPROVABLE`] lists what can be asked for: `handoff.send`, `handoff.cancel` of the pane's
-//!   own jobs, `gateway.call {method: "peer.redeem"}`, `cloud.move` of the pane or a pane of its
+//!   own jobs, `gateway.call {method: "peer.redeem" | "pair.create" | "share.create" |
+//!   "peer.invite"}` (`vibeke gateway pair|share|peer invite|peer add` inside a pane; handing
+//!   out access is never always-allowed), `cloud.move` of the pane or a pane of its
 //!   workspace (spec 17 §10), and `preview.declare` on a port no pane's
 //!   process listens on (asked by `preview.declare` itself; approval also remembers the port
 //!   for the pane's process, see `crate::preview`). The params are validated as the
@@ -59,14 +61,18 @@ pub const APPROVABLE: &[&str] = &[
     "preview.declare",
     "cloud.move",
 ];
-/// `gateway.call` methods a pane can ask for.
-pub const APPROVABLE_GATEWAY: &[&str] = &["peer.redeem"];
+/// `gateway.call` methods a pane can ask for: redeeming a peer invitation, and handing out access
+/// (`vibeke gateway pair|share|peer invite` inside a pane asks for these).
+pub const APPROVABLE_GATEWAY: &[&str] =
+    &["peer.redeem", "pair.create", "share.create", "peer.invite"];
 /// How long `auth.approve` waits for a decision by default.
 const DEFAULT_WAIT_MS: u64 = 120_000;
 /// Requests nobody decided are withdrawn after this long.
 const REQUEST_TTL_MS: i64 = 30 * 60 * 1000;
 /// How long an approved `gateway.call` may take.
 const GATEWAY_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long an approved `gateway.call` waits for a gateway the server just started.
+const GATEWAY_START_WAIT: Duration = Duration::from_secs(10);
 const MAX_REASON: usize = 500;
 const MAX_LINK: usize = 4096;
 
@@ -275,14 +281,17 @@ async fn prepare(
     }
     match method {
         "handoff.send" => {
-            crate::handoff_out::sync_missing_peer(server, &params).await;
-            let (pane, peer) = crate::handoff_out::check_send(server, ctx, &params)?;
+            // Authorize the target first: only then may the ask reach the gateway (the peer
+            // list sync below asks it for its peers).
+            let target = crate::api::resolve_pane(server, ctx, s(&params, "pane"))?;
             let my_ws = server.with_core(|c| c.pane(me).map(|x| x.workspace.clone()));
-            if pane.id != me && my_ws.as_deref() != Some(pane.workspace.as_str()) {
+            if target.id != me && my_ws.as_deref() != Some(target.workspace.as_str()) {
                 return Err(denied(
                     "a pane can only ask to send itself or a pane of its own workspace",
                 ));
             }
+            crate::handoff_out::sync_missing_peer(server, &params).await;
+            let (pane, peer) = crate::handoff_out::check_send(server, ctx, &params)?;
             let cwd = cwd_of(server, &pane)
                 .ok_or_else(|| err(ErrorKind::NotFound, "pane has no working directory"))?;
             let (root, branch, head, changed) =
@@ -437,30 +446,18 @@ async fn prepare(
                 )));
             }
             let args = params.get("params").cloned().unwrap_or_else(|| json!({}));
-            let link = s(&args, "link").map(str::trim).unwrap_or("");
-            if link.is_empty() {
-                return Err(invalid("link is required"));
+            if !args.is_object() {
+                return Err(invalid("params.params must be an object"));
             }
-            if link.len() > MAX_LINK {
-                return Err(invalid("link is too long"));
-            }
-            let share_user = args.get("share_user").and_then(Value::as_bool) == Some(true);
-            let summary = format!(
-                "Redeem a peer invitation: pair this host with the host that made the link, so work can be handed between them{}",
-                if share_user {
-                    "; your git user name and email are shown to that host"
-                } else {
-                    ""
-                }
-            );
+            let (frozen, summary, facts) = gateway_ask(server, ctx, inner, &args)?;
             Ok(Frozen {
                 method: method.into(),
-                params: json!({"method": inner, "params": {"link": link, "share_user": share_user}}),
+                params: json!({"method": inner, "params": frozen}),
                 target: None,
                 repo: None,
                 peer: None,
                 summary,
-                facts: json!({"gateway_method": inner, "share_user": share_user}),
+                facts,
                 always_allowed: false,
             })
         }
@@ -484,6 +481,176 @@ async fn prepare(
             "{other} can't be asked for; auth.approve covers {}",
             APPROVABLE.join(", ")
         ))),
+    }
+}
+
+/// What a pane's access level lets a device do on this host (the same words as the TUI and the
+/// security docs).
+fn access_text(scope: &str) -> &'static str {
+    match scope {
+        "full" => "can run any command as you on this host",
+        "approve" => {
+            "can approve agent requests, including \"always allow\", and send text to agents"
+        }
+        _ => "can read all pane output, transcripts, files and diffs",
+    }
+}
+
+fn duration_text(secs: u64) -> String {
+    match secs {
+        s if s >= 86_400 && s % 86_400 == 0 => plural((s / 86_400) as usize, "day"),
+        s if s >= 3600 && s % 3600 == 0 => plural((s / 3600) as usize, "hour"),
+        s => plural(s.div_ceil(60) as usize, "minute"),
+    }
+}
+
+/// Validate a pane's `gateway.call` ask, and say what it hands out. Returns the frozen inner
+/// params, the summary and the facts. Handing out access is never `always` allowed.
+fn gateway_ask(
+    server: &Server,
+    ctx: &Ctx,
+    inner: &str,
+    args: &Value,
+) -> Result<(Value, String, Value), RpcError> {
+    let ttl = |default: u64, min: u64, max: u64| -> Result<u64, RpcError> {
+        match args.get("ttl_s") {
+            None | Some(Value::Null) => Ok(default),
+            Some(v) => v
+                .as_u64()
+                .map(|t| t.clamp(min, max))
+                .ok_or_else(|| invalid("ttl_s must be a number of seconds")),
+        }
+    };
+    match inner {
+        "peer.redeem" => {
+            let link = s(args, "link").map(str::trim).unwrap_or("");
+            if link.is_empty() {
+                return Err(invalid("link is required"));
+            }
+            if link.len() > MAX_LINK {
+                return Err(invalid("link is too long"));
+            }
+            let share_user = args.get("share_user").and_then(Value::as_bool) == Some(true);
+            let other_relay = args.get("allow_other_relay").and_then(Value::as_bool) == Some(true);
+            let summary = format!(
+                "Redeem a peer invitation: pair this host with the host that made the link, so work can be handed between them{}{}",
+                if share_user {
+                    "; your git user name and email are shown to that host"
+                } else {
+                    ""
+                },
+                if other_relay {
+                    "; the link may use a different relay than this host"
+                } else {
+                    ""
+                }
+            );
+            Ok((
+                json!({"link": link, "share_user": share_user, "allow_other_relay": other_relay}),
+                summary,
+                json!({"gateway_method": inner, "share_user": share_user, "allow_other_relay": other_relay}),
+            ))
+        }
+        "pair.create" => {
+            let scope = s(args, "scope").unwrap_or("full");
+            if !matches!(scope, "full" | "approve" | "view") {
+                return Err(invalid("scope is full, approve or view"));
+            }
+            let ttl_s = ttl(600, 60, 3600)?;
+            let summary = format!(
+                "Pair a new phone or browser with {scope} access: it {}. The link works for {}. Before the device is added, you check its code in Vibeke.",
+                access_text(scope),
+                duration_text(ttl_s)
+            );
+            Ok((
+                json!({"scope": scope, "ttl_s": ttl_s}),
+                summary,
+                json!({"gateway_method": inner, "scope": scope, "ttl_s": ttl_s}),
+            ))
+        }
+        "peer.invite" => {
+            let ttl_s = ttl(900, 60, 3600)?;
+            let summary = format!(
+                "Create a peer invitation: whoever opens the link in the next {} links a host with this one. That host can hand work to this host until you remove it.",
+                duration_text(ttl_s)
+            );
+            Ok((
+                json!({"ttl_s": ttl_s}),
+                summary,
+                json!({"gateway_method": inner, "ttl_s": ttl_s}),
+            ))
+        }
+        "share.create" => {
+            let kind = s(args, "kind").unwrap_or("share");
+            let label = s(args, "label").map(|l| {
+                l.chars()
+                    .filter(|c| !c.is_control())
+                    .take(80)
+                    .collect::<String>()
+            });
+            match kind {
+                "handoff" => {
+                    let ttl_s = ttl(24 * 3600, 60, 7 * 24 * 3600)?;
+                    let summary = format!(
+                        "Create a handoff invitation: a teammate's host that opens the link in the next 15 minutes can hand work to this host for {}",
+                        duration_text(ttl_s)
+                    );
+                    let mut frozen = json!({"kind": "handoff", "ttl_s": ttl_s});
+                    if let Some(l) = &label {
+                        frozen["label"] = json!(l);
+                    }
+                    Ok((
+                        frozen,
+                        summary,
+                        json!({"gateway_method": inner, "kind": kind, "ttl_s": ttl_s}),
+                    ))
+                }
+                "share" => {
+                    let scope = match s(args, "scope").unwrap_or("view") {
+                        "view" => "view",
+                        "approve" => "approve",
+                        "full" | "control" => "full",
+                        _ => return Err(invalid("a share is view, approve or full")),
+                    };
+                    let ttl_s = ttl(2 * 3600, 60, 7 * 24 * 3600)?;
+                    let mut frozen = json!({"kind": "share", "scope": scope, "ttl_s": ttl_s});
+                    let what = match (s(args, "pane"), s(args, "workspace")) {
+                        (Some(p), None) => {
+                            let pane = crate::api::resolve_pane(server, ctx, Some(p))?;
+                            frozen["pane"] = json!(pane.id);
+                            format!("pane {}", pane.handle)
+                        }
+                        (None, Some(w)) => {
+                            let ws = crate::api::resolve_ws(server, ctx, Some(w))?;
+                            frozen["workspace"] = json!(ws.id);
+                            format!("workspace {}", ws.handle)
+                        }
+                        _ => return Err(invalid("share a workspace or a pane (one of them)")),
+                    };
+                    if let Some(l) = &label {
+                        frozen["label"] = json!(l);
+                    }
+                    let shown = match scope {
+                        "full" => "can type into and prompt it",
+                        "approve" => {
+                            "can approve its agents' requests, including \"always allow\", and send text to them"
+                        }
+                        _ => "can read all its output, transcripts, files and diffs",
+                    };
+                    let summary = format!(
+                        "Share {what} with {scope} access for {}: anyone who opens the link in the next 15 minutes {shown}",
+                        duration_text(ttl_s)
+                    );
+                    Ok((
+                        frozen,
+                        summary,
+                        json!({"gateway_method": inner, "kind": kind, "scope": scope, "ttl_s": ttl_s, "what": what}),
+                    ))
+                }
+                _ => Err(invalid("kind is share or handoff")),
+            }
+        }
+        _ => Err(invalid(format!("{inner} can't be asked for"))),
     }
 }
 
@@ -788,6 +955,20 @@ async fn run_approved(server: &Arc<Server>, approver: &Ctx, r: &Request) -> R {
         "gateway.call" => {
             let method = s(&f.params, "method").unwrap_or("");
             let params = f.params.get("params").cloned().unwrap_or(Value::Null);
+            // The pane can't start the gateway itself (`gateway.start` is the user's): start it
+            // now that the user approved, when it is set up, and give it a moment to connect.
+            // (A server that manages no gateway has no status: nothing to wait for.)
+            if !crate::gateway_bridge::connected(server)
+                && crate::gateway_supervisor::status(server).is_some()
+            {
+                crate::gateway_supervisor::ensure_running(server);
+                let deadline = tokio::time::Instant::now() + GATEWAY_START_WAIT;
+                while !crate::gateway_bridge::connected(server)
+                    && tokio::time::Instant::now() < deadline
+                {
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                }
+            }
             crate::gateway_bridge::call(server, method, params, GATEWAY_TIMEOUT).await
         }
         other => Err(invalid(format!("{other} can't be approved"))),
@@ -800,7 +981,9 @@ fn result_brief(method: &str, v: &Value) -> Value {
         "handoff.send" | "handoff.cancel" | "cloud.move" => {
             json!({"job": v.pointer("/job/id"), "state": v.pointer("/job/state")})
         }
-        "gateway.call" => json!({"peer": v.pointer("/peer/id"), "name": v.pointer("/peer/name")}),
+        // Never the link: it is a secret (pairing key and relay ticket).
+        "gateway.call" => json!({"peer": v.pointer("/peer/id"), "name": v.pointer("/peer/name"),
+                                 "pid": v.get("pid"), "open_by": v.get("open_by")}),
         "preview.declare" => {
             json!({"preview": v.pointer("/preview/id"), "port": v.pointer("/preview/port")})
         }
@@ -1319,7 +1502,7 @@ ApprovalGrant = {pane: string, method: string, target: string|null, peer: string
 /// Method shapes (`api_schema` loads them next to its own tables).
 pub const SHAPES: &str = r##"
 # --- approved calls (09 §3.2): a pane asks, the user decides outside it ---
-# pane scope only: handoff.send, handoff.cancel (the pane's own jobs), cloud.move (the pane or one of its workspace), gateway.call {method: peer.redeem} or preview.declare (a port no pane listens on; preview.declare asks by itself); waits for the decision and returns the target method's result; `wait: false` returns the request; `request` resumes waiting; a standing grant runs it at once
+# pane scope only: handoff.send, handoff.cancel (the pane's own jobs), cloud.move (the pane or one of its workspace), gateway.call {method: peer.redeem|pair.create|share.create|peer.invite} (never always-allowed; pair.create always needs the device confirmed in the TUI) or preview.declare (a port no pane listens on; preview.declare asks by itself); waits for the decision and returns the target method's result; `wait: false` returns the request; `request` resumes waiting; a standing grant runs it at once
 auth.approve :: {method?: "handoff.send"|"handoff.cancel"|"gateway.call"|"preview.declare"|"cloud.move", params?: object, reason?: string, wait?: bool = true, timeout_ms?: int = 120000, request?: string}
   => ApprovalRequest | object
 # full scope only, never from a pane or an elevated connection; approve runs the frozen call once as the caller; always also grants (pane, method, target pane, peer) until the pane restarts
