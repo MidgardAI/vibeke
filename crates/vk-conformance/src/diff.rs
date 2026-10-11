@@ -65,6 +65,9 @@ pub fn resolve_inverse(g: &Grid, defaults: DefaultColors) -> Grid {
     out
 }
 
+/// An RGB colour.
+type Rgb = (u8, u8, u8);
+
 /// The default colours Herdr used for inverse cells, read from the pair of grids: every cell
 /// that Vibeke shows inverse with default colours, and Herdr shows as a plain cell with the
 /// same text and RGB colours, gives Herdr's default fg (its bg) and default bg (its fg). The
@@ -72,7 +75,7 @@ pub fn resolve_inverse(g: &Grid, defaults: DefaultColors) -> Grid {
 /// differ. Herdr resolves these colours from its own terminal state, not from the plugin, so
 /// one pair per grid is expected.
 pub fn infer_inverse_defaults(herdr: &Grid, vibeke: &Grid) -> DefaultColors {
-    let mut found: Option<((u8, u8, u8), (u8, u8, u8))> = None;
+    let mut found: Option<(Rgb, Rgb)> = None;
     for (hl, vl) in herdr.cells.iter().zip(&vibeke.cells) {
         for (h, v) in hl.iter().zip(vl) {
             if !v.attrs.inverse
