@@ -215,7 +215,7 @@ fn herdr_cli_shim_and_wire_protocol() {
         "--timeout",
         "15000",
     ]);
-    assert_eq!(m["type"], "pane_output_matched");
+    assert_eq!(m["type"], "output_matched", "{m}");
     // `pane read` prints the text itself, like Herdr.
     let out = s_
         .cmd(&[

@@ -581,3 +581,184 @@ fn herdr_rest_plugin_registry_cli_prints_like_herdr() {
         "a linked plugin keeps its files"
     );
 }
+
+#[test]
+fn herdr_rest_result_shapes_follow_the_schema() {
+    let s_ = session("");
+    let (ws, tab, p1, p2, _) = three_panes(&s_);
+
+    // `pane.current` answers `pane_current`; `caller_pane_id` names the pane.
+    let c = ok(&s_, "pane.current", json!({"caller_pane_id": p2}));
+    assert_eq!(c["type"], "pane_current", "{c}");
+    assert_eq!(c["pane"]["pane_id"], p2.as_str(), "{c}");
+
+    // `pane.read`: Herdr's `PaneReadResult`.
+    s_.herdr(&["pane", "send-text", &p1, "echo rest-$((20+3))\n"]);
+    let m = ok(
+        &s_,
+        "pane.wait_for_output",
+        json!({"pane_id": p1, "source": "recent", "match": {"type": "substring", "value": "rest-23"}, "timeout_ms": 15000}),
+    );
+    assert_eq!(m["type"], "output_matched", "{m}");
+    assert_eq!(m["pane_id"], p1.as_str(), "{m}");
+    assert!(s(&m["matched_line"]).contains("rest-23"), "{m}");
+    assert_eq!(m["read"]["source"], "recent_unwrapped", "{m}");
+    assert_eq!(m["revision"], m["read"]["revision"], "{m}");
+    let m = ok(
+        &s_,
+        "pane.wait_for_output",
+        json!({"pane_id": p1, "source": "recent", "match": {"type": "regex", "value": "rest-2[0-9]"}, "timeout_ms": 15000}),
+    );
+    assert_eq!(m["type"], "output_matched", "{m}");
+    assert_eq!(
+        err_code(
+            &s_,
+            "pane.wait_for_output",
+            json!({"pane_id": p1, "source": "recent", "match": {"type": "regex", "value": "("}}),
+        ),
+        "invalid_regex"
+    );
+    assert_eq!(
+        err_code(
+            &s_,
+            "pane.wait_for_output",
+            json!({"pane_id": p1, "source": "recent", "match": {"type": "substring", "value": "never-printed-xyz"}, "timeout_ms": 300}),
+        ),
+        "timeout"
+    );
+    let r = ok(
+        &s_,
+        "pane.read",
+        json!({"pane_id": p1, "source": "recent", "lines": 20}),
+    );
+    assert_eq!(r["type"], "pane_read", "{r}");
+    let read = &r["read"];
+    assert_eq!(read["pane_id"], p1.as_str(), "{r}");
+    assert_eq!(read["workspace_id"], ws.as_str(), "{r}");
+    assert_eq!(read["tab_id"], tab.as_str(), "{r}");
+    assert_eq!(read["source"], "recent", "{r}");
+    assert_eq!(read["format"], "text", "{r}");
+    assert_eq!(read["truncated"], false, "{r}");
+    assert!(read["revision"].is_u64(), "{r}");
+    assert!(s(&read["text"]).contains("rest-23"), "{r}");
+
+    // `pane.resize` and `pane.zoom` answer with their result objects and the layout.
+    let r = ok(
+        &s_,
+        "pane.resize",
+        json!({"pane_id": p1, "direction": "right", "amount": 0.1}),
+    );
+    assert_eq!(r["type"], "pane_resize", "{r}");
+    assert_eq!(r["resize"]["pane_id"], p1.as_str(), "{r}");
+    assert_eq!(r["resize"]["changed"], true, "{r}");
+    assert!(r["resize"]["layout"]["panes"].is_array(), "{r}");
+    let z = ok(&s_, "pane.zoom", json!({"pane_id": p1, "mode": "on"}));
+    assert_eq!(z["type"], "pane_zoom", "{z}");
+    assert_eq!(z["zoom"]["zoom_changed"], true, "{z}");
+    assert_eq!(z["zoom"]["zoomed"], true, "{z}");
+    assert_eq!(z["zoom"]["focused_pane_id"], p1.as_str(), "{z}");
+    let z = ok(&s_, "pane.zoom", json!({"pane_id": p1, "mode": "on"}));
+    assert_eq!(z["zoom"]["zoom_changed"], false, "{z}");
+    assert_eq!(z["zoom"]["reason"], "already_zoomed", "{z}");
+    let z = ok(&s_, "pane.zoom", json!({"pane_id": p1}));
+    assert_eq!(z["zoom"]["zoomed"], false, "toggle unzooms: {z}");
+    let z = ok(&s_, "pane.zoom", json!({"pane_id": p1, "mode": "off"}));
+    assert_eq!(z["zoom"]["reason"], "already_unzoomed", "{z}");
+    let single = s(&s_.herdr(&["workspace", "create", "--cwd", "/tmp"])["root_pane"]["pane_id"]);
+    let z = ok(&s_, "pane.zoom", json!({"pane_id": single}));
+    assert_eq!(z["zoom"]["reason"], "single_pane", "{z}");
+
+    // Server and notification answers.
+    let n = ok(
+        &s_,
+        "notification.show",
+        json!({"title": "Rest", "body": "done"}),
+    );
+    assert_eq!(
+        n,
+        json!({"type": "notification_show", "shown": true, "reason": "shown"})
+    );
+    assert_eq!(
+        err_code(&s_, "notification.show", json!({"title": "  "})),
+        "invalid_params"
+    );
+    let r = ok(&s_, "server.reload_config", json!({}));
+    assert_eq!(
+        r,
+        json!({"type": "config_reload", "status": "applied", "diagnostics": []})
+    );
+}
+
+#[test]
+fn herdr_rest_worktree_list_shape() {
+    let s_ = session("");
+    let main = s_.path("repo");
+    repo(&main);
+    let checkout = s_.path("repo-wt");
+    git(
+        &main,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "wt",
+            checkout.to_str().unwrap(),
+        ],
+    );
+    let w = ok(
+        &s_,
+        "workspace.create",
+        json!({"cwd": main.to_str().unwrap()}),
+    );
+    let ws = s(&w["workspace"]["workspace_id"]);
+    let l = ok(&s_, "worktree.list", json!({"workspace_id": ws}));
+    assert_eq!(l["type"], "worktree_list", "{l}");
+    let src = &l["source"];
+    assert_eq!(src["repo_name"], "repo", "{l}");
+    assert_eq!(src["repo_root"], main.to_str().unwrap(), "{l}");
+    assert_eq!(src["source_checkout_path"], main.to_str().unwrap(), "{l}");
+    assert_eq!(src["source_workspace_id"], ws.as_str(), "{l}");
+    assert!(src["repo_key"].is_string(), "{l}");
+    let wts = l["worktrees"].as_array().unwrap();
+    assert_eq!(wts.len(), 2, "{l}");
+    let main_entry = wts
+        .iter()
+        .find(|e| e["path"] == main.to_str().unwrap())
+        .unwrap();
+    assert_eq!(main_entry["is_linked_worktree"], false, "{l}");
+    assert_eq!(main_entry["branch"], "main", "{l}");
+    assert_eq!(main_entry["open_workspace_id"], ws.as_str(), "{l}");
+    assert_eq!(main_entry["label"], "repo", "{l}");
+    let linked = wts
+        .iter()
+        .find(|e| e["path"] == checkout.to_str().unwrap())
+        .unwrap();
+    assert_eq!(linked["is_linked_worktree"], true, "{l}");
+    assert_eq!(linked["branch"], "wt", "{l}");
+    assert_eq!(linked["is_detached"], false, "{l}");
+    assert!(linked.get("open_workspace_id").is_none(), "{l}");
+    // A linked checkout lists from its main checkout; `cwd` works without a workspace.
+    let l2 = ok(
+        &s_,
+        "worktree.list",
+        json!({"cwd": checkout.to_str().unwrap()}),
+    );
+    assert_eq!(
+        l2["source"]["source_checkout_path"],
+        main.to_str().unwrap(),
+        "{l2}"
+    );
+    assert_eq!(
+        err_code(
+            &s_,
+            "worktree.list",
+            json!({"cwd": "/", "workspace_id": ws})
+        ),
+        "invalid_request"
+    );
+    assert_eq!(
+        err_code(&s_, "worktree.list", json!({"cwd": "/"})),
+        "not_git_worktree"
+    );
+}

@@ -178,9 +178,10 @@ pub async fn call(
             let unseen = sn
                 .pane(&r.pane)
                 .is_some_and(|x| (x.unread || x.marked_unread) && r.turns_completed > 0);
+            // Herdr wraps the explanation in `explain` (its CLI prints that object).
             Ok(typed(
                 "agent_explain",
-                json!({
+                json!({"explain": {
                     "agent": sn.agent_json(server, &r),
                     "agent_status": status,
                     "reason": explain_reason(status, r.execution.value.as_str(), blocked, unseen),
@@ -191,7 +192,7 @@ pub async fn call(
                     "last_tool": r.last_tool,
                     "last_message": r.last_message,
                     "source": r.integration,
-                }),
+                }}),
             ))
         }
         other => Err(WireError::new(

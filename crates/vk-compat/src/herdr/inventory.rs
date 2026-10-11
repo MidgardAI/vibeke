@@ -261,13 +261,19 @@ pub const ENTRIES: &[Entry] = &[
         "spec",
         "Herdr `PaneInfo`, see `pane.list`",
     ),
-    e(Method, "pane.current", Implemented, "spec", ""),
+    e(
+        Method,
+        "pane.current",
+        Implemented,
+        "spec",
+        "`caller_pane_id`, else the focused pane; `pane_current {pane}`",
+    ),
     e(
         Method,
         "pane.read",
         Partial,
         "spec",
-        "`format: ansi` returns text; baseline wrapping rules unverified",
+        "`pane_read {read: PaneReadResult}` with `pane_id`, `workspace_id`, `tab_id`, `source`, `format`, `text`, `revision`, `truncated` (always false); `format: ansi` is echoed but the text is plain; `strip_ansi` ignored; `lines` defaults to 50",
     ),
     e(
         Method,
@@ -306,7 +312,7 @@ pub const ENTRIES: &[Entry] = &[
         "pane.wait_for_output",
         Partial,
         "spec",
-        "`match`/`regex`, `timeout_ms`; emits `pane.output_matched`",
+        "Herdr's `{pane_id, source, lines?, match: {type: substring|regex, value}, timeout_ms?}` (also a plain-string `match`); reads the pane every 100 ms (`recent` reads `recent_unwrapped`, as Herdr does) and matches line by line; `output_matched {pane_id, revision, matched_line, read}`; `invalid_regex`; no deadline without `timeout_ms`, else `timeout`; emits `pane.output_matched`",
     ),
     e(
         Method,
@@ -329,7 +335,7 @@ pub const ENTRIES: &[Entry] = &[
         "agent.read",
         Partial,
         "spec",
-        "reads the agent's pane",
+        "reads the agent's pane; `pane_read {read: PaneReadResult}` as `pane.read`",
     ),
     e(
         Method,
@@ -364,14 +370,14 @@ pub const ENTRIES: &[Entry] = &[
         "agent.explain",
         Partial,
         "corpus",
-        "`agent explain`: result `agent_explain` {agent, agent_status, reason, execution, blocked, unseen_turn, turns_completed, last_tool, last_message, source}; Vibeke's own shape, baseline unverified",
+        "`agent_explain {explain}`; the object is Vibeke's (agent, agent_status, reason, execution, blocked, unseen_turn, turns_completed, last_tool, last_message, source), not Herdr's detection-manifest explanation",
     ),
     e(
         Method,
         "worktree.list",
         Partial,
         "spec",
-        "native shape under `worktree_list`",
+        "`{workspace_id? | cwd?}` (else the active workspace; both: `invalid_request`); `not_git_worktree`; `worktree_list {source: WorktreeSourceInfo, worktrees: [WorktreeInfo]}` from the main checkout (`label` = repository name, `open_workspace_id` by checkout path); `is_bare` always false; `trust_repository` ignored",
     ),
     e(Method, "worktree.repo_root", Partial, "spec", ""),
     e(
@@ -535,9 +541,15 @@ pub const ENTRIES: &[Entry] = &[
         "pane.resize",
         Partial,
         "spec",
-        "direction + percent",
+        "`{pane_id?, direction, amount?}` (share of the tab, default 0.05, at most 0.5; Vibeke's `percent` too); `pane_resize {resize: {changed, reason?: unchanged, pane_id, focused_pane_id, layout}}`; Vibeke's resize rule, not Herdr's border search",
     ),
-    e(Method, "pane.zoom", Partial, "spec", ""),
+    e(
+        Method,
+        "pane.zoom",
+        Partial,
+        "spec",
+        "`{pane_id?, mode: toggle|on|off}` (Vibeke's `zoomed` too): focuses the pane, then zooms or unzooms its tab; `pane_zoom {zoom: {changed, zoom_changed, focus_changed, reason?: single_pane|already_zoomed|already_unzoomed, pane_id, focused_pane_id, zoomed, layout}}`; a pane-scoped caller that may not move the focus keeps it",
+    ),
     e(
         Method,
         "client.window_title.set",
@@ -599,7 +611,7 @@ pub const ENTRIES: &[Entry] = &[
         "server.reload_config",
         Partial,
         "corpus",
-        "acknowledged; Vibeke reloads config itself",
+        "Vibeke does not read Herdr's config.toml: `config_reload {status: applied, diagnostics: []}`; Vibeke reloads its own config itself",
     ),
     e(
         Method,
@@ -621,7 +633,7 @@ pub const ENTRIES: &[Entry] = &[
         "notification.show",
         Partial,
         "corpus",
-        "`herdr notification show`; maps to a Vibeke notification",
+        "`{title, body?}` (`position`, `sound` ignored); empty title `invalid_params`; delivered through Vibeke's notifier; `notification_show {shown: true, reason: shown}` (Herdr's `disabled`, `rate_limited`, `busy` and `no_foreground_client` are never reported)",
     ),
     e(
         Method,
