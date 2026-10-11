@@ -1,0 +1,566 @@
+name: herdr-plugins
+# The real Herdr plugin harness (spec 18): runs the highest-ranked eligible Herdr plugins,
+# unchanged, against Vibeke, and optionally against the pinned Herdr 0.9.3 baseline.
+#
+# Third-party plugin code runs only in the `plugin` jobs, one runner per plugin and platform,
+# as an unprivileged user with a fresh HOME and an environment allowlist (18 §5). Those jobs get
+# read-only repository access, no secrets and no tokens. The trusted `build` and `herdr` jobs
+# build everything they run and pass it in as checksummed artifacts. Only the `report` job may
+# write issues, and it treats the plugin jobs' artifacts as hostile data. Caches use their own
+# `herdr-plugins-` key namespace and never touch the Rust caches that ci, nightly and weekly share.
+on:
+  schedule:
+    - cron: "29 4 * * 1"
+  workflow_dispatch:
+    inputs:
+      plugins:
+        description: "Plugin ids, repositories or ranks, separated by commas or spaces (empty: all locked plugins)"
+        default: ""
+      herdr:
+        description: "Also run the Herdr 0.9.3 side (18 §11)"
+        type: boolean
+        default: false
+      record:
+        description: "Record run: send all downloads through the recording proxy and upload {url, sha256} lines (18 §7.2)"
+        type: boolean
+        default: false
+      capture_baseline:
+        description: "Build Herdr 0.9.3 and capture its API schema and CLI help for baseline.toml"
+        type: boolean
+        default: false
+
+permissions: {}
+
+concurrency:
+  group: herdr-plugins-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  LOCK: tests/compat/herdr/0.9.3/plugins/top20.lock.toml
+  HERDR_COMMIT: 7b116c05bfda646af39d2524c54e70c751f57ee8
+
+jobs:
+  plan:
+    # Reads the lock and decides what runs. Trusted: it runs only this repository's scripts.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+      count: ${{ steps.matrix.outputs.count }}
+      herdr: ${{ steps.flags.outputs.herdr }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: "1.3.14" # as in mise.toml
+      - id: flags
+        env:
+          EVENT: ${{ github.event_name }}
+          HERDR_INPUT: ${{ inputs.herdr }}
+          BASELINE_INPUT: ${{ inputs.capture_baseline }}
+        run: |
+          herdr=false
+          if [ "$EVENT" = schedule ] || [ "$HERDR_INPUT" = true ] || [ "$BASELINE_INPUT" = true ]; then
+            herdr=true
+          fi
+          echo "herdr=$herdr" >> "$GITHUB_OUTPUT"
+      - id: matrix
+        env:
+          FILTER: ${{ inputs.plugins }}
+        run: |
+          bun scripts/herdr-plugins/lock-tools.ts matrix --lock "$LOCK" --filter "$FILTER" > matrix.json
+          count=$(jq '.include | length' matrix.json)
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+          echo "matrix=$(jq -c . matrix.json)" >> "$GITHUB_OUTPUT"
+          echo "$count plugin jobs"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: herdr-plugins-plan
+          path: matrix.json
+          retention-days: 14
+      - name: Corpus drift (18 §6)
+        if: github.event_name == 'schedule'
+        run: |
+          # Reports new entrants and new commits in the live catalog. It never edits the lock.
+          status=0
+          bun scripts/herdr-plugins-lock.ts --check > drift.md || status=$?
+          {
+            echo "## Corpus drift"
+            echo
+            cat drift.md
+            echo
+            echo "Drift check exit status: $status"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    # Trusted: builds the test binary archive and cargo-nextest that the plugin jobs run.
+    needs: plan
+    if: needs.plan.outputs.count != '0'
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { os: linux, runner: ubuntu-latest }
+          - { os: macos, runner: macos-latest }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    env:
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      CARGO_INCREMENTAL: "0"
+      VK_TERM_CACHE_DIR: /tmp/vk-term-cache
+      OS: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - if: matrix.os == 'linux'
+        name: Free runner disk space
+        run: nohup sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL >/dev/null 2>&1 &
+      - uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2.4.4
+        with:
+          cache_key_prefix: herdr-plugins-mise
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          prefix-key: herdr-plugins-v1
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cache/zig
+            ~/Library/Caches/zig
+            /tmp/vk-term-cache
+          key: herdr-plugins-ghostty-${{ runner.os }}-${{ hashFiles('vendor/libghostty-vt.vendor.json', 'vendor/libghostty-vt/**', 'crates/vk-term/build.rs', 'mise.toml') }}
+      - name: Build the nextest archive of the integration tests
+        run: cargo nextest archive --locked -p vibeke --test it --archive-file "herdr-plugins-it-$OS.tar.zst"
+      - name: Package with checksums
+        run: |
+          mkdir pkg
+          mv "herdr-plugins-it-$OS.tar.zst" pkg/
+          cp "$(mise which cargo-nextest)" pkg/cargo-nextest
+          cd pkg
+          shasum -a 256 cargo-nextest "herdr-plugins-it-$OS.tar.zst" > SHA256SUMS
+          cat SHA256SUMS
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: herdr-plugins-build-${{ matrix.os }}
+          path: pkg/
+          retention-days: 7
+
+  herdr:
+    # Trusted: builds the pinned Herdr reference binary from source (18 §11) and records its
+    # sha256. Never uses an installed Herdr.
+    needs: plan
+    if: needs.plan.outputs.herdr == 'true'
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { os: linux, runner: ubuntu-latest }
+          - { os: macos, runner: macos-latest }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: herdrdev/herdr
+          ref: ${{ env.HERDR_COMMIT }}
+          path: herdr-src
+          persist-credentials: false
+      - name: Confirm the pinned commit
+        run: test "$(git -C herdr-src rev-parse HEAD)" = "$HERDR_COMMIT"
+      - uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2.4.4
+        with:
+          install: false
+          cache: false
+      - name: Install Zig 0.16.0 (Herdr's libghostty-vt build)
+        run: |
+          mise install zig@0.16.0
+          echo "ZIG=$(mise where zig@0.16.0)/zig" >> "$GITHUB_ENV"
+      - name: Build Herdr (rustup installs the toolchain from its rust-toolchain.toml)
+        working-directory: herdr-src
+        run: cargo build --release --locked
+      - name: Package with checksum
+        env:
+          OS: ${{ matrix.os }}
+        run: |
+          mkdir herdr-pkg
+          cp herdr-src/target/release/herdr herdr-pkg/herdr
+          cd herdr-pkg
+          shasum -a 256 herdr > herdr.sha256
+          echo "Herdr 0.9.3 ($OS): $(cat herdr.sha256)" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: herdr-plugins-herdr-${{ matrix.os }}
+          path: herdr-pkg/
+          retention-days: 14
+
+  baseline:
+    # Captures `herdr api schema --json` and every CLI help page for baseline.toml (18 §11).
+    # A person reviews the artifact and commits it.
+    needs: herdr
+    if: inputs.capture_baseline
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: herdr-plugins-herdr-*
+          path: ${{ runner.temp }}/herdr
+      - name: Verify the binary, then capture
+        run: |
+          bin="$RUNNER_TEMP/herdr/herdr-plugins-herdr-linux/herdr"
+          sha=$(awk '{print $1}' "$RUNNER_TEMP/herdr/herdr-plugins-herdr-linux/herdr.sha256")
+          chmod 0555 "$bin"
+          sh scripts/herdr-plugins/capture-baseline.sh "$bin" "$sha" "$RUNNER_TEMP/baseline"
+          {
+            echo "linux-x86_64 = $(awk '{print $1}' "$RUNNER_TEMP/herdr/herdr-plugins-herdr-linux/herdr.sha256")"
+            echo "macos-arm64 = $(awk '{print $1}' "$RUNNER_TEMP/herdr/herdr-plugins-herdr-macos/herdr.sha256")"
+          } > "$RUNNER_TEMP/baseline/reference_binary_sha256.txt"
+          cat "$RUNNER_TEMP/baseline/reference_binary_sha256.txt" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: herdr-baseline-0.9.3
+          path: ${{ runner.temp }}/baseline/
+          retention-days: 30
+
+  plugin:
+    # Untrusted: runs one third-party plugin. Each job is its own disposable runner (18 §5.1).
+    # It has no secrets and only read access, and the plugin runs as a separate unprivileged
+    # user that cannot read the runner user's files or environment. Plugin failures do not fail
+    # this job; the report decides. Only harness setup errors fail it.
+    needs: [plan, build, herdr]
+    if: >-
+      always() && needs.plan.result == 'success' && needs.build.result == 'success' &&
+      (needs.herdr.result == 'success' || needs.herdr.result == 'skipped')
+    name: "${{ matrix.rank }}. ${{ matrix.plugin_id }} (${{ matrix.os }})"
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    env:
+      HP: /opt/vibeke-hp
+      BOX_USER: vkplugin
+      HERDR_SIDE: ${{ needs.plan.outputs.herdr }}
+      RECORD: ${{ inputs.record && 'true' || 'false' }}
+      PLUGIN_ID: ${{ matrix.plugin_id }}
+      STEM: ${{ matrix.stem }}
+      PLUGIN_OS: ${{ matrix.os }}
+      DEPENDENCY_MODE: ${{ matrix.mode }}
+      TEST_FILTER: ${{ matrix.filter }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: "1.3.14" # trusted scripts only; the plugin gets the lock's toolchains
+      - uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2.4.4
+        with:
+          install: false
+          cache: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: herdr-plugins-build-${{ matrix.os }}
+          path: ${{ runner.temp }}/build
+      - if: needs.plan.outputs.herdr == 'true'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: herdr-plugins-herdr-${{ matrix.os }}
+          path: ${{ runner.temp }}/herdr
+
+      - name: Proxy mode
+        id: mode
+        run: |
+          proxy=none
+          if [ "$RECORD" = true ]; then
+            proxy=record
+          elif [ "$DEPENDENCY_MODE" = verified ]; then
+            proxy=verify
+          fi
+          echo "proxy=$proxy" >> "$GITHUB_OUTPUT"
+          echo "dependency mode $DEPENDENCY_MODE, proxy $proxy"
+
+      - name: Verify the trusted artifacts and stage them
+        timeout-minutes: 10
+        run: |
+          set -eu
+          (cd "$RUNNER_TEMP/build" && shasum -a 256 -c SHA256SUMS)
+          sudo install -d -o 0 -g 0 -m 0755 "$HP" "$HP/bin" "$HP/src"
+          sudo install -o 0 -g 0 -m 0555 "$RUNNER_TEMP/build/cargo-nextest" "$HP/bin/cargo-nextest"
+          # The repository files the tests read (lock, scenarios, nextest config), at HEAD.
+          git archive --format=tar HEAD | sudo tar -x -C "$HP/src"
+          # Extract the archive as the runner user, then make it root-owned below.
+          sudo install -d -o "$(id -u)" -m 0755 "$HP/ex"
+          "$HP/bin/cargo-nextest" nextest list --archive-file "$RUNNER_TEMP/build/herdr-plugins-it-$PLUGIN_OS.tar.zst" \
+            --extract-to "$HP/ex" --workspace-remap "$HP/src" --run-ignored only -E "$TEST_FILTER"
+          if [ "$HERDR_SIDE" = true ]; then
+            expected=$(awk '{print $1}' "$RUNNER_TEMP/herdr/herdr.sha256")
+            actual=$(shasum -a 256 "$RUNNER_TEMP/herdr/herdr" | awk '{print $1}')
+            [ "$actual" = "$expected" ] || { echo "Herdr checksum mismatch"; exit 1; }
+            sudo install -d -o 0 -g 0 -m 0755 "$HP/herdr"
+            sudo install -o 0 -g 0 -m 0555 "$RUNNER_TEMP/herdr/herdr" "$HP/herdr/herdr"
+            echo "HERDR_SHA256=$expected" >> "$GITHUB_ENV"
+          fi
+
+      - name: Install the lock's toolchains for the plugin
+        timeout-minutes: 20
+        run: |
+          set -eu
+          bun scripts/herdr-plugins/lock-tools.ts toolchains --lock "$LOCK" > "$RUNNER_TEMP/toolchains.txt"
+          cat "$RUNNER_TEMP/toolchains.txt"
+          sudo install -d -o "$(id -u)" -m 0755 "$HP/tools"
+          export MISE_DATA_DIR="$HP/tools/mise" MISE_CACHE_DIR="$RUNNER_TEMP/mise-cache"
+          export RUSTUP_HOME="$HP/tools/rustup" CARGO_HOME="$HP/tools/cargo"
+          tool_path=""
+          rust=""
+          while IFS='=' read -r name version; do
+            case $name in
+              node | go | bun)
+                (cd "$HP" && mise install "$name@$version")
+                tool_path="$tool_path:$(cd "$HP" && mise where "$name@$version")/bin"
+                ;;
+              rust)
+                (cd "$HP" && mise install "rust@$version")
+                tool_path="$tool_path:$HP/tools/cargo/bin"
+                rust=$version
+                ;;
+              *) echo "unknown toolchain $name"; exit 1 ;;
+            esac
+          done < "$RUNNER_TEMP/toolchains.txt"
+          echo "TOOL_PATH=${tool_path#:}" >> "$GITHUB_ENV"
+          echo "RUST_TOOLCHAIN=$rust" >> "$GITHUB_ENV"
+
+      - name: Fetch and scan the plugin source
+        timeout-minutes: 15
+        run: |
+          set -eu
+          sudo install -d -o "$(id -u)" -m 0755 "$HP/mirror"
+          bun scripts/herdr-plugins-fetch.ts --mirror "$HP/mirror" --only "$PLUGIN_ID"
+          mkdir -p "$RUNNER_TEMP/harness"
+          # Direct socket use (18 §8.5). The scan only reads the mirrored source.
+          bun scripts/herdr-plugins-scan.ts --mirror "$HP/mirror" --only "$PLUGIN_ID" > "$RUNNER_TEMP/harness/scan.jsonl" \
+            || echo "scan failed with status $?"
+
+      - name: Create the boundary user and seal the trusted files
+        timeout-minutes: 5
+        run: |
+          set -eu
+          sh scripts/herdr-plugins/setup-boundary.sh user "$BOX_USER"
+          sealed="$HP/bin $HP/src $HP/ex $HP/tools $HP/mirror"
+          [ "$HERDR_SIDE" != true ] || sealed="$sealed $HP/herdr"
+          # shellcheck disable=SC2086 # word splitting is intended
+          sh scripts/herdr-plugins/setup-boundary.sh seal $sealed
+          # The mirror is read through file:// Git URLs as another user.
+          for git in /usr/bin/git "$(command -v git)"; do
+            sudo "$git" config --system --add safe.directory '*' || true
+          done
+          sudo install -d -o "$BOX_USER" -g "$(id -gn "$BOX_USER")" -m 0700 "$HP/out"
+
+      - name: Python for the dependency proxy
+        if: steps.mode.outputs.proxy != 'none'
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+      - name: Restore the dependency cache
+        if: steps.mode.outputs.proxy == 'verify'
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/proxy/cache
+          key: herdr-plugins-deps-${{ matrix.os }}-${{ matrix.plugin_id }}-${{ hashFiles(env.LOCK) }}
+          restore-keys: herdr-plugins-deps-${{ matrix.os }}-${{ matrix.plugin_id }}-
+      - name: Start the dependency proxy (18 §7.2)
+        if: steps.mode.outputs.proxy != 'none'
+        timeout-minutes: 10
+        env:
+          PROXY_MODE: ${{ steps.mode.outputs.proxy }}
+        run: |
+          set -eu
+          proxy_dir="$RUNNER_TEMP/proxy"
+          mkdir -p "$proxy_dir/conf" "$proxy_dir/cache" "$RUNNER_TEMP/harness/proxy"
+          python3 -m venv "$RUNNER_TEMP/mitm"
+          "$RUNNER_TEMP/mitm/bin/pip" install --quiet --only-binary :all: --require-hashes \
+            -r scripts/herdr-plugins/mitmproxy-requirements.txt
+          bun scripts/herdr-plugins/lock-tools.ts allowlist --lock "$LOCK" --plugin "$PLUGIN_ID" > "$proxy_dir/allow.json"
+          nohup "$RUNNER_TEMP/mitm/bin/mitmdump" -q --listen-host 127.0.0.1 --listen-port 8899 \
+            --set confdir="$proxy_dir/conf" -s "$GITHUB_WORKSPACE/scripts/herdr-plugins/verified_proxy.py" \
+            --set hp_mode="$PROXY_MODE" --set hp_cache="$proxy_dir/cache" \
+            --set hp_log="$RUNNER_TEMP/harness/proxy" --set hp_allow="$proxy_dir/allow.json" \
+            > "$RUNNER_TEMP/harness/proxy/mitmdump.log" 2>&1 &
+          for _ in $(seq 1 100); do
+            if [ -s "$proxy_dir/conf/mitmproxy-ca-cert.pem" ] && nc -z 127.0.0.1 8899 2>/dev/null; then break; fi
+            sleep 0.2
+          done
+          nc -z 127.0.0.1 8899 || { cat "$RUNNER_TEMP/harness/proxy/mitmdump.log"; exit 1; }
+          sudo install -o 0 -g 0 -m 0644 "$proxy_dir/conf/mitmproxy-ca-cert.pem" "$HP/proxy-ca.pem"
+          sh scripts/herdr-plugins/setup-boundary.sh trust-ca "$HP/proxy-ca.pem"
+          sh scripts/herdr-plugins/proxy-env.sh http://127.0.0.1:8899 "$HP/proxy-ca.pem" > "$RUNNER_TEMP/proxy.env"
+          # Everything the plugin downloads must pass the proxy: allow the user only loopback.
+          sh scripts/herdr-plugins/setup-boundary.sh firewall "$BOX_USER" loopback
+      - name: Block link-local addresses for the plugin
+        if: steps.mode.outputs.proxy == 'none'
+        run: sh scripts/herdr-plugins/setup-boundary.sh firewall "$BOX_USER" no-link-local
+
+      - name: Run the plugin inside the boundary
+        id: run
+        timeout-minutes: 55
+        run: |
+          set -u
+          envf="$RUNNER_TEMP/boundary.env"
+          {
+            echo "VIBEKE_HERDR_PLUGINS=1"
+            echo "VIBEKE_PLUGIN_MIRROR=$HP/mirror"
+            echo "VIBEKE_HERDR_PLUGIN_RESULTS=$HP/out"
+            echo "RUSTUP_HOME=$HP/tools/rustup"
+            [ -z "$RUST_TOOLCHAIN" ] || echo "RUSTUP_TOOLCHAIN=$RUST_TOOLCHAIN"
+            echo "CARGO_TERM_COLOR=never"
+            echo "NEXTEST_HIDE_PROGRESS_BAR=1"
+            echo "GIT_CONFIG_COUNT=1"
+            echo "GIT_CONFIG_KEY_0=safe.directory"
+            echo "GIT_CONFIG_VALUE_0=*"
+            if [ "$HERDR_SIDE" = true ]; then
+              echo "VIBEKE_HERDR_BIN=$HP/herdr/herdr"
+              echo "VIBEKE_HERDR_SHA256=$HERDR_SHA256"
+            fi
+            [ ! -f "$RUNNER_TEMP/proxy.env" ] || cat "$RUNNER_TEMP/proxy.env"
+          } > "$envf"
+          status=0
+          sh scripts/herdr-plugins/run-boundary.sh --user "$BOX_USER" --root "$HP/box" --timeout 3000 \
+            --path "$TOOL_PATH" --env-file "$envf" --workdir "$HP/src" -- \
+            "$HP/bin/cargo-nextest" nextest run \
+            --binaries-metadata "$HP/ex/target/nextest/binaries-metadata.json" \
+            --cargo-metadata "$HP/ex/target/nextest/cargo-metadata.json" \
+            --target-dir-remap "$HP/ex/target" --workspace-remap "$HP/src" \
+            --run-ignored only --no-fail-fast --no-tests fail -E "$TEST_FILTER" || status=$?
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          echo "Plugin test exit status $status. The report job decides the outcome."
+          # Plugin failures do not fail this job (125 is a boundary setup error).
+          [ "$status" -ne 125 ]
+
+      - name: Collect the results
+        if: always()
+        run: |
+          set -u
+          dest="$RUNNER_TEMP/results"
+          mkdir -p "$dest"
+          [ -d "$HP/out" ] || exit 0
+          # Every boundary process is dead by now. Copy regular files only (never symbolic links)
+          # with size and count limits; the report validates their contents.
+          sudo find "$HP/out" -type f -size -8192k | head -n 2000 | while IFS= read -r f; do
+            rel=${f#"$HP/out/"}
+            case $rel in *..*) continue ;; esac
+            mkdir -p "$dest/$(dirname "$rel")"
+            # shellcheck disable=SC2024 # root reads the file, the runner user writes the copy
+            sudo cat -- "$f" > "$dest/$rel"
+          done
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: herdr-plugin-results-${{ matrix.stem }}-${{ matrix.os }}
+          path: ${{ runner.temp }}/results/
+          if-no-files-found: ignore
+          retention-days: 14
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          # Written by trusted code only: the source scan and the proxy logs.
+          name: herdr-plugin-harness-${{ matrix.stem }}-${{ matrix.os }}
+          path: ${{ runner.temp }}/harness/
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Save the recorded dependency cache
+        if: always() && steps.mode.outputs.proxy == 'record'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/proxy/cache
+          key: herdr-plugins-deps-${{ matrix.os }}-${{ matrix.plugin_id }}-${{ github.run_id }}
+
+  report:
+    # Reads the plugin jobs' artifacts as hostile data (18 §5.6) and never runs anything from
+    # them. The only job that may write issues.
+    needs: [plan, plugin]
+    if: always() && needs.plan.result == 'success' && needs.plan.outputs.count != '0'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: "1.3.14"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: herdr-plugin-results-*
+          path: ${{ runner.temp }}/results
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: herdr-plugins-plan
+          path: ${{ runner.temp }}/plan
+      - name: Build the matrix
+        id: report
+        run: |
+          mkdir -p "$RUNNER_TEMP/results"
+          status=0
+          bun scripts/herdr-plugins-report.ts --in "$RUNNER_TEMP/results" --out "$RUNNER_TEMP/report" \
+            --expect "$RUNNER_TEMP/plan/matrix.json" || status=$?
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          [ -f "$RUNNER_TEMP/report/matrix.md" ] || exit 1
+          cat "$RUNNER_TEMP/report/matrix.md" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: herdr-plugin-matrix
+          path: |
+            ${{ runner.temp }}/report/
+            ${{ runner.temp }}/results/
+          retention-days: 30
+      - name: Update the tracking issue
+        if: github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -eu
+          title="Real Herdr plugin matrix"
+          body="$RUNNER_TEMP/issue.md"
+          # matrix.md is already escaped by the report script.
+          if [ "$(wc -c < "$RUNNER_TEMP/report/matrix.md")" -le 60000 ]; then
+            cp "$RUNNER_TEMP/report/matrix.md" "$body"
+          else
+            printf '# Real Herdr plugin matrix\n\nThe matrix is too large for an issue. See the run artifacts.\n' > "$body"
+          fi
+          printf '\nLatest run: %s\n' "$RUN_URL" >> "$body"
+          number=$(gh issue list --state open --search "\"$title\" in:title" --limit 50 --json number,title \
+            --jq "map(select(.title == \"$title\")) | .[0].number // empty")
+          if [ -n "$number" ]; then
+            gh issue edit "$number" --body-file "$body"
+          else
+            gh issue create --title "$title" --body-file "$body"
+          fi
+      - name: Fail when a result fails the run
+        if: steps.report.outputs.status != '0'
+        env:
+          STATUS: ${{ steps.report.outputs.status }}
+        run: |
+          echo "The matrix has failing results (report exit status $STATUS)."
+          exit 1
