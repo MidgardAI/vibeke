@@ -788,10 +788,14 @@ where
             .and_then(|()| crate::auth::authorize(&server, ctx, M))
             .err()
     };
+    // Subscribed before connecting, so a revocation during the connect is not missed.
+    let mut revoked = crate::auth::revocations(&server);
     let target = match refusal {
         Some(e) => Err(e),
         None => crate::preview::connect_stream(&server, &req.params).await,
     };
+    // The grant may have been revoked or expired while the connect ran.
+    let target = target.and_then(|t| crate::auth::authorize(&server, ctx, M).map(|()| t));
     let mut target = match target {
         Ok(t) => t,
         Err(e) => {
@@ -809,11 +813,17 @@ where
     // The reader may already hold bytes the client sent right after the request line; the
     // `BufReader` hands them out first, so nothing written before the upgrade is lost.
     let mut client = tokio::io::join(rd, wr);
-    let mut revoked = crate::auth::revocations(&server);
     let copy = tokio::io::copy_bidirectional(&mut client, &mut target);
     tokio::pin!(copy);
+    // Revocations are notified; an elevated grant's expiry is not, so it is checked each second.
+    let mut expiry = tokio::time::interval(std::time::Duration::from_secs(1));
     loop {
         tokio::select! {
+            _ = expiry.tick() => {
+                if crate::auth::authorize(&server, ctx, M).is_err() {
+                    return Ok(());
+                }
+            }
             r = &mut copy => {
                 if let Err(e) = r {
                     tracing::debug!(error = %e, "preview.connect: stream ended");

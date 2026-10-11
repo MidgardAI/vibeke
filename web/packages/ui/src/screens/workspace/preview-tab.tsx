@@ -25,7 +25,7 @@ export function PreviewTab({ hostId, preview }: { hostId: string; preview: Previ
   if (!preview) return <Empty icon={<Globe />} title={t.tabs2.previewGone} />;
   const full = (host?.info?.scope ?? host?.record.scope) === 'full' && host?.status === 'online';
   if (watching) return <Screencast hostId={hostId} session={watching} canControl={full} onClose={() => setWatching(null)} />;
-  if ('previewView' in app.platform && app.platform.previewView) return <EmbeddedPreview hostId={hostId} preview={preview} />;
+  if ('previewView' in app.platform && app.platform.previewView) return <EmbeddedPreview key={`${hostId}:${preview.machine ?? ""}:${preview.id}`} hostId={hostId} preview={preview} />;
   const info = host?.info;
   const rendered = full && !!info && !info.limit?.pane && !info.limit?.workspace && info.kind !== 'share' && info.features.includes('browser_preview');
   const browserButton = !isLoopbackUrl(preview.url) && (
@@ -37,7 +37,7 @@ export function PreviewTab({ hostId, preview }: { hostId: string; preview: Previ
   if (rendered) {
     return (
       <div className="flex min-h-0 flex-1 flex-col">
-        <PhonePreview hostId={hostId} preview={preview} />
+        <PhonePreview key={`${hostId}:${preview.machine ?? ""}:${preview.id}`} hostId={hostId} preview={preview} />
         <div className="flex shrink-0 flex-wrap items-center gap-2 border-t border-border px-3 py-1.5">
           <span className="inline-flex min-w-0 flex-1 items-center gap-1.5 text-xs text-muted">
             <StatusDot status={DOT[preview.status] ?? 'idle'} />

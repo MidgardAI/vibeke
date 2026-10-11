@@ -1661,8 +1661,14 @@ impl Call<'_> {
                     }
                 }
                 self.still_authorized()?;
-                crate::screencast::preview_open(self.gw, &self.actor(), &self.device.id, params)
-                    .await
+                // Detached: a request cancelled by revocation or disconnect must not abandon a
+                // session the host already opened. Once recorded, the opener's lease closes it.
+                let (gw, actor, device) = (self.gw.clone(), self.actor(), self.device.id.clone());
+                tokio::spawn(async move {
+                    crate::screencast::preview_open(&gw, &actor, &device, params).await
+                })
+                .await
+                .map_err(|_| ApiError::new("internal", "opening the preview failed"))?
             }
             "browser.session_close" => {
                 let session = req(&p, "session")?;

@@ -28,6 +28,7 @@ export function PhonePreview({ hostId, preview, onClose }: { hostId: string; pre
   const visible = useStore(app.visible);
   const stage = useRef<HTMLDivElement>(null);
   const hidden = useRef<HTMLInputElement>(null);
+  const area = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState<Size>({ width: 0, height: 0 });
   const [src, setSrc] = useState<string | null>(null);
   const [url, setUrl] = useState('');
@@ -48,7 +49,9 @@ export function PhonePreview({ hostId, preview, onClose }: { hostId: string; pre
 
   // ---- measuring: the area in CSS pixels, also when the keyboard or a rotation changes it ----
   useEffect(() => {
-    const el = stage.current;
+    // The unconstrained container, not the stage: the stage's height is set from this
+    // measurement, so measuring it could never grow again after the keyboard closes.
+    const el = area.current;
     if (!el) return;
     const measure = () => {
       const r = el.getBoundingClientRect();
@@ -377,7 +380,7 @@ export function PhonePreview({ hostId, preview, onClose }: { hostId: string; pre
         )}
       </div>
 
-      <div className="relative min-h-0 flex-1 overflow-hidden bg-surface-2">
+      <div ref={area} className="relative min-h-0 flex-1 overflow-hidden bg-surface-2">
         <div
           ref={stage}
           role="img"
