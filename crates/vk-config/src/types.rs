@@ -348,6 +348,8 @@ pub struct Ui {
     pub confirm_close: ConfirmClose,
     pub marked_unread_clears_on_focus: bool,
     pub sidebar: Sidebar,
+    /// Images in the TUI (spec 18): the sidebar section and the attach card.
+    pub images: UiImages,
     pub tabs: Tabs,
     pub status_bar: StatusBar,
     pub sync_input: SyncInput,
@@ -371,6 +373,7 @@ impl Default for Ui {
             confirm_close: ConfirmClose::Running,
             marked_unread_clears_on_focus: false,
             sidebar: Sidebar::default(),
+            images: UiImages::default(),
             tabs: Tabs::default(),
             status_bar: StatusBar::default(),
             sync_input: SyncInput::default(),
@@ -395,7 +398,7 @@ pub struct Sidebar {
     pub collapsed: bool,
     pub show_shell_panes: bool,
     pub nest_tasks: bool,
-    /// Tiny latest-screenshot thumbnail per preview row (kitty graphics only; 06 B8).
+    /// Tiny latest-screenshot thumbnail per preview row (kitty graphics or iTerm2 inline images; 06 B8).
     pub preview_thumbnails: bool,
     pub show_state_source: ShowStateSource,
     pub isolation_glyphs: IsolationGlyphs,
@@ -417,6 +420,27 @@ impl Default for Sidebar {
             show_state_source: ShowStateSource::InferredOnly,
             isolation_glyphs: IsolationGlyphs::default(),
             token: Vec::new(),
+        }
+    }
+}
+
+/// `[ui.images]`: where the TUI shows images that agents and users attach (spec 18).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct UiImages {
+    /// Show the Images section in the sidebar.
+    pub sidebar: bool,
+    /// How many recent images the sidebar section lists (1-20).
+    pub recent: u32,
+    /// Show a card when an agent attaches an image to the focused pane.
+    pub popup: bool,
+}
+impl Default for UiImages {
+    fn default() -> Self {
+        UiImages {
+            sidebar: true,
+            recent: 5,
+            popup: true,
         }
     }
 }

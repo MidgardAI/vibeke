@@ -95,6 +95,8 @@ pub const DEFAULT_KEYMAP: &[(&str, &str)] = &[
     ("cloud_send", ""),
     ("cloud_bring_back", ""),
     ("sandboxes", ""),
+    // Images (spec 18 §6.2): the gallery of new images.
+    ("open_images", "prefix+alt+i"),
 ];
 
 /// Copy-mode actions for `[keys.copy_mode]` per-key overrides (`key = "action"`; an empty

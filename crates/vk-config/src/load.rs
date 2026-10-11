@@ -446,6 +446,9 @@ impl Config {
                 "outside min_width..max_width; it will be clamped",
             ));
         }
+        if !(1..=20).contains(&self.ui.images.recent) {
+            errs.push(problem("ui.images.recent", "must be between 1 and 20"));
+        }
         if self.ui.max_fps == 0 {
             errs.push(problem("ui.max_fps", "must be greater than 0"));
         }

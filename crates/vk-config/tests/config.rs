@@ -496,3 +496,53 @@ fn shift_enter_defaults_to_a_newline_for_legacy_apps() {
         vk_config::ShiftEnterLegacy::Lf
     ));
 }
+
+#[test]
+fn ui_images_defaults() {
+    let c = Config::default();
+    assert!(c.ui.images.sidebar);
+    assert_eq!(c.ui.images.recent, 5);
+    assert!(c.ui.images.popup);
+    let (c, _) = parse("[ui.images]\nsidebar = false\nrecent = 9\npopup = false\n").unwrap();
+    assert!(!c.ui.images.sidebar);
+    assert_eq!(c.ui.images.recent, 9);
+    assert!(!c.ui.images.popup);
+}
+
+#[test]
+fn ui_images_recent_range() {
+    for ok in [1, 20] {
+        assert!(
+            parse(&format!("[ui.images]\nrecent = {ok}\n")).is_ok(),
+            "{ok}"
+        );
+    }
+    for bad in [0, 21] {
+        let err = parse(&format!("[ui.images]\nrecent = {bad}\n")).unwrap_err();
+        let ConfigError::Invalid(diags) = err else {
+            panic!("expected Invalid")
+        };
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.message.contains("must be between 1 and 20"))
+        );
+    }
+}
+
+#[test]
+fn open_images_is_bound_by_default() {
+    let bound = DEFAULT_KEYMAP
+        .iter()
+        .find(|(a, _)| *a == "open_images")
+        .expect("open_images in DEFAULT_KEYMAP");
+    assert_eq!(bound.1, "prefix+alt+i");
+    assert_eq!(
+        DEFAULT_KEYMAP
+            .iter()
+            .filter(|(_, b)| *b == "prefix+alt+i")
+            .count(),
+        1
+    );
+    assert!(check_keys(&Config::default()).is_empty());
+}
