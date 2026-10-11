@@ -6,7 +6,8 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone)]
 pub struct Paths {
     pub session: String,
-    /// `$XDG_RUNTIME_DIR/vibeke/<session>` (macOS: `$TMPDIR/vibeke-$UID/<session>`).
+    /// `$XDG_RUNTIME_DIR/vibeke/<dir>` (macOS: `$TMPDIR/vibeke-$UID/<dir>`), where `<dir>` is
+    /// [`runtime_dir_name`] of the session.
     pub runtime: PathBuf,
     /// `~/.local/state/vibeke/<session>`.
     pub state: PathBuf,
@@ -81,11 +82,28 @@ pub fn data_root() -> PathBuf {
     home().join(".local/share/vibeke")
 }
 
+/// Longest session name used as-is for its runtime dir.
+const RUNTIME_NAME_MAX: usize = 16;
+
+/// The runtime dir name of `session`: the name itself when it has at most 16 characters,
+/// else its first 7 characters, `~` and 8 hex digits of its hash. Unix socket paths must fit
+/// `sun_path` (104 bytes on macOS, under a `$TMPDIR` of about 50), and session names may have
+/// 64 characters. `~` never occurs in a session name, so a shortened dir never collides with
+/// another session's name. The state dir keeps the full name.
+pub fn runtime_dir_name(session: &str) -> String {
+    if session.chars().count() <= RUNTIME_NAME_MAX {
+        return session.to_string();
+    }
+    let head: String = session.chars().take(7).collect();
+    let hash = blake3::hash(session.as_bytes()).to_hex();
+    format!("{head}~{}", &hash.as_str()[..8])
+}
+
 impl Paths {
     pub fn new(session: &str) -> Self {
         Paths {
             session: session.to_string(),
-            runtime: runtime_root().join(session),
+            runtime: runtime_root().join(runtime_dir_name(session)),
             state: state_root().join(session),
         }
     }
@@ -404,5 +422,37 @@ mod tests {
         assert_eq!(s, p.holders().join("Z7THC5P3TYTZ.sock"));
         assert!(s.as_os_str().len() < 104, "{}", s.display());
         assert_eq!(p.holder_socket("p1"), p.holders().join("p1.sock"));
+    }
+
+    /// A 64-character session name under a long macOS `$TMPDIR`: the control socket and the
+    /// holder sockets still fit `sun_path` (104 bytes).
+    #[test]
+    fn long_session_names_keep_sockets_under_the_limit() {
+        let name = "a-very-long-session-name-that-uses-all-sixty-four-characters-xyz";
+        assert_eq!(name.len(), 64);
+        let tmp = PathBuf::from("/var/folders/vp/bwsl4vyx2r30vjbd6hy07b6m0000gn/T/vibeke-501");
+        let p = Paths {
+            session: name.into(),
+            runtime: tmp.join(runtime_dir_name(name)),
+            state: PathBuf::from("/state").join(name),
+        };
+        let sockets = [p.socket(), p.holder_socket("01M4AFG11S4Y0DZ7THC5P3TYTZ")];
+        for s in &sockets {
+            assert!(
+                s.as_os_str().len() < 104,
+                "{} is {} bytes",
+                s.display(),
+                s.as_os_str().len()
+            );
+        }
+        // Readable where it fits, distinct for names that share a prefix, never a valid name.
+        assert_eq!(runtime_dir_name("default"), "default");
+        assert_eq!(runtime_dir_name("sixteen-chars-ok"), "sixteen-chars-ok");
+        let a = runtime_dir_name("project-alpha-session-1");
+        let b = runtime_dir_name("project-alpha-session-2");
+        assert_ne!(a, b);
+        assert!(a.starts_with("project~") && a.len() == 16, "{a}");
+        // The state dir keeps the readable name.
+        assert!(p.state.ends_with(name));
     }
 }
