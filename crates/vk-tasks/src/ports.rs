@@ -9,7 +9,7 @@ use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
-use std::net::{Ipv4Addr, TcpListener};
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -230,8 +230,38 @@ fn is_live(l: &Lease) -> bool {
     l.owner_pid.is_none_or(pid_alive)
 }
 
+/// Is `port` free on every address a dev server listens on: `127.0.0.1`, `::1` (Vite and
+/// Node often bind only this) and the IPv4/IPv6 wildcards (a `0.0.0.0` listener does not stop
+/// a `127.0.0.1` bind on macOS). Each probe binds **without** `SO_REUSEADDR` (std's
+/// `TcpListener` sets it, which hides some listeners). An address family the machine does not
+/// have (no IPv6) is skipped.
 fn port_free(port: u16) -> bool {
-    TcpListener::bind((Ipv4Addr::LOCALHOST, port)).is_ok()
+    let addrs = [
+        SocketAddr::from((Ipv4Addr::LOCALHOST, port)),
+        SocketAddr::from((Ipv6Addr::LOCALHOST, port)),
+        SocketAddr::from((Ipv4Addr::UNSPECIFIED, port)),
+        SocketAddr::from((Ipv6Addr::UNSPECIFIED, port)),
+    ];
+    addrs.iter().all(|a| probe_bind(a))
+}
+
+fn probe_bind(a: &SocketAddr) -> bool {
+    use socket2::{Domain, Protocol, Socket, Type};
+    let Ok(s) = Socket::new(Domain::for_address(*a), Type::STREAM, Some(Protocol::TCP)) else {
+        // No socket of this family on this machine: nothing can listen there.
+        return true;
+    };
+    if a.is_ipv6() {
+        // The IPv4 probes cover IPv4; this one asks about IPv6 only.
+        let _ = s.set_only_v6(true);
+    }
+    match s.bind(&(*a).into()) {
+        Ok(()) => true,
+        Err(e) => matches!(
+            e.raw_os_error(),
+            Some(libc::EADDRNOTAVAIL) | Some(libc::EAFNOSUPPORT)
+        ),
+    }
 }
 
 struct LockGuard(File);
@@ -467,5 +497,28 @@ impl PortLeases {
 
     pub fn state_dir(&self) -> &Path {
         &self.dir
+    }
+}
+
+#[cfg(test)]
+mod probe_tests {
+    use super::*;
+    use std::net::TcpListener;
+
+    /// Review finding D1.12: a listener on `::1` only, or on the wildcard address, makes the
+    /// port busy.
+    #[test]
+    fn probe_sees_ipv6_loopback_and_wildcard_listeners() {
+        if let Ok(l) = TcpListener::bind((Ipv6Addr::LOCALHOST, 0)) {
+            let p = l.local_addr().unwrap().port();
+            assert!(!port_free(p), "::1-only listener on {p} missed");
+        }
+        let l = TcpListener::bind((Ipv4Addr::UNSPECIFIED, 0)).unwrap();
+        let p = l.local_addr().unwrap().port();
+        assert!(!port_free(p), "0.0.0.0 listener on {p} missed");
+        let l = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let p = l.local_addr().unwrap().port();
+        assert!(!port_free(p), "127.0.0.1 listener on {p} missed");
+        drop(l);
     }
 }

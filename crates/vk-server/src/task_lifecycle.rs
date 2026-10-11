@@ -77,7 +77,8 @@ fn commit(server: &Server, tx: Tx) -> Result<Option<i64>, RpcError> {
     Ok(events.last().map(|e| e.seq))
 }
 
-fn pool() -> vk_tasks::PortPool {
+/// The configured port pool (`tasks.port_pool`, `tasks.port_block`).
+pub(crate) fn pool() -> vk_tasks::PortPool {
     let cfg = crate::task_workspace::load_tasks_cfg();
     vk_tasks::PortPool {
         start: cfg.port_pool.start,

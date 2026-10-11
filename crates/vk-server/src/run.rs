@@ -1862,10 +1862,9 @@ async fn task_finish(server: &Arc<Server>, p: &Value) -> R {
             server.close_pane(&pid);
         }
     }
-    let leases = vk_tasks::PortLeases::new(
-        crate::paths::state_root(),
-        vk_tasks::PortPool::parse("20000-29999", 10).map_err(|e| invalid(e.to_string()))?,
-    );
+    // The configured pool, not a fixed one (a lease outside it is still released by task id).
+    let leases =
+        vk_tasks::PortLeases::new(crate::paths::state_root(), crate::task_lifecycle::pool());
     let _ = leases.release(&task.id);
     // The lease is gone, so are the task's previews (06 B2 lifecycle).
     crate::preview_fabric::retire_task_previews(server, &task.id);
