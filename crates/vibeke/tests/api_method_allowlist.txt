@@ -10,7 +10,6 @@ agent.interrupt
 agent.manifests_reload
 agent.read
 agent.release
-agent.send_keys
 agent.spawn
 blob.abort
 browser.detach_screencast
@@ -35,7 +34,6 @@ preview.profile.list
 sandbox.remove
 tab.focus
 worktree.create
-worktree.open
 
 # spawn a real gateway process; covered by vk-server unit tests (gateway_supervisor) and the gateway CLI
 gateway.start
