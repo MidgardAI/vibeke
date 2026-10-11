@@ -151,6 +151,49 @@ pub const CONTROL_DIR: &str = ".ctl";
 /// (`vk_tasks::register_box_objects`). Not alphanumeric, so no pane dir has this name.
 pub const GIT_OBJECTS_DIR: &str = ".git-objects";
 
+/// Git hooks of a Linux box, in its private dir ([`commit_guard`]).
+pub const COMMIT_GUARD_DIR: &str = "git-hooks";
+
+/// Linux boxes cannot commit (13 §6): Seatbelt lets a macOS box write exactly the task branch's
+/// ref file (`refs/heads/<branch>` and its `.lock`), but bubblewrap and Landlock only grant
+/// whole directories, and the ref's directory holds the other branches of the user's
+/// repository too. Git would fail on the ref lock with a bare "Read-only file system". Instead,
+/// `pre-commit` and `pre-merge-commit` hooks (through `core.hooksPath`, added to any
+/// `GIT_CONFIG_COUNT` list) stop the commit first and say why and what to do. The hooks live
+/// in the box's private dir and are written without following symlinks the box may have
+/// planted there.
+pub fn commit_guard(
+    e: &mut Vec<(String, String)>,
+    private: &Path,
+    branch: Option<&str>,
+) -> std::io::Result<()> {
+    let dir = crate::fsafe::ensure_dir_under(private, Path::new(COMMIT_GUARD_DIR))?;
+    let what = match branch {
+        Some(b) => format!("the task branch `{b}` (refs/heads/{b})"),
+        None => "the branch ref".to_string(),
+    };
+    let script = format!(
+        "#!/bin/sh\n\
+         echo 'vibeke: git cannot commit inside the Linux sandbox: {what} is read-only in here.' >&2\n\
+         echo 'vibeke: the Linux sandbox can only make whole directories writable, and that directory holds your other branches too.' >&2\n\
+         echo 'vibeke: leave the changes uncommitted in the working tree and tell the user; they can commit on the host.' >&2\n\
+         exit 1\n",
+        what = what.replace('\'', "")
+    );
+    for name in ["pre-commit", "pre-merge-commit"] {
+        crate::fsafe::write_nofollow(&dir.join(name), script.as_bytes(), 0o755)?;
+    }
+    let n = e
+        .iter()
+        .find(|(k, _)| k == "GIT_CONFIG_COUNT")
+        .and_then(|(_, v)| v.trim().parse::<usize>().ok())
+        .unwrap_or(0);
+    env::set(e, &format!("GIT_CONFIG_KEY_{n}"), "core.hooksPath");
+    env::set(e, &format!("GIT_CONFIG_VALUE_{n}"), dir.to_string_lossy());
+    env::set(e, "GIT_CONFIG_COUNT", (n + 1).to_string());
+    Ok(())
+}
+
 impl SandboxRunner {
     pub fn pane_dir(&self, pane_id: &str) -> PathBuf {
         self.setup.root.join(short_id(pane_id))
@@ -326,6 +369,11 @@ impl SandboxRunner {
         env::set(&mut e, "VIBEKE_NETWORK", self.setup.network.as_str());
         for (k, v) in &self.setup.projection.env {
             env::set(&mut e, k, v.clone());
+        }
+        if cfg!(target_os = "linux")
+            && let Some(g) = &self.setup.git
+        {
+            commit_guard(&mut e, private, g.branch.as_deref())?;
         }
         Ok(e)
     }
@@ -624,6 +672,62 @@ mod tests {
         assert!(r.objects_dir().is_none());
         let e = r.env(&[], &private, None).unwrap();
         assert!(!e.iter().any(|(k, _)| k.starts_with("GIT_")));
+    }
+
+    /// Linux boxes stop a commit with an explanation instead of git's bare ref-lock error.
+    #[test]
+    fn commit_guard_explains_and_keeps_other_git_config() {
+        let t = tempfile::tempdir().unwrap();
+        let private = t.path().canonicalize().unwrap();
+        let mut e = vec![
+            ("GIT_CONFIG_COUNT".to_string(), "1".to_string()),
+            ("GIT_CONFIG_KEY_0".to_string(), "user.name".to_string()),
+            ("GIT_CONFIG_VALUE_0".to_string(), "T".to_string()),
+        ];
+        commit_guard(&mut e, &private, Some("vk/t")).unwrap();
+        let get = |k: &str| e.iter().find(|(x, _)| x == k).map(|(_, v)| v.clone());
+        let dir = private.join(COMMIT_GUARD_DIR);
+        assert_eq!(get("GIT_CONFIG_COUNT").as_deref(), Some("2"));
+        assert_eq!(get("GIT_CONFIG_KEY_0").as_deref(), Some("user.name"));
+        assert_eq!(get("GIT_CONFIG_KEY_1").as_deref(), Some("core.hooksPath"));
+        assert_eq!(
+            get("GIT_CONFIG_VALUE_1").as_deref(),
+            Some(dir.to_str().unwrap())
+        );
+        for name in ["pre-commit", "pre-merge-commit"] {
+            let hook = dir.join(name);
+            let text = std::fs::read_to_string(&hook).unwrap();
+            assert!(
+                text.contains("refs/heads/vk/t") && text.contains("exit 1"),
+                "{text}"
+            );
+            use std::os::unix::fs::PermissionsExt as _;
+            assert_eq!(
+                std::fs::metadata(&hook).unwrap().permissions().mode() & 0o777,
+                0o755
+            );
+        }
+        // A symlink the box planted in its private dir is replaced, never followed.
+        let outside = private.join("outside");
+        std::fs::write(&outside, "keep").unwrap();
+        std::fs::remove_file(dir.join("pre-commit")).unwrap();
+        std::os::unix::fs::symlink(&outside, dir.join("pre-commit")).unwrap();
+        let mut e = vec![];
+        commit_guard(&mut e, &private, None).unwrap();
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "keep");
+        assert!(
+            !std::fs::symlink_metadata(dir.join("pre-commit"))
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(get_count(&e), Some("1".to_string()));
+    }
+
+    fn get_count(e: &[(String, String)]) -> Option<String> {
+        e.iter()
+            .find(|(k, _)| k == "GIT_CONFIG_COUNT")
+            .map(|(_, v)| v.clone())
     }
 
     #[test]
