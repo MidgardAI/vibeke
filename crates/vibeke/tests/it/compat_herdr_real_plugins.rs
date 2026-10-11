@@ -370,8 +370,8 @@ fn step_reasons_keep_both_sides_and_fit_the_report() {
         Some("Herdr failed too: boom; vibeke: x")
     );
     assert_eq!(combine_reason(None, None, None), None);
-    let long = "e".repeat(10_000);
-    let r = combine_reason(Some(&long), Some(&long), Some(&long)).unwrap();
+    let (a, b, c) = ("a".repeat(10_000), "b".repeat(10_000), "c".repeat(10_000));
+    let r = combine_reason(Some(&a), Some(&b), Some(&c)).unwrap();
     assert!(r.encode_utf16().count() <= 1800, "{}", r.len());
     assert!(r.contains("; vibeke: ") && r.contains("; herdr: "));
 }

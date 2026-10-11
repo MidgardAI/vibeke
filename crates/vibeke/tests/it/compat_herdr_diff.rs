@@ -363,8 +363,10 @@ fn baseline_sha256(text: &str, key: &str) -> Option<String> {
 #[test]
 fn the_reference_checksum_comes_from_the_environment_or_a_captured_baseline() {
     let text = std::fs::read_to_string(baseline_path()).unwrap();
-    // Today every entry is still pending: the harness then needs VIBEKE_HERDR_SHA256.
-    assert_eq!(baseline_sha256(&text, "macos-arm64"), None);
+    // The checked-in baseline records a captured hash per platform; a pending entry yields None.
+    let recorded = baseline_sha256(&text, "macos-arm64").expect("macos-arm64 is captured");
+    assert_eq!(recorded.len(), 64);
+    assert_eq!(baseline_sha256(&text, "windows-x86_64"), None);
     let sha = "ab".repeat(32);
     let captured = format!(
         "[captures]\nreference_binary_sha256 = {{ macos-arm64 = \"{sha}\", linux-x86_64 = \"pending\" }}\n"
