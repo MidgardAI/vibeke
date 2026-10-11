@@ -164,7 +164,13 @@ async fn main_async(o: Opts) -> i32 {
     let vk_cfg = vk_config::Config::load(vk_config::config_path())
         .map(|(c, _)| c)
         .unwrap_or_default();
-    let kc = auth::keychain(&vk_cfg).unwrap_or(vk_store::keychain::Keychain::Os);
+    let kc = match auth::credentials(&vk_cfg) {
+        Ok(kc) => kc,
+        Err(_) => {
+            eprintln!("vibeke: invalid cloud credential storage configuration");
+            return EXIT_CANT_RUN;
+        }
+    };
     let cred = match auth::require(&*p, &cfg, &kc, &|k| std::env::var(k).ok()) {
         Ok(c) => c,
         Err(e) => return fail(&o.provider, &e),

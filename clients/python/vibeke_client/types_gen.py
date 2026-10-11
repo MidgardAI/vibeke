@@ -3060,22 +3060,26 @@ CloudAuthClearResult = TypedDict("CloudAuthClearResult", {
 CloudAuthImportParams = TypedDict("CloudAuthImportParams", {
     "provider": str,
     "source": str,
+    "storage": NotRequired[Literal["keychain", "file"]],
 })
 
 CloudAuthImportResult = TypedDict("CloudAuthImportResult", {
     "provider": str,
     "account": str,
+    "storage": NotRequired[Literal["keychain", "file"]],
     "cursor": NotRequired["Cursor"],
 })
 
 CloudAuthSetParams = TypedDict("CloudAuthSetParams", {
     "provider": str,
     "token": str,
+    "storage": NotRequired[Literal["keychain", "file"]],
 })
 
 CloudAuthSetResult = TypedDict("CloudAuthSetResult", {
     "provider": str,
     "account": str,
+    "storage": NotRequired[Literal["keychain", "file"]],
     "cursor": NotRequired["Cursor"],
 })
 

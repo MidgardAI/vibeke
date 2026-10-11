@@ -426,3 +426,45 @@ fn tab_reaches_a_provider_without_sandboxes() {
     let last = v.provider_order().last().cloned();
     assert_eq!(v.focused(), last);
 }
+
+#[test]
+fn keychain_failure_offers_a_file_retry_without_showing_the_token() {
+    let (mut app, mut rxs) = opened();
+    app.on_key(ch('j'));
+    app.on_key(ch('j'));
+    app.on_key(ch('s'));
+    app.on_paste("SENTINEL-TOKEN".into());
+    app.on_key(named(NamedKey::Enter));
+    let cmds = commands(&mut rxs[0]);
+    let (req, _) = only(&cmds, "cloud.auth.set");
+    reply_err(
+        &mut app,
+        0,
+        req,
+        "permission_denied",
+        json!({"reason": "keychain_unavailable", "file_fallback": true}),
+    );
+    let shown = screen(&app);
+    assert!(shown.contains("Save to protected file"), "{shown}");
+    assert!(shown.contains("not encrypted"), "{shown}");
+    assert!(!shown.contains("SENTINEL"));
+    assert!(!format!("{:?}", app.ux.sandboxes).contains("SENTINEL"));
+    assert!(commands(&mut rxs[0]).is_empty());
+    app.on_key(named(NamedKey::Enter));
+    let cmds = commands(&mut rxs[0]);
+    let (req, params) = only(&cmds, "cloud.auth.set");
+    assert_eq!(
+        params,
+        json!({"provider": "e2b", "token": "SENTINEL-TOKEN", "storage": "file"})
+    );
+    reply(
+        &mut app,
+        0,
+        req,
+        json!({"provider": "e2b", "account": "team", "storage": "file"}),
+    );
+    assert!(matches!(
+        app.ux.sandboxes.as_ref().unwrap().stage,
+        Stage::List
+    ));
+}

@@ -1521,8 +1521,8 @@
       ],
       "milestone": null,
       "spec": null,
-      "params": "{provider: string, source: string}",
-      "result": "{provider: string, account: string}"
+      "params": "{provider: string, source: string, storage?: keychain|file = keychain}",
+      "result": "{provider: string, account: string, storage?: keychain|file}"
     },
     {
       "name": "cloud.auth.set",
@@ -1535,8 +1535,8 @@
       ],
       "milestone": null,
       "spec": null,
-      "params": "{provider: string, token: string}",
-      "result": "{provider: string, account: string}"
+      "params": "{provider: string, token: string, storage?: keychain|file = keychain}",
+      "result": "{provider: string, account: string, storage?: keychain|file}"
     },
     {
       "name": "cloud.box.adopt",

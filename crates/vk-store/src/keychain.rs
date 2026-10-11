@@ -23,6 +23,11 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+#[cfg(target_os = "macos")]
+mod macos;
+#[cfg(target_os = "macos")]
+use macos::{os_delete, os_get, os_set};
+
 /// Default keychain service name for Vibeke's own items.
 pub const SERVICE: &str = "vibeke";
 /// Account used when Vibeke stores an item (the service name is the item).
@@ -270,18 +275,24 @@ fn write_file(p: &Path, m: &BTreeMap<String, String>) -> R<()> {
     if let Some(d) = p.parent() {
         std::fs::create_dir_all(d).map_err(fail)?;
     }
-    let tmp = p.with_extension(format!("tmp-{}", std::process::id()));
+    let tmp = p.with_extension(format!("tmp-{}", ulid::Ulid::new()));
     let mut f = std::fs::OpenOptions::new()
         .write(true)
-        .create(true)
-        .truncate(true)
+        .create_new(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
         .mode(0o600)
         .open(&tmp)
         .map_err(fail)?;
-    f.write_all(&serde_json::to_vec_pretty(m).unwrap_or_default())
-        .map_err(fail)?;
-    f.sync_all().map_err(fail)?;
-    std::fs::rename(&tmp, p).map_err(fail)
+    let result = (|| {
+        f.write_all(&serde_json::to_vec_pretty(m).unwrap_or_default())
+            .map_err(fail)?;
+        f.sync_all().map_err(fail)?;
+        std::fs::rename(&tmp, p).map_err(fail)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
 }
 
 fn file_insert(p: &Path, key: String, secret: &str) -> R<()> {
@@ -302,7 +313,11 @@ fn file_remove(p: &Path, key: &str) -> R<bool> {
 // ---- OS backends --------------------------------------------------------------------------
 
 /// Run a keychain tool with a deadline; returns (exit code, first line of stdout).
-fn run(mut cmd: Command, stdin: Option<&str>) -> R<(i32, String)> {
+fn run(cmd: Command, stdin: Option<&str>) -> R<(i32, String)> {
+    run_output(cmd, stdin).map(|(code, text)| (code, text.lines().next().unwrap_or("").to_string()))
+}
+
+fn run_output(mut cmd: Command, stdin: Option<&str>) -> R<(i32, String)> {
     cmd.stdin(if stdin.is_some() {
         Stdio::piped()
     } else {
@@ -349,67 +364,7 @@ fn run(mut cmd: Command, stdin: Option<&str>) -> R<(i32, String)> {
     let text = rx
         .recv_timeout(Duration::from_millis(500))
         .unwrap_or_default();
-    Ok((
-        status.code().unwrap_or(-1),
-        text.lines().next().unwrap_or("").to_string(),
-    ))
-}
-
-#[cfg(target_os = "macos")]
-const SECURITY: &str = "/usr/bin/security";
-
-#[cfg(target_os = "macos")]
-fn os_get(service: &str, account: Option<&str>) -> R<Option<String>> {
-    let mut c = Command::new(SECURITY);
-    c.args(["find-generic-password", "-s", service]);
-    if let Some(a) = account {
-        c.args(["-a", a]);
-    }
-    c.arg("-w");
-    match run(c, None)? {
-        (0, out) => Ok(Some(out)),
-        // errSecItemNotFound
-        (44, _) => Ok(None),
-        _ => Err(KeychainError::Failed(
-            "the macOS Keychain refused the lookup (locked or access denied)".into(),
-        )),
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn os_set(service: &str, account: &str, secret: &str, _pair: bool) -> R<()> {
-    // `security -i` reads commands from stdin, keeping the secret off the command line.
-    if secret.contains(['"', '\\']) {
-        return Err(KeychainError::Invalid(
-            "the macOS backend can't store a secret containing quotes or backslashes".into(),
-        ));
-    }
-    let mut c = Command::new(SECURITY);
-    c.arg("-i");
-    let line =
-        format!("add-generic-password -U -s \"{service}\" -a \"{account}\" -w \"{secret}\"\n");
-    match run(c, Some(&line))? {
-        (0, _) => Ok(()),
-        _ => Err(KeychainError::Failed(
-            "the macOS Keychain refused to store the item".into(),
-        )),
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn os_delete(service: &str, account: Option<&str>) -> R<bool> {
-    let mut c = Command::new(SECURITY);
-    c.args(["delete-generic-password", "-s", service]);
-    if let Some(a) = account {
-        c.args(["-a", a]);
-    }
-    match run(c, None)? {
-        (0, _) => Ok(true),
-        (44, _) => Ok(false),
-        _ => Err(KeychainError::Failed(
-            "the macOS Keychain refused to delete the item".into(),
-        )),
-    }
+    Ok((status.code().unwrap_or(-1), text))
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]

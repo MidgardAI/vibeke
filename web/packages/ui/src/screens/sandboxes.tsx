@@ -66,6 +66,7 @@ function AuthState({ p, onSignIn, onSignOut }: { p: CloudProvider; onSignIn(): v
   return (
     <div className="ml-auto flex items-center gap-2 text-xs text-muted">
       <span>{p.auth.state === 'ok' ? t.cloud.signedIn(p.auth.account ?? '') : p.auth.state === 'invalid' ? t.cloud.invalid : t.cloud.signedOut}</span>
+      {p.auth.source === 'file' && <span>{t.cloud.fileStorageLabel}</span>}
       {p.auth.state !== 'ok' && (
         <Button size="sm" variant="outline" onClick={onSignIn}>
           {t.cloud.signIn}

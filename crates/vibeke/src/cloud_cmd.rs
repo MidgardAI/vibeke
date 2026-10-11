@@ -3,7 +3,7 @@
 //! `resume`, `jobs`, `cancel`, `move`) are plain API commands in `vk_cli::COMMANDS`, and
 //! `cloud exec` is the provider shim that box panes run.
 //!
-//! - `login <provider> [--import <source>]` asks the server to check a token (`cloud.auth.set`)
+//! - `login <provider> [--import <source>] [--storage keychain|file]` asks the server to check a token (`cloud.auth.set`)
 //!   or to import one from another tool (`cloud.auth.import`). On a terminal the token is typed
 //!   with echo off; otherwise it is one line of stdin. It never appears in argv, in output or in
 //!   an error message.
@@ -29,7 +29,7 @@ use vk_cli::{EXIT_API, EXIT_OK, EXIT_PERMISSION, EXIT_USAGE, Global, exit_code_f
 /// The verbs this module runs.
 pub const VERBS: &[&str] = &["login", "send", "bring-back"];
 
-pub const USAGE: &str = "vibeke cloud login <provider> [--import <source>]\n\
+pub const USAGE: &str = "vibeke cloud login <provider> [--import <source>] [--storage keychain|file]\n\
 vibeke cloud send [--pane P] [--provider X] [--box <provider/id>] [--interrupt] [--no-wait]\n\
 vibeke cloud bring-back <pane|provider/id> [--to local|<peer>] [--source-after keep|suspend|destroy] [--no-wait]\n\
   (inside a pane both ask for approval in Vibeke first: [--reason TEXT] [--timeout-ms MS])";
@@ -46,6 +46,7 @@ pub enum Cmd {
     Login {
         provider: String,
         import: Option<String>,
+        storage: Option<String>,
     },
     Send {
         pane: Option<String>,
@@ -67,6 +68,7 @@ pub enum Cmd {
 /// Flags that take a value.
 const VALUED: &[&str] = &[
     "import",
+    "storage",
     "pane",
     "provider",
     "box",
@@ -169,11 +171,19 @@ pub fn parse(args: &[String]) -> Result<Cmd, String> {
     let a = split(rest)?;
     match verb.as_str() {
         "login" => {
-            a.only(&["import"])?;
+            a.only(&["import", "storage"])?;
+            let storage = a.value("storage");
+            if storage
+                .as_deref()
+                .is_some_and(|s| s != "keychain" && s != "file")
+            {
+                return Err("--storage must be keychain or file".into());
+            }
             match a.pos.as_slice() {
                 [p] if !p.is_empty() => Ok(Cmd::Login {
                     provider: p.clone(),
                     import: a.value("import"),
+                    storage,
                 }),
                 [] => Err("vibeke cloud login needs a provider".into()),
                 _ => Err(format!("unexpected argument `{}`", a.pos[1])),
@@ -355,7 +365,11 @@ where
         return exit_code_for(&e);
     }
     match cmd {
-        Cmd::Login { provider, import } => login(client, g, &provider, import.as_deref()).await,
+        Cmd::Login {
+            provider,
+            import,
+            storage,
+        } => login(client, g, &provider, import.as_deref(), storage.as_deref()).await,
         Cmd::Send {
             pane,
             provider,
@@ -384,7 +398,13 @@ where
     }
 }
 
-async fn login<S>(client: &mut Client<S>, g: &Global, provider: &str, import: Option<&str>) -> i32
+async fn login<S>(
+    client: &mut Client<S>,
+    g: &Global,
+    provider: &str,
+    import: Option<&str>,
+    storage: Option<&str>,
+) -> i32
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
@@ -411,7 +431,7 @@ where
             eprintln!("Create a token at {url}");
         }
     }
-    let (method, params) = match import {
+    let (method, mut params) = match import {
         Some(source) => (
             "cloud.auth.import",
             json!({"provider": provider, "source": source}),
@@ -430,6 +450,9 @@ where
             )
         }
     };
+    if let Some(storage) = storage {
+        params["storage"] = json!(storage);
+    }
     match client.call(method, params).await {
         Ok(v) => {
             if g.quiet {
@@ -449,6 +472,15 @@ where
                 eprintln!("{provider} did not accept the token.");
             }
             print_error(&e);
+            if !want_json(g)
+                && let CallError::Rpc(r) = &e
+                && r.data.details["reason"] == "keychain_unavailable"
+                && r.data.details["file_fallback"] == true
+            {
+                eprintln!(
+                    "To save to a file with mode 0600 (not encrypted), retry: vibeke cloud login {provider} --storage file"
+                );
+            }
             exit_code_for(&e)
         }
     }
@@ -708,16 +740,35 @@ mod tests {
             parse(&args(&["login", "sprites"])).unwrap(),
             Cmd::Login {
                 provider: "sprites".into(),
-                import: None
+                import: None,
+                storage: None
             }
         );
         assert_eq!(
             parse(&args(&["login", "sprites", "--import", "fly"])).unwrap(),
             Cmd::Login {
                 provider: "sprites".into(),
-                import: Some("fly".into())
+                import: Some("fly".into()),
+                storage: None
             }
         );
+        assert_eq!(
+            parse(&args(&[
+                "login",
+                "sprites",
+                "--import",
+                "fly",
+                "--storage",
+                "file"
+            ]))
+            .unwrap(),
+            Cmd::Login {
+                provider: "sprites".into(),
+                import: Some("fly".into()),
+                storage: Some("file".into()),
+            }
+        );
+        assert!(parse(&args(&["login", "sprites", "--storage", "automatic"])).is_err());
         assert!(parse(&args(&["login"])).is_err());
         // A token on the command line would end up in the process list: there is no flag.
         assert!(parse(&args(&["login", "sprites", "--token", "x"])).is_err());

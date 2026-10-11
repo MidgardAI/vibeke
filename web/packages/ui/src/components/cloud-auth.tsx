@@ -5,11 +5,12 @@
 // `withCloudAuth(conn, provider, call)` runs any cloud call. When the host answers `needs_auth`
 // it opens the sign-in sheet (mounted by each window as <CloudAuthHost/>), and retries the
 // call once after a successful sign-in. The token goes to the host in one `cloud.auth.set` call
-// and is dropped from the form at once; it is never stored or logged here.
+// and is dropped from the form at once. A failed keychain write keeps a private retry
+// only until this sheet closes; the token is never persisted or logged by the client.
 
 import { useEffect, useMemo, useState } from 'react';
 import { Download, ExternalLink, KeyRound } from 'lucide-react';
-import { needsAuth, type CloudAuthMethod, type HostConnectionApi } from '@vibeke/core';
+import { RpcError, needsAuth, type CloudAuthMethod, type HostConnectionApi } from '@vibeke/core';
 import { cloudStores, useHostCloud } from '../app/cloud-stores';
 import { useApp } from '../app/hooks';
 import { t } from '../i18n';
@@ -33,13 +34,15 @@ export interface CloudAuthFormProps {
   envVar?: string | null;
   busy?: boolean;
   error?: string | null;
+  onFileFallback?(): void;
+  onTokenChange?(): void;
   onToken(token: string): void;
   onImport(source: string): void;
   onHelp(url: string): void;
 }
 
 /** The generic renderer of a provider's sign-in methods. */
-export function CloudAuthForm({ methods, envVar, busy, error, onToken, onImport, onHelp }: CloudAuthFormProps) {
+export function CloudAuthForm({ methods, envVar, busy, error, onFileFallback, onTokenChange, onToken, onImport, onHelp }: CloudAuthFormProps) {
   const [token, setToken] = useState('');
   const paste = methods.filter((m): m is Extract<CloudAuthMethod, { kind: 'paste_token' }> => m.kind === 'paste_token');
   const imports = methods.filter((m): m is Extract<CloudAuthMethod, { kind: 'import' }> => m.kind === 'import');
@@ -48,6 +51,10 @@ export function CloudAuthForm({ methods, envVar, busy, error, onToken, onImport,
     <div className="space-y-3">
       {envVar && <Notice tone="ok">{t.cloud.envNote(envVar)}</Notice>}
       {error && <Notice tone="danger">{error}</Notice>}
+      {onFileFallback && <div className="space-y-2">
+        <Notice>{t.cloud.fileStorageHint}</Notice>
+        <Button block variant="outline" busy={busy} onClick={onFileFallback}>{t.cloud.saveToFile}</Button>
+      </div>}
       {paste.map((m, i) => {
         const help = safeUrl(m.help_url);
         return (
@@ -62,7 +69,7 @@ export function CloudAuthForm({ methods, envVar, busy, error, onToken, onImport,
               onToken(v);
             }}
           >
-            <TextField type="password" label={m.label || t.cloud.token} value={token} onChange={(e) => setToken(e.target.value)} autoComplete="off" autoCapitalize="off" spellCheck={false} disabled={busy} />
+            <TextField type="password" label={m.label || t.cloud.token} value={token} onChange={(e) => { setToken(e.target.value); onTokenChange?.(); }} autoComplete="off" autoCapitalize="off" spellCheck={false} disabled={busy} />
             {m.hint && <div className="text-xs text-muted">{m.hint}</div>}
             <div className="flex gap-2">
               {help && (
@@ -146,18 +153,25 @@ function CloudAuthSheet({ req, onFinish }: { req: AuthRequest; onFinish(ok: bool
   const app = useApp();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [retry, setRetry] = useState<{ method: 'cloud.auth.set' | 'cloud.auth.import'; params: { token: string } | { source: string } } | null>(null);
   // A `needs_auth` retry knows only the provider id: show its label when the host listed it.
   const label = useHostCloud(req.conn.id).providers.find((p) => p.id === req.provider)?.label ?? req.label;
 
-  const run = async (method: 'cloud.auth.set' | 'cloud.auth.import', params: { token: string } | { source: string }) => {
+  const run = async (method: 'cloud.auth.set' | 'cloud.auth.import', params: { token: string } | { source: string }, storage?: 'file') => {
     setBusy(true);
     setError(null);
+    setRetry(null);
     try {
-      await req.conn.request(method, { provider: req.provider, ...params } as never, { timeoutMs: 60_000 });
+      await req.conn.request(method, { provider: req.provider, ...params, ...(storage ? { storage } : {}) } as never, { timeoutMs: 60_000 });
       const host = req.conn.id;
       void cloudStores(app).refreshProviders(host);
+      if (storage === 'file') app.toast(t.cloud.fileStorageSaved, 'info', 6000);
       onFinish(true);
     } catch (e) {
+      const details = e instanceof RpcError ? e.data?.details as { reason?: unknown; file_fallback?: unknown } | undefined : undefined;
+      if (!storage && details?.reason === 'keychain_unavailable' && details?.file_fallback === true) {
+        setRetry({ method, params });
+      }
       setError(needsAuth(e) ? `${t.cloud.authFailed} ${errorMessage(e)}` : errorMessage(e));
       setBusy(false);
     }
@@ -169,6 +183,8 @@ function CloudAuthSheet({ req, onFinish }: { req: AuthRequest; onFinish(ok: bool
         methods={req.methods}
         busy={busy}
         error={error}
+        onTokenChange={() => setRetry(null)}
+        onFileFallback={retry ? () => void run(retry.method, retry.params, 'file') : undefined}
         onToken={(token) => void run('cloud.auth.set', { token })}
         onImport={(source) => void run('cloud.auth.import', { source })}
         onHelp={(u) => app.platform.openExternal(u)}

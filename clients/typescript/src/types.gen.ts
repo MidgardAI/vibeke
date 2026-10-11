@@ -2827,22 +2827,26 @@ export type CloudAuthClearResult = {
 export type CloudAuthImportParams = {
   provider: string;
   source: string;
+  storage?: "keychain" | "file";
 };
 
 export type CloudAuthImportResult = {
   provider: string;
   account: string;
+  storage?: "keychain" | "file";
   cursor?: Cursor;
 };
 
 export type CloudAuthSetParams = {
   provider: string;
   token: string;
+  storage?: "keychain" | "file";
 };
 
 export type CloudAuthSetResult = {
   provider: string;
   account: string;
+  storage?: "keychain" | "file";
   cursor?: Cursor;
 };
 

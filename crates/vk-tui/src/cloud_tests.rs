@@ -454,3 +454,30 @@ fn closing_the_popup_leaves_a_running_job_in_the_tab_bar() {
     let s = status(&app).unwrap();
     assert!(s.contains("creating") && s.contains("bootstrapping"), "{s}");
 }
+
+#[test]
+fn file_retry_tracks_the_attempt_and_is_cleared_by_new_input() {
+    let e = RpcErr {
+        kind: "permission_denied".into(),
+        message: "keychain unavailable".into(),
+        details: json!({"reason": "keychain_unavailable", "file_fallback": true}),
+    };
+    let mut a = AuthState::new("sprites", "Sprites", methods());
+    auth_request(&mut a, &AuthOut::Import("fly".into())).unwrap();
+    a.failed(&e);
+    assert_eq!(a.key(&named(NamedKey::Enter)), AuthOut::SaveFile);
+    let (method, params) = auth_request(&mut a, &AuthOut::SaveFile).unwrap();
+    assert_eq!(method, "cloud.auth.import");
+    assert_eq!(
+        params,
+        json!({"provider": "sprites", "source": "fly", "storage": "file"})
+    );
+    assert!(a.retry.is_none());
+    auth_request(&mut a, &AuthOut::SetToken("SENTINEL".into())).unwrap();
+    a.failed(&e);
+    assert!(!format!("{a:?}").contains("SENTINEL"));
+    a.paste("new-token");
+    assert!(!a.file_fallback);
+    assert!(a.retry.is_none());
+    assert!(auth_request(&mut a, &AuthOut::SaveFile).is_none());
+}

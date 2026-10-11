@@ -621,3 +621,104 @@ fn prune_takes_only_the_named_boxes() {
         .unwrap_err();
     assert_eq!(kind(&e), "invalid_params", "{e}");
 }
+
+#[test]
+fn keychain_failure_offers_explicit_file_storage_and_survives_restart() {
+    use std::os::unix::fs::PermissionsExt;
+    let h = Host::new();
+    let kc = h.dir.path().join("keychain.json");
+    std::fs::write(&kc, b"unavailable keychain").unwrap();
+    std::fs::set_permissions(&kc, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let e = h
+        .api(
+            "cloud.auth.set",
+            json!({"provider": "fake", "token": "fake-token"}),
+        )
+        .unwrap_err();
+    assert_eq!(reason(&e), "keychain_unavailable", "{e}");
+    assert_eq!(
+        e.pointer("/error/details/file_fallback"),
+        Some(&json!(true))
+    );
+    assert!(!e.to_string().contains("fake-token"));
+    let file = h.dir.path().join("cloud-credentials/fake.json");
+    assert!(!file.exists());
+    let e = h
+        .api(
+            "cloud.auth.set",
+            json!({"provider": "fake", "token": "wrong-token", "storage": "file"}),
+        )
+        .unwrap_err();
+    assert_needs_auth(&e, "file fallback verifies the token");
+    assert!(!file.exists());
+    // Exercise the public CLI option too; the token travels only over stdin.
+    use std::io::Write;
+    use std::process::Stdio;
+    let mut child = h
+        .cmd(&["cloud", "login", "fake", "--storage", "file"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"fake-token\n")
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let r: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(r["storage"], "file");
+    assert!(!r.to_string().contains("fake-token"));
+    assert_eq!(
+        std::fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    let fake = h.fake(&h.api("cloud.providers", json!({"verify": true})).unwrap());
+    assert_eq!(fake["auth"]["source"], "file");
+    assert_eq!(fake["auth"]["state"], "ok");
+    assert!(
+        h.cmd(&["server", "stop", "--kill-panes"])
+            .status()
+            .unwrap()
+            .success()
+    );
+    let fake = h.fake(&h.api("cloud.providers", json!({"verify": true})).unwrap());
+    assert_eq!(fake["auth"]["state"], "ok");
+    h.api("cloud.auth.clear", json!({"provider": "fake"}))
+        .unwrap();
+    assert!(
+        !std::fs::read_to_string(&file)
+            .unwrap()
+            .contains("fake-token")
+    );
+    let fake = h.fake(&h.api("cloud.providers", json!({})).unwrap());
+    assert_eq!(fake["auth"]["state"], "missing");
+}
+
+#[test]
+fn corrupt_credential_file_is_not_reported_as_a_keychain_failure() {
+    use std::os::unix::fs::PermissionsExt;
+    let h = Host::new();
+    let dir = h.dir.path().join("cloud-credentials");
+    std::fs::create_dir(&dir).unwrap();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let file = dir.join("fake.json");
+    std::fs::write(&file, b"invalid json").unwrap();
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let e = h
+        .api(
+            "cloud.auth.set",
+            json!({"provider":"fake", "token":"fake-token"}),
+        )
+        .unwrap_err();
+    assert_eq!(kind(&e), "internal", "{e}");
+    assert_ne!(reason(&e), "keychain_unavailable", "{e}");
+    assert!(!h.dir.path().join("keychain.json").exists());
+}

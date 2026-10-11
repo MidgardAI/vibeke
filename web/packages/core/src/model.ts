@@ -1176,8 +1176,8 @@ export interface AppApi {
   'handoff.cancel': { params: { id: string }; result: { job: HandoffJob } };
   /** Cloud sandboxes (spec 17), full scope. `token` is never logged or echoed. */
   'cloud.providers': { params: { verify?: boolean }; result: { providers: CloudProvider[] } };
-  'cloud.auth.set': { params: { provider: string; token: string }; result: { provider: string; account?: string } };
-  'cloud.auth.import': { params: { provider: string; source: string }; result: { provider: string; account?: string } };
+  'cloud.auth.set': { params: { provider: string; token: string; storage?: 'keychain' | 'file' }; result: { provider: string; account?: string; storage?: 'keychain' | 'file' } };
+  'cloud.auth.import': { params: { provider: string; source: string; storage?: 'keychain' | 'file' }; result: { provider: string; account?: string; storage?: 'keychain' | 'file' } };
   'cloud.auth.clear': { params: { provider: string }; result: { provider: string; cleared: boolean; boxes_running?: number } };
   'cloud.box.list': {
     params: { provider?: string; ownership?: CloudOwnership; refresh?: boolean };

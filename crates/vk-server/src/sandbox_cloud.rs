@@ -376,11 +376,11 @@ pub fn cloud_cfg() -> vk_cloud::CloudConfig {
 }
 
 /// The `[security] keychain` backend.
-pub fn keychain() -> Result<vk_store::keychain::Keychain, RpcError> {
+pub fn keychain() -> Result<vk_cloud::auth::Credentials, RpcError> {
     let cfg = vk_config::Config::load(vk_config::config_path())
         .map(|(c, _)| c)
         .unwrap_or_default();
-    vk_cloud::auth::keychain(&cfg).map_err(|e| invalid(format!("[security] keychain: {e}")))
+    vk_cloud::auth::credentials(&cfg).map_err(|e| invalid(format!("[security] keychain: {e}")))
 }
 
 pub fn host_env(k: &str) -> Option<String> {

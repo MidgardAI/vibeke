@@ -12123,6 +12123,14 @@
           },
           "source": {
             "type": "string"
+          },
+          "storage": {
+            "type": "string",
+            "enum": [
+              "keychain",
+              "file"
+            ],
+            "default": "keychain"
           }
         },
         "required": [
@@ -12138,6 +12146,13 @@
           },
           "account": {
             "type": "string"
+          },
+          "storage": {
+            "type": "string",
+            "enum": [
+              "keychain",
+              "file"
+            ]
           },
           "cursor": {
             "$ref": "#/$defs/Cursor"
@@ -12161,6 +12176,14 @@
           },
           "token": {
             "type": "string"
+          },
+          "storage": {
+            "type": "string",
+            "enum": [
+              "keychain",
+              "file"
+            ],
+            "default": "keychain"
           }
         },
         "required": [
@@ -12176,6 +12199,13 @@
           },
           "account": {
             "type": "string"
+          },
+          "storage": {
+            "type": "string",
+            "enum": [
+              "keychain",
+              "file"
+            ]
           },
           "cursor": {
             "$ref": "#/$defs/Cursor"

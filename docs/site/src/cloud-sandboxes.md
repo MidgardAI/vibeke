@@ -8,13 +8,19 @@ Vibeke supports these providers: Sprites and E2B.
 
 ## Sign in
 
-You sign in to a provider once for each host. Vibeke keeps the token in the system keychain of that host.
+You sign in to a provider once for each host. Vibeke keeps the token in the user keychain of that host by default.
 
 - In the terminal interface, open **sandboxes** from the command palette. Press `tab` until the provider is marked, then press `s`.
 - From the command line, run `vibeke cloud login sprites`. Vibeke asks for the token without showing it.
 - In the browser or desktop app, open **Sandboxes** and choose **Sign in** next to the provider. Choose **Get a token** to open the provider's page. Paste the token into the field.
 
 Some providers also let you import a login that you already have. The sign-in screen shows each option that is available for the provider. If the host already has the token in an environment variable, the app tells you.
+
+If the host cannot use its keychain, the sign-in screen offers **Save to protected file**. This choice saves the token on the host in a file that only your user can read (mode `0600`). The file is not encrypted. Vibeke stores these files in `cloud-credentials/` beside the host configuration file. The directory has mode `0700`. Signing out removes the saved token.
+
+From the command line, choose file storage with `vibeke cloud login sprites --storage file`. You can also use this option with `--import`.
+
+On macOS, a host reached through SSH may need its login keychain unlocked. You can unlock it in Keychain Access on that host before trying again.
 
 Any action that needs a sign-in opens the same screen. After you sign in, the action runs again.
 
