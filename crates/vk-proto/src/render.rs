@@ -626,11 +626,198 @@ pub enum SyncPayload {
     Paste(String),
 }
 
+/// A [`ServerFrame::Model`] whose model and read marks are serialized once per model
+/// revision and shared by every attached client; only the per-client focus is encoded per
+/// send. Postcard writes an enum variant as its index followed by its fields in order, so the
+/// parts concatenate to exactly the bytes `ServerFrame::Model` encodes to.
+#[derive(Debug, Clone)]
+pub struct SharedModel {
+    model: Vec<u8>,
+    seen: Vec<u8>,
+}
+
+impl SharedModel {
+    pub fn new(model: &SessionModel, seen: &[(String, u64)]) -> Result<Self, postcard::Error> {
+        Ok(SharedModel {
+            model: postcard::to_extend(model, Vec::new())?,
+            seen: postcard::to_extend(seen, Vec::new())?,
+        })
+    }
+
+    /// The complete frame (length prefix included) for a client with `focus`.
+    pub fn frame(&self, focus: &ClientFocus) -> Result<Vec<u8>, crate::frame::FrameError> {
+        let tag = model_variant_tag();
+        let focus = postcard::to_extend(focus, Vec::new())?;
+        let len = tag.len() + self.model.len() + focus.len() + self.seen.len();
+        if len > crate::frame::MAX_FRAME {
+            return Err(crate::frame::FrameError::TooLarge(len));
+        }
+        let mut out = Vec::with_capacity(4 + len);
+        out.extend_from_slice(&(len as u32).to_le_bytes());
+        out.extend_from_slice(tag);
+        out.extend_from_slice(&self.model);
+        out.extend_from_slice(&focus);
+        out.extend_from_slice(&self.seen);
+        Ok(out)
+    }
+}
+
+/// The encoded variant index of [`ServerFrame::Model`]: an encoded empty `Model` frame minus
+/// its encoded fields.
+fn model_variant_tag() -> &'static [u8] {
+    static TAG: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+    TAG.get_or_init(|| {
+        let empty = ServerFrame::Model {
+            model: Box::default(),
+            focus: ClientFocus::default(),
+            seen: vec![],
+        };
+        let full = postcard::to_extend(&empty, Vec::new()).expect("encodes");
+        let mut tail = postcard::to_extend(&SessionModel::default(), Vec::new()).expect("encodes");
+        tail = postcard::to_extend(&ClientFocus::default(), tail).expect("encodes");
+        tail = postcard::to_extend(&Vec::<(String, u64)>::new(), tail).expect("encodes");
+        assert!(full.ends_with(&tail), "ServerFrame::Model encoding");
+        full[..full.len() - tail.len()].to_vec()
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::frame::{decode, encode};
     use crate::model::BrowserPane;
+
+    #[test]
+    fn shared_model_frames_match_the_direct_encoding() {
+        let model = SessionModel {
+            session: "s".into(),
+            machine: "m".into(),
+            server_version: "1".into(),
+            ..Default::default()
+        };
+        let focus = ClientFocus {
+            workspace: Some("w".into()),
+            tab: Some("t".into()),
+            pane: Some("p".into()),
+        };
+        let seen = vec![("p".to_string(), 7u64)];
+        let direct = encode(&ServerFrame::Model {
+            model: Box::new(model.clone()),
+            focus: focus.clone(),
+            seen: seen.clone(),
+        })
+        .unwrap();
+        let shared = SharedModel::new(&model, &seen).unwrap();
+        assert_eq!(shared.frame(&focus).unwrap(), direct);
+        // Another client's focus over the same shared parts.
+        let other = ClientFocus::default();
+        let direct = encode(&ServerFrame::Model {
+            model: Box::new(model),
+            focus: other.clone(),
+            seen,
+        })
+        .unwrap();
+        assert_eq!(shared.frame(&other).unwrap(), direct);
+    }
+
+    /// The type definitions the render stream encodes (`render.rs`, `model.rs`, `input.rs`),
+    /// without comments and tests, as one normalized string.
+    fn layout_source() -> String {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut out = String::new();
+        for f in ["render.rs", "model.rs", "input.rs"] {
+            let text = std::fs::read_to_string(dir.join(f)).unwrap();
+            let text = text.split("\n#[cfg(test)]\nmod ").next().unwrap_or("");
+            out.push_str(&format!("file {f}\n"));
+            let lines: Vec<&str> = text
+                .lines()
+                .map(|l| match l.find("//") {
+                    Some(i) => &l[..i],
+                    None => l,
+                })
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .collect();
+            let mut i = 0;
+            while i < lines.len() {
+                let l = lines[i];
+                let item = ["pub struct ", "struct ", "pub enum ", "enum "]
+                    .iter()
+                    .any(|k| l.starts_with(k))
+                    || l.starts_with("pub(crate) struct ")
+                    || l.starts_with("pub(crate) enum ");
+                if !item {
+                    i += 1;
+                    continue;
+                }
+                // The attributes right above the item (derives, serde options).
+                let mut a = i;
+                while a > 0 && lines[a - 1].starts_with("#[") {
+                    a -= 1;
+                }
+                for attr in &lines[a..i] {
+                    out.push_str(attr);
+                    out.push('\n');
+                }
+                // The item up to its closing brace (or `;` for unit and tuple structs).
+                let mut depth = 0i32;
+                let mut opened = false;
+                while i < lines.len() {
+                    let l = lines[i];
+                    out.push_str(l);
+                    out.push('\n');
+                    depth += l.matches('{').count() as i32 - l.matches('}').count() as i32;
+                    opened |= l.contains('{');
+                    i += 1;
+                    if (opened && depth <= 0) || (!opened && l.ends_with(';')) {
+                        break;
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// FNV-1a, 64 bit.
+    fn fnv(s: &str) -> u64 {
+        s.bytes().fold(0xcbf2_9ce4_8422_2325, |h, b| {
+            (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3)
+        })
+    }
+
+    /// Guard for [`PROTOCOL`]: the render stream is positional postcard, so any change to a
+    /// type it encodes must bump `PROTOCOL`. The fingerprint of those type definitions is
+    /// recorded with the protocol number in `render_layout.fingerprint`.
+    #[test]
+    fn render_layout_changes_bump_protocol() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src")
+            .join("render_layout.fingerprint");
+        let fp = format!("{:016x}", fnv(&layout_source()));
+        let want = format!("protocol {PROTOCOL}\nfingerprint {fp}\n");
+        let update = "VIBEKE_UPDATE_RENDER_LAYOUT=1 cargo test -p vk-proto render_layout";
+        if std::env::var_os("VIBEKE_UPDATE_RENDER_LAYOUT").is_some() {
+            std::fs::write(&path, &want).unwrap();
+            return;
+        }
+        let have = std::fs::read_to_string(&path).unwrap_or_default();
+        if have == want {
+            return;
+        }
+        let recorded = have
+            .lines()
+            .find_map(|l| l.strip_prefix("protocol "))
+            .and_then(|p| p.trim().parse::<u32>().ok());
+        if recorded == Some(PROTOCOL) {
+            panic!(
+                "the render stream types changed (render.rs, model.rs or input.rs) but PROTOCOL is still {PROTOCOL}. \
+                 Postcard is positional: bump PROTOCOL in crates/vk-proto/src/render.rs, note the change in its doc list, \
+                 then run `{update}`. If the change cannot affect the encoding (a derive, a type that is not sent), \
+                 only run that command."
+            );
+        }
+        panic!("record the render layout for protocol {PROTOCOL}: run `{update}`");
+    }
 
     fn rt_server(f: &ServerFrame) -> ServerFrame {
         decode(&encode(f).unwrap()[4..]).unwrap()
