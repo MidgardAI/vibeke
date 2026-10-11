@@ -2273,6 +2273,13 @@ fn parse_input_event(ev: &Value) -> Result<InputStep, RpcError> {
                     "id": pt.get("id").and_then(Value::as_i64).unwrap_or(i as i64),
                 }));
             }
+            // `points` lists the fingers still down after the change. CDP diffs each event
+            // against the previous one: touchEnd and touchCancel carry no points, and a finger
+            // lifted while others stay down is a touchMove with the remaining points.
+            let kind = match (kind, touch_points.is_empty()) {
+                ("touchEnd" | "touchCancel", false) => "touchMove",
+                (k, _) => k,
+            };
             InputStep::Cdp(vec![CdpInput::Touch(
                 json!({"type": kind, "touchPoints": touch_points}),
             )])

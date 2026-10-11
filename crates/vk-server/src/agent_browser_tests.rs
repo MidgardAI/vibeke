@@ -1808,6 +1808,7 @@ async fn input_needs_the_take_over_and_is_human_only() {
             "browser.input",
             json!({"session": "b1", "events": [
                 {"type": "touch", "phase": "start", "points": [{"id": 1, "x": 10, "y": 20}]},
+                {"type": "touch", "phase": "end", "points": [{"id": 2, "x": 1, "y": 1}]},
                 {"type": "touch", "phase": "end", "points": []},
                 {"type": "tap", "x": 5, "y": 6},
                 {"type": "wheel", "x": 5, "y": 6, "dx": 0, "dy": 40},
@@ -1818,12 +1819,16 @@ async fn input_needs_the_take_over_and_is_human_only() {
         )
         .await
         .unwrap();
-    assert_eq!(r["applied"], 7);
+    assert_eq!(r["applied"], 8);
     let f = e.fake();
     let touch = f.calls_of("Input.dispatchTouchEvent");
     assert_eq!(touch[0].1["type"], "touchStart");
     assert_eq!(touch[0].1["touchPoints"][0]["x"], 10.0);
-    assert_eq!(touch[1].1["type"], "touchEnd");
+    // One finger lifted while another stays down is a move with the remaining point.
+    assert_eq!(touch[1].1["type"], "touchMove");
+    assert_eq!(touch[1].1["touchPoints"].as_array().unwrap().len(), 1);
+    assert_eq!(touch[2].1["type"], "touchEnd");
+    assert!(touch[2].1["touchPoints"].as_array().unwrap().is_empty());
     let mouse: Vec<String> = f
         .calls_of("Input.dispatchMouseEvent")
         .iter()
