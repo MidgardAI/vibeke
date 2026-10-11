@@ -270,6 +270,31 @@ describe("recomputed verdict", () => {
     expect(verdict(r)).toEqual({ outcome: "harness_error", fails_run: false });
   });
 
+  test("ignores lifecycle checks that do not apply", () => {
+    const na = [
+      { check: "install", outcome: "passed", reason: null },
+      { check: "build", outcome: "not_applicable", reason: "the manifest declares no build step for this platform" },
+      { check: "startup_before_actions", outcome: "not_applicable", reason: "no startup command" },
+    ];
+    const r = validate(result({ lifecycle: na }));
+    expect(verdict(r)).toEqual({ outcome: "passed", fails_run: false });
+    expect(inconsistencies(r)).toEqual([]);
+    const m = build([{ file: "p-linux.json", text: JSON.stringify(result({ lifecycle: na })) }]);
+    expect(m.rows[0].outcome).toBe("passed");
+    expect(m.rows[0].lifecycle).toEqual({ passed: 1, not_applicable: 2 });
+    expect(render(m)).toContain("not\\_applicable 2");
+    expect(m.failing).toBe(false);
+    // A check that applies but did not run still counts.
+    const ne = validate(
+      result({ lifecycle: [...na, { check: "uninstall", outcome: "not_exercised", reason: "x" }] }),
+    );
+    expect(verdict(ne).outcome).toBe("not_exercised");
+    // A result that claims not_applicable for itself or a step is rejected.
+    rejects(result({ outcome: "not_applicable" }), /\$\.outcome: not an allowed value/);
+    rejects(result({ steps: [step({ outcome: "not_applicable" })] }), /\$\.steps\[0\]\.outcome/);
+    rejects(result({ steps: [step({ known: "not_applicable" })] }), /\$\.steps\[0\]\.known/);
+  });
+
   test("fails the run on an unexpected pass, a failed coverage check or missing coverage", () => {
     expect(verdict(validate(result({ steps: [step({ unexpected_pass: true })] }))).fails_run).toBe(true);
     expect(verdict(validate(result({ coverage: { ok: false, missing: [], skipped: [] } }))).fails_run).toBe(true);

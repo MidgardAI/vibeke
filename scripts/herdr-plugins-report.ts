@@ -60,6 +60,13 @@ export const OUTCOMES = [
   "harness_error",
 ] as const;
 export type Outcome = (typeof OUTCOMES)[number];
+/**
+ * A lifecycle check may also be `not_applicable` (a check that does not apply to the plugin, such
+ * as the startup checks without a startup command). The verdict ignores it, as `worst` in
+ * crates/vk-conformance/src/outcome.rs does. Steps and plugins never have it.
+ */
+export const CHECK_OUTCOMES = [...OUTCOMES, "not_applicable"] as const;
+export type CheckOutcome = (typeof CHECK_OUTCOMES)[number];
 export const SIDES = ["passed", "failed", "not_run", "harness_error"] as const;
 export type Side = (typeof SIDES)[number];
 
@@ -84,7 +91,7 @@ export type Step = {
   grids: Grid[];
   duration_ms: number;
 };
-export type Check = { check: string; outcome: Outcome; reason: string | null };
+export type Check = { check: string; outcome: CheckOutcome; reason: string | null };
 export type PluginResult = {
   schema: string;
   plugin_id: string;
@@ -231,7 +238,7 @@ function check(v: unknown, p: string): Check {
   const o = object(v, p, ["check", "outcome"], ["reason"]);
   return {
     check: str(o.check, `${p}.check`, LIMITS.id, ID),
-    outcome: oneOf(o.outcome, `${p}.outcome`, OUTCOMES),
+    outcome: oneOf(o.outcome, `${p}.outcome`, CHECK_OUTCOMES),
     reason: optStr(o.reason, `${p}.reason`, LIMITS.text),
   };
 }
@@ -310,7 +317,10 @@ export function md(s: string): string {
 /** The verdict recomputed from a result's details, as the runner computes it (`finish`). */
 export type Verdict = { outcome: Outcome; fails_run: boolean };
 
-/** Orders outcomes as crates/vk-conformance/src/outcome.rs does: later is worse. */
+/**
+ * Orders outcomes as crates/vk-conformance/src/outcome.rs does: later is worse. `passed` for an
+ * empty list.
+ */
 export function worst(outcomes: Outcome[]): Outcome {
   let w = 0;
   for (const o of outcomes) w = Math.max(w, OUTCOMES.indexOf(o));
@@ -319,7 +329,10 @@ export function worst(outcomes: Outcome[]): Outcome {
 
 export function verdict(r: PluginResult): Verdict {
   return {
-    outcome: worst([...r.lifecycle.map((c) => c.outcome), ...r.steps.map((s) => s.outcome)]),
+    outcome: worst([
+      ...r.lifecycle.map((c) => c.outcome).filter((o): o is Outcome => o !== "not_applicable"),
+      ...r.steps.map((s) => s.outcome),
+    ]),
     fails_run: !r.coverage.ok || r.coverage.missing.length > 0 || r.steps.some((s) => s.unexpected_pass),
   };
 }
@@ -470,7 +483,7 @@ export type Row = {
   dependency_mode: string;
   fails_run: boolean;
   steps: Partial<Record<Outcome, number>>;
-  lifecycle: Partial<Record<Outcome, number>>;
+  lifecycle: Partial<Record<CheckOutcome, number>>;
   surfaces: string[];
   failed_surfaces: string[];
   partial_surfaces: string[];
@@ -495,8 +508,8 @@ export type Deferred = { rank: number; plugin_id: string; repository: string; re
 
 const FAILED: Outcome[] = ["dependency_failure", "suspected_compat_failure", "compat_failure", "harness_error"];
 
-function counts(outcomes: Outcome[]): Partial<Record<Outcome, number>> {
-  const c: Partial<Record<Outcome, number>> = {};
+function counts<O extends CheckOutcome>(outcomes: O[]): Partial<Record<O, number>> {
+  const c: Partial<Record<O, number>> = {};
   for (const o of outcomes) c[o] = (c[o] ?? 0) + 1;
   return c;
 }
@@ -646,8 +659,8 @@ export function build(
   return m;
 }
 
-function fmtCounts(c: Partial<Record<Outcome, number>>): string {
-  const parts = OUTCOMES.filter((o) => c[o]).map((o) => `${o} ${c[o]}`);
+function fmtCounts(c: Partial<Record<CheckOutcome, number>>): string {
+  const parts = CHECK_OUTCOMES.filter((o) => c[o]).map((o) => `${o} ${c[o]}`);
   return parts.length ? md(parts.join(", ")) : "none";
 }
 

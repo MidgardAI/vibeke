@@ -2,10 +2,16 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Ordered from best to worst; a plugin's outcome is its worst step outcome.
+/// Ordered from best to worst; a plugin's outcome is its worst step or lifecycle outcome.
+///
+/// `NotApplicable` is a lifecycle check that does not apply to the plugin (startup checks
+/// without a startup command, the build check without a build step). It sorts first and
+/// [`worst`] ignores it, so such a check never keeps a plugin from `Passed`. A check that
+/// applies but could not run is `NotExercised`.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum Outcome {
+    NotApplicable,
     Passed,
     NotExercised,
     DependencyFailure,
@@ -147,9 +153,13 @@ pub fn reconcile(actual: Outcome, known: Option<Outcome>) -> Reconciled {
     }
 }
 
-/// The worst outcome, `Passed` for an empty list.
+/// The worst outcome, ignoring `NotApplicable`; `Passed` when nothing else is left.
 pub fn worst(outcomes: impl IntoIterator<Item = Outcome>) -> Outcome {
-    outcomes.into_iter().max().unwrap_or(Outcome::Passed)
+    outcomes
+        .into_iter()
+        .filter(|o| *o != Outcome::NotApplicable)
+        .max()
+        .unwrap_or(Outcome::Passed)
 }
 
 #[cfg(test)]
@@ -324,6 +334,28 @@ mod tests {
         );
         assert!(Outcome::NotExercised < Outcome::DependencyFailure);
         assert!(Outcome::DependencyFailure < Outcome::SuspectedCompatFailure);
+    }
+
+    #[test]
+    fn not_applicable_checks_are_ignored() {
+        assert_eq!(worst([Outcome::NotApplicable]), Outcome::Passed);
+        assert_eq!(
+            worst([
+                Outcome::Passed,
+                Outcome::NotApplicable,
+                Outcome::NotApplicable
+            ]),
+            Outcome::Passed
+        );
+        assert_eq!(
+            worst([Outcome::NotApplicable, Outcome::NotExercised]),
+            Outcome::NotExercised
+        );
+        assert!(Outcome::NotApplicable < Outcome::Passed);
+        assert_eq!(
+            serde_json::to_string(&Outcome::NotApplicable).unwrap(),
+            "\"not_applicable\""
+        );
     }
 
     #[test]
