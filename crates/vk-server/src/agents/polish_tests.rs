@@ -72,6 +72,10 @@ fn add_run(e: &Env, id: &str, pane: &str, f: impl FnOnce(&mut AgentRun)) -> Agen
     f(&mut r);
     let mut c = e.server.core.lock().unwrap();
     let mut tx = Tx::new();
+    // The tailer reads a transcript only for a run whose pane it knows.
+    if c.pane(pane).is_none() {
+        tx.pane(crate::hardening::testkit::sample_pane(pane, "w"));
+    }
     tx.run(r.clone());
     e.server.commit(&mut c, tx).unwrap();
     r
@@ -118,7 +122,10 @@ async fn tailer_writes_turn_records_items_totals_and_reconciles_approvals() {
         r.transcript_path = Some(path.display().to_string());
     });
     let approval = open_approval(&e, &run, "tool1");
-    assert!(tailer::track(&run), "claude transcript is tailed");
+    assert!(
+        tailer::track(&e.server, &run),
+        "claude transcript is tailed"
+    );
     assert!(tailer::poll_all(&e.server) > 0);
 
     // One compact record per finished turn: usage summed over its messages, priced from the
@@ -204,11 +211,11 @@ async fn a_known_turn_id_is_never_recorded_twice() {
     let run = add_run(&e, "run-dedupe", "pane-dedupe", |r| {
         r.transcript_path = Some(path.display().to_string());
     });
-    assert!(tailer::track(&run));
+    assert!(tailer::track(&e.server, &run));
     tailer::poll_all(&e.server);
     // A fresh tail over the same file (a restarted server, a replaced path) re-reads it all.
     tailer::untrack("run-dedupe");
-    assert!(tailer::track(&run_of(&e, "run-dedupe")));
+    assert!(tailer::track(&e.server, &run_of(&e, "run-dedupe")));
     tailer::poll_all(&e.server);
     assert_eq!(tailer::records_of(&e.server, "run-dedupe").len(), 1);
     tailer::untrack("run-dedupe");
@@ -223,7 +230,7 @@ async fn a_model_switch_mid_session_updates_the_run_model() {
         r.model = Some("claude-sonnet-4".into());
         r.transcript_path = Some(path.display().to_string());
     });
-    assert!(tailer::track(&run));
+    assert!(tailer::track(&e.server, &run));
     tailer::poll_all(&e.server);
     assert_eq!(
         run_of(&e, "run-switch").model.as_deref(),
@@ -258,7 +265,7 @@ async fn subscription_billing_keeps_tokens_and_no_dollars() {
         r.harness = "subbot".into();
         r.transcript_path = Some(path.display().to_string());
     });
-    assert!(tailer::track(&run));
+    assert!(tailer::track(&e.server, &run));
     tailer::poll_all(&e.server);
     let recs = tailer::records_of(&e.server, "run-sub");
     assert_eq!(recs.len(), 1);
@@ -386,7 +393,7 @@ async fn turn_usage_and_limits_api() {
             observed_at_ms: 5,
         });
     });
-    assert!(tailer::track(&run));
+    assert!(tailer::track(&e.server, &run));
     tailer::poll_all(&e.server);
     let r = polish::api(
         &e.server,

@@ -221,7 +221,9 @@ impl Importer<'_> {
     fn set(&mut self, from: &str, to: &str, value: toml::Value) {
         let mut candidate = self.out.clone();
         set_path(&mut candidate, to, value);
-        match validate(&candidate, to) {
+        // Not checked for replaced values: related settings (a sidebar's min and max width)
+        // are mapped one at a time, and the first may only make sense with the second.
+        match validate(&candidate, None) {
             Ok(()) => {
                 self.out = candidate;
                 self.mapped.push((from.to_string(), to.to_string()));
@@ -233,7 +235,7 @@ impl Importer<'_> {
     fn push(&mut self, from: &str, to: &str, value: toml::Value) {
         let mut candidate = self.out.clone();
         push_path(&mut candidate, to, value);
-        match validate(&candidate, to) {
+        match validate(&candidate, Some(to)) {
             Ok(()) => {
                 self.out = candidate;
                 self.mapped.push((from.to_string(), to.to_string()));
@@ -487,15 +489,17 @@ fn push_path(t: &mut toml::Table, path: &str, value: toml::Value) {
     }
 }
 
-/// Does Vibeke take `t` as written? A value under `key` that the loader would replace or drop
-/// (it loads with a warning, but does not apply) counts as rejected.
-fn validate(t: &toml::Table, key: &str) -> Result<(), String> {
+/// Does Vibeke take `t` as written? With a `key`, a value under it that the loader would
+/// replace or drop (it loads with a warning, but does not apply) counts as rejected.
+fn validate(t: &toml::Table, key: Option<&str>) -> Result<(), String> {
     let text = toml::to_string(t).map_err(|e| e.to_string())?;
     match Config::parse(&text, Path::new("<import>")) {
-        Ok((_, warns)) => match warns.iter().find(|w| w.replaced && w.key.starts_with(key)) {
-            Some(w) => Err(w.message.clone()),
-            None => Ok(()),
-        },
+        Ok((_, warns)) => {
+            match key.and_then(|k| warns.iter().find(|w| w.replaced && w.key.starts_with(k))) {
+                Some(w) => Err(w.message.clone()),
+                None => Ok(()),
+            }
+        }
         Err(e) => Err(match e.first_diagnostic() {
             Some(d) => d.message.clone(),
             None => e.to_string(),

@@ -1985,8 +1985,10 @@ pub fn teardown(server: &Arc<Server>, key: &str) {
         // Keep every object the box wrote before its private store is deleted. When the
         // import fails (a full disk, say), the store may hold the only copy of commits a
         // branch points to: the box directory stays, and the store stays registered so the
-        // next host git command in the repository imports it again.
+        // next host git command in the repository imports it again. A `sandbox_objects`
+        // record brings the store back after a server restart ([`retry_kept_objects`]).
         let mut kept = None;
+        let mut pending = None;
         if let BoxRunner::Sandbox(r) = &b.runner
             && let Some(objects) = r.objects_dir()
             && let Err(e) = vk_tasks::release_box_objects(&objects)
@@ -1997,6 +1999,11 @@ pub fn teardown(server: &Arc<Server>, key: &str) {
                 "importing the box's git objects failed, keeping its directory: {e}"
             );
             kept = Some(json!({"objects_kept": objects.to_string_lossy(), "error": e}));
+            pending = Some(json!({
+                "checkout": b.checkout.to_string_lossy(),
+                "objects": objects.to_string_lossy(),
+                "root": root.to_string_lossy(),
+            }));
         }
         emit(
             server,
@@ -2012,7 +2019,51 @@ pub fn teardown(server: &Arc<Server>, key: &str) {
         let mut c = server.core.lock().unwrap();
         let mut tx = Tx::new();
         tx.m.kv("sandbox", key, None);
+        if let Some(p) = pending {
+            tx.m.kv(KEPT_OBJECTS, key, Some(p.to_string()));
+        }
         let _ = server.commit(&mut c, tx);
+    }
+}
+
+/// kv scope of box object stores whose import failed at teardown: `{checkout, objects, root}`.
+const KEPT_OBJECTS: &str = "sandbox_objects";
+
+/// Import the object stores of boxes whose import failed before (see [`KEPT_OBJECTS`]) and
+/// delete each box directory once its objects are safe. A store that still fails stays
+/// registered, so host git in its repository keeps trying, and is retried at the next start.
+fn retry_kept_objects(server: &Server) {
+    let kept = server.with_core(|c| c.store.kv_scope(KEPT_OBJECTS).unwrap_or_default());
+    for (key, v) in kept {
+        let v: Value = serde_json::from_str(&v).unwrap_or_default();
+        let (Some(checkout), Some(objects), Some(root)) = (
+            v["checkout"].as_str(),
+            v["objects"].as_str(),
+            v["root"].as_str(),
+        ) else {
+            continue;
+        };
+        let done = if Path::new(objects).is_dir() {
+            vk_tasks::register_box_objects(Path::new(checkout), Path::new(objects));
+            match vk_tasks::release_box_objects(Path::new(objects)) {
+                Ok(_) => {
+                    let _ = std::fs::remove_dir_all(root);
+                    true
+                }
+                Err(e) => {
+                    tracing::warn!(sandbox = %key, "importing kept git objects: {e}");
+                    false
+                }
+            }
+        } else {
+            true
+        };
+        if done {
+            let mut c = server.core.lock().unwrap();
+            let mut tx = Tx::new();
+            tx.m.kv(KEPT_OBJECTS, &key, None);
+            let _ = server.commit(&mut c, tx);
+        }
     }
 }
 
@@ -2123,6 +2174,10 @@ fn tick(server: &Arc<Server>) {
 pub async fn restore(server: &Arc<Server>) {
     // Nudges for user-typed host yolo runs (13 §3) watch the event stream from now on.
     extras::start(server);
+    {
+        let srv = server.clone();
+        let _ = tokio::task::spawn_blocking(move || retry_kept_objects(&srv)).await;
+    }
     let stale: Vec<Interaction> = server.with_core(|c| {
         c.model
             .interactions

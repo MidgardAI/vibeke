@@ -331,7 +331,7 @@ struct Candidate {
 /// Transcripts of live runs (and, when `closed`, ended runs) that are not yet registered as
 /// run sources. Holds the state lock only to copy run fields.
 fn run_candidates(server: &Server, known_runs: &HashSet<String>, closed: bool) -> Vec<Candidate> {
-    server.with_core(|c| {
+    let raw: Vec<(String, Candidate)> = server.with_core(|c| {
         let mut runs: Vec<AgentRun> = c.model.runs.clone();
         if closed {
             runs.extend(
@@ -343,9 +343,6 @@ fn run_candidates(server: &Server, known_runs: &HashSet<String>, closed: bool) -
         runs.into_iter()
             .filter_map(|r| {
                 let path = r.transcript_path.clone()?;
-                if known_runs.contains(&path) {
-                    return None;
-                }
                 let workspace = c.pane(&r.pane).map(|p| p.workspace.clone()).or_else(|| {
                     c.store
                         .find::<Pane>("pane", &r.pane)
@@ -353,18 +350,29 @@ fn run_candidates(server: &Server, known_runs: &HashSet<String>, closed: bool) -
                         .flatten()
                         .map(|p| p.workspace)
                 });
-                Some(Candidate {
-                    path,
-                    harness: r.harness.clone(),
-                    session: r.harness_session_id.clone(),
-                    cwd: r.cwd.clone(),
-                    run: Some(r.id.clone()),
-                    workspace,
-                    origin: "run",
-                })
+                Some((
+                    r.pane.clone(),
+                    Candidate {
+                        path,
+                        harness: r.harness.clone(),
+                        session: r.harness_session_id.clone(),
+                        cwd: r.cwd.clone(),
+                        run: Some(r.id.clone()),
+                        workspace,
+                        origin: "run",
+                    },
+                ))
             })
             .collect()
-    })
+    });
+    // Checked again outside the core lock: a contained run's path must stay inside its box,
+    // and a path stored before it was normalized is resolved (`transcript_file::accept`).
+    raw.into_iter()
+        .filter_map(|(pane, mut cand)| {
+            cand.path = crate::agents::transcript_file::accept(server, &pane, &cand.path)?;
+            (!known_runs.contains(&cand.path)).then_some(cand)
+        })
+        .collect()
 }
 
 fn walk(dir: &Path, depth: u32, out: &mut Vec<PathBuf>, max: usize) {

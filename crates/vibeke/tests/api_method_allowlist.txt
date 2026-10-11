@@ -24,13 +24,11 @@ group.rename
 image.upload
 interaction.cancel
 layout.get
-notification.read
 pane.equalize
 pane.resize
 pane.send_bytes
 plugin.registry.notify
 plugin.surface.close
-preview.dismiss
 preview.profile.list
 sandbox.remove
 tab.focus

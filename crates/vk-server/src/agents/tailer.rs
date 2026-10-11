@@ -109,16 +109,22 @@ fn format_for(h: Harness, path: &Path) -> Option<Format> {
 }
 
 /// The run's transcript file: the path a hook reported, else the manifest's `[identity]`
-/// `transcript_glob` for its session.
-pub fn transcript_of(run: &AgentRun) -> Option<PathBuf> {
+/// `transcript_glob` for its session. Either way the path must pass
+/// [`transcript_file::accept`](super::transcript_file::accept) for the run's pane: a contained
+/// run never reads a host file, and a path stored before it was normalized is resolved again.
+pub fn transcript_of(server: &Server, run: &AgentRun) -> Option<PathBuf> {
+    let accept = |p: &str| super::transcript_file::accept(server, &run.pane, p).map(PathBuf::from);
     if let Some(p) = &run.transcript_path {
-        return Some(PathBuf::from(p));
+        return accept(p);
     }
-    // The session id comes from the agent: never let it walk out of the manifest's directory.
+    // The session id and cwd come from the agent: never let them walk out of the manifest's
+    // directory or widen its glob.
+    let unsafe_part = |s: &str| s.contains(['\\', '\0', '*', '?', '[', ']', '{', '}']);
     if run
         .harness_session_id
         .as_deref()
-        .is_some_and(|s| s.contains(['/', '\\', '\0']) || s.contains(".."))
+        .is_some_and(|s| s.contains('/') || s.contains("..") || unsafe_part(s))
+        || run.cwd.as_deref().is_some_and(unsafe_part)
     {
         return None;
     }
@@ -128,16 +134,15 @@ pub fn transcript_of(run: &AgentRun) -> Option<PathBuf> {
         run.cwd.as_deref(),
         run.harness_session_id.as_deref(),
     )?;
-    // Readers refuse symlinks in any component (`transcript_file::open_regular`).
-    super::transcript_file::resolve_existing_prefix(&p)
+    accept(&p.to_string_lossy())
 }
 
 /// Start tailing `run`'s transcript (idempotent; a changed path replaces the tail).
-pub fn track(run: &AgentRun) -> bool {
+pub fn track(server: &Server, run: &AgentRun) -> bool {
     if run.ended_at_ms.is_some() {
         return false;
     }
-    let Some(path) = transcript_of(run) else {
+    let Some(path) = transcript_of(server, run) else {
         return false;
     };
     let Some(h) = Harness::from_id(&run.harness) else {
@@ -480,8 +485,8 @@ fn codex_thread_name(session: &str) -> Result<Option<String>, ()> {
 /// What the transcript says the run is doing (for the arbiter's `reconcile`): `Idle` when the
 /// last turn ended, `Working` when a prompt or tool call is pending. `None` without a readable
 /// transcript.
-pub fn reconcile_state(_server: &Server, run: &AgentRun) -> Option<Execution> {
-    let path = transcript_of(run)?;
+pub fn reconcile_state(server: &Server, run: &AgentRun) -> Option<Execution> {
+    let path = transcript_of(server, run)?;
     let h = Harness::from_id(&run.harness)?;
     let fmt = format_for(h, &path).or_else(|| default_format(h))?;
     let len = std::fs::metadata(&path).ok()?.len();
@@ -538,7 +543,7 @@ pub fn sync_runs(server: &Server) {
         .tails
         .retain(|_, t| ids.contains(t.run.as_str()));
     for r in &live {
-        track(r);
+        track(server, r);
     }
 }
 

@@ -865,6 +865,11 @@ impl Loaded {
         if g.is_empty() {
             return None;
         }
+        // Values come from the agent: they may not widen the glob.
+        let glob_free = |v: &str| !v.contains(['*', '?', '[', ']', '{', '}']);
+        if !session_id.is_none_or(glob_free) || !cwd.is_none_or(glob_free) {
+            return None;
+        }
         let mut t = g.to_string();
         if t.contains("{session_id}") {
             t = t.replace("{session_id}", session_id?);
