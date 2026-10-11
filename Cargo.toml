@@ -36,6 +36,7 @@ vk-assist = { path = "crates/vk-assist" }
 vk-orchestrate = { path = "crates/vk-orchestrate" }
 vk-handoff = { path = "crates/vk-handoff" }
 vk-cloud = { path = "crates/vk-cloud" }
+vk-conformance = { path = "crates/vk-conformance" }
 
 anyhow = "1"
 base64 = "0.22"

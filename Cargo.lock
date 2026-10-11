@@ -3384,6 +3384,7 @@ dependencies = [
  "vk-cloud",
  "vk-compat",
  "vk-config",
+ "vk-conformance",
  "vk-gateway",
  "vk-handoff",
  "vk-hold",
@@ -3533,6 +3534,26 @@ dependencies = [
  "thiserror",
  "toml",
  "toml_edit",
+]
+
+[[package]]
+name = "vk-conformance"
+version = "0.11.0"
+dependencies = [
+ "anyhow",
+ "libc",
+ "regex",
+ "rustix",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "toml",
+ "unicode-width",
+ "vk-compat",
+ "vk-proto",
+ "vk-redact",
+ "vk-term",
 ]
 
 [[package]]

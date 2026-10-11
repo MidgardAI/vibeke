@@ -1,0 +1,25 @@
+[package]
+name = "vk-conformance"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Test-only support for the real Herdr plugin harness (spec 18): lock, scenarios, outcomes, traces and canonical cell grids."
+
+[dependencies]
+vk-compat.workspace = true
+vk-proto.workspace = true
+vk-redact.workspace = true
+vk-term.workspace = true
+anyhow.workspace = true
+regex.workspace = true
+rustix.workspace = true
+libc.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+toml.workspace = true
+unicode-width.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
