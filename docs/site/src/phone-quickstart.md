@@ -8,7 +8,9 @@ You need a host with a running Vibeke session. See the [quickstart](quickstart.m
 
 Choose one way.
 
-In the terminal interface, press `prefix` then `alt+d` to open **Connections**. You can also run **Pair a phone** from the command palette. Choose the access level and press Enter. A QR code appears.
+In the terminal interface, run **Pair a phone** from the command palette (`prefix` then `:`). Choose the access level and press Enter. A QR code appears.
+
+You can also press `prefix` then `alt+d` to open **Connections**. Switch to the **Devices** tab with `tab`, then press `n` to start pairing.
 
 Or run this in a shell on the host:
 

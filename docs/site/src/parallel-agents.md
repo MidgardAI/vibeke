@@ -4,7 +4,7 @@ This guide shows how to run several agents on one repository, keep their work ap
 
 ## Give each agent its own task
 
-A **task** is the safest way to run parallel agents. Each task gets its own git worktree, branch, and port block. Agents cannot overwrite each other's files.
+A **task** is the safest way to run parallel agents. Each task gets its own git worktree, branch, and port block. Agents that stay in their own worktree do not change each other's files. A worktree is not a security boundary. An agent at the host execution level can still write anywhere your user can. Use a [sandbox execution level](concepts/sandboxes.md) when you need a real boundary.
 
 1. Press **Ctrl+B**, then **Shift+K** to open **New task (git worktree)**. You can also run this command in a pane:
 
@@ -25,7 +25,7 @@ You can also start `claude` and `codex` in panes of the same directory. Vibeke t
 - The sidebar shows one line under the workspace, for example "claude and codex both edited `src/auth.ts`".
 - The collision view lists every collision, with pause, tell, fresh task, and ignore actions. It has no default key. Click the sidebar line, or choose **collisions** in the command palette (**Ctrl+B**, then **:**).
 
-To avoid the warning, move one agent into its own task. In the collision view, choose **Start a fresh task from here**.
+To avoid more collisions, give one of the agents its own task. In the collision view, **Start a fresh task from here** creates a new worktree from the current commit. It starts a new agent there with a summary of the work. The original agents keep running, and their changes stay in the shared checkout. Pause or stop one of them yourself.
 
 You can also tell Vibeke which part of the checkout a run owns:
 

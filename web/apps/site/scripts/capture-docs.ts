@@ -112,7 +112,7 @@ class Clip {
 
 function html(ansi: string, caption: string) {
   // The sidebar header names the machine; show a neutral name of the same width.
-  ansi = ansi.replace(/\/tmp\/vkdoc-\w+\/agents\//g, m => '/usr/local/bin/'.padEnd(m.length, ' '))
+  ansi = ansi.replace(/\/tmp\/vkdoc-\w+\/agents\/(\w+)/g, (m, agent: string) => `/usr/local/bin/${agent}`.padEnd(m.length, ' '))
   ansi = ansi.replace(/vibeke · (\S+)/g, (m, name: string) => 'vibeke · ' + 'laptop'.padEnd(name.length, ' '))
   const lines = parseAnsi(ansi).slice(0, rows)
   const body = lines.map(line => '<div>' + (line.map(({ text, style }) => {

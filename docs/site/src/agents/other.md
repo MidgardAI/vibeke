@@ -39,6 +39,7 @@ argv_regex = '(^|/)my-pi( |$)'
 
 [launch]
 argv = ["my-pi"]
+argv_with_session = ["my-pi", "--session-id", "{session_id}"]
 
 [resume]
 argv = ["my-pi", "--session", "{resume_id}"]

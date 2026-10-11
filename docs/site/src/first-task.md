@@ -30,7 +30,7 @@ If you did not use `--agent`, run your agent command in the shell pane of the ne
 claude
 ```
 
-Give the agent its work. The agent edits files only in the task worktree. Your main checkout stays unchanged.
+Give the agent its work. The agent works in the task worktree, so your main checkout keeps its state. A worktree is not a security boundary: at the host execution level, the agent can still write anywhere your user can. See [execution levels](concepts/sandboxes.md).
 
 ## 3. Watch its state
 
@@ -49,6 +49,8 @@ The answer goes to the agent through its own interface. See [agents and interact
 ## 5. Review the result
 
 Open the task details. Press `prefix` then `g` and choose the task, or run **Task details for this agent** from the palette in the agent pane.
+
+If Vibeke says that the agent is not tracked, run **Track this work (task)** from the palette in the agent pane first. This links the agent run to the task.
 
 The view shows the requirements, the commands the agent ran, the checks and the review state. In this view:
 
