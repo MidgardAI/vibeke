@@ -215,7 +215,7 @@ fn mcp_against_a_real_server_and_mcp_installers() {
     .unwrap();
     for h in ["claude", "codex"] {
         let out = s
-            .cmd(&["integration", "install", h, "--mcp"])
+            .cmd(&["integration", "install", h, "--mcp", "--yes"])
             .output()
             .unwrap();
         assert!(
@@ -240,7 +240,7 @@ fn mcp_against_a_real_server_and_mcp_installers() {
     assert_eq!(st.matches("mcp installed").count(), 2, "{st}");
     for h in ["claude", "codex"] {
         let out = s
-            .cmd(&["integration", "uninstall", h, "--mcp"])
+            .cmd(&["integration", "uninstall", h, "--mcp", "--yes"])
             .output()
             .unwrap();
         assert!(out.status.success());

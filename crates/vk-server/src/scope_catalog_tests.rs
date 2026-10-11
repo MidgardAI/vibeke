@@ -272,3 +272,229 @@ async fn open_methods_are_not_refused_to_panes() {
         );
     }
 }
+
+/// Default deny (review fix): a method nobody classified is the user's, and every classified
+/// name is a real method.
+#[test]
+fn unlisted_methods_default_to_forbidden_for_panes() {
+    assert_eq!(pane_scope_of("some.new_method"), PaneScope::Forbidden);
+    assert_eq!(pane_scope_of("pane.some_new_action"), PaneScope::Forbidden);
+    for m in [
+        "theme.set_mode",
+        "client.appearance",
+        "client.confirm_answer",
+        "plugin.action.run",
+    ] {
+        assert_eq!(pane_scope_of(m), PaneScope::Forbidden, "{m}");
+    }
+    assert_eq!(pane_scope_of("agent.report"), PaneScope::OwnTarget);
+    assert_eq!(pane_scope_of("agent.spawn"), PaneScope::Open);
+    let all: Vec<&str> = crate::api_schema::method_tables()
+        .into_iter()
+        .flat_map(|(_, t)| t.iter().map(|(n, _)| *n))
+        .collect();
+    for m in crate::api::PANE_OPEN
+        .iter()
+        .chain(crate::api::PANE_OWN_TARGET)
+    {
+        assert!(all.contains(m), "{m} is classified but is not a method");
+    }
+}
+
+fn add_foreign_pane(e: &Env) {
+    let mut c = e.server.core.lock().unwrap();
+    let mut p = c.pane("pane-a").cloned().unwrap();
+    p.id = "pane-b".into();
+    p.handle = "pane-b".into();
+    p.tab = "tab-b".into();
+    p.workspace = "ws-b".into();
+    let mut tx = Tx::new();
+    tx.pane(p);
+    e.server.commit(&mut c, tx).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn panes_stay_in_their_own_pane_and_workspace() {
+    let e = Env::new();
+    add_foreign_pane(&e);
+    let pane = ctx_pane();
+    let refused = |m: &str, p: Value| {
+        let r = crate::api::authorize(&e.server, &pane, m, &p);
+        assert!(
+            matches!(&r, Err(x) if x.code == ErrorKind::PermissionDenied.code()),
+            "{m} {p}: {r:?}"
+        );
+    };
+    refused("agent.report", json!({"pane": "pane-b", "state": "idle"}));
+    refused(
+        "agent.report",
+        json!({"pane_id": "pane-b", "state": "idle"}),
+    );
+    refused(
+        "agent.spawn",
+        json!({"harness": "claude", "split_of": "pane-b"}),
+    );
+    refused("agent.spawn", json!({"harness": "claude", "focus": true}));
+    refused("workspace.create", json!({"focus": true}));
+    refused("notification.read", json!({"all": true}));
+    let ok = |m: &str, p: Value| {
+        let r = crate::api::authorize(&e.server, &pane, m, &p);
+        assert!(r.is_ok(), "{m} {p}: {r:?}");
+    };
+    ok("agent.report", json!({"state": "idle"}));
+    ok("agent.spawn", json!({"harness": "claude"}));
+    ok("notification.read", json!({"notification": "n1"}));
+}
+
+/// Host yolo and cloud boxes are the user's decisions: plugins, phones and elevated agents
+/// are refused too, not only pane tokens.
+#[tokio::test(flavor = "multi_thread")]
+async fn user_only_params_are_refused_to_every_other_caller() {
+    let e = Env::new();
+    let gateway = crate::api::Ctx {
+        client_id: "c-gw".into(),
+        kind: "gateway".into(),
+        pane_scope: None,
+        remote: false,
+    };
+    let remote = crate::api::Ctx {
+        client_id: "c-remote".into(),
+        kind: "anonymous".into(),
+        pane_scope: None,
+        remote: true,
+    };
+    // The user's own terminal over SSH stays the user.
+    assert!(crate::api::is_user(&crate::api::Ctx {
+        kind: "tui".into(),
+        ..remote.clone()
+    }));
+    for ctx in [&gateway, &remote, &ctx_pane()] {
+        assert!(!crate::api::is_user(ctx));
+        let r = crate::api::authorize(
+            &e.server,
+            ctx,
+            "task.create",
+            &json!({"title": "x", "confirm_host_yolo": true}),
+        );
+        let e1 = r.unwrap_err();
+        assert_eq!(e1.code, ErrorKind::PermissionDenied.code());
+        assert!(e1.message.contains("confirm_host_yolo"), "{}", e1.message);
+        let r = crate::api::authorize(&e.server, ctx, "task.create", &json!({"box": "b1"}));
+        assert!(r.is_err(), "{ctx:?}");
+    }
+    // `cloud.*` names its own box; the user is never refused.
+    assert!(crate::api::is_user(&ctx_full()));
+    assert!(
+        crate::api::authorize(
+            &e.server,
+            &ctx_full(),
+            "task.create",
+            &json!({"confirm_host_yolo": true, "box": "b1"})
+        )
+        .is_ok()
+    );
+}
+
+/// The generic receipt layer: a retried keyed call runs once, a reused key with other params
+/// is a conflict, and keys are scoped to the caller.
+#[tokio::test(flavor = "multi_thread")]
+async fn keyed_calls_run_once() {
+    let e = Env::new();
+    let user = ctx_full();
+    let p = json!({"title": "built", "idempotency_key": "k-1"});
+    let a = e
+        .call(&user, "notification.send", p.clone())
+        .await
+        .unwrap()
+        .unwrap();
+    let b = e
+        .call(&user, "notification.send", p.clone())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(a["notification"]["id"], b["notification"]["id"]);
+    assert_eq!(b["replayed"], true);
+    let n = e.server.with_core(|c| c.notifications.len());
+    assert_eq!(n, 1, "the retry did not notify twice");
+    let c = e
+        .call(
+            &user,
+            "notification.send",
+            json!({"title": "other", "idempotency_key": "k-1"}),
+        )
+        .await
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(c.data.kind, "conflict");
+    // Another caller with the same key is a different call.
+    let pane = ctx_pane();
+    let d = e
+        .call(&pane, "notification.send", p.clone())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_ne!(d["notification"]["id"], a["notification"]["id"]);
+    assert!(d.get("replayed").is_none());
+    // Without a key every call runs.
+    let plain = json!({"title": "plain"});
+    let x = e
+        .call(&user, "notification.send", plain.clone())
+        .await
+        .unwrap()
+        .unwrap();
+    let y = e
+        .call(&user, "notification.send", plain)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_ne!(x["notification"]["id"], y["notification"]["id"]);
+}
+
+/// Params are checked against the schema at dispatch: JSON types, unknown params on strict
+/// methods, and a clear `invalid_params` naming the param.
+#[test]
+fn params_are_checked_against_the_schema() {
+    use crate::api::check_params;
+    let e = check_params("pane.send_text", &json!({"pane": "p1", "text": 42})).unwrap_err();
+    assert_eq!(e.data.kind, "invalid_params");
+    assert!(
+        e.message.contains("`text` must be a string"),
+        "{}",
+        e.message
+    );
+    assert_eq!(e.data.details["param"], "text");
+    let e = check_params(
+        "pane.send_text",
+        &json!({"pane": "p1", "text": "x", "submit": true}),
+    )
+    .unwrap_err();
+    assert!(
+        e.message.contains("unknown param `submit`"),
+        "{}",
+        e.message
+    );
+    // Common params, nulls for optional params and literal values the handler judges pass.
+    assert!(
+        check_params(
+            "pane.send_text",
+            &json!({"pane": "p1", "text": "x", "actor": "gateway:d1", "idempotency_key": "k", "paste": null})
+        )
+        .is_ok()
+    );
+    assert!(check_params("pane.read", &json!({"pane": "p1", "source": "archive"})).is_ok());
+    // Non-strict methods ignore unknown params.
+    assert!(check_params("pane.list", &json!({"whatever": 1})).is_ok());
+    // A command may be an argv list or a shell line.
+    assert!(check_params("pane.split", &json!({"command": "make dev"})).is_ok());
+    assert!(check_params("pane.split", &json!({"command": ["make", 1]})).is_err());
+    assert!(check_params("pane.send_keys", &json!({"keys": "enter"})).is_err());
+    assert!(check_params("pane.list", &json!([1])).is_err());
+    // agent.spawn's schema lists what its handler reads.
+    assert!(
+        check_params(
+            "agent.spawn",
+            &json!({"harness": "claude", "split_of": "p1", "direction": "down", "cwd": "/tmp", "wait": true, "yolo": false})
+        )
+        .is_ok()
+    );
+}

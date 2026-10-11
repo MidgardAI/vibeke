@@ -442,5 +442,41 @@ manifest_check = true
 # # Optional `background` and `review` profiles serve those features. Without one the default profile
 # # is used only if it meets the feature's requirements.
 
+# Experimental orchestration (12, 05 §11-12). Every feature is off by default, and its commands
+# and API methods are experimental: they can still change. A command of a feature that is off
+# fails and names the flag to turn on.
+# [orchestrate.best_of_n]
+# enabled             = false             # task new --agents claude:2,codex:1; task compare/pick
+# max_children        = 8
+# check               = true              # run the repo's check in each child when it finishes
+# check_command       = ""                # fallback when the repo declares no check
+# check_timeout       = "10m"
+# [orchestrate.split]
+# enabled             = false             # task split: move a running agent's changes into a new task
+# quiet_for           = "3s"
+# resume              = false
+# [orchestrate.merge]
+# enabled             = false             # claims, conflict prediction, merge queue
+# predict_every       = "30s"
+# queue_check         = ""                # command run in the integration worktree before a merge lands
+# queue_check_timeout = "15m"
+# strategy            = "merge"           # merge | squash
+# target              = ""                # branch the queue merges into (default: the task's base)
+# [orchestrate.planner]
+# enabled             = false             # goals: goal to plan to tasks
+# backend             = "heuristic"       # heuristic | agent | external
+# planner_harness     = "claude"
+# approval_required   = true              # nothing starts before `goal approve`
+# max_steps           = 12
+# briefing_window     = "12h"
+# [orchestrate.quota]
+# enabled             = false             # pause low-priority work near a usage limit
+# interval            = "30s"
+# pause_at            = 0.9
+# protect_priority    = 5
+# max_wait            = "6h"
+# resume_below        = 0.8
+# max_resumes_per_tick = 2
+
 # Sections owned by other components and documented with them:
 # [isolation], [preview], [security], [plugins]

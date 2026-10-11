@@ -68,7 +68,39 @@ pub fn method_tables() -> Vec<(&'static str, &'static [(&'static str, bool)])> {
         ("privacy", privacy::METHODS),
         ("handoff", handoff::METHODS),
         ("cloud_api", cloud_api::METHODS),
+        ("tracking", tracking::METHODS),
+        ("gateway_api", gateway_api::METHODS),
     ]
+}
+
+/// Method prefixes whose methods are **experimental**: their params and results may still
+/// change in `vibeke/1`, they are left out of the freeze (`docs/api/vibeke-1.frozen.json`), and
+/// several sit behind `[orchestrate]` flags that are off by default.
+pub const EXPERIMENTAL_PREFIXES: &[&str] = &[
+    "goal.",
+    "quota.",
+    "family.",
+    "merge.",
+    "task.claim",
+    "desk.",
+    "draft.",
+    "vm.",
+    "cloud.",
+    "assistant.",
+    "collision.",
+];
+
+/// The stability tier of a method: `stable` (frozen: no removals, no flag changes) or
+/// `experimental` (see [`EXPERIMENTAL_PREFIXES`]; every `[orchestrate]` method is experimental
+/// too: best-of-N, compare, pick and split).
+pub fn stability_of(method: &str) -> &'static str {
+    if EXPERIMENTAL_PREFIXES.iter().any(|p| method.starts_with(p))
+        || crate::orch::METHODS.iter().any(|(n, _)| *n == method)
+    {
+        "experimental"
+    } else {
+        "stable"
+    }
 }
 
 /// A parsed registry entry: the shape source text and its parse.
@@ -248,8 +280,25 @@ fn build() -> Result<Registry, Vec<String>> {
         if mutating.get(name.as_str()) == Some(&true) {
             add_cursor(&mut e.result);
         }
+        // The generic receipt layer (`api::KEYED_METHODS`) takes an optional idempotency key.
+        if crate::api::KEYED_METHODS.contains(&name.as_str()) {
+            add_idempotency_key(&mut e.params);
+        }
     }
     if errs.is_empty() { Ok(reg) } else { Err(errs) }
+}
+
+fn add_idempotency_key(s: &mut Shape) {
+    match s {
+        Shape::Obj(fs) if !fs.iter().any(|f| f.name == "idempotency_key") => fs.push(Field {
+            name: "idempotency_key".into(),
+            optional: true,
+            shape: Shape::Str,
+            default: None,
+        }),
+        Shape::Union(arms) => arms.iter_mut().for_each(add_idempotency_key),
+        _ => {}
+    }
 }
 
 fn add_cursor(s: &mut Shape) {
@@ -330,6 +379,7 @@ pub fn bundle() -> Value {
             name.to_string(),
             json!({
                 "mutating": m,
+                "stability": stability_of(name),
                 "scope": scope,
                 "pane_scope": pane_scope,
                 "params": params,
@@ -528,7 +578,46 @@ pub const METHOD_SHAPES: &[&str] = &[
     crate::handoff::SHAPES,
     crate::approve::SHAPES,
     crate::cloud_api::SHAPES,
+    TRACKING_SHAPES,
 ];
+
+/// Methods that were handled but missing from the method tables (task tracking 15 §11, the
+/// gateway's transcript and client reports). Results are loose where the handler returns
+/// stored records whose fields are still settling.
+pub const TRACKING_SHAPES: &str = r##"
+# --- task tracking (15 §11); pane tokens only for tasks and runs in their own workspace ---
+# the run's task sources (prompts, turns) and whether its harness identity is verified
+task.sources :: {run?: Target, pane?: Target, limit?: int} => {run: string, harness: string, identity_verified: any}
+# track the run's work as a task: intent from its turns; full scope only
+task.track :: {run?: Target, pane?: Target, title?: string, objective?: string, stop_detail?: string, target_branch?: string, turn?: int, turns?: [int], idempotency_key?: string}
+  => {task: Task, intent: any, binding: any, baseline: any, review_base: any}
+task.detail :: {task: Target} => {task: Task, intent: any, bindings: [any], runs: [any], baseline: any, uncommunicated: [any], messages: [any]}
+task.intent.get :: {task: Target, revision?: int} => {task: string, current_revision: int, intent: any, revisions: [any]}
+# full scope only; expected_revision guards against a concurrent edit
+task.intent.update :: {task: Target, expected_revision?: int, title?: string, objective?: string, stop_detail?: string, criteria?: [any], criterion?: any, add_criterion?: any, constraints?: [any], constraint?: any, idempotency_key?: string}
+  => {task: Task, intent: any, uncommunicated: [any], note?: string|null}
+task.bind :: {task: Target, run?: Target, pane?: Target, role?: string, start_turn?: int, end_turn?: int, idempotency_key?: string} => {binding: any, pending: bool}
+task.unbind :: {task?: Target, binding?: string, idempotency_key?: string} => {closed: any}
+task.message.prepare :: {task: Target, text: string, idempotency_key?: string} => {message: object, recipient: {run: string|null, binding: string|null}, send_path?: any}
+task.message.send :: {message: string, idempotency_key?: string} => {message: object}
+task.message.get :: {message: string} => {message: object}
+task.message.cancel :: {message: string, idempotency_key?: string} => {message: object}
+# the receipt of an idempotent operation; known: false never means the operation is safe to repeat (full scope only)
+task.operation.get :: {idempotency_key: string} => {known: bool, note?: string}
+task.set :: {task: Target, priority?: int|null, effort?: string|null, effort_source?: string, expected_rev?: int, idempotency_key?: string} => {task: Task}
+
+# --- gateway pieces (16 §13) ---
+# turns of the run's harness transcript; with before/limit pages are stable (the gateway pages with them)
+agent.transcript :: {target?: Target, run?: Target, limit?: int, before?: int, items?: bool, image?: string} => {turns?: [any]}
+# a TUI reports the host-wide time of its last input
+client.activity :: {last_input_ms?: int} => {}
+# a gateway reports the devices connected through it (replaces its list); gateway clients only
+client.devices :: {devices: [object]} => {}
+# ask the user's TUI to confirm out of band; waits up to timeout_ms (1 s to 10 min, default 60 s)
+client.confirm :: {title: string, body?: string, options?: [{id: string, label: string}], timeout_ms?: int = 60000} => {confirm: string, choice: string|null, timed_out: bool}
+# a local TUI answers a confirmation
+client.confirm_answer :: {confirm: string, choice?: string} => {confirm: string}
+"##;
 
 /// Lane 3E (09 §9.1–9.3): `state.forget` and state encryption.
 pub const PRIVACY_SHAPES: &str = r##"
@@ -555,7 +644,8 @@ theme.get :: {} => {appearance: Appearance, colorfgbg: string, reports?: any}
 theme.set_mode :: {mode: auto|light|dark|null} => {appearance: Appearance, colorfgbg: string, reports?: any}
 status.segments :: {pane?: Target, client?: string}
   => {segments: object, focus: any, appearance: Appearance, client_side: [string]}
-api.methods :: {} => {methods: [{name: string, mutating: bool, milestone?: string, capability?: string}]}
+# stability: experimental methods may still change and are not frozen
+api.methods :: {} => {methods: [{name: string, mutating: bool, stability?: stable|experimental, milestone?: string, capability?: string}]}
 # the JSON Schema bundle of this binary (07 §1.5); with `method`, only that method's params/result
 api.schema :: {method?: string} => {schema: object}
 # `boot_id` changes when the server image changes (start or `server.restart`); `restart_error` says why the last restart could not exec (the old image keeps serving)
@@ -587,7 +677,7 @@ group.add :: {group: Target, workspace?: Target, index?: int} => {workspace: Wor
 group.remove :: {workspace?: Target, index?: int} => {workspace: Workspace, group: string|null}
 workspace.list :: {group?: Target} => {workspaces: [Workspace]}
 workspace.get :: {workspace?: Target} => {workspace: Workspace}
-workspace.create :: {cwd?: string, name?: string, group?: Target, focus?: bool = false, layout?: LayoutSpec, command?: [string]} => {workspace: Workspace, tab: Tab, root_pane: Pane}
+workspace.create :: {cwd?: string, name?: string, group?: Target, focus?: bool = false, layout?: LayoutSpec, command?: [string] | string} => {workspace: Workspace, tab: Tab, root_pane: Pane}
 workspace.rename :: {workspace?: Target, name: string|null} => {workspace: Workspace}
 workspace.focus :: {workspace: Target, client?: string} => {workspace: Workspace}
 workspace.move :: {workspace: Target, group?: Target|null, index?: int, delta?: int} => {workspaces: [Workspace]}
@@ -596,7 +686,7 @@ workspace.close :: {workspace?: Target, force?: bool = false} => {}
 
 # --- tabs ---
 tab.list :: {workspace?: Target} => {tabs: [Tab]}
-tab.create :: {workspace?: Target, cwd?: string, title?: string, focus?: bool = false, command?: [string], layout?: LayoutSpec} => {tab: Tab, root_pane: Pane}
+tab.create :: {workspace?: Target, cwd?: string, title?: string, focus?: bool = false, command?: [string] | string, layout?: LayoutSpec} => {tab: Tab, root_pane: Pane}
 tab.rename :: {tab: Target, title: string|null} => {tab: Tab}
 tab.focus :: {tab: Target, client?: string} => {tab: Tab}
 tab.move :: {tab: Target, index: int, workspace?: Target} => {tabs: [Tab]}
@@ -607,7 +697,7 @@ tab.floats :: {tab?: Target, visible?: bool} => {tab: Tab}
 pane.list :: {workspace?: Target, tab?: Target, has_agent?: bool} => {panes: [Pane]}
 pane.get :: {pane?: Target} => {pane: Pane, run?: AgentRun|null, open_interactions?: [Interaction], live?: PaneLive|null}
 pane.current :: {} => {pane: Pane}
-pane.split :: {pane?: Target, direction?: right|down|left|up = right, ratio?: number = 0.5, cwd?: string, command?: [string], env?: {*: string}, focus?: bool = false, title?: string} => {pane: Pane}
+pane.split :: {pane?: Target, direction?: right|down|left|up = right, ratio?: number = 0.5, cwd?: string, command?: [string] | string, env?: {*: string}, focus?: bool = false, title?: string} => {pane: Pane}
 pane.close :: {pane?: Target, force?: bool} => {}
 pane.focus :: {pane: Target, client?: string} => {pane: Pane}
 pane.rename :: {pane?: Target, title: string|null} => {pane: Pane}
@@ -616,7 +706,7 @@ pane.mark_seen :: {pane?: Target} => {pane: Pane}
 pane.mark_unread :: {pane?: Target} => {pane: Pane}
 pane.zoom :: {pane?: Target, zoomed?: bool} => {tab: Tab}
 pane.resize :: {pane?: Target, direction: right|down|left|up, cells?: int, percent?: number} => {layout: any}
-pane.float :: {pane?: Target, tab?: Target, rect?: {x?: number, y?: number, w?: number, h?: number}, cwd?: string, command?: [string], focus?: bool} => {pane: Pane}
+pane.float :: {pane?: Target, tab?: Target, rect?: {x?: number, y?: number, w?: number, h?: number}, cwd?: string, command?: [string] | string, focus?: bool} => {pane: Pane}
 pane.embed :: {pane: Target, target?: Target, direction?: right|down|left|up = right, ratio?: number} => {pane: Pane, tab: Tab}
 pane.send_text :: {pane?: Target, text: string, paste?: auto|bracketed|raw = auto} => {bytes: int}
 pane.send_keys :: {pane?: Target, keys: [string]} => {}
@@ -631,7 +721,8 @@ agent.list :: {workspace?: Target, state?: [AgentState], harness?: string} => {r
 agent.get :: {target: Target} => {run: AgentRun, pane: Pane, open_interactions: [Interaction], last_turn?: any}
 agent.harnesses :: {} => {harnesses: [{id: string, display?: string, version_detected?: string|null, integration_installed?: bool, capabilities?: [string]}]}
 agent.start :: {pane?: Target, harness: string, name?: string, mode?: tui|headless = tui, args?: [string], env?: {*: string}, model?: string, task?: Target, ready_timeout_ms?: int = 30000} => {run: AgentRun}
-agent.spawn :: {harness: string, name?: string, where?: object, prompt?: string, args?: [string], focus?: bool = false} => {pane: Pane, run: AgentRun}
+# split a new pane next to split_of (or pane; default the caller's pane) and start the harness there; with prompt, send it (wait as for agent.prompt)
+agent.spawn :: {harness?: string = claude, name?: string, split_of?: Target, pane?: Target, direction?: right|down|left|up = right, cwd?: string, prompt?: string, wait?: bool, args?: [string], focus?: bool = false, yolo?: bool, isolate?: IsolationLevel, network?: string, confirm_host_yolo?: bool} => {pane: Pane, run: AgentRun}
 # refused with conflict, details {reason: dialog_open, interaction} while a picker or unreadable dialog is open; a slash command never fails agent_prompt_stalled,
 # and with wait it returns at once when it opened a picker (interaction) or started no turn (turn_started: false)
 agent.prompt :: {target: Target, text: string, images?: [string], mode?: send|steer|follow_up = send, wait?: bool, until?: [string], timeout_ms?: int} => {run: AgentRun, turn?: any, turn_started?: bool, interaction?: string}
@@ -981,8 +1072,9 @@ server.restart :: {binary?: string} => {new_pid: int, binary: string}
 
 # --- config.* (layers, lowest first: default < user < repo < runtime < cli) ---
 # repo | cwd | pane: layer that repository's .vibeke/config.toml in (only while trusted)
+# load_error: config.toml does not load now; the server keeps the last settings that did
 config.get :: {key?: string, repo?: string, cwd?: string, pane?: Target}
-  => {key?: string, value: any, source: default|user|repo|runtime|cli, path: string, overrides: [string], cli_overrides: [string], layers: [ConfigLayer], repo: {root: string, file: string|null, trusted: bool, applied: bool, warnings?: [string], error?: string}|null, errors: [ConfigDiagnostic]}
+  => {key?: string, value: any, source: default|user|repo|runtime|cli, path: string, overrides: [string], cli_overrides: [string], layers: [ConfigLayer], repo: {root: string, file: string|null, trusted: bool, applied: bool, warnings?: [string], error?: string}|null, errors: [ConfigDiagnostic], load_error?: {path: string, errors: [ConfigDiagnostic]}|null}
 # runtime override unless persist (written to config.toml atomically, comments kept); value null resets the key; full scope only
 config.set :: {key: string, value: any, persist?: bool = false}
   => {key: string, value: any, persisted: bool, path: string, changed: [string]}
@@ -1580,6 +1672,117 @@ mod tests {
             missing.is_empty(),
             "event types emitted but not in EVENT_SHAPES: {missing:?}"
         );
+    }
+
+    /// Every method literal a dispatch function matches on (`"x.y" =>`, `"x.y" | …`,
+    /// `"x.y" if …` inside `fn api`/`fn dispatch`/`fn tasks_api`/`fn attention_api`) is in a
+    /// `METHODS` table: a handled method missing from the tables escapes the read-only gate,
+    /// the gateway audit, the pane-scope catalog and the generated clients.
+    #[test]
+    fn every_dispatched_method_is_in_a_table() {
+        fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for e in std::fs::read_dir(dir).unwrap().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    walk(&p, out);
+                } else if p.extension().is_some_and(|x| x == "rs") {
+                    out.push(p);
+                }
+            }
+        }
+        // Spelling aliases and test-only hooks: handled, deliberately not catalogued.
+        const NOT_CATALOGUED: &[&str] = &[
+            "preview.profile_list",
+            "preview.profile_reset",
+            "preview.test.register_browser",
+        ];
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = vec![];
+        walk(&src, &mut files);
+        let head = regex::Regex::new(
+            r"\n(?:pub(?:\(crate\))? )?(?:async )?fn (?:api|dispatch|tasks_api|attention_api)\b[^{]*\{",
+        )
+        .unwrap();
+        let comment = regex::Regex::new(r"//[^\n]*").unwrap();
+        let arm = regex::Regex::new(r#""([a-z][a-z_]*(?:\.[a-z_]+)+)"\s*(?:=>|\||if\b)"#).unwrap();
+        let known: std::collections::BTreeSet<&str> = method_tables()
+            .into_iter()
+            .flat_map(|(_, t)| t.iter().map(|(n, _)| *n))
+            .collect();
+        let mut missing = std::collections::BTreeSet::new();
+        let mut seen = 0;
+        for f in &files {
+            let name = f.file_name().unwrap().to_string_lossy().to_string();
+            if name.ends_with("tests.rs") {
+                continue;
+            }
+            let text = std::fs::read_to_string(f).unwrap();
+            for m in head.find_iter(&text) {
+                let mut depth = 1usize;
+                let mut end = text.len();
+                for (i, ch) in text[m.end()..].char_indices() {
+                    match ch {
+                        '{' => depth += 1,
+                        '}' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                end = m.end() + i;
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                let body = comment.replace_all(&text[m.end()..end], "");
+                for c in arm.captures_iter(&body) {
+                    let method = c.get(1).unwrap().as_str();
+                    seen += 1;
+                    if !known.contains(method) && !NOT_CATALOGUED.contains(&method) {
+                        missing.insert(format!("{method} ({name})"));
+                    }
+                }
+            }
+        }
+        assert!(
+            seen > 300,
+            "only {seen} dispatch arms found: is the scan broken?"
+        );
+        assert!(
+            missing.is_empty(),
+            "methods handled but missing from every METHODS table: {missing:?}"
+        );
+    }
+
+    #[test]
+    fn stability_tiers() {
+        for m in [
+            "goal.create",
+            "quota.status",
+            "family.list",
+            "merge.queue.add",
+            "task.claim",
+            "task.claim.list",
+            "desk.search",
+            "draft.create",
+            "vm.list",
+            "cloud.box.list",
+            "assistant.generate",
+            "collision.list",
+            "task.best_of_n",
+        ] {
+            assert_eq!(stability_of(m), "experimental", "{m}");
+        }
+        for m in [
+            "pane.send_text",
+            "task.create",
+            "workspace.list",
+            "events.subscribe",
+        ] {
+            assert_eq!(stability_of(m), "stable", "{m}");
+        }
+        let b = bundle();
+        assert_eq!(b["x-methods"]["pane.list"]["stability"], "stable");
+        assert_eq!(b["x-methods"]["goal.create"]["stability"], "experimental");
     }
 
     #[test]

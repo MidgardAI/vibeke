@@ -187,9 +187,8 @@ fn effect_str(e: &vk_config::PolicyEffect) -> String {
 }
 
 fn config_rules() -> Vec<Rule> {
-    let cfg = vk_config::Config::load(vk_config::config_path())
-        .map(|(c, _)| c)
-        .unwrap_or_default();
+    // Never the defaults over a broken file: that would silently drop the user's deny rules.
+    let cfg = crate::config_api::checked();
     cfg.policy
         .rule
         .iter()

@@ -1698,99 +1698,7 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         &["text"],
         "<text|-> [--workspace w]",
     ),
-    (
-        "assist",
-        "status",
-        "assistant.status",
-        &[],
-        "enabled/configured state, coordinator, profile, budgets, consents (no secrets)",
-    ),
-    (
-        "assist",
-        "providers",
-        "assistant.providers",
-        &[],
-        "configured connections and profiles (no secrets)",
-    ),
-    (
-        "assist",
-        "consent",
-        "assistant.consent",
-        &["workspace"],
-        "[workspace] [--connection c] [--classes selected_text,structured_state,review_package,screen] [--operations op,...] [--auto-send op,...]",
-    ),
-    (
-        "assist",
-        "revoke",
-        "assistant.revoke",
-        &["workspace"],
-        "[workspace] [--connection c] — also cancels unfinished requests there",
-    ),
-    (
-        "assist",
-        "generate",
-        "assistant.generate",
-        &["operation"],
-        "suggest_task_details|review_summary|pane_title|briefing|handoff|effort_estimate|navigate|decision_card|task_title|reply_suggestions [--run r] [--turns 3,4] [--pane p] [--task t] [--workspace w] [--query text] [--interaction i] [--stream] [--priority background] [--include-screen] — Show the exact payload. Do not send it.",
-    ),
-    (
-        "assist",
-        "confirm",
-        "assistant.confirm",
-        &["request", "preview_digest"],
-        "<request> <preview-digest> — send the previewed payload",
-    ),
-    (
-        "assist",
-        "show",
-        "assistant.get",
-        &["request"],
-        "<request> — lifecycle, usage, cost, sources and the generated draft",
-    ),
-    (
-        "assist",
-        "list",
-        "assistant.list",
-        &[],
-        "[--workspace w] [--state done] [--limit 50]",
-    ),
-    (
-        "assist",
-        "cancel",
-        "assistant.cancel",
-        &["request"],
-        "<request>",
-    ),
-    (
-        "assist",
-        "purge",
-        "assistant.purge",
-        &["request"],
-        "<request> | --workspace w | --all — forget generated outputs",
-    ),
-    (
-        "assist",
-        "models",
-        "assistant.models",
-        &["connection"],
-        "[connection] [--profile p] [--refresh] — live|cached|bundled model list with capability records; --refresh asks the provider",
-    ),
-    (
-        "assist",
-        "test",
-        "assistant.test",
-        &[],
-        "[--profile p] [--probe streaming,json_schema] — an explicit small generation, counted as usage; probes record what works",
-    ),
-    (
-        "assist",
-        "background",
-        "assistant.background",
-        &["action"],
-        "[status|tick] — the opt-in background sweeper (summaries, stall notices)",
-    ),
-    // `assistant` is the spec's name for the `assist` noun (14 §9): same methods, plus `brief`
-    // and `get`.
+    // AI assistance (14 §9). `vibeke assist ...` is an alias of this noun (and `show` of `get`).
     (
         "assistant",
         "status",
@@ -1810,7 +1718,7 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         "models",
         "assistant.models",
         &["connection"],
-        "--connection <id> [--refresh] — model list with live|cached|bundled provenance and capability records",
+        "[connection] [--profile p] [--refresh] — model list with live|cached|bundled provenance and capability records; --refresh asks the provider",
     ),
     (
         "assistant",
@@ -1831,7 +1739,7 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         "generate",
         "assistant.generate",
         &["operation"],
-        "<operation> [flags] — show the exact payload; nothing is sent",
+        "suggest_task_details|review_summary|pane_title|briefing|handoff|effort_estimate|navigate|decision_card|task_title|reply_suggestions [--run r] [--turns 3,4] [--pane p] [--task t] [--workspace w] [--query text] [--interaction i] [--stream] [--priority background] [--include-screen] — show the exact payload; nothing is sent",
     ),
     (
         "assistant",
@@ -1866,14 +1774,14 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         "consent",
         "assistant.consent",
         &["workspace"],
-        "[workspace] [--remote-workspace machine:/path] [--connection c] [--classes ...] [--operations ...] [--auto-send ...]",
+        "[workspace] [--remote-workspace machine:/path] [--connection c] [--classes selected_text,structured_state,review_package,screen] [--operations op,...] [--auto-send op,...]",
     ),
     (
         "assistant",
         "revoke",
         "assistant.revoke",
         &["workspace"],
-        "[workspace] [--remote-workspace machine:/path] [--connection c]",
+        "[workspace] [--remote-workspace machine:/path] [--connection c] — also cancels unfinished requests there",
     ),
     (
         "assistant",
@@ -1887,7 +1795,7 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         "background",
         "assistant.background",
         &["action"],
-        "[status|tick]",
+        "[status|tick] — the opt-in background sweeper (summaries, stall notices)",
     ),
     ("api", "methods", "api.methods", &[], "list API methods"),
     ("client", "list", "client.list", &[], ""),
@@ -2125,6 +2033,22 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
     ),
 ];
 
+/// Noun aliases: `assist` is the short spelling of `assistant`.
+pub fn canonical_noun(noun: &str) -> &str {
+    match noun {
+        "assist" => "assistant",
+        n => n,
+    }
+}
+
+/// Verb aliases of a (canonical) noun: `assistant show` is `assistant get`.
+fn canonical_verb<'a>(noun: &str, verb: &'a str) -> &'a str {
+    match (noun, verb) {
+        ("assistant", "show") => "get",
+        (_, v) => v,
+    }
+}
+
 pub fn nouns() -> Vec<&'static str> {
     let mut v: Vec<&str> = COMMANDS.iter().map(|c| c.0).collect();
     let mut seen = std::collections::HashSet::new();
@@ -2132,14 +2056,29 @@ pub fn nouns() -> Vec<&'static str> {
     v
 }
 
+/// The help text of a command, marked when its method is experimental: `[orchestrate]`
+/// features are also off by default (their commands fail until the flag is on).
+pub fn command_help(method: &str, help: &str) -> String {
+    if vk_server::api_schema::stability_of(method) != "experimental" {
+        return help.to_string();
+    }
+    if vk_server::orch::METHODS.iter().any(|(m, _)| *m == method) {
+        format!("(experimental, off by default: [orchestrate]) {help}")
+    } else {
+        format!("(experimental) {help}")
+    }
+}
+
 pub fn noun_help(noun: &str) -> String {
+    let noun = canonical_noun(noun);
     let mut s = format!("vibeke {noun} <verb>\n\n");
     for (n, verb, method, pos, help) in COMMANDS {
         if *n == noun {
             let pos: Vec<String> = pos.iter().map(|p| format!("[{p}]")).collect();
             s.push_str(&format!(
-                "  {verb:<14} {:<28} {method:<22} {help}\n",
-                pos.join(" ")
+                "  {verb:<14} {:<28} {method:<22} {}\n",
+                pos.join(" "),
+                command_help(method, help)
             ));
         }
     }
@@ -2166,9 +2105,146 @@ fn scalar(v: &str) -> Value {
     Value::String(v.to_string())
 }
 
-/// Build params from argv after `<noun> <verb>`.
+/// Build params from argv after `<noun> <verb>`, guessing value types (see
+/// [`build_params_for`] for a known method).
 pub fn build_params(positional: &[&str], args: &[String]) -> Result<Value, String> {
+    build_params_for(None, positional, args)
+}
+
+/// The params shapes that may hold `key` (every arm of a union of objects).
+fn field_shapes<'a>(
+    params: &'a vk_server::shape::Shape,
+    key: &str,
+) -> Vec<&'a vk_server::shape::Shape> {
+    use vk_server::shape::Shape;
+    match params {
+        Shape::Obj(fs) => fs
+            .iter()
+            .filter(|f| f.name == key)
+            .map(|f| &f.shape)
+            .collect(),
+        Shape::Union(arms) => arms.iter().flat_map(|a| field_shapes(a, key)).collect(),
+        _ => vec![],
+    }
+}
+
+/// Could the shape hold a word from the command line (a string, a string literal, or a list
+/// or object the command builds from it)? Numbers and booleans cannot.
+fn takes_text(
+    s: &vk_server::shape::Shape,
+    defs: &std::collections::BTreeMap<String, vk_server::shape::Shape>,
+) -> bool {
+    use vk_server::shape::Shape;
+    match s {
+        Shape::Str
+        | Shape::Lit(_)
+        | Shape::Any
+        | Shape::Array(_)
+        | Shape::Map(_)
+        | Shape::Object
+        | Shape::Obj(_) => true,
+        Shape::Union(arms) => arms.iter().any(|a| takes_text(a, defs)),
+        Shape::Ref(n) => defs.get(n).is_some_and(|d| takes_text(d, defs)),
+        _ => false,
+    }
+}
+
+/// A value typed on the command line, as JSON: guessed (`42` is a number, `true` a bool,
+/// `[1]` an array), unless `method`'s schema says what `key` holds: then a string field keeps
+/// `42` as the string "42", a number field takes `0.5`, and a value a number or boolean field
+/// cannot hold is refused with the type it needs.
+fn coerce_param(
+    method: Option<&str>,
+    key: &str,
+    raw: Value,
+    flag: bool,
+    rest: bool,
+) -> Result<Value, String> {
+    let guess = |v: &Value| match v {
+        // `keys...`-style rest positionals are lists of words, never guessed.
+        _ if rest => v.clone(),
+        Value::String(s) => scalar(s),
+        Value::Array(a) => Value::Array(
+            a.iter()
+                .map(|x| match x {
+                    Value::String(s) => scalar(s),
+                    other => other.clone(),
+                })
+                .collect(),
+        ),
+        other => other.clone(),
+    };
+    let guessed = guess(&raw);
+    let Some(entry) = method.and_then(|m| vk_server::api_schema::registry().methods.get(m)) else {
+        return Ok(guessed);
+    };
+    let defs = &vk_server::api_schema::registry().defs;
+    let shapes = field_shapes(&entry.params, key);
+    if shapes.is_empty() {
+        return Ok(guessed);
+    }
+    let fits = |v: &Value| shapes.iter().any(|s| s.validate(v, defs).is_empty());
+    let mut candidates = vec![guessed.clone(), raw.clone()];
+    if let Value::String(s) = &raw
+        && let Ok(f) = s.trim().parse::<f64>()
+        && f.is_finite()
+    {
+        candidates.push(serde_json::json!(f));
+    }
+    if let Some(v) = candidates.into_iter().find(|v| fits(v)) {
+        return Ok(v);
+    }
+    // A word for a text or list field (a name the schema may not list in full, or a
+    // comma-separated list the command splits later): passed on as the word, and the server
+    // checks it. Only a field that can never hold text refuses it here.
+    if raw.is_string() && shapes.iter().any(|s| takes_text(s, defs)) {
+        return Ok(raw);
+    }
+    let why = shapes[0]
+        .validate(&guessed, defs)
+        .into_iter()
+        .next()
+        .unwrap_or_default();
+    let why = why.strip_prefix("$: ").unwrap_or(&why).to_string();
+    let name = if flag {
+        format!("--{}", key.replace('_', "-"))
+    } else {
+        format!("<{key}>")
+    };
+    Err(format!("{name}: {why}"))
+}
+
+/// Build params from argv after `<noun> <verb>` for `method`: values are typed by the
+/// method's schema where it has one ([`coerce_param`]). `--` ends the flags: every later word is
+/// positional, so a value may start with `--`.
+pub fn build_params_for(
+    method: Option<&str>,
+    positional: &[&str],
+    args: &[String],
+) -> Result<Value, String> {
+    let raw = build_raw_params(positional, args)?;
+    let Value::Object(raw) = raw else {
+        return Ok(raw);
+    };
+    let mut out = Map::new();
+    for (k, e) in raw {
+        let flag = e["flag"].as_bool().unwrap_or(false);
+        let rest = e["rest"].as_bool().unwrap_or(false);
+        let v = coerce_param(method, &k, e["value"].clone(), flag, rest)?;
+        out.insert(k, v);
+    }
+    Ok(Value::Object(out))
+}
+
+/// The words of argv per param, untyped: `{key: {value: "raw" | true | false | [..], flag, rest}}`.
+fn build_raw_params(positional: &[&str], args: &[String]) -> Result<Value, String> {
+    // Untyped here: `build_params_for` types every value.
+    fn scalar(v: &str) -> Value {
+        Value::String(v.to_string())
+    }
     let mut map = Map::new();
+    let mut flags = std::collections::BTreeSet::new();
+    let mut rests = std::collections::BTreeSet::new();
     let mut pos = Vec::new();
     let mut i = 0;
     while i < args.len() {
@@ -2183,11 +2259,13 @@ pub fn build_params(positional: &[&str], args: &[String]) -> Result<Value, Strin
                 None => (flag.to_string(), None),
             };
             if let Some(neg) = k.strip_prefix("no-") {
+                flags.insert(neg.replace('-', "_"));
                 map.insert(neg.replace('-', "_"), Value::Bool(false));
                 i += 1;
                 continue;
             }
             let key = k.replace('-', "_");
+            flags.insert(key.clone());
             let value = match inline {
                 Some(v) => scalar(&v),
                 None if i + 1 < args.len() && !args[i + 1].starts_with("--") => {
@@ -2220,6 +2298,7 @@ pub fn build_params(positional: &[&str], args: &[String]) -> Result<Value, Strin
                 .map(|s| Value::String(s.clone()))
                 .collect();
             if !rest_vals.is_empty() {
+                rests.insert(rest.to_string());
                 map.insert(rest.to_string(), Value::Array(rest_vals));
             }
             pi = pos.len();
@@ -2234,7 +2313,18 @@ pub fn build_params(positional: &[&str], args: &[String]) -> Result<Value, Strin
     if pi < pos.len() {
         return Err(format!("unexpected argument `{}`", pos[pi]));
     }
-    Ok(Value::Object(map))
+    Ok(Value::Object(
+        map.into_iter()
+            .map(|(k, v)| {
+                let flag = flags.contains(&k);
+                let rest = rests.contains(&k);
+                (
+                    k,
+                    serde_json::json!({"value": v, "flag": flag, "rest": rest}),
+                )
+            })
+            .collect(),
+    ))
 }
 
 /// Verb-specific param massaging so the CLI reads naturally.
@@ -2616,6 +2706,31 @@ pub fn exit_code_for(e: &CallError) -> i32 {
             EXIT_PERMISSION
         }
         _ => EXIT_API,
+    }
+}
+
+/// A newer CLI calling a method an older running server does not know: say so, with both
+/// versions and the fix, instead of a bare "unknown method".
+pub fn explain_version_skew(e: CallError, method: &str, server_version: Option<&str>) -> CallError {
+    match e {
+        CallError::Rpc(mut r)
+            if r.data.kind == "method_not_found"
+                && server_version.is_some_and(|v| v != vk_proto::VERSION) =>
+        {
+            let sv = server_version.unwrap_or_default();
+            r.message = format!(
+                "the running server (vibeke {sv}) does not know `{method}`; this CLI is vibeke {}. Run `vibeke server restart` to restart the server on this version (panes keep running)",
+                vk_proto::VERSION
+            );
+            r.data.details = json!({
+                "method": method,
+                "server_version": sv,
+                "cli_version": vk_proto::VERSION,
+                "fix": "vibeke server restart",
+            });
+            CallError::Rpc(r)
+        }
+        other => other,
     }
 }
 
@@ -3183,11 +3298,18 @@ where
     if out.is_some() {
         params["inline"] = json!(true);
     }
-    if let Err(e) = client.hello("cli").await {
-        print_error(&e);
-        return exit_code_for(&e);
-    }
-    match client.call(method, params).await {
+    let server_version = match client.hello("cli").await {
+        Ok(h) => h["server_version"].as_str().map(str::to_string),
+        Err(e) => {
+            print_error(&e);
+            return exit_code_for(&e);
+        }
+    };
+    match client
+        .call(method, params)
+        .await
+        .map_err(|e| explain_version_skew(e, method, server_version.as_deref()))
+    {
         Ok(mut v) => {
             let mut method = method;
             if only_collisions {
@@ -3764,7 +3886,7 @@ where
 
 /// Parameters a verb implies (`assistant brief` is `assistant.generate {operation: briefing}`).
 pub fn preset(noun: &str, verb: &str, params: &mut Value) {
-    if noun == "assistant"
+    if canonical_noun(noun) == "assistant"
         && verb == "brief"
         && let Some(o) = params.as_object_mut()
     {
@@ -3789,6 +3911,8 @@ pub fn runs_on_viewing_machine(method: &str) -> bool {
 }
 
 pub fn lookup(noun: &str, verb: &str) -> Option<(&'static str, &'static [&'static str])> {
+    let noun = canonical_noun(noun);
+    let verb = canonical_verb(noun, verb);
     COMMANDS
         .iter()
         .find(|c| c.0 == noun && c.1 == verb)
@@ -3798,6 +3922,131 @@ pub fn lookup(noun: &str, verb: &str) -> Option<(&'static str, &'static [&'stati
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn values_are_typed_by_the_method_schema() {
+        let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        // A string field keeps digits, `true` and brackets as text.
+        let p =
+            build_params_for(Some("pane.send_text"), &["pane", "text"], &a(&["p1", "42"])).unwrap();
+        assert_eq!(p["text"], "42");
+        assert_eq!(p["pane"], "p1");
+        let p = build_params_for(
+            Some("pane.send_text"),
+            &["pane", "text"],
+            &a(&["p1", "true"]),
+        )
+        .unwrap();
+        assert_eq!(p["text"], "true");
+        let p = build_params_for(
+            Some("pane.send_text"),
+            &["pane", "text"],
+            &a(&["p1", "[1]"]),
+        )
+        .unwrap();
+        assert_eq!(p["text"], "[1]");
+        // `--` ends the flags: the text may start with `--`.
+        let p = build_params_for(
+            Some("pane.send_text"),
+            &["pane", "text"],
+            &a(&["p1", "--", "--help"]),
+        )
+        .unwrap();
+        assert_eq!(p["text"], "--help");
+        // Numbers where the schema wants numbers, fractions included.
+        let p = build_params_for(
+            Some("pane.split"),
+            &["pane"],
+            &a(&["p1", "--ratio", "0.3", "--focus"]),
+        )
+        .unwrap();
+        assert_eq!(p["ratio"], serde_json::json!(0.3));
+        assert_eq!(p["focus"], true);
+        // A value that fits nothing names the type it needs.
+        let e =
+            build_params_for(Some("pane.send_text"), &["pane"], &a(&["p1", "--text"])).unwrap_err();
+        assert!(e.contains("--text") && e.contains("expected string"), "{e}");
+        // Unknown methods keep the guessing behaviour.
+        let p = build_params(&["n"], &a(&["42"])).unwrap();
+        assert_eq!(p["n"], 42);
+        // Rest positionals stay words.
+        let p = build_params_for(
+            Some("pane.send_keys"),
+            &["pane", "keys..."],
+            &a(&["p1", "1", "2"]),
+        )
+        .unwrap();
+        assert_eq!(p["keys"], serde_json::json!(["1", "2"]));
+        // A comma-separated list stays a word (`run_api` splits it).
+        let p = build_params_for(
+            Some("agent.spawn"),
+            &["name"],
+            &a(&["--harness", "claude", "--args", "a,b"]),
+        )
+        .unwrap();
+        assert_eq!(p["args"], "a,b");
+        // A word the schema's list of names lacks still reaches the server, which decides.
+        let p = build_params_for(
+            Some("pane.read"),
+            &["pane"],
+            &a(&["p1", "--source", "archive"]),
+        )
+        .unwrap();
+        assert_eq!(p["source"], "archive");
+        // A non-number for a number field is refused here.
+        let e = build_params_for(Some("pane.read"), &["pane"], &a(&["p1", "--lines", "many"]))
+            .unwrap_err();
+        assert!(e.contains("--lines"), "{e}");
+    }
+
+    #[test]
+    fn unknown_method_on_an_older_server_names_both_versions() {
+        let nf = || {
+            CallError::Rpc(vk_proto::rpc::RpcError::new(
+                vk_proto::rpc::ErrorKind::MethodNotFound,
+                "unknown method",
+            ))
+        };
+        let CallError::Rpc(r) = explain_version_skew(nf(), "goal.create", Some("0.0.1")) else {
+            panic!()
+        };
+        assert!(r.message.contains("0.0.1") && r.message.contains(vk_proto::VERSION));
+        assert!(r.message.contains("vibeke server restart"));
+        // Same version: the server's own message stands.
+        let CallError::Rpc(r) = explain_version_skew(nf(), "goal.create", Some(vk_proto::VERSION))
+        else {
+            panic!()
+        };
+        assert_eq!(r.message, "unknown method");
+    }
+
+    #[test]
+    fn assist_is_an_alias_of_assistant() {
+        assert!(!nouns().contains(&"assist"));
+        for (a, b) in [
+            ("status", "status"),
+            ("show", "get"),
+            ("brief", "brief"),
+            ("generate", "generate"),
+        ] {
+            assert_eq!(lookup("assist", a), lookup("assistant", b), "{a}");
+            assert!(lookup("assist", a).is_some(), "{a}");
+        }
+        assert_eq!(lookup("assistant", "show").unwrap().0, "assistant.get");
+        assert_eq!(noun_help("assist"), noun_help("assistant"));
+        let mut p = json!({});
+        preset("assist", "brief", &mut p);
+        assert_eq!(p["operation"], "briefing");
+    }
+
+    #[test]
+    fn experimental_commands_say_so_in_help() {
+        assert!(command_help("goal.create", "x").starts_with("(experimental, off by default"));
+        assert!(command_help("family.list", "").contains("[orchestrate]"));
+        assert_eq!(command_help("desk.search", "x"), "(experimental) x");
+        assert_eq!(command_help("pane.list", "x"), "x");
+        assert!(noun_help("goal").contains("off by default"));
+    }
 
     #[test]
     fn params_from_flags_and_positionals() {

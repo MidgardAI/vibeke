@@ -2,11 +2,17 @@
 //! browser as tools. JSON-RPC 2.0, one message per line (MCP stdio transport); protocol
 //! versions 2025-11-25 (preferred), 2025-06-18, 2025-03-26 and 2024-11-05.
 //!
-//! Every tool call is forwarded to the Vibeke server as the matching API method. The process
-//! runs inside the agent's pane, so its connection is pane-scoped (by `VIBEKE_PANE_TOKEN`, or by
-//! process ancestry): the agent can only use this machine's previews and its own browser
-//! sessions. Tool failures come back as tool results with `isError: true` (with the Vibeke error
-//! kind, e.g. `destination_denied` or `human_control`), never as protocol errors.
+//! Every tool call is forwarded to the Vibeke server as the matching API method. Inside an
+//! agent's pane the connection is pane-scoped (by `VIBEKE_PANE_TOKEN`, or by process
+//! ancestry): the agent can only use this machine's previews and its own browser sessions.
+//! Outside a Vibeke pane ([`Mode::Outside`]) the server never starts, and only read-only tools
+//! are offered: such a connection would otherwise carry the user's full scope. Tool failures
+//! come back as tool results with `isError: true` (with the Vibeke error kind, e.g.
+//! `destination_denied` or `human_control`), never as protocol errors.
+//!
+//! Mutating tool calls carry a fresh `idempotency_key`, so the reconnecting backend may retry
+//! them after a dropped connection without running them twice; other mutating calls are not
+//! retried.
 
 use crate::client::{CallError, Client};
 use serde_json::{Value, json};
@@ -38,6 +44,55 @@ where
     ) -> BoxFuture<'a, Result<Value, CallError>> {
         Box::pin(Client::call(self, method, params))
     }
+}
+
+/// Where `vibeke mcp` runs: in a Vibeke pane (pane-scoped connection, every tool), or outside
+/// one (no pane scope: read-only tools only).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mode {
+    Pane,
+    Outside,
+}
+
+impl Mode {
+    /// From the environment Vibeke gives every pane.
+    pub fn from_env() -> Mode {
+        let set = |k: &str| std::env::var(k).is_ok_and(|v| !v.trim().is_empty());
+        if set("VIBEKE_PANE_TOKEN") || set("VIBEKE_PANE_ID") {
+            Mode::Pane
+        } else {
+            Mode::Outside
+        }
+    }
+}
+
+/// Tools offered outside a Vibeke pane: read-only ones only.
+pub const OUTSIDE_TOOLS: &[&str] = &["preview_list"];
+
+/// May a call that failed with an I/O error (the connection dropped, perhaps after the server
+/// got the request) be sent again? Reads may; writes only with an idempotency key, which makes
+/// the server run them once.
+pub fn safe_to_retry(method: &str, params: &Value) -> bool {
+    !vk_server::session_api::is_mutating(method)
+        || params
+            .get("idempotency_key")
+            .and_then(Value::as_str)
+            .is_some_and(|k| !k.is_empty())
+}
+
+/// A fresh idempotency key for one tool call.
+fn new_key() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static N: AtomicU64 = AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or_default();
+    format!(
+        "mcp-{}-{nanos:x}-{}",
+        std::process::id(),
+        N.fetch_add(1, Ordering::Relaxed)
+    )
 }
 
 /// A backend that (re)connects on demand: `connect` yields a fresh, `client.hello`'d client.
@@ -74,10 +129,16 @@ where
                 }
                 let c = self.client.as_mut().expect("connected");
                 match Client::call(c, method, params.clone()).await {
-                    Err(CallError::Io(e)) if attempt == 0 => {
-                        // Server restarted (e.g. `vibeke update`): reconnect once.
-                        let _ = e;
+                    Err(CallError::Io(e)) => {
+                        // The server restarted (e.g. `vibeke update`) or the connection
+                        // dropped: reconnect next time, and retry once only when that cannot
+                        // run the call twice.
                         self.client = None;
+                        if attempt > 0 || !safe_to_retry(method, &params) {
+                            return Err(CallError::Io(e.context(
+                                "the connection to Vibeke dropped; this call was not retried because it may already have run",
+                            )));
+                        }
                     }
                     r => return r,
                 }
@@ -255,8 +316,15 @@ fn rpc_error(id: Value, code: i64, message: &str) -> Value {
     json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}})
 }
 
-/// Handle one JSON-RPC message; `None` for notifications.
+/// Handle one JSON-RPC message in a pane; `None` for notifications.
 pub async fn handle(msg: &Value, backend: &mut dyn Backend) -> Option<Value> {
+    handle_in(msg, backend, Mode::Pane).await
+}
+
+const OUTSIDE_INSTRUCTIONS: &str = "Vibeke is a terminal workspace for coding agents. This MCP server runs outside a Vibeke pane, so it only lists previews (preview_list) on a Vibeke server that is already running. Run your agent inside a Vibeke pane for browser sessions, screenshots and preview declarations.";
+
+/// Handle one JSON-RPC message; `None` for notifications.
+pub async fn handle_in(msg: &Value, backend: &mut dyn Backend, mode: Mode) -> Option<Value> {
     let id = msg.get("id").cloned();
     let method = msg.get("method").and_then(Value::as_str);
     let Some(method) = method else {
@@ -277,16 +345,24 @@ pub async fn handle(msg: &Value, backend: &mut dyn Backend) -> Option<Value> {
                 "protocolVersion": version,
                 "capabilities": {"tools": {"listChanged": false}},
                 "serverInfo": {"name": "vibeke", "title": "Vibeke", "version": vk_proto::VERSION},
-                "instructions": "Vibeke previews and a headless browser on this machine. After starting a dev server, call preview_declare (or preview_list). Then browser_open {preview} → browser_snapshot to find elements → browser_click/browser_type → browser_screenshot to verify. Check browser_console/browser_network for errors. Requests outside this machine's declared previews are blocked by policy (see the error reason). If a call fails with human_control, the user has taken over the session: wait and retry later. When you produce an image the user should see (a screenshot from tests or a tool, a chart, a rendered page), call show_image {path, caption} so it appears in Vibeke on every device the user watches from.",
+                "instructions": if mode == Mode::Outside { OUTSIDE_INSTRUCTIONS } else { "Vibeke previews and a headless browser on this machine. After starting a dev server, call preview_declare (or preview_list). Then browser_open {preview} → browser_snapshot to find elements → browser_click/browser_type → browser_screenshot to verify. Check browser_console/browser_network for errors. Requests outside this machine's declared previews are blocked by policy (see the error reason). If a call fails with human_control, the user has taken over the session: wait and retry later. When you produce an image the user should see (a screenshot from tests or a tool, a chart, a rendered page), call show_image {path, caption} so it appears in Vibeke on every device the user watches from." },
             })
         }
         "ping" => json!({}),
-        "tools/list" => json!({"tools": tools()}),
+        "tools/list" => json!({"tools": tools_for(mode)}),
         "tools/call" => {
             let name = params["name"].as_str().unwrap_or("");
             let args = params.get("arguments").cloned().unwrap_or(json!({}));
+            if mode == Mode::Outside && !OUTSIDE_TOOLS.contains(&name) {
+                let result = json!({"content": [text(format!("{name} works only inside a Vibeke pane: start your agent in Vibeke (outside a pane only preview_list is available)."))], "isError": true});
+                return Some(json!({"jsonrpc": "2.0", "id": id, "result": result}));
+            }
             if name == "show_image" {
-                let result = match show_image_params(&args) {
+                let params = show_image_params(&args).map(|mut p| {
+                    p["idempotency_key"] = json!(new_key());
+                    p
+                });
+                let result = match params {
                     Err(e) => json!({"content": [text(e)], "isError": true}),
                     Ok(p) => match backend.call("screenshot.add", p).await {
                         Ok(v) => {
@@ -303,9 +379,13 @@ pub async fn handle(msg: &Value, backend: &mut dyn Backend) -> Option<Value> {
                 };
                 return Some(json!({"jsonrpc": "2.0", "id": id, "result": result}));
             }
-            let Some((m, p)) = map_tool(name, &args) else {
+            let Some((m, mut p)) = map_tool(name, &args) else {
                 return Some(rpc_error(id, -32602, &format!("unknown tool: {name}")));
             };
+            if vk_server::session_api::is_mutating(m) && vk_server::api::KEYED_METHODS.contains(&m)
+            {
+                p["idempotency_key"] = json!(new_key());
+            }
             tool_result(name, backend.call(m, p).await)
         }
         "resources/list" => json!({"resources": []}),
@@ -315,8 +395,37 @@ pub async fn handle(msg: &Value, backend: &mut dyn Backend) -> Option<Value> {
     Some(json!({"jsonrpc": "2.0", "id": id, "result": result}))
 }
 
+/// The tool list for a mode (`tools/list`).
+pub fn tools_for(mode: Mode) -> Vec<Value> {
+    match mode {
+        Mode::Pane => tools(),
+        Mode::Outside => tools()
+            .into_iter()
+            .filter(|t| {
+                t["name"]
+                    .as_str()
+                    .is_some_and(|n| OUTSIDE_TOOLS.contains(&n))
+            })
+            .collect(),
+    }
+}
+
+/// Serve MCP over a line-delimited stream until EOF, in a pane.
+pub async fn serve<R, W>(reader: R, writer: W, backend: &mut dyn Backend) -> anyhow::Result<()>
+where
+    R: AsyncBufRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    serve_in(reader, writer, backend, Mode::Pane).await
+}
+
 /// Serve MCP over a line-delimited stream until EOF.
-pub async fn serve<R, W>(reader: R, mut writer: W, backend: &mut dyn Backend) -> anyhow::Result<()>
+pub async fn serve_in<R, W>(
+    reader: R,
+    mut writer: W,
+    backend: &mut dyn Backend,
+    mode: Mode,
+) -> anyhow::Result<()>
 where
     R: AsyncBufRead + Unpin,
     W: AsyncWrite + Unpin,
@@ -331,13 +440,13 @@ where
             Ok(Value::Array(batch)) => {
                 let mut out = Vec::new();
                 for m in &batch {
-                    if let Some(r) = handle(m, backend).await {
+                    if let Some(r) = handle_in(m, backend, mode).await {
                         out.push(r);
                     }
                 }
                 (!out.is_empty()).then_some(Value::Array(out))
             }
-            Ok(m) => handle(&m, backend).await,
+            Ok(m) => handle_in(&m, backend, mode).await,
         };
         if let Some(r) = reply {
             let mut s = serde_json::to_string(&r)?;
@@ -532,8 +641,20 @@ mod tests {
                 "browser.snapshot"
             ]
         );
-        assert_eq!(seen[1].1, json!({"preview": "v1"}));
+        // Mutating tool calls carry a fresh idempotency key; reads do not.
+        let mut open = seen[1].1.clone();
+        let key = open
+            .as_object_mut()
+            .unwrap()
+            .remove("idempotency_key")
+            .unwrap();
+        assert!(key.as_str().is_some_and(|k| k.starts_with("mcp-")));
+        assert_eq!(open, json!({"preview": "v1"}));
         assert_eq!(seen[2].1, json!({"session": "b1", "inline": true}));
+        assert!(
+            seen[5].1.get("idempotency_key").is_none(),
+            "snapshot is a read"
+        );
     }
 
     #[tokio::test]
@@ -549,13 +670,74 @@ mod tests {
         assert_eq!(batch.len(), 2);
         assert_eq!(batch[0]["result"]["protocolVersion"], PROTOCOL_VERSIONS[0]);
         assert_eq!(batch[1]["id"], "b");
-        assert_eq!(
-            seen[1],
-            (
-                "preview.declare".to_string(),
-                json!({"port": 5173, "label": "web"})
-            )
+        assert_eq!(seen[1].0, "preview.declare");
+        let mut p = seen[1].1.clone();
+        p.as_object_mut()
+            .unwrap()
+            .remove("idempotency_key")
+            .unwrap();
+        assert_eq!(p, json!({"port": 5173, "label": "web"}));
+    }
+
+    #[tokio::test]
+    async fn outside_a_pane_only_read_only_tools_are_offered() {
+        let names: Vec<String> = tools_for(Mode::Outside)
+            .iter()
+            .map(|t| t["name"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(names, ["preview_list"]);
+        assert!(tools_for(Mode::Pane).len() > 10);
+        struct NoServer;
+        impl Backend for NoServer {
+            fn call<'a>(
+                &'a mut self,
+                method: &'a str,
+                _: Value,
+            ) -> BoxFuture<'a, Result<Value, CallError>> {
+                Box::pin(async move { panic!("{method} must not reach the server") })
+            }
+        }
+        for tool in [
+            "browser_eval",
+            "browser_open",
+            "preview_declare",
+            "show_image",
+        ] {
+            let m = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": tool, "arguments": {}}});
+            let r = handle_in(&m, &mut NoServer, Mode::Outside).await.unwrap();
+            assert_eq!(r["result"]["isError"], true, "{tool}");
+            assert!(
+                r["result"]["content"][0]["text"]
+                    .as_str()
+                    .unwrap()
+                    .contains("inside a Vibeke pane")
+            );
+        }
+        let init = json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}});
+        let r = handle_in(&init, &mut NoServer, Mode::Outside)
+            .await
+            .unwrap();
+        assert!(
+            r["result"]["instructions"]
+                .as_str()
+                .unwrap()
+                .contains("outside a Vibeke pane")
         );
+    }
+
+    #[test]
+    fn only_reads_and_keyed_writes_are_retried() {
+        assert!(safe_to_retry("preview.list", &json!({})));
+        assert!(safe_to_retry("browser.snapshot", &json!({})));
+        assert!(!safe_to_retry("browser.click", &json!({})));
+        assert!(safe_to_retry(
+            "browser.click",
+            &json!({"idempotency_key": "k"})
+        ));
+        assert!(!safe_to_retry(
+            "pane.send_text",
+            &json!({"idempotency_key": ""})
+        ));
     }
 
     #[tokio::test]
@@ -589,11 +771,43 @@ mod tests {
                 Ok(Client::new(ours))
             }) as BoxFuture<'static, anyhow::Result<Client<tokio::io::DuplexStream>>>
         });
-        let v = Backend::call(&mut b, "browser.open", json!({}))
+        let v = Backend::call(&mut b, "browser.open", json!({"idempotency_key": "k1"}))
             .await
             .unwrap();
         assert_eq!(v["session"], "b1");
         assert_eq!(*connects.lock().unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn reconnecting_backend_does_not_retry_unkeyed_writes() {
+        let connects = Arc::new(Mutex::new(0));
+        let c2 = connects.clone();
+        let mut b = Reconnecting::new(move || {
+            let connects = c2.clone();
+            Box::pin(async move {
+                *connects.lock().unwrap() += 1;
+                let (ours, theirs) = tokio::io::duplex(1 << 16);
+                // Every server answers hello, then dies.
+                tokio::spawn(async move {
+                    let (rd, mut wr) = tokio::io::split(theirs);
+                    let mut lines = BufReader::new(rd).lines();
+                    if let Ok(Some(l)) = lines.next_line().await {
+                        let req: Value = serde_json::from_str(&l).unwrap();
+                        let s = format!(
+                            "{}\n",
+                            json!({"jsonrpc": "2.0", "id": req["id"], "result": {}})
+                        );
+                        wr.write_all(s.as_bytes()).await.unwrap();
+                    }
+                });
+                Ok(Client::new(ours))
+            }) as BoxFuture<'static, anyhow::Result<Client<tokio::io::DuplexStream>>>
+        });
+        let e = Backend::call(&mut b, "browser.click", json!({"session": "b1"}))
+            .await
+            .unwrap_err();
+        assert!(e.to_string().contains("not retried"), "{e}");
+        assert_eq!(*connects.lock().unwrap(), 1, "no second attempt");
     }
 
     #[tokio::test]
@@ -635,6 +849,7 @@ mod tests {
         assert_eq!(seen.len(), 2, "{seen:?}");
         assert_eq!(seen[1].0, "screenshot.add");
         assert_eq!(seen[1].1["caption"], "Login page");
+        assert!(seen[1].1["idempotency_key"].is_string());
         assert_eq!(seen[1].1["name"], "login.png");
         assert!(
             seen[1].1["data_b64"]

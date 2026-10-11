@@ -13,6 +13,17 @@ use tokio::sync::oneshot;
 use vk_proto::render::{Color, Row, attr};
 use vk_proto::rpc::ErrorKind;
 
+/// Methods handled here, for the method tables (`api_schema::method_tables`). `pane.read
+/// {source: styled}` and `client.list` belong to `api::METHODS`.
+pub const METHODS: &[(&str, bool)] = &[
+    ("agent.transcript", false),
+    // Presence only (last input time); a read-only client still reports it.
+    ("client.activity", false),
+    ("client.devices", true),
+    ("client.confirm", true),
+    ("client.confirm_answer", true),
+];
+
 #[derive(Default)]
 pub struct State {
     /// Host-wide last input per TUI client (ms since epoch), reported by `client.activity`.
@@ -101,23 +112,35 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
     })
 }
 
-fn mutating(method: &str) -> bool {
-    crate::api::METHODS
-        .iter()
-        .chain(crate::agents::METHODS.iter())
-        .chain(crate::desk::METHODS.iter())
-        .chain(crate::drafts::METHODS.iter())
-        .chain(crate::handoff::METHODS.iter())
-        .find(|(n, _)| *n == method)
-        .map(|(_, m)| *m)
-        .unwrap_or(
-            method.contains(".answer") || method.contains(".send") || method.contains(".prompt"),
-        )
+/// The gateway's own control plane: calls it makes for itself (device lists, bridge replies,
+/// handoff bookkeeping, screencast frames), not for a device. They are not device actions.
+const GATEWAY_CONTROL: &[&str] = &[
+    "client.hello",
+    "client.activity",
+    "client.devices",
+    "gateway.reply",
+    "gateway.start",
+    "gateway.stop",
+    "browser.screencast_frame",
+    "handoff.peers.set",
+    "handoff.job.update",
+    "handoff.incoming.add",
+    "handoff.commit",
+    "handoff.discard",
+];
+
+/// Does a gateway call act for a device and change something? Table driven (the same
+/// `mutating` flags as every other gate); unknown methods count as mutating.
+fn mutating(ctx: &Ctx, method: &str) -> bool {
+    if ctx.kind == "gateway" && GATEWAY_CONTROL.contains(&method) {
+        return false;
+    }
+    crate::session_api::is_mutating(method)
 }
 
 /// X4: a gateway acts for a device; every mutation names it, and the audit trail records it.
 fn audit(server: &Server, ctx: &Ctx, method: &str, p: &Value) -> Option<R> {
-    if !mutating(method) {
+    if !mutating(ctx, method) {
         return None;
     }
     let Some(actor) = s(p, "actor").filter(|a| !a.trim().is_empty()) else {
@@ -665,6 +688,42 @@ mod tests {
         assert!(!may_answer(&ctx("gateway", true, None)));
         assert!(!may_answer(&ctx("cli", false, None)));
         assert!(!may_answer(&ctx("tui", false, Some("p1"))));
+    }
+
+    /// Every device mutation is audited, from the same tables as every other gate (phone
+    /// actions outside the five tables the old check read included).
+    #[test]
+    fn gateway_audit_covers_every_mutating_method() {
+        let gw = Ctx {
+            client_id: "c".into(),
+            kind: "gateway".into(),
+            pane_scope: None,
+            remote: false,
+        };
+        for m in [
+            "cloud.box.destroy",
+            "auth.approve.decide",
+            "browser.input",
+            "browser.take_over",
+            "preview.open",
+            "pane.send_text",
+            "interaction.answer",
+            "some.future_method",
+        ] {
+            assert!(mutating(&gw, m), "{m}");
+        }
+        for m in ["pane.read", "session.snapshot", "agent.list"] {
+            assert!(!mutating(&gw, m), "{m}");
+        }
+        // The gateway's own bookkeeping is not a device action.
+        assert!(!mutating(&gw, "client.devices"));
+        assert!(!mutating(&gw, "gateway.reply"));
+        // A full remote terminal (gateway-tui) is a device: no control-plane exemption.
+        let tui = Ctx {
+            kind: "gateway-tui".into(),
+            ..gw
+        };
+        assert!(mutating(&tui, "client.devices"));
     }
 
     #[test]

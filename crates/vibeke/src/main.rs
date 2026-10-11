@@ -558,6 +558,7 @@ async fn dispatch(g: Global, args: Vec<String>) -> i32 {
             }
         }
         Some(noun) => {
+            let noun = vk_cli::canonical_noun(noun);
             let Some(verb) = args.get(1) else {
                 if vk_cli::nouns().contains(&noun) {
                     print!("{}", vk_cli::noun_help(noun));
@@ -573,7 +574,7 @@ async fn dispatch(g: Global, args: Vec<String>) -> i32 {
                 );
                 return EXIT_USAGE;
             };
-            let mut params = match vk_cli::build_params(positional, &args[2..]) {
+            let mut params = match vk_cli::build_params_for(Some(method), positional, &args[2..]) {
                 Ok(p) => p,
                 Err(e) => {
                     eprintln!("{e}\n{}", vk_cli::noun_help(noun));
@@ -603,14 +604,23 @@ pub type AnyStream = Box<dyn vk_remote::mux::Stream>;
 
 /// `vibeke mcp`: MCP over stdio, forwarding to this pane's server (06 B7). Reconnects once if
 /// the server restarts. Nothing but JSON-RPC may go to stdout.
+/// `vibeke mcp`: never starts a server. A harness may launch it anywhere (its MCP config is
+/// often user-wide); outside a Vibeke pane it only connects to a server that already runs and
+/// offers read-only tools (`vk_cli::mcp::Mode::Outside`).
 async fn mcp(g: &Global) -> i32 {
     let session = g.session.clone();
     let socket = client::socket_path(&g.session, g.socket.as_deref());
-    let no_spawn = g.no_spawn;
+    let mode = vk_cli::mcp::Mode::from_env();
     let mut backend = vk_cli::mcp::Reconnecting::new(move || {
         let (session, socket) = (session.clone(), socket.clone());
         Box::pin(async move {
-            let s = client::connect_or_spawn(&session, &socket, no_spawn).await?;
+            let s = client::connect_or_spawn(&session, &socket, true)
+                .await
+                .map_err(|e| {
+                    e.context(
+                        "Vibeke is not running; start `vibeke` first (vibeke mcp never starts it)",
+                    )
+                })?;
             Ok(client::Client::new(s))
         })
             as vk_cli::mcp::BoxFuture<
@@ -619,7 +629,7 @@ async fn mcp(g: &Global) -> i32 {
             >
     });
     let stdin = tokio::io::BufReader::new(tokio::io::stdin());
-    match vk_cli::mcp::serve(stdin, tokio::io::stdout(), &mut backend).await {
+    match vk_cli::mcp::serve_in(stdin, tokio::io::stdout(), &mut backend, mode).await {
         Ok(()) => EXIT_OK,
         Err(e) => {
             eprintln!("vibeke mcp: {e:#}");

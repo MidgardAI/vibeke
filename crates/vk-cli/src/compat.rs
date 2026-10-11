@@ -1404,6 +1404,17 @@ pub async fn compat_cmd(g: &Global, args: &[String]) -> i32 {
                 Ok(e) => e,
                 Err(e) => return fail("internal", e, EXIT_API),
             };
+            // The stable path (`~/.local/bin/vibeke`, which follows upgrades; the same order as
+            // `vk_agents::hook_bin`), not this version's image: `vibeke update` prunes unused
+            // versions, which would leave the shim dangling.
+            let home = vk_server::paths::home();
+            let exe = [
+                home.join(".local/bin/vibeke"),
+                home.join(".local/share/vibeke/current/vibeke"),
+            ]
+            .into_iter()
+            .find(|p| p.is_file())
+            .unwrap_or(exe);
             if let Err(e) = std::fs::create_dir_all(&dir) {
                 return fail("internal", e, EXIT_API);
             }

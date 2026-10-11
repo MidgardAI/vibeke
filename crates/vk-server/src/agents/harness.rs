@@ -1370,31 +1370,6 @@ pub fn parse_version(s: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-/// The PATH shim for user-typed `codex` (04 §6.2): exec the real codex later in PATH with a
-/// per-pane embedded app-server, all user arguments untouched.
-pub fn codex_shim_script() -> String {
-    r#"#!/bin/sh
-# managed by vibeke: per-pane embedded Codex app-server so hooks carry this pane's identity
-# (spec 04 §6.2). Disable with CODEX_VIBEKE_SHIM=0.
-VIBEKE_CODEX_EXTRA="--disable daemon_auto_start"
-self_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-real=""
-IFS_SAVE=$IFS; IFS=:
-for d in $PATH; do
-  [ "$d" = "$self_dir" ] && continue
-  if [ -x "$d/codex" ] && [ ! -d "$d/codex" ]; then real="$d/codex"; break; fi
-done
-IFS=$IFS_SAVE
-[ -n "$real" ] || { echo "codex: not found in PATH" >&2; exit 127; }
-if [ "${CODEX_VIBEKE_SHIM:-1}" = "0" ]; then exec "$real" "$@"; fi
-for a in "$@"; do
-  case "$a" in daemon_auto_start*|--remote*|app-server|mcp-server|login|logout|completion|--version|-V|--help|-h) exec "$real" "$@";; esac
-done
-exec "$real" $VIBEKE_CODEX_EXTRA "$@"
-"#
-    .to_string()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

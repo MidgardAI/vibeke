@@ -398,6 +398,18 @@ pub const PANE_FORBIDDEN: &[&str] = &[
     "compat.invocation.verify",
     "plugin.surface.close",
     "plugin.registry.notify",
+    // The user's client and display: appearance reports, theme mode, gateway device reports
+    // and out-of-band confirmations. (Unlisted methods are forbidden anyway; these are named
+    // so the decision is visible.)
+    "client.appearance",
+    "client.activity",
+    "client.confirm",
+    "client.confirm_answer",
+    "client.devices",
+    "theme.set_mode",
+    // A plugin action runs with the plugin's capabilities, not the agent's.
+    "plugin.action.run",
+    "plugin.link.open",
 ];
 
 /// Method prefixes whose every method is forbidden for pane scope (14 §9: pane/adapter tokens
@@ -412,8 +424,254 @@ pub const PANE_FORBIDDEN_PREFIXES: &[&str] = &["assistant.", "cloud."];
 // pane, `browser.eval` without the `browser.script` capability (`preview.browser_script`),
 // `git.status|diff {path}`, `worktree.create {focus: true}`, `compat.herdr.call` of a
 // focus/close method, `screenshot.*` / `task.*` / `draft.*` reads outside the caller's
-// workspace, `screenshot.delete` of an image the caller's pane did not attach, and
-// `task.operation.get` receipts.
+// workspace, and `screenshot.delete` of an image the caller's pane did not attach.
+// `task.operation.get` receipts are the user's (unlisted, so forbidden).
+
+/// Methods a pane-scoped caller may call against any target (handlers may still refuse
+/// particular params). Every method that is neither here nor in [`PANE_OWN_TARGET`] is
+/// **forbidden** for panes: a new method stays the user's until someone classifies it here.
+pub const PANE_OPEN: &[&str] = &[
+    // Adapter transport: an agent reports its own state and gates (handlers bind the pane).
+    "adapter.control",
+    "adapter.delivery_ack",
+    "adapter.gate",
+    "adapter.report_self",
+    "adapter.signal",
+    // Agent reads and launches (`agent.spawn` only in the caller's workspace, see `authorize`).
+    "agent.commands",
+    "agent.drift",
+    "agent.get",
+    "agent.harnesses",
+    "agent.limits",
+    "agent.list",
+    "agent.manifests",
+    "agent.manifests_reload",
+    "agent.models",
+    "agent.read",
+    "agent.resumable",
+    "agent.spawn",
+    "agent.transcript",
+    "agent.turn_usage",
+    "agent.wait",
+    "api.methods",
+    "api.schema",
+    "attention.batch",
+    "attention.list",
+    // Asking the user: elevation and approvals are decided by the user, not the caller.
+    "auth.approve",
+    "auth.approve.withdraw",
+    "auth.elevate",
+    "blob.abort",
+    "blob.append",
+    "blob.begin",
+    "blob.commit",
+    "blob.get",
+    "blob.put",
+    "blob.stat",
+    // The agent's own browser sessions (handlers check ownership, loopback and scripts).
+    "browser.click",
+    "browser.close",
+    "browser.console",
+    "browser.diff",
+    "browser.dom",
+    "browser.eval",
+    "browser.list",
+    "browser.navigate",
+    "browser.network",
+    "browser.open",
+    "browser.pane.create",
+    "browser.pane.list",
+    "browser.pane.status",
+    "browser.press",
+    "browser.screenshot",
+    "browser.session_close",
+    "browser.session_open",
+    "browser.snapshot",
+    "browser.status",
+    "browser.type",
+    "browser.wait",
+    "client.hello",
+    "client.list",
+    "collision.claim",
+    "collision.claim_release",
+    "collision.claims",
+    "collision.get",
+    "collision.list",
+    "compat.herdr.call",
+    "compat.status",
+    "compat.ui.state",
+    "config.get",
+    "config.validate",
+    "desk.context",
+    "desk.search",
+    "desk.sessions",
+    "draft.check",
+    "draft.combine",
+    "draft.create",
+    "draft.delete",
+    "draft.get",
+    "draft.list",
+    "draft.reorder",
+    "draft.update",
+    "events.read",
+    "events.subscribe",
+    "events.unsubscribe",
+    "events.wait",
+    "family.get",
+    "family.list",
+    "fs.list",
+    "fs.read",
+    "gateway.status",
+    "git.diff",
+    "git.log",
+    "git.status",
+    "goal.briefing",
+    "goal.get",
+    "goal.list",
+    "group.list",
+    "handoff.jobs",
+    "handoff.peers",
+    "image.upload",
+    "interaction.get",
+    "interaction.list",
+    // Only in the caller's own workspace (see `authorize`).
+    "layout.apply",
+    "layout.export",
+    "layout.get",
+    "layout.list",
+    "machine.get",
+    "machine.list",
+    "merge.predict",
+    "merge.queue.list",
+    "notes.get",
+    "notes.set",
+    "notification.config",
+    "notification.list",
+    // Its own notifications only: `{all: true}` is refused (see `authorize`).
+    "notification.read",
+    "notification.send",
+    "pane.can_see_paths",
+    "pane.current",
+    "pane.get",
+    "pane.list",
+    "pane.read",
+    "pane.wait_idle",
+    "pane.wait_output",
+    "plugin.action.list",
+    "plugin.link_handler.list",
+    "plugin.list",
+    "plugin.log.list",
+    "preview.declare",
+    // Lane E1 checks the preview's workspace in the handler; refusing here would break an
+    // agent cleaning up the previews it declared.
+    "preview.dismiss",
+    "preview.forget",
+    "preview.get",
+    "preview.list",
+    "preview.open",
+    "preview.profile",
+    "preview.profile.list",
+    "preview.promote",
+    "preview.status",
+    "preview.url",
+    "quota.route",
+    "quota.status",
+    "sandbox.list",
+    "sandbox.request",
+    "sandbox.status",
+    "screenshot.add",
+    "screenshot.delete",
+    "screenshot.get",
+    "screenshot.list",
+    "screenshot.open",
+    "search.query",
+    "server.status",
+    "session.info",
+    "session.list",
+    "session.snapshot",
+    "status.segments",
+    // Only in the caller's own workspace (see `authorize`).
+    "tab.create",
+    "tab.floats",
+    "tab.list",
+    "task.check.get",
+    "task.check.list",
+    "task.claim",
+    "task.claim.list",
+    "task.claim.remove",
+    "task.compare",
+    "task.create",
+    "task.dependency.list",
+    "task.detail",
+    "task.effort.estimate",
+    "task.get",
+    "task.intent.get",
+    "task.link.status",
+    "task.list",
+    "task.message.get",
+    "task.ports",
+    "task.pr",
+    "task.pr.claim",
+    "task.pr.list",
+    "task.reconcile",
+    "task.review.candidates",
+    "task.review.diff",
+    "task.review.get",
+    "task.review.interval_status",
+    "task.review.intervals",
+    "task.review.notes",
+    "task.setup_log",
+    "task.sources",
+    "theme.get",
+    "ui.contributions",
+    "vm.list",
+    "vm.status",
+    "vm.template.list",
+    "vm.transport",
+    "workspace.create",
+    "workspace.get",
+    "workspace.list",
+    "worktree.create",
+    "worktree.list",
+    "worktree.open",
+    "worktree.repo_root",
+];
+
+/// Methods a pane-scoped caller may call only against its own pane (or a pane it created), or
+/// its own run: the `pane` param of the `pane.*` ones, the `target` of the run-targeted
+/// `agent.*` ones, the `pane` of `agent.start`/`agent.resume`, and the `pane_id`/`pane` of
+/// `agent.report`.
+pub const PANE_OWN_TARGET: &[&str] = &[
+    "pane.close",
+    "pane.embed",
+    "pane.equalize",
+    "pane.float",
+    "pane.mark_seen",
+    "pane.mark_unread",
+    "pane.move",
+    "pane.pin",
+    "pane.rename",
+    "pane.report_agent",
+    "pane.report_agent_session",
+    "pane.resize",
+    "pane.run",
+    "pane.screenshot",
+    "pane.scroll",
+    "pane.send_bytes",
+    "pane.send_keys",
+    "pane.send_text",
+    "pane.split",
+    "pane.zoom",
+    "agent.interrupt",
+    "agent.prompt",
+    "agent.release",
+    "agent.rename",
+    "agent.send_keys",
+    "agent.set_model",
+    "agent.start",
+    "agent.resume",
+    "agent.report",
+];
 
 /// How a pane-scoped caller may use a method (09 §5.2). The single source for both
 /// [`authorize`] (dispatch) and the generated API catalog (`docs/api/methods.json`).
@@ -437,7 +695,8 @@ impl PaneScope {
     }
 }
 
-/// The pane scope of `method` (see [`PaneScope`]).
+/// The pane scope of `method` (see [`PaneScope`]). Default deny: a method that is not listed
+/// in [`PANE_OPEN`] or [`PANE_OWN_TARGET`] is forbidden for panes.
 pub fn pane_scope_of(method: &str) -> PaneScope {
     if PANE_FORBIDDEN.contains(&method)
         || crate::security::PANE_FORBIDDEN.contains(&method)
@@ -462,29 +721,18 @@ pub fn pane_scope_of(method: &str) -> PaneScope {
             .any(|p| method.starts_with(p))
     {
         PaneScope::Forbidden
-    } else if is_pane_targeted(method)
-        || is_run_targeted(method)
-        || matches!(method, "agent.start" | "agent.resume")
-    {
+    } else if PANE_OWN_TARGET.contains(&method) {
         PaneScope::OwnTarget
-    } else {
+    } else if PANE_OPEN.contains(&method) {
         PaneScope::Open
+    } else {
+        PaneScope::Forbidden
     }
 }
 
 /// `pane.*` methods that act on a pane (a pane-scoped caller may only target its own panes).
 pub fn is_pane_targeted(method: &str) -> bool {
-    method.starts_with("pane.")
-        && !matches!(
-            method,
-            "pane.list"
-                | "pane.get"
-                | "pane.current"
-                | "pane.read"
-                | "pane.wait_output"
-                | "pane.wait_idle"
-                | "pane.can_see_paths"
-        )
+    method.starts_with("pane.") && PANE_OWN_TARGET.contains(&method)
 }
 
 /// `agent.*` methods whose `target` must be the caller's own run or a pane it created.
@@ -500,11 +748,66 @@ pub fn is_run_targeted(method: &str) -> bool {
     )
 }
 
+/// Is this caller the user at this machine? Panes (agents), native plugins, elevated agent
+/// tokens and gateway devices are not: the checks that need the user's own decision (host
+/// yolo confirmation, choosing a cloud box) refuse them.
+pub fn is_user(ctx: &Ctx) -> bool {
+    ctx.pane_scope.is_none()
+        // A TUI attached over SSH (`vibeke bridge`) is still the user's own terminal; any other
+        // remote connection is not.
+        && (!ctx.remote || ctx.kind == "tui")
+        && !crate::plugin_native::is_plugin_kind(&ctx.kind)
+        && !ctx.kind.starts_with(crate::auth::ELEVATED_KIND)
+        && !matches!(ctx.kind.as_str(), "gateway" | "gateway-tui")
+}
+
+/// Who a non-user caller is, for refusal messages.
+fn caller_noun(ctx: &Ctx) -> &'static str {
+    if ctx.pane_scope.is_some() || ctx.kind.starts_with(crate::auth::ELEVATED_KIND) {
+        "an agent in a pane"
+    } else if crate::plugin_native::is_plugin_kind(&ctx.kind) {
+        "a plugin"
+    } else {
+        "a remote device"
+    }
+}
+
+/// The decisions only the user at this machine makes (13 §3, spec 17), whoever else calls.
+fn authorize_user_only(ctx: &Ctx, method: &str, p: &Value) -> Result<(), RpcError> {
+    if is_user(ctx) {
+        return Ok(());
+    }
+    let who = caller_noun(ctx);
+    // 13 §3: the one-time host-yolo confirmation is the user's; an agent, plugin or phone must
+    // not grant it (`task.create`, `agent.start`/`agent.run`, best-of-N all read this param).
+    if p.get("confirm_host_yolo").and_then(Value::as_bool) == Some(true) {
+        return Err(err(
+            ErrorKind::PermissionDenied,
+            format!(
+                "confirm_host_yolo: {who} cannot confirm yolo on the host; run the command in your terminal with --confirm-host-yolo"
+            ),
+        )
+        .details(json!({"scope": "user", "param": "confirm_host_yolo"})));
+    }
+    // Spec 17: choosing an existing cloud box (`task.create {isolate: cloud, box}`) is the
+    // user's. Only `IsoRequest` reads `box` outside `cloud.*`, whose own `box` param names the
+    // box being managed (refused to panes and plugins by scope).
+    if !method.starts_with("cloud.") && p.get("box").is_some_and(|v| !v.is_null()) {
+        return Err(err(
+            ErrorKind::PermissionDenied,
+            format!("box: {who} cannot choose a cloud box; pick one in Vibeke on this machine"),
+        )
+        .details(json!({"scope": "user", "param": "box"})));
+    }
+    Ok(())
+}
+
 /// Capability check for pane-scoped callers (09 §5.2): reads are open; writes are limited to
 /// the caller's own pane and panes it created; authorizing actions (answering interactions),
 /// server control and other workspaces' layout are forbidden.
 pub fn authorize(server: &Server, ctx: &Ctx, method: &str, p: &Value) -> Result<(), RpcError> {
     crate::plugin_native::authorize(server, ctx, method, p)?;
+    authorize_user_only(ctx, method, p)?;
     let Some(scope) = &ctx.pane_scope else {
         return Ok(());
     };
@@ -525,36 +828,54 @@ pub fn authorize(server: &Server, ctx: &Ctx, method: &str, p: &Value) -> Result<
         }
         return deny("forbidden for pane scope");
     }
-    // 13 §3: the one-time host-yolo confirmation is the user's; an agent must not grant it to
-    // itself (`task.create`, `agent.start`/`agent.run`, best-of-N all read this param).
-    if p.get("confirm_host_yolo").and_then(Value::as_bool) == Some(true) {
-        return Err(err(
-            ErrorKind::PermissionDenied,
-            "confirm_host_yolo: a pane cannot confirm yolo on the host; the user confirms with --confirm-host-yolo",
-        )
-        .details(json!({"scope": "pane"})));
-    }
-    // Spec 17: choosing an existing cloud box (`task.create {isolate: cloud, box}`) is the
-    // user's; an agent must not point a task at a box (only `IsoRequest` reads `box` outside
-    // the pane-forbidden `cloud.*` methods).
-    if p.get("box").is_some_and(|v| !v.is_null()) {
-        return Err(err(
-            ErrorKind::PermissionDenied,
-            "box: a pane cannot choose a cloud box; the user picks one",
-        )
-        .details(json!({"scope": "pane"})));
-    }
     crate::preview::authorize_pane_machine(server, ctx, method, p)?;
     let owns = |pane: &Pane| &pane.id == scope || pane.created_by == format!("agent:{scope}");
+    // Agents never move the user's focus to a pane they act on or to a new agent or
+    // workspace (the user may be working elsewhere).
+    if p.get("focus").and_then(Value::as_bool) == Some(true)
+        && (is_pane_targeted(method)
+            || matches!(method, "agent.spawn" | "workspace.create" | "layout.apply"))
+    {
+        return deny("agents can't move the user's focus; leave out `focus`");
+    }
+    // Workspace-level changes stay in the caller's own workspace.
+    let own_ws = || -> Result<String, RpcError> {
+        Ok(resolve_pane(server, ctx, Some(scope.as_str()))?.workspace)
+    };
+    match method {
+        "agent.spawn" => {
+            let base = resolve_pane(server, ctx, s(p, "split_of").or(s(p, "pane")))?;
+            if base.workspace != own_ws()? {
+                return deny("agents can start agents only in their own workspace");
+            }
+        }
+        "layout.apply" | "tab.create" => {
+            if let Some(w) = s(p, "workspace") {
+                let ws = resolve_ws(server, ctx, Some(w))?;
+                if ws.id != own_ws()? {
+                    return deny("agents can change only their own workspace");
+                }
+            }
+        }
+        "tab.floats" | "pane.equalize" => {
+            if let Some(t) = s(p, "tab") {
+                let tab = resolve_tab(server, ctx, Some(t))?;
+                if tab.workspace != own_ws()? {
+                    return deny("agents can change only their own workspace");
+                }
+            }
+        }
+        "notification.read" if b(p, "all") == Some(true) => {
+            return deny("agents can mark only one notification read; pass `notification`");
+        }
+        _ => {}
+    }
     let pane_targeted = is_pane_targeted(method);
     if pane_targeted {
         let target = s(p, "pane").unwrap_or("@current");
         let pane = resolve_pane(server, ctx, Some(target))?;
         if !owns(&pane) {
             return deny("target pane is not yours");
-        }
-        if p.get("focus").and_then(Value::as_bool) == Some(true) {
-            return deny("agents can't move the user's focus");
         }
         // 09 §5.1 rule 4: no pane-scoped input into a pane with an open interaction.
         let writes_input = matches!(
@@ -593,6 +914,18 @@ pub fn authorize(server: &Server, ctx: &Ctx, method: &str, p: &Value) -> Result<
             return deny("target pane is not yours");
         }
     }
+    // Self-report (04 §4.1): only for the caller's own pane (the handler resolves the same
+    // `pane_id`/`pane` param).
+    if method == "agent.report" {
+        let pane = resolve_pane(
+            server,
+            ctx,
+            s(p, "pane_id").or(s(p, "pane")).or(Some("@current")),
+        )?;
+        if !owns(&pane) {
+            return deny("agents report only for their own pane");
+        }
+    }
     Ok(())
 }
 
@@ -603,6 +936,243 @@ pub async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) 
     crate::search::authorize_read(server, ctx, method, p)?;
     crate::browser_pane::page_io::authorize_output_read(server, ctx, method, p)?;
     crate::limits::check(server, ctx, method, p)?;
+    check_params(method, p)?;
+    if let Some(key) = idempotency_scope(ctx, method, p) {
+        return Box::pin(keyed(server, ctx, method, p, key)).await;
+    }
+    Box::pin(handlers(server, ctx, method, p)).await
+}
+
+/// Params every method accepts: the gateway's audit `actor` and the generic idempotency key.
+pub const COMMON_PARAMS: &[&str] = &["actor", "idempotency_key"];
+
+/// Methods that refuse params their schema does not list (every in-repo caller sends only
+/// listed params). Other methods log unknown params and ignore them.
+pub const STRICT_PARAMS: &[&str] = &[
+    "pane.send_text",
+    "pane.send_keys",
+    "pane.send_bytes",
+    "pane.run",
+];
+
+/// Is `v` the JSON type `shape` describes? Literal sets (`visible|recent`) only need a string:
+/// the handler names the values it takes; nested objects are the handler's to check.
+fn json_type_ok(
+    shape: &crate::shape::Shape,
+    v: &Value,
+    defs: &std::collections::BTreeMap<String, crate::shape::Shape>,
+) -> bool {
+    use crate::shape::Shape;
+    match shape {
+        Shape::Any => true,
+        Shape::Null => v.is_null(),
+        Shape::Bool | Shape::BoolLit(_) => v.is_boolean(),
+        Shape::Int => v.is_i64() || v.is_u64(),
+        Shape::Number => v.is_number(),
+        Shape::Str | Shape::Lit(_) => v.is_string(),
+        Shape::Object | Shape::Map(_) | Shape::Obj(_) => v.is_object(),
+        Shape::Array(inner) => v
+            .as_array()
+            .is_some_and(|a| a.iter().all(|x| json_type_ok(inner, x, defs))),
+        Shape::Union(arms) => arms.iter().any(|a| json_type_ok(a, v, defs)),
+        Shape::Ref(n) => defs.get(n).is_none_or(|d| json_type_ok(d, v, defs)),
+    }
+}
+
+/// A short name for the JSON type a shape wants (for error messages).
+fn json_type_name(
+    shape: &crate::shape::Shape,
+    defs: &std::collections::BTreeMap<String, crate::shape::Shape>,
+) -> String {
+    use crate::shape::Shape;
+    match shape {
+        Shape::Any => "any value".into(),
+        Shape::Null => "null".into(),
+        Shape::Bool | Shape::BoolLit(_) => "a boolean".into(),
+        Shape::Int => "an integer".into(),
+        Shape::Number => "a number".into(),
+        Shape::Str | Shape::Lit(_) => "a string".into(),
+        Shape::Object | Shape::Map(_) | Shape::Obj(_) => "an object".into(),
+        Shape::Array(inner) => format!("a list of {}", json_type_name(inner, defs)),
+        Shape::Ref(n) => defs
+            .get(n)
+            .map(|d| json_type_name(d, defs))
+            .unwrap_or_else(|| n.clone()),
+        Shape::Union(arms) => {
+            let mut names: Vec<String> = arms.iter().map(|a| json_type_name(a, defs)).collect();
+            names.dedup();
+            names.join(" or ")
+        }
+    }
+}
+
+fn brief_json(v: &Value) -> String {
+    let t = v.to_string();
+    if t.chars().count() > 40 {
+        format!("{}…", t.chars().take(40).collect::<String>())
+    } else {
+        t
+    }
+}
+
+/// Check params against the method's schema before any handler runs: params must be an
+/// object, and every listed param must have the right JSON type (`invalid_params` names the
+/// param and the type it needs). Missing required params are left to the handler, which
+/// names them. Unknown params are refused for [`STRICT_PARAMS`] methods and ignored (logged)
+/// elsewhere. `null` for an optional param counts as absent.
+pub fn check_params(method: &str, p: &Value) -> Result<(), RpcError> {
+    let reg = crate::api_schema::registry();
+    let Some(entry) = reg.methods.get(method) else {
+        return Ok(());
+    };
+    let obj = match p {
+        Value::Object(o) => o,
+        Value::Null => return Ok(()),
+        _ => {
+            return Err(invalid(format!("{method}: params must be a JSON object"))
+                .details(json!({"param": null})));
+        }
+    };
+    fn fields(s: &crate::shape::Shape) -> Option<Vec<&crate::shape::Field>> {
+        use crate::shape::Shape;
+        match s {
+            Shape::Obj(fs) => Some(fs.iter().collect()),
+            Shape::Union(arms) => {
+                let mut all = vec![];
+                for a in arms {
+                    all.extend(fields(a)?);
+                }
+                Some(all)
+            }
+            _ => None,
+        }
+    }
+    let Some(fields) = fields(&entry.params) else {
+        return Ok(());
+    };
+    for (k, v) in obj {
+        let declared: Vec<&crate::shape::Field> =
+            fields.iter().copied().filter(|f| &f.name == k).collect();
+        if declared.is_empty() {
+            if COMMON_PARAMS.contains(&k.as_str()) {
+                continue;
+            }
+            if STRICT_PARAMS.contains(&method) {
+                let mut known: Vec<&str> = fields.iter().map(|f| f.name.as_str()).collect();
+                known.sort_unstable();
+                known.dedup();
+                return Err(invalid(format!(
+                    "{method}: unknown param `{k}` (takes {})",
+                    known.join(", ")
+                ))
+                .details(json!({"param": k, "known": known})));
+            }
+            tracing::debug!(method, param = %k, "unknown param ignored");
+            continue;
+        }
+        if v.is_null() && declared.iter().any(|f| f.optional) {
+            continue;
+        }
+        if !declared
+            .iter()
+            .any(|f| json_type_ok(&f.shape, v, &reg.defs))
+        {
+            let want = json_type_name(&declared[0].shape, &reg.defs);
+            return Err(invalid(format!(
+                "{method}: `{k}` must be {want}, got {}",
+                brief_json(v)
+            ))
+            .details(json!({"param": k, "expected": want})));
+        }
+    }
+    Ok(())
+}
+
+/// Mutating methods that clients retry after a dropped connection (the CLI's MCP server, the
+/// phone gateway, the generated clients) and that accept an optional `idempotency_key`
+/// through the generic receipt layer below. Methods with their own receipts (task tracking,
+/// drafts, interaction answers, reviews, assistance) handle the key themselves.
+pub const KEYED_METHODS: &[&str] = &[
+    "agent.prompt",
+    "agent.send_keys",
+    "agent.spawn",
+    "agent.start",
+    "browser.click",
+    "browser.close",
+    "browser.navigate",
+    "browser.open",
+    "browser.press",
+    "browser.type",
+    "notification.send",
+    "pane.run",
+    "pane.send_bytes",
+    "pane.send_keys",
+    "pane.send_text",
+    "pane.split",
+    "preview.declare",
+    "screenshot.add",
+    "tab.create",
+    "task.create",
+    "workspace.create",
+];
+
+/// The receipt key of a keyed call: the caller's `idempotency_key`, scoped to the caller (a
+/// pane, plugin or device never replays another caller's result).
+fn idempotency_scope(ctx: &Ctx, method: &str, p: &Value) -> Option<String> {
+    if !KEYED_METHODS.contains(&method) {
+        return None;
+    }
+    let key = s(p, "idempotency_key").filter(|k| !k.trim().is_empty())?;
+    let who = match &ctx.pane_scope {
+        Some(pane) => format!("pane:{pane}"),
+        None if is_user(ctx) => "user".to_string(),
+        None => ctx.kind.clone(),
+    };
+    Some(format!("api:{who}:{key}"))
+}
+
+/// Calls whose key is being handled now: a retry that arrives while the first attempt still
+/// runs is told to wait instead of running twice.
+fn keys_in_flight() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
+    static K: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+        std::sync::OnceLock::new();
+    K.get_or_init(Default::default)
+}
+
+/// Run a keyed call once: a repeat with the same key and params returns the stored result
+/// (`replayed: true`); the same key with other params is a conflict.
+async fn keyed(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value, key: String) -> R {
+    let mut scoped = p.clone();
+    scoped["idempotency_key"] = json!(key);
+    if let Some(r) = crate::tracking::replay(server, method, &scoped) {
+        return r;
+    }
+    if !keys_in_flight().lock().unwrap().insert(key.clone()) {
+        return Err(err(
+            ErrorKind::Conflict,
+            "a call with this idempotency_key is still running; retry in a moment",
+        )
+        .details(json!({"reason": "in_progress"})));
+    }
+    struct Release(String);
+    impl Drop for Release {
+        fn drop(&mut self) {
+            keys_in_flight().lock().unwrap().remove(&self.0);
+        }
+    }
+    let _release = Release(key);
+    let r = handlers(server, ctx, method, p).await;
+    if let Ok(v) = &r {
+        let mut c = server.core.lock().unwrap();
+        let mut tx = Tx::new();
+        crate::tracking::record(&mut tx, method, &scoped, v);
+        let _ = server.commit(&mut c, tx);
+    }
+    r
+}
+
+/// The method handlers, after authorization.
+async fn handlers(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> R {
     // Lane 3E: search result redaction, state.forget, encryption status/migrate.
     if let Some(r) = crate::privacy::api(server, ctx, method, p).await {
         return r;
@@ -759,7 +1329,9 @@ pub async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) 
             let v: Vec<Value> = crate::api_schema::method_tables()
                 .iter()
                 .flat_map(|(_, t)| t.iter())
-                .map(|(n, m)| json!({"name": n, "mutating": m}))
+                .map(|(n, m)| {
+                    json!({"name": n, "mutating": m, "stability": crate::api_schema::stability_of(n)})
+                })
                 .collect();
             Ok(json!({"methods": v}))
         }
@@ -804,6 +1376,11 @@ pub async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) 
                     "server.stop is not allowed from a pane token",
                 ));
             }
+            // Hooks of running agents stop waiting for this server (no restart window).
+            let _ = std::fs::write(
+                crate::agents::hook::stop_marker(&server.paths.socket().to_string_lossy()),
+                b"",
+            );
             let kill = b(p, "kill_panes").unwrap_or(false);
             if kill {
                 for rt in server.panes.lock().unwrap().values() {

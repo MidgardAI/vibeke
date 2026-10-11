@@ -522,3 +522,39 @@ fn handoff_send_from_a_shell_pane_waits_for_approval_outside_it() {
         assert!(types.contains(&t), "{t} not audited: {types:?}");
     }
 }
+
+/// Install consent: `CODEX_HOME` names the user's real Codex config, so nothing is written
+/// (hooks or the PATH shim) without `--yes`, or with `--dry-run`. Vibeke's own scratch-copy
+/// variables (`VIBEKE_OMP_HOME`) imply consent for their harness only.
+#[test]
+fn integration_install_needs_consent_for_real_harness_dirs() {
+    let s = Session::new();
+    let d = s.dir.path().to_path_buf();
+    let run = |args: &[&str]| {
+        let mut c = cmd(&s, args);
+        // The shim lives under the data dir: keep it in the session dir.
+        c.env("XDG_DATA_HOME", d.join("data"));
+        let out = c.output().unwrap();
+        assert!(
+            out.status.success(),
+            "vibeke {args:?}: {}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    let hooks = d.join("h/codex/hooks.json");
+    let shim = d.join("data/vibeke/shims/codex");
+    let out = run(&["integration", "install", "codex"]);
+    assert!(out.contains("dry run"), "{out}");
+    assert!(!hooks.exists());
+    assert!(!shim.exists(), "no shim without consent");
+    run(&["integration", "install", "codex", "--yes", "--dry-run"]);
+    assert!(!hooks.exists());
+    assert!(!shim.exists(), "no shim on a dry run");
+    run(&["integration", "install", "codex", "--yes"]);
+    assert!(hooks.exists());
+    assert!(shim.exists(), "the shim comes with the consented install");
+    run(&["integration", "install", "omp"]);
+    assert!(d.join("h/omp/agent/extensions/vibeke.js").exists());
+}

@@ -195,7 +195,7 @@ model = "claude-haiku-4-5-20251001"
         )
     }
     fn used(&self) -> Value {
-        self.json(&["assist", "status"])["today"]["used"].clone()
+        self.json(&["assistant", "status"])["today"]["used"].clone()
     }
     fn events(&self) -> Vec<Value> {
         self.api("events.read", json!({"after": 0, "limit": 10000}))
@@ -240,7 +240,7 @@ fn off_by_default_consent_and_preview_before_send() {
     let (ws, _pane) = s.workspace();
 
     // Disabled by default: nothing is contacted.
-    let st = s.json(&["assist", "status"]);
+    let st = s.json(&["assistant", "status"]);
     assert_eq!(st["enabled"], false);
     assert_eq!(st["background"], false);
     let e = s
@@ -262,7 +262,7 @@ fn off_by_default_consent_and_preview_before_send() {
     assert_eq!(reason(&e), "consent_required", "{e}");
 
     // Consent without the needed context class.
-    s.json(&["assist", "consent", &ws, "--classes", "selected_text"]);
+    s.json(&["assistant", "consent", &ws, "--classes", "selected_text"]);
     let e = s
         .api(
             "assistant.generate",
@@ -272,7 +272,7 @@ fn off_by_default_consent_and_preview_before_send() {
     assert_eq!(reason(&e), "context_class_not_granted", "{e}");
 
     // Default classes: a preview, and still nothing sent.
-    let c = s.json(&["assist", "consent", &ws]);
+    let c = s.json(&["assistant", "consent", &ws]);
     assert!(c["notice"].as_str().unwrap().contains("cannot retract"));
     let g = s
         .api(
@@ -302,7 +302,7 @@ fn off_by_default_consent_and_preview_before_send() {
 
     // Confirm: exactly the previewed payload is sent.
     fake.push(briefing_reply("s1"));
-    s.json(&["assist", "confirm", &id, pv["digest"].as_str().unwrap()]);
+    s.json(&["assistant", "confirm", &id, pv["digest"].as_str().unwrap()]);
     let done = s.wait_state(&id, &["done", "failed"]);
     assert_eq!(done["state"], "done", "{done}");
     assert_eq!(done["output"]["generated"], true);
@@ -330,7 +330,7 @@ fn off_by_default_consent_and_preview_before_send() {
         )
         .is_err()
     );
-    let shown = s.json(&["assist", "show", &id]);
+    let shown = s.json(&["assistant", "get", &id]);
     assert_eq!(shown["request"]["output"]["coverage"], "one workspace");
 
     // Changing the endpoint invalidates consent.
@@ -346,7 +346,7 @@ fn off_by_default_consent_and_preview_before_send() {
 
     // Revoke: back to consent_required.
     s.config(&fake.url(), "");
-    let r = s.json(&["assist", "revoke", &ws]);
+    let r = s.json(&["assistant", "revoke", &ws]);
     assert_eq!(r["revoked"], 1);
     let e = s
         .api(
@@ -357,7 +357,7 @@ fn off_by_default_consent_and_preview_before_send() {
     assert_eq!(reason(&e), "consent_required");
 
     // Purge forgets the output.
-    let p = s.json(&["assist", "purge", &id]);
+    let p = s.json(&["assistant", "purge", &id]);
     assert_eq!(p["purged"], 1);
     assert!(s.api("assistant.get", json!({"request": id})).is_err());
     assert_eq!(fake.count(), 1);
@@ -371,7 +371,7 @@ fn redaction_budgets_cancellation_and_metadata_only_audit() {
     let (ws, pane) = s.workspace();
     s.config(&fake.url(), "");
     s.json(&[
-        "assist",
+        "assistant",
         "consent",
         &ws,
         "--classes",
@@ -420,7 +420,7 @@ fn redaction_budgets_cancellation_and_metadata_only_audit() {
         8,
     ));
     s.json(&[
-        "assist",
+        "assistant",
         "confirm",
         &id,
         g["preview"]["digest"].as_str().unwrap(),
@@ -448,7 +448,7 @@ fn redaction_budgets_cancellation_and_metadata_only_audit() {
         .unwrap();
     let slow = g["request"]["id"].as_str().unwrap().to_string();
     s.json(&[
-        "assist",
+        "assistant",
         "confirm",
         &slow,
         g["preview"]["digest"].as_str().unwrap(),
@@ -458,12 +458,12 @@ fn redaction_budgets_cancellation_and_metadata_only_audit() {
         (fake.count() == 2).then_some(())
     });
     let t = Instant::now();
-    let c = s.json(&["assist", "cancel", &slow]);
+    let c = s.json(&["assistant", "cancel", &slow]);
     assert_eq!(c["request"]["state"], "cancelled");
     assert!(t.elapsed() < Duration::from_secs(5));
     std::thread::sleep(Duration::from_millis(300));
     assert_eq!(
-        s.json(&["assist", "show", &slow])["request"]["state"],
+        s.json(&["assistant", "get", &slow])["request"]["state"],
         "cancelled"
     );
     assert!(s.api("assistant.cancel", json!({"request": slow})).is_err());
@@ -493,7 +493,7 @@ fn redaction_budgets_cancellation_and_metadata_only_audit() {
         )
         .unwrap_err();
     assert_eq!(category(&e), "budget_exhausted", "{e}");
-    let st = s.json(&["assist", "status"]);
+    let st = s.json(&["assistant", "status"]);
     assert_eq!(st["today"]["used"]["requests"], 2, "{st}");
     // Cost budget with known pricing.
     s.config(&fake.url(), "daily_cost_limit_usd = 0.000001");
@@ -552,7 +552,7 @@ fn suggest_task_details_without_background_runs_or_mutations() {
     let fake = FakeServer::start_in_thread(vec![]);
     let (ws, pane) = s.workspace();
     s.config(&fake.url(), "");
-    s.json(&["assist", "consent", &ws]);
+    s.json(&["assistant", "consent", &ws]);
     let script = s.dir.path().join("fake-claude");
     std::fs::write(&script, FAKE_CLAUDE).unwrap();
     std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
@@ -586,7 +586,7 @@ fn suggest_task_details_without_background_runs_or_mutations() {
     std::thread::sleep(Duration::from_millis(800));
     assert_eq!(fake.count(), 0);
     assert!(
-        s.json(&["assist", "list"])["requests"]
+        s.json(&["assistant", "list"])["requests"]
             .as_array()
             .unwrap()
             .is_empty()
@@ -622,7 +622,7 @@ fn suggest_task_details_without_background_runs_or_mutations() {
         60,
     ));
     s.json(&[
-        "assist",
+        "assistant",
         "confirm",
         &id,
         g["preview"]["digest"].as_str().unwrap(),
@@ -662,7 +662,7 @@ fn suggest_task_details_without_background_runs_or_mutations() {
         ));
     }
     s.json(&[
-        "assist",
+        "assistant",
         "confirm",
         &id,
         g["preview"]["digest"].as_str().unwrap(),
@@ -716,7 +716,7 @@ fn suggested_details_keep_their_semantics_through_track() {
     let fake = FakeServer::start_in_thread(vec![]);
     let (ws, pane) = s.workspace_at("track");
     s.config(&fake.url(), "");
-    s.json(&["assist", "consent", &ws]);
+    s.json(&["assistant", "consent", &ws]);
     let (run, n) = s.agent(&pane, "sess-t", "Fix the login redirect. Draft PR only.");
     let g = s.generate(json!({"operation": "suggest_task_details", "run": run, "turns": [n]}));
     fake.push(suggest_reply("s1"));
@@ -765,7 +765,7 @@ fn selections_need_the_consent_of_their_own_workspace() {
         r#"auto_send = ["pane_title", "handoff", "review_summary"]"#,
     );
     s.json(&[
-        "assist",
+        "assistant",
         "consent",
         &wa,
         "--auto-send",
@@ -820,7 +820,7 @@ fn selections_need_the_consent_of_their_own_workspace() {
 
     // With B's consent too (and auto_send everywhere) it previews, never auto-sends.
     s.json(&[
-        "assist",
+        "assistant",
         "consent",
         &wb,
         "--auto-send",
@@ -839,7 +839,7 @@ fn selections_need_the_consent_of_their_own_workspace() {
     let g = s.generate(json!({"operation": "pane_title", "pane": pa}));
     assert_eq!(g["requires_confirmation"], false, "{g}");
     // Revoking B cancels the pending cross-workspace request.
-    let r = s.json(&["assist", "revoke", &wb]);
+    let r = s.json(&["assistant", "revoke", &wb]);
     assert_eq!(r["cancelled_requests"], 1, "{r}");
 }
 
@@ -859,7 +859,7 @@ fn auto_send_needs_both_config_and_consent() {
                 ""
             },
         );
-        let mut args = vec!["assist", "consent", ws.as_str()];
+        let mut args = vec!["assistant", "consent", ws.as_str()];
         if grant_on {
             args.extend(["--auto-send", "briefing"]);
         }
@@ -878,7 +878,7 @@ fn auto_send_needs_both_config_and_consent() {
         } else {
             std::thread::sleep(Duration::from_millis(300));
             assert_eq!(fake.count(), before, "config {cfg_on} grant {grant_on}");
-            s.json(&["assist", "cancel", id]);
+            s.json(&["assistant", "cancel", id]);
         }
     }
 }
@@ -891,7 +891,7 @@ fn queued_requests_never_send_after_disable_or_revocation_elsewhere() {
     let (ws, _) = s.workspace_at("queue");
     let base = "max_concurrent_requests = 1";
     s.config(&fake.url(), base);
-    s.json(&["assist", "consent", &ws]);
+    s.json(&["assistant", "consent", &ws]);
 
     // Revocation written by another session (the consent file is shared; nothing tells this
     // session): the queued request is cancelled at dispatch and never sent.
@@ -969,7 +969,7 @@ fn run_names_with_secrets_are_redacted_everywhere() {
         format!("{cfg}\n[security.redact]\npatterns = [\"ACME-[0-9]{{6}}\"]\n"),
     )
     .unwrap();
-    s.json(&["assist", "consent", &ws]);
+    s.json(&["assistant", "consent", &ws]);
     let (run, _) = s.agent(&pane, "sess-n", "hello");
     let custom = "ACME-424242";
     s.api(
@@ -1021,7 +1021,7 @@ fn retries_go_through_admission_and_partial_usage_is_conservative() {
     ]);
     let (ws, _) = s.workspace_at("retry");
     s.config(&fake.url(), "daily_request_limit = 1");
-    s.json(&["assist", "consent", &ws]);
+    s.json(&["assistant", "consent", &ws]);
     let g = s.generate(json!({"operation": "briefing", "workspace": ws}));
     s.confirm(&g).unwrap();
     let r = s.wait_state(g["request"]["id"].as_str().unwrap(), &["done", "failed"]);
@@ -1041,7 +1041,7 @@ fn retries_go_through_admission_and_partial_usage_is_conservative() {
     ]);
     let (ws, _) = s.workspace_at("retry2");
     s.config(&fake.url(), "requests_per_minute = 1");
-    s.json(&["assist", "consent", &ws]);
+    s.json(&["assistant", "consent", &ws]);
     let g = s.generate(json!({"operation": "briefing", "workspace": ws}));
     s.confirm(&g).unwrap();
     let r = s.wait_state(g["request"]["id"].as_str().unwrap(), &["done", "failed"]);
@@ -1057,7 +1057,7 @@ fn retries_go_through_admission_and_partial_usage_is_conservative() {
     ]);
     let (ws, _) = s.workspace_at("retry3");
     s.config(&fake.url(), "");
-    s.json(&["assist", "consent", &ws]);
+    s.json(&["assistant", "consent", &ws]);
     let g = s.generate(json!({"operation": "briefing", "workspace": ws}));
     s.confirm(&g).unwrap();
     let r = s.wait_state(g["request"]["id"].as_str().unwrap(), &["done", "failed"]);
@@ -1105,14 +1105,14 @@ fn restart_charges_interrupted_dispatched_requests() {
         FakeServer::start_in_thread(vec![briefing_reply("s1").delayed(Duration::from_secs(60))]);
     let (ws, _) = s.workspace_at("crash");
     s.config(&fake.url(), "");
-    s.json(&["assist", "consent", &ws]);
+    s.json(&["assistant", "consent", &ws]);
     let g = s.generate(json!({"operation": "briefing", "workspace": ws}));
     let id = g["request"]["id"].as_str().unwrap().to_string();
     s.confirm(&g).unwrap();
     s.until("request at the provider", 10, || {
         (fake.count() == 1).then_some(())
     });
-    let reserved = s.json(&["assist", "status"])["today"]["reserved"].clone();
+    let reserved = s.json(&["assistant", "status"])["today"]["reserved"].clone();
     assert_eq!(reserved["requests"], 1, "{reserved}");
     let pid = server_pid(&s);
     let _ = Command::new("kill").args(["-9", &pid]).status();
@@ -1126,7 +1126,7 @@ fn restart_charges_interrupted_dispatched_requests() {
     });
     // The next call starts the same session again.
     let st = s.until("server back", 20, || {
-        s.cmd(&["assist", "status"])
+        s.cmd(&["assistant", "status"])
             .output()
             .ok()
             .filter(|o| o.status.success())
@@ -1151,7 +1151,7 @@ fn concurrent_confirmations_dispatch_once() {
     fake.set_fallback(briefing_reply("s1").delayed(Duration::from_millis(300)));
     let (ws, _) = s.workspace_at("race");
     s.config(&fake.url(), "");
-    s.json(&["assist", "consent", &ws]);
+    s.json(&["assistant", "consent", &ws]);
     let g = s.generate(json!({"operation": "briefing", "workspace": ws}));
     let results: Vec<Result<Value, Value>> = std::thread::scope(|sc| {
         let hs: Vec<_> = (0..8).map(|_| sc.spawn(|| s.confirm(&g))).collect();
@@ -1184,7 +1184,7 @@ fn concurrent_confirmations_dispatch_once() {
         s.wait_state(g["request"]["id"].as_str().unwrap(), &["done", "failed"])["state"],
         "done"
     );
-    assert!(s.json(&["assist", "status"])["enabled"] == true);
+    assert!(s.json(&["assistant", "status"])["enabled"] == true);
 }
 
 /// Additional coverage: concurrent generation with one idempotency key yields one request.
@@ -1194,7 +1194,7 @@ fn idempotent_generation_under_concurrency() {
     let fake = FakeServer::start_in_thread(vec![]);
     let (ws, _) = s.workspace_at("idem");
     s.config(&fake.url(), "");
-    s.json(&["assist", "consent", &ws]);
+    s.json(&["assistant", "consent", &ws]);
     let ids: Vec<String> = std::thread::scope(|sc| {
         let hs: Vec<_> = (0..6)
             .map(|_| {
@@ -1210,7 +1210,7 @@ fn idempotent_generation_under_concurrency() {
         hs.into_iter().map(|h| h.join().unwrap()).collect()
     });
     assert!(ids.iter().all(|i| *i == ids[0]), "{ids:?}");
-    let list = s.json(&["assist", "list"])["requests"]
+    let list = s.json(&["assistant", "list"])["requests"]
         .as_array()
         .unwrap()
         .clone();
@@ -1227,7 +1227,7 @@ fn abandoned_previews_expire_and_are_bounded() {
         &fake.url(),
         "preview_ttl_seconds = 1\nresult_retention_hours = 0\nmax_concurrent_requests = 1\nmax_queued_requests = 1",
     );
-    s.json(&["assist", "consent", &ws]);
+    s.json(&["assistant", "consent", &ws]);
     let a = s.generate(json!({"operation": "briefing", "workspace": ws}));
     let _b = s.generate(json!({"operation": "briefing", "workspace": ws}));
     // Bounded: a third unconfirmed preview is refused.
@@ -1285,7 +1285,7 @@ fn errors_never_echo_config_values_or_provider_content() {
     }
     // Provider replies with secrets and control characters in invalid enum / reference fields.
     s.config(&fake.url(), "");
-    s.json(&["assist", "consent", &ws]);
+    s.json(&["assistant", "consent", &ws]);
     for body in [
         json!({"items": [{"text": "x", "kind": format!("{sentinel}\u{1b}[2J"), "source_refs": ["s1"]}]}),
         json!({"items": [{"text": "x", "targets": [format!("{sentinel}\u{7}")], "source_refs": ["s1"]}]}),
@@ -1312,7 +1312,7 @@ fn pane_scoped_callers_are_denied_every_assistant_method() {
     let fake = FakeServer::start_in_thread(vec![]);
     let (ws, pane) = s.workspace_at("scope");
     s.config(&fake.url(), "");
-    s.json(&["assist", "consent", &ws]);
+    s.json(&["assistant", "consent", &ws]);
     let methods = [
         "assistant.status",
         "assistant.providers",
@@ -1371,14 +1371,14 @@ fn pane_scoped_callers_are_denied_every_assistant_method() {
     assert_eq!(fake.count(), 0);
     // Nothing was granted, revoked or created by the pane.
     assert_eq!(
-        s.json(&["assist", "status"])["consents"]
+        s.json(&["assistant", "status"])["consents"]
             .as_array()
             .unwrap()
             .len(),
         1
     );
     assert!(
-        s.json(&["assist", "list"])["requests"]
+        s.json(&["assistant", "list"])["requests"]
             .as_array()
             .unwrap()
             .is_empty()
@@ -1426,7 +1426,7 @@ fn effort_estimate_is_previewed_confirmed_and_never_applied() {
         .to_string();
     let pane = v["root_pane"]["id"].as_str().unwrap().to_string();
     s.config(&fake.url(), "");
-    s.json(&["assist", "consent", &ws]);
+    s.json(&["assistant", "consent", &ws]);
     let script = s.dir.path().join("fake-claude");
     std::fs::write(&script, FAKE_CLAUDE).unwrap();
     std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
@@ -1499,7 +1499,7 @@ fn effort_estimate_is_previewed_confirmed_and_never_applied() {
         20,
     ));
     s.json(&[
-        "assist",
+        "assistant",
         "confirm",
         &id,
         g["preview"]["digest"].as_str().unwrap(),
