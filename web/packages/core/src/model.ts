@@ -487,7 +487,7 @@ export interface Worktree {
   main: boolean;
 }
 
-export type TranscriptItemKind = 'text' | 'thinking' | 'tool_call' | 'tool_result' | 'image';
+export type TranscriptItemKind = 'text' | 'thinking' | 'tool_call' | 'tool_result' | 'image' | 'bg_event';
 
 /** One item of a transcript turn (server gateway_api.rs `line_items`). */
 export interface TranscriptItem {
@@ -511,6 +511,10 @@ export interface TranscriptItem {
   ref?: string | null;
   /** `image`: decoded size in bytes (approximate). */
   size?: number | null;
+  /** `bg_event`: the tool call that started the background task (`id` is the task id). */
+  tool_use_id?: string | null;
+  /** `bg_event`: `completed` | `failed` | `stopped` | `event`. */
+  status?: string | null;
 }
 
 /** One transcript turn (`agent.transcript`): a user prompt and everything up to the next one. */

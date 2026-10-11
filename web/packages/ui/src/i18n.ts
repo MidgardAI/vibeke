@@ -95,6 +95,19 @@ export const en = {
     gone: 'This item is no longer open',
   },
 
+  bg: {
+    count: (n: number) => `${n} in background`,
+    title: 'Running in background',
+    stillRunning: (n: number) => `${n} still running`,
+    runningInBackground: 'Running in background',
+    show: 'Show all',
+    hide: 'Show less',
+    more: (n: number) => `${n} more`,
+    jump: 'Show the tool call',
+    kind: { shell: 'Shell', subagent: 'Subagent', monitor: 'Monitor', workflow: 'Workflow', teammate: 'Teammate' } as Record<string, string>,
+    event: { completed: 'Task finished', failed: 'Task failed', stopped: 'Task stopped', event: 'Task update' } as Record<string, string>,
+  },
+
   panes: {
     needYou: (n: number) => `${n} ${plural(n, 'needs', 'need')} you`,
     pinned: 'Pinned',

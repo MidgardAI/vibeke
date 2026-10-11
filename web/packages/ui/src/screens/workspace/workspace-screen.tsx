@@ -42,6 +42,7 @@ import { usePaneActions, type PaneActions } from '../pane/actions';
 import { ActionBelt, type BeltTab } from '../pane/belt';
 import { Composer } from '../pane/composer';
 import { ShareSheet } from '../share';
+import { BgChip } from '../../components/bg-chip';
 import { Conversation } from './conversation';
 import { useWorkspaceShots } from '../../app/screenshot-store';
 import { showsCentreDiff } from './panel';
@@ -289,6 +290,7 @@ function Workspace({ route, row, current, locked }: { route: WorkspaceRoute; row
       <span className="flex min-w-0 items-center gap-1.5">
         <h1 className={cx('truncate font-semibold', narrow ? 'text-[15px]' : 'text-[14px]')}>{row.title}</h1>
         <CacheChip run={current.run} />
+        <BgChip run={current.run} />
       </span>
       {sub && <span className={cx('truncate text-muted', narrow ? 'text-xs' : 'text-[13px]')}>{sub}</span>}
     </div>
