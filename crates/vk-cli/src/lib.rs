@@ -2105,9 +2105,137 @@ fn scalar(v: &str) -> Value {
     Value::String(v.to_string())
 }
 
-/// Build params from argv after `<noun> <verb>`.
+/// Build params from argv after `<noun> <verb>`, guessing value types (see
+/// [`build_params_for`] for a known method).
 pub fn build_params(positional: &[&str], args: &[String]) -> Result<Value, String> {
+    build_params_for(None, positional, args)
+}
+
+/// The params shapes that may hold `key` (every arm of a union of objects).
+fn field_shapes<'a>(
+    params: &'a vk_server::shape::Shape,
+    key: &str,
+) -> Vec<&'a vk_server::shape::Shape> {
+    use vk_server::shape::Shape;
+    match params {
+        Shape::Obj(fs) => fs
+            .iter()
+            .filter(|f| f.name == key)
+            .map(|f| &f.shape)
+            .collect(),
+        Shape::Union(arms) => arms.iter().flat_map(|a| field_shapes(a, key)).collect(),
+        _ => vec![],
+    }
+}
+
+/// Does the shape accept some string (a string, or a string literal)?
+fn takes_text(
+    s: &vk_server::shape::Shape,
+    defs: &std::collections::BTreeMap<String, vk_server::shape::Shape>,
+) -> bool {
+    use vk_server::shape::Shape;
+    match s {
+        Shape::Str | Shape::Lit(_) | Shape::Any => true,
+        Shape::Union(arms) => arms.iter().any(|a| takes_text(a, defs)),
+        Shape::Ref(n) => defs.get(n).is_some_and(|d| takes_text(d, defs)),
+        _ => false,
+    }
+}
+
+/// A value typed on the command line, as JSON: guessed (`42` is a number, `true` a bool,
+/// `[1]` an array), unless `method`'s schema says what `key` holds: then a string field keeps
+/// `42` as the string "42", a number field takes `0.5`, a list field takes a single value as a
+/// one-item list, and a value that fits nothing is refused with the type it needs.
+fn coerce_param(
+    method: Option<&str>,
+    key: &str,
+    raw: Value,
+    flag: bool,
+    rest: bool,
+) -> Result<Value, String> {
+    let guess = |v: &Value| match v {
+        // `keys...`-style rest positionals are lists of words, never guessed.
+        _ if rest => v.clone(),
+        Value::String(s) => scalar(s),
+        Value::Array(a) => Value::Array(
+            a.iter()
+                .map(|x| match x {
+                    Value::String(s) => scalar(s),
+                    other => other.clone(),
+                })
+                .collect(),
+        ),
+        other => other.clone(),
+    };
+    let guessed = guess(&raw);
+    let Some(entry) = method.and_then(|m| vk_server::api_schema::registry().methods.get(m)) else {
+        return Ok(guessed);
+    };
+    let defs = &vk_server::api_schema::registry().defs;
+    let shapes = field_shapes(&entry.params, key);
+    if shapes.is_empty() {
+        return Ok(guessed);
+    }
+    let fits = |v: &Value| shapes.iter().any(|s| s.validate(v, defs).is_empty());
+    let mut candidates = vec![guessed.clone(), raw.clone()];
+    if let Value::String(s) = &raw
+        && let Ok(f) = s.trim().parse::<f64>()
+        && f.is_finite()
+    {
+        candidates.push(serde_json::json!(f));
+    }
+    candidates.push(Value::Array(vec![guessed.clone()]));
+    candidates.push(Value::Array(vec![raw.clone()]));
+    if let Some(v) = candidates.into_iter().find(|v| fits(v)) {
+        return Ok(v);
+    }
+    // A word for a text field (a name, or one of a set of names the schema may not list in
+    // full): the server checks the value itself.
+    if raw.is_string() && shapes.iter().any(|s| takes_text(s, defs)) {
+        return Ok(raw);
+    }
+    let why = shapes[0]
+        .validate(&guessed, defs)
+        .into_iter()
+        .next()
+        .unwrap_or_default();
+    let why = why.strip_prefix("$: ").unwrap_or(&why).to_string();
+    let name = if flag {
+        format!("--{}", key.replace('_', "-"))
+    } else {
+        format!("<{key}>")
+    };
+    Err(format!("{name}: {why}"))
+}
+
+/// Build params from argv after `<noun> <verb>` for `method`: values are typed by the
+/// method's schema where it has one ([`coerce_param`]). `--` ends the flags: every later word is
+/// positional, so a value may start with `--`.
+pub fn build_params_for(
+    method: Option<&str>,
+    positional: &[&str],
+    args: &[String],
+) -> Result<Value, String> {
+    let raw = build_raw_params(positional, args)?;
+    let Value::Object(raw) = raw else {
+        return Ok(raw);
+    };
+    let mut out = Map::new();
+    for (k, e) in raw {
+        let flag = e["flag"].as_bool().unwrap_or(false);
+        let rest = e["rest"].as_bool().unwrap_or(false);
+        let v = coerce_param(method, &k, e["value"].clone(), flag, rest)?;
+        out.insert(k, v);
+    }
+    Ok(Value::Object(out))
+}
+
+/// The words of argv per param, untyped: `{key: {value: "raw" | true | false | [..], flag, rest}}`.
+fn build_raw_params(positional: &[&str], args: &[String]) -> Result<Value, String> {
+    let scalar = |v: &str| Value::String(v.to_string());
     let mut map = Map::new();
+    let mut flags = std::collections::BTreeSet::new();
+    let mut rests = std::collections::BTreeSet::new();
     let mut pos = Vec::new();
     let mut i = 0;
     while i < args.len() {
@@ -2122,11 +2250,13 @@ pub fn build_params(positional: &[&str], args: &[String]) -> Result<Value, Strin
                 None => (flag.to_string(), None),
             };
             if let Some(neg) = k.strip_prefix("no-") {
+                flags.insert(neg.replace('-', "_"));
                 map.insert(neg.replace('-', "_"), Value::Bool(false));
                 i += 1;
                 continue;
             }
             let key = k.replace('-', "_");
+            flags.insert(key.clone());
             let value = match inline {
                 Some(v) => scalar(&v),
                 None if i + 1 < args.len() && !args[i + 1].starts_with("--") => {
@@ -2159,6 +2289,7 @@ pub fn build_params(positional: &[&str], args: &[String]) -> Result<Value, Strin
                 .map(|s| Value::String(s.clone()))
                 .collect();
             if !rest_vals.is_empty() {
+                rests.insert(rest.to_string());
                 map.insert(rest.to_string(), Value::Array(rest_vals));
             }
             pi = pos.len();
@@ -2173,7 +2304,18 @@ pub fn build_params(positional: &[&str], args: &[String]) -> Result<Value, Strin
     if pi < pos.len() {
         return Err(format!("unexpected argument `{}`", pos[pi]));
     }
-    Ok(Value::Object(map))
+    Ok(Value::Object(
+        map.into_iter()
+            .map(|(k, v)| {
+                let flag = flags.contains(&k);
+                let rest = rests.contains(&k);
+                (
+                    k,
+                    serde_json::json!({"value": v, "flag": flag, "rest": rest}),
+                )
+            })
+            .collect(),
+    ))
 }
 
 /// Verb-specific param massaging so the CLI reads naturally.
@@ -3739,6 +3881,74 @@ pub fn lookup(noun: &str, verb: &str) -> Option<(&'static str, &'static [&'stati
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn values_are_typed_by_the_method_schema() {
+        let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        // A string field keeps digits, `true` and brackets as text.
+        let p =
+            build_params_for(Some("pane.send_text"), &["pane", "text"], &a(&["p1", "42"])).unwrap();
+        assert_eq!(p["text"], "42");
+        assert_eq!(p["pane"], "p1");
+        let p = build_params_for(
+            Some("pane.send_text"),
+            &["pane", "text"],
+            &a(&["p1", "true"]),
+        )
+        .unwrap();
+        assert_eq!(p["text"], "true");
+        let p = build_params_for(
+            Some("pane.send_text"),
+            &["pane", "text"],
+            &a(&["p1", "[1]"]),
+        )
+        .unwrap();
+        assert_eq!(p["text"], "[1]");
+        // `--` ends the flags: the text may start with `--`.
+        let p = build_params_for(
+            Some("pane.send_text"),
+            &["pane", "text"],
+            &a(&["p1", "--", "--help"]),
+        )
+        .unwrap();
+        assert_eq!(p["text"], "--help");
+        // Numbers where the schema wants numbers, fractions included.
+        let p = build_params_for(
+            Some("pane.split"),
+            &["pane"],
+            &a(&["p1", "--ratio", "0.3", "--focus"]),
+        )
+        .unwrap();
+        assert_eq!(p["ratio"], serde_json::json!(0.3));
+        assert_eq!(p["focus"], true);
+        // A value that fits nothing names the type it needs.
+        let e =
+            build_params_for(Some("pane.send_text"), &["pane"], &a(&["p1", "--text"])).unwrap_err();
+        assert!(e.contains("--text") && e.contains("expected string"), "{e}");
+        // Unknown methods keep the guessing behaviour.
+        let p = build_params(&["n"], &a(&["42"])).unwrap();
+        assert_eq!(p["n"], 42);
+        // Rest positionals stay words.
+        let p = build_params_for(
+            Some("pane.send_keys"),
+            &["pane", "keys..."],
+            &a(&["p1", "1", "2"]),
+        )
+        .unwrap();
+        assert_eq!(p["keys"], serde_json::json!(["1", "2"]));
+        // A word the schema's list of names lacks still reaches the server, which decides.
+        let p = build_params_for(
+            Some("pane.read"),
+            &["pane"],
+            &a(&["p1", "--source", "archive"]),
+        )
+        .unwrap();
+        assert_eq!(p["source"], "archive");
+        // A non-number for a number field is refused here.
+        let e = build_params_for(Some("pane.read"), &["pane"], &a(&["p1", "--lines", "many"]))
+            .unwrap_err();
+        assert!(e.contains("--lines"), "{e}");
+    }
 
     #[test]
     fn assist_is_an_alias_of_assistant() {

@@ -574,7 +574,7 @@ async fn dispatch(g: Global, args: Vec<String>) -> i32 {
                 );
                 return EXIT_USAGE;
             };
-            let mut params = match vk_cli::build_params(positional, &args[2..]) {
+            let mut params = match vk_cli::build_params_for(Some(method), positional, &args[2..]) {
                 Ok(p) => p,
                 Err(e) => {
                     eprintln!("{e}\n{}", vk_cli::noun_help(noun));
