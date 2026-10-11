@@ -11,6 +11,7 @@ pub mod handoff;
 pub mod handoff_peer;
 pub mod handoff_send;
 pub mod local;
+pub mod notice;
 pub mod notify;
 pub mod pair;
 pub mod peer_client;

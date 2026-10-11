@@ -139,6 +139,8 @@ pub async fn claim(
     pairing: Pairing,
     remote: [u8; 32],
 ) {
+    // Both ends derive the same code from this handshake; a device in the middle can't.
+    let check = keys::check_code(&session.handshake_hash());
     let session = Arc::new(tokio::sync::Mutex::new(session));
     let (sink, mut stream) = ws.split();
     let (out, writer) = spawn_writer(sink, session.clone());
@@ -192,6 +194,7 @@ pub async fn claim(
             fingerprint: fingerprint.clone(),
             device_name: name.clone(),
             platform: platform.clone(),
+            check: check.clone(),
         };
         current.confirmed = None;
         current.confirmed_claim = None;
@@ -202,7 +205,7 @@ pub async fn claim(
         out.send(json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32003, "message": "pairing is not available", "data": {"kind": "forbidden"}}})).await;
         return;
     };
-    out.send(json!({"jsonrpc": "2.0", "id": id, "result": {"status": "pending", "fingerprint": fingerprint}})).await;
+    out.send(json!({"jsonrpc": "2.0", "id": id, "result": {"status": "pending", "check": check, "fingerprint": fingerprint}})).await;
 
     // Wait for the operator (or accept immediately in bearer mode), noticing if the device leaves.
     // Only a confirmation bound to *this* claim counts.
@@ -218,7 +221,9 @@ pub async fn claim(
             claim_id.clone(),
             format!("Pair \"{name}\" with {}?", gw.host_name),
             format!(
-                "{platform} · fingerprint {fingerprint}\nCheck it matches the phone before pairing."
+                "{platform} · {} access\nCheck code: {check}\nPair only if the device shows the same code. It {}.",
+                current.scope.as_str(),
+                crate::notice::access_text(current.scope)
             ),
         );
         Some(tokio::spawn(async move {
@@ -313,7 +318,11 @@ pub async fn claim(
         .unwrap_or(false);
     if consumed {
         LIMITER.lock().unwrap().forget(&pairing.pid);
-        gw.state.audit(&json!({"ts": now_s(), "event": "device.paired", "device": device.id, "name": name, "fingerprint": fingerprint, "kind": device.kind}));
+        gw.state.audit(&json!({"ts": now_s(), "event": "device.paired", "device": device.id, "name": name, "fingerprint": fingerprint, "check": check, "kind": device.kind}));
+        crate::notice::spawn(
+            &gw.server,
+            crate::notice::device_added(&device.kind, &name, device.scope, &gw.host_name),
+        );
         let (ticket, ticket_exp) = device_ticket(&gw.keys, &device.id, device.expires_at);
         out.notify("pair.done", json!({"device_id": device.id, "host_name": gw.host_name, "host_id": gw.keys.host_id(), "scope": device.scope, "kind": device.kind,
                                        "ticket": ticket, "ticket_exp": ticket_exp})).await;
@@ -482,14 +491,14 @@ pub fn record_answer(state: &StateDir, pid: &str, claim: &str, yes: bool) -> Res
 }
 
 /// The terminal question for a claim. Device-supplied text is sanitized again (the pairing file
-/// may come from an older gateway), and the fingerprint sits alone on the last line, where
-/// nothing the device sent can precede it on the same line.
-fn confirm_prompt(name: &str, platform: &str, fingerprint: &str) -> String {
+/// may come from an older gateway), and the check code sits alone on its line, where nothing the
+/// device sent can precede it.
+fn confirm_prompt(name: &str, platform: &str, code: &str) -> String {
     let name = sanitize_label(name, 64);
     let platform = sanitize_label(platform, 32);
-    let fingerprint = sanitize_label(fingerprint, 128);
+    let code = sanitize_label(code, 128);
     format!(
-        "Pair \"{name}\" ({platform})? Check this fingerprint matches the phone:\n  {fingerprint}\nPair? [y/N] "
+        "Pair \"{name}\" ({platform})? Check that the device shows this code:\n  {code}\nPair? [y/N] "
     )
 }
 
@@ -516,11 +525,14 @@ pub async fn wait_and_confirm(state: &StateDir, pid: &str, exp: u64) -> Result<(
                 fingerprint,
                 device_name: name,
                 platform,
+                check,
                 ..
             } if asked.as_deref() != Some(claim_id.as_str()) => {
                 let shown = claim_id.clone();
                 asked = Some(shown.clone());
-                let prompt = confirm_prompt(name, platform, fingerprint);
+                // An older gateway's pairing file has no check code: its fingerprint, then.
+                let code = if check.is_empty() { fingerprint } else { check };
+                let prompt = confirm_prompt(name, platform, code);
                 let answer = tokio::task::spawn_blocking(move || {
                     print!("{prompt}");
                     let _ = std::io::stdout().flush();

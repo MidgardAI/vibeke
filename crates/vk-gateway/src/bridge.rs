@@ -12,7 +12,7 @@
 //!   `vibeke gateway pair`) => `{link, pid, open_by, scope}`. `unavailable` without a relay or
 //!   an app origin.
 //! - `pair.status {pid}` => `{status: pending}` | `{status: claimed, name, platform,
-//!   fingerprint}` | `{status: done, device_id, name?}` (kept until the sweep removes it, so a retry sees it again) |
+//!   fingerprint, check}` (`check`: the pairing's check code, which the device shows too) | `{status: done, device_id, name?}` (kept until the sweep removes it, so a retry sees it again) |
 //!   `{status: rejected}` | `{status: gone}` (unknown or expired).
 //!
 //! Cancelling a pairing is `share.revoke {id: pid}` (removes any pairing that isn't done).
@@ -189,6 +189,10 @@ fn pair_create(gw: &Arc<Gateway>, p: &Value) -> ApiResult {
     )
     .map_err(crate::api::internal)?;
     gw.state.audit(&json!({"ts": now_s(), "event": "pairing.created", "by": BY, "pid": pairing.pid, "scope": scope.as_str()}));
+    crate::notice::spawn(
+        &gw.server,
+        crate::notice::pairing_created(scope, ttl_s.div_ceil(60)),
+    );
     Ok(json!({
         "link": link.to_url(&app),
         "pid": pairing.pid,
@@ -222,10 +226,12 @@ fn pair_status(gw: &Arc<Gateway>, p: &Value) -> ApiResult {
                 fingerprint,
                 device_name,
                 platform,
+                check,
                 ..
             } => {
+                // `check`: the code the operator compares with the device's.
                 return Ok(json!({"status": "claimed", "name": device_name,
-                                 "platform": platform, "fingerprint": fingerprint}));
+                                 "platform": platform, "fingerprint": fingerprint, "check": check}));
             }
         }
     };
@@ -593,13 +599,14 @@ mod tests {
                     fingerprint: "ab-cd".into(),
                     device_name: "phone".into(),
                     platform: "ios".into(),
+                    check: "ABCD-EFGH-IJKL".into(),
                 },
                 ..pairing.clone()
             })
             .unwrap();
         assert_eq!(
             status(pid.clone()).await,
-            json!({"status": "claimed", "name": "phone", "platform": "ios", "fingerprint": "ab-cd"})
+            json!({"status": "claimed", "name": "phone", "platform": "ios", "fingerprint": "ab-cd", "check": "ABCD-EFGH-IJKL"})
         );
 
         // Done: reported with the device's name, again on a retry (a reply may be lost).

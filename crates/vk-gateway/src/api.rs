@@ -2085,6 +2085,11 @@ impl Call<'_> {
             )
         })?;
         self.gw.state.audit(&json!({"ts": now_s(), "event": "share.created", "by": self.device.id, "kind": kind, "pid": pairing.pid}));
+        let by = creator(self.device).map(|_| self.device.name.clone());
+        crate::notice::spawn(
+            &self.gw.server,
+            crate::notice::share_created(kind, scope, by.as_deref()),
+        );
         Ok(
             json!({"link": link.to_url(&app), "pid": pairing.pid, "open_by": pairing.exp, "expires_at": until, "expires_after_s": ttl_s}),
         )

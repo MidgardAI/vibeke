@@ -268,14 +268,14 @@ fn polling_follows_claimed_then_done() {
         0,
         req,
         json!({"status": "claimed", "name": "Pixel 9", "platform": "android",
-               "fingerprint": "12:34"}),
+               "fingerprint": "12:34", "check": "ABCD-EFGH-IJKL"}),
     );
     let s = screen(&app);
     assert!(
-        s.contains("'Pixel 9' (android) is asking to pair — press y to pair or n to reject"),
+        s.contains("'Pixel 9' (android) is asking to pair — check code ABCD-EFGH-IJKL"),
         "{s}"
     );
-    assert!(s.contains("fingerprint 12:34"), "{s}");
+    assert!(!s.contains("12:34"), "{s}");
     // Not again before a second has passed.
     tick(&mut app);
     assert!(commands(&mut rxs[0]).is_empty());

@@ -283,6 +283,8 @@ pub async fn dispatch(gw: &Arc<Gateway>, device: &Device, method: &str, p: &Valu
             )
             .map_err(internal)?;
             gw.state.audit(&json!({"ts": now_s(), "event": "share.created", "by": device.id, "kind": "peer", "pid": pairing.pid}));
+            let by = crate::api::creator(device).map(|_| device.name.clone());
+            crate::notice::spawn(&gw.server, crate::notice::peer_invited(by.as_deref()));
             Ok(
                 json!({"link": link_text(&link, gw.cfg.app_url.as_deref()), "pid": pairing.pid, "open_by": pairing.exp}),
             )
@@ -331,6 +333,11 @@ pub async fn dispatch(gw: &Arc<Gateway>, device: &Device, method: &str, p: &Valu
                 }
             })?;
             crate::handoff_send::publish_peers(gw, false).await;
+            let by = crate::api::creator(device).map(|_| device.name.clone());
+            crate::notice::spawn(
+                &gw.server,
+                crate::notice::peer_redeemed(&rec.name, by.as_deref()),
+            );
             Ok(json!({"peer": rec.public_json()}))
         }
         "peer.list" => {

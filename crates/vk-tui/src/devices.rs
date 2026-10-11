@@ -212,6 +212,7 @@ pub enum PairStatus {
     Claimed {
         name: String,
         platform: String,
+        /// The pairing's check code (the device fingerprint from an older gateway).
         fingerprint: String,
     },
     /// Declined; the link stays valid until it expires.
@@ -967,7 +968,11 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
                             p.status = PairStatus::Claimed {
                                 name: s_of(&x, "name").unwrap_or_default(),
                                 platform: s_of(&x, "platform").unwrap_or_default(),
-                                fingerprint: s_of(&x, "fingerprint").unwrap_or_default(),
+                                // The pairing's check code; an older gateway sends the
+                                // device fingerprint only.
+                                fingerprint: s_of(&x, "check")
+                                    .or_else(|| s_of(&x, "fingerprint"))
+                                    .unwrap_or_default(),
                             }
                         }
                         Some("rejected") => p.status = PairStatus::Rejected,
@@ -1335,7 +1340,7 @@ fn draw_pairing(app: &App, a: &mut crate::drafts::Area<'_>, v: &View, p: &Pairin
     let left = p.open_by - now_s();
     a.line(&format!("Pair a phone · {} access", p.scope), t.bold(t.fg));
     a.line(
-        "Scan with your phone's camera; check the fingerprint matches when asked",
+        "Scan with your phone's camera; check that both show the same code when asked",
         t.text(),
     );
     match &p.status {
@@ -1360,7 +1365,7 @@ fn draw_pairing(app: &App, a: &mut crate::drafts::Area<'_>, v: &View, p: &Pairin
             wrap_lines(
                 a,
                 &format!(
-                    "'{who}'{plat} is asking to pair — press y to pair or n to reject in the Confirm prompt, fingerprint {}",
+                    "'{who}'{plat} is asking to pair — check code {} — pair only if the device shows the same code: y in the Confirm prompt pairs, n rejects",
                     crate::plugins::sanitize(fingerprint, 80)
                 ),
                 t.bold(t.green),

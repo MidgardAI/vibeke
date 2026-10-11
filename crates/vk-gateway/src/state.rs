@@ -363,6 +363,10 @@ pub enum PairingStatus {
         fingerprint: String,
         device_name: String,
         platform: String,
+        /// The pairing's check code (`vk_e2e::keys::check_code` of the handshake hash): the
+        /// operator compares it with the code the device shows. Empty in older pairing files.
+        #[serde(default)]
+        check: String,
     },
     Done {
         device_id: String,
@@ -941,6 +945,7 @@ mod tests {
                 fingerprint: "ab-cd".into(),
                 device_name: "n".into(),
                 platform: "ios".into(),
+                check: "ABCD-EFGH-IJKL".into(),
             },
             confirmed: None,
             confirmed_claim: None,

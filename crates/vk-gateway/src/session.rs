@@ -147,7 +147,11 @@ pub async fn serve(gw: Arc<Gateway>, mut ws: impl Ws, dialing: Dialing) {
         .get("server_version")
         .cloned()
         .unwrap_or(Value::Null);
+    // `relay_key` and `key_sig` bind this Noise key to the host id: a device checks them before
+    // it trusts the host id a pairing link names (`vk_e2e::keys::verify_key_binding`).
     let payload = json!({"v": 1, "host_name": gw.host_name, "host_id": gw.keys.host_id(),
+                         "relay_key": b64::encode(gw.keys.relay_public()),
+                         "key_sig": b64::encode(gw.keys.key_binding()),
                          "gateway_version": env!("CARGO_PKG_VERSION"), "server_version": server_version});
     let Ok((m2, session)) = responder.write_second(payload.to_string().as_bytes()) else {
         return;
