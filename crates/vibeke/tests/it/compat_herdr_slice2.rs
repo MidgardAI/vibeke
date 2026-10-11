@@ -686,8 +686,14 @@ fn plugin_panes_audit_events_and_redacted_logs() {
     assert!(out.contains("token"), "{log}");
     assert!(!out.contains("ghp_AAAAAAAA"), "redacted: {log}");
     assert!(!out.contains("AKIAABCDEFGHIJKLMNOP"), "redacted: {log}");
-    let calls = s_.events("plugin.api_call");
-    let methods: Vec<String> = calls.iter().map(|e| s(&e["data"]["method"])).collect();
+    // The audit event is written after the call returns: wait for it, not for the log.
+    let mut calls = Vec::new();
+    let mut methods: Vec<String> = Vec::new();
+    wait_for("pane.rename audit event", 15000, || {
+        calls = s_.events("plugin.api_call");
+        methods = calls.iter().map(|e| s(&e["data"]["method"])).collect();
+        methods.contains(&"pane.rename".to_string())
+    });
     assert!(methods.contains(&"pane.rename".to_string()), "{calls:?}");
     assert!(
         !methods.contains(&"pane.list".to_string()),
