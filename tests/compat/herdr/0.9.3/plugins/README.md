@@ -19,3 +19,7 @@ Run these from the repository root. They need `bun` and `git`.
 - `bun scripts/herdr-plugins-fetch.ts --mirror <dir>` fetches each locked repository at its pinned commit into `<dir>/<owner>/<repo>`. Use `VIBEKE_PLUGIN_GIT_BASE=file://<dir>` to install from it. It never runs plugin code.
 - `bun scripts/herdr-plugins-scan.ts --mirror <dir>` prints one JSON line per plugin. `raw_socket` is true when the source uses the Herdr socket directly instead of the `herdr` command.
 - `bun test scripts/herdr-plugins` runs the unit tests.
+
+## Screenshots
+
+The run summary of the `herdr-plugins` workflow links to a PNG image of the plugin panes on Herdr and on Vibeke for each plugin job.

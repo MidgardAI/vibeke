@@ -3543,6 +3543,8 @@ name = "vk-conformance"
 version = "0.11.0"
 dependencies = [
  "anyhow",
+ "font8x8",
+ "image",
  "libc",
  "regex",
  "rustix",

@@ -103,7 +103,8 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   build:
-    # Trusted: builds the test binary archive and cargo-nextest that the plugin jobs run.
+    # Trusted: builds the test binary archive and cargo-nextest that the plugin jobs run, and
+    # herdr-plugin-shots, which renders the pane screenshots after the boundary.
     needs: plan
     if: needs.plan.outputs.count != '0'
     strategy:
@@ -144,13 +145,16 @@ jobs:
           key: herdr-plugins-ghostty-${{ runner.os }}-${{ hashFiles('vendor/libghostty-vt.vendor.json', 'vendor/libghostty-vt/**', 'crates/vk-term/build.rs', 'mise.toml') }}
       - name: Build the nextest archive of the integration tests
         run: cargo nextest archive --locked -p vibeke --test it --archive-file "herdr-plugins-it-$OS.tar.zst"
+      - name: Build the screenshot renderer (18 §10.5)
+        run: cargo build --release --locked -p vk-conformance --bin herdr-plugin-shots
       - name: Package with checksums
         run: |
           mkdir pkg
           mv "herdr-plugins-it-$OS.tar.zst" pkg/
           cp "$(mise which cargo-nextest)" pkg/cargo-nextest
+          cp target/release/herdr-plugin-shots pkg/herdr-plugin-shots
           cd pkg
-          shasum -a 256 cargo-nextest "herdr-plugins-it-$OS.tar.zst" > SHA256SUMS
+          shasum -a 256 cargo-nextest herdr-plugin-shots "herdr-plugins-it-$OS.tar.zst" > SHA256SUMS
           cat SHA256SUMS
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -492,6 +496,58 @@ jobs:
           path: ${{ runner.temp }}/results/
           if-no-files-found: ignore
           retention-days: 14
+      - name: Render the pane screenshots (18 §10.5)
+        id: shots
+        if: always()
+        timeout-minutes: 10
+        run: |
+          set -u
+          # Trusted code on hostile data: the renderer from the build job reads the canonical grid
+          # files in the freshly unpacked results with strict limits. It never uses the SVGs that
+          # the test wrote inside the boundary, and it computes each diff again.
+          bin="$RUNNER_TEMP/build/herdr-plugin-shots"
+          (cd "$RUNNER_TEMP/build" && grep -E '  herdr-plugin-shots$' SHA256SUMS | shasum -a 256 -c -) || exit 1
+          chmod 0755 "$bin"
+          out="$RUNNER_TEMP/screens"
+          mkdir -p "$out"
+          png="$out/screens-$STEM-$PLUGIN_OS.png"
+          status=0
+          "$bin" "$RUNNER_TEMP/results" "$png" --summary "$out/summary.md" || status=$?
+          echo "Screenshot renderer exit status $status (screenshots never fail the job)."
+          if [ -f "$png" ]; then
+            echo "png=$png" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Upload the pane screenshots
+        id: upload-shots
+        if: always() && steps.shots.outputs.png != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          # Not zipped, so the run page opens the image directly. With `archive: false` the
+          # artifact takes the file's name: screens-<stem>-<os>.png.
+          name: screens-${{ matrix.stem }}-${{ matrix.os }}
+          path: ${{ steps.shots.outputs.png }}
+          archive: false
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Link the pane screenshots in the run summary
+        if: always() && steps.shots.outcome == 'success'
+        env:
+          ARTIFACT_URL: ${{ steps.upload-shots.outputs.artifact-url }}
+        run: |
+          set -u
+          summary="$RUNNER_TEMP/screens/summary.md"
+          [ -f "$summary" ] || exit 0
+          {
+            echo "## Pane screenshots: $PLUGIN_ID ($PLUGIN_OS)"
+            echo
+            # summary.md is escaped by herdr-plugin-shots.
+            cat "$summary"
+            if [ -n "$ARTIFACT_URL" ]; then
+              echo
+              echo "Screenshots: [screens-$STEM-$PLUGIN_OS.png]($ARTIFACT_URL)"
+            fi
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Record the test exit status
         if: always()
         env:
@@ -546,6 +602,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
+      # actions: read lists the run's screenshot artifacts.
+      actions: read
       contents: read
       issues: write
     steps:
@@ -577,6 +635,30 @@ jobs:
           echo "status=$status" >> "$GITHUB_OUTPUT"
           [ -f "$RUNNER_TEMP/report/matrix.md" ] || exit 1
           cat "$RUNNER_TEMP/report/matrix.md" >> "$GITHUB_STEP_SUMMARY"
+      - name: Link the pane screenshots
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SERVER_URL: ${{ github.server_url }}
+        run: |
+          set -u
+          # The plugin jobs upload one screens-<stem>-<os>.png artifact each. Names are checked
+          # against a strict pattern and escaped before they reach Markdown.
+          if ! gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=100" \
+            --jq '.artifacts[] | select(.name | test("^screens-[A-Za-z0-9_.-]+$"))
+                  | "\(.id)\t\(.name | gsub("(?<c>[_.-])"; "\\\(.c)"))"' > "$RUNNER_TEMP/screens.tsv"; then
+            echo "Could not list the run's artifacts."
+            exit 0
+          fi
+          [ -s "$RUNNER_TEMP/screens.tsv" ] || exit 0
+          {
+            echo "## Screenshots"
+            echo
+            sort -t "$(printf '\t')" -k2 "$RUNNER_TEMP/screens.tsv" | while IFS="$(printf '\t')" read -r id name; do
+              case $id in '' | *[!0-9]*) continue ;; esac
+              echo "- [$name]($SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts/$id)"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: herdr-plugin-matrix

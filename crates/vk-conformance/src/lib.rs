@@ -14,6 +14,8 @@
 //! * [`grid`], [`mask`], [`diff`], [`render`]: the canonical cell grid, masks and stability, grid
 //!   diffs and the side-by-side report (18 §10).
 //! * [`pty`], [`herdr`]: the PTY driver and the Herdr side of a run (18 §10.1, §11).
+//! * [`shots`]: the pane screenshots for the CI run page, rendered after the boundary from the
+//!   canonical grids (18 §10.5). The `herdr-plugin-shots` binary runs it.
 //!
 //! Nothing here runs plugin code. The integration test
 //! `crates/vibeke/tests/it/compat_herdr_real_plugins.rs` does that, only inside a disposable
@@ -31,4 +33,5 @@ pub mod pty;
 pub mod render;
 pub mod result;
 pub mod scenario;
+pub mod shots;
 pub mod trace;

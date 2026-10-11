@@ -13,6 +13,10 @@ vk-proto.workspace = true
 vk-redact.workspace = true
 vk-term.workspace = true
 anyhow.workspace = true
+# PNG screenshots (18 §10.5), as in vk-server's pane_render: font8x8 is a dependency-free 8x8
+# bitmap font (MIT).
+font8x8 = "0.3"
+image = { version = "0.25", default-features = false, features = ["png"] }
 regex.workspace = true
 rustix.workspace = true
 libc.workspace = true
