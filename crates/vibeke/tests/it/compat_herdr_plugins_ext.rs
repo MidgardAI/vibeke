@@ -5,185 +5,11 @@
 //!
 //! Every test uses temp VIBEKE_* dirs; nothing touches a real Herdr, its config or sockets.
 
+use crate::support::Session;
+use crate::support::plugins::{git, read, session, session_with_env, wait_for, write};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::{Duration, Instant};
-
-struct Session {
-    dir: tempfile::TempDir,
-    env: Vec<(String, String)>,
-}
-
-impl Session {
-    fn new(config: &str) -> Self {
-        Self::with_env(config, &[])
-    }
-    fn with_env(config: &str, env: &[(&str, &str)]) -> Self {
-        let dir = tempfile::Builder::new()
-            .prefix("vkpe")
-            .tempdir_in("/tmp")
-            .unwrap();
-        std::fs::write(dir.path().join("config.toml"), config).unwrap();
-        Session {
-            dir,
-            env: env
-                .iter()
-                .map(|(k, v)| (k.to_string(), v.to_string()))
-                .collect(),
-        }
-    }
-    fn path(&self, p: &str) -> PathBuf {
-        self.dir.path().canonicalize().unwrap().join(p)
-    }
-    fn cmd(&self, args: &[&str]) -> Command {
-        let mut c = Command::new(env!("CARGO_BIN_EXE_vibeke"));
-        let d = self.dir.path();
-        c.env("VIBEKE_RUNTIME_DIR", d.join("run"))
-            .env("VIBEKE_STATE_DIR", d.join("state"))
-            .env("VIBEKE_CONFIG", d.join("config.toml"))
-            .env("XDG_DATA_HOME", d.join("data"))
-            .env("GITHUB_TOKEN", "ghp_not_for_plugins")
-            .env(
-                "VIBEKE_NOTIFIER",
-                format!("log:{}", d.join("notes.jsonl").display()),
-            );
-        for (k, v) in &self.env {
-            c.env(k, v);
-        }
-        for k in [
-            "VIBEKE",
-            "VIBEKE_SOCKET",
-            "VIBEKE_SESSION",
-            "VIBEKE_PANE_TOKEN",
-            "VIBEKE_HERDR_BROKER",
-            "HERDR_ENV",
-            "HERDR_SOCKET_PATH",
-            "HERDR_PANE_ID",
-            "HERDR_BIN_PATH",
-            "HERDR_SESSION",
-            "HERDR_PLUGIN_ID",
-        ] {
-            c.env_remove(k);
-        }
-        c.arg("--json").args(args);
-        c
-    }
-    fn json(&self, args: &[&str]) -> Value {
-        let out = self.cmd(args).output().unwrap();
-        assert!(
-            out.status.success(),
-            "{args:?}: {}{}",
-            String::from_utf8_lossy(&out.stderr),
-            String::from_utf8_lossy(&out.stdout)
-        );
-        serde_json::from_slice(&out.stdout).unwrap_or(Value::Null)
-    }
-    fn fail(&self, args: &[&str]) -> (i32, String) {
-        let out = self.cmd(args).output().unwrap();
-        assert!(
-            !out.status.success(),
-            "{args:?} should fail: {}",
-            String::from_utf8_lossy(&out.stdout)
-        );
-        (
-            out.status.code().unwrap_or(-1),
-            String::from_utf8_lossy(&out.stderr).to_string(),
-        )
-    }
-    fn herdr(&self, args: &[&str]) -> Value {
-        let mut a = vec!["compat", "herdr"];
-        a.extend(args);
-        self.json(&a)
-    }
-    fn api(&self, method: &str, params: Value) -> Value {
-        self.json(&["api", "call", method, &params.to_string()])
-    }
-    fn plugin(&self, id: &str) -> Value {
-        let l = self.api("plugin.list", json!({}));
-        l["plugins"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|p| p["plugin_id"] == id)
-            .cloned()
-            .unwrap_or_else(|| panic!("{id} not listed: {l}"))
-    }
-    fn events(&self, types: &str) -> Vec<Value> {
-        let v = self.api("events.read", json!({"types": types}));
-        v["events"].as_array().cloned().unwrap_or_default()
-    }
-    /// Run an action and return the log record at launch.
-    fn run(&self, plugin: &str, action: &str) -> Value {
-        self.api(
-            "plugin.action.run",
-            json!({"plugin": plugin, "action": action}),
-        )["log"]
-            .clone()
-    }
-    /// Wait until `plugin` has no running invocation; returns its records (oldest first).
-    fn settle(&self, plugin: &str) -> Vec<Value> {
-        let deadline = Instant::now() + Duration::from_secs(20);
-        loop {
-            let l = self.api("plugin.log.list", json!({"plugin": plugin}));
-            let logs = l["logs"].as_array().cloned().unwrap_or_default();
-            if logs.iter().all(|x| x["status"] != "running") {
-                return logs;
-            }
-            assert!(Instant::now() < deadline, "invocations never finished");
-            std::thread::sleep(Duration::from_millis(100));
-        }
-    }
-}
-
-impl Drop for Session {
-    fn drop(&mut self) {
-        let _ = self.cmd(&["server", "stop", "--kill-panes"]).output();
-    }
-}
-
-fn write(p: &Path, text: &str) {
-    std::fs::create_dir_all(p.parent().unwrap()).unwrap();
-    std::fs::write(p, text).unwrap();
-}
-
-fn read(p: &Path) -> String {
-    std::fs::read_to_string(p).unwrap_or_default()
-}
-
-fn git(dir: &Path, args: &[&str]) -> String {
-    let o = Command::new("git")
-        .args([
-            "-c",
-            "user.name=t",
-            "-c",
-            "user.email=t@t",
-            "-c",
-            "commit.gpgsign=false",
-        ])
-        .args(args)
-        .current_dir(dir)
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .output()
-        .unwrap();
-    assert!(
-        o.status.success(),
-        "git {args:?}: {}",
-        String::from_utf8_lossy(&o.stderr)
-    );
-    String::from_utf8_lossy(&o.stdout).trim().to_string()
-}
-
-fn wait_for(what: &str, timeout_ms: u64, mut f: impl FnMut() -> bool) {
-    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
-    while Instant::now() < deadline {
-        if f() {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-    panic!("timed out waiting for {what}");
-}
 
 // ---- owner/repo sources --------------------------------------------------------------------
 
@@ -219,7 +45,7 @@ fn repository_installs_pin_the_commit_and_updates_need_a_new_trust_decision() {
         ],
     );
     let base_url = format!("file://{}", b.join("srv").display());
-    let s_ = Session::with_env(
+    let s_ = session_with_env(
         "",
         &[
             ("VIBEKE_TEST_HOOKS", "1"),
@@ -340,7 +166,7 @@ fn key<'a>(p: &'a Value, k: &str) -> &'a Value {
 #[test]
 fn manifest_key_bindings_follow_trust_and_never_override_the_users_keys() {
     // The user bound prefix+alt+j to `help`; prefix+s is the default `settings` key.
-    let s_ = Session::new("[keys]\nhelp = \"prefix+alt+j\"\n");
+    let s_ = session("[keys]\nhelp = \"prefix+alt+j\"\n");
     let src = s_.path("src/keys");
     write_keys_plugin(&src);
     s_.json(&["plugin", "link", src.to_str().unwrap()]);
@@ -430,7 +256,7 @@ fn manifest_key_bindings_follow_trust_and_never_override_the_users_keys() {
 
 #[test]
 fn per_plugin_concurrency_and_log_rings_are_enforced() {
-    let s_ = Session::new(
+    let s_ = session(
         "[plugins.\"acme.lim\"]\nmax_concurrent = 1\nlog_max_lines = 20\nlog_max_records = 3\n",
     );
     let src = s_.path("src/lim");
@@ -494,7 +320,7 @@ command = ["sh", "-c", "i=0; while [ $i -lt 500 ]; do echo line$i; i=$((i+1)); d
 
 #[test]
 fn plugins_set_and_clear_agent_views_scoped_to_their_grant() {
-    let s_ = Session::new("");
+    let s_ = session("");
     let src = s_.path("src/view");
     write(
         &src.join("herdr-plugin.toml"),
@@ -635,14 +461,6 @@ command = ["sh", "-c", "herdr agent view-clear > \"$HERDR_PLUGIN_STATE_DIR/clear
     assert!(views(&s_).is_empty());
 }
 
-impl Session {
-    fn herdr_fail_text(&self, args: &[&str]) -> String {
-        let mut a = vec!["compat", "herdr"];
-        a.extend(args);
-        self.fail(&a).1
-    }
-}
-
 // ---- restricted (sandboxed) legacy mode ----------------------------------------------------
 
 fn write_sandbox_plugin(dir: &Path) {
@@ -688,7 +506,7 @@ fn a_sandboxed_plugin_runs_restricted() {
         eprintln!("skipped: no working sandbox here (nested?)");
         return;
     }
-    let s_ = Session::new("[plugins.\"acme.sbx\"]\nisolate = \"sandbox\"\n");
+    let s_ = session("[plugins.\"acme.sbx\"]\nisolate = \"sandbox\"\n");
     let src = s_.path("src/sbx");
     write_sandbox_plugin(&src);
     s_.json(&["plugin", "link", src.to_str().unwrap()]);
@@ -762,7 +580,7 @@ fn a_sandboxed_plugin_runs_restricted() {
 
 #[test]
 fn restricted_mode_refuses_where_no_sandbox_works() {
-    let s_ = Session::with_env(
+    let s_ = session_with_env(
         "[plugins.\"acme.sbx\"]\nisolate = \"sandbox\"\n",
         &[
             ("VIBEKE_TEST_HOOKS", "1"),
@@ -837,7 +655,7 @@ fn a_sandboxed_plugins_broker_refuses_host_execution_and_other_plugins() {
     if !sandbox_available() {
         return;
     }
-    let s_ = Session::new("[plugins.\"acme.sbx\"]\nisolate = \"sandbox\"\n");
+    let s_ = session("[plugins.\"acme.sbx\"]\nisolate = \"sandbox\"\n");
     script_plugin(
         &s_,
         "acme.host",
@@ -919,7 +737,7 @@ fn a_broker_path_is_not_an_identity() {
     if !sandbox_available() {
         return;
     }
-    let s_ = Session::new("[plugins.\"acme.sbx\"]\nisolate = \"sandbox\"\nnetwork = true\n");
+    let s_ = session("[plugins.\"acme.sbx\"]\nisolate = \"sandbox\"\nnetwork = true\n");
     script_plugin(
         &s_,
         "acme.victim",
@@ -1042,7 +860,7 @@ fn a_broken_config_never_runs_a_sandboxed_plugin_on_the_host() {
         return;
     }
     let good = "[plugins.\"acme.sbx\"]\nisolate = \"sandbox\"\n";
-    let s_ = Session::new(good);
+    let s_ = session(good);
     script_plugin(
         &s_,
         "acme.sbx",
@@ -1141,7 +959,7 @@ fn dependency_only_updates_and_tampered_checkouts_never_run_under_the_old_grant(
         ],
     );
     let base_url = format!("file://{}", b.join("srv").display());
-    let s_ = Session::with_env(
+    let s_ = session_with_env(
         "",
         &[
             ("VIBEKE_TEST_HOOKS", "1"),
@@ -1232,7 +1050,7 @@ fn dependency_only_updates_and_tampered_checkouts_never_run_under_the_old_grant(
 /// never blocked or killed by it, and the record says what happened.
 #[test]
 fn sustained_output_is_bounded_on_disk() {
-    let s_ = Session::new("[plugins.\"acme.loud\"]\noutput_max_bytes = 65536\n");
+    let s_ = session("[plugins.\"acme.loud\"]\noutput_max_bytes = 65536\n");
     script_plugin(
         &s_,
         "acme.loud",
@@ -1281,17 +1099,4 @@ fn sustained_output_is_bounded_on_disk() {
         "{last}"
     );
     assert_eq!(s_.plugin("acme.loud")["output_max_bytes"], 65536);
-}
-
-impl Session {
-    /// Run an action that is refused before launch; returns the error text.
-    fn run_fail(&self, plugin: &str, action: &str) -> String {
-        self.fail(&[
-            "api",
-            "call",
-            "plugin.action.run",
-            &json!({"plugin": plugin, "action": action}).to_string(),
-        ])
-        .1
-    }
 }

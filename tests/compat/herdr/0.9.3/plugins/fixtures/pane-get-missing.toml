@@ -1,0 +1,18 @@
+# `herdr pane get` on a pane that does not exist must fail with Herdr's not-found code.
+plugin = "fixture.caller"
+authority = "legacy"
+
+[initial]
+workspaces = 1
+
+[call]
+method = "pane.get"
+params = { pane_id = "w999:p999" }
+
+[transport]
+kind = "cli"
+args = ["pane", "get", "w999:p999"]
+
+[expect]
+ok = false
+code = "pane_not_found"

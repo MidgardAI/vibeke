@@ -1,0 +1,20 @@
+# `pane.get` over the raw socket on a split pane, as cloudmanic/herdr-plus reads a pane's
+# working directory and its tab and workspace.
+plugin = "fixture.caller"
+authority = "legacy"
+
+[initial]
+workspaces = 1
+panes = 1
+
+[call]
+method = "pane.get"
+params = { pane_id = "{pane2}" }
+
+[transport]
+kind = "socket"
+
+[expect]
+ok = true
+type = "pane_info"
+keys = { "pane.pane_id" = "string", "pane.tab_id" = "string", "pane.workspace_id" = "string", "pane.focused" = "bool" }

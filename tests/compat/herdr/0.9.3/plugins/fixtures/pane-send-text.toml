@@ -1,0 +1,18 @@
+# `herdr pane send-text`, as plugins that type a command into a pane call it.
+plugin = "fixture.caller"
+authority = "legacy"
+
+[initial]
+workspaces = 1
+
+[call]
+method = "pane.send_text"
+params = { pane_id = "{pane}", text = "echo fixture" }
+
+[transport]
+kind = "cli"
+args = ["pane", "send-text", "{pane}", "echo fixture"]
+
+[expect]
+ok = true
+type = "ok"

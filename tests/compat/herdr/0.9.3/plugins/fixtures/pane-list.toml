@@ -1,0 +1,18 @@
+# `pane.list` over the raw socket, as cloudmanic/herdr-plus counts a workspace's panes.
+plugin = "fixture.caller"
+authority = "legacy"
+
+[initial]
+workspaces = 1
+
+[call]
+method = "pane.list"
+params = {}
+
+[transport]
+kind = "socket"
+
+[expect]
+ok = true
+type = "pane_list"
+keys = { "panes" = "array", "panes.0.pane_id" = "string", "panes.0.workspace_id" = "string", "panes.0.tab_id" = "string" }

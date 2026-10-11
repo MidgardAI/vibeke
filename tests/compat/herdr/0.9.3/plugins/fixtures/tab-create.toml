@@ -1,0 +1,18 @@
+# `tab.create` over the raw socket, as cloudmanic/herdr-plus builds a project's tabs.
+plugin = "fixture.caller"
+authority = "legacy"
+
+[initial]
+workspaces = 1
+
+[call]
+method = "tab.create"
+params = { workspace_id = "{workspace}", label = "fixture", focus = false }
+
+[transport]
+kind = "socket"
+
+[expect]
+ok = true
+type = "tab_created"
+keys = { "tab.tab_id" = "string", "tab.workspace_id" = "string", "root_pane.pane_id" = "string" }

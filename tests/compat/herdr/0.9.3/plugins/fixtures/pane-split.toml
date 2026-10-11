@@ -1,0 +1,18 @@
+# `pane.split` over the raw socket with the params cloudmanic/herdr-plus sends.
+plugin = "fixture.caller"
+authority = "legacy"
+
+[initial]
+workspaces = 1
+
+[call]
+method = "pane.split"
+params = { pane_id = "{pane}", direction = "right", focus = false }
+
+[transport]
+kind = "socket"
+
+[expect]
+ok = true
+type = "pane_info"
+keys = { "pane.pane_id" = "string", "pane.tab_id" = "string", "pane.workspace_id" = "string" }

@@ -65,6 +65,9 @@ semver = "1"
 vk-remote = { workspace = true, features = ["testing"] }
 vk-conformance.workspace = true
 tempfile.workspace = true
+# compat_herdr_real_plugins, compat_herdr_plugin_fixtures: scenario masks, fixtures and the baseline file.
+regex.workspace = true
+toml.workspace = true
 rusqlite.workspace = true
 # api_schema_live: validate live results with a real JSON Schema 2020-12 validator (no network resolvers).
 jsonschema = { version = "0.58", default-features = false }

@@ -4,8 +4,9 @@
 //! `VIBEKE_HERDR_BIN=/absolute/path/to/herdr` (a reference binary of the pinned baseline, never
 //! the operator's installed Herdr on PATH). Both sides get a fresh temp HOME, XDG dirs, TMPDIR
 //! and runtime dir; the operator's `~/.config/herdr`, sockets and sessions are never visible.
-//! The reference binary must report the pinned version (and, when `VIBEKE_HERDR_SHA256` is
-//! given, match that checksum) or the harness refuses to run.
+//! The reference binary must match its sha256 (`VIBEKE_HERDR_SHA256`, or this platform's
+//! `reference_binary_sha256` entry in `baseline.toml` once it is no longer `pending`) before it
+//! runs at all, and then report the pinned version, or the harness refuses to run (18 §11).
 //!
 //! Each scenario runs the same Herdr CLI script against both sides and compares, per step, the
 //! exit code and the full **values** of stdout and stderr after a small, explicit normalization:
@@ -30,8 +31,6 @@ use serde_json::{Map, Value};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-
-const BASELINE: &str = "0.9.3";
 
 /// One scripted step: Herdr CLI arguments. `{cwd}` is replaced by a per-side temp dir.
 struct Scenario {
@@ -279,25 +278,28 @@ fn differential_against_pinned_herdr() {
             .path()
             .starts_with(real_home.join(".config/herdr"))
     );
-    // Pin the version (and checksum) before running anything else.
-    let mut v = Command::new(&herdr.argv0);
-    herdr.isolated_env(&mut v);
-    let out = v.arg("--version").output().expect("reference herdr");
-    let version = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        version.contains(BASELINE),
-        "reference binary is not Herdr {BASELINE}: {version}"
-    );
-    if let Ok(want) = std::env::var("VIBEKE_HERDR_SHA256") {
-        let bytes = std::fs::read(&herdr.argv0).unwrap();
-        assert_eq!(
-            vk_compat::herdr::registry::sha256_hex(&bytes),
-            want.to_lowercase()
-        );
-    }
+    // The checksum is required and verified before the binary runs at all; only then is
+    // `--version` checked (`verify_binary` does both, in that order).
+    let sha = std::env::var("VIBEKE_HERDR_SHA256")
+        .ok()
+        .or_else(|| {
+            baseline_sha256(
+                &std::fs::read_to_string(baseline_path()).unwrap_or_default(),
+                &platform_key(),
+            )
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "the reference binary's sha256 is required: set VIBEKE_HERDR_SHA256, or record \
+                 captures.reference_binary_sha256.{} in baseline.toml",
+                platform_key()
+            )
+        });
+    vk_conformance::herdr::verify_binary(&herdr.argv0, &sha)
+        .unwrap_or_else(|e| panic!("reference binary refused: {e:#}"));
     let vibeke = Side {
         home: tempfile::tempdir().unwrap(),
-        argv0: PathBuf::from(env!("CARGO_BIN_EXE_vibeke")),
+        argv0: crate::support::bin(),
         prefix: vec!["compat".into(), "herdr".into()],
     };
     let mut failures = Vec::new();
@@ -331,6 +333,46 @@ fn differential_against_pinned_herdr() {
         failures.len(),
         failures.join("\n")
     );
+}
+
+fn baseline_path() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/compat/herdr/0.9.3/baseline.toml")
+}
+
+/// The `reference_binary_sha256` key of this machine: `macos-arm64`, `linux-x86_64`, ….
+fn platform_key() -> String {
+    let os = vk_compat::herdr::current_platform();
+    let arch = match (os, std::env::consts::ARCH) {
+        ("macos", "aarch64") => "arm64",
+        (_, a) => a,
+    };
+    format!("{os}-{arch}")
+}
+
+/// The recorded sha256 for `key` in `baseline.toml`, unless it is still `pending`.
+fn baseline_sha256(text: &str, key: &str) -> Option<String> {
+    let v: toml::Table = toml::from_str(text).ok()?;
+    let sha = v
+        .get("captures")?
+        .get("reference_binary_sha256")?
+        .get(key)?
+        .as_str()?;
+    (sha.len() == 64 && sha.chars().all(|c| c.is_ascii_hexdigit())).then(|| sha.to_lowercase())
+}
+
+#[test]
+fn the_reference_checksum_comes_from_the_environment_or_a_captured_baseline() {
+    let text = std::fs::read_to_string(baseline_path()).unwrap();
+    // Today every entry is still pending: the harness then needs VIBEKE_HERDR_SHA256.
+    assert_eq!(baseline_sha256(&text, "macos-arm64"), None);
+    let sha = "ab".repeat(32);
+    let captured = format!(
+        "[captures]\nreference_binary_sha256 = {{ macos-arm64 = \"{sha}\", linux-x86_64 = \"pending\" }}\n"
+    );
+    assert_eq!(baseline_sha256(&captured, "macos-arm64"), Some(sha));
+    assert_eq!(baseline_sha256(&captured, "linux-x86_64"), None);
+    assert_eq!(baseline_sha256(&captured, "linux-aarch64"), None);
+    assert!(platform_key().contains('-'));
 }
 
 /// Compare two raw outputs as the harness would (fresh normalizers, same exit code).

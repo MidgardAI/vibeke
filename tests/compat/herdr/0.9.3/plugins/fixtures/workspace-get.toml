@@ -1,0 +1,18 @@
+# `workspace.get` over the raw socket, as cloudmanic/herdr-plus reads a workspace label.
+plugin = "fixture.caller"
+authority = "legacy"
+
+[initial]
+workspaces = 1
+
+[call]
+method = "workspace.get"
+params = { workspace_id = "{workspace}" }
+
+[transport]
+kind = "socket"
+
+[expect]
+ok = true
+type = "workspace_info"
+keys = { "workspace.workspace_id" = "string", "workspace.label" = "string", "workspace.tab_count" = "number" }

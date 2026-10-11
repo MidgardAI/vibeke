@@ -1,0 +1,19 @@
+# `herdr workspace list`, as plugins that pick a workspace call it through the CLI.
+plugin = "fixture.caller"
+authority = "legacy"
+
+[initial]
+workspaces = 1
+
+[call]
+method = "workspace.list"
+params = {}
+
+[transport]
+kind = "cli"
+args = ["workspace", "list"]
+
+[expect]
+ok = true
+type = "workspace_list"
+keys = { "workspaces" = "array", "workspaces.0.workspace_id" = "string", "workspaces.0.label" = "string" }
