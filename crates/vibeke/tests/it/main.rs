@@ -20,6 +20,7 @@ mod compat_herdr_diff;
 mod compat_herdr_plugin_fixtures;
 mod compat_herdr_plugins_ext;
 mod compat_herdr_real_plugins;
+mod compat_herdr_rest;
 mod compat_herdr_review;
 mod compat_herdr_slice2;
 mod compat_herdr_surfaces;
