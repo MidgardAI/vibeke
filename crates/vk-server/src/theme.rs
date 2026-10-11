@@ -78,14 +78,12 @@ pub fn resolve(
             None => (false, true, String::new()),
         },
     };
-    let theme = if cfg.auto_switch && known {
-        if dark {
-            cfg.dark_name.clone()
-        } else {
-            cfg.light_name.clone()
-        }
-    } else {
+    let theme = if !cfg.name.is_empty() {
         cfg.name.clone()
+    } else if cfg.auto_switch && known && !dark {
+        cfg.light_name.clone()
+    } else {
+        cfg.dark_name.clone()
     };
     Appearance {
         known,

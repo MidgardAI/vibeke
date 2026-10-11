@@ -768,7 +768,7 @@ pub fn draw(app: &App, g: &mut Grid) {
         let segs = std::iter::once((marker.to_string(), t.bold(t.accent))).chain(row_segs(app, r));
         for (s, mut sty) in segs {
             if selected {
-                sty.bg = t.selection;
+                sty = t.with_sel(sty);
             }
             let used = cx - (x + 2);
             cx += g.put_str(cx, yy, &s, sty, inner.saturating_sub(used));

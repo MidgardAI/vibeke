@@ -308,6 +308,9 @@ const OSC8_CLOSE: &[u8] = b"\x1b]8;;\x1b\\";
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct HostCaps {
     pub truecolor: bool,
+    /// The terminal has only the 16 ANSI colours (`TERM=linux`, plain `xterm`, `vt100`):
+    /// other colours are mapped to the nearest of the 16.
+    pub ansi16: bool,
     pub sync_update: bool,
     pub undercurl: bool,
     /// Kitty graphics (`a=q` answered OK): browser panes draw with unicode placeholders.
@@ -359,10 +362,66 @@ pub fn rgb_to_256(r: u8, g: u8, b: u8) -> u8 {
     }
 }
 
+/// The 16 ANSI colours as most terminals draw them (xterm defaults).
+const ANSI16: [(u8, u8, u8); 16] = [
+    (0x00, 0x00, 0x00),
+    (0xcd, 0x00, 0x00),
+    (0x00, 0xcd, 0x00),
+    (0xcd, 0xcd, 0x00),
+    (0x00, 0x00, 0xee),
+    (0xcd, 0x00, 0xcd),
+    (0x00, 0xcd, 0xcd),
+    (0xe5, 0xe5, 0xe5),
+    (0x7f, 0x7f, 0x7f),
+    (0xff, 0x00, 0x00),
+    (0x00, 0xff, 0x00),
+    (0xff, 0xff, 0x00),
+    (0x5c, 0x5c, 0xff),
+    (0xff, 0x00, 0xff),
+    (0x00, 0xff, 0xff),
+    (0xff, 0xff, 0xff),
+];
+
+/// RGB of an xterm-256 palette index.
+fn index_rgb(n: u8) -> (u8, u8, u8) {
+    const LEVELS: [u8; 6] = [0, 95, 135, 175, 215, 255];
+    match n {
+        0..=15 => ANSI16[n as usize],
+        16..=231 => {
+            let i = (n - 16) as usize;
+            (LEVELS[i / 36], LEVELS[(i / 6) % 6], LEVELS[i % 6])
+        }
+        _ => {
+            let v = 8 + 10 * (n - 232);
+            (v, v, v)
+        }
+    }
+}
+
+/// Nearest of the 16 ANSI colours for an RGB value.
+pub fn rgb_to_16(r: u8, g: u8, b: u8) -> u8 {
+    let dist = |c: (u8, u8, u8)| {
+        let (dr, dg, db) = (
+            c.0 as i32 - r as i32,
+            c.1 as i32 - g as i32,
+            c.2 as i32 - b as i32,
+        );
+        dr * dr + dg * dg + db * db
+    };
+    (0..16u8)
+        .min_by_key(|&i| dist(ANSI16[i as usize]))
+        .unwrap_or(0)
+}
+
 /// The style as the host will actually be asked to render it (degraded per capabilities).
 fn effective(style: Style, caps: &HostCaps) -> Style {
     let mut s = style;
     let q = |c: Color| match c {
+        Color::Rgb(r, g, b) if caps.ansi16 => Color::Indexed(rgb_to_16(r, g, b)),
+        Color::Indexed(n) if caps.ansi16 && n >= 16 => {
+            let (r, g, b) = index_rgb(n);
+            Color::Indexed(rgb_to_16(r, g, b))
+        }
         Color::Rgb(r, g, b) if !caps.truecolor => Color::Indexed(rgb_to_256(r, g, b)),
         c => c,
     };
@@ -684,6 +743,7 @@ mod tests {
 
     const ALL: HostCaps = HostCaps {
         truecolor: true,
+        ansi16: false,
         sync_update: false,
         undercurl: true,
         kitty_graphics: false,

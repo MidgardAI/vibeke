@@ -236,6 +236,8 @@ pub fn on_focus_gained(app: &mut App) {
 /// A detection result (startup or re-probe): remember, report where it changed, re-theme.
 pub fn on_detect(app: &mut App, det: Option<Detected>) {
     let Some(d) = det else {
+        // Nothing detected: still build the theme once (a named theme, a theme file).
+        apply(app, false);
         return;
     };
     app.parity.appearance.detected = Some(d);
@@ -273,8 +275,9 @@ pub fn report(app: &mut App, mi: usize) {
     );
 }
 
-/// Which chrome theme to use: forced `theme.mode`, else this host's detection, else what the
-/// server resolved; `auto_switch` picks `dark_name`/`light_name`, otherwise `name`.
+/// Which chrome theme to use. A `theme.name` the user set always wins. Without one, the forced
+/// `theme.mode`, else this host's detection, else what the server resolved, picks
+/// `dark_name` or `light_name` when `auto_switch` is on (`dark_name` otherwise).
 pub fn theme_name(cfg: &vk_config::Config, local: Option<bool>, server: &Appearance) -> String {
     let th = &cfg.theme;
     let dark = match th.mode {
@@ -282,27 +285,23 @@ pub fn theme_name(cfg: &vk_config::Config, local: Option<bool>, server: &Appeara
         vk_config::ThemeMode::Light => Some(false),
         vk_config::ThemeMode::Auto => local.or(server.known.then_some(server.dark)),
     };
-    match dark {
-        Some(d) if th.auto_switch => {
-            if d {
-                th.dark_name.clone()
-            } else {
-                th.light_name.clone()
-            }
-        }
-        _ => th.name.clone(),
-    }
+    th.effective_name(dark).to_string()
 }
 
-/// Re-theme the chrome if the effective theme changed (`force`: after a config reload).
+/// Re-theme the chrome if the effective theme changed (`force`: after a config reload). An
+/// unknown theme name or a bad `[theme.custom]` token shows one toast when the theme is built.
 pub fn apply(app: &mut App, force: bool) {
     let local = app.parity.appearance.detected.map(|d| d.dark);
     let name = theme_name(&app.config, local, &app.m().model.appearance);
     if !force && name == app.parity.appearance.applied {
         return;
     }
-    app.theme = Theme::named(&name);
+    let (theme, warnings) = Theme::build(&name, &app.config);
+    app.theme = theme;
     app.parity.appearance.applied = name;
+    for w in warnings {
+        app.toast(w);
+    }
     app.prev = Grid::new(0, 0);
     app.dirty = true;
 }
