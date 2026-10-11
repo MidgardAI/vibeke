@@ -590,6 +590,8 @@ pub enum Incoming {
     /// Progress from a transfer task (separate connection, see `upload`).
     Upload(crate::upload::UploadEvent),
     Update(crate::updates::Event),
+    /// A scripted command from `VIBEKE_TUI_DEMO_CONTROL` (see `demo`).
+    Demo(String),
 }
 
 /// Attach the render stream on `stream` for machine `idx`: JSON-RPC `render.attach`, then
@@ -766,6 +768,7 @@ async fn run_inner(
         ));
     }
     crate::updates::init(&mut app, opts.update_args, inc_tx.clone());
+    crate::demo::start(inc_tx.clone());
     // Connect every machine (in the background; reconnect with backoff, 06 A7).
     let mut connectors: Vec<std::sync::Arc<Connector>> = Vec::new();
     let mut bulk: Vec<std::sync::Arc<Connector>> = Vec::new();
@@ -873,6 +876,7 @@ async fn run_inner(
                     Incoming::Frame(i, f) => app.on_frame(i, f),
                     Incoming::Upload(e) => crate::upload::on_event(&mut app, e),
                     Incoming::Update(e) => crate::updates::on_event(&mut app, e),
+                    Incoming::Demo(line) => crate::demo::run(&mut app, &line),
                     Incoming::Disconnected(i, why) => {
                         app.machines[i].tx = None;
                         app.on_disconnected(i);
@@ -893,6 +897,7 @@ async fn run_inner(
                         Incoming::Frame(i, f) => app.on_frame(i, f),
                         Incoming::Upload(e) => crate::upload::on_event(&mut app, e),
                         Incoming::Update(e) => crate::updates::on_event(&mut app, e),
+                        Incoming::Demo(line) => crate::demo::run(&mut app, &line),
                         Incoming::Connected(i, tx, features) => { app.machines[i].tx = Some(tx); app.machines[i].features = features; app.machines[i].status = "connected".into(); app.machines[i].panes.clear(); app.machines[i].last_hint.clear(); app.on_connected(i); }
                         Incoming::Disconnected(i, _) => {
                             app.machines[i].tx = None;
