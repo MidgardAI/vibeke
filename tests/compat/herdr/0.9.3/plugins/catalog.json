@@ -1,0 +1,698 @@
+{
+ "generatedAt": "2026-10-11T10:00:42.514Z",
+ "source": {
+  "url": "https://assets.herdr.dev/plugins/index.json",
+  "sha256": "a3f7b0f3df320fff2a76779af03e47a6344464619bad8dfd7df569748e307a0b"
+ },
+ "plugins": [
+  {
+   "id": 1291255325,
+   "fullName": "zenbu-labs/terminal-browser",
+   "stars": 3800,
+   "createdAt": "2026-07-06T16:31:11Z",
+   "headCommit": "2165ae76c9639e3996829ab0e6d54ddbd4f06ad8",
+   "manifests": [
+    {
+     "path": "herdr-plugin/herdr-plugin.toml",
+     "id": "zenbu-labs.terminal-browser",
+     "platforms": [
+      "linux",
+      "macos"
+     ]
+    }
+   ]
+  },
+  {
+   "id": 1327448036,
+   "fullName": "zenbu-labs/terminal-code",
+   "stars": 2140,
+   "createdAt": "2026-08-08T05:35:40Z",
+   "headCommit": "66441668de5fbe142d97ec395ee4f2bd115c5cab",
+   "manifests": [
+    {
+     "path": "herdr-plugin/herdr-plugin.toml",
+     "id": "zenbu-labs.tode",
+     "platforms": [
+      "linux",
+      "macos"
+     ]
+    }
+   ]
+  },
+  {
+   "id": 1225688424,
+   "fullName": "openclaw/crabbox",
+   "stars": 1456,
+   "createdAt": "2026-04-30T14:31:48Z",
+   "headCommit": "025bd36cb1ed18ffb8a21c41e51886ee52bf893a",
+   "manifests": [
+    {
+     "path": "plugins/herdr/herdr-plugin.toml",
+     "id": "crabbox",
+     "platforms": [
+      "linux",
+      "macos"
+     ]
+    }
+   ]
+  },
+  {
+   "id": 1338290116,
+   "fullName": "furkankly/zoetrope",
+   "stars": 1024,
+   "createdAt": "2026-08-18T10:48:39Z",
+   "headCommit": "b1f31dd26bd4e9e513885e39edb78d0850a5d1fe",
+   "manifests": [
+    {
+     "path": "herdr-plugin/herdr-plugin.toml",
+     "id": "furkankly.zoetrope",
+     "platforms": [
+      "macos",
+      "linux"
+     ]
+    }
+   ]
+  },
+  {
+   "id": 1281328046,
+   "fullName": "persiyanov/herdr-reviewr",
+   "stars": 866,
+   "createdAt": "2026-06-26T12:50:56Z",
+   "headCommit": "859dd5b11a5280fe282de56b52378b20a54fa10a",
+   "manifests": [
+    {
+     "path": "herdr-plugin.toml",
+     "id": "persiyanov.reviewr",
+     "platforms": [
+      "macos",
+      "linux",
+      "windows"
+     ]
+    }
+   ]
+  },
+  {
+   "id": 1374928133,
+   "fullName": "devswha/herdr-web-ui",
+   "stars": 779,
+   "createdAt": "2026-09-17T18:52:07Z",
+   "headCommit": "b2c5b15cee6abdc28fbbf6e4c33f946a864fdbba",
+   "manifests": [
+    {
+     "path": "herdr-plugin.toml",
+     "id": "devswha.herdr-web-ui",
+     "platforms": [
+      "linux",
+      "macos",
+      "windows"
+     ]
+    }
+   ]
+  },
+  {
+   "id": 1328358094,
+   "fullName": "plannotator/herdr-annotate",
+   "stars": 653,
+   "createdAt": "2026-08-09T02:34:40Z",
+   "headCommit": "e3ca7e88ada0c77baf5714c006a5abe36798349c",
+   "manifests": [
+    {
+     "path": "herdr-plugin.toml",
+     "id": "annotate",
+     "platforms": [
+      "linux",
+      "macos",
+      "windows"
+     ]
+    },
+    {
+     "path": "links/herdr-plugin.toml",
+     "id": "annotate-links",
+     "platforms": [
+      "linux",
+      "macos",
+      "windows"
+     ]
+    }
+   ]
+  },
+  {
+   "id": 1273792025,
+   "fullName": "smarzban/herdr-file-viewer",
+   "stars": 640,
+   "createdAt": "2026-06-18T21:58:48Z",
+   "headCommit": "3996b88d6c6ca5608872abedf05067a803a168ec",
+   "manifests": [
+    {
+     "path": "herdr-plugin.toml",
+     "id": "herdr-file-viewer",
+     "platforms": [
+      "linux",
+      "macos",
+      "windows"
+     ]
+    }
+   ]
+  },
+  {
+   "id": 1375530874,
+   "fullName": "eliasstravik/herdr-projects",
+   "stars": 599,
+   "createdAt": "2026-09-18T07:28:36Z",
+   "headCommit": "4e4548c3c43888e6be1c96906215998f07dc63f0",
+   "manifests": [
+    {
+     "path": "herdr-plugin.toml",
+     "id": "herdr-projects",
+     "platforms": [
+      "macos",
+      "linux"
+     ]
+    }
+   ]
+  },
+  {
+   "id": 1304518726,
+   "fullName": "ZingerLittleBee/Heeler",
+   "stars": 544,
+   "createdAt": "2026-07-18T01:49:37Z",
+   "headCommit": "85788eff639ded9db45a31480b5c78d1af3d82a2",
+   "manifests": [
+    {
+     "path": "plugin/herdr-plugin.toml",
+     "id": "heeler",
+     "platforms": [
+      "linux",
+      "macos"
+     ]
+    }
+   ]
+  },
+  {
+   "id": 1135468428,
+   "fullName": "eugenioenko/ttt",
+   "stars": 518,
+   "createdAt": "2026-01-16T06:21:11Z",
+   "headCommit": "8ff40fb2d2596cd7e22b1a684c965e5bae1a5825",
+   "manifests": [
+    {
+     "path": "herdr-plugin/herdr-plugin.toml",
+     "id": "ttt.editor",
+     "platforms": [
+      "linux",
+      "macos"
+     ]
+    }
+   ]
+  },
+  {
+   "id": 1304451904,
+   "fullName": "alexarthurs/herdr-sidebar",
+   "stars": 457,
+   "createdAt": "2026-07-17T23:08:01Z",
+   "headCommit": "081ed133f3faa377438b51ce435fe8a87c439593",
+   "manifests": [
+    {
+     "path": "plugins/herdr-sidebar/herdr-plugin.toml",
+     "id": "herdr-sidebar",
+     "platforms": [
+      "linux",
+      "macos",
+      "windows"
+     ]
+    }
+   ]
+  },
+  {
+   "id": 1275964022,
+   "fullName": "dcolinmorgan/herdr-remote",
+   "stars": 412,
+   "createdAt": "2026-06-21T11:19:18Z",
+   "headCommit": "bb70162eb6d3ab6413974b14cdd7f3763f14a38c",
+   "manifests": [
+    {
+     "path": "herdr-plugin.toml",
+     "id": "herdr-remote.relay",
+     "platforms": [
+      "macos",
+      "linux",
+      "windows"
+     ]
+    }
+   ]
+  },
+  {
+   "id": 1263724492,
+   "fullName": "cloudmanic/herdr-plus",
+   "stars": 348,
+   "createdAt": "2026-06-09T07:58:41Z",
+   "headCommit": "f38df3570bea8f7ca71dc1ba11bce3b123d14402",
+   "manifests": [
+    {
+     "path": "herdr-plugin.toml",
+     "id": "cloudmanic.herdr-plus",
+     "platforms": [
+      "linux",
+      "macos",
+      "windows"
+     ]
+    }
+   ]
+  },
+  {
+   "id": 1305148975,
+   "fullName": "osolmaz/pi-workflows",
+   "stars": 328,
+   "createdAt": "2026-07-18T18:45:52Z",
+   "headCommit": "2cb8ab3a9c2e52d0c193d572728a9ccd7afdb77a",
+   "manifests": [
+    {
+     "path": "herdr-plugin.toml",
+     "id": "osolmaz.pi-workflows",
+     "platforms": [
+      "linux",
+      "macos"
+     ]
+    }
+   ]
+  },
+  {
+   "id": 1288221712,
+   "fullName": "0cv/herdr-mobile-relay",
+   "stars": 288,
+   "createdAt": "2026-07-03T11:41:38Z",
+   "headCommit": "62115683986384468e53ed01ec993745749c09f7",
+   "manifests": [
+    {
+     "path": "herdr-plugin.toml",
+     "id": "herdr-mobile-relay.events",
+     "platforms": [
+      "macos",
+      "linux"
+     ]
+    }
+   ]
+  },
+  {
+   "id": 1326507166,
+   "fullName": "powerfooI/roamgate",
+   "stars": 288,
+   "createdAt": "2026-08-07T10:04:29Z",
+   "headCommit": "d1a22cb46ce0c07182ec5473454915f1f7ad251c",
+   "manifests": [
+    {
+     "path": "herdr-plugin.toml",
+     "id": "roamgate",
+     "platforms": [
+      "linux",
+      "macos",
+      "windows"
+     ]
+    }
+   ]
+  },
+  {
+   "id": 1311096202,
+   "fullName": "ChmaraX/herdr-nvim",
+   "stars": 264,
+   "createdAt": "2026-07-24T14:00:24Z",
+   "headCommit": "e2ec32e7bbbb1eefd64363414b5806f84eedd6bc",
+   "manifests": [
+    {
+     "path": "herdr-plugin.toml",
+     "id": "chmarax.herdr-nvim",
+     "platforms": [
+      "macos",
+      "linux",
+      "windows"
+     ]
+    }
+   ]
+  },
+  {
+   "id": 1126396638,
+   "fullName": "nicosuave/memex",
+   "stars": 251,
+   "createdAt": "2026-01-01T20:32:00Z",
+   "headCommit": "61194bf8f951afe4a4e00887bd63220a76952618",
+   "manifests": [
+    {
+     "path": "herdr-plugin.toml",
+     "id": "nicosuave.memex",
+     "platforms": [
+      "macos",
+      "linux"
+     ]
+    }
+   ]
+  },
+  {
+   "id": 1288844316,
+   "fullName": "nikok6/herdr-mirror",
+   "stars": 249,
+   "createdAt": "2026-07-04T03:18:49Z",
+   "headCommit": "195398c1275f9f3d18ddff70282149005a2bec01",
+   "manifests": [
+    {
+     "path": "herdr-plugin.toml",
+     "id": "mirror",
+     "platforms": [
+      "macos",
+      "linux"
+     ]
+    }
+   ]
+  },
+  {
+   "id": 1345232342,
+   "fullName": "kryptamine/herdr-auto-title",
+   "stars": 246,
+   "createdAt": "2026-08-24T17:34:38Z",
+   "headCommit": "67fa3e24f319e8c88d9a55b46563d341fb055e55",
+   "manifests": [
+    {
+     "path": "herdr-plugin.toml",
+     "id": "herdr.auto-title",
+     "platforms": [
+      "linux",
+      "macos",
+      "windows"
+     ]
+    }
+   ]
+  },
+  {
+   "id": 1223537324,
+   "fullName": "uwuclxdy/clauth",
+   "stars": 237,
+   "createdAt": "2026-04-28T12:20:42Z",
+   "headCommit": "80382c1b150feaa61874aac189f466701652e867",
+   "manifests": [
+    {
+     "path": "herdr-plugin/herdr-plugin.toml",
+     "id": "clauth",
+     "platforms": [
+      "linux",
+      "macos"
+     ]
+    }
+   ]
+  },
+  {
+   "id": 1294885537,
+   "fullName": "qu8n/herdr-automatic-rename",
+   "stars": 211,
+   "createdAt": "2026-07-09T08:19:11Z",
+   "headCommit": "b90c4086854080fd0dbde63c19667e38d55df5af",
+   "manifests": [
+    {
+     "path": "herdr-plugin.toml",
+     "id": "herdr-automatic-rename",
+     "platforms": [
+      "linux",
+      "macos"
+     ]
+    }
+   ]
+  },
+  {
+   "id": 1339903141,
+   "fullName": "smarzban/tsk",
+   "stars": 190,
+   "createdAt": "2026-08-19T18:26:28Z",
+   "headCommit": "39e3a8e3a92da19eefd70f250a394f3dd730a062",
+   "manifests": [
+    {
+     "path": "herdr-plugin.toml",
+     "id": "herdr-tsk",
+     "platforms": [
+      "linux",
+      "macos",
+      "windows"
+     ]
+    }
+   ]
+  },
+  {
+   "id": 1283233177,
+   "fullName": "devashish2203/herdr-worktrunk",
+   "stars": 181,
+   "createdAt": "2026-06-28T17:37:16Z",
+   "headCommit": "f9df9ba700b8a4f4d97ddfe3ea3eb345e80b880b",
+   "manifests": [
+    {
+     "path": "herdr-plugin.toml",
+     "id": "worktrunk",
+     "platforms": [
+      "macos",
+      "linux",
+      "windows"
+     ]
+    }
+   ]
+  },
+  {
+   "id": 1282925790,
+   "fullName": "thanhdat77/herdr-navigator",
+   "stars": 179,
+   "createdAt": "2026-06-28T11:01:01Z",
+   "headCommit": "313b753b1f98f802b7d861430a13cb95a86e8dd3",
+   "manifests": [
+    {
+     "path": "herdr-plugin.toml",
+     "id": "herdr-navigator",
+     "platforms": [
+      "linux",
+      "macos"
+     ]
+    }
+   ]
+  },
+  {
+   "id": 1300982703,
+   "fullName": "nelsonPires5/herdr-board",
+   "stars": 173,
+   "createdAt": "2026-07-14T22:10:31Z",
+   "headCommit": "754c836d881cb27561f5ebc0c0d57fa028c7dbbd",
+   "manifests": [
+    {
+     "path": "herdr-plugin.toml",
+     "id": "herdr-board",
+     "platforms": [
+      "linux",
+      "macos"
+     ]
+    }
+   ]
+  },
+  {
+   "id": 1360509130,
+   "fullName": "hhdebb/herdr-radar",
+   "stars": 163,
+   "createdAt": "2026-09-07T17:41:55Z",
+   "headCommit": "dd42772da4b8b9e18660d653d08149c7da1d2964",
+   "manifests": [
+    {
+     "path": "herdr-plugin.toml",
+     "id": "hhdebb.herdr-radar",
+     "platforms": [
+      "linux",
+      "macos",
+      "windows"
+     ]
+    }
+   ]
+  },
+  {
+   "id": 1331644818,
+   "fullName": "jhochenbaum/herdr-hunk-diff",
+   "stars": 143,
+   "createdAt": "2026-08-12T05:26:56Z",
+   "headCommit": "47146a058858b4a7a116992aaae643436d80e7ab",
+   "manifests": [
+    {
+     "path": "herdr-plugin.toml",
+     "id": "jhochenbaum.hunkdiff",
+     "platforms": [
+      "macos",
+      "linux",
+      "windows"
+     ]
+    }
+   ]
+  },
+  {
+   "id": 1349306359,
+   "fullName": "arronKler/pairfob",
+   "stars": 140,
+   "createdAt": "2026-08-28T07:04:37Z",
+   "headCommit": "1f5efe6d140f609decff453b5204508350d9c27b",
+   "manifests": [
+    {
+     "path": "herdr-plugin.toml",
+     "id": "pairfob",
+     "platforms": [
+      "linux",
+      "macos"
+     ]
+    }
+   ]
+  },
+  {
+   "id": 1288737471,
+   "fullName": "yuk1ty/herdr-spreader",
+   "stars": 138,
+   "createdAt": "2026-07-03T23:12:04Z",
+   "headCommit": "206ae55aff2de0828623ea4e8fc9c6ab28519935",
+   "manifests": [
+    {
+     "path": "herdr-plugin.toml",
+     "id": "herdr-spreader",
+     "platforms": [
+      "linux",
+      "macos"
+     ]
+    }
+   ]
+  },
+  {
+   "id": 1374235614,
+   "fullName": "nidhi-singh02/agent-router",
+   "stars": 113,
+   "createdAt": "2026-09-17T09:55:56Z",
+   "headCommit": "fb24d06a62fb33a92c7836b4920ae9f4b1216c63",
+   "manifests": [
+    {
+     "path": "herdr-plugin.toml",
+     "id": "nidhi-singh02.agent-router",
+     "platforms": [
+      "linux",
+      "macos"
+     ]
+    }
+   ]
+  },
+  {
+   "id": 1276398623,
+   "fullName": "paulbkim-dev/vim-herdr-navigation",
+   "stars": 111,
+   "createdAt": "2026-06-21T23:48:36Z",
+   "headCommit": "742db891e7d1f9a550b16c01dc8a6763f2b1493a",
+   "manifests": [
+    {
+     "path": "herdr-plugin.toml",
+     "id": "vim-herdr-navigation",
+     "platforms": [
+      "linux",
+      "macos"
+     ]
+    }
+   ]
+  },
+  {
+   "id": 1334494531,
+   "fullName": "aemrebarut/herdr-dagr",
+   "stars": 93,
+   "createdAt": "2026-08-14T19:02:01Z",
+   "headCommit": "52991f9a95a2b8c11518ed66f9530d938c1ba254",
+   "manifests": [
+    {
+     "path": "herdr-plugin.toml",
+     "id": "herdr-dagr",
+     "platforms": [
+      "linux",
+      "macos",
+      "windows"
+     ]
+    }
+   ]
+  },
+  {
+   "id": 1255016041,
+   "fullName": "osolmaz/ghzinga",
+   "stars": 90,
+   "createdAt": "2026-05-31T09:42:10Z",
+   "headCommit": "6ed5266b20dd9eba362b84b982907a49111b519d",
+   "manifests": [
+    {
+     "path": "plugins/herdr/herdr-plugin.toml",
+     "id": "dutifuldev.ghzinga",
+     "platforms": [
+      "linux",
+      "macos"
+     ]
+    }
+   ]
+  },
+  {
+   "id": 1360916274,
+   "fullName": "robbyrussell/herdr-ohmyzsh",
+   "stars": 83,
+   "createdAt": "2026-09-08T04:23:18Z",
+   "headCommit": "bbc072ada531e6306276900a866a4b44a9b92e74",
+   "manifests": [
+    {
+     "path": "herdr-plugin.toml",
+     "id": "ohmyzsh.shell",
+     "platforms": [
+      "macos",
+      "linux"
+     ]
+    }
+   ]
+  },
+  {
+   "id": 1299627068,
+   "fullName": "iurysza/herdr-tab-smart-rename",
+   "stars": 79,
+   "createdAt": "2026-07-13T18:43:12Z",
+   "headCommit": "f66cd1050e6feebfe55f81a2a3962f63b628ba95",
+   "manifests": [
+    {
+     "path": "herdr-plugin.toml",
+     "id": "tab-smart-rename",
+     "platforms": [
+      "linux",
+      "macos",
+      "windows"
+     ]
+    }
+   ]
+  },
+  {
+   "id": 1354484158,
+   "fullName": "permgps/herdr-telegram-agents",
+   "stars": 76,
+   "createdAt": "2026-09-02T07:47:49Z",
+   "headCommit": "f96854caa4c013662ec71621d49f648d2d3aa7ee",
+   "manifests": [
+    {
+     "path": "herdr-plugin.toml",
+     "id": "permgps.telegram-agents",
+     "platforms": [
+      "linux",
+      "macos",
+      "windows"
+     ]
+    }
+   ]
+  },
+  {
+   "id": 1281292876,
+   "fullName": "lmilojevicc/herdr-splits.nvim",
+   "stars": 68,
+   "createdAt": "2026-06-26T12:08:37Z",
+   "headCommit": "94f30cf4e9ac76ddf185a3acd0977be728fa4106",
+   "manifests": [
+    {
+     "path": "herdr-plugin.toml",
+     "id": "herdr-splits",
+     "platforms": [
+      "linux",
+      "macos"
+     ]
+    }
+   ]
+  }
+ ]
+}
