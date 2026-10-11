@@ -58,7 +58,7 @@ impl Mode {
     /// From the environment Vibeke gives every pane.
     pub fn from_env() -> Mode {
         let set = |k: &str| std::env::var(k).is_ok_and(|v| !v.trim().is_empty());
-        if set("VIBEKE_PANE_TOKEN") || set("VIBEKE_PANE") {
+        if set("VIBEKE_PANE_TOKEN") || set("VIBEKE_PANE_ID") {
             Mode::Pane
         } else {
             Mode::Outside
