@@ -11,19 +11,19 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowRight, Check, CheckCircle2, CircleAlert, Cloud, OctagonX, Server, Box } from 'lucide-react';
-import { OutcomeUnknownError, isHandoffBusy, type CloudBox, type CloudJob, type CloudMoveTarget, type CloudProvider, type HandoffPeer } from '@vibeke/core';
+import { OutcomeUnknownError, isHandoffBusy, type CloudBox, type CloudJob, type CloudMoveTarget, type CloudProvider, type CloudReview, type HandoffPeer } from '@vibeke/core';
 import { useCloudStores, useHostCloud } from '../app/cloud-stores';
 import { useApp, useHost } from '../app/hooks';
 import { requestCloudAuth } from '../components/cloud-auth';
 import { Button, Notice, Sheet, Spinner } from '../components/ui';
 import { t } from '../i18n';
 import { errorMessage } from '../lib/answer';
-import { cloudJobError, cloudJobFinal, cloudJobNeedsAuth, cloudJobPct, paneTaskKeys, runWithCloudAuth, sendBoxChoices } from '../lib/cloud';
+import { cloudJobError, cloudJobFinal, cloudJobNeedsAuth, cloudJobPct, paneTaskKeys, runWithCloudAuth, sendBoxChoices, sharedCheckout } from '../lib/cloud';
 import { navigate } from '../router';
 
 export type CloudSheetProps =
-  | { mode: 'send'; host: string; pane: string; open: boolean; onClose(): void }
-  | { mode: 'bring_back'; host: string; pane?: string; box?: string; open: boolean; onClose(): void };
+  | { mode: 'send'; host: string; pane: string; open: boolean; onClose(): void; job?: string }
+  | { mode: 'bring_back'; host: string; pane?: string; box?: string; open: boolean; onClose(): void; job?: string };
 
 type Step =
   | { k: 'loading' }
@@ -34,13 +34,15 @@ type Step =
   | { k: 'target'; box: string | null }
   | { k: 'starting' }
   | { k: 'busy'; retry: () => void }
+  /** The pane shares its checkout: offer to copy the work into a new task and send that. */
+  | { k: 'shared'; message: string; retry: () => void }
   | { k: 'job'; job: string }
   | { k: 'unknown' }
   | { k: 'error'; message: string; retry: (() => void) | null };
 
 const JOB_POLL_MS = 3000;
 
-type MoveParams = { to: CloudMoveTarget; box?: string; interrupt?: boolean; source_after?: 'keep' | 'suspend' | 'destroy' };
+type MoveParams = { to: CloudMoveTarget; box?: string; interrupt?: boolean; source_after?: 'keep' | 'suspend' | 'destroy'; new_task?: boolean };
 
 export function CloudSheet(props: CloudSheetProps) {
   const { host, open, onClose } = props;
@@ -62,6 +64,11 @@ export function CloudSheet(props: CloudSheetProps) {
       return;
     }
     const g = ++gen.current;
+    // Opened for a job (the "Review" toast of a bring-back): show it directly.
+    if (props.job) {
+      setStep({ k: 'job', job: props.job });
+      return;
+    }
     setStep({ k: 'loading' });
     void (async () => {
       await stores.refresh(host);
@@ -105,6 +112,8 @@ export function CloudSheet(props: CloudSheetProps) {
     } catch (e) {
       if (g !== gen.current) return;
       if (!interrupt && isHandoffBusy(e)) return setStep({ k: 'busy', retry: () => void move({ ...params, interrupt: true }, provider, cur.retried) });
+      const shared = !params.new_task ? sharedCheckout(e) : null;
+      if (shared) return setStep({ k: 'shared', message: shared.message, retry: () => void move({ ...params, new_task: true }, provider, cur.retried) });
       if (e instanceof OutcomeUnknownError) {
         void stores.refresh(host);
         return setStep({ k: 'unknown' });
@@ -261,6 +270,19 @@ function Body({
         </div>
       );
     }
+    case 'shared':
+      return (
+        <div className="space-y-3">
+          <Notice tone="warn">{step.message || t.cloud.sharedCheckout}</Notice>
+          <div className="text-xs text-muted">{t.cloud.newTaskHint}</div>
+          <Button block size="lg" variant="primary" icon={<Cloud className="size-5" />} data-act="new-task-send" onClick={step.retry}>
+            {t.cloud.newTaskSend}
+          </Button>
+          <Button block variant="ghost" onClick={onClose}>
+            {t.cancel}
+          </Button>
+        </div>
+      );
     case 'busy':
       return (
         <div className="space-y-3">
@@ -356,6 +378,8 @@ function JobView({ host, jobId, onClose }: { host: string; jobId: string; onClos
         </Button>
       </div>
     );
+  if (job.state === 'awaiting_confirmation' && job.result?.review)
+    return <ReviewView host={host} job={job} review={job.result.review} onClose={onClose} />;
   if (job.state === 'cancelled')
     return (
       <div className="space-y-3">
@@ -409,6 +433,98 @@ function JobView({ host, jobId, onClose }: { host: string; jobId: string; onClos
           {t.close}
         </Button>
       </div>
+    </div>
+  );
+}
+
+/**
+ * A bring-back to this host waits here: what comes back (files with line counts, new and skipped
+ * files, a conversation) and the host's warning. Apply brings the work and resumes the agent;
+ * Code only brings the files; Cancel stops the move and leaves the sandbox as it is.
+ */
+function ReviewView({ host, job, review, onClose }: { host: string; job: CloudJob; review: CloudReview; onClose(): void }) {
+  const app = useApp();
+  const [busy, setBusy] = useState<'apply' | 'code' | 'cancel' | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const act = async (what: 'apply' | 'code' | 'cancel') => {
+    const conn = app.conn(host);
+    if (!conn) return;
+    setBusy(what);
+    setErr(null);
+    try {
+      if (what === 'cancel') await conn.request('cloud.cancel', { id: job.id });
+      else await conn.request('cloud.confirm', { id: job.id, ...(what === 'code' ? { code_only: true } : {}) });
+    } catch (e) {
+      setErr(errorMessage(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+  const moreFiles = review.files_total - review.files.length;
+  const moreUntracked = review.untracked_total - review.untracked.length;
+  return (
+    <div className="space-y-3" data-cloud-review={job.id}>
+      <div className="text-base font-medium">{t.cloud.reviewTitle}</div>
+      {review.warning && <Notice tone="warn">{review.warning}</Notice>}
+      <div className="text-sm text-muted">
+        {t.cloud.reviewSummary(review.files_total, review.added, review.removed)}
+        {review.branch ? ` · ${review.branch}` : ''}
+      </div>
+      {review.files.length > 0 && (
+        <ul aria-label={t.cloud.reviewFiles} className="max-h-48 overflow-y-auto rounded-xl border border-border font-mono text-xs">
+          {review.files.map((f) => (
+            <li key={f.path} className="flex items-center gap-2 border-b border-border px-2.5 py-1 last:border-b-0">
+              <span className="min-w-0 flex-1 truncate" title={f.path}>
+                {f.path}
+              </span>
+              <span className="shrink-0 text-ok">+{f.added}</span>
+              <span className="shrink-0 text-danger">−{f.removed}</span>
+            </li>
+          ))}
+          {moreFiles > 0 && <li className="px-2.5 py-1 text-muted">{t.cloud.reviewMore(moreFiles)}</li>}
+        </ul>
+      )}
+      {review.untracked.length > 0 && (
+        <div className="space-y-1">
+          <div className="text-xs font-medium text-muted">{t.cloud.reviewUntracked}</div>
+          <div className="max-h-24 overflow-y-auto font-mono text-xs">
+            {review.untracked.map((p) => (
+              <div key={p} className="truncate" title={p}>
+                {p}
+              </div>
+            ))}
+            {moreUntracked > 0 && <div className="text-muted">{t.cloud.reviewMore(moreUntracked)}</div>}
+          </div>
+        </div>
+      )}
+      {review.skipped.length > 0 && (
+        <div className="space-y-1">
+          <div className="text-xs font-medium text-muted">{t.cloud.reviewSkipped}</div>
+          <div className="max-h-24 overflow-y-auto font-mono text-xs">
+            {review.skipped.map((s) => (
+              <div key={s.path} className="truncate" title={`${s.path}: ${s.reason}`}>
+                {s.path} <span className="text-muted">({s.reason})</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      <div className="text-xs text-muted">{review.transcript ? t.cloud.reviewWithConversation : t.cloud.reviewNoConversation}</div>
+      {err && <Notice tone="danger">{err}</Notice>}
+      <div className="flex flex-col gap-2">
+        <Button block size="lg" variant="primary" busy={busy === 'apply'} disabled={busy !== null} data-act="cloud-apply" onClick={() => void act('apply')}>
+          {t.cloud.reviewApply}
+        </Button>
+        <Button block variant="outline" busy={busy === 'code'} disabled={busy !== null} data-act="cloud-code-only" onClick={() => void act('code')}>
+          {t.cloud.reviewCodeOnly}
+        </Button>
+        <Button block variant="ghost" busy={busy === 'cancel'} disabled={busy !== null} data-act="cloud-review-cancel" onClick={() => void act('cancel')}>
+          {t.cloud.reviewCancel}
+        </Button>
+      </div>
+      <Button block variant="ghost" onClick={onClose}>
+        {t.close}
+      </Button>
     </div>
   );
 }

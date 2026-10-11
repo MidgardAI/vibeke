@@ -152,6 +152,7 @@ export const RENDERER_METHODS = [
   'cloud.move',
   'cloud.jobs',
   'cloud.cancel',
+  'cloud.confirm',
   'auth.list',
   'auth.approve.decide',
   'assistant.status',

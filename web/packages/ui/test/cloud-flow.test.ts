@@ -141,3 +141,44 @@ describe('CloudStores', () => {
     expect(f.live()).toBe(false);
   });
 });
+
+import { RpcError as RpcErr } from '@vibeke/core';
+import { parseCloudJob as parseJob, parseReview, sharedCheckout } from '../src/lib/cloud';
+
+describe('bring-back review', () => {
+  test('a job waiting for review carries its summary', () => {
+    const j = parseJob({
+      id: 'j1',
+      direction: 'bring_back',
+      state: 'awaiting_confirmation',
+      result: {
+        review: {
+          warning: 'The agent ran with full permissions.',
+          files: [{ path: 'src/a.ts', added: 3, removed: 1 }, { nope: true }],
+          files_total: 40,
+          added: 120,
+          removed: 9,
+          untracked: ['notes.md', 7],
+          untracked_total: 1,
+          skipped: [{ path: 'big.bin', reason: 'too large' }],
+          transcript: true,
+        },
+      },
+    })!;
+    expect(j.state).toBe('awaiting_confirmation');
+    expect(j.result?.review).toMatchObject({
+      warning: 'The agent ran with full permissions.',
+      files: [{ path: 'src/a.ts', added: 3, removed: 1 }],
+      files_total: 40,
+      untracked: ['notes.md'],
+      skipped: [{ path: 'big.bin', reason: 'too large' }],
+      transcript: true,
+    });
+    expect(parseReview(null)).toBeNull();
+  });
+  test('a shared checkout refusal offers a new task', () => {
+    const e = new RpcErr('cloud.move', { code: -32009, message: 'Pane w1:p1 works in the main checkout.', data: { kind: 'conflict', details: { reason: 'shared_checkout', retry: { new_task: true } } } });
+    expect(sharedCheckout(e)).toEqual({ message: 'Pane w1:p1 works in the main checkout.' });
+    expect(sharedCheckout(new Error('x'))).toBeNull();
+  });
+});

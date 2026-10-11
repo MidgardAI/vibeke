@@ -696,7 +696,39 @@ export interface CloudBox {
   host_tag?: string;
 }
 
-export type CloudJobState = 'queued' | 'waiting_turn' | 'creating' | 'bootstrapping' | 'exporting' | 'uploading' | 'importing' | 'resuming' | 'done' | 'failed' | 'cancelled';
+export type CloudJobState =
+  | 'queued'
+  | 'waiting_turn'
+  | 'creating'
+  | 'bootstrapping'
+  | 'exporting'
+  | 'uploading'
+  | 'importing'
+  | 'awaiting_confirmation'
+  | 'resuming'
+  | 'done'
+  | 'failed'
+  | 'cancelled';
+
+/**
+ * What a bring-back to this host would apply (`result.review` while the job waits in
+ * `awaiting_confirmation`): changed files with line counts, new and skipped files, and a warning.
+ */
+export interface CloudReview {
+  warning: string;
+  branch?: string | null;
+  head?: string | null;
+  files: { path: string; added: number; removed: number }[];
+  files_total: number;
+  added: number;
+  removed: number;
+  untracked: string[];
+  untracked_total: number;
+  skipped: { path: string; reason: string }[];
+  harness?: string | null;
+  /** A conversation comes along (resuming the agent applies it). */
+  transcript: boolean;
+}
 
 export interface CloudJob {
   id: string;
@@ -709,7 +741,7 @@ export interface CloudJob {
   state: CloudJobState;
   progress?: { done: number; total: number } | null;
   error?: { kind?: string; message?: string; details?: unknown } | null;
-  result?: { pane?: string; task?: string; box?: string; peer_job?: string } | null;
+  result?: { pane?: string; task?: string; box?: string; peer_job?: string; review?: CloudReview } | null;
   created_at: number;
   updated_at: number;
 }
@@ -1215,9 +1247,12 @@ export interface AppApi {
     result: { candidates: CloudBox[]; destroyed: string[]; skipped: { box: string; reason: string }[] };
   };
   'cloud.move': {
-    params: { pane?: string; run?: string; box?: string; to: CloudMoveTarget; interrupt?: boolean; source_after?: 'keep' | 'suspend' | 'destroy' };
+    /** `new_task`: copy the work into a new task first (the answer to a `shared_checkout` refusal). */
+    params: { pane?: string; run?: string; box?: string; to: CloudMoveTarget; interrupt?: boolean; source_after?: 'keep' | 'suspend' | 'destroy'; new_task?: boolean };
     result: { job: CloudJob };
   };
+  /** Go on with a bring-back waiting in `awaiting_confirmation`; `code_only` skips resuming the agent. */
+  'cloud.confirm': { params: { id: string; code_only?: boolean }; result: { job: CloudJob } };
   'cloud.jobs': { params: Record<string, never>; result: { jobs: CloudJob[] } };
   'cloud.cancel': { params: { id: string }; result: { job: CloudJob } };
   /** The hosts `handoff.send` can deliver to, as this host's gateway last published them. */
@@ -1467,6 +1502,7 @@ export const MUTATING_METHODS: ReadonlySet<string> = new Set([
   'cloud.box.forget',
   'cloud.prune',
   'cloud.move',
+  'cloud.confirm',
   'cloud.cancel',
   'auth.approve.decide',
   'worktree.create',
