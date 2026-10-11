@@ -346,6 +346,7 @@ Use `--json` to print JSON. Non-terminal output also uses JSON.
 | `ignore` | `<collision>` `<path>` | `collision.ignore` | <collision> <path> [--for-secs n]: stop tracking a path (or `--root dir <path>` without a collision) |
 | `ignores` | - | `collision.ignores` | [--root dir] |
 | `unignore` | `<ignore>` | `collision.unignore` | <ignore id> |
+| `dismiss` | `<collision>` | `collision.dismiss` | <collision> [--dismissed false]: hide the warning until it gets worse |
 | `pause` | `<collision>` `<run>` | `collision.pause` | <collision> <run>: the adapter's interrupt for one run |
 | `tell` | `<collision>` | `collision.tell` | <collision> [--runs r]... [--text t]: native steer only (never typed into a TUI) |
 | `fresh` | `<collision>` | `collision.start_task` | <collision> [--run r] [--title t] [--harness h] [--prompt text] [--dry-run]: a new task from the shared checkout's HEAD with a hand-off prompt; nothing is moved |

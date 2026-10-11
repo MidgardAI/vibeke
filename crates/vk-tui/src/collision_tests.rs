@@ -216,10 +216,8 @@ fn the_popup_lists_paths_runs_timeline_and_how_each_run_can_be_told() {
     assert_eq!(p, json!({"collision": "col_1"}));
     reply(&mut app, 0, req, detail(true));
     let s = screen(&app);
-    assert!(
-        s.contains("collision · 2 agents editing src/auth.ts"),
-        "{s}"
-    );
+    // The whole headline is in the body, wrapped, not cut off in the title.
+    assert!(s.contains("2 agents editing src/auth.ts"), "{s}");
     assert!(s.contains("advisory"), "{s}");
     assert!(s.contains("claude (a1)") && s.contains("codex (a3)"), "{s}");
     assert!(s.contains("tell: hook_context"), "{s}");
@@ -419,4 +417,115 @@ fn records_parse_defensively() {
         (rank("high"), rank("medium"), rank("low"), rank("x")),
         (3, 2, 1, 0)
     );
+}
+
+fn line_index(app: &App) -> usize {
+    crate::draw::sidebar_rows(app)
+        .iter()
+        .position(|r| r.collision.is_some())
+        .expect("a collision line")
+}
+
+#[test]
+fn a_click_on_the_sidebar_line_opens_the_popup_on_that_collision() {
+    let (mut app, mut rxs) = setup();
+    let medium = rec_json(
+        "col_3",
+        "medium",
+        &[("r1", "a1", "claude", "p1"), ("r3", "a3", "codex", "p3")],
+        "src/other.ts",
+    );
+    first_list(&mut app, &mut rxs[0], vec![medium, high()]);
+    let y = line_index(&app) as u16 + 1;
+    app.on_mouse(crate::event::MouseEvent {
+        kind: crate::event::MouseEventKind::Down(crate::event::MouseButton::Left),
+        column: 3,
+        row: y,
+        modifiers: crate::event::KeyModifiers::NONE,
+    });
+    assert!(matches!(app.mode, Mode::Popup(Popup::Collision)));
+    let cmds = commands(&mut rxs[0]);
+    let (req, p) = only(&cmds, "collision.get");
+    assert_eq!(p["collision"], "col_1", "the line's own collision");
+    reply(&mut app, 0, req, detail(false));
+    let s = screen(&app);
+    assert!(s.contains("2 agents editing src/auth.ts"), "{s}");
+    assert!(s.contains("d dismiss"), "{s}");
+}
+
+#[test]
+fn navigate_mode_opens_and_dismisses_the_line_without_pane_actions() {
+    let (mut app, mut rxs) = setup();
+    first_list(&mut app, &mut rxs[0], vec![high()]);
+    let sel = crate::draw::sidebar_rows(&app)
+        .iter()
+        .filter(|r| r.selectable())
+        .position(|r| r.collision.is_some())
+        .unwrap();
+    app.mode = Mode::Navigate { sel };
+    // A pane action does nothing on it.
+    key(&mut app, Key::Char('x'));
+    assert!(matches!(app.mode, Mode::Navigate { .. }));
+    key(&mut app, Key::Named(NamedKey::Enter));
+    assert!(matches!(app.mode, Mode::Popup(Popup::Collision)));
+    let cmds = commands(&mut rxs[0]);
+    only(&cmds, "collision.get");
+    app.mode = Mode::Navigate { sel };
+    key(&mut app, Key::Char('d'));
+    let cmds = commands(&mut rxs[0]);
+    let (_, p) = only(&cmds, "collision.dismiss");
+    assert_eq!(p, json!({"collision": "col_1", "dismissed": true}));
+    // The warning leaves the sidebar, the agent rows and the frames at once.
+    assert!(
+        crate::draw::sidebar_rows(&app)
+            .iter()
+            .all(|r| r.collision.is_none())
+    );
+    assert!(!crate::draw::agent_row_text(&app, 0, "r1").contains('⚠'));
+    assert_eq!(pane_badge(&app, 0, "p1"), None);
+    // The popup still lists it.
+    assert_eq!(all(&app), vec![(0, "col_1".to_string())]);
+}
+
+#[test]
+fn dismissing_from_the_popup_closes_it_and_a_dismissed_record_stays_hidden() {
+    let (mut app, mut rxs) = setup();
+    first_list(&mut app, &mut rxs[0], vec![high()]);
+    app.action("collisions", None);
+    let cmds = commands(&mut rxs[0]);
+    let (req, _) = only(&cmds, "collision.get");
+    reply(&mut app, 0, req, detail(false));
+    key(&mut app, Key::Char('d'));
+    assert!(
+        matches!(app.mode, Mode::Normal),
+        "dealt with: the popup closes"
+    );
+    let cmds = commands(&mut rxs[0]);
+    let (req, p) = only(&cmds, "collision.dismiss");
+    assert_eq!(p["dismissed"], true);
+    reply(&mut app, 0, req, json!({"collision": high()}));
+    // The next list carries `dismissed_ms`: still hidden.
+    let mut rec = high();
+    rec["dismissed_ms"] = json!(5);
+    app.ux.collision.stale.insert(0);
+    tick(&mut app, Instant::now());
+    let cmds = commands(&mut rxs[0]);
+    let (req, _) = only(&cmds, "collision.list");
+    reply(&mut app, 0, req, list_of(vec![rec]));
+    assert!(app.ux.collision.recs[&0][0].dismissed);
+    assert_eq!(pane_badge(&app, 0, "p1"), None);
+    // Shown again from the popup: it stays open and says so.
+    app.action("collisions", None);
+    let cmds = commands(&mut rxs[0]);
+    let (req, _) = only(&cmds, "collision.get");
+    let mut d = detail(false);
+    d["collision"]["dismissed_ms"] = json!(5);
+    reply(&mut app, 0, req, d);
+    assert!(screen(&app).contains("dismissed: hidden until"));
+    key(&mut app, Key::Char('d'));
+    assert!(matches!(app.mode, Mode::Popup(Popup::Collision)));
+    let cmds = commands(&mut rxs[0]);
+    let (_, p) = only(&cmds, "collision.dismiss");
+    assert_eq!(p["dismissed"], false);
+    assert_eq!(pane_badge(&app, 0, "p1"), Some("⚠"));
 }

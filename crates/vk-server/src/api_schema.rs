@@ -1433,7 +1433,7 @@ review.pr_claimed :: {task: string} => {claim: string, url: string, pr: string|n
 const BATCH_3A_DEFS: &str = r##"
 CollisionRunInfo = {run: string, handle: string|null, name: string|null, harness: string|null, pane: string|null, task: string|null, state: string|null, alive: bool}
 CollisionPath = {path: string, severity: low|medium|high, reason: object, runs: [string], ambiguous: bool, first_ms: int, last_ms: int}
-Collision = {id: string, root: string, severity: low|medium|high, status: open|cleared|ignored, runs: [string], run_info: [CollisionRunInfo], paths: [CollisionPath], ambiguous: bool, first_ms: int, last_ms: int, headline: string, cleared_ms: int|null, cleared_reason: string|null, timeline?: [object]}
+Collision = {id: string, root: string, severity: low|medium|high, status: open|cleared|ignored, runs: [string], run_info: [CollisionRunInfo], paths: [CollisionPath], ambiguous: bool, first_ms: int, last_ms: int, headline: string, cleared_ms: int|null, cleared_reason: string|null, dismissed_ms: int|null, timeline?: [object]}
 CollisionClaim = {id: string, run: string, run_handle: string|null, root: string, glob: string, created_ms: int, created_at_ms: int, note: string|null, task: string|null, kind: run|task}
 CollisionIgnore = {id: string, root: string, path: string, created_ms: int, expires_ms: int|null, by: string}
 "##;
@@ -1449,6 +1449,8 @@ collision.ignores :: {root?: string} => {ignores: [CollisionIgnore]}
 # "Ignore for this path": drops the path from open collisions and stops tracking it (optionally for a while)
 collision.ignore :: {collision?: string, root?: string, path: string, for_secs?: int} => {ignore: CollisionIgnore, collision: Collision|null}
 collision.unignore :: {ignore: string} => {removed: bool}
+# "I have seen this": hides the warning until a new run joins or the severity rises; tracking goes on
+collision.dismiss :: {collision: string, dismissed?: bool = true} => {collision: Collision}
 # the adapter's own interrupt of one run of the collision
 collision.pause :: {collision: string, run: Target} => {run: AgentRun|null, paused: bool}
 # native steer only (headless steer, Claude hook context on the next prompt or tool result); never typed into a TUI
@@ -1467,7 +1469,7 @@ collision.claim_release :: {claim?: string, run?: Target, glob?: string} => {rel
 const BATCH_3A_EVENT_SHAPES: &str = r##"
 task.collision_detected :: {collision: string} => {repo: string, severity: low|medium|high, reason: same_file|same_dir|read_then_edited|claim, paths: [string], new_paths: [string], runs: [string], new_runs: [string], ambiguous: bool, created: bool, raised: bool}
 task.collision_cleared :: {collision: string} => {repo: string, reason: quiet|runs_ended|ignored|restart|out_of_scope, severity: low|medium|high, runs: [string], paths: [string]}
-task.collision_action :: {collision?: string|null} => {action: ignore|pause|tell|tell_delivered|start_task|claim_denied, path?: string, repo?: string, ignore?: string, run?: string, by?: string, results?: [object], text?: string, via?: string, messages?: int, base?: string, task?: any, source_run?: string|null, claim?: string, owner?: string}
+task.collision_action :: {collision?: string|null} => {action: ignore|dismiss|undismiss|pause|tell|tell_delivered|start_task|claim_denied, path?: string, repo?: string, ignore?: string, run?: string, by?: string, results?: [object], text?: string, via?: string, messages?: int, base?: string, task?: any, source_run?: string|null, claim?: string, owner?: string}
 task.collision_claim_added :: {claim: string, run: string} => {glob: string, repo: string, note: string|null, conflicts: [string], by: string}
 task.collision_claim_released :: {claim: string, run: string} => {glob: string, repo: string, reason: released|run_ended}
 "##;

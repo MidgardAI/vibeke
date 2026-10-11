@@ -838,6 +838,13 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
     ),
     (
         "collision",
+        "dismiss",
+        "collision.dismiss",
+        &["collision"],
+        "<collision> [--dismissed false]: hide the warning until it gets worse",
+    ),
+    (
+        "collision",
         "pause",
         "collision.pause",
         &["collision", "run"],

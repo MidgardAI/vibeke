@@ -279,6 +279,7 @@ Collision = TypedDict("Collision", {
     "headline": str,
     "cleared_ms": Optional[int],
     "cleared_reason": Optional[str],
+    "dismissed_ms": Optional[int],
     "timeline": NotRequired[List[Dict[str, Any]]],
 })
 
@@ -3348,6 +3349,16 @@ CollisionClaimsParams = TypedDict("CollisionClaimsParams", {
 
 CollisionClaimsResult = TypedDict("CollisionClaimsResult", {
     "claims": List["CollisionClaim"],
+})
+
+CollisionDismissParams = TypedDict("CollisionDismissParams", {
+    "collision": str,
+    "dismissed": NotRequired[bool],
+})
+
+CollisionDismissResult = TypedDict("CollisionDismissResult", {
+    "collision": "Collision",
+    "cursor": NotRequired["Cursor"],
 })
 
 CollisionGetParams = TypedDict("CollisionGetParams", {
@@ -8619,6 +8630,7 @@ METHODS: Dict[str, Dict[str, Any]] = {
     "collision.claim": {"mutating": True, "scope": "pane", "pane_scope": "open"},
     "collision.claim_release": {"mutating": True, "scope": "pane", "pane_scope": "open"},
     "collision.claims": {"mutating": False, "scope": "pane", "pane_scope": "open"},
+    "collision.dismiss": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "collision.get": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "collision.ignore": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "collision.ignores": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
@@ -11225,7 +11237,7 @@ TaskCollisionActionSubject = TypedDict("TaskCollisionActionSubject", {
 })
 
 TaskCollisionActionData = TypedDict("TaskCollisionActionData", {
-    "action": Literal["ignore", "pause", "tell", "tell_delivered", "start_task", "claim_denied"],
+    "action": Literal["ignore", "dismiss", "undismiss", "pause", "tell", "tell_delivered", "start_task", "claim_denied"],
     "path": NotRequired[str],
     "repo": NotRequired[str],
     "ignore": NotRequired[str],

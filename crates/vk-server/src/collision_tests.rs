@@ -855,6 +855,61 @@ async fn ignore_drops_the_path_and_stops_tracking_it() {
 }
 
 #[tokio::test]
+async fn dismiss_hides_a_warning_until_a_new_run_joins() {
+    let f = fx("dismiss");
+    let (a, b, rec) = collided(&f);
+    let r = ok(
+        &f.s,
+        &user(),
+        "collision.dismiss",
+        json!({"collision": rec.id}),
+    )
+    .await;
+    assert!(r["collision"]["dismissed_ms"].is_i64());
+    assert_eq!(r["collision"]["status"], "open", "tracking goes on");
+    let acts = events(&f.s, "task.collision_action");
+    assert_eq!(acts.last().unwrap().data["action"], "dismiss");
+    // The same runs on another file: what the dismissal accepted.
+    post(&f, &a, "Edit", "src/db.ts");
+    post(&f, &b, "Edit", "src/db.ts");
+    let o = open(&f.s);
+    assert_eq!(o.len(), 1);
+    assert_eq!(o[0].paths.len(), 2);
+    assert!(o[0].dismissed_ms.is_some());
+    // A third run joins: the warning is back.
+    let c = add_run(&f, "rc", "pc", "codex", Execution::Working);
+    post(&f, &c, "Edit", "src/auth.ts");
+    assert!(open(&f.s)[0].dismissed_ms.is_none());
+    // Dismiss, then show it again by hand.
+    ok(
+        &f.s,
+        &user(),
+        "collision.dismiss",
+        json!({"collision": rec.id}),
+    )
+    .await;
+    let r = ok(
+        &f.s,
+        &user(),
+        "collision.dismiss",
+        json!({"collision": rec.id, "dismissed": false}),
+    )
+    .await;
+    assert!(r["collision"]["dismissed_ms"].is_null());
+    let l = ok(&f.s, &user(), "collision.list", json!({})).await;
+    assert!(l["collisions"][0]["dismissed_ms"].is_null());
+    // An unknown id is not found.
+    let r = dispatch(
+        &f.s,
+        &user(),
+        "collision.dismiss",
+        &json!({"collision": "col_x"}),
+    )
+    .await;
+    assert!(r.is_err());
+}
+
+#[tokio::test]
 async fn an_ignore_can_expire() {
     let f = fx("ignoreexp");
     let (_a, _b, rec) = collided(&f);
@@ -1581,6 +1636,7 @@ fn every_method_is_registered_with_a_shape_and_a_declared_pane_scope() {
         "collision.ignores",
         "collision.ignore",
         "collision.unignore",
+        "collision.dismiss",
         "collision.pause",
         "collision.tell",
         "collision.start_task",

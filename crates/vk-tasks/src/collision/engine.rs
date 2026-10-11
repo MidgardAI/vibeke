@@ -654,6 +654,10 @@ pub struct CollisionRec {
     pub cleared_ms: Option<i64>,
     #[serde(default)]
     pub cleared_reason: Option<String>,
+    /// When the user dismissed the warning ("I have seen this"). The record stays open and
+    /// tracked; a new run or a higher severity brings the warning back (`merge` clears it).
+    #[serde(default)]
+    pub dismissed_ms: Option<i64>,
 }
 
 /// What merging a finding changed.
@@ -696,6 +700,7 @@ impl CollisionRec {
             notified: vec![],
             cleared_ms: None,
             cleared_reason: None,
+            dismissed_ms: None,
         }
     }
 
@@ -764,6 +769,11 @@ impl CollisionRec {
         m.severity_raised = before.is_some_and(|b| self.severity > b);
         m.created = before.is_none();
         self.last_ms = self.last_ms.max(f.at_ms);
+        // Worse than what was dismissed: show the warning again. A new path between the same
+        // runs at the same severity is what a dismissal accepted.
+        if m.severity_raised || !m.new_runs.is_empty() {
+            self.dismissed_ms = None;
+        }
         m
     }
 

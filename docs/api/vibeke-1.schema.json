@@ -1158,6 +1158,16 @@
             }
           ]
         },
+        "dismissed_ms": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "timeline": {
           "type": "array",
           "items": {
@@ -1178,7 +1188,8 @@
         "last_ms",
         "headline",
         "cleared_ms",
-        "cleared_reason"
+        "cleared_reason",
+        "dismissed_ms"
       ]
     },
     "CollisionClaim": {
@@ -13139,6 +13150,40 @@
         },
         "required": [
           "claims"
+        ]
+      }
+    },
+    "collision.dismiss": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "collision": {
+            "type": "string"
+          },
+          "dismissed": {
+            "type": "boolean",
+            "default": true
+          }
+        },
+        "required": [
+          "collision"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "collision": {
+            "$ref": "#/$defs/Collision"
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "collision"
         ]
       }
     },
@@ -39829,6 +39874,8 @@
             "type": "string",
             "enum": [
               "ignore",
+              "dismiss",
+              "undismiss",
               "pause",
               "tell",
               "tell_delivered",

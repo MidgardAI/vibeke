@@ -12,6 +12,7 @@
 //!   `ui.interaction_overlay`, edit-scrollback in a popup (08 §5, §8; 03 §11.3).
 //! - [`crate::navkeys`]: navigate-mode `/` filter, `t`, `p`; palette argument prompts (08 §6).
 //! - [`crate::mouse_focus`]: `ui.focus_follows_mouse` (08 §5).
+//! - [`crate::sidebar_tip`]: the full text of a cut-off sidebar row (08 §2).
 //! - [`crate::sync_input`]: synchronized input (08 §5).
 //!
 //! v1 remainder (spec 08, 09 §3.2):
@@ -51,6 +52,7 @@ pub struct State {
     pub popups: crate::popup_pane::State,
     pub nav: crate::navkeys::State,
     pub hover: crate::mouse_focus::State,
+    pub tip: crate::sidebar_tip::State,
     pub sync: crate::sync_input::State,
     pub trust: crate::trust::State,
     pub elevate: crate::elevate::State,
@@ -220,6 +222,7 @@ pub fn on_tick(app: &mut App) {
 pub fn deadlines(app: &App, now: Instant, d: &mut crate::deadline::Deadlines) {
     crate::fleet::deadlines(app, now, d);
     crate::mouse_focus::deadlines(app, d);
+    crate::sidebar_tip::deadlines(app, now, d);
     crate::sidebar::deadlines(app, now, d);
     crate::elevate::deadlines(app, d);
     crate::taskbadge::deadlines(app, d);

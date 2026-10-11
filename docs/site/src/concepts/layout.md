@@ -12,4 +12,6 @@ Terminal clients, CLI clients, gateways, and plugins can connect to the same ses
 
 The sidebar shows agent state and requests for each workspace. Requests that need an answer appear at the top.
 
+A sidebar row that is too long for the sidebar ends in `…`. Rest the mouse pointer on the row to see its whole text. In navigate mode, select the row to see its whole text.
+
 Terminal actions use the control API. Scripts can use the same operations through `vibeke workspace|tab|pane ...`. See the [CLI reference](../reference/cli.md).

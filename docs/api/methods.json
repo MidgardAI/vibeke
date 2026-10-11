@@ -8,7 +8,7 @@
     "proto": 2,
     "min": 1
   },
-  "method_count": 439,
+  "method_count": 440,
   "methods": [
     {
       "name": "adapter.control",
@@ -1747,6 +1747,20 @@
       "spec": "`{task?, run?, root?}` → `{claims[]}` — run claims and the **task claims** (`task.claim`) that bind each checkout (`kind: run|task`); an agent sees the claims of its own checkout",
       "params": "{task?: Target, run?: Target, root?: string}",
       "result": "{claims: [CollisionClaim]}"
+    },
+    {
+      "name": "collision.dismiss",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "collision"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{collision: string, dismissed?: bool = true}",
+      "result": "{collision: Collision}"
     },
     {
       "name": "collision.get",

@@ -51,12 +51,13 @@ A guess never raises a `high` collision. It raises at most a `medium` collision,
 
 Each path of a collision goes away when no run touches it for 30 minutes (`[collision] window`). The collision closes when it has no paths left, when fewer than two of its runs are still running, or when its checkout is no longer a git checkout.
 
-A pane in a `high` or `medium` collision shows `⚠`. Under the workspace, the sidebar shows one line for the most severe collision, for example "claude and codex both edited `src/auth.ts`". It counts the other collisions as "+N more". The collision view lists every collision, including `low` ones. Open it with the `collisions` palette action. It lists the paths, the runs, and a timeline, and offers:
+A pane in a `high` or `medium` collision shows `⚠`. Under the workspace, the sidebar shows one line for the most severe collision, for example "claude and codex both edited `src/auth.ts`". It counts the other collisions as "+N more". The collision view lists every collision, including `low` ones. Open it with the `collisions` palette action, or click the collision line in the sidebar. It shows the whole headline, the paths, the runs, and a timeline. It offers these actions:
 
 - **Pause** one run, with the adapter's own interrupt.
 - **Tell the agents** with a short message. Vibeke uses only a native steer or follow-up channel, or Claude's next hook. It never types into a terminal mid-turn. A run with no such channel is told so.
 - **Start a fresh task from here.** Vibeke creates a task from the shared checkout's `HEAD` and starts a new run there with a hand-off prompt. The original runs keep working and nothing is moved.
 - **Ignore** a path.
+- **Dismiss** the warning (`d`). The sidebar line and the `⚠` marks go away, but Vibeke keeps tracking the collision. The warning comes back when another agent joins the collision or when it becomes more serious. Press `d` in the collision view again to show a dismissed warning. The dismissal applies to every connected client.
 
 `vibeke claim add "src/auth/**" --run a12` says which part of the checkout a run works in (a run without a task gets a run claim; `vibeke collision claim` is the same call, and a task's own claims count too). Another run writing there raises a `high` collision at once. With `[collision] enforce_claims = true`, Claude also denies its reported edit tools inside another run's claim. This is a courtesy guardrail: shell commands and other harnesses are unaffected. Claims end with their run.
 

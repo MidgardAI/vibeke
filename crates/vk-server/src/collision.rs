@@ -56,6 +56,7 @@ pub const METHODS: &[(&str, bool)] = &[
     ("collision.ignores", false),
     ("collision.ignore", true),
     ("collision.unignore", true),
+    ("collision.dismiss", true),
     ("collision.pause", true),
     ("collision.tell", true),
     ("collision.start_task", true),
@@ -71,6 +72,7 @@ pub const PANE_FORBIDDEN: &[&str] = &[
     "collision.ignores",
     "collision.ignore",
     "collision.unignore",
+    "collision.dismiss",
     "collision.pause",
     "collision.tell",
     "collision.start_task",
@@ -791,6 +793,7 @@ pub(crate) fn collision_json(server: &Server, rec: &vc::CollisionRec, timeline: 
         "headline": headline(server, rec),
         "cleared_ms": rec.cleared_ms,
         "cleared_reason": rec.cleared_reason,
+        "dismissed_ms": rec.dismissed_ms,
     });
     if timeline {
         v["timeline"] = json!(rec.timeline);
@@ -900,6 +903,7 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
         "collision.ignores" => ignores_list(server, p),
         "collision.ignore" => ignore(server, ctx, p),
         "collision.unignore" => unignore(server, p),
+        "collision.dismiss" => dismiss(server, ctx, p),
         "collision.pause" => act::pause(server, ctx, p).await,
         "collision.tell" => act::tell(server, ctx, p).await,
         "collision.start_task" => act::start_task(server, ctx, p).await,
@@ -1090,6 +1094,39 @@ fn ignore(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         "ignore": ignore_json(&ig),
         "collision": out_rec.map(|r| collision_json(server, &r, false)),
     }))
+}
+
+/// "I have seen this": hide an open collision's warning until it gets worse (a new run or a
+/// higher severity). Tracking goes on; `dismissed: false` shows it again.
+fn dismiss(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
+    ensure_loaded(server);
+    let id = req(p, "collision")?;
+    let on = p["dismissed"].as_bool().unwrap_or(true);
+    let rec = {
+        let mut g = server.collision.inner.lock().unwrap();
+        match g.open.iter_mut().find(|r| r.id == id) {
+            Some(r) => {
+                r.dismissed_ms = on.then(now_ms);
+                r.clone()
+            }
+            None => {
+                drop(g);
+                return Err(match find_collision(server, id) {
+                    Some(_) => invalid("collision: no longer open"),
+                    None => not_found("collision", id),
+                });
+            }
+        }
+    };
+    persist(
+        server,
+        &rec,
+        Some((
+            "task.collision_action",
+            json!({"action": if on { "dismiss" } else { "undismiss" }, "repo": rec.root, "by": ctx.client_id}),
+        )),
+    );
+    Ok(json!({"collision": collision_json(server, &rec, false)}))
 }
 
 fn unignore(server: &Arc<Server>, p: &Value) -> R {

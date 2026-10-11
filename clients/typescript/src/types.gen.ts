@@ -258,6 +258,7 @@ export type Collision = {
   headline: string;
   cleared_ms: number | null;
   cleared_reason: string | null;
+  dismissed_ms: number | null;
   timeline?: Record<string, unknown>[];
 };
 
@@ -3091,6 +3092,16 @@ export type CollisionClaimsParams = {
 
 export type CollisionClaimsResult = {
   claims: CollisionClaim[];
+};
+
+export type CollisionDismissParams = {
+  collision: string;
+  dismissed?: boolean;
+};
+
+export type CollisionDismissResult = {
+  collision: Collision;
+  cursor?: Cursor;
 };
 
 export type CollisionGetParams = {
@@ -7984,6 +7995,7 @@ export interface Methods {
   "collision.claim": { params: CollisionClaimParams; result: CollisionClaimResult };
   "collision.claim_release": { params: CollisionClaimReleaseParams; result: CollisionClaimReleaseResult };
   "collision.claims": { params: CollisionClaimsParams; result: CollisionClaimsResult };
+  "collision.dismiss": { params: CollisionDismissParams; result: CollisionDismissResult };
   "collision.get": { params: CollisionGetParams; result: CollisionGetResult };
   "collision.ignore": { params: CollisionIgnoreParams; result: CollisionIgnoreResult };
   "collision.ignores": { params: CollisionIgnoresParams; result: CollisionIgnoresResult };
@@ -8429,6 +8441,7 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "collision.claim": { mutating: true, scope: "pane", paneScope: "open" },
   "collision.claim_release": { mutating: true, scope: "pane", paneScope: "open" },
   "collision.claims": { mutating: false, scope: "pane", paneScope: "open" },
+  "collision.dismiss": { mutating: true, scope: "full", paneScope: "forbidden" },
   "collision.get": { mutating: false, scope: "pane", paneScope: "open" },
   "collision.ignore": { mutating: true, scope: "full", paneScope: "forbidden" },
   "collision.ignores": { mutating: false, scope: "full", paneScope: "forbidden" },
@@ -11021,7 +11034,7 @@ export type TaskCollisionActionSubject = {
 };
 
 export type TaskCollisionActionData = {
-  action: "ignore" | "pause" | "tell" | "tell_delivered" | "start_task" | "claim_denied";
+  action: "ignore" | "dismiss" | "undismiss" | "pause" | "tell" | "tell_delivered" | "start_task" | "claim_denied";
   path?: string;
   repo?: string;
   ignore?: string;

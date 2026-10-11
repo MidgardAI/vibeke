@@ -1972,6 +1972,9 @@ impl App {
         if ev.kind != KeyKind::Release && matches!(self.mode, Mode::Normal) {
             crate::osc::dismiss_recovery(self);
         }
+        if ev.kind != KeyKind::Release {
+            crate::sidebar_tip::hide(self);
+        }
         if crate::gateway::key(self, &ev) {
             return;
         }
@@ -2188,6 +2191,8 @@ impl App {
 
     pub(crate) fn on_mouse(&mut self, me: crate::event::MouseEvent) {
         let (me, px) = crate::browser::cellify(self, me);
+        // The pointer resting on a cut-off sidebar row (never consumes the event).
+        crate::sidebar_tip::on_mouse(self, &me);
         // Moving/resizing a popup by its frame (08 §5).
         if crate::popup_pane::on_mouse(self, &me) {
             return;
@@ -2233,6 +2238,9 @@ impl App {
         if crate::chrome::in_sidebar(self, x) {
             match me.kind {
                 MouseEventKind::Down(CtButton::Left) => {
+                    if crate::collision::sidebar_click(self, y) {
+                        return;
+                    }
                     if let Some((mi, pane)) = draw::sidebar_hit(self, y) {
                         self.focus_pane(mi, &pane);
                     }
@@ -2800,6 +2808,7 @@ impl App {
     fn navigate_key(&mut self, ev: KeyEvent, sel: usize) {
         // Image rows first: they never reach a pane action (spec 18 §4.4).
         if crate::images::navigate_key(self, &ev, sel)
+            || crate::collision::navigate_key(self, &ev, sel)
             || crate::preview_manager::navigate_key(self, &ev, sel)
             || crate::ux::navigate_key(self, &ev, sel)
             || crate::groups::navigate_key(self, &ev, sel)

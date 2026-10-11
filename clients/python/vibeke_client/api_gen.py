@@ -386,6 +386,9 @@ class Api:
     async def collision_claims(self, params: "Optional[t.CollisionClaimsParams]" = None) -> "t.CollisionClaimsResult":
         return await self.call("collision.claims", params or {})  # type: ignore[arg-type, return-value]
 
+    async def collision_dismiss(self, params: "t.CollisionDismissParams") -> "t.CollisionDismissResult":
+        return await self.call("collision.dismiss", params)  # type: ignore[arg-type, return-value]
+
     async def collision_get(self, params: "t.CollisionGetParams") -> "t.CollisionGetResult":
         return await self.call("collision.get", params)  # type: ignore[arg-type, return-value]
 

@@ -24,20 +24,25 @@ pub struct SideRow {
     pub image: Option<(usize, String)>,
     /// A `+N more on <machine>` row of the Images section: opens that machine's gallery.
     pub image_more: Option<usize>,
+    /// A workspace's collision line (machine, collision id): opens the collision popup (05 §10).
+    pub collision: Option<(usize, String)>,
 }
 
 impl SideRow {
-    /// Navigate mode can select it (a pane target, a group, a preview or an image row).
+    /// Navigate mode can select it (a pane target, a group, a preview, an image or a collision
+    /// row).
     pub fn selectable(&self) -> bool {
         self.target.is_some()
             || self.group.is_some()
             || (self.preview.is_some() && self.chips.is_empty())
             || self.image.is_some()
             || self.image_more.is_some()
+            || self.collision.is_some()
     }
 
-    /// What navigate mode selects on this row (pane, group, preview or screenshot id; an empty
-    /// id for `+N more`). `crate::images::navigate_key` handles image rows first.
+    /// What navigate mode selects on this row (pane, group, preview, screenshot or collision id;
+    /// an empty id for `+N more`). `crate::images::navigate_key` and
+    /// `crate::collision::navigate_key` handle their rows first.
     fn selection(&self) -> Option<(usize, String)> {
         self.target
             .clone()
@@ -45,6 +50,12 @@ impl SideRow {
             .or(self.preview.clone().filter(|_| self.chips.is_empty()))
             .or(self.image.clone())
             .or(self.image_more.map(|mi| (mi, String::new())))
+            .or(self.collision.clone())
+    }
+
+    /// The row's whole text.
+    pub fn text(&self) -> String {
+        self.segs.iter().map(|(s, _)| s.as_str()).collect()
     }
 }
 
@@ -572,15 +583,11 @@ fn workspace_rows_at(app: &App, mi: usize, w: &Workspace, depth: usize, rows: &m
         }
     }
     // "claude and codex both edited src/auth.ts" (05 §10): the workspace's most severe one.
-    for (line, rank) in crate::collision::sidebar_lines(app, mi, &ws_panes) {
-        let (mark, c) = match rank {
-            3 => ("⚠", t.red),
-            _ => ("⚠", t.yellow),
-        };
+    for l in crate::collision::sidebar_lines(app, mi, &ws_panes) {
+        let c = if l.rank >= 3 { t.red } else { t.yellow };
         rows.push(SideRow {
-            segs: vec![(format!("{pad}    {mark} {line}"), t.s(c))],
-            target: crate::collision::sidebar_target(app, mi, &ws_panes).map(|p| (mi, p)),
-            focused: false,
+            segs: vec![(format!("{pad}    ⚠ {}", l.text), t.s(c))],
+            collision: Some((mi, l.id)),
             ..Default::default()
         });
     }
@@ -770,17 +777,26 @@ pub fn compose(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
             if selected || r.focused {
                 g.fill(SRect { x: sx, y, w, h: 1 }, t.sel(t.fg));
             }
-            let mut x = 0;
-            for (s, st) in &r.segs {
-                let st = if selected || r.focused {
+            let hl = |st: Style| {
+                if selected || r.focused {
                     Style {
                         bg: t.selection,
-                        ..*st
+                        ..st
                     }
                 } else {
-                    *st
-                };
-                x += g.put_str(sx + x, y, s, st, w.saturating_sub(x));
+                    st
+                }
+            };
+            // A row wider than the sidebar ends in `…`; hovering or selecting it shows the
+            // whole text (`crate::sidebar_tip`).
+            let cut = crate::sidebar_tip::is_cut(r, w);
+            let room = if cut { w.saturating_sub(1) } else { w };
+            let mut x = 0;
+            for (s, st) in &r.segs {
+                x += g.put_str(sx + x, y, s, hl(*st), room.saturating_sub(x));
+            }
+            if cut {
+                g.put_str(sx + room, y, "…", hl(t.dim()), 1);
             }
         }
         crate::preview_ui::draw_thumbs(app, g, sx, w);
@@ -892,6 +908,12 @@ pub fn compose(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
     }
     // The attach pop-up over the focused pane, under every popup (spec 18 §6).
     if let Some(o) = crate::card::draw(app, g)
+        && cursor.is_some_and(|(x, y, _)| x >= o.x && x < o.x + o.w && y >= o.y && y < o.y + o.h)
+    {
+        cursor = None;
+    }
+    // The full text of a cut-off sidebar row, beside the sidebar (08 §2).
+    if let Some(o) = crate::sidebar_tip::draw(app, g)
         && cursor.is_some_and(|(x, y, _)| x >= o.x && x < o.x + o.w && y >= o.y && y < o.y + o.h)
     {
         cursor = None;

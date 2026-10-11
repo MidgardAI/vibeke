@@ -6,8 +6,13 @@
 //! - **Sidebar.** The workspace shows one line under its agents, the server's headline of its
 //!   most severe collision ("claude and codex both edited `src/auth.ts`"), with a count of any
 //!   others, and the agent row carries `⚠`. `low` (same directory, or a guessed edit of a file
-//!   another run read) is listed in the popup only.
-//! - **Popup** (`collisions` in the palette or bound): paths, runs and a timeline, with
+//!   another run read) is listed in the popup only. A click on the line (or `enter` on it in
+//!   navigate mode) opens the popup on that collision; `d` there dismisses it.
+//! - **Dismissed** collisions (`collision.dismiss`, "I have seen this") leave the sidebar, the
+//!   agent rows and the pane frames until the server shows them again (a new run joined or the
+//!   severity rose). The popup still lists them.
+//! - **Popup** (`collisions` in the palette or bound): the full headline, paths, runs and a
+//!   timeline, with **d** dismiss (or show again),
 //!   **p** pause the selected run (the adapter's interrupt), **t** tell the agents (native
 //!   steer only: each run shows how it can be reached, and a run with no such channel is told
 //!   so, never typed into), **f** start a fresh task from the shared checkout's `HEAD` (asks
@@ -58,6 +63,8 @@ pub struct Rec {
     pub runs: Vec<RunInfo>,
     pub paths: Vec<PathInfo>,
     pub last_ms: i64,
+    /// The user dismissed the warning (`dismissed_ms` is set).
+    pub dismissed: bool,
 }
 
 fn text(v: &Value, k: &str) -> String {
@@ -115,6 +122,7 @@ impl Rec {
             runs,
             paths,
             last_ms: v["last_ms"].as_i64().unwrap_or(0),
+            dismissed: v["dismissed_ms"].is_i64(),
         })
     }
 
@@ -187,6 +195,7 @@ pub enum Reply {
     Tell { id: String },
     Fresh { id: String, dry: bool },
     Ignore { id: String, path: String },
+    Dismiss { on: bool },
 }
 
 fn send(app: &mut App, mi: usize, method: &str, params: Value, r: Reply) {
@@ -268,10 +277,14 @@ fn open_recs(app: &App, mi: usize) -> &[Rec] {
         .unwrap_or(&[])
 }
 
+/// Open collisions the user has not dismissed: what the sidebar and the frames warn about.
+fn shown_recs(app: &App, mi: usize) -> impl Iterator<Item = &Rec> {
+    open_recs(app, mi).iter().filter(|r| !r.dismissed)
+}
+
 /// The highest severity rank of the open collisions the pane's run is in.
 pub fn pane_rank(app: &App, mi: usize, pane: &str) -> u8 {
-    open_recs(app, mi)
-        .iter()
+    shown_recs(app, mi)
         .filter(|r| r.has_pane(pane))
         .map(|r| rank(&r.severity))
         .max()
@@ -291,11 +304,18 @@ pub fn agent_marker(app: &App, mi: usize, pane: &str) -> Option<(&'static str, u
     }
 }
 
+/// One sidebar line of a workspace.
+pub struct SideLine {
+    pub text: String,
+    pub rank: u8,
+    /// The collision it names (what a click opens).
+    pub id: String,
+}
+
 /// The workspace's sidebar line, if any: the headline of its most severe (then most recent)
 /// `high` or `medium` collision, "· +N more" when it has others, with the severity rank.
-pub fn sidebar_lines(app: &App, mi: usize, ws_panes: &[&str]) -> Vec<(String, u8)> {
-    let mut v: Vec<&Rec> = open_recs(app, mi)
-        .iter()
+pub fn sidebar_lines(app: &App, mi: usize, ws_panes: &[&str]) -> Vec<SideLine> {
+    let mut v: Vec<&Rec> = shown_recs(app, mi)
         .filter(|r| rank(&r.severity) >= 2)
         .filter(|r| ws_panes.iter().any(|p| r.has_pane(p)))
         .collect();
@@ -307,23 +327,101 @@ pub fn sidebar_lines(app: &App, mi: usize, ws_panes: &[&str]) -> Vec<(String, u8
     let Some(top) = v.first() else {
         return vec![];
     };
-    let line = match v.len() - 1 {
+    let text = match v.len() - 1 {
         0 => top.headline.clone(),
         n => format!("{} · +{n} more", top.headline),
     };
-    vec![(line, rank(&top.severity))]
+    vec![SideLine {
+        text,
+        rank: rank(&top.severity),
+        id: top.id.clone(),
+    }]
 }
 
-/// The first pane of a workspace in a collision the sidebar shows (the click target of its line).
-pub fn sidebar_target(app: &App, mi: usize, ws_panes: &[&str]) -> Option<String> {
-    ws_panes
-        .iter()
-        .find(|p| {
-            open_recs(app, mi)
-                .iter()
-                .any(|r| rank(&r.severity) >= 2 && r.has_pane(p))
-        })
-        .map(|p| p.to_string())
+/// A left click on a sidebar collision line opens the popup on it. True when consumed.
+pub fn sidebar_click(app: &mut App, y: u16) -> bool {
+    let hit = y
+        .checked_sub(1)
+        .and_then(|i| crate::draw::sidebar_rows(app).into_iter().nth(i as usize))
+        .and_then(|r| r.collision);
+    match hit {
+        Some(t) => {
+            open(app, Some(t));
+            true
+        }
+        None => false,
+    }
+}
+
+/// Navigate-mode keys on a collision line: `enter` (or space) opens the popup, `d` dismisses.
+/// Pane actions never reach it; moving, `/` and leaving still work.
+pub fn navigate_key(app: &mut App, ev: &KeyEvent, sel: usize) -> bool {
+    if ev.kind == KeyKind::Release || app.ux.nav.typing {
+        return false;
+    }
+    let line = |app: &App, i: usize| {
+        crate::draw::sidebar_rows(app)
+            .into_iter()
+            .filter(|r| r.selectable())
+            .nth(i)
+            .and_then(|r| r.collision)
+    };
+    // A digit that jumps to a collision line opens it.
+    if let Key::Char(c) = ev.key
+        && let Some(d) = c.to_digit(10)
+    {
+        let Some(t) = line(app, (d as usize).saturating_sub(1)) else {
+            return false;
+        };
+        open(app, Some(t));
+        return true;
+    }
+    let Some((mi, id)) = line(app, sel) else {
+        return false;
+    };
+    match ev.key {
+        Key::Named(NamedKey::Escape | NamedKey::Down | NamedKey::Up)
+        | Key::Char('j' | 'k' | 'q' | '/') => return false,
+        Key::Named(NamedKey::Enter) | Key::Char(' ') => open(app, Some((mi, id))),
+        Key::Char('d') => {
+            dismiss(app, mi, &id, true);
+            app.mode = Mode::Navigate { sel };
+        }
+        _ => app.mode = Mode::Navigate { sel },
+    }
+    true
+}
+
+/// Dismiss (`on`) or show again a collision. The sidebar follows at once; the server's reply
+/// (or the next list) settles it.
+fn dismiss(app: &mut App, mi: usize, id: &str, on: bool) {
+    if let Some(r) = app
+        .ux
+        .collision
+        .recs
+        .get_mut(&mi)
+        .and_then(|v| v.iter_mut().find(|r| r.id == id))
+    {
+        r.dismissed = on;
+    }
+    if let Some(d) = app
+        .ux
+        .collision
+        .view
+        .as_mut()
+        .filter(|v| v.mi == mi && v.id == id)
+        .and_then(|v| v.detail.as_mut())
+    {
+        d.rec.dismissed = on;
+    }
+    send(
+        app,
+        mi,
+        "collision.dismiss",
+        json!({"collision": id, "dismissed": on}),
+        Reply::Dismiss { on },
+    );
+    app.dirty = true;
 }
 
 // ---- popup ----------------------------------------------------------------------------------
@@ -574,6 +672,16 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
             }
             Err(e) => note(app, &id, format!("✗ new task: {}", e.message)),
         },
+        Reply::Dismiss { on } => {
+            match res {
+                Ok(_) if on => app.toast(
+                    "dismissed: it comes back if another agent joins or it gets more serious",
+                ),
+                Ok(_) => app.toast("the collision warning shows again"),
+                Err(e) => app.toast(format!("✗ dismiss: {}", e.message)),
+            }
+            app.ux.collision.stale.insert(mi);
+        }
         Reply::Ignore { id, path } => {
             let msg = match res {
                 Ok(_) => format!("✓ ignoring {path}"),
@@ -720,6 +828,17 @@ pub fn key(app: &mut App, ev: KeyEvent) {
                 },
             );
         }
+        // Dismissing closes the popup: the warning is dealt with. Showing it again stays.
+        Key::Char('d') => {
+            let on = !v.detail.as_ref().is_some_and(|d| d.rec.dismissed);
+            let (mi, id) = (v.mi, v.id.clone());
+            app.ux.collision.view = Some(v);
+            dismiss(app, mi, &id, on);
+            if on {
+                return;
+            }
+            return keep(app);
+        }
         Key::Char('i') => match (&v.detail, rs.get(v.sel)) {
             (Some(d), Some(Row::Path(i))) => {
                 let path = d.rec.paths[*i].path.clone();
@@ -756,18 +875,24 @@ pub fn draw(app: &App, g: &mut Grid) {
         return;
     };
     let t = app.theme;
-    let title = v
-        .detail
-        .as_ref()
-        .map(|d| format!("collision · {}", d.rec.headline))
-        .unwrap_or_else(|| "collision".into());
-    let mut a = crate::drafts::Area::open(app, g, &title);
+    let mut a = crate::drafts::Area::open(app, g, "collision");
     let Some(d) = &v.detail else {
         a.line(v.notice.as_deref().unwrap_or("loading…"), t.dim());
         a.footer("esc back", t.dim());
         return;
     };
     let rs = rows(d);
+    // The whole headline, wrapped: the sidebar line is often cut off.
+    let width = a.r.w.saturating_sub(2) as usize;
+    for l in crate::sidebar_tip::wrap_words(&d.rec.headline, width) {
+        a.line(&l, sev_style(app, &d.rec.severity));
+    }
+    if d.rec.dismissed {
+        a.line(
+            "dismissed: hidden until another agent joins or it gets more serious · d shows it again",
+            t.dim(),
+        );
+    }
     a.line(
         &format!(
             "{} · {}{}",
@@ -868,7 +993,7 @@ pub fn draw(app: &App, g: &mut Grid) {
         a.line(n, t.bold(t.yellow));
     }
     a.footer(
-        "j/k move · p pause · t tell · f fresh task · i ignore path · o open pane · [ ] other · esc back",
+        "j/k move · d dismiss · p pause · t tell · f fresh task · i ignore path · o open pane · [ ] other · esc back",
         t.dim(),
     );
 }

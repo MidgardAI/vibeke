@@ -167,6 +167,7 @@ Clients must accept new fields and event types. The API can change before versio
 | `collision.claim` | Write | Pane |
 | `collision.claim_release` | Write | Pane |
 | `collision.claims` | Read | Pane |
+| `collision.dismiss` | Write | Full |
 | `collision.get` | Read | Pane |
 | `collision.ignore` | Write | Full |
 | `collision.ignores` | Read | Full |

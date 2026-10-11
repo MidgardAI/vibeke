@@ -74,6 +74,7 @@ pub mod search;
 pub mod selection;
 pub mod sharing;
 pub mod sidebar;
+pub mod sidebar_tip;
 pub mod statusbar;
 pub mod sync_input;
 pub mod tabbar;
