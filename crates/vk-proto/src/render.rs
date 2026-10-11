@@ -26,7 +26,8 @@ use serde::{Deserialize, Serialize};
 ///   `QuestionOption.selected`, `Interaction.picker`.
 /// - 7: `AgentRun.title` (the harness session's title).
 /// - 8: `IsolationLevel::Cloud` (spec 17), carried in `SessionModel` frames.
-pub const PROTOCOL: u32 = 8;
+/// - 9: `AgentRun.bg_tasks` and `AgentRun.bg_level_ms` (background work after a turn).
+pub const PROTOCOL: u32 = 9;
 
 /// `render.attach` error kind when client and server speak different render protocols.
 pub const VERSION_MISMATCH: &str = "version_mismatch";

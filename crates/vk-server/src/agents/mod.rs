@@ -4,6 +4,7 @@
 
 pub mod acp;
 pub mod arbiter;
+pub mod bg;
 pub mod channel;
 mod gemini;
 #[cfg(test)]
@@ -906,6 +907,8 @@ pub(crate) fn new_run(
         usage: Default::default(),
         rate_limit: None,
         title: None,
+        bg_tasks: vec![],
+        bg_level_ms: 0,
     }
 }
 
@@ -1633,6 +1636,7 @@ fn on_signal(server: &Arc<Server>, pane: &str, h: Harness, event: &str, p: &Valu
     usage::observe(server, &run, event, p);
     crate::items::observe_hook(server, &run, event, p);
     crate::collision::observe(server, &run, event, p);
+    bg::observe_hook(server, &run, event, p);
     let sid = p.get("session_id").and_then(Value::as_str);
     let tool_use = p.get("tool_use_id").and_then(Value::as_str);
     if let Some(mode) = p.get("permission_mode").and_then(Value::as_str)
@@ -1809,7 +1813,10 @@ fn on_signal(server: &Arc<Server>, pane: &str, h: Harness, event: &str, p: &Valu
                 );
             }
             let who = run.name.clone().unwrap_or_else(|| run.harness.clone());
-            if !server.pane_focused_by_any(pane) {
+            // Background work still running: the session is paused, not done (`bg`).
+            let waiting =
+                server.with_core(|c| c.run(&run.id).is_some_and(|r| !r.bg_tasks.is_empty()));
+            if !waiting && !server.pane_focused_by_any(pane) {
                 server.notify(
                     "agent_state",
                     Some(pane),
@@ -3524,6 +3531,8 @@ pub(crate) fn harness_tests_run() -> AgentRun {
         usage: Default::default(),
         rate_limit: None,
         title: None,
+        bg_tasks: vec![],
+        bg_level_ms: 0,
     }
 }
 

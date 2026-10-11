@@ -565,6 +565,8 @@ fn seed_run(srv: &Server, id: &str, pane: &str, harness: &str, cwd: &str) {
         usage: Default::default(),
         rate_limit: None,
         title: None,
+        bg_tasks: vec![],
+        bg_level_ms: 0,
     };
     let mut c = srv.core.lock().unwrap();
     let mut tx = Tx::new();

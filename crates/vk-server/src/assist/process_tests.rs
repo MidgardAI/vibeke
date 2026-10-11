@@ -145,6 +145,8 @@ impl Env {
             usage: Default::default(),
             rate_limit: None,
             title: None,
+            bg_tasks: vec![],
+            bg_level_ms: 0,
         };
         self.commit(|tx| {
             tx.run(r);
