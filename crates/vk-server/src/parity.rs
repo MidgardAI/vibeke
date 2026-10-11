@@ -636,6 +636,7 @@ fn status_segments(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
             .iter()
             .filter(|r| {
                 r.execution.value == Execution::Idle
+                    && r.bg_tasks.is_empty()
                     && r.done_rev > seen.get(&r.pane).copied().unwrap_or(0)
             })
             .count();
@@ -671,6 +672,7 @@ fn status_segments(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
                 "done": done,
                 "needs_input": open.iter().map(|i| &i.run).collect::<std::collections::HashSet<_>>().len(),
                 "error": runs.iter().filter(|r| matches!(r.execution.value, Execution::Error | Execution::RateLimited)).count(),
+                "background": runs.iter().map(|r| r.bg_tasks.len()).sum::<usize>(),
                 "total": runs.len(),
             },
             "sync_input": {"enabled": false},

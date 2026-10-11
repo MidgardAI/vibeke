@@ -191,3 +191,54 @@ fn collapsed_sidebar_shows_the_urgency_rail() {
     app.ux.sidebar.hide_rail = true;
     assert_eq!(crate::chrome::main_x(&app), (0, 120));
 }
+
+fn bg_task(id: &str, label: &str) -> vk_proto::model::BgTask {
+    vk_proto::model::BgTask {
+        id: id.into(),
+        kind: "shell".into(),
+        label: label.into(),
+        since_ms: 0,
+        source: vk_proto::model::StateSource::Structured,
+        tool_use_id: None,
+    }
+}
+
+#[test]
+fn idle_run_with_background_work_is_not_shown_as_done() {
+    let (mut app, _rx) = fleet();
+    let m = &app.machines[0];
+    let (g, _, _, _) = crate::draw::run_state(&app, m, &m.model.runs[0]);
+    assert_eq!(g, "✓");
+    app.machines[0].model.runs[0].bg_tasks =
+        vec![bg_task("b1", "npm run dev"), bg_task("b2", "tail")];
+    let m = &app.machines[0];
+    let r = &m.model.runs[0];
+    let (g, label, _, _) = crate::draw::run_state(&app, m, r);
+    assert_eq!(g, "⧗");
+    assert_eq!(label, "idle · 2 bg");
+    assert_eq!(state_name(&app, m, r), "background");
+    assert_eq!(crate::draw::bg_summary(r, 30), "npm run dev, tail");
+    app.machines[0].model.runs[0]
+        .bg_tasks
+        .push(bg_task("b3", "x"));
+    let r = &app.machines[0].model.runs[0];
+    assert_eq!(crate::draw::bg_summary(r, 30), "npm run dev, tail, +1");
+}
+
+#[test]
+fn status_segment_counts_background_tasks_and_not_done() {
+    let (mut app, _rx) = fleet();
+    app.machines[0].model.runs[0].bg_tasks =
+        vec![bg_task("b1", "npm run dev"), bg_task("b2", "tail")];
+    let d = crate::statusbar::local_data(&app);
+    assert_eq!(
+        d.pointer("/agents_summary/background"),
+        Some(&serde_json::json!(2))
+    );
+    assert_eq!(
+        d.pointer("/agents_summary/done"),
+        Some(&serde_json::json!(0))
+    );
+    let (text, _) = crate::statusbar::segment(&app, "agents_summary", &d);
+    assert!(text.contains("⧗2"), "{text}");
+}
