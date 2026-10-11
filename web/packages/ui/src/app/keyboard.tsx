@@ -123,6 +123,11 @@ export function KeyboardLayer({ surface }: { surface: Surface }) {
       togglePanel(route, 'changes');
       return true;
     },
+    previews: () => {
+      if (route.name !== 'workspace') return false;
+      togglePanel(route, 'previews');
+      return true;
+    },
     sidebar: () => {
       if (currentLayoutMode() === 'narrow') drawerOpen.set(!drawerOpen.get());
       else app.prefs.patch({ sidebarHidden: !app.prefs.get().sidebarHidden });
@@ -163,6 +168,8 @@ export function KeyboardLayer({ surface }: { surface: Surface }) {
           return true;
         case 'panel':
           return surface === 'full' && actionsRef.current.panel();
+        case 'previews':
+          return surface === 'full' && actionsRef.current.previews();
         case 'sidebar':
           return surface === 'full' && actionsRef.current.sidebar();
         case 'changes':
@@ -243,6 +250,8 @@ export function KeyboardLayer({ surface }: { surface: Surface }) {
             return void actionsRef.current.firstWorkspace();
           case 'panel':
             return void actionsRef.current.panel();
+          case 'previews':
+            return void actionsRef.current.previews();
           case 'sidebar':
             return void actionsRef.current.sidebar();
           case 'pair':
@@ -281,6 +290,7 @@ export function KeyboardLayer({ surface }: { surface: Surface }) {
       c('inbox', `${t.palette.go} ${t.tabs.inbox}`, () => navigate({ name: 'inbox' }), mod('1')),
       c('workspace', t.palette.firstWorkspace, () => actionsRef.current.firstWorkspace(), mod('2'), 'workspaces panes'),
       c('panel', t.palette.togglePanel, () => actionsRef.current.panel(), mod('3'), 'changes diff'),
+      c('previews', t.palette.togglePreviews, () => actionsRef.current.previews(), keyLabel(mac, 'mod+shift+b'), 'preview dev server browser port'),
       c('changes', t.palette.showChanges, () => actionsRef.current.changes(), keyLabel(mac, 'mod+shift+e'), 'diff git'),
       c('sidebar', t.palette.toggleSidebar, () => actionsRef.current.sidebar(), mod('\\'), 'navigation'),
       c('new', t.palette.newAgent, () => setSheet({ kind: 'new' }), undefined, 'start agent tab'),

@@ -1,8 +1,9 @@
 import { useComposerDraft } from '../../lib/composer-draft';
-// The workspace centre (spec 16 §9.1): a title bar (title, muted repo, ⋯; Preview, Share, Hand
-// off, panel toggle), the tab strip (agents, their terminals, shells, previews) and the selected
-// tab — an agent's conversation with the composer, a terminal mirror (key belt, composer typing
-// into the pane), or a preview. An agent opens on the workspace's agent view (conversation by
+// The workspace centre (spec 16 §9.1): a title bar (title, muted repo, ⋯; Previews, Share, Hand
+// off, panel toggle), the tab strip (agents, their terminals, shells) and the selected tab — an
+// agent's conversation with the composer or a terminal mirror (key belt, composer typing into the
+// pane). An expanded preview (spec 06 B3.5) replaces the tab until it is collapsed back into the
+// Previews panel. An agent opens on the workspace's agent view (conversation by
 // default, or the agent's own terminal UI; lib/agent-view.ts); panes without an agent open on the
 // terminal.
 // `locked` (a popped-out pane window): only the bound pane's tabs, no sidebar or panel controls,
@@ -35,7 +36,7 @@ import { noteUnsupported, supported } from '../../lib/supports';
 import type { PaneRow } from '../../lib/tree';
 import { runKey } from '../../lib/tree';
 import type { WorkspaceRow } from '../../lib/workspaces';
-import { navigate, type WorkspaceRoute } from '../../router';
+import { navigate, type PanelKind, type WorkspaceRoute } from '../../router';
 import { HandoffSheet } from '../handoff';
 import { usePaneActions, type PaneActions } from '../pane/actions';
 import { ActionBelt, type BeltTab } from '../pane/belt';
@@ -45,8 +46,9 @@ import { Conversation } from './conversation';
 import { useWorkspaceShots } from '../../app/screenshot-store';
 import { showsCentreDiff } from './panel';
 import { MenuButton, type MenuItem } from './menu';
-import { PreviewTab } from './preview-tab';
-import { TabStrip, workspacePreviews, workspaceTabs, type WsTab } from './tab-strip';
+import { PreviewView } from './preview-view';
+import { TabStrip, workspaceTabs, type WsTab } from './tab-strip';
+import { collapsePreviewRoute, livePreviewCount, selectedPreview, workspacePreviews } from '../../lib/previews';
 import { TerminalTab } from './terminal-tab';
 
 const LazyCentreDiff = lazy(() => import('./panel/centre-diff'));
@@ -94,7 +96,7 @@ export function WorkspaceScreen({ route, locked = false }: { route: WorkspaceRou
   return <Workspace route={route} row={row} current={current} locked={locked} />;
 }
 
-/** The tab the route selects (`show` = `term` / `conversation` / `preview:<id>`; else the pane's default). */
+/** The tab the route selects (`show` = `term` / `conversation`; else the pane's default). */
 export function currentTabId(current: PaneRow, show: string | null | undefined, view: AgentView = 'conversation'): string {
   return paneTabId(current.pane.id, !!current.run, show, view);
 }
@@ -117,17 +119,19 @@ function Workspace({ route, row, current, locked }: { route: WorkspaceRoute; row
   const previews = useMemo(() => workspacePreviews(row, host?.dashboard?.previews), [row, host?.dashboard?.previews]);
   const view = agentViewFor(prefs, row.host, row.workspace.id);
   const overridden = hasViewOverride(prefs, row.host, row.workspace.id);
-  const allTabs = useMemo(() => workspaceTabs(row, previews), [row, previews]);
-  const tabs = locked ? allTabs.filter((x) => x.pane?.pane.id === current.pane.id && x.kind !== 'preview') : allTabs;
+  const allTabs = useMemo(() => workspaceTabs(row), [row]);
+  const tabs = locked ? allTabs.filter((x) => x.pane.pane.id === current.pane.id) : allTabs;
+  /** The preview that fills the centre (Expand), or null. */
+  const expanded = !locked && route.expanded ? selectedPreview(route, previews) : null;
   const tabId = currentTabId(current, show, view);
   // An agent showing its other view (`t:`/`c:` from ?show=) is still its own tab in the strip.
   const tab: WsTab | null = allTabs.find((x) => x.id === tabId) ?? (current.run && /^[tc]:/.test(tabId) ? (allTabs.find((x) => x.id === `a:${current.pane.id}`) ?? null) : null);
   const body = tabBody(tabId, view);
   const hasAgents = locked ? !!current.run : row.panes.some((p) => p.run);
   /** Find works in the terminal and in an agent's conversation. */
-  const findable = body === 'terminal' || (body === 'conversation' && !!current.run);
+  const findable = !expanded && (body === 'terminal' || (body === 'conversation' && !!current.run));
   /** What the toggle shows as on: the agent body on screen, else the workspace's view. */
-  const shownView: AgentView = current.run && body !== 'preview' ? body : view;
+  const shownView: AgentView = current.run ? body : view;
   const [findOpen, setFindOpen] = useState(false);
   const keyboard = useSoftKeyboard();
   const copyRef = useRef<(() => string) | null>(null);
@@ -172,29 +176,30 @@ function Workspace({ route, row, current, locked }: { route: WorkspaceRoute; row
   const inCloud = current.pane.isolation?.level === 'cloud';
   const openCloud = () => openCloudSheet(inCloud ? 'bring_back' : 'send', current);
 
+  /** Showing a tab ends an expanded preview (the Previews panel keeps it selected). */
+  const tabRoute = useCallback((r: WorkspaceRoute): WorkspaceRoute => (r.expanded ? { ...r, expanded: false } : r), []);
   const select = useCallback(
     (x: WsTab) => {
-      const s = x.kind === 'preview' ? `preview:${x.preview!.id}` : null;
-      if (locked) return setLocalShow(s);
-      navigate({ ...route, pane: x.pane?.pane.id ?? route.pane, show: s, view: null }, { replace: true });
+      if (locked) return setLocalShow(null);
+      navigate({ ...tabRoute(route), pane: x.pane.pane.id, show: null, view: null }, { replace: true });
     },
-    [locked, route],
+    [locked, route, tabRoute],
   );
   const openTerminal = () => {
     const s = showFor('terminal', view);
     if (locked) return setLocalShow(s);
-    navigate({ ...route, pane: current.pane.id, show: s, view: null }, { replace: true });
+    navigate({ ...tabRoute(route), pane: current.pane.id, show: s, view: null }, { replace: true });
   };
 
   /**
    * Switch the workspace's agent view on this device (null = back to the default) and show it:
-   * the selected agent's primary tab, or the first agent's when a shell or preview is selected.
+   * the selected agent's primary tab, or the first agent's when a shell is selected.
    */
   const setView = (v: AgentView | null) => {
     app.prefs.setWorkspaceView(row.host, row.workspace.id, v);
     if (locked) return setLocalShow(null);
     const target = current.run ? current : row.panes.find((p) => p.run);
-    if (target) navigate({ ...route, pane: target.pane.id, show: null, view: null }, { replace: true });
+    if (target) navigate({ ...tabRoute(route), pane: target.pane.id, show: null, view: null }, { replace: true });
   };
   const viewReq = useRef<(r: AgentViewRequest) => void>(() => {});
   viewReq.current = (r) => {
@@ -204,9 +209,10 @@ function Workspace({ route, row, current, locked }: { route: WorkspaceRoute; row
   useEffect(() => onAgentViewRequest((r) => viewReq.current(r)), []);
 
   const panelMode = layoutModeFor(typeof window === 'undefined' ? 1440 : window.innerWidth);
-  const panelOpen = !locked && !!effectivePanel(route, prefs, panelMode);
-  const togglePanel = () => {
-    const next = togglePanelRoute(route, app.prefs.get(), layoutModeFor(window.innerWidth), 'changes');
+  const openPanel = locked ? null : effectivePanel(route, prefs, panelMode);
+  const panelOpen = !!openPanel;
+  const togglePanel = (kind: PanelKind = 'changes') => {
+    const next = togglePanelRoute(route, app.prefs.get(), layoutModeFor(window.innerWidth), kind);
     if (next.panelOpen !== undefined) app.prefs.patch({ panelOpen: next.panelOpen });
     navigate(next.route, { replace: true });
   };
@@ -228,7 +234,7 @@ function Workspace({ route, row, current, locked }: { route: WorkspaceRoute; row
     }
   };
 
-  const hostTab = tab?.kind !== 'preview' ? current.tab : undefined;
+  const hostTab = current.tab;
   const tabMenu =
     full && hostTab && supported(row.host, 'tab.rename')
       ? {
@@ -255,7 +261,7 @@ function Workspace({ route, row, current, locked }: { route: WorkspaceRoute; row
     { label: t.tabs2.renamePane, icon: <Pencil />, disabled: !full, onSelect: () => setSheet('rename-pane') },
     hasAgents && overridden && { label: t.tabs2.useDefaultView(t.settings.agentViews[prefs.agentView]!), icon: <RotateCcw />, onSelect: () => setView(null) },
     findable && { label: body === 'terminal' ? t.tabs2.findInTerminal : t.tabs2.findInConversation, icon: <Search />, onSelect: () => setFindOpen(true) },
-    body === 'terminal' && {
+    body === 'terminal' && !expanded && {
       label: t.pane.copyOutput,
       icon: <ClipboardCopy />,
       onSelect: () => {
@@ -281,9 +287,22 @@ function Workspace({ route, row, current, locked }: { route: WorkspaceRoute; row
       {sub && <span className={cx('truncate text-muted', narrow ? 'text-xs' : 'text-[13px]')}>{sub}</span>}
     </div>
   );
+  // Previews: opens / closes the panel on Previews, with the number of live previews.
+  const live = livePreviewCount(previews);
   const previewButton = previews.length > 0 && !locked && (
-    <IconButton label={t.tabs2.preview} active={tab?.kind === 'preview'} onClick={() => select(allTabs.find((x) => x.kind === 'preview')!)}>
+    <IconButton
+      label={`${t.tabs2.previewsButton(live)} (${keyLabel(mac, 'mod+shift+b')})`}
+      aria-keyshortcuts={mac ? 'Meta+Shift+B' : 'Control+Shift+B'}
+      active={openPanel === 'previews' || !!expanded}
+      onClick={() => togglePanel('previews')}
+      className="relative"
+    >
       <MonitorPlay />
+      {live > 0 && (
+        <span aria-hidden className="absolute -right-0.5 -top-0.5 inline-flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-add px-0.5 text-2xs font-semibold leading-none tabular-nums text-black">
+          {live > 9 ? '9+' : live}
+        </span>
+      )}
     </IconButton>
   );
 
@@ -318,7 +337,7 @@ function Workspace({ route, row, current, locked }: { route: WorkspaceRoute; row
           </>
         )}
         {!locked && (
-          <IconButton label={`${t.sidebar.togglePanel} (${keyLabel(mac, 'mod+3')})`} active={panelOpen} onClick={togglePanel} className="relative">
+          <IconButton label={`${t.sidebar.togglePanel} (${keyLabel(mac, 'mod+3')})`} active={panelOpen} onClick={() => togglePanel()} className="relative">
             <PanelRight />
             {unreadShots > 0 && !panelOpen && <span aria-hidden className="absolute right-1 top-1 size-2 rounded-full bg-need" />}
           </IconButton>
@@ -341,7 +360,7 @@ function Workspace({ route, row, current, locked }: { route: WorkspaceRoute; row
       ) : (
       <TabStrip
         tabs={tabs}
-        current={tab?.id ?? tabId}
+        current={expanded ? '' : (tab?.id ?? tabId)}
         onSelect={select}
         onNewAgent={full ? () => setSheet('new') : undefined}
         onNewTerminal={full ? () => void newTerminal() : undefined}
@@ -350,7 +369,7 @@ function Workspace({ route, row, current, locked }: { route: WorkspaceRoute; row
         viewToggle={hasAgents ? { value: shownView, mac, onChange: (v) => setView(v) } : null}
       />
       )}
-      <div role="tabpanel" id={TAB_PANEL_ID} aria-labelledby={tab && tabs.some((x) => x.id === tab.id) ? tabDomId(tab.id) : undefined} className="flex min-h-0 flex-1 flex-col">
+      <div role="tabpanel" id={TAB_PANEL_ID} aria-labelledby={!expanded && tab && tabs.some((x) => x.id === tab.id) ? tabDomId(tab.id) : undefined} className="flex min-h-0 flex-1 flex-col">
         {!locked && showsCentreDiff(route) ? (
           <Suspense
             fallback={
@@ -361,8 +380,8 @@ function Workspace({ route, row, current, locked }: { route: WorkspaceRoute; row
           >
             <LazyCentreDiff route={route} />
           </Suspense>
-        ) : tab?.kind === 'preview' || tabId.startsWith('p:') ? (
-          <PreviewTab hostId={row.host} preview={tab?.preview ?? null} />
+        ) : expanded ? (
+          <PreviewView hostId={row.host} preview={expanded} expanded onExpand={() => navigate(collapsePreviewRoute(route), { replace: true })} />
         ) : (
           <PaneBody
             key={`${row.host}/${current.pane.id}`}

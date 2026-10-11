@@ -39,6 +39,20 @@ Below them, the list shows every agent on every connected host, with its state a
 Select an agent to open its pane in the main window.
 Set a keyboard shortcut for the list in the app settings.
 
+## Previews
+
+A preview is a dev server that runs in a pane, for example a web app on port 3000.
+Select the **Previews** button in the workspace header, or press `Cmd+Shift+B` (`Ctrl+Shift+B` on Windows and Linux).
+The button shows how many previews are running.
+
+The **Previews** tab of the right panel lists the previews of the workspace.
+Running previews come first. Previews that Vibeke found by itself are grey. Select **Open** to show one.
+Use the menu of a row to **Forget** a preview.
+
+Select a preview to show the page in the panel. The agent stays visible beside it.
+Select **Expand** to show the page in the main area. Select **Collapse** to move it back to the panel. The page does not reload.
+The page runs through the host connection, so it also works for a remote host.
+
 ## Notifications and updates
 
 Configure alerts in the app settings. Allow notifications when your operating system asks.

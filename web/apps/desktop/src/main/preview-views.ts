@@ -1,4 +1,4 @@
-// Embedded preview views (spec 06 B3.5): a `WebContentsView` per preview tab, layered over the
+// Embedded preview views (spec 06 B3.5): a `WebContentsView` per shown preview, layered over the
 // owning window at the rectangle its renderer reports. Each view's session routes through the
 // in-app proxy (preview-proxy.ts), which sends loopback destinations through the host gateway's
 // `tunnel.*` streams (preview-tunnel.ts) on that host's existing connection.

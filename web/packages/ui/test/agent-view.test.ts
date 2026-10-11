@@ -97,16 +97,14 @@ describe('agent view tabs and ?show=', () => {
     expect(paneTabId('p1', true, null, 'terminal')).toBe('a:p1');
     expect(paneTabId('p1', true, 'term', 'terminal')).toBe('a:p1');
     expect(paneTabId('p1', true, 'conversation', 'terminal')).toBe('c:p1');
-    // Shells are always the terminal; previews win.
+    // Shells are always the terminal.
     expect(paneTabId('p2', false, null, 'conversation')).toBe('t:p2');
     expect(paneTabId('p2', false, 'conversation', 'terminal')).toBe('t:p2');
-    expect(paneTabId('p1', true, 'preview:v1', 'terminal')).toBe('p:v1');
     // What each tab shows.
     expect(tabBody('a:p1', 'terminal')).toBe('terminal');
     expect(tabBody('a:p1', 'conversation')).toBe('conversation');
     expect(tabBody('t:p1', 'terminal')).toBe('terminal');
     expect(tabBody('c:p1', 'terminal')).toBe('conversation');
-    expect(tabBody('p:v1', 'terminal')).toBe('preview');
   });
 
   test('workspace tabs: one per agent (the toggle picks its view), then shells', () => {
@@ -117,14 +115,14 @@ describe('agent view tabs and ?show=', () => {
       runs: [run({ id: 'r1', pane: 'p1' })],
     });
     const row = groupWorkspaces(buildTree([host('h1', d)], { pins: new Set(), seenDone: {} }), { pins: new Set() }).all[0]!;
-    expect(workspaceTabs(row, []).map((x) => [x.id, x.kind])).toEqual([
+    expect(workspaceTabs(row).map((x) => [x.id, x.kind])).toEqual([
       ['a:p1', 'agent'],
       ['t:p2', 'term'],
     ]);
     // An unnamed agent's tab shows its harness until the session has a title.
-    expect(workspaceTabs(row, [])[0]!.label).toBe(row.panes[0]!.run!.harness);
+    expect(workspaceTabs(row)[0]!.label).toBe(row.panes[0]!.run!.harness);
     const titled = { ...row, panes: row.panes.map((p) => (p.run ? { ...p, run: { ...p.run, title: 'Fix the reconnect bug' } } : p)) };
-    expect(workspaceTabs(titled, [])[0]!.label).toBe('Fix the reconnect bug');
+    expect(workspaceTabs(titled)[0]!.label).toBe('Fix the reconnect bug');
   });
 
   test('routes carry ?show=conversation, and pane links keep show into the workspace', () => {

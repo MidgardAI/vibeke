@@ -194,6 +194,17 @@ Before the app sends anything, it shows the model, the size and the cost. Choose
 An agent in a sandbox can ask to push a branch or copy a file out of the sandbox. The app shows a card with the request and the agent that asked.
 Choose **Allow once** to permit that single action.
 
+### Open a preview
+
+A preview is a dev server that runs in a pane, for example a web app on port 3000.
+Tap the **Previews** button in the workspace header. The list opens full screen.
+Running previews come first. Previews that Vibeke found by itself are grey. Tap **Open** to show one.
+Use the menu of a row to **Forget** a preview.
+
+Tap a preview to show the page. The host draws the page in its own browser and sends you pictures of it.
+Touch the page as you would any page on your phone. Use **Keyboard** to type into it.
+This needs full access to the host.
+
 ### Watch an agent's browser
 
 Choose **Watch live** to see the pages that agent browsers have open on the host.

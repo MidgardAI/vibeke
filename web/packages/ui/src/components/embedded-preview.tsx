@@ -1,16 +1,20 @@
 // A dev-server preview embedded as a native browser view (desktop, spec 06 B3.5). The shell draws
 // the page in a layer above this window; this component draws the toolbar, keeps a placeholder
 // whose rectangle it reports, and hides the layer (showing a still image instead) while a dialog,
-// menu or the command palette is open.
+// menu or the command palette is open. The view itself belongs to the window's registry
+// (lib/preview-view-registry.ts), so moving the preview between the panel and the centre keeps
+// the page loaded.
 
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEvent } from 'react';
-import { ArrowLeft, ArrowRight, Bug, ExternalLink, Globe, RefreshCw, X } from 'lucide-react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type FormEvent } from 'react';
+import { ArrowLeft, ArrowRight, Bug, ExternalLink, Globe, Maximize2, Minimize2, RefreshCw, X } from 'lucide-react';
 import type { Preview } from '@vibeke/core';
 import { useApp, useHost } from '../app/hooks';
 import { t } from '../i18n';
 import { errorMessage } from '../lib/answer';
 import { useOverlayOpen } from '../lib/overlays';
-import type { PreviewViewApi, PreviewViewState } from '../platform';
+import { registryFor } from '../lib/preview-view-registry';
+import { previewKey } from '../lib/previews';
+import type { PreviewViewApi } from '../platform';
 import { Button, IconButton, Notice } from './ui';
 
 const TUNNEL_FEATURE = 'tunnel';
@@ -44,7 +48,7 @@ export function addressToUrl(text: string): string | null {
   }
 }
 
-export function EmbeddedPreview({ hostId, preview }: { hostId: string; preview: Preview }) {
+export function EmbeddedPreview({ hostId, preview, expanded, onExpand }: { hostId: string; preview: Preview; expanded?: boolean; onExpand?: () => void }) {
   const app = useApp();
   const host = useHost(hostId);
   const api = app.platform.previewView;
@@ -71,14 +75,35 @@ export function EmbeddedPreview({ hostId, preview }: { hostId: string; preview: 
     );
   }
   const machine = preview.machine && preview.machine !== 'local' ? preview.machine : info.host_name;
-  return <PreviewSurface key={`${hostId}/${preview.id}`} api={api} hostId={hostId} preview={preview} machine={machine} />;
+  return <PreviewSurface key={previewKey(hostId, preview)} api={api} hostId={hostId} preview={preview} machine={machine} expanded={expanded} onExpand={onExpand} />;
 }
 
-function PreviewSurface({ api, hostId, preview, machine }: { api: PreviewViewApi; hostId: string; preview: Preview; machine: string }) {
+function PreviewSurface({
+  api,
+  hostId,
+  preview,
+  machine,
+  expanded,
+  onExpand,
+}: {
+  api: PreviewViewApi;
+  hostId: string;
+  preview: Preview;
+  machine: string;
+  expanded?: boolean;
+  onExpand?: () => void;
+}) {
   const app = useApp();
-  const [view, setView] = useState<string | null>(null);
-  const [state, setState] = useState<PreviewViewState | null>(null);
-  const [openError, setOpenError] = useState<string | null>(null);
+  const registry = registryFor(api);
+  const key = previewKey(hostId, preview);
+  const slot = useSyncExternalStore(
+    registry.subscribe,
+    () => registry.get(key),
+    () => null,
+  );
+  const view = slot?.view ?? null;
+  const state = slot?.state ?? null;
+  const openError = slot && slot.error != null ? errorMessage(slot.error) : null;
   const [address, setAddress] = useState(preview.url);
   const [editing, setEditing] = useState(false);
   const [shot, setShot] = useState<string | null>(null);
@@ -88,33 +113,11 @@ function PreviewSurface({ api, hostId, preview, machine }: { api: PreviewViewApi
   const box = useRef<HTMLDivElement>(null);
   const initialUrl = useRef(preview.url);
 
-  // One view per mounted preview; closed on unmount.
-  useEffect(() => {
-    let live = true;
-    let id: string | null = null;
-    setOpenError(null);
-    api
-      .open({ hostId, machine: preview.machine && preview.machine !== 'local' ? preview.machine : '', url: initialUrl.current })
-      .then((r) => {
-        if (!live) return api.close(r.view);
-        id = r.view;
-        setView(r.view);
-      })
-      .catch((e) => live && setOpenError(errorMessage(e)));
-    return () => {
-      live = false;
-      if (id) api.close(id);
-      setView(null);
-    };
-  }, [api, hostId, preview.machine]);
-
-  useEffect(() => {
-    if (!view) return;
-    return api.onState((s) => {
-      if (s.view !== view) return;
-      setState(s);
-    });
-  }, [api, view]);
+  // Claim the preview's view while this placeholder is mounted. A layout effect, so a placeholder
+  // that replaces another in the same render (Expand, Collapse) takes the view over before the
+  // registry's grace time would close it.
+  const openMachine = preview.machine && preview.machine !== 'local' ? preview.machine : '';
+  useLayoutEffect(() => registry.claim(key, { hostId, machine: openMachine, url: initialUrl.current }), [registry, key, hostId, openMachine]);
 
   useEffect(() => {
     if (!editing && state?.url) setAddress(state.url);
@@ -158,12 +161,12 @@ function PreviewSurface({ api, hostId, preview, machine }: { api: PreviewViewApi
       const el = box.current;
       if (!view || !el) return;
       const r = el.getBoundingClientRect();
-      const key = `${r.x},${r.y},${r.width},${r.height},${visible}`;
-      if (!force && key === last.current) return;
-      last.current = key;
-      api.bounds(view, { x: r.x, y: r.y, width: r.width, height: r.height }, visible);
+      const k = `${r.x},${r.y},${r.width},${r.height},${visible}`;
+      if (!force && k === last.current) return;
+      last.current = k;
+      registry.bounds(key, { x: r.x, y: r.y, width: r.width, height: r.height }, visible);
     },
-    [api, view, visible],
+    [registry, key, view, visible],
   );
 
   useLayoutEffect(() => {
@@ -248,6 +251,11 @@ function PreviewSurface({ api, hostId, preview, machine }: { api: PreviewViewApi
         {external && (
           <IconButton label={s.openBrowser} onClick={() => app.platform.openExternal(current)}>
             <ExternalLink />
+          </IconButton>
+        )}
+        {onExpand && (
+          <IconButton label={expanded ? s.collapse : s.expand} onClick={onExpand}>
+            {expanded ? <Minimize2 /> : <Maximize2 />}
           </IconButton>
         )}
       </div>

@@ -51,10 +51,9 @@ export function showFor(body: AgentView, view: AgentView): string | null {
 /**
  * The tab id the route selects for an agent or shell pane: `a:<pane>` (primary, the chosen view),
  * `t:<pane>` (terminal: a shell, or an agent's secondary when the view is conversation),
- * `c:<pane>` (an agent's secondary conversation when the view is terminal), `p:<preview>`.
+ * `c:<pane>` (an agent's secondary conversation when the view is terminal).
  */
 export function paneTabId(pane: string, isAgent: boolean, show: string | null | undefined, view: AgentView): string {
-  if (show?.startsWith('preview:')) return `p:${show.slice('preview:'.length)}`;
   if (!isAgent) return `t:${pane}`;
   const body = showBody(show);
   if (!body || body === view) return `a:${pane}`;
@@ -62,8 +61,7 @@ export function paneTabId(pane: string, isAgent: boolean, show: string | null | 
 }
 
 /** What a tab id shows in the centre. */
-export function tabBody(id: string, view: AgentView): AgentView | 'preview' {
-  if (id.startsWith('p:')) return 'preview';
+export function tabBody(id: string, view: AgentView): AgentView {
   if (id.startsWith('a:')) return view;
   if (id.startsWith('c:')) return 'conversation';
   return 'terminal';

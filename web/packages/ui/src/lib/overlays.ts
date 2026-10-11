@@ -2,7 +2,7 @@
 // such as the desktop's embedded preview view, hide while any is open so the overlay stays
 // visible and clickable (spec 06 B3.5).
 
-import { useLayoutEffect, useSyncExternalStore } from 'react';
+import { createContext, useContext, useLayoutEffect, useSyncExternalStore } from 'react';
 
 let open = 0;
 const listeners = new Set<() => void>();
@@ -37,11 +37,18 @@ export function useOverlay(active = true): void {
   useLayoutEffect(() => (active ? pushOverlay() : undefined), [active]);
 }
 
-/** True while any overlay is open. */
+/**
+ * Overlays that hold the subtree itself (the phone-sized panel sheet with a preview in it). They
+ * do not cover it, so they do not count for `useOverlayOpen` below.
+ */
+export const OverlayBase = createContext(0);
+
+/** True while an overlay is open above the calling component. */
 export function useOverlayOpen(): boolean {
+  const base = useContext(OverlayBase);
   return useSyncExternalStore(
     subscribeOverlays,
-    () => open > 0,
+    () => open > base,
     () => false,
   );
 }

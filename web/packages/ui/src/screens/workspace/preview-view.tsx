@@ -1,6 +1,7 @@
-// A dev-server preview as a workspace tab. The desktop app embeds the page (`EmbeddedPreview`);
-// a phone shows the page rendered by the host's headless browser (`PhonePreview`); anything else
-// shows the preview's address. Agent browser sessions can be watched from every layout.
+// One dev-server preview, in the Previews panel or (expanded) in the workspace centre (spec 06
+// B3.5). The desktop app embeds the page (`EmbeddedPreview`); a phone shows the page rendered by
+// the host's headless browser (`PhonePreview`); anything else shows the preview's address. Agent
+// browser sessions can be watched from every layout.
 
 import { useEffect, useState } from 'react';
 import { ExternalLink, Eye, Globe, MonitorPlay } from 'lucide-react';
@@ -12,12 +13,25 @@ import { Screencast } from '../../components/screencast';
 import { Button, Empty, StatusDot, type Status } from '../../components/ui';
 import { t } from '../../i18n';
 import { isLoopbackUrl } from '../../lib/phone-preview';
+import { previewKey, previewLabel } from '../../lib/previews';
 import { sessionsFor } from '../../lib/screencast';
-import { previewLabel } from './tab-strip';
 
-const DOT: Record<string, Status> = { up: 'review', down: 'error', declared: 'idle', suggested: 'idle', gone: 'offline' };
+/** Status dots of previews (the panel's rows, the info card). */
+export const PREVIEW_DOT: Record<string, Status> = { up: 'review', down: 'error', declared: 'idle', suggested: 'idle', gone: 'offline' };
 
-export function PreviewTab({ hostId, preview }: { hostId: string; preview: Preview | null }) {
+export function PreviewView({
+  hostId,
+  preview,
+  expanded,
+  onExpand,
+}: {
+  hostId: string;
+  preview: Preview | null;
+  /** In the centre (Collapse moves it back to the panel). */
+  expanded?: boolean;
+  /** Expand / Collapse; absent where the preview cannot move (the phone-sized sheet). */
+  onExpand?: () => void;
+}) {
   const app = useApp();
   const host = useHost(hostId);
   const [watching, setWatching] = useState<BrowserSession | null>(null);
@@ -25,7 +39,7 @@ export function PreviewTab({ hostId, preview }: { hostId: string; preview: Previ
   if (!preview) return <Empty icon={<Globe />} title={t.tabs2.previewGone} />;
   const full = (host?.info?.scope ?? host?.record.scope) === 'full' && host?.status === 'online';
   if (watching) return <Screencast hostId={hostId} session={watching} canControl={full} onClose={() => setWatching(null)} />;
-  if ('previewView' in app.platform && app.platform.previewView) return <EmbeddedPreview key={`${hostId}:${preview.machine ?? ""}:${preview.id}`} hostId={hostId} preview={preview} />;
+  if ('previewView' in app.platform && app.platform.previewView) return <EmbeddedPreview key={previewKey(hostId, preview)} hostId={hostId} preview={preview} expanded={expanded} onExpand={onExpand} />;
   const info = host?.info;
   const rendered = full && !!info && !info.limit?.pane && !info.limit?.workspace && info.kind !== 'share' && info.features.includes('browser_preview');
   const browserButton = !isLoopbackUrl(preview.url) && (
@@ -37,10 +51,10 @@ export function PreviewTab({ hostId, preview }: { hostId: string; preview: Previ
   if (rendered) {
     return (
       <div className="flex min-h-0 flex-1 flex-col">
-        <PhonePreview key={`${hostId}:${preview.machine ?? ""}:${preview.id}`} hostId={hostId} preview={preview} />
+        <PhonePreview key={previewKey(hostId, preview)} hostId={hostId} preview={preview} expanded={expanded} onExpand={onExpand} />
         <div className="flex shrink-0 flex-wrap items-center gap-2 border-t border-border px-3 py-1.5">
           <span className="inline-flex min-w-0 flex-1 items-center gap-1.5 text-xs text-muted">
-            <StatusDot status={DOT[preview.status] ?? 'idle'} />
+            <StatusDot status={PREVIEW_DOT[preview.status] ?? 'idle'} />
             <span className="truncate">{previewLabel(preview)}</span>
           </span>
           {browserButton}
@@ -64,7 +78,7 @@ export function PreviewTab({ hostId, preview }: { hostId: string; preview: Previ
           <Globe className="size-4 text-muted" />
           <span className="min-w-0 flex-1 truncate font-medium">{previewLabel(preview)}</span>
           <span className="inline-flex items-center gap-1.5 text-xs text-muted">
-            <StatusDot status={DOT[preview.status] ?? 'idle'} />
+            <StatusDot status={PREVIEW_DOT[preview.status] ?? 'idle'} />
             {t.tabs2.previewStatus[preview.status] ?? preview.status}
           </span>
         </div>

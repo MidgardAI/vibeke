@@ -247,6 +247,8 @@ export type UiCommand =
   | 'changes'
   | 'workspace'
   | 'panel'
+  /** Open / close the workspace's Previews panel. */
+  | 'previews'
   | 'sidebar'
   | 'settings'
   | 'pair'

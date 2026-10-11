@@ -38,6 +38,9 @@ describe('keyboard shortcuts', () => {
     expect(shortcutFor(k('\\', { metaKey: true }), ctx({ typing: true }))).toEqual({ type: 'sidebar' });
     expect(shortcutFor(k('E', { metaKey: true, shiftKey: true }), ctx())).toEqual({ type: 'changes' });
     expect(shortcutFor(k('e', { metaKey: true }), ctx())).toBeNull();
+    expect(shortcutFor(k('B', { metaKey: true, shiftKey: true }), ctx({ typing: true }))).toEqual({ type: 'previews' });
+    expect(shortcutFor(k('B', { ctrlKey: true, shiftKey: true }), ctx({ mac: false }))).toEqual({ type: 'previews' });
+    expect(shortcutFor(k('b', { metaKey: true }), ctx())).toBeNull();
     expect(shortcutFor(k('2', { ctrlKey: true }), ctx({ mac: false }))).toEqual({ type: 'go', to: 'workspace' });
     expect(shortcutFor(k('5', { metaKey: true }), ctx())).toBeNull();
     expect(keyLabel(true, 'mod+k')).toBe('⌘K');

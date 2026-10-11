@@ -1,11 +1,11 @@
 // The workspace's tab strip: one tab per agent (harness glyph + name; the toggle on the right
-// picks its conversation or terminal), one per shell pane, and one per dev-server preview. `+` starts an agent or a terminal (`tab.create`);
+// picks its conversation or terminal) and one per shell pane. Previews live in the right panel's
+// Previews tab (spec 06 B3.5). `+` starts an agent or a terminal (`tab.create`);
 // ⋯ renames, closes or focuses the host tab behind the selected one (hidden for hosts without
 // `tab.*` and for devices without full scope). On the right, the conversation / terminal toggle.
 
 import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
-import { Bot, Crosshair, Globe, MessageSquare, MoreHorizontal, Pencil, Plus, SquareTerminal, Trash2 } from 'lucide-react';
-import type { Preview } from '@vibeke/core';
+import { Bot, Crosshair, MessageSquare, MoreHorizontal, Pencil, Plus, SquareTerminal, Trash2 } from 'lucide-react';
 import { HarnessIcon, StatusDot, cx, type Status } from '../../components/ui';
 import { t } from '../../i18n';
 import type { AgentView } from '../../lib/agent-view';
@@ -16,20 +16,17 @@ import type { WorkspaceRow } from '../../lib/workspaces';
 import { MenuButton, type MenuItem } from './menu';
 
 /** `agent` = an agent pane (conversation or terminal, by the toggle), `term` = a shell. */
-export type TabKind = 'agent' | 'term' | 'preview';
+export type TabKind = 'agent' | 'term';
 
 export interface WsTab {
-  /** `a:<pane>`, `t:<pane>`, `p:<preview>` (see lib/agent-view.ts `paneTabId`). */
+  /** `a:<pane>`, `t:<pane>` (see lib/agent-view.ts `paneTabId`). */
   id: string;
   kind: TabKind;
-  pane: PaneRow | null;
-  preview: Preview | null;
+  pane: PaneRow;
   label: string;
   title: string;
   status: Status | null;
 }
-
-const PREVIEW_HIDDEN = new Set(['gone', 'suggested']);
 
 export const paneLabel = (p: PaneRow): string => p.pane.title ?? p.run?.name ?? p.run?.title ?? (p.run ? p.run.harness : p.pane.auto_title);
 
@@ -39,38 +36,18 @@ export function paneStatus(p: PaneRow): Status | null {
   return null;
 }
 
-/** Previews that belong to the workspace's panes and are worth a tab. */
-export function workspacePreviews(row: WorkspaceRow, previews: readonly Preview[] | undefined): Preview[] {
-  const panes = new Set(row.panes.map((p) => p.pane.id));
-  return (previews ?? []).filter((v) => v.pane && panes.has(v.pane) && !PREVIEW_HIDDEN.has(v.status));
-}
-
-export function previewLabel(v: Preview): string {
-  if (v.label) return v.label;
-  try {
-    const u = new URL(v.url);
-    return `${u.host}${u.pathname === '/' ? '' : u.pathname}`;
-  } catch {
-    return v.url;
-  }
-}
-
-/** Tabs in display order: agents, shells, previews. */
-export function workspaceTabs(row: WorkspaceRow, previews: readonly Preview[]): WsTab[] {
+/** Tabs in display order: agents, then shells. */
+export function workspaceTabs(row: WorkspaceRow): WsTab[] {
   const out: WsTab[] = [];
   const agents = row.panes.filter((p) => p.run);
   const shells = row.panes.filter((p) => !p.run);
   for (const p of agents) {
     const label = paneLabel(p);
-    out.push({ id: `a:${p.pane.id}`, kind: 'agent', pane: p, preview: null, label, title: label, status: paneStatus(p) });
+    out.push({ id: `a:${p.pane.id}`, kind: 'agent', pane: p, label, title: label, status: paneStatus(p) });
   }
   for (const p of shells) {
     const label = p.pane.title ?? (p.pane.fg_cmdline.length ? p.pane.fg_cmdline.join(' ') : p.pane.auto_title);
-    out.push({ id: `t:${p.pane.id}`, kind: 'term', pane: p, preview: null, label, title: label, status: paneStatus(p) });
-  }
-  for (const v of previews) {
-    const label = previewLabel(v);
-    out.push({ id: `p:${v.id}`, kind: 'preview', pane: row.panes.find((p) => p.pane.id === v.pane) ?? null, preview: v, label, title: v.url, status: null });
+    out.push({ id: `t:${p.pane.id}`, kind: 'term', pane: p, label, title: label, status: paneStatus(p) });
   }
   return out;
 }
@@ -165,13 +142,11 @@ export function TabStrip({
               )}
             >
               {tab.kind === 'agent' ? (
-                <HarnessIcon harness={tab.pane?.run?.harness ?? null} />
-              ) : tab.kind === 'preview' ? (
-                <Globe aria-hidden className="size-3.5 shrink-0" strokeWidth={1.75} />
+                <HarnessIcon harness={tab.pane.run?.harness ?? null} />
               ) : (
                 <SquareTerminal aria-hidden className="size-3.5 shrink-0" strokeWidth={1.75} />
               )}
-              <span className={cx('truncate', tab.kind === 'preview' && 'font-mono text-xs')}>{tab.label}</span>
+              <span className="truncate">{tab.label}</span>
               {tab.status && <StatusDot status={tab.status} />}
             </button>
           );

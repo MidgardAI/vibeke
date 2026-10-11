@@ -64,6 +64,7 @@ export function buildMenu(a: MenuActions): Menu {
         { label: 'Inbox', accelerator: 'CommandOrControl+1', click: cmd('inbox') },
         { label: 'First Workspace', accelerator: 'CommandOrControl+2', click: cmd('workspace') },
         { label: 'Toggle Changes Panel', accelerator: 'CommandOrControl+3', click: cmd('panel') },
+        { label: 'Toggle Previews Panel', accelerator: 'CommandOrControl+Shift+B', click: cmd('previews') },
         { label: 'Settings', accelerator: 'CommandOrControl+4', click: cmd('settings') },
         { label: 'Show Changes', accelerator: 'CommandOrControl+Shift+E', click: cmd('changes') },
         { label: 'Toggle Sidebar', accelerator: 'CommandOrControl+\\', click: cmd('sidebar') },

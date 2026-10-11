@@ -4,7 +4,7 @@
 // when this view goes away or the app stays hidden for a while.
 
 import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
-import { ArrowLeft, ArrowRight, Keyboard, RotateCw } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Keyboard, Maximize2, Minimize2, RotateCw } from 'lucide-react';
 import { RpcError, type BrowserSession } from '@vibeke/core';
 import { useApp } from '../app/hooks';
 import { t } from '../i18n';
@@ -23,7 +23,20 @@ const RESIZE_DEBOUNCE_MS = 150;
 /** A poll that returns this fast without a picture is not really waiting (an older host): pause between polls. */
 const FAST_EMPTY_MS = 250;
 
-export function PhonePreview({ hostId, preview, onClose }: { hostId: string; preview: { id: string; machine?: string }; onClose?: () => void }) {
+export function PhonePreview({
+  hostId,
+  preview,
+  onClose,
+  expanded,
+  onExpand,
+}: {
+  hostId: string;
+  preview: { id: string; machine?: string };
+  onClose?: () => void;
+  /** Shown in the centre instead of the panel (the Expand / Collapse button). */
+  expanded?: boolean;
+  onExpand?: () => void;
+}) {
   const app = useApp();
   const visible = useStore(app.visible);
   const stage = useRef<HTMLDivElement>(null);
@@ -373,6 +386,11 @@ export function PhonePreview({ hostId, preview, onClose }: { hostId: string; pre
         <IconButton label={t.phone.keyboard} disabled={!ready} onClick={() => hidden.current?.focus()}>
           <Keyboard />
         </IconButton>
+        {onExpand && (
+          <IconButton label={expanded ? t.embeddedPreview.collapse : t.embeddedPreview.expand} onClick={onExpand}>
+            {expanded ? <Minimize2 /> : <Maximize2 />}
+          </IconButton>
+        )}
         {onClose && (
           <Button size="sm" variant="ghost" onClick={onClose}>
             {t.live.stop}

@@ -1,5 +1,5 @@
 // Hash routes (spec 16 §9.3): `#/inbox`, workspaces `#/w/<host>/<workspace>[/t/<pane>]` with
-// `?panel=changes|files|screenshots|off&file=…&commit=…&base=…&view=diff&show=term|conversation|preview:<id>`, push deep links from the gateway
+// `?panel=changes|files|screenshots|previews|off&file=…&commit=…&base=…&view=diff&show=term|conversation&preview=<id>&expand=1`, push deep links from the gateway
 // (`#/i/<host>/<interaction>`, `#/r/<host>/<run>`, `#/inbox`, `#/approve/<host>[/<request>]`) and the
 // pairing link `#/pair?d=…` and shared content `#/share-in/<id>`.
 // Older links (`#/h/<host>/p/<pane>[/history|/changes]`, `#/panes`, `#/focus`, `#/changes`) still
@@ -9,7 +9,7 @@ import { useSyncExternalStore } from 'react';
 
 export type Tab = 'inbox' | 'panes' | 'focus' | 'changes';
 export type PaneView = 'term' | 'history' | 'changes';
-export type PanelKind = 'changes' | 'files' | 'screenshots';
+export type PanelKind = 'changes' | 'files' | 'screenshots' | 'previews';
 
 export interface WorkspaceRoute {
   name: 'workspace';
@@ -27,10 +27,14 @@ export interface WorkspaceRoute {
   view?: 'diff' | null;
   /**
    * The tab's centre: null = the pane's default (agents: the workspace's agent view, see
-   * lib/agent-view.ts), `term` / `conversation` (an agent's terminal or conversation), or
-   * `preview:<id>`.
+   * lib/agent-view.ts), or `term` / `conversation` (an agent's terminal or conversation). The
+   * older `preview:<id>` becomes `preview` with the Previews panel.
    */
   show?: string | null;
+  /** The preview shown in the Previews panel (`?preview=`), or in the centre when `expanded`. */
+  preview?: string | null;
+  /** `?expand=1`: the selected preview fills the centre instead of the panel (spec 06 B3.5). */
+  expanded?: boolean;
 }
 
 export type Route =
@@ -107,18 +111,17 @@ export function parseRoute(hash: string): Route {
     case 'w':
       if (b && c && (d === undefined || (d === 't' && e))) {
         const p = query.get('panel');
-        return {
-          name: 'workspace',
-          host: b,
-          workspace: c,
+        return workspaceRoute(b, c, {
           pane: d === 't' ? e! : null,
-          panel: p === 'changes' || p === 'files' || p === 'screenshots' || p === 'off' ? p : null,
+          panel: p === 'changes' || p === 'files' || p === 'screenshots' || p === 'previews' || p === 'off' ? p : null,
           file: opt('file'),
           commit: opt('commit'),
           base: opt('base'),
           view: query.get('view') === 'diff' ? 'diff' : null,
           show: opt('show'),
-        };
+          preview: opt('preview'),
+          expanded: query.get('expand') === '1',
+        });
       }
       break;
     case 'h':
@@ -143,9 +146,28 @@ export function parseRoute(hash: string): Route {
 
 const enc = encodeURIComponent;
 
-/** A workspace route with defaults for the optional parts. */
+/**
+ * A workspace route with defaults for the optional parts. An older `show=preview:<id>` (preview
+ * tabs) opens that preview in the Previews panel instead.
+ */
 export function workspaceRoute(host: string, workspace: string, o: Partial<Omit<WorkspaceRoute, 'name' | 'host' | 'workspace'>> = {}): WorkspaceRoute {
-  return { name: 'workspace', host, workspace, pane: o.pane ?? null, panel: o.panel ?? null, file: o.file ?? null, commit: o.commit ?? null, base: o.base ?? null, view: o.view ?? null, show: o.show ?? null };
+  const legacy = o.show?.startsWith('preview:') ? o.show.slice('preview:'.length) || null : null;
+  const preview = o.preview ?? legacy;
+  const panel = o.panel ?? (legacy && !o.expanded ? 'previews' : null);
+  return {
+    name: 'workspace',
+    host,
+    workspace,
+    pane: o.pane ?? null,
+    panel,
+    file: o.file ?? null,
+    commit: o.commit ?? null,
+    base: o.base ?? null,
+    view: o.view ?? null,
+    show: o.show?.startsWith('preview:') ? null : (o.show ?? null),
+    preview: preview ?? null,
+    expanded: !!preview && !!o.expanded,
+  };
 }
 
 export function formatRoute(r: Route): string {
@@ -179,6 +201,8 @@ export function formatRoute(r: Route): string {
       if (r.base) q.set('base', r.base);
       if (r.view) q.set('view', r.view);
       if (r.show) q.set('show', r.show);
+      if (r.preview) q.set('preview', r.preview);
+      if (r.preview && r.expanded) q.set('expand', '1');
       const qs = q.toString();
       return `#/w/${enc(r.host)}/${enc(r.workspace)}${r.pane ? `/t/${enc(r.pane)}` : ''}${qs ? `?${qs}` : ''}`;
     }

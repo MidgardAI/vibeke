@@ -1043,6 +1043,10 @@ export interface AppApi {
   'tab.close': { params: { tab: string }; result: unknown };
   'tab.focus': { params: { tab: string }; result: unknown };
   'preview.open': { params: { preview?: string; url?: string; pane?: string; focus?: boolean }; result: unknown };
+  /** A suggested preview (found by discovery) becomes a live one. */
+  'preview.promote': { params: { preview: string; machine?: string }; result: { preview: Preview } };
+  /** Drops a preview from the list until it is found again. */
+  'preview.forget': { params: { preview: string; machine?: string }; result: Record<string, never> };
   'screenshot.list': {
     params: { workspace?: string; pane?: string; task?: string; environment?: string; limit?: number };
     result: { screenshots: ScreenshotMeta[]; count: number; total: number };
@@ -1382,6 +1386,8 @@ export const MUTATING_METHODS: ReadonlySet<string> = new Set([
   'tab.close',
   'tab.focus',
   'preview.open',
+  'preview.promote',
+  'preview.forget',
   'interaction.answer',
   'interaction.answer_batch',
   'notification.read',

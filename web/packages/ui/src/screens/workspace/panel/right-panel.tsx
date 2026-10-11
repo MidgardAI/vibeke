@@ -1,7 +1,8 @@
-// The workspace's right panel: Files / Changes tabs over the selected pane's repository.
-// Lazy-loaded by the layout (app/layout.tsx); the Files viewer loads on first use.
+// The workspace's right panel: Files / Changes tabs over the selected pane's repository, the
+// workspace's Screenshots and its Previews (spec 06 B3.5). Lazy-loaded by the layout
+// (app/layout.tsx); the Files viewer loads on first use.
 
-import { FileDiff, FolderTree, Images, PanelRightClose, X } from 'lucide-react';
+import { FileDiff, FolderTree, Images, MonitorPlay, PanelRightClose, X } from 'lucide-react';
 import { useApp } from '../../../app/hooks';
 import { isMacLike } from '../../../app/keyboard';
 import { useWorkspaceShots } from '../../../app/screenshot-store';
@@ -9,10 +10,12 @@ import { useTogglePanel } from '../../../app/layout';
 import { selectedPane, useWorkspaceRows } from '../../../app/selection';
 import { Badge, Empty, IconButton, Tabs } from '../../../components/ui';
 import { t } from '../../../i18n';
+import { OverlayBase } from '../../../lib/overlays';
 import { keyLabel } from '../../../lib/shortcuts';
 import type { PanelKind, WorkspaceRoute } from '../../../router';
 import { ChangesTab } from './changes-tab';
 import { FilesTab } from './files-tab';
+import { PreviewsTab } from './previews-tab';
 import { ScreenshotsTab } from './screenshots-tab';
 
 export default function RightPanel({ route, kind, sheet = false }: { route: WorkspaceRoute; kind: PanelKind; sheet?: boolean }) {
@@ -30,18 +33,25 @@ export default function RightPanel({ route, kind, sheet = false }: { route: Work
           label={t.workspace.panel}
           value={kind}
           onChange={(k) => k !== kind && toggle(route, k)}
+          className="no-scrollbar overflow-x-auto"
           items={[
             { value: 'files', label: t.workspace.files, icon: <FolderTree /> },
             { value: 'changes', label: t.workspace.changes, icon: <FileDiff /> },
             { value: 'screenshots', label: t.workspace.screenshots, icon: <Images />, badge: kind === 'screenshots' ? undefined : <Badge n={unread} /> },
+            { value: 'previews', label: t.workspace.previews, icon: <MonitorPlay /> },
           ]}
         />
         <span className="flex-1" />
-        <IconButton label={sheet ? t.workspace.closePanel : `${t.workspace.closePanel} (${keyLabel(mac, 'mod+3')})`} onClick={() => toggle(route, kind)}>
+        <IconButton label={sheet ? t.workspace.closePanel : `${t.workspace.closePanel} (${keyLabel(mac, kind === 'previews' ? 'mod+shift+b' : 'mod+3')})`} onClick={() => toggle(route, kind)}>
           {sheet ? <X /> : <PanelRightClose />}
         </IconButton>
       </div>
-      {kind === 'screenshots' ? (
+      {kind === 'previews' ? (
+        // The phone-sized sheet is itself an overlay: it does not cover the preview inside it.
+        <OverlayBase.Provider value={sheet ? 1 : 0}>
+          <PreviewsTab route={route} sheet={sheet} />
+        </OverlayBase.Provider>
+      ) : kind === 'screenshots' ? (
         <ScreenshotsTab route={route} />
       ) : !pane ? (
         <Empty icon={kind === 'files' ? <FolderTree /> : <FileDiff />} title={t.changes.noPane} />
