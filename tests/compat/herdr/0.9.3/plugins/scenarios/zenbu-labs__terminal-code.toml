@@ -1,0 +1,30 @@
+# Plugin: zenbu-labs/terminal-code (zenbu-labs.tode 0.1.1), locked commit
+# 66441668de5fbe142d97ec395ee4f2bd115c5cab, manifest herdr-plugin/herdr-plugin.toml.
+#
+# Covers: action `open-split`. The action runs a script that starts the `tode`
+# program with `--split right`. The program asks Herdr to split the focused pane to the
+# right and to run a command in the new pane, then draws the editor as terminal graphics there.
+# The program (a code editor in a window) is installed by the plugin's build step.
+#
+# Steps check the Herdr calls (split, run in the new pane) and that the action reaches a
+# final log state. Editor contents are live and are not compared. The plugin declares no
+# event hooks, panes, startup commands or link handlers.
+#
+# Confirms no category of spec 18 §8.5.
+
+plugin_id = "zenbu-labs.tode"
+repository = "zenbu-labs/terminal-code"
+timeout_ms = 120000
+
+[[step]]
+id = "open-split"
+kind = "action"
+action = "open-split"
+context = "global"
+timeout_ms = 120000
+expect_calls = [
+  { method = "pane.split", ok = true },
+  { method = "pane.run", ok = true },
+]
+[[step.expect]]
+kind = "invocation_final"

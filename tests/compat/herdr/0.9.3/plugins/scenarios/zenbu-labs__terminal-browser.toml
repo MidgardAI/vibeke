@@ -1,0 +1,30 @@
+# Plugin: zenbu-labs/terminal-browser (zenbu-labs.terminal-browser 0.1.1), locked commit
+# 2165ae76c9639e3996829ab0e6d54ddbd4f06ad8, manifest herdr-plugin/herdr-plugin.toml.
+#
+# Covers: action `open-split`. The action runs a script that starts the `terminal-browser`
+# program with `open --split right`. The program asks Herdr to split the focused pane to the
+# right and to run a command in the new pane, then draws a browser as terminal graphics there.
+# The program is installed by the plugin's build step.
+#
+# Steps check the Herdr calls (split, run in the new pane) and that the action reaches a
+# final log state. Browser contents are live and are not compared. The plugin declares no
+# event hooks, panes, startup commands or link handlers.
+#
+# Confirms no category of spec 18 §8.5.
+
+plugin_id = "zenbu-labs.terminal-browser"
+repository = "zenbu-labs/terminal-browser"
+timeout_ms = 120000
+
+[[step]]
+id = "open-split"
+kind = "action"
+action = "open-split"
+context = "global"
+timeout_ms = 120000
+expect_calls = [
+  { method = "pane.split", ok = true },
+  { method = "pane.run", ok = true },
+]
+[[step.expect]]
+kind = "invocation_final"

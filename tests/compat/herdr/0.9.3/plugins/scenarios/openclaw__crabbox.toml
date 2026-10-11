@@ -1,0 +1,187 @@
+# Plugin: openclaw/crabbox (crabbox 0.1.0), locked commit
+# 025bd36cb1ed18ffb8a21c41e51886ee52bf893a, manifest plugins/herdr/herdr-plugin.toml.
+#
+# Covers: the six actions and the six panes of the plugin. Each action runs a script that
+# calls `herdr plugin pane open` for the matching pane: `boxes` as an overlay, `warmup`,
+# `prewarm` and `doctor` as splits, `connect` and `run-job` as tabs. Each pane runs the
+# `crabbox` command line program through a shim that the build step writes. The build step
+# fails when no compatible `crabbox` program is on the path, so the environment must provide
+# one. No cloud account or credentials exist in the test environment, so the pane commands
+# are expected to report an error and wait for Enter. The scenario checks that each pane opens
+# at its declared placement and shows the plugin's own status text. Pane contents depend on
+# provider state, so they are compared for placement only.
+#
+# The plugin declares no event hooks, startup commands or link handlers.
+#
+# Confirms no category of spec 18 §8.5.
+
+plugin_id = "crabbox"
+repository = "openclaw/crabbox"
+timeout_ms = 120000
+
+[setup]
+[[setup.repo]]
+name = "app"
+files = { "README.md" = "sample\n" }
+
+[[step]]
+id = "boxes"
+kind = "action"
+action = "boxes"
+context = "workspace"
+timeout_ms = 60000
+expect_calls = [{ method = "plugin.pane.open", ok = true }]
+[[step.expect]]
+kind = "invocation_final"
+[[step.expect]]
+kind = "pane"
+pane = "boxes"
+placement = "overlay"
+[[step.expect]]
+kind = "screen_text"
+pane = "boxes"
+text = "Crabbox boxes"
+[[step.compare]]
+pane = "boxes"
+placement_only = true
+
+[[step]]
+id = "close-boxes"
+kind = "input"
+pane = "boxes"
+keys = ["C-c"]
+
+[[step]]
+id = "warmup"
+kind = "action"
+action = "warmup"
+context = "workspace"
+timeout_ms = 60000
+expect_calls = [{ method = "plugin.pane.open", ok = true }]
+[[step.expect]]
+kind = "invocation_final"
+[[step.expect]]
+kind = "pane"
+pane = "warmup"
+placement = "split"
+[[step.expect]]
+kind = "screen_text"
+pane = "warmup"
+regex = 'Command exited with status \d+\. Press Enter to close\.'
+[[step.compare]]
+pane = "warmup"
+placement_only = true
+
+[[step]]
+id = "close-warmup"
+kind = "input"
+pane = "warmup"
+keys = ["Enter"]
+
+[[step]]
+id = "prewarm"
+kind = "action"
+action = "prewarm"
+context = "workspace"
+timeout_ms = 60000
+expect_calls = [{ method = "plugin.pane.open", ok = true }]
+[[step.expect]]
+kind = "invocation_final"
+[[step.expect]]
+kind = "pane"
+pane = "prewarm"
+placement = "split"
+[[step.expect]]
+kind = "screen_text"
+pane = "prewarm"
+regex = 'Command exited with status \d+\. Press Enter to close\.'
+[[step.compare]]
+pane = "prewarm"
+placement_only = true
+
+[[step]]
+id = "close-prewarm"
+kind = "input"
+pane = "prewarm"
+keys = ["Enter"]
+
+[[step]]
+id = "doctor"
+kind = "action"
+action = "doctor"
+context = "workspace"
+timeout_ms = 60000
+expect_calls = [{ method = "plugin.pane.open", ok = true }]
+[[step.expect]]
+kind = "invocation_final"
+[[step.expect]]
+kind = "pane"
+pane = "doctor"
+placement = "split"
+[[step.expect]]
+kind = "screen_text"
+pane = "doctor"
+regex = 'Command exited with status \d+\. Press Enter to close\.'
+[[step.compare]]
+pane = "doctor"
+placement_only = true
+
+[[step]]
+id = "close-doctor"
+kind = "input"
+pane = "doctor"
+keys = ["Enter"]
+
+[[step]]
+id = "connect"
+kind = "action"
+action = "connect"
+context = "workspace"
+timeout_ms = 60000
+expect_calls = [{ method = "plugin.pane.open", ok = true }]
+[[step.expect]]
+kind = "invocation_final"
+[[step.expect]]
+kind = "pane"
+pane = "connect"
+placement = "tab"
+[[step.expect]]
+kind = "screen_text"
+pane = "connect"
+regex = 'Command exited with status \d+\. Press Enter to close\.'
+[[step.compare]]
+pane = "connect"
+placement_only = true
+
+[[step]]
+id = "close-connect"
+kind = "input"
+pane = "connect"
+keys = ["Enter"]
+
+[[step]]
+id = "run-job"
+kind = "action"
+action = "run-job"
+context = "workspace"
+timeout_ms = 60000
+expect_calls = [{ method = "plugin.pane.open", ok = true }]
+[[step.expect]]
+kind = "invocation_final"
+[[step.expect]]
+kind = "pane"
+pane = "run-job"
+placement = "tab"
+[[step.expect]]
+kind = "screen_text"
+pane = "run-job"
+regex = 'Command exited with status \d+\. Press Enter to close\.'
+[[step.compare]]
+pane = "run-job"
+placement_only = true
+
+[[step]]
+id = "close-run-job"
+kind = "input"
+pane = "run-job"
+keys = ["Enter"]
