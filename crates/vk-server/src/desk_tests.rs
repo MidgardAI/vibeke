@@ -848,3 +848,21 @@ async fn sent_text_references_attachments_and_includes_notes_only_on_request() {
     let with = crate::drafts::compose(&e.server, &dr, true);
     assert!(with.ends_with("\n\nNotes:\nstaging only"), "{with}");
 }
+
+/// A transcript source that is a FIFO is refused at once instead of blocking the indexer (a
+/// run's transcript path comes from the agent).
+#[test]
+fn read_at_refuses_a_fifo_without_blocking() {
+    let dir = tempfile::tempdir().unwrap();
+    let fifo = dir.path().join("t.jsonl");
+    let c = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
+    // SAFETY: a valid NUL-terminated path.
+    assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+    assert!(read_at(fifo.to_str().unwrap(), 0, 1024).is_err());
+    // A regular file reads from the offset.
+    let file = dir.path().join("r.jsonl");
+    std::fs::write(&file, b"0123456789").unwrap();
+    assert_eq!(read_at(file.to_str().unwrap(), 4, 3).unwrap(), b"456");
+    // A file that shrank below the offset gives nothing this pass.
+    assert!(read_at(file.to_str().unwrap(), 50, 3).unwrap().is_empty());
+}
