@@ -721,6 +721,8 @@ preview.url :: {preview: Target, machine?: string} => {remote_url: string, profi
 preview.status :: {} => {socks_port: int|null, browsers: [{profile: string, machine: string, route: string, pid: int, running: bool}], links: [{machine: string, connected: bool, bytes_in: int|null, bytes_out: int|null, rtt_ms: int|null}], accepted: int, rejected: int, proxy: {port: int, tls: bool, routes: [{host: string, machine: string, preview: string, handle: string, port: int, scheme: http|https, tls: bool}], stats: {requests: int, denied: int, websockets: int}}|null, mirrors: [PreviewMirror], available_browsers: {pane: {binary: string, kind: string}|null, window: {binary: string, kind: string}|null}, browser_install: {running: bool, binary: string|null, error: string|null}|null}
 # full scope only
 preview.mirror :: {preview: Target, machine?: string} => {machine: string, preview: string, preview_handle: string, local_port: int, addrs: [string], since_ms: int, accepted: int, rejected: int, authenticated: bool, peer_check: same_user, warning: string, url?: string, already?: bool}
+# full scope, user clients only (the gateway's `tunnel.*`); after the result the connection carries raw bytes (06 B3.5)
+preview.connect :: {machine?: string, host: string, port: int} => {connected: bool}
 # full scope only
 preview.unmirror :: {preview?: Target|int, port?: int, machine?: string} => {local_port: int, machine: string, preview: string}
 

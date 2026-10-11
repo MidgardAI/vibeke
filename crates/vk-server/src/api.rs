@@ -353,6 +353,8 @@ pub const PANE_FORBIDDEN: &[&str] = &[
     // (the handler checks stay as defense in depth).
     "preview.mirror",
     "preview.unmirror",
+    // 06 B3.5: a raw stream to a loopback port, for the gateway's `tunnel.*` only.
+    "preview.connect",
     // 06 A11: only the user's client reports translated pastes.
     "paste.translated",
     "preview.profile.reset",

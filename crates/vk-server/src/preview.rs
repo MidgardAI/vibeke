@@ -52,6 +52,8 @@ pub const METHODS: &[(&str, bool)] = &[
     ("preview.profile.reset", true),
     ("preview.mirror", true),
     ("preview.unmirror", true),
+    // Upgrades its control connection to a raw byte stream (`run::connection`, 06 B3.5).
+    ("preview.connect", true),
 ];
 
 /// `[preview]` keys used here (06 Part C). Unknown keys are ignored.
@@ -1067,6 +1069,72 @@ async fn to_machine(
     }
 }
 
+/// `preview.connect {machine?, host, port}` (06 B3.5): validate the params and open a stream
+/// to a loopback port on the preview machine, with the same route as the SOCKS listener
+/// (`to_machine`). Counts the stream in `preview.status.accepted` once it is open.
+pub(crate) async fn connect_stream(
+    server: &Arc<Server>,
+    p: &Value,
+) -> Result<Box<dyn socks::Stream>, RpcError> {
+    let machine = s(p, "machine").unwrap_or_default().to_string();
+    let Some(host) = s(p, "host") else {
+        return Err(invalid("missing param `host`"));
+    };
+    let host = host
+        .strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(host)
+        .to_string();
+    if !vk_remote::is_loopback_host(&host) {
+        return Err(invalid(format!(
+            "preview.connect reaches loopback destinations only (got {host})"
+        )));
+    }
+    let port = match p.get("port").and_then(Value::as_u64) {
+        Some(n) if (1..=65535).contains(&n) => n as u16,
+        _ => return Err(invalid("`port` must be an integer from 1 to 65535")),
+    };
+    let target = if host.contains(':') {
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    };
+    let refused =
+        |m: String| err(ErrorKind::RemoteUnavailable, m).details(json!({"reason": "refused"}));
+    let stream: Box<dyn socks::Stream> = if is_local_machine(server, &machine) {
+        match vk_remote::connect_loopback(&host, port).await {
+            Ok(s) => Box::new(s) as Box<dyn socks::Stream>,
+            Err(e) => return Err(refused(format!("connect {target}: {e:#}"))),
+        }
+    } else {
+        let Some(link) = server.previews.link(server, &machine) else {
+            return Err(err(
+                ErrorKind::RemoteUnavailable,
+                format!("unknown or unreachable machine: {machine}"),
+            )
+            .details(json!({"reason": "unreachable", "machine": machine})));
+        };
+        match link.open_kind(&format!("tcp:{target}")).await {
+            Ok(s) => Box::new(s) as Box<dyn socks::Stream>,
+            Err(e) => {
+                let msg = format!("{e:#}");
+                tracing::debug!(%machine, %target, error = %msg, "preview.connect: tcp channel failed");
+                // The bridge answered the open with an error (nothing listening on the
+                // port); a closed link or a timeout means the machine is not reachable.
+                if msg.starts_with("open tcp:") && !msg.ends_with("timed out") {
+                    return Err(refused(format!("{machine}: {msg}")));
+                }
+                return Err(
+                    err(ErrorKind::RemoteUnavailable, format!("{machine}: {msg}"))
+                        .details(json!({"reason": "unreachable", "machine": machine})),
+                );
+            }
+        }
+    };
+    server.previews.accepted.fetch_add(1, Ordering::Relaxed);
+    Ok(stream)
+}
+
 impl socks::Router for Router {
     type Grant = Grant;
 
@@ -1379,6 +1447,12 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
     }
     Some(match method {
         "preview.declare" => declare_api(server, ctx, p).await,
+        // Handled by the connection loop, which turns the connection into a byte stream; it
+        // never reaches dispatch on a control connection.
+        "preview.connect" => Err(err(
+            ErrorKind::Unsupported,
+            "preview.connect turns a control connection into a byte stream; send it as a request on a fresh control socket connection",
+        )),
         "preview.list" => list(server, p).await,
         "preview.get" => {
             let t = match s(p, "preview") {

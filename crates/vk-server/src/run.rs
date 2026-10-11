@@ -530,7 +530,8 @@ where
                         crate::notify::record_host(&server, &ctx.client_id, req.params.get("host"));
                         let _ = out_tx.send(api::handle_line(&server, &ctx, l).await);
                     }
-                    "render.attach" => break Some(req),
+                    // 06 B3.5: the connection becomes a raw byte stream after the result.
+                    "render.attach" | "preview.connect" => break Some(req),
                     "events.subscribe" => {
                         // The same per-call checks as every dispatched method (pane scope,
                         // revocation, elevation expiry); the subscription re-checks them while
@@ -595,6 +596,16 @@ where
     while let Ok(more) = out_rx.try_recv() {
         wr.write_all(more.as_bytes()).await?;
         wr.write_all(b"\n").await?;
+    }
+    if let Some(req) = attach.as_ref().filter(|r| r.method == "preview.connect") {
+        let gate = PreviewConnectGate {
+            pane_scoped: ctx.pane_scope.is_some(),
+            foreign,
+            tokenless_plugin: plugin_peer
+                .as_deref()
+                .filter(|_| !crate::plugin_native::is_plugin_kind(&ctx.kind)),
+        };
+        return preview_connect(server.clone(), &ctx, gate, req, rd, wr).await;
     }
     if let Some(req) = attach {
         // A render session runs as the connection's authenticated caller: never a pane, never
@@ -731,6 +742,91 @@ where
     }
     wr.flush().await?;
     Ok(())
+}
+
+/// Who sent `preview.connect`, as far as the connection loop knows.
+struct PreviewConnectGate<'a> {
+    pane_scoped: bool,
+    foreign: bool,
+    tokenless_plugin: Option<&'a str>,
+}
+
+/// `preview.connect {machine?, host, port}` (06 B3.5): after one success line
+/// `{"connected": true}` the connection carries raw bytes to a loopback port on the preview
+/// machine until either side closes. Only the connection's user client may ask (never a pane,
+/// a pane of another session or a plugin); a revoked or expired caller's stream ends.
+async fn preview_connect<R, W>(
+    server: Arc<Server>,
+    ctx: &Ctx,
+    gate: PreviewConnectGate<'_>,
+    req: &Request,
+    rd: BufReader<R>,
+    mut wr: W,
+) -> Result<()>
+where
+    R: tokio::io::AsyncRead + Unpin,
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    const M: &str = "preview.connect";
+    let id = req.id.clone().unwrap_or(Value::Null);
+    let refusal = if gate.pane_scoped {
+        Some(err(
+            ErrorKind::PermissionDenied,
+            "preview.connect needs a user client",
+        ))
+    } else if gate.foreign {
+        Some(foreign_refusal(M))
+    } else if let Some(p) = gate.tokenless_plugin {
+        Some(crate::plugin_native::tokenless_refusal(p, M))
+    } else if crate::plugin_native::is_plugin_kind(&ctx.kind) {
+        Some(err(
+            ErrorKind::PermissionDenied,
+            "preview.connect needs a user client",
+        ))
+    } else {
+        api::authorize(&server, ctx, M, &req.params)
+            .and_then(|()| crate::auth::authorize(&server, ctx, M))
+            .err()
+    };
+    let target = match refusal {
+        Some(e) => Err(e),
+        None => crate::preview::connect_stream(&server, &req.params).await,
+    };
+    let mut target = match target {
+        Ok(t) => t,
+        Err(e) => {
+            let r = Response::err(id, e);
+            wr.write_all(serde_json::to_string(&r)?.as_bytes()).await?;
+            wr.write_all(b"\n").await?;
+            wr.flush().await?;
+            return Ok(());
+        }
+    };
+    let r = Response::ok(id, json!({"connected": true}));
+    wr.write_all(serde_json::to_string(&r)?.as_bytes()).await?;
+    wr.write_all(b"\n").await?;
+    wr.flush().await?;
+    // The reader may already hold bytes the client sent right after the request line; the
+    // `BufReader` hands them out first, so nothing written before the upgrade is lost.
+    let mut client = tokio::io::join(rd, wr);
+    let mut revoked = crate::auth::revocations(&server);
+    let copy = tokio::io::copy_bidirectional(&mut client, &mut target);
+    tokio::pin!(copy);
+    loop {
+        tokio::select! {
+            r = &mut copy => {
+                if let Err(e) = r {
+                    tracing::debug!(error = %e, "preview.connect: stream ended");
+                }
+                return Ok(());
+            }
+            Ok(()) = revoked.changed() => {
+                if crate::auth::authorize(&server, ctx, M).is_err() {
+                    return Ok(());
+                }
+            }
+        }
+    }
 }
 
 /// `events.subscribe {after?, types?}`: backlog from the outbox, then live events; never silent

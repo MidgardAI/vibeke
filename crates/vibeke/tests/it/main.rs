@@ -35,6 +35,7 @@ mod osc_marks;
 mod parity;
 mod plugin_native;
 mod preview;
+mod preview_connect;
 mod remote_machine;
 mod review;
 mod screenshot_add;
