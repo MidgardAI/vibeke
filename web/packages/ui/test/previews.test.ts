@@ -12,6 +12,8 @@ import {
   selectedPreview,
   showsExpandedPreview,
   workspacePreviews,
+  hostPreviews,
+  panelPreviews,
 } from '../src/lib/previews';
 import type { PreviewViewApi, PreviewViewState } from '../src/platform';
 import { formatRoute, parseRoute, workspaceRoute } from '../src/router';
@@ -29,7 +31,8 @@ const pv = (id: string, status: string, port: number, o: Partial<Preview> = {}):
   ...o,
 });
 
-const rowOf = (...panes: string[]) => ({ panes: panes.map((id) => ({ pane: { id } })) }) as unknown as Pick<WorkspaceRow, 'panes'>;
+const rowOf = (...panes: string[]) => ({ panes: panes.map((id) => ({ pane: { id } })), task: null }) as unknown as Pick<WorkspaceRow, 'panes' | 'task'>;
+const withTask = (task: string, ...panes: string[]) => ({ ...rowOf(...panes), task: { id: task } }) as unknown as Pick<WorkspaceRow, 'panes' | 'task'>;
 
 describe('previews list', () => {
   test('live and declared first, then stopped ones, then suggestions; by port within a status', () => {
@@ -40,6 +43,19 @@ describe('previews list', () => {
     const list = [pv('a', 'up', 1), pv('b', 'gone', 2), pv('c', 'suggested', 3), pv('d', 'up', 4, { pane: 'other' }), pv('e', 'up', 5, { pane: null })];
     expect(workspacePreviews(rowOf('p1'), list).map((v) => v.id)).toEqual(['a', 'c']);
     expect(workspacePreviews(rowOf('p1'), undefined)).toEqual([]);
+  });
+  test("a preview of the workspace's task belongs to it without a pane", () => {
+    const list = [pv('t', 'up', 1, { pane: null, task: 'k1' }), pv('u', 'up', 2, { pane: null, task: 'k2' })];
+    expect(workspacePreviews(withTask('k1', 'p9'), list).map((v) => v.id)).toEqual(['t']);
+  });
+  test("the host's other previews are those no workspace claims; limited devices get none", () => {
+    const list = [pv('a', 'up', 1), pv('t', 'up', 2, { pane: null, task: 'k1' }), pv('o', 'declared', 3, { pane: null }), pv('g', 'gone', 4, { pane: null }), pv('x', 'up', 5, { pane: 'closed' })];
+    const rows = [rowOf('p1'), withTask('k1', 'p2')];
+    expect(hostPreviews(rows, list).map((v) => v.id)).toEqual(['x', 'o']);
+    const r = panelPreviews(rows[0], rows, list, false);
+    expect(r.own.map((v) => v.id)).toEqual(['a']);
+    expect(r.all.map((v) => v.id)).toEqual(['a', 'x', 'o']);
+    expect(panelPreviews(rows[0], rows, list, true).other).toEqual([]);
   });
   test('the header counts only previews that answer', () => {
     expect(livePreviewCount([pv('a', 'up', 1), pv('b', 'declared', 2), pv('c', 'suggested', 3), pv('d', 'up', 4)])).toBe(2);

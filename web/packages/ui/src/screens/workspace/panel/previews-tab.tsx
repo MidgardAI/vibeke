@@ -12,7 +12,7 @@ import { useWorkspaceRows } from '../../../app/selection';
 import { Button, Empty, IconButton, StatusDot, cx } from '../../../components/ui';
 import { t } from '../../../i18n';
 import { errorMessage } from '../../../lib/answer';
-import { expandPreviewRoute, isSuggested, machineParam, previewLabel, selectPreviewRoute, selectedPreview, workspacePreviews } from '../../../lib/previews';
+import { expandPreviewRoute, isSuggested, machineParam, panelPreviews, previewLabel, selectPreviewRoute, selectedPreview } from '../../../lib/previews';
 import { navigate, type WorkspaceRoute } from '../../../router';
 import { MenuButton } from '../menu';
 import { PREVIEW_DOT, PreviewView } from '../preview-view';
@@ -23,7 +23,12 @@ export function PreviewsTab({ route, sheet = false }: { route: WorkspaceRoute; s
   const host = useHost(route.host);
   const rows = useWorkspaceRows();
   const row = rows.find((r) => r.host === route.host && r.workspace.id === route.workspace);
-  const previews = useMemo(() => (row ? workspacePreviews(row, host?.dashboard?.previews) : []), [row, host?.dashboard?.previews]);
+  const hostRows = useMemo(() => rows.filter((r) => r.host === route.host), [rows, route.host]);
+  const limited = !!host?.info?.limit || host?.info?.kind === 'share';
+  const { own: previews, other, all } = useMemo(
+    () => panelPreviews(row, hostRows, host?.dashboard?.previews, limited),
+    [row, hostRows, host?.dashboard?.previews, limited],
+  );
   const full = (host?.info?.scope ?? host?.record.scope) === 'full' && host?.status === 'online';
   const [busy, setBusy] = useState<string | null>(null);
   // In the phone sheet a preview is never expanded: the sheet shows it itself.
@@ -31,7 +36,7 @@ export function PreviewsTab({ route, sheet = false }: { route: WorkspaceRoute; s
   // A limited device may act only on its shared local previews, and the gateway refuses any
   // machine selector from it.
   const target = (v: Preview) => (host?.info?.limit ? {} : machineParam(v));
-  const selected = selectedPreview(route, previews);
+  const selected = selectedPreview(route, all);
 
   if (selected && (sheet || !route.expanded)) {
     return (
@@ -51,7 +56,7 @@ export function PreviewsTab({ route, sheet = false }: { route: WorkspaceRoute; s
     );
   }
 
-  if (!previews.length) return <Empty icon={<MonitorPlay />} title={t.previews.empty} hint={t.previews.emptyHint} />;
+  if (!all.length) return <Empty icon={<MonitorPlay />} title={t.previews.empty} hint={t.previews.emptyHint} />;
 
   const conn = app.conn(route.host);
   const promote = async (v: Preview) => {
@@ -78,10 +83,7 @@ export function PreviewsTab({ route, sheet = false }: { route: WorkspaceRoute; s
     }
   };
 
-  return (
-    <div className="vk-scroll min-h-0 flex-1 overflow-y-auto py-1">
-      <ul aria-label={t.previews.list} className="flex flex-col">
-        {previews.map((v) => {
+  const renderRow = (v: Preview) => {
           const suggested = isSuggested(v);
           const owner = row?.panes.find((p) => p.pane.id === v.pane);
           const current = route.expanded && route.preview === v.id;
@@ -131,8 +133,26 @@ export function PreviewsTab({ route, sheet = false }: { route: WorkspaceRoute; s
               )}
             </li>
           );
-        })}
-      </ul>
+  };
+
+  return (
+    <div className="vk-scroll min-h-0 flex-1 overflow-y-auto py-1">
+      {previews.length > 0 && (
+        <ul aria-label={t.previews.list} className="flex flex-col">
+          {previews.map(renderRow)}
+        </ul>
+      )}
+      {other.length > 0 && (
+        <details className={cx('group/other', previews.length > 0 && 'mt-2 border-t border-border pt-1')}>
+          <summary className="vk-focus flex cursor-pointer select-none items-center gap-1.5 rounded-md px-3.5 py-1.5 text-xs text-muted hover:text-fg">
+            <span className="min-w-0 flex-1 truncate">{t.previews.other}</span>
+            <span className="font-mono">{other.length}</span>
+          </summary>
+          <ul aria-label={t.previews.otherList} className="flex flex-col">
+            {other.map(renderRow)}
+          </ul>
+        </details>
+      )}
     </div>
   );
 }

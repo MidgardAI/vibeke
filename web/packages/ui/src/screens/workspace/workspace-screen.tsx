@@ -48,7 +48,7 @@ import { showsCentreDiff } from './panel';
 import { MenuButton, type MenuItem } from './menu';
 import { PreviewView } from './preview-view';
 import { TabStrip, workspaceTabs, type WsTab } from './tab-strip';
-import { collapsePreviewRoute, livePreviewCount, selectedPreview, workspacePreviews } from '../../lib/previews';
+import { collapsePreviewRoute, livePreviewCount, panelPreviews, selectedPreview } from '../../lib/previews';
 import { TerminalTab } from './terminal-tab';
 
 const LazyCentreDiff = lazy(() => import('./panel/centre-diff'));
@@ -107,6 +107,7 @@ function Workspace({ route, row, current, locked }: { route: WorkspaceRoute; row
   const app = useApp();
   const prefs = usePrefs();
   const host = useHost(row.host);
+  const rows = useWorkspaceRows();
   const wide = useWide();
   const narrow = !useMediaQuery('(min-width: 960px)');
   const surface = useSurface();
@@ -116,13 +117,18 @@ function Workspace({ route, row, current, locked }: { route: WorkspaceRoute; row
   const scope = host?.info?.scope ?? host?.record.scope ?? 'view';
   const online = host?.status === 'online';
   const full = scope === 'full' && online;
-  const previews = useMemo(() => workspacePreviews(row, host?.dashboard?.previews), [row, host?.dashboard?.previews]);
+  const hostRows = useMemo(() => rows.filter((r) => r.host === row.host), [rows, row.host]);
+  const limited = !!host?.info?.limit || host?.info?.kind === 'share';
+  const { own: previews, all: allPreviews } = useMemo(
+    () => panelPreviews(row, hostRows, host?.dashboard?.previews, limited),
+    [row, hostRows, host?.dashboard?.previews, limited],
+  );
   const view = agentViewFor(prefs, row.host, row.workspace.id);
   const overridden = hasViewOverride(prefs, row.host, row.workspace.id);
   const allTabs = useMemo(() => workspaceTabs(row), [row]);
   const tabs = locked ? allTabs.filter((x) => x.pane.pane.id === current.pane.id) : allTabs;
   /** The preview that fills the centre (Expand), or null. */
-  const expanded = !locked && route.expanded ? selectedPreview(route, previews) : null;
+  const expanded = !locked && route.expanded ? selectedPreview(route, allPreviews) : null;
   const tabId = currentTabId(current, show, view);
   // An agent showing its other view (`t:`/`c:` from ?show=) is still its own tab in the strip.
   const tab: WsTab | null = allTabs.find((x) => x.id === tabId) ?? (current.run && /^[tc]:/.test(tabId) ? (allTabs.find((x) => x.id === `a:${current.pane.id}`) ?? null) : null);
@@ -289,7 +295,7 @@ function Workspace({ route, row, current, locked }: { route: WorkspaceRoute; row
   );
   // Previews: opens / closes the panel on Previews, with the number of live previews.
   const live = livePreviewCount(previews);
-  const previewButton = previews.length > 0 && !locked && (
+  const previewButton = allPreviews.length > 0 && !locked && (
     <IconButton
       label={`${t.tabs2.previewsButton(live)} (${keyLabel(mac, 'mod+shift+b')})`}
       aria-keyshortcuts={mac ? 'Meta+Shift+B' : 'Control+Shift+B'}

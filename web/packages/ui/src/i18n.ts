@@ -1059,6 +1059,8 @@ export const en = {
     forget: 'Forget',
     rowMenu: (name: string) => `Options for ${name}`,
     expanded: 'Shown in the main area',
+    other: 'Other previews on this host',
+    otherList: 'Previews on this host that belong to no workspace',
   },
 
   shots: {
