@@ -367,6 +367,23 @@ fn check_isolation(r: &mut Report) {
     for (level, res) in vk_sandbox::runner::availability() {
         match res {
             Ok(d) => r.add(ISOLATION, Level::Pass, format!("{}: {d}", level.as_str())),
+            // Linux with bwrap but a kernel below Landlock ABI 6: sandboxed tasks refuse to
+            // start, so say so loudly and name the requirement.
+            Err(h)
+                if cfg!(target_os = "linux")
+                    && level == vk_sandbox::IsolationLevel::Sandbox
+                    && vk_sandbox::linux::bwrap_available() =>
+            {
+                r.add_hint(
+                    ISOLATION,
+                    Level::Warn,
+                    format!("{}: unavailable — {h}", level.as_str()),
+                    format!(
+                        "sandboxed tasks refuse to start on this kernel; the sandbox needs Landlock ABI {} (Linux 6.12 or newer)",
+                        vk_sandbox::linux::MIN_LANDLOCK_ABI
+                    ),
+                )
+            }
             Err(h) => r.add(
                 ISOLATION,
                 Level::Info,

@@ -6,6 +6,10 @@
 //! forwarder touch Linux syscalls and are `cfg(target_os = "linux")`. **Unverified on a real
 //! Linux host** (spec 13 implementation status).
 //!
+//! The backend needs Landlock ABI [`MIN_LANDLOCK_ABI`] (Linux 6.12): abstract unix socket and
+//! signal scoping, and TCP bind rules. On an older kernel (or with Landlock disabled) contained
+//! tasks refuse to start ([`landlock_status`]); there is no weaker fallback.
+//!
 //! Launch chain on Linux:
 //! `bwrap <args> --seccomp <fd> -- vibeke sandbox inner --spec <file>` → the inner helper
 //! applies Landlock (it must run *after* bwrap has built the mount namespace: Landlock forbids
@@ -56,6 +60,10 @@ pub fn bwrap_args(
         "--tmpfs".into(),
         "/run".into(),
     ];
+    // Without network the box gets its own network namespace (only loopback; the egress
+    // forwarder bridges to the host proxy). With open network it shares the host's: Landlock's
+    // ABI 6 scoping keeps the host's abstract unix sockets and processes out of reach, and its
+    // TCP bind rules limit listening to the box's own ports ([`landlock_net`]).
     if !p.network_open {
         a.push("--unshare-net".into());
     }
@@ -171,7 +179,10 @@ pub fn landlock_rules(p: &Policy) -> Vec<LandlockRule> {
 }
 
 /// Syscalls refused with EPERM inside the box: tracing other processes, kernel keyrings,
-/// namespace/mount manipulation, kernel modules, BPF and perf.
+/// namespace/mount manipulation (including the new mount API), kernel modules, BPF and perf.
+/// `clone` with a `CLONE_NEW*` flag is refused too ([`CLONE_NEW_MASK`]), and `clone3` (its
+/// flags sit in a struct seccomp cannot read) fails with `ENOSYS`, so libc falls back to
+/// `clone`.
 pub const SECCOMP_DENY: &[&str] = &[
     "ptrace",
     "process_vm_readv",
@@ -181,6 +192,13 @@ pub const SECCOMP_DENY: &[&str] = &[
     "pivot_root",
     "setns",
     "unshare",
+    "open_tree",
+    "move_mount",
+    "fsopen",
+    "fsconfig",
+    "fsmount",
+    "fspick",
+    "mount_setattr",
     "keyctl",
     "add_key",
     "request_key",
@@ -218,6 +236,16 @@ pub fn syscall_nr(name: &str, arch: Arch) -> Option<u32> {
         "delete_module" => (176, 106),
         "open_by_handle_at" => (304, 265),
         "name_to_handle_at" => (303, 264),
+        // The new mount API and clone3 share their numbers across architectures.
+        "open_tree" => (428, 428),
+        "move_mount" => (429, 429),
+        "fsopen" => (430, 430),
+        "fsconfig" => (431, 431),
+        "fsmount" => (432, 432),
+        "fspick" => (433, 433),
+        "clone3" => (435, 435),
+        "mount_setattr" => (442, 442),
+        "clone" => (56, 220),
         "ioctl" => (16, 29),
         _ => return None,
     };
@@ -263,15 +291,29 @@ pub struct SockFilter {
 const BPF_LD_W_ABS: u16 = 0x20;
 const BPF_JEQ_K: u16 = 0x15;
 const BPF_JGE_K: u16 = 0x35;
+const BPF_JSET_K: u16 = 0x45;
 const BPF_RET_K: u16 = 0x06;
 const SECCOMP_RET_ALLOW: u32 = 0x7fff_0000;
 const SECCOMP_RET_KILL_PROCESS: u32 = 0x8000_0000;
 const SECCOMP_RET_ERRNO: u32 = 0x0005_0000;
 const EPERM: u32 = 1;
+const ENOSYS: u32 = 38;
 const TIOCSTI: u32 = 0x5412;
 
-/// Build the seccomp filter: wrong arch → kill; each denied syscall → EPERM; `ioctl(TIOCSTI)`
-/// (terminal input injection) → EPERM; everything else allowed.
+/// Every `CLONE_NEW*` flag: `NEWTIME`, `NEWNS`, `NEWCGROUP`, `NEWUTS`, `NEWIPC`, `NEWUSER`,
+/// `NEWPID`, `NEWNET`. All of them sit in the low 32 bits of `clone`'s first argument.
+pub const CLONE_NEW_MASK: u32 = 0x0000_0080
+    | 0x0002_0000
+    | 0x0200_0000
+    | 0x0400_0000
+    | 0x0800_0000
+    | 0x1000_0000
+    | 0x2000_0000
+    | 0x4000_0000;
+
+/// Build the seccomp filter: wrong arch → kill; each denied syscall → EPERM; `clone3` →
+/// ENOSYS; `clone` with a namespace flag → EPERM; `ioctl(TIOCSTI)` (terminal input
+/// injection) → EPERM; everything else allowed.
 pub fn seccomp_program(arch: Arch) -> Vec<SockFilter> {
     let ins = |code, jt, jf, k| SockFilter { code, jt, jf, k };
     let mut p = vec![
@@ -291,6 +333,22 @@ pub fn seccomp_program(arch: Arch) -> Vec<SockFilter> {
             p.push(ins(BPF_RET_K, 0, 0, SECCOMP_RET_ERRNO | EPERM));
         }
     }
+    // clone3 passes its flags in a struct: refuse it as unknown, libc then uses clone.
+    p.push(ins(
+        BPF_JEQ_K,
+        0,
+        1,
+        syscall_nr("clone3", arch).unwrap_or(u32::MAX),
+    ));
+    p.push(ins(BPF_RET_K, 0, 0, SECCOMP_RET_ERRNO | ENOSYS));
+    // clone(flags, …): args[0] low word at offset 16. Threads and plain forks pass; a new
+    // namespace does not.
+    let clone = syscall_nr("clone", arch).unwrap_or(u32::MAX);
+    p.push(ins(BPF_JEQ_K, 0, 4, clone));
+    p.push(ins(BPF_LD_W_ABS, 0, 0, 16));
+    p.push(ins(BPF_JSET_K, 0, 1, CLONE_NEW_MASK));
+    p.push(ins(BPF_RET_K, 0, 0, SECCOMP_RET_ERRNO | EPERM));
+    p.push(ins(BPF_RET_K, 0, 0, SECCOMP_RET_ALLOW));
     // ioctl(fd, TIOCSTI, …): args[1] low word at offset 16 + 8.
     let ioctl = syscall_nr("ioctl", arch).unwrap_or(u32::MAX);
     p.push(ins(BPF_JEQ_K, 0, 3, ioctl));
@@ -345,6 +403,10 @@ pub mod ll {
     pub const SCOPE_ABSTRACT_UNIX_SOCKET: u64 = 1 << 0;
     /// ABI 6: no signals to processes outside the domain.
     pub const SCOPE_SIGNAL: u64 = 1 << 1;
+    /// ABI 4 (Linux 6.7): `bind(2)` of a TCP socket to a port.
+    pub const NET_BIND_TCP: u64 = 1 << 0;
+    /// ABI 4: `connect(2)` of a TCP socket to a port.
+    pub const NET_CONNECT_TCP: u64 = 1 << 1;
     pub const READ: u64 = EXECUTE | READ_FILE | READ_DIR;
     pub const WRITE: u64 = WRITE_FILE
         | REMOVE_DIR
@@ -356,6 +418,96 @@ pub mod ll {
         | MAKE_FIFO
         | MAKE_BLOCK
         | MAKE_SYM;
+}
+
+/// The oldest Landlock ABI the Linux sandbox runs on: 6 (Linux 6.12) scopes abstract unix
+/// sockets and signals to the box, and ABI 4 added the TCP port rules.
+pub const MIN_LANDLOCK_ABI: u32 = 6;
+
+/// The running kernel's release (`uname -r`), for messages.
+pub fn kernel_release() -> Option<String> {
+    std::fs::read_to_string("/proc/sys/kernel/osrelease")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Why a kernel with Landlock ABI `abi` (`None`: no Landlock, or it is disabled) cannot run the
+/// sandbox, or `Ok(abi)`.
+pub fn require_abi(abi: Option<u32>, kernel: Option<&str>) -> Result<u32, String> {
+    let k = kernel
+        .map(|k| format!("Linux {k}"))
+        .unwrap_or_else(|| "this kernel".to_string());
+    match abi {
+        Some(a) if a >= MIN_LANDLOCK_ABI => Ok(a),
+        Some(a) => Err(format!(
+            "the Linux sandbox needs Landlock ABI {MIN_LANDLOCK_ABI} (Linux 6.12 or newer); \
+             {k} has ABI {a}. Update the kernel, or use --isolate container"
+        )),
+        None => Err(format!(
+            "the Linux sandbox needs Landlock ABI {MIN_LANDLOCK_ABI} (Linux 6.12 or newer); \
+             Landlock is not available on {k} (too old, or not in the `lsm=` boot \
+             parameter). Update the kernel or enable Landlock, or use --isolate container"
+        )),
+    }
+}
+
+/// The Landlock ABI of the running kernel (`None` when Landlock is missing or disabled; always
+/// `None` off Linux).
+pub fn landlock_abi() -> Option<u32> {
+    #[cfg(target_os = "linux")]
+    {
+        const CREATE_RULESET: libc::c_long = 444;
+        const CREATE_RULESET_VERSION: u32 = 1;
+        // SAFETY: the version query takes a null attribute pointer and size 0.
+        let abi = unsafe {
+            libc::syscall(
+                CREATE_RULESET,
+                std::ptr::null::<u8>(),
+                0usize,
+                CREATE_RULESET_VERSION,
+            )
+        };
+        (abi >= 1).then_some(abi as u32)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
+    }
+}
+
+/// Can this kernel run the Linux sandbox (`vibeke doctor`, `sandbox status`, task start)?
+pub fn landlock_status() -> Result<u32, String> {
+    require_abi(landlock_abi(), kernel_release().as_deref())
+}
+
+/// Landlock network rules: which TCP actions are restricted and the ports allowed to bind.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LandlockNet {
+    pub handled: u64,
+    pub bind_ports: Vec<u16>,
+}
+
+/// TCP rules for `p`. A box without open network has its own network namespace: whatever it
+/// binds there is invisible to the host, so nothing is restricted. A box with open network
+/// shares the host's namespace: it may listen only on its port lease (none for plugins), so it
+/// cannot stand in for a host service. Outbound connections are not port-restricted: Landlock
+/// cannot tell a loopback destination from a remote one.
+pub fn landlock_net(p: &Policy) -> LandlockNet {
+    if !p.network_open {
+        return LandlockNet {
+            handled: 0,
+            bind_ports: vec![],
+        };
+    }
+    LandlockNet {
+        handled: ll::NET_BIND_TCP,
+        bind_ports: if p.allow_bind_localhost {
+            p.bind_ports.clone()
+        } else {
+            vec![]
+        },
+    }
 }
 
 /// What Vibeke asks Landlock for on a kernel with ABI `abi`: every filesystem right the kernel
@@ -393,17 +545,17 @@ pub fn landlock_plan(abi: u32) -> LandlockPlan {
     }
 }
 
-/// Apply Landlock rules to the current process (inner helper, after bwrap). Best effort: on a
-/// kernel without Landlock the bwrap mount namespace remains the filesystem boundary. The
-/// rights requested follow the kernel's ABI ([`landlock_plan`]).
+/// Apply Landlock rules to the current process (inner helper, after bwrap). Fails closed: a
+/// kernel below [`MIN_LANDLOCK_ABI`], a ruleset the kernel refuses or a failed
+/// `restrict_self` is an error, and the caller must not run the contained command.
 #[cfg(target_os = "linux")]
-pub fn apply_landlock(rules: &[LandlockRule]) -> std::io::Result<bool> {
+pub fn apply_landlock(rules: &[LandlockRule], net: &LandlockNet) -> Result<u32, String> {
     use std::os::unix::ffi::OsStrExt;
     const CREATE_RULESET: libc::c_long = 444;
     const ADD_RULE: libc::c_long = 445;
     const RESTRICT_SELF: libc::c_long = 446;
     const RULE_PATH_BENEATH: libc::c_int = 1;
-    const CREATE_RULESET_VERSION: u32 = 1;
+    const RULE_NET_PORT: libc::c_int = 2;
     #[repr(C)]
     struct RulesetAttr {
         handled_access_fs: u64,
@@ -415,34 +567,46 @@ pub fn apply_landlock(rules: &[LandlockRule]) -> std::io::Result<bool> {
         allowed_access: u64,
         parent_fd: i32,
     }
+    #[repr(C)]
+    struct NetPort {
+        allowed_access: u64,
+        port: u64,
+    }
+    let abi = landlock_status()?;
     // SAFETY: raw syscalls with valid pointers/sizes; fds are closed below.
     unsafe {
-        let abi = libc::syscall(
-            CREATE_RULESET,
-            std::ptr::null::<RulesetAttr>(),
-            0usize,
-            CREATE_RULESET_VERSION,
-        );
-        if abi < 1 {
-            return Ok(false);
-        }
-        let plan = landlock_plan(abi as u32);
+        let plan = landlock_plan(abi);
         let attr = RulesetAttr {
             handled_access_fs: plan.handled_fs,
-            handled_access_net: 0,
+            handled_access_net: net.handled,
             scoped: plan.scoped,
         };
-        // Older kernels reject unknown trailing fields: pass only what this ABI knows.
-        let size = if abi >= 6 {
-            std::mem::size_of::<RulesetAttr>()
-        } else {
-            std::mem::size_of::<u64>()
-        };
-        let fd = libc::syscall(CREATE_RULESET, &attr as *const RulesetAttr, size, 0u32);
+        let fd = libc::syscall(
+            CREATE_RULESET,
+            &attr as *const RulesetAttr,
+            std::mem::size_of::<RulesetAttr>(),
+            0u32,
+        );
         if fd < 0 {
-            return Ok(false);
+            return Err(format!(
+                "Landlock refused the ruleset: {}",
+                std::io::Error::last_os_error()
+            ));
         }
         let fd = fd as i32;
+        if net.handled & ll::NET_BIND_TCP != 0 {
+            for port in &net.bind_ports {
+                let np = NetPort {
+                    allowed_access: ll::NET_BIND_TCP,
+                    port: u64::from(*port),
+                };
+                if libc::syscall(ADD_RULE, fd, RULE_NET_PORT, &np as *const NetPort, 0u32) != 0 {
+                    let e = std::io::Error::last_os_error();
+                    libc::close(fd);
+                    return Err(format!("Landlock bind rule for port {port}: {e}"));
+                }
+            }
+        }
         for r in rules {
             let c = match std::ffi::CString::new(r.path.as_os_str().as_bytes()) {
                 Ok(c) => c,
@@ -472,12 +636,17 @@ pub fn apply_landlock(rules: &[LandlockRule]) -> std::io::Result<bool> {
             libc::close(pfd);
         }
         if libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 {
+            let e = std::io::Error::last_os_error();
             libc::close(fd);
-            return Err(std::io::Error::last_os_error());
+            return Err(format!("no_new_privs: {e}"));
         }
         let r = libc::syscall(RESTRICT_SELF, fd, 0u32);
+        let e = std::io::Error::last_os_error();
         libc::close(fd);
-        Ok(r == 0)
+        if r != 0 {
+            return Err(format!("Landlock restrict_self: {e}"));
+        }
+        Ok(abi)
     }
 }
 
@@ -618,7 +787,7 @@ mod tests {
             assert_eq!(p[i + 1].k, SECCOMP_RET_ERRNO | EPERM);
             // Every jump target stays inside the program.
             for (n, x) in p.iter().enumerate() {
-                if x.code == BPF_JEQ_K || x.code == BPF_JGE_K {
+                if x.code == BPF_JEQ_K || x.code == BPF_JGE_K || x.code == BPF_JSET_K {
                     assert!(n + 1 + (x.jt.max(x.jf) as usize) < p.len());
                 }
             }
@@ -627,6 +796,115 @@ mod tests {
         }
         for n in SECCOMP_DENY {
             assert!(syscall_nr(n, Arch::X86_64).is_some(), "{n}");
+            assert!(syscall_nr(n, Arch::Aarch64).is_some(), "{n}");
         }
+    }
+
+    /// Run the classic-BPF program on a syscall (a tiny interpreter for the instructions the
+    /// generator emits) and return the action.
+    fn eval(p: &[SockFilter], arch: Arch, nr: u32, args: [u64; 2]) -> u32 {
+        let mut data = vec![0u8; 64];
+        data[0..4].copy_from_slice(&nr.to_le_bytes());
+        data[4..8].copy_from_slice(&arch.audit().to_le_bytes());
+        data[16..24].copy_from_slice(&args[0].to_le_bytes());
+        data[24..32].copy_from_slice(&args[1].to_le_bytes());
+        let (mut a, mut pc) = (0u32, 0usize);
+        loop {
+            let i = p[pc];
+            pc += 1;
+            match i.code {
+                BPF_LD_W_ABS => {
+                    let k = i.k as usize;
+                    a = u32::from_le_bytes(data[k..k + 4].try_into().unwrap());
+                }
+                BPF_JEQ_K => pc += usize::from(if a == i.k { i.jt } else { i.jf }),
+                BPF_JGE_K => pc += usize::from(if a >= i.k { i.jt } else { i.jf }),
+                BPF_JSET_K => pc += usize::from(if a & i.k != 0 { i.jt } else { i.jf }),
+                BPF_RET_K => return i.k,
+                c => panic!("unexpected opcode {c:#x}"),
+            }
+        }
+    }
+
+    #[test]
+    fn seccomp_refuses_namespaces_and_the_mount_api() {
+        for arch in [Arch::X86_64, Arch::Aarch64] {
+            let p = seccomp_program(arch);
+            let nr = |n: &str| syscall_nr(n, arch).unwrap();
+            let deny = SECCOMP_RET_ERRNO | EPERM;
+            // Threads and forks pass (CLONE_VM | CLONE_THREAD…, SIGCHLD).
+            assert_eq!(
+                eval(&p, arch, nr("clone"), [0x3d0f00, 0]),
+                SECCOMP_RET_ALLOW
+            );
+            assert_eq!(eval(&p, arch, nr("clone"), [17, 0]), SECCOMP_RET_ALLOW);
+            // Any namespace flag is refused.
+            for flag in [0x80u64, 0x2_0000, 0x1000_0000, 0x4000_0000, 0x2000_0000] {
+                assert_eq!(
+                    eval(&p, arch, nr("clone"), [flag | 17, 0]),
+                    deny,
+                    "{flag:#x}"
+                );
+            }
+            assert_eq!(
+                eval(&p, arch, nr("clone3"), [0, 0]),
+                SECCOMP_RET_ERRNO | ENOSYS
+            );
+            for n in [
+                "open_tree",
+                "move_mount",
+                "fsopen",
+                "fsconfig",
+                "fsmount",
+                "fspick",
+                "mount_setattr",
+                "pivot_root",
+                "unshare",
+            ] {
+                assert_eq!(eval(&p, arch, nr(n), [0, 0]), deny, "{n}");
+            }
+            // TIOCSTI is still refused after the clone block; other ioctls pass.
+            assert_eq!(eval(&p, arch, nr("ioctl"), [0, TIOCSTI as u64]), deny);
+            assert_eq!(eval(&p, arch, nr("ioctl"), [0, 0x5401]), SECCOMP_RET_ALLOW);
+            // An ordinary syscall passes.
+            assert_eq!(eval(&p, arch, 0, [0, 0]), SECCOMP_RET_ALLOW);
+        }
+    }
+
+    #[test]
+    fn old_kernels_are_refused_with_the_requirement_named() {
+        assert_eq!(require_abi(Some(6), Some("6.12.1")), Ok(6));
+        assert_eq!(require_abi(Some(7), None), Ok(7));
+        let e = require_abi(Some(5), Some("6.10.3")).unwrap_err();
+        assert!(
+            e.contains("Linux 6.12") && e.contains("6.10.3") && e.contains("ABI 5"),
+            "{e}"
+        );
+        let e = require_abi(None, Some("5.15.0")).unwrap_err();
+        assert!(
+            e.contains("Linux 6.12") && e.contains("not available"),
+            "{e}"
+        );
+        assert!(e.contains("--isolate container"), "{e}");
+    }
+
+    #[test]
+    fn landlock_net_limits_binds_only_in_the_shared_namespace() {
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path().canonicalize().unwrap();
+        // Proxy mode: own network namespace, nothing to restrict.
+        let pol = Policy::from_spec(&spec(&root));
+        assert_eq!(landlock_net(&pol).handled, 0);
+        // Open network: binds limited to the lease.
+        let mut s = spec(&root);
+        s.network = crate::policy::NetMode::Open;
+        let n = landlock_net(&Policy::from_spec(&s));
+        assert_eq!(n.handled, ll::NET_BIND_TCP);
+        assert_eq!(n.bind_ports, [20000]);
+        // A plugin (no binds at all).
+        s.allow_bind_localhost = false;
+        let n = landlock_net(&Policy::from_spec(&s));
+        assert_eq!(n.handled, ll::NET_BIND_TCP);
+        assert!(n.bind_ports.is_empty());
     }
 }
