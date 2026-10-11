@@ -911,6 +911,8 @@ fn plugin_panes_audit_events_and_redacted_logs() {
     );
     assert_eq!(opened["plugin_pane"]["entrypoint"], "viewer", "{opened}");
     let vp = s(&opened["plugin_pane"]["pane"]["pane_id"]);
+    // Herdr labels every plugin pane with the manifest pane title.
+    assert_eq!(opened["plugin_pane"]["pane"]["label"], "Viewer", "{opened}");
     assert!(vp.starts_with("w") && vp != pane, "{opened}");
     wait_for("viewer pane callback", 15000, || {
         read(&st.join("viewer-pane.json")).contains("pane_current")
@@ -985,6 +987,13 @@ fn plugin_panes_audit_events_and_redacted_logs() {
     }
     let r = call(with(json!({"env": {"BAD=KEY": "x"}})));
     assert_eq!(r["error"]["code"], "invalid_env", "{r}");
+    // A tab placement labels the pane too (the tab itself stays unnamed).
+    let r = call(with(json!({"placement": "tab"})));
+    assert_eq!(r["result"]["type"], "plugin_pane_opened", "{r}");
+    assert_eq!(r["result"]["plugin_pane"]["pane"]["label"], "Viewer", "{r}");
+    let tp = s(&r["result"]["plugin_pane"]["pane"]["pane_id"]);
+    let g = s_.herdr(&["pane", "get", &tp]);
+    assert_eq!(g["pane"]["label"], "Viewer", "{g}");
     let _ = std::fs::remove_file(st.join("viewer-env.txt"));
     let r = call(with(json!({
         "target_pane_id": pane,

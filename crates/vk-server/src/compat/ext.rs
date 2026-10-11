@@ -1532,14 +1532,32 @@ async fn plugin_pane_open(
         }
         "tab" => {
             let ws = tab_ws.map(|w| w.id.clone()).unwrap_or_default();
-            native(
+            // Herdr leaves the tab unnamed and labels the pane with the manifest title.
+            let r = native(
                 server,
                 caller,
                 "tab.create",
-                json!({"workspace": ws, "cwd": cwd, "command": argv, "title": decl.title, "focus": focus}),
+                json!({"workspace": ws, "cwd": cwd, "command": argv, "focus": focus}),
             )
             .await
-            .map(|r| r["root_pane"]["id"].as_str().unwrap_or_default().to_string())
+            .map(|r| {
+                r["root_pane"]["id"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string()
+            });
+            if let Ok(id) = &r
+                && !id.is_empty()
+            {
+                native(
+                    server,
+                    caller,
+                    "pane.rename",
+                    json!({"pane": id, "title": decl.title}),
+                )
+                .await?;
+            }
+            r
         }
         _ => {
             let t = target

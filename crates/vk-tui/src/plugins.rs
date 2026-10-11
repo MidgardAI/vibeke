@@ -3,8 +3,8 @@
 //! - **Popups and overlays.** `plugin.pane.open {placement: popup|overlay}` starts the plugin's
 //!   command in a floating pane whose `created_by` carries a [`PluginSurface`] tag. A popup is
 //!   drawn as a session-modal window (centred, sized from the manifest/request `width`/`height`
-//!   in cells or `%`, default 80%×80%): it holds the keyboard focus, keys go to its terminal
-//!   (direct bindings and prefix actions are suspended, `prefix prefix` still passes the prefix
+//!   in cells or `%`, default half the area, as in Herdr): it holds the keyboard focus, keys go
+//!   to its terminal (direct bindings and prefix actions are suspended, `prefix prefix` still passes the prefix
 //!   through), clicks outside it are ignored. An overlay is a full-area layer over the current
 //!   tab with a one-row header; nothing under it is drawn, hit or sized. Both close when their
 //!   command exits; `esc` after the exit, `prefix+x`/`prefix+esc` on a popup and `close_pane` on
@@ -34,7 +34,6 @@
 //!   `pane.scroll_changed`.
 
 use crate::app::{App, Mode, Pending, Popup, RpcErr};
-use crate::floats::{MIN_H, MIN_W, inner_rect};
 use crate::screen::{Grid, Rect as SRect};
 use crate::time::{Duration, Instant};
 use serde_json::{Value, json};
@@ -51,8 +50,6 @@ pub const SCROLL_FEATURE: &str = "scroll_report";
 const SCROLL_MIN_INTERVAL: Duration = Duration::from_millis(150);
 /// At most one pull of focus back to an open popup per this interval.
 const REFOCUS_EVERY: Duration = Duration::from_millis(500);
-/// Popup size when the manifest and the request give none.
-const POPUP_DEFAULT_PCT: f32 = 80.0;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct PluginAction {
@@ -393,18 +390,9 @@ pub fn geometry(info: &PluginSurface, area: Rect) -> Option<(Rect, Rect)> {
             Some((area, inner))
         }
         SurfaceKind::Popup => {
-            if area.w < MIN_W || area.h < MIN_H {
-                return None;
-            }
-            let w = PluginSurface::cells(&info.width, area.w, POPUP_DEFAULT_PCT, MIN_W);
-            let h = PluginSurface::cells(&info.height, area.h, POPUP_DEFAULT_PCT, MIN_H);
-            let outer = Rect {
-                x: area.x + (area.w - w) / 2,
-                y: area.y + (area.h - h) / 2,
-                w,
-                h,
-            };
-            Some((outer, inner_rect(outer)))
+            let g = info.popup_geometry((area.x, area.y, area.w, area.h))?;
+            let r = |(x, y, w, h): (u16, u16, u16, u16)| Rect { x, y, w, h };
+            Some((r(g.outer), r(g.inner)))
         }
     }
 }

@@ -248,21 +248,54 @@ impl PluginSurface {
         self.kind == SurfaceKind::Popup
     }
 
-    /// One dimension in cells: `"80%"` of `total`, `"64"` cells, or `default_pct` percent when
-    /// empty/unparseable; at least `min`, at most `total`.
-    pub fn cells(spec: &str, total: u16, default_pct: f32, min: u16) -> u16 {
-        let s = spec.trim();
-        let v = if let Some(p) = s.strip_suffix('%') {
-            p.trim()
-                .parse::<f32>()
-                .ok()
-                .map(|p| (p.clamp(0.0, 100.0) / 100.0 * total as f32).round() as u16)
-        } else {
-            s.parse::<u16>().ok()
-        };
-        let v = v.unwrap_or_else(|| (default_pct / 100.0 * total as f32).round() as u16);
-        v.clamp(min.min(total), total)
+    /// The popup window and its terminal area inside `area` (`x`, `y`, `w`, `h`), by Herdr's
+    /// `resolve_popup_geometry`: an unset or invalid dimension is half the area, every
+    /// dimension is at least 6 columns by 4 rows and at most the area, and the window is
+    /// centred. The terminal sits inside a one-cell frame and loses one more column when it
+    /// is wider than four. `None` when the area cannot hold a popup. This is the one place
+    /// that sizes plugin popups; every client calls it.
+    pub fn popup_geometry(&self, area: (u16, u16, u16, u16)) -> Option<PopupGeometry> {
+        let (ax, ay, aw, ah) = area;
+        let w = Self::popup_dimension(&self.width, aw, 6);
+        let h = Self::popup_dimension(&self.height, ah, 4);
+        if w < 6 || h < 4 {
+            return None;
+        }
+        let x = ax + aw.saturating_sub(w) / 2;
+        let y = ay + ah.saturating_sub(h) / 2;
+        let inner_w = w.saturating_sub(2);
+        let inner_h = h.saturating_sub(2);
+        let cols = if inner_w <= 4 { inner_w } else { inner_w - 1 };
+        Some(PopupGeometry {
+            outer: (x, y, w, h),
+            inner: (x.saturating_add(1), y.saturating_add(1), cols, inner_h),
+        })
     }
+
+    /// One outer popup dimension: `"80%"` of `total` (1 to 100, rounded down), `"64"` cells,
+    /// or half of `total` when empty or invalid; at least `min` and at most `total`.
+    fn popup_dimension(spec: &str, total: u16, min: u16) -> u16 {
+        let spec = spec.trim();
+        let parsed = match spec.strip_suffix('%') {
+            Some(p) => p
+                .parse::<u8>()
+                .ok()
+                .filter(|p| (1..=100).contains(p))
+                .map(|p| (u32::from(total) * u32::from(p) / 100) as u16),
+            None => spec.parse::<u16>().ok(),
+        };
+        parsed
+            .unwrap_or_else(|| (total / 2).max(min))
+            .max(min)
+            .min(total)
+    }
+}
+
+/// A resolved plugin popup: the window and its terminal area as `(x, y, w, h)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PopupGeometry {
+    pub outer: (u16, u16, u16, u16),
+    pub inner: (u16, u16, u16, u16),
 }
 
 /// Persisted state of a browser pane (06 B3.2 "Lifecycle"). The pane lives in the layout of
@@ -986,11 +1019,55 @@ mod tests {
         let o = PluginSurface::parse("plugin-surface:overlay:::a.b/c").unwrap();
         assert_eq!(o.kind, SurfaceKind::Overlay);
         assert!(!o.is_popup() && o.width.is_empty());
-        assert_eq!(PluginSurface::cells("80%", 100, 50.0, 4), 80);
-        assert_eq!(PluginSurface::cells("20", 100, 50.0, 4), 20);
-        assert_eq!(PluginSurface::cells("500", 100, 50.0, 4), 100);
-        assert_eq!(PluginSurface::cells("", 100, 50.0, 4), 50);
-        assert_eq!(PluginSurface::cells("1", 100, 50.0, 4), 4);
-        assert_eq!(PluginSurface::cells("x%", 10, 80.0, 4), 8);
+    }
+
+    fn popup(w: &str, h: &str) -> PluginSurface {
+        PluginSurface::parse(&format!("plugin-surface:popup:{w}:{h}:a/b")).unwrap()
+    }
+
+    // Herdr's `popup_size.rs` cases.
+    #[test]
+    fn popup_geometry_resolves_requested_outer_size_and_inner_area() {
+        let g = popup("80%", "40%").popup_geometry((0, 0, 100, 30)).unwrap();
+        assert_eq!(g.outer, (10, 9, 80, 12));
+        assert_eq!(g.inner, (11, 10, 77, 10));
+    }
+
+    #[test]
+    fn popup_geometry_allows_the_full_area() {
+        let g = popup("100%", "100%")
+            .popup_geometry((4, 2, 100, 30))
+            .unwrap();
+        assert_eq!(g.outer, (4, 2, 100, 30));
+        assert_eq!(g.inner, (5, 3, 97, 28));
+    }
+
+    #[test]
+    fn popup_geometry_enforces_the_minimum_size() {
+        let g = popup("4", "").popup_geometry((0, 0, 80, 24)).unwrap();
+        assert_eq!(g.outer.2, 6);
+        assert_eq!(g.inner.2, 4);
+        assert!(popup("", "").popup_geometry((0, 0, 5, 24)).is_none());
+        assert!(popup("", "").popup_geometry((0, 0, 80, 3)).is_none());
+    }
+
+    #[test]
+    fn popup_geometry_defaults_to_half_the_area() {
+        let g = popup("", "").popup_geometry((0, 0, 100, 40)).unwrap();
+        assert_eq!(g.outer, (25, 10, 50, 20));
+        // Odd sizes round down; tiny areas still get the minimum.
+        let g = popup("", "").popup_geometry((0, 0, 11, 7)).unwrap();
+        assert_eq!((g.outer.2, g.outer.3), (6, 4));
+    }
+
+    #[test]
+    fn popup_geometry_parses_and_clamps_sizes() {
+        let a = (0, 0, 100, 40);
+        assert_eq!(popup("20", "10").popup_geometry(a).unwrap().outer.2, 20);
+        assert_eq!(popup("500", "500").popup_geometry(a).unwrap().outer, a);
+        // Percentages round down; 0%, 101% and junk fall back to the default.
+        assert_eq!(popup("33%", "").popup_geometry(a).unwrap().outer.2, 33);
+        assert_eq!(popup("0%", "x%").popup_geometry(a).unwrap().outer.2, 50);
+        assert_eq!(popup("101%", "x").popup_geometry(a).unwrap().outer.3, 20);
     }
 }
