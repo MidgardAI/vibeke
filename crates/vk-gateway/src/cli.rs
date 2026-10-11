@@ -509,6 +509,7 @@ pub async fn run_as<I: IntoIterator<Item = String>>(prog: &'static str, args: I)
                 limit,
                 label,
                 owner: None,
+                created_by: None,
             };
             let (_, link) = pair::create_with(
                 &state,
@@ -563,20 +564,13 @@ pub async fn run_as<I: IntoIterator<Item = String>>(prog: &'static str, args: I)
                 println!("Invitation cancelled.");
                 return Ok(());
             }
-            let _lock = state.lock()?;
-            let mut all = state.devices()?;
-            let removed: Vec<String> = all
-                .iter()
-                .filter(|d| d.id == device || d.name == device)
-                .map(|d| d.id.clone())
-                .collect();
-            if removed.is_empty() {
+            let lock = state.lock()?;
+            let (c, _) = state.revoke_cascade(&lock, &[device.clone()], "cli")?;
+            if c.devices.is_empty() {
                 bail!("no device or pending invitation {device}");
             }
-            all.retain(|d| !removed.contains(&d.id));
-            state.save_devices(&all)?;
-            for id in &removed {
-                state.audit(&serde_json::json!({"ts": crate::state::now_s(), "event": "device.revoked", "device": id, "by": "cli"}));
+            if let Some(also) = c.summary() {
+                println!("{}", also.replace("This also removes", "Also removed"));
             }
             println!("Revoked. A running gateway disconnects it within 5 s.");
             Ok(())
@@ -1203,6 +1197,7 @@ mod tests {
             limit,
             peer: None,
             supports_clear: false,
+            created_by: None,
         }
     }
 
@@ -1420,6 +1415,7 @@ mod tests {
                 limit: None,
                 label: Some("for Kari".into()),
                 owner: None,
+                created_by: None,
             }),
             created_at: now,
         }];
@@ -1469,6 +1465,7 @@ mod tests {
                 expires_at: None,
                 ticket: None,
                 ticket_exp: None,
+                created_by: None,
             }],
             0,
         );

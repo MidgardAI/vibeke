@@ -142,6 +142,7 @@ async fn gateway(
         limit: None,
         peer: None,
         supports_clear: false,
+        created_by: None,
     };
     gw.add_device(owner.clone()).unwrap();
     tokio::spawn(vk_gateway::run(gw.clone()));

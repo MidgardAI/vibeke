@@ -1954,16 +1954,25 @@ pub fn devices_list_as(gw: &Arc<Gateway>, device: &Device) -> ApiResult {
     // Another process (`vibeke-gateway revoke`, a claim) may have changed the registry.
     let _ = gw.reload_devices();
     let me = &device.id;
-    let list: Vec<Value> = gw
-        .devices()
+    let devices = gw.devices();
+    let pairings = gw.state.pairings();
+    let peers = gw.state.peers().unwrap_or_default();
+    // `also`: what revoking this device takes with it (counts; see `state::Cascade`).
+    let list: Vec<Value> = devices
         .iter()
-        .map(|d| json!({"id": d.id, "name": d.name, "platform": d.platform, "scope": d.scope, "paired_at": d.paired_at, "fingerprint": d.fingerprint(), "push": !d.push.is_empty(), "this": &d.id == me, "kind": d.kind, "expires_at": d.expires_at, "limit": d.limit, "peer": d.peer}))
+        .map(|d| {
+            let also = crate::state::Cascade::of(std::slice::from_ref(&d.id), &devices, &pairings, &peers);
+            json!({"id": d.id, "name": d.name, "platform": d.platform, "scope": d.scope, "paired_at": d.paired_at, "fingerprint": d.fingerprint(), "push": !d.push.is_empty(), "this": &d.id == me, "kind": d.kind, "expires_at": d.expires_at, "limit": d.limit, "peer": d.peer, "created_by": d.created_by, "also": also.also_json()})
+        })
         .collect();
     Ok(json!({"devices": list}))
 }
 
-/// `devices.revoke {device}`, for the app API and the server bridge. A device never revokes
-/// itself here.
+/// `devices.revoke {device, dry_run?}`, for the app API and the server bridge. A device never
+/// revokes itself here. Revoking also revokes what the device created (its shares, peer
+/// devices, pending invitations and redeemed peers). The result says what went:
+/// `{revoked: [ids], also: {shares, hosts, invitations, peers}, summary?}`. With `dry_run` nothing
+/// changes and the result says what would go, so a client can show it in its confirmation.
 pub async fn devices_revoke_as(gw: &Arc<Gateway>, device: &Device, p: &Value) -> ApiResult {
     let id = req(p, "device")?;
     if id == device.id {
@@ -1971,8 +1980,39 @@ pub async fn devices_revoke_as(gw: &Arc<Gateway>, device: &Device, p: &Value) ->
             "a device cannot revoke itself here; use Forget host",
         ));
     }
-    gw.revoke(id).await.map_err(internal)?;
-    Ok(json!({}))
+    let c = if p.get("dry_run").and_then(Value::as_bool) == Some(true) {
+        let _ = gw.reload_devices();
+        let c = crate::state::Cascade::of(
+            &[id.to_string()],
+            &gw.devices(),
+            &gw.state.pairings(),
+            &gw.state.peers().unwrap_or_default(),
+        );
+        if c.devices.is_empty() {
+            return Err(ApiError::new("not_found", "no such device"));
+        }
+        c
+    } else {
+        let by = if device.id == crate::bridge::BY {
+            "tui"
+        } else {
+            device.id.as_str()
+        };
+        gw.revoke_by(id, by).await.map_err(|e| {
+            if e.to_string().contains("no such device") {
+                ApiError::new("not_found", "no such device")
+            } else {
+                internal(e)
+            }
+        })?
+    };
+    Ok(json!({"revoked": c.devices, "also": c.also_json(), "summary": c.summary()}))
+}
+
+/// Who an invitation or redeemed peer is recorded as created by: the device, or `None` for the
+/// host's owner (the server bridge's TUI identity).
+pub fn creator(device: &Device) -> Option<String> {
+    (device.id != crate::bridge::BY).then(|| device.id.clone())
 }
 
 /// `share.create` for the server bridge (`gateway.call`): the same code as the app API.
@@ -2027,6 +2067,7 @@ impl Call<'_> {
             limit,
             label,
             owner: None,
+            created_by: creator(self.device),
         };
         let (pairing, link) = crate::pair::create_with(
             &self.gw.state,
@@ -2647,6 +2688,7 @@ mod workspace_tests {
             limit,
             peer: None,
             supports_clear: false,
+            created_by: None,
         }
     }
 

@@ -228,25 +228,27 @@ impl Gateway {
         Ok(())
     }
 
-    pub async fn revoke(&self, id: &str) -> Result<()> {
-        let _lock = self.state.lock()?;
-        let mut all = self.state.devices()?;
-        let removed: Vec<String> = all
-            .iter()
-            .filter(|d| d.id == id || d.name == id)
-            .map(|d| d.id.clone())
-            .collect();
-        anyhow::ensure!(!removed.is_empty(), "no such device");
-        all.retain(|d| !removed.contains(&d.id));
-        self.state.save_devices(&all)?;
+    pub async fn revoke(&self, id: &str) -> Result<state::Cascade> {
+        self.revoke_by(id, "api").await
+    }
+
+    /// Revoke a device by id or name, and everything it created ([`state::Cascade`]): the
+    /// shares and peer devices its invitations produced, its pending invitations and the peers
+    /// it redeemed. Every revoked device is disconnected and its relay ticket revoked.
+    pub async fn revoke_by(&self, id: &str, by: &str) -> Result<state::Cascade> {
+        let lock = self.state.lock()?;
+        let (c, all) = self.state.revoke_cascade(&lock, &[id.to_string()], by)?;
+        anyhow::ensure!(!c.devices.is_empty(), "no such device");
         *self.devices.write().unwrap() = all;
-        for r in &removed {
-            self.state
-                .audit(&json!({"ts": state::now_s(), "event": "device.revoked", "device": r}));
+        drop(lock);
+        for r in &c.devices {
             self.disconnect(r);
             self.revoke_ticket(r);
         }
-        Ok(())
+        if !c.peers.is_empty() {
+            crate::handoff_send::publish_peers(self, false).await;
+        }
+        Ok(c)
     }
 
     /// Install (or clear) the sender for the live relay control socket.

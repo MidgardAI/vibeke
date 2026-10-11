@@ -123,6 +123,10 @@ pub struct Device {
     /// (`push.subscribe {supports_clear}`); only such devices are sent one.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub supports_clear: bool,
+    /// The device whose invitation produced this one (a share or peer a paired phone created).
+    /// `None` when the owner created it (terminal, TUI). Revoking the creator revokes this too.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_by: Option<String>,
 }
 
 /// Who a `peer` device is (spec 16 §15.3).
@@ -174,6 +178,10 @@ pub struct PeerRecord {
     pub ticket: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ticket_exp: Option<u64>,
+    /// The device that redeemed this invitation through the app API. `None` when the owner did.
+    /// Revoking that device forgets this peer too.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_by: Option<String>,
 }
 
 impl PeerRecord {
@@ -217,6 +225,10 @@ pub struct ShareSpec {
     /// `peer` invitations: `self` for the owner's own hosts. Absent otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner: Option<String>,
+    /// The device that created the invitation. `None` when the owner did (terminal, TUI).
+    /// Revoking that device cancels the invitation and revokes the device it produced.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_by: Option<String>,
 }
 
 impl ShareSpec {
@@ -241,6 +253,102 @@ impl Device {
             .map(|k| vk_e2e::keys::fingerprint(&k))
             .unwrap_or_default()
     }
+}
+
+/// What revoking some devices takes with it: everything those devices created, transitively (a
+/// phone's shares and peer invitations, and whatever a device they produced created in turn).
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Cascade {
+    /// Device ids to revoke: the roots that exist, then what they created.
+    pub devices: Vec<String>,
+    /// Of those, the devices beyond the roots, by kind (`share`, `peer`, …).
+    pub created: Vec<(String, String)>,
+    /// Pending or claimed invitations (pairing ids) a revoked device created.
+    pub invitations: Vec<String>,
+    /// Peer records (hosts this one hands work to) a revoked device redeemed.
+    pub peers: Vec<String>,
+}
+
+impl Cascade {
+    /// Compute the cascade of revoking `roots` (ids or names) without changing anything.
+    pub fn of(
+        roots: &[String],
+        devices: &[Device],
+        pairings: &[Pairing],
+        peers: &[PeerRecord],
+    ) -> Cascade {
+        let mut c = Cascade::default();
+        for d in devices {
+            if roots.iter().any(|r| *r == d.id || *r == d.name) && !c.devices.contains(&d.id) {
+                c.devices.push(d.id.clone());
+            }
+        }
+        if c.devices.is_empty() {
+            return c;
+        }
+        // A fixed point: each round adds the devices created by one already in the set.
+        loop {
+            let more: Vec<&Device> = devices
+                .iter()
+                .filter(|d| !c.devices.contains(&d.id))
+                .filter(|d| d.created_by.as_ref().is_some_and(|b| c.devices.contains(b)))
+                .collect();
+            if more.is_empty() {
+                break;
+            }
+            for d in more {
+                c.devices.push(d.id.clone());
+                c.created.push((d.id.clone(), d.kind.clone()));
+            }
+        }
+        let by_revoked = |b: &Option<String>| b.as_ref().is_some_and(|b| c.devices.contains(b));
+        c.invitations = pairings
+            .iter()
+            .filter(|p| !matches!(p.status, PairingStatus::Done { .. }))
+            .filter(|p| by_revoked(&p.share.as_ref().and_then(|s| s.created_by.clone())))
+            .map(|p| p.pid.clone())
+            .collect();
+        c.peers = peers
+            .iter()
+            .filter(|p| by_revoked(&p.created_by))
+            .map(|p| p.id.clone())
+            .collect();
+        c
+    }
+
+    /// Counts for the API: `{shares, hosts, invitations, peers}` beyond the roots.
+    pub fn also_json(&self) -> serde_json::Value {
+        let shares = self.created.iter().filter(|(_, k)| k != "peer").count();
+        let hosts = self.created.len() - shares;
+        serde_json::json!({"shares": shares, "hosts": hosts, "invitations": self.invitations.len(), "peers": self.peers.len()})
+    }
+
+    /// "This also removes 2 shares and 1 invitation." or `None` when nothing else goes.
+    pub fn summary(&self) -> Option<String> {
+        also_text(&self.also_json())
+    }
+}
+
+/// The sentence for a [`Cascade::also_json`] object (also used by clients that only have the
+/// counts): "This also removes 2 shares, 1 linked host and 1 invitation."
+pub fn also_text(also: &serde_json::Value) -> Option<String> {
+    let n = |k: &str| also.get(k).and_then(|v| v.as_u64()).unwrap_or(0);
+    let hosts = n("hosts") + n("peers");
+    let parts: Vec<String> = [
+        (n("shares"), "share", "shares"),
+        (hosts, "linked host", "linked hosts"),
+        (n("invitations"), "invitation", "invitations"),
+    ]
+    .into_iter()
+    .filter(|(c, _, _)| *c > 0)
+    .map(|(c, one, many)| format!("{c} {}", if c == 1 { one } else { many }))
+    .collect();
+    let list = match parts.as_slice() {
+        [] => return None,
+        [one] => one.clone(),
+        [init @ .., last] => format!("{} and {last}", init.join(", ")),
+    };
+    Some(format!("This also removes {list}."))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -468,6 +576,45 @@ impl StateDir {
             }
         }
         Ok((all, gone))
+    }
+
+    /// Revoke the devices `ids` and everything they created, transitively ([`Cascade`]): the
+    /// devices their invitations produced, their pending invitations and the peers they
+    /// redeemed. The caller holds the registry lock. Returns what was removed and the devices
+    /// that remain. Nothing is written when `ids` names no device.
+    pub fn revoke_cascade(
+        &self,
+        _lock: &RegistryLock,
+        ids: &[String],
+        by: &str,
+    ) -> Result<(Cascade, Vec<Device>)> {
+        let mut devices = self.devices()?;
+        let pairings = self.pairings();
+        let mut peers = self.peers()?;
+        let c = Cascade::of(ids, &devices, &pairings, &peers);
+        if c.devices.is_empty() {
+            return Ok((c, devices));
+        }
+        devices.retain(|d| !c.devices.contains(&d.id));
+        self.save_devices(&devices)?;
+        if !c.peers.is_empty() {
+            peers.retain(|p| !c.peers.contains(&p.id));
+            self.save_peers(&peers)?;
+        }
+        for pid in &c.invitations {
+            let _ = self.remove_pairing(pid);
+        }
+        for id in &c.devices {
+            let cause = (!ids.contains(id)).then_some("creator_revoked");
+            self.audit(&serde_json::json!({"ts": now_s(), "event": "device.revoked", "device": id, "by": by, "cause": cause}));
+        }
+        for pid in &c.invitations {
+            self.audit(&serde_json::json!({"ts": now_s(), "event": "invitation.cancelled", "pid": pid, "by": by, "cause": "creator_revoked"}));
+        }
+        for id in &c.peers {
+            self.audit(&serde_json::json!({"ts": now_s(), "event": "peer.removed", "peer": id, "by": by, "cause": "creator_revoked"}));
+        }
+        Ok((c, devices))
     }
 
     /// Hosts this gateway can hand work to (`peers.json`, 0600: it holds private keys).
@@ -807,6 +954,151 @@ mod tests {
         assert_eq!(s.pairings().len(), 1);
     }
 
+    fn dev(id: &str, kind: &str, by: Option<&str>) -> Device {
+        let mut d: Device = serde_json::from_value(serde_json::json!({
+            "id": id, "name": format!("n-{id}"), "public": format!("k-{id}"), "scope": "full",
+            "paired_at": 0, "kind": kind,
+        }))
+        .unwrap();
+        d.created_by = by.map(str::to_string);
+        d
+    }
+
+    fn invitation(pid: &str, by: Option<&str>, status: PairingStatus) -> Pairing {
+        Pairing {
+            pid: pid.into(),
+            psk: "x".into(),
+            exp: now_s() + 600,
+            scope: Scope::View,
+            name: None,
+            no_confirm: true,
+            status,
+            confirmed: None,
+            confirmed_claim: None,
+            share: Some(ShareSpec {
+                kind: "share".into(),
+                ttl_s: 3600,
+                until: now_s() + 3600,
+                limit: None,
+                label: None,
+                owner: None,
+                created_by: by.map(str::to_string),
+            }),
+            created_at: now_s(),
+        }
+    }
+
+    fn peer_rec(id: &str, by: Option<&str>) -> PeerRecord {
+        PeerRecord {
+            id: id.into(),
+            name: id.into(),
+            relay: "wss://r".into(),
+            host: format!("h-{id}"),
+            host_key: "hk".into(),
+            device_key: "k".into(),
+            device_id: "d".into(),
+            owner: "self".into(),
+            added_at: 0,
+            expires_at: None,
+            ticket: None,
+            ticket_exp: None,
+            created_by: by.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn revoking_a_device_revokes_what_it_created() {
+        let devices = vec![
+            dev("phone", "device", None),
+            dev("tablet", "device", None),
+            dev("s1", "share", Some("phone")),
+            dev("s2", "share", Some("phone")),
+            dev("h1", "peer", Some("phone")),
+            dev("s3", "share", Some("tablet")),
+            dev("owner-share", "share", None),
+        ];
+        let pairings = vec![
+            invitation("i1", Some("phone"), PairingStatus::Pending),
+            invitation("i2", Some("tablet"), PairingStatus::Pending),
+            invitation(
+                "used",
+                Some("phone"),
+                PairingStatus::Done {
+                    device_id: "s1".into(),
+                },
+            ),
+        ];
+        let peers = vec![peer_rec("p1", Some("phone")), peer_rec("p2", None)];
+        let c = Cascade::of(&["phone".into()], &devices, &pairings, &peers);
+        assert_eq!(c.devices, ["phone", "s1", "s2", "h1"]);
+        assert_eq!(c.invitations, ["i1"]);
+        assert_eq!(c.peers, ["p1"]);
+        assert_eq!(
+            c.also_json(),
+            serde_json::json!({"shares": 2, "hosts": 1, "invitations": 1, "peers": 1})
+        );
+        assert_eq!(
+            c.summary().unwrap(),
+            "This also removes 2 shares, 2 linked hosts and 1 invitation."
+        );
+        // By name too; a device that created nothing takes nothing with it.
+        let c = Cascade::of(&["n-owner-share".into()], &devices, &pairings, &peers);
+        assert_eq!(c.devices, ["owner-share"]);
+        assert_eq!(c.summary(), None);
+        // Unknown ids revoke nothing, not even what an unknown id "created".
+        assert_eq!(
+            Cascade::of(&["ghost".into()], &devices, &pairings, &peers),
+            Cascade::default()
+        );
+    }
+
+    #[test]
+    fn revoke_cascade_writes_the_registry() {
+        let t = tempfile::tempdir().unwrap();
+        let s = StateDir::open(t.path().join("gw")).unwrap();
+        s.save_devices(&[
+            dev("phone", "device", None),
+            dev("s1", "share", Some("phone")),
+            dev("keep", "device", None),
+        ])
+        .unwrap();
+        s.save_pairing(&invitation("i1", Some("phone"), PairingStatus::Pending))
+            .unwrap();
+        s.save_pairing(&invitation("i2", None, PairingStatus::Pending))
+            .unwrap();
+        s.save_peers(&[peer_rec("p1", Some("phone")), peer_rec("p2", None)])
+            .unwrap();
+        let lock = s.lock().unwrap();
+        let (c, left) = s.revoke_cascade(&lock, &["phone".into()], "cli").unwrap();
+        assert_eq!(c.devices, ["phone", "s1"]);
+        assert_eq!(
+            left.iter().map(|d| d.id.as_str()).collect::<Vec<_>>(),
+            ["keep"]
+        );
+        assert_eq!(s.devices().unwrap().len(), 1);
+        assert!(s.pairing("i1").unwrap().is_none());
+        assert!(s.pairing("i2").unwrap().is_some());
+        assert_eq!(s.peers().unwrap().len(), 1);
+        assert_eq!(s.peers().unwrap()[0].id, "p2");
+        // Nothing matched: nothing written.
+        let (c, left) = s.revoke_cascade(&lock, &["ghost".into()], "cli").unwrap();
+        assert!(c.devices.is_empty());
+        assert_eq!(left.len(), 1);
+    }
+
+    #[test]
+    fn also_text_lists_counts() {
+        assert_eq!(also_text(&serde_json::json!({})), None);
+        assert_eq!(
+            also_text(&serde_json::json!({"shares": 1})).unwrap(),
+            "This also removes 1 share."
+        );
+        assert_eq!(
+            also_text(&serde_json::json!({"shares": 2, "invitations": 1})).unwrap(),
+            "This also removes 2 shares and 1 invitation."
+        );
+    }
+
     fn write_cfg(dir: &Path, text: &str) {
         fs::write(dir.join("gateway.toml"), text).unwrap();
     }
@@ -902,6 +1194,7 @@ mod tests {
             limit: None,
             peer: None,
             supports_clear: false,
+            created_by: None,
         }
     }
 
@@ -934,6 +1227,7 @@ mod tests {
             limit: None,
             label: None,
             owner: Some("self".into()),
+            created_by: None,
         };
         assert_eq!(sp.device_expiry(), None);
         sp.until = 5;
@@ -958,6 +1252,7 @@ mod tests {
             expires_at: None,
             ticket: Some("tk".into()),
             ticket_exp: None,
+            created_by: None,
         };
         s.save_peers(std::slice::from_ref(&r)).unwrap();
         let mode = fs::metadata(t.path().join("gw/peers.json")).unwrap().mode() & 0o777;

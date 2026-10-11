@@ -284,6 +284,7 @@ pub async fn claim(
         limit: current.share.as_ref().and_then(|sh| sh.limit.clone()),
         peer,
         supports_clear: false,
+        created_by: current.share.as_ref().and_then(|sh| sh.created_by.clone()),
     };
     let consumed = confirmed
         && (|| -> anyhow::Result<bool> {

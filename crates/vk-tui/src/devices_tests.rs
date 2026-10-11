@@ -1,4 +1,4 @@
-//! Devices tab tests: the list (only `kind == "device"` rows), revoke with a confirm, the scope
+//! Devices tab tests: the list (devices, then shares and linked hosts), revoke with a confirm, the scope
 //! picker, `pair.create` and the link with its QR code, polling `pair.status` (claimed, done,
 //! rejected, gone), cancelling a pending link, and the gateway's own messages. Signing in to a
 //! relay that needs an account: `account.status` before each link, the device code and its
@@ -104,7 +104,7 @@ fn pairing(app: &mut App, rxs: &mut [UnboundedReceiver<ClientFrame>]) -> String 
 }
 
 #[test]
-fn the_list_shows_only_devices() {
+fn the_list_shows_devices_then_shares_and_linked_hosts() {
     let (app, _rxs) = opened();
     let s = screen(&app);
     assert!(s.contains("Vibeke · Connections · m0"), "{s}");
@@ -112,8 +112,70 @@ fn the_list_shows_only_devices() {
     assert!(s.contains("› Pixel 8 · android · full · paired"), "{s}");
     assert!(s.contains("🔔"), "{s}");
     assert!(s.contains("iPhone · ios · view"), "{s}");
-    assert!(!s.contains("shared-pane"), "{s}");
-    assert!(!s.contains("laptop-bob"), "{s}");
+    assert!(s.contains("Shares and linked hosts"), "{s}");
+    assert!(s.contains("shared-pane · share · view"), "{s}");
+    assert!(s.contains("laptop-bob · linked host · full"), "{s}");
+    let devices = s.find("iPhone").unwrap();
+    assert!(s.find("shared-pane").unwrap() > devices, "{s}");
+}
+
+#[test]
+fn revoking_a_device_says_what_else_goes() {
+    let (mut app, mut rxs) = fleet();
+    commands(&mut rxs[0]);
+    app.action("devices", None);
+    let cmds = commands(&mut rxs[0]);
+    let (req, _) = gw(&cmds, "devices.list");
+    reply(
+        &mut app,
+        0,
+        req,
+        json!({"devices": [
+            {"id": "dev1", "name": "Pixel 8", "platform": "android", "scope": "full",
+             "paired_at": 1, "kind": "device",
+             "also": {"shares": 2, "hosts": 0, "invitations": 1, "peers": 0}},
+            {"id": "sh1", "name": "shared-pane", "scope": "view", "paired_at": 1,
+             "kind": "share", "created_by": "dev1", "expires_at": now_s() + 7200}
+        ]}),
+    );
+    let s = screen(&app);
+    assert!(s.contains("created by Pixel 8"), "{s}");
+    assert!(s.contains("ends in"), "{s}");
+    app.on_key(ch('x'));
+    let s = screen(&app);
+    assert!(s.contains("Revoke Pixel 8?"), "{s}");
+    assert!(
+        s.contains("This also removes 2 shares and 1 invitation."),
+        "{s}"
+    );
+    app.on_key(ch('y'));
+    let (req, _) = gw(&commands(&mut rxs[0]), "devices.revoke");
+    reply(
+        &mut app,
+        0,
+        req,
+        json!({"revoked": ["dev1", "sh1"], "also": {"shares": 1, "hosts": 0, "invitations": 0, "peers": 0}}),
+    );
+    assert!(screen(&app).contains("Also removed 1 share."));
+}
+
+#[test]
+fn also_text_counts() {
+    assert_eq!(also_text(&json!({"shares": 0})), None);
+    assert_eq!(
+        also_text(&json!({"hosts": 1, "peers": 1, "invitations": 3})).unwrap(),
+        "This also removes 2 linked hosts and 3 invitations."
+    );
+}
+
+#[test]
+fn scope_texts_say_what_each_level_can_do() {
+    let (mut app, _rxs) = opened();
+    app.on_key(ch('n'));
+    let s = screen(&app);
+    assert!(s.contains("can run any command as you on this host"), "{s}");
+    assert!(s.contains("always allow"), "{s}");
+    assert!(s.contains("transcripts, files and diffs"), "{s}");
 }
 
 #[test]

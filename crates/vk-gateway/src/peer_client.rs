@@ -150,6 +150,7 @@ impl PeerClient {
             expires_at,
             ticket,
             ticket_exp,
+            created_by: None,
         })
     }
 

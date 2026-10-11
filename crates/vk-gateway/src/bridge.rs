@@ -84,6 +84,7 @@ fn owner() -> Device {
         limit: None,
         peer: None,
         supports_clear: false,
+        created_by: None,
     }
 }
 
@@ -438,6 +439,75 @@ mod tests {
             .collect();
         assert_eq!(ids, ["d2"]);
         assert!(gw.state.devices().unwrap().iter().all(|d| d.id != "d1"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn revoking_a_device_revokes_its_shares() {
+        let t = tempfile::tempdir().unwrap();
+        let gw = gateway(&t, None, None);
+        gw.add_device(device("d1", "phone")).unwrap();
+        gw.add_device(Device {
+            kind: "share".into(),
+            created_by: Some("d1".into()),
+            ..device("s1", "guest")
+        })
+        .unwrap();
+        gw.add_device(device("d2", "tablet")).unwrap();
+        let list = execute(&gw, "devices.list", &json!({})).await.unwrap();
+        let phone = list["devices"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|d| d["id"] == "d1")
+            .unwrap()
+            .clone();
+        assert_eq!(phone["also"]["shares"], 1);
+        let share = list["devices"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|d| d["id"] == "s1")
+            .unwrap()
+            .clone();
+        assert_eq!(share["created_by"], "d1");
+
+        // A dry run says what would go and changes nothing.
+        let r = execute(
+            &gw,
+            "devices.revoke",
+            &json!({"device": "d1", "dry_run": true}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(r["revoked"], json!(["d1", "s1"]));
+        assert_eq!(r["summary"], "This also removes 1 share.");
+        assert_eq!(gw.state.devices().unwrap().len(), 3);
+        assert_eq!(
+            execute(
+                &gw,
+                "devices.revoke",
+                &json!({"device": "ghost", "dry_run": true})
+            )
+            .await
+            .unwrap_err()
+            .kind,
+            "not_found"
+        );
+
+        let r = execute(&gw, "devices.revoke", &json!({"device": "d1"}))
+            .await
+            .unwrap();
+        assert_eq!(r["also"]["shares"], 1);
+        let left: Vec<String> = gw
+            .state
+            .devices()
+            .unwrap()
+            .into_iter()
+            .map(|d| d.id)
+            .collect();
+        assert_eq!(left, ["d2"]);
+        let audit = std::fs::read_to_string(gw.state.dir.join("audit.log")).unwrap();
+        assert!(audit.contains("creator_revoked"), "{audit}");
     }
 
     #[tokio::test(flavor = "multi_thread")]
