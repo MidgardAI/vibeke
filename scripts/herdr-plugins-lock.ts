@@ -6,7 +6,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import {
-  BASELINE, CATALOG_URL, DEFAULT_SIZE, reduceCatalog, GO_VERSION, NODE_VERSION,
+  BASELINE, CATALOG_URL, DEFAULT_SIZE, reduceCatalog, GO_VERSION, NODE_VERSION, BUN_VERSION,
   type Catalog, type IndexEntry, type LockData, type LockedPlugin,
   diffLocks, driftReport, lockFromToml, lockedFrom, manifestPluginId, parseToml, renderLock, resolvePin, selectCandidates, sha256Hex,
 } from './herdr-plugins/lib'
@@ -87,16 +87,15 @@ for (const [i, c] of chosen.entries()) {
 }
 
 const old: LockedPlugin[] = existsSync(lockPath) ? lockFromToml(readFileSync(lockPath, 'utf8')).plugins : []
-const prevTools = existsSync(lockPath) ? lockFromToml(readFileSync(lockPath, 'utf8')).toolchains : {}
 const lock: LockData = {
   catalog: 'catalog.json',
   catalog_sha256: sha256Hex(catalogBytes),
   catalog_generated_at: catalog.generatedAt,
   size: DEFAULT_SIZE,
   toolchains: {
-    node: prevTools.node ?? NODE_VERSION,
-    bun: miseVersion('bun'),
-    go: prevTools.go ?? GO_VERSION,
+    node: NODE_VERSION,
+    bun: BUN_VERSION,
+    go: GO_VERSION,
     rust: miseVersion('rust'),
   },
   exclude,

@@ -11,10 +11,9 @@
 # The review pane shows the state of a git checkout and the agent session, so its contents are
 # compared for placement only. The plugin has no startup commands and no link handlers.
 #
-# The worktree events are triggered through `herdr worktree open <path>` and
-# `herdr worktree create <branch>`. The flag grammar of these commands is not verified in the
-# compatibility notes, so a CLI parse error on either side is a scenario problem to inspect
-# first.
+# The worktree events are triggered through `herdr worktree open --cwd <repo> --path <path>` and
+# `herdr worktree create --cwd <repo> --branch <branch>`. Herdr 0.9.3 accepts only flags for these
+# commands, and it needs `--cwd` to find the repository.
 #
 # Confirms the "layout or worktree workflow" category of spec 18 §8.5 as a second candidate
 # (the first is cloudmanic/herdr-plus), and offers a raw socket user for the last category.
@@ -107,7 +106,7 @@ kind = "invocation_final"
 id = "worktree-opened"
 kind = "event"
 event = "worktree.opened"
-cli = ["worktree", "open", "{worktree.app.feature}"]
+cli = ["worktree", "open", "--cwd", "{repo.app}", "--path", "{worktree.app.feature}"]
 timeout_ms = 60000
 [[step.expect]]
 kind = "event"
@@ -125,7 +124,7 @@ placement_only = true
 id = "worktree-created"
 kind = "event"
 event = "worktree.created"
-cli = ["worktree", "create", "review-sample"]
+cli = ["worktree", "create", "--cwd", "{repo.app}", "--branch", "review-sample"]
 timeout_ms = 60000
 [[step.expect]]
 kind = "event"

@@ -49,6 +49,7 @@ id = "start"
 kind = "action"
 action = "start"
 context = "workspace"
+known = { outcome = "not_exercised", reason = "The action installs or manages a systemd or launchd user service, and the test user has no user service manager." }
 timeout_ms = 180000
 [[step.expect]]
 kind = "invocation_final"
@@ -58,6 +59,7 @@ id = "status"
 kind = "action"
 action = "status"
 context = "workspace"
+known = { outcome = "not_exercised", reason = "The action installs or manages a systemd or launchd user service, and the test user has no user service manager." }
 [[step.expect]]
 kind = "invocation_final"
 
@@ -82,6 +84,7 @@ id = "restart"
 kind = "action"
 action = "restart"
 context = "workspace"
+known = { outcome = "not_exercised", reason = "The action installs or manages a systemd or launchd user service, and the test user has no user service manager." }
 timeout_ms = 180000
 [[step.expect]]
 kind = "invocation_final"
@@ -91,5 +94,6 @@ id = "uninstall"
 kind = "action"
 action = "uninstall"
 context = "workspace"
+known = { outcome = "not_exercised", reason = "The action installs or manages a systemd or launchd user service, and the test user has no user service manager." }
 [[step.expect]]
 kind = "invocation_final"

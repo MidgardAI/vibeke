@@ -38,7 +38,7 @@ kind = "wait"
 timeout_ms = 60000
 [[step.expect]]
 kind = "file"
-path = "{home}/.config/herdr/plugins/config/heeler/sidebar.json"
+path = "{config}/sidebar.json"
 contains = '"v":1'
 
 [[step]]

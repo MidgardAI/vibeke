@@ -7,13 +7,13 @@
 # before the plugin starts. The steps then:
 #   - open the `manager` popup and read the saved annotation,
 #   - send the annotations to the fake agent (`agent get`, `agent prompt`) and archive them,
-#   - run the paste, copy and copy-and-archive actions on the now empty store (they report
-#     "nothing to do" and need no clipboard tool),
+#   - run the paste action on the now empty store (it reports "nothing to do"),
 #   - open the manager again and read the archive,
 #   - run the document review actions, which start a separate terminal program (plannotator-tui)
 #     that opens the `doc` overlay pane.
 #
-# Not run: `capture` needs a text selection or a clipboard tool, and `last` and `last-newest`
+# Not run: `copy-context` and `copy-archive` need a clipboard tool, which Linux runners lack (see
+# the skips below). `capture` needs a text selection or a clipboard tool, and `last` and `last-newest`
 # need the saved transcript of a supported agent program. The `editor` popup opens only from
 # `capture`. See the known results and skips below.
 #
@@ -94,24 +94,6 @@ id = "paste-archive-empty"
 kind = "action"
 action = "paste-archive"
 context = "pane"
-expect_calls = [{ method = "notification.show", ok = true }]
-[[step.expect]]
-kind = "invocation_final"
-
-[[step]]
-id = "copy-context-empty"
-kind = "action"
-action = "copy-context"
-context = "global"
-expect_calls = [{ method = "notification.show", ok = true }]
-[[step.expect]]
-kind = "invocation_final"
-
-[[step]]
-id = "copy-archive-empty"
-kind = "action"
-action = "copy-archive"
-context = "global"
 expect_calls = [{ method = "notification.show", ok = true }]
 [[step.expect]]
 kind = "invocation_final"
@@ -226,3 +208,11 @@ kind = "invocation_final"
 [[skip]]
 surface = "pane:editor"
 reason = "The comment editor popup opens only from the capture action, which needs a text selection or a clipboard tool."
+
+[[skip]]
+surface = "action:copy-context"
+reason = "The action needs a clipboard tool (wl-copy, xclip or xsel) that the Linux test environment does not have. It passes on macOS with pbcopy, but a skip cannot depend on the platform, so the scenario leaves it out."
+
+[[skip]]
+surface = "action:copy-archive"
+reason = "The action needs a clipboard tool (wl-copy, xclip or xsel) that the Linux test environment does not have. It passes on macOS with pbcopy, but a skip cannot depend on the platform, so the scenario leaves it out."

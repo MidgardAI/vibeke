@@ -22,7 +22,6 @@ files = { "README.md" = "hello\n" }
 id = "viewer-pane"
 kind = "pane"
 pane = "piw"
-known = { outcome = "not_exercised", reason = "The viewer needs a workflow run id and a client from a Pi session, so the pane process exits right after it starts." }
 [[step.expect]]
 kind = "pane"
 pane = "piw"
