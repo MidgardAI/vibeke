@@ -2246,10 +2246,7 @@ impl<'a> Run<'a> {
                             at_ms: 0,
                         };
                         kind == event_type.as_str()
-                            || proj
-                                .project(&input)
-                                .iter()
-                                .any(|n| *n == event_type.as_str())
+                            || proj.project(&input).contains(&event_type.as_str())
                     })
                     .map(|ev| format!("event {event_type} (from {})", ev["type"]))
             }
@@ -2385,6 +2382,7 @@ impl<'a> Run<'a> {
 
     /// Visual comparison of one plugin pane (18 §10): placement, then contents when both sides
     /// see the same inner size, then the reference snapshot (18 §10.5).
+    #[allow(clippy::too_many_arguments)]
     fn compare(
         &self,
         step: &Step,
@@ -2393,6 +2391,7 @@ impl<'a> Run<'a> {
         deadline: Instant,
         ev: &mut Vec<String>,
         why: &mut Vec<String>,
+        herdr_missing: &mut Vec<String>,
     ) -> StepRes<GridArtifact> {
         let mut art = GridArtifact {
             pane: c.pane.clone(),
@@ -2421,17 +2420,38 @@ impl<'a> Run<'a> {
             },
         };
         let herdr = if herdr_ran { self.herdr.as_ref() } else { None };
+        // Herdr's layout, resize and capture calls take its runtime pane id, recorded when the
+        // step opened the pane; popups are found on screen and need none.
+        let popup = placement == "popup";
+        let h_id = match herdr {
+            Some(_) if popup => Some(c.pane.clone()),
+            Some(_) => {
+                let id = self.herdr_panes.get(&c.pane).cloned();
+                if id.is_none() {
+                    herdr_missing.push(format!("no Herdr pane id for {}", c.pane));
+                }
+                id
+            }
+            None => None,
+        };
+        let herdr = herdr.filter(|_| h_id.is_some());
+        let h_id = h_id.unwrap_or_default();
         if let Some(h) = herdr
-            && let Ok(rect) = h.pane_rect(&c.pane)
+            && !popup
         {
-            let h_place = Placement {
-                kind: v_place.kind.clone(),
-                rect,
-            };
-            let m = diff::placement_matches(&h_place, &v_place);
-            art.placement_matches = Some(m);
-            if !m {
-                why.push(format!("placement of {} differs from Herdr", c.pane));
+            match h.pane_rect(&h_id) {
+                Ok(rect) => {
+                    let h_place = Placement {
+                        kind: v_place.kind.clone(),
+                        rect,
+                    };
+                    let m = diff::placement_matches(&h_place, &v_place);
+                    art.placement_matches = Some(m);
+                    if !m {
+                        why.push(format!("placement of {} differs from Herdr", c.pane));
+                    }
+                }
+                Err(e) => herdr_missing.push(format!("Herdr layout of {}: {e:#}", c.pane)),
             }
         }
         let mut contents = !c.placement_only;
@@ -2444,8 +2464,9 @@ impl<'a> Run<'a> {
                 contents = false;
             }
             if let Some(h) = herdr
-                && h.resize_pane(&c.pane, size.cols, size.rows).is_err()
+                && let Err(e) = h.resize_pane(&h_id, size.cols, size.rows)
             {
+                herdr_missing.push(format!("Herdr resize of {}: {e:#}", c.pane));
                 contents = false;
             }
         }
@@ -2470,7 +2491,7 @@ impl<'a> Run<'a> {
         let mut gd: Option<GridDiff> = None;
         if let Some(h) = herdr {
             match h
-                .capture_pane(&c.pane, &placement)
+                .capture_pane(&h_id, &placement)
                 .and_then(|g| mask::apply(&g, &c.masks))
             {
                 Ok(g) => {
@@ -2488,7 +2509,7 @@ impl<'a> Run<'a> {
                     hg = Some(g);
                     gd = Some(d);
                 }
-                Err(e) => ev.push(format!("Herdr capture of {} failed: {e:#}", c.pane)),
+                Err(e) => herdr_missing.push(format!("Herdr capture of {}: {e:#}", c.pane)),
             }
         }
         let svg = render::side_by_side(
@@ -2565,7 +2586,7 @@ impl<'a> Run<'a> {
                 Err(StepErr::Harness(w)) => (SideResult::HarnessError, Some(w)),
             }
         };
-        let (herdr, herdr_reason) = if self.build_failed.is_some() {
+        let (mut herdr, mut herdr_reason) = if self.build_failed.is_some() {
             (SideResult::NotRun, Some("the Vibeke build failed".into()))
         } else {
             self.herdr_step(step, &mut ev)
@@ -2574,6 +2595,7 @@ impl<'a> Run<'a> {
         let mut vreason = vreason;
         if vibeke == SideResult::Passed {
             let mut why = Vec::new();
+            let mut herdr_missing = Vec::new();
             for c in &step.compare {
                 match self.compare(
                     step,
@@ -2582,6 +2604,7 @@ impl<'a> Run<'a> {
                     deadline,
                     &mut ev,
                     &mut why,
+                    &mut herdr_missing,
                 ) {
                     Ok(a) => grids.push(a),
                     Err(StepErr::Harness(w)) => {
@@ -2596,6 +2619,15 @@ impl<'a> Run<'a> {
                     vibeke = SideResult::Failed;
                 }
                 vreason = Some(why.join("; "));
+            }
+            // Herdr cannot count as a pass for a comparison it could not make: without its
+            // side of the evidence, a Vibeke difference stays suspected (18 §8.4).
+            if herdr == SideResult::Passed && !herdr_missing.is_empty() {
+                herdr = SideResult::NotRun;
+                herdr_reason = Some(format!(
+                    "Herdr comparison unavailable: {}",
+                    herdr_missing.join("; ")
+                ));
             }
         }
         let both_ran = matches!(herdr, SideResult::Passed | SideResult::Failed);

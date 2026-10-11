@@ -52,6 +52,7 @@ pub struct StepFacts {
 /// 3. Herdr passes and Vibeke fails: `compat_failure`. If nobody compared the dependency bytes
 ///    (`same_dependency_bytes` is `None`), the failure is only `suspected_compat_failure`.
 /// 4. Both fail: `not_exercised`, with the Herdr result as the reason.
+///
 /// Otherwise `passed`.
 ///
 /// Cases the rule does not name: Vibeke passing is `passed` whatever Herdr did, and a Vibeke
