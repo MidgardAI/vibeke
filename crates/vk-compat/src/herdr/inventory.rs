@@ -305,7 +305,7 @@ pub const ENTRIES: &[Entry] = &[
         "pane.split",
         Partial,
         "spec",
-        "splits `target_pane_id` (baseline), else `pane_id`, the invocation's pane or the focused pane; direction/cwd/focus; size params ignored",
+        "splits `target_pane_id` (baseline), else `pane_id`, the invocation's pane or the focused pane; direction/cwd/focus; Herdr's `ratio` (share of the split pane, 0.1..0.9); `env`, `workspace_id` and `right_click` are not applied (Vibeke's split takes no launch environment)",
     ),
     e(
         Method,

@@ -2260,6 +2260,16 @@ pub async fn call(
             if let Some(c) = sp(p, "cwd") {
                 np["cwd"] = json!(c);
             }
+            // Herdr's `ratio` is the share of the split pane (the first side), clamped to
+            // 0.1..0.9; Vibeke's is the new pane's share.
+            if let Some(r) = p.get("ratio").and_then(Value::as_f64) {
+                let r = if r.is_finite() {
+                    r.clamp(0.1, 0.9)
+                } else {
+                    0.5
+                };
+                np["ratio"] = json!(1.0 - r);
+            }
             let r = native(server, caller, "pane.split", np).await?;
             let sn = snap(server);
             let new = r["pane"]["id"].as_str().unwrap_or_default();
