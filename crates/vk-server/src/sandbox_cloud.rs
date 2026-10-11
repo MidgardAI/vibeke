@@ -960,8 +960,23 @@ async fn exec_session(
         let _ = input.send(In::Eof).await;
     });
     let mut out = Captured::default();
+    let too_much = || {
+        err(
+            ErrorKind::Truncated,
+            format!(
+                "the box command wrote more than {} MiB; output beyond that is not collected",
+                MAX_CAPTURE >> 20
+            ),
+        )
+    };
     let r: Result<Captured, RpcError> = loop {
+        // Check each chunk before keeping it: a box decides how much it writes, so the host
+        // never holds more than the cap, whatever the chunk sizes.
+        let held = out.stdout.len() + out.stderr.len();
         match s.output.recv().await {
+            Some(Out::Stdout(b)) | Some(Out::Stderr(b)) if held + b.len() > MAX_CAPTURE => {
+                break Err(too_much());
+            }
             Some(Out::Stdout(b)) => out.stdout.extend(b),
             Some(Out::Stderr(b)) => out.stderr.extend(b),
             Some(Out::Exit(code)) => {
@@ -981,15 +996,6 @@ async fn exec_session(
                     "the box command ended without an exit code",
                 ));
             }
-        }
-        if out.stdout.len() + out.stderr.len() > MAX_CAPTURE {
-            break Err(err(
-                ErrorKind::Truncated,
-                format!(
-                    "the box command wrote more than {} MiB; output beyond that is not collected",
-                    MAX_CAPTURE >> 20
-                ),
-            ));
         }
     };
     feeder.abort();
