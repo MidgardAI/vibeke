@@ -187,6 +187,18 @@ pub fn on_recent(app: &mut App, mi: usize) {
     }
 }
 
+/// Images in `keys` may be found now (an earlier load found them gone): load the card's again.
+pub fn on_retry(app: &mut App, keys: &[String]) {
+    if app
+        .images_ui
+        .card
+        .as_ref()
+        .is_some_and(|c| keys.contains(&c.key))
+    {
+        load(app);
+    }
+}
+
 /// The reply to the card's fetch.
 pub fn on_fetched(app: &mut App, key: &str, res: &Result<Value, crate::app::RpcErr>) {
     iv::on_fetched(app, key, res);

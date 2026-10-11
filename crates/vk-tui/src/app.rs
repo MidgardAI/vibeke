@@ -1863,6 +1863,7 @@ impl App {
         crate::browser::tick(self);
         crate::preview_manager::tick(self);
         crate::images::tick(self);
+        crate::image_view::tick(self, now);
         crate::plugins::report_scroll(self, now);
         crate::selection::tick(self, now);
         crate::remote_view::release_due(self, now);
@@ -1908,6 +1909,7 @@ impl App {
         crate::selection::deadlines(self, &mut d);
         crate::remote_view::deadlines(self, &mut d);
         crate::osc::deadlines(self, now, &mut d);
+        crate::image_view::deadlines(self, &mut d);
         crate::ux::deadlines(self, now, &mut d);
         d
     }

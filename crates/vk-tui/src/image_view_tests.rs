@@ -351,3 +351,37 @@ fn a_covered_image_stays_cached_and_shows_again_when_uncovered() {
     assert!(app.imgview.image("0:S1").is_some(), "still placed, so kept");
     assert_eq!(osc1337(&app.draw_bytes()), 1, "shown again when uncovered");
 }
+
+#[test]
+fn an_image_found_gone_is_looked_for_again_a_few_times() {
+    let (mut app, _rxs) = fleet();
+    caps(&mut app, true);
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("s1.png");
+    let path = path.to_string_lossy().into_owned();
+    // The recent list says the file is gone, and it is not there yet.
+    load_local(&mut app, "0:S1", &path, false);
+    assert_eq!(app.imgview.problem("0:S1"), Some(&Problem::Gone));
+    let at = app.deadlines(Instant::now()).get("image.retry").unwrap();
+    // The file arrives; the retry clears the problem, and the next load reads it.
+    std::fs::write(&path, tiny_png()).unwrap();
+    tick(&mut app, at);
+    assert!(app.imgview.problem("0:S1").is_none());
+    load_local(&mut app, "0:S1", &path, false);
+    assert!(app.imgview.image("0:S1").is_some());
+    // A file that never comes is given up on after the last retry.
+    let mut now = Instant::now();
+    for _ in 0..GONE_RETRIES {
+        load_local(&mut app, "0:S2", "/nonexistent/s2.png", true);
+        now += Duration::from_secs(60);
+        tick(&mut app, now);
+    }
+    load_local(&mut app, "0:S2", "/nonexistent/s2.png", true);
+    tick(&mut app, now + Duration::from_secs(60));
+    assert_eq!(app.imgview.problem("0:S2"), Some(&Problem::Gone));
+    assert!(app.deadlines(now).get("image.retry").is_none());
+    // An unreadable blob reported by a remote machine is retried too.
+    let res = Ok(json!({"inline_skipped": "blob unreadable"}));
+    assert_eq!(on_fetched(&mut app, "1:S3@64", &res), Some(Problem::Gone));
+    assert!(app.deadlines(now).get("image.retry").is_some());
+}
