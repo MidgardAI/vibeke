@@ -2685,6 +2685,12 @@ fn review_lines(app: &App, p: &Value, v: &TaskView, w: usize, out: &mut Lines) {
                 format!("  {} · {} · {a}", st(c, "name"), command_text(c)),
                 t.text(),
             ));
+            if let Some((where_, ok)) = execution_text(&c["execution"]) {
+                out.push((
+                    format!("    {where_}"),
+                    if ok { t.dim() } else { t.s(t.red) },
+                ));
+            }
         }
     }
     let runs = arr(p, "check_runs");
@@ -2698,9 +2704,14 @@ fn review_lines(app: &App, p: &Value, v: &TaskView, w: usize, out: &mut Lines) {
                 "running" | "queued" => t.yellow,
                 _ => t.muted,
             };
+            let runner = r
+                .pointer("/environment/runner")
+                .and_then(Value::as_str)
+                .map(|x| format!(" · {}", runner_label(x)))
+                .unwrap_or_default();
             out.push((
                 format!(
-                    "  {state:<11}{} on {}{}",
+                    "  {state:<11}{} on {}{runner}{}",
                     st(r, "name"),
                     truncate(st(r, "subject"), 10),
                     r.get("summary")
@@ -3050,8 +3061,13 @@ fn sub_lines(app: &App, v: &TaskView, w: usize) -> Option<(String, Lines)> {
                     ),
                     t.text(),
                 ),
-                (format!("⚠ {label}"), t.bold(t.yellow)),
             ];
+            // Where the check runs: on this machine with the user's environment, or inside the
+            // task's sandbox or container (the server's `execution`).
+            if let Some((where_, ok)) = execution_text(&check["execution"]) {
+                l.push((where_, if ok { t.text() } else { t.bold(t.red) }));
+            }
+            l.push((format!("⚠ {label}"), t.bold(t.yellow)));
             for r in arr(&auth, "reasons") {
                 let s = r
                     .as_str()
@@ -3079,6 +3095,32 @@ fn sub_lines(app: &App, v: &TaskView, w: usize) -> Option<(String, Lines)> {
             Some(("Authorize check".into(), l))
         }
     }
+}
+
+/// How a check's runner is named in the review: `host` is this machine.
+fn runner_label(runner: &str) -> String {
+    match runner {
+        "host" => "ran on the host".into(),
+        "none" | "" => "did not run".into(),
+        r => format!("ran in the {r}"),
+    }
+}
+
+/// Where a check runs, from its `execution` (`{runner, environment?, unavailable?}`): the
+/// text and whether it can run. `None` for an older server that does not say.
+pub(crate) fn execution_text(e: &Value) -> Option<(String, bool)> {
+    if let Some(why) = e.get("unavailable").and_then(Value::as_str) {
+        return Some((format!("Cannot run here: {why}"), false));
+    }
+    let runner = e.get("runner").and_then(Value::as_str)?;
+    let env = e.get("environment").and_then(Value::as_str).unwrap_or("");
+    let text = match (runner, env) {
+        ("host", "") => "Runs on this machine, with no containment".to_string(),
+        ("host", env) => format!("Runs on this machine: {env}"),
+        (r, "") => format!("Runs inside the task's {r}"),
+        (_, env) => format!("Runs {env}"),
+    };
+    Some((text, true))
 }
 
 fn task_keys(v: &TaskView) -> String {
@@ -3356,6 +3398,27 @@ pub fn grid_text(g: &Grid) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn checks_say_where_they_run() {
+        let host = json!({"runner": "host", "environment": "your environment, without credentials; no containment"});
+        let (t, ok) = execution_text(&host).unwrap();
+        assert!(
+            ok && t.starts_with("Runs on this machine: your environment"),
+            "{t}"
+        );
+        let boxed = json!({"runner": "sandbox", "environment": "inside the task's sandbox, with the same limits as its panes"});
+        assert_eq!(
+            execution_text(&boxed).unwrap().0,
+            "Runs inside the task's sandbox, with the same limits as its panes"
+        );
+        let gone = json!({"runner": "none", "unavailable": "the task's container is not running"});
+        let (t, ok) = execution_text(&gone).unwrap();
+        assert!(!ok && t.contains("container is not running"), "{t}");
+        assert!(execution_text(&Value::Null).is_none());
+        assert_eq!(runner_label("container"), "ran in the container");
+        assert_eq!(runner_label("host"), "ran on the host");
+    }
     use crate::app::test_app;
     use vk_proto::input::Mods;
     use vk_proto::render::{ClientFrame, ServerFrame};
