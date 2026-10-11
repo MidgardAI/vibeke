@@ -11,8 +11,10 @@ pub mod handoff;
 pub mod handoff_peer;
 pub mod handoff_send;
 pub mod local;
+pub mod notice;
 pub mod notify;
 pub mod pair;
+pub mod pane_ask;
 pub mod peer_client;
 pub mod peers;
 pub mod push;
@@ -167,6 +169,7 @@ impl Gateway {
                 .collect()
         };
         *self.devices.write().unwrap() = fresh;
+        drop(lock);
         for id in gone {
             self.disconnect(&id);
             self.revoke_ticket(&id);
@@ -228,25 +231,38 @@ impl Gateway {
         Ok(())
     }
 
-    pub async fn revoke(&self, id: &str) -> Result<()> {
-        let _lock = self.state.lock()?;
-        let mut all = self.state.devices()?;
-        let removed: Vec<String> = all
-            .iter()
-            .filter(|d| d.id == id || d.name == id)
-            .map(|d| d.id.clone())
-            .collect();
-        anyhow::ensure!(!removed.is_empty(), "no such device");
-        all.retain(|d| !removed.contains(&d.id));
-        self.state.save_devices(&all)?;
+    pub async fn revoke(&self, id: &str) -> Result<state::Cascade> {
+        self.revoke_by(id, "api").await
+    }
+
+    /// Revoke a device by id or name, and everything it created ([`state::Cascade`]): the
+    /// shares and peer devices its invitations produced, its pending invitations and the peers
+    /// it redeemed. Every revoked device is disconnected and its relay ticket revoked.
+    pub async fn revoke_by(&self, id: &str, by: &str) -> Result<state::Cascade> {
+        let lock = self.state.lock()?;
+        let (c, all) = self.state.revoke_cascade(&lock, &[id.to_string()], by)?;
+        anyhow::ensure!(!c.devices.is_empty(), "no such device");
         *self.devices.write().unwrap() = all;
-        for r in &removed {
-            self.state
-                .audit(&json!({"ts": state::now_s(), "event": "device.revoked", "device": r}));
+        drop(lock);
+        for r in &c.devices {
             self.disconnect(r);
             self.revoke_ticket(r);
         }
-        Ok(())
+        if !c.peers.is_empty() {
+            crate::handoff_send::publish_peers(self, false).await;
+        }
+        Ok(c)
+    }
+
+    /// Send every remembered revocation to the relay (after each registration).
+    pub(crate) fn resend_revocations(&self) {
+        let ctl = self.relay_ctl.lock().unwrap();
+        let Some(tx) = ctl.as_ref() else {
+            return;
+        };
+        for (sub, _) in self.state.revoked_tickets() {
+            let _ = tx.send(vk_e2e::relay::Ctrl::Revoke { sub });
+        }
     }
 
     /// Install (or clear) the sender for the live relay control socket.
@@ -254,11 +270,16 @@ impl Gateway {
         *self.relay_ctl.lock().unwrap() = tx;
     }
 
-    /// Tell the relay to stop admitting this device's tickets (spec 16 §6.6). Without a live
-    /// control socket the ticket stays valid at the relay until it expires; the gateway still
-    /// refuses the device at the handshake.
+    /// Tell the relay to stop admitting this device's tickets (spec 16 §6.6). The subject is
+    /// remembered until its tickets lapse and sent again on every registration
+    /// ([`Gateway::resend_revocations`]): the relay forgets revocations when it restarts, and
+    /// one made while it was unreachable reaches it once the gateway is back.
     pub fn revoke_ticket(&self, device_id: &str) {
         let sub = format!("dev:{device_id}");
+        let until = state::now_s() + pair::DEVICE_TICKET_TTL.as_secs();
+        if let Err(e) = self.state.remember_revoked_ticket(&sub, until) {
+            tracing::warn!(device = device_id, "remembering a revoked ticket: {e:#}");
+        }
         let sent = self
             .relay_ctl
             .lock()

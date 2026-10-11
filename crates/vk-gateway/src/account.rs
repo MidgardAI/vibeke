@@ -21,7 +21,7 @@ pub struct RelayAuth {
 
 impl RelayAuth {
     /// Hosts need an account token: the relay names an account server. A relay that only
-    /// requires tickets (`--require-tickets` without `--account-url`) needs none.
+    /// requires tickets but has no `--account-url` needs none.
     pub fn needs_account(&self) -> bool {
         self.account_url.is_some()
     }

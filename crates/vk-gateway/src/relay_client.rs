@@ -464,6 +464,9 @@ async fn control(gw: &Arc<Gateway>, base: &str, token: Option<&str>, mode: Token
     gw.status.set_state("online", None);
     let (ctl_tx, mut ctl_rx) = tokio::sync::mpsc::unbounded_channel::<Ctrl>();
     gw.set_relay_ctl(Some(ctl_tx));
+    // The relay may have restarted (it keeps revocations in memory) or missed a revocation made
+    // while we were away.
+    gw.resend_revocations();
     let _ctl = CtlGuard(gw);
     let mut announces = Bucket::new(60);
     let mut ping = tokio::time::interval(Duration::from_secs(30));

@@ -584,6 +584,7 @@ mod tests {
                 }),
             }),
             supports_clear: false,
+            created_by: None,
         }
     }
 

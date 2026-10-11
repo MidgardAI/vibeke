@@ -40,6 +40,26 @@ pub struct Identity {
     pub user: Option<GitUser>,
 }
 
+/// Whether the host's handshake payload proves that `host_id` is the host whose Noise key `hk`
+/// we authenticated (`relay_key`, `key_sig`; see `vk_e2e::keys::verify_key_binding`).
+pub fn check_binding(info: &Value, host_id: &str, hk: &[u8; 32]) -> Result<()> {
+    let relay_key = info
+        .get("relay_key")
+        .and_then(|v| v.as_str())
+        .and_then(|k| b64::decode_array::<32>(k).ok());
+    let sig = info
+        .get("key_sig")
+        .and_then(|v| v.as_str())
+        .and_then(|k| b64::decode_array::<64>(k).ok());
+    match (relay_key, sig) {
+        (Some(r), Some(sig)) if vk_e2e::keys::verify_key_binding(host_id, &r, hk, &sig) => Ok(()),
+        (Some(_), Some(_)) => bail!(
+            "the host's key does not belong to host id {host_id}; the invitation may be forged"
+        ),
+        _ => bail!("the host did not prove its identity; update Vibeke on that host"),
+    }
+}
+
 pub struct PeerClient;
 
 impl PeerClient {
@@ -94,6 +114,9 @@ impl PeerClient {
             Some(&psk),
         )
         .await?;
+        // The link's host id must belong to the key we just authenticated: the host's relay key
+        // signed its Noise key. Otherwise a crafted link could replace a known peer.
+        check_binding(&c.info, &link.host, &hk)?;
         let mut peer = json!({"host_name": us.host_name});
         if let Some(u) = &us.user {
             peer["user"] = json!({"name": u.name, "email": u.email});
@@ -150,6 +173,7 @@ impl PeerClient {
             expires_at,
             ticket,
             ticket_exp,
+            created_by: None,
         })
     }
 
@@ -379,18 +403,22 @@ async fn dial(relay: &str, host: &str, ticket: Option<&str>) -> Result<Box<dyn W
     if relay.starts_with("local") {
         bail!("local transport link without a socket path");
     }
-    let mut url = format!(
+    let url = format!(
         "{}/v1/connect?host={host}",
         crate::relay_client::ws_base(relay)
     );
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    let mut req = url.as_str().into_client_request()?;
     if let Some(t) = ticket {
-        // Tickets are base64url and `.`: query-safe as they are.
-        url.push_str(&format!("&ticket={t}"));
+        // In a header, not the URL: URLs end up in proxy and access logs.
+        req.headers_mut().insert(
+            tokio_tungstenite::tungstenite::http::header::AUTHORIZATION,
+            format!("Bearer {t}").parse()?,
+        );
     }
-    let (ws, _) =
-        tokio_tungstenite::connect_async_with_config(url.as_str(), Some(ws_config()), false)
-            .await
-            .with_context(|| format!("connect {}", crate::relay_client::ws_base(relay)))?;
+    let (ws, _) = tokio_tungstenite::connect_async_with_config(req, Some(ws_config()), false)
+        .await
+        .with_context(|| format!("connect {}", crate::relay_client::ws_base(relay)))?;
     Ok(Box::new(ws))
 }
 
@@ -622,6 +650,19 @@ impl Conn {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn host_ids_must_be_bound_to_the_noise_key() {
+        let host = vk_e2e::HostKeys::generate();
+        let other = vk_e2e::HostKeys::generate();
+        let info = json!({"relay_key": b64::encode(host.relay_public()),
+                          "key_sig": b64::encode(host.key_binding())});
+        assert!(check_binding(&info, &host.host_id(), &host.noise_public()).is_ok());
+        // A link naming a known host id with another key.
+        assert!(check_binding(&info, &host.host_id(), &other.noise_public()).is_err());
+        assert!(check_binding(&info, &other.host_id(), &host.noise_public()).is_err());
+        assert!(check_binding(&json!({}), &host.host_id(), &host.noise_public()).is_err());
+    }
 
     #[test]
     fn backoff_grows_and_caps() {

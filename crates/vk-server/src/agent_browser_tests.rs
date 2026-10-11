@@ -1881,7 +1881,9 @@ async fn input_resize_updates_metrics_and_restarts_the_screencast() {
     assert_eq!(last["deviceScaleFactor"], 2.0);
     let s = f.calls_of("Page.startScreencast");
     assert_eq!(s.len(), 2);
-    assert_eq!(s[1].1["maxWidth"], 800);
+    // Frames at device pixels: CSS size × DPR.
+    assert_eq!(s[1].1["maxWidth"], 1600);
+    assert_eq!(s[1].1["maxHeight"], 780);
     let sess = e.server.agent_browser.session("b1").unwrap();
     assert_eq!(sess.viewport(), (800, 390));
     drop(sub);
@@ -1935,4 +1937,135 @@ async fn screencast_frame_long_poll_returns_when_a_frame_arrives() {
         .unwrap();
     assert_eq!(r["seq"], 1);
     assert!(r["data_b64"].is_string());
+}
+
+// ---- phone previews: caps, device take-overs, touch ids, data saving ------------------------
+
+fn ctx_gateway(client: &str) -> Ctx {
+    Ctx {
+        client_id: client.into(),
+        kind: "gateway".into(),
+        pane_scope: None,
+        remote: true,
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn phone_previews_are_capped() {
+    let e = Env::new();
+    let user = ctx_full();
+    e.call(
+        &user,
+        "browser.open",
+        json!({"viewport": {"width": 5000, "height": 900}, "dpr": 8, "mobile": true}),
+    )
+    .await
+    .unwrap();
+    let m = e.fake().calls_of("Emulation.setDeviceMetricsOverride");
+    let first = &m[0].1;
+    assert_eq!(first["width"], 2048);
+    assert_eq!(first["deviceScaleFactor"], 4.0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_device_take_over_survives_a_gateway_reconnect() {
+    let e = Env::new();
+    let gw1 = ctx_gateway("g1");
+    let actor = "gateway:dev1(Phone)";
+    e.call(&gw1, "browser.open", json!({"mobile": true}))
+        .await
+        .unwrap();
+    e.call(
+        &gw1,
+        "browser.take_over",
+        json!({"session": "b1", "actor": actor}),
+    )
+    .await
+    .unwrap();
+    // The gateway reconnects with a new client id; the same device keeps control.
+    let gw2 = ctx_gateway("g2");
+    let tap = json!({"session": "b1", "actor": actor, "events": [{"type": "tap", "x": 1, "y": 1}]});
+    e.call(&gw2, "browser.input", tap).await.unwrap();
+    // Another device through the same gateway does not.
+    let other = json!({"session": "b1", "actor": "gateway:dev2(Tablet)",
+                       "events": [{"type": "tap", "x": 1, "y": 1}]});
+    let err = e.call(&gw2, "browser.input", other).await.unwrap_err();
+    assert_eq!(kind(&err), "conflict");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_orphaned_take_over_does_not_keep_a_session_forever() {
+    let e = Env::new();
+    let user = ctx_full();
+    e.call(&user, "browser.open", json!({})).await.unwrap();
+    e.call(&user, "browser.take_over", json!({"session": "b1"}))
+        .await
+        .unwrap();
+    let sess = e.server.agent_browser.session("b1").unwrap();
+    *sess.last_used.lock().unwrap() = Instant::now() - Duration::from_secs(24 * 3600);
+    until("the idle collector closes the orphaned session", || {
+        !e.events("browser.session_closed").is_empty()
+    })
+    .await;
+    let closed = e.events("browser.session_closed");
+    assert_eq!(closed.last().unwrap().data["reason"], "orphaned");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn touches_without_ids_keep_their_id_while_another_finger_lifts() {
+    let e = Env::new();
+    let user = ctx_full();
+    e.call(&user, "browser.open", json!({"mobile": true}))
+        .await
+        .unwrap();
+    e.call(&user, "browser.take_over", json!({"session": "b1"}))
+        .await
+        .unwrap();
+    e.call(
+        &user,
+        "browser.input",
+        json!({"session": "b1", "events": [
+            {"type": "touch", "phase": "start", "points": [{"x": 10, "y": 10}, {"x": 300, "y": 300}]},
+            // The first finger lifts: the second one is now first in the list.
+            {"type": "touch", "phase": "end", "points": [{"x": 305, "y": 302}]},
+            {"type": "touch", "phase": "end", "points": []},
+        ]}),
+    )
+    .await
+    .unwrap();
+    let touch = e.fake().calls_of("Input.dispatchTouchEvent");
+    let second = touch[0].1["touchPoints"][1]["id"].clone();
+    assert_ne!(touch[0].1["touchPoints"][0]["id"], second);
+    assert_eq!(touch[1].1["touchPoints"][0]["id"], second);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn data_saving_restarts_the_screencast_smaller() {
+    let e = Env::new();
+    let user = ctx_full();
+    e.call(
+        &user,
+        "browser.open",
+        json!({"viewport": "390x800", "dpr": 3, "mobile": true}),
+    )
+    .await
+    .unwrap();
+    let _sub = e
+        .server
+        .agent_browser
+        .attach_screencast("b1")
+        .await
+        .unwrap();
+    e.call(
+        &user,
+        "browser.screencast_frame",
+        json!({"session": "b1", "data_saver": true}),
+    )
+    .await
+    .unwrap();
+    let s = e.fake().calls_of("Page.startScreencast");
+    assert_eq!(s[0].1["maxWidth"], 1170);
+    let last = &s[s.len() - 1].1;
+    assert_eq!(last["maxWidth"], 390);
+    assert_eq!(last["everyNthFrame"], 2);
 }

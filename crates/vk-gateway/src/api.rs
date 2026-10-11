@@ -575,7 +575,7 @@ impl Call<'_> {
     }
 
     pub fn actor(&self) -> String {
-        format!("gateway:{}", self.device.name)
+        self.device.actor()
     }
 
     async fn interaction(&self, id: &str) -> ApiResult {
@@ -1648,19 +1648,36 @@ impl Call<'_> {
             }
             "browser.preview_open" => {
                 let preview = req(&p, "preview")?;
+                // Phone previews are captured at device pixels: their size is capped (the
+                // server caps them the same way).
                 let dim = |k: &str| {
                     p.get("viewport")
                         .and_then(|v| v.get(k))
                         .and_then(Value::as_u64)
-                        .filter(|n| (1..=8192).contains(n))
-                        .ok_or_else(|| ApiError::invalid(format!("viewport.{k} must be 1 to 8192")))
+                        .filter(|n| *n >= 1)
+                        .map(|n| n.min(crate::screencast::MAX_SIDE))
+                        .ok_or_else(|| {
+                            ApiError::invalid(format!("viewport.{k} must be at least 1"))
+                        })
                 };
                 let (width, height) = (dim("width")?, dim("height")?);
                 let dpr = p
                     .get("dpr")
                     .and_then(Value::as_f64)
                     .filter(|d| (0.5..=8.0).contains(d))
+                    .map(|d| d.min(crate::screencast::MAX_DPR))
                     .ok_or_else(|| ApiError::invalid("dpr must be 0.5 to 8"))?;
+                if self.gw.screencasts.opened_count(&self.device.id)
+                    >= crate::screencast::MAX_PER_DEVICE
+                {
+                    return Err(ApiError::new(
+                        "busy",
+                        format!(
+                            "this device already has {} previews open; close one first",
+                            crate::screencast::MAX_PER_DEVICE
+                        ),
+                    ));
+                }
                 let mut params = json!({
                     "preview": preview,
                     "viewport": {"width": width, "height": height},
@@ -1954,16 +1971,25 @@ pub fn devices_list_as(gw: &Arc<Gateway>, device: &Device) -> ApiResult {
     // Another process (`vibeke-gateway revoke`, a claim) may have changed the registry.
     let _ = gw.reload_devices();
     let me = &device.id;
-    let list: Vec<Value> = gw
-        .devices()
+    let devices = gw.devices();
+    let pairings = gw.state.pairings();
+    let peers = gw.state.peers().unwrap_or_default();
+    // `also`: what revoking this device takes with it (counts; see `state::Cascade`).
+    let list: Vec<Value> = devices
         .iter()
-        .map(|d| json!({"id": d.id, "name": d.name, "platform": d.platform, "scope": d.scope, "paired_at": d.paired_at, "fingerprint": d.fingerprint(), "push": !d.push.is_empty(), "this": &d.id == me, "kind": d.kind, "expires_at": d.expires_at, "limit": d.limit, "peer": d.peer}))
+        .map(|d| {
+            let also = crate::state::Cascade::of(std::slice::from_ref(&d.id), &devices, &pairings, &peers);
+            json!({"id": d.id, "name": d.name, "platform": d.platform, "scope": d.scope, "paired_at": d.paired_at, "fingerprint": d.fingerprint(), "push": !d.push.is_empty(), "this": &d.id == me, "kind": d.kind, "expires_at": d.expires_at, "limit": d.limit, "peer": d.peer, "created_by": d.created_by, "also": also.also_json()})
+        })
         .collect();
     Ok(json!({"devices": list}))
 }
 
-/// `devices.revoke {device}`, for the app API and the server bridge. A device never revokes
-/// itself here.
+/// `devices.revoke {device, dry_run?}`, for the app API and the server bridge. A device never
+/// revokes itself here. Revoking also revokes what the device created (its shares, peer
+/// devices, pending invitations and redeemed peers). The result says what went:
+/// `{revoked: [ids], also: {shares, hosts, invitations, peers}, summary?}`. With `dry_run` nothing
+/// changes and the result says what would go, so a client can show it in its confirmation.
 pub async fn devices_revoke_as(gw: &Arc<Gateway>, device: &Device, p: &Value) -> ApiResult {
     let id = req(p, "device")?;
     if id == device.id {
@@ -1971,8 +1997,39 @@ pub async fn devices_revoke_as(gw: &Arc<Gateway>, device: &Device, p: &Value) ->
             "a device cannot revoke itself here; use Forget host",
         ));
     }
-    gw.revoke(id).await.map_err(internal)?;
-    Ok(json!({}))
+    let c = if p.get("dry_run").and_then(Value::as_bool) == Some(true) {
+        let _ = gw.reload_devices();
+        let c = crate::state::Cascade::of(
+            &[id.to_string()],
+            &gw.devices(),
+            &gw.state.pairings(),
+            &gw.state.peers().unwrap_or_default(),
+        );
+        if c.devices.is_empty() {
+            return Err(ApiError::new("not_found", "no such device"));
+        }
+        c
+    } else {
+        let by = if device.id == crate::bridge::BY {
+            "tui"
+        } else {
+            device.id.as_str()
+        };
+        gw.revoke_by(id, by).await.map_err(|e| {
+            if e.to_string().contains("no such device") {
+                ApiError::new("not_found", "no such device")
+            } else {
+                internal(e)
+            }
+        })?
+    };
+    Ok(json!({"revoked": c.devices, "also": c.also_json(), "summary": c.summary()}))
+}
+
+/// Who an invitation or redeemed peer is recorded as created by: the device, or `None` for the
+/// host's owner (the server bridge's TUI identity).
+pub fn creator(device: &Device) -> Option<String> {
+    (device.id != crate::bridge::BY).then(|| device.id.clone())
 }
 
 /// `share.create` for the server bridge (`gateway.call`): the same code as the app API.
@@ -2027,6 +2084,7 @@ impl Call<'_> {
             limit,
             label,
             owner: None,
+            created_by: creator(self.device),
         };
         let (pairing, link) = crate::pair::create_with(
             &self.gw.state,
@@ -2044,6 +2102,11 @@ impl Call<'_> {
             )
         })?;
         self.gw.state.audit(&json!({"ts": now_s(), "event": "share.created", "by": self.device.id, "kind": kind, "pid": pairing.pid}));
+        let by = creator(self.device).map(|_| self.device.name.clone());
+        crate::notice::spawn(
+            &self.gw.server,
+            crate::notice::share_created(kind, scope, by.as_deref()),
+        );
         Ok(
             json!({"link": link.to_url(&app), "pid": pairing.pid, "open_by": pairing.exp, "expires_at": until, "expires_after_s": ttl_s}),
         )
@@ -2647,6 +2710,7 @@ mod workspace_tests {
             limit,
             peer: None,
             supports_clear: false,
+            created_by: None,
         }
     }
 
@@ -3194,7 +3258,7 @@ mod workspace_tests {
             .await,
         );
         assert!(up["snooze_until_ms"].is_null() && up.get("snooze_until_ms").is_some());
-        assert_eq!(up["actor"], "gateway:d1");
+        assert_eq!(up["actor"], "gateway:d1(d1)");
         let dis = echo(
             call.dispatch(
                 "attention.update",
@@ -3242,7 +3306,7 @@ mod workspace_tests {
                 )
                 .await
             ),
-            json!({"preview": "v1", "split": "down", "actor": "gateway:d1"})
+            json!({"preview": "v1", "split": "down", "actor": "gateway:d1(d1)"})
         );
     }
 
@@ -3444,7 +3508,7 @@ mod workspace_tests {
         assert_eq!(r["pane"], "p9");
         assert_eq!(
             r["echo"],
-            json!({"pane": "p9", "harness": "claude", "prompt": "hi", "actor": "gateway:d1"})
+            json!({"pane": "p9", "harness": "claude", "prompt": "hi", "actor": "gateway:d1(d1)"})
         );
         let r = call
             .dispatch(
@@ -3464,7 +3528,7 @@ mod workspace_tests {
             .unwrap();
         assert_eq!(
             r["echo"],
-            json!({"branch": "b", "cwd": "/repo/p1", "actor": "gateway:d1"})
+            json!({"branch": "b", "cwd": "/repo/p1", "actor": "gateway:d1(d1)"})
         );
         let r = call
             .dispatch(
@@ -3473,7 +3537,10 @@ mod workspace_tests {
             )
             .await
             .unwrap();
-        assert_eq!(r["echo"], json!({"cwd": "/tmp/x", "actor": "gateway:d1"}));
+        assert_eq!(
+            r["echo"],
+            json!({"cwd": "/tmp/x", "actor": "gateway:d1(d1)"})
+        );
         assert_eq!(
             call.dispatch(
                 "agent.start",
@@ -3518,7 +3585,7 @@ mod workspace_tests {
         assert_eq!(
             r["echo"],
             json!({"operation": "reply_suggestions", "pane": "p1", "include_screen": true,
-                   "idempotency_key": "gw:d1:o1", "actor": "gateway:d1"})
+                   "idempotency_key": "gw:d1:o1", "actor": "gateway:d1(d1)"})
         );
         // Boundary requests show what is asked and take allow (once) or deny only.
         let r = call
@@ -3643,7 +3710,7 @@ mod workspace_tests {
             .unwrap();
         assert_eq!(
             r["echo"],
-            json!({"session": "b1", "text": "hello", "submit": true, "actor": "gateway:d1"})
+            json!({"session": "b1", "text": "hello", "submit": true, "actor": "gateway:d1(d1)"})
         );
         // The device goes away: it stops watching and its take-over ends.
         crate::screencast::device_gone(&gw, "d1").await;
@@ -3696,7 +3763,7 @@ mod workspace_tests {
         assert_eq!(
             r["echo"],
             json!({"preview": "v1", "machine": "m", "viewport": {"width": 390, "height": 800},
-                   "dpr": 3.0, "dark": true, "mobile": true, "actor": "gateway:d1"})
+                   "dpr": 3.0, "dark": true, "mobile": true, "actor": "gateway:d1(d1)"})
         );
         assert_eq!(gw.screencasts.opened_by("b9").as_deref(), Some("d1"));
         assert_eq!(gw.screencasts.controller("b9").as_deref(), Some("d1"));
@@ -3723,7 +3790,7 @@ mod workspace_tests {
             .unwrap();
         assert_eq!(
             r["echo"],
-            json!({"session": "b9", "events": ev, "actor": "gateway:d1"})
+            json!({"session": "b9", "events": ev, "actor": "gateway:d1(d1)"})
         );
         // Only the opener closes it.
         assert_eq!(

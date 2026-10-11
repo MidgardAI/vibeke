@@ -179,7 +179,7 @@ impl Tunnels {
             return reply(out, id, Err(e));
         }
         match method {
-            "tunnel.open" => self.open(params, id),
+            "tunnel.open" => self.open(params, id, device.actor()),
             "tunnel.send" => match self.send(&params) {
                 Ok(rx) => async move {
                     let r = match rx {
@@ -202,12 +202,15 @@ impl Tunnels {
         }
     }
 
-    fn open(&self, params: Value, id: Option<Value>) -> BoxFuture<'static, ()> {
+    fn open(&self, params: Value, id: Option<Value>, actor: String) -> BoxFuture<'static, ()> {
         let out = self.inner.out.clone();
-        let target = match open_params(&params) {
+        let mut target = match open_params(&params) {
             Ok(t) => t,
             Err(e) => return reply(out, id, Err(e)),
         };
+        // The server logs and audits each stream by device (one `gateway-tunnel` client
+        // carries them all).
+        target["actor"] = json!(actor);
         let stream_id = {
             let mut st = self.inner.state.lock().unwrap();
             if st.closed {
@@ -340,7 +343,9 @@ fn reply(out: Out, id: Option<Value>, r: ApiResult) -> BoxFuture<'static, ()> {
     async move { crate::session::respond(&out, id, r).await }.boxed()
 }
 
-/// The `preview.connect` params of a `tunnel.open`: only `machine`, `host` and `port` pass.
+/// The `preview.connect` params of a `tunnel.open`: only `machine`, `host`, `port` and
+/// `allow_port` pass (`allow_port: true` after the user allowed a port the server refused with
+/// `port_not_allowed`; spec 06 B3.5).
 fn open_params(p: &Value) -> Result<Value, ApiError> {
     let host = p
         .get("host")
@@ -357,6 +362,9 @@ fn open_params(p: &Value) -> Result<Value, ApiError> {
         None | Some(Value::Null) => {}
         Some(Value::String(m)) if m.len() <= 255 => t["machine"] = json!(m),
         Some(_) => return Err(ApiError::invalid("Invalid machine")),
+    }
+    if p.get("allow_port").and_then(Value::as_bool) == Some(true) {
+        t["allow_port"] = json!(true);
     }
     Ok(t)
 }
@@ -659,6 +667,12 @@ mod tests {
         assert_eq!(
             t,
             json!({"host": "localhost", "port": 5173, "machine": "devbox"})
+        );
+        let t =
+            open_params(&json!({"host": "localhost", "port": 8000, "allow_port": true})).unwrap();
+        assert_eq!(
+            t,
+            json!({"host": "localhost", "port": 8000, "allow_port": true})
         );
         assert!(open_params(&json!({"host": "localhost", "port": 0})).is_err());
         assert!(open_params(&json!({"host": "localhost", "port": 65536})).is_err());

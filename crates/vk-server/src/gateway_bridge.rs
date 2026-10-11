@@ -40,10 +40,21 @@ pub const METHODS: &[(&str, bool)] = &[
     ("gateway.call", true),
     ("gateway.reply", true),
     ("gateway.status", false),
+    ("gateway.notice", true),
 ];
 
 /// Calling the gateway and answering for it are the user's and the gateway's, never a pane's.
-pub const PANE_FORBIDDEN: &[&str] = &["gateway.call", "gateway.reply"];
+pub const PANE_FORBIDDEN: &[&str] = &["gateway.call", "gateway.reply", "gateway.notice"];
+
+/// What `gateway.notice` reports: access to this host handed out or used.
+pub const NOTICE_EVENTS: &[&str] = &[
+    "pairing.created",
+    "device.paired",
+    "share.created",
+    "share.redeemed",
+    "peer.invited",
+    "peer.added",
+];
 
 /// Bridged methods refused to a pane-scoped caller even if `gateway.call` reached it: signing
 /// the host in or out of its relay account and handing out access (`share.create`, any kind)
@@ -330,6 +341,47 @@ fn reply(server: &Server, p: &Value) -> R {
     }
 }
 
+/// `gateway.notice {event, title, body?, urgency?}`: the gateway tells the user that access to
+/// this host was handed out (a pairing link, a share, a peer invitation) or used (a device
+/// paired, an invitation redeemed). Stored as a `gateway.access` event and shown as a
+/// notification (a toast in the TUI, the inbox). The text is the gateway's, cleaned of control
+/// characters and redacted; it never carries a link.
+fn notice(server: &Server, p: &Value) -> R {
+    let event = req(p, "event")?;
+    if !NOTICE_EVENTS.contains(&event) {
+        return Err(invalid(format!(
+            "event is one of {}",
+            NOTICE_EVENTS.join(", ")
+        )));
+    }
+    let clean = |t: &str, max: usize| -> String {
+        let t: String = t
+            .chars()
+            .filter(|c| !c.is_control() || *c == '\n')
+            .take(max)
+            .collect();
+        vk_redact::redact(&t).into_owned()
+    };
+    let title = clean(req(p, "title")?, 160);
+    let body = clean(s(p, "body").unwrap_or(""), 600);
+    let urgency = match s(p, "urgency") {
+        Some("normal") => "normal",
+        _ => "high",
+    };
+    {
+        let mut c = server.core.lock().unwrap();
+        let mut tx = crate::core::Tx::new();
+        tx.event(
+            "gateway.access",
+            json!({"gateway_event": event}),
+            json!({"event": event, "title": title, "body": body}),
+        );
+        server.commit(&mut c, tx).map_err(crate::api::internal)?;
+    }
+    server.notify("gateway", None, &title, &body, urgency);
+    Ok(json!({}))
+}
+
 pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Option<R> {
     Some(match method {
         "gateway.call" => {
@@ -351,6 +403,7 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
             call(server, m, params, Duration::from_millis(ms)).await
         }
         "gateway.reply" => gateway_only(ctx, method).and_then(|()| reply(server, p)),
+        "gateway.notice" => gateway_only(ctx, method).and_then(|()| notice(server, p)),
         "gateway.status" => crate::gateway_supervisor::check_status_dir(server, p)
             .map(|()| crate::gateway_supervisor::status_method(server, connected(server))),
         _ => return None,
@@ -364,12 +417,16 @@ pub const SHAPES: &str = r##"
 gateway.call :: {method: string, params?: object, timeout_ms?: int = 30000} => any
 # gateway clients only: the answer to a gateway.request event (result or error, not both)
 gateway.reply :: {id: string, result?: any, error?: {kind: string, message: string, details?: any}} => {}
+# gateway clients only: tell the user that access to this host was handed out or used (event: pairing.created|device.paired|share.created|share.redeemed|peer.invited|peer.added); stored as a gateway.access event and shown as a notification
+gateway.notice :: {event: string, title: string, body?: string, urgency?: normal|high = high} => {}
 # whether a gateway holds an event stream open (connected), whether this server manages one (configured) and, when it does, the supervisor's GatewayStatus fields; dir: the caller's gateway dir, conflict when this server supervises another
 gateway.status :: {dir?: string}
   => {connected: bool, configured: bool, state?: off|starting|connecting|online|offline|local_only|login_required|external|crashed, autostart?: bool, supervised?: bool, pid?: int|null, restarts?: int, relay?: string|null, devices?: int|null, since_ms?: int|null, last_error?: string|null, log?: string}
 "##;
 
 pub const EVENTS: &str = r##"
+# access to this host handed out or used (gateway.notice)
+gateway.access :: {gateway_event: string} => {event: string, title: string, body: string}
 # transient (seq 0, never stored or replayed); goes only to the addressed gateway's subscription
 gateway.request :: {id: string} => {id: string, method: string, params: object, client: string}
 "##;
@@ -436,11 +493,75 @@ mod tests {
         assert_eq!(pane_scope_of("gateway.call"), PaneScope::Forbidden);
         for m in PANE_FORBIDDEN_CALLS {
             assert!(ALLOWED.contains(m), "{m}");
-            assert!(!crate::approve::APPROVABLE_GATEWAY.contains(m), "{m}");
+            // A pane may only *ask* to hand out access (the user decides in the TUI); it can
+            // never ask to sign the host in or out.
+            assert_eq!(
+                crate::approve::APPROVABLE_GATEWAY.contains(m),
+                *m == "share.create",
+                "{m}"
+            );
         }
         assert!(!PANE_FORBIDDEN_CALLS.contains(&"account.status"));
         // Handing out access is the user's, whatever the kind.
         assert!(PANE_FORBIDDEN_CALLS.contains(&"share.create"));
+        assert_eq!(pane_scope_of("gateway.notice"), PaneScope::Forbidden);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn notices_come_from_the_gateway_and_reach_the_user() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let paths = crate::paths::Paths {
+            session: "t".into(),
+            runtime: root.join("run"),
+            state: root.join("state"),
+        };
+        let opts = crate::ServerOpts {
+            session: "t".into(),
+            machine: "m".into(),
+            bin: "/bin/false".into(),
+            hold_args: vec![],
+            default_shell: None,
+            env: vec![],
+            shims: false,
+            gateway: None,
+        };
+        let server = Server::new(paths, opts).unwrap();
+        let tui = Ctx {
+            client_id: "c".into(),
+            kind: "tui".into(),
+            pane_scope: None,
+            remote: false,
+        };
+        let gw = Ctx {
+            client_id: "g".into(),
+            kind: "gateway".into(),
+            pane_scope: None,
+            remote: false,
+        };
+        let p = json!({"event": "device.paired", "title": "Paired \u{1b}[31mPixel",
+                       "body": "open https://app.example/#/pair?d=eyJ2IjoxLCJwc2siOiJzZWNyZXRzZWNyZXQifQ"});
+        let e = api(&server, &tui, "gateway.notice", &p)
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(e.data.kind, "permission_denied");
+        let bad = json!({"event": "anything", "title": "x"});
+        assert!(
+            api(&server, &gw, "gateway.notice", &bad)
+                .await
+                .unwrap()
+                .is_err()
+        );
+        api(&server, &gw, "gateway.notice", &p)
+            .await
+            .unwrap()
+            .unwrap();
+        let n = server
+            .with_core(|c| c.notifications.last().cloned())
+            .unwrap();
+        assert!(!n.title.contains('\u{1b}'), "{}", n.title);
+        assert!(!n.body.contains("eyJ2"), "{}", n.body);
     }
 
     #[tokio::test(flavor = "multi_thread")]

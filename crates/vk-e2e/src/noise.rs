@@ -88,7 +88,8 @@ impl Initiator {
         let mut buf = vec![0u8; NOISE_MAX];
         let n = self.hs.read_message(msg, &mut buf)?;
         buf.truncate(n);
-        Ok((buf, Session::new(self.hs.into_transport_mode()?)))
+        let hh = handshake_hash(&self.hs)?;
+        Ok((buf, Session::new(self.hs.into_transport_mode()?, hh)))
     }
 }
 
@@ -150,13 +151,23 @@ impl Responder {
         let mut buf = vec![0u8; NOISE_MAX];
         let n = self.hs.write_message(payload, &mut buf)?;
         buf.truncate(n);
-        Ok((buf, Session::new(self.hs.into_transport_mode()?)))
+        let hh = handshake_hash(&self.hs)?;
+        Ok((buf, Session::new(self.hs.into_transport_mode()?, hh)))
     }
+}
+
+/// The final handshake hash `h`: the same on both sides, and unique to this handshake (it covers
+/// both ephemeral keys). Pairing derives its check code from it ([`crate::keys::check_code`]).
+fn handshake_hash(hs: &snow::HandshakeState) -> Result<[u8; 32]> {
+    hs.get_handshake_hash()
+        .try_into()
+        .map_err(|_| Error::Bad("handshake hash length".into()))
 }
 
 /// An established channel: chunked encryption and reassembly (spec 16 §5).
 pub struct Session {
     ts: snow::TransportState,
+    handshake_hash: [u8; 32],
     partial: Vec<u8>,
     /// When the current unfinished message started (spec 16 §5: 30 s reassembly deadline).
     partial_since: Option<std::time::Instant>,
@@ -166,9 +177,10 @@ pub struct Session {
 pub const REASSEMBLY_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
 
 impl Session {
-    fn new(ts: snow::TransportState) -> Self {
+    fn new(ts: snow::TransportState, handshake_hash: [u8; 32]) -> Self {
         Session {
             ts,
+            handshake_hash,
             partial: Vec::new(),
             partial_since: None,
         }
@@ -239,6 +251,11 @@ impl Session {
         }
     }
 
+    /// The handshake hash: equal on both ends of this channel and different for every handshake.
+    pub fn handshake_hash(&self) -> [u8; 32] {
+        self.handshake_hash
+    }
+
     /// The remote static key (always known after IK).
     pub fn remote_static(&self) -> Option<[u8; 32]> {
         self.ts.get_remote_static().and_then(|k| k.try_into().ok())
@@ -279,6 +296,14 @@ mod tests {
         assert_eq!(out.unwrap(), big);
         let back = b.encrypt(b"").unwrap();
         assert_eq!(a.decrypt(&back[0]).unwrap().unwrap(), b"");
+    }
+
+    #[test]
+    fn both_ends_share_a_fresh_handshake_hash() {
+        let (a, b) = pair(Some(&[1; 32]), Some(&[1; 32])).unwrap();
+        assert_eq!(a.handshake_hash(), b.handshake_hash());
+        let (c, _) = pair(Some(&[1; 32]), Some(&[1; 32])).unwrap();
+        assert_ne!(a.handshake_hash(), c.handshake_hash());
     }
 
     #[test]

@@ -131,6 +131,51 @@ pub fn fingerprint(public: &[u8]) -> String {
     format!("{}-{}", &b[..4], &b[4..8])
 }
 
+/// Domain separation for [`check_code`].
+pub const CHECK_CODE_CONTEXT: &[u8] = b"vibeke pairing check code v1\0";
+
+/// The pairing check code both ends show (spec 16 §4.3): 60 bits of
+/// `blake3(CHECK_CODE_CONTEXT ‖ handshake hash)` as 12 base32 characters, `ABCD-EFGH-IJKL`.
+/// The handshake hash covers both ephemeral keys, so the code is new for every pairing and
+/// nobody can compute it ahead of time; a relay or a copied link that sits in the middle makes
+/// two handshakes and so two different codes.
+pub fn check_code(handshake_hash: &[u8; 32]) -> String {
+    let mut h = blake3::Hasher::new();
+    h.update(CHECK_CODE_CONTEXT);
+    h.update(handshake_hash);
+    let b = base32(&h.finalize().as_bytes()[..8]).to_uppercase();
+    format!("{}-{}-{}", &b[..4], &b[4..8], &b[8..12])
+}
+
+/// Domain separation for [`HostKeys::key_binding`].
+pub const KEY_BINDING_CONTEXT: &[u8] = b"vibeke host key binding v1\0";
+
+impl HostKeys {
+    /// The host's relay key signs its Noise static key: `sign(KEY_BINDING_CONTEXT ‖ noise
+    /// public)`. A device checks it against the host id in a link ([`verify_key_binding`]), so a
+    /// link cannot pair another key under a known host's id.
+    pub fn key_binding(&self) -> [u8; 64] {
+        let mut msg = KEY_BINDING_CONTEXT.to_vec();
+        msg.extend_from_slice(&self.noise_public());
+        self.sign(&msg)
+    }
+}
+
+/// Whether `relay_pub` is the key of `host_id` and signed `noise_pub` as that host's Noise key.
+pub fn verify_key_binding(
+    host_id: &str,
+    relay_pub: &[u8; 32],
+    noise_pub: &[u8; 32],
+    sig: &[u8; 64],
+) -> bool {
+    if self::host_id(relay_pub) != host_id {
+        return false;
+    }
+    let mut msg = KEY_BINDING_CONTEXT.to_vec();
+    msg.extend_from_slice(noise_pub);
+    verify(relay_pub, &msg, sig)
+}
+
 pub fn encode_key(k: &[u8; 32]) -> String {
     b64::encode(k)
 }
@@ -158,6 +203,53 @@ mod tests {
         let sig = k.sign(b"hello");
         assert!(verify(&k.relay_public(), b"hello", &sig));
         assert!(!verify(&k.relay_public(), b"hellO", &sig));
+    }
+
+    #[test]
+    fn check_codes_have_60_bits_and_differ() {
+        let a = check_code(&[1; 32]);
+        assert_eq!(a.len(), 14, "{a}");
+        assert_eq!(a.matches('-').count(), 2, "{a}");
+        assert!(
+            a.chars()
+                .all(|c| c == '-' || c.is_ascii_uppercase() || ('2'..='7').contains(&c)),
+            "{a}"
+        );
+        assert_eq!(a, check_code(&[1; 32]));
+        assert_ne!(a, check_code(&[2; 32]));
+    }
+
+    #[test]
+    fn key_binding_ties_the_noise_key_to_the_host_id() {
+        let k = HostKeys::generate();
+        let other = HostKeys::generate();
+        let sig = k.key_binding();
+        let id = k.host_id();
+        assert!(verify_key_binding(
+            &id,
+            &k.relay_public(),
+            &k.noise_public(),
+            &sig
+        ));
+        // Another Noise key, another host id, or another relay key: refused.
+        assert!(!verify_key_binding(
+            &id,
+            &k.relay_public(),
+            &other.noise_public(),
+            &sig
+        ));
+        assert!(!verify_key_binding(
+            &other.host_id(),
+            &k.relay_public(),
+            &k.noise_public(),
+            &sig
+        ));
+        assert!(!verify_key_binding(
+            &id,
+            &other.relay_public(),
+            &k.noise_public(),
+            &other.key_binding()
+        ));
     }
 
     #[test]

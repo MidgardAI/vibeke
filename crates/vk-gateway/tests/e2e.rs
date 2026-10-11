@@ -250,6 +250,17 @@ impl Client {
                 let (payload, session) = i.read_second(&m2).map_err(|e| e.to_string())?;
                 let info: Value = serde_json::from_slice(&payload).unwrap();
                 assert_eq!(info["v"], 1);
+                // The host binds its Noise key to its host id.
+                let relay_key =
+                    vk_e2e::b64::decode_array::<32>(info["relay_key"].as_str().unwrap()).unwrap();
+                let sig =
+                    vk_e2e::b64::decode_array::<64>(info["key_sig"].as_str().unwrap()).unwrap();
+                assert!(vk_e2e::keys::verify_key_binding(
+                    info["host_id"].as_str().unwrap(),
+                    &relay_key,
+                    hk,
+                    &sig
+                ));
                 Ok(Client {
                     ws,
                     session,
@@ -402,6 +413,11 @@ async fn pair_confirm_call_and_revoke() {
         r["result"]["fingerprint"],
         vk_e2e::keys::fingerprint(&dev.public())
     );
+    // The check code comes from this handshake, so the device computes the same one.
+    assert_eq!(
+        r["result"]["check"],
+        vk_e2e::keys::check_code(&c.session.handshake_hash())
+    );
     let done = c.recv().await;
     assert_eq!(done["method"], "pair.done", "{done}");
     assert_eq!(done["params"]["scope"], "approve");
@@ -495,7 +511,10 @@ async fn pair_confirm_call_and_revoke() {
         )
         .await;
     assert_eq!(ok["result"]["interaction"]["status"], "answered");
-    assert_eq!(ok["result"]["echo"]["actor"], "gateway:test phone");
+    assert_eq!(
+        ok["result"]["echo"]["actor"],
+        format!("gateway:{device_id}(test phone)")
+    );
     // Same op_id + same params → same result, no second answer; different params → refused.
     let again = c
         .call(
@@ -1011,7 +1030,7 @@ async fn browser_tui_is_encrypted_scoped_and_closed_on_revocation() {
         {
             assert_eq!(req, 88);
             let command: Value = serde_json::from_str(&json).unwrap();
-            assert_eq!(command["params"]["actor"], "gateway:Browser (browser)");
+            assert_eq!(command["params"]["actor"], "gateway:browser(Browser)");
             break;
         }
     }
@@ -1039,7 +1058,7 @@ async fn browser_tui_is_encrypted_scoped_and_closed_on_revocation() {
                 .lock()
                 .unwrap()
                 .iter()
-                .any(|v| v["tui"] == "control-started" && v["actor"] == "gateway:Browser (browser)")
+                .any(|v| v["tui"] == "control-started" && v["actor"] == "gateway:browser(Browser)")
             {
                 break;
             }
@@ -1235,7 +1254,7 @@ async fn shared_tui_commands_use_the_existing_gateway_permissions() {
                         "{scope:?} {method}: {response}"
                     );
                     if permitted && method == "interaction.answer" {
-                        assert_eq!(response["result"]["echo"]["actor"], "gateway:Guest");
+                        assert_eq!(response["result"]["echo"]["actor"], "gateway:guest(Guest)");
                     }
                     break;
                 }

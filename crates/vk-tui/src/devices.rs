@@ -3,9 +3,12 @@
 //! machine, reached through that machine's server with `gateway.call` (like
 //! [`crate::sharing`]). Three stages:
 //!
-//! 1. **List** (`devices.list`, only `kind == "device"`): name, platform, scope, how long ago it
-//!    paired, 🔔 when it takes push. `n` pairs a new one, `x` revokes the selected one after a
-//!    confirm (`devices.revoke`), `r` reads the list again. When the relay needs an account
+//! 1. **List** (`devices.list`): the phones and apps (`kind == "device"`) with name, platform,
+//!    scope, how long ago it paired and 🔔 when it takes push; below them the shares and linked
+//!    hosts that invitations produced, with the device that created each. `n` pairs a new one,
+//!    `x` revokes the selected one after a confirm (`devices.revoke`; the confirm says what else
+//!    goes with it, from the list's `also` counts: revoking a device revokes the shares, linked
+//!    hosts and invitations it created), `r` reads the list again. When the relay needs an account
 //!    (`account.status`, read once on opening), a line shows who is signed in, and `s` signs in.
 //! 2. **Pick scope**: full (default), approve or view. Enter asks `account.status` first: a relay
 //!    that needs an account nobody has signed in to goes through **Sign in**, anything else (an
@@ -53,15 +56,20 @@ const DEFAULT_EXPIRES_IN: u64 = 900;
 /// Tags each `pair.create`, so a late answer can't land in a newer attempt or a reopened view.
 static NEXT_ATTEMPT: AtomicU64 = AtomicU64::new(1);
 
-/// (scope, name, what it allows), the default first.
+/// (scope, name, what it allows), the default first. The texts say what each level can really
+/// do (docs/site/src/security.md, "Remote access").
 const SCOPES: [(&str, &str, &str); 3] = [
-    ("full", "Full", "everything, including typing into agents"),
+    ("full", "Full", "can run any command as you on this host"),
     (
         "approve",
         "Approve",
-        "watch your agents and approve or deny their requests",
+        "can approve agent requests, including \"always allow\", and send text to agents",
     ),
-    ("view", "View", "read-only"),
+    (
+        "view",
+        "View",
+        "read-only, but can read all pane output, transcripts, files and diffs",
+    ),
 ];
 
 fn now_s() -> i64 {
@@ -84,6 +92,37 @@ pub struct DeviceRow {
     pub paired_at: i64,
     pub fingerprint: String,
     pub push: bool,
+    /// `device`, `share` or `peer` (a linked host).
+    pub kind: String,
+    /// The device that created this share or linked host, when a device did.
+    pub created_by: Option<String>,
+    /// Unix seconds, for shares and teammates' hosts.
+    pub expires_at: Option<i64>,
+    /// `peer` rows: `self` (one of your hosts) or `teammate`.
+    pub owner: Option<String>,
+    /// What revoking it also removes ("This also removes 2 shares."), from `also`.
+    pub also: Option<String>,
+}
+
+/// The sentence for `devices.list`'s `also` counts (the gateway's `state::also_text`).
+pub(crate) fn also_text(also: &Value) -> Option<String> {
+    let n = |k: &str| also.get(k).and_then(Value::as_u64).unwrap_or(0);
+    let hosts = n("hosts") + n("peers");
+    let parts: Vec<String> = [
+        (n("shares"), "share", "shares"),
+        (hosts, "linked host", "linked hosts"),
+        (n("invitations"), "invitation", "invitations"),
+    ]
+    .into_iter()
+    .filter(|(c, _, _)| *c > 0)
+    .map(|(c, one, many)| format!("{c} {}", if c == 1 { one } else { many }))
+    .collect();
+    let list = match parts.as_slice() {
+        [] => return None,
+        [one] => one.clone(),
+        [init @ .., last] => format!("{} and {last}", init.join(", ")),
+    };
+    Some(format!("This also removes {list}."))
 }
 
 fn s_of(v: &Value, k: &str) -> Option<String> {
@@ -120,12 +159,8 @@ fn clean_of(v: &Value, k: &str) -> Option<String> {
 }
 
 impl DeviceRow {
-    /// A `devices.list` entry; None for shares and peers (those live in the People and Hosts
-    /// tabs).
+    /// A `devices.list` entry: a phone or app, a share or a linked host.
     fn from_value(v: &Value) -> Option<DeviceRow> {
-        if v.get("kind").and_then(Value::as_str).unwrap_or("device") != "device" {
-            return None;
-        }
         Some(DeviceRow {
             id: s_of(v, "id")?,
             name: s_of(v, "name").unwrap_or_default(),
@@ -134,7 +169,19 @@ impl DeviceRow {
             paired_at: v["paired_at"].as_i64().unwrap_or(0),
             fingerprint: s_of(v, "fingerprint").unwrap_or_default(),
             push: v["push"].as_bool().unwrap_or(false),
+            kind: s_of(v, "kind").unwrap_or_else(|| "device".into()),
+            created_by: s_of(v, "created_by"),
+            expires_at: v["expires_at"].as_i64(),
+            owner: v
+                .pointer("/peer/owner")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            also: v.get("also").and_then(also_text),
         })
+    }
+
+    fn is_device(&self) -> bool {
+        self.kind == "device"
     }
 
     fn label(&self) -> String {
@@ -152,6 +199,8 @@ impl DeviceRow {
 pub struct Confirm {
     pub id: String,
     pub label: String,
+    /// What else goes with it ("This also removes 2 shares and 1 invitation.").
+    pub also: Option<String>,
 }
 
 /// Where a pairing link stands (`pair.status`).
@@ -163,6 +212,7 @@ pub enum PairStatus {
     Claimed {
         name: String,
         platform: String,
+        /// The pairing's check code (the device fingerprint from an older gateway).
         fingerprint: String,
     },
     /// Declined; the link stays valid until it expires.
@@ -556,6 +606,7 @@ fn ask_revoke(v: &mut View) {
             v.confirm = Some(Confirm {
                 id: d.id.clone(),
                 label: d.label(),
+                also: d.also.clone(),
             })
         }
         None => v.notice = Some("nothing selected".into()),
@@ -841,10 +892,13 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
             v.loading = false;
             match res {
                 Ok(x) => {
-                    v.rows = x["devices"]
+                    let mut rows: Vec<DeviceRow> = x["devices"]
                         .as_array()
                         .map(|a| a.iter().filter_map(DeviceRow::from_value).collect())
                         .unwrap_or_default();
+                    // Phones and apps first, then shares and linked hosts (stable within each).
+                    rows.sort_by_key(|d| !d.is_device());
+                    v.rows = rows;
                     v.error = None;
                 }
                 Err(e) => failed(v, &e),
@@ -854,8 +908,15 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
         Reply::Revoke { name } => {
             v.busy = None;
             match res {
-                Ok(_) => {
-                    v.notice = Some(format!("revoked {name}: it can no longer connect"));
+                Ok(x) => {
+                    let also = x.get("also").and_then(also_text);
+                    v.notice = Some(match also {
+                        Some(also) => format!(
+                            "revoked {name}: it can no longer connect. {}",
+                            also.replace("This also removes", "Also removed")
+                        ),
+                        None => format!("revoked {name}: it can no longer connect"),
+                    });
                     refresh(app);
                 }
                 Err(e) => failed(v, &e),
@@ -907,7 +968,11 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
                             p.status = PairStatus::Claimed {
                                 name: s_of(&x, "name").unwrap_or_default(),
                                 platform: s_of(&x, "platform").unwrap_or_default(),
-                                fingerprint: s_of(&x, "fingerprint").unwrap_or_default(),
+                                // The pairing's check code; an older gateway sends the
+                                // device fingerprint only.
+                                fingerprint: s_of(&x, "check")
+                                    .or_else(|| s_of(&x, "fingerprint"))
+                                    .unwrap_or_default(),
                             }
                         }
                         Some("rejected") => p.status = PairStatus::Rejected,
@@ -1082,15 +1147,42 @@ fn ago(t: i64, now_ms: i64) -> String {
     }
 }
 
-fn row_line(d: &DeviceRow, now_ms: i64) -> String {
+fn row_line(d: &DeviceRow, rows: &[DeviceRow], now_ms: i64) -> String {
     let mut parts = vec![d.label()];
-    if !d.platform.is_empty() {
+    match d.kind.as_str() {
+        "device" => {}
+        "share" => parts.push("share".into()),
+        "peer" => parts.push(match d.owner.as_deref() {
+            Some("self") => "your linked host".into(),
+            Some("teammate") => "teammate's host".into(),
+            _ => "linked host".into(),
+        }),
+        other => parts.push(crate::plugins::sanitize(other, 16)),
+    }
+    if d.is_device() && !d.platform.is_empty() {
         parts.push(crate::plugins::sanitize(&d.platform, 16));
     }
     if !d.scope.is_empty() {
         parts.push(d.scope.clone());
     }
-    parts.push(format!("paired {}", ago(d.paired_at, now_ms)));
+    if let Some(by) = &d.created_by {
+        let name = rows
+            .iter()
+            .find(|r| &r.id == by)
+            .map(DeviceRow::label)
+            .unwrap_or_else(|| crate::plugins::sanitize(by, 16));
+        parts.push(format!("created by {name}"));
+    }
+    if d.is_device() {
+        parts.push(format!("paired {}", ago(d.paired_at, now_ms)));
+    } else if let Some(t) = d.expires_at {
+        let left = t - now_ms / 1000;
+        parts.push(if left > 0 {
+            format!("ends in {}", fmt_age(left * 1000))
+        } else {
+            "ended".into()
+        });
+    }
     let mut s = parts.join(" · ");
     if d.push {
         s.push_str(" · 🔔");
@@ -1130,7 +1222,8 @@ pub fn draw(app: &App, g: &mut Grid) {
 fn status_line(app: &App, a: &mut crate::drafts::Area<'_>, v: &View) {
     let t = app.theme;
     if let Some(n) = &v.notice {
-        a.line(
+        wrap_lines(
+            a,
             n,
             t.s(if n.starts_with('✗') {
                 t.red
@@ -1163,7 +1256,7 @@ fn draw_list(app: &App, a: &mut crate::drafts::Area<'_>, v: &View) {
         }
     }
     a.line("", t.text());
-    if v.rows.is_empty() {
+    if !v.rows.iter().any(DeviceRow::is_device) {
         a.line(
             if v.loading {
                 "  loading…"
@@ -1173,22 +1266,37 @@ fn draw_list(app: &App, a: &mut crate::drafts::Area<'_>, v: &View) {
             t.dim(),
         );
     }
+    let mut heading = false;
     for (i, d) in v.rows.iter().enumerate() {
+        if !d.is_device() && !heading {
+            heading = true;
+            a.line("", t.text());
+            a.line("Shares and linked hosts", t.bold(t.fg));
+        }
         let on = i == v.sel;
         a.line(
-            &format!("{} {}", if on { "›" } else { " " }, row_line(d, now_ms)),
+            &format!(
+                "{} {}",
+                if on { "›" } else { " " },
+                row_line(d, &v.rows, now_ms)
+            ),
             if on { t.sel(t.fg) } else { t.text() },
         );
     }
     a.line("", t.text());
     if let Some(c) = &v.confirm {
-        a.line(
+        wrap_lines(
+            a,
             &format!(
-                "Revoke {}? It can no longer connect to this machine. [y] revoke  [n] keep",
+                "Revoke {}? It can no longer connect to this machine.",
                 c.label
             ),
             t.bold(t.red),
         );
+        if let Some(also) = &c.also {
+            wrap_lines(a, also, t.bold(t.red));
+        }
+        a.line("[y] revoke  [n] keep", t.bold(t.red));
     } else {
         status_line(app, a, v);
     }
@@ -1208,7 +1316,9 @@ fn draw_pick(app: &App, a: &mut crate::drafts::Area<'_>, v: &View, sel: usize) {
     a.line("", t.text());
     for (i, (_, name, what)) in SCOPES.iter().enumerate() {
         let on = i == sel;
-        a.line(
+        // Wrapped, not cut: what a level can do is the point of the choice.
+        wrap_lines(
+            a,
             &format!("{} {:<8} {}", if on { "›" } else { " " }, name, what),
             if on { t.sel(t.fg) } else { t.text() },
         );
@@ -1232,7 +1342,7 @@ fn draw_pairing(app: &App, a: &mut crate::drafts::Area<'_>, v: &View, p: &Pairin
     let left = p.open_by - now_s();
     a.line(&format!("Pair a phone · {} access", p.scope), t.bold(t.fg));
     a.line(
-        "Scan with your phone's camera; check the fingerprint matches when asked",
+        "Scan with your phone's camera; check that both show the same code when asked",
         t.text(),
     );
     match &p.status {
@@ -1257,7 +1367,7 @@ fn draw_pairing(app: &App, a: &mut crate::drafts::Area<'_>, v: &View, p: &Pairin
             wrap_lines(
                 a,
                 &format!(
-                    "'{who}'{plat} is asking to pair — press y to pair or n to reject in the Confirm prompt, fingerprint {}",
+                    "'{who}'{plat} is asking to pair — check code {} — pair only if the device shows the same code: y in the Confirm prompt pairs, n rejects",
                     crate::plugins::sanitize(fingerprint, 80)
                 ),
                 t.bold(t.green),

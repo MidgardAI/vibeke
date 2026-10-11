@@ -2,6 +2,8 @@
 //!
 //! `VK_E2E_WRITE_VECTORS=1 cargo test -p vk-e2e --test vectors` regenerates `tests/vectors.json`;
 //! otherwise the test checks that the file still matches what this implementation produces.
+//! Each case also carries its handshake hash and pairing check code, and `keys.binding` a host key
+//! binding signature (`HostKeys::key_binding`).
 
 use serde_json::{Value, json};
 use vk_e2e::{Hello, Initiator, Responder, b64, keys::x25519_public};
@@ -32,6 +34,8 @@ fn case(name: &str, psk: Option<[u8; 32]>, hello: Hello) -> Value {
     for f in i_small.iter().chain(&i_big) {
         rsess.decrypt(f).unwrap();
     }
+    assert_eq!(isess.handshake_hash(), rsess.handshake_hash());
+    let hh = isess.handshake_hash();
     let enc = |v: &Vec<Vec<u8>>| v.iter().map(b64::encode).collect::<Vec<_>>();
     json!({
         "name": name,
@@ -46,6 +50,8 @@ fn case(name: &str, psk: Option<[u8; 32]>, hello: Hello) -> Value {
         "msg1": b64::encode(&m1),
         "msg2": b64::encode(&m2),
         "msg2_payload": String::from_utf8(p2.to_vec()).unwrap(),
+        "handshake_hash": b64::encode(hh),
+        "check_code": vk_e2e::keys::check_code(&hh),
         "transport": {
             "small_plaintext": String::from_utf8(small).unwrap(),
             "big_plaintext_len": big.len(),
@@ -53,6 +59,14 @@ fn case(name: &str, psk: Option<[u8; 32]>, hello: Hello) -> Value {
             "responder_frames": [enc(&r_small)],
         }
     })
+}
+
+/// Host keys for the key binding vector (Ed25519 signatures are deterministic).
+fn binding_keys() -> vk_e2e::HostKeys {
+    vk_e2e::HostKeys {
+        noise_private: bytes(2),
+        relay_seed: bytes(7),
+    }
 }
 
 #[test]
@@ -68,6 +82,13 @@ fn vectors() {
             "device_fingerprint": vk_e2e::keys::fingerprint(&x25519_public(&bytes(1))),
             "relay_public_for_host_id": b64::encode(bytes(6)),
             "host_id": vk_e2e::keys::host_id(&bytes(6)),
+            "binding": {
+                "relay_seed": b64::encode(bytes(7)),
+                "relay_public": b64::encode(binding_keys().relay_public()),
+                "host_id": binding_keys().host_id(),
+                "noise_public": b64::encode(binding_keys().noise_public()),
+                "sig": b64::encode(binding_keys().key_binding()),
+            },
         }
     });
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/vectors.json");

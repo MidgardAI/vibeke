@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import vectors from '../../../../crates/vk-e2e/tests/vectors.json';
 import * as b64 from '../src/b64';
 import { helloDevice, helloPair, helloText } from '../src/hello';
-import { x25519Public } from '../src/keys';
+import { checkCode, hostId, verifyKeyBinding, x25519Public } from '../src/keys';
 import { CHUNK, CipherState, Initiator, MAX_MESSAGE, NOISE_MAX, Responder, Session } from '../src/noise';
 import { FakeClock } from './helpers';
 
@@ -23,6 +23,8 @@ interface Case {
   msg1: string;
   msg2: string;
   msg2_payload: string;
+  handshake_hash: string;
+  check_code: string;
   transport: {
     small_plaintext: string;
     big_plaintext_len: number;
@@ -63,6 +65,9 @@ describe('conformance vectors (crates/vk-e2e/tests/vectors.json)', () => {
       const { payload, session } = i.readSecond(b64.decode(c.msg2));
       expect(td.decode(payload)).toBe(c.msg2_payload);
       expect(b64.encode(session.remoteStatic)).toBe(c.host_static_public);
+      // Same handshake hash, so the same pairing check code.
+      expect(b64.encode(session.handshakeHash)).toBe(c.handshake_hash);
+      expect(checkCode(session.handshakeHash)).toBe(c.check_code);
 
       // Same nonces → byte-identical transport frames.
       const [smallFrames, bigFrames] = c.transport.initiator_frames;
@@ -85,6 +90,7 @@ describe('conformance vectors (crates/vk-e2e/tests/vectors.json)', () => {
       expect(payload.length).toBe(0);
       const { message, session } = r.writeSecond(te.encode(c.msg2_payload));
       expect(b64.encode(message)).toBe(c.msg2);
+      expect(b64.encode(session.handshakeHash)).toBe(c.handshake_hash);
 
       const [smallFrames, bigFrames] = c.transport.initiator_frames.map((fs) => fs.map((f) => b64.decode(f)));
       let out: Uint8Array | null = null;
@@ -97,6 +103,27 @@ describe('conformance vectors (crates/vk-e2e/tests/vectors.json)', () => {
       expect(enc(session.encrypt(te.encode(c.transport.small_plaintext)))).toEqual(c.transport.responder_frames[0]!);
     });
   }
+});
+
+describe('pairing check codes and host key binding', () => {
+  test('check codes have 60 bits in three groups', () => {
+    const code = checkCode(new Uint8Array(32).fill(1));
+    expect(code).toMatch(/^[A-Z2-7]{4}-[A-Z2-7]{4}-[A-Z2-7]{4}$/);
+    expect(checkCode(new Uint8Array(32).fill(2))).not.toBe(code);
+  });
+
+  test('the Rust binding vector verifies, and nothing else does', () => {
+    const v = (vectors as any).keys.binding as { relay_public: string; host_id: string; noise_public: string; sig: string };
+    const relay = b64.decode(v.relay_public);
+    const hk = b64.decode(v.noise_public);
+    const sig = b64.decode(v.sig);
+    expect(hostId(relay)).toBe(v.host_id);
+    expect(verifyKeyBinding(v.host_id, relay, hk, sig)).toBe(true);
+    const other = hk.slice();
+    other[0] = (other[0] ?? 0) ^ 1;
+    expect(verifyKeyBinding(v.host_id, relay, other, sig)).toBe(false);
+    expect(verifyKeyBinding('someotherhostid', relay, hk, sig)).toBe(false);
+  });
 });
 
 // ---- adversarial -----------------------------------------------------------------------------

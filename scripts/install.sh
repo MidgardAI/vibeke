@@ -212,13 +212,13 @@ main() {
     *)
       case $rc in
         1) why="SHA256SUMS.minisig is missing from the release" ;;
-        2) why="minisign is not installed (brew install minisign, or your package manager)" ;;
+        2) why="minisign is not installed. Install it first: 'brew install minisign' on macOS, 'sudo apt install minisign' on Debian or Ubuntu, or your package manager. Then run the installer again" ;;
         *) why="the signature does not verify" ;;
       esac
       if [ "${VIBEKE_ALLOW_UNSIGNED:-}" = 1 ]; then
         echo "vibeke install: WARNING: VIBEKE_ALLOW_UNSIGNED=1: continuing without a verified signature ($why); only the checksum protects this install" >&2
       else
-        die "cannot verify the release: $why; expected a signature by $EXPECTED. Nothing installed. (VIBEKE_ALLOW_UNSIGNED=1 accepts an unsigned release for development)"
+        die "cannot verify the release: $why. Expected a signature by $EXPECTED. Nothing installed."
       fi
       ;;
   esac

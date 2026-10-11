@@ -204,6 +204,10 @@ pub struct Previews {
     /// ([`declare_api`]): pane → (its child process when approved, ports). In memory only; a
     /// restarted pane (new child process) asks again.
     approved_ports: Mutex<HashMap<String, ApprovedPorts>>,
+    /// Loopback ports the user allowed `preview.connect` to reach although no preview of that
+    /// machine uses them (`allow_port: true`), as (machine, port); `""` is this machine.
+    /// Persisted (`preview` / `allowed_ports`), loaded on first use.
+    allowed_ports: Mutex<Option<HashSet<(String, u16)>>>,
 }
 
 /// A pane's approved ports: its child process when approved, and the ports.
@@ -233,6 +237,7 @@ impl Default for Previews {
             tls_ca: Mutex::default(),
             mirrors: Mutex::default(),
             approved_ports: Mutex::default(),
+            allowed_ports: Mutex::default(),
         }
     }
 }
@@ -1069,9 +1074,118 @@ async fn to_machine(
     }
 }
 
-/// `preview.connect {machine?, host, port}` (06 B3.5): validate the params and open a stream
-/// to a loopback port on the preview machine, with the same route as the SOCKS listener
-/// (`to_machine`). Counts the stream in `preview.status.accepted` once it is open.
+/// The machine key of [`Previews::allowed_ports`]: `""` for this machine.
+fn machine_key(server: &Server, machine: &str) -> String {
+    if is_local_machine(server, machine) {
+        String::new()
+    } else {
+        machine.to_string()
+    }
+}
+
+/// `localhost:<port>` or `<machine>:localhost:<port>`, as audit entries name a stream's target.
+fn port_target(machine: &str, port: u16) -> String {
+    if machine.is_empty() {
+        format!("localhost:{port}")
+    } else {
+        format!("{machine}:localhost:{port}")
+    }
+}
+
+/// Whether the user allowed `port` on `machine` for `preview.connect` before.
+fn port_granted(server: &Server, machine: &str, port: u16) -> bool {
+    let key = (machine_key(server, machine), port);
+    let mut g = server.previews.allowed_ports.lock().unwrap();
+    if g.is_none() {
+        let saved: Vec<(String, u16)> = server
+            .with_core(|c| c.store.kv_get("preview", "allowed_ports").ok().flatten())
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default();
+        *g = Some(saved.into_iter().collect());
+    }
+    g.as_ref().is_some_and(|set| set.contains(&key))
+}
+
+/// Remember that the user allowed `port` on `machine` (and say so in the event log).
+fn grant_port(server: &Server, machine: &str, port: u16, actor: Option<&str>) {
+    let key = (machine_key(server, machine), port);
+    let all: Vec<(String, u16)> = {
+        let _ = port_granted(server, machine, port); // loads the saved set
+        let mut g = server.previews.allowed_ports.lock().unwrap();
+        let set = g.get_or_insert_with(HashSet::new);
+        if !set.insert(key.clone()) {
+            return;
+        }
+        set.iter().cloned().collect()
+    };
+    let mut c = server.core.lock().unwrap();
+    let mut tx = Tx::new();
+    tx.m.kv(
+        "preview",
+        "allowed_ports",
+        Some(serde_json::to_string(&all).unwrap_or_default()),
+    );
+    // Audited like a gateway's actions (`client.action`), naming who allowed it.
+    tx.event_by(
+        "client.action",
+        json!({"method": "preview.allow_port", "pane": null, "target": port_target(&key.0, port)}),
+        json!({"kind": if actor.is_some() { "gateway" } else { "user" }, "id": actor}),
+        json!({}),
+    );
+    let _ = server.commit(&mut c, tx);
+}
+
+/// Whether `preview.connect` may reach `port` on `machine` without asking (spec 06 B3.5): a
+/// port of one of that machine's previews (declared, suggested by discovery, or a task's), a
+/// port inside a task's lease on this machine, or one the user allowed before.
+async fn port_allowed(server: &Arc<Server>, machine: &str, port: u16) -> bool {
+    if port_granted(server, machine, port) {
+        return true;
+    }
+    if is_local_machine(server, machine) {
+        return server.with_core(|c| {
+            c.model.previews.iter().any(|x| x.port == port)
+                || c.model.tasks.iter().any(|t| {
+                    t.port_range
+                        .is_some_and(|(lo, hi)| (lo..=hi).contains(&port))
+                })
+        });
+    }
+    // Another machine's server keeps its own previews.
+    match remote_call(server, machine, "preview.list", json!({"all": true})).await {
+        Ok(v) => v["previews"].as_array().is_some_and(|ps| {
+            ps.iter()
+                .any(|x| x.get("port").and_then(Value::as_u64) == Some(u64::from(port)))
+        }),
+        Err(_) => false,
+    }
+}
+
+/// The refusal a client turns into "Allow this preview to reach localhost:<port>?" and then
+/// calls `preview.connect` again with `allow_port: true`.
+fn port_not_allowed(machine: &str, host: &str, port: u16) -> RpcError {
+    err(
+        ErrorKind::PermissionDenied,
+        format!(
+            "port_not_allowed: {host}:{port} is not a preview{}. Ask the user, then call preview.connect again with allow_port: true",
+            if machine.is_empty() {
+                String::new()
+            } else {
+                format!(" on {machine}")
+            }
+        ),
+    )
+    .details(json!({"reason": "port_not_allowed", "port": port, "host": host, "machine": machine}))
+}
+
+/// `preview.connect {machine?, host, port, allow_port?, actor?}` (06 B3.5): validate the params
+/// and open a stream to a loopback port on the preview machine, with the same route as the
+/// SOCKS listener (`to_machine`). Only ports of that machine's previews and task leases, and
+/// ports the user allowed, are reachable; any other port fails with `port_not_allowed`
+/// (`details: {reason, port, host, machine}`) until the client asks the user and calls again
+/// with `allow_port: true`, which remembers the port for that machine. A gateway names the
+/// device (`actor`) and the stream is audited under it. Counts the stream in
+/// `preview.status.accepted` once it is open.
 pub(crate) async fn connect_stream(
     server: &Arc<Server>,
     p: &Value,
@@ -1094,6 +1208,25 @@ pub(crate) async fn connect_stream(
         Some(n) if (1..=65535).contains(&n) => n as u16,
         _ => return Err(invalid("`port` must be an integer from 1 to 65535")),
     };
+    let actor = s(p, "actor").filter(|a| !a.trim().is_empty());
+    if !port_allowed(server, &machine, port).await {
+        if b(p, "allow_port") != Some(true) {
+            return Err(port_not_allowed(&machine, &host, port));
+        }
+        grant_port(server, &machine, port, actor);
+    }
+    if let Some(actor) = actor {
+        let mut c = server.core.lock().unwrap();
+        let mut tx = Tx::new();
+        tx.event_by(
+            "client.action",
+            json!({"method": "preview.connect", "pane": null,
+                   "target": port_target(&machine_key(server, &machine), port)}),
+            json!({"kind": "gateway", "id": actor}),
+            json!({}),
+        );
+        let _ = server.commit(&mut c, tx);
+    }
     let target = if host.contains(':') {
         format!("[{host}]:{port}")
     } else {
@@ -1467,7 +1600,7 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
                 .map(|x| json!({"preview": server.with_core(|c| preview_json(c, &x))}))
         }
         "preview.promote" => promote(server, ctx, p).await,
-        "preview.forget" | "preview.dismiss" => forget(server, p).await,
+        "preview.forget" | "preview.dismiss" => forget(server, ctx, p).await,
         "preview.url" => {
             let t = match s(p, "preview") {
                 Some(t) => t,
@@ -2046,9 +2179,45 @@ async fn promote(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     Ok(json!({"preview": server.with_core(|c| preview_json(c, &x))}))
 }
 
-async fn forget(server: &Arc<Server>, p: &Value) -> R {
+/// Whether a pane may forget preview `x`: only one of its own workspace (its pane's, or its
+/// task's).
+fn in_callers_workspace(server: &Server, caller: &str, x: &Preview) -> bool {
+    server.with_core(|c| {
+        let Some(mine) = c.pane(caller).map(|p| p.workspace.clone()) else {
+            return false;
+        };
+        let by_pane = x
+            .pane
+            .as_deref()
+            .and_then(|id| c.pane(id))
+            .is_some_and(|p| p.workspace == mine);
+        let by_task = x
+            .task
+            .as_deref()
+            .and_then(|id| c.task(id))
+            .is_some_and(|t| t.workspace.as_deref() == Some(mine.as_str()));
+        by_pane || by_task
+    })
+}
+
+async fn forget(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     let t = s(p, "preview").ok_or_else(|| invalid("missing param `preview`"))?;
     let (m, t) = split_target(server, p, t);
+    // (A pane never reaches another machine here: `authorize_pane_machine` refused it.)
+    if let Some(caller) = &ctx.pane_scope
+        && m.is_empty()
+        && let Ok(x) = find_local(server, &t)
+        && !in_callers_workspace(server, caller, &x)
+    {
+        return Err(err(
+            ErrorKind::PermissionDenied,
+            format!(
+                "preview {} belongs to another workspace; a pane can only forget its own workspace's previews",
+                x.handle
+            ),
+        )
+        .details(json!({"scope": "pane", "reason": "foreign_preview", "preview": x.handle})));
+    }
     if !m.is_empty() {
         // Revoke this server's origins for it first: the old link must not reach whatever
         // listens on that remote port next, even if the remote call fails.

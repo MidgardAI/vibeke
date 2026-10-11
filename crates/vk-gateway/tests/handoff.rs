@@ -48,6 +48,8 @@ async fn start_relay() -> SocketAddr {
         vk_relay::Config {
             public_origins: vec![format!("http://{addr}")],
             log_ip_raw: true,
+            // These tests are about other things; the relay tests cover tickets.
+            require_tickets: false,
             ..Default::default()
         },
         Box::new(vk_relay::Open),
@@ -142,6 +144,7 @@ async fn gateway(
         limit: None,
         peer: None,
         supports_clear: false,
+        created_by: None,
     };
     gw.add_device(owner.clone()).unwrap();
     tokio::spawn(vk_gateway::run(gw.clone()));

@@ -12,7 +12,7 @@
 //!   `vibeke gateway pair`) => `{link, pid, open_by, scope}`. `unavailable` without a relay or
 //!   an app origin.
 //! - `pair.status {pid}` => `{status: pending}` | `{status: claimed, name, platform,
-//!   fingerprint}` | `{status: done, device_id, name?}` (kept until the sweep removes it, so a retry sees it again) |
+//!   fingerprint, check}` (`check`: the pairing's check code, which the device shows too) | `{status: done, device_id, name?}` (kept until the sweep removes it, so a retry sees it again) |
 //!   `{status: rejected}` | `{status: gone}` (unknown or expired).
 //!
 //! Cancelling a pairing is `share.revoke {id: pid}` (removes any pairing that isn't done).
@@ -84,6 +84,7 @@ fn owner() -> Device {
         limit: None,
         peer: None,
         supports_clear: false,
+        created_by: None,
     }
 }
 
@@ -170,7 +171,9 @@ fn pair_create(gw: &Arc<Gateway>, p: &Value) -> ApiResult {
         .clamp(PAIR_TTL_MIN_S, PAIR_TTL_MAX_S);
     // Both before anything is written: no orphan pairing when the link can't be made.
     let relay = gw.cfg.relay.clone().ok_or_else(|| {
-        ApiError::unavailable("no relay configured: run `vibeke gateway pair` once to set one up")
+        ApiError::unavailable(
+            "this gateway runs without a relay (local only). Run `vibeke gateway on` to use the Vibeke relay, then pair again",
+        )
     })?;
     let app = gw.cfg.app_url.clone().ok_or_else(|| {
         ApiError::unavailable(
@@ -188,6 +191,10 @@ fn pair_create(gw: &Arc<Gateway>, p: &Value) -> ApiResult {
     )
     .map_err(crate::api::internal)?;
     gw.state.audit(&json!({"ts": now_s(), "event": "pairing.created", "by": BY, "pid": pairing.pid, "scope": scope.as_str()}));
+    crate::notice::spawn(
+        &gw.server,
+        crate::notice::pairing_created(scope, ttl_s.div_ceil(60)),
+    );
     Ok(json!({
         "link": link.to_url(&app),
         "pid": pairing.pid,
@@ -221,10 +228,12 @@ fn pair_status(gw: &Arc<Gateway>, p: &Value) -> ApiResult {
                 fingerprint,
                 device_name,
                 platform,
+                check,
                 ..
             } => {
+                // `check`: the code the operator compares with the device's.
                 return Ok(json!({"status": "claimed", "name": device_name,
-                                 "platform": platform, "fingerprint": fingerprint}));
+                                 "platform": platform, "fingerprint": fingerprint, "check": check}));
             }
         }
     };
@@ -441,12 +450,81 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn revoking_a_device_revokes_its_shares() {
+        let t = tempfile::tempdir().unwrap();
+        let gw = gateway(&t, None, None);
+        gw.add_device(device("d1", "phone")).unwrap();
+        gw.add_device(Device {
+            kind: "share".into(),
+            created_by: Some("d1".into()),
+            ..device("s1", "guest")
+        })
+        .unwrap();
+        gw.add_device(device("d2", "tablet")).unwrap();
+        let list = execute(&gw, "devices.list", &json!({})).await.unwrap();
+        let phone = list["devices"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|d| d["id"] == "d1")
+            .unwrap()
+            .clone();
+        assert_eq!(phone["also"]["shares"], 1);
+        let share = list["devices"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|d| d["id"] == "s1")
+            .unwrap()
+            .clone();
+        assert_eq!(share["created_by"], "d1");
+
+        // A dry run says what would go and changes nothing.
+        let r = execute(
+            &gw,
+            "devices.revoke",
+            &json!({"device": "d1", "dry_run": true}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(r["revoked"], json!(["d1", "s1"]));
+        assert_eq!(r["summary"], "This also removes 1 share.");
+        assert_eq!(gw.state.devices().unwrap().len(), 3);
+        assert_eq!(
+            execute(
+                &gw,
+                "devices.revoke",
+                &json!({"device": "ghost", "dry_run": true})
+            )
+            .await
+            .unwrap_err()
+            .kind,
+            "not_found"
+        );
+
+        let r = execute(&gw, "devices.revoke", &json!({"device": "d1"}))
+            .await
+            .unwrap();
+        assert_eq!(r["also"]["shares"], 1);
+        let left: Vec<String> = gw
+            .state
+            .devices()
+            .unwrap()
+            .into_iter()
+            .map(|d| d.id)
+            .collect();
+        assert_eq!(left, ["d2"]);
+        let audit = std::fs::read_to_string(gw.state.dir.join("audit.log")).unwrap();
+        assert!(audit.contains("creator_revoked"), "{audit}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn pair_create_needs_relay_and_app() {
         let t = tempfile::tempdir().unwrap();
         let gw = gateway(&t, None, Some("https://app.example"));
         let e = execute(&gw, "pair.create", &json!({})).await.unwrap_err();
         assert_eq!(e.kind, "unavailable");
-        assert!(e.message.contains("no relay"), "{}", e.message);
+        assert!(e.message.contains("without a relay"), "{}", e.message);
 
         let t = tempfile::tempdir().unwrap();
         let gw = gateway(&t, Some("wss://relay.example"), None);
@@ -523,13 +601,14 @@ mod tests {
                     fingerprint: "ab-cd".into(),
                     device_name: "phone".into(),
                     platform: "ios".into(),
+                    check: "ABCD-EFGH-IJKL".into(),
                 },
                 ..pairing.clone()
             })
             .unwrap();
         assert_eq!(
             status(pid.clone()).await,
-            json!({"status": "claimed", "name": "phone", "platform": "ios", "fingerprint": "ab-cd"})
+            json!({"status": "claimed", "name": "phone", "platform": "ios", "fingerprint": "ab-cd", "check": "ABCD-EFGH-IJKL"})
         );
 
         // Done: reported with the device's name, again on a retry (a reply may be lost).

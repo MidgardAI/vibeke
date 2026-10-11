@@ -16,6 +16,11 @@ use crate::api::{ApiError, ApiResult};
 
 /// A device that has not polled a frame for this long stops watching.
 pub const LEASE: Duration = Duration::from_secs(30);
+/// Phone previews (`browser.preview_open`): largest viewport side in CSS px, largest DPR, and
+/// most open per device.
+pub const MAX_SIDE: u64 = 2048;
+pub const MAX_DPR: f64 = 4.0;
+pub const MAX_PER_DEVICE: usize = 3;
 /// How often live sessions are attached again: the server drops the gateway's subscriptions when
 /// its connection to the server ends, and a fresh attach restores them.
 const REATTACH: Duration = Duration::from_secs(15);
@@ -88,6 +93,16 @@ impl Screencasts {
             .entry(session.to_string())
             .or_default()
             .opened_by = Some(device.to_string());
+    }
+
+    /// How many sessions `device` opened that are still open here.
+    pub fn opened_count(&self, device: &str) -> usize {
+        self.map
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|w| w.opened_by.as_deref() == Some(device))
+            .count()
     }
 
     pub fn opened_by(&self, session: &str) -> Option<String> {
@@ -585,6 +600,17 @@ mod tests {
             )]
         );
         assert_eq!(s.taken_by("b3"), None);
+    }
+
+    #[test]
+    fn opened_sessions_are_counted_per_device() {
+        let s = Screencasts::default();
+        assert_eq!(s.opened_count("phone"), 0);
+        s.set_opened("b1", "phone");
+        s.set_opened("b2", "phone");
+        s.set_opened("b3", "tablet");
+        assert_eq!(s.opened_count("phone"), 2);
+        assert_eq!(s.opened_count("tablet"), 1);
     }
 
     #[test]

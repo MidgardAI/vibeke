@@ -1,6 +1,6 @@
 // Key material (spec 16 §3), mirroring vk-e2e/src/keys.rs.
 
-import { x25519 } from '@noble/curves/ed25519.js';
+import { ed25519, x25519 } from '@noble/curves/ed25519.js';
 import { blake3 } from '@noble/hashes/blake3.js';
 import { randomBytes } from '@noble/hashes/utils.js';
 import { getOrCreateKey, type KeyStore } from './platform';
@@ -32,6 +32,51 @@ export function hostId(relayPublic: Uint8Array): string {
 export function fingerprint(publicKey: Uint8Array): string {
   const b = base32(blake3(publicKey).subarray(0, 5));
   return `${b.slice(0, 4)}-${b.slice(4, 8)}`;
+}
+
+const utf8 = (s: string): Uint8Array => new TextEncoder().encode(s);
+const concatBytes = (...parts: Uint8Array[]): Uint8Array => {
+  const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
+  let o = 0;
+  for (const p of parts) {
+    out.set(p, o);
+    o += p.length;
+  }
+  return out;
+};
+
+/** Domain separation for `checkCode` (vk-e2e `keys::CHECK_CODE_CONTEXT`). */
+export const CHECK_CODE_CONTEXT = utf8('vibeke pairing check code v1\0');
+
+/**
+ * The pairing check code both ends show: 60 bits of blake3(context ‖ handshake hash) as 12 base32
+ * characters, `ABCD-EFGH-IJKL`. New for every pairing; a party in the middle makes two
+ * handshakes and so two different codes. Mirrors vk-e2e `keys::check_code`.
+ */
+export function checkCode(handshakeHash: Uint8Array): string {
+  const b = base32(blake3(concatBytes(CHECK_CODE_CONTEXT, handshakeHash)).subarray(0, 8)).toUpperCase();
+  return `${b.slice(0, 4)}-${b.slice(4, 8)}-${b.slice(8, 12)}`;
+}
+
+/** Domain separation for the host key binding (vk-e2e `keys::KEY_BINDING_CONTEXT`). */
+export const KEY_BINDING_CONTEXT = utf8('vibeke host key binding v1\0');
+
+/** The message a host's relay key signs to bind its Noise static key `hk`. */
+export const keyBindingMessage = (hk: Uint8Array): Uint8Array => concatBytes(KEY_BINDING_CONTEXT, hk);
+
+/**
+ * Whether `relayKey` is the key of host `id` and signed `hk` as that host's Noise key: the proof a
+ * device checks before it trusts the host id in a pairing link. Mirrors vk-e2e
+ * `keys::verify_key_binding`.
+ */
+export function verifyKeyBinding(id: string, relayKey: Uint8Array, hk: Uint8Array, sig: Uint8Array): boolean {
+  if (relayKey.length !== 32 || sig.length !== 64 || hk.length !== 32) return false;
+  if (hostId(relayKey) !== id) return false;
+  try {
+    return ed25519.verify(sig, keyBindingMessage(hk), relayKey);
+  } catch {
+    return false;
+  }
 }
 
 /** X25519 public key for a private scalar (clamping happens inside the DH function). */

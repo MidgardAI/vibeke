@@ -1,7 +1,9 @@
 //! `preview.connect` end to end (06 B3.5): a user client's control connection becomes a raw
 //! byte stream to a loopback port on this machine. Bytes pipelined right after the request
 //! line reach the destination, half-close is passed on, and non-loopback hosts, bad ports and
-//! closed ports are refused with the documented errors.
+//! closed ports are refused with the documented errors. A port that is no preview is refused
+//! with `port_not_allowed` until the client asks the user and sends `allow_port: true`; the
+//! server then remembers it.
 
 use crate::support::{Rpc, Session};
 use serde_json::{Value, json};
@@ -82,6 +84,21 @@ fn preview_connect_streams_bytes_to_a_loopback_port() {
     let port = echo_listener();
     let before = accepted(&s);
 
+    // No preview uses the port: the client must ask the user first.
+    let v = connect(&s, json!({"host": "localhost", "port": port}));
+    assert_eq!(v["error"]["data"]["kind"], "permission_denied", "{v}");
+    assert_eq!(
+        v["error"]["data"]["details"]["reason"], "port_not_allowed",
+        "{v}"
+    );
+    assert_eq!(v["error"]["data"]["details"]["port"], port, "{v}");
+    // The user allowed it: the port is remembered.
+    let v = connect(
+        &s,
+        json!({"host": "localhost", "port": port, "allow_port": true}),
+    );
+    assert_eq!(v["result"]["connected"], true, "{v}");
+
     let (mut rd, mut wr) = hello(&s);
     // The request line and the first stream bytes in one write: bytes that arrive before the
     // upgrade must not be lost.
@@ -140,6 +157,26 @@ fn preview_connect_refuses_bad_destinations() {
         l.local_addr().unwrap().port()
     };
     let v = connect(&s, json!({"host": "127.0.0.1", "port": closed}));
+    assert_eq!(
+        v["error"]["data"]["details"]["reason"], "port_not_allowed",
+        "{v}"
+    );
+    let v = connect(
+        &s,
+        json!({"host": "127.0.0.1", "port": closed, "allow_port": true}),
+    );
     assert_eq!(v["error"]["data"]["kind"], "remote_unavailable", "{v}");
     assert_eq!(v["error"]["data"]["details"]["reason"], "refused", "{v}");
+}
+
+#[test]
+fn preview_connect_reaches_declared_previews_without_asking() {
+    let s = Session::new();
+    s.json(&["server", "status"]);
+    let port = echo_listener();
+    Rpc::connect(&s.socket())
+        .call("preview.declare", json!({"port": port}))
+        .expect("preview.declare");
+    let v = connect(&s, json!({"host": "localhost", "port": port}));
+    assert_eq!(v["result"]["connected"], true, "{v}");
 }

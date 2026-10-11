@@ -284,9 +284,7 @@ async fn incoming(gw: &Arc<Gateway>, dev: &Device, method: &str, p: &Value) -> A
         return gw.server.call(method, params).await;
     }
     still_authorized(gw, dev)?;
-    gw.server
-        .call_as(&format!("gateway:{}", dev.name), method, params)
-        .await
+    gw.server.call_as(&dev.actor(), method, params).await
 }
 
 #[cfg(test)]

@@ -430,6 +430,77 @@ pub fn load_artifact(path: PathBuf, version: String, allow_unsigned: bool) -> Re
     })
 }
 
+/// Download the signed release of `version` for `target` (`linux-x86_64`, …) into `dir` (the
+/// local release cache, `~/.cache/vibeke/releases/<version>/`) and verify it: `SHA256SUMS` must
+/// carry a minisign signature by a release key for this version before the binary is even
+/// fetched, and the binary must match its entry. Returns the artifact, ready to push. Nothing
+/// that fails a check is kept in `dir`. Blocking (curl).
+pub fn fetch_release_artifact(
+    dir: &std::path::Path,
+    target: &str,
+    version: &str,
+) -> Result<Artifact> {
+    if !valid_version(version) {
+        bail!("invalid version {version:?}");
+    }
+    let base = crate::download::release_base_url(version);
+    fetch_release_artifact_from(&base, dir, target, version)
+}
+
+/// [`fetch_release_artifact`] from the release files at `base`.
+pub fn fetch_release_artifact_from(
+    base: &str,
+    dir: &std::path::Path,
+    target: &str,
+    version: &str,
+) -> Result<Artifact> {
+    use crate::download;
+    let token = download::github_token();
+    let api = download::github_api_base();
+    let name = format!("vibeke-{target}");
+    let sums = download::fetch(&format!("{base}/SHA256SUMS"), token.as_ref(), &api)?;
+    let sig = download::fetch(&format!("{base}/SHA256SUMS.minisig"), token.as_ref(), &api)
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "no SHA256SUMS.minisig ({e}); expected a signature by {}",
+                expected_keys_hint()
+            )
+        })?;
+    let sig = String::from_utf8_lossy(&sig).into_owned();
+    let comment = verify_signature_bytes(&trusted_keys(), &sums, &sig)
+        .map_err(|e| anyhow::anyhow!("the release checksums from {base} are not trusted: {e}"))?;
+    require_signed_version(Trust::Signed, Some(&comment), version)?;
+    let listed = String::from_utf8_lossy(&sums).lines().any(|l| {
+        l.split_whitespace()
+            .nth(1)
+            .is_some_and(|n| n.trim_start_matches('*') == name)
+    });
+    if !listed {
+        bail!("vibeke {version} has no release for {target}");
+    }
+    let bin = download::fetch(&format!("{base}/{name}"), token.as_ref(), &api)?;
+    std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
+    let put = |file: &str, data: &[u8], mode: u32| -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = dir.join(format!(".{file}.tmp"));
+        std::fs::write(&tmp, data).with_context(|| format!("write {}", tmp.display()))?;
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(mode))?;
+        std::fs::rename(&tmp, dir.join(file))?;
+        Ok(())
+    };
+    put("SHA256SUMS", &sums, 0o644)?;
+    put("SHA256SUMS.minisig", sig.as_bytes(), 0o644)?;
+    put(&name, &bin, 0o755)?;
+    let path = dir.join(&name);
+    match load_artifact(path.clone(), version.to_string(), false) {
+        Ok(a) => Ok(a),
+        Err(e) => {
+            let _ = std::fs::remove_file(&path);
+            Err(e)
+        }
+    }
+}
+
 /// The running binary as an artifact. Requires the opt-in because there is no independent
 /// checksum for it; the hash computed here only protects the transfer.
 pub fn load_self_artifact(exe: PathBuf, version: String, allow_unsigned: bool) -> Result<Artifact> {
@@ -468,9 +539,15 @@ pub async fn ensure(
     }
     match (&p.version, &want) {
         (Some(have), Some(w)) if have == w => return Ok(Outcome::AlreadyCurrent),
-        (Some(_), None) => return Ok(Outcome::AlreadyCurrent),
+        // Never a version mismatch taken for current: without an artifact there is nothing to
+        // install, and the caller says why.
+        (Some(have), None) => bail!(
+            "{} runs vibeke {have}, and no verified vibeke release for {} is available to match this machine",
+            t.label,
+            p.target()
+        ),
         (None, None) => bail!(
-            "vibeke is not installed on {} and no {} artifact is available locally (build one with `mise run dist`)",
+            "vibeke is not installed on {} and no verified vibeke release for {} is available",
             t.label,
             p.target()
         ),
@@ -1008,5 +1085,94 @@ mod tests {
         // Still refused without a checksum even with the opt-in.
         let (_d, f) = dist(false, false, true);
         assert!(trust_artifact(&f, true).is_err());
+    }
+
+    /// An HTTP server answering `GET /<name>` from `files` (404 otherwise), until dropped.
+    fn release_server(files: Vec<(String, Vec<u8>)>) -> String {
+        use std::io::{BufRead, BufReader, Write};
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://127.0.0.1:{}", l.local_addr().unwrap().port());
+        std::thread::spawn(move || {
+            for c in l.incoming() {
+                let Ok(mut c) = c else { return };
+                let mut line = String::new();
+                let mut rd = BufReader::new(c.try_clone().unwrap());
+                if rd.read_line(&mut line).is_err() {
+                    continue;
+                }
+                // Drain the headers.
+                let mut h = String::new();
+                while rd.read_line(&mut h).is_ok_and(|n| n > 2) {
+                    h.clear();
+                }
+                let path = line.split_whitespace().nth(1).unwrap_or("/");
+                let body = files
+                    .iter()
+                    .find(|(n, _)| format!("/{n}") == path)
+                    .map(|(_, b)| b.clone());
+                let (status, body) = match body {
+                    Some(b) => ("200 OK", b),
+                    None => ("404 Not Found", b"missing".to_vec()),
+                };
+                let _ = write!(
+                    c,
+                    "HTTP/1.1 {status}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = c.write_all(&body);
+            }
+        });
+        base
+    }
+
+    #[test]
+    fn release_artifacts_are_fetched_only_when_signed_for_the_version() {
+        let bin = b"#!/bin/sh\necho vibeke 9.9.9\n".to_vec();
+        let sha = format!("{:x}", Sha256::digest(&bin));
+        let sums = format!("{sha}  vibeke-linux-x86_64\n").into_bytes();
+        let good = crate::minisign::testing::sign(&sums, "vibeke v9.9.9");
+        let base = release_server(vec![
+            ("SHA256SUMS".into(), sums.clone()),
+            ("SHA256SUMS.minisig".into(), good.into_bytes()),
+            ("vibeke-linux-x86_64".into(), bin.clone()),
+        ]);
+        let dir = tempfile::tempdir().unwrap();
+        let a = fetch_release_artifact_from(&base, dir.path(), "linux-x86_64", "9.9.9").unwrap();
+        assert_eq!(a.trust, Trust::Signed);
+        assert_eq!(a.sha256, sha);
+        assert_eq!(std::fs::read(&a.path).unwrap(), bin);
+        // No release for that platform.
+        let e = fetch_release_artifact_from(&base, dir.path(), "linux-riscv64", "9.9.9")
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("no release for linux-riscv64"), "{e}");
+
+        // Signed for another version: refused before the binary is fetched.
+        let old = crate::minisign::testing::sign(&sums, "vibeke v9.9.8");
+        let base = release_server(vec![
+            ("SHA256SUMS".into(), sums.clone()),
+            ("SHA256SUMS.minisig".into(), old.into_bytes()),
+            ("vibeke-linux-x86_64".into(), bin.clone()),
+        ]);
+        let dir = tempfile::tempdir().unwrap();
+        assert!(fetch_release_artifact_from(&base, dir.path(), "linux-x86_64", "9.9.9").is_err());
+        assert!(!dir.path().join("vibeke-linux-x86_64").exists());
+
+        // A binary that does not match the signed checksum is not kept.
+        let base = release_server(vec![
+            ("SHA256SUMS".into(), sums),
+            (
+                "SHA256SUMS.minisig".into(),
+                crate::minisign::testing::sign(
+                    &format!("{sha}  vibeke-linux-x86_64\n").into_bytes(),
+                    "vibeke v9.9.9",
+                )
+                .into_bytes(),
+            ),
+            ("vibeke-linux-x86_64".into(), b"tampered".to_vec()),
+        ]);
+        let dir = tempfile::tempdir().unwrap();
+        assert!(fetch_release_artifact_from(&base, dir.path(), "linux-x86_64", "9.9.9").is_err());
+        assert!(!dir.path().join("vibeke-linux-x86_64").exists());
     }
 }

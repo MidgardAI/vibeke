@@ -18,6 +18,8 @@ async fn start(limits: Limits) -> SocketAddr {
     start_with(
         Config {
             limits,
+            // Most tests here are about other things; `tickets_relay` requires tickets.
+            require_tickets: false,
             ..Config::default()
         },
         Box::new(Open),
@@ -174,6 +176,62 @@ async fn splice_preserves_messages_both_ways() {
     );
     data.send(Message::Binary(vec![9].into())).await.unwrap();
     client.await.unwrap();
+}
+
+#[tokio::test]
+async fn a_handshake_that_never_finishes_is_closed_early() {
+    let addr = start(Limits {
+        preauth_timeout: Duration::from_millis(300),
+        ..Limits::default()
+    })
+    .await;
+    let mut host = register(addr, HostKeys::generate()).await;
+    let id = host.keys.host_id();
+    let mut c = ws(addr, &format!("/v1/connect?host={id}")).await;
+    // A replayed hello and first handshake message, then nothing.
+    c.send(Message::Text("hello".into())).await.unwrap();
+    c.send(Message::Binary(vec![1].into())).await.unwrap();
+    let (conn, generation) = host.incoming().await;
+    let mut data = host.accept(addr, &conn, generation).await;
+    assert_eq!(next_text(&mut data).await, "hello");
+    data.send(Message::Binary(vec![2].into())).await.unwrap();
+    // Closed long before the idle timeout.
+    let started = std::time::Instant::now();
+    assert_eq!(close_code(&mut c).await, 1008);
+    assert!(started.elapsed() < Duration::from_secs(5));
+}
+
+#[tokio::test]
+async fn a_finished_handshake_outlives_the_preauth_timeout() {
+    let addr = start(Limits {
+        preauth_timeout: Duration::from_millis(200),
+        ..Limits::default()
+    })
+    .await;
+    let mut host = register(addr, HostKeys::generate()).await;
+    let id = host.keys.host_id();
+    let mut c = ws(addr, &format!("/v1/connect?host={id}")).await;
+    for m in [
+        Message::Text("hello".into()),
+        Message::Binary(vec![1].into()),
+        Message::Binary(vec![3].into()),
+    ] {
+        c.send(m).await.unwrap();
+    }
+    let (conn, generation) = host.incoming().await;
+    let mut data = host.accept(addr, &conn, generation).await;
+    assert_eq!(next_text(&mut data).await, "hello");
+    data.send(Message::Binary(vec![2].into())).await.unwrap();
+    // Wait past the timeout by a round trip that takes longer than it.
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    data.send(Message::Binary(vec![4].into())).await.unwrap();
+    loop {
+        match c.next().await.unwrap().unwrap() {
+            Message::Binary(b) if b.as_ref() == [4] => break,
+            Message::Binary(_) => continue,
+            other => panic!("expected data, got {other:?}"),
+        }
+    }
 }
 
 #[tokio::test]
@@ -477,6 +535,40 @@ async fn revoked_subject_is_refused_and_disconnected() {
     let other = sign_ticket(&host.keys, "dev:d2", now() + 60);
     let _c = ws(addr, &connect_path(&id, &other)).await;
     host.incoming().await;
+}
+
+/// A device that sends its ticket in a header: a browser as a subprotocol (the relay selects
+/// `vibeke.v1`), a native client as `Authorization: Bearer`.
+async fn ws_with_header(addr: SocketAddr, path: &str, name: &str, value: &str) -> Ws {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    let mut req = format!("ws://{addr}{path}").into_client_request().unwrap();
+    req.headers_mut().insert(
+        tokio_tungstenite::tungstenite::http::HeaderName::from_bytes(name.as_bytes()).unwrap(),
+        value.parse().unwrap(),
+    );
+    connect_async(req).await.unwrap().0
+}
+
+#[tokio::test]
+async fn tickets_travel_in_headers() {
+    let addr = tickets_relay().await;
+    let mut host = register(addr, HostKeys::generate()).await;
+    let id = host.keys.host_id();
+    let t = sign_ticket(&host.keys, "dev:d1", now() + 60);
+    let path = format!("/v1/connect?host={id}");
+    let _browser = ws_with_header(
+        addr,
+        &path,
+        "sec-websocket-protocol",
+        &format!("vibeke.v1, vibeke-ticket.{t}"),
+    )
+    .await;
+    host.incoming().await;
+    let _native = ws_with_header(addr, &path, "authorization", &format!("Bearer {t}")).await;
+    host.incoming().await;
+    // A bad ticket in a header is checked like one in the URL.
+    let mut c = ws_with_header(addr, &path, "authorization", "Bearer garbage").await;
+    expect_denied(&mut c, "ticket_invalid").await;
 }
 
 #[tokio::test]

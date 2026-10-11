@@ -36,6 +36,17 @@ pub fn invite(
     host_name: &str,
     ttl: Duration,
 ) -> Result<(Pairing, PairingLink)> {
+    invite_by(state, relay, host_name, ttl, None)
+}
+
+/// [`invite`], recording the device that asked for it (`None`: the owner).
+pub fn invite_by(
+    state: &StateDir,
+    relay: Option<&str>,
+    host_name: &str,
+    ttl: Duration,
+    created_by: Option<String>,
+) -> Result<(Pairing, PairingLink)> {
     let spec = ShareSpec {
         kind: "peer".into(),
         ttl_s: 0,
@@ -43,6 +54,7 @@ pub fn invite(
         limit: None,
         label: None,
         owner: Some("self".into()),
+        created_by,
     };
     let (p, mut link) = crate::pair::create_with(
         state,
@@ -96,6 +108,18 @@ pub async fn redeem(
     link: &str,
     allow_other_relay: bool,
 ) -> Result<PeerRecord> {
+    redeem_by(state, our_host_id, us, link, allow_other_relay, None).await
+}
+
+/// [`redeem`], recording the device that asked for it (`None`: the owner).
+pub async fn redeem_by(
+    state: &StateDir,
+    our_host_id: &str,
+    us: &Identity,
+    link: &str,
+    allow_other_relay: bool,
+    created_by: Option<String>,
+) -> Result<PeerRecord> {
     let link = PairingLink::parse(link.trim()).context("not a Vibeke invitation link")?;
     if link.host == our_host_id {
         bail!("this invitation is for this host itself");
@@ -106,7 +130,8 @@ pub async fn redeem(
         configured.as_deref(),
         allow_other_relay,
     )?;
-    let rec = PeerClient::pair(&link, us).await?;
+    let mut rec = PeerClient::pair(&link, us).await?;
+    rec.created_by = created_by;
     let _lock = state.lock()?;
     let mut all = state.peers()?;
     all.retain(|p| p.host != rec.host);
@@ -249,9 +274,17 @@ pub async fn dispatch(gw: &Arc<Gateway>, device: &Device, method: &str, p: &Valu
                 .get("ttl_s")
                 .and_then(|v| v.as_u64())
                 .map_or(INVITE_TTL, |t| Duration::from_secs(t.clamp(60, 3600)));
-            let (pairing, link) =
-                invite(&gw.state, gw.cfg.relay.as_deref(), &gw.host_name, ttl).map_err(internal)?;
+            let (pairing, link) = invite_by(
+                &gw.state,
+                gw.cfg.relay.as_deref(),
+                &gw.host_name,
+                ttl,
+                crate::api::creator(device),
+            )
+            .map_err(internal)?;
             gw.state.audit(&json!({"ts": now_s(), "event": "share.created", "by": device.id, "kind": "peer", "pid": pairing.pid}));
+            let by = crate::api::creator(device).map(|_| device.name.clone());
+            crate::notice::spawn(&gw.server, crate::notice::peer_invited(by.as_deref()));
             Ok(
                 json!({"link": link_text(&link, gw.cfg.app_url.as_deref()), "pid": pairing.pid, "open_by": pairing.exp}),
             )
@@ -270,29 +303,41 @@ pub async fn dispatch(gw: &Arc<Gateway>, device: &Device, method: &str, p: &Valu
                 user,
             };
             let allow_other = p.get("allow_other_relay").and_then(|v| v.as_bool()) == Some(true);
-            let rec = redeem(&gw.state, &gw.keys.host_id(), &us, link, allow_other)
-                .await
-                .map_err(|e| {
-                    let m = format!("{e:#}");
-                    if m.contains("not a peer")
-                        || m.contains("not a Vibeke")
-                        || m.contains("itself")
-                        || m.contains("invitation relay")
-                        || m.contains("invitation uses relay")
-                        || m.contains("invitation points at")
-                        || m.contains("invalid relay address")
-                    {
-                        ApiError::invalid(m)
-                    } else if m.contains("expired")
-                        || m.contains("unauthorized")
-                        || m.contains("not available")
-                    {
-                        ApiError::new("forbidden", m)
-                    } else {
-                        ApiError::unavailable(m)
-                    }
-                })?;
+            let rec = redeem_by(
+                &gw.state,
+                &gw.keys.host_id(),
+                &us,
+                link,
+                allow_other,
+                crate::api::creator(device),
+            )
+            .await
+            .map_err(|e| {
+                let m = format!("{e:#}");
+                if m.contains("not a peer")
+                    || m.contains("not a Vibeke")
+                    || m.contains("itself")
+                    || m.contains("invitation relay")
+                    || m.contains("invitation uses relay")
+                    || m.contains("invitation points at")
+                    || m.contains("invalid relay address")
+                {
+                    ApiError::invalid(m)
+                } else if m.contains("expired")
+                    || m.contains("unauthorized")
+                    || m.contains("not available")
+                {
+                    ApiError::new("forbidden", m)
+                } else {
+                    ApiError::unavailable(m)
+                }
+            })?;
             crate::handoff_send::publish_peers(gw, false).await;
+            let by = crate::api::creator(device).map(|_| device.name.clone());
+            crate::notice::spawn(
+                &gw.server,
+                crate::notice::peer_redeemed(&rec.name, by.as_deref()),
+            );
             Ok(json!({"peer": rec.public_json()}))
         }
         "peer.list" => {
@@ -320,8 +365,11 @@ pub async fn dispatch(gw: &Arc<Gateway>, device: &Device, method: &str, p: &Valu
             }
             match gw.device(id) {
                 Some(d) if d.kind != "device" => {
-                    gw.revoke(&d.id).await.map_err(internal)?;
-                    Ok(json!({"cancelled": "device"}))
+                    let by = crate::api::creator(device).unwrap_or_else(|| "tui".into());
+                    let c = gw.revoke_by(&d.id, &by).await.map_err(internal)?;
+                    Ok(
+                        json!({"cancelled": "device", "also": c.also_json(), "summary": c.summary()}),
+                    )
                 }
                 _ => Err(ApiError::new(
                     "not_found",
@@ -350,6 +398,7 @@ mod tests {
             limit: None,
             label: None,
             owner: owner.map(str::to_string),
+            created_by: None,
         }
     }
 
@@ -435,6 +484,7 @@ mod tests {
             expires_at: None,
             ticket: None,
             ticket_exp: None,
+            created_by: None,
         };
         st.save_peers(&[rec("a", "devbox"), rec("b", "laptop")])
             .unwrap();

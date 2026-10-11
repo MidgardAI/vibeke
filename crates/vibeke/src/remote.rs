@@ -220,10 +220,48 @@ pub async fn ssh(g: &Global, args: &[String]) -> i32 {
             return EXIT_API;
         }
     };
-    let artifact = if remote_download {
+    let current = probe.version.as_deref() == Some(vk_proto::VERSION);
+    // A remote newer than this machine is refused before anything is downloaded.
+    if !current
+        && let Err(e) = bootstrap::downgrade_check(
+            &target.label,
+            probe.version.as_deref(),
+            vk_proto::VERSION,
+            allow_downgrade,
+        )
+    {
+        eprintln!("vibeke: {e:#}");
+        return EXIT_API;
+    }
+    // Without a local copy of this release for the remote's platform, fetch the signed one
+    // into the local cache; if this machine can't, the remote downloads it itself.
+    let mut remote_download = remote_download;
+    let mut fetch_error = None;
+    let artifact = if remote_download || current {
         None
     } else {
-        artifact_for(&probe.target())
+        match artifact_for(&probe.target()) {
+            Some(a) => Some(a),
+            None => {
+                eprintln!(
+                    "vibeke: fetching the signed vibeke {} release for {} …",
+                    vk_proto::VERSION,
+                    probe.target()
+                );
+                match fetch_artifact(&probe.target()).await {
+                    Ok(a) => Some(a),
+                    Err(e) => {
+                        eprintln!(
+                            "vibeke: could not fetch it here ({e:#}); {} downloads it itself",
+                            target.label
+                        );
+                        fetch_error = Some(format!("{e:#}"));
+                        remote_download = true;
+                        None
+                    }
+                }
+            }
+        }
     };
     if let Some(a) = &artifact
         && a.trust != bootstrap::Trust::Signed
@@ -246,8 +284,19 @@ pub async fn ssh(g: &Global, args: &[String]) -> i32 {
             target.label
         ));
     }
-    let ensured = if remote_download {
-        ensure_via_download(&target, &probe, upgrade || auto_upgrade, allow_downgrade).await
+    let ensured = if current {
+        Ok(bootstrap::Outcome::AlreadyCurrent)
+    } else if remote_download {
+        ensure_via_download(&target, &probe, upgrade || auto_upgrade, allow_downgrade)
+            .await
+            .map_err(|e| match &fetch_error {
+                Some(here) => anyhow::anyhow!(
+                    "could not install vibeke {} on {}: this machine could not fetch it ({here}), and the remote could not either ({e:#})",
+                    vk_proto::VERSION,
+                    target.label
+                ),
+                None => e,
+            })
     } else {
         bootstrap::ensure(
             &target,
@@ -629,6 +678,20 @@ async fn machine_disconnect(g: &Global, args: &[String]) -> i32 {
     EXIT_OK
 }
 
+/// The signed release of this version for `target`, downloaded into the local release cache
+/// (`~/.cache/vibeke/releases/<version>/`, where [`artifact_for`] finds it next time) and
+/// verified there.
+async fn fetch_artifact(target: &str) -> anyhow::Result<Artifact> {
+    let dir = vk_server::paths::home()
+        .join(".cache/vibeke/releases")
+        .join(vk_proto::VERSION);
+    let target = target.to_string();
+    tokio::task::spawn_blocking(move || {
+        bootstrap::fetch_release_artifact(&dir, &target, vk_proto::VERSION)
+    })
+    .await?
+}
+
 /// `bootstrap = "remote-download"`: fetch and verify the signed release manifest here (never
 /// unsigned: the opt-in does not apply, there is no local file to checksum), then let the
 /// remote download the binary and check the manifest's sha256. `GITHUB_TOKEN` /
@@ -717,14 +780,17 @@ async fn machine_upgrade(g: &Global, args: &[String]) -> i32 {
         }
         None => match artifact_for(&probe.target()) {
             Some(a) => a,
-            None => {
-                eprintln!(
-                    "vibeke: no verified vibeke {} artifact for {} (build one with `mise run dist`, or pass --from <file> with a SHA256SUMS next to it)",
-                    vk_proto::VERSION,
-                    probe.target()
-                );
-                return EXIT_API;
-            }
+            None => match fetch_artifact(&probe.target()).await {
+                Ok(a) => a,
+                Err(e) => {
+                    eprintln!(
+                        "vibeke: could not fetch the signed vibeke {} release for {} ({e:#}). Check the network, or pass --from <file> with a signed SHA256SUMS next to it",
+                        vk_proto::VERSION,
+                        probe.target()
+                    );
+                    return EXIT_API;
+                }
+            },
         },
     };
     if artifact.trust != bootstrap::Trust::Signed {

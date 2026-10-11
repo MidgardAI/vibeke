@@ -48,3 +48,4 @@ agent.transcript  # needs a run with a harness transcript file; gateway paging i
 client.activity  # reported by TUIs; covered indirectly by gateway client.list tests
 client.confirm  # blocks until a TUI answers; the answer side is covered (client.confirm_answer)
 task.message.cancel  # needs a prepared task message; prepare/send/get are covered
+gateway.notice  # sent only by a real gateway process; covered by vk-server unit tests (gateway_bridge)

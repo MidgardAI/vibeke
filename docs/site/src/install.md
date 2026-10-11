@@ -100,5 +100,26 @@ To select a version, set the variable on the shell that runs the installer:
 curl -fsSL https://vibeke.dev/install.sh | VIBEKE_VERSION=0.2.0 sh
 ```
 
+### Verify a release by hand
+
+The installer checks the release with built-in public keys. You can check those keys yourself.
+Compare them with the keys in this table. The same table is in the `keys/` folder of the
+[source repository](https://github.com/MidgardAI/vibeke/tree/main/keys).
+
+| Label | Key ID | Public key |
+| --- | --- | --- |
+| Current | `5F6E09C78F555F34` | `RWQ0X1WPxwluX2gFO4vO586PSTdpSfJqrb+xsQnZ2ctND/VDw7VCWx5z` |
+| Next | `69536A23D04E2C7C` | `RWR8LE7QI2pTaSsb4srEFbF1j78fXZzbORy4KGRzHErddJwSJLxwqH3x` |
+
+To check a release yourself, download `SHA256SUMS`, `SHA256SUMS.minisig` and the binary from the release page.
+Then run these commands:
+
+```sh
+minisign -V -P RWQ0X1WPxwluX2gFO4vO586PSTdpSfJqrb+xsQnZ2ctND/VDw7VCWx5z -m SHA256SUMS
+shasum -a 256 -c SHA256SUMS --ignore-missing
+```
+
+The first command prints the trusted comment. It must name the version you downloaded, for example `vibeke v0.12.0`.
+
 For mirrors, offline installation, signatures, and development builds, see [release verification](reference/releases.md).
 To contribute code, see [building from source](development.md).

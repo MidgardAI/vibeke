@@ -69,6 +69,11 @@ pub const METHODS: &[(&str, bool)] = &[
 const MAX_FRAME_WAIT_MS: u64 = 15_000;
 /// `browser.input` batch ceiling.
 const MAX_INPUT_EVENTS: usize = 64;
+/// Phone previews (`mobile: true`, 06 B3.6): largest viewport side in CSS px, and largest DPR.
+pub const MAX_MOBILE_SIDE: u32 = 2048;
+pub const MAX_MOBILE_DPR: f64 = 4.0;
+/// Screencast frames are captured at device pixels, at most this many on the longer side.
+const MAX_CAPTURE_SIDE: f64 = 4096.0;
 
 /// Ring sizes (06 B5).
 const RING: usize = 500;
@@ -286,7 +291,15 @@ pub struct Session {
     network: Mutex<VecDeque<Value>>,
     inflight: Mutex<HashMap<String, Value>>,
     denials: Mutex<VecDeque<Denial>>,
+    /// Who holds the take-over: `device:<gateway actor>` for an app device (stable while the
+    /// gateway reconnects), else the client connection id ([`controller_key`]).
     human: Mutex<Option<String>>,
+    /// Ids given to touch points that came without one, for the fingers down now (`(id, x, y)`),
+    /// and the next free id: a finger keeps its id while others lift ([`assign_touch_ids`]).
+    touches: Mutex<(Vec<(i64, f64, f64)>, i64)>,
+    /// Data-saving screencast (a viewer on a cellular network or in the background): CSS
+    /// pixels, lower quality, every other frame.
+    data_saver: AtomicBool,
     frames: watch::Sender<Option<Arc<Frame>>>,
     frame_seq: AtomicU64,
     screencast_subs: AtomicUsize,
@@ -343,6 +356,75 @@ impl Session {
             "proxy_port": self.proxy.lock().unwrap().as_ref().map(|p| p.port),
         })
     }
+}
+
+/// `Page.startScreencast` parameters for a session: frames at device pixels (CSS size × DPR,
+/// at most [`MAX_CAPTURE_SIDE`] on the longer side), or in data-saving mode at CSS pixels,
+/// lower quality and every other frame.
+fn screencast_params(w: u32, h: u32, dpr: f64, saver: bool) -> Value {
+    let scale = if saver {
+        1.0
+    } else {
+        dpr.clamp(1.0, MAX_MOBILE_DPR)
+    };
+    let (mut mw, mut mh) = (f64::from(w) * scale, f64::from(h) * scale);
+    let longest = mw.max(mh);
+    if longest > MAX_CAPTURE_SIDE {
+        let k = MAX_CAPTURE_SIDE / longest;
+        mw *= k;
+        mh *= k;
+    }
+    let (quality, nth) = if saver { (50, 2) } else { (80, 1) };
+    json!({"format": "jpeg", "quality": quality, "maxWidth": mw.round().max(1.0) as u32,
+           "maxHeight": mh.round().max(1.0) as u32, "everyNthFrame": nth})
+}
+
+impl Session {
+    fn screencast_params(&self) -> Value {
+        let (w, h) = self.viewport();
+        screencast_params(w, h, self.dpr(), self.data_saver.load(Ordering::SeqCst))
+    }
+}
+
+/// Who a take-over belongs to. An app device acts through the gateway, which may reconnect
+/// with a new client id: its take-over is keyed by the device (the gateway's `actor`) instead.
+fn controller_key(ctx: &Ctx, p: &Value) -> String {
+    match s(p, "actor").filter(|a| ctx.kind == "gateway" && !a.trim().is_empty()) {
+        Some(actor) => format!("device:{actor}"),
+        None => ctx.client_id.clone(),
+    }
+}
+
+/// Stable ids for touch points that came without one: each point keeps the id of the nearest
+/// finger that was down before (within `MATCH_PX`), new fingers get new ids. `prev` and the
+/// result are `(id, x, y)` of the fingers down; `next` is the next free id.
+fn assign_touch_ids(
+    prev: &[(i64, f64, f64)],
+    pts: &[(f64, f64)],
+    next: &mut i64,
+) -> Vec<(i64, f64, f64)> {
+    const MATCH_PX: f64 = 200.0;
+    let mut free: Vec<(i64, f64, f64)> = prev.to_vec();
+    pts.iter()
+        .map(|&(x, y)| {
+            let near = free
+                .iter()
+                .enumerate()
+                .map(|(i, &(_, px, py))| (i, (px - x).hypot(py - y)))
+                .filter(|(_, d)| *d <= MATCH_PX)
+                .min_by(|a, b| a.1.total_cmp(&b.1))
+                .map(|(i, _)| i);
+            let id = match near {
+                Some(i) => free.remove(i).0,
+                None => {
+                    let id = *next;
+                    *next += 1;
+                    id
+                }
+            };
+            (id, x, y)
+        })
+        .collect()
 }
 
 /// A subscription to a session's screencast; dropping it detaches (and stops the screencast
@@ -458,12 +540,11 @@ impl AgentBrowsers {
             .ok_or_else(|| not_found("browser_session", target))?;
         let cdp = self.cdp().await?;
         if sess.screencast_subs.fetch_add(1, Ordering::SeqCst) == 0 {
-            let (w, h) = sess.viewport();
             if let Err(e) = call(
                 &cdp,
                 Some(&sess.cdp_session),
                 "Page.startScreencast",
-                json!({"format": "jpeg", "quality": 80, "maxWidth": w, "maxHeight": h, "everyNthFrame": 1}),
+                sess.screencast_params(),
             )
             .await
             {
@@ -720,12 +801,17 @@ async fn idle_loop(server: Arc<Server>) {
                 }
                 None
             });
+            // Nobody watching and nothing used for `idle`: closed, also under a take-over whose
+            // holder went away (a phone whose gateway restarted never releases it).
             let why = why.or_else(|| {
                 let unused = sess.last_used.lock().unwrap().elapsed() > idle;
-                (unused
-                    && sess.screencast_subs.load(Ordering::Relaxed) == 0
-                    && sess.human_control().is_none())
-                .then_some("idle")
+                (unused && sess.screencast_subs.load(Ordering::Relaxed) == 0).then_some(
+                    if sess.human_control().is_some() {
+                        "orphaned"
+                    } else {
+                        "idle"
+                    },
+                )
             });
             if let Some(why) = why {
                 close_session(&server, &sess, why).await;
@@ -1373,7 +1459,7 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
                 None => Err(not_found("browser_session", t)),
                 Some(sess) => {
                     let on = method == "browser.take_over";
-                    *sess.human.lock().unwrap() = on.then(|| ctx.client_id.clone());
+                    *sess.human.lock().unwrap() = on.then(|| controller_key(ctx, p));
                     sess.touch();
                     emit(
                         server,
@@ -1430,6 +1516,18 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
                 None => Err(not_found("browser_session", t)),
                 Some(sess) => {
                     use base64::Engine as _;
+                    // A viewer that turns data saving on or off (cellular, in the background)
+                    // restarts the screencast with the new settings.
+                    if let Some(saver) = b(p, "data_saver")
+                        && sess.data_saver.swap(saver, Ordering::SeqCst) != saver
+                        && sess.screencast_subs.load(Ordering::SeqCst) > 0
+                        && let Ok(cdp) = server.agent_browser.cdp().await
+                    {
+                        let cs = Some(sess.cdp_session.as_str());
+                        let _ = call(&cdp, cs, "Page.stopScreencast", json!({})).await;
+                        let _ =
+                            call(&cdp, cs, "Page.startScreencast", sess.screencast_params()).await;
+                    }
                     let after = u(p, "after_seq");
                     let wait =
                         Duration::from_millis(u(p, "wait_ms").unwrap_or(0).min(MAX_FRAME_WAIT_MS));
@@ -1597,6 +1695,18 @@ async fn open(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         .and_then(Value::as_f64)
         .or(device.map(|d| d.dpr))
         .unwrap_or(1.0);
+    // A phone preview is capped: its frames are captured at device pixels.
+    let (viewport, dpr) = if device.is_some_and(|d| d.mobile) {
+        (
+            (
+                viewport.0.clamp(1, MAX_MOBILE_SIDE),
+                viewport.1.clamp(1, MAX_MOBILE_SIDE),
+            ),
+            dpr.clamp(0.5, MAX_MOBILE_DPR),
+        )
+    } else {
+        (viewport, dpr)
+    };
     // Pre-check before starting anything (clean error, nothing left behind).
     if let Some(u) = &url
         && let Some(t) = policy::parse_target(u)
@@ -1734,6 +1844,8 @@ async fn open(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         inflight: Mutex::default(),
         denials: Mutex::default(),
         human: Mutex::new(None),
+        touches: Mutex::default(),
+        data_saver: AtomicBool::new(false),
         frames,
         frame_seq: AtomicU64::new(0),
         screencast_subs: AtomicUsize::new(0),
@@ -2215,7 +2327,7 @@ async fn input(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     if sess.closed.load(Ordering::SeqCst) {
         return Err(not_found("browser_session", t));
     }
-    if sess.human_control().as_deref() != Some(ctx.client_id.as_str()) {
+    if sess.human_control().as_deref() != Some(controller_key(ctx, p).as_str()) {
         return Err(err(
             ErrorKind::Conflict,
             format!(
@@ -2239,6 +2351,8 @@ async fn input(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
 
 enum InputStep {
     Cdp(Vec<vk_browser::input::CdpInput>),
+    /// A CDP touch event type and the fingers down after it (`id` when the client gave one).
+    Touch(&'static str, Vec<(Option<i64>, f64, f64)>),
     Key(String),
     History(String),
     Resize(u32, u32, Option<f64>),
@@ -2273,24 +2387,22 @@ fn parse_input_event(ev: &Value) -> Result<InputStep, RpcError> {
             if pts.len() > 10 {
                 return Err(invalid("a touch event has at most 10 points"));
             }
-            let mut touch_points = Vec::with_capacity(pts.len());
-            for (i, pt) in pts.iter().enumerate() {
-                touch_points.push(json!({
-                    "x": num(pt, "x")?,
-                    "y": num(pt, "y")?,
-                    "id": pt.get("id").and_then(Value::as_i64).unwrap_or(i as i64),
-                }));
+            let mut points = Vec::with_capacity(pts.len());
+            for pt in pts {
+                points.push((
+                    pt.get("id").and_then(Value::as_i64),
+                    num(pt, "x")?,
+                    num(pt, "y")?,
+                ));
             }
             // `points` lists the fingers still down after the change. CDP diffs each event
             // against the previous one: touchEnd and touchCancel carry no points, and a finger
             // lifted while others stay down is a touchMove with the remaining points.
-            let kind = match (kind, touch_points.is_empty()) {
+            let kind = match (kind, points.is_empty()) {
                 ("touchEnd" | "touchCancel", false) => "touchMove",
                 (k, _) => k,
             };
-            InputStep::Cdp(vec![CdpInput::Touch(
-                json!({"type": kind, "touchPoints": touch_points}),
-            )])
+            InputStep::Touch(kind, points)
         }
         "tap" => {
             let (x, y) = (num(ev, "x")?, num(ev, "y")?);
@@ -2354,6 +2466,37 @@ async fn apply_input(
 ) -> Result<(), RpcError> {
     let cs = Some(sess.cdp_session.as_str());
     match step {
+        InputStep::Touch(kind, points) => {
+            // Points without an id keep a stable id for the whole touch sequence, never their
+            // position in the list (that changes when another finger lifts).
+            let touch_points: Vec<Value> = {
+                let mut g = sess.touches.lock().unwrap();
+                let (prev, next) = &mut *g;
+                let anon: Vec<(f64, f64)> = points
+                    .iter()
+                    .filter(|p| p.0.is_none())
+                    .map(|p| (p.1, p.2))
+                    .collect();
+                let assigned = assign_touch_ids(prev, &anon, next);
+                *prev = assigned.clone();
+                if points.is_empty() {
+                    prev.clear();
+                }
+                let mut it = assigned.into_iter();
+                points
+                    .iter()
+                    .map(|&(id, x, y)| {
+                        let id = id.unwrap_or_else(|| it.next().map_or(0, |a| a.0));
+                        json!({"x": x, "y": y, "id": id})
+                    })
+                    .collect()
+            };
+            let c = vk_browser::input::CdpInput::Touch(
+                json!({"type": kind, "touchPoints": touch_points}),
+            );
+            let (m, p) = c.to_command();
+            call(cdp, cs, m, p).await?;
+        }
         InputStep::Cdp(cmds) => {
             for c in cmds {
                 let (m, p) = c.to_command();
@@ -2384,6 +2527,16 @@ async fn apply_input(
         }
         InputStep::Resize(w, h, dpr) => {
             let dpr = dpr.unwrap_or_else(|| sess.dpr());
+            // A phone preview stays within its caps.
+            let (w, h, dpr) = if sess.mobile {
+                (
+                    (*w).min(MAX_MOBILE_SIDE),
+                    (*h).min(MAX_MOBILE_SIDE),
+                    dpr.min(MAX_MOBILE_DPR),
+                )
+            } else {
+                (*w, *h, dpr)
+            };
             // The window first, as when the session opened (`Page::fit_window`).
             if let Some(sid) = cs {
                 let page = vk_browser::cdp::Page::attached(
@@ -2391,7 +2544,7 @@ async fn apply_input(
                     sid.to_string(),
                     sess.target_id.clone(),
                 );
-                let size = (*w, *h);
+                let size = (w, h);
                 let _ = tokio::task::spawn_blocking(move || page.fit_window(size)).await;
             }
             call(
@@ -2401,18 +2554,12 @@ async fn apply_input(
                 json!({"width": w, "height": h, "deviceScaleFactor": dpr, "mobile": sess.mobile}),
             )
             .await?;
-            *sess.viewport.lock().unwrap() = (*w, *h);
+            *sess.viewport.lock().unwrap() = (w, h);
             *sess.dpr.lock().unwrap() = dpr;
             if sess.screencast_subs.load(Ordering::SeqCst) > 0 {
                 // The screencast keeps its old size until restarted.
                 let _ = call(cdp, cs, "Page.stopScreencast", json!({})).await;
-                call(
-                    cdp,
-                    cs,
-                    "Page.startScreencast",
-                    json!({"format": "jpeg", "quality": 80, "maxWidth": w, "maxHeight": h, "everyNthFrame": 1}),
-                )
-                .await?;
+                call(cdp, cs, "Page.startScreencast", sess.screencast_params()).await?;
             }
         }
     }
@@ -3027,6 +3174,37 @@ mod tests {
         assert_eq!(c.idle(), Duration::from_secs(2));
         assert_eq!(c.external(), External::Deny);
         assert_eq!(c.allow_rules().len(), 1);
+    }
+
+    #[test]
+    fn touch_ids_follow_the_nearest_finger() {
+        let mut next = 0;
+        let a = assign_touch_ids(&[], &[(10.0, 10.0), (300.0, 300.0)], &mut next);
+        assert_eq!(a.iter().map(|p| p.0).collect::<Vec<_>>(), [0, 1]);
+        // The first finger lifts; the second keeps its id although it is first now.
+        let b = assign_touch_ids(&a, &[(305.0, 302.0)], &mut next);
+        assert_eq!(b[0].0, 1);
+        // A new finger far away gets a new id.
+        let c = assign_touch_ids(&b, &[(306.0, 303.0), (900.0, 50.0)], &mut next);
+        assert_eq!(c.iter().map(|p| p.0).collect::<Vec<_>>(), [1, 2]);
+    }
+
+    #[test]
+    fn screencasts_capture_device_pixels_within_bounds() {
+        let p = screencast_params(390, 844, 3.0, false);
+        assert_eq!(
+            (p["maxWidth"].as_u64(), p["maxHeight"].as_u64()),
+            (Some(1170), Some(2532))
+        );
+        assert_eq!(p["quality"], 80);
+        // The longer side stays within the capture bound.
+        let p = screencast_params(2048, 1024, 4.0, false);
+        assert_eq!(p["maxWidth"], 4096);
+        assert_eq!(p["maxHeight"], 2048);
+        let p = screencast_params(390, 844, 3.0, true);
+        assert_eq!(p["maxWidth"], 390);
+        assert_eq!(p["everyNthFrame"], 2);
+        assert_eq!(p["quality"], 50);
     }
 
     #[test]

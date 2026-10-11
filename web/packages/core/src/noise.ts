@@ -267,8 +267,9 @@ export class Initiator extends Handshake {
     this.ss.mixKey(dh(this.s.priv, re)); // se
     if (this.psk) this.ss.mixKeyAndHash(this.psk);
     const payload = this.ss.decryptAndHash(msg.subarray(DHLEN));
+    const handshakeHash = this.ss.h.slice();
     const [send, recv] = this.ss.split();
-    return { payload, session: new Session(send, recv, this.rs, clock) };
+    return { payload, session: new Session(send, recv, this.rs, clock, handshakeHash) };
   }
 }
 
@@ -323,8 +324,9 @@ export class Responder extends Handshake {
     parts.push(this.ss.encryptAndHash(payload));
     const message = concat(...parts);
     if (message.length > NOISE_MAX) throw new NoiseError('handshake message too large', 'too_large');
+    const handshakeHash = this.ss.h.slice();
     const [recv, send] = this.ss.split();
-    return { message, session: new Session(send, recv, this.rs, clock) };
+    return { message, session: new Session(send, recv, this.rs, clock, handshakeHash) };
   }
 }
 
@@ -344,6 +346,11 @@ export class Session {
     /** The remote static key (always known after IK). */
     readonly remoteStatic: Uint8Array,
     private readonly clock?: Clock,
+    /**
+     * The final handshake hash: equal on both ends and new for every handshake. Pairing derives
+     * its check code from it (`checkCode` in keys.ts).
+     */
+    readonly handshakeHash: Uint8Array = EMPTY,
   ) {}
 
   /** Encrypt one application message into one or more frames. */

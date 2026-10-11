@@ -1,5 +1,6 @@
-// Pairing (spec 16 §4): parse the link from the fragment, show host + this device's fingerprint
-// ("check this matches your terminal"), run pair.claim, wait for the host's confirmation.
+// Pairing (spec 16 §4): parse the link from the fragment, show the host, run pair.claim, show the
+// pairing's check code ("check that your terminal shows the same code") and wait for the host's
+// confirmation. A link whose key differs from a host paired before asks before replacing it.
 // A handoff invitation (§15.2) is not for this device: one of the user's hosts redeems it
 // (`peer.redeem`), so that host can send work to the teammate's host directly.
 
@@ -18,7 +19,7 @@ import { navigate } from '../router';
 type Phase =
   | { k: 'form' }
   | { k: 'connecting' }
-  | { k: 'pending'; fingerprint: string }
+  | { k: 'pending'; code: string }
   | { k: 'done'; host: string; id: string; terminal: boolean; kind: 'device' | 'share' }
   /** A handoff invitation redeemed by one of the user's hosts (`on`) for the teammate's `to`. */
   | { k: 'redeemed'; on: string; to: string }
@@ -34,6 +35,8 @@ export function pairingErrorMessage(e: unknown): string {
         return t.pair.errors.rejected;
       case 'fingerprint_mismatch':
         return t.pair.errors.mismatch;
+      case 'host_mismatch':
+        return t.pair.errors.hostMismatch;
       case 'timeout':
         return t.pair.errors.timeout;
       case 'channel': {
@@ -98,7 +101,9 @@ export function PairScreen({ d }: { d: string | null }) {
   // record per host: accepting would swap full access for the invitation's. It isn't needed.
   const replacesOwn = share?.kind === 'share' && !!existing && hostKind(existing.record) === 'device';
   const handoff = share?.kind === 'handoff';
-  const fp = app.deviceFingerprint();
+  // The same host id with another key: the host was reset, or the link is not what it says.
+  // Pairing replaces the stored host, so the button says so and the notice warns first.
+  const keyChanged = !!existing && !share && existing.record.hk !== link?.hk;
   const local = link ? transportOf(link.relay) === 'local' : false;
   const unreachable = local && !app.platform.localTransport;
   const Panel = app.platform.extensions?.pairPanel;
@@ -108,7 +113,7 @@ export function PairScreen({ d }: { d: string | null }) {
     app.prefs.patch({ deviceName: name.trim() || app.platform.defaultDeviceName });
     setPhase({ k: 'connecting' });
     try {
-      const rec = await app.pair(link, name.trim() || app.platform.defaultDeviceName, (f) => setPhase({ k: 'pending', fingerprint: f }));
+      const rec = await app.pair(link, name.trim() || app.platform.defaultDeviceName, (code) => setPhase({ k: 'pending', code }));
       app.haptic('success');
       setPhase({ k: 'done', host: rec.name, id: rec.host_id, terminal: rec.kind === 'share' || (rec.scope === 'full' && !rec.limit && !rec.until), kind: rec.kind ?? 'device' });
       setRaw(null);
@@ -177,15 +182,22 @@ export function PairScreen({ d }: { d: string | null }) {
               <dd className="truncate font-mono text-xs" title={link.relay}>{local ? t.pair.thisComputer : link.relay}</dd>
             </dl>
             <div className="text-xs text-muted">{t.pair.expires(clockTime(link.exp * 1000))}</div>
-            {replacesOwn ? <Notice tone="warn">{t.pair.replacesOwn}</Notice> : known && <Notice>{t.pair.alreadyPaired}</Notice>}
+            {replacesOwn ? (
+              <Notice tone="warn">{t.pair.replacesOwn}</Notice>
+            ) : keyChanged ? (
+              <Notice tone="danger">{t.pair.keyChanged(existing!.record.name)}</Notice>
+            ) : (
+              known && <Notice>{t.pair.alreadyPaired}</Notice>
+            )}
             {expired && <Notice tone="danger">{t.pair.errors.expired}</Notice>}
             {unreachable && <Notice tone="warn">{t.pair.localOnly}</Notice>}
 
-            {/* Invitations and local links are bearer links: nobody confirms a fingerprint on the host side. */}
-            {!share && !local && (
+            {/* Invitations and local links are bearer links: nobody compares a code on the host side.
+                The code exists once the handshake is done: it comes from this connection. */}
+            {!share && !local && phase.k === 'pending' && (
               <div className="rounded-2xl border border-border bg-bg p-4 text-center">
                 <div className="text-xs uppercase tracking-wide text-faint">{t.pair.checkFingerprint}</div>
-                <div className="mt-1 font-mono text-3xl font-semibold tracking-wider">{phase.k === 'pending' ? phase.fingerprint : fp}</div>
+                <div className="mt-1 font-mono text-2xl font-semibold tracking-wider" aria-live="polite">{phase.code}</div>
               </div>
             )}
 
@@ -194,7 +206,7 @@ export function PairScreen({ d }: { d: string | null }) {
                 <TextField label={t.pair.deviceName} value={name} onChange={(e) => setName(e.target.value)} maxLength={64} />
                 {phase.k === 'error' && <Notice tone="danger">{phase.message}</Notice>}
                 <Button variant="primary" size="lg" block disabled={expired || unreachable || replacesOwn} icon={<ShieldCheck className="size-5" />} onClick={() => void start()}>
-                  {share ? t.pair.accept : t.pair.start}
+                  {share ? t.pair.accept : keyChanged ? t.pair.replaceHost : t.pair.start}
                 </Button>
               </>
             ) : (
