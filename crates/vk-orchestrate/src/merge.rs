@@ -709,7 +709,7 @@ fn contained_gate(
         })
         .collect();
     let (argv, env) = (g.wrap)(vec!["tar".into(), "-xf".into(), "-".into()], &dir, host_env)
-    .map_err(|e| Error::Refused(format!("the task's isolation is unavailable: {e}")))?;
+        .map_err(|e| Error::Refused(format!("the task's isolation is unavailable: {e}")))?;
     let Some((prog, rest)) = argv.split_first() else {
         return Err(Error::Refused("empty wrapped command".into()));
     };
