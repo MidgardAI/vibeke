@@ -1166,6 +1166,31 @@ mod tests {
     }
 
     #[test]
+    fn a_16_color_terminal_gets_the_nearest_ansi_colors() {
+        assert_eq!(rgb_to_16(0, 0, 0), 0);
+        assert_eq!(rgb_to_16(255, 255, 255), 15);
+        assert_eq!(rgb_to_16(250, 10, 10), 9);
+        let caps = HostCaps {
+            ansi16: true,
+            ..ALL
+        };
+        let s = effective(st(Color::Rgb(205, 0, 0), 0), &caps);
+        assert_eq!(s.fg, Color::Indexed(1));
+        // A 256-palette index maps through its RGB value; a basic index stays.
+        assert_eq!(
+            effective(st(Color::Indexed(196), 0), &caps).fg,
+            Color::Indexed(9)
+        );
+        assert_eq!(
+            effective(st(Color::Indexed(4), 0), &caps).fg,
+            Color::Indexed(4)
+        );
+        // Without the flag nothing changes for a 256-color terminal.
+        let s = effective(st(Color::Indexed(196), 0), &ALL);
+        assert_eq!(s.fg, Color::Indexed(196));
+    }
+
+    #[test]
     fn add_attrs_underlines_a_clipped_run() {
         let mut g = Grid::new(5, 2);
         g.put_str(0, 0, "abcde", Style::default(), 5);

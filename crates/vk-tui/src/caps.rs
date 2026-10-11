@@ -467,6 +467,20 @@ fn detect_osc52(env: &EnvHints, xt: &str) -> Osc52 {
 mod tests {
     use super::*;
 
+    #[test]
+    fn only_old_terminals_are_16_color() {
+        assert!(detect_ansi16(&env("linux", "", ""), false));
+        assert!(detect_ansi16(&env("xterm", "", ""), false));
+        assert!(!detect_ansi16(&env("xterm-256color", "", ""), false));
+        assert!(!detect_ansi16(&env("xterm", "", "truecolor"), false));
+        assert!(!detect_ansi16(&env("linux", "", ""), true));
+        assert!(
+            !detect_ansi16(&env("", "", ""), false),
+            "unknown keeps full color"
+        );
+        assert!(!detect_ansi16(&env("xterm", "iTerm.app", ""), false));
+    }
+
     fn env(term: &str, prog: &str, ct: &str) -> EnvHints {
         EnvHints {
             term: term.into(),
