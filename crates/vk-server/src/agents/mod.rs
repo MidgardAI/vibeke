@@ -784,6 +784,7 @@ impl Agents {
                         && i.status == InteractionStatus::Open
                         && i.source != StateSource::Screen
                         && i.delivery != DeliveryState::Delivering
+                        && !i.gate
                         && !gates.contains(&i.id)
                         && !is_sandbox_request(i)
                 })
@@ -1146,9 +1147,9 @@ fn held_gates(server: &Server) -> std::collections::HashSet<String> {
         .collect()
 }
 
-/// Close the run's open interactions that `pick` selects. A held gate (a hook still waiting on
-/// Vibeke) and a sandbox request are never closed here: releasing them would deny without a
-/// decision.
+/// Close the run's open interactions that `pick` selects. A gated interaction (a hook still
+/// waiting on Vibeke; `gate` is set before the commit, the gate itself is registered after it)
+/// and a sandbox request are never closed here: releasing them would deny without a decision.
 fn resolve_open(server: &Server, run: &str, reason: &str, pick: impl Fn(&Interaction) -> bool) {
     let gates = held_gates(server);
     let ids: Vec<String> = server.with_core(|c| {
@@ -1158,6 +1159,7 @@ fn resolve_open(server: &Server, run: &str, reason: &str, pick: impl Fn(&Interac
             .filter(|i| {
                 i.run == run
                     && i.status == InteractionStatus::Open
+                    && !i.gate
                     && !gates.contains(&i.id)
                     && !is_sandbox_request(i)
                     && pick(i)

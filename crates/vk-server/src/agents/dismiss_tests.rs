@@ -383,3 +383,28 @@ async fn a_new_prompt_leaves_a_sandbox_request_whose_gate_is_not_yet_held() {
     );
     assert_eq!(status(&e, &q), InteractionStatus::Open);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_gated_question_whose_gate_is_not_yet_registered_stays_open() {
+    let e = env();
+    let run = add_run(&e, "r-pend", "p-pend", |_| {});
+    let q = ask(&e, &run, "toolu_q");
+    {
+        let mut c = e.server.core.lock().unwrap();
+        let mut it = c.interaction(&q).cloned().unwrap();
+        it.gate = true;
+        let mut tx = Tx::new();
+        tx.interaction(it);
+        e.server.commit(&mut c, tx).unwrap();
+    }
+    close_questions_for_tool(&e.server, &run, "toolu_b");
+    assert_eq!(status(&e, &q), InteractionStatus::Open);
+    on_signal(
+        &e.server,
+        "p-pend",
+        Harness::Claude,
+        "UserPromptSubmit",
+        &json!({"session_id": "sess-r-pend", "prompt": "next"}),
+    );
+    assert_eq!(status(&e, &q), InteractionStatus::Open);
+}
