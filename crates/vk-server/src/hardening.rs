@@ -6,7 +6,8 @@
 //!   ([`sweep`]) prunes events (aged first, then the oldest `sync` rows over the cap, `history`
 //!   only when `sync` is gone), the Turn/Item stream of long-ended runs, closed history rows
 //!   older than `closed_retention` (`90d`: ended runs, closed interactions and panes, and the
-//!   usage and tool records of runs that are gone), and unreferenced old blobs.
+//!   usage and tool records of runs that are gone), idempotency receipts (`op_receipt`) older
+//!   than a day, and unreferenced old blobs.
 //!   `storage.prune` runs the same sweep on demand.
 //! - **Backups**: the store copies `state.db` to `<state>/backups/` before it migrates (last 3
 //!   kept, `vk_store::backup`); `storage.status` lists them; `vibeke doctor --restore-backup`
@@ -122,6 +123,10 @@ pub struct SweepReport {
     pub blob_bytes: u64,
 }
 
+/// How long an idempotency receipt (`op_receipt`) is kept: a client retries within minutes,
+/// so a day is plenty.
+pub const RECEIPT_KEEP_MS: i64 = 24 * 3_600_000;
+
 /// The retention sweep (hourly, and `storage.prune`). Does nothing while storage is degraded.
 pub fn sweep(server: &Server) -> SweepReport {
     sweep_with(server, &EventsConfig::current())
@@ -142,6 +147,15 @@ pub fn sweep_with(server: &Server, cfg: &EventsConfig) -> SweepReport {
     match server.with_core(|c| c.store.prune_closed(closed_cutoff)) {
         Ok(n) => r.closed_removed = n,
         Err(e) => tracing::warn!(error = %e, "closed history retention sweep failed"),
+    }
+    // Idempotency receipts only serve retries: keep them for a day (counted as closed rows).
+    let receipt_cutoff = vk_store::now_ms() - RECEIPT_KEEP_MS;
+    match server.with_core(|c| {
+        c.store
+            .prune_closed_kind(crate::review::receipts::K_RECEIPT, receipt_cutoff)
+    }) {
+        Ok(n) => r.closed_removed += n,
+        Err(e) => tracing::warn!(error = %e, "idempotency receipt retention sweep failed"),
     }
     let g = crate::blob_store::gc(server, cfg.blob_days, false);
     r.blobs_removed = g.removed;

@@ -1,6 +1,7 @@
 //! One guard for every key that decides something (08 §8): the inbox (`y`/`n`/`1-9`/`x`/`X`),
 //! the interaction card (`y`/`s`/`n`/`c`/`x`/`enter`/digits), the batch view (`a`/`y`/`n`), the
-//! agent list (`enter`) and the close/detach confirmation (`y`). The rules are the elevation
+//! agent list (`enter`), the close/detach confirmation (`y`) and the cloud bring-back review
+//! (`a`/`c`/`x`). The rules are the elevation
 //! view's (spec 08 §8, [`crate::elevate`]):
 //!
 //! - only a fresh **press** decides, with no modifier other than shift: never a release (the
@@ -194,6 +195,7 @@ pub fn target(app: &App) -> Option<String> {
         Mode::Popup(Popup::Inbox) => crate::inbox::selected_target(app),
         Mode::Popup(Popup::Batch) => crate::batch::target(app),
         Mode::Popup(Popup::Agents { filter, sel }) => crate::agent_list::target(app, filter, *sel),
+        Mode::Popup(Popup::CloudSend) => crate::cloud::review_target(app),
         _ => None,
     }
 }

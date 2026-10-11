@@ -1331,11 +1331,15 @@ async fn check_remote(r: &mut Report) {
                 Level::Pass,
                 format!("{}: local artifact for {t}: {}", m.label, a.path.display()),
             ),
-            None => r.add_hint(
+            // `vibeke ssh` downloads and verifies the signed release for the target when no
+            // local copy exists, so this is not a problem.
+            None => r.add(
                 REMOTE,
-                Level::Warn,
-                format!("{}: no local release artifact for {t}", m.label),
-                "mise run dist",
+                Level::Pass,
+                format!(
+                    "{}: no local release artifact for {t}; `vibeke ssh {}` downloads the signed release when it needs one",
+                    m.label, m.label
+                ),
             ),
         }
     }
@@ -1935,7 +1939,7 @@ pub async fn update(g: &Global, args: &[String]) -> i32 {
             None => {
                 println!("vibeke {}", vk_proto::VERSION);
                 println!(
-                    "no cached artifact for {target} in {} (build with `mise run dist`, or pass --from)",
+                    "no cached artifact for {target} in {}: run `vibeke update` (without --cached) to download the signed release, or pass --from <file>",
                     releases_root().display()
                 );
                 return if check { EXIT_OK } else { EXIT_API };

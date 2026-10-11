@@ -880,6 +880,23 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
             Err(e) if e.is_method_not_found() => {
                 app.inbox.notice = Some("dismiss needs a newer server on that machine".into());
             }
+            // The item changed after the user saw it: nothing was dismissed; show it again.
+            Err(e) if e.reason() == Some("item_changed") => {
+                app.inbox.last_dismissed = None;
+                app.inbox.notice = Some("This request changed: look at it again".into());
+                app.toast(format!(
+                    "Not dismissed: “{}” changed since you saw it",
+                    truncate(&title, 48)
+                ));
+                app.inbox.stale = true;
+                app.inbox.last_fetch = None;
+            }
+            Err(e) if e.kind == "not_found" => {
+                app.inbox.last_dismissed = None;
+                app.toast(format!("“{}” is already gone", truncate(&title, 48)));
+                app.inbox.stale = true;
+                app.inbox.last_fetch = None;
+            }
             Err(e) => app.toast(format!("✗ {}", e.message)),
         },
         Reply::Updated | Reply::EffortSet => match res {
@@ -1984,7 +2001,10 @@ fn detail_lines(app: &App, it: &Item, width: usize, out: &mut Vec<(String, Style
     {
         crate::popups::card_lines(app, mi, x, 0, width, out);
         let keys = if x.status != InteractionStatus::Open {
-            "resolved — no longer answerable".to_string()
+            format!(
+                "{} — no longer answerable",
+                crate::closed::text(app, mi, x).unwrap_or_else(|| "closed".into())
+            )
         } else if !x.answerable {
             "answer in the pane · [o] open pane".to_string()
         } else {
@@ -2048,6 +2068,43 @@ mod tests {
     use crate::app::test_app;
     use vk_proto::input::Mods;
     use vk_proto::render::{ClientFrame, ServerFrame};
+
+    #[test]
+    fn a_dismissal_of_a_changed_request_says_so() {
+        let (mut app, _rx) = test_app(1);
+        for (n, (kind, details)) in [
+            (
+                "conflict",
+                json!({"reason": "item_changed", "item_rev": 4, "seen_rev": 3}),
+            ),
+            ("not_found", json!({"object": "interaction", "id": "i1"})),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let req = 900 + n as u64;
+            app.machines[0].pending.insert(
+                req,
+                Pending::Attn(Reply::Dismiss {
+                    undo: false,
+                    quiet: false,
+                    title: "Run tests".into(),
+                }),
+            );
+            crate::drafts::tests::reply_err(&mut app, 0, req, kind, details);
+        }
+        let toasts: Vec<_> = app.toasts.iter().map(|t| t.text.clone()).collect();
+        assert!(
+            toasts
+                .iter()
+                .any(|t| t.contains("changed since you saw it")),
+            "{toasts:?}"
+        );
+        assert!(
+            toasts.iter().any(|t| t.contains("already gone")),
+            "{toasts:?}"
+        );
+    }
 
     fn item(kind: &str, id: &str, class: Value, age: i64, urgent: bool) -> Value {
         json!({"key": {"kind": kind, "id": id}, "class": class, "title": format!("T {id}"),

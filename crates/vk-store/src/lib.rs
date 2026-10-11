@@ -1070,6 +1070,16 @@ impl Store {
         Ok(n)
     }
 
+    /// Remove closed rows of `kind` last written before `cutoff_ms` (short-lived records such
+    /// as idempotency receipts, `op_receipt`). Open rows are never touched. Returns the rows
+    /// removed.
+    pub fn prune_closed_kind(&self, kind: &str, cutoff_ms: i64) -> Result<usize> {
+        Ok(self.conn.execute(
+            "DELETE FROM entities WHERE kind=?1 AND closed=1 AND updated_at < ?2",
+            params![kind, cutoff_ms],
+        )?)
+    }
+
     /// Number of rows in the event log.
     pub fn event_count(&self) -> Result<i64> {
         Ok(self

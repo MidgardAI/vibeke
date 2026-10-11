@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
 use vk_proto::render::{Color, Row, attr};
-use vk_proto::rpc::ErrorKind;
+use vk_proto::rpc::{ErrorKind, RpcError};
 
 /// Methods handled here, for the method tables (`api_schema::method_tables`). `pane.read
 /// {source: styled}` and `client.list` belong to `api::METHODS`.
@@ -56,7 +56,11 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
                 || p.get("image").is_some()
                 || matches!(ctx.kind.as_str(), "gateway" | "gateway-tui") =>
         {
-            transcript(server, ctx, p)
+            // The file read runs on the blocking pool: a slow disk never stalls a worker.
+            let (srv, ctx, p) = (server.clone(), ctx.clone(), p.clone());
+            tokio::task::spawn_blocking(move || transcript(&srv, &ctx, &p))
+                .await
+                .unwrap_or_else(|e| Err(err(ErrorKind::Internal, e.to_string())))
         }
         "client.list" => Ok(client_list(server)),
         "client.activity" => {
@@ -474,6 +478,39 @@ fn transcript_image(text: &str, r: &str) -> R {
     Ok(json!({"mime": mime, "size": size, "data_b64": data}))
 }
 
+/// Largest transcript `agent.transcript` reads.
+const MAX_TRANSCRIPT: u64 = 64 << 20;
+
+/// The whole transcript of a run, read safely (`agents::transcript_file`): the path must be one
+/// the pane may name (a contained pane only inside its own roots), and only a regular file is
+/// read, opened without blocking on a FIFO and without following a final symlink. Blocking:
+/// callers run it on the blocking pool.
+fn read_transcript(server: &Server, pane: &str, raw: &str) -> Result<String, RpcError> {
+    use std::io::Read;
+    let path = crate::agents::transcript_file::accept(server, pane, raw).ok_or_else(|| {
+        err(
+            ErrorKind::Unsupported,
+            "no readable transcript for this run",
+        )
+        .details(json!({"fallback": "agent.read"}))
+    })?;
+    let f = crate::agents::transcript_file::open_regular(std::path::Path::new(&path))
+        .map_err(|e| err(ErrorKind::NotFound, e.to_string()))?;
+    let len = f
+        .metadata()
+        .map_err(|e| err(ErrorKind::Internal, e.to_string()))?
+        .len();
+    if len > MAX_TRANSCRIPT {
+        return Err(err(ErrorKind::Unsupported, "transcript larger than 64 MiB"));
+    }
+    let mut buf = Vec::new();
+    // `take` bounds the read even when the file grows while it is read.
+    f.take(MAX_TRANSCRIPT)
+        .read_to_end(&mut buf)
+        .map_err(|e| err(ErrorKind::Internal, e.to_string()))?;
+    Ok(String::from_utf8_lossy(&buf).into_owned())
+}
+
 fn transcript(server: &Server, ctx: &Ctx, p: &Value) -> R {
     let t = s(p, "target").or(s(p, "run")).unwrap_or("@current");
     let run = server
@@ -488,12 +525,7 @@ fn transcript(server: &Server, ctx: &Ctx, p: &Value) -> R {
         err(ErrorKind::Unsupported, "no transcript for this run")
             .details(json!({"fallback": "agent.read"}))
     })?;
-    let meta = std::fs::metadata(&path).map_err(|e| err(ErrorKind::NotFound, e.to_string()))?;
-    if meta.len() > 64 << 20 {
-        return Err(err(ErrorKind::Unsupported, "transcript larger than 64 MiB"));
-    }
-    let text =
-        std::fs::read_to_string(&path).map_err(|e| err(ErrorKind::Internal, e.to_string()))?;
+    let text = read_transcript(server, &run.pane, &path)?;
     if let Some(r) = s(p, "image") {
         let image = transcript_image(&text, r)?;
         return Ok(json!({"run": run.id, "image": image}));

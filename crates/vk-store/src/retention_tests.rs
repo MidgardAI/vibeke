@@ -247,3 +247,19 @@ fn ended_turns_go_with_their_items() {
     };
     assert!(plan.iter().any(|p| p.contains("entities_turn")), "{plan:?}");
 }
+
+#[test]
+fn closed_rows_of_one_kind_age_out() {
+    use serde_json::json;
+    let s = Store::open_in_memory().unwrap();
+    put(&s, "op_receipt", "k-old", true, json!({}), 2);
+    put(&s, "op_receipt", "k-new", true, json!({}), 0);
+    put(&s, "op_receipt", "k-open", false, json!({}), 2);
+    put(&s, "interaction", "i-old", true, json!({}), 2);
+    let removed = s
+        .prune_closed_kind("op_receipt", now_ms() - 86_400_000)
+        .unwrap();
+    assert_eq!(removed, 1);
+    assert_eq!(ids(&s, "op_receipt"), ["k-new", "k-open"]);
+    assert_eq!(ids(&s, "interaction"), ["i-old"]);
+}

@@ -425,12 +425,15 @@ fn mtime_ms(m: &std::fs::Metadata) -> i64 {
         .unwrap_or(0)
 }
 
+/// Up to `len` bytes of transcript `path` from `offset`. The file is opened without blocking
+/// on a FIFO and without following a final symlink, and must be a regular file
+/// (`agents::transcript_file`): a run's transcript path comes from the agent.
 fn read_at(path: &str, offset: u64, len: u64) -> std::io::Result<Vec<u8>> {
-    use std::io::{Read, Seek, SeekFrom};
-    let mut f = std::fs::File::open(path)?;
-    f.seek(SeekFrom::Start(offset))?;
-    let mut buf = Vec::with_capacity(len as usize);
-    f.take(len).read_to_end(&mut buf)?;
+    let (buf, start) = crate::agents::transcript_file::read_from(Path::new(path), offset, len)?;
+    if start != offset {
+        // It shrank since it was measured: the next pass indexes it again from the start.
+        return Ok(Vec::new());
+    }
     Ok(buf)
 }
 

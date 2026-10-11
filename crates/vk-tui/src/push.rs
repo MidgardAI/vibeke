@@ -46,6 +46,9 @@ pub const TYPES: &[&str] = &[
     "cloud.auth.changed",
     // Gateway autostart: the supervised gateway's state for the status bar.
     "gateway.status",
+    // config.toml stopped (or started again) loading: the config error notice.
+    "session.config_rejected",
+    "session.config_reloaded",
 ];
 
 #[derive(Debug, Default, Clone)]
@@ -115,6 +118,7 @@ pub fn on_events(app: &mut App, i: usize, events: Vec<PushedEvent>, lagged: bool
         ) {
             refresh_clients = true;
         } else if k.starts_with("interaction.") {
+            crate::closed::on_event(app, i, k, &v);
             inbox = true;
         } else if k.starts_with("browser.") {
             refresh_sessions = true;
@@ -161,6 +165,8 @@ pub fn on_events(app: &mut App, i: usize, events: Vec<PushedEvent>, lagged: bool
             crate::handoff::on_event(app, i, k, &v);
         } else if k.starts_with("cloud.") {
             crate::cloud::on_event(app, i, k, &v);
+        } else if k.starts_with("session.config_") {
+            crate::config_notice::on_event(app, i, k, &v);
         }
     }
     if !confirms.is_empty() {

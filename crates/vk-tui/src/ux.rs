@@ -66,6 +66,8 @@ pub struct State {
     pub cloud: crate::cloud::State,
     pub sandboxes: Option<crate::sandboxes::View>,
     pub connections: crate::connections::State,
+    pub config: crate::config_notice::State,
+    pub closed: crate::closed::State,
 }
 
 /// Replies routed back to the 2B modules.
@@ -84,6 +86,8 @@ pub enum Reply {
     People(crate::people::Reply),
     Cloud(crate::cloud::Reply),
     Sandboxes(crate::sandboxes::Reply),
+    /// `config.get` for the config error notice.
+    Config(crate::config_notice::Reply),
     /// `tab.renumber`.
     Renumber,
 }
@@ -103,6 +107,7 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
         Reply::People(r) => crate::people::on_reply(app, mi, r, res),
         Reply::Cloud(r) => crate::cloud::on_reply(app, mi, r, res),
         Reply::Sandboxes(r) => crate::sandboxes::on_reply(app, mi, r, res),
+        Reply::Config(r) => crate::config_notice::on_reply(app, mi, r, res),
         Reply::Renumber => crate::tabbar::on_renumbered(app, res),
     }
 }
@@ -112,6 +117,7 @@ pub fn on_connected(app: &mut App, mi: usize) {
     crate::elevate::on_connected(app, mi);
     crate::handoff::on_connected(app, mi);
     crate::cloud::on_connected(app, mi);
+    crate::config_notice::on_connected(app, mi);
 }
 
 /// Palette / key actions owned by 2B modules.
@@ -132,6 +138,7 @@ pub fn action(app: &mut App, action: &str) -> bool {
         || crate::handoff::action(app, action)
         || crate::cloud::action(app, action)
         || crate::sandboxes::action(app, action)
+        || crate::config_notice::action(app, action)
 }
 
 /// `[[keys.command]] when = "agent:<harness>"`: only while the focused pane runs that harness
@@ -191,6 +198,7 @@ pub fn popup_draw(app: &App, g: &mut Grid, p: &Popup) {
 pub fn on_mouse(app: &mut App, me: &crate::event::MouseEvent) -> bool {
     if crate::popup_pane::on_mouse(app, me)
         || crate::handoff::on_mouse(app, me)
+        || crate::config_notice::on_mouse(app, me)
         || crate::sidebar::on_mouse(app, me)
         || crate::tabbar::on_mouse(app, me)
     {

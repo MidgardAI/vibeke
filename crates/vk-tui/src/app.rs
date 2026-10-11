@@ -157,6 +157,10 @@ impl RpcErr {
     pub fn is_method_not_found(&self) -> bool {
         self.kind == "method_not_found"
     }
+    /// The pane takes no input while its agent moves to or from a cloud sandbox.
+    pub fn pane_moving(&self) -> bool {
+        self.reason() == Some("pane_moving") || self.message.starts_with("pane_moving")
+    }
     /// The request may or may not have been applied.
     pub fn outcome_unknown(&self) -> bool {
         matches!(
@@ -1549,6 +1553,8 @@ impl App {
             ServerFrame::InputAck { status, .. } => {
                 if status == AckStatus::DroppedOffline {
                     self.toast("offline — input not sent");
+                } else if status == AckStatus::Rejected {
+                    crate::cloud::on_input_rejected(self, i);
                 }
             }
             ServerFrame::CommandResult { req, json } => self.on_command_result(i, req, &json),

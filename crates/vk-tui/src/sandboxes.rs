@@ -1184,13 +1184,23 @@ fn row_line(app: &App, mi: usize, b: &BoxRow, now: i64) -> String {
     } else {
         "—".into()
     };
-    // The unsynced marker comes early so a narrow view never cuts it off.
+    // A bring-back waiting for review (`b` opens it), else the unsynced marker. Both come early
+    // so a narrow view never cuts them off.
+    let review =
+        crate::cloud::waiting_review(app, mi, |j| j.box_id.as_deref() == Some(b.box_id.as_str()))
+            .is_some();
     format!(
         "{:<20} {:<12} {:<9} {:<11} {:<20} {:>2} pane{} {:>5} {:>8}",
         truncate(&b.name, 20),
         truncate(&state_badge(b), 12),
         b.ownership,
-        if b.has_unsynced() { "⚠ unsynced" } else { "" },
+        if review {
+            "◆ review"
+        } else if b.has_unsynced() {
+            "⚠ unsynced"
+        } else {
+            ""
+        },
         truncate(&where_label(app, mi, b), 20),
         b.panes.len(),
         if b.panes.len() == 1 { " " } else { "s" },

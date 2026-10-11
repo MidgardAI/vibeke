@@ -95,6 +95,8 @@ pub const DEFAULT_KEYMAP: &[(&str, &str)] = &[
     ("cloud_send", ""),
     ("cloud_bring_back", ""),
     ("sandboxes", ""),
+    // The config error notice: which file does not load and why (the badge opens it too).
+    ("config_error", ""),
     // Images (spec 18 §5.3): view the newest new image.
     ("open_images", "prefix+shift+b"),
 ];

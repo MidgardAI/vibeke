@@ -2142,7 +2142,10 @@ async fn send(server: &Server, ctx: &Ctx, pane: &str, bytes: Vec<u8>) -> Result<
         return Ok(());
     }
     if let Some(reason) = server.agents.input_blocked(pane) {
-        return Err(err(ErrorKind::Conflict, reason));
+        // `details.reason` is the code before the colon (`pane_moving`,
+        // `input_locked_open_interaction`), so clients can explain it.
+        let code = reason.split(':').next().unwrap_or(reason);
+        return Err(err(ErrorKind::Conflict, reason).details(json!({"reason": code, "pane": pane})));
     }
     if ctx.pane_scope.is_none() {
         crate::sync_input::mirror(server, pane, &bytes);
