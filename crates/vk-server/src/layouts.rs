@@ -359,6 +359,10 @@ pub fn apply(server: &Arc<Server>, ctx: &Ctx, spec: &LayoutSpec, target: Target,
         Some(p) => format!("agent:{p}"),
         None => "user".to_string(),
     };
+    if let Target::Existing(w) = &target {
+        // A paused sandbox box runs again before `core` is taken (the unpause blocks).
+        server.wake_box_for(&w.id, None);
+    }
     let mut c = server.core.lock().unwrap();
     let mut tx = Tx::new();
     let (ws, new_ws) = match target {
@@ -435,15 +439,9 @@ pub fn apply(server: &Arc<Server>, ctx: &Ctx, spec: &LayoutSpec, target: Target,
             &mut tab_focus,
         ) {
             Ok(l) => l,
-            Err(e) => {
-                // Holders already spawned for this apply are orphaned without a commit: close them.
-                for p in &tx.panes {
-                    if let Some(rt) = server.pane_rt(&p.id) {
-                        rt.send(crate::pane::PaneCmd::Close);
-                    }
-                }
-                return Err(internal(format!("{e:#}")));
-            }
+            // Holders already spawned for this apply close when the uncommitted `tx` drops
+            // (`Tx::spawned`).
+            Err(e) => return Err(internal(format!("{e:#}"))),
         };
         let mut floating = Vec::new();
         for (z, f) in t.floats.iter().enumerate() {

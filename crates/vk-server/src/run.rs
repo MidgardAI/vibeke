@@ -61,8 +61,83 @@ pub fn bind(path: &Path) -> Result<UnixListener> {
     Ok(UnixListener::from_std(l)?)
 }
 
+/// The exit code of a server that ended itself after a panic poisoned its state.
+pub const EXIT_POISONED: i32 = 101;
+
+/// Panic policy of the server process. A panic while a shared lock is held (`core` above
+/// all) poisons it: every later `.lock().unwrap()` would panic too, while the process keeps
+/// its socket, so clients would hang. The hook logs every panic; when one has poisoned a
+/// shared lock, the server exits with [`EXIT_POISONED`]. Holders keep the panes and their
+/// agents running, and the next client starts a fresh server that reattaches them.
+///
+/// A panic that poisons nothing (caught on purpose, like a malformed image in the terminal
+/// engine, or one that ends a single task) is logged and the server keeps running: exiting
+/// would make the replay of the same pane output crash every restarted server again.
+///
+/// Installed by [`serve`] only, so the TUI client process keeps its own hook that restores
+/// the terminal.
+pub fn install_panic_policy(server: &Arc<Server>) {
+    let weak = Arc::downgrade(server);
+    let (tx, rx) = std::sync::mpsc::channel::<()>();
+    let watcher = std::thread::Builder::new()
+        .name("vk-panic-watch".into())
+        .spawn(move || {
+            while rx.recv().is_ok() {
+                // A lock is poisoned while the panicking thread unwinds, which starts after
+                // the hook returns: watch for a short while.
+                let until = std::time::Instant::now() + Duration::from_secs(2);
+                while std::time::Instant::now() < until {
+                    let Some(srv) = weak.upgrade() else {
+                        return;
+                    };
+                    if let Some(lock) = poisoned_lock(&srv) {
+                        tracing::error!(
+                            lock,
+                            "a panic poisoned the server state; exiting so the next client starts a fresh server (panes keep running in their holders)"
+                        );
+                        eprintln!(
+                            "vibeke server: a panic poisoned the `{lock}` state; exiting (panes keep running and the next client restarts the server)"
+                        );
+                        std::process::exit(EXIT_POISONED);
+                    }
+                    drop(srv);
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            }
+        });
+    if watcher.is_err() {
+        tracing::warn!("panic watcher not started");
+        return;
+    }
+    let tx = std::sync::Mutex::new(tx);
+    let prev = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        prev(info);
+        tracing::error!(panic = %info, "server panic");
+        if let Ok(t) = tx.lock() {
+            let _ = t.send(());
+        }
+    }));
+}
+
+/// The first shared server lock a panic poisoned, if any.
+pub(crate) fn poisoned_lock(s: &Server) -> Option<&'static str> {
+    [
+        ("core", s.core.is_poisoned()),
+        ("panes", s.panes.is_poisoned()),
+        ("clients", s.clients.is_poisoned()),
+        ("archive", s.archive.is_poisoned()),
+        ("tokens", s.tokens.is_poisoned()),
+        ("degraded", s.degraded.is_poisoned()),
+    ]
+    .into_iter()
+    .find(|(_, p)| *p)
+    .map(|(name, _)| name)
+}
+
 /// Run the server until stopped.
 pub async fn serve(server: Arc<Server>, listener: UnixListener) -> Result<()> {
+    install_panic_policy(&server);
     std::fs::write(server.paths.pidfile(), std::process::id().to_string())?;
     let recovered = server.recover()?;
     tracing::info!(recovered, socket = %server.paths.socket().display(), "server ready");
@@ -373,6 +448,189 @@ fn connection_gate(
     Ok(())
 }
 
+// ---- per-connection cancellation --------------------------------------------------------------
+
+tokio::task_local! {
+    static CONN_CANCEL: ConnCancel;
+}
+
+/// The cancellation signal of one control connection. Every request dispatched from a
+/// connection runs in its scope; it fires when the connection closes (the client exited, was
+/// killed, or hung up), before anything else of the connection is cleaned up.
+///
+/// A request that waits for something (a gate held for a hook, a long poll) selects on
+/// [`connection_closed`] to stop waiting and release what it holds when its caller is gone.
+/// The signal is task-local: a request that hands work to a spawned task passes
+/// [`ConnCancel::current`] along explicitly.
+///
+/// When the connection closes, read-only requests still running are aborted. Mutating ones
+/// are left to finish (aborting at an arbitrary `.await` could leave a half-applied change);
+/// they see the signal.
+#[derive(Clone, Default)]
+pub struct ConnCancel(Arc<CancelInner>);
+
+#[derive(Default)]
+struct CancelInner {
+    cancelled: std::sync::atomic::AtomicBool,
+    notify: tokio::sync::Notify,
+}
+
+impl ConnCancel {
+    /// The signal of the connection the current request came on; `None` for calls made
+    /// without one (in-process callers, tests).
+    pub fn current() -> Option<ConnCancel> {
+        CONN_CANCEL.try_with(Clone::clone).ok()
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.0.cancelled.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Resolves once the connection has closed (at once if it already has).
+    pub async fn cancelled(&self) {
+        loop {
+            let n = self.0.notify.notified();
+            tokio::pin!(n);
+            n.as_mut().enable();
+            if self.is_cancelled() {
+                return;
+            }
+            n.await;
+        }
+    }
+
+    /// Run `f` with this signal as the current connection's ([`Self::current`]).
+    pub fn scope<F: std::future::Future>(
+        &self,
+        f: F,
+    ) -> impl std::future::Future<Output = F::Output> {
+        CONN_CANCEL.scope(self.clone(), f)
+    }
+
+    pub(crate) fn cancel(&self) {
+        self.0
+            .cancelled
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self.0.notify.notify_waiters();
+    }
+}
+
+/// Resolves when the connection of the calling request closes. Never resolves for a call
+/// made without a connection (in-process callers, tests), so it is safe in a `select!`.
+pub async fn connection_closed() {
+    match ConnCancel::current() {
+        Some(c) => c.cancelled().await,
+        None => std::future::pending().await,
+    }
+}
+
+/// Requests one connection may have running at once; more are refused with an error until
+/// some finish (a client that pipelines without reading responses cannot grow the server
+/// without bound).
+const MAX_IN_FLIGHT: usize = 1024;
+
+/// Event notifications that may wait for one connection's writer. A live subscriber that
+/// falls this far behind gets `events.overflow` (with the cursor to resume from) and its
+/// subscription ends; a replay waits for room instead.
+const MAX_QUEUED_EVENTS: usize = 4096;
+
+/// The lines waiting to be written to one control connection: responses and the event
+/// notifications of its subscriptions. Responses are never refused (requests are capped by
+/// [`MAX_IN_FLIGHT`]); events are capped by [`MAX_QUEUED_EVENTS`].
+#[derive(Clone)]
+pub(crate) struct Outbox {
+    tx: mpsc::UnboundedSender<String>,
+    queued: Arc<std::sync::atomic::AtomicUsize>,
+    room: Arc<tokio::sync::Notify>,
+}
+
+/// Why an event line was not queued.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum EventSend {
+    /// The subscriber is [`MAX_QUEUED_EVENTS`] behind.
+    Full,
+    /// The connection is gone.
+    Closed,
+}
+
+pub(crate) struct OutRx {
+    rx: mpsc::UnboundedReceiver<String>,
+    queued: Arc<std::sync::atomic::AtomicUsize>,
+    room: Arc<tokio::sync::Notify>,
+}
+
+impl Outbox {
+    pub(crate) fn new() -> (Outbox, OutRx) {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let queued = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let room = Arc::new(tokio::sync::Notify::new());
+        (
+            Outbox {
+                tx,
+                queued: queued.clone(),
+                room: room.clone(),
+            },
+            OutRx { rx, queued, room },
+        )
+    }
+
+    /// Queue a response (or a notice that must not be dropped, like `events.overflow`).
+    pub(crate) fn send(&self, line: String) -> Result<(), EventSend> {
+        use std::sync::atomic::Ordering;
+        self.queued.fetch_add(1, Ordering::SeqCst);
+        self.tx.send(line).map_err(|_| {
+            self.queued.fetch_sub(1, Ordering::SeqCst);
+            EventSend::Closed
+        })
+    }
+
+    /// Queue an event notification unless the subscriber is too far behind.
+    pub(crate) fn try_event(&self, line: String) -> Result<(), EventSend> {
+        if self.queued.load(std::sync::atomic::Ordering::SeqCst) >= MAX_QUEUED_EVENTS {
+            return Err(if self.tx.is_closed() {
+                EventSend::Closed
+            } else {
+                EventSend::Full
+            });
+        }
+        self.send(line)
+    }
+
+    /// Queue an event notification, waiting while the subscriber is too far behind (history
+    /// replay reads at the subscriber's pace).
+    pub(crate) async fn event(&self, line: String) -> Result<(), EventSend> {
+        loop {
+            let n = self.room.notified();
+            tokio::pin!(n);
+            n.as_mut().enable();
+            match self.try_event(line.clone()) {
+                Err(EventSend::Full) => n.await,
+                r => return r,
+            }
+        }
+    }
+}
+
+impl OutRx {
+    pub(crate) async fn recv(&mut self) -> Option<String> {
+        let l = self.rx.recv().await?;
+        self.taken();
+        Some(l)
+    }
+
+    pub(crate) fn try_recv(&mut self) -> Option<String> {
+        let l = self.rx.try_recv().ok()?;
+        self.taken();
+        Some(l)
+    }
+
+    fn taken(&self) {
+        self.queued
+            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        self.room.notify_waiters();
+    }
+}
+
 /// Per-connection cleanup that must run however the connection ends (EOF, error, panic
 /// unwinding): client-held agent-browser screencast subscriptions and take-overs, and a
 /// gateway's connected-devices report.
@@ -384,6 +642,23 @@ struct ConnGuard {
     /// Cleared when the connection ends; dispatched calls run in its scope
     /// (`approve::CONN_OPEN`), so an approval ask still being prepared isn't registered.
     open: Arc<std::sync::atomic::AtomicBool>,
+    /// Fired when the connection ends; dispatched calls run in its scope ([`ConnCancel`]).
+    cancel: ConnCancel,
+    /// Dispatched requests still running, with whether their method mutates state.
+    requests: std::sync::Mutex<Vec<(tokio::task::AbortHandle, bool)>>,
+}
+
+impl ConnGuard {
+    /// Requests of this connection that are still running.
+    fn in_flight(&self) -> usize {
+        let mut r = self.requests.lock().unwrap();
+        r.retain(|(h, _)| !h.is_finished());
+        r.len()
+    }
+
+    fn track(&self, h: tokio::task::AbortHandle, mutating: bool) {
+        self.requests.lock().unwrap().push((h, mutating));
+    }
 }
 
 type Subs = Arc<std::sync::Mutex<std::collections::HashMap<String, tokio::task::AbortHandle>>>;
@@ -392,6 +667,14 @@ impl Drop for ConnGuard {
     fn drop(&mut self) {
         // Before `approve::client_gone`: an ask registering after it sees the closed flag.
         self.open.store(false, std::sync::atomic::Ordering::SeqCst);
+        // Requests waiting on something stop and release it (a killed hook's gate).
+        self.cancel.cancel();
+        // Read-only requests are pointless now; mutating ones finish (see `ConnCancel`).
+        for (h, mutating) in self.requests.lock().unwrap().drain(..) {
+            if !mutating {
+                h.abort();
+            }
+        }
         // The connection's event subscriptions end with it.
         for (_, h) in self.subs.lock().unwrap().drain() {
             h.abort();
@@ -416,6 +699,8 @@ where
         client_ids: Arc::default(),
         subs: Arc::default(),
         open: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        cancel: ConnCancel::default(),
+        requests: std::sync::Mutex::new(Vec::new()),
     };
     let (rd, mut wr) = tokio::io::split(stream);
     let mut rd = BufReader::new(rd);
@@ -443,7 +728,7 @@ where
     guard.client_ids.lock().unwrap().push(ctx.client_id.clone());
     // `client.hello {readonly: true}` (`vibeke attach --readonly`): sticky for the connection.
     let mut readonly = false;
-    let (out_tx, mut out_rx) = mpsc::unbounded_channel::<String>();
+    let (out_tx, mut out_rx) = Outbox::new();
     let mut line = String::new();
     // Revoking a plugin token closes the connections holding it.
     let mut revoked = crate::auth::revocations(&server);
@@ -575,16 +860,24 @@ where
                         let _ = out_tx.send(serde_json::to_string(&r)?);
                     }
                     _ => {
+                        if guard.in_flight() >= MAX_IN_FLIGHT {
+                            let r = Response::err(req.id.clone().unwrap_or(Value::Null), err(ErrorKind::RateLimited, format!("too many requests in flight on this connection (at most {MAX_IN_FLIGHT}); wait for responses before sending more")));
+                            let _ = out_tx.send(serde_json::to_string(&r)?);
+                            continue;
+                        }
+                        let mutating = crate::session_api::is_mutating(&req.method);
                         let (srv, c, tx, l) = (server.clone(), ctx.clone(), out_tx.clone(), l.to_string());
                         let open = guard.open.clone();
-                        tokio::spawn(crate::approve::CONN_OPEN.scope(open, async move { let _ = tx.send(api::handle_line(&srv, &c, &l).await); }));
+                        let call = guard.cancel.scope(async move { let _ = tx.send(api::handle_line(&srv, &c, &l).await); });
+                        let h = tokio::spawn(crate::approve::CONN_OPEN.scope(open, call));
+                        guard.track(h.abort_handle(), mutating);
                     }
                 }
             }
             Some(out) = out_rx.recv() => {
                 wr.write_all(out.as_bytes()).await?;
                 wr.write_all(b"\n").await?;
-                while let Ok(more) = out_rx.try_recv() {
+                while let Some(more) = out_rx.try_recv() {
                     wr.write_all(more.as_bytes()).await?;
                     wr.write_all(b"\n").await?;
                 }
@@ -593,7 +886,7 @@ where
         }
     };
     // Flush pending responses.
-    while let Ok(more) = out_rx.try_recv() {
+    while let Some(more) = out_rx.try_recv() {
         wr.write_all(more.as_bytes()).await?;
         wr.write_all(b"\n").await?;
     }
@@ -847,7 +1140,7 @@ fn subscribe(
     server: &Arc<Server>,
     ctx: &Ctx,
     req: &Request,
-    out: mpsc::UnboundedSender<String>,
+    out: Outbox,
     pane_scoped: bool,
 ) -> Result<Option<(String, tokio::task::AbortHandle)>> {
     let id = req.id.clone().unwrap_or(Value::Null);
@@ -912,7 +1205,7 @@ fn subscribe(
                         return;
                     }
                     last = e.seq;
-                    if out.send(notify(e)).is_err() {
+                    if out.event(notify(e)).await.is_err() {
                         return;
                     }
                 }
@@ -920,6 +1213,8 @@ fn subscribe(
         } else {
             last = live_from.unwrap_or(0);
         }
+        // The cursor an overflowing subscriber resumes from.
+        let mut last_sent = last;
         loop {
             let expiry = crate::auth::elevation_expiry(&srv, &ctx.kind).map(|ms| {
                 let left = (ms - vk_store::now_ms()).max(0) as u64;
@@ -971,8 +1266,19 @@ fn subscribe(
                         let _ = out.send(closed(err));
                         return;
                     }
-                    if out.send(notify(&e)).is_err() {
-                        return;
+                    match out.try_event(notify(&e)) {
+                        Ok(()) => {}
+                        Err(EventSend::Closed) => return,
+                        Err(EventSend::Full) => {
+                            // The subscriber stopped reading: end the subscription with the
+                            // cursor of the last event it was sent (it resumes from there).
+                            let c = api::cursor(&srv, Some(last_sent));
+                            let _ = out.send(serde_json::to_string(&json!({"jsonrpc":"2.0","method":"events.overflow","params":{"subscription_id": sub_id, "resume_from": c, "reason": "slow_reader"}})).unwrap());
+                            return;
+                        }
+                    }
+                    if e.seq != 0 {
+                        last_sent = e.seq;
                     }
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {

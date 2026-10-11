@@ -81,6 +81,7 @@ fn the_sweep_applies_the_row_cap() {
             max_rows: 10,
         },
         blob_days: 30,
+        closed_days: 90,
     };
     let r = sweep_with(&s, &cfg);
     assert!(r.events.capped > 0);

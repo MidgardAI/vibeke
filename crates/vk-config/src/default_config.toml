@@ -349,6 +349,7 @@ allow_server_stop = false             # serve `server.stop` / `herdr server stop
 # sync_retention    = "7d"          # catch-up/live-UI events (the `sync` tier)
 # history_retention = "365d"        # interactions, policy, task status, agent start/exit (`history`)
 # blob_retention    = "30d"         # unreferenced uploads and tool-output payloads in the blob store
+# closed_retention  = "90d"         # ended agent runs, closed interactions and panes, and their usage and tool records
 # max_rows          = 2000000       # hard cap on event rows; oldest `sync` rows go first; 0 = no cap
 
 # Review evidence (15 §6.3, §6.4). Read by the running server.

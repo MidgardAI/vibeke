@@ -115,3 +115,135 @@ fn legacy_prune_still_works() {
     let s = store_with(&[("sync", 10), ("sync", 0)]);
     assert_eq!(s.prune(7, 365).unwrap(), 1);
 }
+
+fn put(s: &Store, kind: &str, id: &str, closed: bool, json: Value, age_days: i64) {
+    s.conn
+        .execute(
+            "INSERT INTO entities (kind, id, json, closed, updated_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                kind,
+                id,
+                json.to_string(),
+                closed as i64,
+                now_ms() - age_days * 86_400_000
+            ],
+        )
+        .unwrap();
+}
+
+fn ids(s: &Store, kind: &str) -> Vec<String> {
+    let mut st = s
+        .conn
+        .prepare("SELECT id FROM entities WHERE kind=?1 ORDER BY id")
+        .unwrap();
+    st.query_map([kind], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
+}
+
+#[test]
+fn closed_history_ages_out_and_open_rows_stay() {
+    use serde_json::json;
+    let s = Store::open_in_memory().unwrap();
+    put(&s, "task", "t-open", false, json!({}), 100);
+    // Old closed runs go, except the one of a task that is still open.
+    put(&s, "run", "r-old", true, json!({}), 100);
+    put(&s, "run", "r-parked", true, json!({"task": "t-open"}), 100);
+    put(&s, "run", "r-recent", true, json!({}), 5);
+    put(&s, "run", "r-live", false, json!({}), 100);
+    put(&s, "interaction", "i-old", true, json!({}), 100);
+    put(&s, "interaction", "i-open", false, json!({}), 100);
+    put(&s, "pane", "p-old", true, json!({}), 100);
+    // Records of the removed run go with it; those of kept runs stay.
+    put(
+        &s,
+        "turn_usage",
+        "u-old",
+        false,
+        json!({"run": "r-old"}),
+        100,
+    );
+    put(
+        &s,
+        "turn_usage",
+        "u-kept",
+        false,
+        json!({"run": "r-parked"}),
+        100,
+    );
+    put(
+        &s,
+        "tool_item",
+        "x-old",
+        true,
+        json!({"run_id": "r-old"}),
+        100,
+    );
+    put(
+        &s,
+        "tool_item",
+        "x-live",
+        true,
+        json!({"run_id": "r-live"}),
+        100,
+    );
+    let removed = s.prune_closed(now_ms() - 30 * 86_400_000).unwrap();
+    assert_eq!(removed, 5);
+    assert_eq!(ids(&s, "run"), ["r-live", "r-parked", "r-recent"]);
+    assert_eq!(ids(&s, "interaction"), ["i-open"]);
+    assert!(ids(&s, "pane").is_empty());
+    assert_eq!(ids(&s, "turn_usage"), ["u-kept"]);
+    assert_eq!(ids(&s, "tool_item"), ["x-live"]);
+}
+
+#[test]
+fn ended_turns_go_with_their_items() {
+    use serde_json::json;
+    let s = Store::open_in_memory().unwrap();
+    put(
+        &s,
+        "stream_turn",
+        "old",
+        false,
+        json!({"ended_at_ms": 10}),
+        0,
+    );
+    put(
+        &s,
+        "stream_turn",
+        "open",
+        false,
+        json!({"ended_at_ms": null}),
+        0,
+    );
+    put(&s, "stream_item", "a", false, json!({"turn_id": "old"}), 0);
+    put(&s, "stream_item", "b", false, json!({"turn_id": "old"}), 0);
+    put(&s, "stream_item", "c", false, json!({"turn_id": "open"}), 0);
+    assert_eq!(
+        s.prune_ended_turns("stream_turn", "stream_item", 5)
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        s.prune_ended_turns("stream_turn", "stream_item", 11)
+            .unwrap(),
+        3
+    );
+    assert_eq!(ids(&s, "stream_turn"), ["open"]);
+    assert_eq!(ids(&s, "stream_item"), ["c"]);
+    // The prune query uses the index rather than a scan per turn.
+    let plan: Vec<String> = {
+        let mut st = s
+            .conn
+            .prepare(
+                "EXPLAIN QUERY PLAN SELECT id FROM entities WHERE kind='stream_item' AND json_extract(json, '$.turn_id')='x'",
+            )
+            .unwrap();
+        st.query_map([], |r| r.get::<_, String>(3))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    };
+    assert!(plan.iter().any(|p| p.contains("entities_turn")), "{plan:?}");
+}

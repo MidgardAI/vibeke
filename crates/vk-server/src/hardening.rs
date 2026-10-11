@@ -4,8 +4,10 @@
 //! - **Retention** (`[events]` in `config.toml`): `sync_retention` (default `7d`),
 //!   `history_retention` (`365d`) and `max_rows` (`2000000`, `0` = no cap). The hourly sweep
 //!   ([`sweep`]) prunes events (aged first, then the oldest `sync` rows over the cap, `history`
-//!   only when `sync` is gone), the Turn/Item stream of long-ended runs, and unreferenced old
-//!   blobs. `storage.prune` runs the same sweep on demand.
+//!   only when `sync` is gone), the Turn/Item stream of long-ended runs, closed history rows
+//!   older than `closed_retention` (`90d`: ended runs, closed interactions and panes, and the
+//!   usage and tool records of runs that are gone), and unreferenced old blobs.
+//!   `storage.prune` runs the same sweep on demand.
 //! - **Backups**: the store copies `state.db` to `<state>/backups/` before it migrates (last 3
 //!   kept, `vk_store::backup`); `storage.status` lists them; `vibeke doctor --restore-backup`
 //!   restores one offline and rotates `log_epoch`.
@@ -74,6 +76,9 @@ pub struct EventsConfig {
     pub retention: Retention,
     /// Unreferenced uploads and payloads older than this many days are collected.
     pub blob_days: i64,
+    /// Closed history rows older than this many days are deleted
+    /// ([`vk_store::Store::prune_closed`]).
+    pub closed_days: i64,
 }
 
 impl Default for EventsConfig {
@@ -81,6 +86,7 @@ impl Default for EventsConfig {
         EventsConfig {
             retention: Retention::default(),
             blob_days: crate::blob_store::DEFAULT_GC_DAYS,
+            closed_days: vk_config::Events::default().closed_days,
         }
     }
 }
@@ -97,6 +103,7 @@ impl EventsConfig {
                 max_rows: e.max_rows,
             },
             blob_days: e.blob_days,
+            closed_days: e.closed_days,
         }
     }
 
@@ -109,6 +116,8 @@ impl EventsConfig {
 pub struct SweepReport {
     pub events: PruneReport,
     pub stream_removed: usize,
+    /// Closed history rows removed for age.
+    pub closed_removed: usize,
     pub blobs_removed: usize,
     pub blob_bytes: u64,
 }
@@ -129,14 +138,20 @@ pub fn sweep_with(server: &Server, cfg: &EventsConfig) -> SweepReport {
     }
     let cutoff = vk_store::now_ms() - cfg.retention.history_days * 86_400_000;
     r.stream_removed = crate::items::prune(server, cutoff);
+    let closed_cutoff = vk_store::now_ms() - cfg.closed_days.saturating_mul(86_400_000);
+    match server.with_core(|c| c.store.prune_closed(closed_cutoff)) {
+        Ok(n) => r.closed_removed = n,
+        Err(e) => tracing::warn!(error = %e, "closed history retention sweep failed"),
+    }
     let g = crate::blob_store::gc(server, cfg.blob_days, false);
     r.blobs_removed = g.removed;
     r.blob_bytes = g.bytes;
-    if r.events.aged + r.events.capped + r.stream_removed + r.blobs_removed > 0 {
+    if r.events.aged + r.events.capped + r.stream_removed + r.closed_removed + r.blobs_removed > 0 {
         tracing::info!(
             aged = r.events.aged,
             capped = r.events.capped,
             stream = r.stream_removed,
+            closed = r.closed_removed,
             blobs = r.blobs_removed,
             "storage sweep"
         );
@@ -197,6 +212,7 @@ fn status(server: &Server) -> R {
                 "history_days": cfg.retention.history_days,
                 "max_rows": cfg.retention.max_rows,
                 "blob_days": cfg.blob_days,
+                "closed_days": cfg.closed_days,
             },
         },
         "backups": backups,
@@ -223,6 +239,7 @@ fn prune(server: &Server) -> R {
         "events_capped": r.events.capped,
         "events_remaining": remaining,
         "stream_removed": r.stream_removed,
+        "closed_removed": r.closed_removed,
         "blobs_removed": r.blobs_removed,
         "blob_bytes": r.blob_bytes,
     }))

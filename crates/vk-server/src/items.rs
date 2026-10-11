@@ -520,36 +520,17 @@ pub fn payload_refs(server: &Server) -> HashSet<String> {
 }
 
 /// Remove turns that ended before `cutoff_ms` together with their items. Returns the number of
-/// rows (turns and items) removed.
+/// rows (turns and items) removed. One indexed delete in SQLite (`entities_turn`), not a
+/// lookup per turn: it runs under the `core` lock.
 pub fn prune(server: &Server, cutoff_ms: i64) -> usize {
-    let mut c = server.core.lock().unwrap();
-    let old: Vec<Turn> = c
-        .store
-        .load::<Turn>(K_TURN)
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|t| t.ended_at_ms.is_some_and(|e| e < cutoff_ms))
-        .collect();
-    let mut removed = 0;
-    for chunk in old.chunks(200) {
-        let mut tx = Tx::new();
-        for t in chunk {
-            for it in c
-                .store
-                .load_by_field::<Item>(K_ITEM, "$.turn_id", &t.id)
-                .unwrap_or_default()
-            {
-                tx.m.delete(K_ITEM, &it.id);
-                removed += 1;
-            }
-            tx.m.delete(K_TURN, &t.id);
-            removed += 1;
-        }
-        if server.commit(&mut c, tx).is_err() {
-            break;
+    let c = server.core.lock().unwrap();
+    match c.store.prune_ended_turns(K_TURN, K_ITEM, cutoff_ms) {
+        Ok(n) => n,
+        Err(e) => {
+            tracing::warn!(error = %e, "turn stream retention failed");
+            0
         }
     }
-    removed
 }
 
 /// `vibeke forget` (09 §9.3, lane 3E `forget_scope`): remove the turns (and their items) for

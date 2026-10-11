@@ -1,15 +1,20 @@
 //! In-memory projections of the state tables plus the store. All mutations go through
-//! [`Core::commit`], which writes entities and events in one SQLite transaction and only then
-//! applies the change in memory (02 §4a: a failed commit means the mutation didn't happen).
+//! [`crate::Server::commit`] (or [`crate::Server::commit_storage`]), which write entities and
+//! events in one SQLite transaction and only then apply the change in memory (02 §4a: a failed
+//! commit means the mutation didn't happen). The store write itself (`Core::apply`) is private
+//! to this module, so no caller can skip the server's event broadcast, model revision and
+//! degraded-mode handling.
 
+use crate::pane::{PaneCmd, PaneRt};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashMap;
+use std::sync::Arc;
 use vk_proto::model::*;
 use vk_store::{Event, Mutation, Store, now_ms};
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Counters {
     pub workspace: u32,
     pub pane: u32,
@@ -26,6 +31,9 @@ pub struct Core {
     pub store: Store,
     pub model: SessionModel,
     pub counters: Counters,
+    /// The counters as last written to the store: a commit persists [`Core::counters`]
+    /// whenever they differ, so an allocated handle is never reused after a restart.
+    persisted_counters: Counters,
     pub notifications: Vec<Notification>,
     /// Set by [`Core::commit`] when the store refused an `ephemeral` transaction and it was
     /// applied in memory only (02 §4a); carries the storage error. [`crate::Server::commit`]
@@ -46,11 +54,43 @@ pub struct Tx {
     pub tasks: Vec<Task>,
     pub groups: Vec<Group>,
     pub removed: Vec<(&'static str, String)>,
+    /// Force writing the counters. Not needed: every commit persists counters that changed.
     pub counters: bool,
+    /// Pane runtimes of holders launched while building this transaction. When the
+    /// transaction is dropped uncommitted or its commit fails, their panes never enter the
+    /// model, so their holders are told to close (a holder exits only once its exit is
+    /// acknowledged; an unattached one would live forever).
+    pub spawned: Spawned,
     /// A UI convenience (focus, unread marks): if storage is unavailable it is applied in
     /// memory only, flagged ephemeral and lost on restart (02 §4a). Never set for anything a
     /// restart or another client must see (interactions, tasks, layout).
     pub ephemeral: bool,
+}
+
+/// See [`Tx::spawned`].
+#[derive(Default)]
+pub struct Spawned(Vec<Arc<PaneRt>>);
+
+impl Spawned {
+    pub fn push(&mut self, rt: Arc<PaneRt>) {
+        self.0.push(rt);
+    }
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+    /// The panes were committed: keep them running.
+    fn disarm(&mut self) {
+        self.0.clear();
+    }
+}
+
+impl Drop for Spawned {
+    fn drop(&mut self) {
+        for rt in self.0.drain(..) {
+            tracing::warn!(pane = %rt.id, "pane not committed; closing its holder");
+            rt.send(PaneCmd::Close);
+        }
+    }
 }
 
 impl Tx {
@@ -172,15 +212,22 @@ impl Core {
         Ok(Core {
             store,
             model,
+            persisted_counters: counters.clone(),
             counters,
             notifications: Vec::new(),
             ephemeral_hit: None,
         })
     }
 
-    /// Persist then apply. Returns the committed events.
-    pub fn commit(&mut self, mut tx: Tx) -> Result<Vec<Event>> {
-        if tx.counters {
+    /// Persist then apply. Returns the committed events. Private: callers go through
+    /// [`crate::Server::commit`] / [`crate::Server::commit_storage`].
+    fn apply(&mut self, mut tx: Tx) -> Result<Vec<Event>> {
+        // Dropped (closing the holders) unless the commit succeeds.
+        let mut spawned = std::mem::take(&mut tx.spawned);
+        // Handles allocated since the last write (any call site, flagged or not) are written
+        // with this transaction: a restart must never hand out the same handle twice.
+        let counters_changed = tx.counters || self.counters != self.persisted_counters;
+        if counters_changed {
             tx.m.kv(
                 "server",
                 "counters",
@@ -188,7 +235,12 @@ impl Core {
             );
         }
         let events = match self.store.commit(std::mem::take(&mut tx.m)) {
-            Ok(e) => e,
+            Ok(e) => {
+                if counters_changed {
+                    self.persisted_counters = self.counters.clone();
+                }
+                e
+            }
             // Pure UI convenience while storage is down: keep it in memory, emit no event.
             Err(e) if tx.ephemeral => {
                 self.ephemeral_hit = Some(format!("storage unavailable: {e:#}"));
@@ -196,6 +248,7 @@ impl Core {
             }
             Err(e) => return Err(e),
         };
+        spawned.disarm();
         for w in tx.workspaces {
             upsert(&mut self.model.workspaces, w, |a, b| a.id == b.id);
         }
@@ -377,4 +430,220 @@ pub fn subject_pane(p: &Pane) -> Value {
 
 pub fn ulid() -> String {
     ulid::Ulid::new().to_string()
+}
+
+// ---- the commit path -------------------------------------------------------------------------
+
+impl crate::Server {
+    /// Commit a transaction, publish its events and bump the model revision.
+    pub fn commit(&self, core: &mut Core, tx: Tx) -> Result<Vec<Event>> {
+        self.commit_with(core, tx, true)
+    }
+
+    /// Commit a write that changes nothing clients render from the model (kv rows, holder
+    /// records, VT snapshots, history rows, a pane's size): like [`Self::commit`] (events are
+    /// published, storage failure enters degraded mode), but the model revision is bumped only
+    /// when the degraded state changes. A busy pane's snapshots and resizes then do not make
+    /// every client re-fetch the model.
+    pub fn commit_storage(&self, core: &mut Core, tx: Tx) -> Result<Vec<Event>> {
+        self.commit_with(core, tx, false)
+    }
+
+    fn commit_with(&self, core: &mut Core, tx: Tx, bump: bool) -> Result<Vec<Event>> {
+        match core.apply(tx) {
+            Ok(events) => {
+                if let Some(msg) = core.ephemeral_hit.take() {
+                    // The store refused the write and the transaction was a UI convenience
+                    // (focus, unread marks): applied in memory only (02 §4a).
+                    self.hardening.note_ephemeral();
+                    self.enter_degraded(core, msg);
+                    return Ok(events);
+                }
+                let was_degraded = self.degraded.lock().unwrap().take().is_some();
+                core.model.degraded = None;
+                self.hardening.recovered();
+                for e in &events {
+                    let _ = self.events.send(Arc::new(e.clone()));
+                }
+                if bump || was_degraded {
+                    self.bump_model();
+                }
+                Ok(events)
+            }
+            Err(e) => {
+                self.enter_degraded(core, format!("storage unavailable: {e:#}"));
+                Err(e)
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod commit_tests {
+    use super::*;
+    use crate::{Server, ServerOpts, paths::Paths};
+
+    fn server(dir: &std::path::Path) -> Arc<Server> {
+        let paths = Paths {
+            session: "t".into(),
+            runtime: dir.join("run"),
+            state: dir.join("state"),
+        };
+        let opts = ServerOpts {
+            session: "t".into(),
+            machine: "testbox".into(),
+            bin: "/bin/false".into(),
+            hold_args: vec![],
+            default_shell: None,
+            env: vec![],
+            shims: false,
+            gateway: None,
+        };
+        Server::new(paths, opts).unwrap()
+    }
+
+    #[test]
+    fn counters_changed_without_the_flag_are_persisted() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = server(dir.path());
+        {
+            let mut c = s.core.lock().unwrap();
+            // A call site that allocates a handle and forgets `tx.counters = true`.
+            let h = c.next_task_handle();
+            assert_eq!(h, "k1");
+            let mut tx = Tx::new();
+            tx.m.kv("test", "x", Some("1".into()));
+            s.commit(&mut c, tx).unwrap();
+        }
+        let stored: Counters = s.with_core(|c| {
+            serde_json::from_str(&c.store.kv_get("server", "counters").unwrap().unwrap()).unwrap()
+        });
+        assert_eq!(stored.task, 1);
+        // A restart continues after it.
+        drop(s);
+        let s = server(dir.path());
+        assert_eq!(s.with_core(|c| c.next_task_handle()), "k2");
+    }
+
+    #[test]
+    fn unchanged_counters_are_not_rewritten() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = server(dir.path());
+        let mut c = s.core.lock().unwrap();
+        let mut tx = Tx::new();
+        tx.m.kv("test", "x", Some("1".into()));
+        s.commit(&mut c, tx).unwrap();
+        assert!(c.store.kv_get("server", "counters").unwrap().is_none());
+    }
+
+    #[test]
+    fn storage_commits_do_not_bump_the_model() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = server(dir.path());
+        let before = *s.model_rev.borrow();
+        let mut c = s.core.lock().unwrap();
+        let mut tx = Tx::new();
+        tx.m.kv("test", "x", Some("1".into()));
+        s.commit_storage(&mut c, tx).unwrap();
+        assert_eq!(*s.model_rev.borrow(), before);
+        let mut tx = Tx::new();
+        tx.m.kv("test", "x", Some("2".into()));
+        s.commit(&mut c, tx).unwrap();
+        assert!(*s.model_rev.borrow() > before);
+    }
+
+    #[test]
+    fn holders_of_an_uncommitted_transaction_are_closed() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = server(dir.path());
+        // Dropped without a commit.
+        let (rt, mut rx) = PaneRt::new("p-dropped", 80, 24);
+        let mut tx = Tx::new();
+        tx.spawned.push(rt);
+        drop(tx);
+        assert!(matches!(rx.try_recv(), Ok(PaneCmd::Close)));
+        // A commit the store refuses.
+        let (rt, mut rx) = PaneRt::new("p-refused", 80, 24);
+        let mut c = s.core.lock().unwrap();
+        c.store.set_query_only(true).unwrap();
+        let mut tx = Tx::new();
+        tx.m.kv("test", "x", Some("1".into()));
+        tx.spawned.push(rt);
+        assert!(s.commit(&mut c, tx).is_err());
+        assert!(matches!(rx.try_recv(), Ok(PaneCmd::Close)));
+        // A commit that succeeds keeps the pane running.
+        c.store.set_query_only(false).unwrap();
+        let (rt, mut rx) = PaneRt::new("p-kept", 80, 24);
+        let mut tx = Tx::new();
+        tx.m.kv("test", "x", Some("2".into()));
+        tx.spawned.push(rt);
+        s.commit(&mut c, tx).unwrap();
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn a_refused_pane_removal_keeps_the_pane_and_is_retried() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = server(dir.path());
+        {
+            let mut c = s.core.lock().unwrap();
+            let mut tx = Tx::new();
+            tx.ws(Workspace {
+                id: "ws1".into(),
+                handle: "w1".into(),
+                name: None,
+                auto_name: "w".into(),
+                root_path: "/tmp".into(),
+                task: None,
+                order: 1.0,
+                branch: None,
+            });
+            tx.tab(Tab {
+                id: "tab1".into(),
+                handle: "w1:t1".into(),
+                workspace: "ws1".into(),
+                title: None,
+                number: 1,
+                layout: LayoutNode::Leaf { pane: "p1".into() },
+                focused_pane: Some("p1".into()),
+                zoomed_pane: None,
+                order: 1.0,
+                floating: vec![],
+                floats_hidden: false,
+            });
+            tx.pane(Pane {
+                id: "p1".into(),
+                handle: "w1:p1".into(),
+                tab: "tab1".into(),
+                workspace: "ws1".into(),
+                title: None,
+                auto_title: "sh".into(),
+                cwd: None,
+                cols: 80,
+                rows: 24,
+                child_pid: None,
+                fg_cmdline: vec![],
+                exited: true,
+                exit_code: Some(0),
+                unread: false,
+                marked_unread: false,
+                pinned: false,
+                created_by: "user".into(),
+                recovered: None,
+                isolation: Isolation::default(),
+                browser: None,
+            });
+            s.commit(&mut c, tx).unwrap();
+        }
+        s.with_core(|c| c.store.set_query_only(true).unwrap());
+        s.pane_ended("p1", "exited:0");
+        // Storage refused: the pane stays, the server is degraded, the removal is pending.
+        assert!(s.with_core(|c| c.pane("p1").is_some()));
+        assert!(s.degraded.lock().unwrap().is_some());
+        s.with_core(|c| c.store.set_query_only(false).unwrap());
+        s.retry_pane_ends();
+        assert!(s.with_core(|c| c.pane("p1").is_none()));
+        assert!(s.with_core(|c| c.ws("ws1").is_none()));
+        assert!(s.pending_pane_ends.lock().unwrap().is_empty());
+    }
 }

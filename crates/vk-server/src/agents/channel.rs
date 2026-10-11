@@ -460,7 +460,7 @@ pub fn announce_loaded_from(server: &crate::Server, root: &Path) -> usize {
             n += 1;
         }
         tx.m.kv(KV_ANNOUNCED.0, KV_ANNOUNCED.1, Some(st.serial.to_string()));
-        let _ = c.commit(tx);
+        let _ = server.commit_storage(c, tx);
     });
     n
 }

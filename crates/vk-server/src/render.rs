@@ -230,6 +230,32 @@ where
     serve_as(server, rd, wr, client_id, remote, max_fps, Auth::default()).await
 }
 
+/// The model of the current revision, serialized once and shared by every attached client
+/// (plain clients; a share filters the model per client). Read with the revision under the
+/// `core` lock, so the pair is consistent.
+fn shared_model(server: &Server) -> Result<(u64, Arc<vk_proto::render::SharedModel>)> {
+    let now = *server.model_rev.borrow();
+    if let Some((rev, m)) = server.model_frame.lock().unwrap().as_ref()
+        && *rev == now
+    {
+        return Ok((*rev, m.clone()));
+    }
+    let (rev, shared) = server.with_core(|c| {
+        let rev = *server.model_rev.borrow();
+        let seen = c.store.reads("local").unwrap_or_default();
+        (rev, vk_proto::render::SharedModel::new(&c.model, &seen))
+    });
+    let shared = Arc::new(shared?);
+    let mut cache = server.model_frame.lock().unwrap();
+    if cache.as_ref().is_none_or(|(r, _)| *r <= rev) {
+        *cache = Some((rev, shared.clone()));
+    }
+    Ok((rev, shared))
+}
+
+/// Client frames read ahead of the render session.
+const CLIENT_FRAME_QUEUE: usize = 256;
+
 pub async fn serve_as<R, W>(
     server: Arc<Server>,
     mut rd: R,
@@ -244,11 +270,16 @@ where
     W: AsyncWrite + Unpin + Send + 'static,
 {
     let mut wr = BufWriter::with_capacity(256 * 1024, wr);
-    let (in_tx, mut in_rx) = mpsc::unbounded_channel::<ClientFrame>();
+    // Bounded, and each frame bounded: a client that sends faster than this session handles
+    // its frames is slowed down by the socket (the reader stops reading), not buffered here.
+    let (in_tx, mut in_rx) = mpsc::channel::<ClientFrame>(CLIENT_FRAME_QUEUE);
     let (ack_tx, mut ack_rx) = mpsc::unbounded_channel::<(u64, AckStatus)>();
     let reader = tokio::spawn(async move {
-        while let Ok(f) = asyncio::read_frame::<_, ClientFrame>(&mut rd).await {
-            if in_tx.send(f).is_err() {
+        while let Ok(f) =
+            asyncio::read_frame_max::<_, ClientFrame>(&mut rd, vk_proto::frame::MAX_CLIENT_FRAME)
+                .await
+        {
+            if in_tx.send(f).await.is_err() {
                 break;
             }
         }
@@ -416,7 +447,7 @@ where
                 "last_focus",
                 Some(serde_json::to_string(&focus).unwrap_or_default()),
             );
-            let _ = c.commit(tx);
+            let _ = server.commit_storage(c, tx);
         });
     }
     server.clients.lock().unwrap().remove(&client_id);
@@ -510,26 +541,29 @@ impl Session {
     }
 
     async fn send_model<W: AsyncWrite + Unpin>(&mut self, wr: &mut W) -> Result<()> {
-        self.model_rev = *self.server.model_rev.borrow();
-        let mut model = self.server.with_core(|c| c.model.clone());
-        let mut seen = self
-            .server
-            .with_core(|c| c.store.reads("local").unwrap_or_default());
         let mut focus = self.server.client_focus(&self.client_id);
         if let Some(share) = &self.auth.share {
-            (model, focus) = share.model(&model, &focus);
-            seen.clear();
+            // A share sees a filtered model: built for this client alone.
+            self.model_rev = *self.server.model_rev.borrow();
+            let full = self.server.with_core(|c| c.model.clone());
+            let (model, f) = share.model(&full, &focus);
+            focus = f;
+            self.focused = focus.pane.clone();
+            asyncio::write_frame(
+                wr,
+                &ServerFrame::Model {
+                    model: Box::new(model),
+                    focus,
+                    seen: vec![],
+                },
+            )
+            .await?;
+            return Ok(());
         }
+        let (rev, shared) = shared_model(&self.server)?;
+        self.model_rev = rev;
         self.focused = focus.pane.clone();
-        asyncio::write_frame(
-            wr,
-            &ServerFrame::Model {
-                model: Box::new(model),
-                focus,
-                seen,
-            },
-        )
-        .await?;
+        wr.write_all(&shared.frame(&focus)?).await?;
         Ok(())
     }
 

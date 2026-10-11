@@ -257,3 +257,130 @@ fn delayed_kill_re_identifies_the_process() {
     assert!(!crate::pane::same_process(me, None));
     assert!(!crate::pane::same_process(1, Some(0)));
 }
+
+#[tokio::test]
+async fn outbox_caps_events_but_not_responses() {
+    let (out, mut rx) = Outbox::new();
+    for i in 0..MAX_QUEUED_EVENTS {
+        out.try_event(format!("e{i}")).unwrap();
+    }
+    assert_eq!(out.try_event("one too many".into()), Err(EventSend::Full));
+    // Responses are never refused.
+    out.send("response".into()).unwrap();
+    // A replay waits for room instead of failing.
+    let o2 = out.clone();
+    let waiting = tokio::spawn(async move { o2.event("late".into()).await });
+    tokio::task::yield_now().await;
+    assert!(!waiting.is_finished());
+    rx.recv().await.unwrap();
+    rx.recv().await.unwrap();
+    tokio::time::timeout(Duration::from_secs(5), waiting)
+        .await
+        .expect("room after the writer drained")
+        .unwrap()
+        .unwrap();
+    drop(rx);
+    assert_eq!(out.send("gone".into()), Err(EventSend::Closed));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_subscriber_that_stops_reading_gets_an_overflow_notice() {
+    let (_d, srv) = server();
+    // A small pipe: the connection's writer blocks once the client stops reading.
+    let (client, server_end) = tokio::io::duplex(64 * 1024);
+    let conn = tokio::spawn(connection(srv.clone(), server_end, None));
+    let (rd, mut wr) = tokio::io::split(client);
+    let mut rd = tokio::io::BufReader::new(rd);
+    let req = json!({"jsonrpc": "2.0", "id": 1, "method": "events.subscribe", "params": {"types": ["notes.*"]}});
+    wr.write_all(format!("{req}\n").as_bytes()).await.unwrap();
+    let mut pushes = vec![];
+    until_response(&mut rd, 1, &mut pushes).await;
+    // Far more events than the connection may queue, while nobody reads.
+    for n in 0..(MAX_QUEUED_EVENTS as u32 + 2_000) {
+        emit(&srv, n);
+    }
+    // Reading again: the queued events, then the notice; the subscription has ended.
+    let overflow = loop {
+        let mut line = String::new();
+        let got = tokio::time::timeout(Duration::from_secs(30), rd.read_line(&mut line))
+            .await
+            .expect("overflow notice in time")
+            .unwrap();
+        assert!(got > 0, "connection closed before the notice");
+        let v: Value = serde_json::from_str(&line).unwrap();
+        if v["method"] == "events.overflow" {
+            break v;
+        }
+    };
+    assert!(overflow["params"]["resume_from"].is_object(), "{overflow}");
+    drop(wr);
+    let _ = conn.await;
+}
+
+#[tokio::test]
+async fn connection_closed_resolves_only_inside_a_closed_connection() {
+    // Without a connection it never resolves (safe in a `select!`).
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), connection_closed())
+            .await
+            .is_err()
+    );
+    let c = ConnCancel::default();
+    let waiter = tokio::spawn(c.scope(async {
+        assert!(ConnCancel::current().is_some());
+        connection_closed().await;
+    }));
+    c.cancel();
+    tokio::time::timeout(Duration::from_secs(5), waiter)
+        .await
+        .expect("cancellation reached the request")
+        .unwrap();
+    assert!(c.is_cancelled());
+    // Already cancelled: resolves at once.
+    c.cancelled().await;
+}
+
+#[tokio::test]
+async fn closing_a_connection_cancels_its_requests_and_aborts_reads() {
+    let (_d, srv) = server();
+    let guard = ConnGuard {
+        server: srv.clone(),
+        client_ids: Arc::default(),
+        subs: Arc::default(),
+        open: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        cancel: ConnCancel::default(),
+        requests: std::sync::Mutex::new(Vec::new()),
+    };
+    let cancel = guard.cancel.clone();
+    // A read-only request that would wait forever, and a mutating one waiting on a gate.
+    let read = tokio::spawn(std::future::pending::<()>());
+    let write = tokio::spawn(guard.cancel.scope(async {
+        connection_closed().await;
+        "gate released"
+    }));
+    guard.track(read.abort_handle(), false);
+    guard.track(write.abort_handle(), true);
+    assert_eq!(guard.in_flight(), 2);
+    drop(guard);
+    assert!(read.await.unwrap_err().is_cancelled());
+    let r = tokio::time::timeout(Duration::from_secs(5), write)
+        .await
+        .expect("mutating request saw the cancellation")
+        .unwrap();
+    assert_eq!(r, "gate released");
+    assert!(cancel.is_cancelled());
+}
+
+#[test]
+fn a_panic_under_core_is_reported_as_poisoned_state() {
+    let (_d, srv) = server();
+    assert_eq!(poisoned_lock(&srv), None);
+    let s2 = srv.clone();
+    let r = std::thread::spawn(move || {
+        let _held = s2.core.lock().unwrap();
+        panic!("injected panic while holding core");
+    })
+    .join();
+    assert!(r.is_err());
+    assert_eq!(poisoned_lock(&srv), Some("core"));
+}

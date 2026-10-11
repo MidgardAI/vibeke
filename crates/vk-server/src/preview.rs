@@ -383,7 +383,7 @@ fn persist_browsers(server: &Server) {
         "browsers",
         Some(serde_json::to_string(&v).unwrap_or_default()),
     );
-    let _ = c.commit(tx);
+    let _ = server.commit_storage(&mut c, tx);
 }
 
 // ---- startup --------------------------------------------------------------------------------
@@ -1269,7 +1269,7 @@ pub async fn ensure_socks(server: &Arc<Server>, prefer: Option<u16>) -> std::io:
         let mut c = server.core.lock().unwrap();
         let mut tx = Tx::new();
         tx.m.kv("preview", "socks_port", Some(port.to_string()));
-        let _ = c.commit(tx);
+        let _ = server.commit_storage(&mut c, tx);
     }
     tracing::info!(port, "preview SOCKS listener on 127.0.0.1");
     *g = Some(port);

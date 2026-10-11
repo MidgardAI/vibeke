@@ -191,7 +191,7 @@ pub fn start(server: &Arc<Server>) {
         server.with_core(|c| {
             let mut tx = Tx::new();
             tx.interaction(it);
-            let _ = c.commit(tx);
+            let _ = server.commit(c, tx);
         });
     }
     // Offer resume for agents that were running before a reboot.
