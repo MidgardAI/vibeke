@@ -26469,6 +26469,12 @@
           },
           "layout": {
             "$ref": "#/$defs/LayoutSpec"
+          },
+          "env": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
           }
         }
       },
@@ -31467,6 +31473,12 @@
           "command": {
             "type": "array",
             "items": {
+              "type": "string"
+            }
+          },
+          "env": {
+            "type": "object",
+            "additionalProperties": {
               "type": "string"
             }
           }

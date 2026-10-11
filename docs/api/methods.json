@@ -4928,7 +4928,7 @@
       ],
       "milestone": "M1",
       "spec": "`{workspace, cwd?, title?, focus?: false, command?: argv, layout?: LayoutSpec}` → `{tab, root_pane}`",
-      "params": "{workspace?: Target, cwd?: string, title?: string, focus?: bool = false, command?: [string], layout?: LayoutSpec}",
+      "params": "{workspace?: Target, cwd?: string, title?: string, focus?: bool = false, command?: [string], layout?: LayoutSpec, env?: {*: string}}",
       "result": "{tab: Tab, root_pane: Pane}"
     },
     {
@@ -6046,7 +6046,7 @@
       ],
       "milestone": "M1",
       "spec": "`{cwd, name?, group?, focus?: false, layout?: LayoutSpec, command?: argv}` → `{workspace, tab, root_pane}`",
-      "params": "{cwd?: string, name?: string, group?: Target, focus?: bool = false, layout?: LayoutSpec, command?: [string]}",
+      "params": "{cwd?: string, name?: string, group?: Target, focus?: bool = false, layout?: LayoutSpec, command?: [string], env?: {*: string}}",
       "result": "{workspace: Workspace, tab: Tab, root_pane: Pane}"
     },
     {

@@ -6507,6 +6507,7 @@ export type TabCreateParams = {
   focus?: boolean;
   command?: string[];
   layout?: LayoutSpec;
+  env?: { [key: string]: string };
 };
 
 export type TabCreateResult = {
@@ -7755,6 +7756,7 @@ export type WorkspaceCreateParams = {
   focus?: boolean;
   layout?: LayoutSpec;
   command?: string[];
+  env?: { [key: string]: string };
 };
 
 export type WorkspaceCreateResult = {

@@ -7034,6 +7034,7 @@ TabCreateParams = TypedDict("TabCreateParams", {
     "focus": NotRequired[bool],
     "command": NotRequired[List[str]],
     "layout": NotRequired["LayoutSpec"],
+    "env": NotRequired[Dict[str, str]],
 })
 
 TabCreateResult = TypedDict("TabCreateResult", {
@@ -8384,6 +8385,7 @@ WorkspaceCreateParams = TypedDict("WorkspaceCreateParams", {
     "focus": NotRequired[bool],
     "layout": NotRequired["LayoutSpec"],
     "command": NotRequired[List[str]],
+    "env": NotRequired[Dict[str, str]],
 })
 
 WorkspaceCreateResult = TypedDict("WorkspaceCreateResult", {
