@@ -11,6 +11,7 @@ import { Channel, ChannelError } from './channel';
 import { helloDevice } from './hello';
 import * as b64 from './b64';
 import { recordKey } from './keys';
+import type { StaticKey } from './noise';
 import {
   MUTATING_METHODS,
   normalizeDashboard,
@@ -144,7 +145,7 @@ export interface ClientIdentity {
 
 export interface ConnectionOptions {
   platform: Platform;
-  devicePrivate: Uint8Array;
+  devicePrivate: StaticKey;
   client: ClientIdentity;
   backoffMinMs?: number;
   backoffMaxMs?: number;

@@ -21,6 +21,7 @@ import { linkExpired, linkHostKey, linkPsk, type PairingLink } from './link';
 import type { Scope } from './model';
 import type { Platform } from './platform';
 import { RpcClient } from './rpc';
+import type { StaticKey } from './noise';
 import type { HostRecord, HostStore } from './hosts';
 
 export class PairingError extends Error {
@@ -37,7 +38,7 @@ export class PairingError extends Error {
 export interface PairOptions {
   link: PairingLink;
   platform: Platform;
-  devicePrivate: Uint8Array;
+  devicePrivate: StaticKey;
   /** Keystore name of `devicePrivate` when it is an invitation's own key (kept on the record). */
   keyName?: string;
   /** Device display name, e.g. "Alice's iPhone". */

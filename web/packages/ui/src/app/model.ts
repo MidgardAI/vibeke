@@ -4,7 +4,7 @@
 import {
   HostManager,
   fingerprint,
-  x25519Public,
+  staticPublic,
   PushSync,
   RpcError,
   answerParams,
@@ -20,6 +20,7 @@ import {
   type HostRecord,
   type Interaction,
   type PairingLink,
+  type StaticKey,
 } from '@vibeke/core';
 import { t } from '../i18n';
 import { isPickerChanged } from '../lib/pickers';
@@ -124,7 +125,7 @@ export class AppModel {
   private _manager: HostManagerApi | null = null;
   private fingerprint: string | null = null;
   private _push: PushSync | null = null;
-  private devicePrivate: Uint8Array | null = null;
+  private devicePrivate: StaticKey | null = null;
   private toastSeq = 0;
   private offs: (() => void)[] = [];
   private lastSaved = new Map<string, { at: number; dashboard: unknown }>();
@@ -165,7 +166,7 @@ export class AppModel {
         this.fingerprint = r.fingerprint;
       } else {
         this.devicePrivate = await loadOrCreateDeviceKey(p.keystore, (n) => p.random(n));
-        this.fingerprint = fingerprint(x25519Public(this.devicePrivate));
+        this.fingerprint = fingerprint(staticPublic(this.devicePrivate));
         const manager = new HostManager({
           platform: p,
           store: p.hostStore,

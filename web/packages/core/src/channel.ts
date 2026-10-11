@@ -10,7 +10,7 @@
 // authenticated: a relay can forge them (see `ChannelError.authenticated`).
 
 import { helloBytes, helloText, type Hello } from './hello';
-import { Initiator, NoiseError, type Session } from './noise';
+import { Initiator, NoiseError, isOpaqueKey, type Session, type StaticKey } from './noise';
 import type { Clock, Socket } from './platform';
 
 export type ChannelErrorCode =
@@ -80,8 +80,8 @@ export interface ChannelOptions {
   hello: Hello;
   /** Pinned host static public key. */
   hostKey: Uint8Array;
-  /** Device static private key. */
-  devicePrivate: Uint8Array;
+  /** Device static private key: raw, or opaque (a non-extractable WebCrypto key; async DH). */
+  devicePrivate: StaticKey;
   /** Pairing secret (IKpsk2). Required iff hello.mode === 'pair'. */
   psk?: Uint8Array;
   clock: Clock;
@@ -152,10 +152,15 @@ export class Channel implements MessageChannel {
         o.timeoutMs ?? 15_000,
       );
 
+      // Raw keys run the handshake synchronously; an opaque key computes its DH asynchronously,
+      // and frames that arrive meanwhile wait in `early` for the channel.
+      const opaque = isOpaqueKey(o.devicePrivate);
+      let reading = false;
+      const early: (string | Uint8Array)[] = [];
       const start = () => {
         try {
           const prologue = helloBytes(o.hello);
-          initiator = new Initiator({
+          const init = new Initiator({
             prologue,
             localPrivate: o.devicePrivate,
             remotePublic: o.hostKey,
@@ -163,11 +168,39 @@ export class Channel implements MessageChannel {
             ephemeral: o.ephemeral,
             random: o.random,
           });
-          socket.send(helloText(o.hello));
-          socket.send(initiator.writeFirst());
+          if (!opaque) {
+            initiator = init;
+            socket.send(helloText(o.hello));
+            socket.send(init.writeFirst());
+            return;
+          }
+          void init.writeFirstAsync().then(
+            (first) => {
+              if (settled) return;
+              initiator = init;
+              socket.send(helloText(o.hello));
+              socket.send(first);
+            },
+            (e) => fail(new ChannelError('handshake', `handshake setup failed: ${(e as Error).message}`, { cause: e })),
+          );
         } catch (e) {
           fail(new ChannelError('handshake', `handshake setup failed: ${(e as Error).message}`, { cause: e }));
         }
+      };
+      const finishHandshake = (payload: Uint8Array, session: Session) => {
+        let host: HostHello;
+        try {
+          host = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(payload)) as HostHello;
+          if (typeof host !== 'object' || host === null || typeof host.host_name !== 'string') throw new Error('shape');
+        } catch {
+          return fail(new ChannelError('protocol', 'bad host info payload', { authenticated: true }));
+        }
+        settled = true;
+        clock.clearTimeout(timer);
+        socket.onopen = null;
+        const ch = new Channel(socket, session, host, clock);
+        resolve(ch);
+        for (const f of early.splice(0)) ch.onFrame(f);
       };
 
       socket.onopen = start;
@@ -179,8 +212,23 @@ export class Channel implements MessageChannel {
         );
       socket.onmessage = (data) => {
         if (settled) return;
+        if (reading) {
+          // Transport frames after message 2, while its async DH runs.
+          early.push(data);
+          return;
+        }
         if (typeof data === 'string') return fail(plaintextError(data));
         if (!initiator) return fail(new ChannelError('protocol', 'binary message before hello'));
+        if (opaque) {
+          reading = true;
+          void initiator.readSecondAsync(data, clock).then(
+            ({ payload, session }) => {
+              if (!settled) finishHandshake(payload, session);
+            },
+            (e) => fail(new ChannelError('handshake', `handshake failed: ${(e as Error).message}`, { cause: e })),
+          );
+          return;
+        }
         let payload: Uint8Array;
         let session: Session;
         try {
@@ -188,17 +236,7 @@ export class Channel implements MessageChannel {
         } catch (e) {
           return fail(new ChannelError('handshake', `handshake failed: ${(e as Error).message}`, { cause: e }));
         }
-        let host: HostHello;
-        try {
-          host = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(payload)) as HostHello;
-          if (typeof host !== 'object' || host === null || typeof host.host_name !== 'string') throw new Error('shape');
-        } catch {
-          return fail(new ChannelError('protocol', 'bad host info payload', { authenticated: true }));
-        }
-        settled = true;
-        clock.clearTimeout(timer);
-        socket.onopen = null;
-        resolve(new Channel(socket, session, host, clock));
+        finishHandshake(payload, session);
       };
 
       if (socket.state === 'open') start();

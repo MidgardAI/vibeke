@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import * as b64 from '../src/b64';
 import { helloBytes, helloDevice, helloPair, helloText, parseHello } from '../src/hello';
-import { base32, fingerprint, hostId, invitationKeyName, loadOrCreateDeviceKey, pairingKey, recordKey, x25519Public } from '../src/keys';
+import { base32, fingerprint, hostId, invitationKeyName, loadOrCreateDeviceKey, pairingKey, recordKey, staticPublic } from '../src/keys';
 import { linkExpired, linkJson, linkToUrl, parseLink, type PairingLink } from '../src/link';
 import type { KeyStore } from '../src/platform';
 import { MemKeyStore } from './helpers';
@@ -53,7 +53,7 @@ describe('keys', () => {
     const a = await loadOrCreateDeviceKey(ks);
     const b = await loadOrCreateDeviceKey(ks);
     expect(a).toEqual(b);
-    expect(x25519Public(a).length).toBe(32);
+    expect(staticPublic(a).length).toBe(32);
   });
   test('invitations get their own key; plain pairing uses the device key', async () => {
     const ks = new MemKeyStore();

@@ -14,7 +14,7 @@ import {
   loadOrCreateDeviceKey,
   pair,
   pairingKey,
-  x25519Public,
+  staticPublic,
   type HostRecord,
   type HostState,
   type AppEvent,
@@ -22,6 +22,7 @@ import {
   type PairingLink,
   type Platform,
   type RpcLink,
+  type StaticKey,
 } from '@vibeke/core';
 import type { HostsPatch, RendererMethod, WireError } from '../shared/contract';
 
@@ -49,7 +50,7 @@ export interface EngineOptions {
 
 export class Engine {
   manager: HostManager | null = null;
-  private devicePrivate: Uint8Array | null = null;
+  private devicePrivate: StaticKey | null = null;
   private starting: Promise<void> | null = null;
   private last = new Map<string, HostState>();
   private listeners = new Set<(p: HostsPatch) => void>();
@@ -61,7 +62,7 @@ export class Engine {
 
   get fingerprint(): string {
     if (!this.devicePrivate) throw new Error('engine not started');
-    return fingerprint(x25519Public(this.devicePrivate));
+    return fingerprint(staticPublic(this.devicePrivate));
   }
 
   /** Idempotent: every window's `engine.start` shares one startup. */

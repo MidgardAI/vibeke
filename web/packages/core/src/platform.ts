@@ -1,6 +1,8 @@
 // Platform capabilities injected into core (spec 16 §9.3). Shells (PWA, Electron, tests)
 // implement these; core never touches DOM, IndexedDB, WebSocket or timers directly.
 
+import type { StaticKey } from './noise';
+
 /** Opaque timer handle. */
 export type TimerHandle = unknown;
 
@@ -56,6 +58,15 @@ export interface KeyStore {
    * serialized in-process only.
    */
   getOrCreate?(name: string, make: () => Uint8Array, valid: (v: Uint8Array) => boolean): Promise<Uint8Array>;
+  /**
+   * Optional: Noise static keys the platform keeps as non-extractable keys (WebCrypto X25519 in
+   * IndexedDB). Returns the stored key (raw bytes stored earlier stay in use), else creates one:
+   * a WebCrypto key where supported, else `makeRaw()`. `get`/`set` stay for raw keys and other
+   * secrets; `delete` removes either kind.
+   */
+  getOrCreateStatic?(name: string, makeRaw: () => Uint8Array): Promise<StaticKey>;
+  /** The static key stored under `name` (raw or WebCrypto), or null. Required with `getOrCreateStatic`. */
+  getStatic?(name: string): Promise<StaticKey | null>;
 }
 
 const inflight = new WeakMap<KeyStore, Map<string, Promise<Uint8Array>>>();

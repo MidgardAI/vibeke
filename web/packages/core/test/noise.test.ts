@@ -3,7 +3,8 @@ import vectors from '../../../../crates/vk-e2e/tests/vectors.json';
 import * as b64 from '../src/b64';
 import { helloDevice, helloPair, helloText } from '../src/hello';
 import { checkCode, hostId, verifyKeyBinding, x25519Public } from '../src/keys';
-import { CHUNK, CipherState, Initiator, MAX_MESSAGE, NOISE_MAX, Responder, Session } from '../src/noise';
+import { x25519 } from '@noble/curves/ed25519.js';
+import { CHUNK, CipherState, Initiator, MAX_MESSAGE, NOISE_MAX, Responder, Session, type OpaqueStaticKey } from '../src/noise';
 import { FakeClock } from './helpers';
 
 const te = new TextEncoder();
@@ -80,6 +81,18 @@ describe('conformance vectors (crates/vk-e2e/tests/vectors.json)', () => {
       let out: Uint8Array | null = null;
       for (const f of back) out = session.decrypt(f);
       expect(td.decode(out!)).toBe(c.transport.small_plaintext);
+    });
+
+    test(`${c.name}: an opaque static key (async DH) gives the same bytes`, async () => {
+      const k = keys(c);
+      const opaque: OpaqueStaticKey = { kind: 'opaque', publicKey: x25519Public(k.dev), dh: async (pub) => x25519.getSharedSecret(k.dev, pub) };
+      const i = new Initiator({ prologue: k.prologue, localPrivate: opaque, remotePublic: k.hostPub, psk: k.psk, ephemeral: k.ei });
+      expect(() => i.writeFirst()).toThrow(/async/);
+      expect(b64.encode(await i.writeFirstAsync())).toBe(c.msg1);
+      const { payload, session } = await i.readSecondAsync(b64.decode(c.msg2));
+      expect(td.decode(payload)).toBe(c.msg2_payload);
+      expect(b64.encode(session.handshakeHash)).toBe(c.handshake_hash);
+      expect(enc(session.encrypt(te.encode(c.transport.small_plaintext)))).toEqual(c.transport.initiator_frames[0]!);
     });
 
     test(`${c.name}: TS responder matches Rust`, () => {
@@ -261,5 +274,17 @@ describe('adversarial', () => {
       out = rs.decrypt(f);
     }
     expect(out).toEqual(msg);
+  });
+});
+
+describe('WebCrypto static keys', () => {
+  test('a non-extractable X25519 key agrees with noble (skipped where WebCrypto has no X25519)', async () => {
+    const { generateCryptoStaticKey, opaqueFromStored } = await import('../src/keys');
+    const stored = await generateCryptoStaticKey();
+    if (!stored) return;
+    expect(stored.privateKey.extractable).toBe(false);
+    const other = Uint8Array.from({ length: 32 }, (_, n) => n + 1);
+    const mine = await opaqueFromStored(stored).dh(x25519Public(other));
+    expect(mine).toEqual(x25519.getSharedSecret(other, stored.publicKey));
   });
 });
