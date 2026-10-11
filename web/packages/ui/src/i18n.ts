@@ -349,6 +349,8 @@ export const en = {
     connecting: 'Connecting to the host…',
     checkFingerprint: 'Check that your host shows the same code',
     waitingConfirm: 'Check that Vibeke on your host shows the same code. Then confirm the pairing there.',
+    waitingConfirmLocal: 'Waiting for the host to confirm the pairing…',
+    openTerminal: 'Open terminal',
     done: (host: string) => `Paired with ${host}`,
     openApp: 'Open Vibeke',
     errors: {
