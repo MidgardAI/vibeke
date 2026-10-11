@@ -842,9 +842,9 @@ attention.list :: {budget_ms?: int, effort?: quick|minutes|deep}
 # equivalent natively answerable approvals (15 §8.3); answer each member with interaction.answer (expected_decision_rev)
 attention.batch :: {interaction: string}
   => {interaction: string, batchable: bool, batch?: string, reason?: string, members: [{interaction: string, handle: string, run: string, pane: string, title: string, decision_rev: int, opened_at_ms: int}], facts?: object | null, note?: string}
-# key.kind is one of interaction|review|check_failed|send_unknown|finished_turn|binding_suspended; snooze_until_ms: null clears
-attention.update :: {key: {kind: string, id: string}, seen?: bool, item_rev?: int, snooze_until_ms?: int | null, pin?: bool}
-  => {key: {kind: string, id: string}, seen: bool, seen_rev: int | null, snoozed_until_ms: int | null, pinned: bool, warning: string | null}
+# key.kind is one of interaction|review|check_failed|send_unknown|finished_turn|binding_suspended; snooze_until_ms: null clears; dismiss: true hides the item until its revision changes (and cancels an open interaction), false undoes it
+attention.update :: {key: {kind: string, id: string}, seen?: bool, item_rev?: int, snooze_until_ms?: int | null, pin?: bool, dismiss?: bool}
+  => {key: {kind: string, id: string}, seen: bool, seen_rev: int | null, snoozed_until_ms: int | null, pinned: bool, dismissed: bool, dismissed_rev: int | null, warning: string | null}
 pane.can_see_paths :: {pane?: Target, paths?: [string]} => {visible: [bool]}
 pane.equalize :: {tab?: Target} => {layout: LayoutSpec}
 # also accepted: pane_id instead of pane; stale-seq drop same as adapter.report_self

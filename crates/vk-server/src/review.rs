@@ -172,6 +172,9 @@ pub struct Pref {
     pub snapshot: Option<AttentionItem>,
     pub pinned: bool,
     pub updated_at_ms: i64,
+    /// Highest item revision the user dismissed; the item stays hidden until it changes again.
+    #[serde(default)]
+    pub dismissed_rev: Option<u64>,
 }
 
 // ---- small helpers ------------------------------------------------------------------------------
@@ -3230,6 +3233,8 @@ struct Collected {
     stale_tasks: Vec<String>,
     /// Workspaces each item belongs to (object id → workspaces), for scoped callers.
     item_ws: HashMap<String, BTreeSet<String>>,
+    /// Object ids hidden by a dismissal (still present, so their preference must be kept).
+    dismissed: HashSet<String>,
 }
 
 /// Gather attention items from the model and cached projections (no git, one lock).
@@ -3643,6 +3648,18 @@ fn collect(server: &Server, now_ms: i64) -> Collected {
     // Per-user preferences: seen, pin, snooze with material wake-ups.
     let aprefs = attention_ext::prefs();
     let prefs: HashMap<&str, &Pref> = prefs.iter().map(|p| (p.key.as_str(), p)).collect();
+    let mut dismissed = HashSet::new();
+    items.retain(|it| {
+        let hidden = prefs
+            .get(it.key.object_id.as_str())
+            .and_then(|pf| pf.dismissed_rev)
+            .is_some_and(|r| r >= it.key.revision);
+        if hidden {
+            dismissed.insert(it.key.object_id.clone());
+            meta.remove(&it.key.object_id);
+        }
+        !hidden
+    });
     for it in items.iter_mut() {
         let Some(pf) = prefs.get(it.key.object_id.as_str()) else {
             continue;
@@ -3716,6 +3733,7 @@ fn collect(server: &Server, now_ms: i64) -> Collected {
         complete,
         stale_tasks,
         item_ws,
+        dismissed,
     }
 }
 
@@ -3867,8 +3885,12 @@ const KEY_KINDS: &[&str] = &[
     "binding_suspended",
 ];
 
-/// `attention.update {key, seen?, snooze_until_ms?, pin?, item_rev?}`: per-user preference only;
-/// never answers, sends or accepts (15 §8.3).
+/// `attention.update {key, seen?, snooze_until_ms?, pin?, dismiss?, item_rev?}`: per-user
+/// preference only; never answers, sends or accepts (15 §8.3). `dismiss: true` hides the item
+/// until its revision changes (`item_rev` or the current one is stored as `dismissed_rev`);
+/// `dismiss: false` undoes that. Dismissing an open interaction also cancels it, which releases
+/// a held hook gate so the agent falls back to its own dialog. A cancelled interaction stays
+/// cancelled after an undo.
 fn attention_update(server: &Arc<Server>, _ctx: &Ctx, p: &Value) -> R {
     let key = p.get("key").ok_or_else(|| invalid("missing param `key`"))?;
     let kind = req(key, "kind")?;
@@ -3923,17 +3945,66 @@ fn attention_update(server: &Arc<Server>, _ctx: &Ctx, p: &Value) -> R {
     if let Some(pin) = p.get("pin").and_then(Value::as_bool) {
         pref.pinned = pin;
     }
+    let mut cancel_interaction = false;
+    match p.get("dismiss").and_then(Value::as_bool) {
+        Some(true) => {
+            let rev = match (u(p, "item_rev"), item.as_ref()) {
+                (Some(r), _) => r,
+                (None, Some(i)) => i.key.revision,
+                (None, None) if kind == "interaction" => 0,
+                (None, None) => return Err(invalid("item is not in the inbox")),
+            };
+            pref.dismissed_rev = Some(rev);
+            cancel_interaction = kind == "interaction"
+                && server.with_core(|c| {
+                    c.model
+                        .interactions
+                        .iter()
+                        .any(|i| i.id == id && i.status == InteractionStatus::Open)
+                });
+        }
+        Some(false) => pref.dismissed_rev = None,
+        None => {}
+    }
     pref.updated_at_ms = now_ms;
+    if cancel_interaction {
+        // Locks core itself, so it runs before this function takes the lock.
+        crate::agents::close_interaction(server, id, InteractionStatus::Cancelled, "dismissed");
+    }
+    // Preferences for objects that are gone and untouched for a week would pile up forever.
+    let stale_prefs: Vec<String> = if col.complete {
+        let week_ago = now_ms - 7 * 24 * 3600 * 1000;
+        server.with_core(|c| {
+            c.store
+                .load::<Pref>(K_PREF)
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|o| {
+                    o.key != obj
+                        && o.updated_at_ms < week_ago
+                        && !o.snoozed_until_ms.is_some_and(|u| u > now_ms)
+                        && !col.meta.contains_key(&o.key)
+                        && !col.dismissed.contains(&o.key)
+                })
+                .map(|o| o.key)
+                .collect()
+        })
+    } else {
+        Vec::new()
+    };
     let mut c = server.core.lock().unwrap();
     let mut tx = Tx::new();
     tx.m.put(K_PREF, &obj, None, &pref);
+    for k in &stale_prefs {
+        tx.m.delete(K_PREF, k);
+    }
     if let Some((pane, rev)) = read_mark {
         tx.m.read_mark("local", &pane, rev);
     }
     tx.event(
         "attention.preference_changed",
         json!({"key": {"kind": kind, "id": id}}),
-        json!({"seen": pref.seen_rev.is_some(), "snoozed_until_ms": pref.snoozed_until_ms, "pinned": pref.pinned}),
+        json!({"seen": pref.seen_rev.is_some(), "snoozed_until_ms": pref.snoozed_until_ms, "pinned": pref.pinned, "dismissed": pref.dismissed_rev.is_some()}),
     );
     server.commit(&mut c, tx).map_err(internal)?;
     Ok(json!({
@@ -3942,6 +4013,8 @@ fn attention_update(server: &Arc<Server>, _ctx: &Ctx, p: &Value) -> R {
         "seen_rev": pref.seen_rev,
         "snoozed_until_ms": pref.snoozed_until_ms,
         "pinned": pref.pinned,
+        "dismissed": pref.dismissed_rev.is_some(),
+        "dismissed_rev": pref.dismissed_rev,
         "warning": warning,
     }))
 }

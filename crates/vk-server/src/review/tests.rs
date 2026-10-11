@@ -2427,3 +2427,89 @@ mod evidence_tests;
 // notifications, Link run, disposable reviewer checkouts).
 #[path = "lane2c_tests.rs"]
 mod lane2c_tests;
+
+#[tokio::test(flavor = "multi_thread")]
+async fn dismiss_hides_an_item_until_a_later_revision_and_undoes() {
+    let e = Env::new();
+    let t0 = now();
+    put_task(&e, "tA", "Fix invoice export", Some("deep"));
+    put_projection(&e, projection("tA", "review_available", t0 - 600_000, 1));
+    let key = json!({"kind": "review", "id": "tA:subj-tA"});
+    let shown = |v: &Value| keys(v).contains(&("review".into(), "tA:subj-tA".into()));
+
+    assert!(shown(&ok(&e, "attention.list", json!({})).await));
+    let r = ok(&e, "attention.update", json!({"key": key, "dismiss": true})).await;
+    assert_eq!(r["dismissed"], true);
+    assert_eq!(r["dismissed_rev"], 1);
+    let v = ok(&e, "attention.list", json!({})).await;
+    assert!(!shown(&v), "{v}");
+    let v = ok(&e, "attention.list", json!({"effort": "deep"})).await;
+    assert!(!shown(&v), "five-minute view too: {v}");
+
+    // A later revision brings the item back.
+    put_projection(&e, projection("tA", "review_available", t0 - 500_000, 2));
+    assert!(shown(&ok(&e, "attention.list", json!({})).await));
+
+    // dismiss:false undoes a dismissal of the current revision.
+    ok(&e, "attention.update", json!({"key": key, "dismiss": true})).await;
+    assert!(!shown(&ok(&e, "attention.list", json!({})).await));
+    let r = ok(
+        &e,
+        "attention.update",
+        json!({"key": key, "dismiss": false}),
+    )
+    .await;
+    assert_eq!(r["dismissed"], false);
+    assert!(r["dismissed_rev"].is_null());
+    assert!(shown(&ok(&e, "attention.list", json!({})).await));
+
+    // An item that is not in the inbox cannot be dismissed without a revision.
+    let gone = json!({"kind": "review", "id": "nope:none"});
+    assert!(
+        call(
+            &e,
+            "attention.update",
+            json!({"key": gone, "dismiss": true})
+        )
+        .await
+        .is_err()
+    );
+    let r = ok(
+        &e,
+        "attention.update",
+        json!({"key": gone, "dismiss": true, "item_rev": 4}),
+    )
+    .await;
+    assert_eq!(r["dismissed_rev"], 4);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn dismissing_an_open_interaction_cancels_it() {
+    let e = Env::new();
+    let t0 = now();
+    e.add_run("r1", &e.repo);
+    put_interaction(&e, "q1", "r1", t0 - 60_000);
+    let v = ok(&e, "attention.list", json!({})).await;
+    assert!(keys(&v).contains(&("interaction".into(), "q1".into())));
+
+    let r = ok(
+        &e,
+        "attention.update",
+        json!({"key": {"kind": "interaction", "id": "q1"}, "dismiss": true}),
+    )
+    .await;
+    assert_eq!(r["dismissed"], true);
+    let status = e.server.with_core(|c| {
+        c.model
+            .interactions
+            .iter()
+            .find(|i| i.id == "q1")
+            .map(|i| i.status)
+    });
+    assert_ne!(status, Some(InteractionStatus::Open));
+    let v = ok(&e, "attention.list", json!({})).await;
+    assert!(
+        !keys(&v).contains(&("interaction".into(), "q1".into())),
+        "{v}"
+    );
+}

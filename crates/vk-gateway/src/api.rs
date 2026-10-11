@@ -158,6 +158,7 @@ pub fn required_scope(method: &str) -> Option<Scope> {
         "agent.interrupt"
         | "interaction.answer"
         | "interaction.answer_batch"
+        | "interaction.cancel"
         | "notification.read"
         | "attention.update" => Approve,
         "pane.send_text"
@@ -1353,6 +1354,7 @@ impl Call<'_> {
                 self.answer_one(id, required_rev(&p)?, &p, &op_id, None)
                     .await
             }
+            "interaction.cancel" => self.server(method, pick(&p, &["interaction"])).await,
             "interaction.answer_batch" => {
                 let decision = req(&p, "decision")?;
                 if !matches!(decision, "allow" | "deny") {
@@ -1432,7 +1434,17 @@ impl Call<'_> {
             "attention.update" => {
                 self.server(
                     "attention.update",
-                    pick_nullable(&p, &["key", "seen", "snooze_until_ms", "pin", "item_rev"]),
+                    pick_nullable(
+                        &p,
+                        &[
+                            "key",
+                            "seen",
+                            "snooze_until_ms",
+                            "pin",
+                            "dismiss",
+                            "item_rev",
+                        ],
+                    ),
                 )
                 .await
             }
@@ -2674,6 +2686,9 @@ mod workspace_tests {
         }
         assert_eq!(required_scope("attention.update"), Some(Scope::Approve));
         assert!(is_mutating("attention.update"));
+        assert_eq!(required_scope("interaction.cancel"), Some(Scope::Approve));
+        assert!(is_mutating("interaction.cancel"));
+        assert!(kind_allows("share", "interaction.cancel"));
         for m in [
             "task.check.run",
             "preview.open",
@@ -3180,6 +3195,22 @@ mod workspace_tests {
         );
         assert!(up["snooze_until_ms"].is_null() && up.get("snooze_until_ms").is_some());
         assert_eq!(up["actor"], "gateway:d1");
+        let dis = echo(
+            call.dispatch(
+                "attention.update",
+                json!({"key": {"kind": "send_unknown", "id": "m1"}, "dismiss": true, "item_rev": 3, "x": 1, "op_id": "o"}),
+            )
+            .await,
+        );
+        assert_eq!(dis["dismiss"], true);
+        assert_eq!(dis["item_rev"], 3);
+        assert!(dis.get("x").is_none());
+        let cancel = echo(
+            call.dispatch("interaction.cancel", json!({"interaction": "i1", "x": 1}))
+                .await,
+        );
+        assert_eq!(cancel["interaction"], "i1");
+        assert!(cancel.get("x").is_none());
         let run = echo(
             call.dispatch(
                 "task.check.run",

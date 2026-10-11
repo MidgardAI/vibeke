@@ -267,6 +267,35 @@ fn review_loop_with_verification_and_acceptance() {
     assert_eq!(item["title"], tracked["task"]["title"]);
     assert!(inbox["five_minute"]["keys"].is_array());
 
+    // Dismissing hides the item from the inbox; dismiss:false brings it back.
+    let key = item["key"].clone();
+    let d = s
+        .api("attention.update", json!({"key": key, "dismiss": true}))
+        .unwrap();
+    assert_eq!(d["dismissed"], true, "{d}");
+    let hidden = s.api("attention.list", json!({})).unwrap();
+    assert!(
+        !hidden["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|i| i["key"] == key),
+        "{hidden}"
+    );
+    let u = s
+        .api("attention.update", json!({"key": key, "dismiss": false}))
+        .unwrap();
+    assert_eq!(u["dismissed"], false, "{u}");
+    let back = s.api("attention.list", json!({})).unwrap();
+    assert!(
+        back["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|i| i["key"] == key),
+        "{back}"
+    );
+
     // Accept the exact revision shown.
     let acc = s
         .api(
