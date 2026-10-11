@@ -9,7 +9,7 @@ test('app screenshots rotate, enlarge, and support keyboard navigation', async (
   await page.evaluate(() => document.fonts.ready)
   const showcase = page.getByRole('region', { name: 'Vibeke screenshots' })
   const orbit = showcase.locator('.client-orbit')
-  await expect(orbit).toHaveAttribute('data-active-client', 'electron')
+  await expect(orbit).toHaveAttribute('data-active-client', 'tui')
   await expect.poll(() => orbit.locator('img').evaluateAll(images => images.every(image => (image as HTMLImageElement).complete && (image as HTMLImageElement).naturalWidth > 0))).toBe(true)
   await expect(orbit.locator('img')).toHaveCount(3)
   for (const [label, client] of [['Terminal', 'tui'], ['Browser', 'web'], ['Desktop', 'electron']]) {

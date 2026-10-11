@@ -8,7 +8,7 @@ const clients = [
 ] as const
 
 export function ClientShowcase() {
-  const [selected, setSelected] = useState(1)
+  const [selected, setSelected] = useState(0)
   const [ready, setReady] = useState(false)
   const [expanded, setExpanded] = useState(false)
   const dialog = useRef<HTMLDialogElement>(null)
@@ -49,7 +49,7 @@ export function ClientShowcase() {
             className={`client-frame ${client.id === 'web' ? 'client-frame-phone' : ''}`}
             data-position={position} data-client={client.id}>
             <span className="client-frame-title"><span className="flex items-center gap-2"><Icon size={11} />{client.kind}</span><Expand size={11} /></span>
-            <img src={`/screenshots/${client.id}.png`} width={client.width} height={client.height} alt={client.alt} fetchPriority={client.id === 'electron' ? 'high' : 'auto'} draggable={false} />
+            <img src={`/screenshots/${client.id}.png`} width={client.width} height={client.height} alt={client.alt} fetchPriority={client.id === 'tui' ? 'high' : 'auto'} draggable={false} />
           </button>
         })}
       </div>
