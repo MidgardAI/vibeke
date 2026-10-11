@@ -198,7 +198,10 @@ impl Record {
         server.with_core(|c| {
             let mut tx = Tx::new();
             tx.m.kv(KV_SCOPE, pane, Some(v));
-            c.commit(tx).map(|_| ()).map_err(|e| e.to_string())
+            server
+                .commit_storage(c, tx)
+                .map(|_| ())
+                .map_err(|e| e.to_string())
         })
     }
 }

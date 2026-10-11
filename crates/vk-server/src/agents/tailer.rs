@@ -321,7 +321,7 @@ fn apply(
                         json!({"run": run_id, "pane": run.pane}),
                         json!({"turn": rec.n, "native_id": rec.native_id, "model": rec.model, "input": rec.input, "output": rec.output, "cache_read": rec.cache_read, "cache_write": rec.cache_write, "cost_usd": rec.cost_usd, "cost_source": rec.cost_source, "source": "transcript"}),
                     );
-                    let _ = c.commit(tx);
+                    let _ = server.commit_storage(c, tx);
                 });
             }
             Event::ToolUse {
@@ -358,7 +358,7 @@ fn apply(
                 server.with_core(|c| {
                     let mut tx = Tx::new();
                     tx.m.put(K_ITEM, &item, None, &rec);
-                    let _ = c.commit(tx);
+                    let _ = server.commit_storage(c, tx);
                 });
             }
             Event::ToolResult {
@@ -384,7 +384,7 @@ fn apply(
                     server.with_core(|c| {
                         let mut tx = Tx::new();
                         tx.m.close(K_ITEM, &item, None, &r);
-                        let _ = c.commit(tx);
+                        let _ = server.commit_storage(c, tx);
                     });
                 }
                 // Reconcile: the tool ran, so its approval is no longer pending.

@@ -333,7 +333,7 @@ pub fn note(server: &Server, run: &AgentRun, kind: Kind) {
         server.with_core(|c| {
             let mut tx = Tx::new();
             tx.m.kv(KV_SCOPE, &k, Some(json));
-            let _ = c.commit(tx);
+            let _ = server.commit_storage(c, tx);
         });
     }
     if let Some(c) = spike {

@@ -179,7 +179,7 @@ pub(crate) fn set_tls_origin(server: &Server, preview_id: &str, on: bool) {
         &format!("tls_origin:{preview_id}"),
         Some(if on { "1" } else { "0" }.to_string()),
     );
-    let _ = c.commit(tx);
+    let _ = server.commit_storage(&mut c, tx);
 }
 
 /// Make the proxy serve `tls_origin` routes: load (or, on first use, generate) the per-user
