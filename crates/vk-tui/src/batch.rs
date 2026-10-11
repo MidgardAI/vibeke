@@ -329,7 +329,7 @@ pub fn key(app: &mut App, ev: KeyEvent) {
     keep(app);
 }
 
-fn delivery_text(it: &Interaction) -> (String, char) {
+fn delivery_text(closed: Option<&crate::closed::Closed>, it: &Interaction) -> (String, char) {
     match it.delivery {
         DeliveryState::DecisionRecorded | DeliveryState::Delivering => ("delivering…".into(), 'y'),
         DeliveryState::Delivered => ("✓ delivered".into(), 'g'),
@@ -341,18 +341,9 @@ fn delivery_text(it: &Interaction) -> (String, char) {
             ),
             'r',
         ),
-        _ => match it.status {
-            InteractionStatus::Open => ("waiting".into(), 'm'),
-            _ => (
-                format!(
-                    "answered{}",
-                    it.answered_by
-                        .as_ref()
-                        .map(|b| format!(" by {b}"))
-                        .unwrap_or_default()
-                ),
-                'm',
-            ),
+        _ => match crate::closed::text_with(closed, it) {
+            None => ("waiting".into(), 'm'),
+            Some(t) => (t, 'm'),
         },
     }
 }
@@ -443,7 +434,7 @@ pub fn draw(app: &App, g: &mut Grid) {
                 };
                 let (state, c) = match v.errors.get(id) {
                     Some(e) => (format!("✗ {e}"), 'r'),
-                    None => delivery_text(&it),
+                    None => delivery_text(app.ux.closed.get(id.0, &it.id), &it),
                 };
                 let color = match c {
                     'g' => t.green,

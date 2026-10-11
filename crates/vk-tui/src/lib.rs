@@ -12,6 +12,7 @@ pub mod caps;
 pub mod card;
 pub mod chrome;
 pub mod clipboard;
+pub mod closed;
 pub mod cloud;
 pub mod collision;
 pub mod config_notice;

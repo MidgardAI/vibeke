@@ -118,6 +118,7 @@ pub fn on_events(app: &mut App, i: usize, events: Vec<PushedEvent>, lagged: bool
         ) {
             refresh_clients = true;
         } else if k.starts_with("interaction.") {
+            crate::closed::on_event(app, i, k, &v);
             inbox = true;
         } else if k.starts_with("browser.") {
             refresh_sessions = true;

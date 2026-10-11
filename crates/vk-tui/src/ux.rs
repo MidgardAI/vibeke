@@ -67,6 +67,7 @@ pub struct State {
     pub sandboxes: Option<crate::sandboxes::View>,
     pub connections: crate::connections::State,
     pub config: crate::config_notice::State,
+    pub closed: crate::closed::State,
 }
 
 /// Replies routed back to the 2B modules.

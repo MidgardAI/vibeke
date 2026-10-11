@@ -1984,7 +1984,10 @@ fn detail_lines(app: &App, it: &Item, width: usize, out: &mut Vec<(String, Style
     {
         crate::popups::card_lines(app, mi, x, 0, width, out);
         let keys = if x.status != InteractionStatus::Open {
-            "resolved — no longer answerable".to_string()
+            format!(
+                "{} — no longer answerable",
+                crate::closed::text(app, mi, x).unwrap_or_else(|| "closed".into())
+            )
         } else if !x.answerable {
             "answer in the pane · [o] open pane".to_string()
         } else {

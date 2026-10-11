@@ -1024,7 +1024,7 @@ const PLAN_ROWS: usize = 12;
 /// `width` columns. Long parts end with how much is left out.
 pub fn card_lines(
     app: &App,
-    _mi: usize,
+    mi: usize,
     it: &Interaction,
     sel: usize,
     width: usize,
@@ -1136,6 +1136,9 @@ pub fn card_lines(
     }
     if let Some(t) = crate::gateway::interaction_answered_text(it) {
         b.line(&format!("📱 {t}"), app.theme.s(app.theme.accent));
+    } else if let Some(how) = crate::closed::text(app, mi, it) {
+        // How it closed: never "answered" for one that was dismissed or closed automatically.
+        b.line(&how, t.dim());
     }
     match it.delivery {
         DeliveryState::DecisionRecorded | DeliveryState::Delivering => {
