@@ -753,7 +753,9 @@ pub fn is_run_targeted(method: &str) -> bool {
 /// yolo confirmation, choosing a cloud box) refuse them.
 pub fn is_user(ctx: &Ctx) -> bool {
     ctx.pane_scope.is_none()
-        && !ctx.remote
+        // A TUI attached over SSH (`vibeke bridge`) is still the user's own terminal; any other
+        // remote connection is not.
+        && (!ctx.remote || ctx.kind == "tui")
         && !crate::plugin_native::is_plugin_kind(&ctx.kind)
         && !ctx.kind.starts_with(crate::auth::ELEVATED_KIND)
         && !matches!(ctx.kind.as_str(), "gateway" | "gateway-tui")

@@ -359,10 +359,15 @@ async fn user_only_params_are_refused_to_every_other_caller() {
     };
     let remote = crate::api::Ctx {
         client_id: "c-remote".into(),
-        kind: "tui".into(),
+        kind: "anonymous".into(),
         pane_scope: None,
         remote: true,
     };
+    // The user's own terminal over SSH stays the user.
+    assert!(crate::api::is_user(&crate::api::Ctx {
+        kind: "tui".into(),
+        ..remote.clone()
+    }));
     for ctx in [&gateway, &remote, &ctx_pane()] {
         assert!(!crate::api::is_user(ctx));
         let r = crate::api::authorize(
