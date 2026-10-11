@@ -24,7 +24,7 @@ context = "global"
 timeout_ms = 120000
 expect_calls = [
   { method = "pane.split", ok = true },
-  { method = "pane.run", ok = true },
+  { method = "pane.send_input", ok = true },
 ]
 [[step.expect]]
 kind = "invocation_final"

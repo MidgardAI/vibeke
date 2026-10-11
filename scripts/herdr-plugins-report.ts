@@ -2,7 +2,7 @@
 // Builds the real Herdr plugin matrix (spec 18 §12) from the per-plugin result files.
 //
 //   bun scripts/herdr-plugins-report.ts --in <dir> --out <dir> [--expect <matrix.json>]
-//                                       [--status <dir>]
+//                                       [--status <dir>] [--lock <top20.lock.toml>]
 //
 // The result files come from jobs that ran third-party plugin code, so this script treats them
 // as hostile data (18 §5.6): it limits file sizes, accepts only regular files, validates the
@@ -19,12 +19,16 @@
 // still forge a passing result for a test that exited 0, so the matrix is a regression signal,
 // not a security verdict.
 //
+// With `--lock` (the trusted, checked-in lock), the report also lists the deferred plugins
+// (`[[defer]]`, 18 §6) with their reasons. They keep their rank but have no plugin job.
+//
 // It writes `matrix.json` and `matrix.md` to the output directory, then exits 1 when a result
 // fails the run, has the outcome `compat_failure` or `harness_error`, is rejected or
 // inconsistent, is missing, or its test exit status is non-zero or missing.
 
 import { lstatSync, mkdirSync, openSync, readSync, closeSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { deferredPlugins, parseLock } from "./herdr-plugins/lock-tools";
 
 export const SCHEMA = "vibeke.herdr-plugin-result/1";
 export const MATRIX_SCHEMA = "vibeke.herdr-plugin-matrix/1";
@@ -365,8 +369,12 @@ export type Matrix = {
   /** Plugins whose test exit status, recorded by the trusted runner, fails them. */
   exit_failures: { plugin_id: string; os: string; reason: string }[];
   missing: { plugin_id: string; os: string }[];
+  /** Locked plugins that are not run for now, from the trusted lock. */
+  deferred: Deferred[];
   failing: boolean;
 };
+
+export type Deferred = { rank: number; plugin_id: string; repository: string; reason: string };
 
 const FAILED: Outcome[] = ["dependency_failure", "suspected_compat_failure", "compat_failure", "harness_error"];
 
@@ -413,6 +421,7 @@ export function build(
   inputs: Input[],
   expect: { plugin_id: string; os: string }[] = [],
   statuses: Input[] | null = null,
+  deferred: Deferred[] = [],
 ): Matrix {
   const m: Matrix = {
     schema: MATRIX_SCHEMA,
@@ -422,6 +431,7 @@ export function build(
     rejected: [],
     exit_failures: [],
     missing: [],
+    deferred: [...deferred].sort((a, b) => a.rank - b.rank),
     failing: false,
   };
   const seen = new Set<string>();
@@ -550,6 +560,13 @@ export function render(m: Matrix): string {
     lines.push("", "## Test exit status", "");
     for (const x of m.exit_failures) lines.push(`- ${md(x.plugin_id)} on ${md(x.os)}: ${md(x.reason)}.`);
   }
+  if (m.deferred.length > 0) {
+    lines.push("", "## Deferred", "");
+    lines.push("These plugins keep their rank in the corpus, but the harness does not run them for now (spec 18 §6).", "");
+    for (const d of m.deferred) {
+      lines.push(`- ${d.rank}. ${md(d.plugin_id)} (${md(d.repository)}): ${md(d.reason)}`);
+    }
+  }
   if (m.missing.length > 0) {
     lines.push("", "## Missing results", "");
     for (const x of m.missing) lines.push(`- ${md(x.plugin_id)} on ${md(x.os)}: no result file (harness error).`);
@@ -633,7 +650,9 @@ if (import.meta.main) {
   const input = arg(args, "--in");
   const out = arg(args, "--out");
   if (!input || !out) {
-    console.error("usage: herdr-plugins-report.ts --in <dir> --out <dir> [--expect <matrix.json>] [--status <dir>]");
+    console.error(
+      "usage: herdr-plugins-report.ts --in <dir> --out <dir> [--expect <matrix.json>] [--status <dir>] [--lock <lock.toml>]",
+    );
     process.exit(2);
   }
   const expectFile = arg(args, "--expect");
@@ -644,7 +663,10 @@ if (import.meta.main) {
   // Status files from the trusted runner user (outside the boundary). Without --status the
   // exit-status check is skipped, which only local runs should do.
   const statusDir = arg(args, "--status");
-  const m = build(collect(input), expect, statusDir ? collect(statusDir, STATUS_NAME) : null);
+  // The checked-in lock is trusted repository data, not a plugin job's output.
+  const lockFile = arg(args, "--lock");
+  const deferred = lockFile ? deferredPlugins(parseLock(await Bun.file(lockFile).text())) : [];
+  const m = build(collect(input), expect, statusDir ? collect(statusDir, STATUS_NAME) : null, deferred);
   mkdirSync(out, { recursive: true });
   writeFileSync(join(out, "matrix.json"), `${JSON.stringify(m, null, 2)}\n`);
   writeFileSync(join(out, "matrix.md"), render(m));

@@ -24,6 +24,26 @@ id = 1283376338
 repository = "AltanS/collie"
 reason = "Vibeke has its own browser and phone app (PWA, a web app that installs like a native app), which covers this plugin's purpose."
 
+[[defer]]
+repository = "devswha/herdr-web-ui"
+reason = "An action starts a background server that keeps using the Herdr socket after the action exits. Vibeke closes an action's socket broker when the action exits. This is a documented difference."
+
+[[defer]]
+repository = "openclaw/crabbox"
+reason = "The plugin needs a Crabbox account and its own crabbox command. The test environment has neither."
+
+[[defer]]
+repository = "powerfooI/roamgate"
+reason = "The plugin installs and controls a user service. The test environment has no user service manager."
+
+[[defer]]
+repository = "zenbu-labs/terminal-browser"
+reason = "The plugin needs a browser that shows pages as terminal images and registers them with the pane.graphics.info method. That method is newer than Herdr 0.9.3."
+
+[[defer]]
+repository = "zenbu-labs/terminal-code"
+reason = "The plugin needs a browser that shows pages as terminal images and registers them with the pane.graphics.info method. That method is newer than Herdr 0.9.3."
+
 [[plugin]]
 rank = 1
 repository = "zenbu-labs/terminal-browser"

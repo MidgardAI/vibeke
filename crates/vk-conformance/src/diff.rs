@@ -58,7 +58,7 @@ pub fn compare(herdr: &Grid, vibeke: &Grid) -> GridDiff {
 /// `pane.layout` rectangle as returned ([`crate::herdr::HerdrSide::pane_rect`]).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Placement {
-    /// `split-right`, `split-down`, `tab`, `overlay`, `popup`, `zoomed`.
+    /// `split`, `split-right`, `split-down`, `tab`, `overlay`, `popup`, `zoomed`.
     pub kind: String,
     pub rect: Rect,
 }
@@ -68,6 +68,8 @@ pub struct Placement {
 ///
 /// * Splits: the plugin pane lies on the declared side of the pane it split, so something is to
 ///   its left (`split-right`: `col > 0`) or above it (`split-down`: `row > 0`) on both sides.
+///   For `split` (the direction is the host's choice) the pane lies on the same side on both:
+///   something is to its left on both or on neither, and above it on both or on neither.
 /// * Popups: the centres of the two rectangles are at most 2 cells apart on each axis (both
 ///   hosts centre popups in the pane area; contents are only compared at equal inner sizes).
 /// * Tabs, overlays and zoomed panes: the kind is enough.
@@ -78,6 +80,10 @@ pub fn placement_matches(herdr: &Placement, vibeke: &Placement) -> bool {
     match herdr.kind.as_str() {
         "split-right" => herdr.rect.col > 0 && vibeke.rect.col > 0,
         "split-down" => herdr.rect.row > 0 && vibeke.rect.row > 0,
+        "split" => {
+            (herdr.rect.col > 0) == (vibeke.rect.col > 0)
+                && (herdr.rect.row > 0) == (vibeke.rect.row > 0)
+        }
         "popup" => {
             // Twice the centre, to stay in integers.
             let c2 = |start: u16, len: u16| 2 * start as i32 + len as i32;
@@ -164,6 +170,18 @@ mod tests {
         assert!(!placement_matches(
             &p("popup", rect(6, 20, 12, 40)),
             &p("popup", rect(0, 0, 12, 40))
+        ));
+        assert!(placement_matches(
+            &p("split", rect(0, 40, 24, 40)),
+            &p("split", rect(0, 46, 39, 45))
+        ));
+        assert!(placement_matches(
+            &p("split", rect(20, 0, 20, 80)),
+            &p("split", rect(19, 0, 20, 90))
+        ));
+        assert!(!placement_matches(
+            &p("split", rect(0, 40, 24, 40)),
+            &p("split", rect(20, 0, 20, 80))
         ));
         assert!(placement_matches(
             &p("tab", rect(0, 0, 1, 1)),

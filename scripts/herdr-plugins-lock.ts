@@ -7,8 +7,8 @@ import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import {
   BASELINE, CATALOG_URL, DEFAULT_SIZE, reduceCatalog, GO_VERSION, NODE_VERSION, BUN_VERSION,
-  type Catalog, type IndexEntry, type LockData, type LockedPlugin,
-  diffLocks, driftReport, lockFromToml, lockedFrom, manifestPluginId, parseToml, renderLock, resolvePin, selectCandidates, sha256Hex,
+  type Catalog, type Deferral, type IndexEntry, type LockData, type LockedPlugin,
+  checkDeferrals, diffLocks, driftReport, lockFromToml, lockedFrom, manifestPluginId, parseToml, renderLock, resolvePin, selectCandidates, sha256Hex,
 } from './herdr-plugins/lib'
 
 const root = resolve(import.meta.dir, '..')
@@ -34,6 +34,11 @@ async function get(url: string): Promise<Uint8Array> {
 
 function loadExclude() {
   return (parseToml(readFileSync(excludePath, 'utf8')).exclude ?? []) as { id: number; reason: string }[]
+}
+
+/** Locked repositories that are not run for now (`[[defer]]` in exclude.toml, spec 18 §6). */
+function loadDefer(): Deferral[] {
+  return ((parseToml(readFileSync(excludePath, 'utf8')).defer ?? []) as Deferral[]).map(d => ({ repository: d.repository, reason: d.reason }))
 }
 
 function miseVersion(tool: string): string {
@@ -86,6 +91,9 @@ for (const [i, c] of chosen.entries()) {
   plugins.push(lockedFrom(c, i + 1, pin))
 }
 
+const defer = loadDefer()
+checkDeferrals(defer, plugins)
+
 const old: LockedPlugin[] = existsSync(lockPath) ? lockFromToml(readFileSync(lockPath, 'utf8')).plugins : []
 const lock: LockData = {
   catalog: 'catalog.json',
@@ -99,6 +107,7 @@ const lock: LockData = {
     rust: miseVersion('rust'),
   },
   exclude,
+  defer,
   plugins,
 }
 writeFileSync(lockPath, renderLock(lock))

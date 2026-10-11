@@ -20,6 +20,10 @@
 //! id = 1283376338
 //! reason = "…"
 //!
+//! [[defer]]                                # keeps its rank slot; the matrix leaves it out
+//! repository = "owner/repo"
+//! reason = "…"
+//!
 //! [[plugin]]
 //! rank = 1
 //! repository = "owner/repo"
@@ -54,8 +58,20 @@ pub struct Lock {
     pub toolchains: BTreeMap<String, String>,
     #[serde(default)]
     pub exclude: Vec<Exclusion>,
+    /// Locked plugins that are not run for now (18 §6). They keep their rank, so the next
+    /// catalog entry does not take their place; the matrix leaves them out, and the report
+    /// lists them with their reasons.
+    #[serde(default)]
+    pub defer: Vec<Deferral>,
     #[serde(default, rename = "plugin")]
     pub plugins: Vec<LockedPlugin>,
+}
+
+/// A deferred repository: every locked plugin from it is left out of the matrix.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Deferral {
+    pub repository: String,
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -173,7 +189,8 @@ impl Lock {
     /// Structural checks: schema version, `plugins.len() == size`, unique ranks 1..=size,
     /// 40-hex commits, 64-hex sha256s, no plugin from an excluded repository id, and
     /// `dependency` entries only in verified mode. Plugin ids and file stems must also be
-    /// unique, and repositories must have the shape `owner/repo`.
+    /// unique, and repositories must have the shape `owner/repo`. Each deferral names a locked
+    /// repository once and has a reason.
     pub fn validate(&self) -> anyhow::Result<()> {
         use anyhow::bail;
         if self.schema != SCHEMA {
@@ -237,11 +254,31 @@ impl Lock {
                 bail!("{at}: duplicate file stem `{}`", p.stem(self));
             }
         }
+        let mut deferred = std::collections::BTreeSet::new();
+        for d in &self.defer {
+            if !deferred.insert(d.repository.as_str()) {
+                bail!("defer `{}`: duplicate repository", d.repository);
+            }
+            if d.reason.trim().is_empty() {
+                bail!("defer `{}`: a deferral needs a reason", d.repository);
+            }
+            if !self.plugins.iter().any(|p| p.repository == d.repository) {
+                bail!(
+                    "defer `{}`: no locked plugin comes from this repository",
+                    d.repository
+                );
+            }
+        }
         Ok(())
     }
 
     pub fn plugin(&self, plugin_id: &str) -> Option<&LockedPlugin> {
         self.plugins.iter().find(|p| p.plugin_id == plugin_id)
+    }
+
+    /// Why `lp` is deferred, when its repository is in the `defer` list.
+    pub fn deferral(&self, lp: &LockedPlugin) -> Option<&Deferral> {
+        self.defer.iter().find(|d| d.repository == lp.repository)
     }
 }
 
@@ -406,6 +443,38 @@ reason = "covered elsewhere"
         let mut l = two();
         l.plugins[1].repository = "acme".into();
         rejects(l, "owner/repo");
+    }
+
+    #[test]
+    fn deferred_plugins_keep_their_rank() {
+        let text = lock(
+            &[
+                plugin(1, "acme/tools", "acme.one", "one/herdr-plugin.toml"),
+                plugin(2, "acme/tools", "acme/two", "herdr-plugin.toml"),
+            ],
+            2,
+        )
+        .replace(
+            "[[exclude]]",
+            "[[defer]]\nrepository = \"acme/tools\"\nreason = \"needs an account\"\n\n[[exclude]]",
+        );
+        let l = parse(&text);
+        l.validate().unwrap();
+        assert_eq!(l.plugins.len(), 2);
+        for p in &l.plugins {
+            assert_eq!(l.deferral(p).unwrap().reason, "needs an account");
+        }
+        assert!(two().deferral(&two().plugins[0]).is_none());
+
+        let mut bad = l.clone();
+        bad.defer[0].repository = "other/repo".into();
+        rejects(bad, "no locked plugin");
+        let mut bad = l.clone();
+        bad.defer[0].reason = " ".into();
+        rejects(bad, "needs a reason");
+        let mut bad = l.clone();
+        bad.defer.push(bad.defer[0].clone());
+        rejects(bad, "duplicate repository");
     }
 
     #[test]

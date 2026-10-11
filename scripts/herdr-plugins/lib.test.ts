@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import {
   type Catalog, type CatalogPlugin, type IndexEntry, type LockData,
-  isEligible, rankCandidates, reduceCatalog, renderLock, resolvePin, selectCandidates, sha256Hex, lockedFrom, lockFromToml, diffLocks,
+  checkDeferrals, isEligible, rankCandidates, reduceCatalog, renderLock, resolvePin, selectCandidates, sha256Hex, lockedFrom, lockFromToml, diffLocks,
 } from './lib'
 
 const repo = (id: number, name: string, stars: number, createdAt: string, platforms?: string[][], head = 'a'.repeat(40)): CatalogPlugin => ({
@@ -66,6 +66,7 @@ describe('lock output', () => {
     catalog: 'catalog.json', catalog_sha256: '0'.repeat(64), catalog_generated_at: 't', size: 20,
     toolchains: { rust: '1.99.0', node: '22.0.0', go: '1.25.1', bun: '1.3.0' },
     exclude: [{ id: 7, reason: 'A "quoted" reason.' }],
+    defer: [{ repository: 'a/one', reason: 'Needs an account.' }],
     plugins: [lockedFrom(c, 1, { commit: 'b'.repeat(40), manifest_sha256: 'e'.repeat(64), plugin_id: 'a.one', reused: false })],
   }
   test('deterministic and parseable', () => {
@@ -75,7 +76,15 @@ describe('lock output', () => {
     const back = lockFromToml(t)
     expect(back.plugins).toEqual(lock.plugins)
     expect(back.exclude).toEqual(lock.exclude)
+    expect(back.defer).toEqual(lock.defer)
+    expect(t).toContain('[[defer]]\nrepository = "a/one"\nreason = "Needs an account."')
     expect(back.toolchains.node).toBe('22.0.0')
+  })
+  test('deferred plugins keep their slot', () => {
+    expect(() => checkDeferrals(lock.defer, lock.plugins)).not.toThrow()
+    expect(() => checkDeferrals([{ repository: 'z/none', reason: 'r' }], lock.plugins)).toThrow('no locked plugin')
+    expect(() => checkDeferrals([{ repository: 'a/one', reason: ' ' }], lock.plugins)).toThrow('reason')
+    expect(() => checkDeferrals([...lock.defer, ...lock.defer], lock.plugins)).toThrow('duplicate')
   })
   test('diff summary', () => {
     const moved = { ...lock.plugins[0], commit: 'd'.repeat(40) }

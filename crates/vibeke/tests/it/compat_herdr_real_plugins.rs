@@ -12,8 +12,9 @@
 use crate::support::real_plugins::{
     self, ENV_ALLOW, TOOLCHAIN_PATH_VAR, combine_reason, describe_failed_call, final_invocation,
     has_url_credentials, herdr_install_args, herdr_opened_pane, herdr_pane_open_args,
-    herdr_path_component, invocation_details, plugin_env, secret_like, shot_panes, user_bin_dirs,
-    vibeke_key,
+    herdr_path_component, herdr_result, invocation_context, invocation_details, link_position,
+    names_path_under, plugin_env, popup_open_entrypoint, rate_limited, secret_like, sh_quote,
+    shot_panes, user_bin_dirs, vibeke_config, vibeke_key, without_path_dirs,
 };
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -512,10 +513,192 @@ id = "open"
 kind = "pane"
 pane = "main"
 expect = [{ kind = "pane", pane = "main" }, { kind = "popup", pane = "picker" }]
+
+[[step]]
+id = "type"
+kind = "input"
+pane = "picker"
+keys = ["Enter"]
+expect = [{ kind = "screen_text", pane = "status", text = "done" }]
 "#,
     )
     .unwrap();
     assert_eq!(shot_panes(&sc.steps[0]), ["main", "picker"]);
+    // A failed step keeps the grid of every pane its expectations name (H12).
+    assert_eq!(shot_panes(&sc.steps[1]), ["picker", "status"]);
+}
+
+#[test]
+fn the_deferred_plugins_keep_their_slots() {
+    let lock = real_plugins::load_lock();
+    let deferred: Vec<&str> = lock.defer.iter().map(|d| d.repository.as_str()).collect();
+    for repo in [
+        "openclaw/crabbox",
+        "zenbu-labs/terminal-browser",
+        "zenbu-labs/terminal-code",
+        "powerfooI/roamgate",
+        "devswha/herdr-web-ui",
+    ] {
+        assert!(deferred.contains(&repo), "{repo} is not deferred");
+        // Still locked: the next catalog entry does not take the slot.
+        assert!(
+            lock.plugins.iter().any(|p| p.repository == repo),
+            "{repo} lost its slot"
+        );
+    }
+    for d in &lock.defer {
+        assert!(!d.reason.trim().is_empty(), "{}", d.repository);
+    }
+}
+
+#[test]
+fn the_vibeke_side_starts_without_onboarding_or_update_checks() {
+    let text = vibeke_config();
+    let cfg: toml::Value = toml::from_str(&text).unwrap();
+    assert_eq!(cfg["onboarding"].as_bool(), Some(false));
+    assert_eq!(cfg["update"]["version_check"].as_bool(), Some(false));
+    assert_eq!(cfg["update"]["manifest_check"].as_bool(), Some(false));
+    assert_eq!(
+        cfg["ui"]["sidebar"]["width"].as_integer(),
+        Some(vk_conformance::herdr::SIDEBAR_WIDTH as i64)
+    );
+    assert_eq!(cfg["ui"]["sidebar"]["auto_width"].as_bool(), Some(false));
+    // The same file must load as a Vibeke config, without warnings about unknown keys.
+    let (_, warnings) = vk_config::Config::parse(&text, Path::new("config.toml")).unwrap();
+    assert!(warnings.is_empty(), "{warnings:?}");
+}
+
+#[test]
+fn both_sides_get_the_same_invocation_context() {
+    let ctx = |k| invocation_context(k, "w1", "w1:t1", "w1:p1", Some("w1:p2"));
+    assert_eq!(ctx(None), json!({}));
+    assert_eq!(ctx(Some("global")), json!({}));
+    assert_eq!(ctx(Some("workspace")), json!({"workspace_id": "w1"}));
+    assert_eq!(
+        ctx(Some("tab")),
+        json!({"workspace_id": "w1", "tab_id": "w1:t1"})
+    );
+    assert_eq!(
+        ctx(Some("pane")),
+        json!({"workspace_id": "w1", "tab_id": "w1:t1", "focused_pane_id": "w1:p1"})
+    );
+    assert_eq!(
+        ctx(Some("agent_pane")),
+        json!({"workspace_id": "w1", "tab_id": "w1:t1", "focused_pane_id": "w1:p2"})
+    );
+}
+
+#[test]
+fn herdr_response_lines_are_unwrapped() {
+    assert_eq!(
+        herdr_result(json!({"id": "cli", "result": {"type": "pong"}})),
+        json!({"type": "pong"})
+    );
+    assert_eq!(
+        herdr_result(json!({"result": {"type": "pong"}})),
+        json!({"type": "pong"})
+    );
+    // The bare result of an older shim stays as it is.
+    let bare = json!({"workspace": {"workspace_id": "w1"}, "result": 1, "extra": 2});
+    assert_eq!(herdr_result(bare.clone()), bare);
+    assert_eq!(
+        herdr_result(json!({"workspace": {"workspace_id": "w1"}})),
+        json!({"workspace": {"workspace_id": "w1"}})
+    );
+}
+
+#[test]
+fn links_are_found_on_screen_but_not_in_the_command_line() {
+    let url = "https://github.com/a/b";
+    let screen =
+        "$ clear; printf '%s%s\\n' 'https:' '//github.com/a/b'\nhttps://github.com/a/b\n$ ";
+    assert_eq!(link_position(screen, url), Some((1, 1)));
+    assert_eq!(
+        link_position("x 'https://github.com/a/b'\n  https://github.com/a/b", url),
+        Some((1, 3))
+    );
+    assert_eq!(link_position("nothing here", url), None);
+    assert_eq!(sh_quote("it's"), "'it'\\''s'");
+}
+
+#[test]
+fn github_rate_limits_are_recognised() {
+    assert!(rate_limited(
+        "curl: (22) The requested URL returned error: 403 from api.github.com"
+    ));
+    assert!(rate_limited("API rate limit exceeded (403)"));
+    assert!(!rate_limited("npm ERR! 404 Not Found"));
+    assert!(!rate_limited("compile error"));
+}
+
+#[test]
+fn excluded_dirs_leave_the_plugin_path() {
+    let mut env = vec![
+        ("HOME".to_string(), "/h".to_string()),
+        (
+            "PATH".to_string(),
+            "/tc/bin:/opt/homebrew/bin:/usr/bin:/opt/homebrew/bin/".to_string(),
+        ),
+    ];
+    without_path_dirs(&mut env, &["/opt/homebrew/bin/".to_string()]);
+    assert_eq!(env[1].1, "/tc/bin:/usr/bin");
+    assert_eq!(env[0].1, "/h");
+    without_path_dirs(&mut env, &[]);
+    assert_eq!(env[1].1, "/tc/bin:/usr/bin");
+}
+
+#[test]
+fn processes_are_found_by_the_paths_they_use() {
+    assert!(names_path_under("/tmp/vkhr1/home", "/tmp/vkhr1/home"));
+    assert!(names_path_under(
+        "/tc/bin:/tmp/vkhr1/home/.local/bin:/usr/bin",
+        "/tmp/vkhr1/home"
+    ));
+    // The Herdr side's dirs are not under the Vibeke side's HOME.
+    assert!(!names_path_under(
+        "/tmp/vkhr1/herdr/home",
+        "/tmp/vkhr1/home"
+    ));
+    assert!(!names_path_under("/tmp/vkhr1/homework", "/tmp/vkhr1/home"));
+    assert!(!names_path_under("/anything", ""));
+}
+
+#[test]
+fn traced_pane_opens_name_their_entrypoint() {
+    let line = |params: Option<serde_json::Value>| vk_conformance::trace::TraceLine {
+        ts_ms: 0,
+        plugin: "unknown".into(),
+        invocation: None,
+        transport: "socket".into(),
+        method: "plugin.pane.open".into(),
+        ok: true,
+        code: None,
+        params,
+        argv: None,
+        parse_error: None,
+    };
+    assert_eq!(
+        popup_open_entrypoint(
+            &line(Some(
+                json!({"plugin_id": "acme.tool", "entrypoint": "pick"})
+            )),
+            "acme.tool"
+        )
+        .as_deref(),
+        Some("pick")
+    );
+    assert_eq!(
+        popup_open_entrypoint(
+            &line(Some(json!({"plugin_id": "other", "entrypoint": "pick"}))),
+            "acme.tool"
+        ),
+        None
+    );
+    assert_eq!(
+        popup_open_entrypoint(&line(Some(json!({"entrypoint": "pick"}))), "acme.tool").as_deref(),
+        Some("pick")
+    );
+    assert_eq!(popup_open_entrypoint(&line(None), "acme.tool"), None);
 }
 
 /// The gate refuses before any plugin code runs when the variable is missing.

@@ -115,7 +115,13 @@ pane_gaps = true
 pane_scrollbars = false
 tab_bar_position = "top"
 hide_tab_bar_when_single_tab = false
+sidebar_width = 26
 "#;
+
+/// The sidebar width both sides use (18 §10.2): Herdr's default, set explicitly in
+/// [`CONFIG_TOML`], and the Vibeke side's `[ui.sidebar] width` with `auto_width = false`, so
+/// the pane areas, and the popups sized from them, have the same size on both sides.
+pub const SIDEBAR_WIDTH: u16 = 26;
 
 const READY_TIMEOUT: Duration = Duration::from_secs(30);
 const CALL_TIMEOUT: Duration = Duration::from_secs(30);
@@ -208,6 +214,8 @@ pub fn verify_binary(bin: &Path, expected_sha256: &str) -> anyhow::Result<()> {
 }
 
 pub struct HerdrSide {
+    opts: HerdrOptions,
+    events: Option<EventStream>,
     bin: PathBuf,
     root: PathBuf,
     home: PathBuf,
@@ -224,6 +232,7 @@ pub struct HerdrSide {
     next_id: AtomicU64,
 }
 
+#[derive(Debug, Clone)]
 pub struct HerdrOptions {
     pub bin: PathBuf,
     /// Root for HOME, XDG_*, TMPDIR and the runtime dir; created fresh by the caller.
@@ -275,14 +284,17 @@ fn log_tail(path: &Path) -> String {
     lines[lines.len().saturating_sub(20)..].join("\n")
 }
 
-/// The parts of a `pane.layout` result the harness uses.
-struct Layout {
-    workspace: String,
-    tab: String,
-    zoomed: bool,
-    area: Rect,
-    focused: String,
-    panes: Vec<(String, Rect)>,
+/// The parts of a `pane.layout` result the harness uses. The Vibeke side answers the same
+/// method in the same shape through its compatibility layer, so both sides parse with
+/// [`parse_layout`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Layout {
+    pub workspace: String,
+    pub tab: String,
+    pub zoomed: bool,
+    pub area: Rect,
+    pub focused: String,
+    pub panes: Vec<(String, Rect)>,
 }
 
 fn rect_of(v: &Value) -> anyhow::Result<Rect> {
@@ -300,7 +312,8 @@ fn rect_of(v: &Value) -> anyhow::Result<Rect> {
     })
 }
 
-fn parse_layout(result: &Value) -> anyhow::Result<Layout> {
+/// Parse a `pane.layout` result (`{"type":"pane_layout","layout":{…}}`).
+pub fn parse_layout(result: &Value) -> anyhow::Result<Layout> {
     let l = result
         .get("layout")
         .with_context(|| format!("pane.layout: no `layout` in {result}"))?;
@@ -342,7 +355,7 @@ fn parse_layout(result: &Value) -> anyhow::Result<Layout> {
 
 impl Layout {
     /// The pane's outer rectangle relative to the pane area (see the module docs).
-    fn rect_of(&self, pane: &str) -> anyhow::Result<Rect> {
+    pub fn rect_of(&self, pane: &str) -> anyhow::Result<Rect> {
         if self.zoomed && self.focused == pane {
             return Ok(self.area);
         }
@@ -382,7 +395,11 @@ impl HerdrSide {
         );
         let app_config = config.join("herdr");
         fs::create_dir_all(&app_config)?;
-        fs::write(app_config.join("config.toml"), CONFIG_TOML)?;
+        // A restart ([`HerdrSide::restart`]) keeps the file, with what plugins wrote into it.
+        let config_file = app_config.join("config.toml");
+        if !config_file.exists() {
+            fs::write(&config_file, CONFIG_TOML)?;
+        }
 
         let bin_dir = opts
             .bin
@@ -466,6 +483,8 @@ impl HerdrSide {
         }
 
         let mut side = HerdrSide {
+            opts: opts.clone(),
+            events: None,
             bin: opts.bin.clone(),
             root: opts.root.clone(),
             home: home.clone(),
@@ -626,6 +645,94 @@ impl HerdrSide {
         parse_layout(&self.call("pane.layout", params)?)
     }
 
+    /// `pane.layout` of the tab that holds `pane` (or of the active tab).
+    pub fn layout_of(&self, pane: Option<&str>) -> anyhow::Result<Layout> {
+        self.layout(pane)
+    }
+
+    /// The options this side started with (a restart starts again with them).
+    pub fn options(&self) -> &HerdrOptions {
+        &self.opts
+    }
+
+    /// The pane area on Herdr's screen: right of the sidebar and below the tab bar (see the
+    /// module docs), with the size `pane.layout` reports.
+    fn screen_area(&self, cols: u16, nrows: u16) -> anyhow::Result<Rect> {
+        let layout = self.layout(None)?;
+        Ok(Rect {
+            row: nrows.saturating_sub(layout.area.rows) + layout.area.row,
+            col: cols.saturating_sub(layout.area.cols) + layout.area.col,
+            rows: layout.area.rows,
+            cols: layout.area.cols,
+        })
+    }
+
+    /// Capture the open popup of the pane entrypoint whose manifest declares `width`,
+    /// `height` and `title`. The frame must sit where `resolve_popup_geometry` puts it
+    /// (`src/popup_size.rs:52-90`) and carry the title in its top border, so a stale popup of
+    /// another entrypoint is never captured. Returns the inner grid (the popup's terminal) and
+    /// the outer rectangle relative to the pane area. When no frame is at the computed place,
+    /// a centred frame with the title elsewhere is accepted with a note (`Some(why)`).
+    pub fn capture_popup(
+        &self,
+        width: Option<PopupSize>,
+        height: Option<PopupSize>,
+        title: &str,
+    ) -> anyhow::Result<(Grid, Rect, Option<String>)> {
+        let (rows, cols, nrows, palette) = self.tui()?.snapshot();
+        let mut screen = Grid::from_rows(&rows, cols, nrows);
+        screen.resolve_palette(&palette);
+        let area = self.screen_area(cols, nrows)?;
+        let want = resolve_popup_geometry(width, height, area)
+            .context("the pane area is too small for a popup")?;
+        let (outer, note) = if popup_frame_at(&screen, want.outer, title) {
+            (want.outer, None)
+        } else {
+            let found = find_popup(&screen, area)
+                .filter(|r| popup_frame_at(&screen, *r, title))
+                .with_context(|| {
+                    format!(
+                        "no popup frame titled {title:?} on Herdr's screen (expected {}x{} at row {}, col {})",
+                        want.outer.cols, want.outer.rows, want.outer.row, want.outer.col
+                    )
+                })?;
+            (
+                found,
+                Some(format!(
+                    "the popup frame is {}x{}, but popup_size.rs gives {}x{}",
+                    found.cols, found.rows, want.outer.cols, want.outer.rows
+                )),
+            )
+        };
+        let rel = Rect {
+            row: outer.row - area.row,
+            col: outer.col - area.col,
+            ..outer
+        };
+        Ok((screen.crop(crop_rect(outer, "popup")), rel, note))
+    }
+
+    /// Write raw bytes to Herdr's TUI client, as typed keys (popups have no pane id, so input
+    /// to a popup goes through the client that shows it).
+    pub fn write_tui(&self, bytes: &[u8]) -> anyhow::Result<()> {
+        self.tui()?.write(bytes)
+    }
+
+    /// Subscribe to `subscriptions` (see [`event_subscriptions`]) on a connection of its own and
+    /// append every event line Herdr sends to `log`, until the side stops. An error response
+    /// to the subscription is returned.
+    pub fn subscribe_events(
+        &mut self,
+        subscriptions: Vec<Value>,
+        log: &Path,
+    ) -> anyhow::Result<()> {
+        if let Some(e) = self.events.take() {
+            e.stop();
+        }
+        self.events = Some(EventStream::start(&self.real_socket, subscriptions, log)?);
+        Ok(())
+    }
+
     /// The plugin pane's rectangle from `pane.layout`, including its frame, relative to
     /// Herdr's pane area (for a zoomed or overlay pane: the whole area).
     pub fn pane_rect(&self, pane: &str) -> anyhow::Result<Rect> {
@@ -648,6 +755,7 @@ impl HerdrSide {
             cols: layout.area.cols,
         };
         let outer = if popup {
+            // Prefer [`HerdrSide::capture_popup`], which checks the frame's title and place.
             find_popup(&screen, area).context("no popup frame centred in Herdr's pane area")?
         } else {
             let r = layout.rect_of(pane)?;
@@ -731,6 +839,9 @@ impl HerdrSide {
     }
 
     pub fn stop(mut self) -> anyhow::Result<()> {
+        if let Some(e) = self.events.take() {
+            e.stop();
+        }
         // Ask the server to stop on its real socket, then make sure.
         let _ = request(&self.real_socket, "stop", "server.stop", &json!({}));
         if let Some(tui) = self.tui.take() {
@@ -747,7 +858,22 @@ impl HerdrSide {
             std::thread::sleep(Duration::from_millis(50));
         }
         kill_group(&mut self.server);
+        // A restart starts a server on the same paths: no stale socket files may stay.
+        for f in [&self.socket, &self.real_socket] {
+            let _ = fs::remove_file(f);
+        }
+        if let Some(dir) = self.socket.parent() {
+            let _ = fs::remove_file(dir.join("herdr-client.sock"));
+        }
         Ok(())
+    }
+
+    /// Stop the server and start it again with the same options (and the same directories, so
+    /// the session, the installed plugins and their state survive, as for a Herdr user).
+    pub fn restart(self) -> anyhow::Result<HerdrSide> {
+        let opts = self.opts.clone();
+        self.stop()?;
+        HerdrSide::start(opts)
     }
 }
 
@@ -859,6 +985,329 @@ pub fn find_popup(screen: &Grid, area: Rect) -> Option<Rect> {
     best
 }
 
+/// A popup size from a manifest pane's `width` or `height` (`src/popup_size.rs`): a number of
+/// cells, or a percentage string such as `"80%"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PopupSize {
+    Cells(u16),
+    Percent(u8),
+}
+
+impl PopupSize {
+    /// The size a manifest value declares; `None` for no value or one Herdr would not accept.
+    pub fn from_manifest(v: Option<&Value>) -> Option<PopupSize> {
+        match v? {
+            Value::Number(n) => n
+                .as_u64()
+                .and_then(|n| u16::try_from(n).ok())
+                .map(PopupSize::Cells),
+            Value::String(s) => {
+                let p: u8 = s.trim().strip_suffix('%')?.trim().parse().ok()?;
+                (1..=100).contains(&p).then_some(PopupSize::Percent(p))
+            }
+            _ => None,
+        }
+    }
+
+    fn resolve(self, available: u16) -> u16 {
+        match self {
+            PopupSize::Cells(c) => c,
+            PopupSize::Percent(p) => ((available as u32 * p as u32) / 100) as u16,
+        }
+    }
+}
+
+/// Herdr's popup geometry: the outer frame and the terminal inside it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PopupGeometry {
+    pub outer: Rect,
+    pub inner: Rect,
+}
+
+/// `resolve_popup_geometry` of `src/popup_size.rs:52-90`, for `area` (the pane area, in screen
+/// coordinates): half the area by default, at least 6x4, at most the area, centred; the
+/// terminal starts one cell in and keeps one column for a scrollbar when it is wider than 4.
+pub fn resolve_popup_geometry(
+    width: Option<PopupSize>,
+    height: Option<PopupSize>,
+    area: Rect,
+) -> Option<PopupGeometry> {
+    let default_w = (area.cols / 2).max(6);
+    let default_h = (area.rows / 2).max(4);
+    let w = width
+        .map(|w| w.resolve(area.cols))
+        .unwrap_or(default_w)
+        .max(6)
+        .min(area.cols);
+    let h = height
+        .map(|h| h.resolve(area.rows))
+        .unwrap_or(default_h)
+        .max(4)
+        .min(area.rows);
+    if w < 6 || h < 4 {
+        return None;
+    }
+    let outer = Rect {
+        row: area.row + (area.rows - h) / 2,
+        col: area.col + (area.cols - w) / 2,
+        rows: h,
+        cols: w,
+    };
+    Some(PopupGeometry {
+        outer,
+        inner: crop_rect(outer, "popup"),
+    })
+}
+
+/// Whether `screen` shows a box frame exactly at `outer` whose top border carries `title`
+/// (Herdr draws the popup's label there, `src/client/shell/composition.rs:562-582`).
+pub fn popup_frame_at(screen: &Grid, outer: Rect, title: &str) -> bool {
+    let at = |row: u16, col: u16| -> &str {
+        screen
+            .cells
+            .get(row as usize)
+            .and_then(|l| l.get(col as usize))
+            .map(|c| c.text.as_str())
+            .unwrap_or("")
+    };
+    if outer.rows < 2 || outer.cols < 2 {
+        return false;
+    }
+    let (r2, c2) = (outer.row + outer.rows - 1, outer.col + outer.cols - 1);
+    if at(outer.row, outer.col) != "┌"
+        || at(outer.row, c2) != "┐"
+        || at(r2, outer.col) != "└"
+        || at(r2, c2) != "┘"
+    {
+        return false;
+    }
+    let top: String = (outer.col + 1..c2).map(|c| at(outer.row, c)).collect();
+    title.trim().is_empty() || top.contains(title.trim())
+}
+
+/// The bytes a terminal sends for one key in Vibeke's key grammar (`enter`, `escape`, `tab`,
+/// `backspace`, `space`, arrows, `home`, `end`, `pageup`, `pagedown`, `delete`, `f1`-`f12`, a
+/// single character, with `ctrl+`, `alt+` and `shift+`), the way a legacy xterm sends it.
+/// Used to type into Herdr's TUI, which forwards keys to an open popup. `None` for keys it
+/// does not know.
+pub fn key_bytes(key: &str) -> Option<Vec<u8>> {
+    let mut ctrl = false;
+    let mut alt = false;
+    let mut shift = false;
+    let parts: Vec<&str> = if key.chars().count() == 1 {
+        vec![key]
+    } else {
+        key.split('+').collect()
+    };
+    let (name, mods) = parts.split_last()?;
+    for m in mods {
+        match m.to_ascii_lowercase().as_str() {
+            "ctrl" | "control" => ctrl = true,
+            "alt" | "meta" => alt = true,
+            "shift" => shift = true,
+            _ => return None,
+        }
+    }
+    let lower = name.to_ascii_lowercase();
+    let mut out: Vec<u8> = match lower.as_str() {
+        "enter" | "return" | "cr" => b"\r".to_vec(),
+        "escape" | "esc" => b"\x1b".to_vec(),
+        "tab" if shift => b"\x1b[Z".to_vec(),
+        "tab" => b"\t".to_vec(),
+        "backspace" | "bs" | "bspace" => b"\x7f".to_vec(),
+        "space" => {
+            if ctrl {
+                vec![0]
+            } else {
+                b" ".to_vec()
+            }
+        }
+        "up" => b"\x1b[A".to_vec(),
+        "down" => b"\x1b[B".to_vec(),
+        "right" => b"\x1b[C".to_vec(),
+        "left" => b"\x1b[D".to_vec(),
+        "home" => b"\x1b[H".to_vec(),
+        "end" => b"\x1b[F".to_vec(),
+        "pageup" | "ppage" => b"\x1b[5~".to_vec(),
+        "pagedown" | "npage" => b"\x1b[6~".to_vec(),
+        "delete" | "dc" => b"\x1b[3~".to_vec(),
+        "insert" | "ic" => b"\x1b[2~".to_vec(),
+        f if f.len() >= 2 && f.starts_with('f') && f[1..].parse::<u8>().is_ok() => {
+            match f[1..].parse::<u8>().ok()? {
+                1 => b"\x1bOP".to_vec(),
+                2 => b"\x1bOQ".to_vec(),
+                3 => b"\x1bOR".to_vec(),
+                4 => b"\x1bOS".to_vec(),
+                5 => b"\x1b[15~".to_vec(),
+                6 => b"\x1b[17~".to_vec(),
+                7 => b"\x1b[18~".to_vec(),
+                8 => b"\x1b[19~".to_vec(),
+                9 => b"\x1b[20~".to_vec(),
+                10 => b"\x1b[21~".to_vec(),
+                11 => b"\x1b[23~".to_vec(),
+                12 => b"\x1b[24~".to_vec(),
+                _ => return None,
+            }
+        }
+        _ => {
+            let mut chars = name.chars();
+            let c = chars.next()?;
+            if chars.next().is_some() {
+                return None;
+            }
+            let c = if shift { c.to_ascii_uppercase() } else { c };
+            if ctrl {
+                let l = c.to_ascii_lowercase();
+                match l {
+                    'a'..='z' => vec![l as u8 - b'a' + 1],
+                    '@' | '2' => vec![0],
+                    '[' | '3' => vec![0x1b],
+                    '\\' | '4' => vec![0x1c],
+                    ']' | '5' => vec![0x1d],
+                    '^' | '6' => vec![0x1e],
+                    '_' | '-' | '7' => vec![0x1f],
+                    '?' | '8' => vec![0x7f],
+                    _ => return None,
+                }
+            } else {
+                c.to_string().into_bytes()
+            }
+        }
+    };
+    if alt {
+        out.insert(0, 0x1b);
+    }
+    Some(out)
+}
+
+/// The Herdr 0.9.3 subscription types that take no parameters (the `Subscription` schema in
+/// `tests/compat/herdr/0.9.3/api-schema.json`). `pane.output_matched`,
+/// `pane.agent_status_changed` and `pane.scroll_changed` need a pane and are added per pane.
+pub const SUBSCRIBABLE: &[&str] = &[
+    "workspace.created",
+    "workspace.updated",
+    "workspace.metadata_updated",
+    "workspace.renamed",
+    "workspace.moved",
+    "workspace.reordered",
+    "workspace.closed",
+    "workspace.focused",
+    "worktree.created",
+    "worktree.opened",
+    "worktree.removed",
+    "tab.created",
+    "tab.closed",
+    "tab.focused",
+    "tab.renamed",
+    "tab.moved",
+    "pane.created",
+    "pane.closed",
+    "pane.updated",
+    "pane.focused",
+    "pane.moved",
+    "pane.exited",
+    "pane.agent_detected",
+    "layout.updated",
+];
+
+/// The `events.subscribe` subscriptions the harness uses: every global type in
+/// [`SUBSCRIBABLE`], and `pane.agent_status_changed` for each pane in `agent_panes`.
+pub fn event_subscriptions(agent_panes: &[&str]) -> Vec<Value> {
+    SUBSCRIBABLE
+        .iter()
+        .map(|t| json!({ "type": t }))
+        .chain(
+            agent_panes
+                .iter()
+                .map(|p| json!({"type": "pane.agent_status_changed", "pane_id": p})),
+        )
+        .collect()
+}
+
+/// Whether one event line from `events.subscribe` (`{"event": "pane_created", "data": …}` or
+/// `{"event": "pane.agent_status_changed", …}`) is of the type a scenario names
+/// (`pane.created`). Herdr spells global event kinds with `_` and per-pane kinds with `.`.
+pub fn event_matches(line: &Value, event_type: &str) -> bool {
+    let norm = |s: &str| s.replace('.', "_");
+    line.get("event")
+        .and_then(Value::as_str)
+        .is_some_and(|e| norm(e) == norm(event_type))
+}
+
+/// A live `events.subscribe` connection that appends every line to a log file.
+struct EventStream {
+    stop: Arc<AtomicBool>,
+    conn: UnixStream,
+    thread: JoinHandle<()>,
+}
+
+impl EventStream {
+    fn start(socket: &Path, subscriptions: Vec<Value>, log: &Path) -> anyhow::Result<EventStream> {
+        let mut s =
+            UnixStream::connect(socket).with_context(|| format!("connect {}", socket.display()))?;
+        s.set_write_timeout(Some(CALL_TIMEOUT))?;
+        s.set_read_timeout(Some(CALL_TIMEOUT))?;
+        let mut line = serde_json::to_vec(&json!({
+            "id": "harness-events",
+            "method": "events.subscribe",
+            "params": {"subscriptions": subscriptions},
+        }))?;
+        line.push(b'\n');
+        s.write_all(&line)?;
+        let mut r = BufReader::new(s.try_clone()?);
+        let mut first = String::new();
+        r.read_line(&mut first)
+            .context("read the events.subscribe reply")?;
+        let v: Value = serde_json::from_str(&first)
+            .with_context(|| format!("bad events.subscribe reply {first:?}"))?;
+        result_of("events.subscribe", v)?;
+        // Events can be minutes apart: wake up now and then to check for the stop flag.
+        s.set_read_timeout(Some(Duration::from_millis(500)))?;
+        let mut out = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log)
+            .with_context(|| format!("open {}", log.display()))?;
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread = {
+            let stop = stop.clone();
+            std::thread::Builder::new()
+                .name("herdr-events".into())
+                .spawn(move || {
+                    let mut buf = Vec::new();
+                    while !stop.load(Ordering::SeqCst) {
+                        match r.read_until(b'\n', &mut buf) {
+                            Ok(0) => break,
+                            Ok(_) if buf.ends_with(b"\n") => {
+                                let _ = out.write_all(&buf);
+                                let _ = out.flush();
+                                buf.clear();
+                            }
+                            Ok(_) => {}
+                            Err(e)
+                                if matches!(
+                                    e.kind(),
+                                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                                ) => {}
+                            Err(_) => break,
+                        }
+                    }
+                })?
+        };
+        Ok(EventStream {
+            stop,
+            conn: s,
+            thread,
+        })
+    }
+
+    fn stop(self) {
+        self.stop.store(true, Ordering::SeqCst);
+        let _ = self.conn.shutdown(std::net::Shutdown::Both);
+        let _ = self.thread.join();
+    }
+}
+
 /// The recording proxy (see the module docs).
 struct Proxy {
     stop: Arc<AtomicBool>,
@@ -963,6 +1412,23 @@ fn plugin_of(pid: u32) -> Option<String> {
     None
 }
 
+/// The request parameters a trace line keeps: for `plugin.pane.open` the plugin, entrypoint
+/// and placement, so the harness can tell which popup a step opened. Nothing else (other
+/// parameters can carry environment values or text).
+pub fn traced_params(method: &str, params: Option<&Value>) -> Option<Value> {
+    if method != "plugin.pane.open" {
+        return None;
+    }
+    let p = params?;
+    let mut out = serde_json::Map::new();
+    for k in ["plugin_id", "entrypoint", "placement"] {
+        if let Some(v) = p.get(k).filter(|v| v.is_string()) {
+            out.insert(k.to_string(), v.clone());
+        }
+    }
+    Some(Value::Object(out))
+}
+
 /// Forward one connection line by line in both directions; pair each response with its
 /// request by `id` and append a trace line for it.
 fn proxy_connection(client: UnixStream, upstream: &Path, trace: Arc<Mutex<File>>) {
@@ -978,7 +1444,8 @@ fn proxy_connection(client: UnixStream, upstream: &Path, trace: Arc<Mutex<File>>
     let (Ok(client_w), Ok(server_r)) = (client.try_clone(), server.try_clone()) else {
         return;
     };
-    let pending: Arc<Mutex<HashMap<String, String>>> = Arc::default();
+    // Request id to (method, the params the trace keeps).
+    let pending: Arc<Mutex<HashMap<String, (String, Option<Value>)>>> = Arc::default();
 
     // Server to client, on its own thread.
     let back = {
@@ -996,7 +1463,7 @@ fn proxy_connection(client: UnixStream, upstream: &Path, trace: Arc<Mutex<File>>
                 if traced
                     && let Ok(v) = serde_json::from_slice::<Value>(&line)
                     && let Some(id) = v.get("id").and_then(Value::as_str)
-                    && let Some(method) = pending.lock().unwrap().remove(id)
+                    && let Some((method, params)) = pending.lock().unwrap().remove(id)
                 {
                     let code = v
                         .pointer("/error/code")
@@ -1010,7 +1477,7 @@ fn proxy_connection(client: UnixStream, upstream: &Path, trace: Arc<Mutex<File>>
                         method,
                         ok: v.get("result").is_some() && code.is_none(),
                         code,
-                        params: None,
+                        params,
                         argv: None,
                         parse_error: None,
                     };
@@ -1044,10 +1511,11 @@ fn proxy_connection(client: UnixStream, upstream: &Path, trace: Arc<Mutex<File>>
                 v.get("method").and_then(Value::as_str),
             )
         {
+            let params = traced_params(method, v.get("params"));
             pending
                 .lock()
                 .unwrap()
-                .insert(id.to_string(), method.to_string());
+                .insert(id.to_string(), (method.to_string(), params));
         }
         if w.write_all(&line).is_err() {
             break;
@@ -1137,6 +1605,146 @@ mod tests {
         }
         assert_eq!(find_popup(&g, area), Some(rect(3, 7, 4, 10)));
         assert_eq!(find_popup(&Grid::blank(22, 9), area), None);
+    }
+
+    #[test]
+    fn popup_geometry_follows_popup_size_rs() {
+        // A 92x37 pane area at (2, 26) on screen.
+        let area = rect(2, 26, 37, 92);
+        let g = resolve_popup_geometry(
+            Some(PopupSize::Percent(80)),
+            Some(PopupSize::Percent(80)),
+            area,
+        )
+        .unwrap();
+        // 92 * 80 / 100 = 73 (integer division), 37 * 80 / 100 = 29.
+        assert_eq!(g.outer, rect(2 + (37 - 29) / 2, 26 + (92 - 73) / 2, 29, 73));
+        assert_eq!(g.inner.cols, 73 - 2 - 1);
+        assert_eq!(g.inner.rows, 29 - 2);
+        // Cells, clamped to the area; the default is half the area.
+        let g = resolve_popup_geometry(
+            Some(PopupSize::Cells(100)),
+            Some(PopupSize::Cells(16)),
+            area,
+        )
+        .unwrap();
+        assert_eq!((g.outer.cols, g.outer.rows), (92, 16));
+        let g = resolve_popup_geometry(None, None, area).unwrap();
+        assert_eq!((g.outer.cols, g.outer.rows), (46, 18));
+        assert_eq!(resolve_popup_geometry(None, None, rect(0, 0, 3, 5)), None);
+        assert_eq!(
+            PopupSize::from_manifest(Some(&json!("60%"))),
+            Some(PopupSize::Percent(60))
+        );
+        assert_eq!(
+            PopupSize::from_manifest(Some(&json!(16))),
+            Some(PopupSize::Cells(16))
+        );
+        assert_eq!(PopupSize::from_manifest(Some(&json!("16"))), None);
+        assert_eq!(PopupSize::from_manifest(None), None);
+    }
+
+    #[test]
+    fn popup_frames_need_their_title() {
+        let mut g = Grid::blank(30, 10);
+        let mut put = |r: u16, c: u16, s: &str| g.cells[r as usize][c as usize].text = s.into();
+        let outer = rect(2, 5, 6, 20);
+        put(2, 5, "┌");
+        put(2, 24, "┐");
+        put(7, 5, "└");
+        put(7, 24, "┘");
+        for (i, ch) in "Projects".chars().enumerate() {
+            put(2, 6 + i as u16, &ch.to_string());
+        }
+        assert!(popup_frame_at(&g, outer, "Projects"));
+        assert!(!popup_frame_at(&g, outer, "Pick"));
+        assert!(!popup_frame_at(&g, rect(2, 5, 6, 19), "Projects"));
+    }
+
+    #[test]
+    fn keys_become_terminal_bytes() {
+        assert_eq!(key_bytes("enter").unwrap(), b"\r");
+        assert_eq!(key_bytes("escape").unwrap(), b"\x1b");
+        assert_eq!(key_bytes("tab").unwrap(), b"\t");
+        assert_eq!(key_bytes("shift+tab").unwrap(), b"\x1b[Z");
+        assert_eq!(key_bytes("ctrl+c").unwrap(), [3]);
+        assert_eq!(key_bytes("alt+x").unwrap(), b"\x1bx");
+        assert_eq!(key_bytes("up").unwrap(), b"\x1b[A");
+        assert_eq!(key_bytes("q").unwrap(), b"q");
+        assert_eq!(key_bytes("P").unwrap(), b"P");
+        assert_eq!(key_bytes("+").unwrap(), b"+");
+        assert_eq!(key_bytes("f5").unwrap(), b"\x1b[15~");
+        assert_eq!(key_bytes("f").unwrap(), b"f");
+        assert!(key_bytes("hyper+q").is_none());
+        assert!(key_bytes("nonsense").is_none());
+    }
+
+    #[test]
+    fn event_lines_match_scenario_types() {
+        assert!(event_matches(
+            &json!({"event": "pane_created", "data": {}}),
+            "pane.created"
+        ));
+        assert!(event_matches(
+            &json!({"event": "pane.agent_status_changed", "data": {}}),
+            "pane.agent_status_changed"
+        ));
+        assert!(event_matches(
+            &json!({"event": "worktree_created", "data": {}}),
+            "worktree.created"
+        ));
+        assert!(!event_matches(
+            &json!({"event": "pane_closed"}),
+            "pane.created"
+        ));
+        assert!(!event_matches(
+            &json!({"id": "x", "result": {}}),
+            "pane.created"
+        ));
+        let subs = event_subscriptions(&["w1:p2"]);
+        assert_eq!(subs.len(), SUBSCRIBABLE.len() + 1);
+        assert_eq!(
+            subs.last().unwrap(),
+            &json!({"type": "pane.agent_status_changed", "pane_id": "w1:p2"})
+        );
+    }
+
+    #[test]
+    fn subscribable_types_are_in_the_captured_schema() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/compat/herdr/0.9.3/api-schema.json");
+        let Ok(text) = fs::read_to_string(&path) else {
+            return;
+        };
+        let schema: Value = serde_json::from_str(&text).unwrap();
+        let subs = schema
+            .pointer("/schemas/request/$defs/Subscription/oneOf")
+            .and_then(Value::as_array)
+            .unwrap();
+        let plain: Vec<&str> = subs
+            .iter()
+            .filter(|o| {
+                o["required"]
+                    .as_array()
+                    .is_some_and(|r| r.len() == 1 && r[0] == "type")
+            })
+            .filter_map(|o| o.pointer("/properties/type/const").and_then(Value::as_str))
+            .collect();
+        let mut want = plain.clone();
+        want.sort();
+        let mut have = SUBSCRIBABLE.to_vec();
+        have.sort();
+        assert_eq!(have, want);
+    }
+
+    #[test]
+    fn the_trace_keeps_only_pane_open_targets() {
+        let p = json!({"plugin_id": "a", "entrypoint": "pick", "placement": "popup", "env": {"TOKEN": "x"}});
+        assert_eq!(
+            traced_params("plugin.pane.open", Some(&p)),
+            Some(json!({"plugin_id": "a", "entrypoint": "pick", "placement": "popup"}))
+        );
+        assert_eq!(traced_params("pane.send_text", Some(&p)), None);
     }
 
     #[test]

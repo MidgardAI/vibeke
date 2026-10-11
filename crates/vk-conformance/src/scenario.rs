@@ -8,6 +8,8 @@
 //!
 //! [setup]
 //! fake_agent = true                    # a pane whose agent status the harness can change
+//! workspace_cwd = "{repo.app}"         # the context workspace starts in this directory
+//! path_exclude = ["/opt/homebrew/bin"] # directories kept off the plugin PATH on both sides
 //! [[setup.repo]]
 //! name = "app"                         # created under {home}/src/app, `git init` + one commit
 //! files = { "README.md" = "hello\n" }
@@ -25,7 +27,8 @@
 //! context = "workspace"
 //! timeout_ms = 30000
 //! expect_calls = [{ method = "popup.open", ok = true }]
-//! known = { outcome = "suspected_compat_failure", reason = "…" }
+//! known = { outcome = "suspected_compat_failure", reason = "…", platforms = ["linux"] }
+//! platforms = ["linux", "macos"]       # the step runs only on these platforms (default: all)
 //! [[step.expect]]
 //! kind = "popup"
 //! pane = "projects"
@@ -41,13 +44,20 @@
 //! [[skip]]
 //! surface = "action:doctor"
 //! reason = "…"
+//! platforms = ["linux"]                # the skip applies only on these platforms (default: all)
 //!
 //! [normalize]
 //! fields = ["project_id"]
 //! ```
 //!
-//! Placeholders in strings: `{home}`, `{state}` (the plugin state dir), `{repo.<name>}`,
+//! Placeholders in strings: `{home}`, `{state}` (the plugin state dir), `{config}` (the plugin
+//! config dir), `{herdr_config}` (the Herdr config file the side's `herdr` command uses),
+//! `{workspace}`, `{tab}`, `{pane}`, `{agent_pane}`, `{repo.<name>}`,
 //! `{worktree.<repo>.<name>}`, `{stub.<id>.url}`, `{stub.<id>.file}`. [`expand`] resolves them.
+//!
+//! Contexts (`step.context`): `global`, `workspace`, `tab`, `pane` (the context pane is the
+//! focused pane) and `agent_pane` (the fake agent pane is the focused pane; needs
+//! `setup.fake_agent`).
 
 use crate::outcome::Outcome;
 use serde::{Deserialize, Serialize};
@@ -86,6 +96,15 @@ pub struct Setup {
     /// Plugin config written before install (`{state}/config.toml` or the manifest's config).
     #[serde(default)]
     pub config: Option<String>,
+    /// The directory the context workspace starts in, on both sides (for plugins that read the
+    /// focused pane's directory, such as a git repository). Placeholders are expanded after
+    /// the repositories exist. The default is `{home}`.
+    #[serde(default)]
+    pub workspace_cwd: Option<String>,
+    /// Directories removed from the PATH of plugin processes on both sides, for example a
+    /// package manager the plugin user cannot write to.
+    #[serde(default)]
+    pub path_exclude: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -196,6 +215,27 @@ pub struct Step {
     pub compare: Vec<Compare>,
     #[serde(default)]
     pub known: Option<Known>,
+    /// The platforms the step runs on (`linux`, `macos`); `None` is every platform. On other
+    /// platforms the step is left out of the run and does not cover its surface.
+    #[serde(default)]
+    pub platforms: Option<Vec<String>>,
+}
+
+/// Whether an optional platform list includes `os` (`None` is every platform).
+pub fn on_platform(platforms: Option<&Vec<String>>, os: &str) -> bool {
+    platforms.is_none_or(|p| p.iter().any(|x| x == os))
+}
+
+impl Step {
+    /// Whether the step runs on `os`.
+    pub fn runs_on(&self, os: &str) -> bool {
+        on_platform(self.platforms.as_ref(), os)
+    }
+
+    /// The step's known result on `os`, if it has one there.
+    pub fn known_on(&self, os: &str) -> Option<&Known> {
+        self.known.as_ref().filter(|k| k.applies_on(os))
+    }
 }
 
 /// One Herdr call the step should make (18 §8). `ok = false` with a `code` is a call that
@@ -296,6 +336,16 @@ pub struct GridSize {
 pub struct Known {
     pub outcome: Outcome,
     pub reason: String,
+    /// The platforms the known result applies to; `None` is every platform. On another
+    /// platform the step must pass like any other.
+    #[serde(default)]
+    pub platforms: Option<Vec<String>>,
+}
+
+impl Known {
+    pub fn applies_on(&self, os: &str) -> bool {
+        on_platform(self.platforms.as_ref(), os)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -304,6 +354,32 @@ pub struct Skip {
     /// A surface name from [`crate::coverage::Surface::name`], such as `action:doctor`.
     pub surface: String,
     pub reason: String,
+    /// The platforms the skip applies to; `None` is every platform. On another platform the
+    /// surface must be covered by a step.
+    #[serde(default)]
+    pub platforms: Option<Vec<String>>,
+}
+
+impl Skip {
+    pub fn applies_on(&self, os: &str) -> bool {
+        on_platform(self.platforms.as_ref(), os)
+    }
+}
+
+/// The platforms a scenario may name.
+pub const PLATFORMS: [&str; 2] = ["linux", "macos"];
+
+fn validate_platforms(p: Option<&Vec<String>>, what: &str) -> anyhow::Result<()> {
+    let Some(p) = p else { return Ok(()) };
+    if p.is_empty() {
+        anyhow::bail!("{what}: `platforms` must not be empty (leave it out for every platform)");
+    }
+    for x in p {
+        if !PLATFORMS.contains(&x.as_str()) {
+            anyhow::bail!("{what}: unknown platform `{x}` (expected linux or macos)");
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -373,6 +449,18 @@ impl Scenario {
             if s.reason.trim().is_empty() {
                 bail!("skip `{}`: a skip needs a reason", s.surface);
             }
+            validate_platforms(s.platforms.as_ref(), &format!("skip `{}`", s.surface))?;
+        }
+        if self.setup.path_exclude.iter().any(|d| !d.starts_with('/')) {
+            bail!("setup.path_exclude: every directory must be absolute");
+        }
+        if self
+            .setup
+            .workspace_cwd
+            .as_deref()
+            .is_some_and(|c| c.trim().is_empty())
+        {
+            bail!("setup.workspace_cwd is empty");
         }
         if self.normalize.fields.iter().any(|f| f.is_empty()) {
             bail!("normalize.fields contains an empty name");
@@ -381,7 +469,7 @@ impl Scenario {
     }
 }
 
-const CONTEXTS: [&str; 4] = ["global", "workspace", "tab", "pane"];
+const CONTEXTS: [&str; 5] = ["global", "workspace", "tab", "pane", "agent_pane"];
 const AGENT_STATUSES: [&str; 4] = ["working", "blocked", "done", "idle"];
 
 impl Step {
@@ -441,6 +529,10 @@ impl Step {
         {
             bail!("unknown context `{c}`");
         }
+        if self.context.as_deref() == Some("agent_pane") && !setup.fake_agent {
+            bail!("context `agent_pane` needs setup.fake_agent = true");
+        }
+        validate_platforms(self.platforms.as_ref(), "step")?;
         if self.timeout_ms == Some(0) {
             bail!("timeout_ms must be positive");
         }
@@ -451,6 +543,7 @@ impl Step {
             if k.reason.trim().is_empty() {
                 bail!("a known result needs a reason");
             }
+            validate_platforms(k.platforms.as_ref(), "known")?;
         }
         for c in &self.expect_calls {
             if c.method.is_empty() {
@@ -821,12 +914,82 @@ fields = ["project_id"]
         );
         rejects(|s| s.repository = "nope".into(), "owner/repo");
         rejects(
+            |s| s.steps[0].platforms = Some(vec!["windows".into()]),
+            "unknown platform",
+        );
+        rejects(|s| s.steps[0].platforms = Some(vec![]), "must not be empty");
+        rejects(
+            |s| s.steps[0].known.as_mut().unwrap().platforms = Some(vec!["bsd".into()]),
+            "unknown platform",
+        );
+        rejects(
+            |s| s.skips[0].platforms = Some(vec!["win".into()]),
+            "unknown platform",
+        );
+        rejects(
+            |s| {
+                s.steps[0].context = Some("agent_pane".into());
+                s.setup.fake_agent = false;
+                s.steps.retain(|x| x.agent_status.is_none());
+            },
+            "agent_pane",
+        );
+        rejects(
+            |s| s.setup.path_exclude = vec!["opt/homebrew/bin".into()],
+            "absolute",
+        );
+        rejects(
+            |s| s.setup.workspace_cwd = Some(" ".into()),
+            "workspace_cwd",
+        );
+        rejects(
             |s| {
                 let dup = s.stubs[0].clone();
                 s.stubs.push(dup);
             },
             "duplicate id",
         );
+    }
+
+    #[test]
+    fn platform_scoped_steps_known_results_and_skips() {
+        let text = GOOD
+            .replace(
+                "known = { outcome = \"suspected_compat_failure\", reason = \"popup sizing\" }",
+                "known = { outcome = \"suspected_compat_failure\", reason = \"popup sizing\", platforms = [\"linux\"] }\nplatforms = [\"linux\", \"macos\"]",
+            )
+            .replace(
+                "reason = \"needs a cloud account\"",
+                "reason = \"needs a cloud account\"\nplatforms = [\"macos\"]",
+            )
+            .replace(
+                "[setup]\nfake_agent = true",
+                "[setup]\nfake_agent = true\nworkspace_cwd = \"{repo.app}\"\npath_exclude = [\"/opt/homebrew/bin\"]",
+            );
+        let s: Scenario = toml::from_str(&text).unwrap();
+        s.validate().unwrap();
+        let step = &s.steps[0];
+        assert!(step.runs_on("linux") && step.runs_on("macos"));
+        assert!(step.known_on("linux").is_some());
+        assert!(step.known_on("macos").is_none());
+        assert!(s.skips[0].applies_on("macos"));
+        assert!(!s.skips[0].applies_on("linux"));
+        assert_eq!(s.setup.workspace_cwd.as_deref(), Some("{repo.app}"));
+        assert_eq!(s.setup.path_exclude, ["/opt/homebrew/bin"]);
+        // Without `platforms`, everything applies everywhere.
+        let g = good();
+        assert!(g.steps[1].runs_on("linux") && g.skips[0].applies_on("linux"));
+        assert!(g.steps[0].known_on("macos").is_some());
+        let mut only_mac = g.steps[1].clone();
+        only_mac.platforms = Some(vec!["macos".into()]);
+        assert!(!only_mac.runs_on("linux"));
+    }
+
+    #[test]
+    fn the_agent_pane_context_is_valid_with_a_fake_agent() {
+        let mut s = good();
+        s.steps[0].context = Some("agent_pane".into());
+        s.validate().unwrap();
     }
 
     #[test]

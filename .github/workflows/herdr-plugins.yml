@@ -426,6 +426,31 @@ jobs:
           tool_path="$TOOL_PATH$extra"
           echo "TOOL_PATH=${tool_path#:}" >> "$GITHUB_ENV"
 
+      - name: Preinstall ttt for its plugin
+        # The ttt plugin's build installs the latest ttt release, and its installer asks the
+        # GitHub API for the tag. Shared runner addresses hit the API's limit for unauthenticated
+        # requests (18 §7.2). The plugin's install script skips the download when `ttt` is on
+        # PATH, so this trusted step fetches the same latest release with the job's token, which
+        # never enters the boundary, and records the tag and checksum. Nothing here runs it.
+        if: matrix.plugin_id == 'ttt.editor'
+        timeout-minutes: 5
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          case $PLUGIN_OS in
+            linux) asset=ttt-linux-amd64 ;;
+            macos) asset=ttt-darwin-arm64 ;;
+            *) echo "unknown OS $PLUGIN_OS"; exit 1 ;;
+          esac
+          tag=$(gh release view --repo eugenioenko/ttt --json tagName --jq .tagName)
+          case $tag in '' | *[!A-Za-z0-9._-]*) echo "unexpected tag $tag"; exit 1 ;; esac
+          install -d "$HP/tools/ttt"
+          gh release download "$tag" --repo eugenioenko/ttt --pattern "$asset" --output "$HP/tools/ttt/ttt"
+          chmod 0755 "$HP/tools/ttt/ttt"
+          echo "ttt $tag ($asset): $(shasum -a 256 "$HP/tools/ttt/ttt" | awk '{print $1}')" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "TOOL_PATH=${TOOL_PATH:+$TOOL_PATH:}$HP/tools/ttt" >> "$GITHUB_ENV"
+
       - name: Fetch and scan the plugin source
         timeout-minutes: 15
         run: |
@@ -699,8 +724,9 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/results" "$RUNNER_TEMP/status"
           status=0
+          # The lock comes from this trusted checkout; the report lists its deferred plugins.
           bun scripts/herdr-plugins-report.ts --in "$RUNNER_TEMP/results" --out "$RUNNER_TEMP/report" \
-            --expect "$RUNNER_TEMP/plan/matrix.json" --status "$RUNNER_TEMP/status" || status=$?
+            --expect "$RUNNER_TEMP/plan/matrix.json" --status "$RUNNER_TEMP/status" --lock "$LOCK" || status=$?
           echo "status=$status" >> "$GITHUB_OUTPUT"
           [ -f "$RUNNER_TEMP/report/matrix.md" ] || exit 1
           cat "$RUNNER_TEMP/report/matrix.md" >> "$GITHUB_STEP_SUMMARY"
