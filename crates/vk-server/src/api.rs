@@ -424,8 +424,8 @@ pub const PANE_FORBIDDEN_PREFIXES: &[&str] = &["assistant.", "cloud."];
 // pane, `browser.eval` without the `browser.script` capability (`preview.browser_script`),
 // `git.status|diff {path}`, `worktree.create {focus: true}`, `compat.herdr.call` of a
 // focus/close method, `screenshot.*` / `task.*` / `draft.*` reads outside the caller's
-// workspace, `screenshot.delete` of an image the caller's pane did not attach, and
-// `task.operation.get` receipts.
+// workspace, and `screenshot.delete` of an image the caller's pane did not attach.
+// `task.operation.get` receipts are the user's (unlisted, so forbidden).
 
 /// Methods a pane-scoped caller may call against any target (handlers may still refuse
 /// particular params). Every method that is neither here nor in [`PANE_OWN_TARGET`] is
@@ -609,7 +609,6 @@ pub const PANE_OPEN: &[&str] = &[
     "task.link.status",
     "task.list",
     "task.message.get",
-    "task.operation.get",
     "task.ports",
     "task.pr",
     "task.pr.claim",
