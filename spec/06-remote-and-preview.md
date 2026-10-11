@@ -272,7 +272,7 @@ Priorities: **declared previews first**; automatic discovery produces *suggestio
 
 ### B3. Primary: a Vibeke-managed browser routed over SOCKS5, in a pane or a window (M3)
 
-One route, two ways to look at it. The route (B3.1) makes `localhost` mean the remote's localhost. The **browser pane** (B3.2) is the default view; the **external window** (B3.3) uses the same profile and route.
+One route, two ways to look at it. The route (B3.1) makes `localhost` mean the remote's localhost. The **browser pane** (B3.2) is the default view; the **external window** (B3.3) uses the same profile and route. The desktop app embeds the preview in its own window over a stream tunnel (B3.5), and the phone app shows a host-rendered view (B3.6).
 
 #### B3.1 The route
 
@@ -368,6 +368,76 @@ A **browser pane** is a non-PTY pane kind whose content is a live Chromium viewp
 - Profiles persist (logins survive), live under Vibeke state, and never touch the user's real browser profile. `vibeke preview profile reset devbox` wipes one.
 - **Opening from the TUI**: a preview chip in the pane frame (`◉ web :5173`) and the sidebar Previews section; click or `prefix+o` opens a browser pane. Clicking a `http://localhost:<port>` URL (plain or OSC 8) printed in a **remote** pane opens it in a browser pane on that machine's profile; `open_url` requests from remote panes are routed to the focused attached client (09 §7 open-URL rules apply).
 - `vibeke preview list [--machine m] [--task k7] [--all]` (suggestions included with `--all`), `vibeke preview open [--split right|down|tab|float | --window]|url|forget|mirror|unmirror`, `vibeke preview profile list|reset`.
+
+#### B3.5 The embedded preview in the desktop app
+
+The desktop app shows a preview as a real browser inside its window, in the preview tab of a workspace. The page runs in an Electron `WebContentsView`, so it is a full Chromium page with DevTools. The route is the same as in B3.1: `localhost` means the preview machine's loopback, and other names resolve on the viewing machine. The way into the route is different. The desktop app does not use the local server's SOCKS listener, for two reasons:
+
+- Electron runs one network process for all views. The SOCKS peer check knows only the process, so it cannot tell which machine a request is for.
+- The desktop app often has no local server at all. It may reach a host only through the relay, and the desktop package does not include the CLI.
+
+So the app reaches the dev server through its existing encrypted connection to the host gateway. The gateway opens the stream on the host server, and the server routes it with the same code as the SOCKS listener.
+
+```
+WebContentsView (session persist:vk-preview-<host>-<machine>)
+   proxy http://127.0.0.1:<app proxy port>, bypass "<-loopback>", Basic credential per view
+        │  CONNECT localhost:5173  /  GET http://localhost:5173/… (absolute form)
+        ▼
+desktop main process: in-app HTTP proxy (127.0.0.1, ephemeral port)
+        │  destination is loopback? ──► tunnel.open {machine, host, port} over the Noise channel (local socket or relay)
+        │  otherwise ──► direct connection from this machine (CDNs, OAuth providers, fonts)
+        ▼
+host gateway ──► host server `preview.connect` (the connection becomes a raw byte stream)
+        │  local machine ──► connect to 127.0.0.1/::1:5173
+        │  remote machine ──► `tcp:` channel over the bridge link (as the SOCKS route, B3.4)
+```
+
+**Server: `preview.connect {machine?, host, port}`.** A user client sends it as a request on a fresh control connection. The method works like `render.attach`: after the success response line `{"connected": true}`, the connection carries raw bytes in both directions until either side closes. `host` must be a loopback name (`vk_remote::is_loopback_host`); `port` is 1–65535. `machine` names the preview machine (empty, `local` or this server's machine = local). Local destinations use `vk_remote::connect_loopback`; remote ones open `tcp:<host>:<port>` on the machine's link (`Previews::link`). Errors: a pane-scoped or foreign caller gets `permission_denied`; a non-loopback host gets `invalid_params`; an unknown or unreachable machine gets `unavailable`; a refused port gets `unavailable` with `details.reason = "refused"`. Each accepted stream counts in `preview.status.accepted`. The method is mutating, and the gateway is its only intended client.
+
+**Gateway: stream tunnel (`tunnel.*`).** Full-scope devices without a limit may open TCP streams to preview destinations. Shares and limited devices get `forbidden`. A stream is bound to one encrypted device connection and closes when the connection ends or the device is revoked (checked every second, as for `tui.*`).
+
+| Call | Direction | Meaning |
+|---|---|---|
+| `tunnel.open {machine?, host, port}` → `{stream}` | request | Gateway opens a server connection, sends `client.hello` (`kind: "gateway-tunnel"`, `remote: true`) and `preview.connect`; server errors are passed on. At most 64 open streams per device connection (`busy` beyond). |
+| `tunnel.send {stream, data_b64?, eof?}` → `{}` | request | Writes bytes (at most 64 KiB decoded per call) or half-closes the write side. The response comes after the write, so a client that waits for it gets backpressure. |
+| `tunnel.ack {stream, bytes}` → `{}` | request | The device consumed `bytes` of stream data. The gateway keeps reading from the server only while less than 512 KiB per stream is unacknowledged. |
+| `tunnel.close {stream}` → `{}` | request | Closes both directions. Unknown streams answer `{}`. |
+| `tunnel.data {stream, data_b64}` | notification | Up to 48 KiB of stream data, in order. |
+| `tunnel.closed {stream, reason}` | notification | The stream ended (`eof`, `error`, `closed`, `revoked`). After `eof`, the device may still send until it closes. |
+
+The gateway announces `tunnel` in `hello.features`. Apps without it show the preview's URL and the external-browser button only.
+
+**Desktop main process.**
+- One in-app HTTP proxy on `127.0.0.1` (ephemeral port), started on the first embedded preview. Every view gets a random 32-byte credential. Its session uses `setProxy({proxyRules: "http://127.0.0.1:<port>", proxyBypassRules: "<-loopback>"})`. The credential is supplied from `app.on('login')` when `authInfo.isProxy` is true and the port matches, and only for that view's `webContents`. Requests without a valid `Proxy-Authorization` get `407`. Other local processes therefore cannot use the proxy.
+- The proxy handles `CONNECT` (HTTPS, WebSockets) and absolute-form HTTP (forwarded in origin form, `Connection: close`). A loopback destination opens a tunnel stream on the view's host and machine. Any other destination connects directly from the desktop machine. A name that resolves to a loopback address is sent to the preview machine, never to the desktop's own loopback (as in B3.4).
+- Each preview view has its own session partition `persist:vk-preview-<hostId>-<machine>`, so logins persist per host and machine and never mix with the app's own session. Views have no preload, `sandbox: true`, `contextIsolation: true` and no `nodeIntegration`. All permission requests are denied, except clipboard writes. WebRTC uses `disable_non_proxied_udp`. Certificate errors are accepted only for loopback hosts in preview sessions; the tunnel is end-to-end authenticated, and dev servers use self-signed certificates. `window.open` from the page loads in the same view, and `target=_blank` links to non-loopback sites open in the system browser. Downloads ask where to save.
+- The app's navigation guard (`will-navigate` to untrusted origins) does not apply to preview views. Preview views may never navigate to `app://` or `file://`.
+- IPC (renderer → main, validated): `preview.view.open {hostId, machine, url}` → `{view}`; `preview.view.bounds {view, x, y, width, height, visible}`; `preview.view.go {view, url? | action: back|forward|reload|stop}`; `preview.view.devtools {view}`; `preview.view.close {view}`. Main → renderer: `preview.view.state {view, url, title, loading, canGoBack, canGoForward, error?}`. Views close when their window closes. A host disconnect shows an error page; the view reloads when the host is back.
+- The view is a native layer above the page. The renderer keeps a placeholder element and reports its bounds on resize, scroll and tab change. While a dialog, popover, menu or the command palette is open, the renderer reports `visible: false`, and the placeholder shows the last `capturePage()` image instead.
+
+**UI.** The preview tab shows a toolbar (back, forward, reload, the address, an environment label such as `→ devbox`, DevTools, open in system browser) above the embedded page. "Open on host" (a pane in the host's TUI layout) is removed from the apps. The "open in browser" button is shown only for non-loopback URLs, because `localhost` in the system browser means the viewing device.
+
+**Not done:** a desktop that runs its own local server could use the SOCKS listener directly. That would need per-view routing in the peer check. The tunnel path works for every connection type, so the apps use only that.
+
+#### B3.6 Phones: the host-rendered preview
+
+A phone browser cannot set a proxy, and the relay must stay content-blind. So the phone app shows a preview rendered by the host's headless browser (B5): a screencast of the page, with the phone's touches and keys sent back. Everything goes through the existing encrypted channel, and the dev app's code never runs in the app's origin.
+
+- **Open.** The gateway call `browser.preview_open {preview, machine?, viewport: {width, height}, dpr, dark?, op_id}` (full scope, no limit) opens a host session on that preview with `browser.session_open {preview, machine, viewport, dpr, dark, mobile: true}`. The session belongs to the device, takes it over at once and attaches the screencast. The result is the `BrowserSession` with `human_control: true`. `mobile: true` sets `Emulation.setDeviceMetricsOverride` with `mobile: true`, `Emulation.setTouchEmulationEnabled {enabled: true, maxTouchPoints: 5}` and a mobile user agent. The page therefore uses its mobile layout at the phone's own size.
+- **Input.** `browser.input {session, events[]}` (server; human-only: the caller must hold the take-over) takes a batch of at most 64 events, applied in order:
+  - `{type: "touch", phase: "start"|"move"|"end"|"cancel", points: [{id, x, y}]}` → `Input.dispatchTouchEvent`. Drags scroll natively, and two points pinch.
+  - `{type: "tap", x, y}` → mouse press and release (for pages without touch handlers).
+  - `{type: "wheel", x, y, dx, dy}` → mouse wheel.
+  - `{type: "text", text}` → `Input.insertText`, and `{type: "key", key}` → key down and up.
+  - `{type: "history", action: "back"|"forward"|"reload"}`.
+  - `{type: "resize", width, height, dpr?}` → new device metrics and screencast size (rotation, keyboard).
+  Coordinates are CSS pixels of the viewport.
+- **Frames.** `browser.screencast_frame` takes `wait_ms` (at most 15000). With `after_seq`, the call waits until a newer frame exists or the time ends. The phone keeps one long poll open, so a new frame arrives in about one round trip, and slow links get the newest frame only.
+- **End.** The gateway closes a device's preview session when the device closes it (`browser.session_close`), stops polling for 30 s, disconnects or is revoked. Agents never see these sessions in their pane scope.
+- **UI.** The phone preview fills the tab: a bar with back, forward, reload and the address, the frame below, and a keyboard button that focuses a hidden input. Typed text goes in as `text` events, and Enter and Backspace as `key` events. Touches are batched once per animation frame. The view resizes the session on rotation and when the keyboard opens.
+- **Watching agents** (`LiveSessions`, B7) stays as it is.
+
+**Alternative, not built: a real browser on the phone.** A page on its own origin (for example `preview.vibeke.dev`) could register a service worker that sends every request of the preview page through the `tunnel.*` streams, through a `MessagePort` from the app. Pages would then scroll natively and run on the phone. Three open problems: it needs a separate origin and deployment; service workers do not see WebSocket connections, so HMR would need a WebSocket shim; and iOS Safari support for service workers in cross-origin frames is uncertain. Revisit this when the host-rendered view is not good enough.
 
 ### B4. Secondary: authenticated reverse proxy for the user's normal browser (M3)
 

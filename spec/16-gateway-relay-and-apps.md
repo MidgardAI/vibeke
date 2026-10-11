@@ -297,9 +297,13 @@ Default for `pair` is `full` (your own phone); `approve`/`view` are for shared o
 | `search.query` | `{q, pane?, workspace?, sources?, since?, limit?, regex?, context?}` → `{hits}` | view | server (redacts hits for remote clients); a limited device's search is narrowed to its pane or workspace and hits outside its live panes are dropped |
 | `sandbox.list` / `sandbox.status` | `{}` | view | server; refused to limited devices |
 | `browser.list` / `browser.status` | `{}` | view | server; refused to limited devices (all `browser.*`) |
-| `browser.attach_screencast` / `browser.screencast_frame` / `browser.detach_screencast` | `{session}` / `{session, after_seq?}` / `{session}` | view | gateway counts viewers per session (the server holds one subscription for the gateway's connection): it attaches once, and detaches when the last device detaches, stops polling for 30 s or disconnects; a frame poll without an attach is `conflict` |
+| `browser.attach_screencast` / `browser.screencast_frame` / `browser.detach_screencast` | `{session}` / `{session, after_seq?, wait_ms?}` / `{session}` | view | gateway counts viewers per session (the server holds one subscription for the gateway's connection): it attaches once, and detaches when the last device detaches, stops polling for 30 s or disconnects; a frame poll without an attach is `conflict` |
 | `browser.take_over` / `browser.release` | `{session, op_id}` | full | server; a take-over also ends when its device stops watching or disconnects |
 | `browser.click` / `browser.type` / `browser.press` / `browser.navigate` | server params (whitelisted) + `op_id` | full | server; only from the device whose take-over is in force (`conflict` otherwise) |
+| `browser.preview_open` | `{preview, machine?, viewport: {width, height}, dpr, dark?, op_id}` → `BrowserSession` | full | server `browser.session_open {mobile: true}`, then take-over and screencast attach for this device; the session closes when the device closes it, stops polling for 30 s, disconnects or is revoked (06 B3.6); refused to limited devices |
+| `browser.input` | `{session, events[], op_id}` → `{session, applied}` | full | server; only from the device whose take-over is in force; touch, tap, wheel, text, key, history and resize events (06 B3.6) |
+| `browser.session_close` | `{session, op_id}` | full | server; only for sessions this device opened with `browser.preview_open` |
+| `tunnel.open` / `tunnel.send` / `tunnel.ack` / `tunnel.close` | `{machine?, host, port}` → `{stream}` / `{stream, data_b64?, eof?}` / `{stream, bytes}` / `{stream}`; notifications `tunnel.data`, `tunnel.closed` | full | gateway stream over server `preview.connect` to a loopback port on the preview machine; at most 64 streams per connection; refused to limited devices and shares (06 B3.5) |
 | `agent.harnesses` | `{}` → `{harnesses}` | view | server |
 | `tab.create` | `{workspace, cwd?, op_id}` → `{tab, pane}` | full | `tab.create` |
 | `interaction.list` / `interaction.get` | server params | view | server; normalized |
@@ -314,7 +318,7 @@ Default for `pair` is `full` (your own phone); `approve`/`view` are for shared o
 | `task.check.list` / `task.check.get` | `{task, subject?}` / `{check_run}` | view | server |
 | `task.check.run` | `{task, subject, check, definition_digest?, authorize?, op_id}` | full | server; `idempotency_key = "gw:<device_id>:<op_id>"` |
 | `preview.list` / `preview.get` / `preview.url` / `preview.status` | `{machine?, status?, all?, task?, pane?}` / `{preview, machine?}` / same / `{}` | view | server |
-| `preview.open` / `preview.promote` / `preview.forget` | `{preview?, url?, machine?, window?, split?, focus?, pane?, op_id}` / `{preview, machine?, op_id}` | full | server |
+| `preview.open` / `preview.promote` / `preview.forget` | `{preview?, url?, machine?, window?, split?, focus?, pane?, op_id}` / `{preview, machine?, op_id}` | full | server ; the apps no longer offer "open on host" (06 B3.5) |
 | `worktree.list` | `{pane}` or `{workspace}` (or `{cwd}`) → `{worktrees}`; not for share devices | view | server `worktree.list {cwd}` with the pane's cwd or the workspace root |
 | `tab.rename` / `tab.close` / `tab.focus` | `{tab, title?, op_id}` / `{tab, op_id}` | full | server |
 | `attachment.put` | `{name, mime, data_b64, op_id}` → `{path}` (≤ 8 MiB) | full | `image.upload` |
@@ -726,6 +730,7 @@ A gateway can pair with another gateway as a client (`vk-gateway/src/peer_client
 - **Native notifications** from the main process for new interactions and finished agents (privacy level as on the phone, §7.8), grouped per host. Clicking opens the card; on macOS, actions *Approve…* / *Open* (approve still shows a confirm for high/unknown risk; low/medium approve in place with the app's confirm sheet in the popover). Suppressed while the main window is focused. DND respected.
 - **Global shortcut** (default `⌥⌘V`, configurable) toggles the quick-approval popover; in-app **command palette** (`⌘K`): jump to any host/workspace/pane, run actions (new agent, share, hand off, pair, settings).
 - **Keyboard-first:** `j`/`k` move through inbox cards and pane lists, `a` allow, `d` deny, `A` allow always, `Enter` open, `Esc` back, `⌘1–4` switch tabs, `/` find; shown in a `?` cheat sheet.
+- **Embedded previews:** the preview tab shows the dev server in a `WebContentsView` with its own session, routed through the in-app proxy and the gateway's `tunnel.*` streams (06 B3.5). It works over the local socket and over the relay.
 - **Multi-window:** pop a pane out into its own window (terminal mirror + composer + keys); window positions persisted.
 - **Deep links:** `vibeke://pair?d=…` (also `https://<app origin>/#/pair?d=…` opened from the OS) routes to the pairing screen; single-instance lock forwards links to the running app.
 - **Native menus:** standard app/edit/view/window menus with accelerators; macOS vibrancy sidebar, traffic-light inset title bar, system accent colour and dark/light following the OS.
