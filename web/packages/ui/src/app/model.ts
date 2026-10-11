@@ -29,7 +29,7 @@ import { PrefsStore } from '../lib/prefs';
 import { ValueStore } from '../lib/store';
 import { runKey } from '../lib/tree';
 import type { CachedMirror, HapticKind, UiPlatform } from '../platform';
-import type { TimerHandle } from '@vibeke/core';
+import type { AppEvent, TimerHandle } from '@vibeke/core';
 
 export type Phase = 'loading' | 'ready' | 'error';
 
@@ -47,6 +47,29 @@ export interface AnswerParams {
   choices?: Record<string, string[]>;
   text?: string;
   expected_signature?: string;
+}
+
+/** A host's config file that does not load (from `session.config_rejected`). */
+export interface ConfigRejected {
+  /** First problems, "line 3: unknown key `x`". */
+  errors: string[];
+  at: number;
+}
+
+/**
+ * What a config event means for the banner: a rejection, `null` for "it loads again", or
+ * `undefined` for an unrelated event.
+ */
+export function configErrorFromEvent(e: AppEvent): ConfigRejected | null | undefined {
+  if (e.type === 'session.config_reloaded') return null;
+  if (e.type !== 'session.config_rejected') return undefined;
+  const raw = Array.isArray(e.data?.errors) ? (e.data.errors as unknown[]) : [];
+  const errors = raw.slice(0, 3).map((x) => {
+    const o = (x ?? {}) as { line?: unknown; message?: unknown };
+    const msg = typeof o.message === 'string' ? o.message : String(x);
+    return typeof o.line === 'number' && o.line > 0 ? `line ${o.line}: ${msg}` : msg;
+  });
+  return { errors, at: e.ts };
 }
 
 export class AppModel {
@@ -76,6 +99,12 @@ export class AppModel {
   private toastSeq = 0;
   private offs: (() => void)[] = [];
   private lastSaved = new Map<string, { at: number; dashboard: unknown }>();
+  /**
+   * Hosts whose `config.toml` does not load (`session.config_rejected`, cleared by
+   * `session.config_reloaded`). The server keeps the last good settings meanwhile.
+   */
+  readonly configErrors = new ValueStore<Record<string, ConfigRejected>>({});
+  private configSubs = new Map<string, () => void>();
   private saveTimers = new Map<string, TimerHandle>();
 
   constructor(readonly platform: UiPlatform) {
@@ -138,6 +167,8 @@ export class AppModel {
     this.saveTimers.clear();
     this.offs.forEach((f) => f());
     this.offs = [];
+    this.configSubs.forEach((f) => f());
+    this.configSubs.clear();
     this._push?.stop();
     this._manager?.stop();
   }
@@ -193,7 +224,33 @@ export class AppModel {
 
   // ---- seen/finished -----------------------------------------------------------------------
 
+  private watchConfigErrors(): void {
+    const ids = new Set(this.manager.getSnapshot().map((h) => h.record.host_id));
+    for (const id of ids) {
+      if (this.configSubs.has(id)) continue;
+      this.configSubs.set(
+        id,
+        this.manager.subscribeEvents(id, (e) => {
+          const next = configErrorFromEvent(e);
+          if (next === undefined) return;
+          this.configErrors.update((m) => {
+            const out = { ...m };
+            if (next) out[id] = next;
+            else delete out[id];
+            return out;
+          });
+        }),
+      );
+    }
+    for (const [id, off] of this.configSubs) {
+      if (ids.has(id)) continue;
+      off();
+      this.configSubs.delete(id);
+    }
+  }
+
   private onHostsChanged(): void {
+    this.watchConfigErrors();
     // Baseline done_rev for runs we have never seen so only *new* completions count as "finished".
     const seen = this.prefs.get().seenDone;
     const add: Record<string, number> = {};

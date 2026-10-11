@@ -286,6 +286,7 @@ function ShareHeader({ link }: { link: PairingLink }) {
       <div className="text-sm text-muted">
         {[t.pair.shareScope[s.scope] ?? s.scope, t.pair.shareUntil(whenText(s.until * 1000, now))].join(' · ')}
       </div>
+      {t.access.hints[s.scope] && <div className="text-xs text-muted">{t.pair.youCan(t.access.hints[s.scope]!)}</div>}
     </div>
   );
 }

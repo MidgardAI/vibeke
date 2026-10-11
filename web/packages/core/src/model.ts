@@ -586,6 +586,17 @@ export interface DeviceInfo {
   limit?: { workspace?: string; pane?: string } | null;
   /** For `peer` devices: whose host it is and how it introduced itself. */
   peer?: { owner: PeerOwner; host_name?: string; user?: GitUser } | null;
+  /** The device that created this share or link; absent/null: the host's owner. */
+  created_by?: string | null;
+  /** What revoking this device also removes (shares, hosts, invitations, peers it created). */
+  also?: { shares?: number; hosts?: number; invitations?: number; peers?: number } | null;
+}
+
+/** `devices.revoke` result: what went (or, with `dry_run`, what would go). */
+export interface RevokeResult {
+  revoked: string[];
+  also: { shares?: number; hosts?: number; invitations?: number; peers?: number };
+  summary?: string | null;
 }
 
 /** `self`: one of the owner's own hosts; `teammate`: a host that redeemed a handoff invitation. */
@@ -1120,7 +1131,7 @@ export interface AppApi {
   /** `data_b64` is standard (padded) base64. */
   'stt.transcribe': { params: { mime: string; data_b64: string }; result: { text: string } };
   'devices.list': { params: Record<string, never>; result: { devices: DeviceInfo[] } };
-  'devices.revoke': { params: { device: string }; result: unknown };
+  'devices.revoke': { params: { device: string; dry_run?: boolean }; result: RevokeResult };
   ping: { params: Record<string, never>; result: Record<string, never> };
   /** Spec 16 §15: a scoped, expiring bearer pairing invitation (share) or a handoff invitation. */
   'share.create': {

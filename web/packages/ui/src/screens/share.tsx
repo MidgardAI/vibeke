@@ -85,6 +85,7 @@ export function ShareSheet({ row, open, onClose }: { row: PaneRow; open: boolean
           </Field>
           <Field label={t.share.scope}>
             <Segmented<'view' | 'approve'> label={t.share.scope} value={scope} onChange={setScope} options={(['view', 'approve'] as const).map((v) => ({ value: v, label: t.share.scopes[v]! }))} />
+            <div className="mt-1 text-xs text-muted">{t.share.scopeHint(t.access.hints[scope]!)}</div>
           </Field>
           <Field label={t.share.duration}>
             <Segmented<Duration> label={t.share.duration} value={ttl} onChange={setTtl} options={DURATIONS.map((v) => ({ value: v, label: t.share.durations[v]! }))} />

@@ -377,6 +377,7 @@ export const en = {
     shareWhatPane: 'a pane',
     shareScope: { view: 'view-only', approve: 'can approve', full: 'full access' } as Record<string, string>,
     shareUntil: (when: string) => `until ${when}`,
+    youCan: (what: string) => `This device ${what}.`,
     handoffFrom: (host: string) => `Handoff invitation from ${host}`,
     handoffWhat: 'One of your hosts accepts it; that host can then hand work to theirs directly. Nothing of theirs shows up in your app.',
     redeemOn: 'Accept on which of your hosts?',
@@ -400,6 +401,7 @@ export const en = {
     title: 'Share live',
     scope: 'They can',
     scopes: { view: 'View', approve: 'View + approve' } as Record<string, string>,
+    scopeHint: (what: string) => `Anyone who joins ${what} in what you share.`,
     duration: 'For',
     durations: { '1800': '30 m', '7200': '2 h', '28800': '8 h', '86400': '1 day' } as Record<string, string>,
     what: 'Share',
@@ -653,6 +655,16 @@ export const en = {
     agents: (n: number) => `${n} ${plural(n, 'agent', 'agents')}`,
   },
 
+  /** Access levels of a device or share, with what each can do. */
+  access: {
+    names: { full: 'Full', approve: 'Approve', view: 'View' } as Record<string, string>,
+    hints: {
+      full: 'can run any command as you on this host',
+      approve: 'can approve agent requests, including “always allow”, and send text to agents',
+      view: 'can read all pane output, transcripts, files and diffs',
+    } as Record<string, string>,
+  },
+
   settings: {
     title: 'Settings',
     receiveHandoff: 'Receive a handoff',
@@ -738,6 +750,21 @@ export const en = {
     thisDevice: 'this device',
     revoke: 'Revoke',
     revokeConfirm: 'Tap again to revoke',
+    revokeTitle: (name: string) => `Revoke ${name}?`,
+    revokeBody: 'This device can no longer connect to the host.',
+    revokeChecking: 'Checking what else goes…',
+    also: {
+      share: (n: number) => `${n} ${plural(n, 'share', 'shares')}`,
+      host: (n: number) => `${n} linked ${plural(n, 'host', 'hosts')}`,
+      invitation: (n: number) => `${n} ${plural(n, 'invitation', 'invitations')}`,
+      removes: (list: string) => `This also removes ${list}.`,
+    },
+    createdBy: (who: string) => `added by ${who}`,
+    ticketSoon: (days: number) =>
+      `This app has not reached the host for a while. Its relay pass expires in ${days} ${plural(days, 'day', 'days')}. Open Vibeke while the host is online to renew it. After it expires, you must pair again.`,
+    configBroken: 'The host’s config.toml does not load. The host keeps its last working settings until you fix it.',
+    configFix: 'On the host, run vibeke config edit or vibeke doctor.',
+    openTui: 'Open TUI',
     pairAnother: 'Pair another host',
     connection: 'Connection',
     connectionInfo: 'Connection info',
