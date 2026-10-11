@@ -57,6 +57,9 @@ export const en = {
     risk: { low: 'low risk', medium: 'medium risk', high: 'high risk', unknown: 'unknown risk' } as Record<string, string>,
     confirmTitle: 'Confirm',
     confirmHigh: (what: string) => `Allow ${what}? This action is marked high or unknown risk.`,
+    confirmAlwaysTitle: 'Always allow?',
+    confirmAlways: (what: string) => `Allow ${what} now? The agent can then run it again without asking you.`,
+    confirmAlwaysHigh: (what: string) => `Allow ${what} now? The agent can then run it again without asking you. This action is marked high or unknown risk.`,
     confirmAllow: 'Yes, allow',
     swipeHint: 'Swipe right to allow, left to deny',
     sending: 'Sending…',
@@ -623,6 +626,7 @@ export const en = {
     approve: 'Approve',
     approveOnce: 'Approve once',
     always: 'Always for this pane',
+    alwaysTitle: 'Always allow this call?',
     alwaysHint: (peer: string | null) =>
       `Always also runs the same call from this pane${peer ? ` to ${peer}` : ''} without asking, until the pane's process restarts.`,
     onceOnly: 'This call can only be approved once.',

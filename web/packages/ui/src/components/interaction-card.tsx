@@ -351,9 +351,9 @@ export function InteractionCard({
           {view && <DeliveryLine view={view} error={local?.error} onOpenPane={openPane} onRefresh={refresh} />}
         </div>
       </Card>
-      <Sheet open={confirm !== null} onClose={() => setConfirm(null)} title={t.inbox.confirmTitle} role="alertdialog">
+      <Sheet open={confirm !== null} onClose={() => setConfirm(null)} title={confirm === 'allow_always' ? t.inbox.confirmAlwaysTitle : t.inbox.confirmTitle} role="alertdialog">
         <div className="space-y-3">
-          <p className="text-sm">{t.inbox.confirmHigh(it.action?.command ? `\`${it.action.command}\`` : it.title)}</p>
+          <p className="text-sm">{confirmText(confirm, it)}</p>
           {it.action?.command && <pre className="term max-h-48 overflow-auto whitespace-pre-wrap break-all rounded-xl border border-border p-2 text-xs">{it.action.command}</pre>}
           <div className="flex gap-2">
             <Button className="flex-1" variant="outline" onClick={() => setConfirm(null)}>
@@ -396,6 +396,14 @@ export function InteractionCard({
       </Sheet>
     </div>
   );
+}
+
+/** The confirmation sentence: "Allow always" says what it grants; high risk says so too. */
+export function confirmText(d: Decision | null, it: Interaction): string {
+  const what = it.action?.command ? `\`${it.action.command}\`` : it.title;
+  const risky = interactionRisk(it) === 'high' || interactionRisk(it) === 'unknown';
+  if (d === 'allow_always') return risky ? t.inbox.confirmAlwaysHigh(what) : t.inbox.confirmAlways(what);
+  return t.inbox.confirmHigh(what);
 }
 
 function QuestionBody({ it, disabled, locked, onSubmit }: { it: Interaction; disabled: boolean; locked: boolean; onSubmit(choices: Record<string, string[]> | null, text: string | null): void }) {
