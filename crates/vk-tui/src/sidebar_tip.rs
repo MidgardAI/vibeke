@@ -23,6 +23,8 @@ const MAX_LINES: usize = 8;
 pub struct State {
     /// The cut-off sidebar row under the pointer (index into `sidebar_rows`) and since when.
     pub hover: Option<(usize, Instant)>,
+    /// The hover tooltip's delay passed and a repaint was asked for.
+    pub shown: bool,
 }
 
 fn cols(s: &str) -> usize {
@@ -54,7 +56,10 @@ pub fn on_mouse(app: &mut App, me: &MouseEvent) {
     };
     match row {
         Some(i) if app.ux.tip.hover.is_some_and(|(h, _)| h == i) => {}
-        Some(i) => app.ux.tip.hover = Some((i, Instant::now())),
+        Some(i) => {
+            app.ux.tip.hover = Some((i, Instant::now()));
+            app.ux.tip.shown = false;
+        }
         None => app.ux.tip.hover = None,
     }
 }
@@ -64,12 +69,23 @@ pub fn hide(app: &mut App) {
     app.ux.tip.hover = None;
 }
 
-/// Repaint when the hover tooltip is due.
-pub fn deadlines(app: &App, now: Instant, d: &mut crate::deadline::Deadlines) {
+/// Repaint once when the hover tooltip is due.
+pub fn tick(app: &mut App, now: Instant) {
     if let Some((_, since)) = app.ux.tip.hover
-        && now < since + DELAY
+        && !app.ux.tip.shown
+        && now.duration_since(since) >= DELAY
     {
-        d.redraw("sidebar_tip", since + DELAY);
+        app.ux.tip.shown = true;
+        app.dirty = true;
+    }
+}
+
+/// Wake for the hover tooltip's delay (`tick` then repaints).
+pub fn deadlines(app: &App, d: &mut crate::deadline::Deadlines) {
+    if let Some((_, since)) = app.ux.tip.hover
+        && !app.ux.tip.shown
+    {
+        d.at("sidebar_tip", since + DELAY);
     }
 }
 

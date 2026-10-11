@@ -204,6 +204,7 @@ pub fn on_tick(app: &mut App) {
     let now = Instant::now();
     crate::fleet::tick(app, now);
     crate::mouse_focus::tick(app, now);
+    crate::sidebar_tip::tick(app, now);
     crate::trust::tick(app);
     crate::popup_pane::tick(app);
     crate::sync_input::tick(app);
@@ -222,7 +223,7 @@ pub fn on_tick(app: &mut App) {
 pub fn deadlines(app: &App, now: Instant, d: &mut crate::deadline::Deadlines) {
     crate::fleet::deadlines(app, now, d);
     crate::mouse_focus::deadlines(app, d);
-    crate::sidebar_tip::deadlines(app, now, d);
+    crate::sidebar_tip::deadlines(app, d);
     crate::sidebar::deadlines(app, now, d);
     crate::elevate::deadlines(app, d);
     crate::taskbadge::deadlines(app, d);

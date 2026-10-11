@@ -105,3 +105,21 @@ fn the_tooltip_stays_beside_a_right_sidebar() {
     let o = draw(&app, &mut g).expect("tooltip");
     assert!(o.x + o.w <= x, "{o:?} left of the sidebar at {x}");
 }
+
+#[test]
+fn the_delay_wakes_the_client_once_and_repaints() {
+    let (mut app, y) = setup();
+    moved(&mut app, 3, y);
+    let now = Instant::now();
+    assert!(app.deadlines(now).names().contains(&"sidebar_tip"));
+    rested(&mut app);
+    app.dirty = false;
+    app.on_tick();
+    assert!(app.dirty, "the tooltip is drawn when its delay passes");
+    assert!(
+        !app.deadlines(Instant::now())
+            .names()
+            .contains(&"sidebar_tip"),
+        "armed once, not a busy loop"
+    );
+}
