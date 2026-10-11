@@ -10,7 +10,7 @@ import { RpcError, type BrowserSession } from '@vibeke/core';
 import { useApp } from '../app/hooks';
 import { t } from '../i18n';
 import { errorMessage } from '../lib/answer';
-import { FRAME_FPS, PRESS_KEYS, controllerOf, fitFrame, frameDelayMs, frameSrc, needsReattach, nextSeq, normalizeUrl, tapToPage, type Size } from '../lib/screencast';
+import { FRAME_FPS, PRESS_KEYS, controllerOf, dataSaverNow, fitFrame, frameDelayMs, frameSrc, needsReattach, nextSeq, normalizeUrl, tapToPage, type Size } from '../lib/screencast';
 import { useStore } from '../lib/store';
 import { Button, Notice, Spinner, TextField, cx } from './ui';
 
@@ -49,7 +49,7 @@ export function Screencast({ hostId, session: initial, canControl, onClose }: { 
     };
     const tick = async () => {
       try {
-        const f = await conn.request('browser.screencast_frame', { session: id, after_seq: seq });
+        const f = await conn.request('browser.screencast_frame', { session: id, after_seq: seq, data_saver: dataSaverNow() });
         fails = 0;
         const url = frameSrc(f as { mime?: string; data_b64: string | null });
         if (live && url) {

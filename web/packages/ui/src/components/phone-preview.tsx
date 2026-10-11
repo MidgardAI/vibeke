@@ -10,7 +10,7 @@ import { useApp } from '../app/hooks';
 import { t } from '../i18n';
 import { errorMessage } from '../lib/answer';
 import { InputBatcher, inputToEvent, namedKey, sizeChanged, toViewport, usableSize, wantsMobileLayout } from '../lib/phone-preview';
-import { FRAME_FPS, frameDelayMs, frameSrc, needsReattach, nextSeq, normalizeUrl, type Size } from '../lib/screencast';
+import { FRAME_FPS, dataSaverNow, frameDelayMs, frameSrc, needsReattach, nextSeq, normalizeUrl, type Size } from '../lib/screencast';
 import { useStore } from '../lib/store';
 import { Button, IconButton, Notice, Spinner, cx } from './ui';
 
@@ -163,7 +163,7 @@ export function PhonePreview({
       while (live && session.current) {
         const started = Date.now();
         try {
-          const f = await conn.request('browser.screencast_frame', { session: session.current, after_seq: seq, wait_ms: WAIT_MS });
+          const f = await conn.request('browser.screencast_frame', { session: session.current, after_seq: seq, wait_ms: WAIT_MS, data_saver: dataSaverNow() });
           fails = 0;
           const img = frameSrc(f as { mime?: string; data_b64: string | null });
           if (live && img) {

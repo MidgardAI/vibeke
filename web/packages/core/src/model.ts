@@ -1283,7 +1283,8 @@ export interface AppApi {
     result: { session: string; delivery: string; width: number; height: number; poll: string };
   };
   /** With `wait_ms` (at most 15000) the call waits until a frame newer than `after_seq` exists. */
-  'browser.screencast_frame': { params: { session: string; after_seq?: number; wait_ms?: number }; result: BrowserFrame };
+  /** `data_saver`: smaller, fewer frames (cellular, Save-Data, or a hidden page that still polls). */
+  'browser.screencast_frame': { params: { session: string; after_seq?: number; wait_ms?: number; data_saver?: boolean }; result: BrowserFrame };
   'browser.detach_screencast': { params: { session: string }; result: { session: string; detached: boolean } };
   /** Pause the agent's use of the session and drive it from this device; ends with `browser.release` or when this device stops watching. */
   'browser.take_over': { params: { session: string }; result: { session: string; human_control: boolean } };
