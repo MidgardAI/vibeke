@@ -595,6 +595,24 @@ pub fn record(tx: &mut Tx, method: &str, p: &Value, result: &Value) {
 
 // ---- API ----------------------------------------------------------------------------------------
 
+/// Task tracking methods (15 §11), for the method tables (`api_schema::method_tables`): the
+/// `mutating` flag drives read-only clients, the gateway audit and the API catalog.
+pub const METHODS: &[(&str, bool)] = &[
+    ("task.sources", false),
+    ("task.track", true),
+    ("task.detail", false),
+    ("task.intent.get", false),
+    ("task.intent.update", true),
+    ("task.bind", true),
+    ("task.unbind", true),
+    ("task.message.prepare", true),
+    ("task.message.send", true),
+    ("task.message.get", false),
+    ("task.message.cancel", true),
+    ("task.operation.get", false),
+    ("task.set", true),
+];
+
 pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Option<R> {
     Some(match method {
         m if ctx.pane_scope.is_some()

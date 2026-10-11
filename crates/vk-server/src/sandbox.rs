@@ -49,7 +49,8 @@ pub const METHODS: &[(&str, bool)] = &[
     ("sandbox.start", true),
     ("sandbox.stop", true),
     ("sandbox.remove", true),
-    ("sandbox.shell", false),
+    // Not read-only: it starts (wakes) the box and opens a shell in it.
+    ("sandbox.shell", true),
     ("sandbox.logs", false),
     ("sandbox.prune", true),
     ("sandbox.recover", true),

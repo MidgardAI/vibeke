@@ -68,6 +68,8 @@ pub fn method_tables() -> Vec<(&'static str, &'static [(&'static str, bool)])> {
         ("privacy", privacy::METHODS),
         ("handoff", handoff::METHODS),
         ("cloud_api", cloud_api::METHODS),
+        ("tracking", tracking::METHODS),
+        ("gateway_api", gateway_api::METHODS),
     ]
 }
 
@@ -528,7 +530,46 @@ pub const METHOD_SHAPES: &[&str] = &[
     crate::handoff::SHAPES,
     crate::approve::SHAPES,
     crate::cloud_api::SHAPES,
+    TRACKING_SHAPES,
 ];
+
+/// Methods that were handled but missing from the method tables (task tracking 15 §11, the
+/// gateway's transcript and client reports). Results are loose where the handler returns
+/// stored records whose fields are still settling.
+pub const TRACKING_SHAPES: &str = r##"
+# --- task tracking (15 §11); pane tokens only for tasks and runs in their own workspace ---
+# the run's task sources (prompts, turns) and whether its harness identity is verified
+task.sources :: {run?: Target, pane?: Target, limit?: int} => {run: string, harness: string, identity_verified: any}
+# track the run's work as a task: intent from its turns; full scope only
+task.track :: {run?: Target, pane?: Target, title?: string, objective?: string, stop_detail?: string, target_branch?: string, turn?: int, turns?: [int], idempotency_key?: string}
+  => {task: Task, intent: any, binding: any, baseline: any, review_base: any}
+task.detail :: {task: Target} => {task: Task, intent: any, bindings: [any], runs: [any], baseline: any, uncommunicated: [any], messages: [any]}
+task.intent.get :: {task: Target, revision?: int} => {task: string, current_revision: int, intent: any, revisions: [any]}
+# full scope only; expected_revision guards against a concurrent edit
+task.intent.update :: {task: Target, expected_revision?: int, title?: string, objective?: string, stop_detail?: string, criteria?: [any], criterion?: any, add_criterion?: any, constraints?: [any], constraint?: any, idempotency_key?: string}
+  => {task: Task, intent: any, uncommunicated: [any], note?: string|null}
+task.bind :: {task: Target, run?: Target, pane?: Target, role?: string, start_turn?: int, end_turn?: int, idempotency_key?: string} => {binding: any, pending: bool}
+task.unbind :: {task?: Target, binding?: string, idempotency_key?: string} => {closed: any}
+task.message.prepare :: {task: Target, text: string, idempotency_key?: string} => {message: object, recipient: {run: string|null, binding: string|null}, send_path?: any}
+task.message.send :: {message: string, idempotency_key?: string} => {message: object}
+task.message.get :: {message: string} => {message: object}
+task.message.cancel :: {message: string, idempotency_key?: string} => {message: object}
+# the receipt of an idempotent operation; known: false never means the operation is safe to repeat (full scope only)
+task.operation.get :: {idempotency_key: string} => {known: bool, note?: string}
+task.set :: {task: Target, priority?: int|null, effort?: string|null, effort_source?: string, expected_rev?: int, idempotency_key?: string} => {task: Task}
+
+# --- gateway pieces (16 §13) ---
+# turns of the run's harness transcript; with before/limit pages are stable (the gateway pages with them)
+agent.transcript :: {target?: Target, run?: Target, limit?: int, before?: int, items?: bool, image?: string} => {turns?: [any]}
+# a TUI reports the host-wide time of its last input
+client.activity :: {last_input_ms?: int} => {}
+# a gateway reports the devices connected through it (replaces its list); gateway clients only
+client.devices :: {devices: [object]} => {}
+# ask the user's TUI to confirm out of band; waits up to timeout_ms (1 s to 10 min, default 60 s)
+client.confirm :: {title: string, body?: string, options?: [{id: string, label: string}], timeout_ms?: int = 60000} => {confirm: string, choice: string|null, timed_out: bool}
+# a local TUI answers a confirmation
+client.confirm_answer :: {confirm: string, choice?: string} => {confirm: string}
+"##;
 
 /// Lane 3E (09 §9.1–9.3): `state.forget` and state encryption.
 pub const PRIVACY_SHAPES: &str = r##"
@@ -1579,6 +1620,85 @@ mod tests {
         assert!(
             missing.is_empty(),
             "event types emitted but not in EVENT_SHAPES: {missing:?}"
+        );
+    }
+
+    /// Every method literal a dispatch function matches on (`"x.y" =>`, `"x.y" | …`,
+    /// `"x.y" if …` inside `fn api`/`fn dispatch`/`fn tasks_api`/`fn attention_api`) is in a
+    /// `METHODS` table: a handled method missing from the tables escapes the read-only gate,
+    /// the gateway audit, the pane-scope catalog and the generated clients.
+    #[test]
+    fn every_dispatched_method_is_in_a_table() {
+        fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for e in std::fs::read_dir(dir).unwrap().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    walk(&p, out);
+                } else if p.extension().is_some_and(|x| x == "rs") {
+                    out.push(p);
+                }
+            }
+        }
+        // Spelling aliases and test-only hooks: handled, deliberately not catalogued.
+        const NOT_CATALOGUED: &[&str] = &[
+            "preview.profile_list",
+            "preview.profile_reset",
+            "preview.test.register_browser",
+        ];
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = vec![];
+        walk(&src, &mut files);
+        let head = regex::Regex::new(
+            r"\n(?:pub(?:\(crate\))? )?(?:async )?fn (?:api|dispatch|tasks_api|attention_api)\b[^{]*\{",
+        )
+        .unwrap();
+        let comment = regex::Regex::new(r"//[^\n]*").unwrap();
+        let arm = regex::Regex::new(r#""([a-z][a-z_]*(?:\.[a-z_]+)+)"\s*(?:=>|\||if\b)"#).unwrap();
+        let known: std::collections::BTreeSet<&str> = method_tables()
+            .into_iter()
+            .flat_map(|(_, t)| t.iter().map(|(n, _)| *n))
+            .collect();
+        let mut missing = std::collections::BTreeSet::new();
+        let mut seen = 0;
+        for f in &files {
+            let name = f.file_name().unwrap().to_string_lossy().to_string();
+            if name.ends_with("tests.rs") {
+                continue;
+            }
+            let text = std::fs::read_to_string(f).unwrap();
+            for m in head.find_iter(&text) {
+                let mut depth = 1usize;
+                let mut end = text.len();
+                for (i, ch) in text[m.end()..].char_indices() {
+                    match ch {
+                        '{' => depth += 1,
+                        '}' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                end = m.end() + i;
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                let body = comment.replace_all(&text[m.end()..end], "");
+                for c in arm.captures_iter(&body) {
+                    let method = c.get(1).unwrap().as_str();
+                    seen += 1;
+                    if !known.contains(method) && !NOT_CATALOGUED.contains(&method) {
+                        missing.insert(format!("{method} ({name})"));
+                    }
+                }
+            }
+        }
+        assert!(
+            seen > 300,
+            "only {seen} dispatch arms found: is the scan broken?"
+        );
+        assert!(
+            missing.is_empty(),
+            "methods handled but missing from every METHODS table: {missing:?}"
         );
     }
 

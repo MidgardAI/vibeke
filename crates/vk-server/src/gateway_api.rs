@@ -13,6 +13,17 @@ use tokio::sync::oneshot;
 use vk_proto::render::{Color, Row, attr};
 use vk_proto::rpc::ErrorKind;
 
+/// Methods handled here, for the method tables (`api_schema::method_tables`). `pane.read
+/// {source: styled}` and `client.list` belong to `api::METHODS`.
+pub const METHODS: &[(&str, bool)] = &[
+    ("agent.transcript", false),
+    // Presence only (last input time); a read-only client still reports it.
+    ("client.activity", false),
+    ("client.devices", true),
+    ("client.confirm", true),
+    ("client.confirm_answer", true),
+];
+
 #[derive(Default)]
 pub struct State {
     /// Host-wide last input per TUI client (ms since epoch), reported by `client.activity`.

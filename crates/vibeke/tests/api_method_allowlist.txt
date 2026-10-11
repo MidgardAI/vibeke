@@ -42,3 +42,9 @@ worktree.open
 # spawn a real gateway process; covered by vk-server unit tests (gateway_supervisor) and the gateway CLI
 gateway.start
 gateway.stop
+
+# handled before the review fixes registered them in the method tables; no test calls them by name yet
+agent.transcript  # needs a run with a harness transcript file; gateway paging is unit-tested in gateway_api.rs
+client.activity  # reported by TUIs; covered indirectly by gateway client.list tests
+client.confirm  # blocks until a TUI answers; the answer side is covered (client.confirm_answer)
+task.message.cancel  # needs a prepared task message; prepare/send/get are covered
