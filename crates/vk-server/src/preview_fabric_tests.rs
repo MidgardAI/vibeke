@@ -1032,6 +1032,15 @@ async fn remote_forget_and_retirement_revoke_the_route() {
     let e = Env::new();
     let (real, seen) = app("remote-app").await;
     let (other, other_seen) = app("replacement").await;
+    // Only this test's own requests count: when the test runs inside a Vibeke pane, the
+    // host's port probe also connects to the replacement app.
+    let reached_other = || {
+        other_seen
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|h| h.starts_with("GET /app "))
+    };
     let remote_port = free_port();
     let previews: Shared<String, u16> = Arc::new(std::sync::Mutex::new(HashMap::from([
         ("v7".to_string(), remote_port),
@@ -1071,7 +1080,7 @@ async fn remote_forget_and_retirement_revoke_the_route() {
     let n = seen.lock().unwrap().len();
     assert_eq!(http(pport, &auth, "/app", Some(&ck)).await.0, 421);
     assert_eq!(seen.lock().unwrap().len(), n);
-    assert!(other_seen.lock().unwrap().is_empty());
+    assert!(!reached_other());
 
     // 2. Retired on the remote (e.g. its task finished there): refused on the next request.
     let r = open("fakebox/v9").await;
@@ -1082,7 +1091,7 @@ async fn remote_forget_and_retirement_revoke_the_route() {
     tokio::time::sleep(REMOTE_CHECK_TTL + Duration::from_millis(100)).await;
     assert_eq!(http(pport, &auth, "/app", Some(&ck)).await.0, 410);
     assert_eq!(http(pport, &auth, "/app", Some(&ck)).await.0, 421);
-    assert!(other_seen.lock().unwrap().is_empty());
+    assert!(!reached_other());
 
     // 3. Moved on the remote (same handle, new port): the old route is revoked too.
     previews
