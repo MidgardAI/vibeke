@@ -22,10 +22,10 @@
 use crate::app::{App, Pending, RpcErr};
 use crate::browser::Gfx;
 use crate::screen::{Cell, Grid, Rect};
+use crate::time::{Duration, Instant};
 use base64::Engine as _;
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
-use std::time::{Duration, Instant};
 
 /// First kitty image id for image views; ids `ID_BASE..ID_BASE + ID_SPAN` (above the gallery's
 /// old id 16 700 001 and `vibeke preview show`'s 16 700 010, below 2^24 so no MSB diacritic is
