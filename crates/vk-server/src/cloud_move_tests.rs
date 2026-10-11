@@ -17,6 +17,9 @@ fn transitions() {
         ("creating", "bootstrapping", true),
         ("bootstrapping", "exporting", true),
         ("exporting", "uploading", true),
+        ("exporting", "awaiting_confirmation", true),
+        ("awaiting_confirmation", "importing", true),
+        ("awaiting_confirmation", "exporting", false),
         ("exporting", "waiting_turn", false),
         ("uploading", "importing", true),
         ("importing", "resuming", true),
@@ -117,6 +120,10 @@ fn sample(id: &str, state: &str) -> Job {
         source_after: None,
         task: None,
         by: None,
+        new_task: false,
+        review: false,
+        code_only: false,
+        confirmed: false,
         created_at: now_s(),
         updated_at: now_s(),
     }
@@ -217,7 +224,7 @@ async fn leftover_jobs_fail_once_and_panes_cannot_move() {
             .contains("restarted")
     );
     // Every cloud method is the user's.
-    for m in ["cloud.move", "cloud.jobs", "cloud.cancel"] {
+    for m in ["cloud.move", "cloud.jobs", "cloud.cancel", "cloud.confirm"] {
         let e = dispatch(
             &s,
             &pane_ctx("p1"),
@@ -333,4 +340,63 @@ fn a_rolled_back_send_names_only_what_it_made() {
     assert_eq!(v["box"], Value::Null);
     assert_eq!(v["new_box"], false);
     assert_eq!(v["panes"], json!(["p9"]));
+}
+
+/// Review finding D1.15: a bring-back waits for `cloud.confirm`, which can ask for the code
+/// only; confirming a job that is not waiting is refused; a cancel ends the wait.
+#[tokio::test]
+async fn bring_back_waits_for_confirmation() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = server(dir.path(), "cmove5");
+    record(&s, &sample("w2", "awaiting_confirmation"));
+    let r = confirm(&s, &json!({"id": "w2", "code_only": true})).unwrap();
+    assert_eq!(r["job"]["confirmed"], true);
+    assert_eq!(r["job"]["code_only"], true);
+    assert!(wait_confirmed(&s, "w2").await.unwrap());
+    let e = confirm(&s, &json!({"id": "nope"})).unwrap_err();
+    assert_eq!(e.data.kind, "not_found");
+    record(&s, &sample("w3", "exporting"));
+    assert_eq!(
+        confirm(&s, &json!({"id": "w3"})).unwrap_err().data.kind,
+        "conflict"
+    );
+    record(&s, &sample("w4", "awaiting_confirmation"));
+    cancel(&s, &json!({"id": "w4"})).unwrap();
+    assert!(wait_confirmed(&s, "w4").await.is_err());
+}
+
+#[test]
+fn patch_summaries_count_lines_per_file() {
+    let patch = "diff --git a/src/a.rs b/src/a.rs\n--- a/src/a.rs\n+++ b/src/a.rs\n@@ -1 +1,2 @@\n-old\n+new\n+more\ndiff --git a/b b/b\nnew file mode 100644\n--- /dev/null\n+++ b/b\n@@ -0,0 +1 @@\n+x\n";
+    assert_eq!(
+        patch_files(patch),
+        vec![("src/a.rs".to_string(), 2, 1), ("b".to_string(), 1, 0)]
+    );
+}
+
+/// Review finding D1.9: while a pane's agent moves, its input is refused.
+#[test]
+fn a_moving_pane_refuses_input() {
+    assert!(input_paused("pmove").is_none());
+    {
+        let _f = Freeze::new("pmove");
+        assert!(input_paused("pmove").unwrap().contains("moving"));
+    }
+    assert!(input_paused("pmove").is_none());
+}
+
+/// Review finding D1.8: a send from the repository's main checkout is refused with a retry
+/// that creates a task.
+#[test]
+fn shared_checkouts_are_named() {
+    let src = Source {
+        pane: sample_pane("p1", "w1"),
+        run: None,
+        task: None,
+        box_ref: None,
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let s = server(dir.path(), "cmove6");
+    // No live pane runtime: the cwd is unknown, so nothing is claimed.
+    assert!(shared_checkout(&s, &src).is_none());
 }

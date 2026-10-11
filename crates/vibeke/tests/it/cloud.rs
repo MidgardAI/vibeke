@@ -252,6 +252,7 @@ fn cloud_methods_are_listed_with_their_mutating_flags() {
         "cloud.box.adopt",
         "cloud.box.forget",
         "cloud.prune",
+        "cloud.confirm",
     ] {
         assert!(flag(m), "{m}");
     }
@@ -394,12 +395,41 @@ fn a_task_runs_in_a_box_and_moves_between_host_and_box() {
     assert_eq!(kind(&e), "conflict", "{e}");
     assert_eq!(reason(&e), "unsynced_changes", "{e}");
 
-    // Bring it back to this host: commit and change land in the task's checkout.
+    // Bring it back to this host. It stops for review first: a summary of what comes back
+    // and the warning; nothing is applied until `cloud.confirm`.
     let j = h.ok(
         "cloud.move",
         json!({"pane": pane, "to": {"kind": "local"}, "interrupt": true}),
     );
-    let j = h.job_done(j["job"]["id"].as_str().unwrap());
+    let id = j["job"]["id"].as_str().unwrap().to_string();
+    let waiting = h.wait(90, "bring-back review", || {
+        let js = h.ok("cloud.jobs", json!({}));
+        js["jobs"]
+            .as_array()?
+            .iter()
+            .find(|j| j["id"] == id.as_str())
+            .filter(|j| j["state"] == "awaiting_confirmation")
+            .cloned()
+    });
+    let review = &waiting["result"]["review"];
+    assert!(
+        review["warning"]
+            .as_str()
+            .unwrap()
+            .contains("cloud sandbox"),
+        "{waiting}"
+    );
+    assert!(
+        review["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|f| f["path"] == "a.txt"),
+        "{waiting}"
+    );
+    h.ok("cloud.confirm", json!({"id": id}));
+    // Commit and change land in the task's checkout.
+    let j = h.job_done(&id);
     assert_eq!(j["state"], "done", "{j}");
     let wt = j["result"]["worktree"].as_str().unwrap().to_string();
     let log = Command::new("git")
@@ -503,6 +533,58 @@ fn a_failed_send_rolls_back_and_can_be_retried() {
     let box_pane = j["result"]["pane"].as_str().unwrap().to_string();
     let s = h.run(&box_pane, "pwd", "R3");
     assert!(s.contains("/workspace"), "{s}");
+    let b = h.only_box();
+    h.ok("cloud.box.destroy", json!({"box": b["box"], "force": true}));
+}
+
+/// Review finding D1.8: a pane in the repository's main checkout is not sent as it is (its
+/// uncommitted work is not only the agent's). The refusal offers `new_task`, which copies the
+/// work into a new task worktree and leaves the main checkout untouched.
+#[test]
+fn a_send_from_the_main_checkout_needs_a_new_task() {
+    let h = Host::new();
+    // The new task's worktree goes under the test dir (set before the server starts).
+    let cfg = h.dir.path().join("config.toml");
+    let mut text = std::fs::read_to_string(&cfg).unwrap();
+    text.push_str(&format!(
+        "\n[tasks]\nroot = \"{}\"\nfetch_before_create = false\n",
+        h.dir.path().join("wt").display()
+    ));
+    std::fs::write(&cfg, text).unwrap();
+    let repo = h.repo();
+    h.ok(
+        "cloud.auth.set",
+        json!({"provider": "fake", "token": "fake-token"}),
+    );
+    let w = h.ok("workspace.create", json!({"cwd": repo}));
+    let pane = w["root_pane"]["id"].as_str().unwrap().to_string();
+    h.run(&pane, "echo main-shell", "S1");
+    std::fs::write(repo.join("wip.txt"), "mine\n").unwrap();
+    let e = h
+        .api(
+            "cloud.move",
+            json!({"pane": pane, "to": {"kind": "cloud", "provider": "fake"}}),
+        )
+        .unwrap_err();
+    assert_eq!(kind(&e), "conflict", "{e}");
+    assert_eq!(reason(&e), "shared_checkout", "{e}");
+
+    let j = h.ok(
+        "cloud.move",
+        json!({"pane": pane, "to": {"kind": "cloud", "provider": "fake"}, "new_task": true}),
+    );
+    let j = h.job_done(j["job"]["id"].as_str().unwrap());
+    assert_eq!(j["state"], "done", "{j}");
+    assert_eq!(j["result"]["new_task"], true, "{j}");
+    assert_eq!(j["result"]["host_stash"]["stashed"], false, "{j}");
+    // The main checkout keeps its work.
+    assert_eq!(
+        std::fs::read_to_string(repo.join("wip.txt")).unwrap(),
+        "mine\n"
+    );
+    let box_pane = j["result"]["pane"].as_str().unwrap().to_string();
+    let s = h.run(&box_pane, "cat wip.txt", "S2");
+    assert!(s.contains("mine"), "{s}");
     let b = h.only_box();
     h.ok("cloud.box.destroy", json!({"box": b["box"], "force": true}));
 }

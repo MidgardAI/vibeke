@@ -21,8 +21,8 @@ pub use export::{ExportInput, Packed, Pin, export, pin};
 pub use git::{git, git_line, set_child_umask};
 pub use import::{Imported, NotWritten, import, import_in_place, verify};
 pub use transcript::{
-    Installed, export_transcript, install_transcript, install_transcript_in, redact_lines,
-    rewrite_paths, rewrite_session,
+    BOX_BRING_BACK_WARNING, Installed, RESUMED_FROM_BOX_NOTE, export_transcript,
+    install_transcript, install_transcript_in, redact_lines, rewrite_paths, rewrite_session,
 };
 
 pub const MAX_BUNDLE: u64 = 200 * 1024 * 1024;

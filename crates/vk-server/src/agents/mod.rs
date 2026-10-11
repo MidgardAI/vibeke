@@ -307,6 +307,10 @@ impl Agents {
     }
 
     pub fn input_blocked(&self, pane: &str) -> Option<&'static str> {
+        // A pane whose agent is moving to or from a cloud box (review finding D1.9).
+        if let Some(why) = crate::cloud_move::input_paused(pane) {
+            return Some(why);
+        }
         let i = self.inner.lock().unwrap();
         match i.locks.get(pane) {
             Some(t) if t.elapsed() < Duration::from_secs(2) => {
