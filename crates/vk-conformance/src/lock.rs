@@ -61,6 +61,9 @@ pub struct Lock {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Exclusion {
     pub id: u64,
+    /// The excluded repository, for readers; matching uses `id`.
+    #[serde(default)]
+    pub repository: Option<String>,
     pub reason: String,
 }
 

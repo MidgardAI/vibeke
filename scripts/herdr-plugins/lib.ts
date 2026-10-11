@@ -29,6 +29,7 @@ export interface Catalog {
 }
 export interface Exclusion {
   id: number
+  repository?: string
   reason: string
 }
 export interface Candidate {
@@ -103,7 +104,7 @@ export const SNAPSHOT_KEEP = 40
 /**
  * The checked-in snapshot (spec 18 §6): the first `keep` eligible, non-excluded manifests with
  * only the fields selection needs, plus the source catalog's time and sha256. Excluded
- * repositories and all other entries are left out, so the repository never names them.
+ * repositories and all other entries are left out, which keeps the snapshot small.
  */
 export function reduceCatalog(catalog: Catalog, exclude: Exclusion[], sourceSha256: string, keep = SNAPSHOT_KEEP): Catalog & { source: { url: string; sha256: string } } {
   const byRepo = new Map<number, CatalogPlugin>()
@@ -197,7 +198,9 @@ export function renderLock(l: LockData): string {
     if (!['node', 'bun', 'go', 'rust'].includes(k)) o.push(`${k} = ${q(l.toolchains[k])}`)
   }
   for (const e of [...l.exclude].sort((a, b) => a.id - b.id)) {
-    o.push('', '[[exclude]]', `id = ${e.id}`, `reason = ${q(e.reason)}`)
+    o.push('', '[[exclude]]', `id = ${e.id}`)
+    if (e.repository) o.push(`repository = ${q(e.repository)}`)
+    o.push(`reason = ${q(e.reason)}`)
   }
   for (const p of l.plugins) {
     o.push('', '[[plugin]]', `rank = ${p.rank}`, `repository = ${q(p.repository)}`, `repo_id = ${p.repo_id}`)

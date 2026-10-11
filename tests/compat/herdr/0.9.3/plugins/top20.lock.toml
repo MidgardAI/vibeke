@@ -20,6 +20,7 @@ rust = "1.99.0"
 
 [[exclude]]
 id = 1283376338
+repository = "AltanS/collie"
 reason = "Vibeke has its own browser and phone app (PWA, a web app that installs like a native app), which covers this plugin's purpose."
 
 [[plugin]]

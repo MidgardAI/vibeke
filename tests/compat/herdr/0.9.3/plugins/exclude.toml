@@ -1,6 +1,7 @@
 # Repositories left out of the corpus, keyed by the catalog's numeric repository id (spec 18 §6).
-# The next eligible plugin takes the slot. Reasons stay neutral and do not name the project.
+# The next eligible plugin takes the slot. `repository` names the excluded project; reasons stay neutral.
 
 [[exclude]]
 id = 1283376338
+repository = "AltanS/collie"
 reason = "Vibeke has its own browser and phone app (PWA, a web app that installs like a native app), which covers this plugin's purpose."
