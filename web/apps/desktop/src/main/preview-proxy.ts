@@ -356,7 +356,9 @@ export class PreviewProxy {
       const got = await readHead(client, MAX_HEAD, first ? HEAD_TIMEOUT_MS : CLIENT_IDLE_MS);
       if ('error' in got) {
         if (got.error === 'too_large') return reply(sock, 431, 'request head too large');
-        sock.destroy();
+        // The client closed between requests: let what we wrote reach it. A silent client is cut.
+        if (got.error === 'closed') sock.end();
+        else sock.destroy();
         return;
       }
       const head = parseHead(got.head.toString('latin1'));
