@@ -1600,7 +1600,7 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
                 .map(|x| json!({"preview": server.with_core(|c| preview_json(c, &x))}))
         }
         "preview.promote" => promote(server, ctx, p).await,
-        "preview.forget" | "preview.dismiss" => forget(server, p).await,
+        "preview.forget" | "preview.dismiss" => forget(server, ctx, p).await,
         "preview.url" => {
             let t = match s(p, "preview") {
                 Some(t) => t,
@@ -2179,9 +2179,45 @@ async fn promote(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     Ok(json!({"preview": server.with_core(|c| preview_json(c, &x))}))
 }
 
-async fn forget(server: &Arc<Server>, p: &Value) -> R {
+/// Whether a pane may forget preview `x`: only one of its own workspace (its pane's, or its
+/// task's).
+fn in_callers_workspace(server: &Server, caller: &str, x: &Preview) -> bool {
+    server.with_core(|c| {
+        let Some(mine) = c.pane(caller).map(|p| p.workspace.clone()) else {
+            return false;
+        };
+        let by_pane = x
+            .pane
+            .as_deref()
+            .and_then(|id| c.pane(id))
+            .is_some_and(|p| p.workspace == mine);
+        let by_task = x
+            .task
+            .as_deref()
+            .and_then(|id| c.task(id))
+            .is_some_and(|t| t.workspace.as_deref() == Some(mine.as_str()));
+        by_pane || by_task
+    })
+}
+
+async fn forget(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     let t = s(p, "preview").ok_or_else(|| invalid("missing param `preview`"))?;
     let (m, t) = split_target(server, p, t);
+    // (A pane never reaches another machine here: `authorize_pane_machine` refused it.)
+    if let Some(caller) = &ctx.pane_scope
+        && m.is_empty()
+        && let Ok(x) = find_local(server, &t)
+        && !in_callers_workspace(server, caller, &x)
+    {
+        return Err(err(
+            ErrorKind::PermissionDenied,
+            format!(
+                "preview {} belongs to another workspace; a pane can only forget its own workspace's previews",
+                x.handle
+            ),
+        )
+        .details(json!({"scope": "pane", "reason": "foreign_preview", "preview": x.handle})));
+    }
     if !m.is_empty() {
         // Revoke this server's origins for it first: the old link must not reach whatever
         // listens on that remote port next, even if the remote call fails.

@@ -89,11 +89,15 @@ impl Env {
     }
 
     fn put_pane(&self, id: &str) {
+        self.put_pane_in(id, "ws-a");
+    }
+
+    fn put_pane_in(&self, id: &str, workspace: &str) {
         let p = Pane {
             id: id.into(),
             handle: id.into(),
-            tab: "tab-a".into(),
-            workspace: "ws-a".into(),
+            tab: format!("tab-{workspace}"),
+            workspace: workspace.into(),
             title: None,
             auto_title: String::new(),
             cwd: None,
@@ -991,6 +995,33 @@ async fn retired_local_previews_lose_their_origin() {
     vk_preview::lifecycle::retire(&mut pv);
     commit_previews(&e.server, vec![(pv, Some("preview.gone"))]);
     assert_eq!(http(pport, &auth, "/", Some(&ck)).await.0, 421);
+}
+
+/// A pane forgets or dismisses only previews of its own workspace.
+#[tokio::test]
+async fn panes_forget_only_their_own_workspace_previews() {
+    let e = Env::new();
+    e.put_pane_in("pane-b", "ws-b");
+    let (port, _) = app("b").await;
+    let d = e
+        .call(
+            &ctx_full(),
+            "preview.declare",
+            json!({"port": port, "pane": "pane-b"}),
+        )
+        .await
+        .unwrap();
+    let h = d["preview"]["handle"].as_str().unwrap().to_string();
+    for m in ["preview.forget", "preview.dismiss"] {
+        let r = e.call(&ctx_pane("pane-a"), m, json!({"preview": h})).await;
+        let err = r.unwrap_err();
+        assert_eq!(err.data.kind, "permission_denied", "{m}: {}", err.message);
+        assert_eq!(err.data.details["reason"], "foreign_preview");
+    }
+    assert!(find_local(&e.server, &h).is_ok_and(|x| x.status != PreviewStatus::Gone));
+    e.call(&ctx_pane("pane-b"), "preview.forget", json!({"preview": h}))
+        .await
+        .unwrap();
 }
 
 /// Forgetting a remote preview revokes this server's origin for it at once; a remote preview
