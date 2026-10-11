@@ -9,8 +9,10 @@
 //!
 //! A gate request whose connection fails or drops is retried on a fresh connection with short
 //! backoff for up to [`RESTART_WINDOW`], so it rides out a server restart (the server
-//! re-attaches by `native_ref` and returns an already recorded decision instead of reopening).
-//! Signals are a single attempt.
+//! re-attaches by `native_ref` and returns an already recorded decision instead of reopening),
+//! unless the server was stopped on purpose (`vibeke server stop` leaves [`stop_marker`]).
+//! Signals are a single attempt with a short timeout ([`SIGNAL_TIMEOUT`]): they run on every
+//! tool call, and a slow or absent server must not slow the agent down.
 
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Read, Write};
@@ -20,6 +22,34 @@ use std::time::{Duration, Instant};
 const MAX_STDIN: u64 = 4 << 20;
 /// How long a gate request keeps retrying while the server is absent or restarting.
 const RESTART_WINDOW: Duration = Duration::from_secs(5);
+
+/// Hello and observation signals: the agent waits for this hook on every tool call.
+const SIGNAL_TIMEOUT: Duration = Duration::from_millis(300);
+/// A signal whose reply may carry `hook_output` that steers or blocks the tool call (the
+/// collision tracker's queued context or an enforced claim's deny) gets a little longer.
+const PRE_TOOL_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// The file `server.stop` leaves next to the socket: the server was stopped on purpose.
+pub fn stop_marker(socket: &str) -> std::path::PathBuf {
+    std::path::PathBuf::from(format!("{socket}.stopped"))
+}
+
+/// Was the server behind `socket` stopped on purpose (and not started again since)? A server
+/// that starts binds a fresh socket, newer than the marker.
+fn stopped_on_purpose(socket: &str) -> bool {
+    let Ok(marker) = std::fs::metadata(stop_marker(socket)).and_then(|m| m.modified()) else {
+        return false;
+    };
+    match std::fs::symlink_metadata(socket).and_then(|m| m.modified()) {
+        Ok(sock) => sock <= marker,
+        Err(_) => true,
+    }
+}
+
+/// Events whose signal reply may steer or block the tool call.
+fn pre_tool(event: &str) -> bool {
+    matches!(event, "PreToolUse" | "BeforeTool" | "tool.execute.before")
+}
 
 /// Pauses between gate attempts: 50 ms doubling to 500 ms.
 fn backoff(attempt: u32) -> Duration {
@@ -87,16 +117,25 @@ struct Req<'a> {
 
 /// One connect → hello → signal/gate → (print decision → ack) exchange.
 fn exchange(r: &Req) -> Result<(), Failure> {
+    let gate = gate_capable(r.harness, r.event, r.payload);
+    // A gate is worth waiting for; a signal is not.
+    let short = if gate {
+        Duration::from_secs(5)
+    } else if pre_tool(r.event) {
+        PRE_TOOL_TIMEOUT
+    } else {
+        SIGNAL_TIMEOUT
+    };
     let mut stream = UnixStream::connect(r.socket).map_err(|_| Failure::Retry)?;
-    let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
+    let _ = stream.set_write_timeout(Some(short.max(Duration::from_millis(500))));
     let rd_stream = stream.try_clone().map_err(|_| Failure::Retry)?;
     let mut rd = BufReader::new(rd_stream);
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+    let _ = stream.set_read_timeout(Some(short));
     if call(&mut stream, &mut rd, 1, "client.hello", json!({"client": "vibeke-hook", "kind": "agent", "token": r.token, "version": vk_proto::VERSION})).is_none() {
         return Err(Failure::Retry);
     }
     let params = json!({"harness": r.harness, "event": r.event, "payload": r.payload, "pid": std::os::unix::process::parent_id()});
-    if !gate_capable(r.harness, r.event, r.payload) {
+    if !gate {
         // The reply may carry a `hook_output` for the harness (collision tracker: queued
         // steering context, an enforced claim's deny). Observation otherwise stays silent.
         if let Some(out) = call(&mut stream, &mut rd, 2, "adapter.signal", params)
@@ -192,7 +231,11 @@ pub fn main(args: &[String]) -> i32 {
     let mut outcome = exchange(&req);
     let deadline = Instant::now() + RESTART_WINDOW;
     let mut n = 0;
-    while gate && outcome == Err(Failure::Retry) && Instant::now() + backoff(n) < deadline {
+    while gate
+        && outcome == Err(Failure::Retry)
+        && !stopped_on_purpose(&socket)
+        && Instant::now() + backoff(n) < deadline
+    {
         std::thread::sleep(backoff(n));
         n += 1;
         outcome = exchange(&req);
@@ -225,6 +268,34 @@ mod tests {
         assert!(gate_capable("claude", "Elicitation", &Value::Null));
         assert!(!gate_capable("claude", "CwdChanged", &Value::Null));
         assert!(!gate_capable("codex", "Elicitation", &Value::Null));
+    }
+
+    #[test]
+    fn signals_wait_briefly_and_a_stopped_server_is_not_waited_for() {
+        assert!(SIGNAL_TIMEOUT <= Duration::from_millis(300));
+        assert!(pre_tool("PreToolUse") && !pre_tool("PostToolUse"));
+        // Short directory under /tmp: unix socket paths are length-limited.
+        let dir = tempfile::Builder::new()
+            .prefix("vkh")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let sock = dir.path().join("vibeke.sock");
+        let sock = sock.to_str().unwrap();
+        // No marker: a restart may be under way.
+        assert!(!stopped_on_purpose(sock));
+        // Stopped: marker, socket gone.
+        std::fs::write(stop_marker(sock), b"").unwrap();
+        assert!(stopped_on_purpose(sock));
+        // Started again: a socket newer than the marker.
+        let old = std::time::SystemTime::now() - Duration::from_secs(60);
+        std::fs::File::options()
+            .write(true)
+            .open(stop_marker(sock))
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+        let _l = std::os::unix::net::UnixListener::bind(sock).unwrap();
+        assert!(!stopped_on_purpose(sock));
     }
 
     #[test]

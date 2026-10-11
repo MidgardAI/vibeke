@@ -1228,6 +1228,11 @@ async fn handlers(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> R
                     "server.stop is not allowed from a pane token",
                 ));
             }
+            // Hooks of running agents stop waiting for this server (no restart window).
+            let _ = std::fs::write(
+                crate::agents::hook::stop_marker(&server.paths.socket().to_string_lossy()),
+                b"",
+            );
             let kill = b(p, "kill_panes").unwrap_or(false);
             if kill {
                 for rt in server.panes.lock().unwrap().values() {
