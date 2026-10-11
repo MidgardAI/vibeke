@@ -67,6 +67,8 @@ pub struct State {
     pub confirm: Option<Confirm>,
     /// The open image viewer.
     pub viewer: Option<crate::viewer::Viewer>,
+    /// The attach pop-up card (spec 18 §6).
+    pub card: Option<crate::card::Card>,
     /// Machines whose recent list is asked for at the next tick.
     stale: BTreeSet<usize>,
     /// Last request sequence number sent / applied, per machine.
@@ -126,6 +128,7 @@ pub fn on_recent(app: &mut App, mi: usize, seq: u64, res: Result<Value, RpcErr>)
         .max(shots.len() as u64);
     app.images_ui.recent.insert(mi, Recent { shots, total });
     app.dirty = true;
+    crate::card::on_recent(app, mi);
 }
 
 /// A pushed `screenshot.captured`: the image is unseen; the recent list is asked for again.
@@ -176,6 +179,7 @@ pub fn forget(app: &mut App, mi: usize, ids: &[String]) {
         app.imgview.forget(mi, id);
     }
     crate::viewer::on_forgotten(app, mi, ids);
+    crate::card::on_forgotten(app, mi, ids);
     // A navigate-mode selection past the last row moves back onto it.
     if let Mode::Navigate { sel } = app.mode {
         let n = crate::draw::sidebar_targets(app).len();

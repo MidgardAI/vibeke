@@ -124,6 +124,7 @@ pub fn on_events(app: &mut App, i: usize, events: Vec<PushedEvent>, lagged: bool
             crate::images::on_captured(app, i, &v);
             crate::gallery::on_captured(app, i, &v);
             crate::preview_ui::on_captured(app, i, &v);
+            crate::card::on_captured(app, i, &v);
         } else if k == "preview.console_error" {
             crate::preview_ui::on_console_error(app, i, &v);
         } else if k == "screenshot.deleted" {

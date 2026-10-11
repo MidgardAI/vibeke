@@ -74,8 +74,8 @@ pub fn action(app: &mut App, action: &str) -> bool {
     if action != "open_images" {
         return false;
     }
-    // Phase 4 hook (§5.3): while the attach pop-up shows, this opens that card's image.
-    if !open_newest_unseen(app) {
+    // While the attach pop-up shows, this opens that card's image (§5.3).
+    if !crate::card::open(app) && !open_newest_unseen(app) {
         let mi = app.cur;
         gallery::open(app, mi, Scope::All, View::List, false);
     }

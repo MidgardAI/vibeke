@@ -73,6 +73,10 @@ pub enum Reply {
     Removed {
         id: String,
     },
+    /// The attach pop-up's image ([`crate::card`]).
+    Card {
+        key: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -765,6 +769,7 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
             iv::on_fetched(app, &key, &res);
         }
         Reply::Removed { id } => crate::images::on_removed(app, mi, id, res),
+        Reply::Card { key } => crate::card::on_fetched(app, &key, &res),
         Reply::List { view } => {
             let Some(g) = view_mut(app, view) else { return };
             g.loading = false;

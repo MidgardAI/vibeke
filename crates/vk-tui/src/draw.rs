@@ -890,6 +890,12 @@ pub fn compose(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
         crate::floats::draw_frame(app, g, f, focused.as_deref() == Some(f.pane.as_str()));
         draw_pane_at(app, g, &f.pane, f.inner, focused.as_deref(), &mut cursor);
     }
+    // The attach pop-up over the focused pane, under every popup (spec 18 §6).
+    if let Some(o) = crate::card::draw(app, g)
+        && cursor.is_some_and(|(x, y, _)| x >= o.x && x < o.x + o.w && y >= o.y && y < o.y + o.h)
+    {
+        cursor = None;
+    }
     // An open popup dims what is under it (08 §5).
     crate::popup_pane::dim(app, g);
     // Plugin overlays and popups on top of everything in the pane area (M5).

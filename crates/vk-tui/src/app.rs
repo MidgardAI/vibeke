@@ -1290,6 +1290,8 @@ impl App {
     }
 
     pub(crate) fn send_key(&mut self, ev: KeyEvent) {
+        // The first key press the pane receives closes the attach pop-up (spec 18 §6.1).
+        crate::card::on_key_to_pane(self, &ev);
         if crate::browser::focused_browser(self).is_some() {
             crate::browser::send_key(self, ev);
             return;
@@ -2134,6 +2136,8 @@ impl App {
             }
             _ => return,
         }
+        // A paste reaches the pane: the attach pop-up closes (spec 18 §6.1).
+        crate::card::close(self);
         if crate::browser::on_paste(self, &text) {
             return;
         }
@@ -2192,6 +2196,10 @@ impl App {
         }
         // Plugin popups are modal; overlay headers and popup frames are chrome.
         if crate::plugins::on_mouse(self, me.column, me.row) {
+            return;
+        }
+        // A click on the attach pop-up opens its image (spec 18 §6.1).
+        if crate::card::on_mouse(self, &me) {
             return;
         }
         // A selection drag in progress follows the pointer past the pane (03 §11.1); the
@@ -3090,6 +3098,7 @@ impl App {
         crate::nav::observe(self);
         crate::plugins::observe(self);
         crate::sidebar::fit(self);
+        crate::card::observe(self);
         // After the layout is final: placements depend on the sidebar width.
         crate::image_view::before_draw(self);
         let (cols, rows) = self.size;

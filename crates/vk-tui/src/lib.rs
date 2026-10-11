@@ -9,6 +9,7 @@ pub mod batch;
 pub mod browser;
 pub mod browser_io;
 pub mod caps;
+pub mod card;
 pub mod chrome;
 pub mod clipboard;
 pub mod cloud;

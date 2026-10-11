@@ -299,6 +299,7 @@ pub fn placements(app: &App) -> Vec<Placement> {
     v.extend(crate::gallery::placements(app));
     v.extend(crate::preview_ui::placements(app));
     v.extend(crate::viewer::placements(app));
+    v.extend(crate::card::placements(app));
     v
 }
 
