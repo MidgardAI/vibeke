@@ -33,7 +33,6 @@ preview.dismiss
 preview.profile.list
 sandbox.remove
 tab.focus
-worktree.create
 
 # spawn a real gateway process; covered by vk-server unit tests (gateway_supervisor) and the gateway CLI
 gateway.start

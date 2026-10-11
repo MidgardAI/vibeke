@@ -515,7 +515,11 @@ fn worktree_create_open_and_worktree_events_reach_streams_and_hooks() {
     ]);
     assert_eq!(r["type"], "worktree_created", "{r}");
     let path = s(&r["worktree"]["path"]);
-    assert!(path.starts_with(s_.path("wt").to_str().unwrap()), "{r}");
+    let wt_root = std::fs::canonicalize(s_.path("wt")).unwrap();
+    assert!(
+        std::fs::canonicalize(&path).unwrap().starts_with(&wt_root),
+        "{r}"
+    );
     assert_eq!(r["worktree"]["branch"], "feat/compat");
     assert!(Path::new(&path).join("README").exists());
     let ws = s(&r["workspace"]["workspace_id"]);
