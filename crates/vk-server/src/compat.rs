@@ -2896,9 +2896,58 @@ async fn poll_watcher(
     }))
 }
 
-/// Herdr's `PaneReadResult` of `x`: `{pane_id, workspace_id, tab_id, source, format, text,
-/// revision, truncated}`. `format: ansi` is echoed but the text is plain (Vibeke reads the
-/// rendered screen); `strip_ansi` has nothing to strip.
+/// Herdr's `limit_snapshot_lines`: the last `limit` lines, `truncated` when lines were left
+/// out.
+fn limit_lines(text: &str, limit: Option<usize>) -> (String, bool) {
+    let Some(limit) = limit else {
+        return (text.to_string(), false);
+    };
+    let lines: Vec<&str> = text.split_inclusive('\n').collect();
+    (
+        lines[lines.len().saturating_sub(limit)..].concat(),
+        lines.len() > limit,
+    )
+}
+
+/// A pane's rows as ANSI text (SGR styles, as `pane.screenshot` renders them): the visible
+/// screen, or the last `lines` rendered rows of history and screen (soft wraps joined for
+/// `recent_unwrapped`); trailing blank rows dropped.
+fn ansi_rows(server: &Server, pane: &str, source: &str, lines: usize) -> String {
+    let Some(rt) = server.pane_rt(pane) else {
+        return String::new();
+    };
+    let sc = rt.screen.lock().unwrap();
+    let e = &sc.engine;
+    let mut rows: Vec<vk_proto::render::Row> = Vec::new();
+    if source != "visible" {
+        let h = e.history_len();
+        let want = lines.saturating_sub(e.rows() as usize).min(h);
+        rows.extend((h - want..h).filter_map(|i| e.history_row(i)));
+    }
+    rows.extend(e.visible_rows());
+    drop(sc);
+    while rows.last().is_some_and(|r| r.text().trim().is_empty()) {
+        rows.pop();
+    }
+    if source != "visible" {
+        rows.drain(..rows.len().saturating_sub(lines));
+    }
+    let unwrap = source == "recent_unwrapped";
+    let mut out = String::new();
+    for (i, r) in rows.iter().enumerate() {
+        out.push_str(&crate::pane_api::rows_ansi(std::slice::from_ref(r)));
+        if !(r.wrapped && unwrap) && i + 1 < rows.len() {
+            out.push('\n');
+        }
+    }
+    out
+}
+
+/// Herdr `pane.read` (`read_terminal_snapshot`): `source` `visible` | `recent` |
+/// `recent_unwrapped` | `detection`, `format` `text` | `ansi` (`detection` is always text),
+/// `lines` (at most 1000; `recent` reads default to 80). `truncated` as Herdr: a `lines` limit
+/// left lines out of the visible text, or the terminal has more rows than a recent read
+/// returns. Herdr reports `revision` 0.
 async fn herdr_read(
     server: &Arc<Server>,
     caller: &Caller,
@@ -2911,35 +2960,63 @@ async fn herdr_read(
         source,
         "visible" | "recent" | "recent_unwrapped" | "detection"
     ) {
-        return Err(WireError::new(
-            "invalid_params",
-            format!("unknown source `{source}`"),
-        ));
+        return Err(wire::invalid_request(format!(
+            "unknown variant `{source}`, expected one of `visible`, `recent`, `recent_unwrapped`, `detection`"
+        )));
     }
     let format = sp(p, "format").unwrap_or("text");
     if !matches!(format, "text" | "ansi") {
-        return Err(WireError::new(
-            "invalid_params",
-            format!("unknown format `{format}`"),
-        ));
+        return Err(wire::invalid_request(format!(
+            "unknown variant `{format}`, expected `text` or `ansi`"
+        )));
     }
-    let lines = p.get("lines").and_then(Value::as_u64).unwrap_or(50);
+    let limit = p
+        .get("lines")
+        .and_then(Value::as_u64)
+        .map(|n| n.min(1000) as usize);
+    let recent = limit.unwrap_or(80);
+    let screen = matches!(source, "visible" | "detection");
+    // The native read checks the caller may read the pane (and redacts for remote callers).
     let r = native(
         server,
         caller,
         "pane.read",
-        json!({"pane": x.id, "source": source, "lines": lines}),
+        json!({"pane": x.id, "source": source, "lines": if screen { 1000 } else { recent }}),
     )
     .await?;
+    let plain = r["text"].as_str().unwrap_or("");
+    let ansi = format == "ansi" && source != "detection" && !caller.ctx.remote;
+    let (text, truncated) = if screen {
+        let full = if ansi {
+            ansi_rows(server, &x.id, source, 0)
+        } else {
+            plain.to_string()
+        };
+        limit_lines(&full, limit)
+    } else {
+        let total = server
+            .pane_rt(&x.id)
+            .map(|rt| {
+                let sc = rt.screen.lock().unwrap();
+                sc.engine.history_len() + usize::from(sc.engine.rows())
+            })
+            .unwrap_or(0);
+        let text = if ansi {
+            ansi_rows(server, &x.id, source, recent)
+        } else {
+            plain.to_string()
+        };
+        (text, total > recent)
+    };
     Ok(json!({
         "pane_id": x.handle,
         "workspace_id": sn.ws_handle(&x.workspace).unwrap_or_default(),
         "tab_id": sn.tab_handle(&x.tab).unwrap_or_default(),
         "source": source,
         "format": format,
-        "text": r["text"].as_str().unwrap_or(""),
-        "revision": r["revision"].as_u64().unwrap_or(0),
-        "truncated": false,
+        "text": text,
+        "revision": 0,
+        "truncated": truncated,
     }))
 }
 
@@ -3001,6 +3078,8 @@ async fn wait_for_output(
     };
     let mut rp = p.clone();
     rp["source"] = json!(source);
+    // Herdr's wait reads text, whatever `format` the request carries.
+    rp["format"] = json!("text");
     let deadline = p
         .get("timeout_ms")
         .and_then(Value::as_u64)

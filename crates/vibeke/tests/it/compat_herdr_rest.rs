@@ -1019,9 +1019,46 @@ fn herdr_rest_result_shapes_follow_the_schema() {
     assert_eq!(read["tab_id"], tab.as_str(), "{r}");
     assert_eq!(read["source"], "recent", "{r}");
     assert_eq!(read["format"], "text", "{r}");
-    assert_eq!(read["truncated"], false, "{r}");
-    assert!(read["revision"].is_u64(), "{r}");
+    // Herdr: the terminal has more rows (24 on screen) than the 20 read.
+    assert_eq!(read["truncated"], true, "{r}");
+    assert_eq!(read["revision"], 0, "Herdr reports revision 0: {r}");
     assert!(s(&read["text"]).contains("rest-23"), "{r}");
+    // `format: ansi` keeps the colours; `visible` with `lines` reports what it left out.
+    s_.herdr(&[
+        "pane",
+        "send-text",
+        &p1,
+        "printf '\\033[31mred-%s\\033[0m\\n' $((1+1))\n",
+    ]);
+    ok(
+        &s_,
+        "pane.wait_for_output",
+        json!({"pane_id": p1, "source": "recent", "match": {"type": "substring", "value": "red-2"}, "timeout_ms": 20000}),
+    );
+    let a = ok(
+        &s_,
+        "pane.read",
+        json!({"pane_id": p1, "source": "visible", "format": "ansi"}),
+    );
+    let t = s(&a["read"]["text"]);
+    assert_eq!(a["read"]["format"], "ansi", "{a}");
+    assert!(t.contains("\x1b[") && t.contains("red-2"), "{a}");
+    assert_eq!(a["read"]["truncated"], false, "{a}");
+    let plain = ok(
+        &s_,
+        "pane.read",
+        json!({"pane_id": p1, "source": "visible", "lines": 1}),
+    );
+    assert!(!s(&plain["read"]["text"]).contains('\x1b'), "{plain}");
+    assert_eq!(plain["read"]["truncated"], true, "{plain}");
+    assert_eq!(
+        err_code(
+            &s_,
+            "pane.read",
+            json!({"pane_id": p1, "source": "visible", "format": "html"})
+        ),
+        "invalid_request"
+    );
 
     // `pane.resize` and `pane.zoom` answer with their result objects and the layout.
     let r = ok(

@@ -279,7 +279,7 @@ pub const ENTRIES: &[Entry] = &[
         "pane.read",
         Partial,
         "spec",
-        "`pane_read {read: PaneReadResult}` with `pane_id`, `workspace_id`, `tab_id`, `source`, `format`, `text`, `revision`, `truncated` (always false); `format: ansi` is echoed but the text is plain; `strip_ansi` ignored; `lines` defaults to 50",
+        "`pane_read {read: PaneReadResult}` with `pane_id`, `workspace_id`, `tab_id`, `source`, `format`, `text`, `revision` (0, as Herdr reports), `truncated` as Herdr (a `lines` limit cut the visible text, or the terminal has more rows than a recent read returns); `format: ansi` returns SGR-styled rows (Vibeke's renderer, so escape sequences can differ from Herdr's byte for byte; `detection` and remote callers get text); `lines` at most 1000, recent reads default to 80; an unknown `source` or `format` is `invalid_request`; `strip_ansi` has no effect, as in Herdr",
     ),
     e(
         Method,
