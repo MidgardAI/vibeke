@@ -1328,7 +1328,10 @@ impl Session {
 /// reported mid-turn) without touching its execution state, unlike `SessionStart`.
 fn signal(server: &Arc<Server>, pane: &str, h: Harness, event: &str, p: &Value) {
     if event != "Identified" {
-        return super::on_signal(server, pane, h, event, p);
+        // The harness's stream names its transcript: keep only a path the server may read.
+        let mut p = p.clone();
+        super::transcript_file::sanitize_payload(server, pane, &mut p);
+        return super::on_signal(server, pane, h, event, &p);
     }
     let run = bound_run(server, pane, h);
     let sid = p.get("session_id").and_then(Value::as_str);

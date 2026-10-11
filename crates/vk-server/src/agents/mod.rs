@@ -26,6 +26,7 @@ mod screen_picker_tests;
 mod screen_walk;
 mod selfreport;
 pub mod tailer;
+pub mod transcript_file;
 pub mod usage;
 
 use crate::Server;
@@ -1770,8 +1771,12 @@ fn on_signal(server: &Arc<Server>, pane: &str, h: Harness, event: &str, p: &Valu
             let msg = p
                 .get("last_assistant_message")
                 .and_then(Value::as_str)
-                .map(str::to_string)
-                .or_else(|| last_assistant_message(p));
+                .map(str::to_string);
+            // The adapter transport fills `last_assistant_message` from the transcript before
+            // it gets here (off the async workers). Other paths read it in the background.
+            if msg.is_none() {
+                fill_last_message_later(server, &run.id, p);
+            }
             update_run(server, &run.id, |r, tx| {
                 if let Some(m) = &msg {
                     r.last_message = Some(m.chars().take(2000).collect());
@@ -1904,9 +1909,62 @@ fn on_signal(server: &Arc<Server>, pane: &str, h: Harness, event: &str, p: &Valu
     }
 }
 
-fn last_assistant_message(p: &Value) -> Option<String> {
-    let path = p.get("transcript_path")?.as_str()?;
-    harness::transcript_last_message(std::path::Path::new(path))
+/// The run's transcript file if the server may read it for the run's pane: the stored path is
+/// checked again at read time (`transcript_file::accept`), since a contained agent can change
+/// its files after it reported the path.
+fn readable_transcript(server: &Server, r: &AgentRun) -> Option<std::path::PathBuf> {
+    let raw = r.transcript_path.as_deref()?;
+    transcript_file::accept(server, &r.pane, raw).map(std::path::PathBuf::from)
+}
+
+/// Read the last assistant message of a finished turn from the transcript on the blocking
+/// pool and store it on the run, when the hook payload did not carry it.
+fn fill_last_message_later(server: &Arc<Server>, run: &str, p: &Value) {
+    let Some(path) = p.get("transcript_path").and_then(Value::as_str) else {
+        return;
+    };
+    let Ok(rt) = tokio::runtime::Handle::try_current() else {
+        return;
+    };
+    let path = std::path::PathBuf::from(path);
+    let (server, run) = (server.clone(), run.to_string());
+    rt.spawn(async move {
+        let msg = tokio::task::spawn_blocking(move || harness::transcript_last_message(&path))
+            .await
+            .ok()
+            .flatten();
+        if let Some(m) = msg {
+            update_run(&server, &run, |r, _| {
+                r.last_message = Some(m.chars().take(2000).collect());
+            });
+        }
+    });
+}
+
+/// Prepare a hook payload from `pane` before it is routed: drop a transcript path the server
+/// may not read for this pane (`transcript_file::accept`), and fill a finished turn's
+/// `last_assistant_message` from the transcript on the blocking pool, so the state machine,
+/// turn tracking and notifications see it without blocking an async worker.
+async fn prepare_payload(server: &Arc<Server>, pane: &str, event: &str, payload: &mut Value) {
+    transcript_file::sanitize_payload(server, pane, payload);
+    if !matches!(event, "Stop" | "Interrupt")
+        || payload
+            .get("last_assistant_message")
+            .is_some_and(Value::is_string)
+    {
+        return;
+    }
+    let Some(path) = payload.get("transcript_path").and_then(Value::as_str) else {
+        return;
+    };
+    let path = std::path::PathBuf::from(path);
+    let msg = tokio::task::spawn_blocking(move || harness::transcript_last_message(&path))
+        .await
+        .ok()
+        .flatten();
+    if let (Some(m), Some(obj)) = (msg, payload.as_object_mut()) {
+        obj.insert("last_assistant_message".into(), Value::String(m));
+    }
 }
 
 /// `adapter.gate`: open an interaction and either answer by policy, hold until a client
@@ -3209,16 +3267,15 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
             Ok(r) => {
                 let source = s(p, "source").unwrap_or("recent");
                 if source == "transcript" {
-                    let text = r
-                        .transcript_path
-                        .as_deref()
-                        .map(|t| {
-                            harness::transcript_tail(
-                                std::path::Path::new(t),
-                                u(p, "lines").unwrap_or(20) as usize,
-                            )
-                        })
-                        .unwrap_or_default();
+                    let lines = u(p, "lines").unwrap_or(20) as usize;
+                    let text = match readable_transcript(server, &r) {
+                        Some(t) => {
+                            tokio::task::spawn_blocking(move || harness::transcript_tail(&t, lines))
+                                .await
+                                .unwrap_or_default()
+                        }
+                        None => String::new(),
+                    };
                     return Some(Ok(json!({"text": text, "source": "transcript"})));
                 }
                 Ok(
@@ -3228,10 +3285,15 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
             Err(e) => Err(e),
         },
         "agent.transcript" => match resolve_run(server, ctx, s(p, "target")) {
-            Ok(r) => match r.transcript_path {
-                Some(t) => Ok(
-                    json!({"turns": harness::transcript_turns(std::path::Path::new(&t), u(p, "limit").unwrap_or(20) as usize)}),
-                ),
+            Ok(r) => match readable_transcript(server, &r) {
+                Some(t) => {
+                    let limit = u(p, "limit").unwrap_or(20) as usize;
+                    let turns =
+                        tokio::task::spawn_blocking(move || harness::transcript_turns(&t, limit))
+                            .await
+                            .unwrap_or_default();
+                    Ok(json!({"turns": turns}))
+                }
                 None => Err(err(ErrorKind::Unsupported, "no transcript for this run")
                     .details(json!({"fallback": "agent.read"}))),
             },
@@ -3425,7 +3487,8 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
             };
             let h = route::effective(server, &pane, h);
             let event = s(p, "event").unwrap_or("").to_string();
-            let payload = p.get("payload").cloned().unwrap_or(Value::Null);
+            let mut payload = p.get("payload").cloned().unwrap_or(Value::Null);
+            prepare_payload(server, &pane, &event, &mut payload).await;
             let pid = p
                 .get("pid")
                 .and_then(Value::as_u64)
