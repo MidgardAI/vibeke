@@ -182,7 +182,8 @@ class GitHubTokenTest(unittest.TestCase):
 
     def test_tokens_cannot_inject_headers(self):
         self.assertTrue(valid_token("ghs_abcDEF0123456789"))
-        for bad in ("", "a b", "a\r\nX-Evil: 1", "tok\n", None):
+        self.assertTrue(valid_token("ghs_abc+def/ghi=="))
+        for bad in ("", "a b", "a\r\nX-Evil: 1", "tok\n", "t\tok", "t\u00e9", "x" * 4097, None):
             with self.subTest(token=bad):
                 self.assertFalse(valid_token(bad))
 

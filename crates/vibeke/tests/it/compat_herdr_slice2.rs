@@ -1096,6 +1096,23 @@ fn plugin_panes_audit_events_and_redacted_logs() {
     let agents = s_.herdr(&["agent", "list"]);
     let target = s(&agents["agents"][0]["agent_id"]);
     assert!(!target.is_empty(), "{agents}");
+    // Herdr's `AgentInfo`: the pane fields flattened, required ids present, no `null`s
+    // (plugins deserialize `name` as a plain string).
+    let a = &agents["agents"][0];
+    for k in ["workspace_id", "tab_id", "pane_id", "terminal_id"] {
+        assert!(a[k].is_string(), "{k}: {a}");
+    }
+    assert_eq!(a["pane_id"], pane.as_str(), "{a}");
+    assert!(a["focused"].is_boolean() && a["revision"].is_u64(), "{a}");
+    assert!(a["state_change_seq"].is_u64(), "{a}");
+    assert_eq!(a["agent"], "claude", "{a}");
+    assert!(a.as_object().unwrap().values().all(|v| !v.is_null()), "{a}");
+    // Herdr sends a prompt only when the agent's program is the pane's foreground process
+    // (`queue_agent_prompt`, `runtime_hosts_agent`). This pane runs only its shell.
+    let e = s_.call("agent.prompt", json!({"target": target, "text": "hello"}));
+    assert_eq!(e["error"]["code"], "agent_not_ready", "{e}");
+    let e = s_.call("agent.prompt", json!({"target": target, "text": ""}));
+    assert_eq!(e["error"]["code"], "empty_agent_prompt", "{e}");
     let r = s_.herdr(&["agent", "rename", &target, "helper"]);
     assert_eq!(r["agent"]["name"], "helper", "{r}");
     let w = s_.herdr(&[

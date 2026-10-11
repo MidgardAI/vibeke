@@ -333,9 +333,15 @@ pub const ENTRIES: &[Entry] = &[
         "agent.list",
         Partial,
         "spec",
-        "status projection unverified",
+        "Herdr's `AgentInfo`: the pane fields flattened (`workspace_id`, `tab_id`, `pane_id`, `terminal_id`, `focused`, `revision`), absent optional fields left out instead of `null`, only agents whose pane exists; `state_change_seq` is the time of the run's last execution change; no `completion_seq`, `launch_pending` or `interactive_ready`",
     ),
-    e(Method, "agent.get", Partial, "spec", ""),
+    e(
+        Method,
+        "agent.get",
+        Partial,
+        "spec",
+        "the same `AgentInfo` as `agent.list`",
+    ),
     e(
         Method,
         "agent.read",
@@ -355,7 +361,7 @@ pub const ENTRIES: &[Entry] = &[
         "agent.prompt",
         Partial,
         "spec",
-        "text + Enter (native `agent.prompt`), `wait`, `timeout_ms`; `agent_prompted {agent}`",
+        "text + Enter (native `agent.prompt`), `wait`, `timeout_ms`; `agent_prompted {agent}`; Herdr's checks first: `empty_agent_prompt`, `agent_blocked`, and `agent_not_ready` unless the agent's program is the pane's foreground process (Herdr's process-name lookup, simplified for wrapped agents); the native method does not check the foreground process",
     ),
     e(
         Method,

@@ -39,14 +39,16 @@ kind = "invocation_final"
 kind = "pane"
 pane = "setup"
 placement = "zoomed"
+# The menu is taller than the pane, so its heading scrolls off the screen on both hosts. The
+# checks read the last lines, which stay visible.
 [[step.expect]]
 kind = "screen_text"
 pane = "setup"
-text = "Herdr Mobile Relay Setup"
+text = "q. Exit, change nothing"
 [[step.expect]]
 kind = "screen_text"
 pane = "setup"
-text = "Choose a complete setup action:"
+text = "Choice [1]:"
 [[step.compare]]
 pane = "setup"
 placement_only = true
@@ -58,11 +60,17 @@ pane = "setup"
 text = "q"
 keys = ["Enter"]
 
+# relay/open-plugin-pane.sh opens the `status` overlay with `--target-pane "$HERDR_PANE_ID"`.
+# Herdr 0.9.3 refuses a target pane for overlay and popup panes (`invalid_params`, "overlay and
+# popup plugin panes target the active pane", src/app/api/plugins/mod.rs), and it sets
+# HERDR_PANE_ID for every invocation context with a focused pane (src/app/api/plugins/runtime.rs).
+# So the action fails on Herdr 0.9.3, and Vibeke answers the same.
 [[step]]
 id = "status"
 kind = "action"
 action = "status"
 context = "workspace"
+known = { outcome = "not_exercised", reason = "The plugin opens its overlay with --target-pane, which Herdr 0.9.3 refuses for overlay panes (invalid_params). Both hosts refuse it, so the status pane never opens." }
 expect_calls = [{ method = "plugin.pane.open", ok = true }]
 [[step.expect]]
 kind = "invocation_final"
@@ -83,6 +91,7 @@ id = "status-close"
 kind = "input"
 pane = "status"
 keys = ["Enter"]
+known = { outcome = "not_exercised", reason = "The status pane does not open (see the status step), so there is nothing to close." }
 
 [[step]]
 id = "setup-link"

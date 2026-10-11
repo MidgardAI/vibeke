@@ -353,12 +353,14 @@ pub fn without_path_dirs(env: &mut [(String, String)], exclude: &[String]) {
 
 /// The Vibeke side's config file (18 §11): no first-run setup guide and no update check, so
 /// the TUI client shows the panes and nothing else, and Herdr's sidebar width, so both sides'
-/// pane areas have the same size.
+/// pane areas have the same size. Herdr's `sidebar_width` counts the separator column (26 is
+/// 25 columns of sidebar and one `│`); Vibeke's `[ui.sidebar] width` does not, so the Vibeke
+/// side sets one column less.
 pub fn vibeke_config() -> String {
     format!(
         "onboarding = false\n\n[update]\nversion_check = false\nmanifest_check = false\n\n\
          [ui.sidebar]\nwidth = {}\nauto_width = false\n",
-        herdr::SIDEBAR_WIDTH
+        herdr::SIDEBAR_WIDTH - 1
     )
 }
 
@@ -2677,13 +2679,31 @@ impl<'a> Run<'a> {
                     .and_then(|v| v["events"].as_array().cloned())
                     .unwrap_or_default();
                 let mut proj = vk_compat::herdr::events::Projector::new();
+                // Agent events carry no Herdr status (`agent.started` has none, and
+                // `agent.state_changed` names Vibeke's execution state). The server projects
+                // them with the pane's current Herdr status, so the harness does the same with
+                // the fake agent's status (the only agent a scenario reports).
+                let agent_now = self
+                    .ctx
+                    .agent_pane
+                    .clone()
+                    .and_then(|p| self.compat_call("pane.get", json!({"pane_id": p})).ok())
+                    .and_then(|r| {
+                        r.pointer("/pane/agent_status")
+                            .and_then(Value::as_str)
+                            .map(str::to_string)
+                    });
                 evs.iter()
                     .find(|ev| {
                         let kind = ev["type"].as_str().unwrap_or_default();
                         let subj = |k: &str| ev["subject"][k].as_str();
+                        let agent_event = kind.starts_with("agent.")
+                            || kind.starts_with("interaction.")
+                            || kind == "pane.marked_unread";
                         let status = ev["data"]["state"]
                             .as_str()
-                            .or(ev["data"]["status"].as_str());
+                            .or(ev["data"]["status"].as_str())
+                            .or(agent_now.as_deref().filter(|_| agent_event));
                         let input = vk_compat::herdr::events::Input {
                             kind,
                             workspace: subj("workspace"),

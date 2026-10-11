@@ -33,7 +33,9 @@ GitHub token: with `hp_github_token_file` (a file only the trusted runner user c
 mode adds `Authorization: Bearer <token>` to GET and HEAD requests for the GitHub API paths of the
 repositories in the allowlist's `github_repositories` (the plugin's own repository from the lock;
 `hp_netfilter.github_token_allowed`). Each such response is logged with its status, without the
-token, to `<log>/github-auth.jsonl`. The token never enters the boundary: the plugin sees only the response.
+token, to `<log>/github-auth.jsonl`. A request to the API host that goes out without the token is
+logged there too, with the reason, and `<log>/github-token.json` says whether a token was loaded
+(never the token itself). The token never enters the boundary: the plugin sees only the response.
 
 Bodies are hashed as the client receives them. The proxy drops `Accept-Encoding` so servers send
 the same bytes in both modes.
@@ -101,12 +103,25 @@ class VerifiedProxy:
                 self.url_shas.setdefault(d["url"], []).append(d["sha256"])
         self.github_repos = [r for r in allow.get("github_repositories", []) if valid_repository(r)]
         self.github_token = None
+        # Whether the token is in use, without the token: `github-token.json` in the log
+        # directory, so a run whose API reads were not authenticated says why.
+        status = {"repositories": self.github_repos, "token_file": bool(ctx.options.hp_github_token_file)}
         if ctx.options.hp_github_token_file:
-            with open(ctx.options.hp_github_token_file, encoding="utf-8") as f:
-                token = f.read().strip()
+            try:
+                with open(ctx.options.hp_github_token_file, encoding="utf-8") as f:
+                    token = f.read().strip()
+            except OSError as e:
+                token = ""
+                status["error"] = f"the token file cannot be read: {e.strerror}"
             if token and not valid_token(token):
-                raise ValueError("the GitHub token file holds an unexpected value")
+                status["error"] = "the token file holds an unexpected value"
+                token = ""
+            if not token and "error" not in status:
+                status["error"] = "the token file is empty"
             self.github_token = token or None
+        status["token_loaded"] = self.github_token is not None
+        with open(os.path.join(ctx.options.hp_log, "github-token.json"), "w", encoding="utf-8") as f:
+            f.write(json.dumps(status, sort_keys=True) + "\n")
 
     # Logging and cache helpers.
 
@@ -192,12 +207,21 @@ class VerifiedProxy:
 
     def _add_github_token(self, flow: http.HTTPFlow):
         """Adds the token to an allowed GitHub API read that carries no credentials of its own."""
-        if not self.github_token or "authorization" in flow.request.headers:
-            return
         r = flow.request
-        if not github_token_allowed(
+        if not self.github_repos or (r.host or "").lower() != "api.github.com":
+            return
+        why = None
+        if not self.github_token:
+            why = "no token is loaded (see github-token.json)"
+        elif "authorization" in r.headers:
+            why = "the request has its own credentials"
+        elif not github_token_allowed(
             r.method, r.scheme, r.host, r.headers.get("host"), r.port, r.path, self.github_repos
         ):
+            why = "not an allowed read of the plugin's repository"
+        if why:
+            # Why an API read of the plugin's repository host went out without the token.
+            self._append("github-auth.jsonl", {"method": r.method, "url": r.pretty_url, "token": False, "reason": why})
             return
         r.headers["authorization"] = f"Bearer {self.github_token}"
         flow.metadata["hp_github_token"] = True
@@ -239,7 +263,7 @@ class VerifiedProxy:
         url = flow.request.pretty_url
         status = flow.response.status_code
         if flow.metadata.get("hp_github_token"):
-            self._append("github-auth.jsonl", {"method": flow.request.method, "url": url, "status": status})
+            self._append("github-auth.jsonl", {"method": flow.request.method, "url": url, "token": True, "status": status})
         if ctx.options.hp_mode == "open":
             self._append("requests.jsonl", {"method": flow.request.method, "url": url, "status": status})
             return
