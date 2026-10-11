@@ -385,8 +385,8 @@ fn stage_and_import(
                 Ok(()) => {}
                 // Gone since the listing (git replaced loose objects by a pack): skip it.
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                // A symlink or a special file: never imported.
-                Err(e) if e.raw_os_error() == Some(libc::ELOOP) => {}
+                // A symlink (file or fan-out dir) or a special file: never imported.
+                Err(e) if matches!(e.raw_os_error(), Some(libc::ELOOP | libc::ENOTDIR)) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
                     if e.to_string().contains("too large") {
                         return Err(e.to_string());
