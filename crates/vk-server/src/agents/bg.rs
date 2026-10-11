@@ -224,7 +224,9 @@ pub fn clear(server: &Arc<Server>, run: &str) {
 /// Hook payloads: Claude `Stop` carries the session's whole background set.
 pub fn observe_hook(server: &Arc<Server>, run: &AgentRun, event: &str, p: &Value) {
     match event {
-        "Stop" => {
+        // Claude `Stop`, and `BgTasks` from headless adapters (Claude stream-json
+        // `background_tasks_changed`, Codex `thread/backgroundTerminals/list`).
+        "Stop" | "BgTasks" => {
             if let Some(list) = p.get("background_tasks").and_then(Value::as_array) {
                 replace(server, &run.id, from_claude(list));
             }
@@ -238,6 +240,144 @@ pub fn observe_hook(server: &Arc<Server>, run: &AgentRun, event: &str, p: &Value
         }
         _ => {}
     }
+}
+
+/// How often the process scan runs.
+const SCAN_EVERY: std::time::Duration = std::time::Duration::from_secs(5);
+/// A process younger than this is not counted yet (hook shims, short tool commands).
+const MIN_AGE_MS: i64 = 3_000;
+
+/// Harnesses that report their own background work (hooks, transcripts, protocols): the
+/// process scan leaves them alone.
+fn reports_own(harness: &str) -> bool {
+    super::harness::Harness::from_id(harness).is_some_and(|h| {
+        matches!(
+            h.family(),
+            super::harness::Family::Claude | super::harness::Family::Codex
+        )
+    })
+}
+
+/// Shells a harness runs tool commands with.
+fn is_shell(argv: &[String]) -> bool {
+    let a0 = argv.first().map(String::as_str).unwrap_or("");
+    let base = a0.rsplit('/').next().unwrap_or(a0).trim_start_matches('-');
+    matches!(base, "sh" | "bash" | "zsh" | "dash" | "fish" | "ksh")
+}
+
+/// What a shell runs: the `-c` script, else the whole command line.
+fn command_of(argv: &[String]) -> String {
+    if is_shell(argv)
+        && let Some(i) = argv
+            .iter()
+            .position(|a| a.starts_with('-') && a.ends_with('c'))
+        && let Some(script) = argv.get(i + 1)
+    {
+        return script.clone();
+    }
+    argv.join(" ")
+}
+
+/// Background work of one harness process: process groups under it, other than its own, led by
+/// a shell (how harnesses run tool commands; MCP servers and language servers are started
+/// directly), alive for at least [`MIN_AGE_MS`]. One task per process group.
+pub fn scan_tree(
+    root: u32,
+    tree: &[vk_hold::procinfo::ProcInfo],
+    now: i64,
+    age_ms: impl Fn(u32) -> Option<i64>,
+) -> Vec<BgTask> {
+    let own = tree.iter().find(|p| p.pid == root).map(|p| p.pgid);
+    let mut out: Vec<BgTask> = Vec::new();
+    for p in tree {
+        if p.pid == root
+            || Some(p.pgid) == own
+            || out.iter().any(|t| t.id == format!("pid:{}", p.pgid))
+        {
+            continue;
+        }
+        // The group's leader when it is in the tree, else the first member seen.
+        let lead = tree.iter().find(|q| q.pid == p.pgid).unwrap_or(p);
+        if !is_shell(&lead.argv) || vk_preview::is_harness_process(&lead.argv) {
+            continue;
+        }
+        if age_ms(lead.pid).is_none_or(|a| a < MIN_AGE_MS) {
+            continue;
+        }
+        out.push(BgTask {
+            id: format!("pid:{}", p.pgid),
+            kind: "shell".into(),
+            label: label(&command_of(&lead.argv)),
+            since_ms: now - age_ms(lead.pid).unwrap_or(0),
+            source: StateSource::Process,
+            tool_use_id: None,
+        });
+    }
+    out
+}
+
+/// Every [`SCAN_EVERY`]: child process groups of idle harnesses that report nothing themselves.
+/// While a run works its children may be foreground tool calls, so the set only shrinks then.
+pub fn start(server: &Arc<Server>) {
+    let srv = server.clone();
+    tokio::spawn(async move {
+        let mut seen: std::collections::HashMap<(u32, u64), i64> = Default::default();
+        loop {
+            tokio::time::sleep(SCAN_EVERY).await;
+            let runs: Vec<(AgentRun, u32)> = srv
+                .with_core(|c| {
+                    c.model
+                        .runs
+                        .iter()
+                        .filter(|r| r.ended_at_ms.is_none() && !reports_own(&r.harness))
+                        .cloned()
+                        .collect::<Vec<_>>()
+                })
+                .into_iter()
+                .filter_map(|r| {
+                    let (h, p) = srv.agents.harness_proc(&r.pane)?;
+                    (h == r.harness).then_some((r, p.pid))
+                })
+                .collect();
+            let roots: Vec<u32> = runs.iter().map(|(_, pid)| *pid).collect();
+            let trees = tokio::task::spawn_blocking(move || {
+                roots
+                    .into_iter()
+                    .map(|pid| vk_hold::procinfo::tree(pid, 8))
+                    .collect::<Vec<_>>()
+            })
+            .await
+            .unwrap_or_default();
+            let now = now_ms();
+            // First sighting of each process (pid, start) stands in for its age.
+            let alive: std::collections::HashSet<(u32, u64)> =
+                trees.iter().flatten().map(|p| (p.pid, p.start)).collect();
+            seen.retain(|k, _| alive.contains(k));
+            for k in &alive {
+                seen.entry(*k).or_insert(now);
+            }
+            for ((run, root), tree) in runs.into_iter().zip(trees) {
+                let age = |pid: u32| {
+                    tree.iter()
+                        .find(|p| p.pid == pid)
+                        .and_then(|p| seen.get(&(p.pid, p.start)))
+                        .map(|t| now - t)
+                };
+                let mut found = scan_tree(root, &tree, now, age);
+                if run.execution.value != Execution::Idle {
+                    found.retain(|t| run.bg_tasks.iter().any(|o| o.id == t.id));
+                }
+                let had: Vec<&BgTask> = run
+                    .bg_tasks
+                    .iter()
+                    .filter(|t| t.source == StateSource::Process)
+                    .collect();
+                if had.len() != found.len() || had.iter().zip(&found).any(|(a, b)| a.id != b.id) {
+                    set_processes(&srv, &run.id, found);
+                }
+            }
+        }
+    });
 }
 
 #[cfg(test)]
@@ -261,6 +401,41 @@ mod tests {
         assert_eq!(t[1].label, "Map the code");
         assert_eq!(t[2].kind, "monitor");
         assert_eq!(t[3].kind, "workflow");
+    }
+
+    fn proc(pid: u32, ppid: u32, pgid: u32, argv: &[&str]) -> vk_hold::procinfo::ProcInfo {
+        vk_hold::procinfo::ProcInfo {
+            pid,
+            ppid,
+            pgid,
+            argv: argv.iter().map(|s| s.to_string()).collect(),
+            exe: None,
+            cwd: None,
+            start: 0,
+        }
+    }
+
+    #[test]
+    fn scan_counts_shell_groups_outside_the_harness_group() {
+        let tree = vec![
+            proc(100, 1, 100, &["gemini"]),
+            // An MCP server, started directly in the harness group.
+            proc(101, 100, 100, &["node", "mcp-server.js"]),
+            // A language server in its own group, not led by a shell.
+            proc(102, 100, 102, &["rust-analyzer"]),
+            // A background command and its child, one group.
+            proc(103, 100, 103, &["/bin/bash", "-c", "npm run dev"]),
+            proc(104, 103, 103, &["node", "vite"]),
+            // Too young to count.
+            proc(105, 100, 105, &["sh", "-c", "sleep 1"]),
+        ];
+        let t = scan_tree(100, &tree, 10_000, |pid| {
+            Some(if pid == 105 { 500 } else { 8_000 })
+        });
+        assert_eq!(ids(&t), ["pid:103"]);
+        assert_eq!(t[0].label, "npm run dev");
+        assert_eq!(t[0].since_ms, 2_000);
+        assert_eq!(t[0].source, StateSource::Process);
     }
 
     #[test]

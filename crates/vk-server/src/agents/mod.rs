@@ -143,6 +143,7 @@ pub fn start(server: &Arc<Server>) {
     let _ = vk_agents::manifest::write_builtin(&server.paths.state.join("harnesses/builtin"));
     arbiter::load_persisted(server);
     tailer::start(server);
+    bg::start(server);
     channel::announce_loaded(server);
     channel::start_polling(server);
     let cfg = vk_config::Config::load(vk_config::config_path())

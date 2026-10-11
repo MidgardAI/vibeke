@@ -181,11 +181,15 @@ impl Adapter for Claude {
                     }
                 }
             }
-            "system" => {
-                if v.get("subtype").and_then(Value::as_str) == Some("compact_boundary") {
-                    cx.signal("PostCompact", json!({}));
-                }
-            }
+            "system" => match v.get("subtype").and_then(Value::as_str) {
+                Some("compact_boundary") => cx.signal("PostCompact", json!({})),
+                // The whole in-flight set, replacing the last one (stream-json level signal).
+                Some("background_tasks_changed") => cx.signal(
+                    "BgTasks",
+                    json!({"background_tasks": v.get("tasks").cloned().unwrap_or(json!([]))}),
+                ),
+                _ => {}
+            },
             "assistant" => {
                 let blocks = v
                     .pointer("/message/content")
