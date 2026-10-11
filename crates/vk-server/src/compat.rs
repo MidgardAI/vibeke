@@ -2553,13 +2553,10 @@ pub async fn call(
                 .filter(|r| r.ended_at_ms.is_none() && r.integration == "self_report")
                 .cloned();
             let st = state(server);
-            let auth = {
-                let mut a = st.authority.lock().unwrap();
-                if run.is_none() {
-                    a.remove(&x.id);
-                }
-                a.get(&x.id).cloned()
-            };
+            // The authority is replaced by the next accepted report and removed when a release
+            // or clear acts. It is not dropped here when this snapshot shows no run: the run may
+            // not be visible yet, and dropping it would let any source release.
+            let auth = st.authority.lock().unwrap().get(&x.id).cloned();
             let seq = p
                 .get("seq")
                 .and_then(Value::as_u64)
