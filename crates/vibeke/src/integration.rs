@@ -1,9 +1,12 @@
 //! `vibeke integration list|install|status|uninstall|doctor|capabilities|update` (04 §11, §13).
 //!
-//! Writing the user's real harness configs needs explicit consent: without `--yes` the command
-//! shows the planned diff only. `CLAUDE_CONFIG_DIR` / `CODEX_HOME` / `VIBEKE_PI_HOME` /
-//! `VIBEKE_OMP_HOME` / `VIBEKE_OPENCODE_HOME` / `VIBEKE_GEMINI_HOME` redirect it (e.g. to
-//! temporary copies).
+//! Writing harness configs needs explicit consent: without `--yes` the command shows the
+//! planned diff only. `CLAUDE_CONFIG_DIR` / `CODEX_HOME` / `PI_CODING_AGENT_DIR` move the
+//! target (still the user's real config: `--yes` needed); Vibeke's scratch-copy variables
+//! `VIBEKE_PI_HOME` / `VIBEKE_OMP_HOME` / `VIBEKE_OPENCODE_HOME` / `VIBEKE_GEMINI_HOME` (tests)
+//! imply consent for their harness. Empty values count as unset. `install` without a harness
+//! installs the harnesses found on this machine (on `PATH`, or already integrated), like
+//! `vibeke setup`; name one, or `all`, to choose.
 //!
 //! `doctor` and `capabilities` read the harness manifests (built-ins, the verified remote cache
 //! and `<config dir>/harnesses/*.toml`) and report each installed harness's version against the
@@ -23,6 +26,16 @@ fn harnesses(arg: Option<&str>) -> Option<Vec<Harness>> {
         Some("all") | None => Some(Harness::ALL.to_vec()),
         Some(id) => Harness::from_id(id).map(|h| vec![h]),
     }
+}
+
+/// The harnesses `install` targets when none is named: those on `PATH`, or already
+/// integrated (a partial or stale install gets refreshed).
+fn detected(dirs: &Dirs) -> Vec<Harness> {
+    vk_tui::onboarding::detect_harnesses(dirs, &stable_bin())
+        .into_iter()
+        .filter(|r| r.binary.is_some() || r.state != InstallState::NotInstalled)
+        .map(|r| r.harness)
+        .collect()
 }
 
 fn stable_bin() -> std::path::PathBuf {
@@ -108,18 +121,29 @@ pub async fn run(g: &Global, args: &[String]) -> i32 {
         "pin" | "unpin" => return pin(g, verb == "unpin", args),
         _ => {}
     }
-    let Some(hs) = harnesses(target) else {
+    let Some(mut hs) = harnesses(target) else {
         eprintln!("{USAGE}");
         return EXIT_USAGE;
     };
     let dirs = Dirs::from_env();
-    let redirected = Dirs::REDIRECT_VARS
-        .iter()
-        .any(|k| std::env::var_os(k).is_some());
     let mcp = args.iter().any(|a| a == "--mcp");
-    if mcp {
-        return run_mcp(verb, hs, &dirs, yes || redirected, dry);
+    if verb == "install" && target.is_none() {
+        hs = detected(&dirs);
+        if hs.is_empty() {
+            println!(
+                "no agent harness found on PATH; name one to install anyway: vibeke integration install <claude|codex|pi|omp|opencode|gemini|all>"
+            );
+            return EXIT_OK;
+        }
+        println!(
+            "installing for the harnesses found here: {} (name one, or `all`, to choose)",
+            hs.iter().map(|h| h.id()).collect::<Vec<_>>().join(", ")
+        );
     }
+    if mcp {
+        return run_mcp(verb, hs, &dirs, yes, dry);
+    }
+    let mut codex_installed = false;
     match verb {
         "list" | "status" => {
             for h in hs {
@@ -193,10 +217,12 @@ pub async fn run(g: &Global, args: &[String]) -> i32 {
                         continue;
                     }
                 };
+                let consent = yes || Dirs::implied_consent(h);
                 if !plan.changed() {
                     if !dry {
                         record_integrity(verb, h, &dirs);
                     }
+                    codex_installed |= h == Harness::Codex && !dry && consent;
                     println!(
                         "{}: already {}",
                         h.id(),
@@ -215,7 +241,7 @@ pub async fn run(g: &Global, args: &[String]) -> i32 {
                 for n in &plan.notes {
                     println!("note: {n}");
                 }
-                if dry || (!yes && !redirected) {
+                if dry || !consent {
                     println!(
                         "{}: dry run — rerun with --yes to write {}",
                         h.id(),
@@ -236,6 +262,7 @@ pub async fn run(g: &Global, args: &[String]) -> i32 {
                             println!("wrote {}", p.display());
                         }
                         record_integrity(verb, h, &dirs);
+                        codex_installed |= h == Harness::Codex;
                     }
                     Err(e) => {
                         eprintln!("{}: {e:#}", h.id());
@@ -243,7 +270,9 @@ pub async fn run(g: &Global, args: &[String]) -> i32 {
                     }
                 }
             }
-            if verb == "install" && hs_contains_codex(target) {
+            // The PATH shim only with the Codex integration itself (consent given, not a dry
+            // run).
+            if verb == "install" && codex_installed {
                 let shims = vk_server::paths::Paths::shims();
                 match vk_agents::write_codex_shim(&shims) {
                     Ok(p) => println!("codex PATH shim: {}", p.display()),
@@ -563,7 +592,12 @@ fn run_mcp(verb: &str, hs: Vec<Harness>, dirs: &Dirs, write: bool, dry: bool) ->
                 for n in &plan.notes {
                     println!("note: {n}");
                 }
-                if dry || !write {
+                if verb == "install" {
+                    println!(
+                        "note: outside a Vibeke pane `vibeke mcp` never starts Vibeke and offers read-only tools only"
+                    );
+                }
+                if dry || !(write || Dirs::implied_consent(h)) {
                     println!("{}: dry run — rerun with --yes to write", h.id());
                     continue;
                 }
@@ -586,10 +620,6 @@ fn run_mcp(verb: &str, hs: Vec<Harness>, dirs: &Dirs, write: bool, dry: bool) ->
         }
     }
     code
-}
-
-fn hs_contains_codex(target: Option<&str>) -> bool {
-    matches!(target, None | Some("all") | Some("codex"))
 }
 
 /// Tamper detection baseline (09 §5.3): remember what install wrote, forget it on uninstall.
