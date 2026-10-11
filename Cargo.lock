@@ -3753,6 +3753,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "ulid",
+ "vk-tasks",
 ]
 
 [[package]]

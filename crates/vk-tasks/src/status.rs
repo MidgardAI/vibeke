@@ -27,16 +27,18 @@ pub struct BranchStatus {
 /// If the branch has no upstream and `base` is given, ahead/behind are
 /// computed against `base`.
 pub fn branch_status(path: &Path, base: Option<&str>) -> Result<BranchStatus> {
-    let out = git_timeout(
-        path,
-        &[
-            "status",
-            "--porcelain=v2",
-            "--branch",
-            "--untracked-files=normal",
-        ],
-        Some(Duration::from_secs(2)),
-    )?;
+    let mut args = vec![
+        "status",
+        "--porcelain=v2",
+        "--branch",
+        "--untracked-files=normal",
+    ];
+    // In a checkout a contained process can write, git never enters submodules: it would run
+    // with the submodule's own (box-written) configuration.
+    if crate::is_contained(path) {
+        args.push("--ignore-submodules=all");
+    }
+    let out = git_timeout(path, &args, Some(Duration::from_secs(2)))?;
     let mut s = parse_status(&out);
     if s.upstream.is_some() {
         s.compared_to = s.upstream.clone();

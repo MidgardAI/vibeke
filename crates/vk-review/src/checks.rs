@@ -985,7 +985,7 @@ fn make_checkout(repo: &Path, sha: &str, opts: &RunOptions) -> Result<Disposable
         path: path.clone(),
         method: CheckoutMethod::ArchiveExport,
     };
-    let mut archive = gitcmd::command(repo)
+    let mut archive = gitcmd::command(repo)?
         .args(["archive", "--format=tar", sha])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

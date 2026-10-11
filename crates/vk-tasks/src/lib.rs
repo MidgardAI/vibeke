@@ -93,7 +93,7 @@ pub use ghpr::{
 };
 pub use git::set_child_umask;
 pub use git::{
-    HOST_HARDEN, is_contained, register_contained_checkout, safety_args,
+    HOST_HARDEN, harden_command, is_contained, register_contained_checkout, safety_args,
     unregister_contained_checkout,
 };
 pub use naming::{DEFAULT_SLUG_MAX, render_branch, slugify, slugify_raw, unique_slug, user_handle};

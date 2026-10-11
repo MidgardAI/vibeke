@@ -70,7 +70,7 @@ pub fn create(
     }
     let _ = std::fs::remove_dir_all(&path);
     std::fs::create_dir_all(&path)?;
-    let mut archive = gitcmd::command(repo)
+    let mut archive = gitcmd::command(repo)?
         .args(["archive", "--format=tar", sha])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

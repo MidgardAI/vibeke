@@ -436,6 +436,11 @@ fn baseline_at(repo: &Path, depth: u32) -> Result<Baseline, SubjectError> {
     let root = Path::new(&identity.root).to_path_buf();
     let head = rev_parse(&root, "HEAD").ok();
     let mut warnings = Vec::new();
+    // A checkout a contained process can write (sandbox, container, VM, cloud): git never runs
+    // inside its submodules or nested repositories, whose configuration the box controls.
+    // Their files are hashed directly instead.
+    let contained = vk_tasks::is_contained(&root);
+    let mut uninspected: Vec<String> = Vec::new();
 
     let digest = (|| -> Result<(String, bool, Vec<String>), String> {
         let status = gitcmd::run_bytes(
@@ -445,7 +450,11 @@ fn baseline_at(repo: &Path, depth: u32) -> Result<Baseline, SubjectError> {
                 "--porcelain=v2",
                 "-z",
                 "--untracked-files=all",
-                "--ignore-submodules=none",
+                if contained {
+                    "--ignore-submodules=all"
+                } else {
+                    "--ignore-submodules=none"
+                },
             ],
         )
         .map_err(|e| e.to_string())?;
@@ -487,7 +496,11 @@ fn baseline_at(repo: &Path, depth: u32) -> Result<Baseline, SubjectError> {
             // repository it does not descend into: its content is followed like a submodule's.
             if let Some(dir) = path.strip_suffix('/') {
                 h.str("nested").str(dir);
-                hash_nested(&mut h, &root, dir, depth)?;
+                if contained {
+                    hash_dir_direct(&mut h, &root, dir)?;
+                } else {
+                    hash_nested(&mut h, &root, dir, depth)?;
+                }
                 nested.push(dir.to_string());
                 continue;
             }
@@ -522,13 +535,29 @@ fn baseline_at(repo: &Path, depth: u32) -> Result<Baseline, SubjectError> {
         // A submodule appears in the superproject's status/diff only as its commit (plus a
         // `-dirty` marker): edits inside an already-dirty submodule would leave both unchanged,
         // so its own state is part of the digest.
-        for path in submodule_paths(&status) {
-            h.str("submodule").str(&path);
-            hash_nested(&mut h, &root, &path, depth)?;
-            nested.push(path);
+        if contained {
+            // `--ignore-submodules=all` hid them from status: read the gitlinks from the index
+            // (no submodule is entered) and hash their files. Whether a submodule changed is
+            // unknown without running git in it, so it is not listed as changed.
+            for path in gitlink_paths(&root)? {
+                h.str("submodule-files").str(&path);
+                hash_dir_direct(&mut h, &root, &path)?;
+                uninspected.push(path);
+            }
+        } else {
+            for path in submodule_paths(&status) {
+                h.str("submodule").str(&path);
+                hash_nested(&mut h, &root, &path, depth)?;
+                nested.push(path);
+            }
         }
         Ok((h.finish(), dirty, nested))
     })();
+    for path in uninspected {
+        warnings.push(format!(
+            "{path}: submodule in a sandboxed checkout; its files are hashed, but git does not run inside it"
+        ));
+    }
 
     let (change_digest, dirty_state, changed_submodules) = match digest {
         Ok((d, dirty, nested)) => (
@@ -598,6 +627,113 @@ fn hash_nested(h: &mut FieldHasher, root: &Path, rel: &str, depth: u32) -> Resul
         }
     }
     Ok(())
+}
+
+/// Most files [`hash_dir_direct`] reads in one nested directory before it gives up.
+const MAX_DIRECT_FILES: usize = 50_000;
+/// Most bytes [`hash_dir_direct`] reads in one nested directory before it gives up.
+const MAX_DIRECT_BYTES: u64 = 1 << 30;
+
+/// Fold the files of a nested repository or submodule into `h` without running git in it:
+/// every path (sorted), its kind, executable bit and content (a symlink's target, never
+/// followed). Inside its `.git` only `HEAD` (or the `.git` link file) is read, so a new commit
+/// checked out there still changes the digest. Too many files or bytes is an error, which
+/// leaves the digest unknown (never clean).
+fn hash_dir_direct(h: &mut FieldHasher, root: &Path, rel: &str) -> Result<(), String> {
+    let top = root.join(rel);
+    let mut files = 0usize;
+    let mut bytes = 0u64;
+    let mut stack = vec![(top.clone(), String::new())];
+    while let Some((dir, prefix)) = stack.pop() {
+        let mut entries: Vec<_> = std::fs::read_dir(&dir)
+            .map_err(|e| format!("{rel}: {e}"))?
+            .filter_map(|e| e.ok())
+            .collect();
+        entries.sort_by_key(|e| e.file_name());
+        // Children are pushed in reverse so they come off the stack in sorted order.
+        let mut subdirs = Vec::new();
+        for e in entries {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let path = e.path();
+            let shown = format!("{prefix}{name}");
+            let m = std::fs::symlink_metadata(&path).map_err(|e| format!("{rel}/{shown}: {e}"))?;
+            files += 1;
+            if files > MAX_DIRECT_FILES {
+                return Err(format!(
+                    "{rel}: more than {MAX_DIRECT_FILES} files in a nested repository"
+                ));
+            }
+            if prefix.is_empty() && name == ".git" {
+                h.str(".git");
+                let head = if m.is_dir() {
+                    path.join("HEAD")
+                } else {
+                    path.clone()
+                };
+                match std::fs::symlink_metadata(&head) {
+                    Ok(hm) if hm.is_file() && hm.len() < 4096 => {
+                        let text = std::fs::read(&head).map_err(|e| format!("{rel}/.git: {e}"))?;
+                        h.field(&text);
+                    }
+                    _ => {
+                        h.str("unreadable");
+                    }
+                }
+                continue;
+            }
+            h.str(&shown);
+            if m.file_type().is_symlink() {
+                let target =
+                    std::fs::read_link(&path).map_err(|e| format!("{rel}/{shown}: {e}"))?;
+                h.str("symlink").str(&target.to_string_lossy());
+            } else if m.is_dir() {
+                h.str("dir");
+                subdirs.push((path, format!("{shown}/")));
+            } else if m.is_file() {
+                bytes += m.len();
+                if bytes > MAX_DIRECT_BYTES {
+                    return Err(format!(
+                        "{rel}: more than {} MiB in a nested repository",
+                        MAX_DIRECT_BYTES >> 20
+                    ));
+                }
+                let mut f =
+                    std::fs::File::open(&path).map_err(|e| format!("{rel}/{shown}: {e}"))?;
+                let mut fh = blake3::Hasher::new();
+                let mut buf = [0u8; 64 * 1024];
+                loop {
+                    let n = f
+                        .read(&mut buf)
+                        .map_err(|e| format!("{rel}/{shown}: {e}"))?;
+                    if n == 0 {
+                        break;
+                    }
+                    fh.update(&buf[..n]);
+                }
+                h.str(if is_executable(&m) { "file+x" } else { "file" })
+                    .str(&fh.finalize().to_hex());
+            } else {
+                h.str("other");
+            }
+        }
+        stack.extend(subdirs.into_iter().rev());
+    }
+    Ok(())
+}
+
+/// Paths of gitlinks (submodules, mode `160000`) in the index. Reads the index only.
+fn gitlink_paths(root: &Path) -> Result<Vec<String>, String> {
+    let out = gitcmd::run_bytes(root, &["ls-files", "--stage", "-z"]).map_err(|e| e.to_string())?;
+    Ok(out
+        .split(|b| *b == 0)
+        .filter_map(|rec| {
+            let rec = std::str::from_utf8(rec).ok()?;
+            let (meta, path) = rec.split_once('\t')?;
+            meta.starts_with("160000 ").then(|| path.to_string())
+        })
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect())
 }
 
 /// Paths of submodule entries (`<sub>` field `S...`) in `git status --porcelain=v2 -z` output:
@@ -982,6 +1118,52 @@ pub(crate) mod testrepo {
 mod tests {
     use super::testrepo::TestRepo;
     use super::*;
+
+    /// Review finding D1.1: in a contained checkout a nested repository's configuration never
+    /// runs on the host. Its files are hashed directly, and edits still change the digest.
+    #[test]
+    fn contained_checkout_never_runs_git_in_nested_repositories() {
+        use std::os::unix::fs::PermissionsExt;
+        let r = TestRepo::new();
+        r.write("a.txt", "a\n");
+        r.commit("base");
+        let marker = r.path().join("..").join(format!(
+            "pwned-{}",
+            r.path().file_name().unwrap().to_string_lossy()
+        ));
+        let evil = r.path().join("..").join(format!(
+            "evil-{}.sh",
+            r.path().file_name().unwrap().to_string_lossy()
+        ));
+        std::fs::write(&evil, format!("#!/bin/sh\ntouch {}\n", marker.display())).unwrap();
+        std::fs::set_permissions(&evil, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // The box creates `x/.git` with an fsmonitor and a clean filter of its choosing.
+        let nested = TestRepo {
+            dir: tempfile::tempdir_in(r.root()).unwrap(),
+        };
+        nested.git(&["init", "-q"]);
+        let ev = evil.to_string_lossy().into_owned();
+        nested.git(&["config", "core.fsmonitor", &ev]);
+        nested.git(&["config", "filter.evil.clean", &ev]);
+        nested.write(".gitattributes", "* filter=evil\n");
+        nested.write("f.txt", "one\n");
+        vk_tasks::register_contained_checkout(&r.path());
+        let b1 = observation_baseline(r.root()).unwrap();
+        nested.write("f.txt", "two\n");
+        let b2 = observation_baseline(r.root()).unwrap();
+        vk_tasks::unregister_contained_checkout(&r.path());
+        let _ = std::fs::remove_file(&evil);
+        assert!(
+            !marker.exists(),
+            "host review ran nested repo configuration"
+        );
+        assert!(b1.change_digest.is_some(), "{:?}", b1.warnings);
+        assert_ne!(
+            b1.change_digest, b2.change_digest,
+            "nested edits change the digest"
+        );
+        assert_eq!(b2.dirty_state, DirtyState::Dirty);
+    }
 
     #[test]
     fn subject_id_is_content_addressed() {

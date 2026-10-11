@@ -174,20 +174,12 @@ fn box_git(box_dir: &Path, args: &[&str]) -> Result<String> {
             "--null",
             "--name-only",
             "--get-regexp",
-            r"^filter\.",
+            r"^(filter|diff|merge)\.",
         ])
         .output()
         .map(|o| o.stdout)
         .unwrap_or_default();
-    let mut filters: Vec<String> = Vec::new();
-    for k in names.split(|&b| b == 0) {
-        let k = String::from_utf8_lossy(k);
-        if let Some((n, _)) = k.strip_prefix("filter.").and_then(|r| r.rsplit_once('.')) {
-            for f in ["clean", "smudge", "process"] {
-                filters.extend(["-c".to_string(), format!("filter.{n}.{f}=")]);
-            }
-        }
-    }
+    let filters = crate::git::driver_overrides_from_names(&names);
     let mut c = std::process::Command::new("git");
     base(&mut c);
     let out = c.args(HOST_HARDEN).args(&filters).args(args).output()?;
@@ -210,7 +202,15 @@ pub fn box_leftovers(box_dir: &Path, host_repo: &Path, task_branch: &str) -> Vec
     if let Err(e) = box_git_dir(box_dir) {
         return vec![e.to_string()];
     }
-    match box_git(box_dir, &["status", "--porcelain", "--untracked-files=all"]) {
+    match box_git(
+        box_dir,
+        &[
+            "status",
+            "--porcelain",
+            "--untracked-files=all",
+            "--ignore-submodules=all",
+        ],
+    ) {
         Ok(s) if !s.trim().is_empty() => {
             let n = s.lines().count();
             let untracked = s.lines().filter(|l| l.starts_with("??")).count();
