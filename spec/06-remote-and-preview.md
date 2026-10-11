@@ -419,7 +419,7 @@ The gateway announces `tunnel` in `hello.features`. Apps without it show the pre
 - The panel's **Previews** tab lists the workspace's previews: label, `:port`, the owning pane and a status dot. Live and declared previews come first. Suggested previews (found by discovery, B2) follow in grey with an **Open** button, which calls `preview.promote` and then shows the page. Each row's menu has **Forget** (`preview.forget`). Gone previews are not listed.
 - Selecting a preview shows it inside the panel: on the desktop, the embedded view (a toolbar with back, forward, reload, the address, an environment label such as `→ devbox`, DevTools, open in system browser, and **Expand**); on phones, the host-rendered view (B3.6). The agent's terminal stays visible beside it. The panel keeps its resizable width.
 - **Expand** moves the selected preview into the main area at full width, and **Collapse** moves it back. On the desktop, the same `WebContentsView` only gets new bounds, so the page does not reload.
-- The workspace header's Preview button opens the panel on Previews and shows the number of live previews. `mod+4` toggles the Previews panel, next to the other panel shortcuts.
+- The workspace header's Preview button opens the panel on Previews and shows the number of live previews. `mod+shift+b` toggles the Previews panel (`mod+4` is Settings).
 - On phones, the right panel is a sheet, so the Previews list and the preview open full screen.
 - "Open on host" (a pane in the host's TUI layout) is removed from the apps. The "open in browser" button is shown only for non-loopback URLs, because `localhost` in the system browser means the viewing device.
 
