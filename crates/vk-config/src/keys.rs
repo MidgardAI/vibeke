@@ -95,7 +95,7 @@ pub const DEFAULT_KEYMAP: &[(&str, &str)] = &[
     ("cloud_send", ""),
     ("cloud_bring_back", ""),
     ("sandboxes", ""),
-    // Images (spec 18 §6.2): the gallery of new images.
+    // Images (spec 18 §5.3): view the newest new image.
     ("open_images", "prefix+alt+i"),
 ];
 
