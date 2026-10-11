@@ -8,6 +8,7 @@ description = "Test-only support for the real Herdr plugin harness (spec 18): lo
 
 [dependencies]
 vk-compat.workspace = true
+vk-hold.workspace = true
 vk-proto.workspace = true
 vk-redact.workspace = true
 vk-term.workspace = true
@@ -19,6 +20,7 @@ serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 toml.workspace = true
+unicode-segmentation.workspace = true
 unicode-width.workspace = true
 
 [dev-dependencies]
