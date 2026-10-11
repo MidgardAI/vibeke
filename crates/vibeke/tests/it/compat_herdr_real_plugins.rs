@@ -617,7 +617,8 @@ fn the_vibeke_side_starts_without_onboarding_or_update_checks() {
     assert_eq!(cfg["update"]["manifest_check"].as_bool(), Some(false));
     assert_eq!(
         cfg["ui"]["sidebar"]["width"].as_integer(),
-        Some(vk_conformance::herdr::SIDEBAR_WIDTH as i64)
+        Some(vk_conformance::herdr::SIDEBAR_WIDTH as i64 - 1),
+        "Herdr's width counts the separator column, Vibeke's does not"
     );
     assert_eq!(cfg["ui"]["sidebar"]["auto_width"].as_bool(), Some(false));
     // The same file must load as a Vibeke config, without warnings about unknown keys.

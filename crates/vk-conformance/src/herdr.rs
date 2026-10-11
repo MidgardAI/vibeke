@@ -120,7 +120,9 @@ sidebar_width = 26
 
 /// The sidebar width both sides use (18 §10.2): Herdr's default, set explicitly in
 /// [`CONFIG_TOML`], and the Vibeke side's `[ui.sidebar] width` with `auto_width = false`, so
-/// the pane areas, and the popups sized from them, have the same size on both sides.
+/// the pane areas, and the popups sized from them, have the same size on both sides. Herdr's
+/// width includes the separator column and Vibeke's does not, so the Vibeke side sets
+/// `SIDEBAR_WIDTH - 1`.
 pub const SIDEBAR_WIDTH: u16 = 26;
 
 const READY_TIMEOUT: Duration = Duration::from_secs(30);

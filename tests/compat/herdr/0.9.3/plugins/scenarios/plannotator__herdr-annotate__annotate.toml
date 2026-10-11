@@ -88,7 +88,8 @@ type = "pane.agent_status_changed"
 
 # Herdr 0.9.3 sends a prompt only when the pane's foreground process is the reported agent
 # (src/app/api/agents.rs, agent.prompt, and runtime_hosts_agent in src/app/agents.rs). The fake
-# agent pane runs a shell, so Herdr answers `agent_not_ready`.
+# agent pane runs a shell, so Herdr answers `agent_not_ready`. Vibeke's Herdr API makes the same
+# check, so both hosts refuse the send.
 [[step]]
 id = "send-archive"
 kind = "action"
@@ -169,7 +170,7 @@ text = "Archives (1)"
 id = "close-manager-archives"
 kind = "input"
 pane = "manager"
-keys = ["Escape", "Escape"]
+keys = ["Escape"]
 
 [[step]]
 id = "capture"
