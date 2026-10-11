@@ -7,6 +7,13 @@
 //! `herdr` launcher, whose directory is prepended to `PATH`), plugin identity/dirs, the context
 //! JSON and the per-entrypoint variables. Build steps get no socket, launcher, context or pane
 //! identity at all.
+//!
+//! The per-entrypoint variables follow Herdr 0.9.3 (`src/app/api/plugins/runtime.rs` and
+//! `panes.rs`): `HERDR_WORKSPACE_ID`, `HERDR_TAB_ID` and `HERDR_PANE_ID` come from the context's
+//! `workspace_id`, `tab_id` and `focused_pane_id`; `HERDR_PLUGIN_ACTION_ID` is set for actions;
+//! `HERDR_PLUGIN_EVENT` for hooks (the dotted event name) and startup commands (`startup`);
+//! `HERDR_PLUGIN_EVENT_JSON` for hooks only (Herdr's whole `EventEnvelope`);
+//! `HERDR_PLUGIN_ENTRYPOINT_ID` for plugin panes only.
 
 use std::path::{Path, PathBuf};
 
@@ -40,12 +47,20 @@ pub struct Invocation {
     pub bin_path: PathBuf,
     /// `PluginInvocationContext` JSON (`HERDR_PLUGIN_CONTEXT_JSON`).
     pub context: Value,
+    /// `HERDR_WORKSPACE_ID` (the context's `workspace_id`).
     pub workspace_id: Option<String>,
+    /// `HERDR_TAB_ID` (the context's `tab_id`).
     pub tab_id: Option<String>,
+    /// `HERDR_PANE_ID` (the context's `focused_pane_id`).
     pub pane_id: Option<String>,
     pub action_id: Option<String>,
-    /// `(event name, event JSON)` for `[[events]]` hooks.
-    pub event: Option<(String, Value)>,
+    /// `HERDR_PLUGIN_EVENT`: the dotted event name of a hook, or `startup`.
+    pub event: Option<String>,
+    /// `HERDR_PLUGIN_EVENT_JSON` (hooks only): Herdr's `EventEnvelope`,
+    /// `{"event": wire name, "data": {"type": wire name, …}}`.
+    pub event_json: Option<Value>,
+    /// `HERDR_PLUGIN_ENTRYPOINT_ID`: set for plugin panes only. Herdr never sets it for
+    /// actions, hooks or startup commands, and plugins use its absence to detect them.
     pub entrypoint_id: Option<String>,
     pub clicked_url: Option<String>,
     pub link_handler_id: Option<String>,
@@ -97,8 +112,8 @@ pub fn runtime_env(
         &inv.link_handler_id,
         &mut set,
     );
-    if let Some((name, data)) = &inv.event {
-        set.push(("HERDR_PLUGIN_EVENT", name.clone()));
+    opt("HERDR_PLUGIN_EVENT", &inv.event, &mut set);
+    if let Some(data) = &inv.event_json {
         set.push(("HERDR_PLUGIN_EVENT_JSON", data.to_string()));
     }
     if !inv.broker_token.is_empty() {
@@ -106,6 +121,75 @@ pub fn runtime_env(
     }
     env.extend(set.into_iter().map(|(k, v)| (k.to_string(), v)));
     env
+}
+
+/// Keys a `plugin.pane.open` caller cannot set (Herdr's `plugin_pane_protected_env_key`), and
+/// every `VIBEKE_*` key (Vibeke credentials and directory overrides).
+fn protected(k: &str) -> bool {
+    k.starts_with("VIBEKE_")
+        || matches!(
+            k,
+            "HERDR_SOCKET_PATH"
+                | "HERDR_ENV"
+                | "HERDR_PLUGIN_ID"
+                | "HERDR_PLUGIN_ROOT"
+                | "HERDR_PLUGIN_CONFIG_DIR"
+                | "HERDR_PLUGIN_STATE_DIR"
+                | "HERDR_PLUGIN_ENTRYPOINT_ID"
+                | "HERDR_PLUGIN_CONTEXT_JSON"
+                | "HERDR_BIN_PATH"
+        )
+}
+
+/// The `env` of `plugin.pane.open` (`{KEY: "value"}`), checked like Herdr's
+/// `normalize_launch_env` (code `invalid_env`, Herdr's messages), sorted by key, with the
+/// protected keys dropped as Herdr's `plugin_pane_launch_env` does. Errors are
+/// `(code, message)`.
+pub fn caller_env(env: Option<&Value>) -> Result<Vec<(String, String)>, (String, String)> {
+    let map = match env {
+        None | Some(Value::Null) => return Ok(Vec::new()),
+        Some(Value::Object(m)) => m,
+        Some(_) => {
+            return Err((
+                "invalid_params".into(),
+                "env must be an object of strings".into(),
+            ));
+        }
+    };
+    let mut out = Vec::with_capacity(map.len());
+    for (key, value) in map {
+        let Some(value) = value.as_str() else {
+            return Err((
+                "invalid_params".into(),
+                format!("env value for {key} must be a string"),
+            ));
+        };
+        if key.is_empty() {
+            return Err(("invalid_env".into(), "env key must not be empty".into()));
+        }
+        if key.contains('=') {
+            return Err((
+                "invalid_env".into(),
+                format!("env key {key} must not contain '='"),
+            ));
+        }
+        if key.contains('\0') {
+            return Err((
+                "invalid_env".into(),
+                "env key must not contain NUL bytes".into(),
+            ));
+        }
+        if value.contains('\0') {
+            return Err((
+                "invalid_env".into(),
+                format!("env value for {key} must not contain NUL bytes"),
+            ));
+        }
+        out.push((key.clone(), value.to_string()));
+    }
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out.retain(|(k, _)| !protected(k));
+    Ok(out)
 }
 
 /// The environment for `[[build]]` steps: no broker, launcher, context or pane identity.
@@ -158,7 +242,10 @@ mod tests {
             context: json!({"source": "cli"}),
             workspace_id: Some("w1".into()),
             action_id: Some("open".into()),
-            event: Some(("worktree.created".into(), json!({"path": "/x"}))),
+            event: Some("worktree.created".into()),
+            event_json: Some(
+                json!({"event": "worktree_created", "data": {"type": "worktree_created"}}),
+            ),
             ..Default::default()
         };
         let inherited = vec![
@@ -200,9 +287,69 @@ mod tests {
         assert_eq!(get(&env, "HERDR_PLUGIN_EVENT"), Some("worktree.created"));
         assert_eq!(get(&env, "HERDR_PLUGIN_ACTION_ID"), Some("open"));
         assert_eq!(
+            get(&env, "HERDR_PLUGIN_EVENT_JSON"),
+            Some(r#"{"event":"worktree_created","data":{"type":"worktree_created"}}"#)
+        );
+        assert_eq!(
+            get(&env, "HERDR_PLUGIN_ENTRYPOINT_ID"),
+            None,
+            "only plugin panes get an entrypoint id"
+        );
+        assert_eq!(
             env.iter().filter(|(k, _)| k == "HERDR_SOCKET_PATH").count(),
             1,
             "no duplicate keys"
+        );
+    }
+
+    #[test]
+    fn startup_gets_an_event_name_without_json() {
+        let inv = Invocation {
+            event: Some("startup".into()),
+            ..Default::default()
+        };
+        let env = runtime_env(&inv, Vec::new());
+        assert_eq!(get(&env, "HERDR_PLUGIN_EVENT"), Some("startup"));
+        assert_eq!(get(&env, "HERDR_PLUGIN_EVENT_JSON"), None);
+        let pane = Invocation {
+            entrypoint_id: Some("viewer".into()),
+            ..Default::default()
+        };
+        let env = runtime_env(&pane, Vec::new());
+        assert_eq!(get(&env, "HERDR_PLUGIN_ENTRYPOINT_ID"), Some("viewer"));
+    }
+
+    #[test]
+    fn caller_env_is_checked_and_protected() {
+        let env = caller_env(Some(&json!({
+            "ZED": "z",
+            "ALPHA": "a",
+            "HERDR_PANE_ID": "w1:p1",
+            "HERDR_SOCKET_PATH": "/elsewhere",
+            "HERDR_PLUGIN_CONTEXT_JSON": "{}",
+            "VIBEKE_HERDR_TOKEN": "stolen",
+        })))
+        .unwrap();
+        assert_eq!(
+            env,
+            vec![
+                ("ALPHA".to_string(), "a".to_string()),
+                ("HERDR_PANE_ID".to_string(), "w1:p1".to_string()),
+                ("ZED".to_string(), "z".to_string()),
+            ]
+        );
+        assert!(caller_env(None).unwrap().is_empty());
+        assert_eq!(
+            caller_env(Some(&json!({"BAD=KEY": "v"}))).unwrap_err().0,
+            "invalid_env"
+        );
+        assert_eq!(
+            caller_env(Some(&json!({"": "v"}))).unwrap_err().1,
+            "env key must not be empty"
+        );
+        assert_eq!(
+            caller_env(Some(&json!({"K": 1}))).unwrap_err().0,
+            "invalid_params"
         );
     }
 
