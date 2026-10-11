@@ -157,6 +157,7 @@ Vibeke reloads the file after a change. If parsing fails, it keeps the previous 
 # cloud_send               = ""               # send the focused pane's agent to a cloud sandbox
 # cloud_bring_back         = ""               # bring the focused cloud pane back to this host or a paired host
 # sandboxes                = ""               # cloud sandboxes: sign-in, state, suspend, bring back, destroy, clean up
+# open_images              = "prefix+alt+i"   # view new images: the gallery of images agents and you attached
 
 # [keys.copy_mode]
 # mode = "vi"                           # vi | emacs
@@ -199,7 +200,7 @@ Vibeke reloads the file after a change. If parsing fails, it keeps the previous 
 # collapsed         = false
 # show_shell_panes  = false
 # nest_tasks        = true
-# preview_thumbnails = false             # tiny latest-screenshot thumbnail per preview row (kitty graphics)
+# preview_thumbnails = false             # tiny latest-screenshot thumbnail per preview row (kitty graphics or iTerm2)
 # show_state_source = "inferred-only"   # inferred-only | always | never
 
 # [ui.sidebar.isolation_glyphs]
@@ -207,6 +208,11 @@ Vibeke reloads the file after a change. If parsing fails, it keeps the previous 
 # sandbox   = "sb"
 # container = "ct"
 # vm        = "vm"
+
+# [ui.images]
+# sidebar = true      # show the Images section in the sidebar
+# recent  = 5         # images listed there (1-20)
+# popup   = true      # show a card when an agent attaches an image to the focused pane
 
 # Token rules: match by harness, state or regex, then rename, recolor, or hide.
 # [[ui.sidebar.token]]

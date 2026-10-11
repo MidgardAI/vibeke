@@ -38866,12 +38866,160 @@
       "subject": {
         "type": "object",
         "properties": {
+          "screenshot": {
+            "type": "string"
+          },
+          "handle": {
+            "type": "string"
+          },
+          "pane": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "task": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "workspace": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "machine": {
             "type": "string"
           }
-        }
+        },
+        "required": [
+          "screenshot",
+          "handle",
+          "pane",
+          "task",
+          "workspace"
+        ]
       },
-      "data": {}
+      "data": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "handle": {
+            "type": "string"
+          },
+          "task": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "binding": {
+            "type": "string",
+            "enum": [
+              "bound",
+              "illustrative"
+            ]
+          },
+          "environment": {
+            "type": "string",
+            "enum": [
+              "remote_headless",
+              "local_pane",
+              "window",
+              "local_proxy",
+              "agent"
+            ]
+          },
+          "label": {
+            "type": "string"
+          },
+          "blob": {
+            "type": "string"
+          },
+          "preview": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "pane": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "caption": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "head_sha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "taken_by": {
+            "type": "string",
+            "enum": [
+              "agent",
+              "user",
+              "plugin"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "handle",
+          "task",
+          "binding",
+          "environment",
+          "label",
+          "blob",
+          "preview",
+          "pane",
+          "caption",
+          "head_sha",
+          "taken_by"
+        ]
+      }
     },
     "screenshot.deleted": {
       "subject": {

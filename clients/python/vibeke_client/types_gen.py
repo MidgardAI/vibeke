@@ -10970,10 +10970,28 @@ SandboxWarmRecycledData = TypedDict("SandboxWarmRecycledData", {
 })
 
 ScreenshotCapturedSubject = TypedDict("ScreenshotCapturedSubject", {
+    "screenshot": str,
+    "handle": str,
+    "pane": Optional[str],
+    "task": Optional[str],
+    "workspace": Optional[str],
     "machine": NotRequired[str],
 })
 
-ScreenshotCapturedData: TypeAlias = Any
+ScreenshotCapturedData = TypedDict("ScreenshotCapturedData", {
+    "id": str,
+    "handle": str,
+    "task": Optional[str],
+    "binding": Literal["bound", "illustrative"],
+    "environment": Literal["remote_headless", "local_pane", "window", "local_proxy", "agent"],
+    "label": str,
+    "blob": str,
+    "preview": Optional[str],
+    "pane": Optional[str],
+    "caption": Optional[str],
+    "head_sha": Optional[str],
+    "taken_by": Literal["agent", "user", "plugin"],
+})
 
 ScreenshotDeletedSubject = TypedDict("ScreenshotDeletedSubject", {
     "machine": str,

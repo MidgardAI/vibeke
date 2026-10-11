@@ -10768,10 +10768,28 @@ export type SandboxWarmRecycledData = {
 };
 
 export type ScreenshotCapturedSubject = {
+  screenshot: string;
+  handle: string;
+  pane: string | null;
+  task: string | null;
+  workspace: string | null;
   machine?: string;
 };
 
-export type ScreenshotCapturedData = unknown;
+export type ScreenshotCapturedData = {
+  id: string;
+  handle: string;
+  task: string | null;
+  binding: "bound" | "illustrative";
+  environment: "remote_headless" | "local_pane" | "window" | "local_proxy" | "agent";
+  label: string;
+  blob: string;
+  preview: string | null;
+  pane: string | null;
+  caption: string | null;
+  head_sha: string | null;
+  taken_by: "agent" | "user" | "plugin";
+};
 
 export type ScreenshotDeletedSubject = {
   machine: string;
