@@ -524,11 +524,22 @@ mod tests {
         let stop = Arc::new(AtomicBool::new(false));
         let (stop2, root2) = (stop.clone(), root.clone());
         let writer = std::thread::spawn(move || {
+            // Each file is replaced whole (write a sibling outside the checkout, then rename):
+            // `fs::write` truncates first, and a writer paused there on a loaded machine leaves
+            // an empty file on disk, a real state the test would then have to accept.
+            let tmp = root2
+                .parent()
+                .unwrap()
+                .join(format!(".snapshot-writer-{}.tmp", std::process::id()));
+            let put = |name: &str, text: String| {
+                std::fs::write(&tmp, text).unwrap();
+                std::fs::rename(&tmp, root2.join(name)).unwrap();
+            };
             let mut i = 0u64;
             while !stop2.load(Ordering::Relaxed) {
                 i += 1;
-                std::fs::write(root2.join("a.txt"), format!("w {i}\n")).unwrap();
-                std::fs::write(root2.join("b.txt"), format!("w {i}\n")).unwrap();
+                put("a.txt", format!("w {i}\n"));
+                put("b.txt", format!("w {i}\n"));
                 std::thread::sleep(Duration::from_millis(1));
             }
         });

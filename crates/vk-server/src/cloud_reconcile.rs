@@ -205,7 +205,15 @@ pub async fn run(server: &Arc<Server>, only: Option<&str>) -> Vec<Value> {
             })
             .to_string();
             if old.as_ref() != Some(&rec) {
-                cl::save_record(server, &rec);
+                // The pass awaited the provider since it read the record: a box destroyed
+                // meanwhile keeps its record dropped.
+                if old.is_some() {
+                    if !cl::update_record(server, &rec) {
+                        continue;
+                    }
+                } else {
+                    cl::save_record(server, &rec);
+                }
             }
             if rec.ownership == "idle" {
                 apply_idle(server, p.as_ref(), &cred, &mut rec, idle_for_s, &cfg).await;
@@ -216,7 +224,7 @@ pub async fn run(server: &Arc<Server>, only: Option<&str>) -> Vec<Value> {
                 continue;
             }
             rec.ownership = "missing".into();
-            cl::save_record(server, &rec);
+            cl::update_record(server, &rec);
         }
     }
     errors

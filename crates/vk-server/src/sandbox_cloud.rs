@@ -316,7 +316,7 @@ pub fn note_pane_spawned(server: &Server, box_ref: &str, pane: &str) {
         push_last_pane(&mut rec.last_panes, pane);
         rec.held = false;
         if rec != before {
-            save_record(server, &rec);
+            update_record(server, &rec);
         }
     }
 }
@@ -339,6 +339,27 @@ pub fn save_record(server: &Server, rec: &BoxRecord) {
     let v = view_in(&c, rec, caps);
     tx.event("cloud.box.changed", json!({"box": rec.box_ref()}), v);
     let _ = server.commit(&mut c, tx);
+}
+
+/// [`save_record`], but only while the record still exists: a read-modify-write that awaited
+/// the provider must not bring back a record that a destroy dropped meanwhile. Returns whether
+/// it wrote.
+pub fn update_record(server: &Server, rec: &BoxRecord) -> bool {
+    let caps = caps_of(&rec.provider);
+    let mut c = server.core.lock().unwrap();
+    if !matches!(c.store.kv_get(K_BOX, &rec.box_ref()), Ok(Some(_))) {
+        return false;
+    }
+    let mut tx = Tx::new();
+    tx.m.kv(
+        K_BOX,
+        &rec.box_ref(),
+        Some(serde_json::to_string(rec).unwrap_or_default()),
+    );
+    let v = view_in(&c, rec, caps);
+    tx.event("cloud.box.changed", json!({"box": rec.box_ref()}), v);
+    let _ = server.commit(&mut c, tx);
+    true
 }
 
 /// Drop `rec` and emit `cloud.box.changed` with `state: destroyed`.

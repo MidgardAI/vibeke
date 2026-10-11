@@ -475,7 +475,9 @@ export class PreviewProxy {
           this.spliceRest(sock, client, upstream, reader.detach());
           return false;
         }
-        if (r.reusable && !reader.buffered && !upstream.destroyed) this.put(key, up);
+        // A request sent with `Connection: close` told the origin to close: whatever its answer
+        // says, that connection is not reused.
+        if (r.reusable && !o.close && !reader.buffered && !upstream.destroyed) this.put(key, up);
         else upstream.destroy();
         if (r.closeClient || o.close) {
           sock.end();

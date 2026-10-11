@@ -231,10 +231,12 @@ fn is_live(l: &Lease) -> bool {
 }
 
 /// Is `port` free on every address a dev server listens on: `127.0.0.1`, `::1` (Vite and
-/// Node often bind only this) and the IPv4/IPv6 wildcards (a `0.0.0.0` listener does not stop
-/// a `127.0.0.1` bind on macOS). Each probe binds **without** `SO_REUSEADDR` (std's
-/// `TcpListener` sets it, which hides some listeners). An address family the machine does not
-/// have (no IPv6) is skipped.
+/// Node often bind only this) and the IPv4/IPv6 wildcards. Each address is probed on its own:
+/// on macOS a `0.0.0.0` listener does not stop a `127.0.0.1` bind, so only the wildcard probe
+/// sees it. Probes set `SO_REUSEADDR` like the dev servers do: a listener on the same address
+/// still refuses the bind, but a closed connection in `TIME_WAIT` or an outgoing connection
+/// that happens to use the port does not make it look busy. An address family the machine
+/// does not have (no IPv6) is skipped.
 fn port_free(port: u16) -> bool {
     let addrs = [
         SocketAddr::from((Ipv4Addr::LOCALHOST, port)),
@@ -255,6 +257,7 @@ fn probe_bind(a: &SocketAddr) -> bool {
         // The IPv4 probes cover IPv4; this one asks about IPv6 only.
         let _ = s.set_only_v6(true);
     }
+    let _ = s.set_reuse_address(true);
     match s.bind(&(*a).into()) {
         Ok(()) => true,
         Err(e) => matches!(

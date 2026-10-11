@@ -519,3 +519,29 @@ fn box_link_serves_old_broker_names_for_the_new_pane() {
     link.remove_pane(pane);
     assert_eq!(link.resolve("oldpane1"), "oldpane1");
 }
+
+/// A reconcile pass that read a record before a destroy dropped it must not write it back
+/// (it would come back as a `missing` box).
+#[test]
+fn an_update_never_brings_back_a_dropped_record() {
+    let dir = tempfile::Builder::new()
+        .prefix("vkcr")
+        .tempdir_in("/tmp")
+        .unwrap();
+    let srv = crate::hardening::testkit::server(dir.path(), "cr");
+    let rec = BoxRecord {
+        provider: "fake".into(),
+        id: "b1".into(),
+        name: "b1".into(),
+        state: "running".into(),
+        ..Default::default()
+    };
+    save_record(&srv, &rec);
+    let mut seen = load_record(&srv, "fake/b1").unwrap();
+    seen.sessions = 2;
+    assert!(update_record(&srv, &seen));
+    assert_eq!(load_record(&srv, "fake/b1").unwrap().sessions, 2);
+    drop_record(&srv, &rec);
+    assert!(!update_record(&srv, &seen));
+    assert!(load_record(&srv, "fake/b1").is_none());
+}

@@ -589,7 +589,9 @@ fn leases_cross_process_exclusion() {
 #[test]
 fn dead_owner_lease_expires() {
     let tmp = tempfile::tempdir().unwrap();
-    let small = PortPool::parse("41000-41009", 10).unwrap();
+    // Below the ephemeral ranges (Linux 32768+, macOS 49152+): outgoing connections of other
+    // tests never take these ports, so the one block stays free.
+    let small = PortPool::parse("31000-31009", 10).unwrap();
     let pl = PortLeases::new(tmp.path(), small);
 
     let mut child = Command::new("sh").args(["-c", "exit 0"]).spawn().unwrap();
