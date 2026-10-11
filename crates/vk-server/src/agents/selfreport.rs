@@ -18,7 +18,7 @@ static SEQ: LazyLock<Mutex<HashMap<(String, String), i64>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// `true` when the report is fresh (strictly greater `seq` than the last one from `source`).
-pub(super) fn accept_seq(pane: &str, source: &str, seq: Option<i64>) -> bool {
+pub(crate) fn accept_seq(pane: &str, source: &str, seq: Option<i64>) -> bool {
     let Some(seq) = seq else { return true };
     let mut g = SEQ.lock().unwrap();
     let k = (pane.to_string(), source.to_string());

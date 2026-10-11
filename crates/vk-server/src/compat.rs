@@ -86,6 +86,11 @@ struct State {
     next: AtomicU64,
     /// Live broker bindings by socket path.
     bindings: Mutex<HashMap<PathBuf, brokers::Live>>,
+    /// When `notification.show` last delivered (Herdr's one-per-second limit).
+    last_notification: Mutex<Option<std::time::Instant>>,
+    /// Herdr's hook authority per pane (Vibeke id): the `(source, agent)` of the last
+    /// accepted `pane.report_agent`, while its self-reported run lives.
+    authority: Mutex<HashMap<String, (String, String)>>,
     /// Reported metadata (`pane.report_metadata`, `workspace.report_metadata`) by Vibeke id,
     /// and the plugin-set window title (`client.window_title.set`).
     meta: Mutex<ext::Meta>,
@@ -813,7 +818,32 @@ pub async fn serve_wire(server: Arc<Server>, stream: UnixStream, caller: Caller)
             }
         }
     }
-    let r = call(&server, &caller, &req.method, &req.params).await;
+    // Herdr stops a wait when its client goes away (`should_stop_connection`): a wait here
+    // ends without an answer once the peer closes the connection.
+    let waits = matches!(
+        req.method.as_str(),
+        "events.wait" | "pane.wait_for_output" | "agent.wait"
+    );
+    let r = if waits && rd.limit() > 0 {
+        let fut = call(&server, &caller, &req.method, &req.params);
+        tokio::pin!(fut);
+        let mut probe = [0u8; 64];
+        loop {
+            tokio::select! {
+                r = &mut fut => break r,
+                n = rd.read(&mut probe) => match n {
+                    Ok(0) | Err(_) => {
+                        traced(Err("client_disconnected"));
+                        return;
+                    }
+                    // Bytes after the request line are ignored, as in Herdr.
+                    Ok(_) => {}
+                },
+            }
+        }
+    } else {
+        call(&server, &caller, &req.method, &req.params).await
+    };
     audit_call(
         &server,
         &caller,
@@ -1470,8 +1500,14 @@ fn project_event(
                 .map(|(w, _)| w.to_string())
         });
     let status_after = sid("pane").and_then(|p| sn.pane_status(p));
+    // A block move (`workspace.move_block`) is one `workspace.moved` with the block in its data.
+    let kind = if ev.kind == "workspace.moved" && ev.data.get("workspace_ids").is_some() {
+        "workspace.reordered"
+    } else {
+        ev.kind.as_str()
+    };
     let input = hev::Input {
-        kind: &ev.kind,
+        kind,
         workspace: ws.as_deref(),
         tab: tab.as_deref(),
         pane: pane.as_deref(),
@@ -1544,10 +1580,14 @@ fn event_data(
             );
         }
         "workspace.reordered" => {
-            d.insert(
-                "workspace_ids".into(),
-                json!(sn.ws.iter().map(|w| w.handle.clone()).collect::<Vec<_>>()),
-            );
+            // Herdr's `WorkspaceReordered {workspace_ids, before_workspace_id?, workspaces}`.
+            let block = ev.data.get("workspace_ids").cloned().unwrap_or_else(|| {
+                json!(sn.ws.iter().map(|w| w.handle.clone()).collect::<Vec<_>>())
+            });
+            d.insert("workspace_ids".into(), block);
+            if let Some(b) = ev.data.get("before_workspace_id").filter(|b| b.is_string()) {
+                d.insert("before_workspace_id".into(), b.clone());
+            }
             d.insert(
                 "workspaces".into(),
                 json!(sn.ws.iter().map(|w| sn.ws_json(w)).collect::<Vec<_>>()),
@@ -1812,6 +1852,38 @@ fn sp<'a>(p: &'a Value, k: &str) -> Option<&'a str> {
 
 fn req_s<'a>(p: &'a Value, k: &str) -> Result<&'a str, WireError> {
     sp(p, k).ok_or_else(|| WireError::new("invalid_params", format!("{k} is required")))
+}
+
+/// Herdr's `sanitized_notification_text`: line breaks and tabs become spaces, other control
+/// characters go, runs of whitespace collapse, at most `max` characters, trimmed; `None` when
+/// nothing is left.
+fn sanitized_notification(value: &str, max: usize) -> Option<String> {
+    let mut out = String::new();
+    let mut count = 0usize;
+    let mut space = false;
+    for ch in value.chars() {
+        let ch = match ch {
+            '\n' | '\r' | '\t' => ' ',
+            c if c.is_control() => continue,
+            c => c,
+        };
+        if ch.is_whitespace() {
+            if space {
+                continue;
+            }
+            space = true;
+            out.push(' ');
+        } else {
+            space = false;
+            out.push(ch);
+        }
+        count += 1;
+        if count >= max {
+            break;
+        }
+    }
+    let t = out.trim();
+    (!t.is_empty()).then(|| t.to_string())
 }
 
 /// Herdr's `normalize_launch_env` for the `env` of `pane.split`, `tab.create` and
@@ -2405,7 +2477,20 @@ pub async fn call(
             } else if let Some(d) = &caller.default_pane {
                 np["pane_id"] = json!(d);
             }
-            native(server, caller, method, np).await?;
+            let r = native(server, caller, method, np.clone()).await?;
+            // The reporting hook holds the pane's authority (Herdr's `hook_authority`).
+            if method == "pane.report_agent"
+                && r.get("dropped").is_none()
+                && let (Some(pane), Some(agent)) = (sp(&np, "pane_id"), sp(p, "agent"))
+                && let Some(x) = snap(server).pane(pane)
+            {
+                let source = sp(p, "source").unwrap_or("herdr").to_string();
+                state(server)
+                    .authority
+                    .lock()
+                    .unwrap()
+                    .insert(x.id.clone(), (source, agent.trim().to_string()));
+            }
             Ok(ok())
         }
         "pane.resize" => pane_resize(server, caller, &sn, p).await,
@@ -2438,23 +2523,60 @@ pub async fn call(
                     "self-report is limited to your own pane",
                 ));
             }
-            if method == "pane.release_agent" {
-                req_s(p, "source")?;
-                let agent = req_s(p, "agent")?;
-                if agent.trim().is_empty() {
+            // Herdr's per-source hook authority: the last accepted report's `(source, agent)`,
+            // kept while that self-reported run lives.
+            let run = sn
+                .pane_run
+                .get(&x.id)
+                .filter(|r| r.ended_at_ms.is_none() && r.integration == "self_report")
+                .cloned();
+            let st = state(server);
+            let auth = {
+                let mut a = st.authority.lock().unwrap();
+                if run.is_none() {
+                    a.remove(&x.id);
+                }
+                a.get(&x.id).cloned()
+            };
+            let seq = p
+                .get("seq")
+                .and_then(Value::as_u64)
+                .map(|s| i64::try_from(s).unwrap_or(i64::MAX));
+            let accept = |source: &str| crate::agents::selfreport::accept_seq(&x.id, source, seq);
+            let act = if method == "pane.release_agent" {
+                let source = req_s(p, "source")?;
+                let agent = req_s(p, "agent")?.trim();
+                if agent.is_empty() {
                     return Err(WireError::new(
                         "invalid_agent",
                         "agent label must not be empty",
                     ));
                 }
-            }
-            // The hook says its agent left the pane (release) or gives up its authority
-            // (clear): a run that only self-reports ends, so detection takes over again.
-            if let Some(r) = sn.pane_run.get(&x.id)
-                && r.ended_at_ms.is_none()
-                && r.integration == "self_report"
-            {
-                server.agents.end_run(server, &r.id, "released");
+                // Herdr ignores releases from its own integrations and from any source or
+                // agent other than the one holding the authority; the agent must be the
+                // pane's current one; a stale `seq` is dropped.
+                !status::official_agent_source(source, agent)
+                    && auth.as_ref().is_none_or(|(s, a)| s == source && a == agent)
+                    && run.as_ref().is_some_and(|r| {
+                        auth.is_some() || r.harness == status::vibeke_harness(agent)
+                    })
+                    && accept(source)
+            } else {
+                // `clear_agent_authority`: only the holder's source (or any, without one).
+                match &auth {
+                    Some((holder, _)) => {
+                        let source = sp(p, "source");
+                        source.is_none_or(|s| s == holder) && accept(source.unwrap_or(holder))
+                    }
+                    None => false,
+                }
+            };
+            // Detection takes over again: a run that only self-reports ends.
+            if act {
+                st.authority.lock().unwrap().remove(&x.id);
+                if let Some(r) = &run {
+                    server.agents.end_run(server, &r.id, "released");
+                }
             }
             Ok(ok())
         }
@@ -2602,15 +2724,27 @@ pub async fn call(
             ))
         }
         "notification.show" => {
-            let title = req_s(p, "title")?;
-            if title.trim().is_empty() {
-                return Err(WireError::new(
-                    "invalid_params",
-                    "notification title is empty",
-                ));
+            let raw = req_s(p, "title")?;
+            let title = sanitized_notification(raw, 80)
+                .ok_or_else(|| WireError::new("invalid_params", "notification title is empty"))?;
+            let body = sp(p, "body")
+                .or(sp(p, "message"))
+                .and_then(|b| sanitized_notification(b, 240));
+            // Herdr shows at most one API notification per second (`rate_limited`).
+            let now = std::time::Instant::now();
+            {
+                let st = state(server);
+                let mut last = st.last_notification.lock().unwrap();
+                if last.is_some_and(|t| now.duration_since(t) < Duration::from_secs(1)) {
+                    return Ok(typed(
+                        "notification_show",
+                        json!({"shown": false, "reason": "rate_limited"}),
+                    ));
+                }
+                *last = Some(now);
             }
             let mut np = json!({"title": title});
-            if let Some(b) = sp(p, "body").or(sp(p, "message")) {
+            if let Some(b) = body {
                 np["body"] = json!(b);
             }
             native(server, caller, "notification.send", np).await?;
@@ -2621,11 +2755,34 @@ pub async fn call(
                 json!({"shown": true, "reason": "shown"}),
             ))
         }
-        // Vibeke does not read Herdr's config.toml; nothing to apply.
-        "server.reload_config" => Ok(typed(
-            "config_reload",
-            json!({"status": "applied", "diagnostics": []}),
-        )),
+        // Herdr reloads its config.toml; Vibeke reloads its own (`server.reload_config`) and
+        // answers in Herdr's shape: `failed` when the file does not load, `partial` with
+        // diagnostics, else `applied`.
+        "server.reload_config" => {
+            let r = native(server, caller, "server.reload_config", json!({})).await?;
+            let list = |k: &str| r[k].as_array().cloned().unwrap_or_default();
+            let (errors, warnings) = (list("errors"), list("warnings"));
+            let line = |d: &Value| {
+                let msg = d["message"].as_str().unwrap_or("");
+                match (d["key"].as_str(), d["line"].as_u64(), d["col"].as_u64()) {
+                    (Some(k), _, _) => format!("{k}: {msg}"),
+                    (None, Some(l), Some(c)) => format!("line {l}, column {c}: {msg}"),
+                    _ => msg.to_string(),
+                }
+            };
+            let status = if !errors.is_empty() {
+                "failed"
+            } else if !warnings.is_empty() {
+                "partial"
+            } else {
+                "applied"
+            };
+            let diagnostics: Vec<String> = errors.iter().chain(&warnings).map(line).collect();
+            Ok(typed(
+                "config_reload",
+                json!({"status": status, "diagnostics": diagnostics}),
+            ))
+        }
         "events.wait" => events_wait(server, caller, p).await,
         "vibeke.invocation_ticket" => invocation_ticket(server, caller),
         "events.subscribe" => Err(WireError::new(
@@ -2774,7 +2931,7 @@ async fn workspace_move_block(
         }
         None => None,
     };
-    let mut cur: Vec<String> = sn.ws.iter().map(|w| w.id.clone()).collect();
+    let cur: Vec<String> = sn.ws.iter().map(|w| w.id.clone()).collect();
     let mut want: Vec<String> = cur
         .iter()
         .filter(|w| !block.contains(*w))
@@ -2787,21 +2944,35 @@ async fn workspace_move_block(
     for (i, id) in block.iter().enumerate() {
         want.insert(at + i, id.clone());
     }
-    for (k, id) in want.iter().enumerate() {
-        let Some(pos) = cur.iter().position(|w| w == id) else {
-            continue;
-        };
-        if pos != k {
-            native(
-                server,
-                caller,
-                "workspace.move",
-                json!({"workspace": id, "delta": k as i64 - pos as i64}),
-            )
-            .await?;
-            let w = cur.remove(pos);
-            cur.insert(k, w);
+    if caller.ctx.pane_scope.is_some() {
+        return Err(WireError::new(
+            "permission_denied",
+            "agents can't reorder the user's workspaces",
+        ));
+    }
+    // One commit and one event, as Herdr's `move_workspace_block` (no event when nothing
+    // moved).
+    if want != cur {
+        let mut c = server.core.lock().unwrap();
+        let mut tx = crate::core::Tx::new();
+        for (k, id) in want.iter().enumerate() {
+            if let Some(mut w) = c.ws(id).cloned() {
+                w.order = k as f64 + 1.0;
+                tx.ws(w);
+            }
         }
+        let handle = |id: &String| sn.ws(id).map(|w| w.handle.clone());
+        let mut data = json!({
+            "index": want.iter().position(|w| w == &block[0]).unwrap_or(0),
+            "workspace_ids": block.iter().filter_map(handle).collect::<Vec<_>>(),
+        });
+        if let Some(b) = before.as_ref().and_then(handle) {
+            data["before_workspace_id"] = json!(b);
+        }
+        tx.event("workspace.moved", json!({"workspace": block[0]}), data);
+        server
+            .commit(&mut c, tx)
+            .map_err(|e| WireError::new("internal_error", e.to_string()))?;
     }
     let sn = snap(server);
     Ok(typed(

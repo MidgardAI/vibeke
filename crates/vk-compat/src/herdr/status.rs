@@ -27,6 +27,21 @@ pub fn agent_status(execution: &str, open_interaction: bool, unseen_done: bool) 
     }
 }
 
+/// Herdr's `is_official_agent_source`: a release from one of Herdr's own integration hooks
+/// (`herdr:<agent>`) is ignored, because the process detector owns those agents.
+pub fn official_agent_source(source: &str, agent: &str) -> bool {
+    let Some(name) = source.strip_prefix("herdr:") else {
+        return false;
+    };
+    match name {
+        "antigravity_cli" => agent == "agy",
+        "claude" | "codex" | "copilot" | "devin" | "droid" | "kimi" | "omp" | "mastracode"
+        | "pi" | "hermes" | "opencode" | "qodercli" | "qwen" | "kilo" | "cursor" | "grok"
+        | "letta" => agent == name,
+        _ => false,
+    }
+}
+
 /// The most urgent status of a set (workspace `agent_status`); `None` when there is no agent.
 pub fn most_urgent<'a>(statuses: impl IntoIterator<Item = &'a str>) -> Option<&'static str> {
     statuses
@@ -88,5 +103,13 @@ mod tests {
             &["needs_approval", "needs_answer"]
         );
         assert!(wait_conditions("nope").is_empty());
+    }
+
+    #[test]
+    fn official_sources() {
+        assert!(official_agent_source("herdr:claude", "claude"));
+        assert!(official_agent_source("herdr:antigravity_cli", "agy"));
+        assert!(!official_agent_source("herdr:claude", "codex"));
+        assert!(!official_agent_source("my-hook", "claude"));
     }
 }

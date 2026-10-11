@@ -412,7 +412,7 @@ pub const ENTRIES: &[Entry] = &[
         "events.wait",
         Partial,
         "spec",
-        "Herdr's `{match_event, timeout_ms?}`: only `pane_agent_status_changed {pane_id, agent_status}` (every other `EventMatch` is `unsupported_event_wait_match`, as in Herdr); `wait_matched {event: EventEnvelope}` at once when the pane already has the status, else on the first projected change; `pane_not_found`; no deadline without `timeout_ms`, else `timeout`. Vibeke's older `{subscriptions}` form still answers the first matching projected event as `event`",
+        "Herdr's `{match_event, timeout_ms?}`: only `pane_agent_status_changed {pane_id, agent_status}` (every other `EventMatch` is `unsupported_event_wait_match`, as in Herdr); `wait_matched {event: EventEnvelope}` at once when the pane already has the status, else on the first projected change; `pane_not_found`; no deadline without `timeout_ms`, else `timeout`; the wait ends without an answer when the client closes the connection, as in Herdr (also `pane.wait_for_output` and `agent.wait`). Vibeke's older `{subscriptions}` form still answers the first matching projected event as `event`",
     ),
     // ---- methods: 07 §8.3 required-coverage list -------------------------------------------
     e(
@@ -420,7 +420,7 @@ pub const ENTRIES: &[Entry] = &[
         "plugin.list",
         Implemented,
         "spec",
-        "Herdr's `InstalledPluginInfo` (`name`, `version`, `min_herdr_version`, `manifest_path`, `plugin_root`, `enabled`, manifest lists in Herdr's order, `source` as `PluginSourceInfo` with `local`/`github`, `warnings` incl. `manifest unavailable: …`); `plugin_id` filter; Vibeke extras `status`, `trust`, `managed`, `origin`, `config_dir`, `state_dir`, sandbox settings",
+        "Herdr's `InstalledPluginInfo` (`name`, `version`, `min_herdr_version`, `manifest_path`, `plugin_root`, `enabled`, manifest lists in Herdr's order, `source` as `PluginSourceInfo`: `github` (owner, repo, subdir, ref, commit, `managed_path`, `installed_unix_ms`) for repository installs, `{kind: local}` alone for links and for Vibeke's local-directory copies (Herdr installs from GitHub only, so it has no copy kind), `warnings` incl. `manifest unavailable: …`); `plugin_id` filter; Vibeke extras `status`, `trust`, `managed`, `origin`, `config_dir`, `state_dir`, sandbox settings",
     ),
     e(
         Method,
@@ -623,7 +623,7 @@ pub const ENTRIES: &[Entry] = &[
         "server.reload_config",
         Partial,
         "corpus",
-        "Vibeke does not read Herdr's config.toml: `config_reload {status: applied, diagnostics: []}`; Vibeke reloads its own config itself",
+        "reloads Vibeke's own config (Vibeke does not read Herdr's config.toml) and answers Herdr's `config_reload {status, diagnostics}`: `failed` with the parse errors when the file does not load, `partial` with the warnings, else `applied`; refused from panes (`permission_denied`), as Vibeke's `server.reload_config` is",
     ),
     e(
         Method,
@@ -645,7 +645,7 @@ pub const ENTRIES: &[Entry] = &[
         "notification.show",
         Partial,
         "corpus",
-        "`{title, body?}` (`position`, `sound` ignored); empty title `invalid_params`; delivered through Vibeke's notifier; `notification_show {shown: true, reason: shown}` (Herdr's `disabled`, `rate_limited`, `busy` and `no_foreground_client` are never reported)",
+        "`{title, body?}` cleaned as Herdr's `sanitized_notification_text` (control characters dropped, whitespace collapsed, title at most 80 and body 240 characters; an empty title is `invalid_params`); Herdr's one-per-second limit (`notification_show {shown: false, reason: rate_limited}`); otherwise delivered through Vibeke's notifier and `{shown: true, reason: shown}`; `position` and `sound` ignored; `disabled`, `busy` and `no_foreground_client` are never reported (Vibeke's notifier has no Herdr toast delivery setting and queues notifications)",
     ),
     e(
         Method,
@@ -687,7 +687,7 @@ pub const ENTRIES: &[Entry] = &[
         "pane.release_agent",
         Partial,
         "corpus",
-        "`{pane_id, source, agent, seq?}`: `invalid_agent` for an empty label; a run that only self-reports ends (`released`) so detection takes over; `source`/`agent`/`seq` are not compared with the reporting hook (Herdr keeps per-source authority); a pane may release only itself",
+        "`{pane_id, source, agent, seq?}` with Herdr's per-source hook authority: the `(source, agent)` of the last accepted `pane.report_agent` holds the pane; a release from another source or agent, from one of Herdr's own `herdr:<agent>` integrations, for an agent the pane does not run, or with a stale `seq` (per pane and source, shared with the reports) changes nothing; otherwise the self-reported run ends (`released`) so detection takes over; `invalid_agent` for an empty label; `ok`; a pane may release only itself",
     ),
     e(
         Method,
@@ -722,7 +722,7 @@ pub const ENTRIES: &[Entry] = &[
         "workspace.move_block",
         Partial,
         "spec",
-        "`{workspace_ids, before_workspace_id?}` with Herdr's `workspace_move_block_failed` checks; `workspace_list`; Vibeke moves the workspaces one at a time, so subscribers see `workspace.moved` per moved workspace instead of one `workspace.reordered`",
+        "`{workspace_ids, before_workspace_id?}` with Herdr's `workspace_move_block_failed` checks; the block moves in one commit and, when the order changed, emits one `workspace.reordered {workspace_ids, before_workspace_id?, workspaces}`; `workspace_list`; refused from panes",
     ),
     e(
         Method,
@@ -736,7 +736,7 @@ pub const ENTRIES: &[Entry] = &[
         "pane.clear_agent_authority",
         Partial,
         "spec",
-        "`{pane_id, source?, seq?}`: `ok`; a run that only self-reports ends so detection takes over (Herdr drops the hook's authority and keeps the run)",
+        "`{pane_id, source?, seq?}`: `ok`; only the source holding the hook authority (any, without `source`) and only with a fresh `seq`; then the self-reported run ends so detection takes over (Herdr drops the hook's authority and keeps its detected agent; Vibeke's self-reported runs have no detector behind them)",
     ),
     e(
         Method,
@@ -993,7 +993,7 @@ pub const ENTRIES: &[Entry] = &[
         "workspace.reordered",
         Partial,
         "corpus",
-        "declared by one plugin, not named by the spec; emitted after every `workspace.move` (the only reordering Vibeke has); `{workspace_ids, workspaces}` without `before_workspace_id`",
+        "from `workspace.move_block` only, as in Herdr: `{workspace_ids, before_workspace_id?, workspaces}`; `workspace.move` reports `workspace.moved` alone",
     ),
     // ---- CLI --------------------------------------------------------------------------------
     // Each row follows the captured 0.9.3 help (`tests/compat/herdr/0.9.3/cli-help/`) and Herdr's
@@ -1059,7 +1059,7 @@ pub const ENTRIES: &[Entry] = &[
         "plugin install owner/repo[/subdir] [--ref]",
         Partial,
         "spec",
-        "Herdr's grammar `[--ref REF] [--yes|-y] <source>`; without `--yes` and without a terminal: Herdr's `remote plugin install requires --yes when stdin is not interactive` (exit 2); shallow, hardened clone (no hooks/fsmonitor/filters, https+file only) of `https://github.com/owner/repo` at a tag, branch or sha (`@ref` or `--ref`); the resolved commit is recorded and pinned by the trust grant; prints Herdr's `Installed <id> from <source>.` and `Config: <dir>`; no install preview or confirmation prompt; errors in Vibeke's JSON",
+        "Herdr's grammar `[--ref REF] [--yes|-y] <source>`; without `--yes` and without a terminal: Herdr's `remote plugin install requires --yes when stdin is not interactive` (exit 2); shallow, hardened clone (no hooks/fsmonitor/filters, https+file only) of `https://github.com/owner/repo` at a tag, branch or sha (`@ref` or `--ref`); the resolved commit is recorded and pinned by the trust grant; prints Herdr's install preview on stderr (id, name, version, source, ref, commit, counts, build/startup/action/event/pane commands with `(skipped on <platform>)`, warnings, `replaces:`), asks `Install this plugin? [y/N]` without `--yes` (declining removes the new registration: `plugin install cancelled`; a replacement is not asked, because the previous checkout is already replaced), then `Installed <id> from <source>.` and `Config: <dir>`; the preview follows Vibeke's fetch, staging and build instead of preceding the build; errors in Vibeke's JSON",
     ),
     e(
         Cli,
@@ -1108,7 +1108,7 @@ pub const ENTRIES: &[Entry] = &[
         "plugin config-dir",
         Partial,
         "corpus",
-        "prints the bare path and creates the config and state directories, as Herdr does; the path is Vibeke's per-plugin config directory (Herdr's lies under its own config root); an id that is not a safe path component is refused (`invalid_plugin_id`), where Herdr encodes it",
+        "prints the bare path and creates the config and state directories, as Herdr does; any id, encoded into one directory name as Herdr's `plugin_config_path_component` does (also for `HERDR_PLUGIN_CONFIG_DIR`/`HERDR_PLUGIN_STATE_DIR`; a directory an earlier Vibeke version made under the plain id keeps being used); the path is under Vibeke's plugin config root (Herdr's lies under its own config root)",
     ),
     e(
         Cli,

@@ -53,16 +53,70 @@ pub struct PluginDirs {
 }
 
 impl PluginDirs {
+    /// `<config>/<id as Herdr encodes it>` ([`path_component`]).
     pub fn config_dir(&self, id: &str) -> PathBuf {
-        self.config.join(id)
+        dir_for(&self.config, id)
     }
+    /// `<state>/<id as Herdr encodes it>` ([`path_component`]).
     pub fn state_dir(&self, id: &str) -> PathBuf {
-        self.state.join(id)
+        dir_for(&self.state, id)
     }
     /// Where `owner/repo` sources are fetched before staging: `<checkouts>/.fetch/`.
     pub fn fetch_dir(&self) -> PathBuf {
         self.checkouts.join(".fetch")
     }
+}
+
+/// Herdr's `plugin_config_path_component`: a plugin id as one path component. Lowercase
+/// ASCII letters, digits, `.`, `_` and `-` stay; every other byte becomes `%XX`; a trailing
+/// `.` becomes `%2E`; an empty id is `%plugin`; a Windows device name gets a `%` prefix; a
+/// component over 120 characters is cut and ends in `-<12 hex digits of its SHA-256>`.
+pub fn path_component(id: &str) -> String {
+    const MAX: usize = 120;
+    let mut c = String::new();
+    for b in id.bytes() {
+        if b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'.' | b'_' | b'-') {
+            c.push(b as char);
+        } else {
+            c.push_str(&format!("%{b:02X}"));
+        }
+    }
+    if c.ends_with('.') {
+        c.pop();
+        c.push_str("%2E");
+    }
+    if c.is_empty() {
+        return "%plugin".to_string();
+    }
+    let stem = c.split('.').next().unwrap_or(&c).to_ascii_uppercase();
+    let reserved = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || ((stem.starts_with("COM") || stem.starts_with("LPT"))
+            && stem.len() == 4
+            && matches!(stem.as_bytes()[3], b'1'..=b'9'));
+    if reserved {
+        c = format!("%{c}");
+    }
+    if c.chars().count() > MAX {
+        let digest = Sha256::digest(id.as_bytes());
+        let hash: String = digest[..6].iter().map(|b| format!("{b:02x}")).collect();
+        let prefix: String = c.chars().take(MAX - hash.len() - 1).collect();
+        return format!("{prefix}-{hash}");
+    }
+    c
+}
+
+/// `<base>/<encoded id>`. A directory an earlier Vibeke version created under the plain id
+/// (ids whose encoding differs, such as ones with capitals) keeps being used.
+fn dir_for(base: &Path, id: &str) -> PathBuf {
+    let enc = path_component(id);
+    let plain = !id.is_empty() && id != "." && id != ".." && !id.contains(['/', '\\', '\0']);
+    if enc != id && plain {
+        let legacy = base.join(id);
+        if legacy.is_dir() {
+            return legacy;
+        }
+    }
+    base.join(enc)
 }
 
 /// Whether the canonical plugin `root` overlaps the managed checkouts: it lies inside them or
@@ -2021,5 +2075,39 @@ mod tests {
         let e = reg.get("acme.tool").unwrap().clone();
         let (m, dg) = read_manifest(&e.root).unwrap();
         assert!(trust_terms(&e, &m, &dg).contains(e.origin.commit.as_deref().unwrap()));
+    }
+
+    #[test]
+    fn plugin_dirs_encode_ids_like_herdr() {
+        assert_eq!(
+            path_component("examples.agent-telegram-notify"),
+            "examples.agent-telegram-notify"
+        );
+        assert_eq!(path_component("example:a"), "example%3Aa");
+        assert_eq!(path_component("Example"), "%45xample");
+        assert_eq!(path_component("con"), "%con");
+        assert_eq!(path_component("com1.x"), "%com1.x");
+        assert_eq!(path_component("example."), "example%2E");
+        assert_eq!(path_component(""), "%plugin");
+        assert_eq!(path_component(".."), ".%2E");
+        assert_eq!(path_component("a/b"), "a%2Fb");
+        let long = path_component(&"A".repeat(120));
+        assert!(long.chars().count() <= 120, "{long}");
+        assert_ne!(long, path_component(&"B".repeat(120)));
+        let t = tempfile::tempdir().unwrap();
+        let dirs = PluginDirs {
+            registry: t.path().join("plugins.json"),
+            checkouts: t.path().join("checkouts"),
+            config: t.path().join("config"),
+            state: t.path().join("state"),
+        };
+        assert_eq!(
+            dirs.config_dir("Example"),
+            t.path().join("config/%45xample")
+        );
+        // A directory under the plain id from an earlier version keeps being used.
+        std::fs::create_dir_all(t.path().join("state/Example")).unwrap();
+        assert_eq!(dirs.state_dir("Example"), t.path().join("state/Example"));
+        assert_eq!(dirs.state_dir("acme.x"), t.path().join("state/acme.x"));
     }
 }

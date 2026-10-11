@@ -259,7 +259,7 @@ fn herdr_rest_navigation_snapshot_and_small_methods() {
         err_code(&s_, "server.ssh_agent.register", json!({})),
         "connection_local_only"
     );
-    let r = call(&s_, "pane.clear", json!({"pane_id": p1}));
+    let r = call(&s_, "pane.copy_motion", json!({"pane_id": p1}));
     assert_eq!(r["error"]["code"], "unsupported", "{r}");
     assert!(
         s(&r["error"]["message"]).contains("does not serve it"),
@@ -285,6 +285,20 @@ fn herdr_rest_navigation_snapshot_and_small_methods() {
         order.iter().position(|w| w == &ws).unwrap(),
     );
     assert_eq!(b, a + 1, "{order:?}");
+    // One reorder event for the whole block (Herdr's `workspace.reordered`), carried by one
+    // native `workspace.moved` with the block.
+    let moved = s_.events("workspace.moved");
+    let blocks: Vec<&Value> = moved
+        .iter()
+        .filter(|e| e["data"].get("workspace_ids").is_some())
+        .collect();
+    assert_eq!(blocks.len(), 1, "{moved:?}");
+    assert_eq!(blocks[0]["data"]["workspace_ids"], json!([w2]), "{moved:?}");
+    assert_eq!(
+        blocks[0]["data"]["before_workspace_id"],
+        ws.as_str(),
+        "{moved:?}"
+    );
     assert_eq!(
         err_code(&s_, "workspace.move_block", json!({"workspace_ids": []})),
         "workspace_move_block_failed"
@@ -914,6 +928,67 @@ fn herdr_rest_clear_selection_and_agent_manifests() {
     }
 }
 
+#[test]
+fn herdr_rest_release_agent_follows_the_hook_authority() {
+    let s_ = session("");
+    let created = ok(&s_, "workspace.create", json!({"cwd": "/tmp"}));
+    let pane = s(&created["root_pane"]["pane_id"]);
+    let agents = |s_: &Session| {
+        ok(s_, "agent.list", json!({}))["agents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|a| a["pane_id"] == pane.as_str())
+            .count()
+    };
+    ok(
+        &s_,
+        "pane.report_agent",
+        json!({"pane_id": pane, "source": "hook-a", "agent": "claude", "state": "working", "seq": 5}),
+    );
+    assert_eq!(agents(&s_), 1);
+    // Another source, another agent, a stale seq: the holder keeps its authority.
+    for params in [
+        json!({"pane_id": pane, "source": "hook-b", "agent": "claude"}),
+        json!({"pane_id": pane, "source": "hook-a", "agent": "codex"}),
+        json!({"pane_id": pane, "source": "hook-a", "agent": "claude", "seq": 4}),
+    ] {
+        assert_eq!(ok(&s_, "pane.release_agent", params.clone())["type"], "ok");
+        assert_eq!(agents(&s_), 1, "{params}");
+    }
+    assert_eq!(
+        ok(
+            &s_,
+            "pane.clear_agent_authority",
+            json!({"pane_id": pane, "source": "hook-b"})
+        )["type"],
+        "ok"
+    );
+    assert_eq!(agents(&s_), 1, "another source cannot clear the authority");
+    // The holder releases: the self-reported run ends.
+    ok(
+        &s_,
+        "pane.release_agent",
+        json!({"pane_id": pane, "source": "hook-a", "agent": "claude", "seq": 6}),
+    );
+    assert_eq!(agents(&s_), 0);
+    // Herdr's own integrations never release by hook; the holder's source clears.
+    ok(
+        &s_,
+        "pane.report_agent",
+        json!({"pane_id": pane, "source": "herdr:claude", "agent": "claude", "state": "idle"}),
+    );
+    assert_eq!(agents(&s_), 1);
+    ok(
+        &s_,
+        "pane.release_agent",
+        json!({"pane_id": pane, "source": "herdr:claude", "agent": "claude"}),
+    );
+    assert_eq!(agents(&s_), 1, "official sources do not release");
+    ok(&s_, "pane.clear_agent_authority", json!({"pane_id": pane}));
+    assert_eq!(agents(&s_), 0);
+}
+
 fn write_plugin(dir: &Path) {
     write(
         &dir.join("herdr-plugin.toml"),
@@ -1024,6 +1099,11 @@ fn herdr_rest_plugin_registry_cli_prints_like_herdr() {
     let dir = out.trim_end_matches('\n');
     assert_eq!(out.lines().count(), 1, "{out}");
     assert!(Path::new(dir).is_dir(), "{out}");
+    // Any id: Herdr encodes it into one directory name.
+    let (out, _, code) = shim(&s_, &["plugin", "config-dir", "Acme:X/y"]);
+    assert_eq!(code, 0);
+    assert!(out.trim_end().ends_with("/%41cme%3A%58%2Fy"), "{out}");
+    assert!(Path::new(out.trim_end()).is_dir(), "{out}");
 
     // Disable, enable, unlink: response lines.
     let (out, _, _) = shim(&s_, &["plugin", "disable", "acme.rest"]);
@@ -1200,6 +1280,11 @@ fn herdr_rest_result_shapes_follow_the_schema() {
     assert_eq!(
         n,
         json!({"type": "notification_show", "shown": true, "reason": "shown"})
+    );
+    // Herdr shows one API notification per second.
+    assert_eq!(
+        ok(&s_, "notification.show", json!({"title": "Again"})),
+        json!({"type": "notification_show", "shown": false, "reason": "rate_limited"})
     );
     assert_eq!(
         err_code(&s_, "notification.show", json!({"title": "  "})),
