@@ -33,6 +33,8 @@ vk-remote = { workspace = true }
 crossterm = { workspace = true }
 tokio = { workspace = true }
 libc = { workspace = true }
+# Scales an image once to the size it is shown at (iTerm2 inline images, spec 18 §3).
+image = { version = "0.25", default-features = false, features = ["png"] }
 vk-proto = { workspace = true, features = ["tokio"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]

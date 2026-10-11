@@ -467,3 +467,56 @@ fn deletions_by_another_client_or_retention_clear_everything() {
             .any(|c| c.1 == "screenshot.list" && c.2["limit"] == 5)
     );
 }
+
+#[test]
+fn digits_count_panes_and_never_the_image_rows() {
+    let (mut app, mut rxs) = fleet();
+    let before: Vec<_> = crate::draw::sidebar_digit_rows(&app)
+        .into_iter()
+        .map(|r| r.target.map(|t| t.1))
+        .collect();
+    load(&mut app, &mut rxs[0], 0, three(now_ms()), 3);
+    let after: Vec<_> = crate::draw::sidebar_digit_rows(&app)
+        .into_iter()
+        .map(|r| r.target.map(|t| t.1))
+        .collect();
+    assert_eq!(before, after, "pictures do not shift the numbers");
+    // `1` with an image row selected still goes to the first pane row, not the viewer.
+    let sel = nav_index(&app, 0, "S5");
+    app.mode = Mode::Navigate { sel };
+    app.on_key(ch('1'));
+    assert!(!matches!(app.mode, Mode::Popup(Popup::ImageViewer)));
+    if let Some(Some(first)) = before.first() {
+        assert_eq!(app.m().focus.pane.as_ref(), Some(first));
+    }
+}
+
+#[test]
+fn unseen_is_capped_and_browser_automation_is_not_new() {
+    let (mut app, _rxs) = fleet();
+    // An agent's headless-browser capture shows in lists but is not a "new image".
+    crate::push::on_events(
+        &mut app,
+        0,
+        vec![captured(1, "S1", "p1", "remote_headless")],
+        false,
+    );
+    assert!(app.images_ui.unseen.is_empty());
+    // An attached image counts.
+    crate::push::on_events(&mut app, 0, vec![captured(2, "S2", "p1", "agent")], false);
+    assert_eq!(app.images_ui.unseen.len(), 1);
+    // A flood keeps the newest MAX_UNSEEN.
+    for i in 0..(MAX_UNSEEN + 20) {
+        let id = format!("X{i}");
+        crate::push::on_events(
+            &mut app,
+            0,
+            vec![captured(10 + i as i64, &id, "p1", "agent")],
+            false,
+        );
+    }
+    assert_eq!(app.images_ui.unseen.len(), MAX_UNSEEN);
+    let last = format!("X{}", MAX_UNSEEN + 19);
+    assert_eq!(app.images_ui.unseen.last().unwrap().id, last);
+    assert!(!is_unseen(&app, 0, "S2"), "the oldest fell off");
+}

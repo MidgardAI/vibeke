@@ -451,7 +451,7 @@ pub fn watch_session(app: &mut App, mi: usize, params: Value) {
 /// Descriptions for the palette (actions without one show their name).
 pub const ACTION_INFO: &[(&str, &str)] = &[
     ("help", "Show key help"),
-    ("settings", "Settings"),
+    ("settings", "Settings: show where the config file is"),
     ("detach", "Detach this client"),
     ("reload_config", "Reload the config file"),
     (
@@ -935,7 +935,7 @@ pub fn list_key(ev: &KeyEvent, mut filter: String, sel: usize, n: usize) -> List
         Key::Named(NamedKey::Up) => ListKey::Stay(filter, sel.saturating_sub(1)),
         Key::Char('p' | 'k') if ev.mods.ctrl() => ListKey::Stay(filter, sel.saturating_sub(1)),
         Key::Named(NamedKey::Backspace) => {
-            filter.pop();
+            crate::draw::pop_grapheme(&mut filter);
             ListKey::Stay(filter, 0)
         }
         Key::Char('u') if ev.mods.ctrl() => ListKey::Stay(String::new(), 0),
@@ -978,14 +978,7 @@ pub(crate) fn list_row(
     let avail = w.saturating_sub(note_w + 2);
     let mut cx = x;
     for (s, st) in segs {
-        let st = if selected {
-            Style {
-                bg: t.selection,
-                ..st
-            }
-        } else {
-            st
-        };
+        let st = if selected { t.with_sel(st) } else { st };
         let used = g.put_str(cx, y, &s, st, (x + avail).saturating_sub(cx));
         cx += used;
         if cx >= x + avail {
@@ -994,10 +987,7 @@ pub(crate) fn list_row(
     }
     if !note.is_empty() && note_w + 2 < w {
         let st = if selected {
-            Style {
-                bg: t.selection,
-                ..t.dim()
-            }
+            t.with_sel(t.dim())
         } else {
             t.dim()
         };

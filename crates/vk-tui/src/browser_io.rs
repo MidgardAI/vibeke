@@ -1,7 +1,7 @@
 //! Browser pane page I/O on the client (06 B3.2): the console split toggle, page clipboard
 //! writes (OSC 52 under the `clipboard` config), files and clipboard images into the page.
 //!
-//! - **Console split** (`browser_console`, `prefix+alt+c`): `browser.pane.console` on the
+//! - **Console split** (`browser_console`, `prefix+m`): `browser.pane.console` on the
 //!   pane's machine opens (or closes) a split under the browser pane running
 //!   `vibeke browser console --pane <id> --follow`.
 //! - **Page clipboard**: only the machine that renders the page (the pane's media host) may send
@@ -316,12 +316,16 @@ pub fn draw_drop(app: &App, g: &mut crate::screen::Grid, ask: &DropAsk) {
 /// this machine (its clipboard is this machine's); see the module docs for why OSC 5522 isn't
 /// used.
 pub fn request_image_paste(app: &mut App, pane: &str) {
-    let img = if app.caps.host_remote || cfg!(test) {
-        None
-    } else {
-        crate::clipboard::os_clipboard_image().ok().flatten()
-    };
-    on_clip_image(app, pane, img);
+    if app.caps.host_remote || cfg!(test) {
+        return on_clip_image(app, pane, None);
+    }
+    // The tool can take a while (`osascript`): read it off the event loop.
+    let pane = pane.to_string();
+    crate::jobs::spawn(
+        app,
+        || crate::clipboard::os_clipboard_image().ok().flatten(),
+        move |app, img| on_clip_image(app, &pane, img),
+    );
 }
 
 /// The image the read produced (`None` = nothing usable): hand it to the page.

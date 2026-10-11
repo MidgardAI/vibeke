@@ -187,6 +187,20 @@ pub fn ago(now_ms: u64, then_ms: u64) -> String {
     }
 }
 
+/// When machine `mi` was last heard from while it is disconnected: agent ages freeze there
+/// instead of counting on. `None` while connected, or when no time is known.
+pub fn offline_since_ms(app: &App, mi: usize) -> Option<i64> {
+    let m = app.machines.get(mi)?;
+    if m.connected() {
+        return None;
+    }
+    m.link
+        .as_ref()
+        .and_then(|p| p().last_seen_ms)
+        .or_else(|| app.remote.lost_at_ms.get(&mi).copied())
+        .map(|t| t as i64)
+}
+
 /// What follows the machine label in the sidebar, and whether the link is degraded.
 pub fn status_suffix(app: &App, mi: usize) -> (String, bool) {
     let m = &app.machines[mi];

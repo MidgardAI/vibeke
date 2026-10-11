@@ -362,12 +362,51 @@ pub fn ask_key(app: &mut App, ev: KeyEvent, popup: Popup) {
     }
 }
 
-/// ctrl+v with an image on the local clipboard and a remote pane focused (06 A10).
+/// What the local clipboard holds, read on a worker thread (`osascript` takes a while and
+/// can stall).
+struct ClipSnapshot {
+    files: Vec<std::path::PathBuf>,
+    image: Option<(String, Vec<u8>)>,
+}
+
+/// A clipboard probe is on its way (a second ctrl+v meanwhile is ignored).
+static PROBING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// ctrl+v with an image on the local clipboard and a remote pane focused (06 A10). The
+/// clipboard is read off the event loop; when it has nothing for us, ctrl+v goes to the pane
+/// as usual a moment later.
 pub fn image_paste(app: &mut App) {
     let Some(pane) = app.focused_pane() else {
         return;
     };
-    let copied = crate::clipboard::os_clipboard_files();
+    if PROBING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let machine = app.cur;
+    crate::jobs::spawn(
+        app,
+        || {
+            let files = crate::clipboard::os_clipboard_files();
+            // Files first: a clipboard with files also carries their icon as an image.
+            let image = if files.is_empty() {
+                crate::clipboard::os_clipboard_image().ok().flatten()
+            } else {
+                None
+            };
+            ClipSnapshot { files, image }
+        },
+        move |app, snap| {
+            PROBING.store(false, Ordering::SeqCst);
+            image_paste_with(app, machine, pane, snap);
+        },
+    );
+}
+
+fn image_paste_with(app: &mut App, machine: usize, pane: String, snap: ClipSnapshot) {
+    let ClipSnapshot {
+        files: copied,
+        image,
+    } = snap;
     if !copied.is_empty() {
         let files: Vec<Item> = copied
             .iter()
@@ -389,12 +428,11 @@ pub fn image_paste(app: &mut App) {
             app.toast("copied files too large");
             return;
         }
-        let machine = app.cur;
         begin(app, machine, &pane, String::new(), None, files);
         return;
     }
-    match crate::clipboard::os_clipboard_image() {
-        Ok(Some((mime, data))) => {
+    match image {
+        Some((mime, data)) => {
             if data.len() as u64 > max_bytes(app) {
                 app.toast("clipboard image too large");
                 return;
@@ -412,22 +450,23 @@ pub fn image_paste(app: &mut App) {
                 size: data.len() as u64,
                 src: Source::Bytes(Arc::new(data)),
             };
-            let machine = app.cur;
             begin(app, machine, &pane, String::new(), None, vec![item]);
         }
         // No image: ctrl+v goes to the pane as usual.
-        _ => {
+        None => {
             let id = app.next_input;
             app.next_input += 1;
             let key = vk_proto::input::KeyEvent::new(
                 vk_proto::input::Key::Char('v'),
                 vk_proto::input::Mods::CTRL,
             );
-            app.m().send(ClientFrame::Key {
-                input_id: id,
-                pane,
-                key,
-            });
+            if let Some(m) = app.machines.get(machine) {
+                m.send(ClientFrame::Key {
+                    input_id: id,
+                    pane,
+                    key,
+                });
+            }
         }
     }
 }

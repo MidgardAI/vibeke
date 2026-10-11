@@ -366,11 +366,16 @@ pub fn navigate_key(app: &mut App, ev: &KeyEvent, sel: usize) -> bool {
             .nth(i)
             .and_then(|r| r.collision)
     };
-    // A digit that jumps to a collision line opens it.
+    // A digit that jumps to a collision line opens it. Digits skip the Images rows, as
+    // everywhere in navigate mode.
     if let Key::Char(c) = ev.key
         && let Some(d) = c.to_digit(10)
     {
-        let Some(t) = line(app, (d as usize).saturating_sub(1)) else {
+        let Some(t) = crate::draw::sidebar_digit_rows(app)
+            .into_iter()
+            .nth((d as usize).saturating_sub(1))
+            .and_then(|r| r.collision)
+        else {
             return false;
         };
         open(app, Some(t));

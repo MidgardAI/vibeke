@@ -11,7 +11,7 @@
 //!   Any other first key press or paste the pane receives closes the card and reaches the pane
 //!   ([`on_key_to_pane`], [`close`]); releases, repeats, modifier-only presses and the prefix
 //!   key do not close it. Untouched, it hides itself after [`AUTO_HIDE`]. `open_images`
-//!   (`prefix+alt+i`) or a click on the card opens its image in the viewer. Closing by typing
+//!   (`prefix+shift+b`, shown with the real prefix on the card) or a click on the card opens its image in the viewer. Closing by typing
 //!   leaves the image unseen.
 //! - Several images attached before or while it shows: one card for the newest, with a count
 //!   line (`3 new images`); the viewer opens with the unseen images first.
@@ -19,7 +19,7 @@
 //!   Normal/Prefix or a plugin surface opens ([`observe`]), and when its image is deleted.
 //! - Layout: at most half the pane each way, in the corner away from the pane cursor, with a
 //!   border, the caption, the image (slot `card` on [`crate::image_view`], so the iTerm2
-//!   occlusion and repaint rules apply) and `prefix+alt+i open · closes when you type`.
+//!   occlusion and repaint rules apply) and `ctrl+q then B open · esc close`.
 //!   Without graphics it shows the caption text only.
 
 use crate::app::{App, Mode, Pending};
@@ -351,13 +351,12 @@ fn pane_rect(app: &App, pane: &str) -> Option<Rect> {
         })
 }
 
-/// `prefix+alt+i open · esc close`, with the bound key.
+/// `ctrl+q then B open · esc close`, with the bound key (only `esc close` when unbound).
 fn footer(app: &App) -> String {
-    let key = app
-        .keymap
-        .binding_for("open_images")
-        .unwrap_or_else(|| "prefix+alt+i".into());
-    format!("{key} open · esc close")
+    match app.keymap.how_to("open_images") {
+        Some(key) => format!("{key} open · esc close"),
+        None => "esc close".into(),
+    }
 }
 
 /// `s5 · login page`: the caption, else what the recent list says, else `attached image`.
@@ -484,11 +483,11 @@ pub fn draw(app: &App, g: &mut Grid) -> Option<Rect> {
         );
     }
     if l.graphics {
-        let key = app
-            .keymap
-            .binding_for("open_images")
-            .unwrap_or_else(|| "prefix+alt+i".into());
-        match iv::hint(app, &c.key, &format!("{key} to view")) {
+        let open = match app.keymap.how_to("open_images") {
+            Some(key) => format!("{key} to view"),
+            None => "run View new images in the palette".into(),
+        };
+        match iv::hint(app, &c.key, &open) {
             Some(h) => {
                 g.put_str(x, l.image_y, &h, t.dim(), w);
             }

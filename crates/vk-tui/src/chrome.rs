@@ -88,6 +88,7 @@ pub fn action(app: &mut App, action: &str) -> bool {
                 SidebarPosition::Right => SidebarPosition::Left,
             };
             app.sidebar = true;
+            crate::sidebar::toggled(app);
             let side = if sidebar_right(app) { "right" } else { "left" };
             app.toast(format!(
                 "sidebar on the {side} (ui.sidebar.position = \"{side}\" to keep it)"

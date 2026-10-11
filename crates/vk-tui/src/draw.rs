@@ -26,6 +26,9 @@ pub struct SideRow {
     pub image_more: Option<usize>,
     /// A workspace's collision line (machine, collision id): opens the collision popup (05 §10).
     pub collision: Option<(usize, String)>,
+    /// Segments from this index on change with the state or the clock (an agent's label and
+    /// age). They never count toward the sidebar width; a long one is cut with `…`.
+    pub volatile_from: Option<usize>,
 }
 
 impl SideRow {
@@ -150,8 +153,15 @@ pub fn run_state(
             i.source == StateSource::Screen,
         );
     }
+    // A disconnected machine's ages stop at the moment it was last heard from.
+    let now = app
+        .machines
+        .iter()
+        .position(|x| std::ptr::eq(x, m))
+        .and_then(|mi| crate::remote_view::offline_since_ms(app, mi))
+        .unwrap_or_else(vk_now);
     let age = |since: i64| {
-        let s = ((vk_now() - since) / 1000).max(0);
+        let s = ((now - since) / 1000).max(0);
         if s < 60 {
             format!("{s}s")
         } else if s < 3600 {
@@ -264,8 +274,10 @@ fn agent_row(app: &App, mi: usize, r: &AgentRun, indent: &str) -> SideRow {
     } else {
         g
     };
-    // A working agent's glyph pulses with `ui.animate` (08 §2.2).
-    let gst = if r.execution.value == Execution::Working && glyph.starts_with('●') {
+    // A working agent's glyph pulses with `ui.animate` (08 §2.2). Not when the machine is
+    // disconnected: the state is old.
+    let gst = if r.execution.value == Execution::Working && glyph.starts_with('●') && m.connected()
+    {
         crate::sidebar::working_style(app, t.bold(color))
     } else {
         t.bold(color)
@@ -288,6 +300,9 @@ fn agent_row(app: &App, mi: usize, r: &AgentRun, indent: &str) -> SideRow {
         };
         segs.push((format!("{mark} "), t.s(c)));
     }
+    // The label is the volatile part of the row: it changes with the state and the age, so
+    // it never decides the sidebar width (`SideRow::volatile_from`).
+    let volatile_from = segs.len();
     segs.push((label, t.dim()));
     // Another agent is editing the same files in this checkout (05 §10).
     if let Some((mark, rank)) = crate::collision::agent_marker(app, mi, &r.pane) {
@@ -312,11 +327,20 @@ fn agent_row(app: &App, mi: usize, r: &AgentRun, indent: &str) -> SideRow {
     if let Some(n) = crate::gallery::badge(app, mi, &r.pane) {
         segs.push((format!(" 📷{n}"), t.s(t.accent)));
     }
+    // A disconnected machine: its agents are dimmed, and the row says the state is the last
+    // one known (the age stopped when the link was lost).
+    if !m.connected() {
+        for (_, st) in segs.iter_mut() {
+            *st = t.dim();
+        }
+        segs.push((" · last known".into(), t.dim()));
+    }
     let focused = mi == app.cur && app.m().focus.pane.as_deref() == Some(&r.pane);
     SideRow {
         segs,
         target: Some((mi, r.pane.clone())),
         focused,
+        volatile_from: Some(volatile_from),
         ..Default::default()
     }
 }
@@ -344,6 +368,10 @@ pub fn sidebar_rows(app: &App) -> Vec<SideRow> {
     if app.config.ui.sidebar.attention_section {
         let mut need: Vec<(i64, usize, &AgentRun)> = Vec::new();
         for (mi, m) in app.machines.iter().enumerate() {
+            // What a disconnected machine last said is not something to act on.
+            if !m.connected() {
+                continue;
+            }
             for r in &m.model.runs {
                 let opened = m
                     .model
@@ -629,6 +657,15 @@ pub fn sidebar_targets(app: &App) -> Vec<(usize, String)> {
         .collect()
 }
 
+/// What the digits `1`..`9` count in navigate mode: the selectable rows without the Images
+/// section. Pictures sit above the panes; they would shift every number. Arrows reach them.
+pub fn sidebar_digit_rows(app: &App) -> Vec<SideRow> {
+    sidebar_rows(app)
+        .into_iter()
+        .filter(|r| r.selectable() && r.image.is_none() && r.image_more.is_none())
+        .collect()
+}
+
 pub fn sidebar_index_of_focus(app: &App) -> usize {
     let f = app.m().focus.pane.clone();
     sidebar_targets(app)
@@ -779,10 +816,7 @@ pub fn compose(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
             }
             let hl = |st: Style| {
                 if selected || r.focused {
-                    Style {
-                        bg: t.selection,
-                        ..st
-                    }
+                    t.with_sel(st)
                 } else {
                     st
                 }
@@ -865,14 +899,25 @@ pub fn compose(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
     let mut cursor = None;
     if rects.is_empty() && floats.is_empty() {
         let msg = if app.m().connected() {
-            "no panes — prefix+c for a new tab, prefix+shift+n for a workspace"
+            // Name the real keys and the prefix: the prefix is configurable.
+            match (
+                app.keymap.how_to("new_tab"),
+                app.keymap.how_to("new_workspace"),
+            ) {
+                (Some(tab), Some(ws)) => {
+                    format!("no panes — {tab} for a new tab, {ws} for a workspace")
+                }
+                (Some(tab), None) => format!("no panes — {tab} for a new tab"),
+                (None, Some(ws)) => format!("no panes — {ws} for a new workspace"),
+                (None, None) => "no panes — open the command palette to start one".into(),
+            }
         } else {
-            "connecting…"
+            "connecting…".into()
         };
         g.put_str(
             area.x + 2,
             area.y + 1,
-            msg,
+            &msg,
             t.dim(),
             area.w.saturating_sub(2),
         );
@@ -1252,13 +1297,72 @@ pub fn degraded_label(d: &str) -> String {
 /// Widest a run's label gets in the sidebar and tab bar (session titles run to 80 characters).
 pub const RUN_LABEL_MAX: usize = 28;
 
+/// Remove the last grapheme (a letter with its accents, an emoji with its modifiers) from
+/// `s`: what Backspace deletes in a text field.
+pub fn pop_grapheme(s: &mut String) {
+    use unicode_segmentation::UnicodeSegmentation;
+    if let Some((i, _)) = s.grapheme_indices(true).next_back() {
+        s.truncate(i);
+    }
+}
+
+/// `s` cut to at most `n` terminal columns, ending in `…` when it was cut. Counts display
+/// width (a wide character is two columns) and never splits a grapheme.
 pub fn truncate(s: &str, n: usize) -> String {
-    if s.chars().count() <= n {
+    use unicode_segmentation::UnicodeSegmentation;
+    use unicode_width::UnicodeWidthStr;
+    if UnicodeWidthStr::width(s) <= n {
         return s.to_string();
     }
-    let mut t: String = s.chars().take(n.saturating_sub(1)).collect();
+    // One column is for the ellipsis.
+    let budget = n.saturating_sub(1);
+    let mut t = String::new();
+    let mut used = 0;
+    for g in s.graphemes(true) {
+        let w = UnicodeWidthStr::width(g);
+        if used + w > budget {
+            break;
+        }
+        t.push_str(g);
+        used += w;
+    }
     t.push('…');
     t
+}
+
+#[cfg(test)]
+mod truncate_tests {
+    use super::truncate;
+    use unicode_width::UnicodeWidthStr;
+
+    #[test]
+    fn backspace_removes_a_whole_grapheme() {
+        let mut s = String::from("ae\u{301}");
+        super::pop_grapheme(&mut s);
+        assert_eq!(s, "a");
+        let mut s = String::from("x👩\u{200d}💻");
+        super::pop_grapheme(&mut s);
+        assert_eq!(s, "x");
+        let mut s = String::new();
+        super::pop_grapheme(&mut s);
+        assert!(s.is_empty());
+    }
+
+    #[test]
+    fn truncate_counts_columns_and_keeps_graphemes_whole() {
+        assert_eq!(truncate("abc", 3), "abc");
+        assert_eq!(truncate("abcdef", 4), "abc…");
+        // Wide characters take two columns each.
+        assert_eq!(truncate("日本語", 6), "日本語");
+        let t = truncate("日本語テキスト", 7);
+        assert_eq!(t, "日本語…");
+        assert!(UnicodeWidthStr::width(t.as_str()) <= 7);
+        // A combining mark stays with its letter.
+        let t = truncate("e\u{301}e\u{301}e\u{301}e\u{301}", 3);
+        assert_eq!(t, "e\u{301}e\u{301}…");
+        assert_eq!(truncate("", 0), "");
+        assert_eq!(truncate("ab", 0), "…");
+    }
 }
 
 #[cfg(test)]

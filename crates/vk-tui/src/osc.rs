@@ -147,48 +147,74 @@ pub fn on_query(app: &mut App, mi: usize, req: u64, pane: String, sel: ClipSel) 
     }
 }
 
-/// Read the clipboard (or primary selection) of this machine: the override command, else
-/// the platform tool.
-fn read_clipboard(app: &App, primary: bool) -> anyhow::Result<Vec<u8>> {
-    if let Some(d) = &app.osc.test_clipboard {
-        return Ok(d.clone());
-    }
-    if let Some(cmd) = &app.osc.read_cmd {
-        let out = std::process::Command::new("sh")
-            .arg("-c")
-            .arg(cmd)
-            .env(
-                "VIBEKE_CLIPBOARD_SELECTION",
-                if primary { "primary" } else { "clipboard" },
-            )
-            .stdin(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .output()?;
-        anyhow::ensure!(out.status.success(), "VIBEKE_CLIPBOARD_READ_CMD failed");
-        return Ok(out.stdout);
-    }
-    anyhow::ensure!(
-        !app.copyout.env.ssh,
-        "over SSH the clipboard here is not yours"
-    );
-    crate::clipboard::os_paste(primary)
+/// Where a clipboard read comes from, decided on the event loop and run on a worker.
+enum ReadSource {
+    /// Tests: fixed content.
+    Fixed(Vec<u8>),
+    /// `VIBEKE_CLIPBOARD_READ_CMD`.
+    Command(String),
+    /// The platform tool.
+    Platform,
+    /// Not allowed (over SSH the clipboard here is not the user's).
+    Refused(&'static str),
 }
 
-/// Answer a read with the clipboard and say so.
+fn read_source(app: &App) -> ReadSource {
+    if let Some(d) = &app.osc.test_clipboard {
+        return ReadSource::Fixed(d.clone());
+    }
+    if let Some(cmd) = &app.osc.read_cmd {
+        return ReadSource::Command(cmd.clone());
+    }
+    if app.copyout.env.ssh {
+        return ReadSource::Refused("over SSH the clipboard here is not yours");
+    }
+    ReadSource::Platform
+}
+
+/// Read the clipboard (or primary selection) of this machine: the override command, else
+/// the platform tool. Blocks for as long as the tool runs: call it from a worker.
+fn read_clipboard(source: ReadSource, primary: bool) -> anyhow::Result<Vec<u8>> {
+    match source {
+        ReadSource::Fixed(d) => Ok(d),
+        ReadSource::Command(cmd) => {
+            let mut c = std::process::Command::new("sh");
+            c.arg("-c").arg(cmd).env(
+                "VIBEKE_CLIPBOARD_SELECTION",
+                if primary { "primary" } else { "clipboard" },
+            );
+            let (status, out) =
+                crate::clipboard::run_with_timeout(c, None, crate::clipboard::TOOL_TIMEOUT)?;
+            anyhow::ensure!(status.success(), "VIBEKE_CLIPBOARD_READ_CMD failed");
+            Ok(out)
+        }
+        ReadSource::Refused(why) => anyhow::bail!(why),
+        ReadSource::Platform => crate::clipboard::os_paste(primary),
+    }
+}
+
+/// Answer a read with the clipboard and say so. The tool runs on a worker thread: a stuck
+/// `pbpaste` must not freeze the screen, and the asking program gets its answer when it is done.
 fn grant(app: &mut App, mi: usize, req: u64, pane: &str, primary: bool) {
     let label = pane_label(app, mi, pane);
-    match read_clipboard(app, primary) {
-        Ok(mut data) => {
-            data.truncate(READ_MAX);
-            let n = data.len();
-            reply(app, mi, req, pane, Some(data));
-            app.toast(format!("⎘ shared your clipboard ({n} bytes) with {label}"));
-        }
-        Err(e) => {
-            reply(app, mi, req, pane, None);
-            app.toast(format!("⎘ clipboard read by {label} failed — {e}"));
-        }
-    }
+    let source = read_source(app);
+    let pane = pane.to_string();
+    crate::jobs::spawn(
+        app,
+        move || read_clipboard(source, primary).map_err(|e| format!("{e:#}")),
+        move |app, res| match res {
+            Ok(mut data) => {
+                data.truncate(READ_MAX);
+                let n = data.len();
+                reply(app, mi, req, &pane, Some(data));
+                app.toast(format!("⎘ shared your clipboard ({n} bytes) with {label}"));
+            }
+            Err(e) => {
+                reply(app, mi, req, &pane, None);
+                app.toast(format!("⎘ clipboard read by {label} failed — {e}"));
+            }
+        },
+    );
 }
 
 /// `review_clipboard`: open the oldest pending read. False when there is none.

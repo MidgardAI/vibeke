@@ -3877,6 +3877,7 @@ dependencies = [
  "crossterm",
  "futures",
  "getrandom 0.3.4",
+ "image",
  "js-sys",
  "libc",
  "qrcode",
