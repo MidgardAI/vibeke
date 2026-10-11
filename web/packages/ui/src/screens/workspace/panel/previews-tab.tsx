@@ -26,10 +26,14 @@ export function PreviewsTab({ route, sheet = false }: { route: WorkspaceRoute; s
   const previews = useMemo(() => (row ? workspacePreviews(row, host?.dashboard?.previews) : []), [row, host?.dashboard?.previews]);
   const full = (host?.info?.scope ?? host?.record.scope) === 'full' && host?.status === 'online';
   const [busy, setBusy] = useState<string | null>(null);
-  const go = (r: WorkspaceRoute) => navigate(r, { replace: true });
+  // In the phone sheet a preview is never expanded: the sheet shows it itself.
+  const go = (r: WorkspaceRoute) => navigate(sheet ? { ...r, expanded: false } : r, { replace: true });
+  // A limited device may act only on its shared local previews, and the gateway refuses any
+  // machine selector from it.
+  const target = (v: Preview) => (host?.info?.limit ? {} : machineParam(v));
   const selected = selectedPreview(route, previews);
 
-  if (selected && !route.expanded) {
+  if (selected && (sheet || !route.expanded)) {
     return (
       <div className="flex min-h-0 flex-1 flex-col">
         <div className="flex h-9 shrink-0 items-center gap-1.5 border-b border-border pl-1 pr-2">
@@ -54,7 +58,7 @@ export function PreviewsTab({ route, sheet = false }: { route: WorkspaceRoute; s
     if (!conn) return;
     setBusy(v.id);
     try {
-      await conn.request('preview.promote', { preview: v.id, ...machineParam(v) });
+      await conn.request('preview.promote', { preview: v.id, ...target(v) });
       void conn.refresh().catch(() => {});
       go(selectPreviewRoute(route, v.id));
     } catch (e) {
@@ -66,7 +70,7 @@ export function PreviewsTab({ route, sheet = false }: { route: WorkspaceRoute; s
   const forget = async (v: Preview) => {
     if (!conn) return;
     try {
-      await conn.request('preview.forget', { preview: v.id, ...machineParam(v) });
+      await conn.request('preview.forget', { preview: v.id, ...target(v) });
       if (route.preview === v.id) go(selectPreviewRoute(route, null));
       void conn.refresh().catch(() => {});
     } catch (e) {

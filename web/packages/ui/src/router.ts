@@ -153,7 +153,8 @@ const enc = encodeURIComponent;
 export function workspaceRoute(host: string, workspace: string, o: Partial<Omit<WorkspaceRoute, 'name' | 'host' | 'workspace'>> = {}): WorkspaceRoute {
   const legacy = o.show?.startsWith('preview:') ? o.show.slice('preview:'.length) || null : null;
   const preview = o.preview ?? legacy;
-  const panel = o.panel ?? (legacy && !o.expanded ? 'previews' : null);
+  // An old preview link always shows its preview, whatever panel it named.
+  const panel = legacy && !o.expanded ? 'previews' : (o.panel ?? null);
   return {
     name: 'workspace',
     host,
