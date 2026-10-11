@@ -73,6 +73,36 @@ pub fn method_tables() -> Vec<(&'static str, &'static [(&'static str, bool)])> {
     ]
 }
 
+/// Method prefixes whose methods are **experimental**: their params and results may still
+/// change in `vibeke/1`, they are left out of the freeze (`docs/api/vibeke-1.frozen.json`), and
+/// several sit behind `[orchestrate]` flags that are off by default.
+pub const EXPERIMENTAL_PREFIXES: &[&str] = &[
+    "goal.",
+    "quota.",
+    "family.",
+    "merge.",
+    "task.claim",
+    "desk.",
+    "draft.",
+    "vm.",
+    "cloud.",
+    "assistant.",
+    "collision.",
+];
+
+/// The stability tier of a method: `stable` (frozen: no removals, no flag changes) or
+/// `experimental` (see [`EXPERIMENTAL_PREFIXES`]; every `[orchestrate]` method is experimental
+/// too: best-of-N, compare, pick and split).
+pub fn stability_of(method: &str) -> &'static str {
+    if EXPERIMENTAL_PREFIXES.iter().any(|p| method.starts_with(p))
+        || crate::orch::METHODS.iter().any(|(n, _)| *n == method)
+    {
+        "experimental"
+    } else {
+        "stable"
+    }
+}
+
 /// A parsed registry entry: the shape source text and its parse.
 pub struct Entry {
     pub params_src: String,
@@ -332,6 +362,7 @@ pub fn bundle() -> Value {
             name.to_string(),
             json!({
                 "mutating": m,
+                "stability": stability_of(name),
                 "scope": scope,
                 "pane_scope": pane_scope,
                 "params": params,
@@ -596,7 +627,8 @@ theme.get :: {} => {appearance: Appearance, colorfgbg: string, reports?: any}
 theme.set_mode :: {mode: auto|light|dark|null} => {appearance: Appearance, colorfgbg: string, reports?: any}
 status.segments :: {pane?: Target, client?: string}
   => {segments: object, focus: any, appearance: Appearance, client_side: [string]}
-api.methods :: {} => {methods: [{name: string, mutating: bool, milestone?: string, capability?: string}]}
+# stability: experimental methods may still change and are not frozen
+api.methods :: {} => {methods: [{name: string, mutating: bool, stability?: stable|experimental, milestone?: string, capability?: string}]}
 # the JSON Schema bundle of this binary (07 §1.5); with `method`, only that method's params/result
 api.schema :: {method?: string} => {schema: object}
 # `boot_id` changes when the server image changes (start or `server.restart`); `restart_error` says why the last restart could not exec (the old image keeps serving)
@@ -1700,6 +1732,38 @@ mod tests {
             missing.is_empty(),
             "methods handled but missing from every METHODS table: {missing:?}"
         );
+    }
+
+    #[test]
+    fn stability_tiers() {
+        for m in [
+            "goal.create",
+            "quota.status",
+            "family.list",
+            "merge.queue.add",
+            "task.claim",
+            "task.claim.list",
+            "desk.search",
+            "draft.create",
+            "vm.list",
+            "cloud.box.list",
+            "assistant.generate",
+            "collision.list",
+            "task.best_of_n",
+        ] {
+            assert_eq!(stability_of(m), "experimental", "{m}");
+        }
+        for m in [
+            "pane.send_text",
+            "task.create",
+            "workspace.list",
+            "events.subscribe",
+        ] {
+            assert_eq!(stability_of(m), "stable", "{m}");
+        }
+        let b = bundle();
+        assert_eq!(b["x-methods"]["pane.list"]["stability"], "stable");
+        assert_eq!(b["x-methods"]["goal.create"]["stability"], "experimental");
     }
 
     #[test]

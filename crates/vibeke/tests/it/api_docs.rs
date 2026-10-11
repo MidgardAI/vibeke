@@ -105,6 +105,7 @@ pub fn catalog() -> Value {
             json!({
                 "name": name,
                 "mutating": mutating,
+                "stability": vk_server::api_schema::stability_of(name),
                 "scope": scope(name),
                 "pane_scope": pane_scope(name),
                 "gateway": if *mutating { "actor_required" } else { "open" },
@@ -175,10 +176,12 @@ Download the [method catalog](methods.json) or [complete schema](vibeke-1.schema
 
 Clients must accept new fields and event types. The API can change before version 1.0.
 
+**Stable** methods keep their name and flags. **Experimental** methods can still change. Some of them only work when you turn on their feature in the `[orchestrate]` section of the configuration.
+
 ## Methods
 
-| Method | Action | Access |
-|---|---|---|
+| Method | Action | Access | Stability |
+|---|---|---|---|
 "#,
     );
     for m in cat["methods"].as_array().unwrap() {
@@ -189,7 +192,7 @@ Clients must accept new fields and event types. The API can change before versio
         };
         let _ = writeln!(
             s,
-            "| `{}` | {} | {} |",
+            "| `{}` | {} | {} | {} |",
             m["name"].as_str().unwrap(),
             if m["mutating"].as_bool().unwrap() {
                 "Write"
@@ -197,6 +200,11 @@ Clients must accept new fields and event types. The API can change before versio
                 "Read"
             },
             access,
+            if m["stability"] == "experimental" {
+                "Experimental"
+            } else {
+                "Stable"
+            },
         );
     }
     s
@@ -246,9 +254,13 @@ fn config_markdown() -> String {
     s
 }
 
+/// The freeze snapshot: stable methods only (experimental ones may still change).
 fn freeze_doc(cat: &Value) -> Value {
     let mut methods = serde_json::Map::new();
     for m in cat["methods"].as_array().unwrap() {
+        if m["stability"] != "stable" {
+            continue;
+        }
         methods.insert(
             m["name"].as_str().unwrap().to_string(),
             json!({"mutating": m["mutating"], "scope": m["scope"], "pane_scope": m["pane_scope"]}),
@@ -257,7 +269,7 @@ fn freeze_doc(cat: &Value) -> Value {
     json!({
         "api": cat["api"],
         "status": "draft until 1.0",
-        "rule": "frozen methods may not be removed and their mutating/scope/pane_scope flags may not change; additions are allowed",
+        "rule": "frozen (stable) methods may not be removed, become experimental, or change their mutating/scope/pane_scope flags; additions are allowed; experimental methods are not frozen",
         "render_protocol": cat["render_protocol"],
         "holder_protocol": cat["holder_protocol"],
         "methods": methods,
@@ -412,6 +424,9 @@ fn diff_against_freeze(frozen: &Value, cat: &Value) -> Vec<String> {
     for (name, f) in frozen["methods"].as_object().unwrap() {
         match cur.get(name.as_str()) {
             None => problems.push(format!("{name}: removed")),
+            Some(m) if m["stability"] != "stable" => {
+                problems.push(format!("{name}: frozen but now {}", m["stability"]));
+            }
             Some(m) => {
                 if m["mutating"] != f["mutating"] {
                     problems.push(format!(
@@ -493,6 +508,16 @@ fn freeze_check_detects_breaks_and_allows_additions() {
     let cat = catalog();
     let frozen = freeze_doc(&cat);
     assert!(diff_against_freeze(&frozen, &cat).is_empty());
+    // Only stable methods are frozen.
+    assert!(frozen["methods"].get("pane.list").is_some());
+    assert!(frozen["methods"].get("goal.create").is_none());
+    let mut demoted = frozen.clone();
+    demoted["methods"]["goal.create"] =
+        json!({"mutating": true, "scope": "full", "pane_scope": "forbidden"});
+    assert_eq!(
+        diff_against_freeze(&demoted, &cat),
+        vec!["goal.create: frozen but now \"experimental\""]
+    );
 
     // Addition: a frozen snapshot that lacks a current method still passes.
     let mut fewer = frozen.clone();

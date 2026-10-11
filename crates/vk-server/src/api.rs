@@ -1090,7 +1090,9 @@ pub async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) 
             let v: Vec<Value> = crate::api_schema::method_tables()
                 .iter()
                 .flat_map(|(_, t)| t.iter())
-                .map(|(n, m)| json!({"name": n, "mutating": m}))
+                .map(|(n, m)| {
+                    json!({"name": n, "mutating": m, "stability": crate::api_schema::stability_of(n)})
+                })
                 .collect();
             Ok(json!({"methods": v}))
         }
