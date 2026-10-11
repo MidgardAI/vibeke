@@ -11,6 +11,7 @@ pub mod cli_config;
 pub mod events;
 pub mod inventory;
 pub mod launch;
+pub mod links;
 pub mod manifest;
 pub mod migrate;
 pub mod registry;

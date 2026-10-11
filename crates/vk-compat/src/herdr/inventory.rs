@@ -832,16 +832,16 @@ pub const ENTRIES: &[Entry] = &[
     e(
         Method,
         "pane.link.resolve",
-        Missing,
+        Implemented,
         "spec",
-        "`unsupported`: Herdr resolves link regions at a viewport cell of its own renderer; Vibeke's clients detect links themselves",
+        "`{pane_id, viewport_row, col, content_revision?, offset_from_bottom?}` on the server's terminal state: the pane must be on the active tab (`stale_target`), the viewport offset (the client-reported scroll) and the content revision must match (`stale_content`); `pane_link_resolved {regions: [{row, start_col, end_col}]}` for the plain-text `http(s)` URL in the whitespace-bounded token under the cell (soft wraps followed, trailing punctuation and unbalanced closers trimmed as in Herdr); an OSC 8 link has no regions, as in Herdr",
     ),
     e(
         Method,
         "pane.link.activate",
-        Missing,
+        Implemented,
         "spec",
-        "`unsupported`: see `pane.link.resolve`; plugin link handlers run through `plugin.link.open` on the native socket",
+        "as `pane.link.resolve`; the URL is the OSC 8 target or the plain-text `http(s)` URL under the cell; the first matching `[[link_handlers]]` entry (plugins in id order, active ones, handler and action on this platform) runs its action like a click, with the clicked pane's context, `invocation_source: link_click`, `clicked_url` and `link_handler_id`; `pane_link_activated {url?, handled}` (`handled: false` when nothing matched or the action could not start)",
     ),
     e(
         Method,

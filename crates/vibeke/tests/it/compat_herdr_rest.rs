@@ -674,6 +674,141 @@ fn herdr_rest_launch_env_for_split_tab_and_workspace() {
     assert!(!bad.status.success(), "a non-string env value is refused");
 }
 
+#[test]
+fn herdr_rest_pane_links_resolve_and_activate_like_a_click() {
+    let s_ = session("");
+    let src = s_.path("src/links");
+    write(
+        &src.join("herdr-plugin.toml"),
+        r#"id = "acme.links"
+name = "Links"
+version = "0.1.0"
+
+[[actions]]
+id = "open"
+title = "Open"
+command = ["sh", "-c", "printf '%s|%s|%s' \"$HERDR_PLUGIN_CLICKED_URL\" \"$HERDR_PLUGIN_LINK_HANDLER_ID\" \"$HERDR_PLUGIN_CONTEXT_JSON\" > \"$HERDR_PLUGIN_STATE_DIR/link.txt\""]
+
+[[link_handlers]]
+id = "example"
+title = "Example"
+pattern = '^https://example\.com/'
+action = "open"
+"#,
+    );
+    s_.json(&["plugin", "link", src.to_str().unwrap()]);
+    s_.json(&["plugin", "trust", "acme.links", "--legacy"]);
+    let created = ok(
+        &s_,
+        "workspace.create",
+        json!({"cwd": "/tmp", "focus": true}),
+    );
+    let ws = s(&created["workspace"]["workspace_id"]);
+    let pane = s(&created["root_pane"]["pane_id"]);
+    ok(&s_, "workspace.focus", json!({"workspace_id": ws}));
+    s_.herdr(&[
+        "pane",
+        "send-text",
+        &pane,
+        "printf 'go: https://example.com/x/%s, done\\n' $((40+2))\n",
+    ]);
+    ok(
+        &s_,
+        "pane.wait_for_output",
+        json!({"pane_id": pane, "source": "visible", "match": {"type": "substring", "value": "go: https://example.com/x/42"}, "timeout_ms": 20000}),
+    );
+    let read = ok(
+        &s_,
+        "pane.read",
+        json!({"pane_id": pane, "source": "visible"}),
+    );
+    let text = s(&read["read"]["text"]);
+    let (row, line) = text
+        .lines()
+        .enumerate()
+        .find(|(_, l)| l.starts_with("go: https://"))
+        .unwrap();
+    let col = line.find("example").unwrap() as u64;
+
+    // Resolve: the URL's cells, without the trailing comma.
+    let r = ok(
+        &s_,
+        "pane.link.resolve",
+        json!({"pane_id": pane, "viewport_row": row, "col": col}),
+    );
+    assert_eq!(r["type"], "pane_link_resolved", "{r}");
+    assert_eq!(
+        r["regions"],
+        json!([{"row": row, "start_col": 4, "end_col": 4 + "https://example.com/x/42".len() - 1}]),
+        "{r}"
+    );
+    // A blank cell has no link.
+    let r = ok(
+        &s_,
+        "pane.link.resolve",
+        json!({"pane_id": pane, "viewport_row": row, "col": 3}),
+    );
+    assert_eq!(r["regions"], json!([]), "{r}");
+
+    // Activate: the handler runs like a click, with Herdr's link invocation context.
+    let a = ok(
+        &s_,
+        "pane.link.activate",
+        json!({"pane_id": pane, "viewport_row": row, "col": col, "offset_from_bottom": 0}),
+    );
+    assert_eq!(
+        a,
+        json!({"type": "pane_link_activated", "url": "https://example.com/x/42", "handled": true})
+    );
+    let out = s_.path("state/plugins/state/acme.links/link.txt");
+    crate::support::plugins::wait_for("link handler", 15000, || out.exists());
+    let got = crate::support::plugins::read(&out);
+    let mut parts = got.splitn(3, '|');
+    assert_eq!(parts.next(), Some("https://example.com/x/42"), "{got}");
+    assert_eq!(parts.next(), Some("example"), "{got}");
+    let ctx: Value = serde_json::from_str(parts.next().unwrap()).unwrap();
+    assert_eq!(ctx["invocation_source"], "link_click", "{ctx}");
+    assert_eq!(ctx["clicked_url"], "https://example.com/x/42", "{ctx}");
+    assert_eq!(ctx["link_handler_id"], "example", "{ctx}");
+    assert_eq!(ctx["focused_pane_id"], pane.as_str(), "{ctx}");
+
+    // No handler matches a plain word; stale checks and errors as in Herdr.
+    let a = ok(
+        &s_,
+        "pane.link.activate",
+        json!({"pane_id": pane, "viewport_row": row, "col": 0}),
+    );
+    assert_eq!(a, json!({"type": "pane_link_activated", "handled": false}));
+    assert_eq!(
+        err_code(
+            &s_,
+            "pane.link.activate",
+            json!({"pane_id": pane, "viewport_row": row, "col": col, "offset_from_bottom": 5})
+        ),
+        "stale_content"
+    );
+    assert_eq!(
+        err_code(
+            &s_,
+            "pane.link.resolve",
+            json!({"pane_id": pane, "viewport_row": row, "col": col, "content_revision": 1})
+        ),
+        "stale_content"
+    );
+    assert_eq!(
+        err_code(
+            &s_,
+            "pane.link.resolve",
+            json!({"pane_id": "w99:p1", "viewport_row": 0, "col": 0})
+        ),
+        "pane_not_found"
+    );
+    assert_eq!(
+        err_code(&s_, "pane.link.resolve", json!({"pane_id": pane, "col": 0})),
+        "invalid_request"
+    );
+}
+
 fn write_plugin(dir: &Path) {
     write(
         &dir.join("herdr-plugin.toml"),

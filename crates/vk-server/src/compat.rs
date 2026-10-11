@@ -2581,6 +2581,9 @@ pub async fn call(
         }
         // ---- worktrees, notifications, server --------------------------------------------
         "worktree.list" => worktree_list(server, caller, &sn, p).await,
+        "pane.link.resolve" | "pane.link.activate" => {
+            pane_link(server, caller, &sn, method, p).await
+        }
         "worktree.repo_root" => {
             let r = native(
                 server,
@@ -4370,6 +4373,265 @@ fn open_link(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> Result<Value, WireEr
         ictx,
         "link_handler",
     )
+}
+
+// ---- pane links (`pane.link.resolve`, `pane.link.activate`) -----------------------------------
+
+/// The cells of one terminal row at viewport row `vrow`, one grapheme each (combining marks
+/// join the cell before them; a wide character covers two columns).
+fn row_cells(row: &vk_proto::render::Row, vrow: i64, out: &mut Vec<herdr::links::Cell>) {
+    use unicode_width::UnicodeWidthChar;
+    let mut col: u16 = 0;
+    for span in &row.spans {
+        let start = col;
+        for ch in span.text.chars() {
+            let w = ch.width().unwrap_or(0) as u16;
+            if w == 0 {
+                if let Some(last) = out.last_mut().filter(|c| c.row == vrow) {
+                    last.text.push(ch);
+                }
+                continue;
+            }
+            out.push(herdr::links::Cell {
+                row: vrow,
+                col,
+                end_col: col.saturating_add(w - 1),
+                text: ch.to_string(),
+            });
+            col = col.saturating_add(w);
+        }
+        col = start.saturating_add(span.cols).max(col);
+    }
+}
+
+/// What lies under a viewport cell: an OSC 8 target, or the plain-text token (its cells, the
+/// token's cell range and the clicked cell).
+enum LinkHit {
+    Uri(String),
+    Text {
+        cells: Vec<herdr::links::Cell>,
+        token: (usize, usize),
+        clicked: usize,
+    },
+}
+
+/// Herdr's `viewport_link_selection` over Vibeke's engine: the viewport is `offset` rows above
+/// the bottom; a token continues across soft-wrapped rows (also outside the viewport).
+fn link_hit(engine: &vk_term::Engine, offset: u64, col: u16, vrow: u16) -> Option<LinkHit> {
+    let (rows, cols) = (engine.rows(), engine.cols());
+    if col >= cols || vrow >= rows {
+        return None;
+    }
+    let hist = engine.history_len() as i64;
+    let total = hist + i64::from(rows);
+    let top = hist - offset.min(hist as u64) as i64;
+    let fetch = |v: i64| -> Option<vk_proto::render::Row> {
+        let abs = top + v;
+        if abs < 0 || abs >= total {
+            None
+        } else if abs < hist {
+            engine.history_row(abs as usize)
+        } else {
+            Some(engine.row((abs - hist) as u16))
+        }
+    };
+    let here = fetch(i64::from(vrow))?;
+    if let Some(l) = here.link_at(col) {
+        return Some(LinkHit::Uri(l.uri.clone()));
+    }
+    // The logical line: rows joined by soft wraps (bounded like Herdr's word selection).
+    let v = i64::from(vrow);
+    let mut first = v;
+    while v - first < 64 && fetch(first - 1).is_some_and(|r| r.wrapped) {
+        first -= 1;
+    }
+    let mut last = v;
+    while last - v < 64 && fetch(last).is_some_and(|r| r.wrapped) && fetch(last + 1).is_some() {
+        last += 1;
+    }
+    let mut cells = Vec::new();
+    let mut clicked = None;
+    for r in first..=last {
+        let row = if r == v { here.clone() } else { fetch(r)? };
+        let from = cells.len();
+        row_cells(&row, r, &mut cells);
+        if r == v {
+            clicked = cells[from..]
+                .iter()
+                .position(|c| c.col <= col && col <= c.end_col)
+                .map(|i| from + i);
+        }
+    }
+    let clicked = clicked?;
+    let token = herdr::links::token(&cells, clicked)?;
+    Some(LinkHit::Text {
+        cells,
+        token,
+        clicked,
+    })
+}
+
+/// The first link handler whose pattern matches `url` (plugins in id order, active ones only;
+/// the handler and its action must run on this platform): `(plugin, action, handler)`.
+fn find_link_handler(url: &str) -> Option<(String, String, String)> {
+    let reg = Registry::load(&plugin_dirs()).ok()?;
+    let pf = herdr::current_platform();
+    for e in reg.plugins.values() {
+        let (st, m) = registry::entry_status(e);
+        let (Status::Active, Some(m)) = (st, m) else {
+            continue;
+        };
+        for l in &m.link_handlers {
+            if !m.entry_on(l.platforms.as_ref(), pf) {
+                continue;
+            }
+            let Some(a) = m.resolve_action(&l.action) else {
+                continue;
+            };
+            if !m.entry_on(a.platforms.as_ref(), pf) {
+                continue;
+            }
+            let Ok(re) = regex::Regex::new(&l.pattern) else {
+                continue;
+            };
+            if re.is_match(url) {
+                return Some((e.id.clone(), a.id.clone(), l.id.clone()));
+            }
+        }
+    }
+    None
+}
+
+/// Herdr `pane.link.resolve` / `pane.link.activate` `{pane_id, viewport_row, col,
+/// content_revision?, offset_from_bottom?}` (`read_checked_pane_link`): the pane must be
+/// visible (`stale_target`), the viewport offset and content revision must still match
+/// (`stale_content`). Resolve answers `pane_link_resolved {regions}` (the plain-text URL's
+/// cells; an OSC 8 link has none, as in Herdr); activate finds the URL (an OSC 8 target, or a
+/// plain `http(s)` URL) and runs the first matching plugin link handler with the clicked
+/// pane's context, `clicked_url` and `link_handler_id`, answering
+/// `pane_link_activated {url?, handled}`.
+async fn pane_link(
+    server: &Arc<Server>,
+    caller: &Caller,
+    sn: &Snap,
+    method: &str,
+    p: &Value,
+) -> Result<Value, WireError> {
+    let field = |k: &str| -> Result<u16, WireError> {
+        match p.get(k) {
+            None | Some(Value::Null) => Err(wire::invalid_request(format!("missing field `{k}`"))),
+            Some(v) => v
+                .as_u64()
+                .and_then(|n| u16::try_from(n).ok())
+                .ok_or_else(|| wire::invalid_request(format!("invalid value for `{k}`"))),
+        }
+    };
+    let pid = sp(p, "pane_id").ok_or_else(|| wire::invalid_request("missing field `pane_id`"))?;
+    let (vrow, col) = (field("viewport_row")?, field("col")?);
+    let op = if method == "pane.link.resolve" {
+        "resolution"
+    } else {
+        "activation"
+    };
+    let x = sn
+        .pane(pid)
+        .cloned()
+        .ok_or_else(|| WireError::new("pane_not_found", "pane not found"))?;
+    let visible = sn
+        .tab(&x.tab)
+        .is_some_and(|t| sn.tab_is_active(t) && t.zoomed_pane.as_deref().is_none_or(|z| z == x.id));
+    if !visible {
+        return Err(WireError::new("stale_target", "pane is no longer visible"));
+    }
+    let rt = server
+        .pane_rt(&x.id)
+        .ok_or_else(|| WireError::new("pane_not_found", "pane runtime not found"))?;
+    let offset = u64::from(
+        sn.meta
+            .scroll
+            .get(&x.id)
+            .or_else(|| sn.meta.scroll.get(&x.handle))
+            .copied()
+            .unwrap_or(0),
+    );
+    if p.get("offset_from_bottom")
+        .and_then(Value::as_u64)
+        .is_some_and(|o| o != offset)
+    {
+        return Err(WireError::new(
+            "stale_content",
+            format!("pane viewport changed before link {op}"),
+        ));
+    }
+    let (hit, rows) = {
+        let sc = rt.screen.lock().unwrap();
+        if p.get("content_revision")
+            .and_then(Value::as_u64)
+            .is_some_and(|r| r != sc.rev)
+        {
+            return Err(WireError::new(
+                "stale_content",
+                format!("pane content changed before link {op}"),
+            ));
+        }
+        (link_hit(&sc.engine, offset, col, vrow), sc.engine.rows())
+    };
+    if method == "pane.link.resolve" {
+        let regions: Vec<Value> = match &hit {
+            Some(LinkHit::Text {
+                cells,
+                token,
+                clicked,
+            }) => {
+                let (text, b) = herdr::links::token_text(cells, *token, *clicked);
+                herdr::links::url_byte_range(&text, b)
+                    .map(|r| herdr::links::regions(cells, *token, &r, rows))
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|r| json!({"row": r.row, "start_col": r.start_col, "end_col": r.end_col}))
+                    .collect()
+            }
+            _ => Vec::new(),
+        };
+        return Ok(typed("pane_link_resolved", json!({"regions": regions})));
+    }
+    let url = match hit {
+        Some(LinkHit::Uri(u)) => Some(u),
+        Some(LinkHit::Text {
+            cells,
+            token,
+            clicked,
+        }) => {
+            let (text, b) = herdr::links::token_text(&cells, token, clicked);
+            herdr::links::url_at_byte(&text, b).map(str::to_string)
+        }
+        None => None,
+    };
+    let mut handled = false;
+    if let Some(u) = &url
+        && let Some((plugin, action, handler)) = find_link_handler(u)
+        && let Some(mut ictx) = sn.ctx_for_pane(server, &x, "link_click")
+    {
+        ictx.invocation_source = Some("link_click".into());
+        ictx.clicked_url = Some(u.clone());
+        ictx.link_handler_id = Some(handler);
+        match invoke_action(
+            server,
+            caller.ctx.pane_scope.as_deref(),
+            &plugin,
+            &action,
+            ictx,
+            "link_handler",
+        ) {
+            Ok(_) => handled = true,
+            Err(e) => tracing::warn!(url = %u, error = %e, "plugin link handler not invoked"),
+        }
+    }
+    let mut v = json!({"handled": handled});
+    if let Some(u) = url {
+        v["url"] = json!(u);
+    }
+    Ok(typed("pane_link_activated", v))
 }
 
 fn split_qualified(q: &str) -> Result<(String, String), WireError> {
