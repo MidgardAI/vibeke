@@ -741,6 +741,16 @@ pub async fn serve_wire(server: Arc<Server>, stream: UnixStream, caller: Caller)
                 return;
             }
         };
+        // Herdr's output watchers: the pane must exist and the regex compile before the
+        // subscription starts.
+        let mut watchers = match output_watchers(&server, &subs) {
+            Ok(w) => w,
+            Err(e) => {
+                traced(Err(e.code.as_str()));
+                let _ = write_line(&mut wr, &wire::err_line(&req.id, &e)).await;
+                return;
+            }
+        };
         let mut rx = server.events.subscribe();
         let mut proj = seeded_projector(&server);
         traced(Ok(()));
@@ -751,11 +761,30 @@ pub async fn serve_wire(server: Arc<Server>, stream: UnixStream, caller: Caller)
         {
             return;
         }
+        let mut tick = tokio::time::interval(Duration::from_millis(100));
         loop {
-            let ev = match rx.recv().await {
-                Ok(e) => e,
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                Err(_) => return,
+            let ev = tokio::select! {
+                r = rx.recv() => match r {
+                    Ok(e) => Some(e),
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(_) => return,
+                },
+                _ = tick.tick(), if !watchers.is_empty() => None,
+            };
+            let Some(ev) = ev else {
+                for w in watchers.iter_mut() {
+                    let Some(data) = poll_watcher(&server, &caller, w).await else {
+                        continue;
+                    };
+                    if check_broker(&server, &caller).is_err() {
+                        return;
+                    }
+                    let line = hev::stream_event("pane.output_matched", data).to_string();
+                    if write_line(&mut wr, &line).await.is_err() {
+                        return;
+                    }
+                }
+                continue;
             };
             for (name, pane, data) in project_event(&server, &mut proj, &ev) {
                 if !subs.iter().any(|s| hev::matches(s, name, pane.as_deref())) {
@@ -2659,6 +2688,97 @@ async fn workspace_move_block(
         "workspace_list",
         json!({"workspaces": sn.ws.iter().map(|w| sn.ws_json(w)).collect::<Vec<_>>()}),
     ))
+}
+
+/// One Herdr `pane.output_matched` subscription with a matcher (Herdr
+/// `ActiveOutputMatchedSubscription`).
+struct OutputWatcher {
+    pane: String,
+    handle: String,
+    workspace: String,
+    tab: String,
+    watch: hev::OutputWatch,
+    re: Option<regex::Regex>,
+    /// The output revision last read; the pane is read again only when it changed.
+    rev: Option<u64>,
+    /// A line matched at the last read: the next event needs a read without a match first.
+    matching: bool,
+}
+
+/// The output watchers of `subs`; `pane_not_found` or `invalid_regex` refuse the subscription.
+fn output_watchers(
+    server: &Server,
+    subs: &[hev::Subscription],
+) -> Result<Vec<OutputWatcher>, WireError> {
+    let sn = snap(server);
+    let mut out = Vec::new();
+    for sub in subs {
+        let (Some(w), Some(id)) = (&sub.output, &sub.pane_id) else {
+            continue;
+        };
+        let x = sn
+            .pane(id)
+            .ok_or_else(|| WireError::new("pane_not_found", format!("pane {id} not found")))?;
+        let re = if w.regex {
+            Some(
+                regex::Regex::new(&w.value)
+                    .map_err(|e| WireError::new("invalid_regex", e.to_string()))?,
+            )
+        } else {
+            None
+        };
+        out.push(OutputWatcher {
+            pane: x.id.clone(),
+            handle: x.handle.clone(),
+            workspace: sn.ws_handle(&x.workspace).unwrap_or_default(),
+            tab: sn.tab_handle(&x.tab).unwrap_or_default(),
+            watch: w.clone(),
+            re,
+            rev: None,
+            matching: false,
+        });
+    }
+    Ok(out)
+}
+
+/// Read a watched pane when its output changed; Herdr's `{pane_id, matched_line, read}` when a
+/// line starts to match (once per run of matching reads, as Herdr does).
+async fn poll_watcher(
+    server: &Arc<Server>,
+    caller: &Caller,
+    w: &mut OutputWatcher,
+) -> Option<Value> {
+    let rev = server.pane_rt(&w.pane).map(|r| r.rev())?;
+    if w.rev == Some(rev) {
+        return None;
+    }
+    w.rev = Some(rev);
+    let mut np = json!({"pane": w.pane, "source": w.watch.source});
+    np["lines"] = json!(w.watch.lines.unwrap_or(50));
+    let r = native(server, caller, "pane.read", np).await.ok()?;
+    let text = r["text"].as_str().unwrap_or("");
+    let substring = w.re.is_none().then_some(w.watch.value.as_str());
+    let Some(line) = match_line(text, substring, w.re.as_ref()) else {
+        w.matching = false;
+        return None;
+    };
+    if std::mem::replace(&mut w.matching, true) {
+        return None;
+    }
+    Some(json!({
+        "pane_id": w.handle,
+        "matched_line": line,
+        "read": {
+            "pane_id": w.handle,
+            "workspace_id": w.workspace,
+            "tab_id": w.tab,
+            "source": w.watch.source,
+            "format": "text",
+            "text": text,
+            "revision": r["revision"].as_u64().unwrap_or(rev),
+            "truncated": false,
+        },
+    }))
 }
 
 /// Herdr's `PaneReadResult` of `x`: `{pane_id, workspace_id, tab_id, source, format, text,

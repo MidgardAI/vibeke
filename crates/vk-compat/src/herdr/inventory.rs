@@ -394,7 +394,13 @@ pub const ENTRIES: &[Entry] = &[
         "spec",
         "reuses the workspace rooted at the worktree or creates one; `worktree_opened {workspace, tab, root_pane, worktree, already_open}` (Vibeke extra `created`); only `path` is accepted; emits `worktree.opened`",
     ),
-    e(Method, "events.subscribe", Partial, "spec", "see events"),
+    e(
+        Method,
+        "events.subscribe",
+        Partial,
+        "spec",
+        "`subscription_started`, then event lines; `pane.output_matched` with `source` and `match` runs an output watcher; see events",
+    ),
     e(
         Method,
         "events.wait",
@@ -939,7 +945,7 @@ pub const ENTRIES: &[Entry] = &[
         "pane.output_matched",
         Partial,
         "spec",
-        "fires when a compat `pane.wait_for_output` matcher matches (Herdr matches in the subscription itself); `{pane_id, matched_line, read}`",
+        "a subscription with Herdr's `source` and `match` watches the pane itself: it reads the source (`recent` as `recent_unwrapped`, `lines` default 50) whenever the output revision changes (checked every 100 ms) and fires `{pane_id, matched_line, read}` each time a line starts to match, as Herdr does; `invalid_regex`/`pane_not_found` refuse the subscription; Vibeke's older form without `match` relays `pane.wait_for_output` matches",
     ),
     e(
         Event,

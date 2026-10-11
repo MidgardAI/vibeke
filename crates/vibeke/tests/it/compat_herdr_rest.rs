@@ -762,3 +762,55 @@ fn herdr_rest_worktree_list_shape() {
         "not_git_worktree"
     );
 }
+
+#[test]
+fn herdr_rest_output_matched_subscription_watches_the_pane() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixStream;
+    let s_ = session("[compat.herdr]\nenabled = true\n");
+    let (_, _, p1, _, _) = three_panes(&s_);
+    let sock = s_.path("run/herdr-compat/herdr.sock");
+    crate::support::plugins::wait_for("compat socket", 10000, || sock.exists());
+    let open = |subs: Value| {
+        let mut st = UnixStream::connect(&sock).unwrap();
+        st.set_read_timeout(Some(std::time::Duration::from_secs(20)))
+            .unwrap();
+        let req =
+            json!({"id": "sub", "method": "events.subscribe", "params": {"subscriptions": subs}});
+        st.write_all(format!("{req}\n").as_bytes()).unwrap();
+        let mut rd = BufReader::new(st);
+        let mut l = String::new();
+        rd.read_line(&mut l).unwrap();
+        (rd, serde_json::from_str::<Value>(&l).unwrap())
+    };
+    // A bad regex or an unknown pane refuses the subscription.
+    let (_, ack) = open(
+        json!([{"type": "pane.output_matched", "pane_id": p1, "source": "recent", "match": {"type": "regex", "value": "("}}]),
+    );
+    assert_eq!(ack["error"]["code"], "invalid_regex", "{ack}");
+    let (_, ack) = open(
+        json!([{"type": "pane.output_matched", "pane_id": "w99:p9", "source": "recent", "match": {"type": "substring", "value": "x"}}]),
+    );
+    assert_eq!(ack["error"]["code"], "pane_not_found", "{ack}");
+
+    let (mut rd, ack) = open(
+        json!([{"type": "pane.output_matched", "pane_id": p1, "source": "recent", "match": {"type": "substring", "value": "watched-42"}}]),
+    );
+    assert_eq!(ack["result"]["type"], "subscription_started", "{ack}");
+    s_.herdr(&["pane", "send-text", &p1, "echo watched-$((40+2))\n"]);
+    let mut l = String::new();
+    rd.read_line(&mut l).unwrap();
+    let ev: Value = serde_json::from_str(&l).unwrap();
+    // Herdr's `SubscriptionEventEnvelope`: dotted name, plain data.
+    assert_eq!(ev["event"], "pane.output_matched", "{ev}");
+    assert_eq!(ev["data"]["pane_id"], p1.as_str(), "{ev}");
+    assert!(
+        s(&ev["data"]["matched_line"]).contains("watched-42"),
+        "{ev}"
+    );
+    assert_eq!(ev["data"]["read"]["source"], "recent_unwrapped", "{ev}");
+    assert!(
+        s(&ev["data"]["read"]["text"]).contains("watched-42"),
+        "{ev}"
+    );
+}

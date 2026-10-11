@@ -304,6 +304,35 @@ impl Projector {
 pub struct Subscription {
     pub kind: String,
     pub pane_id: Option<String>,
+    /// `pane.output_matched` with Herdr's `source`, `match` and `lines`: an output watcher.
+    pub output: Option<OutputWatch>,
+}
+
+/// Herdr's `pane.output_matched` subscription matcher: the pane is read from `source`
+/// (`recent` reads `recent_unwrapped`, as Herdr does) and an event fires each time a line
+/// starts to match (not again while it keeps matching).
+#[derive(Debug, Clone, PartialEq)]
+pub struct OutputWatch {
+    /// The source the read uses (after Herdr's `recent` → `recent_unwrapped`).
+    pub source: String,
+    pub lines: Option<u64>,
+    /// `true` for `{type: "regex"}`, `false` for `{type: "substring"}`.
+    pub regex: bool,
+    pub value: String,
+}
+
+/// Herdr's `{type: substring|regex, value}` (`OutputMatch`).
+pub fn parse_output_match(m: &serde_json::Value) -> Result<(bool, String), (&'static str, String)> {
+    let kind = m.get("type").and_then(|v| v.as_str()).unwrap_or("");
+    let value = m
+        .get("value")
+        .and_then(|v| v.as_str())
+        .ok_or(("invalid_params", "match.value is required".to_string()))?;
+    match kind {
+        "substring" => Ok((false, value.to_string())),
+        "regex" => Ok((true, value.to_string())),
+        other => Err(("invalid_params", format!("unknown match type `{other}`"))),
+    }
 }
 
 /// Validate `events.subscribe {subscriptions: [...]}` params. Errors are `(code, message)`.
@@ -333,9 +362,30 @@ pub fn parse_subscriptions(
         if PANE_SCOPED.contains(&kind) && pane_id.is_none() {
             return Err(("invalid_params", format!("`{kind}` requires pane_id")));
         }
+        // Herdr requires `source` and `match` here; Vibeke's older form without them only
+        // relays matches that `pane.wait_for_output` calls report.
+        let output = match (kind, s.get("match")) {
+            ("pane.output_matched", Some(m)) => {
+                let (regex, value) = parse_output_match(m)?;
+                let source = match s.get("source").and_then(|v| v.as_str()) {
+                    Some("recent") => "recent_unwrapped",
+                    Some(x @ ("visible" | "recent_unwrapped" | "detection")) => x,
+                    Some(x) => return Err(("invalid_params", format!("unknown source `{x}`"))),
+                    None => return Err(("invalid_params", "source is required".to_string())),
+                };
+                Some(OutputWatch {
+                    source: source.to_string(),
+                    lines: s.get("lines").and_then(|v| v.as_u64()),
+                    regex,
+                    value,
+                })
+            }
+            _ => None,
+        };
         out.push(Subscription {
             kind: kind.to_string(),
             pane_id,
+            output,
         });
     }
     Ok(out)
@@ -431,13 +481,45 @@ pub fn parse_event_match(params: &serde_json::Value) -> Result<StatusWait, (&'st
 
 /// Whether `sub` wants a Herdr event about `pane` (Herdr pane id).
 pub fn matches(sub: &Subscription, event: &str, pane: Option<&str>) -> bool {
-    sub.kind == event && sub.pane_id.as_deref().is_none_or(|want| Some(want) == pane)
+    // An output watcher produces its own events; it does not relay other matches.
+    sub.output.is_none()
+        && sub.kind == event
+        && sub.pane_id.as_deref().is_none_or(|want| Some(want) == pane)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn output_subscriptions_carry_herdrs_matcher() {
+        let subs = parse_subscriptions(&json!({"subscriptions": [
+            {"type": "pane.output_matched", "pane_id": "w1:p1", "source": "recent", "match": {"type": "regex", "value": "ok$"}, "lines": 20},
+            {"type": "pane.output_matched", "pane_id": "w1:p1"},
+        ]}))
+        .unwrap();
+        assert_eq!(
+            subs[0].output,
+            Some(OutputWatch {
+                source: "recent_unwrapped".into(),
+                lines: Some(20),
+                regex: true,
+                value: "ok$".into(),
+            })
+        );
+        assert!(!matches(&subs[0], "pane.output_matched", Some("w1:p1")));
+        assert_eq!(subs[1].output, None);
+        assert!(matches(&subs[1], "pane.output_matched", Some("w1:p1")));
+        for bad in [
+            json!({"type": "pane.output_matched", "pane_id": "w1:p1", "match": {"type": "substring", "value": "x"}}),
+            json!({"type": "pane.output_matched", "pane_id": "w1:p1", "source": "recent", "match": {"type": "glob", "value": "x"}}),
+            json!({"type": "pane.output_matched", "pane_id": "w1:p1", "source": "recent", "match": {"type": "substring"}}),
+        ] {
+            let e = parse_subscriptions(&json!({"subscriptions": [bad]})).unwrap_err();
+            assert_eq!(e.0, "invalid_params", "{e:?}");
+        }
+    }
 
     #[test]
     fn event_match_waits_only_for_agent_status() {
