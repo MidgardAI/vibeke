@@ -677,7 +677,7 @@ group.add :: {group: Target, workspace?: Target, index?: int} => {workspace: Wor
 group.remove :: {workspace?: Target, index?: int} => {workspace: Workspace, group: string|null}
 workspace.list :: {group?: Target} => {workspaces: [Workspace]}
 workspace.get :: {workspace?: Target} => {workspace: Workspace}
-workspace.create :: {cwd?: string, name?: string, group?: Target, focus?: bool = false, layout?: LayoutSpec, command?: [string]} => {workspace: Workspace, tab: Tab, root_pane: Pane}
+workspace.create :: {cwd?: string, name?: string, group?: Target, focus?: bool = false, layout?: LayoutSpec, command?: [string] | string} => {workspace: Workspace, tab: Tab, root_pane: Pane}
 workspace.rename :: {workspace?: Target, name: string|null} => {workspace: Workspace}
 workspace.focus :: {workspace: Target, client?: string} => {workspace: Workspace}
 workspace.move :: {workspace: Target, group?: Target|null, index?: int, delta?: int} => {workspaces: [Workspace]}
@@ -686,7 +686,7 @@ workspace.close :: {workspace?: Target, force?: bool = false} => {}
 
 # --- tabs ---
 tab.list :: {workspace?: Target} => {tabs: [Tab]}
-tab.create :: {workspace?: Target, cwd?: string, title?: string, focus?: bool = false, command?: [string], layout?: LayoutSpec} => {tab: Tab, root_pane: Pane}
+tab.create :: {workspace?: Target, cwd?: string, title?: string, focus?: bool = false, command?: [string] | string, layout?: LayoutSpec} => {tab: Tab, root_pane: Pane}
 tab.rename :: {tab: Target, title: string|null} => {tab: Tab}
 tab.focus :: {tab: Target, client?: string} => {tab: Tab}
 tab.move :: {tab: Target, index: int, workspace?: Target} => {tabs: [Tab]}
@@ -697,7 +697,7 @@ tab.floats :: {tab?: Target, visible?: bool} => {tab: Tab}
 pane.list :: {workspace?: Target, tab?: Target, has_agent?: bool} => {panes: [Pane]}
 pane.get :: {pane?: Target} => {pane: Pane, run?: AgentRun|null, open_interactions?: [Interaction], live?: PaneLive|null}
 pane.current :: {} => {pane: Pane}
-pane.split :: {pane?: Target, direction?: right|down|left|up = right, ratio?: number = 0.5, cwd?: string, command?: [string], env?: {*: string}, focus?: bool = false, title?: string} => {pane: Pane}
+pane.split :: {pane?: Target, direction?: right|down|left|up = right, ratio?: number = 0.5, cwd?: string, command?: [string] | string, env?: {*: string}, focus?: bool = false, title?: string} => {pane: Pane}
 pane.close :: {pane?: Target, force?: bool} => {}
 pane.focus :: {pane: Target, client?: string} => {pane: Pane}
 pane.rename :: {pane?: Target, title: string|null} => {pane: Pane}
@@ -706,7 +706,7 @@ pane.mark_seen :: {pane?: Target} => {pane: Pane}
 pane.mark_unread :: {pane?: Target} => {pane: Pane}
 pane.zoom :: {pane?: Target, zoomed?: bool} => {tab: Tab}
 pane.resize :: {pane?: Target, direction: right|down|left|up, cells?: int, percent?: number} => {layout: any}
-pane.float :: {pane?: Target, tab?: Target, rect?: {x?: number, y?: number, w?: number, h?: number}, cwd?: string, command?: [string], focus?: bool} => {pane: Pane}
+pane.float :: {pane?: Target, tab?: Target, rect?: {x?: number, y?: number, w?: number, h?: number}, cwd?: string, command?: [string] | string, focus?: bool} => {pane: Pane}
 pane.embed :: {pane: Target, target?: Target, direction?: right|down|left|up = right, ratio?: number} => {pane: Pane, tab: Tab}
 pane.send_text :: {pane?: Target, text: string, paste?: auto|bracketed|raw = auto} => {bytes: int}
 pane.send_keys :: {pane?: Target, keys: [string]} => {}
@@ -721,7 +721,8 @@ agent.list :: {workspace?: Target, state?: [AgentState], harness?: string} => {r
 agent.get :: {target: Target} => {run: AgentRun, pane: Pane, open_interactions: [Interaction], last_turn?: any}
 agent.harnesses :: {} => {harnesses: [{id: string, display?: string, version_detected?: string|null, integration_installed?: bool, capabilities?: [string]}]}
 agent.start :: {pane?: Target, harness: string, name?: string, mode?: tui|headless = tui, args?: [string], env?: {*: string}, model?: string, task?: Target, ready_timeout_ms?: int = 30000} => {run: AgentRun}
-agent.spawn :: {harness: string, name?: string, where?: object, prompt?: string, args?: [string], focus?: bool = false} => {pane: Pane, run: AgentRun}
+# split a new pane next to split_of (or pane; default the caller's pane) and start the harness there; with prompt, send it (wait as for agent.prompt)
+agent.spawn :: {harness?: string = claude, name?: string, split_of?: Target, pane?: Target, direction?: right|down|left|up = right, cwd?: string, prompt?: string, wait?: bool, args?: [string], focus?: bool = false, yolo?: bool, isolate?: IsolationLevel, network?: string, confirm_host_yolo?: bool} => {pane: Pane, run: AgentRun}
 # refused with conflict, details {reason: dialog_open, interaction} while a picker or unreadable dialog is open; a slash command never fails agent_prompt_stalled,
 # and with wait it returns at once when it opened a picker (interaction) or started no turn (turn_started: false)
 agent.prompt :: {target: Target, text: string, images?: [string], mode?: send|steer|follow_up = send, wait?: bool, until?: [string], timeout_ms?: int} => {run: AgentRun, turn?: any, turn_started?: bool, interaction?: string}

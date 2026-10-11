@@ -934,10 +934,156 @@ pub async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) 
     crate::search::authorize_read(server, ctx, method, p)?;
     crate::browser_pane::page_io::authorize_output_read(server, ctx, method, p)?;
     crate::limits::check(server, ctx, method, p)?;
+    check_params(method, p)?;
     if let Some(key) = idempotency_scope(ctx, method, p) {
         return Box::pin(keyed(server, ctx, method, p, key)).await;
     }
     Box::pin(handlers(server, ctx, method, p)).await
+}
+
+/// Params every method accepts: the gateway's audit `actor` and the generic idempotency key.
+pub const COMMON_PARAMS: &[&str] = &["actor", "idempotency_key"];
+
+/// Methods that refuse params their schema does not list (every in-repo caller sends only
+/// listed params). Other methods log unknown params and ignore them.
+pub const STRICT_PARAMS: &[&str] = &[
+    "pane.send_text",
+    "pane.send_keys",
+    "pane.send_bytes",
+    "pane.run",
+];
+
+/// Is `v` the JSON type `shape` describes? Literal sets (`visible|recent`) only need a string:
+/// the handler names the values it takes; nested objects are the handler's to check.
+fn json_type_ok(
+    shape: &crate::shape::Shape,
+    v: &Value,
+    defs: &std::collections::BTreeMap<String, crate::shape::Shape>,
+) -> bool {
+    use crate::shape::Shape;
+    match shape {
+        Shape::Any => true,
+        Shape::Null => v.is_null(),
+        Shape::Bool | Shape::BoolLit(_) => v.is_boolean(),
+        Shape::Int => v.is_i64() || v.is_u64(),
+        Shape::Number => v.is_number(),
+        Shape::Str | Shape::Lit(_) => v.is_string(),
+        Shape::Object | Shape::Map(_) | Shape::Obj(_) => v.is_object(),
+        Shape::Array(inner) => v
+            .as_array()
+            .is_some_and(|a| a.iter().all(|x| json_type_ok(inner, x, defs))),
+        Shape::Union(arms) => arms.iter().any(|a| json_type_ok(a, v, defs)),
+        Shape::Ref(n) => defs.get(n).is_none_or(|d| json_type_ok(d, v, defs)),
+    }
+}
+
+/// A short name for the JSON type a shape wants (for error messages).
+fn json_type_name(
+    shape: &crate::shape::Shape,
+    defs: &std::collections::BTreeMap<String, crate::shape::Shape>,
+) -> String {
+    use crate::shape::Shape;
+    match shape {
+        Shape::Any => "any value".into(),
+        Shape::Null => "null".into(),
+        Shape::Bool | Shape::BoolLit(_) => "a boolean".into(),
+        Shape::Int => "an integer".into(),
+        Shape::Number => "a number".into(),
+        Shape::Str | Shape::Lit(_) => "a string".into(),
+        Shape::Object | Shape::Map(_) | Shape::Obj(_) => "an object".into(),
+        Shape::Array(inner) => format!("a list of {}", json_type_name(inner, defs)),
+        Shape::Ref(n) => defs
+            .get(n)
+            .map(|d| json_type_name(d, defs))
+            .unwrap_or_else(|| n.clone()),
+        Shape::Union(arms) => {
+            let mut names: Vec<String> = arms.iter().map(|a| json_type_name(a, defs)).collect();
+            names.dedup();
+            names.join(" or ")
+        }
+    }
+}
+
+fn brief_json(v: &Value) -> String {
+    let t = v.to_string();
+    if t.chars().count() > 40 {
+        format!("{}…", t.chars().take(40).collect::<String>())
+    } else {
+        t
+    }
+}
+
+/// Check params against the method's schema before any handler runs: params must be an
+/// object, and every listed param must have the right JSON type (`invalid_params` names the
+/// param and the type it needs). Missing required params are left to the handler, which
+/// names them. Unknown params are refused for [`STRICT_PARAMS`] methods and ignored (logged)
+/// elsewhere. `null` for an optional param counts as absent.
+pub fn check_params(method: &str, p: &Value) -> Result<(), RpcError> {
+    let reg = crate::api_schema::registry();
+    let Some(entry) = reg.methods.get(method) else {
+        return Ok(());
+    };
+    let obj = match p {
+        Value::Object(o) => o,
+        Value::Null => return Ok(()),
+        _ => {
+            return Err(invalid(format!("{method}: params must be a JSON object"))
+                .details(json!({"param": null})));
+        }
+    };
+    fn fields(s: &crate::shape::Shape) -> Option<Vec<&crate::shape::Field>> {
+        use crate::shape::Shape;
+        match s {
+            Shape::Obj(fs) => Some(fs.iter().collect()),
+            Shape::Union(arms) => {
+                let mut all = vec![];
+                for a in arms {
+                    all.extend(fields(a)?);
+                }
+                Some(all)
+            }
+            _ => None,
+        }
+    }
+    let Some(fields) = fields(&entry.params) else {
+        return Ok(());
+    };
+    for (k, v) in obj {
+        let declared: Vec<&crate::shape::Field> =
+            fields.iter().copied().filter(|f| &f.name == k).collect();
+        if declared.is_empty() {
+            if COMMON_PARAMS.contains(&k.as_str()) {
+                continue;
+            }
+            if STRICT_PARAMS.contains(&method) {
+                let mut known: Vec<&str> = fields.iter().map(|f| f.name.as_str()).collect();
+                known.sort_unstable();
+                known.dedup();
+                return Err(invalid(format!(
+                    "{method}: unknown param `{k}` (takes {})",
+                    known.join(", ")
+                ))
+                .details(json!({"param": k, "known": known})));
+            }
+            tracing::debug!(method, param = %k, "unknown param ignored");
+            continue;
+        }
+        if v.is_null() && declared.iter().any(|f| f.optional) {
+            continue;
+        }
+        if !declared
+            .iter()
+            .any(|f| json_type_ok(&f.shape, v, &reg.defs))
+        {
+            let want = json_type_name(&declared[0].shape, &reg.defs);
+            return Err(invalid(format!(
+                "{method}: `{k}` must be {want}, got {}",
+                brief_json(v)
+            ))
+            .details(json!({"param": k, "expected": want})));
+        }
+    }
+    Ok(())
 }
 
 /// Mutating methods that clients retry after a dropped connection (the CLI's MCP server, the

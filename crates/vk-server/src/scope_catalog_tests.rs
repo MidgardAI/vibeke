@@ -444,3 +444,52 @@ async fn keyed_calls_run_once() {
         .unwrap();
     assert_ne!(x["notification"]["id"], y["notification"]["id"]);
 }
+
+/// Params are checked against the schema at dispatch: JSON types, unknown params on strict
+/// methods, and a clear `invalid_params` naming the param.
+#[test]
+fn params_are_checked_against_the_schema() {
+    use crate::api::check_params;
+    let e = check_params("pane.send_text", &json!({"pane": "p1", "text": 42})).unwrap_err();
+    assert_eq!(e.data.kind, "invalid_params");
+    assert!(
+        e.message.contains("`text` must be a string"),
+        "{}",
+        e.message
+    );
+    assert_eq!(e.data.details["param"], "text");
+    let e = check_params(
+        "pane.send_text",
+        &json!({"pane": "p1", "text": "x", "submit": true}),
+    )
+    .unwrap_err();
+    assert!(
+        e.message.contains("unknown param `submit`"),
+        "{}",
+        e.message
+    );
+    // Common params, nulls for optional params and literal values the handler judges pass.
+    assert!(
+        check_params(
+            "pane.send_text",
+            &json!({"pane": "p1", "text": "x", "actor": "gateway:d1", "idempotency_key": "k", "paste": null})
+        )
+        .is_ok()
+    );
+    assert!(check_params("pane.read", &json!({"pane": "p1", "source": "archive"})).is_ok());
+    // Non-strict methods ignore unknown params.
+    assert!(check_params("pane.list", &json!({"whatever": 1})).is_ok());
+    // A command may be an argv list or a shell line.
+    assert!(check_params("pane.split", &json!({"command": "make dev"})).is_ok());
+    assert!(check_params("pane.split", &json!({"command": ["make", 1]})).is_err());
+    assert!(check_params("pane.send_keys", &json!({"keys": "enter"})).is_err());
+    assert!(check_params("pane.list", &json!([1])).is_err());
+    // agent.spawn's schema lists what its handler reads.
+    assert!(
+        check_params(
+            "agent.spawn",
+            &json!({"harness": "claude", "split_of": "p1", "direction": "down", "cwd": "/tmp", "wait": true, "yolo": false})
+        )
+        .is_ok()
+    );
+}
