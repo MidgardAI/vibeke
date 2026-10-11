@@ -59,7 +59,7 @@ const GROUP_ICON: Record<WorkspaceGroupId, ReactNode> = {
 
 function rowStatus(r: WorkspaceRow): Status | null {
   if (r.group === 'needs') return r.panes.some((p) => p.run?.execution.value === 'error') && !r.open ? 'error' : 'need';
-  if (r.group === 'working') return 'working';
+  if (r.group === 'working') return r.panes.some((p) => p.attention === 'working') ? 'working' : 'background';
   if (r.unread) return 'review';
   return null;
 }

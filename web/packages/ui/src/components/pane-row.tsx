@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ComponentProps, type KeyboardEvent as
 import { Bot, Pencil, Pin, PinOff, SquareTerminal, Trash2 } from 'lucide-react';
 import { useApp, useHost, useNow } from '../app/hooks';
 import { t } from '../i18n';
+import { bgCount } from '../lib/bg-tasks';
 import { shortDuration, shortPath } from '../lib/format';
 import { harnessLabel } from '../lib/harness';
 import { rowTitle, type PaneRow } from '../lib/tree';
@@ -115,15 +116,21 @@ export function PressRow({ onActions, onWarm, onClick, className, ...rest }: Com
   );
 }
 
-export function stateTone(r: PaneRow): 'need' | 'ok' | 'accent' | 'muted' | 'danger' {
+/** Background work on a run that is not working itself (and is not waiting for you). */
+const bgOnly = (r: PaneRow): number => (r.attention === 'interaction' || r.attention === 'working' ? 0 : r.attention === 'needs_input' && r.run?.execution.value !== 'idle' ? 0 : bgCount(r.run));
+
+export function stateTone(r: PaneRow): 'need' | 'ok' | 'accent' | 'muted' | 'danger' | 'info' {
   if (r.attention === 'interaction') return 'need';
   if (r.attention === 'needs_input') return r.run?.execution.value === 'error' || r.run?.execution.value === 'rate_limited' ? 'danger' : 'need';
   if (r.attention === 'working') return 'accent';
+  if (bgOnly(r) > 0) return 'info';
   return 'muted';
 }
 
 export function stateWord(r: PaneRow): string {
   if (r.attention === 'interaction') return t.panes.state.needs_you!;
+  const bg = bgOnly(r);
+  if (bg > 0) return t.bg.count(bg);
   if (r.attention === 'needs_input' && r.run?.execution.value === 'idle') return t.panes.state.finished!;
   if (r.run) return t.panes.state[r.run.execution.value] ?? r.run.execution.value;
   return r.pane.exited ? t.panes.exited : t.panes.shell;

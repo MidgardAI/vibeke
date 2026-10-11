@@ -18,12 +18,19 @@ export interface ThinkingStep {
   text: string;
 }
 
+export type BgEventStatus = 'completed' | 'failed' | 'stopped' | 'event';
+
+export function bgEventStatus(s: string | null | undefined): BgEventStatus {
+  return s === 'completed' || s === 'failed' || s === 'stopped' ? s : 'event';
+}
+
 export type Step = ToolStep | ThinkingStep;
 
 export type ConvBlock =
   | { k: 'user'; key: string; text: string }
   | { k: 'image'; key: string; mime: string; ref: string; size: number | null }
   | { k: 'text'; key: string; text: string }
+  | { k: 'bg_event'; key: string; id: string | null; toolUseId: string | null; status: BgEventStatus; summary: string }
   | Step
   | { k: 'steps'; key: string; steps: Step[] };
 
@@ -63,6 +70,13 @@ export function turnSteps(turn: TranscriptTurn): ConvBlock[] {
           if (text) out.push({ k: 'user', key, text });
         } else if (raw.trim()) out.push({ k: 'text', key, text: raw });
         lastTool = null;
+        return;
+      }
+      case 'bg_event': {
+        // A background task reported back: a system row, not a user bubble. It does not break
+        // the pairing of a tool call with its result.
+        const summary = (it.summary ?? it.text ?? '').replace(/\s+/g, ' ').trim();
+        out.push({ k: 'bg_event', key, id: it.id ?? null, toolUseId: it.tool_use_id ?? null, status: bgEventStatus(it.status), summary });
         return;
       }
       case 'thinking': {
@@ -161,4 +175,7 @@ export const turnText = (turn: TranscriptTurn): string =>
     .join('\n\n');
 
 /** Did the agent say or do anything in this turn (a footer is worth showing)? */
-export const turnHasWork = (turn: TranscriptTurn): boolean => turn.items.some((i) => i.kind !== 'text' || i.role !== 'user');
+export const turnHasWork = (turn: TranscriptTurn): boolean => turn.items.some((i) => i.kind !== 'bg_event' && (i.kind !== 'text' || i.role !== 'user'));
+
+/** Tool call ids of a turn (to match a turn against the run's background tasks). */
+export const turnToolIds = (turn: TranscriptTurn): Set<string> => new Set(turn.items.filter((i) => i.kind === 'tool_call' && i.id).map((i) => i.id!));
