@@ -4,6 +4,10 @@
 //!
 //! - Every pane token gets a token bucket: `burst` requests, refilled at `rate` per second
 //!   (default 50 / 10).
+//! - The agent transport (`adapter.*` from the harness hooks and every `client.hello`) has a
+//!   bucket of its own per pane: `hook_burst` / `hook_rate` (default 200 / 50). An agent that
+//!   calls the CLI in a loop then cannot starve the hooks that report its state and hold its
+//!   gates, and hooks do not use up the budget of the agent's own calls.
 //! - `agent.spawn`, `agent.start` and `task.create` from a pane: at most `spawns_per_min` per
 //!   pane in any 60 s window (default 10).
 //! - Panes created by agents carry depth through `created_by = agent:<pane>`: a pane-scoped
@@ -13,9 +17,10 @@
 //!
 //! Exceeding a limit returns `rate_limited` (budgets, `retryable: true`, `details.retry_after_ms`)
 //! or `permission_denied` (`details.reason: spawn_depth_exceeded | descendant_runs_exceeded`),
-//! records a `security.rate_limited` event and, at most once a minute per pane, a notification.
-//! Configuration: `[security.limits]` (`burst`, `rate`, `spawns_per_min`, `max_spawn_depth`,
-//! `max_descendant_runs`).
+//! records a `security.rate_limited` event (at most one per pane and limit a minute, with the
+//! number of refusals it stands for) and, at most once a minute per pane, a notification.
+//! Configuration: `[security.limits]` (`burst`, `rate`, `hook_burst`, `hook_rate`,
+//! `spawns_per_min`, `max_spawn_depth`, `max_descendant_runs`).
 
 use crate::Server;
 use crate::api::{Ctx, err};
@@ -31,6 +36,9 @@ use vk_proto::rpc::{ErrorKind, RpcError};
 pub struct Limits {
     pub burst: f64,
     pub rate: f64,
+    /// Bucket of the agent transport (`adapter.*`, `client.hello`).
+    pub hook_burst: f64,
+    pub hook_rate: f64,
     pub spawns_per_min: usize,
     pub max_spawn_depth: usize,
     pub max_descendant_runs: usize,
@@ -41,6 +49,8 @@ impl Default for Limits {
         Limits {
             burst: 50.0,
             rate: 10.0,
+            hook_burst: 200.0,
+            hook_rate: 50.0,
             spawns_per_min: 10,
             max_spawn_depth: 3,
             max_descendant_runs: 20,
@@ -68,6 +78,8 @@ impl Limits {
         Limits {
             burst: num("burst").unwrap_or(d.burst).max(1.0),
             rate: num("rate").unwrap_or(d.rate),
+            hook_burst: num("hook_burst").unwrap_or(d.hook_burst).max(1.0),
+            hook_rate: num("hook_rate").unwrap_or(d.hook_rate),
             spawns_per_min: num("spawns_per_min").map_or(d.spawns_per_min, |x| x as usize),
             max_spawn_depth: num("max_spawn_depth").map_or(d.max_spawn_depth, |x| x as usize),
             max_descendant_runs: num("max_descendant_runs")
@@ -79,12 +91,58 @@ impl Limits {
 #[derive(Default)]
 struct State {
     limits: Option<Limits>,
-    /// pane -> (tokens, last refill)
-    buckets: HashMap<String, (f64, Instant)>,
+    /// (pane, bucket) -> (tokens, last refill)
+    buckets: HashMap<(String, Bucket), (f64, Instant)>,
     /// pane -> spawn times in the last minute
     spawns: HashMap<String, VecDeque<Instant>>,
     /// pane -> last notification
     notified: HashMap<String, Instant>,
+    /// (pane, limit) -> (last `security.rate_limited` event, refusals since then)
+    recorded: HashMap<(String, String), (Instant, u64)>,
+}
+
+/// Which request budget of a pane a call spends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum Bucket {
+    /// Everything an agent or a program in the pane calls.
+    Calls,
+    /// The agent transport: harness hooks and extensions (`adapter.*`) and `client.hello`.
+    Transport,
+}
+
+fn bucket_of(method: &str) -> Bucket {
+    if method.starts_with("adapter.") || method == "client.hello" {
+        Bucket::Transport
+    } else {
+        Bucket::Calls
+    }
+}
+
+/// Take one token from a bucket; `Some(ms)` until the next token when it is empty.
+fn take(
+    st: &mut State,
+    pane: &str,
+    bucket: Bucket,
+    burst: f64,
+    rate: f64,
+    now: Instant,
+) -> Option<u64> {
+    let (tokens, last) = st
+        .buckets
+        .entry((pane.to_string(), bucket))
+        .or_insert((burst, now));
+    *tokens = (*tokens + now.duration_since(*last).as_secs_f64() * rate).min(burst);
+    *last = now;
+    if *tokens >= 1.0 {
+        *tokens -= 1.0;
+        None
+    } else {
+        Some(if rate > 0.0 {
+            ((1.0 - *tokens) / rate * 1000.0).ceil() as u64
+        } else {
+            60_000
+        })
+    }
 }
 
 fn state() -> &'static Mutex<State> {
@@ -159,19 +217,40 @@ pub fn lineage(panes: &[Pane], pane: &str) -> (usize, String) {
     (depth, cur)
 }
 
+/// Least time between two `security.rate_limited` events of one pane and limit.
+const EVENT_EVERY: Duration = Duration::from_secs(60);
+
 fn refuse(server: &Server, pane: &str, method: &str, limit: &str, e: RpcError) -> RpcError {
     let p = server.with_core(|c| c.pane(pane).cloned());
     let handle = p
         .as_ref()
         .map(|p| p.handle.clone())
         .unwrap_or_else(|| pane.to_string());
-    {
+    // One event per pane and limit a minute: a caller hammering a closed budget must not
+    // turn every refusal into a stored event.
+    let record = {
+        let mut st = state().lock().unwrap();
+        let now = Instant::now();
+        let e = st
+            .recorded
+            .entry((pane.to_string(), limit.to_string()))
+            .or_insert((now - EVENT_EVERY, 0));
+        e.1 += 1;
+        if now.duration_since(e.0) >= EVENT_EVERY {
+            let n = e.1;
+            *e = (now, 0);
+            Some(n)
+        } else {
+            None
+        }
+    };
+    if let Some(refusals) = record {
         let mut c = server.core.lock().unwrap();
         let mut tx = Tx::new();
         tx.event(
             "security.rate_limited",
             json!({"pane": pane}),
-            json!({"method": method, "limit": limit}),
+            json!({"method": method, "limit": limit, "refusals": refusals}),
         );
         let _ = server.commit(&mut c, tx);
     }
@@ -189,7 +268,7 @@ fn refuse(server: &Server, pane: &str, method: &str, limit: &str, e: RpcError) -
     };
     if notify {
         crate::audit::rate_limited(server, pane, &handle, method, limit);
-        let what = if limit == "requests" {
+        let what = if limit == "requests" || limit == "hooks" {
             "is calling the API rapidly"
         } else {
             "is spawning agents rapidly"
@@ -222,30 +301,20 @@ pub fn check(server: &Server, ctx: &Ctx, method: &str, p: &Value) -> Result<(), 
     }
     let l = limits();
     let now = Instant::now();
-    // Request budget (token bucket).
-    let wait = {
-        let mut st = state().lock().unwrap();
-        let (tokens, last) = st.buckets.entry(pane.to_string()).or_insert((l.burst, now));
-        *tokens = (*tokens + now.duration_since(*last).as_secs_f64() * l.rate).min(l.burst);
-        *last = now;
-        if *tokens >= 1.0 {
-            *tokens -= 1.0;
-            None
-        } else {
-            Some(if l.rate > 0.0 {
-                ((1.0 - *tokens) / l.rate * 1000.0).ceil() as u64
-            } else {
-                60_000
-            })
-        }
+    // Request budget (token bucket): the agent transport has its own.
+    let bucket = bucket_of(method);
+    let (burst, rate, limit) = match bucket {
+        Bucket::Calls => (l.burst, l.rate, "requests"),
+        Bucket::Transport => (l.hook_burst, l.hook_rate, "hooks"),
     };
+    let wait = take(&mut state().lock().unwrap(), pane, bucket, burst, rate, now);
     if let Some(ms) = wait {
         let e = err(
             ErrorKind::RateLimited,
-            format!("rate_limited: pane request budget exceeded ({}/s)", l.rate),
+            format!("rate_limited: pane {limit} budget exceeded ({rate}/s)"),
         )
-        .details(json!({"limit": "requests", "retry_after_ms": ms, "scope": "pane"}));
-        return Err(refuse(server, pane, method, "requests", e));
+        .details(json!({"limit": limit, "retry_after_ms": ms, "scope": "pane"}));
+        return Err(refuse(server, pane, method, limit, e));
     }
     if creates_pane(method) || starts_agent(method, p) {
         let panes = server.with_core(|c| c.model.panes.clone());
@@ -315,9 +384,10 @@ pub fn check(server: &Server, ctx: &Ctx, method: &str, p: &Value) -> Result<(), 
 /// Forget a closed pane's budgets.
 pub fn forget(pane: &str) {
     let mut st = state().lock().unwrap();
-    st.buckets.remove(pane);
+    st.buckets.retain(|(p, _), _| p != pane);
     st.spawns.remove(pane);
     st.notified.remove(pane);
+    st.recorded.retain(|(p, _), _| p != pane);
 }
 
 #[cfg(test)]
@@ -364,6 +434,35 @@ mod tests {
     }
 
     #[test]
+    fn hooks_spend_their_own_bucket() {
+        assert_eq!(bucket_of("adapter.signal"), Bucket::Transport);
+        assert_eq!(bucket_of("adapter.gate"), Bucket::Transport);
+        assert_eq!(bucket_of("client.hello"), Bucket::Transport);
+        assert_eq!(bucket_of("pane.list"), Bucket::Calls);
+        let mut st = State::default();
+        let now = Instant::now();
+        // The agent's own calls use up their budget (no refill: rate 0)...
+        for _ in 0..3 {
+            assert!(take(&mut st, "p", Bucket::Calls, 3.0, 0.0, now).is_none());
+        }
+        assert!(take(&mut st, "p", Bucket::Calls, 3.0, 0.0, now).is_some());
+        // ...and the hooks of the same pane still get through.
+        assert!(take(&mut st, "p", Bucket::Transport, 3.0, 0.0, now).is_none());
+        // Another pane has its own buckets.
+        assert!(take(&mut st, "q", Bucket::Calls, 3.0, 0.0, now).is_none());
+        // Refill: one token after 1/rate seconds.
+        assert_eq!(
+            take(&mut st, "p", Bucket::Calls, 3.0, 0.0, now),
+            Some(60_000)
+        );
+        let later = now + Duration::from_millis(100);
+        let mut st2 = State::default();
+        assert!(take(&mut st2, "p", Bucket::Calls, 1.0, 10.0, now).is_none());
+        assert!(take(&mut st2, "p", Bucket::Calls, 1.0, 10.0, now).is_some());
+        assert!(take(&mut st2, "p", Bucket::Calls, 1.0, 10.0, later).is_none());
+    }
+
+    #[test]
     fn limits_from_config() {
         let (cfg, _) = vk_config::Config::parse(
             "[security.limits]\nburst = 5\nrate = 0.5\nmax_spawn_depth = 1\n",
@@ -375,5 +474,7 @@ mod tests {
         assert_eq!(l.rate, 0.5);
         assert_eq!(l.max_spawn_depth, 1);
         assert_eq!(l.spawns_per_min, 10);
+        assert_eq!(l.hook_burst, 200.0);
+        assert_eq!(l.hook_rate, 50.0);
     }
 }

@@ -646,12 +646,13 @@ fn pane_budgets_and_spawn_depth() {
     )
     .unwrap();
     let d = s.dir.path();
-    // Request budget: the second CLI call from the pane (hello + call each) runs dry.
+    // Request budget: the fourth CLI call from the pane runs dry. `client.hello` spends the
+    // separate agent transport bucket, so each call costs one token of this one.
     let budget = d.join("budget.sh");
     std::fs::write(
         &budget,
         format!(
-            "for i in 1 2 3; do {VK} --json pane list >/dev/null 2>>{d}/budget.err && echo ok >> {d}/budget.out; done; echo done >> {d}/budget.out; sleep 1000\n",
+            "for i in 1 2 3 4 5; do {VK} --json pane list >/dev/null 2>>{d}/budget.err && echo ok >> {d}/budget.out; done; echo done >> {d}/budget.out; sleep 1000\n",
             d = d.display()
         ),
     )
@@ -661,7 +662,7 @@ fn pane_budgets_and_spawn_depth() {
         std::fs::read_to_string(d.join("budget.out")).is_ok_and(|t| t.contains("done"))
     });
     let out = std::fs::read_to_string(d.join("budget.out")).unwrap();
-    assert_eq!(out.matches("ok").count(), 1, "{out}");
+    assert_eq!(out.matches("ok").count(), 3, "{out}");
     let err = std::fs::read_to_string(d.join("budget.err")).unwrap();
     assert!(err.contains("rate_limited"), "{err}");
     let mut r = Rpc::connect(&s.socket());
