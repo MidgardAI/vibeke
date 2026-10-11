@@ -235,7 +235,7 @@ fn cli_markdown() -> String {
                     } else {
                         pos.join(" ")
                     },
-                    md_cell(help)
+                    md_cell(&vk_cli::command_help(method, help))
                 );
             }
         }

@@ -2132,14 +2132,28 @@ pub fn nouns() -> Vec<&'static str> {
     v
 }
 
+/// The help text of a command, marked when its method is experimental: `[orchestrate]`
+/// features are also off by default (their commands fail until the flag is on).
+pub fn command_help(method: &str, help: &str) -> String {
+    if vk_server::api_schema::stability_of(method) != "experimental" {
+        return help.to_string();
+    }
+    if vk_server::orch::METHODS.iter().any(|(m, _)| *m == method) {
+        format!("(experimental, off by default: [orchestrate]) {help}")
+    } else {
+        format!("(experimental) {help}")
+    }
+}
+
 pub fn noun_help(noun: &str) -> String {
     let mut s = format!("vibeke {noun} <verb>\n\n");
     for (n, verb, method, pos, help) in COMMANDS {
         if *n == noun {
             let pos: Vec<String> = pos.iter().map(|p| format!("[{p}]")).collect();
             s.push_str(&format!(
-                "  {verb:<14} {:<28} {method:<22} {help}\n",
-                pos.join(" ")
+                "  {verb:<14} {:<28} {method:<22} {}\n",
+                pos.join(" "),
+                command_help(method, help)
             ));
         }
     }
@@ -3798,6 +3812,15 @@ pub fn lookup(noun: &str, verb: &str) -> Option<(&'static str, &'static [&'stati
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn experimental_commands_say_so_in_help() {
+        assert!(command_help("goal.create", "x").starts_with("(experimental, off by default"));
+        assert!(command_help("family.list", "").contains("[orchestrate]"));
+        assert_eq!(command_help("desk.search", "x"), "(experimental) x");
+        assert_eq!(command_help("pane.list", "x"), "x");
+        assert!(noun_help("goal").contains("off by default"));
+    }
 
     #[test]
     fn params_from_flags_and_positionals() {
