@@ -23,6 +23,17 @@ Vibeke stores the decision, delivery attempt, and acknowledgment. The request an
 
 An agent can read its own requests. It cannot answer them.
 
+## Background work
+
+An agent can leave work running after its turn ends. Examples are a development server, a background shell command, or a watcher. Vibeke then does not show the agent as done.
+
+- The sidebar shows `⧗` and a label such as `idle · 2 bg`.
+- The status bar counts background tasks after `⧗`.
+- The agent details list each task with its kind, its command, and how long it has run.
+- The apps show the tasks next to the agent and in the conversation.
+
+Claude Code and the Codex app server report their background tasks to Vibeke. For other agents, Vibeke looks for shell commands that the agent started and that still run after the turn.
+
 ## Configure an integration
 
 Open **Setup** in the command palette to select integrations, inspect changes, and confirm installation. The installer preserves existing hooks.
@@ -30,4 +41,17 @@ Open **Setup** in the command palette to select integrations, inspect changes, a
 Then run your usual `claude`, `codex`, `pi`, or `omp` command in a shell pane.
 For scripts and troubleshooting, use `vibeke integration install|status|uninstall|doctor`.
 
+Each agent has its own page:
+
+- [Claude Code](../agents/claude-code.md)
+- [Codex CLI](../agents/codex.md)
+- [pi and oh-my-pi](../agents/pi.md)
+- [Other agents](../agents/other.md): terminal detection, custom manifests and ACP agents
+
 Use `vibeke agent start|prompt|wait|read|send-keys|get|list` to control agent runs. See the [CLI reference](../reference/cli.md) for command arguments.
+
+## Next steps
+
+- [Run agents in parallel](../parallel-agents.md): run several agents and find the one that needs you.
+- [Tasks and review](tasks.md): give an agent its own worktree.
+- [Execution levels](sandboxes.md): limit what an agent can reach.

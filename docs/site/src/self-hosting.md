@@ -60,3 +60,9 @@ vibeke gateway pair --relay http://localhost:8787 --app-from-relay
 `--app-from-relay` explicitly trusts the relay origin to serve the app.
 Localhost works only for a browser on that computer. A phone needs a reachable HTTPS address.
 See the [web development guide](../../../web/README.md) for hot reload and app development.
+
+## Next steps
+
+- [Phone and browser access](mobile.md) to pair a device with your relay.
+- [Security model](security.md) for what the relay and the app origin can see.
+- [Troubleshooting](troubleshooting.md) if devices cannot connect.

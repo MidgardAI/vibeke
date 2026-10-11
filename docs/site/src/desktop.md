@@ -23,9 +23,8 @@ If the CLI is not found, use **Choose…** to select the `vibeke` executable.
 
 ## Connect to a remote host
 
-On the remote host, follow the [pairing instructions](mobile.md#pair-your-device).
-Paste the resulting pairing link into the desktop app. Confirm the device fingerprint on the host.
-The connection uses the public relay. The remote host needs no inbound port.
+Pair the app with the remote host through the public relay. The remote host needs no inbound port.
+See [work on a remote machine](remote.md#connect-from-the-desktop-app) for the steps.
 
 ## Menu bar
 
@@ -75,3 +74,9 @@ Users of v0.1.0 must manually install an update-enabled release once.
 Desktop updates are separate from host CLI updates. Update each host from its terminal
 interface or with `vibeke update`.
 For host connection problems, run `vibeke gateway status` and `vibeke doctor` on the host.
+
+## Next steps
+
+- [Work on a remote machine](remote.md): connect the app to a remote host.
+- [Phone and browser access](mobile.md): pair a phone.
+- [Previews and browsers](concepts/previews.md): learn how previews and browser panes work.

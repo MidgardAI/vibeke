@@ -1,8 +1,8 @@
-# Transfers and shared access
+# Move work to another host
 
-A **handoff** transfers an agent's work to another host. **Shared access** lets another person view or approve work on its current host.
+A **handoff** transfers an agent's work to another host. After a handoff, you continue the work on the destination host. To send work to another person or let them watch a pane, see [work with a teammate](sharing.md).
 
-The browser and desktop apps provide both features through the gateway.
+The browser, desktop and terminal apps provide handoffs through the gateway.
 
 ## Requirements
 
@@ -163,80 +163,6 @@ The destination uses its own credentials. Secret filters and transcript redactio
 Bundles have a 200 MiB limit. A transfer that never completes is discarded after one hour; a
 delivered incoming handoff is kept for 7 days unless it is imported or declined first.
 
-## Transfer work to a teammate
-
-The recipient prepares the destination:
-
-1. Open **Settings → Sharing & handoff** and create a handoff invitation for the host that should
-   receive the work.
-2. Send the invitation to the sender.
-
-The sender accepts the invitation on one of their hosts:
-
-1. Open the invitation in the app.
-2. Choose which of your hosts accepts it. Tick **Show my git name and email** to let the
-   recipient see who is sending; otherwise they only see your host's name.
-3. Hand off a pane on that host and select the teammate's host as the destination.
-
-In the terminal client, the recipient opens **Connections → Hosts** (`prefix+alt+d`, then
-`tab`) on the receiving host and presses `n`, then `t` (**Invite a teammate to send to me**):
-the link shows with a QR code, and `c` copies it. The sender opens **Connections → Hosts** on their
-host, presses `p` and pastes the link. The view says what it is before anything happens
-("Handoff invitation from laptop-anna (teammate), valid 23h"); tick **Show my git name and
-email** if you like, then **Accept**. A link that isn't an invitation for a host, or that
-expired, is refused without contacting anyone.
-
-The invitation pairs that host with the teammate's host until the invitation expires. The app
-itself is never paired for it: opening the link in an app only offers to accept it on one of your
-hosts, and the recipient's host refuses a claim from anything but a host. It lets the host deliver
-handoffs and nothing else: it can't see panes, the inbox or other devices there, and
-the sender cannot choose where the work lands on the recipient's host.
-
-The handoff arrives as an incoming handoff and is never imported automatically. The recipient
-receives a notification, then accepts it (choosing the repository, worktree and branch, as above)
-and decides whether to resume the agent, or declines it.
-
-## Share a pane or workspace
-
-In the app:
-
-1. Select **Share this pane…** in the app.
-2. Select the pane or its workspace.
-3. Select **View** or **View + approve** access.
-4. Set an expiry time.
-5. Create the invitation.
-
-In the terminal client, open **Connections → People** (`prefix+alt+d`, then `tab`), or run
-`share_pane` (**Share this pane or workspace with someone…**, `prefix+alt+v`, also in the
-sidebar pane's right-click menu) to open the form for the focused pane:
-
-1. Choose **This pane** or **This workspace**.
-2. Choose **View**, **View + approve** or **Control**. Control asks for a confirmation.
-3. Choose the expiry: 1h, 2h, 8h, 24h or 7d.
-4. Optionally enter a name for the person.
-5. Create the share. The view shows a link and a QR code to send them; they open it in the browser app.
-
-**People** also lists the shared access on this host (name, pane or workspace, access, expiry)
-and unused share links; `x` revokes the selected entry after a confirmation. It reaches the
-gateway through the host's server, and says so when the gateway isn't running.
-
-What each level allows, always limited to the shared pane or workspace:
-
-- **View**: the screen, the agent's conversation, git status, diffs and log, and the files of the
-  pane's repository (secret-looking files and `.git` stay hidden).
-- **View + approve**: also answering the agent's questions and permission requests, and
-  interrupting it. An approved request runs as you; when the agent isn't sandboxed, that can
-  reach anything your account can.
-- **Control** (terminal client): also typing into the pane and prompting its agent. This is like
-  a shell as you on that machine: unless the pane runs in a sandbox, they can read and change any
-  file you can. Share it only with someone you trust, and keep the expiry short.
-
-No level can create or revoke access, hand work off, or pair hosts.
-
-Whoever opens a share link first gets the access: send it privately.
-
-The gateway refuses expired shares and removes them from its device list. Use **Settings → Devices** in the app, or the **People** tab of **Connections** in the terminal client, to revoke access earlier. See [device recovery](mobile.md#trust-and-recovery).
-
 ## Pair your hosts with each other
 
 A host can also pair with another host, so the two gateways can deliver work to each other directly. On the destination host, create a peer invitation; on the source host, redeem it:
@@ -255,7 +181,7 @@ In the terminal client, **Connections → Hosts** does the same: `n` then `h` (*
 hosts**) on the destination shows the invitation, and `p` on the source pastes and accepts it.
 When the terminal client is attached to both hosts, choosing the other host under **Your machines (will pair)** when handing off pairs them for you.
 
-A peer invitation pairs one of your own hosts and never expires. A teammate's handoff invitation can also be redeemed this way; that pairing expires with the invitation. A paired host can only deliver handoffs: it can't see panes, the inbox or other devices.
+A peer invitation pairs one of your own hosts and never expires. A teammate's handoff invitation can also be redeemed this way; that pairing expires with the invitation. See [work with a teammate](sharing.md). A paired host can only deliver handoffs: it can't see panes, the inbox or other devices.
 
 ## Manage invitations
 
@@ -291,3 +217,9 @@ again does not create a second one.
 If the import succeeds but the agent fails to start, the worktree remains available. Correct the
 agent setup, then resume the agent from the imported handoff: `r` in the terminal client's accept
 overlay or handoffs list, or `vibeke handoff resume <id>`.
+
+## Next steps
+
+- [Work with a teammate](sharing.md) to send work to another person or share a pane.
+- [Pair your phone or browser](mobile.md) to start and accept handoffs from the app.
+- [Fix common problems](troubleshooting.md) if a transfer or pairing fails.

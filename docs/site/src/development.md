@@ -32,3 +32,9 @@ The product website reads its documentation directly from `docs/site/src/`.
 Register new chapters in `SUMMARY.md` and `web/apps/site/content/manifest.ts`.
 
 CLI, configuration, and API references are generated from source. Use the regeneration instructions in [releases](reference/releases.md).
+
+## Next steps
+
+- [CLI reference](reference/cli.md) for the commands you can test.
+- [Release verification](reference/releases.md) before you use development artifacts remotely.
+- [Troubleshooting](troubleshooting.md) for how to collect a debug bundle.

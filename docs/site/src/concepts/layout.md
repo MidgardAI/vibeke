@@ -15,3 +15,9 @@ The sidebar shows agent state and requests for each workspace. Requests that nee
 A sidebar row that is too long for the sidebar ends in `…`. Rest the mouse pointer on the row to see its whole text. In navigate mode, select the row to see its whole text.
 
 Terminal actions use the control API. Scripts can use the same operations through `vibeke workspace|tab|pane ...`. See the [CLI reference](../reference/cli.md).
+
+## Next steps
+
+- [Using the terminal interface](../terminal.md): learn the default keys.
+- [Customize keys and appearance](../customize.md): change the sidebar, tabs, and status bar.
+- [Holders and process recovery](holders.md): see how panes survive a server restart.

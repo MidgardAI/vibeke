@@ -53,3 +53,9 @@ Telemetry is disabled.
 Release files have checksums and Minisign signatures. Sigstore provenance is not yet provided. Linux musl reproducibility checks use `scripts/repro-check.sh`.
 
 See [release verification](reference/releases.md) for current results and limits.
+
+## Next steps
+
+- [Execution levels](concepts/sandboxes.md) to run a task in isolation.
+- [Frequently asked questions](faq.md) for short answers about data and safety.
+- [Release verification](reference/releases.md) to check signatures and checksums.

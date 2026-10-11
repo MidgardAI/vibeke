@@ -56,7 +56,7 @@ From the command line, use `vibeke cloud send`.
 For a pane that runs in a sandbox, the header of the workspace shows **Bring back** instead of **Cloud**. You can also choose **Bring back from cloud…** in the pane menu or the command palette. You can bring the work back to:
 
 - **This host.** The agent continues in a new pane on your host. The task uses your host again.
-- **A paired host.** Vibeke sends the work to another of your hosts. That host needs to be paired with this one. See [Sharing and handoff](handoff.md).
+- **A paired host.** Vibeke sends the work to another of your hosts. That host needs to be paired with this one. See [move work to another host](handoff.md).
 
 From the command line, use `vibeke cloud bring-back`.
 
@@ -117,3 +117,9 @@ The provider bills you for sandboxes, not Vibeke. A running sandbox costs money.
 - Destroying a sandbox with work that is not on your host needs your explicit choice. Automatic clean-up never does this.
 
 See the [security model](security.md) for the full picture.
+
+## Next steps
+
+- [Execution levels](concepts/sandboxes.md) to compare host, sandbox, container and VM isolation.
+- [Tasks and review](concepts/tasks.md) to manage the work you send to a sandbox.
+- [Move work to another host](handoff.md) to bring work back to a paired host.

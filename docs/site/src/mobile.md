@@ -222,3 +222,9 @@ The browser stores pairing keys for each origin. Changing domains creates a sepa
 The app origin is trusted with keys and decrypted content. Check it before opening a pairing link.
 
 For your own relay or app hosting, see [self-hosting](self-hosting.md).
+
+## Next steps
+
+- [Phone quickstart](phone-quickstart.md) for a short path from pairing to your first answer.
+- [Work with a teammate](sharing.md) to share a pane with another person.
+- [Troubleshooting](troubleshooting.md) if pairing fails or the app shows offline.

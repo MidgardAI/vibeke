@@ -44,7 +44,7 @@ These are the default keys. Press **Ctrl+B** before each key:
 | `q` | Detach this client. |
 | `?` | Show the key menu. |
 
-Your configuration can change these keys. Run `vibeke keys` to see active bindings.
+Your configuration can change these keys. Run `vibeke keys` to see active bindings. See [customize keys and appearance](customize.md).
 
 ## Setup and integrations
 
@@ -73,3 +73,9 @@ The desktop app has a **Connect to this Mac/computer** flow.
 **Connections** (`prefix` then `alt+d`) has four tabs, switched with `tab` and `shift+tab`: **Devices** pairs a phone or browser (also **Pair a phone** in the command palette) and lists and revokes paired devices; **People** lists, creates and revokes colleagues' shared access to a pane or workspace; **Hosts** manages your paired hosts and handoff invitations; **Handoffs** lists incoming handoffs (`prefix+shift+h`).
 
 See [desktop access](desktop.md) and [phone and browser access](mobile.md).
+
+## Next steps
+
+- [Customize keys and appearance](customize.md): change keys, theme, and bars.
+- [Run agents in parallel](parallel-agents.md): work on one repository with several agents.
+- [Workspaces, tabs, and panes](concepts/layout.md): learn how the layout fits together.
