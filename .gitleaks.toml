@@ -112,8 +112,8 @@ paths = ["(^|/)web/packages/core/test/redact\\.test\\.ts$"]
 regexes = ["^\\Q-----BEGIN RSA PRIVATE KEY-----\\nMIIE\\n-----END RSA PRIVATE KEY----- tail')).toBe(`${REDACTED} tail`);\n    expect(redact('x -----BEGIN PRIVATE KEY-----\\E$"]
 
 [[allowlists]]
-description = "Synthetic device token and key in a real-plugin scenario stub"
+description = "Synthetic device token and key in a real-plugin scenario stub and its harness test"
 condition = "AND"
 targetRules = ["generic-api-key"]
-paths = ["(^|/)tests/compat/herdr/0\\.9\\.3/plugins/scenarios/ZingerLittleBee__Heeler\\.toml$"]
+paths = ["(^|/)tests/compat/herdr/0\\.9\\.3/plugins/scenarios/ZingerLittleBee__Heeler\\.toml$", "(^|/)crates/vibeke/tests/it/compat_herdr_real_plugins\\.rs$"]
 regexes = ["^\\Q0123456789abcdef\\E$", "^\\QAAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8\\E$"]
