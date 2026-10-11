@@ -701,11 +701,14 @@ fn contained_gate(
         .join(format!(".vibeke-gate-{}-{}", std::process::id(), now_ms()));
     std::fs::create_dir(&dir)?;
     let _guard = GateDir(dir.clone());
-    let (argv, env) = (g.wrap)(
-        vec!["tar".into(), "-xf".into(), "-".into()],
-        &dir,
-        std::env::vars().collect(),
-    )
+    // The same environment the check gets (`run_check_in`): no Vibeke or Herdr control
+    // variables and no credentials reach the box.
+    let host_env: Vec<(String, String)> = std::env::vars()
+        .filter(|(k, _)| {
+            !k.starts_with("VIBEKE_") && !k.starts_with("HERDR_") && !vk_tasks::is_credential_env(k)
+        })
+        .collect();
+    let (argv, env) = (g.wrap)(vec!["tar".into(), "-xf".into(), "-".into()], &dir, host_env)
     .map_err(|e| Error::Refused(format!("the task's isolation is unavailable: {e}")))?;
     let Some((prog, rest)) = argv.split_first() else {
         return Err(Error::Refused("empty wrapped command".into()));

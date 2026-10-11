@@ -130,6 +130,12 @@ test('sign in, send a pane to the cloud, bring it back, sign in again on needs_a
   await send.getByRole('button', { name: new RegExp(FAKE.replace(/[()]/g, '\\$&')) }).click();
   await send.getByRole('button', { name: /A new sandbox/ }).click();
   await send.getByRole('button', { name: `Send to ${FAKE}` }).click();
+  // The pane works in the repository's main checkout, which other work shares: the sheet
+  // offers to copy the work into a new task and send that instead.
+  const newTask = send.getByRole('button', { name: 'Create a task and send' });
+  await expect(newTask).toBeVisible({ timeout: 20_000 });
+  await shoot(app, page, 'cloud-send-shared-checkout');
+  await newTask.click();
   await expect(send.getByText('Done.', { exact: true })).toBeVisible({ timeout: 120_000 });
   await shoot(app, page, 'cloud-send-done');
   const sent = jobs().find((j) => j.direction === 'send' && j.state === 'done');
@@ -164,6 +170,11 @@ test('sign in, send a pane to the cloud, bring it back, sign in again on needs_a
   const back = page.getByRole('dialog', { name: 'Bring back from cloud' });
   await expect(back).toBeVisible();
   await back.getByRole('button', { name: /This host/ }).click();
+  // Nothing comes back before the changes are reviewed.
+  const apply = back.getByRole('button', { name: /^(Apply and resume the agent|Bring back the code only)$/ }).first();
+  await expect(apply).toBeVisible({ timeout: 120_000 });
+  await shoot(app, page, 'cloud-bring-back-review');
+  await apply.click();
   await expect(back.getByText('Done.', { exact: true })).toBeVisible({ timeout: 120_000 });
   await shoot(app, page, 'cloud-bring-back-done');
   const brought = jobs().find((j) => j.direction === 'bring_back' && j.state === 'done');
@@ -194,7 +205,11 @@ test('sign in, send a pane to the cloud, bring it back, sign in again on needs_a
   await signIn.getByLabel('Fake token').fill('fake-token');
   await signIn.getByRole('button', { name: 'Save' }).click();
   await expect(signIn).toHaveCount(0);
-  await expect(send.getByText('Done.', { exact: true })).toBeVisible({ timeout: 120_000 });
+  // The brought-back pane may again share its checkout: then send it as a new task.
+  const done = send.getByText('Done.', { exact: true });
+  await expect(done.or(newTask)).toBeVisible({ timeout: 120_000 });
+  if (await newTask.isVisible()) await newTask.click();
+  await expect(done).toBeVisible({ timeout: 120_000 });
   expect(jobs().filter((j) => j.direction === 'send' && j.state === 'done')).toHaveLength(2);
   await send.getByRole('button', { name: 'Done', exact: true }).click();
 });

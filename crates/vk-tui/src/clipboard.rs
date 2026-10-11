@@ -3,7 +3,9 @@
 
 #[cfg(not(target_arch = "wasm32"))]
 use std::io::Write as _;
-use std::process::{Command, Stdio};
+use std::process::Command;
+#[cfg(not(target_arch = "wasm32"))]
+use std::process::Stdio;
 
 use anyhow::{Result, anyhow, bail};
 use base64::Engine as _;

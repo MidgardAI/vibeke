@@ -2,9 +2,9 @@
 // server + gateway (temp HOME / XDG / runtime dirs, so nothing touches the user's own session).
 
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { _electron as electron, type ElectronApplication, type Page } from '@playwright/test';
 
 export const appRoot = new URL('..', import.meta.url).pathname;
@@ -406,7 +406,9 @@ export function hookRun(host: TestHost, pane: string): AgentRunInfo | undefined 
  */
 export async function agentHooks(host: TestHost, pane: string, cwd: string, steps: HookStep[]): Promise<AgentRunInfo> {
   await shellReady(host, pane);
-  const transcript = steps.map((s) => s.extra?.transcript_path).find((t): t is string => typeof t === 'string');
+  const reported = steps.map((s) => s.extra?.transcript_path).find((t): t is string => typeof t === 'string');
+  // The server stores transcript paths with symlinks resolved (`/tmp` is a link on macOS).
+  const transcript = reported && join(realpathSync(dirname(reported)), basename(reported));
   const last = steps[steps.length - 1]?.event;
   const ready = (r: AgentRunInfo | undefined): r is AgentRunInfo => {
     if (!r) return false;
