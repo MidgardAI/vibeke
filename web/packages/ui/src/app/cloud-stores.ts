@@ -6,7 +6,7 @@ import { useEffect } from 'react';
 import { RpcError, type AppEvent, type CloudBox, type CloudJob, type CloudProvider } from '@vibeke/core';
 import { t } from '../i18n';
 import { errorMessage } from '../lib/answer';
-import { openCloudJob } from './keyboard';
+import { openCloudJob } from '../lib/cloud-open';
 import { cloudBoxFromEvent, cloudJobError, cloudJobFinal, cloudJobFromEvent, upsertCloudBox, upsertCloudJob } from '../lib/cloud';
 import { isOwnFullHost } from '../lib/handoff-send';
 import { ValueStore, useStore } from '../lib/store';

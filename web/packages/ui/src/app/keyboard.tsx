@@ -17,6 +17,7 @@ import type { UiCommand } from '../platform';
 import { formatRoute, goBack, navigate, useRoute, workspaceRoute, type Route } from '../router';
 import { CloudAuthHost } from '../components/cloud-auth';
 import { CloudSheet } from '../screens/cloud-send';
+import { setCloudJobOpener } from '../lib/cloud-open';
 import { HandoffSheet } from '../screens/handoff';
 import { isOwnFullHost } from '../lib/handoff-send';
 import { ShareSheet } from '../screens/share';
@@ -70,13 +71,6 @@ type SheetState =
   | { kind: 'cloud_job'; host: string; job: string }
   | null;
 
-let cloudJobOpener: ((host: string, job: string) => void) | null = null;
-
-/** Show a cloud move's job (a bring-back waiting for review) in the cloud sheet. */
-export function openCloudJob(host: string, job: string): void {
-  cloudJobOpener?.(host, job);
-}
-
 const TYPING = /^(INPUT|TEXTAREA|SELECT)$/;
 const SUBPAGES = new Set<Route['name']>(['pane', 'interaction', 'run', 'settings', 'crew', 'sandboxes', 'pair', 'not_found']);
 
@@ -108,10 +102,10 @@ export function KeyboardLayer({ surface }: { surface: Surface }) {
   const [sheet, setSheet] = useState<SheetState>(null);
   useEffect(() => {
     cloudOpener = (mode, row) => setSheet(mode === 'send' ? { kind: 'cloud_send', row } : { kind: 'cloud_back', host: row.host, pane: row.pane.id });
-    cloudJobOpener = (host, job) => setSheet({ kind: 'cloud_job', host, job });
+    setCloudJobOpener((host, job) => setSheet({ kind: 'cloud_job', host, job }));
     return () => {
       cloudOpener = null;
-      cloudJobOpener = null;
+      setCloudJobOpener(null);
     };
   }, []);
   const routeKey = formatRoute(route);
