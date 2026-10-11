@@ -1648,19 +1648,36 @@ impl Call<'_> {
             }
             "browser.preview_open" => {
                 let preview = req(&p, "preview")?;
+                // Phone previews are captured at device pixels: their size is capped (the
+                // server caps them the same way).
                 let dim = |k: &str| {
                     p.get("viewport")
                         .and_then(|v| v.get(k))
                         .and_then(Value::as_u64)
-                        .filter(|n| (1..=8192).contains(n))
-                        .ok_or_else(|| ApiError::invalid(format!("viewport.{k} must be 1 to 8192")))
+                        .filter(|n| *n >= 1)
+                        .map(|n| n.min(crate::screencast::MAX_SIDE))
+                        .ok_or_else(|| {
+                            ApiError::invalid(format!("viewport.{k} must be at least 1"))
+                        })
                 };
                 let (width, height) = (dim("width")?, dim("height")?);
                 let dpr = p
                     .get("dpr")
                     .and_then(Value::as_f64)
                     .filter(|d| (0.5..=8.0).contains(d))
+                    .map(|d| d.min(crate::screencast::MAX_DPR))
                     .ok_or_else(|| ApiError::invalid("dpr must be 0.5 to 8"))?;
+                if self.gw.screencasts.opened_count(&self.device.id)
+                    >= crate::screencast::MAX_PER_DEVICE
+                {
+                    return Err(ApiError::new(
+                        "busy",
+                        format!(
+                            "this device already has {} previews open; close one first",
+                            crate::screencast::MAX_PER_DEVICE
+                        ),
+                    ));
+                }
                 let mut params = json!({
                     "preview": preview,
                     "viewport": {"width": width, "height": height},
