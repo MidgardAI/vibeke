@@ -49,7 +49,7 @@ vibeke integration capabilities claude
 - `status` says `installed`, `partial` or `not installed`. For a partial install it lists the missing events.
 - `doctor` finds the `claude` program, prints its version, and compares it with the validated range. It also shows the capabilities that apply.
 - `capabilities` prints the same capability list for your version.
-- These checks are local. To confirm that hooks reach the server, start `claude` in a Vibeke pane and check that the sidebar shows its state.
+- These checks are local. To confirm that hooks reach the server, start `claude` in a Vibeke pane and run `vibeke agent list`. The run should show `"source": "Structured"` under `execution`. The value `Screen` means that Vibeke reads only the terminal output.
 
 A Claude Code version outside the validated range gets `observe` and keystroke answers only. Vibeke still shows state. It does not send native answers until the version is validated.
 

@@ -48,9 +48,7 @@ The answer goes to the agent through its own interface. See [agents and interact
 
 ## 5. Review the result
 
-Open the task details. Press `prefix` then `g` and choose the task, or run **Task details for this agent** from the palette in the agent pane.
-
-If Vibeke says that the agent is not tracked, run **Track this work (task)** from the palette in the agent pane first. This links the agent run to the task.
+Open the task details. Press `prefix` then `g` and choose the task. **Task details for this agent** in the palette also works when the agent run belongs to the task, for example when you started it with `--agent`.
 
 The view shows the requirements, the commands the agent ran, the checks and the review state. In this view:
 
