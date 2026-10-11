@@ -341,6 +341,94 @@ pub fn parse_subscriptions(
     Ok(out)
 }
 
+/// The `event` names of Herdr's `EventMatch` (`events.wait {match_event}`).
+pub const EVENT_MATCH_EVENTS: &[&str] = &[
+    "workspace_created",
+    "workspace_updated",
+    "workspace_closed",
+    "workspace_renamed",
+    "workspace_moved",
+    "workspace_focused",
+    "tab_created",
+    "tab_closed",
+    "tab_renamed",
+    "tab_moved",
+    "tab_focused",
+    "pane_created",
+    "pane_closed",
+    "pane_focused",
+    "pane_moved",
+    "pane_output_changed",
+    "pane_exited",
+    "pane_agent_detected",
+    "pane_agent_status_changed",
+];
+
+/// Herdr's `AgentStatus` values.
+pub const AGENT_STATUSES: &[&str] = &["idle", "working", "blocked", "done", "unknown"];
+
+/// What Herdr 0.9.3's `events.wait {match_event, timeout_ms?}` can wait for: a pane reaching
+/// an agent status. Every other `EventMatch` is answered `unsupported_event_wait_match`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StatusWait {
+    pub pane_id: String,
+    pub agent_status: String,
+    pub timeout_ms: Option<u64>,
+}
+
+/// Herdr's message for a match `events.wait` does not wait for.
+pub const UNSUPPORTED_WAIT_MATCH: &str = "events.wait currently supports pane agent status matches";
+
+/// Validate Herdr's `events.wait` params. Errors are `(code, message)`.
+pub fn parse_event_match(params: &serde_json::Value) -> Result<StatusWait, (&'static str, String)> {
+    let m = params
+        .get("match_event")
+        .filter(|m| m.is_object())
+        .ok_or(("invalid_params", "match_event is required".to_string()))?;
+    let event = m.get("event").and_then(|v| v.as_str()).ok_or((
+        "invalid_params",
+        "match_event.event is required".to_string(),
+    ))?;
+    if !EVENT_MATCH_EVENTS.contains(&event) {
+        return Err((
+            "invalid_params",
+            format!("unknown match_event.event `{event}`"),
+        ));
+    }
+    if event != "pane_agent_status_changed" {
+        return Err((
+            "unsupported_event_wait_match",
+            UNSUPPORTED_WAIT_MATCH.into(),
+        ));
+    }
+    let pane_id = m.get("pane_id").and_then(|v| v.as_str()).ok_or((
+        "invalid_params",
+        "match_event.pane_id is required".to_string(),
+    ))?;
+    let agent_status = m.get("agent_status").and_then(|v| v.as_str()).ok_or((
+        "invalid_params",
+        "match_event.agent_status is required".to_string(),
+    ))?;
+    if !AGENT_STATUSES.contains(&agent_status) {
+        return Err((
+            "invalid_params",
+            format!("unknown agent_status `{agent_status}`"),
+        ));
+    }
+    let timeout_ms = match params.get("timeout_ms") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(v) => Some(v.as_u64().ok_or((
+            "invalid_params",
+            "timeout_ms must be a non-negative integer".to_string(),
+        ))?),
+    };
+    Ok(StatusWait {
+        pane_id: pane_id.to_string(),
+        agent_status: agent_status.to_string(),
+        timeout_ms,
+    })
+}
+
 /// Whether `sub` wants a Herdr event about `pane` (Herdr pane id).
 pub fn matches(sub: &Subscription, event: &str, pane: Option<&str>) -> bool {
     sub.kind == event && sub.pane_id.as_deref().is_none_or(|want| Some(want) == pane)
@@ -350,6 +438,44 @@ pub fn matches(sub: &Subscription, event: &str, pane: Option<&str>) -> bool {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn event_match_waits_only_for_agent_status() {
+        let ok = parse_event_match(&json!({"match_event": {"event": "pane_agent_status_changed", "pane_id": "w1:p1", "agent_status": "idle"}, "timeout_ms": 500})).unwrap();
+        assert_eq!(
+            ok,
+            StatusWait {
+                pane_id: "w1:p1".into(),
+                agent_status: "idle".into(),
+                timeout_ms: Some(500),
+            }
+        );
+        let no_timeout = parse_event_match(&json!({"match_event": {"event": "pane_agent_status_changed", "pane_id": "w1:p1", "agent_status": "done"}})).unwrap();
+        assert_eq!(no_timeout.timeout_ms, None);
+        let e = parse_event_match(&json!({"match_event": {"event": "tab_created"}})).unwrap_err();
+        assert_eq!(
+            e,
+            (
+                "unsupported_event_wait_match",
+                UNSUPPORTED_WAIT_MATCH.to_string()
+            )
+        );
+        for bad in [
+            json!({}),
+            json!({"match_event": "x"}),
+            json!({"match_event": {"event": "nope"}}),
+            json!({"match_event": {"event": "pane_agent_status_changed", "agent_status": "idle"}}),
+            json!({"match_event": {"event": "pane_agent_status_changed", "pane_id": "w1:p1"}}),
+            json!({"match_event": {"event": "pane_agent_status_changed", "pane_id": "w1:p1", "agent_status": "sleepy"}}),
+            json!({"match_event": {"event": "pane_agent_status_changed", "pane_id": "w1:p1", "agent_status": "idle"}, "timeout_ms": -1}),
+        ] {
+            assert_eq!(
+                parse_event_match(&bad).unwrap_err().0,
+                "invalid_params",
+                "{bad}"
+            );
+        }
+    }
 
     fn input<'a>(kind: &'a str, ws: &'a str, tab: &'a str, pane: &'a str) -> Input<'a> {
         Input {

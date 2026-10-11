@@ -57,6 +57,9 @@ pub struct Action {
     pub description: Option<String>,
     /// Declared contexts, or [`DEFAULT_CONTEXTS`] when the manifest omits them.
     pub contexts: Vec<String>,
+    /// Whether the manifest declared `contexts` (Herdr lists only declared contexts).
+    #[serde(skip)]
+    pub contexts_declared: bool,
     pub command: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub platforms: Option<Vec<String>>,
@@ -371,7 +374,9 @@ impl Manifest {
             if !valid_id(&aid, true) {
                 return Err(ManifestError::Invalid(format!("invalid action id `{aid}`")));
             }
-            let contexts = match r.strings("contexts")? {
+            let declared = r.strings("contexts")?;
+            let contexts_declared = declared.is_some();
+            let contexts = match declared {
                 Some(c) => {
                     for x in &c {
                         if !CONTEXTS.contains(&x.as_str()) {
@@ -390,6 +395,7 @@ impl Manifest {
                 id: aid,
                 description: r.string("description")?,
                 contexts,
+                contexts_declared,
                 command: r.command()?,
                 platforms: r.platforms()?,
             });
