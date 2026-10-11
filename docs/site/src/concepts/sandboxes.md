@@ -36,7 +36,7 @@ The Linux sandbox uses Landlock ABI 6. This needs Linux 6.12 or newer. With an o
 
 - Each box has its own private Git object store. The agent cannot change objects that your checkout uses. Vibeke imports the objects when it reviews or merges the work.
 - Credential files next to tool configuration are hidden from the box.
-- On macOS, the sandbox may use only the ports that the task leased. It cannot reach services on the loopback address of your computer. To allow this, set `allow_host_loopback = true` in the `[sandbox]` section of your configuration.
+- On macOS, the sandbox may use only the ports that the task leased. It cannot reach services on the loopback address of your computer. To allow this, set `allow_host_loopback = true` in the `[isolation.sandbox]` section of your configuration.
 
 ## Where Vibeke runs jobs for a task
 
