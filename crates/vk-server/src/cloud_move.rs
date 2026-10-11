@@ -1406,6 +1406,12 @@ async fn send_steps(
     let _ = std::fs::remove_file(&out);
     let _cleanup = Cleanup(out.clone());
     let facts = agent_facts(run.as_ref());
+    // Handoff git does not go through `vk_tasks::harden_command`: bring the objects a
+    // sandboxed box wrote to its private store into the repository first (13 §6).
+    {
+        let dir = PathBuf::from(&cwd);
+        let _ = tokio::task::spawn_blocking(move || vk_tasks::import_box_objects(&dir)).await;
+    }
     let input = vk_handoff::ExportInput {
         cwd: PathBuf::from(&cwd),
         pin: None,

@@ -120,7 +120,13 @@ pub fn render(p: &Policy) -> String {
     o.push_str(";; … Vibeke's own runtime/state/config and $TMPDIR stay hidden (layer 2b) …\n");
     rule(&mut o, "deny", "file-read*", &subpaths(&p.hidden));
     rule(&mut o, "allow", "file-read*", &subpaths(&p.allow_read_late));
-    rule(&mut o, "deny", "file-read*", &subpaths(&p.never_read));
+    let mut nr = subpaths(&p.never_read);
+    nr.extend(
+        p.never_read_regex
+            .iter()
+            .map(|r| format!("(regex {})", q(r))),
+    );
+    rule(&mut o, "deny", "file-read*", &nr);
     o.push_str(";; stat/realpath anywhere (names and sizes, never contents)\n");
     o.push_str("(allow file-read-metadata)\n");
 
@@ -173,8 +179,31 @@ pub fn render(p: &Policy) -> String {
         ));
     }
     rule(&mut o, "allow", "network-outbound", &net);
+    if p.allow_host_loopback {
+        o.push_str(";; [sandbox] allow_host_loopback: every loopback service of the host\n");
+        o.push_str("(allow network-outbound (remote ip \"localhost:*\"))\n");
+    } else if p.network_open {
+        // "Open" means the internet, not the host's own services (databases, agent daemons,
+        // Vibeke): loopback stays limited to the box's own ports, as in proxy mode.
+        o.push_str(";; open network, but not the host's loopback services\n");
+        o.push_str("(deny network-outbound (remote ip \"localhost:*\"))\n");
+        let own: Vec<String> = p
+            .bind_ports
+            .iter()
+            .map(|b| format!("(remote ip \"localhost:{b}\")"))
+            .collect();
+        rule(&mut o, "allow", "network-outbound", &own);
+    }
     if p.allow_bind_localhost {
-        o.push_str("(allow network-bind (local ip \"localhost:*\"))\n");
+        // Listen only on the task's port lease: a box listening on any other port could
+        // impersonate a host service that is not running right now. Connecting does not need
+        // a bind rule (the kernel's implicit bind is not checked).
+        let binds: Vec<String> = p
+            .bind_ports
+            .iter()
+            .map(|b| format!("(local ip \"localhost:{b}\")"))
+            .collect();
+        rule(&mut o, "allow", "network-bind", &binds);
         o.push_str("(allow network-inbound (local ip \"localhost:*\"))\n");
     }
     o
@@ -295,6 +324,68 @@ mod tests {
         for u in &pol.unix_sockets {
             assert!(block.contains(&u.display().to_string()));
         }
+    }
+
+    #[test]
+    fn credential_files_created_later_are_hidden_too() {
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path().canonicalize().unwrap();
+        let sb = render(&Policy::from_spec(&spec(&root)));
+        let mise = regex_escape(&root.join("home/.config/mise").to_string_lossy());
+        let want = format!("(regex \"^{}/\\\\.env[^/]*$\")", mise.replace('\\', "\\\\"));
+        let deny = sb.rfind("(deny file-read*").unwrap();
+        assert!(sb[deny..].contains(&want), "{want}\n{sb}");
+    }
+
+    #[test]
+    fn binding_is_limited_to_the_port_lease() {
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path().canonicalize().unwrap();
+        let sb = render(&Policy::from_spec(&spec(&root)));
+        let start = sb.find("(allow network-bind\n").unwrap();
+        let block = &sb[start..start + sb[start..].find("\n)\n").unwrap()];
+        assert_eq!(block.lines().count(), 2, "{block}");
+        assert!(block.contains("(local ip \"localhost:20000\")"), "{block}");
+        assert!(!sb.contains("(allow network-bind (local ip \"localhost:*\"))"));
+        // No lease: nothing may listen.
+        let mut s = spec(&root);
+        s.bind_ports.clear();
+        let sb = render(&Policy::from_spec(&s));
+        assert!(!sb.contains("network-bind"), "{sb}");
+        // Without allow_bind_localhost the lease does not matter.
+        let mut s = spec(&root);
+        s.allow_bind_localhost = false;
+        assert!(!render(&Policy::from_spec(&s)).contains("network-bind"));
+    }
+
+    #[test]
+    fn loopback_destinations_are_limited_unless_allowed() {
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path().canonicalize().unwrap();
+        // Proxy mode: the proxy and the declared ports only (unchanged), no blanket loopback.
+        let sb = render(&Policy::from_spec(&spec(&root)));
+        assert!(!sb.contains("(remote ip \"localhost:*\")"), "{sb}");
+        // Open mode: the internet, then loopback denied, then the box's own lease again.
+        let mut s = spec(&root);
+        s.network = crate::policy::NetMode::Open;
+        let sb = render(&Policy::from_spec(&s));
+        let open = sb.find("(remote ip \"*:*\")").unwrap();
+        let deny = sb
+            .find("(deny network-outbound (remote ip \"localhost:*\"))")
+            .unwrap();
+        let own = sb.rfind("(remote ip \"localhost:20000\")").unwrap();
+        assert!(open < deny && deny < own, "{sb}");
+        // Opt-in: every loopback port, with no deny after it.
+        s.allow_host_loopback = true;
+        let sb = render(&Policy::from_spec(&s));
+        assert!(sb.contains("(allow network-outbound (remote ip \"localhost:*\"))"));
+        assert!(!sb.contains("(deny network-outbound"));
+        let mut s = spec(&root);
+        s.allow_host_loopback = true;
+        assert!(
+            render(&Policy::from_spec(&s))
+                .contains("(allow network-outbound (remote ip \"localhost:*\"))")
+        );
     }
 
     #[test]

@@ -61,6 +61,42 @@ pub fn open_dir_under(root: &Path, rel: &Path) -> std::io::Result<(OwnedFd, Path
     Ok((dir, cur))
 }
 
+/// Open the existing file `rel` under `root` for reading without following a symlink at any
+/// component: `root` itself must be a real directory, every directory below it is opened with
+/// `openat(O_DIRECTORY | O_NOFOLLOW)` relative to its parent's fd, and the leaf with
+/// `O_NOFOLLOW | O_NONBLOCK` (a FIFO cannot block the open). Nothing is created. Callers check
+/// the leaf's type and size with `fstat` on the returned file, so a swap after the open cannot
+/// change what is read.
+pub fn open_file_under(root: &Path, rel: &Path) -> std::io::Result<std::fs::File> {
+    let mut comps: Vec<&OsStr> = Vec::new();
+    for c in rel.components() {
+        let Component::Normal(name) = c else {
+            return Err(refused("unexpected path component", rel));
+        };
+        comps.push(name);
+    }
+    let Some(leaf) = comps.pop() else {
+        return Err(refused("not a file path", rel));
+    };
+    let mut dir = open_dir_at(rfs::CWD, root.as_os_str(), root)?;
+    let mut cur = root.to_path_buf();
+    for name in comps {
+        cur.push(name);
+        dir = open_dir_at(&dir, name, &cur)?;
+    }
+    cur.push(leaf);
+    match rfs::openat(
+        &dir,
+        leaf,
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+        Mode::empty(),
+    ) {
+        Ok(fd) => Ok(std::fs::File::from(fd)),
+        Err(e) if e == Errno::LOOP => Err(refused("symlink", &cur)),
+        Err(e) => Err(e.into()),
+    }
+}
+
 /// `root/rel`, creating missing directories (0700) one component at a time (see
 /// [`open_dir_under`]): the result is always physically inside `root`.
 pub fn ensure_dir_under(root: &Path, rel: &Path) -> std::io::Result<PathBuf> {
@@ -216,6 +252,39 @@ mod tests {
         std::fs::create_dir_all(sbx.join("d")).unwrap();
         assert!(write_nofollow(&sbx.join("d"), b"x", 0o600).is_err());
         assert!(sbx.join("d").is_dir());
+    }
+
+    #[test]
+    fn open_file_under_never_follows_a_symlink() {
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path().canonicalize().unwrap();
+        let co = root.join("co");
+        let outside = root.join("outside");
+        std::fs::create_dir_all(co.join("src")).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(co.join("src/a.txt"), "inside").unwrap();
+        std::fs::write(outside.join("secret"), "host").unwrap();
+        let mut s = String::new();
+        std::io::Read::read_to_string(
+            &mut open_file_under(&co, Path::new("src/a.txt")).unwrap(),
+            &mut s,
+        )
+        .unwrap();
+        assert_eq!(s, "inside");
+        // A symlinked leaf and a symlinked directory on the way are both refused.
+        std::os::unix::fs::symlink(outside.join("secret"), co.join("leaf")).unwrap();
+        assert!(open_file_under(&co, Path::new("leaf")).is_err());
+        std::os::unix::fs::symlink(&outside, co.join("dir")).unwrap();
+        assert!(open_file_under(&co, Path::new("dir/secret")).is_err());
+        assert!(open_file_under(&co, Path::new("../outside/secret")).is_err());
+        assert!(open_file_under(&co, Path::new("")).is_err());
+        // A FIFO opens without blocking; the caller's fstat sees it is not a regular file.
+        let fifo = co.join("fifo");
+        let c = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
+        // SAFETY: valid NUL-terminated path.
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        let f = open_file_under(&co, Path::new("fifo")).unwrap();
+        assert!(!f.metadata().unwrap().is_file());
     }
 
     #[test]

@@ -668,6 +668,7 @@ ls "$HERDR_PLUGIN_STATE_DIR/../acme.other" > /dev/null 2>&1; echo "other_state=$
 echo "token=${GITHUB_TOKEN:-unset}" >> "$out/r"
 echo "isolation=$VIBEKE_ISOLATION" >> "$out/r"
 /usr/bin/nc -z -w 2 127.0.0.1 "$(cat "$out/port")" > /dev/null 2>&1; echo "net=$?" >> "$out/r"
+/usr/bin/nc -v -z -w 1 192.0.2.1 9 2>&1 | grep -q "not permitted"; echo "remote_denied=$?" >> "$out/r"
 herdr workspace list > "$out/ws.json" 2> "$out/ws.err"; echo "herdr=$?" >> "$out/r"
 "#,
     );
@@ -732,6 +733,11 @@ fn a_sandboxed_plugin_runs_restricted() {
     assert_eq!(field(&r, "isolation"), "sandbox");
     assert_ne!(field(&r, "net"), "0", "network is off\n{r}");
     assert_eq!(
+        field(&r, "remote_denied"),
+        "0",
+        "the sandbox refuses remote connections\n{r}"
+    );
+    assert_eq!(
         field(&r, "herdr"),
         "0",
         "the plugin still reaches its own broker\n{r}\n{}",
@@ -746,7 +752,10 @@ fn a_sandboxed_plugin_runs_restricted() {
     );
     assert_eq!(e["error"]["code"], "unsupported", "{e}");
 
-    // Network granted by config: the sandbox opens outbound connections.
+    // Network granted by config: the sandbox opens outbound connections to remote addresses
+    // (192.0.2.1 is a documentation address: the connection times out or finds no route, but
+    // the sandbox no longer refuses it), while the host's loopback services stay out of reach
+    // (no `[isolation.sandbox] allow_host_loopback` for plugins).
     std::fs::write(
         s_.path("config.toml"),
         "[plugins.\"acme.sbx\"]\nisolate = \"sandbox\"\nnetwork = true\n",
@@ -756,7 +765,16 @@ fn a_sandboxed_plugin_runs_restricted() {
     s_.run("acme.sbx", "probe");
     s_.settle("acme.sbx");
     let r = read(&state.join("r"));
-    assert_eq!(field(&r, "net"), "0", "network = true is honoured\n{r}");
+    assert_ne!(
+        field(&r, "remote_denied"),
+        "0",
+        "network = true is honoured\n{r}"
+    );
+    assert_ne!(
+        field(&r, "net"),
+        "0",
+        "host loopback stays closed with network = true\n{r}"
+    );
     assert_eq!(s_.plugin("acme.sbx")["network"], true);
 }
 

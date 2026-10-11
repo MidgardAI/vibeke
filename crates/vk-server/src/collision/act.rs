@@ -352,11 +352,10 @@ pub(super) fn claim_denial(server: &Arc<Server>, run: &AgentRun, p: &Value) -> O
 // ---- start a fresh task ---------------------------------------------------------------------
 
 fn git_out(root: &str, args: &[&str]) -> Option<String> {
-    let safety = vk_tasks::safety_args(Path::new(root)).ok()?;
-    let out = std::process::Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(&safety)
+    let mut cmd = std::process::Command::new("git");
+    cmd.arg("-C").arg(root);
+    vk_tasks::harden_command(&mut cmd, Path::new(root)).ok()?;
+    let out = cmd
         .args(args)
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_OPTIONAL_LOCKS", "0")

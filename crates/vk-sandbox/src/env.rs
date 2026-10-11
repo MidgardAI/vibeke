@@ -97,6 +97,12 @@ pub fn private_dirs(env: &mut Vec<(String, String)>, private: &Path) -> std::io:
     set(env, "XDG_CACHE_HOME", s(&cache));
     set(env, "npm_config_cache", s(&cache.join("npm")));
     set(env, "PIP_CACHE_DIR", s(&cache.join("pip")));
+    // clang's default module cache is in the per-user cache dir, which the box cannot see.
+    set(
+        env,
+        "CLANG_MODULE_CACHE_PATH",
+        s(&cache.join("clang/ModuleCache")),
+    );
     set(env, "ZDOTDIR", s(&zdot));
     set(env, "VIBEKE_SANDBOX", "1");
     Ok(())

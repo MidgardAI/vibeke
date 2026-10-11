@@ -219,6 +219,12 @@ fn linux_outer(args: &[String]) -> i32 {
     let Some(policy_path) = get("--policy") else {
         return 2;
     };
+    // Refuse before building the namespace: the inner helper would refuse anyway, with the
+    // same message, after bwrap already ran.
+    if let Err(e) = linux::landlock_status() {
+        eprintln!("vibeke sandbox: {e}");
+        return 1;
+    }
     let policy_bytes = match std::fs::read(&policy_path) {
         Ok(b) => b,
         Err(e) => {
@@ -348,10 +354,15 @@ fn linux_inner(args: &[String]) -> i32 {
                 return 1;
             }
         };
-        match linux::apply_landlock(&linux::landlock_rules(&policy)) {
-            Ok(true) => {}
-            Ok(false) => eprintln!("vibeke sandbox: Landlock unavailable; mount namespace only"),
-            Err(e) => eprintln!("vibeke sandbox: Landlock: {e}"),
+        // Fail closed: without Landlock the box could reach the host's abstract unix sockets
+        // and signal its processes, and the mount namespace alone is not the boundary the
+        // policy describes.
+        if let Err(e) = linux::apply_landlock(
+            &linux::landlock_rules(&policy),
+            &linux::landlock_net(&policy),
+        ) {
+            eprintln!("vibeke sandbox: {e}");
+            return 1;
         }
     }
     if let Some(port) = get("--proxy-port").and_then(|p| p.parse::<u16>().ok()) {

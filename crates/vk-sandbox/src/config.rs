@@ -17,6 +17,7 @@
 //! allow_domains = ["example.com"] # added to every profile except none
 //! deny_domains = []
 //! local_ports = [5432]            # loopback services reachable through the proxy
+//! allow_host_loopback = false     # reach every host loopback service directly (default off)
 //! ports = [443, 80]               # ports allowlisted domains may use (default 80/443)
 //! allow_private = false
 //! broker = true                   # per-pane broker socket (hooks inside the box)
@@ -188,6 +189,10 @@ pub struct SandboxConfig {
     pub sni_check: bool,
     /// Egress Interactions offer "allow always" (persisted for every contained task).
     pub global_approvals: bool,
+    /// Let contained processes connect to every loopback port of the host directly. Off, they
+    /// reach only the egress proxy, the task's port lease and `local_ports`: databases, agent
+    /// daemons and other local services stay out of reach.
+    pub allow_host_loopback: bool,
 }
 
 impl Default for SandboxConfig {
@@ -203,6 +208,7 @@ impl Default for SandboxConfig {
             broker: true,
             sni_check: true,
             global_approvals: true,
+            allow_host_loopback: false,
         }
     }
 }
