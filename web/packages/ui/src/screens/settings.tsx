@@ -353,28 +353,6 @@ function HostAlertPrefs({ h, showName }: { h: HostState; showName: boolean }) {
         </Button>
       </Row>}
       {err && <div className="px-4 pb-2 text-xs text-danger">{err}</div>}
-      <Sheet open={revoking !== null} onClose={() => setRevoking(null)} title={revoking ? t.settings.revokeTitle(revoking.d.name) : ''} role="alertdialog">
-        {revoking && (
-          <div className="space-y-3">
-            <p className="text-sm">{t.settings.revokeBody}</p>
-            {revoking.checking && !revoking.also ? (
-              <div className="flex items-center gap-2 text-sm text-muted">
-                <Spinner /> {t.settings.revokeChecking}
-              </div>
-            ) : (
-              revoking.also && <Notice tone="warn">{revoking.also}</Notice>
-            )}
-            <div className="flex gap-2">
-              <Button className="flex-1" variant="outline" onClick={() => setRevoking(null)}>
-                {t.cancel}
-              </Button>
-              <Button className="flex-1" variant="danger" data-act="revoke-confirm" disabled={!online} onClick={() => void revoke(revoking.d)}>
-                {t.settings.revoke}
-              </Button>
-            </div>
-          </div>
-        )}
-      </Sheet>
     </div>
   );
 }

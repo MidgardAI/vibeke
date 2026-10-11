@@ -61,7 +61,7 @@ describe('vault', () => {
     for (const r of rs) expect([...r]).toEqual([...rs[0]!]);
     // And through core's helper with a second vault instance on the same file.
     const v2 = new Vault(dir, fakeSafe(), 'darwin');
-    expect([...(await loadOrCreateDeviceKey(v2.keystore))]).toEqual([...rs[0]!]);
+    expect([...((await loadOrCreateDeviceKey(v2.keystore)) as Uint8Array)]).toEqual([...rs[0]!]);
     expect([...(await getOrCreateKey(v2.keystore, 'device_static', make, valid))]).toEqual([...rs[0]!]);
     expect(made).toBe(1);
   });

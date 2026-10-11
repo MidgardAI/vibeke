@@ -84,7 +84,7 @@ describe('keys', () => {
     const [a, b, c] = await Promise.all([loadOrCreateDeviceKey(ks), loadOrCreateDeviceKey(ks), loadOrCreateDeviceKey(ks)]);
     expect(b).toEqual(a);
     expect(c).toEqual(a);
-    expect(ks.m.get('device_static')).toEqual(a);
+    expect(ks.m.get('device_static')).toEqual(a as Uint8Array);
   });
   test('uses the store\'s atomic getOrCreate when present', async () => {
     const ks = new MemKeyStore() as MemKeyStore & { getOrCreate: KeyStore['getOrCreate'] };

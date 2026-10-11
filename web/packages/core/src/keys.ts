@@ -122,7 +122,7 @@ export function opaqueFromStored(k: StoredCryptoKey): OpaqueStaticKey {
     async dh(pub: Uint8Array): Promise<Uint8Array> {
       const s = subtle();
       if (!s) throw new Error('WebCrypto is not available');
-      const remote = await s.importKey('raw', pub, { name: 'X25519' }, true, []);
+      const remote = await s.importKey('raw', pub as Uint8Array<ArrayBuffer>, { name: 'X25519' }, true, []);
       const bits = await s.deriveBits({ name: 'X25519', public: remote } as unknown as AlgorithmIdentifier, k.privateKey, 256);
       const out = new Uint8Array(bits);
       // RFC 7748: an all-zero result means a low-order point (as noble rejects it).

@@ -183,7 +183,8 @@ export class TunnelMux {
       this.streams.set(id, s);
       if (this.overflowed.delete(id)) {
         this.early.delete(id);
-        s.destroy(new TunnelError('the preview sent data faster than the app could take it; reload the page', 'overflow'));
+        // Nobody holds the stream yet: destroy it quietly (an error here would be an unhandled 'error' event).
+        s.destroy();
         throw new TunnelError('tunnel stream overflowed before it opened', 'overflow');
       }
       const queued = this.early.get(id);

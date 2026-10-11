@@ -87,7 +87,7 @@ export type HeadResult = { head: Buffer } | { error: 'closed' | 'too_large' | 't
  * the blank line; the bytes after it go back into the reader.
  */
 export async function readHead(r: ByteReader, max: number, timeoutMs?: number): Promise<HeadResult> {
-  let buf = Buffer.alloc(0);
+  let buf: Buffer<ArrayBufferLike> = Buffer.alloc(0);
   let timer: ReturnType<typeof setTimeout> | null = null;
   const timeout = timeoutMs
     ? new Promise<'timeout'>((res) => {
