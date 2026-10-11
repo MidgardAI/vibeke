@@ -108,7 +108,8 @@ pub fn on_captured(app: &mut App, mi: usize, v: &Value) {
         caption: text(&d["caption"]),
         count,
         key: String::new(),
-        shown: prev.is_some_and(|c| c.shown),
+        // A new image waits for its own bytes, and the conditions are checked again then.
+        shown: prev.is_some_and(|c| c.shown && c.id == id),
     });
     load(app);
 }

@@ -360,3 +360,98 @@ fn remote_image_is_fetched_at_the_view_width_on_kitty_and_iterm() {
         }
     }
 }
+
+#[test]
+fn a_late_force_reply_never_removes_another_image() {
+    let (mut app, mut rxs) = fleet();
+    let now = now_ms();
+    load(
+        &mut app,
+        &mut rxs[0],
+        0,
+        vec![
+            rec("S4", "local_pane", "p2", now - 1_000),
+            rec("S2", "local_pane", "p2", now - 2_000),
+        ],
+        2,
+    );
+    open(&mut app, (0, "S4".into()), false);
+    app.on_key(ch('x'));
+    app.on_key(ch('y'));
+    let (req, _) = only(&commands(&mut rxs[0]), "screenshot.delete");
+    // Move on before the reply arrives.
+    app.on_key(named(NamedKey::Left));
+    assert_eq!(cur(&app), (0, "S2".to_string()));
+    reply_err(
+        &mut app,
+        0,
+        req,
+        "conflict",
+        json!({"reason": "referenced_by_acceptance"}),
+    );
+    assert!(!screen(&app).contains("[!] remove anyway"));
+    app.on_key(ch('!'));
+    assert!(commands(&mut rxs[0]).is_empty(), "S4 is not removed");
+    assert!(app.images_ui.confirm.is_none());
+    // A removal of S2 is not replaced by a late reply for S4 either.
+    app.on_key(ch('x'));
+    assert_eq!(
+        app.images_ui.confirm.as_ref().map(|c| c.id.as_str()),
+        Some("S2")
+    );
+}
+
+#[test]
+fn the_image_on_screen_survives_a_refresh_of_the_recent_list() {
+    let (mut app, mut rxs) = fleet();
+    app.config.ui.images.recent = 1;
+    let now = now_ms();
+    load(
+        &mut app,
+        &mut rxs[0],
+        0,
+        vec![rec("SA", "agent", "p1", now - 5_000)],
+        1,
+    );
+    open(&mut app, (0, "SA".into()), false);
+    // A new image pushes SA out of the one-entry recent list.
+    crate::push::on_events(&mut app, 0, vec![captured(1, "SB", "p1", "agent")], false);
+    crate::images::tick(&mut app);
+    let (req, _) = only(&commands(&mut rxs[0]), "screenshot.list");
+    reply(
+        &mut app,
+        0,
+        req,
+        json!({"screenshots": [rec("SB", "agent", "p1", now)], "count": 1, "total": 2}),
+    );
+    assert!(crate::images::shot(&app, 0, "SA").is_none());
+    assert_eq!(cur(&app), (0, "SA".to_string()));
+    let s = screen(&app);
+    assert!(s.contains("sa caption"), "{s}");
+    assert!(!s.contains("no longer in the recent list"), "{s}");
+}
+
+#[test]
+fn a_remote_image_is_fetched_again_when_the_view_changes_size() {
+    let (mut app, mut rxs) = fleet_n(2);
+    caps(&mut app, true);
+    let dir = tempfile::tempdir().unwrap();
+    app.imgview.gfx_dir = Some(dir.path().join("gfx"));
+    load(
+        &mut app,
+        &mut rxs[1],
+        1,
+        vec![rec("S7", "agent", "p1", now_ms() - 1_000)],
+        1,
+    );
+    app.draw_bytes();
+    open(&mut app, (1, "S7".into()), false);
+    let (req, p) = only(&commands(&mut rxs[1]), "screenshot.get");
+    let b64 = base64::engine::general_purpose::STANDARD.encode(tiny_png());
+    reply(&mut app, 1, req, json!({"id": "S7", "data_b64": b64}));
+    // Much narrower: another fetch size, asked for by the next frame on its own.
+    app.size.0 -= 40;
+    app.draw_bytes();
+    let (_, q) = only(&commands(&mut rxs[1]), "screenshot.get");
+    assert_ne!(p["thumb"], q["thumb"]);
+}

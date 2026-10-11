@@ -101,11 +101,13 @@ impl State {
         }
     }
 
-    /// Forget every image of screenshot `id` on machine `mi` (it was deleted).
+    /// Forget every image of screenshot `id` on machine `mi` (it was deleted): full size,
+    /// fetched at any size, and the sidebar thumbnail.
     pub fn forget(&mut self, mi: usize, id: &str) {
         let local = format!("{mi}:{id}");
         let remote = format!("{local}@");
-        let gone = |k: &String| *k == local || k.starts_with(&remote);
+        let thumb = format!("thumb:{local}");
+        let gone = |k: &String| *k == local || *k == thumb || k.starts_with(&remote);
         self.images.retain(|(k, _)| !gone(k));
         self.problems.retain(|k, _| !gone(k));
     }
@@ -195,6 +197,13 @@ pub fn fetch(app: &mut App, mi: usize, id: &str, px: u32, key: &str, pending: Pe
         json!({"id": id, "inline": true, "thumb": px}),
         pending,
     );
+}
+
+/// Machine `mi` disconnected: replies to its fetches will never arrive, so they may be asked
+/// for again (every key of the machine starts with `<mi>:`).
+pub fn on_disconnected(app: &mut App, mi: usize) {
+    let prefix = format!("{mi}:");
+    app.imgview.fetching.retain(|k| !k.starts_with(&prefix));
 }
 
 /// The reply to a fetch (or another call that answers with `data_b64`). Stores the image, or

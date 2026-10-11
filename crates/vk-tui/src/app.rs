@@ -1250,6 +1250,8 @@ impl App {
         crate::taskbadge::on_disconnected(self, i);
         crate::collision::on_disconnected(self, i);
         crate::path_picker::on_disconnected(self, i);
+        crate::image_view::on_disconnected(self, i);
+        crate::preview_ui::on_disconnected(self, i);
         if self.inbox.outstanding.is_empty()
             && let Some(f) = self.inbox.next_after.take()
         {
@@ -3099,7 +3101,9 @@ impl App {
         crate::plugins::observe(self);
         crate::sidebar::fit(self);
         crate::card::observe(self);
-        // After the layout is final: placements depend on the sidebar width.
+        // After the layout is final: placements (and the size a remote image is fetched at)
+        // depend on the sidebar width.
+        crate::viewer::ensure_image(self);
         crate::image_view::before_draw(self);
         let (cols, rows) = self.size;
         let mut grid = Grid::new(cols, rows);

@@ -30,6 +30,9 @@ pub struct Viewer {
     pub cur: (usize, String),
     /// `←`/`→` order (older = later), fixed when the viewer opens.
     pub order: Vec<(usize, String)>,
+    /// The records of `order`, kept here so a refresh of the bounded recent cache (a new image
+    /// pushing an old one out) does not take the image on screen away.
+    pub shots: Vec<(usize, Shot)>,
     pub notice: Option<String>,
 }
 
@@ -42,14 +45,16 @@ pub fn open(app: &mut App, target: (usize, String), unseen_first: bool) {
         gallery::open_on(app, target.0, &target.1);
         return;
     }
-    let order: Vec<(usize, String)> = images::ordered(app, unseen_first)
+    let shots: Vec<(usize, Shot)> = images::ordered(app, unseen_first)
         .into_iter()
-        .map(|(mi, s)| (mi, s.id.clone()))
+        .map(|(mi, s)| (mi, s.clone()))
         .collect();
+    let order = shots.iter().map(|(mi, s)| (*mi, s.id.clone())).collect();
     app.images_ui.confirm = None;
     app.images_ui.viewer = Some(Viewer {
         cur: target,
         order,
+        shots,
         notice: None,
     });
     app.mode = Mode::Popup(Popup::ImageViewer);
@@ -99,11 +104,25 @@ fn show(app: &mut App) {
     ensure_image(app);
 }
 
+/// Screenshot `id` of machine `mi`: the recent cache's record (the freshest), else the one the
+/// viewer kept when it opened.
+pub fn shot<'a>(app: &'a App, mi: usize, id: &str) -> Option<&'a Shot> {
+    images::shot(app, mi, id).or_else(|| {
+        app.images_ui
+            .viewer
+            .as_ref()?
+            .shots
+            .iter()
+            .find(|(m, s)| *m == mi && s.id == id)
+            .map(|(_, s)| s)
+    })
+}
+
 /// What the viewer shows an image for this frame: (machine, shot, cache key, area it may fill).
 fn wanted(app: &App) -> Option<(usize, &Shot, String, Rect)> {
     let v = app.images_ui.viewer.as_ref()?;
     let (mi, id) = (v.cur.0, v.cur.1.as_str());
-    let s = images::shot(app, mi, id)?;
+    let s = shot(app, mi, id)?;
     let a = app.pane_area();
     let lines =
         u16::from(v.notice.is_some()) + u16::from(gallery::too_large_to_open(app, mi, s).is_some());
@@ -157,6 +176,7 @@ pub(crate) fn on_forgotten(app: &mut App, mi: usize, ids: &[String]) {
         .or_else(|| old[..at].iter().rev().find(|t| !gone(t)))
         .cloned();
     v.order = old.into_iter().filter(|t| !gone(t)).collect();
+    v.shots.retain(|(m, s)| !(*m == mi && ids.contains(&s.id)));
     if !gone(&v.cur) {
         return;
     }
@@ -177,7 +197,7 @@ fn step(app: &mut App, older: bool) {
     let Some(v) = app.images_ui.viewer.as_ref() else {
         return;
     };
-    let known = |t: &&(usize, String)| images::shot(app, t.0, &t.1).is_some();
+    let known = |t: &&(usize, String)| shot(app, t.0, &t.1).is_some();
     let next = match v.order.iter().position(|t| *t == v.cur) {
         Some(i) if older => v.order[i + 1..].iter().find(known).cloned(),
         Some(i) => v.order[..i].iter().rev().find(known).cloned(),
@@ -214,10 +234,10 @@ pub fn key(app: &mut App, ev: KeyEvent) {
     if let Some(v) = &mut app.images_ui.viewer {
         v.notice = None;
     }
-    if images::confirm_key(app, &ev) == Some(true) {
+    if images::confirm_key(app, &ev, Some((mi, &id))) == Some(true) {
         return;
     }
-    let shot = images::shot(app, mi, &id).cloned();
+    let shot = shot(app, mi, &id).cloned();
     match ev.key {
         Key::Named(NamedKey::Escape) | Key::Char('q') => {
             images::mark_seen(app, mi, &id);
@@ -307,7 +327,7 @@ pub fn draw(app: &App, g: &mut Grid) {
     };
     let t = app.theme;
     let (mi, id) = (v.cur.0, v.cur.1.as_str());
-    let Some(s) = images::shot(app, mi, id) else {
+    let Some(s) = shot(app, mi, id) else {
         let mut a = Area::open(app, g, "image");
         a.line(
             "This image is no longer in the recent list — g opens the gallery",

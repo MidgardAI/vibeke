@@ -108,6 +108,28 @@ pub fn on_captured(app: &mut App, mi: usize, v: &Value) {
     }
 }
 
+/// Screenshots `ids` of machine `mi` were deleted: a preview whose thumbnail showed one loses
+/// it and looks for its newest screenshot again.
+pub fn on_forgotten(app: &mut App, mi: usize, ids: &[String]) {
+    let st = &mut app.previews_ui;
+    let gone: Vec<(usize, String)> = st
+        .thumbs
+        .iter()
+        .filter(|((m, _), t)| *m == mi && ids.contains(&t.shot))
+        .map(|(k, _)| k.clone())
+        .collect();
+    for k in gone {
+        st.thumbs.remove(&k);
+        st.asked.remove(&k);
+    }
+}
+
+/// Machine `mi` disconnected: list requests on the old connection get no reply, so its
+/// previews are asked for again.
+pub fn on_disconnected(app: &mut App, mi: usize) {
+    app.previews_ui.asked.retain(|(m, _)| *m != mi);
+}
+
 /// Ask for the newest screenshot of every wanted preview that has no answer yet, and make sure
 /// the image of the one we know is loaded (called from `App::draw_bytes` before the image layer).
 pub fn observe(app: &mut App) {

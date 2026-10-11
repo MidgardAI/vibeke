@@ -364,3 +364,33 @@ fn remote_machines_fetch_a_thumbnail() {
         assert!(commands(&mut rxs[1]).is_empty(), "cached");
     }
 }
+
+#[test]
+fn a_deleted_screenshot_leaves_its_thumbnail_and_the_preview_looks_again() {
+    let (mut app, mut rxs, _dir, path) = thumb_app(false);
+    app.config.ui.sidebar.preview_thumbnails = true;
+    observe(&mut app);
+    let (req, _) = only(&commands(&mut rxs[0]), "screenshot.list");
+    reply(&mut app, 0, req, list_reply("S1", &path));
+    observe(&mut app);
+    assert!(app.imgview.image("thumb:0:S1").is_some());
+    assert_eq!(placements(&app).len(), 1);
+    crate::images::forget(&mut app, 0, &["S1".to_string()]);
+    assert!(app.imgview.image("thumb:0:S1").is_none());
+    assert!(placements(&app).is_empty());
+    observe(&mut app);
+    only(&commands(&mut rxs[0]), "screenshot.list");
+}
+
+#[test]
+fn a_disconnect_lets_the_previews_be_asked_again() {
+    let (mut app, mut rxs, _dir, _path) = thumb_app(false);
+    app.config.ui.sidebar.preview_thumbnails = true;
+    observe(&mut app);
+    only(&commands(&mut rxs[0]), "screenshot.list");
+    observe(&mut app);
+    assert!(commands(&mut rxs[0]).is_empty(), "asked once");
+    on_disconnected(&mut app, 0);
+    observe(&mut app);
+    only(&commands(&mut rxs[0]), "screenshot.list");
+}

@@ -180,6 +180,7 @@ pub fn forget(app: &mut App, mi: usize, ids: &[String]) {
     }
     crate::viewer::on_forgotten(app, mi, ids);
     crate::card::on_forgotten(app, mi, ids);
+    crate::preview_ui::on_forgotten(app, mi, ids);
     // A navigate-mode selection past the last row moves back onto it.
     if let Mode::Navigate { sel } = app.mode {
         let n = crate::draw::sidebar_targets(app).len();
@@ -307,11 +308,16 @@ pub fn ask_remove(app: &mut App, mi: usize, id: String) {
     });
 }
 
-/// A key while a removal waits. `None`: nothing waits. `Some(true)`: the key was used (removing,
-/// or kept after the gallery-style confirm step). `Some(false)`: the removal is off and the key
-/// acts as usual (an attached image's second `x` is not a dialog).
-pub fn confirm_key(app: &mut App, ev: &KeyEvent) -> Option<bool> {
+/// A key while a removal of `target` (the image on screen or selected) waits. `None`: nothing
+/// waits. `Some(true)`: the key was used (removing, or kept after the gallery-style confirm
+/// step). `Some(false)`: the removal is off and the key acts as usual (an attached image's
+/// second `x` is not a dialog). A removal waiting for another image (a late reply) is dropped
+/// and never takes the key.
+pub fn confirm_key(app: &mut App, ev: &KeyEvent, target: Option<(usize, &str)>) -> Option<bool> {
     let c = app.images_ui.confirm.take()?;
+    if target != Some((c.machine, c.id.as_str())) {
+        return None;
+    }
     let force = match (c.step, &ev.key) {
         (Step::Again, Key::Char('x')) | (Step::Yes, Key::Char('y' | 'Y')) => false,
         (Step::Force, Key::Char('!')) => true,
@@ -336,13 +342,18 @@ pub fn on_removed(app: &mut App, mi: usize, id: String, res: Result<Value, RpcEr
     match res {
         // The `screenshot.deleted` event follows; forgetting twice is harmless.
         Ok(_) => forget(app, mi, &[id]),
-        Err(e) if e.reason() == Some("referenced_by_acceptance") => {
+        // Only while nothing else waits; `confirm_key` also checks that it is still on screen.
+        Err(e)
+            if e.reason() == Some("referenced_by_acceptance")
+                && app.images_ui.confirm.is_none() =>
+        {
             app.images_ui.confirm = Some(Confirm {
                 machine: mi,
                 id,
                 step: Step::Force,
             });
         }
+        Err(e) if e.reason() == Some("referenced_by_acceptance") => {}
         Err(e) => app.toast(format!("✗ {}", e.message)),
     }
     app.dirty = true;
@@ -464,10 +475,6 @@ pub fn navigate_key(app: &mut App, ev: &KeyEvent, sel: usize) -> bool {
         return false;
     }
     let stay = |app: &mut App| app.mode = Mode::Navigate { sel };
-    if confirm_key(app, ev) == Some(true) {
-        stay(app);
-        return true;
-    }
     let rows = crate::draw::sidebar_rows(app);
     let target = |i: usize| {
         rows.iter()
@@ -476,6 +483,12 @@ pub fn navigate_key(app: &mut App, ev: &KeyEvent, sel: usize) -> bool {
             .map(|r| (r.image.clone(), r.image_more))
             .filter(|(image, more)| image.is_some() || more.is_some())
     };
+    let selected = target(sel).and_then(|(image, _)| image);
+    let on = selected.as_ref().map(|(mi, id)| (*mi, id.as_str()));
+    if confirm_key(app, ev, on) == Some(true) {
+        stay(app);
+        return true;
+    }
     let open =
         |app: &mut App, image: Option<(usize, String)>, more: Option<usize>| match (image, more) {
             (Some(t), _) => crate::viewer::open(app, t, false),

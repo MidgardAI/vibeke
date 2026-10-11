@@ -427,3 +427,21 @@ fn it_closes_when_the_focus_moves_a_popup_opens_or_the_image_goes() {
     crate::push::on_events(&mut app, 0, vec![deleted(4, &["C"])], false);
     assert!(app.images_ui.card.is_none(), "the image was deleted");
 }
+
+#[test]
+fn a_replacement_image_is_checked_again_when_its_bytes_arrive() {
+    let (mut app, mut rxs) = setup(2);
+    caps(&mut app, false);
+    app.cur = 1;
+    attach(&mut app, 1, 1, "R1", "p1");
+    let (req, _) = only(&commands(&mut rxs[1]), "screenshot.get");
+    reply(&mut app, 1, req, json!({"data_b64": b64(&tiny_png())}));
+    assert!(showing(&app).is_some());
+    // A second image while the first card shows; the terminal loses focus during its fetch.
+    attach(&mut app, 1, 2, "R2", "p1");
+    let (req, _) = only(&commands(&mut rxs[1]), "screenshot.get");
+    app.caps.focus_events = true;
+    app.host_focused = false;
+    reply(&mut app, 1, req, json!({"data_b64": b64(&tiny_png())}));
+    assert!(app.images_ui.card.is_none());
+}

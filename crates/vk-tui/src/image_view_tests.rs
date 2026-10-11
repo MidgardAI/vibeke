@@ -289,3 +289,20 @@ fn remote_keys_carry_the_size_and_deletions_forget_them() {
     assert_eq!(thumb_px(&app, 9), 128, "rounded up to 64 px");
     assert_eq!(thumb_px(&app, 500), 1024);
 }
+
+#[test]
+fn a_disconnect_lets_interrupted_fetches_go_again() {
+    let (mut app, _rxs) = fleet_n(2);
+    caps(&mut app, false);
+    fetch(&mut app, 1, "S1", 128, "1:S1@128", Pending::Ignore);
+    fetch(&mut app, 0, "S2", 128, "0:S2@128", Pending::Ignore);
+    assert!(app.imgview.fetching.contains("1:S1@128"));
+    app.on_disconnected(1);
+    assert!(!app.imgview.fetching.contains("1:S1@128"));
+    assert!(
+        app.imgview.fetching.contains("0:S2@128"),
+        "other machines keep theirs"
+    );
+    fetch(&mut app, 1, "S1", 128, "1:S1@128", Pending::Ignore);
+    assert!(app.imgview.fetching.contains("1:S1@128"), "asked again");
+}
