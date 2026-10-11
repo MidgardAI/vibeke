@@ -997,6 +997,7 @@ async fn add_stores_a_png_as_an_agent_image() {
     assert_eq!(ev.len(), 1);
     assert_eq!(ev[0].data["caption"], "Login page");
     assert_eq!(ev[0].data["environment"], "agent");
+    assert_eq!(ev[0].data["taken_by"], "agent");
     assert_eq!(ev[0].data["pane"], "pane-a");
 }
 
@@ -1225,6 +1226,8 @@ async fn add_forces_a_pane_scoped_caller_to_its_own_pane() {
         (json!("pane-b"), json!("ws-b"))
     );
     assert_eq!(r["taken_by"]["kind"], "user");
+    let ev = e.events("screenshot.captured");
+    assert_eq!(ev.last().unwrap().data["taken_by"], "user");
     let none = png(2, 2, |_, _| [2, 2, 2, 255]);
     let r = e
         .call(

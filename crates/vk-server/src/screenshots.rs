@@ -644,6 +644,7 @@ fn persist_screenshot(
                 "task": meta.task,
                 "binding": meta.binding,
                 "environment": meta.environment.kind,
+                "taken_by": meta.taken_by.kind,
                 "label": meta.label,
                 "blob": meta.blob,
                 "preview": meta.preview,
