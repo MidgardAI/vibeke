@@ -2384,6 +2384,16 @@ async fn apply_input(
         }
         InputStep::Resize(w, h, dpr) => {
             let dpr = dpr.unwrap_or_else(|| sess.dpr());
+            // The window first, as when the session opened (`Page::fit_window`).
+            if let Some(sid) = cs {
+                let page = vk_browser::cdp::Page::attached(
+                    cdp.clone(),
+                    sid.to_string(),
+                    sess.target_id.clone(),
+                );
+                let size = (*w, *h);
+                let _ = tokio::task::spawn_blocking(move || page.fit_window(size)).await;
+            }
             call(
                 cdp,
                 cs,

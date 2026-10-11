@@ -94,6 +94,22 @@ fn apply_config(u: &mut State, version_check: bool) {
     }
 }
 
+/// The configuration was reloaded: follow `[update] version_check` (turned back on, the next
+/// background check runs soon).
+pub fn on_config(app: &mut App) {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let u = &mut app.ux.updates;
+        let was_off = u.off;
+        apply_config(u, app.config.update.version_check);
+        if was_off && !u.off && u.automatic {
+            u.next = Some(Instant::now() + Duration::from_secs(10));
+        }
+    }
+    #[cfg(target_arch = "wasm32")]
+    let _ = app;
+}
+
 impl State {
     /// Background checks run: the user's preference, unless the configuration turns them off.
     fn background_checks(&self) -> bool {
@@ -474,6 +490,9 @@ mod tests {
         assert!(u.status.is_null());
         // The user's own preference is untouched (it is what `save` writes).
         assert!(u.automatic);
+        // Turned back on (a config reload): background checks again.
+        apply_config(&mut u, true);
+        assert!(u.background_checks());
     }
     #[test]
     fn checks_never_steal_focus_or_send_pane_input() {

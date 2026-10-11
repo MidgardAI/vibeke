@@ -436,6 +436,10 @@ pub fn set_viewport(page: &Page, t: &Target, g: Geom) -> anyhow::Result<(u32, u3
         st.io.touch = touch;
         let changed = st.io.window != window;
         st.io.window = window;
+        // The new geometry before frames of the new size arrive (`fit_frame` reads it from the
+        // event thread); the callers set the same again.
+        st.applied = Some(g);
+        st.css = css;
         st.screencast && (changed || css != old_css || old_lb.map(|l| l.rect) != lb.map(|l| l.rect))
     };
     if restart {

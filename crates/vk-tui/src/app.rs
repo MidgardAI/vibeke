@@ -2583,6 +2583,7 @@ impl App {
                         );
                         self.theme = Theme::named(&c.theme.name);
                         self.config = c;
+                        crate::updates::on_config(self);
                         crate::appearance::apply(self, true);
                         // The reloaded keymap lacks the plugins' default bindings: re-read them.
                         for mi in 0..self.machines.len() {
