@@ -18,6 +18,8 @@ use vk_proto::render::Style;
 /// Refresh at most this often while the inbox is open.
 pub const REFRESH_MIN: Duration = Duration::from_secs(2);
 pub const FIVE_MINUTES_MS: i64 = 300_000;
+/// A `prefix+a` whose fresh rankings take longer than this opens nothing.
+pub const NEXT_AFTER_MAX: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ItemKey {
@@ -134,8 +136,13 @@ pub struct InboxState {
     pub outstanding: HashSet<usize>,
     /// `prefix+a` waiting for fresh rankings (`true`: focus the pane instead of the card).
     pub next_after: Option<bool>,
+    /// When that `prefix+a` was pressed: a reply later than [`NEXT_AFTER_MAX`] opens nothing.
+    pub next_after_at: Option<Instant>,
+    /// The selected item went away while the inbox showed it: nothing is selected until the
+    /// user moves (so a key meant for it never acts on the item that slid into its place).
+    pub lost: bool,
     pub notice: Option<String>,
-    /// A first `x` / `X` waiting for its second press.
+    /// A first `x` / `X` waiting for its second press (`X`: the problems it counted).
     pub confirm: Option<Confirm>,
     /// The last item dismissed, for `u`.
     pub last_dismissed: Option<Dismissed>,
@@ -144,7 +151,7 @@ pub struct InboxState {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Confirm {
     Item(ItemKey),
-    DeliveryProblems,
+    DeliveryProblems(Vec<ItemKey>),
 }
 
 #[derive(Debug, Clone)]
@@ -154,6 +161,8 @@ pub struct Dismissed {
     pub raw_key: Value,
     /// Open interactions are cancelled and cannot be restored.
     pub interaction: bool,
+    /// What the user dismissed, for the toast.
+    pub title: String,
 }
 
 const CONFIRM_INTERACTION: &str =
@@ -173,6 +182,8 @@ impl Default for InboxState {
             stale: false,
             outstanding: HashSet::new(),
             next_after: None,
+            next_after_at: None,
+            lost: false,
             notice: None,
             confirm: None,
             last_dismissed: None,
@@ -191,6 +202,8 @@ pub enum Reply {
     Dismiss {
         undo: bool,
         quiet: bool,
+        /// The item's title, for the toast.
+        title: String,
     },
 }
 
@@ -652,8 +665,10 @@ pub fn view(app: &App) -> View {
     }
 }
 
-/// Keep the selection on the same object while the list reorders; if it disappeared, select the
-/// item now at the same position and say so.
+/// Keep the selection on the same object while the list reorders. If it disappeared while the
+/// inbox showed it, select nothing and say so: the item that slid into its place is never
+/// selected for the user (a `y` or `x` meant for the old item must not act on it). Before the
+/// user has a selection, the item at the old position is selected.
 pub fn sync_selection(st: &mut InboxState, items: &[Item]) {
     let keys: HashSet<ItemKey> = items.iter().map(|i| i.key.clone()).collect();
     for i in items {
@@ -665,24 +680,49 @@ pub fn sync_selection(st: &mut InboxState, items: &[Item]) {
         }
     }
     st.fresh.retain(|k| keys.contains(k));
-    match &st.selected {
+    match st.selected.clone() {
         Some(k) => {
-            if let Some(p) = items.iter().position(|i| &i.key == k) {
+            if let Some(p) = items.iter().position(|i| i.key == k) {
                 st.sel_idx = p;
-            } else {
-                if st.last_dismissed.as_ref().is_none_or(|d| &d.key != k) {
-                    st.notice = Some("The selected item no longer needs you".into());
+            } else if st.seen_keys.contains(&k) {
+                // It was on screen and went away (answered, dismissed, resolved elsewhere).
+                if st.last_dismissed.as_ref().is_none_or(|d| d.key != k) {
+                    st.notice =
+                        Some("The selected item no longer needs you · j/k select another".into());
                 }
+                st.selected = None;
+                st.lost = true;
+                st.sub = Sub::None;
+                st.sel_idx = st.sel_idx.min(items.len().saturating_sub(1));
+            } else {
+                // Kept from the last time the inbox was open and gone since: start afresh.
                 st.sel_idx = st.sel_idx.min(items.len().saturating_sub(1));
                 st.selected = items.get(st.sel_idx).map(|i| i.key.clone());
-                st.sub = Sub::None;
             }
         }
+        None if st.lost => st.sel_idx = st.sel_idx.min(items.len().saturating_sub(1)),
         None => {
             st.sel_idx = st.sel_idx.min(items.len().saturating_sub(1));
             st.selected = items.get(st.sel_idx).map(|i| i.key.clone());
         }
     }
+}
+
+/// The item the inbox shows as selected: the selected item if it is still listed, else (before
+/// the user has a selection) the one at the remembered position; nothing once the selection
+/// went away.
+pub fn shown_selection<'a>(st: &InboxState, items: &'a [Item]) -> Option<&'a Item> {
+    match &st.selected {
+        Some(k) => items.iter().find(|i| &i.key == k),
+        None if st.lost => None,
+        None => items.get(st.sel_idx.min(items.len().saturating_sub(1))),
+    }
+}
+
+/// What the inbox's decision keys act on now ([`crate::decide`]).
+pub fn selected_target(app: &App) -> Option<String> {
+    let v = view(app);
+    shown_selection(&app.inbox, &v.items).map(|i| crate::decide::inbox_target(&i.key))
 }
 
 // ---- fetching -----------------------------------------------------------------------------------
@@ -692,6 +732,7 @@ pub fn open(app: &mut App) {
     app.inbox.fresh.clear();
     app.inbox.notice = None;
     app.inbox.sub = Sub::None;
+    app.inbox.lost = false;
     app.mode = Mode::Popup(Popup::Inbox);
     // The selection is kept from the last time (if that item still exists) once rankings
     // arrive; selecting a provisional model-built item now could report it as "resolved".
@@ -794,24 +835,22 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
             let v = view(app);
             sync_selection(&mut app.inbox, &v.items);
             if app.inbox.outstanding.is_empty()
-                && let Some(focus) = app.inbox.next_after.take()
+                && let Some(focus) = take_next_after(app)
             {
                 act_on_first(app, focus);
             }
         }
-        Reply::Dismiss { undo, quiet } => match res {
+        Reply::Dismiss { undo, quiet, title } => match res {
             Ok(v) => {
                 if v.get("dismissed").is_none() {
                     app.inbox.last_dismissed = None;
                     app.inbox.notice = Some("dismiss needs a newer server on that machine".into());
                     app.toast("dismiss needs a newer server on that machine");
                 } else if !quiet {
-                    let restorable = !undo
-                        && app
-                            .inbox
-                            .last_dismissed
-                            .as_ref()
-                            .is_some_and(|d| d.machine == mi && !d.interaction);
+                    let last = app.inbox.last_dismissed.as_ref();
+                    let restorable =
+                        !undo && last.is_some_and(|d| d.machine == mi && !d.interaction);
+                    let interaction = !undo && last.is_some_and(|d| d.interaction);
                     app.inbox.notice = Some(
                         if undo {
                             "Restored"
@@ -822,6 +861,18 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
                         }
                         .into(),
                     );
+                    // The toast names the item, wherever the user is now (a card closes on
+                    // dismiss, so the inbox notice alone may never be seen).
+                    let name = truncate(&title, 48);
+                    app.toast(if undo {
+                        format!("Restored “{name}”")
+                    } else if restorable {
+                        format!("Dismissed “{name}” · u in the inbox undoes it")
+                    } else if interaction {
+                        format!("Dismissed “{name}” · the agent may still wait in its pane")
+                    } else {
+                        format!("Dismissed “{name}”")
+                    });
                 }
                 app.inbox.stale = true;
                 app.inbox.last_fetch = None;
@@ -874,13 +925,62 @@ pub fn next_attention(app: &mut App, focus: bool) {
     let was_five = app.inbox.five_minute;
     app.inbox.five_minute = false;
     app.inbox.next_after = Some(focus);
+    app.inbox.next_after_at = Some(Instant::now());
     refresh(app);
     app.inbox.five_minute = was_five;
     if app.inbox.outstanding.is_empty()
-        && let Some(f) = app.inbox.next_after.take()
+        && let Some(f) = take_next_after(app)
     {
         act_on_first(app, f);
     }
+}
+
+/// A key press that is only a modifier (kitty reports them): it does not count as "a later key".
+pub fn is_modifier_key(ev: &KeyEvent) -> bool {
+    matches!(
+        ev.key,
+        Key::Named(
+            NamedKey::LeftShift
+                | NamedKey::RightShift
+                | NamedKey::LeftControl
+                | NamedKey::RightControl
+                | NamedKey::LeftAlt
+                | NamedKey::RightAlt
+                | NamedKey::LeftSuper
+                | NamedKey::RightSuper
+        )
+    )
+}
+
+/// The user pressed another key: a `prefix+a` still waiting for rankings opens nothing.
+pub fn cancel_next_after(app: &mut App) {
+    app.inbox.next_after = None;
+    app.inbox.next_after_at = None;
+}
+
+/// The waiting `prefix+a`, if its rankings arrived in time and nothing else is on screen. An
+/// async reply never replaces a popup, prompt or menu the user is in; a late one says so.
+pub fn take_next_after(app: &mut App) -> Option<bool> {
+    let focus = app.inbox.next_after.take()?;
+    let at = app.inbox.next_after_at.take();
+    if !matches!(app.mode, Mode::Normal) {
+        return None;
+    }
+    if at.is_none_or(|t| t.elapsed() > NEXT_AFTER_MAX) {
+        let key = app
+            .keymap
+            .binding_for(if focus {
+                "next_attention_focus"
+            } else {
+                "next_attention"
+            })
+            .unwrap_or_else(|| "it".into());
+        app.toast(format!(
+            "The inbox took too long to answer, so nothing opened. Press {key} again."
+        ));
+        return None;
+    }
+    Some(focus)
 }
 
 fn act_on_first(app: &mut App, focus: bool) {
@@ -1089,7 +1189,8 @@ fn dismiss_blocked(app: &App, it: &Item) -> Option<String> {
 }
 
 /// Dismiss an open interaction from its card: the server cancels it and remembers the choice.
-pub fn dismiss_interaction(app: &mut App, mi: usize, id: &str) {
+/// `title` names it in the toast.
+pub fn dismiss_interaction(app: &mut App, mi: usize, id: &str, title: &str) {
     let raw_key = json!({"kind": "interaction", "id": id});
     app.command_on(
         mi,
@@ -1098,6 +1199,7 @@ pub fn dismiss_interaction(app: &mut App, mi: usize, id: &str) {
         Pending::Attn(Reply::Dismiss {
             undo: false,
             quiet: false,
+            title: title.to_string(),
         }),
     );
     app.inbox.last_dismissed = Some(Dismissed {
@@ -1109,6 +1211,7 @@ pub fn dismiss_interaction(app: &mut App, mi: usize, id: &str) {
         },
         raw_key,
         interaction: true,
+        title: title.to_string(),
     });
 }
 
@@ -1121,7 +1224,11 @@ fn send_dismiss(app: &mut App, it: &Item, quiet: bool) {
         it.key.machine,
         "attention.update",
         params,
-        Pending::Attn(Reply::Dismiss { undo: false, quiet }),
+        Pending::Attn(Reply::Dismiss {
+            undo: false,
+            quiet,
+            title: it.title.clone(),
+        }),
     );
 }
 
@@ -1130,8 +1237,20 @@ fn send_dismiss(app: &mut App, it: &Item, quiet: bool) {
 pub fn key(app: &mut App, ev: KeyEvent) {
     let v = view(app);
     sync_selection(&mut app.inbox, &v.items);
-    let sel = v.items.get(app.inbox.sel_idx).cloned();
+    let sel = shown_selection(&app.inbox, &v.items).cloned();
     app.mode = Mode::Popup(Popup::Inbox);
+    // Releases, repeats and decision keys right after the selection changed under the user stop
+    // here (crate::decide): they were meant for something else.
+    let decides = matches!(app.inbox.sub, Sub::None)
+        && matches!(ev.key, Key::Char('y' | 'n' | 'x' | 'X' | '1'..='9'));
+    let target = sel.as_ref().map(|i| crate::decide::inbox_target(&i.key));
+    match app
+        .decide
+        .gate(target.as_deref(), &ev, Instant::now(), app.kitty, decides)
+    {
+        crate::decide::Gate::Go => {}
+        crate::decide::Gate::Ignore | crate::decide::Gate::Wait => return,
+    }
     // A pending dismiss confirmation survives only the matching second press.
     let pend = app.inbox.confirm.take();
     if pend.is_some()
@@ -1205,18 +1324,32 @@ pub fn key(app: &mut App, ev: KeyEvent) {
     let move_to = |app: &mut App, idx: usize| {
         app.inbox.sel_idx = idx;
         app.inbox.selected = v.items.get(idx).map(|i| i.key.clone());
+        app.inbox.lost = false;
         app.inbox.notice = None;
         if let Some(k) = &app.inbox.selected {
             app.inbox.fresh.remove(k);
         }
     };
+    // With nothing selected (the selection went away), j/k select the item now at its place.
+    let none = sel.is_none();
+    let last = n.saturating_sub(1);
     match ev.key {
         Key::Named(NamedKey::Escape) | Key::Char('q') => app.mode = Mode::Normal,
         Key::Char('j') | Key::Named(NamedKey::Down) => {
-            move_to(app, (app.inbox.sel_idx + 1).min(n.saturating_sub(1)))
+            let i = if none {
+                app.inbox.sel_idx.min(last)
+            } else {
+                (app.inbox.sel_idx + 1).min(last)
+            };
+            move_to(app, i)
         }
         Key::Char('k') | Key::Named(NamedKey::Up) => {
-            move_to(app, app.inbox.sel_idx.saturating_sub(1))
+            let i = if none {
+                app.inbox.sel_idx.min(last)
+            } else {
+                app.inbox.sel_idx.saturating_sub(1)
+            };
+            move_to(app, i)
         }
         Key::Char('g') | Key::Named(NamedKey::Home) => move_to(app, 0),
         Key::Char('G') | Key::Named(NamedKey::End) => move_to(app, n.saturating_sub(1)),
@@ -1234,6 +1367,7 @@ pub fn key(app: &mut App, ev: KeyEvent) {
                     Pending::Attn(Reply::Dismiss {
                         undo: true,
                         quiet: false,
+                        title: d.title.clone(),
                     }),
                 );
             }
@@ -1247,28 +1381,54 @@ pub fn key(app: &mut App, ev: KeyEvent) {
                 .filter(|i| i.key.kind == "send_unknown" && dismiss_blocked(app, i).is_none())
                 .cloned()
                 .collect();
-            if targets.is_empty() {
-                app.inbox.notice = Some("no delivery problems to dismiss".into());
-            } else if pend != Some(Confirm::DeliveryProblems) {
-                app.inbox.confirm = Some(Confirm::DeliveryProblems);
-                app.inbox.notice = Some(format!(
-                    "Press X again to dismiss {} delivery problem{}.",
-                    targets.len(),
-                    if targets.len() == 1 { "" } else { "s" }
-                ));
-            } else {
-                for it in &targets {
-                    send_dismiss(app, it, true);
+            let plural = |n: usize| if n == 1 { "" } else { "s" };
+            match pend {
+                // The second X dismisses what the first one counted (and is still listed),
+                // never a problem that arrived in between.
+                Some(Confirm::DeliveryProblems(keys)) => {
+                    let targets: Vec<&Item> =
+                        targets.iter().filter(|i| keys.contains(&i.key)).collect();
+                    if targets.is_empty() {
+                        app.inbox.notice = Some("those delivery problems are already gone".into());
+                    } else {
+                        for it in &targets {
+                            send_dismiss(app, it, true);
+                        }
+                        app.inbox.last_dismissed = None;
+                        let msg = format!(
+                            "Dismissed {} delivery problem{}",
+                            targets.len(),
+                            plural(targets.len())
+                        );
+                        app.toast(msg.clone());
+                        app.inbox.notice = Some(msg);
+                    }
                 }
-                app.inbox.last_dismissed = None;
-                app.inbox.notice = Some(format!(
-                    "Dismissed {} delivery problem{}",
-                    targets.len(),
-                    if targets.len() == 1 { "" } else { "s" }
-                ));
+                _ if targets.is_empty() => {
+                    app.inbox.notice = Some("no delivery problems to dismiss".into());
+                }
+                _ => {
+                    app.inbox.confirm = Some(Confirm::DeliveryProblems(
+                        targets.iter().map(|i| i.key.clone()).collect(),
+                    ));
+                    app.inbox.notice = Some(format!(
+                        "Press X again to dismiss {} delivery problem{}.",
+                        targets.len(),
+                        plural(targets.len())
+                    ));
+                }
             }
         }
-        _ if sel.is_none() => {}
+        _ if sel.is_none() => {
+            let item_key = matches!(
+                ev.key,
+                Key::Char('y' | 'n' | 'x' | 'A' | 's' | 'e' | 'o' | '1'..='9')
+                    | Key::Named(NamedKey::Enter)
+            );
+            if item_key && n > 0 {
+                app.inbox.notice = Some("Nothing is selected · j/k select an item".into());
+            }
+        }
         Key::Char('x') => {
             let it = sel.unwrap();
             if let Some(why) = dismiss_blocked(app, &it) {
@@ -1283,6 +1443,7 @@ pub fn key(app: &mut App, ev: KeyEvent) {
                     key: it.key.clone(),
                     raw_key: it.raw_key.clone(),
                     interaction: it.key.kind == "interaction",
+                    title: it.title.clone(),
                 });
             }
         }
@@ -1437,11 +1598,18 @@ pub fn draw(app: &App, g: &mut Grid) {
     g.fill(r, t.text());
     let v = view(app);
     let st = &app.inbox;
-    let sel_idx = st
-        .selected
+    // Nothing is highlighted once the selection went away: the item that slid into its place
+    // is not the user's choice.
+    let shown = shown_selection(st, &v.items).map(|i| i.key.clone());
+    let sel_idx = shown
         .as_ref()
         .and_then(|k| v.items.iter().position(|i| &i.key == k))
-        .unwrap_or(st.sel_idx.min(v.items.len().saturating_sub(1)));
+        .unwrap_or(usize::MAX);
+    let scroll_idx = if sel_idx == usize::MAX {
+        st.sel_idx
+    } else {
+        sel_idx
+    };
     let actionable = v.items.iter().filter(|i| i.class <= 4).count();
     let header = if st.five_minute {
         format!("Needs you · {actionable}   [5-minute view]  f: All items")
@@ -1488,7 +1656,7 @@ pub fn draw(app: &App, g: &mut Grid) {
     }
     let multi = app.machines.len() > 1;
     let rows = bottom.saturating_sub(list_top) as usize;
-    let skip = sel_idx.saturating_sub(rows.saturating_sub(2));
+    let skip = scroll_idx.saturating_sub(rows.saturating_sub(2));
     let mut shown_footer = false;
     for (i, it) in v.items.iter().enumerate().skip(skip) {
         if y >= bottom {
@@ -1605,7 +1773,9 @@ pub fn draw(app: &App, g: &mut Grid) {
     let dw = (r.x + r.w).saturating_sub(dx + 1);
     let mut lines: Vec<(String, Style)> = Vec::new();
     if let Some(it) = v.items.get(sel_idx) {
-        detail_lines(app, it, &mut lines);
+        detail_lines(app, it, dw as usize, &mut lines);
+    } else if !v.items.is_empty() {
+        lines.push(("Nothing is selected · j/k select an item".into(), t.dim()));
     }
     for (yy, (s, stl)) in (list_top.saturating_sub(1)..bottom).zip(lines) {
         g.put_str(dx, yy, &s, stl, dw);
@@ -1678,10 +1848,15 @@ pub fn draw(app: &App, g: &mut Grid) {
     let mut keys = String::from("j/k move · enter open");
     let caps = v
         .items
-        .get(app.inbox.sel_idx)
+        .get(sel_idx)
         .map(|it| app.machines[it.key.machine].capabilities());
+    let live = crate::decide::live(app);
     if caps.is_some_and(|c| c.approve) {
-        keys.push_str(" · y/n/1-9 answer · A batch");
+        keys.push_str(if live {
+            " · y/n/1-9 answer · A batch"
+        } else {
+            " · y/n/1-9 answer (in a moment) · A batch"
+        });
     }
     keys.push_str(" · o open pane");
     if caps.is_some_and(|c| c.host) {
@@ -1737,7 +1912,7 @@ pub fn blocks_suffix(it: &Item) -> String {
     }
 }
 
-fn detail_lines(app: &App, it: &Item, out: &mut Vec<(String, Style)>) {
+fn detail_lines(app: &App, it: &Item, width: usize, out: &mut Vec<(String, Style)>) {
     let t = app.theme;
     let mi = it.key.machine;
     out.push((it.title.clone(), t.bold(t.fg)));
@@ -1807,7 +1982,7 @@ fn detail_lines(app: &App, it: &Item, out: &mut Vec<(String, Style)>) {
     if let Some(int) = &it.interaction
         && let Some(x) = m.model.interactions.iter().find(|x| &x.id == int)
     {
-        crate::popups::card_lines(app, mi, x, 0, out);
+        crate::popups::card_lines(app, mi, x, 0, width, out);
         let keys = if x.status != InteractionStatus::Open {
             "resolved — no longer answerable".to_string()
         } else if !x.answerable {
@@ -1977,7 +2152,8 @@ mod tests {
         assert_eq!(v.items[app.inbox.sel_idx].key.id, "y");
         // The new urgent item is flagged rather than stealing the selection.
         assert!(app.inbox.fresh.iter().any(|k| k.id == "u"));
-        // The selected item resolves: selection moves to its neighbour with a notice.
+        // The selected item resolves: nothing is selected (the item that slid into its place is
+        // not the user's choice) and a notice says so.
         reply_all_with(
             &mut app,
             &mut rxs,
@@ -1986,8 +2162,140 @@ mod tests {
                 json!({"items": [item("interaction", "z", json!(3), 2_000, false)], "coverage": {"complete": true, "notes": []}}),
             ],
         );
-        assert!(app.inbox.notice.is_some());
-        assert!(app.inbox.selected.is_some());
+        assert!(
+            app.inbox
+                .notice
+                .as_deref()
+                .is_some_and(|n| n.contains("no longer needs you"))
+        );
+        assert!(app.inbox.selected.is_none());
+        assert!(selected_target(&app).is_none());
+        // A dismiss key does nothing but say so.
+        app.on_key(key(Key::Char('x')));
+        assert!(
+            commands(&mut rxs[0])
+                .iter()
+                .all(|(_, v)| v["method"] != "attention.update")
+        );
+        assert!(
+            app.inbox
+                .notice
+                .as_deref()
+                .unwrap()
+                .contains("Nothing is selected")
+        );
+        // j selects the item now at that place (no step past it).
+        app.on_key(key(Key::Char('j')));
+        assert_eq!(app.inbox.selected.as_ref().unwrap().id, "x");
+    }
+
+    #[test]
+    fn y_twice_never_answers_the_item_that_slid_into_place() {
+        let (mut app, mut rxs) = test_app(1);
+        for (id, age) in [("i1", 600_000), ("i2", 500_000)] {
+            app.machines[0]
+                .model
+                .interactions
+                .push(crate::app::test_interaction(id, "p2", id, now_ms() - age));
+        }
+        let int = |id: &str| {
+            let mut v = item("interaction", id, json!(3), 60_000, false);
+            v["interaction"] = json!(id);
+            v
+        };
+        open(&mut app);
+        let c = commands(&mut rxs[0]);
+        reply(
+            &mut app,
+            0,
+            c[0].0,
+            json!({"items": [int("i1"), int("i2")], "coverage": {"complete": true, "notes": []}}),
+        );
+        assert_eq!(app.inbox.selected.as_ref().unwrap().id, "i1");
+        app.on_key(key(Key::Char('y')));
+        let mut y_release = key(Key::Char('y'));
+        y_release.kind = vk_proto::input::KeyKind::Release;
+        app.on_key(y_release.clone());
+        let answered: Vec<Value> = commands(&mut rxs[0])
+            .into_iter()
+            .filter(|(_, v)| v["method"] == "interaction.answer")
+            .map(|(_, v)| v)
+            .collect();
+        assert_eq!(answered.len(), 1);
+        assert_eq!(answered[0]["params"]["interaction"], "i1");
+        // The refresh lands: i1 is gone and i2 slides into its place.
+        app.inbox.last_fetch = None;
+        refresh(&mut app);
+        let c = commands(&mut rxs[0]);
+        reply(
+            &mut app,
+            0,
+            c[0].0,
+            json!({"items": [int("i2")], "coverage": {"complete": true, "notes": []}}),
+        );
+        // A second y (or its release, or a key repeat) does not approve i2.
+        app.on_key(y_release);
+        app.on_key(key(Key::Char('y')));
+        assert!(
+            commands(&mut rxs[0])
+                .iter()
+                .all(|(_, v)| v["method"] != "interaction.answer")
+        );
+        // Selecting it first does.
+        app.on_key(key(Key::Char('j')));
+        app.on_key(key(Key::Char('y')));
+        assert!(commands(&mut rxs[0]).iter().any(
+            |(_, v)| v["method"] == "interaction.answer" && v["params"]["interaction"] == "i2"
+        ));
+    }
+
+    #[test]
+    fn a_release_never_confirms_a_dismiss() {
+        let (mut app, mut rxs) = open_with(vec![
+            item("interaction", "i1", json!(3), 600_000, false),
+            item("review", "a", json!(4), 600_000, false),
+        ]);
+        app.machines[0]
+            .model
+            .interactions
+            .push(crate::app::test_interaction(
+                "i1",
+                "p2",
+                "Allow rm?",
+                now_ms(),
+            ));
+        app.on_key(key(Key::Char('x')));
+        let mut rel = key(Key::Char('x'));
+        rel.kind = vk_proto::input::KeyKind::Release;
+        app.on_key(rel);
+        assert!(updates(&mut rxs[0]).is_empty());
+        assert!(
+            app.inbox.confirm.is_some(),
+            "still waiting for the second x"
+        );
+        // Bulk X dismisses only what the first X counted.
+        let (mut app, mut rxs) = open_with(vec![
+            item("send_unknown", "s1", json!(4), 600_000, false),
+            item("review", "a", json!(4), 600_000, false),
+        ]);
+        app.on_key(key(Key::Char('X')));
+        app.inbox.per_machine[0] = parse_list(
+            0,
+            &json!({"items": [item("send_unknown", "s1", json!(4), 600_000, false),
+                              item("send_unknown", "s9", json!(4), 10, false)],
+                    "coverage": {"complete": true, "notes": []}}),
+            Instant::now(),
+            now_ms(),
+        );
+        app.on_key(key(Key::Char('X')));
+        let u = updates(&mut rxs[0]);
+        assert_eq!(u.len(), 1);
+        assert_eq!(u[0].1["params"]["key"]["id"], "s1");
+        assert!(
+            app.toasts
+                .last()
+                .is_some_and(|t| t.text == "Dismissed 1 delivery problem")
+        );
     }
 
     fn key_down(app: &mut App, n: usize) {

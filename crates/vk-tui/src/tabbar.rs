@@ -15,7 +15,7 @@
 //!   tabs 1..n in their current order (`tab.renumber {workspace}`). A server without the method
 //!   says so in a toast; nothing changes locally.
 
-use crate::app::{Action, App, Mode, Pending, Popup, RpcErr};
+use crate::app::{Action, App, Pending, RpcErr};
 use crate::event::{MouseButton as CtButton, MouseEvent, MouseEventKind};
 use serde_json::{Value, json};
 use vk_proto::model::Tab;
@@ -146,7 +146,7 @@ fn tabs_of_focus(app: &App) -> Vec<Tab> {
         .collect()
 }
 
-fn tab_busy(app: &App, t: &Tab) -> bool {
+pub(crate) fn tab_busy(app: &App, t: &Tab) -> bool {
     let shell = |s: &str| {
         matches!(
             s.rsplit('/').next().unwrap_or(s).trim_start_matches('-'),
@@ -166,14 +166,10 @@ pub fn close_tab(app: &mut App, t: &Tab) {
     if !app.m().capabilities().action("close_tab") {
         return;
     }
-    if tab_busy(app, t) {
-        app.mode = Mode::Popup(Popup::Confirm {
-            message: format!("Close tab {}? A process is running.", t.number),
-            action: Box::new(Action::CloseTab(t.id.clone())),
-        });
-    } else {
-        app.command("tab.close", json!({"tab": t.id}), Pending::Ignore);
-    }
+    // `ui.confirm_close` decides, as for the close_tab key.
+    let busy = tab_busy(app, t);
+    let what = format!("tab {}", t.number);
+    crate::popups::close_or_confirm(app, Action::CloseTab(t.id.clone()), busy, &what);
 }
 
 pub fn on_mouse(app: &mut App, me: &MouseEvent) -> bool {

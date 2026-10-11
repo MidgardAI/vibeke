@@ -523,6 +523,10 @@ pub struct App {
     /// The last text copied from this client (middle-click pastes it with `primary_selection`).
     pub last_copy: Option<String>,
     pub inbox: crate::inbox::InboxState,
+    /// The guard on keys that decide something (inbox, cards, batch, confirmations).
+    pub decide: crate::decide::Guard,
+    /// Where the open popup was drawn last frame (for clicks outside it).
+    pub popup_rect: std::cell::Cell<Option<crate::screen::Rect>>,
     pub pending_ops: crate::pending::PendingStore,
     pub track: Option<crate::tasks::TrackForm>,
     pub task_view: Option<crate::tasks::TaskView>,
@@ -957,6 +961,8 @@ impl App {
             copyout: crate::copyout::Delivery::from_env(),
             last_copy: None,
             inbox: Default::default(),
+            decide: Default::default(),
+            popup_rect: Default::default(),
             pending_ops: Default::default(),
             track: None,
             task_view: None,
@@ -1253,7 +1259,7 @@ impl App {
         crate::image_view::on_disconnected(self, i);
         crate::preview_ui::on_disconnected(self, i);
         if self.inbox.outstanding.is_empty()
-            && let Some(f) = self.inbox.next_after.take()
+            && let Some(f) = crate::inbox::take_next_after(self)
         {
             crate::inbox::next_attention(self, f);
         }
@@ -1292,8 +1298,11 @@ impl App {
     }
 
     pub(crate) fn send_key(&mut self, ev: KeyEvent) {
-        // The first key press the pane receives closes the attach pop-up (spec 18 §6.1).
-        crate::card::on_key_to_pane(self, &ev);
+        // The first key press the pane receives closes the attach pop-up (spec 18 §6.1); esc
+        // only closes it and never reaches the pane.
+        if crate::card::on_key_to_pane(self, &ev) {
+            return;
+        }
         if crate::browser::focused_browser(self).is_some() {
             crate::browser::send_key(self, ev);
             return;
@@ -1909,6 +1918,8 @@ impl App {
         crate::remote_view::deadlines(self, &mut d);
         crate::osc::deadlines(self, now, &mut d);
         crate::ux::deadlines(self, now, &mut d);
+        crate::card::deadlines(self, &mut d);
+        self.decide.deadlines(&mut d);
         d
     }
 
@@ -1978,6 +1989,19 @@ impl App {
         if crate::gateway::key(self, &ev) {
             return;
         }
+        // A `prefix+a` still waiting for fresh rankings is dropped by any later key: its reply
+        // must not open something over what the user does now.
+        if ev.kind != KeyKind::Release && !crate::inbox::is_modifier_key(&ev) {
+            crate::inbox::cancel_next_after(self);
+        }
+        // What changed on a decision surface since the last key or frame re-arms its guard;
+        // what this key changes is the user's own doing.
+        crate::decide::before_key(self);
+        self.on_key_inner(ev);
+        crate::decide::after_key(self);
+    }
+
+    fn on_key_inner(&mut self, ev: KeyEvent) {
         let mode = std::mem::replace(&mut self.mode, Mode::Normal);
         let from_card = matches!(
             mode,
@@ -2214,6 +2238,11 @@ impl App {
         if crate::selection::on_active_drag(self, &me) || crate::scrollback::on_mouse(self, &me) {
             return;
         }
+        // Any other popup is modal for the mouse: nothing reaches the panes, sidebar or tabs
+        // behind it, and a click outside it closes it.
+        if crate::popups::on_mouse(self, &me) {
+            return;
+        }
         // Sidebar image rows and 📷N badges, before any pane click (spec 18 §4.4).
         if crate::images::on_mouse(self, &me) {
             return;
@@ -2378,16 +2407,7 @@ impl App {
             "close_pane" => {
                 if let Some(p) = pane {
                     let busy = self.pane_busy(&p);
-                    if busy
-                        && !matches!(self.config.ui.confirm_close, vk_config::ConfirmClose::Never)
-                    {
-                        self.mode = Mode::Popup(Popup::Confirm {
-                            message: "Close pane? A process is running.".into(),
-                            action: Box::new(Action::ClosePane(p)),
-                        });
-                    } else {
-                        self.command("pane.close", json!({"pane": p}), Pending::Ignore);
-                    }
+                    crate::popups::close_or_confirm(self, Action::ClosePane(p), busy, "pane");
                 }
             }
             "zoom" => {
@@ -2470,10 +2490,9 @@ impl App {
             }
             "close_tab" => {
                 if let Some(t) = tab {
-                    self.mode = Mode::Popup(Popup::Confirm {
-                        message: format!("Close tab {}?", t.number),
-                        action: Box::new(Action::CloseTab(t.id)),
-                    });
+                    let busy = crate::tabbar::tab_busy(self, &t);
+                    let what = format!("tab {}", t.number);
+                    crate::popups::close_or_confirm(self, Action::CloseTab(t.id), busy, &what);
                 }
             }
             "rename_tab" => self.prompt(
@@ -2492,10 +2511,15 @@ impl App {
             }
             "close_workspace" => {
                 if let Some(w) = ws {
-                    self.mode = Mode::Popup(Popup::Confirm {
-                        message: format!("Close workspace {}?", w.display_name()),
-                        action: Box::new(Action::CloseWorkspace(w.id)),
-                    });
+                    let mi = self.cur;
+                    let busy = crate::popups::workspace_busy(self, mi, &w.id);
+                    let what = format!("workspace {}", w.display_name());
+                    crate::popups::close_or_confirm(
+                        self,
+                        Action::CloseWorkspace(w.id),
+                        busy,
+                        &what,
+                    );
                 }
             }
             "workspace_picker" => {
@@ -2866,11 +2890,18 @@ impl App {
                 self.mode = Mode::Navigate { sel };
             }
             Key::Char('x') => {
-                if let Some((_, pane)) = rows.get(sel).cloned() {
-                    self.mode = Mode::Popup(Popup::Confirm {
-                        message: "Close pane?".into(),
-                        action: Box::new(Action::ClosePane(pane)),
-                    });
+                if let Some((mi, pane)) = rows.get(sel).cloned() {
+                    let busy = crate::popups::pane_running(self, mi, &pane);
+                    if crate::popups::should_confirm_close(self, busy) {
+                        crate::popups::close_or_confirm(
+                            self,
+                            Action::ClosePane(pane),
+                            busy,
+                            "pane",
+                        );
+                    } else {
+                        self.command_on(mi, "pane.close", json!({"pane": pane}), Pending::Ignore);
+                    }
                 }
             }
             Key::Char('n') => {
@@ -3111,6 +3142,7 @@ impl App {
         crate::plugins::observe(self);
         crate::sidebar::fit(self);
         crate::card::observe(self);
+        crate::decide::before_draw(self);
         // After the layout is final: placements (and the size a remote image is fetched at)
         // depend on the sidebar width.
         crate::viewer::ensure_image(self);
@@ -3295,6 +3327,8 @@ pub(crate) fn test_app(n: usize) -> (App, Vec<mpsc::UnboundedReceiver<ClientFram
     // OSC 52 reads see a fixed clipboard, never the host's.
     app.osc = crate::osc::State::with_test_clipboard(b"(test clipboard)");
     app.size = (120, 40);
+    // Decision keys act at once unless a test is about the arm delay (it sets the delay back).
+    app.decide.delay = Duration::ZERO;
     (app, rxs)
 }
 

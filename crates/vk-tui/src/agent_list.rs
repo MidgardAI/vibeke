@@ -16,7 +16,7 @@ use crate::app::{App, Mode, Popup};
 use crate::nav::{ListKey, fuzzy, highlight, list_frame, list_key, list_row};
 use crate::screen::{Grid, Rect as SRect};
 use unicode_width::UnicodeWidthStr;
-use vk_proto::input::KeyEvent;
+use vk_proto::input::{Key, KeyEvent, Mods, NamedKey};
 use vk_proto::model::*;
 use vk_proto::render::{Style, attr};
 
@@ -137,8 +137,34 @@ pub fn action(app: &mut App, action: &str) -> bool {
     false
 }
 
+/// The agent under the cursor ([`crate::decide::target`]): the list re-sorts by attention as
+/// runs change, so `enter` waits a moment when another agent slid under the cursor.
+pub fn target(app: &App, filter: &str, sel: usize) -> Option<String> {
+    ranked(app, filter)
+        .get(sel)
+        .map(|(e, _)| crate::decide::agents_target(e))
+}
+
 pub fn key(app: &mut App, ev: KeyEvent, filter: String, sel: usize) {
     let list = ranked(app, &filter);
+    let decides = matches!(ev.key, Key::Named(NamedKey::Enter));
+    let target = list.get(sel).map(|(e, _)| crate::decide::agents_target(e));
+    // `alt+enter` (open the card) is gated like `enter`.
+    let mut gated = ev.clone();
+    if decides {
+        gated.mods = Mods::empty();
+    }
+    let gate = app.decide.gate(
+        target.as_deref(),
+        &gated,
+        crate::time::Instant::now(),
+        app.kitty,
+        decides,
+    );
+    if gate != crate::decide::Gate::Go {
+        app.mode = Mode::Popup(Popup::Agents { filter, sel });
+        return;
+    }
     match list_key(&ev, filter, sel, list.len()) {
         ListKey::Close => {}
         ListKey::Enter(i) => {

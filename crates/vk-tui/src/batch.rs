@@ -19,7 +19,7 @@ use crate::app::{App, Mode, Pending, Popup, RpcErr};
 use crate::screen::Grid;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashMap, HashSet};
-use vk_proto::input::{Key, KeyEvent, KeyKind, NamedKey};
+use vk_proto::input::{Key, KeyEvent, NamedKey};
 use vk_proto::model::*;
 
 pub type Id = (usize, String);
@@ -251,14 +251,46 @@ pub fn on_reply(app: &mut App, _mi: usize, r: Reply, res: Result<Value, RpcErr>)
     app.dirty = true;
 }
 
+/// What `a`/`y`/`n` act on: the selected group's members as drawn (ticked, not yet answered,
+/// still listed). A member that goes away or arrives changes it, and the guard waits again
+/// ([`crate::decide`]), so a key never approves a group other than the one on screen.
+pub fn group_target(app: &App, v: &View) -> Option<String> {
+    let rs = rows(app, v);
+    let gi = group_of(&rs, v.sel)?;
+    let (key, ids) = v.order.get(gi)?;
+    let members: Vec<String> = ids
+        .iter()
+        .filter(|id| !v.unticked.contains(*id) && !v.sent.contains_key(*id))
+        .filter(|id| find(app, id).is_some())
+        .map(|(mi, id)| format!("{mi}/{id}"))
+        .collect();
+    Some(format!("batch:{key}:{}", members.join(",")))
+}
+
+/// The batch view's decision target ([`crate::decide::target`]).
+pub fn target(app: &App) -> Option<String> {
+    group_target(app, app.ux.batch.as_ref()?)
+}
+
 pub fn key(app: &mut App, ev: KeyEvent) {
     let keep = |app: &mut App| app.mode = Mode::Popup(Popup::Batch);
-    if ev.kind == KeyKind::Release {
-        return keep(app);
-    }
     let Some(mut v) = app.ux.batch.take() else {
         return;
     };
+    // Releases, repeats and an `a`/`y`/`n` right after the group changed stop here.
+    let decides = matches!(ev.key, Key::Char('a' | 'y' | 'n'));
+    let target = group_target(app, &v);
+    let gate = app.decide.gate(
+        target.as_deref(),
+        &ev,
+        crate::time::Instant::now(),
+        app.kitty,
+        decides,
+    );
+    if gate != crate::decide::Gate::Go {
+        app.ux.batch = Some(v);
+        return keep(app);
+    }
     let rs = rows(app, &v);
     let n = rs.len();
     match ev.key {
@@ -349,9 +381,11 @@ pub fn draw(app: &App, g: &mut Grid) {
             Row::Header(gi) => {
                 let ids = &v.order[*gi].1;
                 let it = ids.first().and_then(|id| find(app, id));
+                // The same members `a`/`n` answer (see `group_target`).
                 let ticked = ids
                     .iter()
                     .filter(|id| !v.unticked.contains(*id) && !v.sent.contains_key(*id))
+                    .filter(|id| find(app, id).is_some())
                     .count();
                 let what = it
                     .as_ref()
@@ -437,7 +471,11 @@ pub fn draw(app: &App, g: &mut Grid) {
         }
     }
     a.footer(
-        "j/k move · space tick/untick · a allow all ticked · n deny all ticked · o open pane · esc back",
+        if crate::decide::live(app) {
+            "j/k move · space tick/untick · a allow all ticked · n deny all ticked · o open pane · esc back"
+        } else {
+            "j/k move · space tick/untick · a/n work in a moment (the group changed) · o open pane · esc back"
+        },
         t.dim(),
     );
 }

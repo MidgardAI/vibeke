@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::{Mode, Popup};
 use crate::drafts::tests::{commands, fleet, only, pane, screen};
 use crossterm::event::KeyModifiers;
 use vk_proto::model::LayoutNode;

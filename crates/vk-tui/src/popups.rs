@@ -3,8 +3,9 @@
 use crate::app::{App, Mode, Pending, Popup, PromptKind};
 use crate::draw::{harness_icon, run_state};
 use crate::screen::{Grid, Rect as SRect};
+use crate::time::Instant;
 use serde_json::json;
-use vk_proto::input::{Key, KeyEvent, NamedKey};
+use vk_proto::input::{Key, KeyEvent, KeyKind, NamedKey};
 use vk_proto::model::*;
 use vk_proto::render::{CursorShape, Style};
 
@@ -31,6 +32,12 @@ impl BoxDraw<'_> {
     pub(crate) fn next(&mut self) {
         self.y += 1;
     }
+    /// Rows still free above the bottom border.
+    pub(crate) fn rows_left(&self) -> u16 {
+        (self.r.y + self.r.h)
+            .saturating_sub(1)
+            .saturating_sub(self.y)
+    }
     pub(crate) fn line(&mut self, s: &str, st: Style) {
         if self.y + 1 >= self.r.y + self.r.h {
             return;
@@ -53,6 +60,21 @@ pub(crate) fn frame<'a>(app: &App, g: &'a mut Grid, w: u16, h: u16, title: &str)
 /// A bordered, titled box at `r` (the caller keeps it inside the pane area).
 pub(crate) fn frame_at<'a>(app: &App, g: &'a mut Grid, r: SRect, title: &str) -> BoxDraw<'a> {
     let SRect { x, y, w, h } = r;
+    // Remember where popups are on screen this frame (several frames: their union).
+    let hit = match app.popup_rect.get() {
+        Some(o) => {
+            let (x0, y0) = (o.x.min(x), o.y.min(y));
+            let (x1, y1) = ((o.x + o.w).max(x + w), (o.y + o.h).max(y + h));
+            SRect {
+                x: x0,
+                y: y0,
+                w: x1 - x0,
+                h: y1 - y0,
+            }
+        }
+        None => r,
+    };
+    app.popup_rect.set(Some(hit));
     let t = app.theme;
     let st = t.text();
     g.fill(SRect { x, y, w, h }, st);
@@ -80,6 +102,96 @@ pub(crate) fn frame_at<'a>(app: &App, g: &'a mut Grid, r: SRect, title: &str) ->
         g,
         r: SRect { x, y, w, h },
         y: y + 1,
+    }
+}
+
+/// Popups are modal for the mouse (the gateway overlay, plugin popups, the preview manager and
+/// the scrollback viewer handle their own clicks first). While one is open nothing reaches the
+/// panes, sidebar or tab bar; a press outside it closes it the way `esc` does. True when the
+/// event was taken.
+pub fn on_mouse(app: &mut App, me: &crate::event::MouseEvent) -> bool {
+    use crate::event::MouseEventKind;
+    if !matches!(app.mode, Mode::Popup(_)) {
+        return false;
+    }
+    if let MouseEventKind::Down(_) = me.kind {
+        // Popups drawn over the whole pane area (inbox, drafts, task view) have no frame.
+        let r = app.popup_rect.get().unwrap_or_else(|| {
+            let a = app.pane_area();
+            SRect {
+                x: a.x,
+                y: a.y,
+                w: a.w,
+                h: a.h,
+            }
+        });
+        let inside =
+            me.column >= r.x && me.column < r.x + r.w && me.row >= r.y && me.row < r.y + r.h;
+        if !inside {
+            app.on_key(KeyEvent::new(
+                Key::Named(NamedKey::Escape),
+                vk_proto::input::Mods::empty(),
+            ));
+            app.dirty = true;
+        }
+    }
+    true
+}
+
+/// A pane runs something other than a shell in the foreground.
+pub fn pane_running(app: &App, mi: usize, pane: &str) -> bool {
+    let shell = |s: &str| {
+        matches!(
+            s.rsplit('/').next().unwrap_or(s).trim_start_matches('-'),
+            "zsh" | "bash" | "fish" | "sh" | "dash" | "nu" | "tcsh" | "ksh"
+        )
+    };
+    app.machines.get(mi).is_some_and(|m| {
+        m.model
+            .panes
+            .iter()
+            .find(|p| p.id == pane)
+            .is_some_and(|p| !p.fg_cmdline.is_empty() && !shell(&p.fg_cmdline[0]))
+    })
+}
+
+/// Some pane of workspace `ws` on machine `mi` runs something other than a shell.
+pub fn workspace_busy(app: &App, mi: usize, ws: &str) -> bool {
+    let Some(m) = app.machines.get(mi) else {
+        return false;
+    };
+    m.model
+        .panes
+        .iter()
+        .filter(|p| p.workspace == ws)
+        .any(|p| pane_running(app, mi, &p.id))
+}
+
+/// `ui.confirm_close`: `running` asks when something other than a shell runs in what closes,
+/// `always` always asks, `never` never does. The same rule for panes, tabs and workspaces.
+pub fn should_confirm_close(app: &App, busy: bool) -> bool {
+    match app.config.ui.confirm_close {
+        vk_config::ConfirmClose::Always => true,
+        vk_config::ConfirmClose::Never => false,
+        vk_config::ConfirmClose::Running => busy,
+    }
+}
+
+/// Close a pane, tab or workspace (`what`: "pane", "tab 2", "workspace api"), asking first
+/// when [`should_confirm_close`] says so.
+pub fn close_or_confirm(app: &mut App, action: crate::app::Action, busy: bool, what: &str) {
+    if should_confirm_close(app, busy) {
+        let message = if busy {
+            format!("Close {what}? A process is running.")
+        } else {
+            format!("Close {what}?")
+        };
+        app.mode = Mode::Popup(Popup::Confirm {
+            message,
+            action: Box::new(action),
+        });
+    } else {
+        app.confirm(action);
     }
 }
 
@@ -112,13 +224,33 @@ fn find_interaction(app: &App, id: &str) -> Option<(usize, Interaction)> {
 
 pub fn key(app: &mut App, ev: KeyEvent, p: Popup) {
     let esc = matches!(ev.key, Key::Named(NamedKey::Escape));
+    // A release is not a key press: the release of the key that opened one of these must not
+    // close it, grant a clipboard write or focus a pane.
+    if ev.kind == KeyKind::Release
+        && matches!(
+            p,
+            Popup::Message { .. } | Popup::ClipboardAsk { .. } | Popup::Peek { .. }
+        )
+    {
+        app.mode = Mode::Popup(p);
+        return;
+    }
     match p {
         Popup::Message { .. } => {}
-        Popup::Confirm { action, message } => match ev.key {
-            Key::Char('y' | 'Y') | Key::Named(NamedKey::Enter) => app.confirm(*action),
-            Key::Char('n' | 'N') | Key::Named(NamedKey::Escape) => {}
-            _ => app.mode = Mode::Popup(Popup::Confirm { action, message }),
-        },
+        // Only `y` confirms (never enter: the release of the enter that opened it, or an enter
+        // typed for the pane, must not close anything), and only through the decision guard.
+        Popup::Confirm { action, message } => {
+            let decides = matches!(ev.key, Key::Char('y' | 'Y'));
+            let target = crate::decide::confirm_target(&message);
+            let gate = app
+                .decide
+                .gate(Some(&target), &ev, Instant::now(), app.kitty, decides);
+            match (gate, ev.key) {
+                (crate::decide::Gate::Go, Key::Char('y' | 'Y')) => app.confirm(*action),
+                (crate::decide::Gate::Go, Key::Char('n' | 'N') | Key::Named(NamedKey::Escape)) => {}
+                _ => app.mode = Mode::Popup(Popup::Confirm { action, message }),
+            }
+        }
         // Opened deliberately via `review_clipboard`; only explicit keys act, others are ignored.
         Popup::ClipboardAsk {
             machine,
@@ -263,7 +395,28 @@ pub fn key(app: &mut App, ev: KeyEvent, p: Popup) {
             interaction,
             mut sel,
         } => {
+            // Releases, repeats and decision keys right after the card appeared (or changed
+            // under the user) stop here (crate::decide).
+            let decides = matches!(
+                ev.key,
+                Key::Char('y' | 's' | 'n' | 'c' | 'x' | ' ' | '1'..='9')
+                    | Key::Named(NamedKey::Enter)
+            );
+            let target = crate::decide::card_target(&interaction);
+            match app
+                .decide
+                .gate(Some(&target), &ev, Instant::now(), app.kitty, decides)
+            {
+                crate::decide::Gate::Go => {}
+                crate::decide::Gate::Ignore | crate::decide::Gate::Wait => {
+                    app.mode = Mode::Popup(Popup::Card { interaction, sel });
+                    return;
+                }
+            }
             let Some((mi, it)) = find_interaction(app, &interaction) else {
+                if !esc {
+                    app.toast("that request is gone (answered, dismissed or withdrawn)");
+                }
                 return;
             };
             let open = it.status == InteractionStatus::Open && it.answerable;
@@ -286,7 +439,8 @@ pub fn key(app: &mut App, ev: KeyEvent, p: Popup) {
                         app.inbox.confirm = Some(crate::inbox::Confirm::Item(ikey));
                         app.mode = Mode::Popup(Popup::Card { interaction, sel });
                     } else {
-                        crate::inbox::dismiss_interaction(app, mi, &it.id);
+                        let title = interaction_title(&it);
+                        crate::inbox::dismiss_interaction(app, mi, &it.id, &title);
                     }
                 }
                 (_, Key::Char('o')) => {
@@ -378,6 +532,7 @@ pub fn key(app: &mut App, ev: KeyEvent, p: Popup) {
 
 pub fn draw(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
     let t = app.theme;
+    app.popup_rect.set(None);
     match &app.mode {
         Mode::Prompt(p) => {
             let area = app.pane_area();
@@ -407,9 +562,20 @@ pub fn draw(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
                 }
             }
             Popup::Confirm { message, .. } => {
-                let mut b = frame(app, g, 56, 5, "confirm");
-                b.line(message, t.text());
-                b.line("[y] yes   [n] no", t.dim());
+                let body = hard_wrap(message, 52);
+                let mut b = frame(app, g, 56, body.len() as u16 + 4, "confirm");
+                for l in &body {
+                    b.line(l, t.text());
+                }
+                b.line("", t.text());
+                b.line(
+                    if crate::decide::live(app) {
+                        "[y] yes   [n] no"
+                    } else {
+                        "[y] yes (in a moment)   [n] no"
+                    },
+                    t.dim(),
+                );
             }
             Popup::PasteAsk {
                 machine,
@@ -653,64 +819,7 @@ pub fn draw(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
             }
             Popup::Card { interaction, sel } => {
                 let (mi, it) = find_interaction(app, interaction)?;
-                let m = &app.machines[mi];
-                let run = m.model.runs.iter().find(|r| r.id == it.run);
-                let ws = m
-                    .model
-                    .panes
-                    .iter()
-                    .find(|p| p.id == it.pane)
-                    .and_then(|p| m.model.workspaces.iter().find(|w| w.id == p.workspace))
-                    .map(|w| w.display_name().to_string())
-                    .unwrap_or_default();
-                let who = run.map(|r| r.label().to_string()).unwrap_or_default();
-                let kind = match it.kind {
-                    InteractionKind::Approval => "needs approval",
-                    InteractionKind::Question => "question",
-                    InteractionKind::PlanReview => "plan review",
-                    InteractionKind::Notice => "notice",
-                    InteractionKind::Picker => "picker",
-                };
-                let mut b = frame(
-                    app,
-                    g,
-                    80,
-                    22,
-                    &format!("{who} · {ws} · {kind} · {}", it.handle),
-                );
-                let mut lines = Vec::new();
-                card_lines(app, mi, &it, *sel, &mut lines);
-                for (s, st) in lines {
-                    b.line(&s, st);
-                }
-                let keys = if !it.answerable {
-                    "this dialog can only be answered in the pane · [o] open pane  [esc] later"
-                        .to_string()
-                } else {
-                    match it.kind {
-                        InteractionKind::Approval => "[y] allow once  [s] allow for session  [n] deny  [e] deny with message  [A] batch  [x] dismiss  [o] open  [esc] later".into(),
-                        InteractionKind::PlanReview => "[y] approve  [e] request changes  [n] reject  [x] dismiss  [o] open  [esc] later".into(),
-                        InteractionKind::Question => "[j/k] choose  [enter] answer  [1-9] pick  [x] dismiss  [o] open  [esc] later".into(),
-                        InteractionKind::Notice => "[o] open  [esc] close".into(),
-                        InteractionKind::Picker if it.questions.iter().all(|q| q.options.is_empty()) => "[c] cancel the dialog  [o] open  [esc] later".into(),
-                        InteractionKind::Picker if it.questions.first().is_some_and(|q| q.multi) => "[j/k] choose  [enter] toggle and confirm  [c] cancel  [o] open  [esc] later".into(),
-                        InteractionKind::Picker => "[j/k] choose  [enter] pick  [c] cancel  [o] open  [esc] later".into(),
-                    }
-                };
-                b.line("", t.text());
-                let confirming = app.inbox.confirm
-                    == Some(crate::inbox::Confirm::Item(crate::inbox::ItemKey {
-                        machine: mi,
-                        kind: "interaction".into(),
-                        id: it.id.clone(),
-                    }));
-                if confirming {
-                    b.line(
-                        "The agent may still be waiting in the pane. Press x again to dismiss.",
-                        t.s(t.yellow),
-                    );
-                }
-                b.line(&keys, t.dim());
+                draw_card(app, g, mi, &it, *sel);
             }
         },
         Mode::Prefix(p) if p.menu => crate::menu::draw(app, g),
@@ -718,6 +827,22 @@ pub fn draw(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
         _ => {}
     }
     None
+}
+
+/// A short name for an interaction in toasts: its handle and what it asks.
+pub fn interaction_title(it: &Interaction) -> String {
+    let what = it
+        .action
+        .as_ref()
+        .and_then(|a| a.command.as_deref().or(Some(a.summary.as_str())))
+        .filter(|s| !s.is_empty())
+        .unwrap_or(&it.title);
+    let what = what.lines().next().unwrap_or_default();
+    if it.handle.is_empty() {
+        what.to_string()
+    } else {
+        format!("{} {what}", it.handle)
+    }
 }
 
 /// The `interaction.answer` params for picking row `idx`: one option, or for a multi-select
@@ -741,15 +866,172 @@ pub fn choice_answer(it: &Interaction, idx: usize) -> Option<serde_json::Value> 
     Some(a)
 }
 
-/// The body of an interaction card (shared by the card popup and the inbox detail).
+/// The card: what is asked, wrapped to the frame, then its keys. The key hint is always on
+/// screen; a body taller than the frame ends with how much is not shown and that `[o]` opens
+/// the pane with the full request.
+fn draw_card(app: &App, g: &mut Grid, mi: usize, it: &Interaction, sel: usize) {
+    let t = app.theme;
+    let m = &app.machines[mi];
+    let run = m.model.runs.iter().find(|r| r.id == it.run);
+    let ws = m
+        .model
+        .panes
+        .iter()
+        .find(|p| p.id == it.pane)
+        .and_then(|p| m.model.workspaces.iter().find(|w| w.id == p.workspace))
+        .map(|w| w.display_name().to_string())
+        .unwrap_or_default();
+    let who = run.map(|r| r.label().to_string()).unwrap_or_default();
+    let kind = match it.kind {
+        InteractionKind::Approval => "needs approval",
+        InteractionKind::Question => "question",
+        InteractionKind::PlanReview => "plan review",
+        InteractionKind::Notice => "notice",
+        InteractionKind::Picker => "picker",
+    };
+    let area = app.pane_area();
+    let w = 80u16.min(area.w.saturating_sub(2)).max(20);
+    let inner = w.saturating_sub(4).max(1) as usize;
+    let mut body = Vec::new();
+    card_lines(app, mi, it, sel, inner, &mut body);
+    let keys = if !it.answerable {
+        "this dialog can only be answered in the pane · [o] open pane  [esc] later".to_string()
+    } else {
+        match it.kind {
+            InteractionKind::Approval => "[y] allow once  [s] allow for session  [n] deny  [e] deny with message  [A] batch  [x] dismiss  [o] open pane  [esc] later".into(),
+            InteractionKind::PlanReview => "[y] approve  [e] request changes  [n] reject  [x] dismiss  [o] open pane  [esc] later".into(),
+            InteractionKind::Question => "[j/k] choose  [enter] answer  [1-9] pick  [x] dismiss  [o] open pane  [esc] later".into(),
+            InteractionKind::Notice => "[o] open pane  [esc] close".into(),
+            InteractionKind::Picker if it.questions.iter().all(|q| q.options.is_empty()) => "[c] cancel the dialog  [o] open pane  [esc] later".into(),
+            InteractionKind::Picker if it.questions.first().is_some_and(|q| q.multi) => "[j/k] choose  [enter] toggle and confirm  [c] cancel  [o] open pane  [esc] later".into(),
+            InteractionKind::Picker => "[j/k] choose  [enter] pick  [c] cancel  [o] open pane  [esc] later".into(),
+        }
+    };
+    let mut foot: Vec<(String, Style)> = vec![(String::new(), t.text())];
+    let confirming = app.inbox.confirm
+        == Some(crate::inbox::Confirm::Item(crate::inbox::ItemKey {
+            machine: mi,
+            kind: "interaction".into(),
+            id: it.id.clone(),
+        }));
+    if confirming {
+        for l in word_wrap(
+            "The agent may still be waiting in the pane. Press x again to dismiss.",
+            inner,
+        ) {
+            foot.push((l, t.s(t.yellow)));
+        }
+    }
+    if it.answerable && !crate::decide::live(app) {
+        foot.push((crate::decide::WAIT_HINT.into(), t.s(t.yellow)));
+    }
+    for l in word_wrap(&keys, inner) {
+        foot.push((l, t.dim()));
+    }
+    // Border (2) + body + footer, within the pane area.
+    let want = (body.len() + foot.len() + 2) as u16;
+    let mut b = frame(
+        app,
+        g,
+        w,
+        want.max(8),
+        &format!("{who} · {ws} · {kind} · {}", it.handle),
+    );
+    let rows = b.rows_left() as usize;
+    let room = rows.saturating_sub(foot.len());
+    if body.len() > room {
+        let keep = room.saturating_sub(1);
+        let hidden = body.len() - keep;
+        body.truncate(keep);
+        body.push((
+            format!("… {hidden} more line(s) · [o] open the pane to see the full request"),
+            t.s(t.yellow),
+        ));
+    }
+    // A frame too small for the whole footer keeps its last lines: the keys.
+    let foot_skip = foot
+        .len()
+        .saturating_sub(rows.saturating_sub(body.len().min(rows)));
+    for (s, st) in body.into_iter().take(rows) {
+        b.line(&s, st);
+    }
+    for (s, st) in foot.into_iter().skip(foot_skip) {
+        b.line(&s, st);
+    }
+}
+
+/// Split `s` into rows of at most `w` columns, keeping every character (commands and paths
+/// must read exactly as the agent sent them, spaces included).
+pub fn hard_wrap(s: &str, w: usize) -> Vec<String> {
+    use unicode_width::UnicodeWidthChar;
+    let w = w.max(1);
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut used = 0;
+    for c in s.chars() {
+        let cw = c.width().unwrap_or(0);
+        if used + cw > w && !cur.is_empty() {
+            out.push(std::mem::take(&mut cur));
+            used = 0;
+        }
+        cur.push(c);
+        used += cw;
+    }
+    if !cur.is_empty() || out.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
+/// Wrap prose at spaces (a word longer than `w` is split).
+pub fn word_wrap(s: &str, w: usize) -> Vec<String> {
+    use unicode_width::UnicodeWidthStr;
+    let w = w.max(1);
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    for word in s.split(' ') {
+        let need = if cur.is_empty() {
+            word.width()
+        } else {
+            cur.width() + 1 + word.width()
+        };
+        if need > w && !cur.is_empty() {
+            out.push(std::mem::take(&mut cur));
+        }
+        if !cur.is_empty() {
+            cur.push(' ');
+        }
+        cur.push_str(word);
+        while cur.width() > w {
+            let mut parts = hard_wrap(&cur, w);
+            cur = parts.pop().unwrap_or_default();
+            out.extend(parts);
+        }
+    }
+    if !cur.is_empty() || out.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
+/// At most this many rows of a command, a plan or a diff before "… N more".
+const CMD_ROWS: usize = 12;
+const PATHS: usize = 6;
+const DIFF_ROWS: usize = 12;
+const PLAN_ROWS: usize = 12;
+
+/// The body of an interaction card (shared by the card popup and the inbox detail), wrapped to
+/// `width` columns. Long parts end with how much is left out.
 pub fn card_lines(
     app: &App,
     _mi: usize,
     it: &Interaction,
     sel: usize,
+    width: usize,
     out: &mut Vec<(String, Style)>,
 ) {
     let t = app.theme;
+    let width = width.max(8);
     let mut b = Lines(out);
     if let Some(a) = &it.action {
         let risk = match a.risk {
@@ -760,38 +1042,59 @@ pub fn card_lines(
         };
         b.line(&format!("{}   risk: {}", a.tool, risk.0), t.bold(risk.1));
         if let Some(c) = &a.command {
-            for l in c.lines().take(4) {
-                b.line(&format!("  {l}"), t.text());
+            push_block(&mut b, &t, width, c, "  ", CMD_ROWS, "line(s)", &|_| {
+                t.text()
+            });
+        }
+        for p in a.paths.iter().take(PATHS) {
+            for r in hard_wrap(p, width.saturating_sub(2)) {
+                b.line(&format!("  {r}"), t.text());
             }
         }
-        for p in a.paths.iter().take(3) {
-            b.line(&format!("  {p}"), t.text());
+        if a.paths.len() > PATHS {
+            b.line(
+                &format!("  … {} more path(s)", a.paths.len() - PATHS),
+                t.s(t.yellow),
+            );
         }
         if !a.risk_reasons.is_empty() {
-            b.line(&format!("reasons: {}", a.risk_reasons.join(", ")), t.dim());
+            for l in word_wrap(&format!("reasons: {}", a.risk_reasons.join(", ")), width) {
+                b.line(&l, t.dim());
+            }
         }
         if let Some(d) = &a.diff {
-            for l in d.lines().take(8) {
-                let c = if l.starts_with('+') {
+            let color = |l: &str| {
+                t.s(if l.starts_with('+') {
                     t.green
                 } else if l.starts_with('-') {
                     t.red
                 } else {
                     t.muted
-                };
-                b.line(l, t.s(c));
-            }
+                })
+            };
+            push_block(&mut b, &t, width, d, "", DIFF_ROWS, "diff line(s)", &color);
         }
     } else {
-        b.line(&it.title, t.bold(t.fg));
-    }
-    if let Some(plan) = &it.plan_md {
-        for l in plan.lines().take(10) {
-            b.line(l, t.text());
+        for l in word_wrap(&it.title, width) {
+            b.line(&l, t.bold(t.fg));
         }
     }
+    if let Some(plan) = &it.plan_md {
+        push_block(
+            &mut b,
+            &t,
+            width,
+            plan,
+            "",
+            PLAN_ROWS,
+            "plan line(s)",
+            &|_| t.text(),
+        );
+    }
     for q in &it.questions {
-        b.line(&q.prompt, t.bold(t.fg));
+        for l in word_wrap(&q.prompt, width) {
+            b.line(&l, t.bold(t.fg));
+        }
         for (i, o) in q.options.iter().enumerate() {
             let st = if i == sel { t.sel(t.accent) } else { t.text() };
             let d = o
@@ -807,7 +1110,11 @@ pub fn card_lines(
                 (InteractionKind::Picker, false, false) => "  ",
                 _ => "",
             };
-            b.line(&format!("{}. {mark}{}{d}", i + 1, o.label), st);
+            let rows = word_wrap(&format!("{}. {mark}{}{d}", i + 1, o.label), width);
+            for (k, l) in rows.into_iter().enumerate() {
+                let l = if k == 0 { l } else { format!("   {l}") };
+                b.line(&l, st);
+            }
         }
     }
     if let Some(lr) = it.picker.as_ref().and_then(|p| p.left_right.as_ref()) {
@@ -847,6 +1154,53 @@ pub fn card_lines(
         ),
         _ => {}
     }
+}
+
+/// Each line of `text` wrapped to `width` (indented by `indent`), at most `max` rows; a longer
+/// text ends with how many of its lines are not shown.
+#[allow(clippy::too_many_arguments)]
+fn push_block(
+    b: &mut Lines<'_>,
+    t: &crate::theme::Theme,
+    width: usize,
+    text: &str,
+    indent: &str,
+    max: usize,
+    what: &str,
+    st: &dyn Fn(&str) -> Style,
+) {
+    let w = width.saturating_sub(indent.len()).max(1);
+    let wrapped: Vec<(&str, Vec<String>)> = text.lines().map(|l| (l, hard_wrap(l, w))).collect();
+    let total: usize = wrapped.iter().map(|(_, r)| r.len()).sum();
+    if total <= max {
+        for (l, rows) in &wrapped {
+            for r in rows {
+                b.line(&format!("{indent}{r}"), st(l));
+            }
+        }
+        return;
+    }
+    // Leave a row for the "… N more" line; count what is left out in source lines.
+    let room = max.saturating_sub(1);
+    let mut used = 0;
+    let mut whole = 0;
+    'out: for (l, rows) in &wrapped {
+        for r in rows {
+            if used == room {
+                break 'out;
+            }
+            b.line(&format!("{indent}{r}"), st(l));
+            used += 1;
+        }
+        whole += 1;
+    }
+    b.line(
+        &format!(
+            "{indent}… {} more {what} · [o] open the pane to see all",
+            wrapped.len() - whole
+        ),
+        t.s(t.yellow),
+    );
 }
 
 struct Lines<'a>(&'a mut Vec<(String, Style)>);
