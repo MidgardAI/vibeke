@@ -480,8 +480,11 @@ async fn queue_run(server: &Arc<Server>, p: &Value) -> R {
             .filter(|x| !x.is_empty())
             .map(|x| (x, c.merge.queue_check_timeout()));
         let (squash, only2) = (c.merge.squash(), only.clone());
+        // A contained task's gate runs inside its box, never on the host (13 §6).
+        let srv = server.clone();
         let (q2, ran) = tokio::task::spawn_blocking(move || {
-            let r = mg::run_next(&mut q, only2.as_deref(), check, squash);
+            let gate_for = |task: &str| crate::task_workspace::gate_box(&srv, task);
+            let r = mg::run_next_with(&mut q, only2.as_deref(), check, squash, &gate_for);
             (q, r)
         })
         .await

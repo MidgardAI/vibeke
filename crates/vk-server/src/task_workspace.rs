@@ -473,6 +473,105 @@ fn setup_options(
     }
 }
 
+/// A contained task's box: (runner name such as `sandbox`, task checkout, box).
+pub(crate) type ContainedBox = (String, PathBuf, Arc<crate::sandbox::TaskBox>);
+
+/// Runs a process (argv, cwd, full env) inside a box: returns the wrapped argv and the exact
+/// env to spawn it with. Shared by setup, review checks and orchestration gates.
+pub(crate) type BoxWrap = Arc<
+    dyn Fn(
+            Vec<String>,
+            &Path,
+            Vec<(String, String)>,
+        ) -> std::io::Result<(Vec<String>, Vec<(String, String)>)>
+        + Send
+        + Sync,
+>;
+
+/// Where host-side jobs that run task code (checks, gates) run for `task` (13 §6):
+/// `Ok(None)` for a host task, `Ok(Some(..))` inside its box (sandbox, VM), `Err` with what
+/// to do when they cannot run now. They never fall back to the host. `what` names the job in
+/// the message ("its checks").
+pub(crate) fn contained_box(
+    server: &Server,
+    task: &Task,
+    what: &str,
+) -> Result<Option<ContainedBox>, String> {
+    use vk_proto::model::IsolationLevel;
+    let runner = match task.isolation.level {
+        IsolationLevel::Host => return Ok(None),
+        IsolationLevel::Container => {
+            return Err(format!(
+                "This task runs in a container. Vibeke does not run {what} on this machine; run them in one of the task's panes."
+            ));
+        }
+        IsolationLevel::Cloud => {
+            return Err(format!(
+                "This task runs in a cloud sandbox. Run {what} in one of its panes, or bring the task back first."
+            ));
+        }
+        l => serde_json::to_value(l)
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_string))
+            .unwrap_or_else(|| "sandbox".into()),
+    };
+    let checkout = task
+        .worktree_path
+        .clone()
+        .map(PathBuf::from)
+        .ok_or_else(|| "The task has no checkout on this machine.".to_string())?;
+    let b = server.sandbox.get(&task.id).ok_or_else(|| {
+        format!(
+            "The task's {runner} is not running, and Vibeke never runs {what} outside it. Start it with `vibeke sandbox start`, then try again."
+        )
+    })?;
+    Ok(Some((runner, checkout, b)))
+}
+
+/// A [`BoxWrap`] that prepares every process like a pane spawn of the box (scrubbed
+/// environment, the box's policy). `kind` prefixes the synthetic pane id (`setup`, `check`).
+pub(crate) fn box_wrap(
+    server: &Arc<Server>,
+    b: Arc<crate::sandbox::TaskBox>,
+    kind: &'static str,
+) -> BoxWrap {
+    let srv = server.clone();
+    Arc::new(move |argv, cwd, env| {
+        // A paused (idle-suspended) box runs again first.
+        crate::sandbox::extras::before_spawn(&srv, &b);
+        let prepared = b
+            .runner
+            .runner()
+            .prepare(vk_sandbox::runner::SpawnRequest {
+                pane_id: format!("{kind}-{}", crate::core::ulid()),
+                argv,
+                cwd: cwd.to_path_buf(),
+                env,
+            })
+            .map_err(|e| std::io::Error::other(e.to_string()))?;
+        Ok((prepared.argv, prepared.env))
+    })
+}
+
+/// The [`vk_orchestrate::family::GateBox`] of a task's gates (family and merge-queue checks):
+/// `Ok(None)` for a host task.
+pub(crate) fn gate_box(
+    server: &Arc<Server>,
+    task_id: &str,
+) -> Result<Option<vk_orchestrate::family::GateBox>, String> {
+    let Some(task) = server.with_core(|c| c.task(task_id).cloned()) else {
+        return Ok(None);
+    };
+    Ok(
+        contained_box(server, &task, "its merge and family checks")?.map(|(_, checkout, b)| {
+            vk_orchestrate::family::GateBox {
+                wrap: box_wrap(server, b, "gate"),
+                checkout,
+            }
+        }),
+    )
+}
+
 /// The wrapper that runs each setup step of a contained task through its box runner, exactly
 /// like a pane spawn of that task (scrubbed environment, the box's policy). `Err` with a
 /// reason when the box is not available.
@@ -492,25 +591,10 @@ fn setup_wrapper(
         // Container setup has its own path (`container_setup`).
         return Err("a container task runs setup through its container".into());
     }
-    let srv = server.clone();
+    let wrap = box_wrap(server, b, "setup");
     let cwd = checkout.to_path_buf();
-    let pane_id = format!("setup-{task_id}");
     Ok(vk_tasks::StepWrapper(Arc::new(
-        move |(argv, env): vk_tasks::Step| {
-            // A paused (idle-suspended) box runs again first.
-            crate::sandbox::extras::before_spawn(&srv, &b);
-            let prepared = b
-                .runner
-                .runner()
-                .prepare(vk_sandbox::runner::SpawnRequest {
-                    pane_id: pane_id.clone(),
-                    argv,
-                    cwd: cwd.clone(),
-                    env,
-                })
-                .map_err(|e| std::io::Error::other(e.to_string()))?;
-            Ok((prepared.argv, prepared.env))
-        },
+        move |(argv, env): vk_tasks::Step| wrap(argv, &cwd, env),
     )))
 }
 

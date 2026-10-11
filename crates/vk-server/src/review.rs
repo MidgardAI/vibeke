@@ -1315,8 +1315,12 @@ fn file_stamp(p: &Path) -> Option<(i128, u64)> {
 /// path+mtime+size+cwd for a minute), `path mtime size` for other programs on PATH,
 /// `missing` when not found. Repo-relative programs belong to the subject and are skipped.
 /// `Err` = identity unavailable (probe failed or timed out).
-fn tool_identity(tool: &str, repo: &Path) -> Result<Option<String>, String> {
+/// `probe_cwd`: where `--version` runs. A contained task's checkout is box-written: its
+/// version files (`rust-toolchain.toml`, tool-manager configs) could name programs to run, so
+/// those probes run from `/` instead.
+fn tool_identity(tool: &str, repo: &Path, probe_cwd: &Path) -> Result<Option<String>, String> {
     let repo_c = canon(&repo.to_string_lossy());
+    let probe_c = canon(&probe_cwd.to_string_lossy());
     let path = if tool.contains('/') {
         let p = Path::new(tool);
         if !p.is_absolute() {
@@ -1346,7 +1350,7 @@ fn tool_identity(tool: &str, repo: &Path) -> Result<Option<String>, String> {
             real.display()
         )));
     }
-    let key = (real.clone(), mtime, size, repo_c.clone());
+    let key = (real.clone(), mtime, size, probe_c.clone());
     if let Some((v, at)) = tool_cache().lock().unwrap().get(&key)
         && at.elapsed() < TOOL_CACHE_TTL
     {
@@ -1355,7 +1359,7 @@ fn tool_identity(tool: &str, repo: &Path) -> Result<Option<String>, String> {
     let arg = if base == "go" { "version" } else { "--version" };
     let mut cmd = std::process::Command::new(&path);
     cmd.arg(arg)
-        .current_dir(&repo_c)
+        .current_dir(&probe_c)
         .env("RUSTUP_AUTO_INSTALL", "0")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -1399,20 +1403,87 @@ fn tool_identity(tool: &str, repo: &Path) -> Result<Option<String>, String> {
 
 /// Tool versions for a check's resolved command (recorded in the run's environment manifest
 /// and compared for freshness). `Err` when any tool's identity is unavailable.
-pub fn check_tools(def: &CheckDefinition, repo: &Path) -> Result<BTreeMap<String, String>, String> {
+pub fn check_tools(
+    def: &CheckDefinition,
+    repo: &Path,
+    contained: bool,
+) -> Result<BTreeMap<String, String>, String> {
     let mut out = BTreeMap::new();
+    let probe_cwd = if contained { Path::new("/") } else { repo };
     for t in command_tools(&def.command) {
-        if let Some(v) = tool_identity(&t, repo)? {
+        if let Some(v) = tool_identity(&t, repo, probe_cwd)? {
             out.insert(t, v);
         }
     }
     Ok(out)
 }
 
-/// The environment digest a host run of `def` would record now (same hash as the run's
-/// [`checks::EnvironmentManifest`]: os, arch, runner, tool versions).
-pub fn current_environment(def: &CheckDefinition, repo: &Path) -> Result<String, String> {
-    check_tools(def, repo).map(|t| checks::EnvironmentManifest::new("host", None, t, vec![]).digest)
+/// The environment digest a run of `def` would record now (same hash as the run's
+/// [`checks::EnvironmentManifest`]: os, arch, runner, tool versions). `runner` is `host` or
+/// the task's isolation level ([`check_runner_name`]).
+pub fn current_environment(
+    def: &CheckDefinition,
+    repo: &Path,
+    runner: &str,
+) -> Result<String, String> {
+    check_tools(def, repo, runner != "host")
+        .map(|t| checks::EnvironmentManifest::new(runner, None, t, vec![]).digest)
+}
+
+/// Where a task's checks run: `host`, or its isolation level (`sandbox`, `vm`, …).
+pub fn check_runner_name(task: &Task) -> String {
+    match task.isolation.level {
+        IsolationLevel::Host => "host".into(),
+        l => serde_json::to_value(l)
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_string))
+            .unwrap_or_else(|| "contained".into()),
+    }
+}
+
+/// A contained task's box for running its checks: (runner name, checkout, box).
+type CheckBox = crate::task_workspace::ContainedBox;
+
+/// Where a task's checks run (15 §6.3, 13 §6): `Ok(None)` on the host (a host task),
+/// `Ok(Some(..))` inside the task's box, `Err` with what to do when they cannot run now.
+/// A contained task's checks never run on the host.
+fn check_box(server: &Server, task: &Task) -> Result<Option<CheckBox>, String> {
+    crate::task_workspace::contained_box(server, task, "its checks")
+}
+
+/// The [`checks::ContainedRun`] for a contained task (see [`check_box`]).
+fn contained_run(server: &Arc<Server>, cb: CheckBox) -> checks::ContainedRun {
+    let (runner, checkout, b) = cb;
+    checks::ContainedRun {
+        runner,
+        checkout,
+        wrap: crate::task_workspace::box_wrap(server, b, "check"),
+    }
+}
+
+/// The `execution` block clients show before a check runs: where it runs and with what.
+fn execution_json(server: &Server, task: &Task) -> Value {
+    match check_box(server, task) {
+        Ok(None) => json!({
+            "machine": server.opts.machine,
+            "runner": "host",
+            "checkout": "disposable checkout of the candidate commit",
+            "environment": "your environment, without VIBEKE_* variables and without credentials (cloud keys, tokens, the SSH agent) unless the check names them; no containment",
+            "side_effects": "Runs arbitrary code from this revision on this machine",
+        }),
+        Ok(Some((runner, _, _))) => json!({
+            "machine": server.opts.machine,
+            "runner": runner,
+            "checkout": "disposable copy of the candidate commit inside the task checkout",
+            "environment": format!("inside the task's {runner}, with the same limits as its panes"),
+            "side_effects": format!("Runs code from this revision inside the task's {runner}"),
+        }),
+        Err(why) => json!({
+            "machine": server.opts.machine,
+            "runner": "none",
+            "unavailable": why,
+        }),
+    }
 }
 
 // ---- authorization before retrieval (§11) -------------------------------------------------------
@@ -1710,8 +1781,9 @@ pub fn build_package(
     let mut env_errors: Vec<String> = Vec::new();
     if let Some(s) = &selected {
         let root = Path::new(&s.repo.root);
+        let runner = check_runner_name(&task);
         for e in &entries {
-            match current_environment(&e.def, root) {
+            match current_environment(&e.def, root, &runner) {
                 Ok(d) => {
                     live.current_environment_digests.insert(e.def.id.clone(), d);
                 }
@@ -1875,6 +1947,7 @@ pub fn build_package(
     subjects.extend(cands.live_subject.clone());
 
     // Check entries for display, with authorization for the selected subject.
+    let execution = execution_json(server, &task);
     let check_json: Vec<Value> = entries
         .iter()
         .map(|e| {
@@ -1899,13 +1972,7 @@ pub fn build_package(
                 "provenance": e.provenance,
                 "authorization": auth,
                 "confirmation_label": checks::HOST_RUN_LABEL,
-                "execution": {
-                    "machine": server.opts.machine,
-                    "runner": "host",
-                    "checkout": "disposable checkout of the candidate commit",
-                    "environment": "your environment with VIBEKE_* removed; no containment",
-                    "side_effects": "Runs arbitrary code from this revision on this machine",
-                },
+                "execution": execution,
                 "runs_on_subject": on_subject,
                 "latest_run": rs.last().map(|r| &r.run),
             })
@@ -2888,7 +2955,7 @@ async fn check_authorize(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         "subject": subj.id,
         "head_sha": subj.head_sha,
         "confirmation_label": checks::HOST_RUN_LABEL,
-        "execution": {"machine": server.opts.machine, "runner": "host", "checkout": "disposable checkout of the candidate commit"},
+        "execution": execution_json(server, &pkg.task),
     });
     let mut c = server.core.lock().unwrap();
     if let Some(r) = receipts::replay_in(&c, ctx, M, p) {
@@ -2967,6 +3034,11 @@ async fn check_run(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
             })));
         }
     };
+    // Where it would run: a contained task whose box is not available gets a clear answer
+    // instead of a queued run that cannot start.
+    if let Err(why) = check_box(server, &pkg.task) {
+        return Err(conflict("check_unavailable", why));
+    }
     let key = s(p, "idempotency_key")
         .map(str::to_string)
         .unwrap_or_else(crate::core::ulid);
@@ -3027,21 +3099,38 @@ fn execute(
     }
     // The run's environment manifest carries the same tool identities freshness compares
     // against (§6.3, §7). If some identity is unavailable, the current side is unavailable too.
-    let tools = check_tools(&rec.definition, Path::new(&rec.subject.repo.root)).unwrap_or_default();
-    let opts = checks::RunOptions {
-        idempotency_key: rec.run.idempotency_key.clone(),
-        tool_versions: tools,
-        ..Default::default()
+    // A contained task's check runs inside its box; never on the host (13 §6).
+    let place = match server.with_core(|c| c.task(&rec.task).cloned()) {
+        Some(t) => check_box(server, &t),
+        None => Ok(None),
     };
-    let out = checks::run_in_disposable_checkout(
-        Path::new(&rec.subject.repo.root),
-        &rec.subject,
+    let contained = !matches!(place, Ok(None));
+    let tools = check_tools(
         &rec.definition,
-        &grant,
-        &server.paths.state.join("checks"),
-        &token,
-        &opts,
-    );
+        Path::new(&rec.subject.repo.root),
+        contained,
+    )
+    .unwrap_or_default();
+    let out = match place {
+        Err(why) => Err(checks::CheckError::Checkout(why)),
+        Ok(cb) => {
+            let opts = checks::RunOptions {
+                idempotency_key: rec.run.idempotency_key.clone(),
+                tool_versions: tools,
+                contained: cb.map(|cb| contained_run(server, cb)),
+                ..Default::default()
+            };
+            checks::run_in_disposable_checkout(
+                Path::new(&rec.subject.repo.root),
+                &rec.subject,
+                &rec.definition,
+                &grant,
+                &server.paths.state.join("checks"),
+                &token,
+                &opts,
+            )
+        }
+    };
     cancels().lock().unwrap().remove(&rec.run.id);
     match out {
         Ok(mut r) => {

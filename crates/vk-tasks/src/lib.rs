@@ -59,6 +59,7 @@
 
 mod clone;
 pub mod collision;
+mod credenv;
 mod deps;
 mod error;
 mod files;
@@ -79,6 +80,7 @@ mod taskfile;
 mod worktree;
 
 pub use clone::{CloneMethod, clone_path, cow_available};
+pub use credenv::is_credential_env;
 pub use deps::{
     DepsAction, DepsPlan, PackageManager, detect_package_manager, plan_deps, run_deps_clone,
 };

@@ -1550,7 +1550,7 @@ fn finished_run(task: &str, pkg: &Value, state: CheckState, key: &str) -> CheckR
     r.run.environment = Some(checks::EnvironmentManifest::new(
         "host",
         None,
-        check_tools(&def, Path::new(&subj.repo.root)).unwrap(),
+        check_tools(&def, Path::new(&subj.repo.root), false).unwrap(),
         vec![],
     ));
     r
@@ -2774,4 +2774,34 @@ async fn message_delivery_problem_clears_after_a_look_or_the_window() {
     }
     let k = keys(&ok(&e, "attention.list", json!({})).await);
     assert!(!k.iter().any(|(kind, _)| kind == "send_unknown"), "{k:?}");
+}
+
+/// Review finding D1.6: a contained task's checks never run on the host. Without its box they
+/// are refused with a clear reason, and the execution block says where checks run.
+#[test]
+fn contained_task_checks_never_fall_back_to_the_host() {
+    let e = Env::new();
+    let mut t = Task {
+        id: "boxed".into(),
+        worktree_path: Some(e.repo.to_string_lossy().into_owned()),
+        ..Default::default()
+    };
+    assert!(matches!(check_box(&e.server, &t), Ok(None)));
+    assert_eq!(execution_json(&e.server, &t)["runner"], "host");
+    t.isolation.level = IsolationLevel::Sandbox;
+    assert_eq!(check_runner_name(&t), "sandbox");
+    let why = check_box(&e.server, &t).err().expect("no box: refused");
+    assert!(why.contains("not running"), "{why}");
+    let ex = execution_json(&e.server, &t);
+    assert_eq!(ex["runner"], "none");
+    assert!(
+        ex["unavailable"]
+            .as_str()
+            .unwrap()
+            .contains("sandbox start")
+    );
+    for level in [IsolationLevel::Container, IsolationLevel::Cloud] {
+        t.isolation.level = level;
+        assert!(check_box(&e.server, &t).is_err(), "{level:?}");
+    }
 }
