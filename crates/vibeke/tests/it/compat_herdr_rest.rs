@@ -216,7 +216,7 @@ fn herdr_rest_navigation_snapshot_and_small_methods() {
             "pane.input.set",
             json!({"pane_id": p1, "right_click": "menu"})
         ),
-        "invalid_params"
+        "invalid_request"
     );
     assert_eq!(
         err_code(

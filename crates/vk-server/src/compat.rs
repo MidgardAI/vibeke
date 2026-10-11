@@ -2182,7 +2182,7 @@ pub async fn call(
                     .and_then(|w| sn.ws(w))
                     .or(sn.ws.first())
                     .cloned()
-                    .ok_or_else(|| WireError::new("workspace_not_found", "no workspace"))?,
+                    .ok_or_else(|| WireError::new("workspace_not_found", "no active workspace"))?,
             };
             let env = herdr_launch_env(p)?;
             let mut np = json!({"workspace": w.id, "focus": p.get("focus").and_then(Value::as_bool).unwrap_or(false)});
@@ -2502,13 +2502,13 @@ pub async fn call(
             herdr_pane(&sn, p)?;
             match sp(p, "right_click") {
                 Some("herdr" | "pane") => {}
+                // Herdr's typed parse refuses these (`invalid_request`).
                 Some(o) => {
-                    return Err(WireError::new(
-                        "invalid_params",
-                        format!("unknown variant `{o}`, expected `herdr` or `pane`"),
-                    ));
+                    return Err(wire::invalid_request(format!(
+                        "unknown variant `{o}`, expected `herdr` or `pane`"
+                    )));
                 }
-                None => return Err(WireError::new("invalid_params", "right_click is required")),
+                None => return Err(wire::invalid_request("missing field `right_click`")),
             }
             Ok(ok())
         }

@@ -680,7 +680,7 @@ pub const ENTRIES: &[Entry] = &[
         "pane.input.set",
         Partial,
         "corpus",
-        "`{pane_id, right_click: herdr|pane}` validated (`pane_not_found`, `invalid_params`) and answered `ok`, but it has no effect: Vibeke's clients have no per-pane right-click routing",
+        "`{pane_id, right_click: herdr|pane}` validated (`pane_not_found`; another value `invalid_request`, as Herdr's typed parse) and answered `ok`, but it has no effect: Vibeke's clients have no per-pane right-click routing",
     ),
     e(
         Method,
