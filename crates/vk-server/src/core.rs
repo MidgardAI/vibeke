@@ -551,4 +551,99 @@ mod commit_tests {
         s.commit(&mut c, tx).unwrap();
         assert!(*s.model_rev.borrow() > before);
     }
+
+    #[test]
+    fn holders_of_an_uncommitted_transaction_are_closed() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = server(dir.path());
+        // Dropped without a commit.
+        let (rt, mut rx) = PaneRt::new("p-dropped", 80, 24);
+        let mut tx = Tx::new();
+        tx.spawned.push(rt);
+        drop(tx);
+        assert!(matches!(rx.try_recv(), Ok(PaneCmd::Close)));
+        // A commit the store refuses.
+        let (rt, mut rx) = PaneRt::new("p-refused", 80, 24);
+        let mut c = s.core.lock().unwrap();
+        c.store.set_query_only(true).unwrap();
+        let mut tx = Tx::new();
+        tx.m.kv("test", "x", Some("1".into()));
+        tx.spawned.push(rt);
+        assert!(s.commit(&mut c, tx).is_err());
+        assert!(matches!(rx.try_recv(), Ok(PaneCmd::Close)));
+        // A commit that succeeds keeps the pane running.
+        c.store.set_query_only(false).unwrap();
+        let (rt, mut rx) = PaneRt::new("p-kept", 80, 24);
+        let mut tx = Tx::new();
+        tx.m.kv("test", "x", Some("2".into()));
+        tx.spawned.push(rt);
+        s.commit(&mut c, tx).unwrap();
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn a_refused_pane_removal_keeps_the_pane_and_is_retried() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = server(dir.path());
+        {
+            let mut c = s.core.lock().unwrap();
+            let mut tx = Tx::new();
+            tx.ws(Workspace {
+                id: "ws1".into(),
+                handle: "w1".into(),
+                name: None,
+                auto_name: "w".into(),
+                root_path: "/tmp".into(),
+                task: None,
+                order: 1.0,
+                branch: None,
+            });
+            tx.tab(Tab {
+                id: "tab1".into(),
+                handle: "w1:t1".into(),
+                workspace: "ws1".into(),
+                title: None,
+                number: 1,
+                layout: LayoutNode::Leaf { pane: "p1".into() },
+                focused_pane: Some("p1".into()),
+                zoomed_pane: None,
+                order: 1.0,
+                floating: vec![],
+                floats_hidden: false,
+            });
+            tx.pane(Pane {
+                id: "p1".into(),
+                handle: "w1:p1".into(),
+                tab: "tab1".into(),
+                workspace: "ws1".into(),
+                title: None,
+                auto_title: "sh".into(),
+                cwd: None,
+                cols: 80,
+                rows: 24,
+                child_pid: None,
+                fg_cmdline: vec![],
+                exited: true,
+                exit_code: Some(0),
+                unread: false,
+                marked_unread: false,
+                pinned: false,
+                created_by: "user".into(),
+                recovered: None,
+                isolation: Isolation::default(),
+                browser: None,
+            });
+            s.commit(&mut c, tx).unwrap();
+        }
+        s.with_core(|c| c.store.set_query_only(true).unwrap());
+        s.pane_ended("p1", "exited:0");
+        // Storage refused: the pane stays, the server is degraded, the removal is pending.
+        assert!(s.with_core(|c| c.pane("p1").is_some()));
+        assert!(s.degraded.lock().unwrap().is_some());
+        s.with_core(|c| c.store.set_query_only(false).unwrap());
+        s.retry_pane_ends();
+        assert!(s.with_core(|c| c.pane("p1").is_none()));
+        assert!(s.with_core(|c| c.ws("ws1").is_none()));
+        assert!(s.pending_pane_ends.lock().unwrap().is_empty());
+    }
 }
