@@ -148,6 +148,7 @@ share_pane               = "prefix+shift+z"   # share the focused pane or its wo
 cloud_send               = ""               # send the focused pane's agent to a cloud sandbox
 cloud_bring_back         = ""               # bring the focused cloud pane back to this host or a paired host
 sandboxes                = ""               # cloud sandboxes: sign-in, state, suspend, bring back, destroy, clean up
+config_error             = ""               # why config.toml does not load (Vibeke keeps the last good config meanwhile)
 open_images              = "prefix+shift+b"   # view new images: the gallery of images agents and you attached
 
 [keys.copy_mode]

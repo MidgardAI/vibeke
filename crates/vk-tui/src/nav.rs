@@ -652,6 +652,10 @@ pub const ACTION_INFO: &[(&str, &str)] = &[
     ("cloud_bring_back", "Bring back from cloud…"),
     ("sandboxes", "Sandboxes"),
     (
+        "config_error",
+        "Config error: why config.toml does not load (the last good config is in use)",
+    ),
+    (
         "handoff_details",
         "Handoff details: where this imported pane came from (retry resume)",
     ),

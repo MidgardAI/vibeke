@@ -14,6 +14,7 @@ pub mod chrome;
 pub mod clipboard;
 pub mod cloud;
 pub mod collision;
+pub mod config_notice;
 pub mod connections;
 pub mod copy;
 pub mod copykeys;

@@ -1079,6 +1079,10 @@ fn right_cluster(app: &App) -> Vec<(String, Style)> {
             (format!(" {} ", truncate(&toast.text, 60)), t.s(t.yellow)),
         );
     }
+    // config.toml does not load: the server keeps the last good config (until looked at).
+    if let Some(b) = crate::config_notice::badge(app) {
+        right.insert(0, (b, t.bold(t.red)));
+    }
     if let Some(d) = &app.m().model.degraded {
         right.insert(0, (format!(" ⚠ {} ", degraded_label(d)), t.bold(t.red)));
     }
