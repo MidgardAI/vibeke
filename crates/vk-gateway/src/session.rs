@@ -225,6 +225,8 @@ async fn device_loop(gw: Arc<Gateway>, ws: impl Ws, session: Session, device_id:
     let mut tui: Option<crate::tui::Bridge> = None;
     type Attach = tokio::task::JoinHandle<Result<(crate::tui::Bridge, Value), ApiError>>;
     let mut attaching: Option<(Attach, Option<Value>)> = None;
+    // Preview streams (`tunnel.*`, spec 06 B3.5) live as long as this connection.
+    let tunnels = crate::tunnel::Tunnels::new(gw.clone(), device_id.clone(), out.clone());
     tracing::info!(device = %device_id, "device connected");
 
     let mut tasks = tokio::task::JoinSet::new();
@@ -258,6 +260,7 @@ async fn device_loop(gw: Arc<Gateway>, ws: impl Ws, session: Session, device_id:
                         tasks.abort_all();
                         if let Some((task, _)) = attaching.take() { task.abort(); }
                         tui.take();
+                        tunnels.close_all();
                         out.notify("device.revoked", json!({})).await;
                     }
                 }
@@ -372,6 +375,20 @@ async fn device_loop(gw: Arc<Gateway>, ws: impl Ws, session: Session, device_id:
             respond(&out, id, result).await;
             continue;
         }
+        if method.starts_with("tunnel.") {
+            if payload.is_some() {
+                respond(
+                    &out,
+                    id,
+                    Err(ApiError::invalid("Tunnel calls take no binary payload")),
+                )
+                .await;
+            } else {
+                // Writes are queued in request order here; the answers run alongside.
+                tasks.spawn(tunnels.handle(&device, &method, params, id));
+            }
+            continue;
+        }
         match method.as_str() {
             "events.subscribe" => {
                 if let Some(t) = events_task.take() {
@@ -443,6 +460,7 @@ async fn device_loop(gw: Arc<Gateway>, ws: impl Ws, session: Session, device_id:
         task.abort();
     }
     tui.take();
+    tunnels.close_all();
     gw.set_visible(&device_id, false);
     // Closes this connection's entry in the live list before the report reads it.
     drop(cmd_rx);
@@ -474,6 +492,8 @@ fn features(gw: &Gateway) -> Vec<&'static str> {
         "cache_cold",
         "wasm_tui",
         "wasm_tui_share",
+        // Embedded previews in the desktop app (`tunnel.*`, spec 06 B3.5).
+        "tunnel",
     ];
     if gw.cfg.stt.is_some() {
         f.push("stt");
@@ -481,7 +501,7 @@ fn features(gw: &Gateway) -> Vec<&'static str> {
     f
 }
 
-async fn respond(out: &Out, id: Option<Value>, r: api::ApiResult) {
+pub(crate) async fn respond(out: &Out, id: Option<Value>, r: api::ApiResult) {
     let Some(id) = id else { return };
     let v = match r {
         Ok(result) => json!({"jsonrpc": "2.0", "id": id, "result": result}),
