@@ -539,8 +539,10 @@ pub struct App {
     pub nav: crate::nav::Nav,
     /// M4 parity state: floats, groups, status bar, search, appearance, notifications.
     pub parity: crate::parity::State,
-    /// Screenshot gallery, 📷 counters and the gallery's kitty image.
+    /// Screenshot gallery and 📷 counters.
     pub gallery: crate::gallery::GalleryState,
+    /// Images the TUI draws itself (gallery, viewer, pop-up, thumbnails), spec 18 §3.
+    pub imgview: crate::image_view::State,
     /// `!N` console-error badges and sidebar preview thumbnails.
     pub previews_ui: crate::preview_ui::State,
     /// Preview manager popup and sidebar preview chips (06 B2/B4).
@@ -963,6 +965,7 @@ impl App {
             nav: Default::default(),
             parity: Default::default(),
             gallery: Default::default(),
+            imgview: crate::image_view::State::new(),
             previews_ui: Default::default(),
             preview_mgr: Default::default(),
             desk: None,
@@ -3068,7 +3071,7 @@ impl App {
         self.dirty = false;
         self.send_view_hints(false);
         crate::browser::update_views(self);
-        crate::gallery::before_draw(self);
+        crate::image_view::before_draw(self);
         crate::preview_ui::before_draw(self);
         crate::pane_images::before_draw(self);
         crate::nav::observe(self);
@@ -3077,6 +3080,7 @@ impl App {
         let (cols, rows) = self.size;
         let mut grid = Grid::new(cols, rows);
         let cursor = draw::compose(self, &mut grid);
+        crate::image_view::after_compose(self, &grid);
         // Browser tile images first; their placeholder cells follow in the grid diff.
         let mut out = crate::browser::take_output(self);
         out.extend(crate::pane_images::take_output(self));
@@ -3094,7 +3098,27 @@ impl App {
         }
         self.prev = grid;
         crate::browser::after_write(self, &mut out);
+        crate::image_view::after_write(self, &mut out);
         out
+    }
+
+    /// Make the next grid diff rewrite the cells of `r` (spec 18 §3.3): an iTerm2 inline image
+    /// is not part of the grid, so blank cells under a removed image would otherwise compare
+    /// equal and leave the image on screen.
+    pub fn invalidate(&mut self, r: crate::screen::Rect) {
+        // Never produced by drawing (control characters have no width), so never equal.
+        let unknown = crate::screen::Cell {
+            text: crate::screen::CellText::new("\u{1}"),
+            width: 1,
+            style: Default::default(),
+            link: None,
+        };
+        let (cols, rows) = (self.prev.cols, self.prev.rows);
+        for y in r.y..r.y.saturating_add(r.h).min(rows) {
+            for x in r.x..r.x.saturating_add(r.w).min(cols) {
+                self.prev.cells[y as usize * cols as usize + x as usize] = unknown.clone();
+            }
+        }
     }
 }
 

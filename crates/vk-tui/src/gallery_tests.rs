@@ -282,6 +282,7 @@ fn screenshot_pane_follows_new_screenshots() {
 
 #[test]
 fn kitty_local_reads_file_remote_waits_for_v() {
+    const ID: u32 = crate::image_view::ID_BASE;
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("s3.png");
     std::fs::write(&path, tiny_png()).unwrap();
@@ -289,7 +290,7 @@ fn kitty_local_reads_file_remote_waits_for_v() {
     app.caps.kitty_graphics = true;
     app.caps.cell_w = 10;
     app.caps.cell_h = 20;
-    app.gallery.gfx_dir = Some(dir.path().join("gfx"));
+    app.imgview.gfx_dir = Some(dir.path().join("gfx"));
     // Local machine: the file is read directly; nothing is fetched.
     open_list(&mut app, &mut rxs[0]);
     if let Some(g) = &mut app.gallery.view {
@@ -297,10 +298,10 @@ fn kitty_local_reads_file_remote_waits_for_v() {
     }
     app.on_key(named(NamedKey::Enter));
     assert!(commands(&mut rxs[0]).is_empty());
-    assert!(app.gallery.image("0:S3").is_some());
-    before_draw(&mut app);
+    assert!(app.imgview.image("0:S3").is_some());
+    crate::image_view::before_draw(&mut app);
     let out = String::from_utf8_lossy(&app.browser.out).to_string();
-    assert!(out.contains(&format!("a=T,i={IMAGE_ID},f=100")), "{out}");
+    assert!(out.contains(&format!("a=T,i={ID},f=100")), "{out}");
     assert!(out.contains("U=1"), "{out}");
     // The host terminal is local: the PNG goes through a temp file (`t=t`), not base64.
     assert!(out.contains("t=t"), "{out}");
@@ -309,14 +310,14 @@ fn kitty_local_reads_file_remote_waits_for_v() {
     assert!(s.contains('\u{10EEEE}'));
     // Unchanged placement: nothing re-sent.
     app.browser.out.clear();
-    before_draw(&mut app);
+    crate::image_view::before_draw(&mut app);
     assert!(app.browser.out.is_empty());
     // Closing deletes the image.
     app.on_key(named(NamedKey::Escape));
     app.on_key(named(NamedKey::Escape));
-    before_draw(&mut app);
+    crate::image_view::before_draw(&mut app);
     let out = String::from_utf8_lossy(&app.browser.out).to_string();
-    assert!(out.contains(&format!("a=d,d=I,i={IMAGE_ID}")), "{out}");
+    assert!(out.contains(&format!("a=d,d=I,i={ID}")), "{out}");
     // Remote machine: no image request until v.
     open(&mut app, 1, Scope::All, View::List, false);
     let (req, _) = only(&commands(&mut rxs[1]), "screenshot.list");
@@ -325,13 +326,15 @@ fn kitty_local_reads_file_remote_waits_for_v() {
     assert!(commands(&mut rxs[1]).is_empty());
     assert!(screen(&app).contains("[v] view image"));
     app.on_key(ch('v'));
+    // Fetched at the width of the view, not as the original.
+    let px = crate::image_view::thumb_px(&app, app.pane_area().w - 2);
     let (req, p) = only(&commands(&mut rxs[1]), "screenshot.get");
-    assert_eq!(p, json!({"id": "S3", "inline": true}));
+    assert_eq!(p, json!({"id": "S3", "inline": true, "thumb": px}));
     let b64 = base64::engine::general_purpose::STANDARD.encode(tiny_png());
     reply(&mut app, 1, req, json!({"id": "S3", "data_b64": b64}));
-    assert!(app.gallery.image("1:S3").is_some());
+    assert!(app.imgview.image(&format!("1:S3@{px}")).is_some());
     app.browser.out.clear();
-    before_draw(&mut app);
+    crate::image_view::before_draw(&mut app);
     assert!(String::from_utf8_lossy(&app.browser.out).contains("a=T"));
 }
 
@@ -354,8 +357,13 @@ fn png_goes_through_a_private_temp_file_unless_ssh() {
     let png = tiny_png();
     let (mut app, _rxs) = fleet();
     app.caps.kitty_graphics = true;
-    app.gallery.gfx_dir = Some(gfx.clone());
-    let h = vk_browser::kitty::Header::new(IMAGE_ID, vk_browser::kitty::PixelFormat::Png, 0, 0);
+    app.imgview.gfx_dir = Some(gfx.clone());
+    let h = vk_browser::kitty::Header::new(
+        crate::image_view::ID_BASE,
+        vk_browser::kitty::PixelFormat::Png,
+        0,
+        0,
+    );
     // Local: `t=t` with the path of a file kitty will accept (and delete) — 0700 dir, the
     // `tty-graphics-protocol` marker in the name, our bytes inside.
     let mut out = Vec::new();
@@ -400,7 +408,7 @@ fn png_goes_through_a_private_temp_file_unless_ssh() {
     std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o700)).unwrap();
     let link = dir.path().join("link");
     std::os::unix::fs::symlink(&real, &link).unwrap();
-    app.gallery.gfx_dir = Some(link);
+    app.imgview.gfx_dir = Some(link);
     let mut out = Vec::new();
     transmit_png(&mut app, &mut out, &h, &png);
     assert!(String::from_utf8_lossy(&out).contains("t=d"));
@@ -447,4 +455,66 @@ fn agent_images_show_caption_not_url() {
     app.on_key(ch('j'));
     let s = screen(&app);
     assert!(s.contains("login.png"), "{s}");
+}
+
+#[test]
+fn iterm_shows_the_full_view_and_the_diff() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("s.png");
+    std::fs::write(&path, tiny_png()).unwrap();
+    let path = path.to_string_lossy().into_owned();
+    let (mut app, mut rxs) = fleet();
+    app.caps.iterm2_images = true;
+    app.caps.cell_w = 10;
+    app.caps.cell_h = 20;
+    app.imgview.tmux = false;
+    open_list(&mut app, &mut rxs[0]);
+    if let Some(g) = &mut app.gallery.view {
+        g.shots[0].path = path.clone();
+    }
+    app.on_key(named(NamedKey::Enter));
+    assert!(app.imgview.image("0:S3").is_some());
+    let s = screen(&app);
+    assert!(
+        !s.contains("no graphics") && !s.contains("loading image"),
+        "{s}"
+    );
+    let out = String::from_utf8_lossy(&app.draw_bytes()).to_string();
+    assert_eq!(out.matches("\x1b]1337;File=").count(), 1);
+    // The diff view: its image is read locally too and replaces the screenshot.
+    app.on_key(ch('d'));
+    let (req, _) = only(&commands(&mut rxs[0]), "browser.diff");
+    reply(
+        &mut app,
+        0,
+        req,
+        json!({"blob": "D1", "path_on_machine": path, "changed_ratio": 0.5, "regions": []}),
+    );
+    assert!(app.imgview.image("0:diff:D1").is_some());
+    let p = placements(&app).unwrap();
+    assert_eq!((p.slot.as_str(), p.key.as_str()), ("diff", "0:diff:D1"));
+    let out = String::from_utf8_lossy(&app.draw_bytes()).to_string();
+    assert_eq!(out.matches("\x1b]1337;File=").count(), 1);
+}
+
+#[test]
+fn remote_originals_over_8_mib_are_not_offered_to_open() {
+    let (mut app, mut rxs) = fleet_n(2);
+    open(&mut app, 1, Scope::All, View::List, false);
+    let (req, _) = only(&commands(&mut rxs[1]), "screenshot.list");
+    let mut l = list();
+    l["screenshots"][0]["bytes"] = json!(9u64 << 20);
+    reply(&mut app, 1, req, l);
+    app.on_key(named(NamedKey::Enter));
+    let s = screen(&app);
+    assert!(!s.contains("o open locally"), "{s}");
+    app.on_key(ch('o'));
+    assert!(commands(&mut rxs[1]).is_empty(), "no screenshot.open");
+    let s = screen(&app);
+    assert!(s.contains("too large to transfer (9 MiB)"), "{s}");
+    assert!(s.contains("/nonexistent/s3.png"), "{s}");
+    // A smaller one opens as before.
+    app.on_key(ch('j'));
+    app.on_key(ch('o'));
+    only(&commands(&mut rxs[1]), "screenshot.open");
 }

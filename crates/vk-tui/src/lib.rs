@@ -33,6 +33,7 @@ pub mod gateway;
 pub mod groups;
 pub mod gw_indicator;
 pub mod handoff;
+pub mod image_view;
 pub mod inbox;
 pub mod input;
 pub mod keymap;

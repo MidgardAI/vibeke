@@ -118,6 +118,8 @@ pub struct BrowserUi {
     requested: HashMap<usize, std::collections::HashSet<String>>,
     /// Media frames dropped as malformed (bad geometry or payload sizes).
     pub rejected_frames: u64,
+    /// A popup covered the pane area since the last iTerm2 frames were sent.
+    pub covered: bool,
     /// Active preview mirrors on this machine's server (06 B4), as last reported.
     pub mirrors: Vec<MirrorInfo>,
     /// Preview a palette action applies to (set by right-clicking a chip or sidebar row):
@@ -830,12 +832,24 @@ pub fn take_output(app: &mut App) -> Vec<u8> {
 
 /// After the frame was written: iTerm2 inline images, then acks.
 pub fn after_write(app: &mut App, out: &mut Vec<u8>) {
-    if gfx(app) == Gfx::Iterm
-        && matches!(
-            app.mode,
-            Mode::Normal | Mode::Prefix(crate::app::PrefixState { menu: false, .. })
-        )
-    {
+    let open = matches!(
+        app.mode,
+        Mode::Normal | Mode::Prefix(crate::app::PrefixState { menu: false, .. })
+    );
+    // A popup (the image viewer, the gallery) repainted the cells of the panes it covered:
+    // their frames go again when it closes, even without a new media frame (spec 18 §3.2).
+    if open && std::mem::replace(&mut app.browser.covered, false) {
+        for pm in app.browser.panes.values_mut() {
+            if pm.canvas.is_some() {
+                pm.canvas_dirty = true;
+                pm.last_inline = None;
+            }
+        }
+    }
+    if !open {
+        app.browser.covered = true;
+    }
+    if gfx(app) == Gfx::Iterm && open {
         for (pid, r) in app.pane_rects() {
             let Some(pm) = app.browser.panes.get_mut(&pid) else {
                 continue;

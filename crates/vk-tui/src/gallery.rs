@@ -7,11 +7,11 @@
 //!   with the reason), code state and URL. `enter` shows the selected screenshot full size.
 //! - **Screenshot pane** (`:screenshot_pane`): the same view in full-image mode that follows new
 //!   screenshots as they are captured (`f` toggles following).
-//! - **Images**: drawn with kitty graphics (a PNG transmitted once per image and size, shown
-//!   through unicode placeholders like the browser pane's tiles) when the host supports it.
+//! - **Images**: drawn through [`crate::image_view`] (kitty graphics or iTerm2 inline images).
 //!   Screenshots on the local machine are read from disk; a remote machine's image is fetched
-//!   only on an explicit `v` (never sent over the link unasked). Without graphics: metadata and
-//!   `o` **open image locally** (the OS opener, only on that explicit key).
+//!   at the size of the view only on an explicit `v` (never sent over the link unasked).
+//!   Without graphics: metadata and `o` **open image locally** (the OS opener, only on that
+//!   explicit key; a download in the WASM TUI).
 //! - **Diff**: `space` marks a base, `d` diffs it (or the next older screenshot) against the
 //!   selected one with `browser.diff`; different environments are refused unless `!` forces.
 //! - `x` delete (confirm; a screenshot kept for a review acceptance needs `!`), `t` scope
@@ -25,14 +25,16 @@ use crate::draw::truncate;
 use crate::screen::Grid;
 use base64::Engine as _;
 use serde_json::{Value, json};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use vk_proto::input::{Key, KeyEvent, KeyKind, NamedKey};
 
-/// Kitty image id for the gallery (above every browser-pane tile id, below 2^24).
-pub const IMAGE_ID: u32 = 16_700_001;
-/// Largest image the gallery decodes/transmits.
-const MAX_IMAGE: usize = 16 << 20;
-const CACHE: usize = 8;
+use crate::image_view::{self as iv, Placement};
+pub use crate::image_view::{fit_cells, png_size, transmit_png};
+use crate::screen::Rect;
+
+/// Largest original `screenshot.open` carries from a remote machine (the server's inline
+/// limit).
+pub const MAX_OPEN: u64 = 8 << 20;
 
 #[derive(Debug, Clone)]
 pub enum Reply {
@@ -231,40 +233,16 @@ impl Gallery {
     }
 }
 
-/// Client state: the open view, 📷 counters, loaded images and what the terminal holds.
+/// Client state: the open view and 📷 counters (images are in [`crate::image_view`]).
 #[derive(Debug, Default)]
 pub struct GalleryState {
     pub view: Option<Gallery>,
     /// (machine, pane) → screenshots captured since the gallery was last opened for it.
     pub counts: HashMap<(usize, String), u32>,
-    /// Image bytes by key (`<machine>:<shot id>` or `<machine>:diff:<blob>`), bounded.
-    pub images: Vec<(String, Vec<u8>)>,
-    pub fetching: HashSet<String>,
-    /// (key, x, y, cols, rows) of the image currently transmitted with [`IMAGE_ID`].
-    pub sent: Option<(String, u16, u16, u16, u16)>,
     /// Files handed to the OS opener (tests read this instead of spawning).
     pub opened: Vec<String>,
     #[cfg(target_arch = "wasm32")]
     pub downloads: Vec<(String, Vec<u8>)>,
-    /// Directory for `t=t` temp files (`None`: `$TMPDIR/vibeke-gfx-<uid>`; tests point it at a
-    /// temp dir of their own).
-    pub gfx_dir: Option<std::path::PathBuf>,
-}
-
-impl GalleryState {
-    pub fn image(&self, key: &str) -> Option<&[u8]> {
-        self.images
-            .iter()
-            .find(|(k, _)| k == key)
-            .map(|(_, d)| d.as_slice())
-    }
-    fn put_image(&mut self, key: String, data: Vec<u8>) {
-        self.images.retain(|(k, _)| *k != key);
-        self.images.push((key, data));
-        if self.images.len() > CACHE {
-            self.images.remove(0);
-        }
-    }
 }
 
 // ---- counters ----------------------------------------------------------------------------------------
@@ -376,55 +354,73 @@ fn close(app: &mut App) {
     };
 }
 
-fn image_key(mi: usize, id: &str) -> String {
-    format!("{mi}:{id}")
+fn diff_key(mi: usize, blob: &str) -> String {
+    format!("{mi}:diff:{blob}")
+}
+
+/// What the gallery shows an image for this frame: (slot, key, area it may fill, the shot when
+/// it is a screenshot rather than a diff).
+fn wanted<'a>(app: &App, g: &'a Gallery) -> Option<(&'static str, String, Rect, Option<&'a Shot>)> {
+    let a = app.pane_area();
+    let (slot, key, header, shot) = match &g.diff {
+        Some(d) => (
+            "diff",
+            diff_key(g.machine, st(d.result.as_ref()?, "blob")),
+            8u16,
+            None,
+        ),
+        None if g.view == View::Full => {
+            let s = g.cur()?;
+            let max_c = a.w.saturating_sub(2);
+            let k = iv::key(app, g.machine, &s.id, iv::thumb_px(app, max_c));
+            ("gallery", k, 5u16, Some(s))
+        }
+        None => return None,
+    };
+    let top = a.y + 1 + header + u16::from(g.notice.is_some());
+    let area = Rect {
+        x: a.x + 1,
+        y: top,
+        w: a.w.saturating_sub(2),
+        h: (a.y + a.h).saturating_sub(top + 1),
+    };
+    Some((slot, key, area, shot))
 }
 
 /// Load the selected (or diff) image when that needs no transfer: local machines read the PNG
 /// from disk. Remote images wait for an explicit `v`.
 pub fn ensure_local_image(app: &mut App) {
-    if crate::browser::gfx(app) != crate::browser::Gfx::Kitty {
+    if iv::gfx(app) == crate::browser::Gfx::None {
         return;
     }
     let Some(g) = &app.gallery.view else {
         return;
     };
-    if !app.machines[g.machine].local {
+    if !iv::readable(app, g.machine) {
         return;
     }
-    let want: Option<(String, String)> = match &g.diff {
+    let want = match &g.diff {
         Some(d) => d.result.as_ref().map(|r| {
             (
-                image_key(g.machine, &format!("diff:{}", st(r, "blob"))),
+                diff_key(g.machine, st(r, "blob")),
                 st(r, "path_on_machine").to_string(),
+                true,
             )
         }),
-        None if g.view == View::Full => g
-            .cur()
-            .filter(|s| s.exists && !s.path.is_empty())
-            .map(|s| (image_key(g.machine, &s.id), s.path.clone())),
-        None => None,
+        None => wanted(app, g).and_then(|(_, k, _, s)| s.map(|s| (k, s.path.clone(), s.exists))),
     };
-    let Some((key, path)) = want else { return };
-    if app.gallery.image(&key).is_some() || path.is_empty() {
-        return;
-    }
-    match std::fs::metadata(&path) {
-        Ok(m) if m.len() as usize <= MAX_IMAGE => {
-            if let Ok(data) = std::fs::read(&path) {
-                app.gallery.put_image(key, data);
-            }
-        }
-        _ => {}
+    if let Some((key, path, exists)) = want {
+        iv::load_local(app, &key, &path, exists);
     }
 }
 
-/// `v`: fetch the selected image from its machine (explicit for remote machines).
+/// `v`: fetch the selected image from its machine (explicit for remote machines), at the size
+/// of the view.
 fn fetch_image(app: &mut App, g: &Gallery) {
     if let Some(d) = &g.diff {
         let Some(r) = &d.result else { return };
-        let key = image_key(g.machine, &format!("diff:{}", st(r, "blob")));
-        if app.gallery.fetching.insert(key.clone()) {
+        let key = diff_key(g.machine, st(r, "blob"));
+        if app.imgview.image(&key).is_none() && app.imgview.fetching.insert(key.clone()) {
             app.command_on(
                 g.machine,
                 "browser.diff",
@@ -434,19 +430,46 @@ fn fetch_image(app: &mut App, g: &Gallery) {
         }
         return;
     }
-    let Some(s) = g.cur() else { return };
-    let key = image_key(g.machine, &s.id);
-    if app.gallery.image(&key).is_some() {
+    let Some((_, key, area, Some(s))) = wanted(app, g) else {
         return;
+    };
+    let px = iv::thumb_px(app, area.w);
+    let id = s.id.clone();
+    // An explicit `v` tries again after a failed transfer.
+    app.imgview.problems.remove(&key);
+    iv::fetch(
+        app,
+        g.machine,
+        &id,
+        px,
+        &key,
+        Pending::Gallery(Reply::Image {
+            view: g.id,
+            key: key.clone(),
+        }),
+    );
+}
+
+/// The action that still works when no image is shown.
+pub fn open_label() -> &'static str {
+    if cfg!(target_arch = "wasm32") {
+        "o download"
+    } else {
+        "o open locally"
     }
-    if app.gallery.fetching.insert(key.clone()) {
-        app.command_on(
-            g.machine,
-            "screenshot.get",
-            json!({"id": s.id, "inline": true}),
-            Pending::Gallery(Reply::Image { view: g.id, key }),
-        );
-    }
+}
+
+/// A remote original too large for `screenshot.open` (§3.4): what to say instead of `o`.
+pub fn too_large_to_open(app: &App, mi: usize, s: &Shot) -> Option<String> {
+    (!iv::readable(app, mi) && s.bytes > MAX_OPEN).then(|| {
+        format!(
+            "{} is too large to transfer ({} MiB) — on {}: {}",
+            s.handle,
+            s.bytes >> 20,
+            app.machines[mi].label,
+            s.path
+        )
+    })
 }
 
 fn os_open(app: &mut App, path: &str) {
@@ -469,9 +492,13 @@ fn os_open(app: &mut App, path: &str) {
 
 /// `o`: open the image with the OS opener. Local: the blob file itself; remote: fetched
 /// (`screenshot.open`, explicit) into `$TMPDIR/vibeke-screenshots/<id>.png` first.
-fn open_locally(app: &mut App, g: &Gallery) {
+fn open_locally(app: &mut App, g: &mut Gallery) {
     let Some(s) = g.cur() else { return };
-    if app.machines[g.machine].local {
+    if let Some(msg) = too_large_to_open(app, g.machine, s) {
+        g.notice = Some(msg);
+        return;
+    }
+    if iv::readable(app, g.machine) {
         if s.exists {
             let p = s.path.clone();
             os_open(app, &p);
@@ -611,14 +638,13 @@ pub fn key(app: &mut App, ev: KeyEvent) {
             if g.view == View::List {
                 g.view = View::Full;
             }
-            if crate::browser::gfx(app) == crate::browser::Gfx::Kitty {
+            if iv::gfx(app) != crate::browser::Gfx::None {
                 fetch_image(app, &g);
             } else {
-                g.notice =
-                    Some("This terminal shows no graphics — o opens the image locally".into());
+                g.notice = iv::hint(app, "", open_label());
             }
         }
-        Key::Char('o') => open_locally(app, &g),
+        Key::Char('o') => open_locally(app, &mut g),
         Key::Char(' ') => {
             if let Some(s) = g.cur() {
                 g.mark = if g.mark.as_deref() == Some(&s.id) {
@@ -722,27 +748,10 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
             ensure_local_image(app);
         }
         Reply::Image { view, key } => {
-            app.gallery.fetching.remove(&key);
-            let data = res
-                .as_ref()
-                .ok()
-                .and_then(|x| x.get("data_b64").and_then(Value::as_str))
-                .and_then(|b| base64::engine::general_purpose::STANDARD.decode(b).ok());
-            let skipped = res
-                .as_ref()
-                .ok()
-                .and_then(|x| x.get("inline_skipped").and_then(Value::as_str))
-                .map(str::to_string);
-            match data {
-                Some(d) if d.len() <= MAX_IMAGE => app.gallery.put_image(key, d),
-                _ => {
-                    if let Some(g) = view_mut(app, view) {
-                        g.notice = Some(match (res, skipped) {
-                            (Err(e), _) => format!("✗ {}", e.message),
-                            (_, Some(s)) => format!("image not transferred: {s} — o opens it"),
-                            _ => "image not available".into(),
-                        });
-                    }
+            if iv::on_fetched(app, &key, &res).is_some() {
+                let hint = iv::hint(app, &key, open_label());
+                if let Some(g) = view_mut(app, view) {
+                    g.notice = hint;
                 }
             }
         }
@@ -812,136 +821,16 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
     }
 }
 
-// ---- kitty transmission (before drawing) --------------------------------------------------------------------
+// ---- placement -------------------------------------------------------------------------------------
 
-/// Cells for an image of `w × h` px fitted into `max_c × max_r` cells (aspect kept).
-pub fn fit_cells(app: &App, w: u32, h: u32, max_c: u16, max_r: u16) -> (u16, u16) {
-    if w == 0 || h == 0 || max_c == 0 || max_r == 0 {
-        return (0, 0);
-    }
-    let (cw, ch, _) = crate::browser::cell_geom(app);
-    let sx = (max_c as f64 * cw as f64) / w as f64;
-    let sy = (max_r as f64 * ch as f64) / h as f64;
-    let s = sx.min(sy);
-    let c = ((w as f64 * s) / cw as f64).floor().max(1.0) as u16;
-    let r = ((h as f64 * s) / ch as f64).floor().max(1.0) as u16;
-    (c.min(max_c), r.min(max_r))
-}
-
-/// PNG dimensions from the IHDR chunk.
-pub fn png_size(d: &[u8]) -> Option<(u32, u32)> {
-    if d.len() < 24 || &d[..8] != b"\x89PNG\r\n\x1a\n" {
-        return None;
-    }
-    let w = u32::from_be_bytes(d[16..20].try_into().ok()?);
-    let h = u32::from_be_bytes(d[20..24].try_into().ok()?);
-    Some((w, h))
-}
-
-/// Where the image goes this frame: (key, x, y, cols, rows), if one is shown.
-pub fn placement(app: &App) -> Option<(String, u16, u16, u16, u16)> {
-    if crate::browser::gfx(app) != crate::browser::Gfx::Kitty
-        || !matches!(app.mode, Mode::Popup(Popup::Gallery))
-    {
+/// The gallery's image placement this frame (full view or diff), if its image is loaded.
+pub fn placements(app: &App) -> Option<Placement> {
+    if !matches!(app.mode, Mode::Popup(Popup::Gallery)) {
         return None;
     }
     let g = app.gallery.view.as_ref()?;
-    let (key, header) = match &g.diff {
-        Some(d) => (
-            image_key(
-                g.machine,
-                &format!("diff:{}", st(d.result.as_ref()?, "blob")),
-            ),
-            8u16,
-        ),
-        None if g.view == View::Full => (image_key(g.machine, &g.cur()?.id), 5u16),
-        None => return None,
-    };
-    let data = app.gallery.image(&key)?;
-    let (w, h) = png_size(data)?;
-    let a = app.pane_area();
-    let top = a.y + 1 + header + u16::from(g.notice.is_some());
-    let max_r = (a.y + a.h).saturating_sub(top + 1);
-    let max_c = a.w.saturating_sub(2);
-    let (c, r) = fit_cells(app, w, h, max_c, max_r);
-    if c == 0 || r == 0 {
-        return None;
-    }
-    Some((key, a.x + 1, top, c, r))
-}
-
-/// Transmit a PNG for `h`. When the host terminal is on this machine (not behind SSH) the PNG
-/// goes through a temp file the terminal reads and deletes (`t=t`, 06 B8) instead of base64
-/// through the pty; otherwise (or when no private temp file can be made, or
-/// `VIBEKE_GFX_TRANSFER=direct`) it is chunked `t=d`.
-pub fn transmit_png(app: &mut App, out: &mut Vec<u8>, h: &vk_browser::kitty::Header, data: &[u8]) {
-    if !app.caps.host_remote
-        && std::env::var("VIBEKE_GFX_TRANSFER").as_deref() != Ok("direct")
-        && let Some(dir) = private_gfx_dir(app.gallery.gfx_dir.as_deref())
-        && let Ok(path) = vk_browser::kitty::write_temp_file(&dir, data)
-    {
-        vk_browser::kitty::transmit_temp_file(out, h, &path, data.len());
-        return;
-    }
-    vk_browser::kitty::transmit_direct(out, h, data);
-}
-
-/// A directory only this user can use (0700, ours, not a symlink); stale files from terminals
-/// that never read them are removed.
-#[cfg(not(target_arch = "wasm32"))]
-fn private_gfx_dir(custom: Option<&std::path::Path>) -> Option<std::path::PathBuf> {
-    use std::os::unix::fs::{DirBuilderExt, MetadataExt};
-    // SAFETY: geteuid has no preconditions.
-    let uid = unsafe { libc::geteuid() };
-    let dir = custom
-        .map(std::path::Path::to_path_buf)
-        .unwrap_or_else(|| std::env::temp_dir().join(format!("vibeke-gfx-{uid}")));
-    if std::fs::symlink_metadata(&dir).is_err() {
-        let _ = std::fs::DirBuilder::new().mode(0o700).create(&dir);
-    }
-    let md = std::fs::symlink_metadata(&dir).ok()?;
-    if !md.is_dir() || md.uid() != uid || md.mode() & 0o077 != 0 {
-        return None;
-    }
-    if let Ok(rd) = std::fs::read_dir(&dir) {
-        for e in rd.flatten() {
-            let old = e
-                .metadata()
-                .ok()
-                .and_then(|m| m.modified().ok())
-                .and_then(|t| t.elapsed().ok())
-                .is_some_and(|age| age > crate::time::Duration::from_secs(120));
-            if old {
-                let _ = std::fs::remove_file(e.path());
-            }
-        }
-    }
-    Some(dir)
-}
-
-/// Transmit or delete the gallery image so the next frame's placeholders resolve. Called from
-/// `App::draw` before composing (the only mutable point of a frame).
-pub fn before_draw(app: &mut App) {
-    let want = placement(app);
-    if want == app.gallery.sent {
-        return;
-    }
-    let mut out = Vec::new();
-    if app.gallery.sent.take().is_some() {
-        vk_browser::kitty::delete_image(&mut out, IMAGE_ID);
-    }
-    if let Some((key, x, y, c, r)) = want
-        && let Some(data) = app.gallery.image(&key)
-    {
-        let mut h =
-            vk_browser::kitty::Header::new(IMAGE_ID, vk_browser::kitty::PixelFormat::Png, 0, 0);
-        h.virtual_cells = Some((c, r));
-        h.placement = Some(1);
-        let data = data.to_vec();
-        transmit_png(app, &mut out, &h, &data);
-        app.gallery.sent = Some((key, x, y, c, r));
-    }
-    app.browser.out.extend_from_slice(&out);
+    let (slot, key, area, _) = wanted(app, g)?;
+    iv::fit(app, slot, &key, area)
 }
 
 // ---- drawing ---------------------------------------------------------------------------------------------
@@ -1027,8 +916,7 @@ pub fn draw(app: &App, g: &mut Grid) {
     if let Some(n) = &gv.notice {
         a.line(n, t.bold(t.yellow));
     }
-    let kitty = crate::browser::gfx(app) == crate::browser::Gfx::Kitty;
-    let local = app.machines[gv.machine].local;
+    let local = iv::readable(app, gv.machine);
     if let Some(d) = &gv.diff {
         a.line(
             &format!("diff {} → {}", d.a.handle, d.b.handle),
@@ -1066,7 +954,7 @@ pub fn draw(app: &App, g: &mut Grid) {
                         t.dim(),
                     );
                 }
-                draw_image_or_hint(app, &mut a, kitty, local, true);
+                draw_image_or_hint(app, &mut a, local, true);
             }
             (None, Some(e)) => {
                 a.line(e, t.s(t.red));
@@ -1097,11 +985,15 @@ pub fn draw(app: &App, g: &mut Grid) {
         View::Full => {
             if let Some(s) = gv.cur() {
                 meta_lines(app, s, &mut a);
-                draw_image_or_hint(app, &mut a, kitty, local, false);
+                draw_image_or_hint(app, &mut a, local, false);
             }
+            let open = match gv.cur() {
+                Some(s) if too_large_to_open(app, gv.machine, s).is_some() => String::new(),
+                _ => format!(" · {}", open_label()),
+            };
             a.footer(
                 &format!(
-                    "{}/{} · ←/→ history · d diff · space mark · v image · o open locally · L live preview · f follow · x delete · esc {}",
+                    "{}/{} · ←/→ history · d diff · space mark · v image{open} · L live preview · f follow · x delete · esc {}",
                     gv.sel + 1,
                     gv.shots.len(),
                     if gv.pane_mode { "close" } else { "list" }
@@ -1150,7 +1042,10 @@ pub fn draw(app: &App, g: &mut Grid) {
                 );
             } else {
                 a.footer(
-                    "j/k · enter view · d diff (space marks base) · o open locally · t scope · L live preview · x delete · y copy · esc",
+                    &format!(
+                        "j/k · enter view · d diff (space marks base) · {} · t scope · L live preview · x delete · y copy · esc",
+                        open_label()
+                    ),
                     t.dim(),
                 );
             }
@@ -1158,30 +1053,23 @@ pub fn draw(app: &App, g: &mut Grid) {
     }
 }
 
-fn draw_image_or_hint(app: &App, a: &mut Area, kitty: bool, local: bool, diff: bool) {
+fn draw_image_or_hint(app: &App, a: &mut Area, local: bool, diff: bool) {
     let t = app.theme;
-    if !kitty {
-        a.line(
-            "This terminal shows no graphics — [o] open image locally",
-            t.dim(),
-        );
+    let Some(gv) = &app.gallery.view else { return };
+    let key = wanted(app, gv).map(|(_, k, _, _)| k).unwrap_or_default();
+    let open = if cfg!(target_arch = "wasm32") {
+        "[o] download the image"
+    } else {
+        "[o] open image locally"
+    };
+    if let Some(h) = iv::hint(app, &key, open) {
+        a.line(&h, t.dim());
         return;
     }
-    match placement(app) {
-        Some((_, x, y, c, r)) => {
-            for row in 0..r {
-                for col in 0..c {
-                    a.g.put_grapheme(
-                        x + col,
-                        y + row,
-                        &crate::browser::placeholder(IMAGE_ID, row, col),
-                        crate::browser::id_style(IMAGE_ID),
-                    );
-                }
-            }
-            a.y = a.y.max(y + r);
-        }
-        None if local => a.line("loading image…", t.dim()),
+    match placements(app) {
+        Some(p) if iv::draw(app, a.g, &p) => a.y = a.y.max(p.rect.y + p.rect.h),
+        Some(_) => a.line("loading image…", t.dim()),
+        None if local || app.imgview.fetching.contains(&key) => a.line("loading image…", t.dim()),
         None => a.line(
             if diff {
                 "[v] fetch the diff image from the remote machine"
@@ -1196,8 +1084,3 @@ fn draw_image_or_hint(app: &App, a: &mut Area, kitty: bool, local: bool, diff: b
 #[cfg(test)]
 #[path = "gallery_tests.rs"]
 mod tests;
-
-#[cfg(target_arch = "wasm32")]
-fn private_gfx_dir(_: Option<&std::path::Path>) -> Option<std::path::PathBuf> {
-    None
-}
