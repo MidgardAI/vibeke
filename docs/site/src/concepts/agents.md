@@ -37,6 +37,17 @@ Vibeke also closes some requests by itself. It records each of these as closed a
 
 Vibeke never closes a gated request or a sandbox request by itself. These stay open until you answer or dismiss them.
 
+## Background work
+
+An agent can leave work running after its turn ends. Examples are a development server, a background shell command, or a watcher. Vibeke then does not show the agent as done.
+
+- The sidebar shows `⧗` and a label such as `idle · 2 bg`.
+- The status bar counts background tasks after `⧗`.
+- The agent details list each task with its kind, its command, and how long it has run.
+- The apps show the tasks next to the agent and in the conversation.
+
+Claude Code and the Codex app server report their background tasks to Vibeke. For other agents, Vibeke looks for shell commands that the agent started and that still run after the turn.
+
 ## Configure an integration
 
 Open **Setup** in the command palette to select integrations, inspect changes, and confirm installation. The installer preserves existing hooks.

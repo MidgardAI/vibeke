@@ -189,7 +189,7 @@ pub enum Confirm {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Stage {
     List,
-    Auth(AuthState),
+    Auth(Box<AuthState>),
 }
 
 #[derive(Debug, Clone)]
@@ -524,7 +524,7 @@ pub fn on_key(v: &mut View, ev: &KeyEvent) -> Act {
         return match a.key(ev) {
             AuthOut::None => Act::None,
             AuthOut::Cancel => Act::LeaveAuth,
-            out @ (AuthOut::SetToken(_) | AuthOut::Import(_)) => {
+            out @ (AuthOut::SetToken(_) | AuthOut::Import(_) | AuthOut::SaveFile) => {
                 a.busy = Some("signing in…".into());
                 Act::Auth(out)
             }
@@ -803,7 +803,7 @@ fn sign_in(app: &mut App) {
     match st {
         Some(a) => {
             v.retry = None;
-            v.stage = Stage::Auth(a);
+            v.stage = Stage::Auth(Box::new(a));
         }
         None => v.notice = Some("no cloud provider is available on this machine".into()),
     }
@@ -821,10 +821,10 @@ fn auth(app: &mut App, out: AuthOut) {
     let Stage::Auth(a) = &mut v.stage else {
         return;
     };
-    let Some((method, params)) = crate::cloud::auth_request(&a.provider, &out) else {
+    let Some((method, params)) = crate::cloud::auth_request(a, &out) else {
         return;
     };
-    // The token is in the request only: the field is empty from here on.
+    // Clear the field; AuthState keeps a private retry until sign-in finishes.
     a.token.clear();
     let call = if method == "cloud.auth.set" {
         Call::AuthSet
@@ -908,7 +908,7 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
             v.retry = None;
             v.notice = Some("✗ still not signed in: the sign-in did not work".into());
         } else if let Some(a) = crate::cloud::auth_stage(&v.providers, None, &e.details) {
-            v.stage = Stage::Auth(a);
+            v.stage = Stage::Auth(Box::new(a));
         } else {
             v.notice = Some("✗ sign in to the provider first (s)".into());
         }
@@ -1088,8 +1088,7 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
         (Call::AuthSet | Call::AuthImport, Ok(x)) => auth_done(app, &x),
         (Call::AuthSet | Call::AuthImport, Err(e)) => {
             if let Stage::Auth(a) = &mut v.stage {
-                a.busy = None;
-                a.error = Some(err_text(&e));
+                a.failed(&e);
             }
         }
         (Call::List, Err(e)) => {
@@ -1115,6 +1114,7 @@ fn auth_done(app: &mut App, x: &Value) {
         for p in v.providers.iter_mut().filter(|p| p.id == id) {
             p.state = "ok".into();
             p.account = s_of(x, "account");
+            p.source = s_of(x, "storage");
         }
     }
     v.stage = Stage::List;

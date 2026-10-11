@@ -10,8 +10,10 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   ArrowDown,
+  Bell,
   Bot,
   Brain,
+  Check,
   ChevronRight,
   ChevronsDown,
   ChevronsUp,
@@ -25,12 +27,13 @@ import {
   Loader2,
   Map as MapIcon,
   Search,
+  Square,
   SquareTerminal,
   Wrench,
   X,
 } from 'lucide-react';
-import { NotConnectedError, RpcError, applyLatest, applyOlder, emptyTranscript, type AgentRun, type AppApi, type TranscriptItem, type TranscriptState, type TranscriptTurn } from '@vibeke/core';
-import { useApp, useHost, useVisible } from '../../app/hooks';
+import { NotConnectedError, RpcError, applyLatest, applyOlder, emptyTranscript, type AgentRun, type BgTask, type AppApi, type TranscriptItem, type TranscriptState, type TranscriptTurn } from '@vibeke/core';
+import { useApp, useHost, useNow, useVisible } from '../../app/hooks';
 import { FindBar } from '../../components/find-bar';
 import { LinkContext, linkifyText, useLinks } from '../../components/link-context';
 import { Markdown } from '../../components/markdown';
@@ -38,7 +41,9 @@ import { Button, Chip, DiffCount, Empty, IconButton, Spinner, cx } from '../../c
 import { t } from '../../i18n';
 import { errorMessage } from '../../lib/answer';
 import { ImageSourceContext, TranscriptImage } from '../../components/transcript-image';
-import { turnBlocks, turnHasWork, turnStats, turnText, workedFor, type ConvBlock, type Step, type ToolStep } from '../../lib/conversation';
+import { turnBlocks, turnHasWork, turnStats, turnText, turnToolIds, workedFor, type BgEventStatus, type ConvBlock, type Step, type ToolStep } from '../../lib/conversation';
+import { bgTasksOf, bgToolIds } from '../../lib/bg-tasks';
+import { shortDuration } from '../../lib/format';
 import { toolSummary, type ToolKind } from '../../lib/tool-summary';
 import { takePrefetchedTranscript } from '../../lib/prefetch';
 import { EVENT_DEBOUNCE_MS, LatestFeed, SAFETY_POLL_MS, watchRunEvents } from '../../lib/live-transcript';
@@ -126,7 +131,17 @@ export function Conversation({
   const runRef = useRef(run.id);
   runRef.current = run.id;
 
+  const bgKey = bgTasksOf(run).map((b) => `${b.id}:${b.tool_use_id ?? ''}`).join('|');
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const bgIds = useMemo(() => bgToolIds(run), [bgKey]);
+
   const imageSource = useMemo(() => ({ host: hostId, target: run.id }), [hostId, run.id]);
+
+  /** Scroll to the tool row a background task started (when it is in the loaded, unfolded turns). */
+  const jumpToTool = useCallback((id: string) => {
+    const el = listRef.current?.querySelector<HTMLElement>(`[data-tool-id="${CSS.escape(id)}"]`);
+    el?.scrollIntoView?.({ block: 'center', behavior: 'smooth' });
+  }, []);
 
   const nearBottom = () => {
     const el = listRef.current;
@@ -517,6 +532,7 @@ export function Conversation({
               latest={turn.n === lastN}
               working={working && turn.n === lastN}
               cwd={cwd}
+              bgIds={bgIds}
               adds={turn.n === lastN ? diff.adds : 0}
               dels={turn.n === lastN ? diff.dels : 0}
             />
@@ -527,6 +543,7 @@ export function Conversation({
               {t.conv.working}
             </div>
           )}
+          {phase === 'ready' && <BgStrip run={run} onJump={jumpToTool} />}
           {tail && (
             <div ref={tailRef} className="mt-3 space-y-2">
               {tail}
@@ -570,13 +587,19 @@ export function Conversation({
 // ---- one turn --------------------------------------------------------------------------------
 
 const TurnView = memo(
-  function TurnView({ turn, latest, working, cwd, adds, dels }: { turn: TranscriptTurn; latest: boolean; working: boolean; cwd: string | null; adds: number; dels: number }) {
+  function TurnView({ turn, latest, working, cwd, bgIds, adds, dels }: { turn: TranscriptTurn; latest: boolean; working: boolean; cwd: string | null; bgIds: ReadonlySet<string>; adds: number; dels: number }) {
     const blocks = useMemo(() => turnBlocks(turn), [turn]);
     const groups = useMemo(() => groupSteps(blocks), [blocks]);
     const lastStepKey = useMemo(() => {
       for (let i = blocks.length - 1; i >= 0; i--) if (blocks[i]!.k === 'tool') return blocks[i]!.key;
       return null;
     }, [blocks]);
+    const bgRunning = useMemo(() => {
+      if (!bgIds.size) return 0;
+      let n = 0;
+      for (const id of turnToolIds(turn)) if (bgIds.has(id)) n++;
+      return n;
+    }, [turn, bgIds]);
     return (
       <section
         id={`turn-${turn.n}`}
@@ -587,14 +610,14 @@ const TurnView = memo(
           Array.isArray(g) ? (
             <div key={g[0]!.key}>
               {g.map((b) => (
-                <StepView key={b.key} block={b} cwd={cwd} pending={working && b.key === lastStepKey} />
+                <StepView key={b.key} block={b} cwd={cwd} bgIds={bgIds} pending={working && b.key === lastStepKey} />
               ))}
             </div>
           ) : (
             <BlockView key={g.key} block={g} />
           ),
         )}
-        {turnHasWork(turn) && !working && <TurnFooter turn={turn} latest={latest} adds={adds} dels={dels} />}
+        {(turnHasWork(turn) || bgRunning > 0) && !working && <TurnFooter turn={turn} latest={latest} adds={adds} dels={dels} bgRunning={bgRunning} />}
       </section>
     );
   },
@@ -605,6 +628,7 @@ const TurnView = memo(
     a.latest === b.latest &&
     a.working === b.working &&
     a.cwd === b.cwd &&
+    a.bgIds === b.bgIds &&
     a.adds === b.adds &&
     a.dels === b.dels &&
     // Results arrive for existing calls without adding items when the server merges; compare the tail item.
@@ -629,6 +653,7 @@ function groupSteps(blocks: ConvBlock[]): (ConvBlock | StepBlock[])[] {
 
 function BlockView({ block }: { block: ConvBlock }) {
   if (block.k === 'user') return <UserMessage text={block.text} />;
+  if (block.k === 'bg_event') return <BgEventRow status={block.status} summary={block.summary} />;
   if (block.k === 'image') return <TranscriptImage mime={block.mime} imageRef={block.ref} size={block.size} />;
   if (block.k === 'text')
     return (
@@ -677,13 +702,13 @@ const ICONS: Record<ToolKind, typeof Wrench> = {
 const rowCls =
   'vk-focus group -mx-1.5 flex h-7 w-[calc(100%+12px)] min-w-0 items-center gap-2 rounded-md px-1.5 text-left text-[13px] hover:bg-hover pointer-coarse:h-9';
 
-function StepView({ block, cwd, pending }: { block: StepBlock; cwd: string | null; pending: boolean }) {
-  if (block.k === 'steps') return <FoldedSteps steps={block.steps} cwd={cwd} />;
+function StepView({ block, cwd, bgIds, pending }: { block: StepBlock; cwd: string | null; bgIds: ReadonlySet<string>; pending: boolean }) {
+  if (block.k === 'steps') return <FoldedSteps steps={block.steps} cwd={cwd} bgIds={bgIds} />;
   if (block.k === 'thinking') return <ThinkingRow text={block.text} />;
-  return <ToolRow step={block} cwd={cwd} pending={pending} />;
+  return <ToolRow step={block} cwd={cwd} pending={pending} bgIds={bgIds} />;
 }
 
-function FoldedSteps({ steps, cwd }: { steps: Step[]; cwd: string | null }) {
+function FoldedSteps({ steps, cwd, bgIds }: { steps: Step[]; cwd: string | null; bgIds: ReadonlySet<string> }) {
   const [open, setOpen] = useState(false);
   return (
     <div>
@@ -694,7 +719,7 @@ function FoldedSteps({ steps, cwd }: { steps: Step[]; cwd: string | null }) {
       </button>
       {open && (
         <div className="ml-[7px] border-l border-border pl-3">
-          {steps.map((s) => (s.k === 'thinking' ? <ThinkingRow key={s.key} text={s.text} /> : <ToolRow key={s.key} step={s} cwd={cwd} pending={false} />))}
+          {steps.map((s) => (s.k === 'thinking' ? <ThinkingRow key={s.key} text={s.text} /> : <ToolRow key={s.key} step={s} cwd={cwd} pending={false} bgIds={bgIds} />))}
         </div>
       )}
     </div>
@@ -715,7 +740,7 @@ function ThinkingRow({ text }: { text: string }) {
   );
 }
 
-export function ToolRow({ step, cwd, pending }: { step: ToolStep; cwd: string | null; pending: boolean }) {
+export function ToolRow({ step, cwd, pending, bgIds }: { step: ToolStep; cwd: string | null; pending: boolean; bgIds?: ReadonlySet<string> }) {
   const [open, setOpen] = useState(false);
   const call: TranscriptItem | null = step.call;
   const res: TranscriptItem | null = step.result;
@@ -725,13 +750,20 @@ export function ToolRow({ step, cwd, pending }: { step: ToolStep; cwd: string | 
   const input = call?.summary && call.summary !== 'null' ? call.summary : null;
   const output = res?.summary || res?.text || null;
   const can = !!(input || output);
+  const inBg = !!(call?.id && bgIds?.has(call.id));
   return (
-    <div data-tool={call?.tool ?? 'result'}>
+    <div data-tool={call?.tool ?? 'result'} data-tool-id={call?.id ?? undefined}>
       <button type="button" className={rowCls} aria-expanded={can ? open : undefined} disabled={!can} onClick={() => setOpen(!open)}>
         <Icon className={cx('size-3.5 shrink-0', failed ? 'text-del' : 'text-faint')} />
         <span className={cx('shrink-0', failed ? 'text-del' : 'text-muted')}>{s.label}</span>
         <span className="min-w-0 flex-1 truncate font-mono text-xs text-faint group-hover:text-muted">{s.detail}</span>
-        {pending && !res && <Loader2 className="size-3.5 shrink-0 animate-spin text-faint" aria-label={t.conv.working} />}
+        {inBg && (
+          <span className="flex shrink-0 items-center gap-1 text-xs text-info">
+            <Loader2 className="size-3.5 animate-spin" />
+            {t.bg.runningInBackground}
+          </span>
+        )}
+        {!inBg && pending && !res && <Loader2 className="size-3.5 shrink-0 animate-spin text-faint" aria-label={t.conv.working} />}
         {failed && <X className="size-3.5 shrink-0 text-del" aria-label={t.conv.error} />}
       </button>
       {open && can && (
@@ -750,12 +782,12 @@ export function ToolRow({ step, cwd, pending }: { step: ToolStep; cwd: string | 
 
 // ---- footer --------------------------------------------------------------------------------------
 
-function TurnFooter({ turn, latest, adds, dels }: { turn: TranscriptTurn; latest: boolean; adds: number; dels: number }) {
+function TurnFooter({ turn, latest, adds, dels, bgRunning }: { turn: TranscriptTurn; latest: boolean; adds: number; dels: number; bgRunning: number }) {
   const app = useApp();
   const st = turnStats(turn);
   const text = turnText(turn);
   const meta = [st.durationMs !== null ? t.conv.workedFor(workedFor(st.durationMs)) : null, !latest && st.tools > 0 ? t.conv.tools(st.tools) : null].filter(Boolean).join(' · ');
-  const chips = latest && (st.tools > 0 || st.subagents > 0 || adds > 0 || dels > 0);
+  const chips = bgRunning > 0 || (latest && (st.tools > 0 || st.subagents > 0 || adds > 0 || dels > 0));
   return (
     <div className="space-y-2" data-turn-footer>
       <div className="-ml-1.5 flex items-center gap-1 text-xs text-faint">
@@ -768,13 +800,18 @@ function TurnFooter({ turn, latest, adds, dels }: { turn: TranscriptTurn; latest
       </div>
       {chips && (
         <div className="flex flex-wrap gap-1.5">
-          {st.tools > 0 && <Chip className="h-7 px-2.5">{t.conv.tools(st.tools)}</Chip>}
-          {st.subagents > 0 && (
+          {bgRunning > 0 && (
+            <Chip className="h-7 px-2.5" tone="info" icon={<Loader2 className="animate-spin" />}>
+              {t.bg.stillRunning(bgRunning)}
+            </Chip>
+          )}
+          {latest && st.tools > 0 && <Chip className="h-7 px-2.5">{t.conv.tools(st.tools)}</Chip>}
+          {latest && st.subagents > 0 && (
             <Chip className="h-7 px-2.5" icon={<Bot />}>
               {t.conv.subagents(st.subagents)}
             </Chip>
           )}
-          {(adds > 0 || dels > 0) && (
+          {latest && (adds > 0 || dels > 0) && (
             <Chip className="h-7 px-2.5">
               <DiffCount adds={adds} dels={dels} />
             </Chip>
@@ -782,5 +819,71 @@ function TurnFooter({ turn, latest, adds, dels }: { turn: TranscriptTurn; latest
         </div>
       )}
     </div>
+  );
+}
+
+// ---- background work -------------------------------------------------------------------------------
+
+const BG_EVENT_ICON: Record<BgEventStatus, typeof Check> = { completed: Check, failed: X, stopped: Square, event: Bell };
+const BG_EVENT_TONE: Record<BgEventStatus, string> = { completed: 'text-add', failed: 'text-del', stopped: 'text-faint', event: 'text-info' };
+
+/** A background task reported back (a `<task-notification>` line): one compact system row. */
+function BgEventRow({ status, summary }: { status: BgEventStatus; summary: string }) {
+  const Icon = BG_EVENT_ICON[status];
+  return (
+    <div className="flex min-w-0 items-start gap-2 text-[13px] text-muted" data-bg-event={status}>
+      <Icon className={cx('mt-0.5 size-3.5 shrink-0', BG_EVENT_TONE[status])} aria-label={t.bg.event[status]} />
+      <span className="min-w-0 break-words">{summary || t.bg.event[status]}</span>
+    </div>
+  );
+}
+
+const BG_FOLD = 3;
+
+function bgIcon(kind: string): typeof Wrench {
+  return kind === 'subagent' || kind === 'teammate' ? Bot : kind === 'shell' ? SquareTerminal : kind === 'monitor' ? Search : ListTree;
+}
+
+/** What still runs after the agent's turn: each task with its age; more than 3 fold. */
+function BgStrip({ run, onJump }: { run: AgentRun; onJump(toolUseId: string): void }) {
+  const tasks = bgTasksOf(run);
+  const [all, setAll] = useState(false);
+  const now = useNow(1000);
+  if (!tasks.length) return null;
+  const shown = all || tasks.length <= BG_FOLD ? tasks : tasks.slice(0, BG_FOLD);
+  return (
+    <div className="mt-2 rounded-lg border border-border bg-surface px-2.5 py-2" data-bg-strip>
+      <div className="mb-1 flex items-center gap-2 text-xs text-muted">
+        <Loader2 className="size-3.5 animate-spin text-info" />
+        <span>{t.bg.title}</span>
+      </div>
+      {shown.map((b) => (
+        <BgRow key={b.id} task={b} now={now} onJump={onJump} />
+      ))}
+      {tasks.length > BG_FOLD && (
+        <button type="button" className="vk-focus mt-1 text-xs text-muted hover:text-fg" aria-expanded={all} onClick={() => setAll(!all)}>
+          {all ? t.bg.hide : t.bg.more(tasks.length - BG_FOLD)}
+        </button>
+      )}
+    </div>
+  );
+}
+
+function BgRow({ task, now, onJump }: { task: BgTask; now: number; onJump(toolUseId: string): void }) {
+  const Icon = bgIcon(task.kind);
+  const id = task.tool_use_id;
+  const body = (
+    <>
+      <Icon className="size-3.5 shrink-0 text-faint" aria-label={t.bg.kind[task.kind] ?? task.kind} />
+      <span className={cx('min-w-0 flex-1 truncate text-xs text-muted', task.kind === 'shell' && 'font-mono')}>{task.label}</span>
+      <span className="shrink-0 text-xs tabular-nums text-faint">{shortDuration(now - task.since_ms)}</span>
+    </>
+  );
+  return id ? (
+    <button type="button" className={rowCls} title={t.bg.jump} onClick={() => onJump(id)}>
+      {body}
+    </button>
+  ) : (
+    <div className={cx(rowCls, 'hover:bg-transparent')}>{body}</div>
   );
 }

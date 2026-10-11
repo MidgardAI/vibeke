@@ -604,6 +604,8 @@ pub enum Incoming {
     Update(crate::updates::Event),
     /// A background job finished (`crate::jobs`): its callback runs on the event loop.
     Job(crate::jobs::Job),
+    /// A scripted command from `VIBEKE_TUI_DEMO_CONTROL` (see `demo`).
+    Demo(String),
 }
 
 /// Attach the render stream on `stream` for machine `idx`: JSON-RPC `render.attach`, then
@@ -785,6 +787,7 @@ async fn run_inner(
     }
     crate::updates::init(&mut app, opts.update_args, inc_tx.clone());
     crate::jobs::install(inc_tx.clone());
+    crate::demo::start(inc_tx.clone());
     // Connect every machine (in the background; reconnect with backoff, 06 A7).
     let mut connectors: Vec<std::sync::Arc<Connector>> = Vec::new();
     let mut bulk: Vec<std::sync::Arc<Connector>> = Vec::new();
@@ -893,6 +896,7 @@ async fn run_inner(
                     Incoming::Upload(e) => crate::upload::on_event(&mut app, e),
                     Incoming::Update(e) => crate::updates::on_event(&mut app, e),
                     Incoming::Job(j) => j.run(&mut app),
+                    Incoming::Demo(line) => crate::demo::run(&mut app, &line),
                     Incoming::Disconnected(i, why) => {
                         app.machines[i].tx = None;
                         app.on_disconnected(i);
@@ -914,6 +918,7 @@ async fn run_inner(
                         Incoming::Upload(e) => crate::upload::on_event(&mut app, e),
                         Incoming::Update(e) => crate::updates::on_event(&mut app, e),
                         Incoming::Job(j) => j.run(&mut app),
+                        Incoming::Demo(line) => crate::demo::run(&mut app, &line),
                         Incoming::Connected(i, tx, features) => { app.machines[i].tx = Some(tx); app.machines[i].features = features; app.machines[i].status = "connected".into(); app.machines[i].panes.clear(); app.machines[i].last_hint.clear(); app.on_connected(i); }
                         Incoming::Disconnected(i, _) => {
                             app.machines[i].tx = None;
@@ -1939,6 +1944,7 @@ impl App {
         crate::browser::tick(self);
         crate::preview_manager::tick(self);
         crate::images::tick(self);
+        crate::image_view::tick(self, now);
         crate::plugins::report_scroll(self, now);
         crate::selection::tick(self, now);
         crate::remote_view::release_due(self, now);
@@ -1989,6 +1995,7 @@ impl App {
         crate::selection::deadlines(self, &mut d);
         crate::remote_view::deadlines(self, &mut d);
         crate::osc::deadlines(self, now, &mut d);
+        crate::image_view::deadlines(self, &mut d);
         crate::ux::deadlines(self, now, &mut d);
         crate::card::deadlines(self, &mut d);
         self.decide.deadlines(&mut d);

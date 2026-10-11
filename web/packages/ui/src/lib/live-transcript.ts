@@ -11,7 +11,7 @@ export const EVENT_DEBOUNCE_MS = 200;
 /** While the agent works and events flow, a slow poll covers changes no event announces. */
 export const SAFETY_POLL_MS = 15_000;
 
-const AGENT_TYPES = new Set(['agent.turn_started', 'agent.turn_completed', 'agent.state_changed', 'agent.usage', 'agent.file_changed', 'agent.session_ended', 'agent.exited', 'agent.rate_limited']);
+const AGENT_TYPES = new Set(['agent.turn_started', 'agent.turn_completed', 'agent.state_changed', 'agent.usage', 'agent.file_changed', 'agent.session_ended', 'agent.exited', 'agent.rate_limited', 'agent.bg_tasks_changed']);
 
 /** An event that may change what the run's newest turns show. */
 export function isRunEvent(e: AppEvent, run: string, pane: string | null): boolean {

@@ -4,6 +4,7 @@
 
 import { displayName, type Task, type Workspace } from '@vibeke/core';
 import type { PaneRow, PaneTree } from './tree';
+import { bgCount } from './bg-tasks';
 
 export type WorkspaceGroupId = 'needs' | 'review' | 'working' | 'done' | 'idle';
 export const GROUP_ORDER: readonly WorkspaceGroupId[] = ['needs', 'review', 'working', 'done', 'idle'];
@@ -88,6 +89,7 @@ function groupOf(panes: PaneRow[], task: Task | null, hints: readonly AttentionH
   const label = typeof task?.review_label === 'string' ? task.review_label : null;
   if ((label && REVIEW_LABELS.has(label)) || hints.some((h) => h.kind === 'review')) return 'review';
   if (panes.some((r) => r.run && ACTIVE.has(r.run.execution.value))) return 'working';
+  if (panes.some((r) => bgCount(r.run) > 0)) return 'working';
   if (panes.some((r) => r.run && r.run.execution.value === 'idle' && r.run.turns_completed > 0)) return 'done';
   return 'idle';
 }

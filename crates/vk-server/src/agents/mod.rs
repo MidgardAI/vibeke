@@ -4,6 +4,7 @@
 
 pub mod acp;
 pub mod arbiter;
+pub mod bg;
 pub mod channel;
 mod gemini;
 #[cfg(test)]
@@ -145,6 +146,7 @@ pub fn start(server: &Arc<Server>) {
     let _ = vk_agents::manifest::write_builtin(&server.paths.state.join("harnesses/builtin"));
     arbiter::load_persisted(server);
     tailer::start(server);
+    bg::start(server);
     channel::announce_loaded(server);
     channel::start_polling(server);
     let cfg = vk_config::Config::load(vk_config::config_path())
@@ -418,6 +420,8 @@ impl Agents {
     pub fn end_run_tx(&self, core: &mut Core, tx: &mut Tx, run: &AgentRun, reason: &str) {
         let mut r = run.clone();
         r.ended_at_ms = Some(now_ms());
+        // Background work dies with the harness or is no longer its work (`bg`).
+        r.bg_tasks.clear();
         crate::items::end_run_tx(core, tx, &r.id);
         let prev = r.execution.value.clone();
         r.execution = Facet {
@@ -917,6 +921,8 @@ pub(crate) fn new_run(
         usage: Default::default(),
         rate_limit: None,
         title: None,
+        bg_tasks: vec![],
+        bg_level_ms: 0,
     }
 }
 
@@ -1858,6 +1864,7 @@ fn on_signal(server: &Arc<Server>, pane: &str, h: Harness, event: &str, p: &Valu
     usage::observe(server, &run, event, p);
     crate::items::observe_hook(server, &run, event, p);
     crate::collision::observe(server, &run, event, p);
+    bg::observe_hook(server, &run, event, p);
     let sid = p.get("session_id").and_then(Value::as_str);
     let tool_use = p.get("tool_use_id").and_then(Value::as_str);
     if let Some(mode) = p.get("permission_mode").and_then(Value::as_str)
@@ -2038,7 +2045,10 @@ fn on_signal(server: &Arc<Server>, pane: &str, h: Harness, event: &str, p: &Valu
                 );
             }
             let who = run.name.clone().unwrap_or_else(|| run.harness.clone());
-            if !server.pane_focused_by_any(pane) {
+            // Background work still running: the session is paused, not done (`bg`).
+            let waiting =
+                server.with_core(|c| c.run(&run.id).is_some_and(|r| !r.bg_tasks.is_empty()));
+            if !waiting && !server.pane_focused_by_any(pane) {
                 server.notify(
                     "agent_state",
                     Some(pane),
@@ -3927,6 +3937,8 @@ pub(crate) fn harness_tests_run() -> AgentRun {
         usage: Default::default(),
         rate_limit: None,
         title: None,
+        bg_tasks: vec![],
+        bg_level_ms: 0,
     }
 }
 

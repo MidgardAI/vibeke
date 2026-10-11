@@ -112,7 +112,7 @@ export function Pill({ children, className }: { children: ReactNode; className?:
   );
 }
 
-export function Dot({ tone }: { tone: 'ok' | 'warn' | 'danger' | 'muted' | 'need' | 'accent' }) {
+export function Dot({ tone }: { tone: 'ok' | 'warn' | 'danger' | 'muted' | 'need' | 'accent' | 'info' }) {
   const c = {
     ok: 'bg-ok',
     warn: 'bg-warn',
@@ -120,6 +120,7 @@ export function Dot({ tone }: { tone: 'ok' | 'warn' | 'danger' | 'muted' | 'need
     muted: 'bg-faint',
     need: 'bg-need-strong',
     accent: 'bg-accent',
+    info: 'bg-info vk-pulse',
   }[tone];
   return <span className={cx('inline-block size-2 shrink-0 rounded-full', c)} aria-hidden />;
 }
@@ -483,7 +484,7 @@ export function HarnessIcon({ harness, className }: { harness: string | null | u
   }
 }
 
-export type Status = 'need' | 'working' | 'review' | 'done' | 'idle' | 'error' | 'offline';
+export type Status = 'need' | 'working' | 'review' | 'done' | 'idle' | 'error' | 'offline' | 'background';
 
 const STATUS_DOT: Record<Status, string> = {
   need: 'bg-need',
@@ -493,6 +494,7 @@ const STATUS_DOT: Record<Status, string> = {
   idle: 'bg-transparent border border-faint',
   error: 'bg-del',
   offline: 'bg-transparent border border-del',
+  background: 'bg-transparent border border-info vk-pulse',
 };
 
 /** 6px status dot (working pulses). `ring` cuts it out of an icon it overlaps. */

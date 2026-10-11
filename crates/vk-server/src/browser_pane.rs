@@ -307,6 +307,39 @@ struct Sub {
     state_dirty: bool,
     /// A page clipboard write for this viewer (sent as `ServerFrame::Clipboard`).
     clip: Option<Vec<u8>>,
+    /// The size this viewer shows the pane at. The page has one size (the latest view's); a
+    /// viewer whose pane or cells differ gets each frame scaled to fit its own pane.
+    geom: Option<Geom>,
+    /// Tiles cut for this viewer's own size, while it differs from the page's.
+    scaled: Option<Scaled>,
+    /// Source and shown frame size in device px (`[src_w, src_h, shown_w, shown_h]`) when
+    /// this viewer last got a scaled frame, to map its pointer positions back to the page.
+    shown: Option<[u32; 4]>,
+}
+
+/// One viewer's tiles of frames scaled to its pane ([`Sub::geom`]).
+struct Scaled {
+    differ: TileDiffer,
+    cell: (u16, u16),
+    frame: Option<Arc<Rgba>>,
+}
+
+/// The device px area a frame is fitted into for viewer geometry `g`, and its cell size, when
+/// that differs from the page's tile geometry (`None`: the viewer takes the shared tiles).
+fn own_view(
+    g: Option<Geom>,
+    page: Option<Geom>,
+    cell: (u16, u16),
+) -> Option<((u32, u32), (u16, u16))> {
+    let g = g.filter(Geom::valid)?;
+    let area = |g: Geom| {
+        (
+            g.cols as u32 * g.cell_w as u32,
+            g.rows as u32 * g.cell_h as u32,
+        )
+    };
+    let same = page.is_some_and(|p| area(p) == area(g)) && cell == (g.cell_w, g.cell_h);
+    (!same).then(|| (area(g), (g.cell_w, g.cell_h)))
 }
 
 struct TState {
@@ -434,11 +467,25 @@ impl Target {
         let frame = st.frame.clone()?;
         let seq = st.seq;
         let cell = st.tile_cell;
-        let all = st.differ.tiles(frame.width, frame.height);
+        let page = st.applied.or(st.want);
         let s = st.subs.get_mut(&sub)?;
         if !s.reset && s.dirty.is_empty() {
             return None;
         }
+        if let Some((area, own_cell)) = own_view(s.geom, page, cell) {
+            let reset = std::mem::take(&mut s.reset);
+            s.dirty.clear();
+            let scaled = s.scaled.take();
+            drop(st);
+            return self.take_scaled(sub, frame, seq, area, own_cell, reset, scaled);
+        }
+        // Back from scaled tiles: the viewer holds none of the shared ones.
+        if s.scaled.take().is_some() {
+            s.reset = true;
+        }
+        s.shown = None;
+        let all = st.differ.tiles(frame.width, frame.height);
+        let s = st.subs.get_mut(&sub)?;
         let reset = std::mem::take(&mut s.reset);
         let dirty = std::mem::take(&mut s.dirty);
         let tiles: Vec<TileRect> = if reset {
@@ -455,6 +502,113 @@ impl Target {
             seq,
             cell,
         })
+    }
+
+    /// [`Target::take`] for a viewer whose pane differs from the page's size: the frame scaled
+    /// to fit its pane (aspect kept, top left), diffed against what it was sent before. The
+    /// scaling runs outside the lock.
+    #[allow(clippy::too_many_arguments)]
+    fn take_scaled(
+        &self,
+        sub: u64,
+        frame: Arc<Rgba>,
+        seq: u64,
+        area: (u32, u32),
+        cell: (u16, u16),
+        reset: bool,
+        scaled: Option<Scaled>,
+    ) -> Option<TakenFrame> {
+        let img = Arc::new(vk_browser::frame::scale_to_fit(&frame, area.0, area.1));
+        let mut sc = scaled
+            .filter(|sc| sc.cell == cell)
+            .unwrap_or_else(|| Scaled {
+                differ: TileDiffer::cell_aligned(
+                    cell.0 as u32,
+                    cell.1 as u32,
+                    TILE_COLS as u32,
+                    TILE_ROWS as u32,
+                ),
+                cell,
+                frame: None,
+            });
+        let reset = reset
+            || sc
+                .frame
+                .as_ref()
+                .is_none_or(|f| (f.width, f.height) != (img.width, img.height));
+        let changed = sc.differ.diff(&img);
+        sc.frame = Some(img.clone());
+        let mut st = self.st.lock().unwrap();
+        let s = st.subs.get_mut(&sub)?;
+        s.scaled = Some(sc);
+        s.shown = Some([frame.width, frame.height, img.width, img.height]);
+        if !reset && changed.is_empty() {
+            return None;
+        }
+        let tiles = if reset {
+            s.scaled.as_ref()?.differ.tiles(img.width, img.height)
+        } else {
+            changed
+        };
+        Some(TakenFrame {
+            frame: img,
+            tiles,
+            reset,
+            seq,
+            cell,
+        })
+    }
+
+    /// Pointer positions of viewer `sub` (CSS px of its own pane) in CSS px of the page's size:
+    /// undo the viewer's scaling and its device pixel ratio.
+    fn to_page(&self, sub: u64, cmd: BrowserCmd) -> BrowserCmd {
+        let (kx, ky) = {
+            let st = self.st.lock().unwrap();
+            let (Some(s), Some(page)) = (st.subs.get(&sub), st.applied.or(st.want)) else {
+                return cmd;
+            };
+            let Some(g) = s.geom.filter(Geom::valid) else {
+                return cmd;
+            };
+            // Each axis on its own: the fitted size is rounded per axis.
+            let zoom = |src: u32, shown: u32| match shown {
+                0 => 1.0,
+                _ => src as f32 / shown as f32,
+            };
+            let (zx, zy) = s
+                .shown
+                .map_or((1.0, 1.0), |[sw, sh, w, h]| (zoom(sw, w), zoom(sh, h)));
+            let d = g.dpr / page.dpr.max(f32::MIN_POSITIVE);
+            (d * zx, d * zy)
+        };
+        if (kx - 1.0).abs() < 1e-6 && (ky - 1.0).abs() < 1e-6 {
+            return cmd;
+        }
+        match cmd {
+            BrowserCmd::Mouse {
+                kind,
+                button,
+                x,
+                y,
+                mods,
+                clicks,
+            } => BrowserCmd::Mouse {
+                kind,
+                button,
+                x: x * kx,
+                y: y * ky,
+                mods,
+                clicks,
+            },
+            BrowserCmd::Wheel { x, y, dx, dy, mods } => BrowserCmd::Wheel {
+                x: x * kx,
+                y: y * ky,
+                dx,
+                dy,
+                mods,
+            },
+            cmd => cmd,
+        }
     }
 
     fn take_state(&self, sub: u64, windowed: bool) -> Option<BrowserStatus> {
@@ -795,6 +949,12 @@ pub fn view(server: &Arc<Server>, sub: u64, notify: &Arc<Notify>, panes: &[Media
             if new {
                 s.reset = true;
                 s.state_dirty = true;
+                s.notify.notify_one();
+            }
+            if s.geom != Some(geom) {
+                // Its tiles are cut for the old size (scaled or shared): send it all again.
+                s.geom = Some(geom);
+                s.reset = true;
                 s.notify.notify_one();
             }
             let mut resize = geom.valid() && st.want != Some(geom);
@@ -2166,6 +2326,10 @@ impl MediaSession {
     }
 
     pub fn on_cmd(&self, server: &Arc<Server>, pane: &str, cmd: BrowserCmd) {
+        let cmd = match server.browser.target(pane) {
+            Some(t) => t.to_page(self.id, cmd),
+            None => cmd,
+        };
         command(server, pane, cmd, self.key_releases);
     }
 
@@ -3018,6 +3182,57 @@ mod tests {
         // Identical frame: no work.
         t.on_frame(rgba(192, 128, [1, 1, 1, 255]));
         assert!(t.take(1).is_none());
+    }
+
+    #[test]
+    fn a_viewer_of_another_size_gets_the_frame_scaled_to_its_pane() {
+        let t = bare_target();
+        sub(&t, 1);
+        sub(&t, 2);
+        let half = Geom {
+            cols: 4,
+            rows: 2,
+            cell_w: 16,
+            cell_h: 32,
+            dpr: 2.0,
+        };
+        t.st.lock().unwrap().subs.get_mut(&2).unwrap().geom = Some(half);
+        // The page is 8×4 cells of 16×32 (128×128 px); viewer 2 shows 4×2 cells (64×64).
+        t.on_frame(rgba(128, 128, [7, 7, 7, 255]));
+        let f1 = t.take(1).unwrap();
+        assert_eq!((f1.frame.width, f1.tiles.len()), (128, 4));
+        let f2 = t.take(2).unwrap();
+        assert!(f2.reset);
+        assert_eq!((f2.frame.width, f2.frame.height), (64, 64));
+        assert_eq!((f2.tiles.len(), f2.cell), (1, (16, 32)));
+        assert_eq!(f2.frame.pixel(63, 63), [7, 7, 7, 255]);
+        // A change reaches it as a diff of its own tiles.
+        let mut a = rgba(128, 128, [7, 7, 7, 255]);
+        a.fill_rect(0, 0, 128, 128, [9, 9, 9, 255]);
+        t.on_frame(a);
+        let f2 = t.take(2).unwrap();
+        assert!(!f2.reset && f2.tiles.len() == 1);
+        // Its pointer positions are in its own CSS px: doubled for the page.
+        let cmd = BrowserCmd::Mouse {
+            kind: MouseKind::Press,
+            button: MouseButton::Left,
+            x: 10.0,
+            y: 5.0,
+            mods: Default::default(),
+            clicks: 1,
+        };
+        let BrowserCmd::Mouse { x, y, .. } = t.to_page(2, cmd.clone()) else {
+            panic!()
+        };
+        assert_eq!((x, y), (20.0, 10.0));
+        assert_eq!(t.to_page(1, cmd.clone()), cmd);
+        // At the page's size again: the shared tiles, all of them.
+        let want = t.st.lock().unwrap().want;
+        t.st.lock().unwrap().subs.get_mut(&2).unwrap().geom = want;
+        t.on_frame(rgba(128, 128, [1, 1, 1, 255]));
+        let f2 = t.take(2).unwrap();
+        assert!(f2.reset && f2.tiles.len() == 4 && f2.frame.width == 128);
+        assert_eq!(t.to_page(2, cmd.clone()), cmd);
     }
 
     #[test]

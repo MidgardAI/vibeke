@@ -314,6 +314,8 @@ async fn reviewer_run_needs_the_exact_prompt_binds_review_and_records_notes() {
                 usage: Default::default(),
                 rate_limit: None,
                 title: None,
+                bg_tasks: vec![],
+                bg_level_ms: 0,
             };
             let mut c = srv.core.lock().unwrap();
             let mut tx = Tx::new();
@@ -679,6 +681,8 @@ fn reviewer_run(id: &str, cwd: &Path) -> AgentRun {
         usage: Default::default(),
         rate_limit: None,
         title: None,
+        bg_tasks: vec![],
+        bg_level_ms: 0,
     }
 }
 

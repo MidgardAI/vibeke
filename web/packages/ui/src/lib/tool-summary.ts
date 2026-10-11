@@ -123,6 +123,15 @@ export function toolSummary(tool: string | null | undefined, summary: string | n
       if (!name) return { kind: 'other', label: 'Tool', detail: src === 'null' ? '' : oneLine(src) };
       return { kind: 'shell', label: 'Shell', detail: oneLine(src) };
     }
+    case 'TaskOutput':
+      return { kind: 'shell', label: 'Shell output', detail: f('task_id') ?? f('bash_id') ?? '' };
+    case 'TaskStop':
+    case 'KillShell':
+      return { kind: 'shell', label: 'Stop task', detail: f('task_id') ?? f('shell_id') ?? '' };
+    case 'Monitor':
+      return { kind: 'shell', label: 'Monitor', detail: f('description') ?? f('command') ?? '' };
+    case 'write_stdin':
+      return { kind: 'shell', label: 'Shell input', detail: oneLine(f('chars') ?? '') || (f('session_id') ?? '') };
     case 'Read':
     case 'read_file':
       return { kind: 'read', label: 'Read', detail: path('file_path') || path('path') };

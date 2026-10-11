@@ -54,10 +54,10 @@ pub const SHAPES: &str = r##"
 # --- cloud sandboxes (spec 17 §5, §6.3): full scope only; a method without a usable credential fails permission_denied with details {reason: needs_auth, provider, methods} ---
 # every provider with its sign-in state; verify checks the credential with the provider
 cloud.providers :: {verify?: bool = false} => {providers: [CloudProvider]}
-# verifies the token, then stores it in the keychain item vibeke/cloud/<provider>; a rejected token fails needs_auth
-cloud.auth.set :: {provider: string, token: string} => {provider: string, account: string}
+# verifies the token, then stores it; keychain is the default, file is an explicit unencrypted 0600 fallback; a rejected token fails needs_auth; keychain_unavailable offers a file retry
+cloud.auth.set :: {provider: string, token: string, storage?: keychain|file = keychain} => {provider: string, account: string, storage?: keychain|file}
 # imports an existing login on the host (a source from the provider's import methods); not_found when it has none
-cloud.auth.import :: {provider: string, source: string} => {provider: string, account: string}
+cloud.auth.import :: {provider: string, source: string, storage?: keychain|file = keychain} => {provider: string, account: string, storage?: keychain|file}
 cloud.auth.clear :: {provider: string} => {provider: string, cleared: bool, boxes_running: int}
 # boxes this host knows; refresh lists the providers first (the reconciler)
 cloud.box.list :: {provider?: string, ownership?: attached|idle|orphaned|foreign|missing, refresh?: bool = false}
@@ -160,6 +160,7 @@ fn source_str(s: &vk_cloud::auth::Source) -> String {
     match s {
         vk_cloud::auth::Source::Config => "config".into(),
         vk_cloud::auth::Source::Keychain => "keychain".into(),
+        vk_cloud::auth::Source::File => "file".into(),
         vk_cloud::auth::Source::Env(v) => format!("env:{v}"),
     }
 }
@@ -169,7 +170,7 @@ async fn auth_state(
     server: &Server,
     p: &dyn Provider,
     cfg: &vk_cloud::CloudConfig,
-    kc: &vk_store::keychain::Keychain,
+    kc: &vk_cloud::auth::Credentials,
     verify: bool,
 ) -> Value {
     use vk_cloud::ErrorKind as K;
@@ -227,25 +228,53 @@ async fn providers(server: &Arc<Server>, p: &Value) -> R {
 }
 
 /// Verify `secret` with `prov`, store it, record the account and announce the change.
-async fn sign_in(server: &Server, prov: &dyn Provider, secret: &Secret) -> R {
+async fn sign_in(server: &Server, prov: &dyn Provider, secret: &Secret, storage: &str) -> R {
     let account = prov.verify(secret).await.map_err(cl::map_err(prov))?.label;
     let kc = keychain()?;
-    vk_cloud::auth::store(&kc, prov.id(), secret).map_err(cl::map_err(prov))?;
+    let result = if storage == "file" {
+        kc.store_file(prov.id(), secret)
+            .map_err(vk_cloud::auth::StoreError::File)
+    } else {
+        vk_cloud::auth::store(&kc, prov.id(), secret)
+    };
+    result.map_err(|e| {
+        use vk_store::keychain::KeychainError as K;
+        if matches!(
+            e,
+            vk_cloud::auth::StoreError::Keychain(K::Unsupported(_) | K::Failed(_) | K::Timeout)
+        ) {
+            err(ErrorKind::PermissionDenied, e.to_string()).details(json!({
+                "reason": "keychain_unavailable", "provider": prov.id(), "file_fallback": true,
+            }))
+        } else {
+            err(ErrorKind::Internal, e.to_string())
+        }
+    })?;
     set_account(server, prov.id(), Some(&account));
     auth_changed(server, prov.id(), "ok", Some(&account));
-    Ok(json!({"provider": prov.id(), "account": account}))
+    Ok(json!({"provider": prov.id(), "account": account, "storage": storage}))
+}
+
+fn storage(p: &Value) -> Result<&str, RpcError> {
+    match p.get("storage") {
+        None => Ok("keychain"),
+        Some(Value::String(s)) if s == "keychain" || s == "file" => Ok(s),
+        _ => Err(invalid("storage must be keychain or file")),
+    }
 }
 
 async fn auth_set(server: &Arc<Server>, p: &Value) -> R {
+    let storage = storage(p)?;
     let prov = cl::provider(req(p, "provider")?)?;
     let secret = Secret::new(req(p, "token")?);
     if secret.is_empty() {
         return Err(invalid("token is empty"));
     }
-    sign_in(server, prov.as_ref(), &secret).await
+    sign_in(server, prov.as_ref(), &secret, storage).await
 }
 
 async fn auth_import(server: &Arc<Server>, p: &Value) -> R {
+    let storage = storage(p)?;
     let prov = cl::provider(req(p, "provider")?)?;
     let source = req(p, "source")?;
     let known = prov
@@ -268,7 +297,7 @@ async fn auth_import(server: &Arc<Server>, p: &Value) -> R {
                 format!("no {source} login found on this host"),
             )
         })?;
-    sign_in(server, prov.as_ref(), &secret).await
+    sign_in(server, prov.as_ref(), &secret, storage).await
 }
 
 fn running(state: &str) -> bool {

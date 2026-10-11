@@ -26,6 +26,7 @@
 use crate::app::{App, Pending, RpcErr};
 use crate::browser::Gfx;
 use crate::screen::{Cell, Grid, Rect};
+use crate::time::{Duration, Instant};
 use base64::Engine as _;
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
@@ -57,6 +58,11 @@ pub struct Payload {
     pub len: usize,
     pub b64: String,
 }
+/// How often an image found gone is looked for again before the view gives up. A file can be
+/// missing for a moment: a client may ask for it as soon as `screenshot.captured` arrives.
+const GONE_RETRIES: u8 = 3;
+/// Wait before the first retry; it doubles for each further one.
+const GONE_RETRY_DELAY: Duration = Duration::from_millis(500);
 
 /// Where one image goes this frame.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -84,6 +90,9 @@ pub struct State {
     images: Vec<(String, Vec<u8>)>,
     pub fetching: HashSet<String>,
     pub problems: HashMap<String, Problem>,
+    /// Keys found gone: (retries so far, when the next one is due). A due retry clears the
+    /// problem so the view loads the image again ([`tick`]).
+    gone_retry: HashMap<String, (u8, Instant)>,
     /// Inside tmux: no image views (§3.5).
     pub tmux: bool,
     /// Kitty: slot → image id.
@@ -102,8 +111,8 @@ pub struct State {
     waiting: Vec<(String, Rect)>,
     /// Keys every view placed on the last frame, covered or not (never evicted).
     placed: HashSet<String>,
-    /// Directory for `t=t` temp files (`None`: `$TMPDIR/vibeke-gfx-<uid>`; tests point it at a
-    /// temp dir of their own).
+    /// Directory for `t=t` temp files (`None`: `vibeke-gfx-<uid>` in [`system_temp_dir`]; tests
+    /// point it at a temp dir of their own).
     pub gfx_dir: Option<std::path::PathBuf>,
 }
 
@@ -127,6 +136,7 @@ impl State {
     /// next key, and a remote one is only fetched when asked for).
     pub fn put(&mut self, key: String, data: Vec<u8>) {
         self.problems.remove(&key);
+        self.gone_retry.remove(&key);
         self.images.retain(|(k, _)| *k != key);
         self.images.push((key, data));
         // Bound the cache by count and by bytes. The newest image and everything on screen
@@ -190,6 +200,30 @@ impl State {
         self.images.retain(|(k, _)| !gone(k));
         self.payloads.retain(|p| !gone(&p.key));
         self.problems.retain(|k, _| !gone(k));
+        self.gone_retry.retain(|k, _| !gone(k));
+    }
+
+    /// Record that the image of `key` is gone, and look for it again later unless it was
+    /// looked for [`GONE_RETRIES`] times already.
+    pub fn mark_gone(&mut self, key: &str) {
+        self.problems.insert(key.into(), Problem::Gone);
+        let now = Instant::now();
+        let tries = self.gone_retry.get(key).map_or(0, |(n, _)| *n);
+        self.gone_retry.insert(
+            key.into(),
+            (tries, now + GONE_RETRY_DELAY * 2u32.pow(tries.into())),
+        );
+    }
+
+    /// The next due retry of an image found gone.
+    fn next_retry(&self) -> Option<Instant> {
+        self.gone_retry
+            .iter()
+            .filter(|(k, (n, _))| {
+                *n < GONE_RETRIES && self.problems.get(*k) == Some(&Problem::Gone)
+            })
+            .map(|(_, (_, at))| *at)
+            .min()
     }
 
     pub fn problem(&self, key: &str) -> Option<&Problem> {
@@ -236,8 +270,9 @@ pub fn load_local(app: &mut App, key: &str, path: &str, exists: bool) {
     if app.imgview.image(key).is_some() || app.imgview.problem(key).is_some() {
         return;
     }
-    if !exists || path.is_empty() {
-        app.imgview.problems.insert(key.into(), Problem::Gone);
+    // `exists` comes from the recent list, which may be older than the file.
+    if path.is_empty() || (!exists && !std::path::Path::new(path).exists()) {
+        app.imgview.mark_gone(key);
         return;
     }
     match std::fs::metadata(path) {
@@ -255,9 +290,7 @@ pub fn load_local(app: &mut App, key: &str, path: &str, exists: bool) {
                     .insert(key.into(), Problem::Failed(e.to_string()));
             }
         },
-        Err(_) => {
-            app.imgview.problems.insert(key.into(), Problem::Gone);
-        }
+        Err(_) => app.imgview.mark_gone(key),
     }
 }
 
@@ -305,7 +338,10 @@ pub fn on_fetched(app: &mut App, key: &str, res: &Result<Value, RpcErr>) -> Opti
         (Some(d), _) => Problem::TooLarge(format!("{} MiB", d.len() >> 20)),
         (None, Err(e)) => Problem::Failed(e.message.clone()),
         (None, Ok(x)) => match x.get("inline_skipped").and_then(Value::as_str) {
-            Some(s) if s.contains("unreadable") => Problem::Gone,
+            Some(s) if s.contains("unreadable") => {
+                app.imgview.mark_gone(key);
+                return Some(Problem::Gone);
+            }
             Some(s) => Problem::TooLarge(s.to_string()),
             None => Problem::Failed("no image data".into()),
         },
@@ -314,6 +350,38 @@ pub fn on_fetched(app: &mut App, key: &str, res: &Result<Value, RpcErr>) -> Opti
         .problems
         .insert(key.to_string(), problem.clone());
     Some(problem)
+}
+
+/// Arm the next retry of an image found gone.
+pub fn deadlines(app: &App, d: &mut crate::deadline::Deadlines) {
+    if let Some(at) = app.imgview.next_retry() {
+        d.at("image.retry", at);
+    }
+}
+
+/// Clear the problem of each image whose retry is due, so its view loads it again on the next
+/// frame. The pop-up card loads only on events, so it is asked to load here.
+pub fn tick(app: &mut App, now: Instant) {
+    let st = &mut app.imgview;
+    let due: Vec<String> = st
+        .gone_retry
+        .iter()
+        .filter(|(k, (n, at))| {
+            *n < GONE_RETRIES && *at <= now && st.problems.get(*k) == Some(&Problem::Gone)
+        })
+        .map(|(k, _)| k.clone())
+        .collect();
+    if due.is_empty() {
+        return;
+    }
+    for k in &due {
+        st.problems.remove(k);
+        if let Some((n, _)) = st.gone_retry.get_mut(k) {
+            *n += 1;
+        }
+    }
+    app.dirty = true;
+    crate::card::on_retry(app, &due);
 }
 
 /// The hint a view shows instead of the image: `None` while the image can still be drawn
@@ -520,7 +588,7 @@ fn private_gfx_dir(custom: Option<&std::path::Path>) -> Option<std::path::PathBu
     let uid = unsafe { libc::geteuid() };
     let dir = custom
         .map(std::path::Path::to_path_buf)
-        .unwrap_or_else(|| std::env::temp_dir().join(format!("vibeke-gfx-{uid}")));
+        .unwrap_or_else(|| system_temp_dir().join(format!("vibeke-gfx-{uid}")));
     if std::fs::symlink_metadata(&dir).is_err() {
         let _ = std::fs::DirBuilder::new().mode(0o700).create(&dir);
     }
@@ -542,6 +610,36 @@ fn private_gfx_dir(custom: Option<&std::path::Path>) -> Option<std::path::PathBu
         }
     }
     Some(dir)
+}
+
+/// The temp directory the terminal accepts `t=t` files from. Terminals only read files in a
+/// temp directory they know: Ghostty takes `/tmp`, `/dev/shm` and its own `$TMPDIR`, which a
+/// process started in a test harness or with its own `TMPDIR` does not share. A terminal drops
+/// a file elsewhere without an error. So this is the per-user temp directory the OS reports on
+/// macOS (what a terminal started from the Dock has as `$TMPDIR`) and `/tmp` elsewhere.
+#[cfg(not(target_arch = "wasm32"))]
+fn system_temp_dir() -> std::path::PathBuf {
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let mut buf = vec![0u8; 1024];
+        // SAFETY: `buf` is a writable buffer of the given length; confstr NUL-terminates.
+        let n = unsafe {
+            libc::confstr(
+                libc::_CS_DARWIN_USER_TEMP_DIR,
+                buf.as_mut_ptr().cast(),
+                buf.len(),
+            )
+        };
+        if n > 1 && n <= buf.len() {
+            return std::path::PathBuf::from(std::ffi::OsStr::from_bytes(&buf[..n - 1]));
+        }
+        std::env::temp_dir()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        std::path::PathBuf::from("/tmp")
+    }
 }
 
 #[cfg(target_arch = "wasm32")]

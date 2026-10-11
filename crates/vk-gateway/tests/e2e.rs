@@ -140,6 +140,7 @@ fn fake_server(path: PathBuf) -> Reports {
                         "client.hello" => {
                             json!({"server_version": "test", "capabilities": ["*"], "features":["render.scoped_share"]})
                         }
+                        "cloud.auth.set" | "cloud.auth.import" => json!({"echo": p}),
                         "server.status" => json!({}),
                         "session.snapshot" => {
                             json!({"at_seq": 7, "workspaces": [], "panes": [], "runs": [],
@@ -657,6 +658,16 @@ async fn local_socket_pairs_and_serves() {
     let mut c = open_local(&path, Hello::device(), &dev, &hk, None).await;
     let d = c.call(2, "dashboard.get", json!({})).await;
     assert_eq!(d["result"]["at"], 7);
+    for (id, method, field) in [
+        (3, "cloud.auth.set", "token"),
+        (4, "cloud.auth.import", "source"),
+    ] {
+        let params = json!({"provider": "fake", field: "test-value", "storage": "file", "untrusted": true, "op_id": format!("cloud-{id}")});
+        let r = c.call(id, method, params).await;
+        assert_eq!(r["result"]["echo"]["storage"], "file", "{r}");
+        assert_eq!(r["result"]["echo"][field], "test-value", "{r}");
+        assert!(r["result"]["echo"].get("untrusted").is_none());
+    }
     // The server hears which devices are connected (the TUI's 📱 count), and when they leave.
     let list = report_where(&reports, |l| l.as_array().is_some_and(|a| a.len() == 1)).await;
     assert_eq!(list[0]["name"], "desktop", "{list}");

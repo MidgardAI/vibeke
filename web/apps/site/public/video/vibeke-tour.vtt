@@ -1,0 +1,85 @@
+WEBVTT
+
+00:00:00.450 --> 00:00:01.513
+This is Vibeke.
+
+00:00:01.513 --> 00:00:06.970
+It keeps your coding agents running, and lets you reach them from any screen.
+
+00:00:07.820 --> 00:00:10.113
+Vibeke runs in your terminal.
+
+00:00:10.113 --> 00:00:15.412
+Each project gets a workspace, and each agent runs in its own pane.
+
+00:00:15.412 --> 00:00:17.706
+Here, Claude is fixing a bug.
+
+00:00:17.706 --> 00:00:21.740
+You see every agent, on every machine, in one list.
+
+00:00:22.590 --> 00:00:26.393
+When an agent needs a decision, it shows up in your inbox.
+
+00:00:26.393 --> 00:00:29.869
+Approve it with one key, and the agent keeps working.
+
+00:00:32.223 --> 00:00:35.446
+This agent runs on a second machine, the devbox.
+
+00:00:35.446 --> 00:00:41.223
+It starts a web server, and Vibeke opens the page in a browser pane next to the agent.
+
+00:00:50.511 --> 00:00:54.231
+Screenshots from the agent pop up right in your terminal.
+
+00:00:58.179 --> 00:01:01.859
+You can also open the page in the browser on your laptop.
+
+00:01:02.709 --> 00:01:04.239
+Need a faster machine?
+
+00:01:04.239 --> 00:01:06.604
+Hand the work to another computer.
+
+00:01:06.604 --> 00:01:10.917
+Vibeke sends the branch, your changes and the agent's session.
+
+00:01:10.917 --> 00:01:15.509
+Accept it on the devbox, and the agent continues where it stopped.
+
+00:01:21.331 --> 00:01:23.993
+The desktop app shows the same session.
+
+00:01:23.993 --> 00:01:29.931
+Read what each agent did, review the changes, and look at screenshots before you merge.
+
+00:01:31.705 --> 00:01:35.203
+On a Mac, Vibeke also sits in the menu bar.
+
+00:01:35.203 --> 00:01:38.945
+One click shows every agent and every request.
+
+00:01:39.795 --> 00:01:44.065
+To add your phone, scan the code in your terminal and confirm it.
+
+00:01:44.065 --> 00:01:49.847
+The connection is end-to-end encrypted, so the relay in the middle never sees your code.
+
+00:01:49.847 --> 00:01:55.235
+Now you can approve requests and give your agents new instructions, from anywhere.
+
+00:02:09.887 --> 00:02:11.569
+Want a second pair of eyes?
+
+00:02:11.569 --> 00:02:13.438
+Share a pane with a colleague.
+
+00:02:13.438 --> 00:02:17.487
+They open the link in a browser and follow the agent as it works.
+
+00:02:34.398 --> 00:02:37.357
+Install Vibeke with one command.
+
+00:02:37.357 --> 00:02:40.038
+Learn more at vibeke.dev.

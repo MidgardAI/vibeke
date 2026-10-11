@@ -56,6 +56,8 @@ AgentRun = TypedDict("AgentRun", {
     "usage": NotRequired["RunUsage"],
     "rate_limit": NotRequired[Optional["RateLimitInfo"]],
     "title": NotRequired[Optional[str]],
+    "bg_tasks": NotRequired[List["BgTask"]],
+    "bg_level_ms": NotRequired[int],
 })
 
 AgentState: TypeAlias = Literal["starting", "working", "idle", "error", "rate_limited", "exited", "unknown"]
@@ -124,6 +126,15 @@ AuditEntry = TypedDict("AuditEntry", {
     "data": Any,
     "prev_hash": str,
     "hash": str,
+})
+
+BgTask = TypedDict("BgTask", {
+    "id": str,
+    "kind": str,
+    "label": str,
+    "since_ms": int,
+    "source": str,
+    "tool_use_id": NotRequired[Optional[str]],
 })
 
 BrowserPane = TypedDict("BrowserPane", {
@@ -3144,22 +3155,26 @@ CloudAuthClearResult = TypedDict("CloudAuthClearResult", {
 CloudAuthImportParams = TypedDict("CloudAuthImportParams", {
     "provider": str,
     "source": str,
+    "storage": NotRequired[Literal["keychain", "file"]],
 })
 
 CloudAuthImportResult = TypedDict("CloudAuthImportResult", {
     "provider": str,
     "account": str,
+    "storage": NotRequired[Literal["keychain", "file"]],
     "cursor": NotRequired["Cursor"],
 })
 
 CloudAuthSetParams = TypedDict("CloudAuthSetParams", {
     "provider": str,
     "token": str,
+    "storage": NotRequired[Literal["keychain", "file"]],
 })
 
 CloudAuthSetResult = TypedDict("CloudAuthSetResult", {
     "provider": str,
     "account": str,
+    "storage": NotRequired[Literal["keychain", "file"]],
     "cursor": NotRequired["Cursor"],
 })
 
@@ -9348,6 +9363,16 @@ AdapterHealthChangedData = TypedDict("AdapterHealthChangedData", {
     "reason": NotRequired[str],
 })
 
+AgentBgTasksChangedSubject = TypedDict("AgentBgTasksChangedSubject", {
+    "run": str,
+    "pane": str,
+})
+
+AgentBgTasksChangedData = TypedDict("AgentBgTasksChangedData", {
+    "count": int,
+    "ids": List[str],
+})
+
 AgentCwdChangedSubject = TypedDict("AgentCwdChangedSubject", {
     "run": str,
     "pane": str,
@@ -12101,6 +12126,7 @@ WorktreeRemovedData = TypedDict("WorktreeRemovedData", {
 EVENT_TYPES = (
     "adapter.disagreement",
     "adapter.health_changed",
+    "agent.bg_tasks_changed",
     "agent.cwd_changed",
     "agent.detected",
     "agent.drift_detected",

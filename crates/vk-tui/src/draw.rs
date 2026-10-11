@@ -177,6 +177,12 @@ pub fn run_state(
             t.accent,
             inferred,
         ),
+        Execution::Idle if !r.bg_tasks.is_empty() => (
+            "⧗".into(),
+            format!("idle · {} bg", r.bg_tasks.len()),
+            t.accent,
+            inferred,
+        ),
         Execution::Idle => {
             let seen = *m.seen.get(&r.pane).unwrap_or(&0);
             if r.done_rev > seen {
@@ -205,6 +211,32 @@ fn vk_now() -> i64 {
         .unwrap_or(0)
 }
 
+/// Background work of a run in one line: the first two labels, then a count of the rest.
+pub fn bg_summary(r: &AgentRun, max: usize) -> String {
+    let mut parts: Vec<String> = r
+        .bg_tasks
+        .iter()
+        .take(2)
+        .map(|b| truncate(&b.label, max))
+        .collect();
+    if r.bg_tasks.len() > 2 {
+        parts.push(format!("+{}", r.bg_tasks.len() - 2));
+    }
+    parts.join(", ")
+}
+
+/// Time since a background task started, like `4m`.
+pub fn bg_age(since_ms: i64) -> String {
+    let s = ((vk_now() - since_ms) / 1000).max(0);
+    if s < 60 {
+        format!("{s}s")
+    } else if s < 3600 {
+        format!("{}m", s / 60)
+    } else {
+        format!("{}h", s / 3600)
+    }
+}
+
 pub(crate) fn urgency(app: &App, m: &crate::app::Machine, r: &AgentRun) -> u8 {
     let (g, _, _, _) = run_state(app, m, r);
     match g.as_str() {
@@ -214,6 +246,7 @@ pub(crate) fn urgency(app: &App, m: &crate::app::Machine, r: &AgentRun) -> u8 {
         "⏸" => 5,
         "✓" => 4,
         "●" => 3,
+        "⧗" => 3,
         "○" => 2,
         _ => 1,
     }

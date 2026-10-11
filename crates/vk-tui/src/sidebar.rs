@@ -58,6 +58,7 @@ pub fn state_name(app: &App, m: &crate::app::Machine, r: &AgentRun) -> &'static 
         "●" => "working",
         "✓" => "done",
         "○" => "idle",
+        "⧗" => "background",
         "✗" => "error",
         "⏸" => "rate_limited",
         "◌" => "starting",

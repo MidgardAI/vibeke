@@ -1928,12 +1928,14 @@ impl Call<'_> {
             "cloud.auth.set" => {
                 req(&p, "provider")?;
                 req(&p, "token")?;
-                self.server(method, pick(&p, &["provider", "token"])).await
+                self.server(method, pick(&p, &["provider", "token", "storage"]))
+                    .await
             }
             "cloud.auth.import" => {
                 req(&p, "provider")?;
                 req(&p, "source")?;
-                self.server(method, pick(&p, &["provider", "source"])).await
+                self.server(method, pick(&p, &["provider", "source", "storage"]))
+                    .await
             }
             "cloud.auth.clear" => {
                 req(&p, "provider")?;

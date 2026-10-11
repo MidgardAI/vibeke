@@ -105,6 +105,19 @@ export const en = {
     newItems: (n: number) => `${n} new`,
   },
 
+  bg: {
+    count: (n: number) => `${n} in background`,
+    title: 'Running in background',
+    stillRunning: (n: number) => `${n} still running`,
+    runningInBackground: 'Running in background',
+    show: 'Show all',
+    hide: 'Show less',
+    more: (n: number) => `${n} more`,
+    jump: 'Show the tool call',
+    kind: { shell: 'Shell', subagent: 'Subagent', monitor: 'Monitor', workflow: 'Workflow', teammate: 'Teammate' } as Record<string, string>,
+    event: { completed: 'Task finished', failed: 'Task failed', stopped: 'Task stopped', event: 'Task update' } as Record<string, string>,
+  },
+
   panes: {
     needYou: (n: number) => `${n} ${plural(n, 'needs', 'need')} you`,
     pinned: 'Pinned',
@@ -996,6 +1009,10 @@ export const en = {
     token: 'Token',
     getToken: 'Get a token',
     save: 'Save',
+    saveToFile: 'Save to protected file',
+    fileStorageHint: 'The file is readable only by your host user (0600). It is not encrypted.',
+    fileStorageSaved: 'Token saved to a protected file on the host.',
+    fileStorageLabel: 'Token stored in a protected file (not encrypted)',
     importFrom: (label: string) => label,
     envNote: (v: string) => `Using ${v} from the host`,
     envHint: (v: string) => `Or set ${v} in the host's environment.`,

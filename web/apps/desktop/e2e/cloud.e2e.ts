@@ -6,7 +6,7 @@
 // sign-in prompt and then goes on. The credential lives in a file keychain under the test root.
 
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { expect, test, type Page } from '@playwright/test';
 import { TestHost, built, hasDisplay, launchApp, shoot, vibekeBin, type LaunchedApp } from './helpers';
@@ -197,4 +197,43 @@ test('sign in, send a pane to the cloud, bring it back, sign in again on needs_a
   await expect(send.getByText('Done.', { exact: true })).toBeVisible({ timeout: 120_000 });
   expect(jobs().filter((j) => j.direction === 'send' && j.state === 'done')).toHaveLength(2);
   await send.getByRole('button', { name: 'Done', exact: true }).click();
+});
+
+
+test('keychain failure offers an explicit protected-file retry', async () => {
+  test.setTimeout(90_000);
+  await a?.close();
+  a = null;
+  const keychain = join(host.root, 'keychain.json');
+  writeFileSync(keychain, 'unavailable keychain');
+  chmodSync(keychain, 0o600);
+  const file = join(host.env.XDG_CONFIG_HOME!, 'vibeke', 'cloud-credentials', 'fake.json');
+  host.cli(['workspace', 'create', '--cwd', host.root, '--name', 'Credentials test']);
+  a = await launchApp({ ...host.env, VIBEKE_BIN: bin!, HOME: process.env.HOME ?? host.env.HOME! });
+  const { page, app } = a;
+  await page.getByRole('button', { name: /Connect to this (Mac|computer)/ }).click();
+  await expect(page.getByText(/^Connected to /)).toBeVisible({ timeout: 30_000 });
+  await page.getByRole('button', { name: 'Open Vibeke' }).click();
+  await page.getByRole('button', { name: 'Skip' }).click();
+  await page.evaluate(() => { location.hash = '#/sandboxes'; });
+  const fake = page.getByRole('region', { name: FAKE });
+  await fake.getByRole('button', { name: 'Sign in' }).click();
+  const signIn = page.getByRole('dialog', { name: `Sign in to ${FAKE}` });
+  await expect(signIn.getByRole('button', { name: 'Save to protected file' })).toHaveCount(0);
+  await signIn.getByLabel('Fake token').fill('fake-token');
+  await signIn.getByRole('button', { name: 'Save', exact: true }).click();
+  const fallback = signIn.getByRole('button', { name: 'Save to protected file' });
+  await expect(fallback).toBeVisible();
+  await expect(signIn.getByText(/not encrypted/)).toBeVisible();
+  await expect(signIn.getByLabel('Fake token')).toHaveValue('');
+  expect(existsSync(file)).toBe(false);
+  await shoot(app, page, 'cloud-keychain-file-fallback');
+  await fallback.click();
+  await expect(signIn).toHaveCount(0);
+  await expect(fake.getByText('Token stored in a protected file (not encrypted)')).toBeVisible();
+  expect(statSync(file).mode & 0o777).toBe(0o600);
+  expect(api<{ providers: { id: string; auth: { state: string; source: string } }[] }>('cloud.providers', { verify: true }).providers.find(p => p.id === 'fake')?.auth).toMatchObject({ state: 'ok', source: 'file' });
+  await fake.getByRole('button', { name: 'Sign out' }).click();
+  await expect(fake.getByText('Not signed in')).toBeVisible();
+  expect(readFileSync(file, 'utf8')).not.toContain('fake-token');
 });

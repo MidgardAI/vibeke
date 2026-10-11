@@ -22,6 +22,7 @@ pub mod copykeys;
 pub mod copyout;
 pub mod deadline;
 pub mod decide;
+pub mod demo;
 pub mod desk;
 pub mod devices;
 pub mod drafts;

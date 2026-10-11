@@ -8,6 +8,7 @@ import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 
 import { Bot, Crosshair, MessageSquare, MoreHorizontal, Pencil, Plus, SquareTerminal, Trash2 } from 'lucide-react';
 import { HarnessIcon, StatusDot, cx, type Status } from '../../components/ui';
 import { t } from '../../i18n';
+import { bgCount } from '../../lib/bg-tasks';
 import type { AgentView } from '../../lib/agent-view';
 import { keyLabel } from '../../lib/shortcuts';
 import { TAB_PANEL_ID, rovingTab, tabDomId, tabKeyTarget } from '../../lib/tabs-nav';
@@ -33,6 +34,7 @@ export const paneLabel = (p: PaneRow): string => p.pane.title ?? p.run?.name ?? 
 export function paneStatus(p: PaneRow): Status | null {
   if (p.attention === 'interaction' || p.run?.execution.value === 'error') return 'need';
   if (p.attention === 'working') return 'working';
+  if (bgCount(p.run) > 0) return 'background';
   return null;
 }
 

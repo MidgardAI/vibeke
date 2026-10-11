@@ -21,7 +21,7 @@
 //! - **Auth**: renders the `methods` the server sends. A pasted token goes in a masked field (one
 //!   `•` per character; a bracketed paste works), `import` rows call `cloud.auth.import`, an `env`
 //!   row is a note. `o` (or `ctrl+o` in the token field) opens the token page. The token leaves
-//!   this module only in the `cloud.auth.set` request and is cleared once that is sent.
+//!   the masked field at once; a private, redacted retry holds it until sign-in ends.
 //!
 //! Any reply error with `details.reason == "needs_auth"` jumps to the Auth stage for that
 //! provider and, after signing in, repeats the original call once.
@@ -153,7 +153,20 @@ pub enum AuthOut {
     Cancel,
     SetToken(String),
     Import(String),
+    SaveFile,
     Open(String),
+}
+
+#[derive(Clone, PartialEq)]
+struct AuthRetry {
+    method: &'static str,
+    params: Value,
+}
+
+impl std::fmt::Debug for AuthRetry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("AuthRetry(***)")
+    }
 }
 
 /// The Auth stage: the provider's methods, the masked token field and what is in flight.
@@ -164,6 +177,8 @@ pub struct AuthState {
     pub methods: Vec<AuthMethod>,
     pub sel: usize,
     pub token: String,
+    retry: Option<AuthRetry>,
+    pub file_fallback: bool,
     pub busy: Option<String>,
     pub error: Option<String>,
 }
@@ -177,6 +192,8 @@ impl AuthState {
             methods,
             sel,
             token: String::new(),
+            retry: None,
+            file_fallback: false,
             busy: None,
             error: None,
         }
@@ -197,15 +214,31 @@ impl AuthState {
         })
     }
 
+    pub(crate) fn failed(&mut self, e: &RpcErr) {
+        self.busy = None;
+        self.error = Some(err_text(e));
+        self.file_fallback = e.reason() == Some("keychain_unavailable")
+            && e.details.get("file_fallback").and_then(Value::as_bool) == Some(true)
+            && self.retry.is_some();
+        if self.file_fallback {
+            self.sel = self.methods.len();
+        } else {
+            self.retry = None;
+            if self.sel >= self.methods.len() {
+                self.sel = 0;
+            }
+        }
+    }
+
     fn step(&mut self, down: bool) {
-        let n = self.methods.len();
+        let n = self.methods.len() + usize::from(self.file_fallback);
         for k in 1..=n {
             let i = if down {
                 (self.sel + k) % n
             } else {
                 (self.sel + n - k % n) % n
             };
-            if self.methods[i].selectable() {
+            if i == self.methods.len() || self.methods[i].selectable() {
                 self.sel = i;
                 return;
             }
@@ -236,6 +269,9 @@ impl AuthState {
                 self.step(false);
                 AuthOut::None
             }
+            Key::Named(NamedKey::Enter) if self.file_fallback && self.sel == self.methods.len() => {
+                AuthOut::SaveFile
+            }
             Key::Named(NamedKey::Enter) => match self.methods.get(self.sel) {
                 Some(AuthMethod::PasteToken { .. }) => {
                     let t = self.token.trim().to_string();
@@ -254,11 +290,15 @@ impl AuthState {
                 _ => AuthOut::None,
             },
             Key::Named(NamedKey::Backspace) if on_token => {
+                self.retry = None;
+                self.file_fallback = false;
                 self.token.pop();
                 self.error = None;
                 AuthOut::None
             }
             Key::Char('u') if ev.mods.ctrl() && on_token => {
+                self.retry = None;
+                self.file_fallback = false;
                 self.token.clear();
                 self.error = None;
                 AuthOut::None
@@ -276,6 +316,8 @@ impl AuthState {
                 AuthOut::None
             }
             Key::Char(c) if plain && on_token && !c.is_control() && !c.is_whitespace() => {
+                self.retry = None;
+                self.file_fallback = false;
                 self.token.push(c);
                 self.error = None;
                 AuthOut::None
@@ -299,6 +341,8 @@ impl AuthState {
                 None => return,
             }
         }
+        self.retry = None;
+        self.file_fallback = false;
         self.token.extend(
             text.chars()
                 .filter(|c| !c.is_control() && !c.is_whitespace()),
@@ -355,6 +399,22 @@ impl AuthState {
         if let Some(e) = &self.error {
             crate::devices::wrap_lines(a, &format!("✗ {e}"), t.s(t.red));
         }
+        if self.file_fallback {
+            crate::devices::wrap_lines(
+                a,
+                "The file is readable only by your host user (0600). It is not encrypted.",
+                t.dim(),
+            );
+            let selected = self.sel == self.methods.len();
+            a.line(
+                if selected {
+                    "› Save to protected file"
+                } else {
+                    "  Save to protected file"
+                },
+                if selected { t.sel(t.fg) } else { t.text() },
+            );
+        }
         let open = if self.help_url().is_some() {
             if self.on_token_row() {
                 " · ctrl+o open the token page"
@@ -373,15 +433,31 @@ impl AuthState {
 }
 
 /// The request for an Auth-stage action: (method, params). The token is only in the params.
-pub(crate) fn auth_request(provider: &str, out: &AuthOut) -> Option<(&'static str, Value)> {
-    match out {
-        AuthOut::SetToken(t) => Some(("cloud.auth.set", json!({"provider": provider, "token": t}))),
-        AuthOut::Import(s) => Some((
+pub(crate) fn auth_request(a: &mut AuthState, out: &AuthOut) -> Option<(&'static str, Value)> {
+    let (method, params) = match out {
+        AuthOut::SetToken(t) => (
+            "cloud.auth.set",
+            json!({"provider": a.provider, "token": t}),
+        ),
+        AuthOut::Import(s) => (
             "cloud.auth.import",
-            json!({"provider": provider, "source": s}),
-        )),
-        _ => None,
-    }
+            json!({"provider": a.provider, "source": s}),
+        ),
+        AuthOut::SaveFile if a.file_fallback => {
+            let retry = a.retry.take()?;
+            let mut params = retry.params;
+            params["storage"] = json!("file");
+            a.file_fallback = false;
+            return Some((retry.method, params));
+        }
+        _ => return None,
+    };
+    a.file_fallback = false;
+    a.retry = Some(AuthRetry {
+        method,
+        params: params.clone(),
+    });
+    Some((method, params))
 }
 
 // ---- providers -------------------------------------------------------------------------------
@@ -427,6 +503,9 @@ impl ProviderRow {
                     Some(a) => format!("signed in as {a}"),
                     None => "signed in".to_string(),
                 };
+                if self.source.as_deref() == Some("file") {
+                    s.push_str(" (protected file, not encrypted)");
+                }
                 if let Some(src) = self.source.as_deref().filter(|s| s.starts_with("env")) {
                     s.push_str(&format!(" ({src})"));
                 }
@@ -777,7 +856,7 @@ pub enum Stage {
     PickProvider {
         sel: usize,
     },
-    Auth(AuthState),
+    Auth(Box<AuthState>),
     PickBox {
         sel: usize,
     },
@@ -1298,6 +1377,7 @@ pub enum Act {
     ChooseProvider(usize),
     SetToken(String),
     Import(String),
+    SaveFile,
     OpenUrl(String),
     ChooseBox(usize),
     StartMove,
@@ -1354,6 +1434,10 @@ pub fn on_key(f: &mut Flow, ev: &KeyEvent) -> Act {
             AuthOut::Import(s) => {
                 a.busy = Some(format!("importing from {s}…"));
                 return Act::Import(s);
+            }
+            AuthOut::SaveFile => {
+                a.busy = Some("saving to protected file…".into());
+                return Act::SaveFile;
             }
             AuthOut::Open(u) => return Act::OpenUrl(u),
         },
@@ -1521,6 +1605,7 @@ fn run(app: &mut App, act: Act) {
         Act::ChooseProvider(i) => choose_provider(app, i),
         Act::SetToken(t) => auth_send(app, AuthOut::SetToken(t)),
         Act::Import(s) => auth_send(app, AuthOut::Import(s)),
+        Act::SaveFile => auth_send(app, AuthOut::SaveFile),
         Act::OpenUrl(u) => {
             let mi = app.cur;
             crate::nav::open_url(app, mi, "", &u);
@@ -1607,10 +1692,10 @@ fn auth_send(app: &mut App, out: AuthOut) {
     let Stage::Auth(a) = &mut f.stage else {
         return;
     };
-    let Some((method, params)) = auth_request(&a.provider, &out) else {
+    let Some((method, params)) = auth_request(a, &out) else {
         return;
     };
-    // The token is in the request only: the field is empty from here on.
+    // Clear the field; the private retry keeps it only while this sign-in is open.
     a.token.clear();
     let call = if method == "cloud.auth.set" {
         Call::AuthSet
@@ -1635,7 +1720,7 @@ fn choose_provider(app: &mut App, i: usize) {
     if p.signed_in() {
         load_boxes(app);
     } else {
-        f.stage = Stage::Auth(AuthState::new(&p.id, &p.label, p.methods));
+        f.stage = Stage::Auth(Box::new(AuthState::new(&p.id, &p.label, p.methods)));
     }
 }
 
@@ -1744,7 +1829,7 @@ fn enter_auth(f: &mut Flow, details: &Value) {
     match auth_stage(&f.providers, f.provider.as_deref(), details) {
         Some(a) => {
             f.provider = Some(a.provider.clone());
-            f.stage = Stage::Auth(a);
+            f.stage = Stage::Auth(Box::new(a));
         }
         None => f.error = Some("sign in to the provider first".into()),
     }
@@ -1880,8 +1965,7 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
         (Call::AuthSet | Call::AuthImport, Ok(v)) => auth_done(app, &v),
         (Call::AuthSet | Call::AuthImport, Err(e)) => {
             if let Stage::Auth(a) = &mut f.stage {
-                a.busy = None;
-                a.error = Some(err_text(&e));
+                a.failed(&e);
             }
         }
         (Call::Cancel, Err(e)) => f.error = Some(err_text(&e)),
@@ -1936,6 +2020,7 @@ fn auth_done(app: &mut App, v: &Value) {
         for r in f.providers.iter_mut().filter(|r| &r.id == p) {
             r.state = "ok".into();
             r.account = s_of(v, "account");
+            r.source = s_of(v, "storage");
         }
     }
     f.error = None;

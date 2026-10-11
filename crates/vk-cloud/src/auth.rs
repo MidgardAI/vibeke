@@ -1,14 +1,19 @@
 //! Provider credentials (spec 17 §5). A provider's credential comes from, in order:
 //! 1. the configured reference `[cloud.<provider>] credential = { env | file | keychain }`;
-//! 2. the keychain item `vibeke/cloud/<provider>` that `cloud.auth.set` / `vibeke cloud login`
+//! 2. an explicitly selected protected file (0600), when present;
+//! 3. the keychain item `vibeke/cloud/<provider>` that `cloud.auth.set` / `vibeke cloud login`
 //!    store, through the `[security] keychain` backend;
-//! 3. the provider's well-known environment variable ([`AuthMethod::Env`]).
+//! 4. the provider's well-known environment variable ([`AuthMethod::Env`]).
 //!
 //! Secrets never appear in events, argv, logs or error messages. [`Secret`]'s `Debug` and
 //! `Display` print a placeholder.
 
 use serde::{Deserialize, Serialize};
 use vk_store::keychain::{Keychain, KeychainError};
+
+mod storage;
+use storage::Saved;
+pub use storage::{Credentials, StoreError};
 
 use crate::config::{CloudConfig, CredentialRef};
 use crate::{CloudError, ErrorKind, Provider, Result};
@@ -74,6 +79,7 @@ pub enum AuthState {
 pub enum Source {
     Config,
     Keychain,
+    File,
     Env(String),
 }
 
@@ -83,8 +89,8 @@ pub fn item(provider: &str) -> String {
 }
 
 /// The keychain backend from `[security] keychain` (default: the OS keychain).
-pub fn keychain(cfg: &vk_config::Config) -> std::result::Result<Keychain, String> {
-    match cfg
+pub fn credentials(cfg: &vk_config::Config) -> std::result::Result<Credentials, String> {
+    let keychain = match cfg
         .extra
         .get("security")
         .and_then(|s| s.get("keychain"))
@@ -92,7 +98,11 @@ pub fn keychain(cfg: &vk_config::Config) -> std::result::Result<Keychain, String
     {
         Some(x) => Keychain::from_setting(x),
         None => Ok(Keychain::Os),
-    }
+    }?;
+    Ok(Credentials::new(
+        keychain,
+        vk_config::config_path().with_file_name("cloud-credentials"),
+    ))
 }
 
 fn kc_err(e: impl std::fmt::Display) -> CloudError {
@@ -103,16 +113,30 @@ fn kc_err(e: impl std::fmt::Display) -> CloudError {
 pub fn resolve(
     p: &dyn Provider,
     cfg: &CloudConfig,
-    kc: &Keychain,
+    kc: &Credentials,
     env: &dyn Fn(&str) -> Option<String>,
 ) -> Result<Option<(Secret, Source)>> {
     if let Some(r) = cfg.provider(p.id()).credential.as_ref() {
-        return r.resolve(kc, env).map(|s| Some((s, Source::Config)));
+        return r
+            .resolve(&kc.keychain, env)
+            .map(|s| Some((s, Source::Config)));
     }
     // The implicit item is optional: a host without a usable keychain (Linux without
     // `secret-tool`, a locked or refusing keychain) has nothing stored there, so the env method
     // still applies. An explicit `credential` reference above stays strict.
-    let stored = match kc.get_item(&item(p.id())) {
+    let saved = kc.saved(p.id()).map_err(kc_err)?;
+    if let Some(Saved::File { token }) = saved {
+        let secret = Secret::new(token);
+        if secret.is_empty() {
+            return Err(kc_err("the cloud credential file is empty"));
+        }
+        return Ok(Some((secret, Source::File)));
+    }
+    let stored = match if matches!(saved, Some(Saved::SignedOut)) {
+        Ok(None)
+    } else {
+        kc.keychain.get_item(&item(p.id()))
+    } {
         Ok(v) => v,
         Err(KeychainError::Unsupported(_) | KeychainError::Failed(_) | KeychainError::Timeout) => {
             None
@@ -139,7 +163,7 @@ pub fn resolve(
 pub fn require(
     p: &dyn Provider,
     cfg: &CloudConfig,
-    kc: &Keychain,
+    kc: &Credentials,
     env: &dyn Fn(&str) -> Option<String>,
 ) -> Result<Secret> {
     resolve(p, cfg, kc, env)?
@@ -148,13 +172,13 @@ pub fn require(
 }
 
 /// Store a credential for `provider` in the keychain item.
-pub fn store(kc: &Keychain, provider: &str, s: &Secret) -> Result<()> {
-    kc.set_item(&item(provider), s.expose()).map_err(kc_err)
+pub fn store(kc: &Credentials, provider: &str, s: &Secret) -> std::result::Result<(), StoreError> {
+    kc.store(provider, s)
 }
 
 /// Remove the stored credential; `false` when there was none.
-pub fn clear(kc: &Keychain, provider: &str) -> Result<bool> {
-    kc.delete_item(&item(provider)).map_err(kc_err)
+pub fn clear(kc: &Credentials, provider: &str) -> Result<bool> {
+    kc.clear(provider).map_err(kc_err)
 }
 
 impl CredentialRef {
@@ -249,7 +273,8 @@ mod tests {
         let p = crate::fake::Fake::new(dir.path().join("fake"));
         let cfg = CloudConfig::default();
         let env = |v: &str| (v == crate::fake::TOKEN_ENV).then(|| "tok".to_string());
-        let (s, src) = resolve(&p, &cfg, &kc, &env).unwrap().unwrap();
+        let credentials = Credentials::new(kc, dir.path().join("credentials"));
+        let (s, src) = resolve(&p, &cfg, &credentials, &env).unwrap().unwrap();
         assert_eq!(s.expose(), "tok");
         assert_eq!(src, Source::Env(crate::fake::TOKEN_ENV.to_string()));
     }

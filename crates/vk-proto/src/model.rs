@@ -400,6 +400,31 @@ pub struct AgentRun {
     /// Appended (render protocol 7).
     #[serde(default)]
     pub title: Option<String>,
+    /// Work the harness keeps running after its turn ended: background shells, monitors,
+    /// background subagents (Claude `background_tasks`, Codex background terminals, child
+    /// processes). Empty when nothing is in flight. Appended (render protocol 9).
+    #[serde(default)]
+    pub bg_tasks: Vec<BgTask>,
+    /// When a harness last reported its whole background set (ms). Transcript start records
+    /// older than this are history the report already covers. Appended (render protocol 9).
+    #[serde(default)]
+    pub bg_level_ms: i64,
+}
+
+/// One piece of background work of an agent run (`AgentRun::bg_tasks`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BgTask {
+    /// The harness's id (Claude task id, Codex process id), or `pid:<pgid>` for a process.
+    pub id: String,
+    /// `shell`, `subagent`, `monitor`, `workflow`, `teammate` or another harness word.
+    pub kind: String,
+    /// What it runs: the command or the description, redacted and shortened.
+    pub label: String,
+    pub since_ms: i64,
+    pub source: StateSource,
+    /// The tool call that started it, when known (links the chat row).
+    #[serde(default)]
+    pub tool_use_id: Option<String>,
 }
 
 impl AgentRun {

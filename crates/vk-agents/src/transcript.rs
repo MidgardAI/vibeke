@@ -13,7 +13,7 @@
 //! ([verify M0]).
 
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
@@ -107,7 +107,61 @@ pub enum Event {
         is_error: bool,
         ts_ms: Option<i64>,
     },
+    /// Background work started: a shell, a monitor or a subagent that outlives its tool call.
+    BgStarted {
+        id: String,
+        kind: String,
+        label: String,
+        tool_use_id: Option<String>,
+        ts_ms: Option<i64>,
+    },
+    /// Background work ended (`status` is the harness word: completed, failed, stopped, killed).
+    BgEnded {
+        id: String,
+        status: String,
+        ts_ms: Option<i64>,
+    },
 }
+
+/// A Claude `<task-notification>` block.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskNotification {
+    pub task_id: String,
+    pub tool_use_id: Option<String>,
+    /// `None` for a Monitor event (its stream goes on); a word when the task ended.
+    pub status: Option<String>,
+    pub summary: String,
+}
+
+fn tag<'a>(s: &'a str, name: &str) -> Option<&'a str> {
+    let open = format!("<{name}>");
+    let close = format!("</{name}>");
+    let a = s.find(&open)? + open.len();
+    let b = a + s[a..].find(&close)?;
+    Some(s[a..b].trim())
+}
+
+/// Parse text that is a `<task-notification>` block; `None` when it is anything else.
+pub fn parse_task_notification(text: &str) -> Option<TaskNotification> {
+    let t = text.trim();
+    if !t.starts_with("<task-notification>") {
+        return None;
+    }
+    let task_id = tag(t, "task-id")?.to_string();
+    Some(TaskNotification {
+        task_id,
+        tool_use_id: tag(t, "tool-use-id")
+            .filter(|s| !s.is_empty())
+            .map(str::to_string),
+        status: tag(t, "status")
+            .filter(|s| !s.is_empty())
+            .map(str::to_string),
+        summary: tag(t, "summary").unwrap_or("").to_string(),
+    })
+}
+
+/// Cap on remembered tool inputs (for background labels).
+const INPUTS_MAX: usize = 4000;
 
 /// What the transcript says the harness is doing right now (for `reconcile`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -123,6 +177,10 @@ pub struct Parser {
     format: Format,
     carry: Vec<u8>,
     seen_tools: HashSet<String>,
+    seen_bg_start: HashSet<String>,
+    seen_bg_end: HashSet<String>,
+    /// Tool call id to what it ran (a command or description), for background labels.
+    inputs: HashMap<String, String>,
     seen_turns: HashSet<String>,
     seen_msgs: HashSet<String>,
     /// Usage per message id within the open turn (Claude writes one line per content block with
@@ -151,6 +209,9 @@ impl Parser {
             format,
             carry: vec![],
             seen_tools: HashSet::new(),
+            seen_bg_start: HashSet::new(),
+            seen_bg_end: HashSet::new(),
+            inputs: HashMap::new(),
             seen_turns: HashSet::new(),
             seen_msgs: HashSet::new(),
             msgs: vec![],
@@ -303,6 +364,96 @@ impl Parser {
         });
     }
 
+    fn remember_input(&mut self, id: &str, text: Option<&str>) {
+        let Some(t) = text.filter(|t| !id.is_empty() && !t.trim().is_empty()) else {
+            return;
+        };
+        if self.inputs.len() >= INPUTS_MAX {
+            self.inputs.clear();
+        }
+        self.inputs.insert(id.to_string(), t.to_string());
+    }
+
+    fn bg_started(
+        &mut self,
+        id: &str,
+        kind: &str,
+        tool_use_id: Option<&str>,
+        label: Option<String>,
+        ts: Option<i64>,
+        out: &mut Vec<Event>,
+    ) {
+        if id.is_empty() || !self.seen_bg_start.insert(id.to_string()) {
+            return;
+        }
+        let label = label
+            .or_else(|| tool_use_id.and_then(|t| self.inputs.get(t).cloned()))
+            .unwrap_or_default();
+        out.push(Event::BgStarted {
+            id: id.to_string(),
+            kind: kind.to_string(),
+            label,
+            tool_use_id: tool_use_id.map(str::to_string),
+            ts_ms: ts,
+        });
+    }
+
+    fn bg_ended(&mut self, id: &str, status: &str, ts: Option<i64>, out: &mut Vec<Event>) {
+        if id.is_empty() || !self.seen_bg_end.insert(id.to_string()) {
+            return;
+        }
+        out.push(Event::BgEnded {
+            id: id.to_string(),
+            status: status.to_string(),
+            ts_ms: ts,
+        });
+    }
+
+    /// Background records of a Claude `user` line.
+    fn claude_bg(&mut self, v: &Value, ts: Option<i64>, out: &mut Vec<Event>) {
+        let content = v.pointer("/message/content");
+        let notification = v.pointer("/origin/kind").and_then(Value::as_str)
+            == Some("task-notification")
+            || user_text(content)
+                .is_some_and(|t| t.trim_start().starts_with("<task-notification>"));
+        if notification {
+            if let Some(n) = user_text(content).and_then(|t| parse_task_notification(&t))
+                && let Some(status) = n.status
+            {
+                self.bg_ended(&n.task_id, &status, ts, out);
+            }
+            return;
+        }
+        let Some(r) = v.get("toolUseResult").filter(|r| r.is_object()) else {
+            return;
+        };
+        let tool_use_id = match content {
+            Some(Value::Array(blocks)) => blocks
+                .iter()
+                .find(|b| b.get("type").and_then(Value::as_str) == Some("tool_result"))
+                .and_then(|b| b.get("tool_use_id"))
+                .and_then(Value::as_str),
+            _ => None,
+        };
+        let s = |k: &str| r.get(k).and_then(Value::as_str);
+        if let Some(id) = s("backgroundTaskId") {
+            self.bg_started(id, "shell", tool_use_id, None, ts, out);
+        } else if let Some(id) = s("taskId")
+            && r.get("timeoutMs").is_some()
+        {
+            self.bg_started(id, "monitor", tool_use_id, None, ts, out);
+        } else if s("status") == Some("async_launched")
+            && let Some(id) = s("agentId")
+        {
+            let label = s("description").map(str::to_string);
+            self.bg_started(id, "subagent", tool_use_id, label, ts, out);
+        } else if let Some(id) = s("task_id")
+            && s("message").is_some_and(|m| m.starts_with("Successfully stopped"))
+        {
+            self.bg_ended(id, "stopped", ts, out);
+        }
+    }
+
     // ---- Claude ----------------------------------------------------------------------------
 
     fn claude(&mut self, v: &Value, out: &mut Vec<Event>) {
@@ -314,6 +465,9 @@ impl Parser {
         match v.get("type").and_then(Value::as_str) {
             Some("user") => {
                 let content = v.pointer("/message/content");
+                if !sidechain {
+                    self.claude_bg(v, ts, out);
+                }
                 let mut had_result = false;
                 let mut had_text = false;
                 match content {
@@ -392,6 +546,12 @@ impl Parser {
                                 .pointer("/input/command")
                                 .and_then(Value::as_str)
                                 .map(str::to_string);
+                            let remembered = cmd.clone().or_else(|| {
+                                b.pointer("/input/description")
+                                    .and_then(Value::as_str)
+                                    .map(str::to_string)
+                            });
+                            self.remember_input(id, remembered.as_deref());
                             self.tool_use(id, name, cmd, ts, out);
                         }
                     }
@@ -498,6 +658,22 @@ impl Parser {
                         .unwrap_or_else(|| format!("turn{}", self.turns_done + 1));
                     self.finish_turn(id, Some(pty.to_string()), ts, out);
                 }
+                "item_completed" => {
+                    let item = &p["item"];
+                    if item.get("type").and_then(Value::as_str) == Some("CommandExecution")
+                        && let Some(pid) = item.get("process_id").and_then(|x| {
+                            x.as_str()
+                                .map(str::to_string)
+                                .or_else(|| x.as_u64().map(|n| n.to_string()))
+                        })
+                    {
+                        let status = item
+                            .get("status")
+                            .and_then(Value::as_str)
+                            .unwrap_or("completed");
+                        self.bg_ended(&pid, status, ts, out);
+                    }
+                }
                 "exec_command_end" => {
                     let id = p.get("call_id").and_then(Value::as_str).unwrap_or("");
                     let code = p.get("exit_code").and_then(Value::as_i64).unwrap_or(0);
@@ -534,6 +710,7 @@ impl Parser {
                             .or_else(|| p.pointer("/action/command")),
                     );
                     self.activity = Some(Activity::Working);
+                    self.remember_input(id, cmd.as_deref());
                     self.tool_use(id, name, cmd, ts, out);
                 }
                 "function_call_output" | "custom_tool_call_output" => {
@@ -549,6 +726,9 @@ impl Parser {
                         is_error,
                         ts_ms: ts,
                     });
+                    for sid in codex_session_ids(pty, p.get("output")) {
+                        self.bg_started(&sid, "shell", Some(id), None, ts, out);
+                    }
                 }
                 _ => {}
             },
@@ -718,6 +898,60 @@ pub fn codex_thread_name(index: &str, session: &str) -> Option<String> {
     name
 }
 
+/// Session ids of Codex commands still running after their call returned: the legacy
+/// `exec_command` text says `Process running with session ID N`; code-mode `exec` answers JSON
+/// objects (one per command it ran) with `"session_id": N` and no `exit_code`.
+fn codex_session_ids(pty: &str, output: Option<&Value>) -> Vec<String> {
+    let text = match output {
+        Some(Value::String(s)) => s.clone(),
+        Some(Value::Array(a)) => a
+            .iter()
+            .filter_map(|b| b.get("text").and_then(Value::as_str))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => return vec![],
+    };
+    if pty == "function_call_output" {
+        return text
+            .split("Process running with session ID ")
+            .skip(1)
+            .map(|rest| {
+                rest.chars()
+                    .take_while(char::is_ascii_digit)
+                    .collect::<String>()
+            })
+            .filter(|n| !n.is_empty())
+            .collect();
+    }
+    let mut ids = Vec::new();
+    let mut objects = vec![];
+    // Each text block may lead with prose; its JSON starts at the first brace or bracket.
+    for block in text.split('\n') {
+        let Some(at) = block.find(['{', '[']) else {
+            continue;
+        };
+        for v in serde_json::Deserializer::from_str(&block[at..]).into_iter::<Value>() {
+            match v {
+                Ok(Value::Array(a)) => objects.extend(a),
+                Ok(v) => objects.push(v),
+                Err(_) => break,
+            }
+        }
+    }
+    for o in objects {
+        if o.get("exit_code").is_some_and(|c| !c.is_null()) {
+            continue;
+        }
+        let id = match o.get("session_id") {
+            Some(Value::Number(n)) => n.to_string(),
+            Some(Value::String(s)) => s.clone(),
+            _ => continue,
+        };
+        ids.push(id);
+    }
+    ids
+}
+
 fn n64(v: &Value, k: &str) -> u64 {
     v.get(k).and_then(Value::as_u64).unwrap_or(0)
 }
@@ -769,6 +1003,7 @@ pub fn parse_rfc3339_ms(s: &str) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     fn lines(v: &[Value]) -> Vec<u8> {
         let mut b = vec![];
@@ -790,7 +1025,6 @@ mod tests {
 
     #[test]
     fn titles_prefer_the_users_then_the_harness_then_the_first_prompt() {
-        use serde_json::json;
         let mut p = Parser::new(Format::ClaudeJsonl);
         p.feed(&lines(&[
             json!({"type":"user","uuid":"u0","message":{"role":"user","content":"<command-name>/clear</command-name>"}}),
@@ -1017,5 +1251,143 @@ mod tests {
             Some(Format::PiJsonl)
         );
         assert_eq!(Format::sniff("hello"), None);
+    }
+
+    fn bg(ev: &[Event]) -> Vec<&Event> {
+        ev.iter()
+            .filter(|e| matches!(e, Event::BgStarted { .. } | Event::BgEnded { .. }))
+            .collect()
+    }
+
+    fn notification(id: &str, status: Option<&str>) -> Value {
+        let st = status
+            .map(|s| format!("<status>{s}</status>\n"))
+            .unwrap_or_default();
+        json!({"type":"user","timestamp":"2026-01-01T00:00:09Z",
+            "origin":{"kind":"task-notification"},
+            "message":{"role":"user","content":format!("<task-notification>\n<task-id>{id}</task-id>\n<tool-use-id>tu1</tool-use-id>\n{st}<summary>Background command done</summary>\n</task-notification>")}})
+    }
+
+    #[test]
+    fn claude_background_shell_starts_and_ends() {
+        let mut p = Parser::new(Format::ClaudeJsonl);
+        let ev = p.feed(&lines(&[
+            json!({"type":"assistant","message":{"id":"m1","stop_reason":"tool_use","content":[
+                {"type":"tool_use","id":"tu1","name":"Bash","input":{"command":"sleep 30","description":"wait","run_in_background":true}}]}}),
+            json!({"type":"user","timestamp":"2026-01-01T00:00:01Z",
+                "toolUseResult":{"stdout":"","backgroundTaskId":"bg1"},
+                "message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu1","content":"running"}]}}),
+            notification("bg1", Some("completed")),
+        ]));
+        let b = bg(&ev);
+        assert_eq!(b.len(), 2, "{b:?}");
+        assert!(
+            matches!(b[0], Event::BgStarted { id, kind, label, tool_use_id, ts_ms }
+            if id == "bg1" && kind == "shell" && label == "sleep 30"
+                && tool_use_id.as_deref() == Some("tu1") && ts_ms.is_some())
+        );
+        assert!(
+            matches!(b[1], Event::BgEnded { id, status, .. } if id == "bg1" && status == "completed")
+        );
+        // The same lines again emit nothing new.
+        let again = p.feed(&lines(&[notification("bg1", Some("completed"))]));
+        assert!(bg(&again).is_empty());
+    }
+
+    #[test]
+    fn claude_monitor_and_subagent_start() {
+        let mut p = Parser::new(Format::ClaudeJsonl);
+        let ev = p.feed(&lines(&[
+            json!({"type":"assistant","message":{"id":"m1","stop_reason":"tool_use","content":[
+                {"type":"tool_use","id":"tm","name":"Monitor","input":{"description":"watch logs","command":"tail -f x"}}]}}),
+            json!({"type":"user","toolUseResult":{"taskId":"mon1","timeoutMs":60000,"persistent":false},
+                "message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tm","content":"started"}]}}),
+            json!({"type":"user","toolUseResult":{"isAsync":true,"status":"async_launched","agentId":"ag1","description":"Look around"},
+                "message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"ta","content":"launched"}]}}),
+        ]));
+        let b = bg(&ev);
+        assert_eq!(b.len(), 2, "{b:?}");
+        assert!(matches!(b[0], Event::BgStarted { id, kind, label, .. }
+            if id == "mon1" && kind == "monitor" && label == "tail -f x"));
+        assert!(
+            matches!(b[1], Event::BgStarted { id, kind, label, tool_use_id, .. }
+            if id == "ag1" && kind == "subagent" && label == "Look around"
+                && tool_use_id.as_deref() == Some("ta"))
+        );
+    }
+
+    #[test]
+    fn claude_monitor_event_is_not_an_end() {
+        let mut p = Parser::new(Format::ClaudeJsonl);
+        let ev = p.feed(&lines(&[notification("mon1", None)]));
+        assert!(bg(&ev).is_empty());
+        // The notification still starts a turn (the agent wakes up).
+        assert!(ev.iter().any(|e| matches!(e, Event::TurnStarted { .. })));
+        // Fallback without `origin`: string content starting with the tag.
+        let mut q = Parser::new(Format::ClaudeJsonl);
+        let mut n = notification("mon2", Some("killed"));
+        n.as_object_mut().unwrap().remove("origin");
+        let ev = q.feed(&lines(&[n]));
+        assert!(
+            matches!(bg(&ev)[0], Event::BgEnded { id, status, .. } if id == "mon2" && status == "killed")
+        );
+    }
+
+    #[test]
+    fn claude_task_stop_ends() {
+        let mut p = Parser::new(Format::ClaudeJsonl);
+        let ev = p.feed(&lines(&[
+            json!({"type":"user","toolUseResult":{"message":"Successfully stopped task: bg9 (sleep)","task_id":"bg9","task_type":"local_bash"},
+                "message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tx","content":"ok"}]}}),
+            json!({"type":"user","toolUseResult":{"message":"No task found","task_id":"bg8"},
+                "message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"ty","content":"no"}]}}),
+        ]));
+        let b = bg(&ev);
+        assert_eq!(b.len(), 1);
+        assert!(
+            matches!(b[0], Event::BgEnded { id, status, .. } if id == "bg9" && status == "stopped")
+        );
+    }
+
+    #[test]
+    fn parses_task_notifications() {
+        let n = parse_task_notification(
+            "<task-notification>\n<task-id>a1</task-id>\n<status>failed</status>\n<summary>It broke</summary>\n</task-notification>",
+        )
+        .unwrap();
+        assert_eq!(n.task_id, "a1");
+        assert_eq!(n.status.as_deref(), Some("failed"));
+        assert_eq!(n.tool_use_id, None);
+        assert_eq!(n.summary, "It broke");
+        assert!(parse_task_notification("hello <task-notification>").is_none());
+    }
+
+    #[test]
+    fn codex_background_sessions_start_and_end() {
+        let mut p = Parser::new(Format::CodexRollout);
+        let ev = p.feed(&lines(&[
+            json!({"timestamp":"2026-01-01T00:00:00Z","type":"response_item","payload":{"type":"function_call","call_id":"c1","name":"exec_command","arguments":"{\"cmd\":\"npm run dev\"}"}}),
+            json!({"timestamp":"2026-01-01T00:00:01Z","type":"response_item","payload":{"type":"function_call_output","call_id":"c1","output":"Wall time: 1 seconds\nProcess running with session ID 4242\nOutput:\n"}}),
+            json!({"timestamp":"2026-01-01T00:00:02Z","type":"response_item","payload":{"type":"function_call_output","call_id":"c2","output":"Process running with session ID 4242\nOutput:\n"}}),
+            json!({"timestamp":"2026-01-01T00:00:03Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"c3","output":[{"type":"input_text","text":"{\"session_id\": 77, \"output\": \"\"}"}]}}),
+            json!({"timestamp":"2026-01-01T00:00:04Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"c4","output":[{"type":"input_text","text":"{\"session_id\": 78, \"exit_code\": 0}"}]}}),
+            json!({"timestamp":"2026-01-01T00:00:05Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"c5","output":[{"type":"input_text","text":"{\"session_id\": 79, \"exit_code\": 0}"},{"type":"input_text","text":"{\"session_id\": 80, \"output\": \"\"}"},{"type":"input_text","text":"{\"session_id\": 81}"}]}}),
+            json!({"timestamp":"2026-01-01T00:00:05Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"CommandExecution","id":"e1","process_id":"4242","status":"completed"}}}),
+            json!({"timestamp":"2026-01-01T00:00:06Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"Plan","id":"e2"}}}),
+        ]));
+        let b = bg(&ev);
+        assert_eq!(b.len(), 5, "{b:?}");
+        assert!(
+            matches!(b[0], Event::BgStarted { id, kind, label, tool_use_id, .. }
+            if id == "4242" && kind == "shell" && label == "npm run dev"
+                && tool_use_id.as_deref() == Some("c1"))
+        );
+        assert!(matches!(b[1], Event::BgStarted { id, .. } if id == "77"));
+        // A batch: one command finished, two still run.
+        assert!(matches!(b[2], Event::BgStarted { id, .. } if id == "80"));
+        assert!(matches!(b[3], Event::BgStarted { id, .. } if id == "81"));
+        assert!(
+            matches!(b[4], Event::BgEnded { id, status, .. } if id == "4242" && status == "completed")
+        );
     }
 }

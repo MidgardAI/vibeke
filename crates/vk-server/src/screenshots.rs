@@ -632,6 +632,15 @@ fn persist_screenshot(
     png: &[u8],
     mut meta: ScreenshotMeta,
 ) -> Result<ScreenshotMeta, RpcError> {
+    // The blob goes in first: `screenshot.captured` makes clients fetch the image at once, so
+    // it must be readable by the time the event commits. Its sidecar has no handle yet.
+    crate::agent_browser::store_blob(
+        server,
+        png,
+        "png",
+        &serde_json::to_value(&meta).unwrap_or_default(),
+    )
+    .map_err(crate::api::internal)?;
     // Handle allocation and the entity write under one core lock.
     let srv = server.clone();
     let meta = {
@@ -669,14 +678,16 @@ fn persist_screenshot(
         srv.commit(&mut c, tx).map_err(crate::api::internal)?;
         meta
     };
-    // Blob + JSON sidecar (0600, content-addressed).
-    crate::agent_browser::store_blob(
+    // Write the JSON sidecar (0600, content-addressed) again, now with the handle. The record
+    // is committed and the blob stored, so a failure here only leaves the handle out.
+    if let Err(e) = crate::agent_browser::store_blob(
         server,
         png,
         "png",
         &serde_json::to_value(&meta).unwrap_or_default(),
-    )
-    .map_err(crate::api::internal)?;
+    ) {
+        tracing::warn!(screenshot = %meta.id, "screenshot sidecar not updated: {e}");
+    }
     // Enforce the per-task cap right away (cheap: one task's records).
     if let Some(t) = meta.task.clone() {
         let srv = server.clone();

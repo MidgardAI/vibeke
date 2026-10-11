@@ -748,6 +748,17 @@ pub fn draw(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
                     if let Some(tool) = &r.last_tool {
                         b.line(&format!("last tool: {tool}"), t.dim());
                     }
+                    for bg in r.bg_tasks.iter().take(6) {
+                        b.line(
+                            &format!(
+                                "⧗ {} · {} · {}",
+                                bg.kind,
+                                crate::draw::truncate(&bg.label, 60),
+                                crate::draw::bg_age(bg.since_ms)
+                            ),
+                            t.dim(),
+                        );
+                    }
                     if let Some(v) = crate::plugins::agent_view(app, app.cur, &r.id) {
                         let c = match v.tone.as_str() {
                             "ok" => t.green,

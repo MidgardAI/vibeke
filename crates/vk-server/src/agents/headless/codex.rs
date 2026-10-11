@@ -22,7 +22,12 @@
 
 use super::*;
 
+/// Lists a thread's background terminals (unified exec processes that outlive their turn).
+const BG_LIST: &str = "thread/backgroundTerminals/list";
+
 pub struct Codex {
+    /// A background-terminal list was asked for while one was in flight: ask again after it.
+    bg_dirty: bool,
     cwd: String,
     resume: Option<String>,
     initialized: bool,
@@ -60,6 +65,7 @@ impl Codex {
         // shows the handshake (ring overflow).
         let est = rec.established();
         Codex {
+            bg_dirty: false,
             cwd: rec.cwd.clone(),
             resume: rec.session.clone().filter(|_| rec.resume),
             initialized: est,
@@ -135,6 +141,46 @@ impl Codex {
         let id = self.next;
         self.next += 1;
         cx.write(json!({"id": id, "method": method, "params": params}));
+    }
+
+    /// Ask for the thread's background terminals (`BG_LIST`); the reply becomes `BgTasks`.
+    fn list_bg(&mut self, cx: &mut Cx) {
+        if self.inflight_has(BG_LIST) {
+            self.bg_dirty = true;
+        } else if let Some(t) = self.thread.clone() {
+            self.bg_dirty = false;
+            self.request(cx, BG_LIST, json!({"threadId": t}));
+        }
+    }
+
+    /// `thread/backgroundTerminals/list` result `{data: [{itemId, processId, command, ...}]}` as
+    /// a `BgTasks` signal (the whole set, Claude hook shape).
+    fn bg_tasks(r: &Value) -> Value {
+        let list: Vec<Value> = r
+            .get("data")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|t| {
+                let id = match t.get("processId")? {
+                    Value::String(s) => s.clone(),
+                    Value::Number(n) => n.to_string(),
+                    _ => return None,
+                };
+                let command = match t.get("command") {
+                    Some(Value::Array(a)) => a
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .next_back()
+                        .unwrap_or("")
+                        .to_string(),
+                    Some(Value::String(c)) => c.clone(),
+                    _ => String::new(),
+                };
+                Some(json!({"id": id, "type": "shell", "status": "running", "command": command, "tool_use_id": t.get("itemId")}))
+            })
+            .collect();
+        json!({"background_tasks": list})
     }
 
     fn inflight_has(&self, method: &str) -> bool {
@@ -363,6 +409,11 @@ impl Adapter for Codex {
                         cx.reply(id_str(id), Err(format!("{m}: {msg}")));
                         return;
                     }
+                    // An app-server without background terminals: nothing to report.
+                    if m == BG_LIST {
+                        self.bg_dirty = false;
+                        return;
+                    }
                     cx.render(format!("! {m}: {msg}\n"));
                     if m == "turn/start" {
                         self.busy = false;
@@ -387,6 +438,13 @@ impl Adapter for Codex {
                         }
                     }
                     "model/list" => cx.reply(id_str(id), Ok(self.models_result(&r))),
+                    BG_LIST => {
+                        cx.signal("BgTasks", Self::bg_tasks(&r));
+                        // Something ended while this list was on its way: it may be stale.
+                        if self.bg_dirty {
+                            self.list_bg(cx);
+                        }
+                    }
                     "config/value/write" => {
                         cx.reply(id_str(id), Ok(json!({"default_changed": true})))
                     }
@@ -493,6 +551,10 @@ impl Adapter for Codex {
                     }
                     "item/completed" => {
                         let item = p.get("item").cloned().unwrap_or(Value::Null);
+                        // A background terminal exited after its turn: list what is left.
+                        if !self.busy && item.get("processId").is_some_and(|v| !v.is_null()) {
+                            self.list_bg(cx);
+                        }
                         let iid = item
                             .get("id")
                             .and_then(Value::as_str)
@@ -570,6 +632,8 @@ impl Adapter for Codex {
                                 );
                             }
                         }
+                        // Commands that outlive the turn keep running in unified exec.
+                        self.list_bg(cx);
                         cx.render(format!("[{status}]\n› "));
                     }
                     "thread/tokenUsage/updated" => {

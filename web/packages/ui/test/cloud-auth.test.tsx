@@ -108,3 +108,12 @@ describe('runWithCloudAuth', () => {
     expect(asked).toBe(false);
   });
 });
+
+ test('offers protected file storage only when a fallback callback is supplied', () => {
+  const html = renderToStaticMarkup(<CloudAuthForm methods={methods} error="Unlock the host keychain" onFileFallback={() => {}} onToken={() => {}} onImport={() => {}} onHelp={() => {}} />);
+  expect(html).toContain('Save to protected file');
+  expect(html).toContain('0600');
+  expect(html).toContain('not encrypted');
+  const normal = renderToStaticMarkup(<CloudAuthForm methods={methods} onToken={() => {}} onImport={() => {}} onHelp={() => {}} />);
+  expect(normal).not.toContain('Save to protected file');
+});

@@ -19,7 +19,9 @@
 **A terminal workspace for supervising coding agents, on your laptop or a devbox.**
 
 <p align="center">
-  <img src="docs/site/src/images/architecture.svg" alt="Vibeke architecture: clients, the server and holders on your host, remote machines, cloud sandboxes, and the relay" width="100%" />
+  <a href="https://vibeke.dev/#tour"><img src="web/apps/site/public/video/vibeke-tour-poster.jpg" alt="Watch the product tour: a browser pane in the terminal shows a dev server that runs on another machine" width="100%" /></a>
+  <br />
+  <a href="https://vibeke.dev/#tour"><b>▶ Watch the product tour</b></a> (2:41)
 </p>
 
 - **Knows what each agent is doing.** Vibeke reads Claude Code, Codex, pi and omp through their hooks, extensions and RPC streams instead of guessing from the screen. Terminal output is only the fallback, and every state says where it came from. [Agents and interactions →](https://vibeke.dev/docs/agents)
@@ -33,6 +35,10 @@
 - **Built to be scripted.** A versioned JSON-RPC API (`vibeke/1`), a CLI on top of it, and an MCP server for agents. [Control API →](https://vibeke.dev/docs/api)
 - **Plugins.** Native plugins with declared capabilities. Coming from Herdr? Import your config and layouts. Some Herdr plugins also work. [Moving from Herdr →](https://vibeke.dev/docs/migrating-from-herdr)
 - **One Rust binary.** Ghostty's VT engine inside, and it runs in the terminal you already use.
+
+<p align="center">
+  <img src="docs/site/src/images/architecture.svg" alt="Vibeke architecture: clients, the server and holders on your host, remote machines, cloud sandboxes, and the relay" width="100%" />
+</p>
 
 ---
 
