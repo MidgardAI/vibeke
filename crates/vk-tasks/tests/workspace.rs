@@ -439,6 +439,7 @@ fn setup_runs_install_then_run_commands_then_script_and_stops_on_failure() {
         extra_env: vec![("DATABASE_URL".into(), "postgres://x/app_feature".into())],
         log_path: log.clone(),
         timeout: Some(Duration::from_secs(20)),
+        wrap: None,
     };
     let out = run_setup(&o, &CancelToken::new()).unwrap();
     assert_eq!(out.status, SetupStatus::Succeeded);

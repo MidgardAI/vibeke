@@ -169,8 +169,16 @@ async fn setup_log_tails_the_log_and_respects_pane_scope() {
         .await
         .unwrap();
     assert_eq!(none["exists"], false);
+    // A log a contained process planted in the checkout is never read.
+    std::fs::write(wt.join(".vibeke/setup.log"), "planted\n").unwrap();
+    let still_none = dispatch(&srv, &user(), "task.setup_log", &json!({"task": "a1"}))
+        .await
+        .unwrap();
+    assert_eq!(still_none["exists"], false);
     let log: String = (0..2000).map(|i| format!("line {i}\n")).collect();
-    std::fs::write(wt.join(".vibeke/setup.log"), &log).unwrap();
+    let path = crate::task_workspace::setup_log_path(&srv, "a1");
+    let mut f = vk_tasks::create_log(&path).unwrap();
+    std::io::Write::write_all(&mut f, log.as_bytes()).unwrap();
     let all = dispatch(&srv, &user(), "task.setup_log", &json!({"task": "a1"}))
         .await
         .unwrap();

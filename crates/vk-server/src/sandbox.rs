@@ -194,7 +194,7 @@ pub enum BoxRunner {
 }
 
 impl BoxRunner {
-    fn runner(&self) -> &dyn Runner {
+    pub(crate) fn runner(&self) -> &dyn Runner {
         match self {
             BoxRunner::Sandbox(r) => r.as_ref(),
             BoxRunner::Container(c) => &c.runner,

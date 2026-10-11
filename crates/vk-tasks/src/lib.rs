@@ -112,8 +112,8 @@ pub use recreate::recreate_worktree;
 pub use remove::{RemovalEvent, RemovalJob, RemovalState, RemoveOptions, reap_trash, start_remove};
 pub use repo::{RepoInfo, Vcs, detect, repo_root};
 pub use setup::{
-    CancelToken, DEFAULT_SETUP_SCRIPT, SetupHandle, SetupOptions, SetupOutcome, SetupStatus,
-    run_setup, setup_env, spawn_setup,
+    CancelToken, DEFAULT_SETUP_SCRIPT, SetupHandle, SetupOptions, SetupOutcome, SetupStatus, Step,
+    StepWrapper, create_log, run_setup, setup_env, spawn_setup,
 };
 pub use status::{Blockers, BranchStatus, branch_status, removal_blockers};
 pub use taskfile::{

@@ -3,8 +3,9 @@
 use crate::Result;
 use crate::ports::Lease;
 use std::fs::File;
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::os::unix::process::CommandExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -30,12 +31,27 @@ impl CancelToken {
     }
 }
 
+/// One setup step as the host would run it: argv and the full environment.
+pub type Step = (Vec<String>, Vec<(String, String)>);
+
+/// Turns a setup step into the command that runs it inside the task's isolation (the same
+/// runner as the task's panes). The returned argv is spawned with exactly the returned
+/// environment (nothing inherited).
+#[derive(Clone)]
+pub struct StepWrapper(pub Arc<dyn Fn(Step) -> std::io::Result<Step> + Send + Sync>);
+
+impl std::fmt::Debug for StepWrapper {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("StepWrapper")
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct SetupOptions {
     /// Run with this cwd.
     pub worktree: PathBuf,
-    /// Script path, relative to `worktree` (or absolute). Run as `sh <script>`
-    /// after `commands`; an empty path or a missing file means no script.
+    /// Script path, relative to `worktree`. Run as `sh <script>` (relative, from the
+    /// worktree) after `commands`; an empty path or a missing file means no script.
     pub script: PathBuf,
     /// Shell commands (`sh -c`) run first, in order: the dependency install,
     /// then `setup.run`. The first failing step ends setup.
@@ -44,9 +60,13 @@ pub struct SetupOptions {
     pub lease: Option<Lease>,
     /// Extra environment (e.g. the `[env]` table), applied last.
     pub extra_env: Vec<(String, String)>,
-    /// stdout+stderr are written here (truncated first).
+    /// stdout+stderr are written here. The file is replaced, never followed: a symlink or
+    /// hard link at this path is removed first and a new file is created.
     pub log_path: PathBuf,
     pub timeout: Option<Duration>,
+    /// Run every step through this wrapper (a contained task's runner). `None` runs the steps
+    /// on the host with the server's environment.
+    pub wrap: Option<StepWrapper>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -116,10 +136,7 @@ pub fn run_setup(opts: &SetupOptions, cancel: &CancelToken) -> Result<SetupOutco
     if script.is_none() && opts.commands.is_empty() {
         return Ok(done(SetupStatus::Skipped));
     }
-    if let Some(p) = opts.log_path.parent() {
-        std::fs::create_dir_all(p)?;
-    }
-    let mut log = File::create(&opts.log_path)?;
+    let mut log = create_log(&opts.log_path)?;
     let env: Vec<(String, String)> = setup_env(&opts.task_id, &opts.worktree, opts.lease.as_ref())
         .into_iter()
         .chain(opts.extra_env.iter().cloned())
@@ -129,25 +146,55 @@ pub fn run_setup(opts: &SetupOptions, cancel: &CancelToken) -> Result<SetupOutco
         .iter()
         .map(|c| (c.clone(), vec!["-c".to_string(), c.clone()]))
         .collect();
-    if let Some(sc) = &script {
+    if script.is_some() {
+        // Relative to the worktree (the cwd): the same path inside a box that mounts the
+        // checkout somewhere else.
         steps.push((
             format!("sh {}", opts.script.display()),
-            vec![sc.to_string_lossy().into_owned()],
+            vec![opts.script.to_string_lossy().into_owned()],
         ));
     }
     for (label, args) in steps {
         use std::io::Write;
         let _ = writeln!(log, "$ {label}");
-        let mut cmd = Command::new("sh");
-        cmd.args(&args)
-            .current_dir(&opts.worktree)
+        let mut cmd = match &opts.wrap {
+            None => {
+                let mut c = Command::new("sh");
+                c.args(&args);
+                for (k, v) in &env {
+                    c.env(k, v);
+                }
+                c
+            }
+            Some(w) => {
+                let argv: Vec<String> = std::iter::once("sh".to_string())
+                    .chain(args.iter().cloned())
+                    .collect();
+                // The runner scrubs the host environment the same way it does for panes.
+                let mut full: Vec<(String, String)> = std::env::vars()
+                    .filter(|(k, _)| !env.iter().any(|(n, _)| n == k))
+                    .collect();
+                full.extend(env.iter().cloned());
+                let (argv, wenv) = match (w.0)((argv, full)) {
+                    Ok(x) => x,
+                    Err(e) => {
+                        let _ = writeln!(log, "setup cannot run in the task's isolation: {e}");
+                        return Ok(done(SetupStatus::Failed { exit_code: None }));
+                    }
+                };
+                let Some((prog, rest)) = argv.split_first() else {
+                    return Ok(done(SetupStatus::Failed { exit_code: None }));
+                };
+                let mut c = Command::new(prog);
+                c.args(rest).env_clear().envs(wenv);
+                c
+            }
+        };
+        cmd.current_dir(&opts.worktree)
             .stdin(Stdio::null())
             .stdout(Stdio::from(log.try_clone()?))
             .stderr(Stdio::from(log.try_clone()?))
             .process_group(0);
-        for (k, v) in &env {
-            cmd.env(k, v);
-        }
         let mut child = cmd.spawn()?;
         let pid = child.id();
         loop {
@@ -185,6 +232,29 @@ pub fn run_setup(opts: &SetupOptions, cancel: &CancelToken) -> Result<SetupOutco
     Ok(done(SetupStatus::Succeeded))
 }
 
+/// Create the setup log at `path` without following links: the parent directories are
+/// created private (`0700`), an existing entry (file, symlink or hard link) is removed, and a
+/// new `0600` file is created exclusively with `O_NOFOLLOW`.
+pub fn create_log(path: &Path) -> Result<File> {
+    if let Some(p) = path.parent() {
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(p)?;
+    }
+    match std::fs::remove_file(path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e.into()),
+    }
+    Ok(std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .mode(0o600)
+        .open(path)?)
+}
+
 /// A setup running on a background thread.
 pub struct SetupHandle {
     cancel: CancelToken,
@@ -212,5 +282,81 @@ pub fn spawn_setup(opts: SetupOptions) -> SetupHandle {
     SetupHandle {
         cancel,
         join: thread::spawn(move || run_setup(&opts, &c)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn opts(dir: &Path, log: PathBuf) -> SetupOptions {
+        SetupOptions {
+            worktree: dir.to_path_buf(),
+            script: PathBuf::new(),
+            commands: vec!["echo hi".into()],
+            task_id: "t1".into(),
+            lease: None,
+            extra_env: vec![("EXTRA".into(), "yes".into())],
+            log_path: log,
+            timeout: Some(Duration::from_secs(20)),
+            wrap: None,
+        }
+    }
+
+    /// Review finding D1.5: a symlink planted at the log path is replaced, not followed.
+    #[test]
+    fn log_never_follows_a_planted_symlink() {
+        let t = tempfile::tempdir().unwrap();
+        let victim = t.path().join("victim");
+        std::fs::write(&victim, "keep me").unwrap();
+        let log = t.path().join("logs/setup.log");
+        std::fs::create_dir_all(log.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&victim, &log).unwrap();
+        let out = run_setup(&opts(t.path(), log.clone()), &CancelToken::new()).unwrap();
+        assert_eq!(out.status, SetupStatus::Succeeded);
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "keep me");
+        assert!(
+            !std::fs::symlink_metadata(&log)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert!(std::fs::read_to_string(&log).unwrap().contains("hi"));
+    }
+
+    /// Review finding D1.3: with a wrapper every step runs through it, with exactly the
+    /// environment the wrapper returns.
+    #[test]
+    fn wrapped_steps_run_through_the_wrapper_with_its_env_only() {
+        let t = tempfile::tempdir().unwrap();
+        let seen = Arc::new(std::sync::Mutex::new(Vec::<Vec<String>>::new()));
+        let s2 = seen.clone();
+        let mut o = opts(t.path(), t.path().join("setup.log"));
+        o.commands = vec!["echo \"extra=$EXTRA wrapped=$WRAPPED home=${HOME:-none}\"".into()];
+        o.wrap = Some(StepWrapper(Arc::new(move |(argv, env): Step| {
+            s2.lock().unwrap().push(argv.clone());
+            assert!(env.iter().any(|(k, v)| k == "EXTRA" && v == "yes"));
+            Ok((argv, vec![("WRAPPED".into(), "1".into())]))
+        })));
+        let out = run_setup(&o, &CancelToken::new()).unwrap();
+        assert_eq!(out.status, SetupStatus::Succeeded);
+        let log = std::fs::read_to_string(t.path().join("setup.log")).unwrap();
+        assert!(log.contains("extra= wrapped=1 home=none"), "{log}");
+        assert_eq!(seen.lock().unwrap()[0][0], "sh");
+    }
+
+    #[test]
+    fn a_failing_wrapper_fails_setup_without_running_anything() {
+        let t = tempfile::tempdir().unwrap();
+        let mut o = opts(t.path(), t.path().join("setup.log"));
+        o.commands = vec!["touch ran".into()];
+        o.wrap = Some(StepWrapper(Arc::new(|_| {
+            Err(std::io::Error::other("box is gone"))
+        })));
+        let out = run_setup(&o, &CancelToken::new()).unwrap();
+        assert_eq!(out.status, SetupStatus::Failed { exit_code: None });
+        assert!(!t.path().join("ran").exists());
+        let log = std::fs::read_to_string(t.path().join("setup.log")).unwrap();
+        assert!(log.contains("box is gone"));
     }
 }

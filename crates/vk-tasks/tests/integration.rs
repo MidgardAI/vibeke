@@ -310,6 +310,7 @@ fn setup_opts(wt: &Path, log: &Path, lease: Option<Lease>) -> SetupOptions {
         extra_env: vec![("EXTRA".into(), "yes".into())],
         log_path: log.to_path_buf(),
         timeout: Some(Duration::from_secs(20)),
+        wrap: None,
     }
 }
 

@@ -1005,7 +1005,10 @@ fn task_cfg(p: &Value) -> vk_tasks::WorktreeConfig {
     cfg
 }
 
-/// blake3 over the `.vibeke/` tree (relative paths + contents, sorted; logs excluded).
+/// blake3 over the `.vibeke/` tree (relative paths + contents, sorted). Every file counts,
+/// logs too: Vibeke writes its own logs (the setup log) in its state dir, never here. A setup
+/// script must live in this tree (`task_workspace::script_in_vibeke_dir`), so its content is
+/// always part of the digest.
 pub fn vibeke_dir_digest(root: &std::path::Path) -> Option<String> {
     let dir = root.join(".vibeke");
     if !dir.is_dir() {
@@ -1019,7 +1022,7 @@ pub fn vibeke_dir_digest(root: &std::path::Path) -> Option<String> {
             let ft = e.file_type().ok()?;
             if ft.is_dir() {
                 stack.push(path);
-            } else if !path.extension().is_some_and(|x| x == "log") {
+            } else {
                 files.push(path);
             }
         }
@@ -1110,7 +1113,14 @@ pub fn policy_trust(server: &Server, p: &Value) -> R {
             d.clone(),
         );
     }
-    let script = std::fs::read_to_string(repo.join(".vibeke/setup.sh")).ok();
+    // The script setup would run (the task file's `setup.script` when it is inside `.vibeke/`).
+    let script_rel = vk_tasks::TaskFile::load(&repo)
+        .ok()
+        .flatten()
+        .and_then(|f| f.setup.script)
+        .filter(|s| crate::task_workspace::script_in_vibeke_dir(s))
+        .unwrap_or_else(|| vk_tasks::DEFAULT_SETUP_SCRIPT.to_string());
+    let script = std::fs::read_to_string(repo.join(&script_rel)).ok();
     let devcontainer = dc.as_ref().map(|d| {
         json!({
             "file": d.path, "digest": dc_digest, "image": d.image,
@@ -1575,6 +1585,7 @@ async fn task_create(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         trusted,
     );
     setup_plan.digest = digest.clone();
+    warnings.extend(setup_plan.warnings.iter().cloned());
     let cwd = checkout.path.to_string_lossy().into_owned();
     let mut isolation = vk_proto::model::Isolation {
         yolo: iso_req.yolo,
