@@ -803,7 +803,7 @@ mod tests {
     /// Run the classic-BPF program on a syscall (a tiny interpreter for the instructions the
     /// generator emits) and return the action.
     fn eval(p: &[SockFilter], arch: Arch, nr: u32, args: [u64; 2]) -> u32 {
-        let mut data = vec![0u8; 64];
+        let mut data = [0u8; 64];
         data[0..4].copy_from_slice(&nr.to_le_bytes());
         data[4..8].copy_from_slice(&arch.audit().to_le_bytes());
         data[16..24].copy_from_slice(&args[0].to_le_bytes());

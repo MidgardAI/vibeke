@@ -635,7 +635,7 @@ pub async fn run_as<I: IntoIterator<Item = String>>(prog: &'static str, args: I)
                 return Ok(());
             }
             let lock = state.lock()?;
-            let (c, _) = state.revoke_cascade(&lock, &[device.clone()], "cli")?;
+            let (c, _) = state.revoke_cascade(&lock, std::slice::from_ref(&device), "cli")?;
             if c.devices.is_empty() {
                 bail!("no device or pending invitation {device}");
             }

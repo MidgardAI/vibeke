@@ -242,7 +242,7 @@ fn port_free(port: u16) -> bool {
         SocketAddr::from((Ipv4Addr::UNSPECIFIED, port)),
         SocketAddr::from((Ipv6Addr::UNSPECIFIED, port)),
     ];
-    addrs.iter().all(|a| probe_bind(a))
+    addrs.iter().all(probe_bind)
 }
 
 fn probe_bind(a: &SocketAddr) -> bool {

@@ -266,6 +266,9 @@ struct Denial {
     reason: &'static str,
 }
 
+/// Touch points without an id that are down now (`(id, x, y)`), and the next free id.
+type TouchIds = (Vec<(i64, f64, f64)>, i64);
+
 pub struct Session {
     pub id: String,
     pub handle: String,
@@ -296,7 +299,7 @@ pub struct Session {
     human: Mutex<Option<String>>,
     /// Ids given to touch points that came without one, for the fingers down now (`(id, x, y)`),
     /// and the next free id: a finger keeps its id while others lift ([`assign_touch_ids`]).
-    touches: Mutex<(Vec<(i64, f64, f64)>, i64)>,
+    touches: Mutex<TouchIds>,
     /// Data-saving screencast (a viewer on a cellular network or in the background): CSS
     /// pixels, lower quality, every other frame.
     data_saver: AtomicBool,
@@ -539,18 +542,17 @@ impl AgentBrowsers {
             .session(target)
             .ok_or_else(|| not_found("browser_session", target))?;
         let cdp = self.cdp().await?;
-        if sess.screencast_subs.fetch_add(1, Ordering::SeqCst) == 0 {
-            if let Err(e) = call(
+        if sess.screencast_subs.fetch_add(1, Ordering::SeqCst) == 0
+            && let Err(e) = call(
                 &cdp,
                 Some(&sess.cdp_session),
                 "Page.startScreencast",
                 sess.screencast_params(),
             )
             .await
-            {
-                sess.screencast_subs.fetch_sub(1, Ordering::SeqCst);
-                return Err(e);
-            }
+        {
+            sess.screencast_subs.fetch_sub(1, Ordering::SeqCst);
+            return Err(e);
         }
         Ok(ScreencastSub {
             session: sess.handle.clone(),
