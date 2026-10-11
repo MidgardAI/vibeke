@@ -588,7 +588,7 @@ group.add :: {group: Target, workspace?: Target, index?: int} => {workspace: Wor
 group.remove :: {workspace?: Target, index?: int} => {workspace: Workspace, group: string|null}
 workspace.list :: {group?: Target} => {workspaces: [Workspace]}
 workspace.get :: {workspace?: Target} => {workspace: Workspace}
-workspace.create :: {cwd?: string, name?: string, group?: Target, focus?: bool = false, layout?: LayoutSpec, command?: [string]} => {workspace: Workspace, tab: Tab, root_pane: Pane}
+workspace.create :: {cwd?: string, name?: string, group?: Target, focus?: bool = false, layout?: LayoutSpec, command?: [string], env?: {*: string}} => {workspace: Workspace, tab: Tab, root_pane: Pane}
 workspace.rename :: {workspace?: Target, name: string|null} => {workspace: Workspace}
 workspace.focus :: {workspace: Target, client?: string} => {workspace: Workspace}
 workspace.move :: {workspace: Target, group?: Target|null, index?: int, delta?: int} => {workspaces: [Workspace]}
@@ -597,7 +597,7 @@ workspace.close :: {workspace?: Target, force?: bool = false} => {}
 
 # --- tabs ---
 tab.list :: {workspace?: Target} => {tabs: [Tab]}
-tab.create :: {workspace?: Target, cwd?: string, title?: string, focus?: bool = false, command?: [string], layout?: LayoutSpec} => {tab: Tab, root_pane: Pane}
+tab.create :: {workspace?: Target, cwd?: string, title?: string, focus?: bool = false, command?: [string], layout?: LayoutSpec, env?: {*: string}} => {tab: Tab, root_pane: Pane}
 tab.rename :: {tab: Target, title: string|null} => {tab: Tab}
 tab.focus :: {tab: Target, client?: string} => {tab: Tab}
 tab.move :: {tab: Target, index: int, workspace?: Target} => {tabs: [Tab]}

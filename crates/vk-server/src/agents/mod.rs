@@ -25,7 +25,7 @@ pub mod screen_picker;
 #[cfg(test)]
 mod screen_picker_tests;
 mod screen_walk;
-mod selfreport;
+pub(crate) mod selfreport;
 pub mod tailer;
 pub mod usage;
 

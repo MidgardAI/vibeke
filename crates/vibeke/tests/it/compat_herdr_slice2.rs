@@ -289,7 +289,10 @@ fn layout_pane_move_swap_metadata_and_their_events() {
         "{r}"
     );
     let e = ev.until("layout_updated");
-    assert!(e["data"].get("tab_id").is_none(), "Herdr: only `layout`: {e}");
+    assert!(
+        e["data"].get("tab_id").is_none(),
+        "Herdr: only `layout`: {e}"
+    );
     assert_eq!(e["data"]["layout"]["tab_id"], t1.as_str(), "{e}");
     assert!(
         (e["data"]["layout"]["splits"][0]["ratio"].as_f64().unwrap() - 0.7).abs() < 0.01,
@@ -540,7 +543,14 @@ fn worktree_create_open_and_worktree_events_reach_streams_and_hooks() {
     assert_eq!(wt["is_linked_worktree"], true, "{e}");
 
     // Opening the same worktree reuses its workspace.
-    let o = s_.herdr(&["worktree", "open", "--path", &path]);
+    let o = s_.herdr(&[
+        "worktree",
+        "open",
+        "--cwd",
+        repo.to_str().unwrap(),
+        "--path",
+        &path,
+    ]);
     assert_eq!(o["type"], "worktree_opened", "{o}");
     assert_eq!(o["created"], false);
     assert_eq!(o["workspace"]["workspace_id"], ws.as_str());
@@ -567,6 +577,8 @@ fn worktree_create_open_and_worktree_events_reach_streams_and_hooks() {
     let (_, e) = s_.herdr_fail(&[
         "worktree",
         "open",
+        "--cwd",
+        repo.to_str().unwrap(),
         "--path",
         "/tmp/definitely-not-a-worktree",
     ]);
@@ -579,7 +591,11 @@ fn worktree_create_open_and_worktree_events_reach_streams_and_hooks() {
         "--branch",
         "feat/compat",
     ]);
-    assert_eq!(e["error"]["code"], "conflict", "branch in use: {e}");
+    // Herdr: git's own message under `worktree_create_failed`.
+    assert_eq!(
+        e["error"]["code"], "worktree_create_failed",
+        "branch in use: {e}"
+    );
 }
 
 #[test]

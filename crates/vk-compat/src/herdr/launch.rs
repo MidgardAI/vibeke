@@ -146,13 +146,22 @@ fn protected(k: &str) -> bool {
 /// protected keys dropped as Herdr's `plugin_pane_launch_env` does. Errors are
 /// `(code, message)`.
 pub fn caller_env(env: Option<&Value>) -> Result<Vec<(String, String)>, (String, String)> {
+    let mut out = launch_env(env)?;
+    out.retain(|(k, _)| !protected(k));
+    Ok(out)
+}
+
+/// The `env` of `pane.split`, `tab.create` and `workspace.create`, checked and sorted like
+/// Herdr's `normalize_launch_env` (no keys dropped: the server keeps the pane's identity).
+pub fn launch_env(env: Option<&Value>) -> Result<Vec<(String, String)>, (String, String)> {
     let map = match env {
         None | Some(Value::Null) => return Ok(Vec::new()),
         Some(Value::Object(m)) => m,
         Some(_) => {
+            // Herdr's typed parse refuses the request (`invalid_request`).
             return Err((
-                "invalid_params".into(),
-                "env must be an object of strings".into(),
+                "invalid_request".into(),
+                "invalid request: invalid type: env must be a map of strings".into(),
             ));
         }
     };
@@ -160,8 +169,8 @@ pub fn caller_env(env: Option<&Value>) -> Result<Vec<(String, String)>, (String,
     for (key, value) in map {
         let Some(value) = value.as_str() else {
             return Err((
-                "invalid_params".into(),
-                format!("env value for {key} must be a string"),
+                "invalid_request".into(),
+                format!("invalid request: invalid type: env value for {key} must be a string"),
             ));
         };
         if key.is_empty() {
@@ -188,7 +197,6 @@ pub fn caller_env(env: Option<&Value>) -> Result<Vec<(String, String)>, (String,
         out.push((key.clone(), value.to_string()));
     }
     out.sort_by(|a, b| a.0.cmp(&b.0));
-    out.retain(|(k, _)| !protected(k));
     Ok(out)
 }
 
@@ -349,7 +357,7 @@ mod tests {
         );
         assert_eq!(
             caller_env(Some(&json!({"K": 1}))).unwrap_err().0,
-            "invalid_params"
+            "invalid_request"
         );
     }
 

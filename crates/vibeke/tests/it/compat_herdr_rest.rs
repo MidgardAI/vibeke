@@ -216,7 +216,7 @@ fn herdr_rest_navigation_snapshot_and_small_methods() {
             "pane.input.set",
             json!({"pane_id": p1, "right_click": "menu"})
         ),
-        "invalid_params"
+        "invalid_request"
     );
     assert_eq!(
         err_code(
@@ -259,7 +259,7 @@ fn herdr_rest_navigation_snapshot_and_small_methods() {
         err_code(&s_, "server.ssh_agent.register", json!({})),
         "connection_local_only"
     );
-    let r = call(&s_, "pane.clear", json!({"pane_id": p1}));
+    let r = call(&s_, "pane.copy_motion", json!({"pane_id": p1}));
     assert_eq!(r["error"]["code"], "unsupported", "{r}");
     assert!(
         s(&r["error"]["message"]).contains("does not serve it"),
@@ -285,6 +285,20 @@ fn herdr_rest_navigation_snapshot_and_small_methods() {
         order.iter().position(|w| w == &ws).unwrap(),
     );
     assert_eq!(b, a + 1, "{order:?}");
+    // One reorder event for the whole block (Herdr's `workspace.reordered`), carried by one
+    // native `workspace.moved` with the block.
+    let moved = s_.events("workspace.moved");
+    let blocks: Vec<&Value> = moved
+        .iter()
+        .filter(|e| e["data"].get("workspace_ids").is_some())
+        .collect();
+    assert_eq!(blocks.len(), 1, "{moved:?}");
+    assert_eq!(blocks[0]["data"]["workspace_ids"], json!([w2]), "{moved:?}");
+    assert_eq!(
+        blocks[0]["data"]["before_workspace_id"],
+        ws.as_str(),
+        "{moved:?}"
+    );
     assert_eq!(
         err_code(&s_, "workspace.move_block", json!({"workspace_ids": []})),
         "workspace_move_block_failed"
@@ -381,7 +395,7 @@ fn herdr_rest_worktree_remove() {
     let o = ok(
         &s_,
         "worktree.open",
-        json!({"path": checkout.to_str().unwrap()}),
+        json!({"path": checkout.to_str().unwrap(), "cwd": main.to_str().unwrap()}),
     );
     let ws = s(&o["workspace"]["workspace_id"]);
     let r = ok(&s_, "worktree.remove", json!({"workspace_id": ws}));
@@ -411,7 +425,7 @@ fn herdr_rest_worktree_remove() {
     let o = ok(
         &s_,
         "worktree.open",
-        json!({"path": dirty.to_str().unwrap()}),
+        json!({"path": dirty.to_str().unwrap(), "cwd": main.to_str().unwrap()}),
     );
     let ws = s(&o["workspace"]["workspace_id"]);
     assert_eq!(
@@ -426,6 +440,553 @@ fn herdr_rest_worktree_remove() {
     );
     assert_eq!(r["forced"], true, "{r}");
     assert!(!dirty.exists());
+}
+
+#[test]
+fn herdr_rest_worktree_open_and_create_take_herdrs_params() {
+    let s_ = session("");
+    write(
+        &s_.path("config.toml"),
+        &format!(
+            "[tasks]\nroot = \"{}\"\nfetch_before_create = false\n",
+            s_.path("wt").display()
+        ),
+    );
+    let main = s_.path("app");
+    repo(&main);
+    let m = main.to_str().unwrap();
+    let feat = s_.path("app-feat");
+    git(
+        &main,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "feat",
+            feat.to_str().unwrap(),
+        ],
+    );
+
+    // `worktree.open` by branch from `cwd`; `label` names the new workspace. The main
+    // checkout gets its parent workspace first, as in Herdr.
+    let o = ok(
+        &s_,
+        "worktree.open",
+        json!({"cwd": m, "branch": "feat", "label": "Feature"}),
+    );
+    assert_eq!(o["type"], "worktree_opened", "{o}");
+    assert_eq!(o["already_open"], false, "{o}");
+    assert_eq!(o["worktree"]["path"], feat.to_str().unwrap(), "{o}");
+    assert_eq!(o["worktree"]["branch"], "feat", "{o}");
+    assert_eq!(o["worktree"]["is_linked_worktree"], true, "{o}");
+    assert_eq!(o["worktree"]["label"], "app", "{o}");
+    assert_eq!(o["workspace"]["label"], "Feature", "{o}");
+    let ws = s(&o["workspace"]["workspace_id"]);
+    assert_eq!(o["worktree"]["open_workspace_id"], ws.as_str(), "{o}");
+    assert_eq!(o["tab"]["workspace_id"], ws.as_str(), "{o}");
+    assert!(o["root_pane"]["pane_id"].is_string(), "{o}");
+    let l = ok(&s_, "worktree.list", json!({"cwd": m}));
+    let parent = s(&l["source"]["source_workspace_id"]);
+    assert!(!parent.is_empty() && parent != ws, "{l}");
+    // Again: the same workspace, `already_open`.
+    let o = ok(
+        &s_,
+        "worktree.open",
+        json!({"workspace_id": parent, "path": feat.to_str().unwrap()}),
+    );
+    assert_eq!(o["already_open"], true, "{o}");
+    assert_eq!(o["workspace"]["workspace_id"], ws.as_str(), "{o}");
+
+    // Herdr's errors: exactly one of path/branch, an unknown branch, a linked source, a
+    // relative path.
+    for (params, code) in [
+        (json!({"cwd": m}), "invalid_request"),
+        (
+            json!({"cwd": m, "path": "/x", "branch": "feat"}),
+            "invalid_request",
+        ),
+        (json!({"cwd": m, "branch": "nope"}), "worktree_not_found"),
+        (json!({"cwd": m, "path": "/nope"}), "worktree_not_found"),
+        (
+            json!({"cwd": feat.to_str().unwrap(), "branch": "feat"}),
+            "linked_worktree_source",
+        ),
+        (json!({"cwd": "app", "branch": "feat"}), "invalid_request"),
+    ] {
+        assert_eq!(
+            err_code(&s_, "worktree.open", params.clone()),
+            code,
+            "{params}"
+        );
+    }
+
+    // `worktree.create` with an explicit `path`, `base` and `label`.
+    let dest = s_.path("elsewhere/app-two");
+    let c = ok(
+        &s_,
+        "worktree.create",
+        json!({"cwd": m, "branch": "two", "base": "main", "path": dest.to_str().unwrap(), "label": "Two"}),
+    );
+    assert_eq!(c["type"], "worktree_created", "{c}");
+    assert_eq!(c["worktree"]["path"], dest.to_str().unwrap(), "{c}");
+    assert_eq!(c["worktree"]["branch"], "two", "{c}");
+    assert_eq!(c["worktree"]["is_linked_worktree"], true, "{c}");
+    assert_eq!(c["workspace"]["label"], "Two", "{c}");
+    assert!(dest.join("README.md").exists(), "{c}");
+    assert!(
+        c["tab"]["tab_id"].is_string() && c["root_pane"]["pane_id"].is_string(),
+        "{c}"
+    );
+    // An existing local branch is checked out rather than created.
+    git(&main, &["branch", "three"]);
+    let c = ok(
+        &s_,
+        "worktree.create",
+        json!({"cwd": m, "branch": "three", "path": s_.path("app-three").to_str().unwrap()}),
+    );
+    assert_eq!(c["worktree"]["branch"], "three", "{c}");
+    // Without `branch`, Herdr's generated `worktree/<adjective>-<noun>-<hex>`, under the
+    // tasks root.
+    let c = ok(&s_, "worktree.create", json!({"cwd": m}));
+    let b = s(&c["worktree"]["branch"]);
+    assert!(b.starts_with("worktree/"), "{c}");
+    assert!(
+        s(&c["worktree"]["path"]).starts_with(s_.path("wt/app").to_str().unwrap()),
+        "{c}"
+    );
+    assert_eq!(
+        err_code(&s_, "worktree.create", json!({"cwd": m, "branch": "  "})),
+        "invalid_request"
+    );
+    assert_eq!(
+        err_code(
+            &s_,
+            "worktree.create",
+            json!({"cwd": m, "branch": "x", "path": "rel/path"})
+        ),
+        "invalid_request"
+    );
+    assert_eq!(
+        err_code(
+            &s_,
+            "worktree.create",
+            json!({"cwd": m, "branch": "two", "path": dest.to_str().unwrap()})
+        ),
+        "worktree_create_failed"
+    );
+
+    // `worktree.list` reports bare entries as Herdr does, and `trust_repository` is accepted.
+    let l = ok(
+        &s_,
+        "worktree.list",
+        json!({"cwd": m, "trust_repository": true}),
+    );
+    let wts = l["worktrees"].as_array().unwrap();
+    assert!(wts.iter().all(|e| e["is_bare"] == false), "{l}");
+    assert_eq!(wts.len(), 5, "{l}");
+}
+
+/// Echo `$name` in a pane and wait for `want` (Herdr's `pane.wait_for_output`).
+fn expect_env(s_: &Session, pane: &str, name: &str, want: &str) {
+    s_.herdr(&[
+        "pane",
+        "send-text",
+        pane,
+        &format!("echo \"env-$((1+1))-${name}\"\n"),
+    ]);
+    let r = ok(
+        s_,
+        "pane.wait_for_output",
+        json!({"pane_id": pane, "source": "recent", "match": {"type": "substring", "value": format!("env-2-{want}")}, "timeout_ms": 20000}),
+    );
+    assert_eq!(r["type"], "output_matched", "{r}");
+}
+
+#[test]
+fn herdr_rest_launch_env_for_split_tab_and_workspace() {
+    let s_ = session("");
+    let w = ok(
+        &s_,
+        "workspace.create",
+        json!({"cwd": "/tmp", "env": {"HP5_WS": "ws-value"}}),
+    );
+    let ws = s(&w["workspace"]["workspace_id"]);
+    let root = s(&w["root_pane"]["pane_id"]);
+    expect_env(&s_, &root, "HP5_WS", "ws-value");
+
+    // `pane.split` with `env`; the pane's identity cannot be replaced.
+    let sp_ = ok(
+        &s_,
+        "pane.split",
+        json!({"target_pane_id": root, "direction": "right", "env": {"HP5_SPLIT": "split-value", "VIBEKE_PANE_ID": "forged", "HERDR_PANE_ID": "forged"}, "right_click": "pane"}),
+    );
+    let split = s(&sp_["pane"]["pane_id"]);
+    expect_env(&s_, &split, "HP5_SPLIT", "split-value");
+    expect_env(&s_, &split, "VIBEKE_PANE_ID", &split);
+
+    // `tab.create` with `env`.
+    let t = ok(
+        &s_,
+        "tab.create",
+        json!({"workspace_id": ws, "env": {"HP5_TAB": "tab-value"}}),
+    );
+    expect_env(&s_, &s(&t["root_pane"]["pane_id"]), "HP5_TAB", "tab-value");
+
+    // Herdr's `normalize_launch_env` errors and the `right_click` enum.
+    assert_eq!(
+        err_code(
+            &s_,
+            "pane.split",
+            json!({"target_pane_id": root, "direction": "down", "env": {"A=B": "x"}})
+        ),
+        "invalid_env"
+    );
+    assert_eq!(
+        err_code(&s_, "tab.create", json!({"env": {"": "x"}})),
+        "invalid_env"
+    );
+    assert_eq!(
+        err_code(
+            &s_,
+            "pane.split",
+            json!({"target_pane_id": root, "direction": "down", "right_click": "menu"})
+        ),
+        "invalid_request"
+    );
+    assert_eq!(
+        err_code(
+            &s_,
+            "pane.split",
+            json!({"target_pane_id": "w99:p1", "direction": "down"})
+        ),
+        "pane_not_found"
+    );
+    // `workspace_id` splits that workspace's focused pane.
+    let sp2 = ok(
+        &s_,
+        "pane.split",
+        json!({"workspace_id": ws, "direction": "down"}),
+    );
+    assert_eq!(sp2["pane"]["workspace_id"], ws.as_str(), "{sp2}");
+    // The native API takes `env` too.
+    let n = s_.api(
+        "workspace.create",
+        json!({"cwd": "/tmp", "env": {"HP5_NATIVE": "native-value"}}),
+    );
+    let np = s(&n["root_pane"]["handle"]);
+    expect_env(&s_, &np, "HP5_NATIVE", "native-value");
+    let bad = s_
+        .cmd(&[
+            "api",
+            "call",
+            "pane.split",
+            &json!({"pane": np, "env": {"K": 1}}).to_string(),
+        ])
+        .output()
+        .unwrap();
+    assert!(!bad.status.success(), "a non-string env value is refused");
+}
+
+#[test]
+fn herdr_rest_pane_links_resolve_and_activate_like_a_click() {
+    let s_ = session("");
+    let src = s_.path("src/links");
+    write(
+        &src.join("herdr-plugin.toml"),
+        r#"id = "acme.links"
+name = "Links"
+version = "0.1.0"
+
+[[actions]]
+id = "open"
+title = "Open"
+command = ["sh", "-c", "printf '%s|%s|%s' \"$HERDR_PLUGIN_CLICKED_URL\" \"$HERDR_PLUGIN_LINK_HANDLER_ID\" \"$HERDR_PLUGIN_CONTEXT_JSON\" > \"$HERDR_PLUGIN_STATE_DIR/link.txt\""]
+
+[[link_handlers]]
+id = "example"
+title = "Example"
+pattern = '^https://example\.com/'
+action = "open"
+"#,
+    );
+    s_.json(&["plugin", "link", src.to_str().unwrap()]);
+    s_.json(&["plugin", "trust", "acme.links", "--legacy"]);
+    let created = ok(
+        &s_,
+        "workspace.create",
+        json!({"cwd": "/tmp", "focus": true}),
+    );
+    let ws = s(&created["workspace"]["workspace_id"]);
+    let pane = s(&created["root_pane"]["pane_id"]);
+    ok(&s_, "workspace.focus", json!({"workspace_id": ws}));
+    s_.herdr(&[
+        "pane",
+        "send-text",
+        &pane,
+        "printf 'go: https://example.com/x/%s, done\\n' $((40+2))\n",
+    ]);
+    ok(
+        &s_,
+        "pane.wait_for_output",
+        json!({"pane_id": pane, "source": "visible", "match": {"type": "substring", "value": "go: https://example.com/x/42"}, "timeout_ms": 20000}),
+    );
+    let read = ok(
+        &s_,
+        "pane.read",
+        json!({"pane_id": pane, "source": "visible"}),
+    );
+    let text = s(&read["read"]["text"]);
+    let (row, line) = text
+        .lines()
+        .enumerate()
+        .find(|(_, l)| l.starts_with("go: https://"))
+        .unwrap();
+    let col = line.find("example").unwrap() as u64;
+
+    // Resolve: the URL's cells, without the trailing comma.
+    let r = ok(
+        &s_,
+        "pane.link.resolve",
+        json!({"pane_id": pane, "viewport_row": row, "col": col}),
+    );
+    assert_eq!(r["type"], "pane_link_resolved", "{r}");
+    assert_eq!(
+        r["regions"],
+        json!([{"row": row, "start_col": 4, "end_col": 4 + "https://example.com/x/42".len() - 1}]),
+        "{r}"
+    );
+    // A blank cell has no link.
+    let r = ok(
+        &s_,
+        "pane.link.resolve",
+        json!({"pane_id": pane, "viewport_row": row, "col": 3}),
+    );
+    assert_eq!(r["regions"], json!([]), "{r}");
+
+    // Activate: the handler runs like a click, with Herdr's link invocation context.
+    let a = ok(
+        &s_,
+        "pane.link.activate",
+        json!({"pane_id": pane, "viewport_row": row, "col": col, "offset_from_bottom": 0}),
+    );
+    assert_eq!(
+        a,
+        json!({"type": "pane_link_activated", "url": "https://example.com/x/42", "handled": true})
+    );
+    let out = s_.path("state/plugins/state/acme.links/link.txt");
+    crate::support::plugins::wait_for("link handler", 15000, || out.exists());
+    let got = crate::support::plugins::read(&out);
+    let mut parts = got.splitn(3, '|');
+    assert_eq!(parts.next(), Some("https://example.com/x/42"), "{got}");
+    assert_eq!(parts.next(), Some("example"), "{got}");
+    let ctx: Value = serde_json::from_str(parts.next().unwrap()).unwrap();
+    assert_eq!(ctx["invocation_source"], "link_click", "{ctx}");
+    assert_eq!(ctx["clicked_url"], "https://example.com/x/42", "{ctx}");
+    assert_eq!(ctx["link_handler_id"], "example", "{ctx}");
+    assert_eq!(ctx["focused_pane_id"], pane.as_str(), "{ctx}");
+
+    // No handler matches a plain word; stale checks and errors as in Herdr.
+    let a = ok(
+        &s_,
+        "pane.link.activate",
+        json!({"pane_id": pane, "viewport_row": row, "col": 0}),
+    );
+    assert_eq!(a, json!({"type": "pane_link_activated", "handled": false}));
+    assert_eq!(
+        err_code(
+            &s_,
+            "pane.link.activate",
+            json!({"pane_id": pane, "viewport_row": row, "col": col, "offset_from_bottom": 5})
+        ),
+        "stale_content"
+    );
+    assert_eq!(
+        err_code(
+            &s_,
+            "pane.link.resolve",
+            json!({"pane_id": pane, "viewport_row": row, "col": col, "content_revision": 1})
+        ),
+        "stale_content"
+    );
+    assert_eq!(
+        err_code(
+            &s_,
+            "pane.link.resolve",
+            json!({"pane_id": "w99:p1", "viewport_row": 0, "col": 0})
+        ),
+        "pane_not_found"
+    );
+    assert_eq!(
+        err_code(&s_, "pane.link.resolve", json!({"pane_id": pane, "col": 0})),
+        "invalid_request"
+    );
+}
+
+#[test]
+fn herdr_rest_clear_selection_and_agent_manifests() {
+    let s_ = session("");
+    let created = ok(&s_, "workspace.create", json!({"cwd": "/tmp"}));
+    let pane = s(&created["root_pane"]["pane_id"]);
+    s_.herdr(&[
+        "pane",
+        "send-text",
+        &pane,
+        "printf 'sel-%s one\\nsel-%s two\\n' $((1+1)) $((2+1))\n",
+    ]);
+    ok(
+        &s_,
+        "pane.wait_for_output",
+        json!({"pane_id": pane, "source": "recent", "match": {"type": "substring", "value": "sel-3 two"}, "timeout_ms": 20000}),
+    );
+
+    // `pane.selection.read` over absolute rows (no scrollback yet: row = screen row).
+    let read = ok(
+        &s_,
+        "pane.read",
+        json!({"pane_id": pane, "source": "visible"}),
+    );
+    let text = s(&read["read"]["text"]);
+    let row = text
+        .lines()
+        .position(|l| l.starts_with("sel-2 one"))
+        .unwrap();
+    let r = ok(
+        &s_,
+        "pane.selection.read",
+        json!({"pane_id": pane, "anchor": {"row": row, "col": 4}, "cursor": {"row": row + 1, "col": 4}}),
+    );
+    assert_eq!(
+        r,
+        json!({"type": "pane_selection", "pane_id": pane, "text": "2 one\nsel-3"})
+    );
+    assert_eq!(
+        err_code(
+            &s_,
+            "pane.selection.read",
+            json!({"pane_id": pane, "anchor": {"row": 0, "col": 0}, "cursor": {"row": 0, "col": 1}, "content_revision": 1})
+        ),
+        "stale_content"
+    );
+    assert_eq!(
+        err_code(
+            &s_,
+            "pane.selection.read",
+            json!({"pane_id": pane, "anchor": {"row": 0, "col": 0}, "cursor": {"row": 100000, "col": 1}})
+        ),
+        "selection_unavailable"
+    );
+    assert_eq!(
+        err_code(
+            &s_,
+            "pane.selection.read",
+            json!({"pane_id": "w99:p1", "anchor": {"row": 0, "col": 0}, "cursor": {"row": 0, "col": 1}})
+        ),
+        "pane_not_found"
+    );
+
+    // `pane.clear`: the rows above the cursor and the scrollback are gone.
+    assert_eq!(
+        ok(&s_, "pane.clear", json!({"pane_id": pane})),
+        json!({"type": "ok"})
+    );
+    let after = ok(
+        &s_,
+        "pane.read",
+        json!({"pane_id": pane, "source": "recent", "lines": 200}),
+    );
+    assert!(!s(&after["read"]["text"]).contains("sel-2 one"), "{after}");
+    assert_eq!(
+        err_code(&s_, "pane.clear", json!({"pane_id": "w99:p1"})),
+        "pane_not_found"
+    );
+
+    // Agent manifests in Herdr's `AgentManifestInfo` shape.
+    let m = ok(&s_, "server.agent_manifests", json!({}));
+    assert_eq!(m["type"], "agent_manifest_status", "{m}");
+    let list = m["manifests"].as_array().unwrap();
+    assert!(!list.is_empty(), "{m}");
+    let claude = list.iter().find(|x| x["agent"] == "claude").unwrap();
+    assert_eq!(claude["source"], "bundled", "{m}");
+    assert_eq!(claude["source_kind"], "bundled", "{m}");
+    assert_eq!(claude["local_override_shadowing_remote"], false, "{m}");
+    let r = ok(&s_, "server.reload_agent_manifests", json!({}));
+    assert_eq!(r["type"], "agent_manifest_reload", "{r}");
+    assert_eq!(r["manifests"].as_array().unwrap().len(), list.len(), "{r}");
+
+    // The client-only methods stay `unsupported` with their reason.
+    for m in [
+        "pane.copy_motion",
+        "pane.copy_search",
+        "pane.edit_scrollback",
+        "command.invoke",
+        "client_shell.surface.set",
+        "integration.list",
+        "server.live_handoff",
+    ] {
+        assert_eq!(err_code(&s_, m, json!({})), "unsupported", "{m}");
+    }
+}
+
+#[test]
+fn herdr_rest_release_agent_follows_the_hook_authority() {
+    let s_ = session("");
+    let created = ok(&s_, "workspace.create", json!({"cwd": "/tmp"}));
+    let pane = s(&created["root_pane"]["pane_id"]);
+    let agents = |s_: &Session| {
+        ok(s_, "agent.list", json!({}))["agents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|a| a["pane_id"] == pane.as_str())
+            .count()
+    };
+    ok(
+        &s_,
+        "pane.report_agent",
+        json!({"pane_id": pane, "source": "hook-a", "agent": "claude", "state": "working", "seq": 5}),
+    );
+    assert_eq!(agents(&s_), 1);
+    // Another source, another agent, a stale seq: the holder keeps its authority.
+    for params in [
+        json!({"pane_id": pane, "source": "hook-b", "agent": "claude"}),
+        json!({"pane_id": pane, "source": "hook-a", "agent": "codex"}),
+        json!({"pane_id": pane, "source": "hook-a", "agent": "claude", "seq": 4}),
+    ] {
+        assert_eq!(ok(&s_, "pane.release_agent", params.clone())["type"], "ok");
+        assert_eq!(agents(&s_), 1, "{params}");
+    }
+    assert_eq!(
+        ok(
+            &s_,
+            "pane.clear_agent_authority",
+            json!({"pane_id": pane, "source": "hook-b"})
+        )["type"],
+        "ok"
+    );
+    assert_eq!(agents(&s_), 1, "another source cannot clear the authority");
+    // The holder releases: the self-reported run ends.
+    ok(
+        &s_,
+        "pane.release_agent",
+        json!({"pane_id": pane, "source": "hook-a", "agent": "claude", "seq": 6}),
+    );
+    assert_eq!(agents(&s_), 0);
+    // Herdr's own integrations never release by hook; the holder's source clears.
+    ok(
+        &s_,
+        "pane.report_agent",
+        json!({"pane_id": pane, "source": "herdr:claude", "agent": "claude", "state": "idle"}),
+    );
+    assert_eq!(agents(&s_), 1);
+    ok(
+        &s_,
+        "pane.release_agent",
+        json!({"pane_id": pane, "source": "herdr:claude", "agent": "claude"}),
+    );
+    assert_eq!(agents(&s_), 1, "official sources do not release");
+    ok(&s_, "pane.clear_agent_authority", json!({"pane_id": pane}));
+    assert_eq!(agents(&s_), 0);
 }
 
 fn write_plugin(dir: &Path) {
@@ -538,6 +1099,11 @@ fn herdr_rest_plugin_registry_cli_prints_like_herdr() {
     let dir = out.trim_end_matches('\n');
     assert_eq!(out.lines().count(), 1, "{out}");
     assert!(Path::new(dir).is_dir(), "{out}");
+    // Any id: Herdr encodes it into one directory name.
+    let (out, _, code) = shim(&s_, &["plugin", "config-dir", "Acme:X/y"]);
+    assert_eq!(code, 0);
+    assert!(out.trim_end().ends_with("/%41cme%3A%58%2Fy"), "{out}");
+    assert!(Path::new(out.trim_end()).is_dir(), "{out}");
 
     // Disable, enable, unlink: response lines.
     let (out, _, _) = shim(&s_, &["plugin", "disable", "acme.rest"]);
@@ -638,9 +1204,46 @@ fn herdr_rest_result_shapes_follow_the_schema() {
     assert_eq!(read["tab_id"], tab.as_str(), "{r}");
     assert_eq!(read["source"], "recent", "{r}");
     assert_eq!(read["format"], "text", "{r}");
-    assert_eq!(read["truncated"], false, "{r}");
-    assert!(read["revision"].is_u64(), "{r}");
+    // Herdr: the terminal has more rows (24 on screen) than the 20 read.
+    assert_eq!(read["truncated"], true, "{r}");
+    assert_eq!(read["revision"], 0, "Herdr reports revision 0: {r}");
     assert!(s(&read["text"]).contains("rest-23"), "{r}");
+    // `format: ansi` keeps the colours; `visible` with `lines` reports what it left out.
+    s_.herdr(&[
+        "pane",
+        "send-text",
+        &p1,
+        "printf '\\033[31mred-%s\\033[0m\\n' $((1+1))\n",
+    ]);
+    ok(
+        &s_,
+        "pane.wait_for_output",
+        json!({"pane_id": p1, "source": "recent", "match": {"type": "substring", "value": "red-2"}, "timeout_ms": 20000}),
+    );
+    let a = ok(
+        &s_,
+        "pane.read",
+        json!({"pane_id": p1, "source": "visible", "format": "ansi"}),
+    );
+    let t = s(&a["read"]["text"]);
+    assert_eq!(a["read"]["format"], "ansi", "{a}");
+    assert!(t.contains("\x1b[") && t.contains("red-2"), "{a}");
+    assert_eq!(a["read"]["truncated"], false, "{a}");
+    let plain = ok(
+        &s_,
+        "pane.read",
+        json!({"pane_id": p1, "source": "visible", "lines": 1}),
+    );
+    assert!(!s(&plain["read"]["text"]).contains('\x1b'), "{plain}");
+    assert_eq!(plain["read"]["truncated"], true, "{plain}");
+    assert_eq!(
+        err_code(
+            &s_,
+            "pane.read",
+            json!({"pane_id": p1, "source": "visible", "format": "html"})
+        ),
+        "invalid_request"
+    );
 
     // `pane.resize` and `pane.zoom` answer with their result objects and the layout.
     let r = ok(
@@ -677,6 +1280,11 @@ fn herdr_rest_result_shapes_follow_the_schema() {
     assert_eq!(
         n,
         json!({"type": "notification_show", "shown": true, "reason": "shown"})
+    );
+    // Herdr shows one API notification per second.
+    assert_eq!(
+        ok(&s_, "notification.show", json!({"title": "Again"})),
+        json!({"type": "notification_show", "shown": false, "reason": "rate_limited"})
     );
     assert_eq!(
         err_code(&s_, "notification.show", json!({"title": "  "})),

@@ -1736,6 +1736,92 @@ fn plugin_source_display(p: &Value) -> String {
     }
 }
 
+/// Herdr's `print_install_preview` (written to stderr), from the `InstalledPluginInfo` of the
+/// plugin being installed and of the one it replaces.
+fn install_preview(p: &Value, replaces: Option<&Value>) -> String {
+    let list = |k: &str| p[k].as_array().cloned().unwrap_or_default();
+    let cmd = |v: &Value| {
+        v["command"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .unwrap_or_default()
+    };
+    let text = |v: &Value| v.as_str().unwrap_or("").to_string();
+    let mut o = String::from("Plugin install preview:\n");
+    o.push_str(&format!("  id: {}\n", text(&p["plugin_id"])));
+    o.push_str(&format!("  name: {}\n", text(&p["name"])));
+    o.push_str(&format!("  version: {}\n", text(&p["version"])));
+    let src = &p["source"];
+    if let (Some(owner), Some(repo)) = (src["owner"].as_str(), src["repo"].as_str()) {
+        let subdir = src["subdir"]
+            .as_str()
+            .map(|d| format!("/{d}"))
+            .unwrap_or_default();
+        o.push_str(&format!("  source: {owner}/{repo}{subdir}\n"));
+    }
+    if let Some(r) = src["requested_ref"].as_str() {
+        o.push_str(&format!("  ref: {r}\n"));
+    }
+    if let Some(c) = src["resolved_commit"].as_str() {
+        o.push_str(&format!("  commit: {c}\n"));
+    }
+    for (label, k) in [
+        ("actions", "actions"),
+        ("startup commands", "startup"),
+        ("events", "events"),
+        ("panes", "panes"),
+        ("link handlers", "link_handlers"),
+        ("build commands", "build"),
+    ] {
+        o.push_str(&format!("  {label}: {}\n", list(k).len()));
+    }
+    let pf = herdr::current_platform();
+    for b in list("build") {
+        let platforms = b
+            .get("platforms")
+            .filter(|x| x.is_array())
+            .or_else(|| p.get("platforms").filter(|x| x.is_array()));
+        let supported = platforms.is_none_or(|x| {
+            x.as_array()
+                .is_some_and(|a| a.iter().any(|v| v.as_str() == Some(pf)))
+        });
+        let skip = if supported {
+            String::new()
+        } else {
+            format!(" (skipped on {pf})")
+        };
+        o.push_str(&format!("    build{skip}: {}\n", cmd(&b)));
+    }
+    for x in list("startup") {
+        o.push_str(&format!("    startup: {}\n", cmd(&x)));
+    }
+    for x in list("actions") {
+        o.push_str(&format!("    action {}: {}\n", text(&x["id"]), cmd(&x)));
+    }
+    for x in list("events") {
+        o.push_str(&format!("    event {}: {}\n", text(&x["on"]), cmd(&x)));
+    }
+    for x in list("panes") {
+        o.push_str(&format!("    pane {}: {}\n", text(&x["id"]), cmd(&x)));
+    }
+    for w in list("warnings") {
+        o.push_str(&format!("  warning: {}\n", text(&w)));
+    }
+    if let Some(e) = replaces {
+        o.push_str(&format!(
+            "  replaces: {} from {}\n",
+            text(&e["plugin_id"]),
+            plugin_source_display(e)
+        ));
+    }
+    o
+}
+
 /// Herdr's human `plugin list` (`print_plugin_list_human`).
 fn plugin_list_human(plugins: &[Value], dirs: &registry::PluginDirs) -> String {
     if plugins.is_empty() {
@@ -1775,16 +1861,6 @@ fn plugin_list_human(plugins: &[Value], dirs: &registry::PluginDirs) -> String {
         }
     }
     out
-}
-
-/// A plugin id that is safe as one path component (Herdr encodes any id into a directory name;
-/// Vibeke's per-plugin directories use the id itself).
-fn safe_plugin_id(id: &str) -> bool {
-    !id.is_empty()
-        && !id.starts_with('.')
-        && id
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | ':'))
 }
 
 /// `herdr plugin …` registry commands as Herdr 0.9.3 prints them: the response line
@@ -1854,12 +1930,7 @@ fn herdr_local(g: &Global, op: Local) -> i32 {
             EXIT_OK
         }
         Local::PluginConfigDir { id } => {
-            if !safe_plugin_id(&id) {
-                return plugin_cli_error(
-                    "invalid_plugin_id",
-                    "plugin id must be non-empty and contain only ASCII letters, digits, colon, dot, underscore, or hyphen",
-                );
-            }
+            // Any id: the directory name is Herdr's encoding of it (`path_component`).
             let d = dirs.config_dir(&id);
             let made = std::fs::create_dir_all(&d)
                 .and_then(|_| std::fs::create_dir_all(dirs.state_dir(&id)));
@@ -1913,6 +1984,7 @@ fn herdr_local(g: &Global, op: Local) -> i32 {
                 return 2;
             }
             let before = Registry::load(&dirs).ok();
+            let before_info = vk_server::compat::herdr_plugin_list(None);
             let quiet = Global {
                 quiet: true,
                 ..g.clone()
@@ -1943,6 +2015,25 @@ fn herdr_local(g: &Global, op: Local) -> i32 {
                     .cloned()
             });
             if let Some(e) = installed {
+                // Herdr's install preview on stderr, then its confirmation without `--yes`
+                // (declining removes the registration again).
+                let replaces = before_info.iter().find(|x| x["plugin_id"] == e.id.as_str());
+                if let Some(info) = vk_server::compat::herdr_plugin_list(Some(&e.id)).first() {
+                    eprint!("{}", install_preview(info, replaces));
+                }
+                // A replacement cannot be undone here (the previous checkout is gone), so only
+                // a new plugin is confirmed; either way it stays inactive until trusted.
+                if !yes && replaces.is_none() {
+                    eprint!("Install this plugin? [y/N] ");
+                    let _ = std::io::stderr().flush();
+                    let mut line = String::new();
+                    let _ = std::io::stdin().read_line(&mut line);
+                    if !matches!(line.trim(), "y" | "Y" | "yes" | "YES" | "Yes") {
+                        let _ = Registry::update(&dirs, |r| r.uninstall(&dirs, &e.id));
+                        eprintln!("plugin install cancelled");
+                        return EXIT_OK;
+                    }
+                }
                 println!("Installed {} from {}.", e.id, source);
                 println!("Config: {}", dirs.config_dir(&e.id).display());
                 if !yes {
@@ -2052,6 +2143,27 @@ pub async fn compat_cmd(g: &Global, args: &[String]) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn install_preview_prints_like_herdr() {
+        let p = json!({
+            "plugin_id": "acme.x", "name": "X", "version": "1.2.0",
+            "source": {"kind": "github", "owner": "acme", "repo": "tools", "subdir": "x", "requested_ref": "v1", "resolved_commit": "abc"},
+            "build": [{"command": ["make"]}, {"command": ["nmake"], "platforms": ["windows"]}],
+            "actions": [{"id": "go", "command": ["sh", "-c", "true"]}],
+            "events": [{"on": "pane.created", "command": ["hook"]}],
+            "warnings": ["w1"],
+        });
+        let old =
+            json!({"plugin_id": "acme.x", "plugin_root": "/old", "source": {"kind": "local"}});
+        assert_eq!(
+            install_preview(&p, Some(&old)),
+            "Plugin install preview:\n  id: acme.x\n  name: X\n  version: 1.2.0\n  source: acme/tools/x\n  ref: v1\n  commit: abc\n  actions: 1\n  startup commands: 0\n  events: 1\n  panes: 0\n  link handlers: 0\n  build commands: 2\n    build: make\n    build (skipped on "
+                .to_string()
+                + herdr::current_platform()
+                + "): nmake\n    action go: sh -c true\n    event pane.created: hook\n  warning: w1\n  replaces: acme.x from local:/old\n"
+        );
+    }
 
     #[test]
     fn response_lines_print_like_herdr() {

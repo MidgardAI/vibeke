@@ -21,8 +21,8 @@
 //! * **Method mapping**: Herdr methods are translated onto the native API (`api::dispatch`, so
 //!   native authorization and events apply) and results are projected to Herdr shapes with
 //!   Herdr-style ids (Vibeke handles); slice-2 methods live in [`ext`]. Known-but-unimplemented
-//!   baseline methods return an explicit `unsupported` error; `method_not_found` is reserved
-//!   for unknown methods.
+//!   baseline methods return an explicit `unsupported` error; unknown methods answer
+//!   `invalid_request`, as Herdr's typed request parse does.
 //! * **Plugins**: `plugin.action.list/run` (native) and `plugin.action.invoke` (compat) run
 //!   argv actions asynchronously with log records (output written by a [`capture`] helper into
 //!   files bounded per invocation and tailed from them, so it survives a server restart,
@@ -37,6 +37,7 @@ pub mod capture;
 mod ext;
 mod gap;
 mod limits;
+mod rest;
 pub mod trace;
 mod views;
 
@@ -85,6 +86,11 @@ struct State {
     next: AtomicU64,
     /// Live broker bindings by socket path.
     bindings: Mutex<HashMap<PathBuf, brokers::Live>>,
+    /// When `notification.show` last delivered (Herdr's one-per-second limit).
+    last_notification: Mutex<Option<std::time::Instant>>,
+    /// Herdr's hook authority per pane (Vibeke id): the `(source, agent)` of the last
+    /// accepted `pane.report_agent`, while its self-reported run lives.
+    authority: Mutex<HashMap<String, (String, String)>>,
     /// Reported metadata (`pane.report_metadata`, `workspace.report_metadata`) by Vibeke id,
     /// and the plugin-set window title (`client.window_title.set`).
     meta: Mutex<ext::Meta>,
@@ -579,6 +585,9 @@ fn read_only(method: &str) -> bool {
             | "plugin.list"
             | "plugin.action.list"
             | "plugin.log.list"
+            | "pane.selection.read"
+            | "pane.link.resolve"
+            | "server.agent_manifests"
     )
 }
 
@@ -689,6 +698,11 @@ pub async fn serve_wire(server: Arc<Server>, stream: UnixStream, caller: Caller)
     } else {
         "socket"
     };
+    // Herdr closes the connection without an answer for a blank, non-UTF-8 or over-long line.
+    if !wire::answers(&buf) {
+        trace_result(&caller, transport, "", None, Err("invalid_request"));
+        return;
+    }
     let req = match wire::parse_request(&buf) {
         Ok(r) => r,
         Err((id, e)) => {
@@ -804,7 +818,32 @@ pub async fn serve_wire(server: Arc<Server>, stream: UnixStream, caller: Caller)
             }
         }
     }
-    let r = call(&server, &caller, &req.method, &req.params).await;
+    // Herdr stops a wait when its client goes away (`should_stop_connection`): a wait here
+    // ends without an answer once the peer closes the connection.
+    let waits = matches!(
+        req.method.as_str(),
+        "events.wait" | "pane.wait_for_output" | "agent.wait"
+    );
+    let r = if waits && rd.limit() > 0 {
+        let fut = call(&server, &caller, &req.method, &req.params);
+        tokio::pin!(fut);
+        let mut probe = [0u8; 64];
+        loop {
+            tokio::select! {
+                r = &mut fut => break r,
+                n = rd.read(&mut probe) => match n {
+                    Ok(0) | Err(_) => {
+                        traced(Err("client_disconnected"));
+                        return;
+                    }
+                    // Bytes after the request line are ignored, as in Herdr.
+                    Ok(_) => {}
+                },
+            }
+        }
+    } else {
+        call(&server, &caller, &req.method, &req.params).await
+    };
     audit_call(
         &server,
         &caller,
@@ -1461,8 +1500,14 @@ fn project_event(
                 .map(|(w, _)| w.to_string())
         });
     let status_after = sid("pane").and_then(|p| sn.pane_status(p));
+    // A block move (`workspace.move_block`) is one `workspace.moved` with the block in its data.
+    let kind = if ev.kind == "workspace.moved" && ev.data.get("workspace_ids").is_some() {
+        "workspace.reordered"
+    } else {
+        ev.kind.as_str()
+    };
     let input = hev::Input {
-        kind: &ev.kind,
+        kind,
         workspace: ws.as_deref(),
         tab: tab.as_deref(),
         pane: pane.as_deref(),
@@ -1535,10 +1580,14 @@ fn event_data(
             );
         }
         "workspace.reordered" => {
-            d.insert(
-                "workspace_ids".into(),
-                json!(sn.ws.iter().map(|w| w.handle.clone()).collect::<Vec<_>>()),
-            );
+            // Herdr's `WorkspaceReordered {workspace_ids, before_workspace_id?, workspaces}`.
+            let block = ev.data.get("workspace_ids").cloned().unwrap_or_else(|| {
+                json!(sn.ws.iter().map(|w| w.handle.clone()).collect::<Vec<_>>())
+            });
+            d.insert("workspace_ids".into(), block);
+            if let Some(b) = ev.data.get("before_workspace_id").filter(|b| b.is_string()) {
+                d.insert("before_workspace_id".into(), b.clone());
+            }
             d.insert(
                 "workspaces".into(),
                 json!(sn.ws.iter().map(|w| sn.ws_json(w)).collect::<Vec<_>>()),
@@ -1805,27 +1854,103 @@ fn req_s<'a>(p: &'a Value, k: &str) -> Result<&'a str, WireError> {
     sp(p, k).ok_or_else(|| WireError::new("invalid_params", format!("{k} is required")))
 }
 
-/// The pane a request targets: `pane_id`, else the invocation's pane, else `@current` for
-/// pane-scoped callers, else the focused pane of the most recent client.
+/// Herdr's `sanitized_notification_text`: line breaks and tabs become spaces, other control
+/// characters go, runs of whitespace collapse, at most `max` characters, trimmed; `None` when
+/// nothing is left.
+fn sanitized_notification(value: &str, max: usize) -> Option<String> {
+    let mut out = String::new();
+    let mut count = 0usize;
+    let mut space = false;
+    for ch in value.chars() {
+        let ch = match ch {
+            '\n' | '\r' | '\t' => ' ',
+            c if c.is_control() => continue,
+            c => c,
+        };
+        if ch.is_whitespace() {
+            if space {
+                continue;
+            }
+            space = true;
+            out.push(' ');
+        } else {
+            space = false;
+            out.push(ch);
+        }
+        count += 1;
+        if count >= max {
+            break;
+        }
+    }
+    let t = out.trim();
+    (!t.is_empty()).then(|| t.to_string())
+}
+
+/// Herdr's `normalize_launch_env` for the `env` of `pane.split`, `tab.create` and
+/// `workspace.create` (`invalid_env`).
+fn herdr_launch_env(p: &Value) -> Result<Vec<(String, String)>, WireError> {
+    launch::launch_env(p.get("env")).map_err(|(code, msg)| WireError::new(code, msg))
+}
+
+fn env_json(env: &[(String, String)]) -> Value {
+    Value::Object(
+        env.iter()
+            .map(|(k, v)| (k.clone(), Value::String(v.clone())))
+            .collect(),
+    )
+}
+
+/// A native create error as Herdr's `<thing>_create_failed` (`pane_split_failed`), keeping
+/// Herdr's not-found and permission codes.
+fn create_failed(code: &str, e: WireError) -> WireError {
+    match e.code.as_str() {
+        "pane_not_found"
+        | "workspace_not_found"
+        | "tab_not_found"
+        | "permission_denied"
+        | "invalid_params"
+        | "invalid_env" => e,
+        _ => WireError::new(code, e.message),
+    }
+}
+
+/// The directory a new pane follows in a workspace: its focused pane's current directory,
+/// else the workspace root.
+fn ws_cwd(server: &Server, sn: &Snap, w: &Workspace) -> String {
+    sn.active_tab(w)
+        .and_then(|t| sn.tab_focus(t))
+        .and_then(|x| server.pane_cwd(&x.id))
+        .unwrap_or_else(|| w.root_path.clone())
+}
+
+/// The pane a request targets: `pane_id`; else, for a pane-scoped caller, its own pane;
+/// else Herdr's focused pane (`resolve_optional_pane`): the most recent client's focus, else
+/// the pane the invocation's context named, else the active workspace's focused pane.
 fn pane_target(caller: &Caller, sn: &Snap, p: &Value) -> Result<String, WireError> {
     if let Some(id) = sp(p, "pane_id") {
         return sn
             .pane(id)
             .map(|x| x.id.clone())
-            .ok_or_else(|| WireError::new("pane_not_found", format!("pane not found: {id}")));
-    }
-    if let Some(d) = &caller.default_pane
-        && let Some(x) = sn.pane(d)
-    {
-        return Ok(x.id.clone());
+            .ok_or_else(|| WireError::new("pane_not_found", format!("pane {id} not found")));
     }
     if let Some(s) = &caller.ctx.pane_scope {
         return Ok(s.clone());
     }
-    sn.focus
-        .pane
-        .clone()
-        .ok_or_else(|| WireError::new("invalid_params", "pane_id is required (no focused pane)"))
+    if let Some(x) = sn.focus.pane.as_deref().and_then(|f| sn.pane(f)) {
+        return Ok(x.id.clone());
+    }
+    if let Some(x) = caller.default_pane.as_deref().and_then(|d| sn.pane(d)) {
+        return Ok(x.id.clone());
+    }
+    focused_pane(sn).ok_or_else(|| WireError::new("pane_not_found", "pane not found"))
+}
+
+/// The active workspace's focused pane (Herdr's `resolve_optional_pane(None)`).
+fn focused_pane(sn: &Snap) -> Option<String> {
+    sn.active_ws()
+        .and_then(|w| sn.active_tab(w))
+        .and_then(|t| sn.tab_focus(t))
+        .map(|x| x.id.clone())
 }
 
 /// The pane a Herdr `PaneTarget` names: `pane_id` is required (no focus fallback).
@@ -1840,14 +1965,14 @@ fn ws_target(sn: &Snap, p: &Value) -> Result<Workspace, WireError> {
     let id = req_s(p, "workspace_id")?;
     sn.ws(id)
         .cloned()
-        .ok_or_else(|| WireError::new("workspace_not_found", format!("workspace not found: {id}")))
+        .ok_or_else(|| WireError::new("workspace_not_found", format!("workspace {id} not found")))
 }
 
 fn tab_target(sn: &Snap, p: &Value) -> Result<Tab, WireError> {
     let id = req_s(p, "tab_id")?;
     sn.tab(id)
         .cloned()
-        .ok_or_else(|| WireError::new("tab_not_found", format!("tab not found: {id}")))
+        .ok_or_else(|| WireError::new("tab_not_found", format!("tab {id} not found")))
 }
 
 fn run_target(sn: &Snap, p: &Value) -> Result<AgentRun, WireError> {
@@ -1857,7 +1982,7 @@ fn run_target(sn: &Snap, p: &Value) -> Result<AgentRun, WireError> {
         .find(|r| r.handle == t || r.id == t || r.name.as_deref() == Some(t))
         .or_else(|| sn.pane(t).and_then(|x| sn.pane_run.get(&x.id)))
         .cloned()
-        .ok_or_else(|| WireError::new("agent_not_found", format!("agent not found: {t}")))
+        .ok_or_else(|| WireError::new("agent_not_found", format!("agent target {t} not found")))
 }
 
 fn ok() -> Value {
@@ -1929,14 +2054,37 @@ pub async fn call(
             ))
         }
         "workspace.create" => {
+            let env = herdr_launch_env(p)?;
             let mut np = json!({"focus": p.get("focus").and_then(Value::as_bool).unwrap_or(false)});
-            if let Some(c) = sp(p, "cwd") {
+            // Herdr: `cwd`, else the focused pane's directory in `source_workspace_id` (else
+            // the active workspace).
+            let cwd = match sp(p, "cwd") {
+                Some(c) => Some(c.to_string()),
+                None => {
+                    let src = match sp(p, "source_workspace_id") {
+                        Some(id) => Some(sn.ws(id).ok_or_else(|| {
+                            WireError::new(
+                                "workspace_not_found",
+                                format!("workspace {id} not found"),
+                            )
+                        })?),
+                        None => sn.active_ws(),
+                    };
+                    src.map(|w| ws_cwd(server, &sn, w))
+                }
+            };
+            if let Some(c) = cwd {
                 np["cwd"] = json!(c);
             }
             if let Some(l) = sp(p, "label") {
                 np["name"] = json!(l);
             }
-            let r = native(server, caller, "workspace.create", np).await?;
+            if !env.is_empty() {
+                np["env"] = env_json(&env);
+            }
+            let r = native(server, caller, "workspace.create", np)
+                .await
+                .map_err(|e| create_failed("workspace_create_failed", e))?;
             let sn = snap(server);
             let id = |k: &str| r[k]["id"].as_str().unwrap_or_default().to_string();
             Ok(typed(
@@ -2034,14 +2182,25 @@ pub async fn call(
                     .and_then(|w| sn.ws(w))
                     .or(sn.ws.first())
                     .cloned()
-                    .ok_or_else(|| WireError::new("workspace_not_found", "no workspace"))?,
+                    .ok_or_else(|| WireError::new("workspace_not_found", "no active workspace"))?,
             };
+            let env = herdr_launch_env(p)?;
             let mut np = json!({"workspace": w.id, "focus": p.get("focus").and_then(Value::as_bool).unwrap_or(false)});
             if let Some(l) = sp(p, "label") {
                 np["title"] = json!(l);
             }
-            np["cwd"] = json!(sp(p, "cwd").unwrap_or(&w.root_path));
-            let r = native(server, caller, "tab.create", np).await?;
+            // Herdr: `cwd`, else the directory of the workspace's focused pane.
+            np["cwd"] = json!(
+                sp(p, "cwd")
+                    .map(str::to_string)
+                    .unwrap_or_else(|| ws_cwd(server, &sn, &w))
+            );
+            if !env.is_empty() {
+                np["env"] = env_json(&env);
+            }
+            let r = native(server, caller, "tab.create", np)
+                .await
+                .map_err(|e| create_failed("tab_create_failed", e))?;
             let sn = snap(server);
             let id = |k: &str| r[k]["id"].as_str().unwrap_or_default().to_string();
             Ok(typed(
@@ -2224,7 +2383,7 @@ pub async fn call(
             let sn = snap(server);
             let x = sn
                 .pane(&id)
-                .ok_or_else(|| WireError::new("pane_not_found", id.clone()))?;
+                .ok_or_else(|| WireError::new("pane_not_found", format!("pane {id} not found")))?;
             Ok(typed("pane_info", json!({"pane": sn.pane_json(server, x)})))
         }
         "pane.rename" => {
@@ -2240,7 +2399,7 @@ pub async fn call(
             let sn = snap(server);
             let x = sn
                 .pane(&id)
-                .ok_or_else(|| WireError::new("pane_not_found", id.clone()))?;
+                .ok_or_else(|| WireError::new("pane_not_found", format!("pane {id} not found")))?;
             Ok(typed("pane_info", json!({"pane": sn.pane_json(server, x)})))
         }
         "pane.close" => {
@@ -2249,16 +2408,36 @@ pub async fn call(
             Ok(ok())
         }
         "pane.split" => {
-            // Baseline requests name the pane to split `target_pane_id`.
-            let id = match sp(p, "target_pane_id") {
-                Some(t) => sn.pane(t).map(|x| x.id.clone()).ok_or_else(|| {
-                    WireError::new("pane_not_found", format!("pane not found: {t}"))
-                })?,
-                None => pane_target(caller, &sn, p)?,
+            // Herdr: `target_pane_id`, else the focused pane of `workspace_id`, else of the
+            // active workspace (Vibeke also takes `pane_id` and the caller's pane).
+            let nf = || WireError::new("pane_not_found", "pane not found");
+            let id = if let Some(t) = sp(p, "target_pane_id") {
+                sn.pane(t).map(|x| x.id.clone()).ok_or_else(nf)?
+            } else if let Some(w) = sp(p, "workspace_id") {
+                let w = sn.ws(w).ok_or_else(nf)?;
+                sn.active_tab(w)
+                    .and_then(|t| sn.tab_focus(t))
+                    .map(|x| x.id.clone())
+                    .ok_or_else(nf)?
+            } else {
+                pane_target(caller, &sn, p)?
             };
+            match p.get("right_click") {
+                None | Some(Value::Null) => {}
+                Some(Value::String(r)) if r == "herdr" || r == "pane" => {}
+                Some(other) => {
+                    return Err(wire::invalid_request(format!(
+                        "unknown variant {other}, expected `herdr` or `pane`"
+                    )));
+                }
+            }
+            let env = herdr_launch_env(p)?;
             let mut np = json!({"pane": id, "direction": sp(p, "direction").unwrap_or("right"), "focus": p.get("focus").and_then(Value::as_bool).unwrap_or(false)});
             if let Some(c) = sp(p, "cwd") {
                 np["cwd"] = json!(c);
+            }
+            if !env.is_empty() {
+                np["env"] = env_json(&env);
             }
             // Herdr's `ratio` is the share of the split pane (the first side), clamped to
             // 0.1..0.9; Vibeke's is the new pane's share.
@@ -2270,7 +2449,9 @@ pub async fn call(
                 };
                 np["ratio"] = json!(1.0 - r);
             }
-            let r = native(server, caller, "pane.split", np).await?;
+            let r = native(server, caller, "pane.split", np)
+                .await
+                .map_err(|e| create_failed("pane_split_failed", e))?;
             let sn = snap(server);
             let new = r["pane"]["id"].as_str().unwrap_or_default();
             Ok(typed(
@@ -2289,14 +2470,27 @@ pub async fn call(
         "pane.report_agent" | "pane.report_agent_session" => {
             let mut np = p.clone();
             if let Some(id) = sp(p, "pane_id") {
-                let x = sn
-                    .pane(id)
-                    .ok_or_else(|| WireError::new("pane_not_found", id.to_string()))?;
+                let x = sn.pane(id).ok_or_else(|| {
+                    WireError::new("pane_not_found", format!("pane {id} not found"))
+                })?;
                 np["pane_id"] = json!(x.id);
             } else if let Some(d) = &caller.default_pane {
                 np["pane_id"] = json!(d);
             }
-            native(server, caller, method, np).await?;
+            let r = native(server, caller, method, np.clone()).await?;
+            // The reporting hook holds the pane's authority (Herdr's `hook_authority`).
+            if method == "pane.report_agent"
+                && r.get("dropped").is_none()
+                && let (Some(pane), Some(agent)) = (sp(&np, "pane_id"), sp(p, "agent"))
+                && let Some(x) = snap(server).pane(pane)
+            {
+                let source = sp(p, "source").unwrap_or("herdr").to_string();
+                state(server)
+                    .authority
+                    .lock()
+                    .unwrap()
+                    .insert(x.id.clone(), (source, agent.trim().to_string()));
+            }
             Ok(ok())
         }
         "pane.resize" => pane_resize(server, caller, &sn, p).await,
@@ -2308,13 +2502,13 @@ pub async fn call(
             herdr_pane(&sn, p)?;
             match sp(p, "right_click") {
                 Some("herdr" | "pane") => {}
+                // Herdr's typed parse refuses these (`invalid_request`).
                 Some(o) => {
-                    return Err(WireError::new(
-                        "invalid_params",
-                        format!("unknown variant `{o}`, expected `herdr` or `pane`"),
-                    ));
+                    return Err(wire::invalid_request(format!(
+                        "unknown variant `{o}`, expected `herdr` or `pane`"
+                    )));
                 }
-                None => return Err(WireError::new("invalid_params", "right_click is required")),
+                None => return Err(wire::invalid_request("missing field `right_click`")),
             }
             Ok(ok())
         }
@@ -2329,23 +2523,60 @@ pub async fn call(
                     "self-report is limited to your own pane",
                 ));
             }
-            if method == "pane.release_agent" {
-                req_s(p, "source")?;
-                let agent = req_s(p, "agent")?;
-                if agent.trim().is_empty() {
+            // Herdr's per-source hook authority: the last accepted report's `(source, agent)`,
+            // kept while that self-reported run lives.
+            let run = sn
+                .pane_run
+                .get(&x.id)
+                .filter(|r| r.ended_at_ms.is_none() && r.integration == "self_report")
+                .cloned();
+            let st = state(server);
+            let auth = {
+                let mut a = st.authority.lock().unwrap();
+                if run.is_none() {
+                    a.remove(&x.id);
+                }
+                a.get(&x.id).cloned()
+            };
+            let seq = p
+                .get("seq")
+                .and_then(Value::as_u64)
+                .map(|s| i64::try_from(s).unwrap_or(i64::MAX));
+            let accept = |source: &str| crate::agents::selfreport::accept_seq(&x.id, source, seq);
+            let act = if method == "pane.release_agent" {
+                let source = req_s(p, "source")?;
+                let agent = req_s(p, "agent")?.trim();
+                if agent.is_empty() {
                     return Err(WireError::new(
                         "invalid_agent",
                         "agent label must not be empty",
                     ));
                 }
-            }
-            // The hook says its agent left the pane (release) or gives up its authority
-            // (clear): a run that only self-reports ends, so detection takes over again.
-            if let Some(r) = sn.pane_run.get(&x.id)
-                && r.ended_at_ms.is_none()
-                && r.integration == "self_report"
-            {
-                server.agents.end_run(server, &r.id, "released");
+                // Herdr ignores releases from its own integrations and from any source or
+                // agent other than the one holding the authority; the agent must be the
+                // pane's current one; a stale `seq` is dropped.
+                !status::official_agent_source(source, agent)
+                    && auth.as_ref().is_none_or(|(s, a)| s == source && a == agent)
+                    && run.as_ref().is_some_and(|r| {
+                        auth.is_some() || r.harness == status::vibeke_harness(agent)
+                    })
+                    && accept(source)
+            } else {
+                // `clear_agent_authority`: only the holder's source (or any, without one).
+                match &auth {
+                    Some((holder, _)) => {
+                        let source = sp(p, "source");
+                        source.is_none_or(|s| s == holder) && accept(source.unwrap_or(holder))
+                    }
+                    None => false,
+                }
+            };
+            // Detection takes over again: a run that only self-reports ends.
+            if act {
+                st.authority.lock().unwrap().remove(&x.id);
+                if let Some(r) = &run {
+                    server.agents.end_run(server, &r.id, "released");
+                }
             }
             Ok(ok())
         }
@@ -2384,9 +2615,9 @@ pub async fn call(
                 u32::try_from(total).unwrap_or(u32::MAX),
             );
             let sn = snap(server);
-            let x = sn
-                .pane(&x.id)
-                .ok_or_else(|| WireError::new("pane_not_found", x.handle.clone()))?;
+            let x = sn.pane(&x.id).ok_or_else(|| {
+                WireError::new("pane_not_found", format!("pane {} not found", x.handle))
+            })?;
             Ok(typed("pane_info", json!({"pane": sn.pane_json(server, x)})))
         }
         // Herdr behaviours that need its own client or state; answered as Herdr answers when
@@ -2476,6 +2707,9 @@ pub async fn call(
         }
         // ---- worktrees, notifications, server --------------------------------------------
         "worktree.list" => worktree_list(server, caller, &sn, p).await,
+        "pane.link.resolve" | "pane.link.activate" => {
+            pane_link(server, caller, &sn, method, p).await
+        }
         "worktree.repo_root" => {
             let r = native(
                 server,
@@ -2490,15 +2724,27 @@ pub async fn call(
             ))
         }
         "notification.show" => {
-            let title = req_s(p, "title")?;
-            if title.trim().is_empty() {
-                return Err(WireError::new(
-                    "invalid_params",
-                    "notification title is empty",
-                ));
+            let raw = req_s(p, "title")?;
+            let title = sanitized_notification(raw, 80)
+                .ok_or_else(|| WireError::new("invalid_params", "notification title is empty"))?;
+            let body = sp(p, "body")
+                .or(sp(p, "message"))
+                .and_then(|b| sanitized_notification(b, 240));
+            // Herdr shows at most one API notification per second (`rate_limited`).
+            let now = std::time::Instant::now();
+            {
+                let st = state(server);
+                let mut last = st.last_notification.lock().unwrap();
+                if last.is_some_and(|t| now.duration_since(t) < Duration::from_secs(1)) {
+                    return Ok(typed(
+                        "notification_show",
+                        json!({"shown": false, "reason": "rate_limited"}),
+                    ));
+                }
+                *last = Some(now);
             }
             let mut np = json!({"title": title});
-            if let Some(b) = sp(p, "body").or(sp(p, "message")) {
+            if let Some(b) = body {
                 np["body"] = json!(b);
             }
             native(server, caller, "notification.send", np).await?;
@@ -2509,11 +2755,34 @@ pub async fn call(
                 json!({"shown": true, "reason": "shown"}),
             ))
         }
-        // Vibeke does not read Herdr's config.toml; nothing to apply.
-        "server.reload_config" => Ok(typed(
-            "config_reload",
-            json!({"status": "applied", "diagnostics": []}),
-        )),
+        // Herdr reloads its config.toml; Vibeke reloads its own (`server.reload_config`) and
+        // answers in Herdr's shape: `failed` when the file does not load, `partial` with
+        // diagnostics, else `applied`.
+        "server.reload_config" => {
+            let r = native(server, caller, "server.reload_config", json!({})).await?;
+            let list = |k: &str| r[k].as_array().cloned().unwrap_or_default();
+            let (errors, warnings) = (list("errors"), list("warnings"));
+            let line = |d: &Value| {
+                let msg = d["message"].as_str().unwrap_or("");
+                match (d["key"].as_str(), d["line"].as_u64(), d["col"].as_u64()) {
+                    (Some(k), _, _) => format!("{k}: {msg}"),
+                    (None, Some(l), Some(c)) => format!("line {l}, column {c}: {msg}"),
+                    _ => msg.to_string(),
+                }
+            };
+            let status = if !errors.is_empty() {
+                "failed"
+            } else if !warnings.is_empty() {
+                "partial"
+            } else {
+                "applied"
+            };
+            let diagnostics: Vec<String> = errors.iter().chain(&warnings).map(line).collect();
+            Ok(typed(
+                "config_reload",
+                json!({"status": status, "diagnostics": diagnostics}),
+            ))
+        }
         "events.wait" => events_wait(server, caller, p).await,
         "vibeke.invocation_ticket" => invocation_ticket(server, caller),
         "events.subscribe" => Err(WireError::new(
@@ -2601,6 +2870,7 @@ pub async fn call(
             ))
         }
         m if gap::METHODS.contains(&m) => gap::call(server, caller, &sn, m, p).await,
+        m if rest::METHODS.contains(&m) => rest::call(server, caller, &sn, m, p).await,
         m if ext::METHODS.contains(&m) => ext::call(server, caller, &sn, m, p).await,
         other => match inventory::method_status(other) {
             Some(_) => Err(WireError::new(
@@ -2613,10 +2883,7 @@ pub async fn call(
                         .trim_start_matches("`unsupported`: ")
                 ),
             )),
-            None => Err(WireError::new(
-                "method_not_found",
-                format!("unknown method: {other}"),
-            )),
+            None => Err(wire::retired_method(other).unwrap_or_else(|| wire::unknown_method(other))),
         },
     }
 }
@@ -2664,7 +2931,7 @@ async fn workspace_move_block(
         }
         None => None,
     };
-    let mut cur: Vec<String> = sn.ws.iter().map(|w| w.id.clone()).collect();
+    let cur: Vec<String> = sn.ws.iter().map(|w| w.id.clone()).collect();
     let mut want: Vec<String> = cur
         .iter()
         .filter(|w| !block.contains(*w))
@@ -2677,21 +2944,35 @@ async fn workspace_move_block(
     for (i, id) in block.iter().enumerate() {
         want.insert(at + i, id.clone());
     }
-    for (k, id) in want.iter().enumerate() {
-        let Some(pos) = cur.iter().position(|w| w == id) else {
-            continue;
-        };
-        if pos != k {
-            native(
-                server,
-                caller,
-                "workspace.move",
-                json!({"workspace": id, "delta": k as i64 - pos as i64}),
-            )
-            .await?;
-            let w = cur.remove(pos);
-            cur.insert(k, w);
+    if caller.ctx.pane_scope.is_some() {
+        return Err(WireError::new(
+            "permission_denied",
+            "agents can't reorder the user's workspaces",
+        ));
+    }
+    // One commit and one event, as Herdr's `move_workspace_block` (no event when nothing
+    // moved).
+    if want != cur {
+        let mut c = server.core.lock().unwrap();
+        let mut tx = crate::core::Tx::new();
+        for (k, id) in want.iter().enumerate() {
+            if let Some(mut w) = c.ws(id).cloned() {
+                w.order = k as f64 + 1.0;
+                tx.ws(w);
+            }
         }
+        let handle = |id: &String| sn.ws(id).map(|w| w.handle.clone());
+        let mut data = json!({
+            "index": want.iter().position(|w| w == &block[0]).unwrap_or(0),
+            "workspace_ids": block.iter().filter_map(handle).collect::<Vec<_>>(),
+        });
+        if let Some(b) = before.as_ref().and_then(handle) {
+            data["before_workspace_id"] = json!(b);
+        }
+        tx.event("workspace.moved", json!({"workspace": block[0]}), data);
+        server
+            .commit(&mut c, tx)
+            .map_err(|e| WireError::new("internal_error", e.to_string()))?;
     }
     let sn = snap(server);
     Ok(typed(
@@ -2791,9 +3072,58 @@ async fn poll_watcher(
     }))
 }
 
-/// Herdr's `PaneReadResult` of `x`: `{pane_id, workspace_id, tab_id, source, format, text,
-/// revision, truncated}`. `format: ansi` is echoed but the text is plain (Vibeke reads the
-/// rendered screen); `strip_ansi` has nothing to strip.
+/// Herdr's `limit_snapshot_lines`: the last `limit` lines, `truncated` when lines were left
+/// out.
+fn limit_lines(text: &str, limit: Option<usize>) -> (String, bool) {
+    let Some(limit) = limit else {
+        return (text.to_string(), false);
+    };
+    let lines: Vec<&str> = text.split_inclusive('\n').collect();
+    (
+        lines[lines.len().saturating_sub(limit)..].concat(),
+        lines.len() > limit,
+    )
+}
+
+/// A pane's rows as ANSI text (SGR styles, as `pane.screenshot` renders them): the visible
+/// screen, or the last `lines` rendered rows of history and screen (soft wraps joined for
+/// `recent_unwrapped`); trailing blank rows dropped.
+fn ansi_rows(server: &Server, pane: &str, source: &str, lines: usize) -> String {
+    let Some(rt) = server.pane_rt(pane) else {
+        return String::new();
+    };
+    let sc = rt.screen.lock().unwrap();
+    let e = &sc.engine;
+    let mut rows: Vec<vk_proto::render::Row> = Vec::new();
+    if source != "visible" {
+        let h = e.history_len();
+        let want = lines.saturating_sub(e.rows() as usize).min(h);
+        rows.extend((h - want..h).filter_map(|i| e.history_row(i)));
+    }
+    rows.extend(e.visible_rows());
+    drop(sc);
+    while rows.last().is_some_and(|r| r.text().trim().is_empty()) {
+        rows.pop();
+    }
+    if source != "visible" {
+        rows.drain(..rows.len().saturating_sub(lines));
+    }
+    let unwrap = source == "recent_unwrapped";
+    let mut out = String::new();
+    for (i, r) in rows.iter().enumerate() {
+        out.push_str(&crate::pane_api::rows_ansi(std::slice::from_ref(r)));
+        if !(r.wrapped && unwrap) && i + 1 < rows.len() {
+            out.push('\n');
+        }
+    }
+    out
+}
+
+/// Herdr `pane.read` (`read_terminal_snapshot`): `source` `visible` | `recent` |
+/// `recent_unwrapped` | `detection`, `format` `text` | `ansi` (`detection` is always text),
+/// `lines` (at most 1000; `recent` reads default to 80). `truncated` as Herdr: a `lines` limit
+/// left lines out of the visible text, or the terminal has more rows than a recent read
+/// returns. Herdr reports `revision` 0.
 async fn herdr_read(
     server: &Arc<Server>,
     caller: &Caller,
@@ -2806,35 +3136,63 @@ async fn herdr_read(
         source,
         "visible" | "recent" | "recent_unwrapped" | "detection"
     ) {
-        return Err(WireError::new(
-            "invalid_params",
-            format!("unknown source `{source}`"),
-        ));
+        return Err(wire::invalid_request(format!(
+            "unknown variant `{source}`, expected one of `visible`, `recent`, `recent_unwrapped`, `detection`"
+        )));
     }
     let format = sp(p, "format").unwrap_or("text");
     if !matches!(format, "text" | "ansi") {
-        return Err(WireError::new(
-            "invalid_params",
-            format!("unknown format `{format}`"),
-        ));
+        return Err(wire::invalid_request(format!(
+            "unknown variant `{format}`, expected `text` or `ansi`"
+        )));
     }
-    let lines = p.get("lines").and_then(Value::as_u64).unwrap_or(50);
+    let limit = p
+        .get("lines")
+        .and_then(Value::as_u64)
+        .map(|n| n.min(1000) as usize);
+    let recent = limit.unwrap_or(80);
+    let screen = matches!(source, "visible" | "detection");
+    // The native read checks the caller may read the pane (and redacts for remote callers).
     let r = native(
         server,
         caller,
         "pane.read",
-        json!({"pane": x.id, "source": source, "lines": lines}),
+        json!({"pane": x.id, "source": source, "lines": if screen { 1000 } else { recent }}),
     )
     .await?;
+    let plain = r["text"].as_str().unwrap_or("");
+    let ansi = format == "ansi" && source != "detection" && !caller.ctx.remote;
+    let (text, truncated) = if screen {
+        let full = if ansi {
+            ansi_rows(server, &x.id, source, 0)
+        } else {
+            plain.to_string()
+        };
+        limit_lines(&full, limit)
+    } else {
+        let total = server
+            .pane_rt(&x.id)
+            .map(|rt| {
+                let sc = rt.screen.lock().unwrap();
+                sc.engine.history_len() + usize::from(sc.engine.rows())
+            })
+            .unwrap_or(0);
+        let text = if ansi {
+            ansi_rows(server, &x.id, source, recent)
+        } else {
+            plain.to_string()
+        };
+        (text, total > recent)
+    };
     Ok(json!({
         "pane_id": x.handle,
         "workspace_id": sn.ws_handle(&x.workspace).unwrap_or_default(),
         "tab_id": sn.tab_handle(&x.tab).unwrap_or_default(),
         "source": source,
         "format": format,
-        "text": r["text"].as_str().unwrap_or(""),
-        "revision": r["revision"].as_u64().unwrap_or(0),
-        "truncated": false,
+        "text": text,
+        "revision": 0,
+        "truncated": truncated,
     }))
 }
 
@@ -2896,6 +3254,8 @@ async fn wait_for_output(
     };
     let mut rp = p.clone();
     rp["source"] = json!(source);
+    // Herdr's wait reads text, whatever `format` the request carries.
+    rp["format"] = json!("text");
     let deadline = p
         .get("timeout_ms")
         .and_then(Value::as_u64)
@@ -3069,15 +3429,109 @@ async fn pane_zoom(
     Ok(typed("pane_zoom", json!({"zoom": z})))
 }
 
-/// Herdr `worktree.list {workspace_id? | cwd?}`: the repository of the workspace (else the
-/// active one) or of `cwd`, as `worktree_list {source: WorktreeSourceInfo, worktrees:
-/// [WorktreeInfo]}`. A linked worktree lists from its main checkout.
-async fn worktree_list(
+// ---- worktrees --------------------------------------------------------------------------------
+
+/// Herdr's `absolute_user_path`: `~` expands to the home directory; the path must be absolute.
+fn user_path(path: &str) -> Result<String, WireError> {
+    let home = crate::paths::home();
+    let p = if path == "~" {
+        home
+    } else if let Some(rest) = path.strip_prefix("~/") {
+        home.join(rest)
+    } else {
+        PathBuf::from(path)
+    };
+    if p.is_absolute() {
+        Ok(p.to_string_lossy().into_owned())
+    } else {
+        Err(WireError::new(
+            "invalid_request",
+            "worktree path must be absolute",
+        ))
+    }
+}
+
+fn canon_path(s: &str) -> PathBuf {
+    std::fs::canonicalize(s).unwrap_or_else(|_| PathBuf::from(s))
+}
+
+/// The workspace rooted at `path` (compared canonically), as Herdr's
+/// `open_workspace_idx_for_checkout`.
+fn ws_at<'a>(sn: &'a Snap, path: &str) -> Option<&'a Workspace> {
+    let c = canon_path(path);
+    sn.ws.iter().find(|w| canon_path(&w.root_path) == c)
+}
+
+/// `git <git_args> <args>` with Git's English diagnostics; `Err` carries Git's message.
+fn run_git(repo: &str, trust: bool, args: &[String]) -> Result<std::process::Output, String> {
+    let mut all = herdr::worktree::git_args(Path::new(repo), trust);
+    all.extend(args.iter().cloned());
+    std::process::Command::new("git")
+        .env("LC_ALL", "C")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .args(&all)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|e| e.to_string())
+}
+
+fn git_failure(out: &std::process::Output, what: &str) -> String {
+    let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+    let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    match (stderr.is_empty(), stdout.is_empty()) {
+        (false, _) => stderr,
+        (true, false) => stdout,
+        (true, true) => format!("{what} failed with status {}", out.status),
+    }
+}
+
+/// Herdr's `list_existing_worktrees` (`trust_repository` adds `safe.directory`).
+async fn git_worktrees(
+    repo: &str,
+    trust: bool,
+) -> Result<Vec<herdr::worktree::ExistingWorktree>, WireError> {
+    let repo = repo.to_string();
+    let out = tokio::task::spawn_blocking(move || {
+        run_git(
+            &repo,
+            trust,
+            &["worktree".into(), "list".into(), "--porcelain".into()],
+        )
+    })
+    .await
+    .map_err(|e| WireError::new("worktree_list_failed", e.to_string()))?
+    .map_err(|e| WireError::new("worktree_list_failed", e))?;
+    if !out.status.success() {
+        return Err(WireError::new(
+            "worktree_list_failed",
+            git_failure(&out, "git worktree list"),
+        ));
+    }
+    Ok(herdr::worktree::parse_porcelain(&String::from_utf8_lossy(
+        &out.stdout,
+    )))
+}
+
+/// Herdr's `WorktreeSource`: the repository a worktree request starts from.
+struct WtSource {
+    /// The workspace the request named (or the active one) when it is the repository's parent.
+    workspace: Option<String>,
+    /// The main checkout (`source_checkout_path` and `repo_root`).
+    checkout: String,
+    repo_key: Value,
+    repo_name: String,
+}
+
+/// Herdr's source resolution: `workspace_id`, else `cwd` (absolute, `~` expanded), else the
+/// active workspace; both is `invalid_request`. A linked worktree is refused unless
+/// `allow_linked` (`worktree.list`, which then lists from its main checkout).
+async fn worktree_source(
     server: &Arc<Server>,
     caller: &Caller,
     sn: &Snap,
     p: &Value,
-) -> Result<Value, WireError> {
+    allow_linked: bool,
+) -> Result<WtSource, WireError> {
     let (ws_given, cwd) = (sp(p, "workspace_id"), sp(p, "cwd"));
     if ws_given.is_some() && cwd.is_some() {
         return Err(WireError::new(
@@ -3086,7 +3540,7 @@ async fn worktree_list(
         ));
     }
     let (from_ws, dir) = match (ws_given, cwd) {
-        (_, Some(c)) => (None, c.to_string()),
+        (_, Some(c)) => (None, user_path(c)?),
         (Some(id), None) => {
             let w = sn.ws(id).ok_or_else(|| {
                 WireError::new("workspace_not_found", format!("workspace {id} not found"))
@@ -3123,70 +3577,380 @@ async fn worktree_list(
         .to_string();
     let space = git_space(&checkout).ok_or_else(not_git)?;
     let linked = space["is_linked_worktree"] == true;
-    let repo_root = space["repo_root"].as_str().unwrap_or(&checkout).to_string();
-    let source_checkout = if linked {
-        repo_root.clone()
+    if linked && !allow_linked {
+        return Err(WireError::new(
+            "linked_worktree_source",
+            "New and open worktree actions start from the repo parent workspace.",
+        ));
+    }
+    let main = if linked {
+        space["repo_root"].as_str().unwrap_or(&checkout).to_string()
     } else {
         checkout.clone()
     };
-    let repo_name = space["repo_name"].as_str().unwrap_or("").to_string();
-    let canon = |s: &str| std::fs::canonicalize(s).unwrap_or_else(|_| PathBuf::from(s));
-    let open_ws = |path: &str| {
-        let c = canon(path);
-        sn.ws
-            .iter()
-            .find(|w| canon(&w.root_path) == c)
-            .map(|w| w.handle.clone())
-    };
-    let mut source = json!({
-        "repo_key": space["repo_key"],
-        "repo_name": repo_name,
-        "repo_root": source_checkout,
-        "source_checkout_path": source_checkout,
-    });
-    let source_ws = from_ws
+    let workspace = from_ws
         .filter(|_| !linked)
         .map(|w| w.handle)
-        .or_else(|| open_ws(&source_checkout));
-    if let Some(w) = source_ws {
+        .or_else(|| ws_at(sn, &main).map(|w| w.handle.clone()));
+    Ok(WtSource {
+        workspace,
+        checkout: main,
+        repo_key: space["repo_key"].clone(),
+        repo_name: space["repo_name"].as_str().unwrap_or("").to_string(),
+    })
+}
+
+/// Herdr's `WorktreeInfo` for one listed entry (`worktree_info_for_entry`).
+fn wt_entry_info(sn: &Snap, src: &WtSource, e: &herdr::worktree::ExistingWorktree) -> Value {
+    let path = e.path.to_string_lossy().into_owned();
+    let mut v = Map::new();
+    v.insert("path".into(), json!(path));
+    if let Some(b) = &e.branch {
+        v.insert("branch".into(), json!(b));
+    }
+    v.insert("is_bare".into(), json!(e.is_bare));
+    v.insert("is_detached".into(), json!(e.is_detached));
+    v.insert("is_prunable".into(), json!(e.is_prunable));
+    v.insert(
+        "is_linked_worktree".into(),
+        json!(canon_path(&path) != canon_path(&src.checkout)),
+    );
+    if let Some(w) = ws_at(sn, &path) {
+        v.insert("open_workspace_id".into(), json!(w.handle));
+    }
+    v.insert("label".into(), json!(src.repo_name));
+    Value::Object(v)
+}
+
+/// Herdr `worktree.list {workspace_id? | cwd?, trust_repository?}`: the repository of the
+/// workspace (else the active one) or of `cwd`, as `worktree_list {source: WorktreeSourceInfo,
+/// worktrees: [WorktreeInfo]}`. A linked worktree lists from its main checkout.
+async fn worktree_list(
+    server: &Arc<Server>,
+    caller: &Caller,
+    sn: &Snap,
+    p: &Value,
+) -> Result<Value, WireError> {
+    let src = worktree_source(server, caller, sn, p, true).await?;
+    let trust = p
+        .get("trust_repository")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let entries = git_worktrees(&src.checkout, trust).await?;
+    let mut source = json!({
+        "repo_key": src.repo_key,
+        "repo_name": src.repo_name,
+        "repo_root": src.checkout,
+        "source_checkout_path": src.checkout,
+    });
+    if let Some(w) = &src.workspace {
         source["source_workspace_id"] = json!(w);
     }
-    let r = native(
-        server,
-        caller,
-        "worktree.list",
-        json!({"cwd": source_checkout}),
-    )
-    .await?;
-    let main = canon(&source_checkout);
-    let worktrees: Vec<Value> = r["worktrees"]
-        .as_array()
-        .cloned()
-        .unwrap_or_default()
-        .iter()
-        .map(|e| {
-            let path = e["path"].as_str().unwrap_or("").to_string();
-            let branch = e["branch"]
-                .as_str()
-                .map(|b| b.strip_prefix("refs/heads/").unwrap_or(b).to_string());
-            let mut v = json!({"path": path});
-            if let Some(b) = &branch {
-                v["branch"] = json!(b);
-            }
-            v["is_bare"] = json!(false);
-            v["is_detached"] = json!(branch.is_none());
-            v["is_prunable"] = json!(e["prunable"].as_bool().unwrap_or(false));
-            v["is_linked_worktree"] = json!(canon(&path) != main);
-            if let Some(w) = open_ws(&path) {
-                v["open_workspace_id"] = json!(w);
-            }
-            v["label"] = json!(repo_name);
-            v
-        })
-        .collect();
+    let worktrees: Vec<Value> = entries.iter().map(|e| wt_entry_info(sn, &src, e)).collect();
     Ok(typed(
         "worktree_list",
         json!({"source": source, "worktrees": worktrees}),
+    ))
+}
+
+/// The active tab of a workspace (the focused one, else its first) and that tab's root pane,
+/// as Herdr reports them for an opened or created worktree workspace.
+fn ws_tab_root(server: &Server, sn: &Snap, ws_id: &str) -> (Value, Value) {
+    let Some(w) = sn.ws(ws_id) else {
+        return (Value::Null, Value::Null);
+    };
+    let tab = sn.active_tab(w);
+    let root = tab
+        .and_then(|t| t.layout.panes().first().cloned())
+        .and_then(|x| sn.pane(&x).map(|x| sn.pane_json(server, x)));
+    (
+        tab.map(|t| sn.tab_json(t)).unwrap_or(Value::Null),
+        root.unwrap_or(Value::Null),
+    )
+}
+
+/// Herdr's `ensure_source_parent_membership`: the repository's main checkout gets a workspace
+/// (not focused) when none is open there yet.
+fn ensure_parent_workspace(server: &Arc<Server>, src: &WtSource) -> Result<(), WireError> {
+    if ws_at(&snap(server), &src.checkout).is_some() {
+        return Ok(());
+    }
+    server
+        .create_workspace(&src.checkout, None, None, None)
+        .map(|_| ())
+        .map_err(|e| WireError::new("worktree_open_failed", format!("{e:#}")))
+}
+
+fn focus_allowed(caller: &Caller, focus: bool) -> Result<(), WireError> {
+    if focus && caller.ctx.pane_scope.is_some() {
+        return Err(WireError::new(
+            "permission_denied",
+            "agents can't move the user's focus",
+        ));
+    }
+    Ok(())
+}
+
+/// Herdr `worktree.open {path | branch, workspace_id? | cwd?, label?, focus?,
+/// trust_repository?}`: finds the worktree among the repository's worktrees (by path, or the
+/// one non-bare, non-prunable, attached checkout of `branch`), then reuses the workspace open
+/// there or opens one. `worktree_opened {workspace, tab, root_pane, worktree, already_open}`;
+/// emits `worktree.opened` (and `workspace.created` for a new workspace).
+async fn herdr_worktree_open(
+    server: &Arc<Server>,
+    caller: &Caller,
+    sn: &Snap,
+    p: &Value,
+) -> Result<Value, WireError> {
+    let (path, branch) = (sp(p, "path"), sp(p, "branch"));
+    if path.is_some() == branch.is_some() {
+        return Err(WireError::new(
+            "invalid_request",
+            "exactly one of path or branch is required",
+        ));
+    }
+    let focus = p.get("focus").and_then(Value::as_bool).unwrap_or(false);
+    focus_allowed(caller, focus)?;
+    let trust = p
+        .get("trust_repository")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let src = worktree_source(server, caller, sn, p, false).await?;
+    let entries = git_worktrees(&src.checkout, trust).await?;
+    let entry = match (path, branch) {
+        (Some(path), _) => {
+            let want = canon_path(&user_path(path)?);
+            entries
+                .into_iter()
+                .find(|e| canon_path(&e.path.to_string_lossy()) == want)
+                .ok_or_else(|| WireError::new("worktree_not_found", "worktree path not found"))?
+        }
+        (None, Some(branch)) => {
+            let mut m: Vec<_> = entries
+                .into_iter()
+                .filter(|e| {
+                    !e.is_bare
+                        && !e.is_prunable
+                        && !e.is_detached
+                        && e.branch.as_deref() == Some(branch)
+                })
+                .collect();
+            match m.len() {
+                0 => {
+                    return Err(WireError::new(
+                        "worktree_not_found",
+                        "worktree branch not found",
+                    ));
+                }
+                1 => m.remove(0),
+                _ => {
+                    return Err(WireError::new(
+                        "ambiguous_worktree_branch",
+                        "multiple worktrees matched branch",
+                    ));
+                }
+            }
+        }
+        (None, None) => unreachable!("checked above"),
+    };
+    if entry.is_bare || entry.is_prunable {
+        return Err(WireError::new(
+            "worktree_not_found",
+            "worktree cannot be opened",
+        ));
+    }
+    let target = entry.path.to_string_lossy().into_owned();
+    if canon_path(&target) != canon_path(&src.checkout) {
+        ensure_parent_workspace(server, &src)?;
+    }
+    let label = sp(p, "label").map(str::to_string);
+    let mut np = json!({"path": target, "focus": focus});
+    if let Some(l) = &label {
+        np["name"] = json!(l);
+    }
+    let r = native(server, caller, "worktree.open", np).await?;
+    let created = r["created"].as_bool().unwrap_or(false);
+    let ws_id = r["workspace"]["id"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    if let (Some(l), false) = (&label, created) {
+        native(
+            server,
+            caller,
+            "workspace.rename",
+            json!({"workspace": ws_id, "name": l}),
+        )
+        .await?;
+    }
+    let sn = snap(server);
+    let (tab, root) = ws_tab_root(server, &sn, &ws_id);
+    Ok(typed(
+        "worktree_opened",
+        json!({
+            "workspace": sn.ws(&ws_id).map(|w| sn.ws_json(w)),
+            "tab": tab,
+            "root_pane": root,
+            "worktree": wt_entry_info(&sn, &src, &entry),
+            "already_open": !created,
+            "created": created,
+        }),
+    ))
+}
+
+/// Herdr `worktree.create {branch?, base?, path?, workspace_id? | cwd?, label?, focus?,
+/// trust_repository?}`: `git worktree add` from the repository's main checkout (an existing
+/// local branch is checked out, otherwise `-b <branch>` from `base`, default `HEAD`), then a
+/// workspace opens at the checkout. Without `branch` Herdr's generated `worktree/<name>` is
+/// used; without `path` the checkout goes to `<[tasks] root>/<repo>/<branch slug>` (Herdr:
+/// `[worktrees] directory`). `worktree_created {workspace, tab, root_pane, worktree}`; emits
+/// `worktree.created`.
+async fn herdr_worktree_create(
+    server: &Arc<Server>,
+    caller: &Caller,
+    sn: &Snap,
+    p: &Value,
+) -> Result<Value, WireError> {
+    let branch = match sp(p, "branch") {
+        Some(b) => b.trim().to_string(),
+        None => herdr::worktree::generated_branch(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_micros().min(u128::from(u64::MAX)) as u64)
+                .unwrap_or(0),
+        ),
+    };
+    if branch.is_empty() {
+        return Err(WireError::new("invalid_request", "branch is required"));
+    }
+    let base = sp(p, "base").unwrap_or("HEAD").to_string();
+    let focus = p.get("focus").and_then(Value::as_bool).unwrap_or(false);
+    focus_allowed(caller, focus)?;
+    let trust = p
+        .get("trust_repository")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let src = worktree_source(server, caller, sn, p, false).await?;
+    let path = match sp(p, "path") {
+        Some(x) => user_path(x)?,
+        None => {
+            let cfg = crate::run::worktree_cfg(&json!({}));
+            vk_tasks::worktree_path(
+                &cfg.root,
+                Path::new(&src.checkout),
+                &herdr::worktree::branch_slug(&branch),
+            )
+            .to_string_lossy()
+            .into_owned()
+        }
+    };
+    {
+        let (repo, path, branch, base) = (
+            src.checkout.clone(),
+            PathBuf::from(&path),
+            branch.clone(),
+            base.clone(),
+        );
+        tokio::task::spawn_blocking(move || -> Result<(), String> {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            }
+            let exists = run_git(
+                &repo,
+                trust,
+                &[
+                    "show-ref".into(),
+                    "--verify".into(),
+                    "--quiet".into(),
+                    format!("refs/heads/{branch}"),
+                ],
+            )?
+            .status
+            .success();
+            let out = run_git(
+                &repo,
+                trust,
+                &herdr::worktree::add_args(&path, &branch, &base, exists),
+            )?;
+            if out.status.success() {
+                Ok(())
+            } else {
+                Err(git_failure(&out, "git worktree add"))
+            }
+        })
+        .await
+        .map_err(|e| WireError::new("worktree_create_failed", e.to_string()))?
+        .map_err(|e| WireError::new("worktree_create_failed", e))?;
+    }
+    ensure_parent_workspace(server, &src)?;
+    let label = sp(p, "label").map(str::to_string);
+    let open_fail = |e: anyhow::Error| {
+        WireError::new(
+            "worktree_open_failed",
+            format!("created worktree but failed to open workspace: {e:#}"),
+        )
+    };
+    let existing = ws_at(&snap(server), &path).cloned();
+    let ws_id = match existing {
+        Some(w) => {
+            if focus {
+                native(
+                    server,
+                    caller,
+                    "workspace.focus",
+                    json!({"workspace": w.id}),
+                )
+                .await?;
+            }
+            if let Some(l) = &label {
+                native(
+                    server,
+                    caller,
+                    "workspace.rename",
+                    json!({"workspace": w.id, "name": l}),
+                )
+                .await?;
+            }
+            w.id
+        }
+        None => {
+            let focus_client = focus.then_some(caller.ctx.client_id.as_str());
+            server
+                .create_workspace(&path, label.clone(), None, focus_client)
+                .map_err(open_fail)?
+                .0
+                .id
+        }
+    };
+    {
+        let mut c = server.core.lock().unwrap();
+        let mut tx = crate::core::Tx::new();
+        tx.event(
+            "worktree.created",
+            json!({"workspace": ws_id}),
+            json!({"path": path, "branch": branch, "base_ref": base, "repo_root": src.checkout}),
+        );
+        server
+            .commit(&mut c, tx)
+            .map_err(|e| WireError::new("internal_error", e.to_string()))?;
+    }
+    let sn = snap(server);
+    let (tab, root) = ws_tab_root(server, &sn, &ws_id);
+    let entry = herdr::worktree::ExistingWorktree {
+        path: PathBuf::from(&path),
+        branch: Some(branch),
+        is_bare: false,
+        is_detached: false,
+        is_prunable: false,
+    };
+    Ok(typed(
+        "worktree_created",
+        json!({
+            "workspace": sn.ws(&ws_id).map(|w| sn.ws_json(w)),
+            "tab": tab,
+            "root_pane": root,
+            "worktree": wt_entry_info(&sn, &src, &entry),
+        }),
     ))
 }
 
@@ -3382,10 +4146,7 @@ const TICKET_TTL: Duration = Duration::from_secs(30);
 /// session verify this invocation's identity with this server.
 fn invocation_ticket(server: &Server, caller: &Caller) -> Result<Value, WireError> {
     let Some(b) = &caller.broker else {
-        return Err(WireError::new(
-            "method_not_found",
-            "unknown method: vibeke.invocation_ticket",
-        ));
+        return Err(wire::unknown_method("vibeke.invocation_ticket"));
     };
     if caller.sandboxed {
         return Err(sandbox_denied("vibeke.invocation_ticket"));
@@ -3755,7 +4516,7 @@ fn action_list(plugin: Option<&str>) -> Result<Vec<Value>, WireError> {
     {
         return Err(WireError::new(
             "plugin_not_found",
-            format!("plugin not found: {id}"),
+            "plugin not found".to_string(),
         ));
     }
     let pf = herdr::current_platform();
@@ -3828,7 +4589,7 @@ fn open_link(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> Result<Value, WireEr
         .map_err(|e| WireError::new("internal_error", e.to_string()))?;
     let entry = reg
         .get(plugin)
-        .map_err(|_| WireError::new("plugin_not_found", format!("plugin not found: {plugin}")))?;
+        .map_err(|_| WireError::new("plugin_not_found", "plugin not found".to_string()))?;
     let (_, m) = registry::entry_status(entry);
     let m = m.ok_or_else(|| WireError::new("invalid_manifest", "manifest missing"))?;
     let pf = herdr::current_platform();
@@ -3867,6 +4628,265 @@ fn open_link(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> Result<Value, WireEr
         ictx,
         "link_handler",
     )
+}
+
+// ---- pane links (`pane.link.resolve`, `pane.link.activate`) -----------------------------------
+
+/// The cells of one terminal row at viewport row `vrow`, one grapheme each (combining marks
+/// join the cell before them; a wide character covers two columns).
+fn row_cells(row: &vk_proto::render::Row, vrow: i64, out: &mut Vec<herdr::links::Cell>) {
+    use unicode_width::UnicodeWidthChar;
+    let mut col: u16 = 0;
+    for span in &row.spans {
+        let start = col;
+        for ch in span.text.chars() {
+            let w = ch.width().unwrap_or(0) as u16;
+            if w == 0 {
+                if let Some(last) = out.last_mut().filter(|c| c.row == vrow) {
+                    last.text.push(ch);
+                }
+                continue;
+            }
+            out.push(herdr::links::Cell {
+                row: vrow,
+                col,
+                end_col: col.saturating_add(w - 1),
+                text: ch.to_string(),
+            });
+            col = col.saturating_add(w);
+        }
+        col = start.saturating_add(span.cols).max(col);
+    }
+}
+
+/// What lies under a viewport cell: an OSC 8 target, or the plain-text token (its cells, the
+/// token's cell range and the clicked cell).
+enum LinkHit {
+    Uri(String),
+    Text {
+        cells: Vec<herdr::links::Cell>,
+        token: (usize, usize),
+        clicked: usize,
+    },
+}
+
+/// Herdr's `viewport_link_selection` over Vibeke's engine: the viewport is `offset` rows above
+/// the bottom; a token continues across soft-wrapped rows (also outside the viewport).
+fn link_hit(engine: &vk_term::Engine, offset: u64, col: u16, vrow: u16) -> Option<LinkHit> {
+    let (rows, cols) = (engine.rows(), engine.cols());
+    if col >= cols || vrow >= rows {
+        return None;
+    }
+    let hist = engine.history_len() as i64;
+    let total = hist + i64::from(rows);
+    let top = hist - offset.min(hist as u64) as i64;
+    let fetch = |v: i64| -> Option<vk_proto::render::Row> {
+        let abs = top + v;
+        if abs < 0 || abs >= total {
+            None
+        } else if abs < hist {
+            engine.history_row(abs as usize)
+        } else {
+            Some(engine.row((abs - hist) as u16))
+        }
+    };
+    let here = fetch(i64::from(vrow))?;
+    if let Some(l) = here.link_at(col) {
+        return Some(LinkHit::Uri(l.uri.clone()));
+    }
+    // The logical line: rows joined by soft wraps (bounded like Herdr's word selection).
+    let v = i64::from(vrow);
+    let mut first = v;
+    while v - first < 64 && fetch(first - 1).is_some_and(|r| r.wrapped) {
+        first -= 1;
+    }
+    let mut last = v;
+    while last - v < 64 && fetch(last).is_some_and(|r| r.wrapped) && fetch(last + 1).is_some() {
+        last += 1;
+    }
+    let mut cells = Vec::new();
+    let mut clicked = None;
+    for r in first..=last {
+        let row = if r == v { here.clone() } else { fetch(r)? };
+        let from = cells.len();
+        row_cells(&row, r, &mut cells);
+        if r == v {
+            clicked = cells[from..]
+                .iter()
+                .position(|c| c.col <= col && col <= c.end_col)
+                .map(|i| from + i);
+        }
+    }
+    let clicked = clicked?;
+    let token = herdr::links::token(&cells, clicked)?;
+    Some(LinkHit::Text {
+        cells,
+        token,
+        clicked,
+    })
+}
+
+/// The first link handler whose pattern matches `url` (plugins in id order, active ones only;
+/// the handler and its action must run on this platform): `(plugin, action, handler)`.
+fn find_link_handler(url: &str) -> Option<(String, String, String)> {
+    let reg = Registry::load(&plugin_dirs()).ok()?;
+    let pf = herdr::current_platform();
+    for e in reg.plugins.values() {
+        let (st, m) = registry::entry_status(e);
+        let (Status::Active, Some(m)) = (st, m) else {
+            continue;
+        };
+        for l in &m.link_handlers {
+            if !m.entry_on(l.platforms.as_ref(), pf) {
+                continue;
+            }
+            let Some(a) = m.resolve_action(&l.action) else {
+                continue;
+            };
+            if !m.entry_on(a.platforms.as_ref(), pf) {
+                continue;
+            }
+            let Ok(re) = regex::Regex::new(&l.pattern) else {
+                continue;
+            };
+            if re.is_match(url) {
+                return Some((e.id.clone(), a.id.clone(), l.id.clone()));
+            }
+        }
+    }
+    None
+}
+
+/// Herdr `pane.link.resolve` / `pane.link.activate` `{pane_id, viewport_row, col,
+/// content_revision?, offset_from_bottom?}` (`read_checked_pane_link`): the pane must be
+/// visible (`stale_target`), the viewport offset and content revision must still match
+/// (`stale_content`). Resolve answers `pane_link_resolved {regions}` (the plain-text URL's
+/// cells; an OSC 8 link has none, as in Herdr); activate finds the URL (an OSC 8 target, or a
+/// plain `http(s)` URL) and runs the first matching plugin link handler with the clicked
+/// pane's context, `clicked_url` and `link_handler_id`, answering
+/// `pane_link_activated {url?, handled}`.
+async fn pane_link(
+    server: &Arc<Server>,
+    caller: &Caller,
+    sn: &Snap,
+    method: &str,
+    p: &Value,
+) -> Result<Value, WireError> {
+    let field = |k: &str| -> Result<u16, WireError> {
+        match p.get(k) {
+            None | Some(Value::Null) => Err(wire::invalid_request(format!("missing field `{k}`"))),
+            Some(v) => v
+                .as_u64()
+                .and_then(|n| u16::try_from(n).ok())
+                .ok_or_else(|| wire::invalid_request(format!("invalid value for `{k}`"))),
+        }
+    };
+    let pid = sp(p, "pane_id").ok_or_else(|| wire::invalid_request("missing field `pane_id`"))?;
+    let (vrow, col) = (field("viewport_row")?, field("col")?);
+    let op = if method == "pane.link.resolve" {
+        "resolution"
+    } else {
+        "activation"
+    };
+    let x = sn
+        .pane(pid)
+        .cloned()
+        .ok_or_else(|| WireError::new("pane_not_found", "pane not found"))?;
+    let visible = sn
+        .tab(&x.tab)
+        .is_some_and(|t| sn.tab_is_active(t) && t.zoomed_pane.as_deref().is_none_or(|z| z == x.id));
+    if !visible {
+        return Err(WireError::new("stale_target", "pane is no longer visible"));
+    }
+    let rt = server
+        .pane_rt(&x.id)
+        .ok_or_else(|| WireError::new("pane_not_found", "pane runtime not found"))?;
+    let offset = u64::from(
+        sn.meta
+            .scroll
+            .get(&x.id)
+            .or_else(|| sn.meta.scroll.get(&x.handle))
+            .copied()
+            .unwrap_or(0),
+    );
+    if p.get("offset_from_bottom")
+        .and_then(Value::as_u64)
+        .is_some_and(|o| o != offset)
+    {
+        return Err(WireError::new(
+            "stale_content",
+            format!("pane viewport changed before link {op}"),
+        ));
+    }
+    let (hit, rows) = {
+        let sc = rt.screen.lock().unwrap();
+        if p.get("content_revision")
+            .and_then(Value::as_u64)
+            .is_some_and(|r| r != sc.rev)
+        {
+            return Err(WireError::new(
+                "stale_content",
+                format!("pane content changed before link {op}"),
+            ));
+        }
+        (link_hit(&sc.engine, offset, col, vrow), sc.engine.rows())
+    };
+    if method == "pane.link.resolve" {
+        let regions: Vec<Value> = match &hit {
+            Some(LinkHit::Text {
+                cells,
+                token,
+                clicked,
+            }) => {
+                let (text, b) = herdr::links::token_text(cells, *token, *clicked);
+                herdr::links::url_byte_range(&text, b)
+                    .map(|r| herdr::links::regions(cells, *token, &r, rows))
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|r| json!({"row": r.row, "start_col": r.start_col, "end_col": r.end_col}))
+                    .collect()
+            }
+            _ => Vec::new(),
+        };
+        return Ok(typed("pane_link_resolved", json!({"regions": regions})));
+    }
+    let url = match hit {
+        Some(LinkHit::Uri(u)) => Some(u),
+        Some(LinkHit::Text {
+            cells,
+            token,
+            clicked,
+        }) => {
+            let (text, b) = herdr::links::token_text(&cells, token, clicked);
+            herdr::links::url_at_byte(&text, b).map(str::to_string)
+        }
+        None => None,
+    };
+    let mut handled = false;
+    if let Some(u) = &url
+        && let Some((plugin, action, handler)) = find_link_handler(u)
+        && let Some(mut ictx) = sn.ctx_for_pane(server, &x, "link_click")
+    {
+        ictx.invocation_source = Some("link_click".into());
+        ictx.clicked_url = Some(u.clone());
+        ictx.link_handler_id = Some(handler);
+        match invoke_action(
+            server,
+            caller.ctx.pane_scope.as_deref(),
+            &plugin,
+            &action,
+            ictx,
+            "link_handler",
+        ) {
+            Ok(_) => handled = true,
+            Err(e) => tracing::warn!(url = %u, error = %e, "plugin link handler not invoked"),
+        }
+    }
+    let mut v = json!({"handled": handled});
+    if let Some(u) = url {
+        v["url"] = json!(u);
+    }
+    Ok(typed("pane_link_activated", v))
 }
 
 fn split_qualified(q: &str) -> Result<(String, String), WireError> {
@@ -4037,7 +5057,7 @@ pub fn invoke_action(
     let reg = Registry::load(&dirs).map_err(|e| WireError::new("internal_error", e.to_string()))?;
     let entry = reg
         .get(plugin)
-        .map_err(|_| WireError::new("plugin_not_found", format!("plugin not found: {plugin}")))?
+        .map_err(|_| WireError::new("plugin_not_found", "plugin not found".to_string()))?
         .clone();
     let (st, m) = registry::entry_status(&entry);
     if st != Status::Active {
@@ -4906,7 +5926,7 @@ fn wire_to_rpc(e: WireError) -> vk_proto::rpc::RpcError {
         "invalid_params" | "invalid_request" => ErrorKind::InvalidParams,
         "timeout" => ErrorKind::Timeout,
         "unsupported" => ErrorKind::Unsupported,
-        "method_not_found" => ErrorKind::MethodNotFound,
+        "method_not_found" | "unknown_method" => ErrorKind::MethodNotFound,
         _ => ErrorKind::Internal,
     };
     err(kind, e.message).details(json!({"herdr_code": e.code}))
@@ -5246,7 +6266,9 @@ mod tests {
             }
         }
         let r = call(&srv, &user(), "galaxy.explode", &json!({})).await;
-        assert_eq!(r.unwrap_err().code, "method_not_found");
+        assert_eq!(r.unwrap_err().code, "invalid_request");
+        let r = call(&srv, &user(), "pane.graphics.info", &json!({})).await;
+        assert_eq!(r.unwrap_err().code, "unknown_method");
     }
 
     #[tokio::test]
@@ -5306,7 +6328,7 @@ mod tests {
         let e = call(&srv, &user(), "pane.send_text", &json!({}))
             .await
             .unwrap_err();
-        assert_eq!(e.code, "invalid_params", "no pane and no focus");
+        assert_eq!(e.code, "pane_not_found", "no pane and no focus");
         let e = call(
             &srv,
             &user(),
@@ -5351,7 +6373,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(r["error"]["code"], "method_not_found");
+        assert_eq!(r["error"]["code"], "invalid_request");
         let st = api::dispatch(&srv, &user_ctx, "compat.status", &json!({}))
             .await
             .unwrap();

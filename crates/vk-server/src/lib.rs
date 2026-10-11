@@ -240,6 +240,22 @@ pub fn shell_argv(opts: &ServerOpts) -> Vec<String> {
     vec![shell, "-l".into()]
 }
 
+/// Variables a caller's launch environment cannot set: the pane's own identity, its terminal
+/// type and the Herdr aliases (Herdr sets its identity after the extra environment too).
+fn pane_identity_key(k: &str) -> bool {
+    k.starts_with("VIBEKE")
+        || matches!(
+            k,
+            "TERM"
+                | "COLORTERM"
+                | "HERDR_ENV"
+                | "HERDR_SOCKET_PATH"
+                | "HERDR_PANE_ID"
+                | "HERDR_TAB_ID"
+                | "HERDR_WORKSPACE_ID"
+        )
+}
+
 fn token_hash(token: &str) -> String {
     blake3::hash(token.as_bytes()).to_hex().to_string()
 }
@@ -864,6 +880,7 @@ impl Server {
             title,
             created_by,
             ulid(),
+            &[],
         )
     }
 
@@ -880,11 +897,18 @@ impl Server {
         title: Option<String>,
         created_by: &str,
         id: String,
+        launch_env: &[(String, String)],
     ) -> Result<Pane> {
         let handle = c.next_pane_handle(&ws.handle);
         let (cols, rows) = (80, 24);
         let argv = command.unwrap_or_else(|| shell_argv(&self.opts));
-        let task_env = self.task_env_for(c, ws.task.as_deref());
+        let mut task_env = self.task_env_for(c, ws.task.as_deref());
+        // A caller's launch environment (`env` of `pane.split`, `tab.create`,
+        // `workspace.create`): set before the pane's identity, which it cannot replace.
+        for (k, v) in launch_env.iter().filter(|(k, _)| !pane_identity_key(k)) {
+            task_env.retain(|(x, _)| x != k);
+            task_env.push((k.clone(), v.clone()));
+        }
         let (holder_pid, child_pid, socket, key, isolation) = self.spawn_holder(
             &id,
             &handle,
@@ -956,6 +980,20 @@ impl Server {
         focus_client: Option<&str>,
         task: Option<&str>,
     ) -> Result<(Workspace, Tab, Pane)> {
+        self.create_workspace_env(cwd, name, command, focus_client, task, &[])
+    }
+
+    /// [`Self::create_workspace_for`] whose first pane starts with `launch_env` set (the
+    /// pane's identity variables cannot be replaced).
+    pub fn create_workspace_env(
+        self: &Arc<Self>,
+        cwd: &str,
+        name: Option<String>,
+        command: Option<Vec<String>>,
+        focus_client: Option<&str>,
+        task: Option<&str>,
+        launch_env: &[(String, String)],
+    ) -> Result<(Workspace, Tab, Pane)> {
         let mut c = self.core.lock().unwrap();
         let id = ulid();
         let handle = c.next_ws_handle();
@@ -984,7 +1022,7 @@ impl Server {
             json!({"workspace": ws.id}),
             json!({"cwd": cwd}),
         );
-        let tab = self.tab_in(&mut c, &mut tx, &ws, None, cwd, command, None)?;
+        let tab = self.tab_in(&mut c, &mut tx, &ws, None, cwd, command, None, launch_env)?;
         let pane_id = tab.focused_pane.clone().unwrap_or_default();
         let pane = tx
             .panes
@@ -1010,6 +1048,7 @@ impl Server {
         cwd: &str,
         command: Option<Vec<String>>,
         pane_id: Option<String>,
+        launch_env: &[(String, String)],
     ) -> Result<Tab> {
         let id = ulid();
         let number = c.next_tab_number(&ws.id);
@@ -1031,6 +1070,7 @@ impl Server {
             None,
             "user",
             pane_id.unwrap_or_else(ulid),
+            launch_env,
         )?;
         let tab = Tab {
             id: id.clone(),
@@ -1078,13 +1118,30 @@ impl Server {
         focus_client: Option<&str>,
         pane_id: Option<String>,
     ) -> Result<(Tab, Pane)> {
+        self.create_tab_env(ws_id, cwd, title, command, focus_client, pane_id, &[])
+    }
+
+    /// [`Self::create_tab_as`] whose pane starts with `launch_env` set.
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_tab_env(
+        self: &Arc<Self>,
+        ws_id: &str,
+        cwd: Option<&str>,
+        title: Option<String>,
+        command: Option<Vec<String>>,
+        focus_client: Option<&str>,
+        pane_id: Option<String>,
+        launch_env: &[(String, String)],
+    ) -> Result<(Tab, Pane)> {
         let mut c = self.core.lock().unwrap();
         let ws = c.ws(ws_id).cloned().context("workspace not found")?;
         let cwd = cwd
             .map(str::to_string)
             .unwrap_or_else(|| ws.root_path.clone());
         let mut tx = Tx::new();
-        let tab = self.tab_in(&mut c, &mut tx, &ws, title, &cwd, command, pane_id)?;
+        let tab = self.tab_in(
+            &mut c, &mut tx, &ws, title, &cwd, command, pane_id, launch_env,
+        )?;
         let pane = tx
             .panes
             .iter()
@@ -1136,6 +1193,33 @@ impl Server {
         focus_client: Option<&str>,
         created_by: &str,
     ) -> Result<(Pane, Arc<PaneRt>)> {
+        self.split_pane_env(
+            target,
+            dir,
+            ratio,
+            cwd,
+            command,
+            title,
+            focus_client,
+            created_by,
+            &[],
+        )
+    }
+
+    /// [`Self::split_pane_with_runtime`] whose new pane starts with `launch_env` set.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn split_pane_env(
+        self: &Arc<Self>,
+        target: &str,
+        dir: Direction,
+        ratio: f32,
+        cwd: Option<&str>,
+        command: Option<Vec<String>>,
+        title: Option<String>,
+        focus_client: Option<&str>,
+        created_by: &str,
+        launch_env: &[(String, String)],
+    ) -> Result<(Pane, Arc<PaneRt>)> {
         // Resolve the cwd before taking `core` (pane_cwd may lock it; lock order: core → clients,
         // never re-entrant).
         let target_id = self
@@ -1151,7 +1235,7 @@ impl Server {
         let cwd = cwd_resolved.unwrap_or_else(|| ws.root_path.clone());
         let mut tx = Tx::new();
         let tab_handle = tab.handle.clone();
-        let pane = self.new_pane(
+        let pane = self.new_pane_as(
             &mut c,
             &mut tx,
             &ws,
@@ -1161,6 +1245,8 @@ impl Server {
             command,
             title,
             created_by,
+            ulid(),
+            launch_env,
         )?;
         layout::split(&mut tab.layout, &tp.id, &pane.id, dir, ratio);
         tab.zoomed_pane = None;

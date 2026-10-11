@@ -1172,8 +1172,8 @@ fn metadata_event(server: &Server, kind: &str, subject: Value, p: &Value) -> Res
 
 fn reg_err(e: RegistryError) -> WireError {
     match e {
-        RegistryError::NotFound(id) => {
-            WireError::new("plugin_not_found", format!("plugin not found: {id}"))
+        RegistryError::NotFound(_) => {
+            WireError::new("plugin_not_found", "plugin not found".to_string())
         }
         RegistryError::Conflict(m) => WireError::new("conflict", m),
         RegistryError::Manifest(m) => WireError::new("invalid_manifest", m.to_string()),
@@ -1243,10 +1243,7 @@ pub fn registry_op(method: &str, p: &Value) -> Result<Value, WireError> {
             "plugin_list",
             json!({"plugins": super::herdr_plugin_list(sp(p, "plugin_id"))}),
         )),
-        other => Err(WireError::new(
-            "method_not_found",
-            format!("unknown method: {other}"),
-        )),
+        other => Err(super::wire::unknown_method(other)),
     }
 }
 
@@ -1839,6 +1836,10 @@ async fn worktree_remove(
 ) -> Result<Value, WireError> {
     let w = ws_target(sn, p)?;
     let force = p.get("force").and_then(Value::as_bool).unwrap_or(false);
+    let trust = p
+        .get("trust_repository")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     let space = super::git_space(&w.root_path).ok_or_else(|| {
         WireError::new(
             "not_linked_worktree",
@@ -1869,12 +1870,16 @@ async fn worktree_remove(
             .filter(|o| o.status.success())
             .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
             .filter(|b| !b.is_empty());
-        let mut args = vec!["-C", root.as_str(), "worktree", "remove"];
+        let mut args = herdr::worktree::git_args(std::path::Path::new(&root), trust);
+        args.extend(["worktree".to_string(), "remove".to_string()]);
         if force {
-            args.push("--force");
+            args.push("--force".to_string());
         }
-        args.push(checkout.as_str());
-        let out = std::process::Command::new("git").args(&args).output();
+        args.push(checkout.clone());
+        let out = std::process::Command::new("git")
+            .env("LC_ALL", "C")
+            .args(&args)
+            .output();
         (branch, out)
     })
     .await
@@ -2315,65 +2320,8 @@ pub async fn call(
             Ok(typed("agent_info", agent_info(server, &r.id)))
         }
         // ---- worktrees -------------------------------------------------------------------
-        "worktree.create" => {
-            let mut np = json!({
-                "cwd": req_s(p, "cwd")?,
-                "branch": req_s(p, "branch")?,
-                "open": p.get("open").and_then(Value::as_bool).unwrap_or(true),
-                "focus": p.get("focus").and_then(Value::as_bool).unwrap_or(false),
-            });
-            for k in ["base", "label"] {
-                if let Some(v) = sp(p, k) {
-                    np[if k == "label" { "name" } else { k }] = json!(v);
-                }
-            }
-            let r = native(server, caller, "worktree.create", np).await?;
-            let sn = snap(server);
-            let id = |k: &str| r[k]["id"].as_str().unwrap_or_default().to_string();
-            Ok(typed(
-                "worktree_created",
-                json!({
-                    "worktree": r["worktree"],
-                    "workspace": sn.ws(&id("workspace")).map(|w| sn.ws_json(w)),
-                    "tab": sn.tab(&id("tab")).map(|t| sn.tab_json(t)),
-                    "root_pane": sn.pane(&id("root_pane")).map(|x| sn.pane_json(server, x)),
-                }),
-            ))
-        }
-        "worktree.open" => {
-            let r = native(
-                server,
-                caller,
-                "worktree.open",
-                json!({"path": req_s(p, "path")?, "focus": p.get("focus").and_then(Value::as_bool).unwrap_or(false)}),
-            )
-            .await?;
-            let sn = snap(server);
-            let ws = r["workspace"]["id"].as_str().unwrap_or_default();
-            // The workspace's active tab and that tab's root (first) pane, as Herdr reports.
-            let tab = sn
-                .tabs
-                .iter()
-                .filter(|t| sn.ws(ws).is_some_and(|w| w.id == t.workspace))
-                .find(|t| sn.focus.tab.as_deref() == Some(t.id.as_str()))
-                .or_else(|| {
-                    sn.tabs
-                        .iter()
-                        .find(|t| sn.ws(ws).is_some_and(|w| w.id == t.workspace))
-                });
-            let root = tab.and_then(|t| t.layout.panes().first().cloned());
-            Ok(typed(
-                "worktree_opened",
-                json!({
-                    "worktree": r["worktree"],
-                    "workspace": sn.ws(ws).map(|w| sn.ws_json(w)),
-                    "tab": tab.map(|t| sn.tab_json(t)),
-                    "root_pane": root.as_deref().and_then(|x| sn.pane(x)).map(|x| sn.pane_json(server, x)),
-                    "already_open": r["created"].as_bool().map(|c| !c),
-                    "created": r["created"],
-                }),
-            ))
-        }
+        "worktree.create" => super::herdr_worktree_create(server, caller, sn, p).await,
+        "worktree.open" => super::herdr_worktree_open(server, caller, sn, p).await,
         "worktree.remove" => worktree_remove(server, caller, sn, p).await,
         // ---- plugin registry ---------------------------------------------------------------
         "plugin.link" | "plugin.unlink" | "plugin.enable" | "plugin.disable" => {
@@ -2438,10 +2386,7 @@ pub async fn call(
             close_surface(server, &id);
             Ok(ok())
         }
-        other => Err(WireError::new(
-            "method_not_found",
-            format!("unknown method: {other}"),
-        )),
+        other => Err(super::wire::unknown_method(other)),
     }
 }
 

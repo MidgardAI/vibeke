@@ -202,9 +202,10 @@ impl Projector {
                 }
                 out.push("workspace.closed")
             }
-            // `workspace.reordered` is declared by a corpus plugin; a move is the only
-            // reordering Vibeke has.
-            "workspace.moved" => out.extend(["workspace.moved", "workspace.reordered"]),
+            // Herdr: `workspace.move` reports `workspace.moved`, `workspace.move_block` one
+            // `workspace.reordered` (the server passes a block move as `workspace.reordered`).
+            "workspace.moved" => out.push("workspace.moved"),
+            "workspace.reordered" => out.push("workspace.reordered"),
             "tab.created" => out.push("tab.created"),
             "tab.closed" => {
                 if self.focused_tab.as_deref() == e.tab {
@@ -609,13 +610,18 @@ mod tests {
     }
 
     #[test]
-    fn a_move_also_reports_a_reorder() {
+    fn a_move_and_a_block_move_report_one_event_each() {
         let mut p = Projector::new();
         let out = p.project(&Input {
             kind: "workspace.moved",
             ..Default::default()
         });
-        assert_eq!(out, vec!["workspace.moved", "workspace.reordered"]);
+        assert_eq!(out, vec!["workspace.moved"]);
+        let out = p.project(&Input {
+            kind: "workspace.reordered",
+            ..Default::default()
+        });
+        assert_eq!(out, vec!["workspace.reordered"]);
     }
 
     #[test]

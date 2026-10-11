@@ -123,7 +123,7 @@ pub const ENTRIES: &[Entry] = &[
         "error `{id, error: {code, message}}`",
         Implemented,
         "spec",
-        "string id echoed when recoverable; code set unverified",
+        "string id echoed when the line is an object with a string `id`; an unknown method or params of the wrong type answer `invalid_request` (message `invalid request: unknown variant …`; Herdr's serde message also lists every method), the retired `pane.graphics.*` methods `unknown_method`",
     ),
     e(
         Wire,
@@ -142,16 +142,16 @@ pub const ENTRIES: &[Entry] = &[
     e(
         Wire,
         "invalid UTF-8 / invalid JSON handling",
-        Partial,
+        Implemented,
         "spec",
-        "`parse_error`; exact baseline codes unverified",
+        "invalid JSON answers `invalid_request` (`invalid request: <reason>`, id `\"\"`); a line that is not UTF-8 or is blank gets no answer, as in Herdr",
     ),
     e(
         Wire,
         "line limit",
-        Partial,
+        Implemented,
         "spec",
-        "16 MiB; baseline limit unverified",
+        "1 MiB (Herdr's `MAX_INITIAL_REQUEST_BYTES`); a longer line is closed without an answer",
     ),
     e(
         Wire,
@@ -230,7 +230,7 @@ pub const ENTRIES: &[Entry] = &[
         "workspace.create",
         Implemented,
         "spec",
-        "`workspace_created {workspace, tab, root_pane}`",
+        "`{cwd?, label?, focus?, env?, source_workspace_id?}`: without `cwd` the new workspace follows the focused pane's directory of `source_workspace_id` (else the active workspace); `env` as `pane.split`; `workspace_created {workspace, tab, root_pane}`; failures `workspace_create_failed`",
     ),
     e(Method, "workspace.rename", Implemented, "spec", ""),
     e(
@@ -242,7 +242,13 @@ pub const ENTRIES: &[Entry] = &[
     ),
     e(Method, "workspace.focus", Implemented, "spec", ""),
     e(Method, "tab.list", Implemented, "spec", ""),
-    e(Method, "tab.create", Implemented, "spec", ""),
+    e(
+        Method,
+        "tab.create",
+        Implemented,
+        "spec",
+        "`{workspace_id?, cwd?, label?, focus?, env?}`: without `cwd` the tab follows the workspace's focused pane directory; `env` as `pane.split`; `tab_created {tab, root_pane}`",
+    ),
     e(Method, "tab.rename", Implemented, "spec", ""),
     e(Method, "tab.move", Implemented, "spec", "`insert_index`"),
     e(Method, "tab.focus", Implemented, "spec", ""),
@@ -273,7 +279,7 @@ pub const ENTRIES: &[Entry] = &[
         "pane.read",
         Partial,
         "spec",
-        "`pane_read {read: PaneReadResult}` with `pane_id`, `workspace_id`, `tab_id`, `source`, `format`, `text`, `revision`, `truncated` (always false); `format: ansi` is echoed but the text is plain; `strip_ansi` ignored; `lines` defaults to 50",
+        "`pane_read {read: PaneReadResult}` with `pane_id`, `workspace_id`, `tab_id`, `source`, `format`, `text`, `revision` (0, as Herdr reports), `truncated` as Herdr (a `lines` limit cut the visible text, or the terminal has more rows than a recent read returns); `format: ansi` returns SGR-styled rows (Vibeke's renderer, so escape sequences can differ from Herdr's byte for byte; `detection` and remote callers get text); `lines` at most 1000, recent reads default to 80; an unknown `source` or `format` is `invalid_request`; `strip_ansi` has no effect, as in Herdr",
     ),
     e(
         Method,
@@ -305,7 +311,7 @@ pub const ENTRIES: &[Entry] = &[
         "pane.split",
         Partial,
         "spec",
-        "splits `target_pane_id` (baseline), else `pane_id`, the invocation's pane or the focused pane; direction/cwd/focus; Herdr's `ratio` (share of the split pane, 0.1..0.9); `env`, `workspace_id` and `right_click` are not applied (Vibeke's split takes no launch environment)",
+        "splits `target_pane_id`, else the focused pane of `workspace_id`, else the focused pane (Vibeke also: `pane_id`, a pane-scoped caller's own pane); `direction`/`cwd`/`focus`; Herdr's `ratio` (share of the split pane, 0.1..0.9); `env` checked like Herdr's `normalize_launch_env` (`invalid_env`) and set in the new pane before its identity (`VIBEKE_*`, `TERM`, `HERDR_ENV`, `HERDR_*_ID` and `HERDR_SOCKET_PATH` cannot be replaced); `right_click` validated (`herdr`/`pane`) but not applied: Vibeke's clients have no per-pane right-click routing; `pane_info`; failures `pane_split_failed`. The launch environment is not kept when a lost pane is restarted",
     ),
     e(
         Method,
@@ -375,9 +381,9 @@ pub const ENTRIES: &[Entry] = &[
     e(
         Method,
         "worktree.list",
-        Partial,
+        Implemented,
         "spec",
-        "`{workspace_id? | cwd?}` (else the active workspace; both: `invalid_request`); `not_git_worktree`; `worktree_list {source: WorktreeSourceInfo, worktrees: [WorktreeInfo]}` from the main checkout (`label` = repository name, `open_workspace_id` by checkout path); `is_bare` always false; `trust_repository` ignored",
+        "`{workspace_id? | cwd?, trust_repository?}` (else the active workspace; both: `invalid_request`; `cwd` absolute, `~` expanded); `not_git_worktree`; `git worktree list --porcelain` in the main checkout (`-c safe.directory=<repo>` with `trust_repository`; `worktree_list_failed` with git's message); `worktree_list {source: WorktreeSourceInfo, worktrees: [WorktreeInfo]}` with Herdr's `is_bare`, `is_detached`, `is_prunable`, `label` = repository name and `open_workspace_id` by canonical checkout path",
     ),
     e(Method, "worktree.repo_root", Partial, "spec", ""),
     e(
@@ -385,14 +391,14 @@ pub const ENTRIES: &[Entry] = &[
         "worktree.create",
         Partial,
         "spec",
-        "`git worktree add` under `[tasks] root`, opens a workspace (`open` defaults to true); no `path` param; emits `worktree.created`",
+        "Herdr's params and checks: `branch` (default Herdr's generated `worktree/<adjective>-<noun>-<hex>`; blank: `invalid_request`), `base` (default `HEAD`), `path` (absolute, `~` expanded), `workspace_id | cwd` source (a linked worktree: `linked_worktree_source`), `label`, `focus`, `trust_repository`; an existing local branch is checked out, else `-b <branch>` from `base`; git's message as `worktree_create_failed`; the main checkout gets a parent workspace when none is open; `worktree_created {workspace, tab, root_pane, worktree}`; emits `worktree.created`. Without `path` the checkout goes under Vibeke's `[tasks] root` (`<root>/<repo>/<branch slug>`) instead of Herdr's `[worktrees] directory`; runs synchronously (no `worktree_operation_in_progress`)",
     ),
     e(
         Method,
         "worktree.open",
-        Partial,
+        Implemented,
         "spec",
-        "reuses the workspace rooted at the worktree or creates one; `worktree_opened {workspace, tab, root_pane, worktree, already_open}` (Vibeke extra `created`); only `path` is accepted; emits `worktree.opened`",
+        "Herdr's params: exactly one of `path`/`branch` (`invalid_request`), `workspace_id | cwd` source (a linked worktree: `linked_worktree_source`), `label`, `focus`, `trust_repository`; the worktree is looked up among the repository's worktrees (`worktree_not_found` `worktree path not found`/`worktree branch not found`, `ambiguous_worktree_branch`, bare or prunable: `worktree cannot be opened`); the main checkout gets a parent workspace when none is open; reuses the workspace rooted at the worktree or creates one (named `label`; an open one is renamed); `worktree_opened {workspace, tab, root_pane, worktree, already_open}` (Vibeke extra `created`); emits `worktree.opened`",
     ),
     e(
         Method,
@@ -406,7 +412,7 @@ pub const ENTRIES: &[Entry] = &[
         "events.wait",
         Partial,
         "spec",
-        "Herdr's `{match_event, timeout_ms?}`: only `pane_agent_status_changed {pane_id, agent_status}` (every other `EventMatch` is `unsupported_event_wait_match`, as in Herdr); `wait_matched {event: EventEnvelope}` at once when the pane already has the status, else on the first projected change; `pane_not_found`; no deadline without `timeout_ms`, else `timeout`. Vibeke's older `{subscriptions}` form still answers the first matching projected event as `event`",
+        "Herdr's `{match_event, timeout_ms?}`: only `pane_agent_status_changed {pane_id, agent_status}` (every other `EventMatch` is `unsupported_event_wait_match`, as in Herdr); `wait_matched {event: EventEnvelope}` at once when the pane already has the status, else on the first projected change; `pane_not_found`; no deadline without `timeout_ms`, else `timeout`; the wait ends without an answer when the client closes the connection, as in Herdr (also `pane.wait_for_output` and `agent.wait`). Vibeke's older `{subscriptions}` form still answers the first matching projected event as `event`",
     ),
     // ---- methods: 07 §8.3 required-coverage list -------------------------------------------
     e(
@@ -414,7 +420,7 @@ pub const ENTRIES: &[Entry] = &[
         "plugin.list",
         Implemented,
         "spec",
-        "Herdr's `InstalledPluginInfo` (`name`, `version`, `min_herdr_version`, `manifest_path`, `plugin_root`, `enabled`, manifest lists in Herdr's order, `source` as `PluginSourceInfo` with `local`/`github`, `warnings` incl. `manifest unavailable: …`); `plugin_id` filter; Vibeke extras `status`, `trust`, `managed`, `origin`, `config_dir`, `state_dir`, sandbox settings",
+        "Herdr's `InstalledPluginInfo` (`name`, `version`, `min_herdr_version`, `manifest_path`, `plugin_root`, `enabled`, manifest lists in Herdr's order, `source` as `PluginSourceInfo`: `github` (owner, repo, subdir, ref, commit, `managed_path`, `installed_unix_ms`) for repository installs, `{kind: local}` alone for links and for Vibeke's local-directory copies (Herdr installs from GitHub only, so it has no copy kind), `warnings` incl. `manifest unavailable: …`); `plugin_id` filter; Vibeke extras `status`, `trust`, `managed`, `origin`, `config_dir`, `state_dir`, sandbox settings",
     ),
     e(
         Method,
@@ -617,7 +623,7 @@ pub const ENTRIES: &[Entry] = &[
         "server.reload_config",
         Partial,
         "corpus",
-        "Vibeke does not read Herdr's config.toml: `config_reload {status: applied, diagnostics: []}`; Vibeke reloads its own config itself",
+        "reloads Vibeke's own config (Vibeke does not read Herdr's config.toml) and answers Herdr's `config_reload {status, diagnostics}`: `failed` with the parse errors when the file does not load, `partial` with the warnings, else `applied`; refused from panes (`permission_denied`), as Vibeke's `server.reload_config` is",
     ),
     e(
         Method,
@@ -639,7 +645,7 @@ pub const ENTRIES: &[Entry] = &[
         "notification.show",
         Partial,
         "corpus",
-        "`{title, body?}` (`position`, `sound` ignored); empty title `invalid_params`; delivered through Vibeke's notifier; `notification_show {shown: true, reason: shown}` (Herdr's `disabled`, `rate_limited`, `busy` and `no_foreground_client` are never reported)",
+        "`{title, body?}` cleaned as Herdr's `sanitized_notification_text` (control characters dropped, whitespace collapsed, title at most 80 and body 240 characters; an empty title is `invalid_params`); Herdr's one-per-second limit (`notification_show {shown: false, reason: rate_limited}`); otherwise delivered through Vibeke's notifier and `{shown: true, reason: shown}`; `position` and `sound` ignored; `disabled`, `busy` and `no_foreground_client` are never reported (Vibeke's notifier has no Herdr toast delivery setting and queues notifications)",
     ),
     e(
         Method,
@@ -674,14 +680,14 @@ pub const ENTRIES: &[Entry] = &[
         "pane.input.set",
         Partial,
         "corpus",
-        "`{pane_id, right_click: herdr|pane}` validated (`pane_not_found`, `invalid_params`) and answered `ok`, but it has no effect: Vibeke's clients have no per-pane right-click routing",
+        "`{pane_id, right_click: herdr|pane}` validated (`pane_not_found`; another value `invalid_request`, as Herdr's typed parse) and answered `ok`, but it has no effect: Vibeke's clients have no per-pane right-click routing",
     ),
     e(
         Method,
         "pane.release_agent",
         Partial,
         "corpus",
-        "`{pane_id, source, agent, seq?}`: `invalid_agent` for an empty label; a run that only self-reports ends (`released`) so detection takes over; `source`/`agent`/`seq` are not compared with the reporting hook (Herdr keeps per-source authority); a pane may release only itself",
+        "`{pane_id, source, agent, seq?}` with Herdr's per-source hook authority: the `(source, agent)` of the last accepted `pane.report_agent` holds the pane; a release from another source or agent, from one of Herdr's own `herdr:<agent>` integrations, for an agent the pane does not run, or with a stale `seq` (per pane and source, shared with the reports) changes nothing; otherwise the self-reported run ends (`released`) so detection takes over; `invalid_agent` for an empty label; `ok`; a pane may release only itself",
     ),
     e(
         Method,
@@ -709,14 +715,14 @@ pub const ENTRIES: &[Entry] = &[
         "worktree.remove",
         Partial,
         "corpus",
-        "`{workspace_id, force?}`: `not_linked_worktree` unless the workspace is a linked worktree checkout; `git worktree remove [--force]` in the main repository (`dirty_worktree_requires_force`, `worktree_remove_failed` with git's message); then the workspace closes and `worktree.removed` follows with `forced` and the workspace's last snapshot; `worktree_removed {workspace_id, path, forced}`; `trust_repository` ignored (git's own safe.directory rules apply); runs synchronously",
+        "`{workspace_id, force?}`: `not_linked_worktree` unless the workspace is a linked worktree checkout; `git worktree remove [--force]` in the main repository (`dirty_worktree_requires_force`, `worktree_remove_failed` with git's message); then the workspace closes and `worktree.removed` follows with `forced` and the workspace's last snapshot; `worktree_removed {workspace_id, path, forced}`; `trust_repository` adds `-c safe.directory=<repo>` as in Herdr; runs synchronously",
     ),
     e(
         Method,
         "workspace.move_block",
         Partial,
         "spec",
-        "`{workspace_ids, before_workspace_id?}` with Herdr's `workspace_move_block_failed` checks; `workspace_list`; Vibeke moves the workspaces one at a time, so subscribers see `workspace.moved` per moved workspace instead of one `workspace.reordered`",
+        "`{workspace_ids, before_workspace_id?}` with Herdr's `workspace_move_block_failed` checks; the block moves in one commit and, when the order changed, emits one `workspace.reordered {workspace_ids, before_workspace_id?, workspaces}`; `workspace_list`; refused from panes",
     ),
     e(
         Method,
@@ -730,7 +736,7 @@ pub const ENTRIES: &[Entry] = &[
         "pane.clear_agent_authority",
         Partial,
         "spec",
-        "`{pane_id, source?, seq?}`: `ok`; a run that only self-reports ends so detection takes over (Herdr drops the hook's authority and keeps the run)",
+        "`{pane_id, source?, seq?}`: `ok`; only the source holding the hook authority (any, without `source`) and only with a fresh `seq`; then the self-reported run ends so detection takes over (Herdr drops the hook's authority and keeps its detected agent; Vibeke's self-reported runs have no detector behind them)",
     ),
     e(
         Method,
@@ -758,98 +764,98 @@ pub const ENTRIES: &[Entry] = &[
         "server.live_handoff",
         Missing,
         "spec",
-        "`unsupported`: hands a running Herdr server to a new binary; Vibeke upgrades with `vibeke update` and its holders keep panes alive",
+        "`unsupported`: hands a running Herdr server's panes to a new Herdr binary (`import_exe`, `expected_version`); Vibeke's pane holders already outlive the server, and `vibeke update` restarts it without a handoff (`ping` reports `live_handoff: false`, so Herdr clients do not ask)",
     ),
     e(
         Method,
         "server.agent_manifests",
-        Missing,
+        Partial,
         "spec",
-        "`unsupported`: Herdr's agent-detection manifests; Vibeke's are listed with `vibeke agent manifests`",
+        "`agent_manifest_status {manifests: [AgentManifestInfo]}` from Vibeke's active agent manifests: `agent` = manifest id, `source`/`source_kind` `bundled`, `remote:<serial>`/`remote` or the file/`local override`, `local_override_shadowing_remote: false`, the first load `warning`; Herdr's remote update fields (`last_check_unix`, `active_version`, …) are left out",
     ),
     e(
         Method,
         "server.reload_agent_manifests",
-        Missing,
+        Partial,
         "spec",
-        "`unsupported`: see `server.agent_manifests`; Vibeke reloads with `agent.manifests_reload`",
+        "reloads Vibeke's agent manifests (`agent.manifests_reload`), then `agent_manifest_reload {manifests}` as `server.agent_manifests`",
     ),
     e(
         Method,
         "command.invoke",
         Missing,
         "spec",
-        "`unsupported`: runs a command id from Herdr's client-shell projection, which Vibeke does not publish",
+        "`unsupported`: runs an opaque `command_id` that Herdr's endpoint issued in its client-shell projection (the menu and keybinding commands of Herdr's own client); Vibeke's clients get their commands from the render stream and never see such ids",
     ),
     e(
         Method,
         "client_shell.surface.set",
         Missing,
         "spec",
-        "`unsupported`: Herdr's client-shell presentation protocol; Vibeke clients use the render stream",
+        "`unsupported`: a lease in Herdr's client-shell presentation protocol (whether the calling client draws the panes; answers a `projection_revision`); Vibeke's clients draw from the render stream, which has no such lease (`ping` reports `surface_interest: false`)",
     ),
     e(
         Method,
         "pane.clear",
-        Missing,
+        Implemented,
         "spec",
-        "`unsupported`: Herdr clears the emulator's screen; Vibeke's terminal engine has no server-side clear that keeps the program's output consistent",
+        "`{pane_id}`: Herdr's clear (Ghostty's, without a prompt redraw) on the server's terminal state: the scrollback is erased and the rows above the cursor removed, so the cursor row becomes the top row; the alternate screen is left alone; the program is not told; `ok`; `pane_not_found`; a pane may clear only its own panes. The cleared state is not snapshotted at once: a server restart before the pane prints again shows the old screen",
     ),
     e(
         Method,
         "pane.edit_scrollback",
         Missing,
         "spec",
-        "`unsupported`: opens the focused pane's scrollback in Herdr's client editor",
+        "`unsupported`: Herdr opens the focused pane's scrollback in an editor of its own client (`stale_pane_target`, `scrollback_editor_failed`); Vibeke's editor runs in the TUI client (`edit_scrollback`, prefix+e) and the render stream has no frame that asks a client to open it",
     ),
     e(
         Method,
         "pane.selection.read",
-        Missing,
+        Implemented,
         "spec",
-        "`unsupported`: selections are client-side in Vibeke and not reported to the server",
+        "`{pane_id, anchor: {row, col}, cursor: {row, col}, content_revision?}` over the server's terminal state (rows count from the oldest kept scrollback row, Vibeke's retained buffer): `pane_selection {pane_id, text}` with soft wraps joined and trailing blanks trimmed, as Herdr's `read_text_screen`; `stale_content` when `content_revision` is not the pane's current revision; `selection_unavailable` for rows no longer kept; `pane not found: <id>`",
     ),
     e(
         Method,
         "pane.copy_motion",
         Missing,
         "spec",
-        "`unsupported`: Herdr's copy-mode cursor; Vibeke's copy mode runs in the client",
+        "`unsupported`: moves the cursor of Herdr's client-shell copy mode (vi word, line and paragraph motions over Herdr's retained buffer and its even/odd content sequence); Vibeke's copy mode and its motions run in the TUI client, and no plugin calls it",
     ),
     e(
         Method,
         "pane.copy_search",
         Missing,
         "spec",
-        "`unsupported`: see `pane.copy_motion`",
+        "`unsupported`: the search of Herdr's client-shell copy mode (a window of up to 1024 matches around the copy cursor with smart case and `current_global`); Vibeke's copy-mode search runs in the TUI client, and no plugin calls it",
     ),
     e(
         Method,
         "pane.link.resolve",
-        Missing,
+        Implemented,
         "spec",
-        "`unsupported`: Herdr resolves link regions at a viewport cell of its own renderer; Vibeke's clients detect links themselves",
+        "`{pane_id, viewport_row, col, content_revision?, offset_from_bottom?}` on the server's terminal state: the pane must be on the active tab (`stale_target`), the viewport offset (the client-reported scroll) and the content revision must match (`stale_content`); `pane_link_resolved {regions: [{row, start_col, end_col}]}` for the plain-text `http(s)` URL in the whitespace-bounded token under the cell (soft wraps followed, trailing punctuation and unbalanced closers trimmed as in Herdr); an OSC 8 link has no regions, as in Herdr",
     ),
     e(
         Method,
         "pane.link.activate",
-        Missing,
+        Implemented,
         "spec",
-        "`unsupported`: see `pane.link.resolve`; plugin link handlers run through `plugin.link.open` on the native socket",
+        "as `pane.link.resolve`; the URL is the OSC 8 target or the plain-text `http(s)` URL under the cell; the first matching `[[link_handlers]]` entry (plugins in id order, active ones, handler and action on this platform) runs its action like a click, with the clicked pane's context, `invocation_source: link_click`, `clicked_url` and `link_handler_id`; `pane_link_activated {url?, handled}` (`handled: false` when nothing matched or the action could not start)",
     ),
     e(
         Method,
         "integration.list",
         Missing,
         "spec",
-        "`unsupported`: Herdr's agent integrations; use `vibeke integration list`",
+        "`unsupported`: Herdr's integrations install Herdr's own hooks into 17 agents (`IntegrationTarget`); Vibeke's integrations cover other harnesses, are managed by the `vibeke integration` command outside the server, and installing them is a user decision that plugins and panes may not take",
     ),
     e(
         Method,
         "integration.install",
         Missing,
         "spec",
-        "`unsupported`: installing hooks needs `vibeke integration install <harness>`, which writes Vibeke's own hooks",
+        "`unsupported`: see `integration.list`; `vibeke integration install <harness>` writes Vibeke's own hooks",
     ),
     e(
         Method,
@@ -987,7 +993,7 @@ pub const ENTRIES: &[Entry] = &[
         "workspace.reordered",
         Partial,
         "corpus",
-        "declared by one plugin, not named by the spec; emitted after every `workspace.move` (the only reordering Vibeke has); `{workspace_ids, workspaces}` without `before_workspace_id`",
+        "from `workspace.move_block` only, as in Herdr: `{workspace_ids, before_workspace_id?, workspaces}`; `workspace.move` reports `workspace.moved` alone",
     ),
     // ---- CLI --------------------------------------------------------------------------------
     // Each row follows the captured 0.9.3 help (`tests/compat/herdr/0.9.3/cli-help/`) and Herdr's
@@ -1053,7 +1059,7 @@ pub const ENTRIES: &[Entry] = &[
         "plugin install owner/repo[/subdir] [--ref]",
         Partial,
         "spec",
-        "Herdr's grammar `[--ref REF] [--yes|-y] <source>`; without `--yes` and without a terminal: Herdr's `remote plugin install requires --yes when stdin is not interactive` (exit 2); shallow, hardened clone (no hooks/fsmonitor/filters, https+file only) of `https://github.com/owner/repo` at a tag, branch or sha (`@ref` or `--ref`); the resolved commit is recorded and pinned by the trust grant; prints Herdr's `Installed <id> from <source>.` and `Config: <dir>`; no install preview or confirmation prompt; errors in Vibeke's JSON",
+        "Herdr's grammar `[--ref REF] [--yes|-y] <source>`; without `--yes` and without a terminal: Herdr's `remote plugin install requires --yes when stdin is not interactive` (exit 2); shallow, hardened clone (no hooks/fsmonitor/filters, https+file only) of `https://github.com/owner/repo` at a tag, branch or sha (`@ref` or `--ref`); the resolved commit is recorded and pinned by the trust grant; prints Herdr's install preview on stderr (id, name, version, source, ref, commit, counts, build/startup/action/event/pane commands with `(skipped on <platform>)`, warnings, `replaces:`), asks `Install this plugin? [y/N]` without `--yes` (declining removes the new registration: `plugin install cancelled`; a replacement is not asked, because the previous checkout is already replaced), then `Installed <id> from <source>.` and `Config: <dir>`; the preview follows Vibeke's fetch, staging and build instead of preceding the build; errors in Vibeke's JSON",
     ),
     e(
         Cli,
@@ -1102,7 +1108,7 @@ pub const ENTRIES: &[Entry] = &[
         "plugin config-dir",
         Partial,
         "corpus",
-        "prints the bare path and creates the config and state directories, as Herdr does; the path is Vibeke's per-plugin config directory (Herdr's lies under its own config root); an id that is not a safe path component is refused (`invalid_plugin_id`), where Herdr encodes it",
+        "prints the bare path and creates the config and state directories, as Herdr does; any id, encoded into one directory name as Herdr's `plugin_config_path_component` does (also for `HERDR_PLUGIN_CONFIG_DIR`/`HERDR_PLUGIN_STATE_DIR`; a directory an earlier Vibeke version made under the plain id keeps being used); the path is under Vibeke's plugin config root (Herdr's lies under its own config root)",
     ),
     e(
         Cli,
@@ -1701,7 +1707,8 @@ pub const ENTRIES: &[Entry] = &[
 ];
 
 /// Methods the baseline is known (by this inventory) to have. Requests for other methods get
-/// `method_not_found`; known-but-missing methods get an explicit `unsupported` error.
+/// `invalid_request` (as Herdr's typed parse answers them); known-but-missing methods get an
+/// explicit `unsupported` error.
 pub fn known_methods() -> impl Iterator<Item = &'static str> {
     ENTRIES.iter().filter(|e| e.kind == Method).map(|e| e.name)
 }
