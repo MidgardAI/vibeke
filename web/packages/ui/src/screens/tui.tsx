@@ -281,7 +281,7 @@ export default function TuiScreen({ host, workspace, pane }: { host: string; wor
           {notice && <span>{notice}</span>}
           {link && <a className="underline" href={link} target="_blank" rel="noopener noreferrer" onClick={() => setLink(null)}>Open link</a>}
           {download && <a className="underline" href={download.url} download={download.name}>Save screenshot</a>}
-          {!notice && !link && !download && <span>Ctrl+B opens the terminal menu. Ctrl+Shift+. opens browser controls.</span>}
+          {!notice && !link && !download && <span>Ctrl+Q opens the terminal menu. Ctrl+Shift+. opens browser controls.</span>}
           <Button size="sm" aria-label="Dismiss terminal notice" onClick={() => { setNotice(null); setLink(null); setDownload(null); app.prefs.patch({ tuiHintDismissed: true }); }}>Dismiss</Button>
         </>}
       </div>}
@@ -317,7 +317,7 @@ export default function TuiScreen({ host, workspace, pane }: { host: string; wor
         <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={prefs.tuiScreenReader} onChange={(e) => app.prefs.patch({ tuiScreenReader: e.target.checked })} />Screen reader support</label>
         <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={prefs.tuiOptionMeta} onChange={(e) => app.prefs.patch({ tuiOptionMeta: e.target.checked })} />Use Option as Alt on Mac</label>
         {!shared && <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={prefs.preferredTuiHost === host} onChange={(e) => app.prefs.patch({ preferredTuiHost: e.target.checked ? host : null })} />Open this terminal when I launch the app</label>}
-        <p className="text-xs text-muted">Ctrl+B opens the prefix menu. Ctrl+B, then : opens commands. Shift-drag selects text in the browser. {shared ? "The owner controls terminal size. Access applies only to the shared panes." : "Other clients can control a pane’s size; focus the pane to request control."}</p>
+        <p className="text-xs text-muted">Ctrl+Q opens the prefix menu. Ctrl+Q, then : opens commands. Shift-drag selects text in the browser. {shared ? "The owner controls terminal size. Access applies only to the shared panes." : "Other clients can control a pane’s size; focus the pane to request control."}</p>
         <div className="flex flex-wrap gap-2"><Button onClick={() => { retry(); setMenu(false); }}>{crashed ? 'Reload terminal' : 'Reconnect'}</Button><Button onClick={leave}>Leave terminal</Button></div>
       </Dialog>
     </div>

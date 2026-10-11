@@ -1,7 +1,7 @@
 //! `vibeke debug ptyshot`: run a command in a PTY, send scripted input, render the output with
 //! the VT engine and print the final screen. Used to test the TUI end to end.
 //!
-//! `--keys` script: `text` is typed as-is; `{...}` is a key in the key grammar (`{ctrl+b}`,
+//! `--keys` script: `text` is typed as-is; `{...}` is a key in the key grammar (`{ctrl+q}`,
 //! `{enter}`), `{sleep:300}` waits, `{wait:TEXT}` waits until TEXT is on screen (≤ 10 s),
 //! `{paste:TEXT}` sends a bracketed paste. Mouse: `{sgr:0;10;5M}` sends a raw SGR report,
 //! `{drag:TEXT}` drags over the first on-screen TEXT and `{dclick:TEXT}` double-clicks its first

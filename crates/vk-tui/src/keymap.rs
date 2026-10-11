@@ -35,7 +35,7 @@ pub struct Keymap {
 impl Keymap {
     pub fn from_config(cfg: &vk_config::Config) -> Self {
         let prefix = vk_term::keygrammar::parse_key(&cfg.keys.prefix)
-            .unwrap_or_else(|_| KeyEvent::new(Key::Char('b'), Mods::CTRL));
+            .unwrap_or_else(|_| KeyEvent::new(Key::Char('q'), Mods::CTRL));
         let mut bindings = Vec::new();
         let mut add = |action: &str, spec: &str| {
             if spec.is_empty() {
@@ -66,7 +66,7 @@ impl Keymap {
             ("next_attention_focus", "prefix+shift+a"),
             // `prefix+/` is search_scrollback (copy-mode search); the cross-pane search popup
             // takes alt+/ (M4).
-            ("search_global", "prefix+alt+/"),
+            ("search_global", "prefix+shift+q"),
         ] {
             if !cfg.keys.bindings.contains_key(action) {
                 add(action, spec);
@@ -240,6 +240,31 @@ impl Keymap {
         self.bindings
             .iter()
             .find(|b| !b.prefix && b.chords.len() == 1 && key_matches(&b.chords[0], ev))
+    }
+
+    /// The prefix key as typed in help text: `ctrl+q`.
+    pub fn prefix_text(&self) -> String {
+        vk_term::keygrammar::format_key(&self.prefix)
+    }
+
+    /// How a person types `action`, for hints: `ctrl+q then B` for a prefix binding, the chord
+    /// itself for a direct one. `None` when the action is unbound.
+    pub fn how_to(&self, action: &str) -> Option<String> {
+        let b = self
+            .bindings
+            .iter()
+            .find(|b| b.action == action && b.index.is_none_or(|i| i == 0))?;
+        let keys: Vec<String> = b
+            .chords
+            .iter()
+            .map(vk_term::keygrammar::display_key)
+            .collect();
+        let keys = keys.join(" ");
+        Some(if b.prefix {
+            format!("{} then {keys}", self.prefix_text())
+        } else {
+            keys
+        })
     }
 
     pub fn binding_for(&self, action: &str) -> Option<String> {
@@ -562,7 +587,7 @@ mod tests {
     #[test]
     fn herdr_defaults_resolve() {
         let km = cfg();
-        assert!(km.is_prefix(&KeyEvent::new(Key::Char('b'), Mods::CTRL)));
+        assert!(km.is_prefix(&KeyEvent::new(Key::Char('q'), Mods::CTRL)));
         let v = km.prefixed(&KeyEvent::ch('v')).unwrap();
         assert_eq!(v.action, "split_vertical");
         let minus = km.prefixed(&KeyEvent::ch('-')).unwrap();

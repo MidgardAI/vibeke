@@ -787,7 +787,7 @@ fn bindings_open_the_handoff_views() {
     );
     assert_eq!(
         app.keymap.binding_for("handoff_send").as_deref(),
-        Some("prefix+alt+h")
+        Some("prefix+shift+j")
     );
     prefix(
         &mut app,
@@ -802,7 +802,7 @@ fn bindings_open_the_handoff_views() {
     app.on_key(named(NamedKey::Escape));
     prefix(
         &mut app,
-        KeyEvent::new(Key::Char('h'), vk_proto::input::Mods::ALT),
+        KeyEvent::new(Key::Char('J'), vk_proto::input::Mods::SHIFT),
     );
     assert!(matches!(app.mode, Mode::Popup(Popup::HandoffSend)));
     only(&commands(&mut rxs[0]), "handoff.peers");

@@ -1439,7 +1439,7 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         "console-split",
         "browser.pane.console",
         &["pane"],
-        "<browser pane> toggle the console/network split under it (prefix+alt+c)",
+        "<browser pane> toggle the console/network split under it (prefix+m)",
     ),
     (
         "browser",

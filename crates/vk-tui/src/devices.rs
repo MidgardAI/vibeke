@@ -1,5 +1,5 @@
 //! Devices in the TUI: the Devices tab of the Connections view ([`crate::connections`]; `devices`
-//! in the palette, `connections` on `prefix+alt+d`) of the phones and apps paired with one
+//! in the palette, `connections` on `prefix+d`) of the phones and apps paired with one
 //! machine, reached through that machine's server with `gateway.call` (like
 //! [`crate::sharing`]). Three stages:
 //!

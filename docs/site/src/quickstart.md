@@ -35,8 +35,8 @@ The sidebar shows agent state when an integration or terminal detection is avail
 
 ## Find your way around
 
-Press **Ctrl+B**, release both keys, then press the key in this table.
-Wait a moment instead, and a menu shows every key.
+Most shortcuts start with the prefix key, **Ctrl+Q**. Press it, release both keys, then press the key in this table.
+Wait a moment instead, and a menu shows every key. To send Ctrl+Q itself to the program in a pane, press it twice.
 
 | Key | Action |
 | --- | --- |
@@ -55,7 +55,7 @@ See [using the terminal interface](terminal.md) for more controls.
 
 ## Disconnect and reconnect
 
-Detach with **Ctrl+B**, then **q**, or close the terminal. Run `vibeke` again to reconnect.
+Detach with **Ctrl+Q**, then **q**, or close the terminal. Run `vibeke` again to reconnect.
 Holder processes keep panes active after a client disconnect or server restart.
 A host restart stops these processes. Screen recovery after a server restart can be incomplete.
 

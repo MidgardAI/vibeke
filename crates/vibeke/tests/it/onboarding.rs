@@ -356,8 +356,8 @@ sleep 60
         (n == 2).then_some(())
     });
     // Focus the plain workspace, open the batch view from the palette, allow all.
-    let keys = "{sleep:800}{ctrl+b}gplainws{sleep:300}{enter}{sleep:300}\
-                {ctrl+b}:batch approvals{sleep:300}{enter}\
+    let keys = "{sleep:800}{ctrl+q}gplainws{sleep:300}{enter}{sleep:300}\
+                {ctrl+q}:batch approvals{sleep:300}{enter}\
                 {wait:allow all 2}a{wait:delivered}{sleep:300}";
     let (screen, err) = ptyshot(&e, keys, "500");
     assert!(

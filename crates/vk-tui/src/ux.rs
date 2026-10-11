@@ -24,7 +24,7 @@
 //! - [`crate::nav`] goto previews and machines; [`crate::scrollback`] `editor_include_ansi`.
 //! - [`crate::repo_preview`]: a trusted repo's `[preview]`.
 //! - [`crate::taskbadge`]: PR badges and recreate/forget for missing tasks.
-//! - [`crate::agent_list`]: every agent on every machine by attention (`prefix+alt+a`).
+//! - [`crate::agent_list`]: every agent on every machine by attention (`prefix+shift+i`).
 //!
 //! Lane 3A: [`crate::collision`]: shared-checkout collisions (pane badge, sidebar line, popup).
 //!

@@ -122,11 +122,11 @@ fn prefix(app: &mut App, k: KeyEvent) {
 }
 
 #[test]
-fn prefix_alt_c_toggles_the_console_split_on_the_owner() {
+fn prefix_m_toggles_the_console_split_on_the_owner() {
     let (mut app, mut rxs) = setup(2);
     prefix(
         &mut app,
-        KeyEvent::new(Key::Char('c'), vk_proto::input::Mods::ALT),
+        KeyEvent::new(Key::Char('m'), vk_proto::input::Mods::empty()),
     );
     let cmds = commands(&mut rxs[1]);
     assert!(

@@ -2,9 +2,9 @@
 //!
 //! `prefix+shift+s` (`sync_input`) toggles sync for the focused tab. While it is on, every key
 //! and paste sent to the focused pane is also sent to the other panes of the tab that are in the
-//! sync set: all terminal panes of the tab, minus the ones taken out with `prefix+alt+s`
+//! sync set: all terminal panes of the tab, minus the ones taken out with `prefix+shift+y`
 //! (`sync_input_pane`). Agent panes are **excluded by default** (`ui.sync_input.include_agents =
-//! false`) so a command never prompts N agents by accident; `prefix+alt+s` on an agent pane adds
+//! false`) so a command never prompts N agents by accident; `prefix+shift+y` on an agent pane adds
 //! it explicitly. Browser panes and popups never take part. The fan-out happens in this client
 //! (one `Key`/`Paste` frame per pane, each with its own input id); the focused pane is only a
 //! source when it is itself in the set.
@@ -90,7 +90,7 @@ pub fn targets(app: &App, pane: &str) -> Vec<String> {
 pub const FEATURE: &str = "sync_input";
 
 /// Whether the user explicitly let `pane` receive synced input although it runs an agent
-/// (`prefix+alt+s`, or `ui.sync_input.include_agents`).
+/// (`prefix+shift+y`, or `ui.sync_input.include_agents`).
 fn agent_included(app: &App, pane: &str) -> bool {
     app.config.ui.sync_input.include_agents
         || focused_key(app)
@@ -167,13 +167,18 @@ pub fn action(app: &mut App, action: &str) -> bool {
                 app.ux.sync.tabs.insert(k.clone(), Set::default());
                 let n = members(app, k.0, &k.1).len();
                 let agents = if app.config.ui.sync_input.include_agents {
-                    ""
+                    String::new()
                 } else {
-                    " (agents excluded; prefix+alt+s adds one)"
+                    match app.keymap.how_to("sync_input_pane") {
+                        Some(k) => format!(" (agents excluded; {k} adds one)"),
+                        None => " (agents excluded)".into(),
+                    }
                 };
-                app.toast(format!(
-                    "SYNC on: typing goes to {n} pane(s){agents} — prefix+shift+s stops"
-                ));
+                let stop = match app.keymap.how_to("sync_input") {
+                    Some(k) => format!(" — {k} stops"),
+                    None => String::new(),
+                };
+                app.toast(format!("SYNC on: typing goes to {n} pane(s){agents}{stop}"));
             }
             true
         }

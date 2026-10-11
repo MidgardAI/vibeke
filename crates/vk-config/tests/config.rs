@@ -33,7 +33,7 @@ fn commented_template_is_a_no_op() {
 #[test]
 fn spec_defaults_spot_check() {
     let c = Config::default();
-    assert_eq!(c.keys.prefix, "ctrl+b");
+    assert_eq!(c.keys.prefix, "ctrl+q");
     assert_eq!(c.keys.prefix_timeout_ms, 1500);
     assert_eq!(c.keys.bindings["switch_tab"], "prefix+1..9");
     assert_eq!(c.keys.bindings["split_horizontal"], "prefix+minus");
@@ -536,11 +536,11 @@ fn open_images_is_bound_by_default() {
         .iter()
         .find(|(a, _)| *a == "open_images")
         .expect("open_images in DEFAULT_KEYMAP");
-    assert_eq!(bound.1, "prefix+alt+i");
+    assert_eq!(bound.1, "prefix+shift+b");
     assert_eq!(
         DEFAULT_KEYMAP
             .iter()
-            .filter(|(_, b)| *b == "prefix+alt+i")
+            .filter(|(_, b)| *b == "prefix+shift+b")
             .count(),
         1
     );

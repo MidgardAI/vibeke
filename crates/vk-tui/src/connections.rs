@@ -1,5 +1,5 @@
 //! Connections: one full pane-area view over a machine's gateway, with four tabs (`connections`,
-//! `prefix+alt+d`, opens on the tab last used this session, Devices at first):
+//! `prefix+d`, opens on the tab last used this session, Devices at first):
 //!
 //! - **Devices** ([`crate::devices`]; `devices`, `pair_phone`): your own paired phones and apps.
 //! - **People** ([`crate::people`]; `people`, `share_pane`): colleagues you shared a pane or a

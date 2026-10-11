@@ -134,7 +134,7 @@ The **gallery** lists all images of one machine. Open it from the command palett
 
 The **viewer** shows one image over the pane area. Open it in one of these ways:
 
-- Press `prefix+alt+i`. This opens the newest new image. If no image is new, it opens the gallery.
+- Press `prefix+shift+b`. This opens the newest new image. If no image is new, it opens the gallery.
 - Choose **View new images** in the command palette.
 - Select a row in the **Images** section, or click a `📷N` badge.
 
@@ -153,9 +153,9 @@ A screenshot that a review accepted needs one more confirmation before Vibeke re
 
 ### The pop-up card
 
-When an agent attaches an image to the pane you are using, a small card appears over that pane. The card shows the image and its caption. It does not take the keyboard. Every key you type still goes to the pane, and the first key you type closes the card. The image stays new in the sidebar.
+When an agent attaches an image to the pane you are using, a small card appears over that pane. The card shows the image and its caption. It does not take the keyboard. Press `esc` to close the card. That `esc` does not reach the pane, so it does not interrupt your agent. Every other key still goes to the pane, and the first one also closes the card. A card that you do not touch hides after 20 seconds. The image stays new in the sidebar.
 
-To look at the image, press `prefix+alt+i` or click the card. The viewer opens. Turn the card off in your configuration:
+To look at the image, press `prefix+shift+b` or click the card. The viewer opens. Turn the card off in your configuration:
 
 ```toml
 [ui.images]

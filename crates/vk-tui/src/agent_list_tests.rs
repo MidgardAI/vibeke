@@ -44,10 +44,10 @@ fn lists_every_machine_by_attention() {
 #[test]
 fn binding_opens_the_popup_and_draws_rows() {
     let (mut app, _rx) = setup();
-    // prefix+alt+a (prefix+a stays next_attention).
+    // prefix+shift+i (prefix+a stays next_attention).
     let b = app
         .keymap
-        .prefixed(&KeyEvent::new(Key::Char('a'), Mods::ALT))
+        .prefixed(&KeyEvent::new(Key::Char('I'), Mods::SHIFT))
         .unwrap();
     assert_eq!(b.action, "agent_list");
     assert_eq!(

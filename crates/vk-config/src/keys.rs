@@ -56,7 +56,7 @@ pub const DEFAULT_KEYMAP: &[(&str, &str)] = &[
     ("next_attention_focus", "prefix+shift+a"),
     ("inbox", "prefix+i"),
     ("mark_unread", "prefix+u"),
-    ("pin_pane", "prefix+alt+p"),
+    ("pin_pane", "prefix+t"),
     ("float_new", "prefix+f"),
     ("toggle_floats", "prefix+shift+f"),
     ("sync_input", "prefix+shift+s"),
@@ -67,36 +67,36 @@ pub const DEFAULT_KEYMAP: &[(&str, &str)] = &[
     ("last_workspace", "prefix+shift+l"),
     ("url_hints", "prefix+shift+u"),
     // Batch 2B (08 §5, §6.6, §8, §9, §11.1).
-    ("sync_input_pane", "prefix+alt+s"),
+    ("sync_input_pane", "prefix+shift+y"),
     ("fleet", "prefix+shift+m"),
     ("batch_approvals", ""),
     ("collisions", ""),
     ("setup", ""),
     ("trust_repo", ""),
     // v1 TUI (08 §2.1, §3, §6.5; 09 §3.2).
-    ("agent_list", "prefix+alt+a"),
+    ("agent_list", "prefix+shift+i"),
     ("elevation_requests", "prefix+shift+e"),
     ("tab_renumber", ""),
     ("task_recreate", ""),
     ("task_forget", ""),
     // Connections: one view over a machine's gateway with the tabs Devices (your paired
     // phones), People (colleagues' shares), Hosts (peers, invitations) and Handoffs.
-    // `prefix+shift+d` is `close_workspace`.
-    ("connections", "prefix+alt+d"),
+    // `prefix+shift+d` is `close_workspace`, so Connections takes the plain letter.
+    ("connections", "prefix+d"),
     // Handoffs (16 §15.2): the Handoffs tab, sending the focused pane, the Hosts tab.
-    // `prefix+shift+o` is `preview_list`, so sending takes the list's letter with `alt`.
+    // `prefix+shift+h` is `handoffs`, so sending takes `j`.
     ("handoffs", "prefix+shift+h"),
-    ("handoff_send", "prefix+alt+h"),
+    ("handoff_send", "prefix+shift+j"),
     ("hosts", ""),
-    // Share the focused pane or its workspace with a colleague: `prefix+alt+s` is
-    // `sync_input_pane`.
-    ("share_pane", "prefix+alt+v"),
+    // Share the focused pane or its workspace with a colleague: `prefix+shift+s` is
+    // `sync_input`, so sharing takes `z`.
+    ("share_pane", "prefix+shift+z"),
     // Cloud sandboxes (spec 17 §8): unbound; reachable from the palette and the pane menu.
     ("cloud_send", ""),
     ("cloud_bring_back", ""),
     ("sandboxes", ""),
     // Images (spec 18 §5.3): view the newest new image.
-    ("open_images", "prefix+alt+i"),
+    ("open_images", "prefix+shift+b"),
 ];
 
 /// Copy-mode actions for `[keys.copy_mode]` per-key overrides (`key = "action"`; an empty
@@ -309,22 +309,20 @@ mod tests {
     #[test]
     fn plugin_binding_clashes() {
         let mut cfg = Config::default();
-        // `prefix+s` is the default `settings` binding; `prefix+shift+z` is free.
+        // `prefix+s` is the default `settings` binding; `prefix+0` is free.
         assert_eq!(
             binding_clash(&cfg, "prefix+s", &[]).unwrap().as_deref(),
             Some("settings")
         );
-        assert_eq!(binding_clash(&cfg, "prefix+shift+z", &[]).unwrap(), None);
+        assert_eq!(binding_clash(&cfg, "prefix+0", &[]).unwrap(), None);
         // A user's own command binding wins, and so does an earlier plugin's claim.
         cfg.keys.command.push(crate::types::KeyCommand {
-            key: "prefix+shift+z".into(),
+            key: "prefix+0".into(),
             command: "lazygit".into(),
             ..Default::default()
         });
         assert_eq!(
-            binding_clash(&cfg, "prefix+shift+z", &[])
-                .unwrap()
-                .as_deref(),
+            binding_clash(&cfg, "prefix+0", &[]).unwrap().as_deref(),
             Some("command[0]")
         );
         let claimed = vec![("a.x".to_string(), "prefix+alt+k".to_string())];
@@ -339,6 +337,19 @@ mod tests {
         // An unbound action never clashes; garbage is an error.
         assert!(binding_clash(&cfg, "", &[]).is_err());
         assert!(binding_clash(&cfg, "prefix+nonsense+++", &[]).is_err());
+    }
+
+    #[test]
+    fn no_default_binding_needs_alt() {
+        // Option is not Meta in the default macOS terminals, and Option types symbols on
+        // several layouts.
+        for (a, b) in DEFAULT_KEYMAP {
+            assert!(
+                !b.split('+').any(|p| p.eq_ignore_ascii_case("alt")),
+                "{a}: {b}"
+            );
+        }
+        assert_eq!(Config::default().keys.prefix, "ctrl+q");
     }
 
     #[test]

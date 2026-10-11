@@ -316,7 +316,7 @@ fn config_layers_edit_and_reset_keys() {
     let cfg = s.dir.path().join("config.toml");
     std::fs::write(
         &cfg,
-        "[keys]\nprefix = \"ctrl+a\"\n[[keys.command]]\nkey = \"prefix+t\"\ncommand = \"make\"\n",
+        "[keys]\nprefix = \"ctrl+a\"\n[[keys.command]]\nkey = \"prefix+0\"\ncommand = \"make\"\n",
     )
     .unwrap();
     // A CLI-layer override the server inherits from the command that starts it.
@@ -408,7 +408,7 @@ fn config_layers_edit_and_reset_keys() {
         "invalid file: {}",
         String::from_utf8_lossy(&e.stderr)
     );
-    std::fs::write(&editor, "#!/bin/sh\nprintf '[keys]\\nprefix = \"ctrl+a\"\\nsplit_right = \"prefix+v\"\\n[[keys.command]]\\nkey = \"prefix+t\"\\ncommand = \"make\"\\n' > \"$1\"\n").unwrap();
+    std::fs::write(&editor, "#!/bin/sh\nprintf '[keys]\\nprefix = \"ctrl+a\"\\nsplit_right = \"prefix+v\"\\n[[keys.command]]\\nkey = \"prefix+0\"\\ncommand = \"make\"\\n' > \"$1\"\n").unwrap();
     let e = s
         .cmd(&["config", "edit"])
         .env("VISUAL", &editor)

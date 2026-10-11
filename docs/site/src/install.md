@@ -67,7 +67,7 @@ Open [app.vibeke.dev](https://app.vibeke.dev). Pair it with your host using the 
 
 ## Update Vibeke
 
-In the terminal interface, open the command palette with **Ctrl+B**, then **:** and choose
+In the terminal interface, open the command palette with **Ctrl+Q**, then **:** and choose
 **Check for updates** or **Update Vibeke…**. When a release is available, the sidebar shows
 its version. Review it and confirm installation; Vibeke reopens the same session and pane.
 Background checks run every six hours and can be turned off in the update view.

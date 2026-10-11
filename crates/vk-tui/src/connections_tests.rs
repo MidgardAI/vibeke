@@ -187,20 +187,20 @@ fn bindings_open_connections_handoffs_and_the_share_form() {
     let (mut app, _rxs) = fleet();
     assert_eq!(
         app.keymap.binding_for("connections").as_deref(),
-        Some("prefix+alt+d")
+        Some("prefix+d")
     );
     assert_eq!(
         app.keymap.binding_for("share_pane").as_deref(),
-        Some("prefix+alt+v")
+        Some("prefix+shift+z")
     );
     assert!(crate::nav::describe("connections").starts_with("Connections: devices, people"));
-    prefix(&mut app, KeyEvent::new(Key::Char('d'), Mods::ALT));
+    prefix(&mut app, KeyEvent::new(Key::Char('d'), Mods::empty()));
     assert_eq!(showing(&app), Some(Tab::Devices));
     app.on_key(named(NamedKey::Escape));
     prefix(&mut app, KeyEvent::new(Key::Char('h'), Mods::SHIFT));
     assert_eq!(showing(&app), Some(Tab::Handoffs));
     app.on_key(named(NamedKey::Escape));
-    prefix(&mut app, KeyEvent::new(Key::Char('v'), Mods::ALT));
+    prefix(&mut app, KeyEvent::new(Key::Char('Z'), Mods::SHIFT));
     assert_eq!(showing(&app), Some(Tab::People));
     assert!(screen(&app).contains("Share with someone"));
 }

@@ -202,7 +202,7 @@ animate = false
         assert_eq!(c.tasks.branch_template, "repo/{slug}");
         assert_eq!(c.tasks.port_block, 20);
         assert_eq!(c.tasks.default_agent, "codex", "user keys kept");
-        assert_eq!(c.keys.prefix, "ctrl+b", "repo can't touch keys.prefix");
+        assert_eq!(c.keys.prefix, "ctrl+q", "repo can't touch keys.prefix");
         assert!(c.ui.animate, "repo can't touch ui");
         assert_eq!(c.keys.command.len(), 1);
         assert_eq!(c.policy.rule.len(), 1);

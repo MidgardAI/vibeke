@@ -3,7 +3,7 @@
 //! machine, `taken_by = user`, a captured screenshot, a plugin surface, an armed prefix, an
 //! unfocused terminal, `ui.images.popup = false` or focus that moved before the bytes arrived.
 //! Keys and pastes reach the pane and close it (releases, repeats, modifier-only presses and the
-//! prefix do not); esc closes it without reaching the pane; untouched it hides after a while; `prefix+alt+i` and a click open the viewer; typing leaves the image unseen;
+//! prefix do not); esc closes it without reaching the pane; untouched it hides after a while; `prefix+shift+b` and a click open the viewer; typing leaves the image unseen;
 //! three images make one card; the corner away from the cursor; the iTerm2 repaint on close.
 
 use super::*;
@@ -132,7 +132,7 @@ fn appears_for_an_agent_attached_image_in_the_focused_pane() {
         let s = screen(&app);
         assert!(s.contains("attached by claude"), "{s}");
         assert!(s.contains("s5 · s5 caption"), "{s}");
-        assert!(s.contains("prefix+alt+i open · esc close"), "{s}");
+        assert!(s.contains("ctrl+q then B open · esc close"), "{s}");
         // At most half the pane, in the bottom-right corner (the cursor is top-left).
         let p = placements(&app).unwrap();
         let r = pane_rect(&app, "p1").unwrap();
@@ -220,7 +220,7 @@ fn no_card_with_a_plugin_surface_an_armed_prefix_an_unfocused_terminal_or_the_se
     assert!(app.images_ui.card.is_none(), "a plugin surface");
 
     let (mut app, _rxs) = setup(1);
-    app.on_key(ctl('b'));
+    app.on_key(ctl('q'));
     assert!(matches!(app.mode, Mode::Prefix(_)));
     attach(&mut app, 0, 1, "A", "p1");
     assert!(app.images_ui.card.is_none(), "an armed prefix");
@@ -329,15 +329,15 @@ fn every_key_and_a_paste_reach_the_pane_and_close_the_card() {
 }
 
 #[test]
-fn prefix_alt_i_opens_the_card_image_in_the_viewer() {
+fn prefix_shift_b_opens_the_card_image_in_the_viewer() {
     for kitty in [true, false] {
         let (mut app, mut rxs, _dir) = local_card(kitty);
         app.draw_bytes();
         inputs(&mut rxs[0]);
-        app.on_key(ctl('b'));
+        app.on_key(ctl('q'));
         assert!(matches!(app.mode, Mode::Prefix(_)));
         assert!(showing(&app).is_some(), "the prefix key does not close it");
-        app.on_key(KeyEvent::new(Key::Char('i'), Mods::ALT));
+        app.on_key(KeyEvent::new(Key::Char('B'), Mods::SHIFT));
         assert!(matches!(app.mode, Mode::Popup(Popup::ImageViewer)));
         let v = app.images_ui.viewer.as_ref().unwrap();
         assert_eq!(v.cur, (0, "S5".to_string()));

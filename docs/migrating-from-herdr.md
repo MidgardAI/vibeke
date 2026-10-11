@@ -136,7 +136,7 @@ The default session uses `$RUNTIME/herdr-compat/herdr.sock`. Named sessions use 
 
 ## Terminal controls
 
-Vibeke uses the same `ctrl+b` prefix by default.
+Vibeke uses `ctrl+q` as the prefix by default. Herdr uses `ctrl+b`. Set `keys.prefix = "ctrl+b"` in your configuration to keep your old habit. An imported Herdr configuration keeps the prefix that it sets.
 
 | Action | Key |
 | --- | --- |

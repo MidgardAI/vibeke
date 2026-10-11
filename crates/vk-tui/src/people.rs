@@ -1,5 +1,5 @@
 //! People in the TUI: the People tab of the Connections view ([`crate::connections`]; `people`
-//! in the palette, `share_pane` on `prefix+alt+v` and in a pane's right-click menu): the
+//! in the palette, `share_pane` on `prefix+shift+z` and in a pane's right-click menu): the
 //! colleagues you shared a pane or a workspace with, on one machine's gateway (`gateway.call`,
 //! like [`crate::sharing`]). Three stages:
 //!

@@ -136,7 +136,7 @@
 
   <rect class="hot" x="844" y="344" width="332" height="108" rx="10"/>
   <text class="h" x="862" y="370">Your other machines</text>
-  <text class="cmd mono" x="862" y="391">prefix+alt+h · Hand off…</text>
+  <text class="cmd mono" x="862" y="391">prefix+shift+j · Hand off…</text>
   <text class="s" x="862" y="414">Move a running agent, its checkout</text>
   <text class="s" x="862" y="432">and its session to another host.</text>
 

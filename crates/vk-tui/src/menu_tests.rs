@@ -1,4 +1,4 @@
-//! The prefix menu (08 §10.4): groups from the live keymap, the delay, no timeout once up,
+//! The prefix menu (08 §10.4): groups from the live keymap, the delay, hides after a long pause,
 //! submenus for key sequences, the resize level.
 
 use crate::app::{App, Mode, PrefixState};
@@ -11,7 +11,7 @@ use vk_proto::input::{Key, KeyEvent, Mods, NamedKey};
 use vk_proto::render::ClientFrame;
 
 fn prefix(app: &mut App) {
-    app.on_key(KeyEvent::new(Key::Char('b'), Mods::CTRL));
+    app.on_key(KeyEvent::new(Key::Char('q'), Mods::CTRL));
 }
 
 fn key(app: &mut App, c: char) {
@@ -176,10 +176,15 @@ fn menu_appears_after_the_delay_and_then_never_times_out() {
     assert!(s.contains("split side by side"), "{s}");
     assert!(s.contains("esc close"), "{s}");
     assert!(s.contains(" PREFIX "), "{s}");
-    // No deadline and no timeout while the menu is up.
+    // The prefix timeout is gone while the menu is up. Only the longer idle hide is armed.
     assert!(app.deadlines(Instant::now()).get("prefix").is_none());
+    assert!(
+        app.deadlines(Instant::now())
+            .get("prefix.menu_hide")
+            .is_some()
+    );
     if let Mode::Prefix(p) = &mut app.mode {
-        p.since = Instant::now().checked_sub(Duration::from_secs(60)).unwrap();
+        p.since = Instant::now().checked_sub(Duration::from_secs(5)).unwrap();
     }
     app.on_tick();
     assert!(state(&app).menu);
@@ -237,7 +242,7 @@ fn sequences_descend_and_esc_goes_back_up() {
     assert_eq!(p.seq.len(), 1);
     let s = screen(&app);
     assert!(s.contains(" PREFIX m "), "{s}");
-    assert!(s.contains("ctrl+b m"), "{s}");
+    assert!(s.contains("ctrl+q m"), "{s}");
     assert!(s.contains("esc back"), "{s}");
     app.on_key(named(NamedKey::Escape));
     let p = state(&app);
@@ -266,7 +271,7 @@ fn prefix_twice_still_passes_through_and_releases_keep_the_menu() {
     assert!(matches!(app.mode, Mode::Normal));
     assert_eq!(sent_keys(&mut rxs[0]), 1);
     app.mode = Mode::Prefix(PrefixState::menu());
-    let mut rel = KeyEvent::new(Key::Char('b'), Mods::CTRL);
+    let mut rel = KeyEvent::new(Key::Char('q'), Mods::CTRL);
     rel.kind = vk_proto::input::KeyKind::Release;
     app.on_key(rel);
     app.on_key(named(NamedKey::LeftShift));
@@ -310,7 +315,7 @@ fn resize_mode_draws_as_a_sticky_level() {
     assert!(matches!(app.mode, Mode::Resize));
     let s = screen(&app);
     assert!(s.contains(" RESIZE "), "{s}");
-    assert!(s.contains("ctrl+b r · resize"), "{s}");
+    assert!(s.contains("ctrl+q r · resize"), "{s}");
     assert!(s.contains("equalize") && s.contains("keys repeat"), "{s}");
     key(&mut app, 'l');
     assert!(matches!(app.mode, Mode::Resize));
@@ -328,4 +333,37 @@ fn small_terminals_still_draw() {
     app.size = (60, 20);
     let s = screen(&app);
     assert!(s.contains("PANE"), "{s}");
+}
+
+#[test]
+fn a_paste_is_never_swallowed_in_silence() {
+    let (mut app, _rxs) = fleet();
+    // The prefix is armed: leave it and paste into the pane.
+    prefix(&mut app);
+    assert!(matches!(app.mode, Mode::Prefix(_)));
+    app.on_paste("echo hi".into());
+    assert!(matches!(app.mode, Mode::Normal));
+    // Navigate mode: a filter being typed takes the paste, else the user is told.
+    app.mode = Mode::Navigate { sel: 0 };
+    app.ux.nav.typing = true;
+    app.ux.nav.filter = Some(String::new());
+    app.on_paste("api\n".into());
+    assert_eq!(app.ux.nav.filter.as_deref(), Some("api "));
+    app.ux.nav.typing = false;
+    app.on_paste("x".into());
+    assert!(
+        app.toasts
+            .last()
+            .unwrap()
+            .text
+            .contains("pasting is not possible"),
+        "{:?}",
+        app.toasts.last()
+    );
+    assert!(matches!(app.mode, Mode::Navigate { .. }));
+    // Resize mode says so, too.
+    app.mode = Mode::Resize;
+    app.toasts.clear();
+    app.on_paste("x".into());
+    assert!(!app.toasts.is_empty());
 }

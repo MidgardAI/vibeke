@@ -188,13 +188,15 @@ pub fn on_events(app: &mut App, i: usize, events: Vec<PushedEvent>, lagged: bool
 }
 
 /// The toast for a new image, naming the key that opens it (spec 18 §5.3):
-/// `📷 s5 attached by claude · prefix+alt+i to view`, or the captured-screenshot text with the
+/// `📷 s5 attached by claude · ctrl+q then B to view`, or the captured-screenshot text with the
 /// same hint.
 fn captured_toast(app: &App, i: usize, v: &Value) -> String {
-    let key = app
+    // Name the key only when `open_images` is bound; an unbound action gets no hint.
+    let hint = app
         .keymap
-        .binding_for("open_images")
-        .unwrap_or_else(|| "prefix+alt+i".into());
+        .how_to("open_images")
+        .map(|k| format!(" · {k} to view"))
+        .unwrap_or_default();
     if v["data"]["environment"].as_str() == Some("agent") {
         let handle = v["data"]["handle"]
             .as_str()
@@ -205,7 +207,7 @@ fn captured_toast(app: &App, i: usize, v: &Value) -> String {
             .or_else(|| v["data"]["pane"].as_str());
         let who = crate::images::agent(app, i, pane).unwrap_or_else(|| "agent".into());
         return format!(
-            "📷 {} attached by {} · {key} to view",
+            "📷 {} attached by {}{hint}",
             vk_proto::text::escape_controls(handle),
             vk_proto::text::escape_controls(&who)
         );
@@ -217,7 +219,7 @@ fn captured_toast(app: &App, i: usize, v: &Value) -> String {
         .or_else(|| v["subject"]["browser_session"].as_str())
         .unwrap_or("");
     let text = format!("📷 screenshot captured {what}");
-    format!("{} · {key} to view", text.trim_end())
+    format!("{}{hint}", text.trim_end())
 }
 
 fn now_ms() -> i64 {
