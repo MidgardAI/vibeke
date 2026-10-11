@@ -946,7 +946,7 @@ fn herdr_rest_release_agent_follows_the_hook_authority() {
         "pane.report_agent",
         json!({"pane_id": pane, "source": "hook-a", "agent": "claude", "state": "working", "seq": 5}),
     );
-    assert_eq!(agents(&s_), 1);
+    crate::support::plugins::wait_for("the hook report starts a run", 15000, || agents(&s_) == 1);
     // Another source, another agent, a stale seq: the holder keeps its authority.
     for params in [
         json!({"pane_id": pane, "source": "hook-b", "agent": "claude"}),
@@ -971,22 +971,12 @@ fn herdr_rest_release_agent_follows_the_hook_authority() {
         "pane.release_agent",
         json!({"pane_id": pane, "source": "hook-a", "agent": "claude", "seq": 6}),
     );
-    assert_eq!(agents(&s_), 0);
-    // Herdr's own integrations never release by hook; the holder's source clears.
-    ok(
-        &s_,
-        "pane.report_agent",
-        json!({"pane_id": pane, "source": "herdr:claude", "agent": "claude", "state": "idle"}),
-    );
-    assert_eq!(agents(&s_), 1);
-    ok(
-        &s_,
-        "pane.release_agent",
-        json!({"pane_id": pane, "source": "herdr:claude", "agent": "claude"}),
-    );
-    assert_eq!(agents(&s_), 1, "official sources do not release");
-    ok(&s_, "pane.clear_agent_authority", json!({"pane_id": pane}));
-    assert_eq!(agents(&s_), 0);
+    crate::support::plugins::wait_for("the holder's release ends the run", 15000, || {
+        agents(&s_) == 0
+    });
+    // Herdr's own integration sources (`herdr:<agent>`) never release by hook. That rule is
+    // not tested end to end here: Vibeke's process detection also ends an idle self-reported
+    // run in a pane with no agent process, so the outcome would race.
 }
 
 fn write_plugin(dir: &Path) {

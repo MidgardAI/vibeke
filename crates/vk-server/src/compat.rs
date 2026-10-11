@@ -814,7 +814,9 @@ pub async fn serve_wire(server: Arc<Server>, stream: UnixStream, caller: Caller)
                 continue;
             };
             for (name, pane, data) in project_event(&server, &mut proj, &ev) {
-                if !subs.iter().any(|s| hev::matches(s, name, pane.as_deref())) {
+                if !subs.iter().any(|s| hev::matches(s, name, pane.as_deref()))
+                    || !may_deliver(&server, &caller, name, pane.as_deref())
+                {
                     continue;
                 }
                 if check_broker(&server, &caller).is_err() {
@@ -1847,6 +1849,19 @@ fn native_err(e: vk_proto::rpc::RpcError) -> WireError {
     wire::from_native(&e.data.kind, object, &e.message)
 }
 
+/// Close a workspace and answer once it is gone, as Herdr does. The native close stops the
+/// panes; the workspace leaves the model when the last one exits.
+async fn close_workspace(server: &Arc<Server>, caller: &Caller, id: &str) -> Result<(), WireError> {
+    native(server, caller, "workspace.close", json!({"workspace": id})).await?;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    while server.with_core(|c| c.model.workspaces.iter().any(|w| w.id == id))
+        && tokio::time::Instant::now() < deadline
+    {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    Ok(())
+}
+
 async fn native(
     server: &Arc<Server>,
     caller: &Caller,
@@ -2164,13 +2179,7 @@ pub async fn call(
         }
         "workspace.close" => {
             let w = ws_target(&sn, p)?;
-            native(
-                server,
-                caller,
-                "workspace.close",
-                json!({"workspace": w.id}),
-            )
-            .await?;
+            close_workspace(server, caller, &w.id).await?;
             Ok(ok())
         }
         "workspace.move_block" => workspace_move_block(server, caller, &sn, p).await,
@@ -3031,10 +3040,32 @@ fn authorize_output_subs(
         let x = sn
             .pane(id)
             .ok_or_else(|| WireError::new("pane_not_found", format!("pane {id} not found")))?;
-        crate::search::authorize_read(server, &caller.ctx, "pane.read", &json!({"pane": x.id}))
-            .map_err(native_err)?;
+        read_check(server, caller, &x.id).map_err(native_err)?;
     }
     Ok(())
+}
+
+/// The checks native `pane.read` runs for this caller on pane `id` (`api::dispatch`): the
+/// pane-scope capability check, the security policy, the read scope and the browser console
+/// rule.
+fn read_check(server: &Server, caller: &Caller, id: &str) -> Result<(), vk_proto::rpc::RpcError> {
+    let p = json!({"pane": id});
+    api::authorize(server, &caller.ctx, "pane.read", &p)?;
+    crate::security::authorize(server, &caller.ctx, "pane.read")?;
+    crate::search::authorize_read(server, &caller.ctx, "pane.read", &p)?;
+    crate::browser_pane::page_io::authorize_output_read(server, &caller.ctx, "pane.read", &p)
+}
+
+/// Whether a relayed `pane.output_matched` event (pane handle `pane`) may reach this caller
+/// now. Checked at delivery too: read scope can change after the subscription started.
+fn may_deliver(server: &Server, caller: &Caller, name: &str, pane: Option<&str>) -> bool {
+    if name != "pane.output_matched" {
+        return true;
+    }
+    let Some(x) = pane.and_then(|h| snap(server).pane(h).cloned()) else {
+        return false;
+    };
+    read_check(server, caller, &x.id).is_ok()
 }
 
 /// The output watchers of `subs`; `pane_not_found` or `invalid_regex` refuse the subscription.
@@ -4175,7 +4206,9 @@ async fn events_wait(server: &Arc<Server>, caller: &Caller, p: &Value) -> Result
         // The wait may have outlived the invocation or its grant.
         check_broker(server, caller)?;
         for (name, pane, data) in project_event(server, &mut proj, &ev) {
-            if subs.iter().any(|s| hev::matches(s, name, pane.as_deref())) {
+            if subs.iter().any(|s| hev::matches(s, name, pane.as_deref()))
+                && may_deliver(server, caller, name, pane.as_deref())
+            {
                 return Ok(typed("event", hev::stream_event(name, data)));
             }
         }

@@ -1910,13 +1910,7 @@ async fn worktree_remove(
     }
     // The workspace snapshot from before the close travels with the event.
     let ws_info = sn.ws_json(&w);
-    native(
-        server,
-        caller,
-        "workspace.close",
-        json!({"workspace": w.id}),
-    )
-    .await?;
+    super::close_workspace(server, caller, &w.id).await?;
     {
         let mut c = server.core.lock().unwrap();
         let mut tx = Tx::new();
