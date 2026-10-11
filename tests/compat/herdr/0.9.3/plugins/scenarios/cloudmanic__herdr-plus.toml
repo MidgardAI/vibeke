@@ -153,7 +153,7 @@ text = 'branch "feat/layout"): 2 tab(s)'
 id = "worktree-opened"
 kind = "event"
 event = "worktree.opened"
-cli = ["worktree", "open", "{worktree.app.feature}"]
+cli = ["worktree", "open", "--cwd", "{repo.app}", "--path", "{worktree.app.feature}"]
 expect_calls = [
   { method = "pane.list", ok = true },
   { method = "tab.rename", ok = true },

@@ -51,7 +51,7 @@ pane = "projects"
 [[step.expect]]
 kind = "screen_text"
 pane = "projects"
-text = "1 project · 0 need you"
+text = "Projects · all projects"
 [[step.compare]]
 pane = "projects"
 size = { cols = 100, rows = 30 }
@@ -165,7 +165,7 @@ pane = "projects"
 [[step.expect]]
 kind = "screen_text"
 pane = "projects"
-text = "1 project · 0 need you"
+text = "Projects · all projects"
 
 [[step]]
 id = "restored-project-picker"
@@ -239,11 +239,22 @@ expect_calls = [{ method = "agent.view.set", ok = true }]
 [[step.expect]]
 kind = "invocation_final"
 
+# Only a pane with a detected agent can be adopted: the fake agent reports itself first, and
+# the action runs with the agent pane focused.
+[[step]]
+id = "agent-idle"
+kind = "event"
+event = "pane.agent_status_changed"
+agent_status = "idle"
+[[step.expect]]
+kind = "event"
+type = "pane.agent_status_changed"
+
 [[step]]
 id = "adopt-workspace"
 kind = "action"
 action = "adopt-workspace"
-context = "workspace"
+context = "agent_pane"
 expect_calls = [{ method = "plugin.pane.open", ok = true }]
 [[step.expect]]
 kind = "invocation_final"

@@ -23,6 +23,9 @@ repository = "persiyanov/herdr-reviewr"
 timeout_ms = 120000
 
 [setup]
+# The pane reads the git checkout of the focused pane's directory.
+workspace_cwd = "{repo.app}"
+
 [[setup.repo]]
 name = "app"
 files = { "README.md" = "sample\n", "src/main.txt" = "line one\nline two\n" }
