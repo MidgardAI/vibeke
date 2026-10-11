@@ -2,7 +2,7 @@
 // Builds the real Herdr plugin matrix (spec 18 §12) from the per-plugin result files.
 //
 //   bun scripts/herdr-plugins-report.ts --in <dir> --out <dir> [--expect <matrix.json>]
-//                                       [--status <dir>] [--lock <top20.lock.toml>]
+//                                       [--status <dir>] [--lock <top20.lock.toml>] [--scenarios <dir>]
 //
 // The result files come from jobs that ran third-party plugin code, so this script treats them
 // as hostile data (18 §5.6): it limits file sizes, accepts only regular files, validates the
@@ -19,7 +19,13 @@
 // still forge a passing result for a test that exited 0, so the matrix is a regression signal,
 // not a security verdict.
 //
-// With `--lock` (the trusted, checked-in lock), the report also lists the deferred plugins
+// With `--lock` (the trusted, checked-in lock), the report also loads the scenario files next to
+// it (`--scenarios`, default `<lock dir>/scenarios`) and requires every result to match them: the
+// plugin id, OS and commit from the lock, exactly the scenario's steps for that OS, the skipped
+// surfaces, and the fixed lifecycle checks. A mismatch is rejected as a `harness_error`. A plugin
+// can still forge steps that fit its scenario (spec 18 §5.6).
+//
+// With `--lock`, the report also lists the deferred plugins
 // (`[[defer]]`, 18 §6) with their reasons. They keep their rank but have no plugin job.
 //
 // It writes `matrix.json` and `matrix.md` to the output directory, then exits 1 when a result
@@ -27,8 +33,8 @@
 // inconsistent, is missing, or its test exit status is non-zero or missing.
 
 import { lstatSync, mkdirSync, openSync, readSync, closeSync, readdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { deferredPlugins, parseLock } from "./herdr-plugins/lock-tools";
+import { dirname, join } from "node:path";
+import { deferral, deferredPlugins, parseLock, stem, supports, type Lock } from "./herdr-plugins/lock-tools";
 
 export const SCHEMA = "vibeke.herdr-plugin-result/1";
 export const MATRIX_SCHEMA = "vibeke.herdr-plugin-matrix/1";
@@ -327,6 +333,101 @@ export function inconsistencies(r: PluginResult, v: Verdict = verdict(r)): strin
   return out;
 }
 
+/**
+ * What the trusted checkout says one result must look like: the identity from the lock and the
+ * step ids and skipped surfaces from the scenario, both already filtered for the platform.
+ */
+export type Expected = {
+  plugin_id: string;
+  repository: string;
+  rank: number;
+  os: string;
+  commit: string;
+  steps: string[];
+  skips: string[];
+};
+
+/** Expected results by `<plugin_id>`, a NUL character, then `<os>`. */
+export type Trusted = Map<string, Expected>;
+
+const onPlatform = (platforms: unknown, os: string): boolean =>
+  !Array.isArray(platforms) || platforms.length === 0 || platforms.includes(os);
+
+/**
+ * Builds the expectations from the trusted lock and the scenario files. `scenarios` maps a
+ * scenario stem (`owner__repo`, see `stem`) to the TOML text. Deferred plugins and platforms a
+ * plugin does not support get no entry, so a result for them is rejected. Throws when a locked
+ * plugin has no scenario: that is a broken checkout, not a plugin failure.
+ */
+export function trustedFrom(lock: Lock, scenarios: Map<string, string>): Trusted {
+  const out: Trusted = new Map();
+  for (const p of lock.plugin ?? []) {
+    if (deferral(lock, p)) continue;
+    const name = stem(lock, p);
+    const text = scenarios.get(name);
+    if (text === undefined) throw new Error(`no scenario file for ${p.plugin_id} (${name}.toml)`);
+    const sc = Bun.TOML.parse(text) as {
+      repository?: string;
+      step?: { id: string; platforms?: string[] }[];
+      skip?: { surface: string; platforms?: string[] }[];
+    };
+    if (sc.repository !== p.repository) throw new Error(`scenario ${name}.toml is for ${sc.repository}, not ${p.repository}`);
+    for (const os of ["linux", "macos"] as const) {
+      if (!supports(p, os)) continue;
+      out.set(`${p.plugin_id}\u0000${os}`, {
+        plugin_id: p.plugin_id,
+        repository: p.repository,
+        rank: p.rank,
+        os,
+        commit: p.commit,
+        steps: (sc.step ?? []).filter((s) => onPlatform(s.platforms, os)).map((s) => s.id),
+        skips: (sc.skip ?? []).filter((s) => onPlatform(s.platforms, os)).map((s) => s.surface),
+      });
+    }
+  }
+  return out;
+}
+
+/** Lifecycle checks the harness records in every run that got past session setup. */
+export const ALWAYS_LIFECYCLE = ["install", "vibeke_side_stopped"];
+
+/**
+ * Checks a result against the trusted expectations. The result file is written by the same user
+ * as the plugin, so the report requires the identity, the exact step list and the skipped
+ * surfaces to match the scenario and the lock, and the fixed lifecycle checks to be present. It
+ * cannot recompute which manifest surfaces the steps cover (the manifest is plugin data), so it
+ * still relies on `coverage.ok`. Returns the problems; empty means consistent.
+ */
+export function crossCheck(r: PluginResult, e: Expected): string[] {
+  const out: string[] = [];
+  if (r.plugin_id !== e.plugin_id) out.push(`plugin_id ${r.plugin_id} is not ${e.plugin_id}`);
+  if (r.repository !== e.repository) out.push(`repository ${r.repository} is not ${e.repository}`);
+  if (r.rank !== e.rank) out.push(`rank ${r.rank} is not ${e.rank}`);
+  if (r.os !== e.os) out.push(`os ${r.os} is not ${e.os}`);
+  if (r.commit !== e.commit) out.push(`commit ${r.commit} is not the locked commit ${e.commit}`);
+  // A run that already reports a harness error fails whatever else it says. It may stop early,
+  // so it has no complete step list.
+  const failedEarly = [...r.lifecycle, ...r.steps].some((x) => x.outcome === "harness_error");
+  if (failedEarly) return out;
+  const ids = r.steps.map((s) => s.id);
+  const want = new Set(e.steps);
+  const dup = ids.filter((id, i) => ids.indexOf(id) !== i);
+  if (dup.length > 0) out.push(`duplicate steps: ${[...new Set(dup)].join(", ")}`);
+  const missing = e.steps.filter((id) => !ids.includes(id));
+  if (missing.length > 0) out.push(`missing scenario steps: ${missing.join(", ")}`);
+  const extra = [...new Set(ids.filter((id) => !want.has(id)))];
+  if (extra.length > 0) out.push(`steps that are not in the scenario: ${extra.join(", ")}`);
+  const names = r.lifecycle.map((c) => c.check);
+  for (const c of ALWAYS_LIFECYCLE) {
+    const n = names.filter((x) => x === c).length;
+    if (n !== 1) out.push(`lifecycle check ${c} appears ${n} times, not once`);
+  }
+  const skipped = [...r.coverage.skipped].sort().join("\u0000");
+  if (skipped !== [...e.skips].sort().join("\u0000")) out.push("coverage.skipped is not the scenario's skip list for this platform");
+  if (!r.coverage.ok || r.coverage.missing.length > 0) out.push("coverage is not complete");
+  return out;
+}
+
 export const STATUS_SCHEMA = "vibeke.herdr-plugin-status/1";
 
 /** What the trusted runner recorded about one plugin job, outside the boundary. */
@@ -422,6 +523,7 @@ export function build(
   expect: { plugin_id: string; os: string }[] = [],
   statuses: Input[] | null = null,
   deferred: Deferred[] = [],
+  trusted: Trusted | null = null,
 ): Matrix {
   const m: Matrix = {
     schema: MATRIX_SCHEMA,
@@ -456,6 +558,17 @@ export function build(
       continue;
     }
     seen.add(key);
+    if (trusted !== null) {
+      const e = trusted.get(key);
+      const bad = e ? crossCheck(r, e) : [`${r.plugin_id} on ${r.os} is not a locked, supported plugin and platform`];
+      if (bad.length > 0) {
+        m.rejected.push({
+          file: input.file,
+          reason: `harness_error: result does not match the trusted scenario and lock: ${bad.join("; ")}`,
+        });
+        continue;
+      }
+    }
     const v = verdict(r);
     const bad = inconsistencies(r, v);
     if (bad.length > 0) {
@@ -651,7 +764,7 @@ if (import.meta.main) {
   const out = arg(args, "--out");
   if (!input || !out) {
     console.error(
-      "usage: herdr-plugins-report.ts --in <dir> --out <dir> [--expect <matrix.json>] [--status <dir>] [--lock <lock.toml>]",
+      "usage: herdr-plugins-report.ts --in <dir> --out <dir> [--expect <matrix.json>] [--status <dir>] [--lock <lock.toml>] [--scenarios <dir>]",
     );
     process.exit(2);
   }
@@ -666,7 +779,17 @@ if (import.meta.main) {
   // The checked-in lock is trusted repository data, not a plugin job's output.
   const lockFile = arg(args, "--lock");
   const deferred = lockFile ? deferredPlugins(parseLock(await Bun.file(lockFile).text())) : [];
-  const m = build(collect(input), expect, statusDir ? collect(statusDir, STATUS_NAME) : null, deferred);
+  // The scenarios come from the same trusted checkout as the lock.
+  let trusted: Trusted | null = null;
+  if (lockFile) {
+    const dir = arg(args, "--scenarios") ?? join(dirname(lockFile), "scenarios");
+    const scenarios = new Map<string, string>();
+    for (const name of readdirSync(dir)) {
+      if (name.endsWith(".toml")) scenarios.set(name.slice(0, -5), await Bun.file(join(dir, name)).text());
+    }
+    trusted = trustedFrom(parseLock(await Bun.file(lockFile).text()), scenarios);
+  }
+  const m = build(collect(input), expect, statusDir ? collect(statusDir, STATUS_NAME) : null, deferred, trusted);
   mkdirSync(out, { recursive: true });
   writeFileSync(join(out, "matrix.json"), `${JSON.stringify(m, null, 2)}\n`);
   writeFileSync(join(out, "matrix.md"), render(m));
