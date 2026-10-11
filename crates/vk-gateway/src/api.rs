@@ -208,7 +208,8 @@ pub fn required_scope(method: &str) -> Option<Scope> {
         | "cloud.prune"
         | "cloud.move"
         | "cloud.jobs"
-        | "cloud.cancel" => Full,
+        | "cloud.cancel"
+        | "cloud.confirm" => Full,
         // Host-to-host trust and invitation management (spec 16 §15.3–§15.4, peers.rs).
         "peer.invite" | "peer.redeem" | "peer.list" | "peer.remove" | "share.list"
         | "share.revoke" => Full,
@@ -1657,7 +1658,7 @@ impl Call<'_> {
                 crate::screencast::frame(
                     self.gw,
                     &self.device.id,
-                    pick(&p, &["session", "after_seq", "wait_ms"]),
+                    pick(&p, &["session", "after_seq", "wait_ms", "data_saver"]),
                 )
                 .await
             }
@@ -1705,11 +1706,18 @@ impl Call<'_> {
                         ),
                     ));
                 }
+                // A phone page by default; `mobile: false` asks for a desktop page (a wide
+                // window). The size caps above apply either way.
+                let mobile = match p.get("mobile") {
+                    None | Some(Value::Null) => true,
+                    Some(Value::Bool(m)) => *m,
+                    Some(_) => return Err(ApiError::invalid("mobile must be a boolean")),
+                };
                 let mut params = json!({
                     "preview": preview,
                     "viewport": {"width": width, "height": height},
                     "dpr": dpr,
-                    "mobile": true,
+                    "mobile": mobile,
                 });
                 for k in ["machine", "dark"] {
                     if let Some(v) = p.get(k).filter(|v| !v.is_null()) {
@@ -1953,7 +1961,17 @@ impl Call<'_> {
                     method,
                     pick(
                         &p,
-                        &["pane", "run", "box", "to", "interrupt", "source_after"],
+                        &[
+                            "pane",
+                            "run",
+                            "box",
+                            "to",
+                            "interrupt",
+                            "source_after",
+                            "new_task",
+                            "review",
+                            "code_only",
+                        ],
                     ),
                 )
                 .await
@@ -1962,6 +1980,11 @@ impl Call<'_> {
             "cloud.cancel" => {
                 req(&p, "id")?;
                 self.server(method, pick(&p, &["id"])).await
+            }
+            // A bring-back waiting for review goes on; `code_only` skips resuming the agent.
+            "cloud.confirm" => {
+                req(&p, "id")?;
+                self.server(method, pick(&p, &["id", "code_only"])).await
             }
             // Approved calls (09 §3.2): only the approval requests and standing grants, never
             // the elevation tokens and revocations `auth.list` also returns.
@@ -2548,6 +2571,7 @@ mod share_tests {
             "cloud.move",
             "cloud.jobs",
             "cloud.cancel",
+            "cloud.confirm",
         ] {
             assert_eq!(required_scope(m), Some(Scope::Full), "{m}");
             assert!(host_wide(m), "{m}");
@@ -3328,6 +3352,36 @@ mod workspace_tests {
             let r = echo(call.dispatch(m, params).await);
             assert_eq!(r["idempotency_key"], "client-key-1", "{m}");
         }
+        // Cloud moves: the app's new-task retry and bring-back review reach the server.
+        let mv = echo(
+            call.dispatch(
+                "cloud.move",
+                json!({"pane": "p1", "to": {"kind": "cloud", "provider": "sprites"},
+                       "new_task": true, "review": false, "code_only": true, "x": 1, "op_id": "c1"}),
+            )
+            .await,
+        );
+        assert_eq!(mv["new_task"], true);
+        assert_eq!(mv["review"], false);
+        assert_eq!(mv["code_only"], true);
+        assert!(mv.get("x").is_none());
+        let confirm = echo(
+            call.dispatch(
+                "cloud.confirm",
+                json!({"id": "j1", "code_only": true, "x": 1, "op_id": "c2"}),
+            )
+            .await,
+        );
+        assert_eq!(confirm["id"], "j1");
+        assert_eq!(confirm["code_only"], true);
+        assert!(confirm.get("x").is_none());
+        assert_eq!(
+            call.dispatch("cloud.confirm", json!({"op_id": "c3"}))
+                .await
+                .unwrap_err()
+                .kind,
+            "invalid_params"
+        );
         let plain = echo(
             call.dispatch(
                 "pane.send_keys",
@@ -3719,11 +3773,14 @@ mod workspace_tests {
         let f = call
             .dispatch(
                 "browser.screencast_frame",
-                json!({"session": "b1", "after_seq": 3, "target": "r2"}),
+                json!({"session": "b1", "after_seq": 3, "target": "r2", "data_saver": true}),
             )
             .await
             .unwrap();
-        assert_eq!(f["echo"], json!({"session": "b1", "after_seq": 3}));
+        assert_eq!(
+            f["echo"],
+            json!({"session": "b1", "after_seq": 3, "data_saver": true})
+        );
         assert_eq!(gw.screencasts.live(), vec!["b1".to_string()]);
         assert_eq!(
             conflict(
@@ -3793,6 +3850,7 @@ mod workspace_tests {
             json!({"preview": "v1", "viewport": {"width": 0, "height": 10}, "dpr": 2, "op_id": "a"}),
             json!({"preview": "v1", "viewport": {"width": 390, "height": 800}, "op_id": "a"}),
             json!({"viewport": {"width": 390, "height": 800}, "dpr": 2, "op_id": "a"}),
+            json!({"preview": "v1", "viewport": {"width": 390, "height": 800}, "dpr": 2, "mobile": "no", "op_id": "a"}),
         ] {
             assert_eq!(
                 call.dispatch("browser.preview_open", p)
