@@ -57,7 +57,8 @@ describe('API reference content', () => {
     expect(api.body).not.toContain('VIBEKE_UPDATE_API_FREEZE')
     const rows = api.body.split('\n').filter(line => line.startsWith('|'))
     expect(rows.length).toBeGreaterThan(200)
-    for (const row of rows) expect(row.split('|')).toHaveLength(5)
+    // Method, action, access and stability: four cells, so six parts.
+    for (const row of rows) expect(row.split('|')).toHaveLength(6)
     expect(api.body).toContain('](/api-reference/vibeke-1.schema.json)')
   })
 })
