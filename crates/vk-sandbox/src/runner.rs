@@ -561,6 +561,71 @@ mod tests {
         }
     }
 
+    /// 13 §7: loopback grants follow the task's port lease. Configured host services are
+    /// reachable but never bindable, and nothing else on loopback is either.
+    #[test]
+    fn network_grants_follow_the_port_lease() {
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path().canonicalize().unwrap();
+        std::fs::create_dir_all(root.join("home/co")).unwrap();
+        let mut s = setup_at(&root);
+        s.network = NetworkProfile::Dev;
+        s.proxy_port = Some(4100);
+        s.local_ports = vec![5432, 20000, 20001];
+        s.bind_ports = vec![20000, 20001];
+        let r = SandboxRunner { setup: s };
+        let pol = Policy::from_spec(&r.spec(&root.join("sbx/p"), None));
+        assert_eq!(pol.network, Some((4100, vec![5432, 20000, 20001])));
+        assert_eq!(pol.bind_ports, [20000, 20001]);
+        assert!(!pol.allow_host_loopback);
+        assert!(!pol.network_open);
+    }
+
+    /// 13 §6: git in the box writes to the task's private object store and reads the host's
+    /// objects as an alternate; the shared store is not writable.
+    #[test]
+    fn git_checkouts_get_a_private_object_store() {
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path().canonicalize().unwrap();
+        let common = root.join("home/repo/.git");
+        std::fs::create_dir_all(root.join("home/co")).unwrap();
+        std::fs::create_dir_all(common.join("worktrees/co")).unwrap();
+        let mut s = setup_at(&root);
+        s.git = Some(GitLayout {
+            common_dir: common.clone(),
+            git_dir: common.join("worktrees/co"),
+            branch: Some("vk/t".into()),
+        });
+        let r = SandboxRunner { setup: s };
+        let objects = r.objects_dir().unwrap();
+        assert_eq!(objects, root.join("sbx").join(GIT_OBJECTS_DIR));
+        r.ensure_git_dirs().unwrap();
+        assert!(objects.is_dir());
+        // The branch reflog exists, so the box can append to it without creating dirs.
+        assert!(common.join("logs/refs/heads/vk/t").is_file());
+        let private = r.ensure_pane_dir("01PANE0000000000000000AAAA").unwrap();
+        let e = r.env(&[], &private, None).unwrap();
+        let get = |k: &str| e.iter().find(|(x, _)| x == k).map(|(_, v)| v.clone());
+        assert_eq!(
+            get("GIT_OBJECT_DIRECTORY").as_deref(),
+            Some(objects.to_str().unwrap())
+        );
+        assert_eq!(
+            get("GIT_ALTERNATE_OBJECT_DIRECTORIES").as_deref(),
+            Some(common.join("objects").to_str().unwrap())
+        );
+        let pol = Policy::from_spec(&r.spec(&private, None));
+        assert!(pol.allow_write.contains(&objects));
+        assert!(pol.deny_write.contains(&common.join("objects")));
+        // Without git there is no store and no git environment.
+        let r = SandboxRunner {
+            setup: setup_at(&root),
+        };
+        assert!(r.objects_dir().is_none());
+        let e = r.env(&[], &private, None).unwrap();
+        assert!(!e.iter().any(|(k, _)| k.starts_with("GIT_")));
+    }
+
     #[test]
     fn symlinked_projection_never_widens_grants() {
         let t = tempfile::tempdir().unwrap();

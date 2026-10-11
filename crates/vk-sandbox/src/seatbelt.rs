@@ -120,7 +120,13 @@ pub fn render(p: &Policy) -> String {
     o.push_str(";; … Vibeke's own runtime/state/config and $TMPDIR stay hidden (layer 2b) …\n");
     rule(&mut o, "deny", "file-read*", &subpaths(&p.hidden));
     rule(&mut o, "allow", "file-read*", &subpaths(&p.allow_read_late));
-    rule(&mut o, "deny", "file-read*", &subpaths(&p.never_read));
+    let mut nr = subpaths(&p.never_read);
+    nr.extend(
+        p.never_read_regex
+            .iter()
+            .map(|r| format!("(regex {})", q(r))),
+    );
+    rule(&mut o, "deny", "file-read*", &nr);
     o.push_str(";; stat/realpath anywhere (names and sizes, never contents)\n");
     o.push_str("(allow file-read-metadata)\n");
 
@@ -318,6 +324,17 @@ mod tests {
         for u in &pol.unix_sockets {
             assert!(block.contains(&u.display().to_string()));
         }
+    }
+
+    #[test]
+    fn credential_files_created_later_are_hidden_too() {
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path().canonicalize().unwrap();
+        let sb = render(&Policy::from_spec(&spec(&root)));
+        let mise = regex_escape(&root.join("home/.config/mise").to_string_lossy());
+        let want = format!("(regex \"^{}/\\\\.env[^/]*$\")", mise.replace('\\', "\\\\"));
+        let deny = sb.rfind("(deny file-read*").unwrap();
+        assert!(sb[deny..].contains(&want), "{want}\n{sb}");
     }
 
     #[test]

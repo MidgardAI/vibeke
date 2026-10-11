@@ -299,6 +299,10 @@ pub struct Policy {
     /// Re-allowed under hidden roots (inbox, private dir, `vibeke` binary).
     pub allow_read_late: Vec<PathBuf>,
     pub never_read: Vec<PathBuf>,
+    /// Anchored regexes for [`HOME_NEVER_READ_MATCH`]: Seatbelt also hides matching files
+    /// created after the profile was written (bubblewrap can only mask what exists).
+    #[serde(default)]
+    pub never_read_regex: Vec<String>,
     pub allow_write: Vec<PathBuf>,
     /// Git dirs: read-only as a whole (layer 3b) …
     pub deny_write_git: Vec<PathBuf>,
@@ -463,6 +467,15 @@ impl Policy {
                 push_unique(&mut p.never_read, target);
             }
             push_unique(&mut p.never_read, f);
+        }
+        for (dir, prefix, suffix) in HOME_NEVER_READ_MATCH {
+            let d = canon(&home.join(dir));
+            p.never_read_regex.push(format!(
+                "^{}/{}[^/]*{}$",
+                regex_escape(&d.to_string_lossy()),
+                regex_escape(prefix),
+                regex_escape(suffix)
+            ));
         }
         if let Some(c) = &spec.control_dir {
             push_unique(&mut p.never_read, canon(c));
