@@ -68,15 +68,15 @@ mod tests {
     use super::*;
 
     fn home() -> PathBuf {
-        PathBuf::from("/home/espen")
+        PathBuf::from("/home/user")
     }
 
     #[test]
     fn home_is_tilde_and_subdirs_are_abbreviated() {
-        assert_eq!(name_for("/home/espen", &home(), None), "~");
-        assert_eq!(name_for("/home/espen/notes/a", &home(), None), "~/notes/a");
+        assert_eq!(name_for("/home/user", &home(), None), "~");
+        assert_eq!(name_for("/home/user/notes/a", &home(), None), "~/notes/a");
         assert_eq!(name_for("/srv/data", &home(), None), "/srv/data");
-        assert_eq!(name_for("/home/espenx", &home(), None), "/home/espenx");
+        assert_eq!(name_for("/home/userx", &home(), None), "/home/userx");
     }
 
     #[test]
@@ -87,14 +87,14 @@ mod tests {
 
     #[test]
     fn git_top_level_basename_wins() {
-        let top = PathBuf::from("/home/espen/code/vibeke");
+        let top = PathBuf::from("/home/user/code/project");
         assert_eq!(
-            name_for("/home/espen/code/vibeke", &home(), Some(&top)),
-            "vibeke"
+            name_for("/home/user/code/project", &home(), Some(&top)),
+            "project"
         );
         assert_eq!(
-            name_for("/home/espen/code/vibeke/crates/x", &home(), Some(&top)),
-            "vibeke"
+            name_for("/home/user/code/project/crates/x", &home(), Some(&top)),
+            "project"
         );
     }
 
