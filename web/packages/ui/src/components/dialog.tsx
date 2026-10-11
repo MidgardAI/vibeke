@@ -5,6 +5,7 @@
 
 import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
+import { useOverlay } from '../lib/overlays';
 
 /** Open dialogs, bottom to top. Only the top one is interactive. */
 const stack: HTMLElement[] = [];
@@ -76,6 +77,8 @@ function DialogLayer({ onClose, label, labelledBy, initialFocus, className, pane
   const scrim = useRef<HTMLDivElement>(null);
   const close = useRef(onClose);
   close.current = onClose;
+  // Native layers (the desktop's embedded preview) step aside while a dialog is open.
+  useOverlay();
 
   useEffect(() => {
     if (!closeOnNavigate || !dismissable) return;

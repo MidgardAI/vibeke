@@ -3,7 +3,7 @@
 // nothing in the renderer may open a connection or touch key material.
 
 import { linkToUrl, systemClock, type HostRecord, type KeyStore, type Lifecycle, type Socket } from '@vibeke/core';
-import type { CachedDashboard, CachedMirror, DashboardCache, HostEngine, KV, MirrorCache, UiCommand, UiPlatform, UpdateState, UpdatesCapability } from '@vibeke/ui';
+import type { CachedDashboard, CachedMirror, DashboardCache, HostEngine, KV, MirrorCache, PreviewViewApi, PreviewViewState, UiCommand, UiPlatform, UpdateState, UpdatesCapability } from '@vibeke/ui';
 import { EVENT, INVOKE, type BootInfo, type Bridge, type EngineHello } from '../shared/contract';
 import { RemoteManager, call } from './remote';
 import { extensions } from './extensions';
@@ -176,6 +176,24 @@ function caches(bridge: Bridge): { mirrorCache: MirrorCache; dashboardCache: Das
   };
 }
 
+/** Embedded preview views over the bridge (main validates every call and owns the views). */
+function previewView(bridge: Bridge): PreviewViewApi {
+  const fire = (channel: (typeof INVOKE)[keyof typeof INVOKE], ...args: unknown[]) => void bridge.invoke(channel, ...args).catch(() => {});
+  return {
+    open: (p) => call<{ view: string }>(bridge, INVOKE.previewOpen, { hostId: p.hostId, machine: p.machine, url: p.url }),
+    bounds: (view, r, visible) => fire(INVOKE.previewBounds, { view, x: r.x, y: r.y, width: Math.max(0, r.width), height: Math.max(0, r.height), visible }),
+    go: (view, p) => call<void>(bridge, INVOKE.previewGo, p.url !== undefined ? { view, url: p.url } : { view, action: p.action }),
+    devtools: (view) => fire(INVOKE.previewDevtools, view),
+    snapshot: (view) => call<string | null>(bridge, INVOKE.previewSnapshot, view).catch(() => null),
+    close: (view) => fire(INVOKE.previewClose, view),
+    onState: (cb) =>
+      bridge.on(EVENT.previewState, (p) => {
+        const s = p as PreviewViewState;
+        if (s && typeof s.view === 'string' && typeof s.url === 'string') cb(s);
+      }),
+  };
+}
+
 export function createDesktopPlatform(bridge: Bridge, boot: BootInfo): UiPlatform {
   const win = (op: Record<string, unknown>) => void bridge.invoke(INVOKE.window, op).catch(() => {});
   return {
@@ -215,6 +233,7 @@ export function createDesktopPlatform(bridge: Bridge, boot: BootInfo): UiPlatfor
     },
     onCommand: (cb) => bridge.on(EVENT.command, (c) => cb(c as UiCommand)),
     extensions: extensions(bridge, boot),
+    previewView: previewView(bridge),
     speech: {
       recognizer: false,
       recorder: typeof MediaRecorder !== 'undefined' && !!navigator.mediaDevices?.getUserMedia,

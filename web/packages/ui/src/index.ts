@@ -24,6 +24,8 @@ export type {
   UiExtensions,
   ShellCommand,
   UiCommand,
+  PreviewViewApi,
+  PreviewViewState,
 } from './platform';
 export { parseRoute, formatRoute, hashFromUrl, navigate, type Route } from './router';
 export { hostOfTag, staleTags, badgeCount, openCounts } from './lib/notify';

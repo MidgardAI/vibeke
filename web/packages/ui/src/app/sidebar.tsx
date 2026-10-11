@@ -47,6 +47,7 @@ import { useApp, useHosts, useInboxItems, usePrefs } from './hooks';
 import { useStableList } from './stable-list';
 import { emitUi, isMacLike } from './keyboard';
 import { drawerOpen, selectedPane, useWorkspaces, workspacePinKey } from './selection';
+import { useOverlay } from '../lib/overlays';
 
 const GROUP_ICON: Record<WorkspaceGroupId, ReactNode> = {
   needs: <CircleAlert className="size-3.5 text-need" strokeWidth={2} />,
@@ -402,6 +403,7 @@ function FilterMenu({ onClose, onHosts }: { onClose(): void; onHosts(): void }) 
   const prefs = usePrefs();
   const hosts = useHosts();
   const ref = useRef<HTMLDivElement>(null);
+  useOverlay();
   useEffect(() => {
     const down = (e: PointerEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node) && !(e.target as Element).closest?.('[aria-expanded]')) onClose();

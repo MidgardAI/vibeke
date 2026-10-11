@@ -3,6 +3,7 @@
 
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { IconButton, cx } from '../../components/ui';
+import { useOverlay } from '../../lib/overlays';
 
 export interface MenuItem {
   label: string;
@@ -73,6 +74,7 @@ function MenuList({
   onClose(refocus: boolean): void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
+  useOverlay();
   useEffect(() => {
     const el = ref.current;
     el?.querySelector<HTMLElement>('[role="menuitem"]:not(:disabled)')?.focus();

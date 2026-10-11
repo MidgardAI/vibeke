@@ -75,6 +75,17 @@ interface Pending {
 
 type NotificationHandler = (params: unknown, method: string) => void;
 
+/**
+ * One live RPC connection, for main-process stream users (the desktop's `tunnel.*` client). It is
+ * bound to that connection: after `onClose` fires, a reconnect is a different link.
+ */
+export interface RpcLink {
+  request<T = unknown>(method: string, params?: Record<string, unknown>, ro?: RequestOptions): Promise<T>;
+  on(method: string, cb: NotificationHandler): () => void;
+  onClose(cb: () => void): () => void;
+  readonly closed: boolean;
+}
+
 export function uuidv4(random: (n: number) => Uint8Array): string {
   const b = random(16);
   b[6] = (b[6]! & 0x0f) | 0x40;
@@ -83,7 +94,7 @@ export function uuidv4(random: (n: number) => Uint8Array): string {
   return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
 }
 
-export class RpcClient {
+export class RpcClient implements RpcLink {
   private nextId = 1;
   private readonly pending = new Map<number, Pending>();
   private readonly handlers = new Map<string, Set<NotificationHandler>>();
@@ -156,6 +167,15 @@ export class RpcClient {
     if (!set) this.handlers.set(method, (set = new Set()));
     set.add(cb);
     return () => set.delete(cb);
+  }
+
+  /** The connection ended (runs at once, asynchronously, when it already has). */
+  onClose(cb: () => void): () => void {
+    if (this.channel.closed) {
+      queueMicrotask(cb);
+      return () => {};
+    }
+    return this.channel.onClose(() => cb());
   }
 
   close(): void {

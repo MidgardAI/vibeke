@@ -21,6 +21,7 @@ import {
   type HostStore,
   type PairingLink,
   type Platform,
+  type RpcLink,
 } from '@vibeke/core';
 import type { HostsPatch, RendererMethod, WireError } from '../shared/contract';
 
@@ -127,6 +128,16 @@ export class Engine {
     const c = this.manager?.get(hostId);
     if (!c) throw new NotConnectedError(hostId);
     return c.request(method, params as never, opts);
+  }
+
+  /** The host's live connection for stream protocols (`tunnel.*`), or null while it is not online. */
+  streamLink(hostId: string): RpcLink | null {
+    return this.manager?.get(hostId)?.streamLink() ?? null;
+  }
+
+  /** One host's current state (null for an unknown host). */
+  host(hostId: string): HostState | null {
+    return this.manager?.get(hostId)?.getSnapshot() ?? null;
   }
 
   async refresh(hostId: string): Promise<void> {

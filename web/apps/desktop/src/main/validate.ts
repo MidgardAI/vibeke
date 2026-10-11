@@ -2,7 +2,7 @@
 // tested; ipc.ts applies them before any handler logic runs.
 
 import { isAbsolute } from 'node:path';
-import { RENDERER_METHODS, type DesktopSettings, type RendererMethod, type RendererSettingsPatch, type Theme, type WindowOp } from '../shared/contract';
+import { RENDERER_METHODS, type DesktopSettings, type PreviewBounds, type PreviewGo, type PreviewOpen, type RendererMethod, type RendererSettingsPatch, type Theme, type WindowOp } from '../shared/contract';
 
 export class IpcValidationError extends Error {
   constructor(message: string) {
@@ -212,4 +212,68 @@ export function storedExecutablePath(v: unknown): string {
 export function storedSetting(k: string, v: unknown): Partial<DesktopSettings> {
   if (k === 'vibekePath') return { vibekePath: storedExecutablePath(v) };
   return settingsPatch({ [k]: v });
+}
+
+// ---- embedded previews (spec 06 B3.5) -------------------------------------------------------
+
+/** A page a preview view may load: http(s) only, no embedded credentials, bounded. */
+export function previewUrl(v: unknown): string {
+  if (typeof v !== 'string' || v.length > 8192 || /[\0-\x1f]/.test(v)) return fail('preview url');
+  let u: URL;
+  try {
+    u = new URL(v);
+  } catch {
+    return fail('preview url');
+  }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') fail('preview url scheme');
+  if (u.username || u.password) fail('preview url credentials');
+  if (!u.hostname) fail('preview url host');
+  return u.toString();
+}
+
+/** A preview machine name ('' = the host's own machine). */
+export function previewMachine(v: unknown): string {
+  if (v === undefined || v === null) return '';
+  return typeof v === 'string' && v.length <= 128 && !/[\0-\x1f/\\]/.test(v) ? v : fail('preview machine');
+}
+
+/** View ids are minted by main (`pv` + hex). */
+export function previewView(v: unknown): string {
+  return typeof v === 'string' && /^pv[0-9a-f]{24}$/.test(v) ? v : fail('preview view');
+}
+
+const only = (o: Record<string, unknown>, keys: string[], what: string) => {
+  for (const k of Object.keys(o)) if (!keys.includes(k)) fail(`${what}.${k}`);
+};
+
+export function previewOpen(v: unknown): PreviewOpen {
+  if (!isPlain(v)) return fail('preview open');
+  only(v, ['hostId', 'machine', 'url'], 'preview open');
+  return { hostId: hostId(v.hostId), machine: previewMachine(v.machine), url: previewUrl(v.url) };
+}
+
+const coord = (v: unknown, what: string, min: number): number =>
+  typeof v === 'number' && Number.isFinite(v) && v >= min && v <= 100_000 ? v : fail(what);
+
+export function previewBounds(v: unknown): PreviewBounds {
+  if (!isPlain(v)) return fail('preview bounds');
+  only(v, ['view', 'x', 'y', 'width', 'height', 'visible'], 'preview bounds');
+  return {
+    view: previewView(v.view),
+    x: coord(v.x, 'preview bounds.x', -100_000),
+    y: coord(v.y, 'preview bounds.y', -100_000),
+    width: coord(v.width, 'preview bounds.width', 0),
+    height: coord(v.height, 'preview bounds.height', 0),
+    visible: flag(v.visible, 'preview bounds.visible'),
+  };
+}
+
+export function previewGo(v: unknown): PreviewGo {
+  if (!isPlain(v)) return fail('preview go');
+  only(v, ['view', 'url', 'action'], 'preview go');
+  const view = previewView(v.view);
+  if (v.url !== undefined && v.action !== undefined) fail('preview go: url or action');
+  if (v.url !== undefined) return { view, url: previewUrl(v.url) };
+  if (v.action === 'back' || v.action === 'forward' || v.action === 'reload' || v.action === 'stop') return { view, action: v.action };
+  return fail('preview go.action');
 }

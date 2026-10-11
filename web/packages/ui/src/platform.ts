@@ -162,6 +162,35 @@ export interface UiPlatform extends Platform {
   onCommand?(cb: (cmd: UiCommand) => void): () => void;
   /** macOS-style platform (Cmd instead of Ctrl for shortcuts). Defaults to sniffing the UA. */
   mac?: boolean;
+  /** Dev-server previews embedded as native browser views over the host's tunnel (desktop). */
+  previewView?: PreviewViewApi;
+}
+
+/** A preview view's navigation state, pushed by the shell. */
+export interface PreviewViewState {
+  view: string;
+  url: string;
+  title: string;
+  loading: boolean;
+  canGoBack: boolean;
+  canGoForward: boolean;
+  /** `host_offline` while the host is not connected; other values describe a failed load. */
+  error?: string;
+}
+
+/**
+ * Embedded preview views (spec 06 B3.5). A view is a native layer above the page: the UI keeps a
+ * placeholder element and reports its rectangle (CSS pixels of this window).
+ */
+export interface PreviewViewApi {
+  open(p: { hostId: string; machine: string; url: string }): Promise<{ view: string }>;
+  bounds(view: string, rect: { x: number; y: number; width: number; height: number }, visible: boolean): void;
+  go(view: string, p: { url?: string; action?: 'back' | 'forward' | 'reload' | 'stop' }): Promise<void>;
+  devtools(view: string): void;
+  /** The page as an image data URL, or null (shown while an overlay hides the view). */
+  snapshot(view: string): Promise<string | null>;
+  close(view: string): void;
+  onState(cb: (s: PreviewViewState) => void): () => void;
 }
 
 /**

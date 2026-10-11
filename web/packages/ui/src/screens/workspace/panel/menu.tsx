@@ -4,6 +4,7 @@
 import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
 import { Check } from 'lucide-react';
 import { cx } from '../../../components/ui';
+import { useOverlay } from '../../../lib/overlays';
 
 export interface MenuItem {
   key: string;
@@ -32,6 +33,7 @@ export function Menu({
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  useOverlay(open);
   useEffect(() => {
     if (!open) return;
     const down = (e: PointerEvent) => {

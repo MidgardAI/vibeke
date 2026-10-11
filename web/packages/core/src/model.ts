@@ -1294,6 +1294,16 @@ export interface AppApi {
     params: { session: string; url?: string; path?: string; wait?: string; timeout_ms?: number };
     result: { session: string; status: number | null; final_url: string; title: string };
   };
+  /**
+   * Stream tunnel to a loopback port on a preview machine (spec 06 B3.5; gateway feature `tunnel`).
+   * Full-scope devices without a limit only. Data arrives as `tunnel.data` notifications; the
+   * gateway stops reading while `TUNNEL_ACK_WINDOW` bytes are unacknowledged.
+   */
+  'tunnel.open': { params: TunnelOpenParams; result: { stream: string } };
+  /** At most `TUNNEL_SEND_MAX` decoded bytes; the response comes after the write (backpressure). */
+  'tunnel.send': { params: { stream: string; data_b64?: string; eof?: boolean }; result: Record<string, never> };
+  'tunnel.ack': { params: { stream: string; bytes: number }; result: Record<string, never> };
+  'tunnel.close': { params: { stream: string }; result: Record<string, never> };
   /** Open approval requests from panes and the standing grants (the gateway passes only these parts of the host's `auth.list`). */
   'auth.list': { params: Record<string, never>; result: { approvals?: ApprovalRequest[]; grants?: ApprovalGrant[] } };
   /**
@@ -1316,6 +1326,45 @@ export interface AppApi {
 }
 
 export type AppMethod = keyof AppApi;
+
+// ---- stream tunnel (spec 06 B3.5) ----------------------------------------------------------
+
+export interface TunnelOpenParams {
+  /** Preview machine; absent, empty or `local` = the host's own machine. */
+  machine?: string;
+  /** A loopback name or address on that machine (`localhost`, `*.localhost`, 127/8, ::1). */
+  host: string;
+  port: number;
+}
+
+/** `tunnel.data`: up to 48 KiB of stream data (unpadded base64url), in order. */
+export interface TunnelDataNotification {
+  stream: string;
+  data_b64: string;
+}
+
+export type TunnelClosedReason = 'eof' | 'error' | 'closed' | 'revoked';
+
+/** `tunnel.closed`: the stream ended. After `eof` the device may still send until it closes. */
+export interface TunnelClosedNotification {
+  stream: string;
+  reason: TunnelClosedReason | (string & {});
+}
+
+/** Host → device notifications of the stream tunnel, by method. */
+export interface TunnelNotifications {
+  'tunnel.data': TunnelDataNotification;
+  'tunnel.closed': TunnelClosedNotification;
+}
+
+/** The hello feature that announces `tunnel.*`. */
+export const TUNNEL_FEATURE = 'tunnel';
+/** Largest decoded `tunnel.send` payload. */
+export const TUNNEL_SEND_MAX = 64 * 1024;
+/** Unacknowledged bytes per stream after which the gateway stops reading. */
+export const TUNNEL_ACK_WINDOW = 512 * 1024;
+/** Open streams per device connection. */
+export const TUNNEL_MAX_STREAMS = 64;
 
 /** Methods that carry `op_id` (spec 16 §7.3/§7.4); mirrors vk-gateway api::is_mutating. */
 export const MUTATING_METHODS: ReadonlySet<string> = new Set([

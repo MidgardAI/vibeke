@@ -43,6 +43,7 @@ import { DraftStore } from './drafts';
 import { CacheStore } from './cache';
 import { syncDraftHosts } from './draft-lifecycle';
 import { Windows } from './windows';
+import { PreviewViews } from './preview-views';
 
 declare const __APP_VERSION__: string;
 declare const __BUILD_HASH__: string;
@@ -133,6 +134,15 @@ function deviceName(): string {
   h = h.replace(/[-_]+/g, ' ').trim();
   return (h || platformName).slice(0, 64);
 }
+
+// Embedded previews (spec 06 B3.5): views routed through the in-app proxy and `tunnel.*`.
+const previews = new PreviewViews({
+  link: (hostId) => engine.streamLink(hostId),
+  online: (hostId) => engine.host(hostId)?.status === 'online',
+  features: (hostId) => engine.host(hostId)?.info?.features ?? [],
+  onHostsChanged: (cb) => engine.onPatch(() => cb()),
+  log,
+});
 
 // ---- windows, tray, notifications -----------------------------------------------------------
 
@@ -419,6 +429,9 @@ async function pickDirectory(win: BrowserWindow | null, defaultPath?: string): P
 // ---- security -------------------------------------------------------------------------------
 
 app.on('web-contents-created', (_e, wc) => {
+  // Preview views have their own, stricter rules (preview-views.ts): pages there may navigate
+  // between web origins but never to app:// or file://.
+  if (previews.isPreviewContents(wc)) return;
   // No new windows from page content; http(s) links open in the browser.
   wc.setWindowOpenHandler(({ url }) => {
     try {
@@ -437,6 +450,13 @@ app.on('web-contents-created', (_e, wc) => {
   wc.on('will-navigate', guard);
   wc.on('will-redirect', guard);
   wc.on('will-attach-webview', (e) => e.preventDefault());
+});
+
+// The in-app preview proxy asks for credentials; only a preview view's own webContents gets its own.
+app.on('login', (event, wc, _details, authInfo, callback) => {
+  if (!authInfo.isProxy) return;
+  event.preventDefault();
+  if (!previews.login(wc, authInfo, callback)) callback();
 });
 
 function secureSession(): void {
@@ -497,6 +517,7 @@ app.whenReady().then(() => {
     pickDirectory,
     onPrefsChanged: (h) => notifier.invalidatePrefs(h),
     onTheme: () => windows.repaint(),
+    previews,
     log,
   });
   // Boot facts (registered here because it needs `settings`); same sender checks as ipc.ts.
@@ -572,6 +593,7 @@ app.on('before-quit', (event) => {
   windows.quitting = true;
 });
 app.on('will-quit', () => {
+  previews.closeAll();
   updates?.stop();
   globalShortcut.unregisterAll();
   notifier.stop();

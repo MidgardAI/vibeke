@@ -41,6 +41,13 @@ export const INVOKE = {
   ready: 'vk:ready',
   /** Start / stop receiving `EVENT.hostEvent` for one host (`hostId`, `on: boolean`). */
   hostEvents: 'vk:host.events',
+  /** Embedded preview views (spec 06 B3.5); see `PreviewOpen` and friends below. */
+  previewOpen: 'vk:preview.view.open',
+  previewBounds: 'vk:preview.view.bounds',
+  previewGo: 'vk:preview.view.go',
+  previewDevtools: 'vk:preview.view.devtools',
+  previewSnapshot: 'vk:preview.view.snapshot',
+  previewClose: 'vk:preview.view.close',
 } as const;
 
 /** Main → renderer (webContents.send). */
@@ -54,6 +61,8 @@ export const EVENT = {
   visibility: 'vk:visibility',
   /** A host's live event (`HostEventPayload`, see host-events.ts), to windows that subscribed. */
   hostEvent: 'vk:host-event',
+  /** An embedded preview view's navigation state (`PreviewViewState`), to the window that owns it. */
+  previewState: 'vk:preview.view.state',
 } as const;
 
 /**
@@ -252,6 +261,40 @@ export type WindowOp =
   | { op: 'quick' };
 
 export type Theme = 'system' | 'light' | 'dark';
+
+/** `vk:preview.view.open`: the preview to show (`machine` '' = the host's own machine). */
+export interface PreviewOpen {
+  hostId: string;
+  machine: string;
+  url: string;
+}
+
+/** `vk:preview.view.bounds`: the placeholder's rectangle in CSS pixels of the owning window. */
+export interface PreviewBounds {
+  view: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  visible: boolean;
+}
+
+export type PreviewAction = 'back' | 'forward' | 'reload' | 'stop';
+
+/** `vk:preview.view.go`: either a new URL or a history/loading action. */
+export type PreviewGo = { view: string; url: string } | { view: string; action: PreviewAction };
+
+/** `vk:preview.view.state` (main → renderer). */
+export interface PreviewState {
+  view: string;
+  url: string;
+  title: string;
+  loading: boolean;
+  canGoBack: boolean;
+  canGoForward: boolean;
+  /** `host_offline` while the host connection is down; other values are load errors. */
+  error?: string;
+}
 
 /** What the preload exposes as `window.vibeke` (see preload/index.ts). */
 export interface Bridge {

@@ -11,6 +11,7 @@ import type { Updates } from './updater';
 import type { DraftStore } from './drafts';
 import { MAX_ENTRY, type CacheStore } from './cache';
 import type { Windows } from './windows';
+import type { PreviewViews } from './preview-views';
 
 export interface IpcDeps {
   updates: Updates;
@@ -33,6 +34,8 @@ export interface IpcDeps {
   pickDirectory(win: BrowserWindow | null, defaultPath?: string): Promise<string | null>;
   onPrefsChanged(hostId: string): void;
   onTheme(theme: 'system' | 'light' | 'dark'): void;
+  /** Embedded preview views (spec 06 B3.5). */
+  previews: PreviewViews;
   log(msg: string): void;
 }
 
@@ -182,6 +185,44 @@ export function registerIpc(d: IpcDeps): void {
 
   handle(INVOKE.hostEvents, (e, host, on) => {
     d.setHostEvents(e.sender, v.hostId(host), v.flag(on, 'host events flag'));
+    return ok(null);
+  });
+
+  // Embedded previews: each view belongs to the window that opened it; main checks that too.
+  handle(INVOKE.previewOpen, async (e, p) => {
+    const o = v.previewOpen(p);
+    try {
+      return ok(await d.previews.open(e.sender, o));
+    } catch (x) {
+      return err(x);
+    }
+  });
+  handle(INVOKE.previewBounds, (e, p) => {
+    d.previews.bounds(e.sender, v.previewBounds(p));
+    return ok(null);
+  });
+  handle(INVOKE.previewGo, (e, p) => {
+    const g = v.previewGo(p);
+    try {
+      d.previews.go(e.sender, g.view, 'url' in g ? { url: g.url } : { action: g.action });
+      return ok(null);
+    } catch (x) {
+      return err(x);
+    }
+  });
+  handle(INVOKE.previewDevtools, (e, view) => {
+    d.previews.devtools(e.sender, v.previewView(view));
+    return ok(null);
+  });
+  handle(INVOKE.previewSnapshot, async (e, view) => {
+    try {
+      return ok(await d.previews.snapshot(e.sender, v.previewView(view)));
+    } catch {
+      return ok(null);
+    }
+  });
+  handle(INVOKE.previewClose, (e, view) => {
+    d.previews.close(e.sender, v.previewView(view));
     return ok(null);
   });
 

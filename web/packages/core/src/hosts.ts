@@ -23,7 +23,7 @@ import {
 import type { HostKind } from './link';
 import { relayConnectUrl } from './pairing';
 import type { Platform, TimerHandle } from './platform';
-import { RpcClient, type RequestOptions } from './rpc';
+import { RpcClient, type RequestOptions, type RpcLink } from './rpc';
 
 /** A paired host as persisted by the device. */
 export interface HostRecord {
@@ -270,6 +270,14 @@ export class HostConnection implements HostConnectionApi {
     const rpc = this.rpc;
     if (!rpc || this.state.status !== 'online') return Promise.reject(new NotConnectedError(this.id));
     return openTuiStream(rpc, protocol, callbacks, signal);
+  }
+
+  /**
+   * The current connection for stream protocols that need its notifications (desktop `tunnel.*`),
+   * or null while not online. The link closes with the connection; it never follows a reconnect.
+   */
+  streamLink(): RpcLink | null {
+    return this.rpc && !this.rpc.closed && this.state.status === 'online' ? this.rpc : null;
   }
 
   /** Typed app-API call. Mutating methods get an op_id automatically. */

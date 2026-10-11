@@ -534,6 +534,23 @@ export const en = {
     allowOnce: 'Allow once',
   },
 
+  embeddedPreview: {
+    toolbar: 'Preview controls',
+    back: 'Back',
+    forward: 'Forward',
+    reload: 'Reload',
+    stop: 'Stop loading',
+    address: 'Address',
+    devtools: 'Developer tools',
+    openBrowser: 'Open in browser',
+    environment: (machine: string) => `Runs on ${machine}`,
+    page: 'Preview page',
+    noTunnel: 'This host cannot show previews inside the app. Update Vibeke on the host to use them.',
+    hostOffline: 'The host is not connected. The preview reloads when the host is back.',
+    waiting: 'Waiting for the host connection.',
+    openFailed: 'The preview could not open.',
+    crashed: 'The preview page stopped working. Reload it to try again.',
+  },
   live: {
     watch: 'Watch live',
     sessions: 'Browser sessions on the host',
