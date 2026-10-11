@@ -1222,7 +1222,8 @@ pub fn draw(app: &App, g: &mut Grid) {
 fn status_line(app: &App, a: &mut crate::drafts::Area<'_>, v: &View) {
     let t = app.theme;
     if let Some(n) = &v.notice {
-        a.line(
+        wrap_lines(
+            a,
             n,
             t.s(if n.starts_with('✗') {
                 t.red
@@ -1284,19 +1285,18 @@ fn draw_list(app: &App, a: &mut crate::drafts::Area<'_>, v: &View) {
     }
     a.line("", t.text());
     if let Some(c) = &v.confirm {
-        let also = c
-            .also
-            .as_deref()
-            .map(|x| format!(" {x}"))
-            .unwrap_or_default();
         wrap_lines(
             a,
             &format!(
-                "Revoke {}? It can no longer connect to this machine.{also} [y] revoke  [n] keep",
+                "Revoke {}? It can no longer connect to this machine.",
                 c.label
             ),
             t.bold(t.red),
         );
+        if let Some(also) = &c.also {
+            wrap_lines(a, also, t.bold(t.red));
+        }
+        a.line("[y] revoke  [n] keep", t.bold(t.red));
     } else {
         status_line(app, a, v);
     }
