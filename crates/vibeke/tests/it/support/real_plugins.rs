@@ -402,21 +402,77 @@ pub fn herdr_result(v: Value) -> Value {
 }
 
 /// Where `url` is on a pane's visible text: (viewport row, a column inside the URL). The line
-/// must show the URL itself, not quoted in a command line.
+/// must show the URL itself, not quoted in a command line. A URL that a narrow pane wraps over
+/// several rows is found too: it ends one row and goes on at the start of the next rows. The
+/// position is then its first cell (Herdr's link detection follows wrapped rows).
 pub fn link_position(text: &str, url: &str) -> Option<(u16, u16)> {
-    for (row, line) in text.lines().enumerate() {
+    if url.is_empty() {
+        return None;
+    }
+    let lines: Vec<&str> = text.lines().collect();
+    let at_col = |row: usize, line: &str, at: usize| -> Option<(u16, u16)> {
+        let col = line[..at].chars().count() + 1;
+        Some((u16::try_from(row).ok()?, u16::try_from(col).ok()?))
+    };
+    let quoted = |line: &str, at: usize| line[..at].ends_with('\'') || line[..at].ends_with('"');
+    for (row, line) in lines.iter().enumerate() {
         let mut from = 0;
         while let Some(i) = line[from..].find(url) {
             let at = from + i;
-            let quoted = line[..at].ends_with('\'') || line[..at].ends_with('"');
-            if !quoted {
-                let col = line[..at].chars().count() + 1;
-                return Some((u16::try_from(row).ok()?, u16::try_from(col).ok()?));
+            if !quoted(line, at) {
+                return at_col(row, line, at);
             }
             from = at + url.len();
         }
     }
+    // Wrapped: a row ends with the start of the URL and the next rows hold the rest.
+    for (row, line) in lines.iter().enumerate() {
+        for (at, _) in line.char_indices() {
+            let head = &line[at..];
+            if head.len() >= url.len() || !url.starts_with(head) || quoted(line, at) {
+                continue;
+            }
+            let mut rest = &url[head.len()..];
+            for next in &lines[row + 1..] {
+                if next.is_empty() {
+                    break;
+                }
+                if next.starts_with(rest) {
+                    rest = "";
+                    break;
+                }
+                match rest.strip_prefix(*next) {
+                    Some(r) => rest = r,
+                    None => break,
+                }
+            }
+            if rest.is_empty() {
+                return at_col(row, line, at);
+            }
+        }
+    }
     None
+}
+
+/// The two halves a link step prints with `printf '%s%s\n'`, so the command line never shows
+/// the whole link. A URL splits after its scheme (`https:` and `//…`). A link without a scheme,
+/// such as a file path, which Herdr also detects, splits after its first character.
+pub fn link_print_parts(url: &str) -> Option<(String, String)> {
+    if let Some((scheme, rest)) = url.split_once("://") {
+        return Some((format!("{scheme}:"), format!("//{rest}")));
+    }
+    let first = url.chars().next()?;
+    Some((first.to_string(), url[first.len_utf8()..].to_string()))
+}
+
+/// The pause after a lone Escape key on both sides, longer than Herdr's escape flush timeout
+/// (150 ms, held once more while it waits for a host reply; `src/raw_input.rs`) and the usual
+/// escape delay of terminal programs, so Escape and the next key are not read as Alt+key.
+pub const ESCAPE_PAUSE: Duration = Duration::from_millis(500);
+
+/// Whether a key (in Vibeke's spelling, [`vibeke_key`]) is a lone Escape.
+pub fn is_escape_key(k: &str) -> bool {
+    matches!(k.to_ascii_lowercase().as_str(), "escape" | "esc")
 }
 
 /// `s` quoted for a POSIX shell.
@@ -511,6 +567,31 @@ fn serve_one(c: &mut std::net::TcpStream, log: &Path) -> std::io::Result<()> {
     }
     c.write_all(
         b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
+    )
+}
+
+/// Whether one line of an `http_sink` log matches a `stub_request` expectation. `contains`
+/// is matched against the raw request: its method and path, and its body as the plugin sent
+/// it (the log line stores the body as a JSON string, so quotes in it are escaped there).
+pub fn sink_request_matches(line: &str, contains: Option<&str>) -> bool {
+    let Ok(v) = serde_json::from_str::<Value>(line) else {
+        return false;
+    };
+    let Some(c) = contains else {
+        return true;
+    };
+    ["method", "path", "body"]
+        .iter()
+        .any(|k| v[*k].as_str().is_some_and(|t| t.contains(c)))
+}
+
+/// The output of a finished plugin invocation record (either side): stdout then stderr, as
+/// text.
+pub fn log_output(l: &Value) -> String {
+    format!(
+        "{}{}",
+        l["stdout"].as_str().unwrap_or_default(),
+        l["stderr"].as_str().unwrap_or_default()
     )
 }
 
@@ -733,6 +814,25 @@ pub fn herdr_pane_open_args(
         a.extend(["--target-pane".to_string(), t.to_string()]);
     }
     a
+}
+
+/// The fake agent's `herdr pane report-agent` arguments, the same on both sides. Herdr
+/// requires `--source` (`src/cli/pane.rs`, `pane_report_agent`), and so does Vibeke's shim.
+pub fn fake_agent_report_args(pane: &str, state: &str) -> Vec<String> {
+    [
+        "pane",
+        "report-agent",
+        pane,
+        "--source",
+        "vibeke-harness",
+        "--agent",
+        "claude",
+        "--state",
+        state,
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
 }
 
 /// The `herdr plugin install` arguments: `owner/repo[/subdir] --ref <commit> --yes` (stdin is
@@ -1681,7 +1781,7 @@ impl<'a> Run<'a> {
                 self.lifecycle.push(match (has_build, built) {
                     (false, _) => check(
                         "build",
-                        Outcome::NotExercised,
+                        Outcome::NotApplicable,
                         "the manifest declares no build step for this platform".to_string(),
                     ),
                     (true, true) => passed("build"),
@@ -1727,7 +1827,7 @@ impl<'a> Run<'a> {
         if n == 0 {
             self.lifecycle.push(check(
                 "enable_does_not_run_startup",
-                Outcome::NotExercised,
+                Outcome::NotApplicable,
                 "the manifest declares no startup command".to_string(),
             ));
             return;
@@ -1768,7 +1868,7 @@ impl<'a> Run<'a> {
             for c in ["startup_before_actions", "startup_once_per_activation"] {
                 self.lifecycle.push(check(
                     c,
-                    Outcome::NotExercised,
+                    Outcome::NotApplicable,
                     "the manifest declares no startup command".to_string(),
                 ));
             }
@@ -1886,13 +1986,21 @@ impl<'a> Run<'a> {
 
     /// Disable (`disable`) or revoke (`untrust`) the plugin, then check that its callbacks are
     /// rejected: a declared action is refused, and every broker call its still-running
-    /// processes (startup commands, panes) make afterwards fails.
+    /// processes (startup commands, panes) make afterwards fails. A plugin without actions is
+    /// checked through its first pane, which must not open (Herdr answers `plugin_disabled`,
+    /// `src/app/api/plugins/mod.rs`). A plugin with only a `pane.agent_status_changed` hook is
+    /// checked by changing the fake agent's status: no hook may run.
     fn callbacks_rejected(&mut self, name: &str, op: &str) {
         let id = self.lp.plugin_id.clone();
         let from = match self.trace_since(self.trace_off) {
             Ok((_, off)) => off,
             Err(_) => self.trace_off,
         };
+        let hooks0: BTreeSet<String> = self
+            .logs()
+            .iter()
+            .filter_map(|l| l["log_id"].as_str().map(str::to_string))
+            .collect();
         let t = now_ms();
         if let Err(e) = self.cli(&["plugin", op, &id]) {
             self.lifecycle.push(check(
@@ -1908,13 +2016,44 @@ impl<'a> Run<'a> {
             .manifest
             .as_ref()
             .and_then(|m| m.actions_on(self.os).first().map(|a| a.id.clone()));
-        if let Some(a) = action {
+        let pane = self.manifest.as_ref().and_then(|m| {
+            m.panes
+                .iter()
+                .find(|p| m.entry_on(p.platforms.as_ref(), self.os))
+                .map(|p| p.id.clone())
+        });
+        let agent_hook = self
+            .manifest
+            .as_ref()
+            .is_some_and(|m| !m.hooks_for("pane.agent_status_changed", self.os).is_empty());
+        let mut hook_event = None;
+        if let Some(a) = &action {
             match self.api(
                 "plugin.action.run",
                 json!({"plugin": id, "action": a, "context": {"workspace_id": self.ctx.workspace}}),
             ) {
                 Err(_) => evidence.push(format!("action {a} refused")),
                 Ok(r) => violations.push(format!("action {a} launched: {}", r["log"]["log_id"])),
+            }
+        } else if let Some(p) = &pane {
+            match self.compat_call(
+                "plugin.pane.open",
+                json!({"plugin_id": id, "entrypoint": p, "workspace_id": self.ctx.workspace}),
+            ) {
+                Err(e) => evidence.push(format!("pane {p} refused ({e})")),
+                Ok(r) => violations.push(format!("pane {p} opened: {r}")),
+            }
+        } else if agent_hook && let Some(agent) = self.ctx.agent_pane.clone() {
+            // A status the agent does not have yet, so the event fires: the scenario's last
+            // report is usually `idle`, and the two checks use different statuses.
+            let st = if op == "disable" {
+                "working"
+            } else {
+                "blocked"
+            };
+            match self.herdr_cli(&fake_agent_report_args(&agent, st)) {
+                Ok(_) => hook_event = Some(format!("pane.agent_status_changed ({st})")),
+                Err(e) => evidence.push(format!("the fake agent could not report {st}: {e}")),
             }
         }
         let mut lines = Vec::new();
@@ -1935,13 +2074,30 @@ impl<'a> Run<'a> {
                 evidence.push(format!("{} rejected ({:?})", l.method, l.code));
             }
         }
+        if let Some(e) = hook_event {
+            let ran: Vec<String> = self
+                .logs()
+                .into_iter()
+                .filter(|l| {
+                    !l["event"].is_null()
+                        && !hooks0.contains(l["log_id"].as_str().unwrap_or_default())
+                })
+                .map(|l| invocation_details(&l))
+                .collect();
+            if ran.is_empty() {
+                evidence.push(format!("{e} fired and no hook ran"));
+            } else {
+                violations.push(format!("{e} ran a hook after {op}: {}", ran.join("; ")));
+            }
+        }
         self.lifecycle.push(if !violations.is_empty() {
             check(name, Outcome::SuspectedCompatFailure, violations.join("; "))
         } else if evidence.is_empty() {
             check(
                 name,
                 Outcome::NotExercised,
-                "the plugin has no action and made no callback afterwards".to_string(),
+                "the plugin has no action, pane or agent status hook and made no callback afterwards"
+                    .to_string(),
             )
         } else {
             check(name, Outcome::Passed, Some(evidence.join("; ")))
@@ -2210,16 +2366,8 @@ impl<'a> Run<'a> {
                     let Some(p) = self.ctx.agent_pane.clone() else {
                         return harness("agent_status needs `setup.fake_agent = true`");
                     };
-                    self.herdr_cli(&[
-                        "pane".into(),
-                        "report-agent".into(),
-                        p,
-                        "--agent".into(),
-                        "claude".into(),
-                        "--state".into(),
-                        st.clone(),
-                    ])
-                    .or_else(fail)?;
+                    self.herdr_cli(&fake_agent_report_args(&p, st))
+                        .or_else(fail)?;
                     ev.push(format!("fake agent reported {st}"));
                 } else {
                     return harness("event step without `cli` or `agent_status`");
@@ -2346,8 +2494,15 @@ impl<'a> Run<'a> {
                 }
                 if !step.keys.is_empty() {
                     let keys: Vec<String> = step.keys.iter().map(|k| vibeke_key(k)).collect();
-                    self.api("pane.send_keys", json!({"pane": target, "keys": keys}))
-                        .or_else(fail)?;
+                    // A lone Escape goes out on its own and is followed by a pause, so the
+                    // program does not read it together with the next key as Alt+key.
+                    for chunk in keys.split_inclusive(|k| is_escape_key(k)) {
+                        self.api("pane.send_keys", json!({"pane": target, "keys": chunk}))
+                            .or_else(fail)?;
+                        if chunk.last().is_some_and(|k| is_escape_key(k)) {
+                            std::thread::sleep(ESCAPE_PAUSE);
+                        }
+                    }
                     ev.push(format!("sent keys {:?} to {pane}", step.keys));
                 }
             }
@@ -2423,17 +2578,46 @@ impl<'a> Run<'a> {
                     Err(why) => return fail(why),
                 }
             }
-            Expectation::Pane { pane, placement } => self
-                .events_since(seq0, "plugin.pane_opened")
-                .into_iter()
-                .find(|ev| {
-                    ev["actor"]["id"] == id
-                        && ev["data"]["entrypoint_id"] == pane.as_str()
-                        && placement
-                            .as_deref()
-                            .is_none_or(|p| ev["data"]["placement"] == p)
-                })
-                .map(|ev| format!("pane {pane} at {}", ev["data"]["placement"])),
+            Expectation::Pane {
+                pane,
+                placement,
+                reuse,
+            } => {
+                let opened = self
+                    .events_since(seq0, "plugin.pane_opened")
+                    .into_iter()
+                    .find(|ev| {
+                        ev["actor"]["id"] == id
+                            && ev["data"]["entrypoint_id"] == pane.as_str()
+                            && placement
+                                .as_deref()
+                                .is_none_or(|p| ev["data"]["placement"] == p)
+                    })
+                    .map(|ev| format!("pane {pane} at {}", ev["data"]["placement"]));
+                match opened {
+                    Some(x) => Some(x),
+                    // A pane an earlier step opened, still open (`reuse`).
+                    None if *reuse => self
+                        .plugin_pane_placed(pane)
+                        .filter(|(p, at)| {
+                            !self.s.pane(p).is_null()
+                                && placement.as_deref().is_none_or(|w| at == w)
+                        })
+                        .map(|(p, at)| format!("pane {pane} still open as {p} at {at}")),
+                    None => None,
+                }
+            }
+            Expectation::AgentStatus { status } => {
+                let Some(p) = self.ctx.agent_pane.clone() else {
+                    return harness("an agent_status expectation needs the fake agent pane");
+                };
+                let got = self
+                    .compat_call("pane.get", json!({"pane_id": p}))
+                    .ok()
+                    .and_then(|r| r.pointer("/pane/agent_status").cloned());
+                (got.as_ref().and_then(Value::as_str) == Some(status.as_str()))
+                    .then(|| format!("fake agent pane {p} has agent status {status}"))
+            }
             Expectation::Popup { pane } => {
                 let ui = self.api("compat.ui.state", json!({})).unwrap_or_default();
                 (ui["popup"]["plugin_id"] == id && ui["popup"]["entrypoint_id"] == pane.as_str())
@@ -2463,15 +2647,12 @@ impl<'a> Run<'a> {
             Expectation::HookLog { text } => self
                 .logs()
                 .into_iter()
-                .find(|l| {
-                    !l["event"].is_null()
-                        && format!("{}{}", l["stdout"], l["stderr"]).contains(text.as_str())
-                })
+                .find(|l| !l["event"].is_null() && log_output(l).contains(text.as_str()))
                 .map(|l| format!("event hook {} logged the text", l["event"])),
             Expectation::Ready { text } => self
                 .startup_logs()
                 .into_iter()
-                .find(|l| format!("{}{}", l["stdout"], l["stderr"]).contains(text.as_str()))
+                .find(|l| log_output(l).contains(text.as_str()))
                 .map(|l| format!("startup {} ready", l["entrypoint_id"])),
             Expectation::Event { event_type } => {
                 // The server's own projection is the best evidence: a hook of this plugin
@@ -2523,7 +2704,7 @@ impl<'a> Run<'a> {
                 let text = read(log);
                 let hit = text
                     .lines()
-                    .any(|l| contains.as_deref().is_none_or(|c| l.contains(c)));
+                    .any(|l| sink_request_matches(l, contains.as_deref()));
                 hit.then(|| format!("stub {stub} received a request"))
             }
         })
@@ -3120,6 +3301,19 @@ impl<'a> Run<'a> {
             side.duration_ms = t0.elapsed().as_millis() as u64;
             return side;
         };
+        // A pane this step opened replaces the remembered pane of its entrypoint, so later
+        // steps (input, capture) do not reach an older pane with the same label.
+        let names: Vec<String> = self
+            .manifest
+            .as_ref()
+            .map(|m| m.panes.iter().map(|p| p.id.clone()).collect())
+            .unwrap_or_default();
+        let before = self.herdr_before.clone();
+        for name in names {
+            if let Some(p) = self.herdr_find_pane(&h, &name, Some(&before)) {
+                self.herdr_panes.insert(name, p);
+            }
+        }
         // Which popup this step opened (or failed to open), from Herdr's trace (H7).
         let lines = trace::read(&self.herdr_trace, step_from)
             .map(|(l, _)| l)
@@ -3323,8 +3517,8 @@ impl<'a> Run<'a> {
                     Err(e) => return (SideResult::HarnessError, Some(format!("{e:#}"))),
                 }
             }
-            // The fake agent reports through the socket, as `herdr pane report-agent --source`
-            // would (Herdr requires a source).
+            // The fake agent reports with the same `herdr pane report-agent` command as on the
+            // Vibeke side ([`fake_agent_report_args`]).
             StepKind::Event => {
                 let st = step.agent_status.clone().unwrap_or_default();
                 let Some(p) = self.herdr_agent_pane.clone() else {
@@ -3339,14 +3533,17 @@ impl<'a> Run<'a> {
                         Some(format!("Herdr 0.9.3 has no agent state `{st}`")),
                     );
                 }
-                if let Err(e) = h.call(
-                    "pane.report_agent",
-                    json!({"pane_id": p, "source": "vibeke-harness", "agent": "claude", "state": st}),
-                ) {
-                    return (
-                        SideResult::Failed,
-                        Some(format!("pane.report_agent: {e:#}")),
-                    );
+                let args = fake_agent_report_args(&p, &st);
+                let a: Vec<&str> = args.iter().map(String::as_str).collect();
+                match h.cli(&a) {
+                    Ok((0, _, _)) => {}
+                    Ok((code, _, err)) => {
+                        return (
+                            SideResult::Failed,
+                            Some(format!("herdr {args:?} exited {code}: {err}")),
+                        );
+                    }
+                    Err(e) => return (SideResult::HarnessError, Some(format!("{e:#}"))),
                 }
                 ev.push(format!("Herdr: fake agent reported {st}"));
             }
@@ -3442,6 +3639,11 @@ impl<'a> Run<'a> {
                 std::thread::sleep(Duration::from_millis(50));
                 h.write_tui(&b)
                     .map_err(|e| (SideResult::HarnessError, Some(format!("{e:#}"))))?;
+                // Herdr holds a lone Escape for up to 150 ms (twice while it waits for a host
+                // reply) before it flushes it; a key in that window makes Alt+key.
+                if is_escape_key(k) {
+                    std::thread::sleep(ESCAPE_PAUSE);
+                }
             }
             if !keys.is_empty() {
                 ev.push(format!(
@@ -3454,11 +3656,26 @@ impl<'a> Run<'a> {
         let Some(target) = self.herdr_find_pane(h, &pane, None) else {
             return Err(failed(format!("plugin pane {pane} is not open on Herdr")));
         };
-        h.call(
-            "pane.send_input",
-            json!({"pane_id": target, "text": text.clone().unwrap_or_default(), "keys": keys}),
-        )
-        .map_err(|e| failed(format!("{e:#}")))?;
+        // As on Vibeke: a lone Escape goes out on its own, followed by a pause.
+        let mut chunks: Vec<&[String]> = keys.split_inclusive(|k| is_escape_key(k)).collect();
+        if chunks.is_empty() {
+            chunks.push(&[]);
+        }
+        for (i, chunk) in chunks.iter().enumerate() {
+            let t = if i == 0 {
+                text.clone().unwrap_or_default()
+            } else {
+                String::new()
+            };
+            h.call(
+                "pane.send_input",
+                json!({"pane_id": target, "text": t, "keys": chunk}),
+            )
+            .map_err(|e| failed(format!("{e:#}")))?;
+            if chunk.last().is_some_and(|k| is_escape_key(k)) {
+                std::thread::sleep(ESCAPE_PAUSE);
+            }
+        }
         ev.push(format!("Herdr: sent input to {pane} ({target})"));
         Ok(())
     }
@@ -3483,14 +3700,14 @@ impl<'a> Run<'a> {
         let Some(pane) = self.herdr_pane.clone() else {
             return Err(harness_err("the Herdr side has no context pane".into()));
         };
-        let Some((scheme, rest)) = url.split_once("://") else {
-            return Err(harness_err(format!("link URL without a scheme: {url}")));
+        let Some((first, second)) = link_print_parts(&url) else {
+            return Err(harness_err("link step with an empty URL".into()));
         };
         // The command line must not show the whole URL, so only the output line matches.
         let cmd = format!(
             "clear; printf '%s%s\\n' {} {}",
-            sh_quote(&format!("{scheme}:")),
-            sh_quote(&format!("//{rest}"))
+            sh_quote(&first),
+            sh_quote(&second)
         );
         h.call(
             "pane.send_input",
@@ -3604,9 +3821,9 @@ impl<'a> Run<'a> {
                         "no popup frame titled {title:?} for {pane} on Herdr's screen"
                     ))
                 }
-                Expectation::Pane { pane, placement } => {
-                    why.push(self.describe_herdr_pane(h, pane, placement.as_deref(), before))
-                }
+                Expectation::Pane {
+                    pane, placement, ..
+                } => why.push(self.describe_herdr_pane(h, pane, placement.as_deref(), before)),
                 other => why.push(format!("no evidence on Herdr for {other:?}")),
             }
         }
@@ -3698,13 +3915,7 @@ impl<'a> Run<'a> {
     ) -> StepRes<HerdrLook> {
         use HerdrLook::{Holds, NotYet, Unknown};
         let id = self.lp.plugin_id.as_str();
-        let output = |l: &Value| {
-            format!(
-                "{}{}",
-                l["stdout"].as_str().unwrap_or_default(),
-                l["stderr"].as_str().unwrap_or_default()
-            )
-        };
+        let output = log_output;
         Ok(match e {
             Expectation::InvocationFinal { status } => {
                 let want = match status.as_deref().unwrap_or("completed") {
@@ -3768,17 +3979,38 @@ impl<'a> Run<'a> {
                 };
                 let hit = read(log)
                     .lines()
-                    .any(|l| contains.as_deref().is_none_or(|c| l.contains(c)));
+                    .any(|l| sink_request_matches(l, contains.as_deref()));
                 if hit {
                     Holds(format!("stub {stub} received a request"))
                 } else {
                     NotYet
                 }
             }
-            Expectation::Pane { pane, placement } => {
+            Expectation::AgentStatus { status } => {
+                let Some(p) = &self.herdr_agent_pane else {
+                    return Ok(Unknown("the Herdr side has no fake agent pane".into()));
+                };
+                let got = h
+                    .call("pane.get", json!({"pane_id": p}))
+                    .ok()
+                    .and_then(|r| r.pointer("/pane/agent_status").cloned());
+                if got.as_ref().and_then(Value::as_str) == Some(status.as_str()) {
+                    Holds(format!("fake agent pane {p} has agent status {status}"))
+                } else {
+                    NotYet
+                }
+            }
+            Expectation::Pane {
+                pane,
+                placement,
+                reuse,
+            } => {
                 let found = match opened {
                     Some((entry, pid)) if entry == pane => Some(pid.clone()),
-                    _ => self.herdr_find_pane(h, pane, Some(before)),
+                    _ => self
+                        .herdr_find_pane(h, pane, Some(before))
+                        // A pane an earlier step opened, still open (`reuse`).
+                        .or_else(|| reuse.then(|| self.herdr_find_pane(h, pane, None)).flatten()),
                 };
                 match found {
                     None => NotYet,
@@ -3863,8 +4095,10 @@ impl<'a> Run<'a> {
     }
 
     /// The Herdr pane of the plugin pane entrypoint `name`: a pane labelled with the manifest's
-    /// pane title (H2). With `before`, only a pane that was not there before the step counts;
-    /// otherwise the pane the harness saw last, or the newest one with that label.
+    /// pane title (H2). With `before`, only a pane that was not there before the step counts.
+    /// Otherwise a pane the current step opened comes first (an older pane of the same
+    /// entrypoint may still be open), then the pane the harness saw last, then the newest one
+    /// with that label.
     fn herdr_find_pane(
         &self,
         h: &HerdrSide,
@@ -3880,11 +4114,16 @@ impl<'a> Run<'a> {
             .collect();
         match before {
             Some(b) => ids.into_iter().rfind(|p| !b.contains(p)),
-            None => self
-                .herdr_panes
-                .get(name)
-                .filter(|p| ids.contains(p))
+            None => ids
+                .iter()
+                .rfind(|p| !self.herdr_before.contains(*p))
                 .cloned()
+                .or_else(|| {
+                    self.herdr_panes
+                        .get(name)
+                        .filter(|p| ids.contains(p))
+                        .cloned()
+                })
                 .or_else(|| ids.last().cloned()),
         }
     }

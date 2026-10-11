@@ -7,8 +7,9 @@
 # before the plugin starts. The steps then:
 #   - open the `manager` popup and read the saved annotation,
 #   - let the fake agent report itself, so both hosts see an agent in its pane,
-#   - send the annotations to the fake agent (`agent get`, `agent prompt`) and archive them,
-#   - run the paste action on the now empty store (it reports "nothing to do"),
+#   - try to send the annotations to the fake agent (`agent get`, `agent prompt`; Herdr refuses
+#     the prompt to a pane that runs no agent program),
+#   - paste the annotations into the fake agent pane, which archives them,
 #   - on macOS, run the two copy actions on the empty store (pbcopy is there),
 #   - open the manager again and read the archive,
 #   - run the document review actions, which start a separate terminal program (plannotator-tui)
@@ -85,12 +86,16 @@ agent_status = "idle"
 kind = "event"
 type = "pane.agent_status_changed"
 
+# Herdr 0.9.3 sends a prompt only when the pane's foreground process is the reported agent
+# (src/app/api/agents.rs, agent.prompt, and runtime_hosts_agent in src/app/agents.rs). The fake
+# agent pane runs a shell, so Herdr answers `agent_not_ready`.
 [[step]]
 id = "send-archive"
 kind = "action"
 action = "send-archive"
 context = "agent_pane"
 timeout_ms = 60000
+known = { outcome = "not_exercised", reason = "Herdr 0.9.3 sends agent.prompt only when the pane's foreground process is the reported agent program. The fake agent pane runs a shell, so Herdr answers agent_not_ready, and the test environment has no agent program to run there." }
 expect_calls = [
   { method = "agent.get", ok = true },
   { method = "agent.prompt", ok = true },
@@ -103,7 +108,9 @@ kind = "file"
 path = "{state}/archives.jsonl"
 contains = "Sample comment"
 
-# The store is empty now, so the next four actions report that there is nothing to do.
+# The send above does not archive (see its known result), so the paste below sends the
+# annotation with `pane send-text` and archives it. The store is empty after that, so the
+# copy actions report that there is nothing to do.
 [[step]]
 id = "paste-archive-empty"
 kind = "action"
