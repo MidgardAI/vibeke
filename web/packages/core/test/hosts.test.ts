@@ -396,12 +396,13 @@ describe('HostManager', () => {
     mgr.stop();
   });
 
-  test('connect URL carries the stored ticket; relay.ticket refresh is persisted', async () => {
+  test('the stored ticket goes beside the connect URL, never in it; relay.ticket refresh is persisted', async () => {
     const { mgr, h, state, platform } = harness({ ...record, ticket: 'a.b-c_d', ticket_exp: 1000 });
     state.ticket = { ticket: 'new.ticket', exp: 99_999 };
     await mgr.start();
     await flush(20);
-    expect(platform.urls[0]).toBe('wss://relay.example/v1/connect?host=h1&ticket=a.b-c_d');
+    expect(platform.urls[0]).toBe('wss://relay.example/v1/connect?host=h1');
+    expect(platform.tickets[0]).toBe('a.b-c_d');
     expect(state.puts.at(-1)).toMatchObject({ host_id: 'h1', ticket: 'new.ticket', ticket_exp: 99_999 });
     expect(h().getSnapshot().record.ticket).toBe('new.ticket');
     mgr.stop();

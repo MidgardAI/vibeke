@@ -405,7 +405,7 @@ export class HostConnection implements HostConnectionApi {
     let channel: Channel;
     try {
       channel = await Channel.connect({
-        socket: platform.connect(relayConnectUrl(rec.relay, rec.host_id, rec.ticket)),
+        socket: platform.connect(relayConnectUrl(rec.relay, rec.host_id), rec.ticket ? { ticket: rec.ticket } : undefined),
         hello: helloDevice(),
         hostKey: b64.decodeExact(rec.hk, 32),
         devicePrivate,

@@ -1,7 +1,7 @@
 // Browser WebSocket → core Socket (spec 16 §5): text stays string, binary arrives as Uint8Array.
 // Socket errors are reported through onclose (code 1006 when the browser gives none).
 
-import type { Socket, SocketState } from '@vibeke/core';
+import { relayProtocols, type ConnectOptions, type Socket, type SocketState } from '@vibeke/core';
 
 export interface WebSocketLike {
   readonly readyState: number;
@@ -65,9 +65,11 @@ export class WsSocket implements Socket {
   }
 }
 
-export function connectWebSocket(url: string): Socket {
+export function connectWebSocket(url: string, opts?: ConnectOptions): Socket {
   try {
-    return new WsSocket(new WebSocket(url) as unknown as WebSocketLike);
+    // The ticket rides as a subprotocol: browsers cannot set other headers on a WebSocket.
+    const protocols = relayProtocols(opts?.ticket);
+    return new WsSocket((protocols.length ? new WebSocket(url, protocols) : new WebSocket(url)) as unknown as WebSocketLike);
   } catch (e) {
     // Invalid URL etc.: a socket that closes immediately.
     const s = new WsSocket({

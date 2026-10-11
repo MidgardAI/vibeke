@@ -6,21 +6,22 @@
 
 import { connect as netConnect } from 'node:net';
 import WebSocket from 'ws';
-import { parseConnectUrl, type ConnectTarget, type Socket, type SocketState } from '@vibeke/core';
+import { parseConnectUrl, type ConnectOptions, type ConnectTarget, type Socket, type SocketState } from '@vibeke/core';
 
 /** 16 MiB reassembly limit (spec 16 §5) plus framing headroom. */
 const MAX_PAYLOAD = 17 * 1024 * 1024;
 const HANDSHAKE_TIMEOUT_MS = 15_000;
 
 /** The `ws` constructor arguments for a target (exported for tests). */
-export function wsArgs(target: ConnectTarget): { url: string; options: WebSocket.ClientOptions } {
+export function wsArgs(target: ConnectTarget, ticket?: string): { url: string; options: WebSocket.ClientOptions } {
   const options: WebSocket.ClientOptions = {
     perMessageDeflate: false,
     maxPayload: MAX_PAYLOAD,
     handshakeTimeout: HANDSHAKE_TIMEOUT_MS,
     followRedirects: false,
   };
-  if (target.kind === 'relay') return { url: target.url, options };
+  // A relay ticket goes in a header (never the URL, which proxies and logs keep).
+  if (target.kind === 'relay') return { url: target.url, options: ticket ? { ...options, headers: { Authorization: `Bearer ${ticket}` } } : options };
   // ws's `ws+unix:` URLs split on ':' and percent-encode spaces ("Application Support"), so
   // connect the socket ourselves and give ws a placeholder host.
   const socketPath = target.socketPath;
@@ -38,11 +39,11 @@ export class NodeSocket implements Socket {
   private fired = false;
   private ws: WebSocket | null = null;
 
-  constructor(url: string) {
+  constructor(url: string, ticket?: string) {
     let target: ConnectTarget;
     try {
       target = parseConnectUrl(url);
-      const { url: u, options } = wsArgs(target);
+      const { url: u, options } = wsArgs(target, ticket);
       this.ws = new WebSocket(u, options);
     } catch (e) {
       queueMicrotask(() => this.fire(1006, (e as Error).message));
@@ -91,4 +92,4 @@ export class NodeSocket implements Socket {
   }
 }
 
-export const connectNode = (url: string): Socket => new NodeSocket(url);
+export const connectNode = (url: string, opts?: ConnectOptions): Socket => new NodeSocket(url, opts?.ticket);

@@ -240,11 +240,14 @@ export interface TestPlatform extends Platform {
   clock: FakeClock;
   lifecycle: FakeLifecycle;
   urls: string[];
+  /** The ticket passed beside each connect URL (undefined = none). */
+  tickets: (string | undefined)[];
 }
 
 /** A Platform whose connect() hands the server end to `gateway` (or refuses when it returns false). */
 export function testPlatform(gateway: (sock: MemSocket, url: string) => void | false): TestPlatform {
   const urls: string[] = [];
+  const tickets: (string | undefined)[] = [];
   return {
     keystore: new MemKeyStore(),
     clock: new FakeClock(),
@@ -252,8 +255,10 @@ export function testPlatform(gateway: (sock: MemSocket, url: string) => void | f
     lifecycle: new FakeLifecycle(),
     platformName: 'test',
     urls,
-    connect(url) {
+    tickets,
+    connect(url, opts) {
       urls.push(url);
+      tickets.push(opts?.ticket);
       const [client, server] = socketPair();
       if (gateway(server, url) === false) queueMicrotask(() => server.close(4404, 'host_offline'));
       return client;
