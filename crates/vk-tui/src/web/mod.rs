@@ -19,6 +19,14 @@ pub fn render_protocol() -> u32 {
     vk_proto::render::PROTOCOL
 }
 
+/// `navigator.userAgent` of the page ("" when it cannot be read).
+fn user_agent() -> String {
+    let nav = js_sys::Reflect::get(&js_sys::global(), &JsValue::from_str("navigator")).ok();
+    nav.and_then(|n| js_sys::Reflect::get(&n, &JsValue::from_str("userAgent")).ok())
+        .and_then(|u| u.as_string())
+        .unwrap_or_default()
+}
+
 #[wasm_bindgen]
 pub struct BrowserTui {
     app: App,
@@ -46,8 +54,15 @@ impl BrowserTui {
             dpr_x100: 100,
             ..Default::default()
         };
+        let mut config = vk_config::Config::default();
+        // Firefox on Linux and Windows quits on the default prefix (`ctrl+q`) before the page
+        // sees it: use a prefix the page can take there. Help and hints read the keymap.
+        let browser_prefix = crate::keymap::browser_prefix(&user_agent(), &config.keys.prefix);
+        if let Some(p) = browser_prefix {
+            config.keys.prefix = p.to_string();
+        }
         let mut app = App::new(
-            vk_config::Config::default(),
+            config,
             vec![Machine::new(label, false)],
             "browser".into(),
             caps,
@@ -55,6 +70,11 @@ impl BrowserTui {
             true,
         );
         app.clipboard_sink = Some(Vec::new());
+        if let Some(p) = browser_prefix {
+            app.toast(format!(
+                "This browser quits on ctrl+q, so the Vibeke prefix here is {p}"
+            ));
+        }
         app.pending_ops = crate::pending::PendingStore::open_browser(host, label)
             .map_err(|e| JsValue::from_str(&e))?;
         let outbox = crate::frame_queue::Sender::default();

@@ -469,6 +469,19 @@ pub fn from_crossterm(k: &CtKey) -> Option<KeyEvent> {
     })
 }
 
+/// The prefix the browser TUI uses when the user did not choose one, for the browser that
+/// `user_agent` names. Firefox on Linux and Windows quits on `ctrl+q` before a page can see the
+/// key, so there the prefix is `ctrl+b` (a page can take that one). `None` keeps the `configured` prefix.
+pub fn browser_prefix(user_agent: &str, configured: &str) -> Option<&'static str> {
+    let firefox = user_agent.contains("Firefox/");
+    let desktop_non_mac = !user_agent.contains("Mac")
+        && !user_agent.contains("Android")
+        && !user_agent.contains("iPhone")
+        && !user_agent.contains("iPad");
+    (configured == vk_config::Config::default().keys.prefix && firefox && desktop_non_mac)
+        .then_some("ctrl+b")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -612,6 +625,31 @@ mod tests {
             km.prefixed(&KeyEvent::ch('[')).unwrap().action,
             "enter_copy_mode"
         );
+    }
+
+    #[test]
+    fn firefox_on_linux_and_windows_gets_a_prefix_it_does_not_take() {
+        let d = vk_config::Config::default().keys.prefix;
+        let linux = "Mozilla/5.0 (X11; Linux x86_64; rv:131.0) Gecko/20100101 Firefox/131.0";
+        let windows =
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:131.0) Gecko/20100101 Firefox/131.0";
+        let mac =
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 14.6; rv:131.0) Gecko/20100101 Firefox/131.0";
+        let chrome = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0 Safari/537.36";
+        let android = "Mozilla/5.0 (Android 14; Mobile; rv:131.0) Gecko/131.0 Firefox/131.0";
+        assert_eq!(browser_prefix(linux, &d), Some("ctrl+b"));
+        assert_eq!(browser_prefix(windows, &d), Some("ctrl+b"));
+        assert_eq!(browser_prefix(mac, &d), None);
+        assert_eq!(browser_prefix(chrome, &d), None);
+        assert_eq!(browser_prefix(android, &d), None);
+        // A prefix the user chose stays.
+        assert_eq!(browser_prefix(linux, "ctrl+a"), None);
+        // The browser prefix works as a prefix and the help names it.
+        let mut cfg = vk_config::Config::default();
+        cfg.keys.prefix = "ctrl+b".into();
+        let km = Keymap::from_config(&cfg);
+        assert!(km.is_prefix(&KeyEvent::new(Key::Char('b'), Mods::CTRL)));
+        assert_eq!(km.prefix_text(), "ctrl+b");
     }
 }
 
