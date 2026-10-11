@@ -68,6 +68,7 @@ With this change, the same pane reported `css: [501, 758]` and `frame: [1002, 15
 
 - **Edge seam:** a faint one-pixel line is still visible at the right and bottom edges. The frame is now a pixel smaller than the pane, so the last tile column and row are narrower than their cells. Pad the frame to whole cells, or let the last tiles cover exactly their pixels.
 - **Measuring the window frame:** the patch clears the device metrics override for a moment on every resize to measure the window's frame (`outerHeight - innerHeight`). This can flicker. Measure the frame once per browser, or derive it from `Browser.getWindowBounds` and a known content size.
+- **Narrow panes:** Chromium does not make a window narrower than about 500 CSS pixels. For a narrower pane, the frame stays wider than the viewport (for example 1000 pixels for a 486-pixel viewport at DPR 2), and the image is scaled down with an empty band below it. Handle this case, for example by cropping the frame to the viewport before tiling.
 - **Other paths:** check the pinned-device path (`set_viewport` with `pin` in `crates/vk-server/src/browser_page.rs`) and `chrome-headless-shell`, which may not support `Browser.setWindowBounds`. The patch ignores errors from those calls.
 - **Tests:** `vibeke debug fake-chromium` does not model window-sized frames. Add a test that fails when the frame size differs from the viewport size, for example in `crates/vibeke/tests/it/browser_pane.rs` with a real Chromium (`VIBEKE_BROWSER_TESTS=1`).
 
