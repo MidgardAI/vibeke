@@ -3,6 +3,7 @@ import { ArrowRight, ArrowUpRight, BookOpen, ChevronRight, Code2, GitBranch, Glo
 import { useState } from 'react'
 import { CodeBlock, Eyebrow } from '../components/ui'
 import { ClientShowcase } from '../components/client-showcase'
+import { ProductTour } from '../components/product-tour'
 import { comparisonCount } from '../lib/comparisons'
 import { latestRelease } from '../lib/release'
 
@@ -35,6 +36,8 @@ function Home() {
         <div className="mt-9 flex flex-wrap items-center justify-between gap-x-8 gap-y-5"><Eyebrow>Agent integrations</Eyebrow><div className="flex flex-wrap items-center gap-x-8 gap-y-4 font-mono text-xs text-[#c8ccc2] sm:text-sm"><span className="flex items-center gap-2"><span className="text-accent">✳</span> Claude Code</span><span className="flex items-center gap-2"><Terminal size={16} /> Codex</span><span className="flex items-center gap-2"><span className="text-green">π</span> pi / omp</span><Link to="/docs/$slug" params={{ slug: 'agents' }} className="text-[11px] text-muted hover:text-cream">Integration details <ArrowUpRight className="inline" size={12} /></Link></div></div>
       </div>
     </section>
+
+    <ProductTour />
 
     <section className="page-width py-20 sm:py-24" id="workspace">
       <div className="grid gap-6 md:grid-cols-2"><div><Eyebrow><span className="mr-3 text-accent">01 /</span> While the agents run</Eyebrow><h2 className="section-title mt-5">Find the agent<br /><span className="text-muted">that needs an answer.</span></h2></div><p className="max-w-md self-end text-sm leading-7 text-muted md:ml-auto">Claude edits a test. Codex reviews a diff. When an agent needs an answer, the inbox shows its request and task.</p></div>
