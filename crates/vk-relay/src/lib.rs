@@ -32,7 +32,7 @@ use vk_e2e::relay::{
 use vk_e2e::{b64, keys};
 
 pub use limits::Limits;
-use limits::RateMap;
+use limits::{RateMap, ip_key};
 
 /// Outcome of an [`Authorizer`] check (spec 16 §6.6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -131,8 +131,8 @@ pub struct Config {
     /// Log raw client IPs instead of daily-keyed hashes.
     pub log_ip_raw: bool,
     pub limits: Limits,
-    /// Refuse `/v1/connect` without a host-signed ticket (spec 16 §6.6). Tickets that are present
-    /// are always verified.
+    /// Refuse `/v1/connect` without a host-signed ticket (spec 16 §6.6). On by default; tickets
+    /// that are present are always verified.
     pub require_tickets: bool,
     /// Where users create an account for this relay; advertised on `/v1/status`.
     pub account_url: Option<String>,
@@ -147,7 +147,7 @@ impl Default for Config {
             trust_proxy: false,
             log_ip_raw: false,
             limits: Limits::default(),
-            require_tickets: false,
+            require_tickets: true,
             account_url: None,
         }
     }
@@ -243,6 +243,10 @@ pub struct Relay {
     /// gateway with handshakes it must dial back for.
     announce_rate: RateMap<(IpAddr, String)>,
     ip_conns: std::sync::Mutex<HashMap<IpAddr, usize>>,
+    /// New ticketed `/v1/connect` sockets per address (their own budget).
+    ticket_rate: RateMap,
+    /// Concurrent ticketed `/v1/connect` sockets per address.
+    ticket_conns: std::sync::Mutex<HashMap<IpAddr, usize>>,
     /// Control and accept sockets per IP that have not authenticated yet (spec 16 §6.4: ≤ 8).
     ip_unauth: std::sync::Mutex<HashMap<IpAddr, usize>>,
     pub(crate) per_host: std::sync::Mutex<HashMap<String, usize>>,
@@ -268,6 +272,7 @@ impl Relay {
         );
         let ip_rate = RateMap::new(cfg.limits.ip_new_per_min);
         let announce_rate = RateMap::new(cfg.limits.ip_host_announces_per_min);
+        let ticket_rate = RateMap::new(cfg.limits.ticket_new_per_min);
         Ok(Arc::new(Relay {
             cfg: Config {
                 public_origins,
@@ -281,6 +286,8 @@ impl Relay {
             ip_rate,
             announce_rate,
             ip_conns: std::sync::Mutex::new(HashMap::new()),
+            ticket_rate,
+            ticket_conns: std::sync::Mutex::new(HashMap::new()),
             ip_unauth: std::sync::Mutex::new(HashMap::new()),
             per_host: std::sync::Mutex::new(HashMap::new()),
             spliced: AtomicUsize::new(0),
@@ -344,29 +351,48 @@ impl Relay {
         peer.ip()
     }
 
-    /// Per-IP admission: new-socket rate and concurrent cap. Returns a guard that releases the slot.
+    /// Per-address admission ([`ip_key`]: an IPv6 /64 counts as one): new-socket rate and
+    /// concurrent cap. Returns a guard that releases the slot.
     fn admit(self: &Shared, ip: IpAddr) -> Result<IpGuard, StatusCode> {
+        self.admit_in(ip, false)
+    }
+
+    /// [`Relay::admit`] from the budget of sockets that present a ticket (`ticketed`), or the
+    /// anonymous one. The ticket itself is verified after admission.
+    fn admit_in(self: &Shared, ip: IpAddr, ticketed: bool) -> Result<IpGuard, StatusCode> {
         if self.draining.load(Ordering::SeqCst) {
             return Err(StatusCode::SERVICE_UNAVAILABLE);
         }
-        if !self.ip_rate.allow(ip) {
+        let key = ip_key(ip);
+        let (rate, conns, max) = if ticketed {
+            (
+                &self.ticket_rate,
+                &self.ticket_conns,
+                self.cfg.limits.ticket_concurrent,
+            )
+        } else {
+            (&self.ip_rate, &self.ip_conns, self.cfg.limits.ip_concurrent)
+        };
+        if !rate.allow(key) {
             return Err(StatusCode::TOO_MANY_REQUESTS);
         }
-        let mut m = self.ip_conns.lock().unwrap();
-        let n = m.entry(ip).or_default();
-        if *n >= self.cfg.limits.ip_concurrent {
+        let mut m = conns.lock().unwrap();
+        let n = m.entry(key).or_default();
+        if *n >= max {
             return Err(StatusCode::TOO_MANY_REQUESTS);
         }
         *n += 1;
         Ok(IpGuard {
             relay: self.clone(),
-            ip,
+            ip: key,
+            ticketed,
         })
     }
 
     /// Reserve one of the IP's unauthenticated control/accept slots; released when the socket
     /// authenticates or closes.
     fn admit_unauth(self: &Shared, ip: IpAddr) -> Result<UnauthGuard, StatusCode> {
+        let ip = ip_key(ip);
         let mut m = self.ip_unauth.lock().unwrap();
         let n = m.entry(ip).or_default();
         if *n >= self.cfg.limits.ip_unauthenticated {
@@ -411,12 +437,20 @@ impl Relay {
 
 struct IpGuard {
     relay: Shared,
+    /// The [`ip_key`] of the address.
     ip: IpAddr,
+    /// Counted in the ticketed budget.
+    ticketed: bool,
 }
 
 impl Drop for IpGuard {
     fn drop(&mut self) {
-        let mut m = self.relay.ip_conns.lock().unwrap();
+        let conns = if self.ticketed {
+            &self.relay.ticket_conns
+        } else {
+            &self.relay.ip_conns
+        };
+        let mut m = conns.lock().unwrap();
         if let Some(n) = m.get_mut(&self.ip) {
             *n -= 1;
             if *n == 0 {
@@ -709,7 +743,38 @@ fn verify_host_auth(relay: &Relay, text: &str, nonce: &[u8; 32]) -> Option<(Stri
 #[derive(serde::Deserialize)]
 struct ConnectQuery {
     host: String,
+    /// Deprecated: a ticket in the URL ends up in proxy and access logs. Clients send it in a
+    /// header instead ([`client_ticket`]); drop this once older apps are gone.
     ticket: Option<String>,
+}
+
+/// The WebSocket subprotocol a browser offers next to its ticket; the relay selects it.
+pub const SUBPROTOCOL: &str = "vibeke.v1";
+/// Prefix of the subprotocol that carries a browser's ticket (`vibeke-ticket.<ticket>`):
+/// browsers can't set other headers on a WebSocket. Tickets are base64url and `.`, which are
+/// valid in a subprotocol name.
+pub const TICKET_SUBPROTOCOL: &str = "vibeke-ticket.";
+
+/// A device's relay ticket: `Authorization: Bearer <ticket>` (native clients), a
+/// `vibeke-ticket.<ticket>` subprotocol (browsers), else the deprecated `?ticket=`.
+fn client_ticket(headers: &HeaderMap, query: Option<String>) -> Option<String> {
+    let from_protocol = headers
+        .get_all(axum::http::header::SEC_WEBSOCKET_PROTOCOL)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(','))
+        .find_map(|p| {
+            p.trim()
+                .strip_prefix(TICKET_SUBPROTOCOL)
+                .map(str::to_string)
+        })
+        .filter(|t| !t.is_empty());
+    host_token(headers, None).or(from_protocol).or_else(|| {
+        if query.is_some() {
+            tracing::debug!("device ticket in the URL (deprecated; send it in a header)");
+        }
+        query
+    })
 }
 
 async fn connect_ws(
@@ -720,6 +785,9 @@ async fn connect_ws(
     ws: WebSocketUpgrade,
 ) -> Response {
     let ip = relay.client_ip(peer, &headers);
+    let ConnectQuery { host, ticket } = q;
+    let ticket = client_ticket(&headers, ticket);
+    let q = ConnectQuery { host, ticket };
     if q.host.len() != 26
         || !q
             .host
@@ -729,15 +797,18 @@ async fn connect_ws(
         return reject(StatusCode::BAD_REQUEST);
     }
     // Each announce makes the host dial back and wait for a handshake: bound them per address.
-    if !relay.announce_rate.allow((ip, q.host.clone())) {
+    if !relay.announce_rate.allow((ip_key(ip), q.host.clone())) {
         return reject(StatusCode::TOO_MANY_REQUESTS);
     }
-    // Admission first so ticket checks cannot be used to burn CPU without limits.
-    let guard = match relay.admit(ip) {
+    // Admission first so ticket checks cannot be used to burn CPU without limits; a socket that
+    // presents a ticket uses the ticketed budget (and must then pass the check).
+    let guard = match relay.admit_in(ip, q.ticket.is_some()) {
         Ok(g) => g,
         Err(c) => return reject(c),
     };
     let limits = relay.cfg.limits.clone();
+    // A browser that sent its ticket as a subprotocol needs one selected in the answer.
+    let ws = ws.protocols([SUBPROTOCOL]);
     upgrade(ws, &limits).on_upgrade(move |socket| async move {
         let _guard = guard;
         let ConnectQuery { host, ticket } = q;
@@ -941,7 +1012,7 @@ async fn status(
     Query(q): Query<StatusQuery>,
 ) -> Response {
     let ip = relay.client_ip(peer, &headers);
-    if !relay.ip_rate.allow(ip) {
+    if !relay.ip_rate.allow(ip_key(ip)) {
         return reject(StatusCode::TOO_MANY_REQUESTS);
     }
     let online = relay.hosts.lock().await.contains_key(&q.host);
@@ -962,6 +1033,31 @@ async fn status(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn device_tickets_come_from_headers_first() {
+        let mut h = HeaderMap::new();
+        assert_eq!(client_ticket(&h, None), None);
+        assert_eq!(
+            client_ticket(&h, Some("q.t".into())).as_deref(),
+            Some("q.t")
+        );
+        h.insert(
+            "sec-websocket-protocol",
+            "vibeke.v1, vibeke-ticket.e30.sig-x_y".parse().unwrap(),
+        );
+        assert_eq!(
+            client_ticket(&h, Some("q.t".into())).as_deref(),
+            Some("e30.sig-x_y")
+        );
+        h.insert("authorization", "Bearer a.b".parse().unwrap());
+        assert_eq!(client_ticket(&h, None).as_deref(), Some("a.b"));
+    }
+
+    #[test]
+    fn tickets_are_required_by_default() {
+        assert!(Config::default().require_tickets);
+    }
 
     #[test]
     fn host_token_prefers_the_header() {

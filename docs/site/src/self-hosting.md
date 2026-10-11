@@ -17,7 +17,8 @@ Configure a reverse proxy with HTTPS and WebSocket support for that address.
 See the [relay deployment guide](../../../crates/vk-relay/deploy/README.md) for process supervision and deployment details.
 
 To restrict which hosts may register on a private relay, add `--host-token <token>` and set `relay_token` in the host's `gateway.toml`.
-Add `--require-tickets` to refuse devices that lack a host-signed ticket.
+The relay refuses devices that lack a host-signed ticket.
+Add `--allow-ticketless` only for a private relay where you want to admit them.
 
 Pair using your relay and the public browser app:
 

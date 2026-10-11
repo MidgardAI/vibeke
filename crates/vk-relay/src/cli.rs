@@ -35,10 +35,10 @@ struct Args {
         value_delimiter = ','
     )]
     host_tokens: Vec<String>,
-    /// Refuse devices on /v1/connect without a host-signed ticket (`?ticket=`); tickets that are
-    /// present are always verified.
-    #[arg(long, env = "VIBEKE_RELAY_REQUIRE_TICKETS")]
-    require_tickets: bool,
+    /// Admit devices on /v1/connect without a host-signed ticket (by default they are refused;
+    /// tickets that are present are always verified). Only for private relays.
+    #[arg(long, env = "VIBEKE_RELAY_ALLOW_TICKETLESS")]
+    allow_ticketless: bool,
     /// Account sign-up URL advertised on /v1/status (`account_url`).
     #[arg(long, env = "VIBEKE_RELAY_ACCOUNT_URL")]
     account_url: Option<String>,
@@ -98,7 +98,7 @@ pub async fn run_as<I: IntoIterator<Item = String>>(
             trust_proxy: a.trust_proxy,
             log_ip_raw: a.log_ip_raw,
             limits,
-            require_tickets: a.require_tickets,
+            require_tickets: !a.allow_ticketless,
             account_url: a.account_url,
         },
         auth,

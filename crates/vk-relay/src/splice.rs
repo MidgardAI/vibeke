@@ -1,6 +1,6 @@
 //! Forward WebSocket messages verbatim between a device and its host (spec 16 §6.3–§6.4).
 
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use axum::extract::ws::{CloseFrame, Message, WebSocket};
 use futures::stream::{SplitSink, SplitStream};
@@ -60,10 +60,12 @@ pub async fn run(
     let (mut h_tx, h_rx) = host_ws.split();
     let l = &relay.cfg.limits;
     let (mut up_in, mut down_in) = (0u64, 0u64);
+    let (up_msgs, down_msgs) = (AtomicU32::new(0), AtomicU32::new(0));
     let outcome = tokio::select! {
-        r = forward(c_rx, &mut h_tx, l, &mut up_in) => (r, Side::Client),
-        r = forward(h_rx, &mut c_tx, l, &mut down_in) => (r, Side::Host),
+        r = forward(c_rx, &mut h_tx, l, &mut up_in, &up_msgs) => (r, Side::Client),
+        r = forward(h_rx, &mut c_tx, l, &mut down_in, &down_msgs) => (r, Side::Host),
         () = revoked(&relay, &host, watch) => (None, Side::Revoked),
+        () = preauth(l.preauth_timeout, &up_msgs, &down_msgs) => (None, Side::Preauth),
     };
     let frame = outcome.0.unwrap_or(CloseFrame {
         code: 1001,
@@ -77,6 +79,14 @@ pub async fn run(
             let frame = CloseFrame {
                 code: vk_e2e::relay::close::UNAUTHORIZED,
                 reason: "ticket_revoked".into(),
+            };
+            close(l, &mut c_tx, frame.clone()).await;
+            close(l, &mut h_tx, frame).await;
+        }
+        Side::Preauth => {
+            let frame = CloseFrame {
+                code: 1008,
+                reason: "handshake timeout".into(),
             };
             close(l, &mut c_tx, frame.clone()).await;
             close(l, &mut h_tx, frame).await;
@@ -95,6 +105,21 @@ enum Side {
     Client,
     Host,
     Revoked,
+    Preauth,
+}
+
+/// Messages a finished handshake has sent from the device (its hello, Noise message 1 and a
+/// first encrypted request) and from the host (Noise message 2).
+const HANDSHAKE_UP: u32 = 3;
+const HANDSHAKE_DOWN: u32 = 1;
+
+/// Resolves when the splice has not got past the Noise handshake within `timeout` (a replayed
+/// or abandoned first message); never once it has.
+async fn preauth(timeout: std::time::Duration, up: &AtomicU32, down: &AtomicU32) {
+    tokio::time::sleep(timeout).await;
+    if up.load(Ordering::SeqCst) >= HANDSHAKE_UP && down.load(Ordering::SeqCst) >= HANDSHAKE_DOWN {
+        std::future::pending::<()>().await;
+    }
 }
 
 async fn close(l: &crate::Limits, tx: &mut SplitSink<WebSocket, Message>, frame: CloseFrame) {
@@ -124,6 +149,7 @@ async fn forward(
     tx: &mut SplitSink<WebSocket, Message>,
     l: &crate::Limits,
     bytes: &mut u64,
+    msgs: &AtomicU32,
 ) -> Option<CloseFrame> {
     let mut byte_bucket = Bucket::new(l.conn_burst_bytes as f64, l.conn_bytes_per_sec as f64);
     let mut msg_bucket = Bucket::new(l.conn_msgs_per_sec as f64, l.conn_msgs_per_sec as f64);
@@ -145,6 +171,7 @@ async fn forward(
             Message::Ping(_) | Message::Pong(_) => continue,
         };
         *bytes += len as u64;
+        msgs.fetch_add(1, Ordering::SeqCst);
         // Back-pressure: stop reading until the budget allows, instead of buffering.
         let wait = byte_bucket
             .take_wait(len as f64)

@@ -169,6 +169,7 @@ impl Gateway {
                 .collect()
         };
         *self.devices.write().unwrap() = fresh;
+        drop(lock);
         for id in gone {
             self.disconnect(&id);
             self.revoke_ticket(&id);
@@ -253,16 +254,32 @@ impl Gateway {
         Ok(c)
     }
 
+    /// Send every remembered revocation to the relay (after each registration).
+    pub(crate) fn resend_revocations(&self) {
+        let ctl = self.relay_ctl.lock().unwrap();
+        let Some(tx) = ctl.as_ref() else {
+            return;
+        };
+        for (sub, _) in self.state.revoked_tickets() {
+            let _ = tx.send(vk_e2e::relay::Ctrl::Revoke { sub });
+        }
+    }
+
     /// Install (or clear) the sender for the live relay control socket.
     pub(crate) fn set_relay_ctl(&self, tx: Option<mpsc::UnboundedSender<vk_e2e::relay::Ctrl>>) {
         *self.relay_ctl.lock().unwrap() = tx;
     }
 
-    /// Tell the relay to stop admitting this device's tickets (spec 16 §6.6). Without a live
-    /// control socket the ticket stays valid at the relay until it expires; the gateway still
-    /// refuses the device at the handshake.
+    /// Tell the relay to stop admitting this device's tickets (spec 16 §6.6). The subject is
+    /// remembered until its tickets lapse and sent again on every registration
+    /// ([`Gateway::resend_revocations`]): the relay forgets revocations when it restarts, and
+    /// one made while it was unreachable reaches it once the gateway is back.
     pub fn revoke_ticket(&self, device_id: &str) {
         let sub = format!("dev:{device_id}");
+        let until = state::now_s() + pair::DEVICE_TICKET_TTL.as_secs();
+        if let Err(e) = self.state.remember_revoked_ticket(&sub, until) {
+            tracing::warn!(device = device_id, "remembering a revoked ticket: {e:#}");
+        }
         let sent = self
             .relay_ctl
             .lock()

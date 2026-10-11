@@ -639,6 +639,30 @@ impl StateDir {
         Ok((c, devices))
     }
 
+    /// Relay ticket subjects this host revoked, with when their tickets lapse anyway
+    /// (`revoked_tickets.json`). The relay keeps revocations in memory only, so the gateway sends
+    /// them again each time it registers. Expired entries are dropped.
+    pub fn revoked_tickets(&self) -> Vec<(String, u64)> {
+        let all: Vec<(String, u64)> =
+            read_json_or_default(&self.path("revoked_tickets.json")).unwrap_or_default();
+        let now = now_s();
+        all.into_iter().filter(|(_, until)| *until > now).collect()
+    }
+
+    /// Remember that ticket subject `sub` is revoked until `until` (unix seconds).
+    /// Only the gateway process writes the file, so no registry lock (a caller may hold it).
+    pub fn remember_revoked_ticket(&self, sub: &str, until: u64) -> Result<()> {
+        let mut all = self.revoked_tickets();
+        all.retain(|(s, _)| s != sub);
+        all.push((sub.to_string(), until));
+        // Bounded like the relay's own list; the oldest go first.
+        if all.len() > 1024 {
+            let drop = all.len() - 1024;
+            all.drain(..drop);
+        }
+        write_json(&self.path("revoked_tickets.json"), &all)
+    }
+
     /// Hosts this gateway can hand work to (`peers.json`, 0600: it holds private keys).
     pub fn peers(&self) -> Result<Vec<PeerRecord>> {
         let p = self.path("peers.json");
@@ -1107,6 +1131,19 @@ mod tests {
         let (c, left) = s.revoke_cascade(&lock, &["ghost".into()], "cli").unwrap();
         assert!(c.devices.is_empty());
         assert_eq!(left.len(), 1);
+    }
+
+    #[test]
+    fn revoked_tickets_are_remembered_until_they_lapse() {
+        let t = tempfile::tempdir().unwrap();
+        let s = StateDir::open(t.path().join("gw")).unwrap();
+        assert!(s.revoked_tickets().is_empty());
+        s.remember_revoked_ticket("dev:a", now_s() + 60).unwrap();
+        s.remember_revoked_ticket("dev:b", 1).unwrap();
+        s.remember_revoked_ticket("dev:a", now_s() + 120).unwrap();
+        let all = s.revoked_tickets();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].0, "dev:a");
     }
 
     #[test]

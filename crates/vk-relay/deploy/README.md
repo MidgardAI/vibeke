@@ -2,9 +2,15 @@
 
 The relay lets phones and desktops reach a Vibeke host that has no inbound port (spec 16 §6). It
 only forwards end-to-end encrypted WebSocket messages; it never sees keys or content. A relay you run needs no
-account. By default anyone can register a host and limits keep abuse cheap; use `--host-token` to
-restrict hosts (private relay) and `--require-tickets` to refuse devices without a host-signed
-ticket (spec 16 §6.6).
+account. By default anyone can register a host and limits keep abuse cheap. Devices must present
+a host-signed ticket (spec 16 §6.6); `--allow-ticketless` turns that off for a private relay. Use
+`--host-token` to restrict hosts (private relay).
+
+Per-address limits count an IPv6 address as its /64. Devices with a ticket have their own budget
+of new and concurrent connections. Devices send the ticket in a header (`Authorization: Bearer`,
+or the `vibeke-ticket.<ticket>` WebSocket subprotocol next to `vibeke.v1` from a browser); the
+`?ticket=` query parameter still works but ends up in access logs. A device connection whose
+encrypted handshake has not finished after 10 seconds is closed.
 
 ## Run locally
 
@@ -32,7 +38,7 @@ mismatch fails host authentication with close code 4401.
 | `--public-url` | required, repeatable | origins hosts sign over |
 | `--app-dir` | none | static web app |
 | `--host-token` | none | require one of these tokens from hosts |
-| `--require-tickets` | off | refuse devices without a host-signed ticket |
+| `--allow-ticketless` | off | admit devices without a host-signed ticket |
 | `--account-url` | none | account URL shown on `/v1/status` |
 | `--trust-proxy` | off | client IP from `X-Forwarded-For` |
 | `--log-ip-raw` | off | log raw client IPs instead of daily-keyed hashes |

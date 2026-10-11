@@ -403,18 +403,22 @@ async fn dial(relay: &str, host: &str, ticket: Option<&str>) -> Result<Box<dyn W
     if relay.starts_with("local") {
         bail!("local transport link without a socket path");
     }
-    let mut url = format!(
+    let url = format!(
         "{}/v1/connect?host={host}",
         crate::relay_client::ws_base(relay)
     );
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    let mut req = url.as_str().into_client_request()?;
     if let Some(t) = ticket {
-        // Tickets are base64url and `.`: query-safe as they are.
-        url.push_str(&format!("&ticket={t}"));
+        // In a header, not the URL: URLs end up in proxy and access logs.
+        req.headers_mut().insert(
+            tokio_tungstenite::tungstenite::http::header::AUTHORIZATION,
+            format!("Bearer {t}").parse()?,
+        );
     }
-    let (ws, _) =
-        tokio_tungstenite::connect_async_with_config(url.as_str(), Some(ws_config()), false)
-            .await
-            .with_context(|| format!("connect {}", crate::relay_client::ws_base(relay)))?;
+    let (ws, _) = tokio_tungstenite::connect_async_with_config(req, Some(ws_config()), false)
+        .await
+        .with_context(|| format!("connect {}", crate::relay_client::ws_base(relay)))?;
     Ok(Box::new(ws))
 }
 

@@ -219,14 +219,14 @@ trait Authorizer {
 
 **Host tokens.** A host presents an opaque account token on `/v1/host?token=`. The relay treats it as a bearer string and asks the `Authorizer`. A denied host receives `{"t":"error","code":4401,"reason":"token_expired|token_invalid|account_required"}` and the socket closes with 4401. The token only decides who may register hosts; it never grants access to a host.
 
-**Device tickets.** With `--require-tickets`, a device presents a ticket signed by the host on `/v1/connect?ticket=`:
+**Device tickets.** A device presents a ticket signed by the host on `/v1/connect`. The relay refuses devices without one unless it runs with `--allow-ticketless`. Native clients send `Authorization: Bearer <ticket>`; browsers, which can't set WebSocket headers, offer the subprotocols `vibeke.v1` and `vibeke-ticket.<ticket>` (the relay selects `vibeke.v1`). The older `?ticket=` query parameter still works but is deprecated: URLs end up in proxy and access logs. Connections that present a ticket have their own per-address budget of new and concurrent connections, and per-address limits count an IPv6 address as its /64. A splice whose Noise handshake has not finished within 10 s (three device messages and one host message) is closed, so a replayed first message can't hold a slot. The ticket format:
 
 ```
 ticket = base64url(json{"v":1,"host","sub","exp"}) "." base64url(ed25519 signature)
 signed bytes = "vibeke-relay/1 ticket\0" ‖ host ‖ "\0" ‖ sub ‖ "\0" ‖ exp
 ```
 
-The signature uses the host's relay key, so the relay verifies it against the key the host authenticated with and needs no per-device state. `sub` is `dev:<device id>` for a paired device or `pid:<pairing id>` for a pairing in progress; pairing links carry the ticket in a `tk` field. Device tickets last 30 days; the device refreshes them through the gateway method `relay.ticket`. A host revokes a subject by sending `{"t":"revoke","sub":…}` on its control socket; the relay then refuses that subject's tickets. A denied device receives a plaintext `{"error":"unauthorized","reason":"ticket_missing|ticket_invalid|ticket_expired|ticket_revoked"}` frame and the socket closes with 4401.
+The signature uses the host's relay key, so the relay verifies it against the key the host authenticated with and needs no per-device state. `sub` is `dev:<device id>` for a paired device or `pid:<pairing id>` for a pairing in progress; pairing links carry the ticket in a `tk` field. Device tickets last 30 days; the device refreshes them through the gateway method `relay.ticket`. A host revokes a subject by sending `{"t":"revoke","sub":…}` on its control socket; the relay then refuses that subject's tickets. The relay keeps revocations in memory only, so the gateway remembers what it revoked (until those tickets expire) and sends it again each time it registers, also after a revocation made while the relay was unreachable. A denied device receives a plaintext `{"error":"unauthorized","reason":"ticket_missing|ticket_invalid|ticket_expired|ticket_revoked"}` frame and the socket closes with 4401.
 
 **Status.** `/v1/status` reports `"auth": "open" | "tickets"` and `account_url`, the page where a user creates an account. `--account-url` sets it. In `gateway.toml`, `account_url` defaults to the relay origin and `relay_token` holds the token for a private relay.
 

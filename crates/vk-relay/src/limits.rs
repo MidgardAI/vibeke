@@ -27,6 +27,14 @@ pub struct Limits {
     pub ip_host_announces_per_min: u32,
     /// Control (`/v1/host`) and accept sockets per IP that have not authenticated yet.
     pub ip_unauthenticated: usize,
+    /// New `/v1/connect` sockets per minute per address that present a ticket: their own
+    /// budget, so anonymous traffic from the same network can't lock paired devices out.
+    pub ticket_new_per_min: u32,
+    /// Concurrent ticketed `/v1/connect` sockets per address.
+    pub ticket_concurrent: usize,
+    /// A splice whose Noise handshake has not finished by then is closed: a replayed first
+    /// handshake message must not hold a slot until the idle timeout.
+    pub preauth_timeout: Duration,
 }
 
 impl Default for Limits {
@@ -49,7 +57,26 @@ impl Default for Limits {
             max_conns: 50_000,
             ip_host_announces_per_min: 10,
             ip_unauthenticated: 8,
+            ticket_new_per_min: 120,
+            ticket_concurrent: 128,
+            preauth_timeout: Duration::from_secs(10),
         }
+    }
+}
+
+/// The address limits are kept for: an IPv6 address counts as its /64 (one subscriber usually
+/// holds a whole /64, so per-address limits would not bind), an IPv4-mapped IPv6 address as the
+/// IPv4 address.
+pub fn ip_key(ip: IpAddr) -> IpAddr {
+    match ip {
+        IpAddr::V4(_) => ip,
+        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+            Some(v4) => IpAddr::V4(v4),
+            None => {
+                let s = v6.segments();
+                IpAddr::V6(std::net::Ipv6Addr::new(s[0], s[1], s[2], s[3], 0, 0, 0, 0))
+            }
+        },
     }
 }
 
@@ -142,6 +169,19 @@ mod tests {
         let mut b = Bucket::new(10.0, 10.0);
         assert_eq!(b.take_wait(10.0), Duration::ZERO);
         assert!(b.take_wait(5.0) >= Duration::from_millis(400));
+    }
+
+    #[test]
+    fn ipv6_addresses_count_per_64() {
+        let a: IpAddr = "2001:db8:1:2:aaaa::1".parse().unwrap();
+        let b: IpAddr = "2001:db8:1:2:bbbb::9".parse().unwrap();
+        let c: IpAddr = "2001:db8:1:3::1".parse().unwrap();
+        assert_eq!(ip_key(a), ip_key(b));
+        assert_ne!(ip_key(a), ip_key(c));
+        assert_eq!(ip_key(a), "2001:db8:1:2::".parse::<IpAddr>().unwrap());
+        let v4: IpAddr = "192.0.2.7".parse().unwrap();
+        assert_eq!(ip_key(v4), v4);
+        assert_eq!(ip_key("::ffff:192.0.2.7".parse().unwrap()), v4);
     }
 
     #[test]
