@@ -668,7 +668,7 @@ ls "$HERDR_PLUGIN_STATE_DIR/../acme.other" > /dev/null 2>&1; echo "other_state=$
 echo "token=${GITHUB_TOKEN:-unset}" >> "$out/r"
 echo "isolation=$VIBEKE_ISOLATION" >> "$out/r"
 /usr/bin/nc -z -w 2 127.0.0.1 "$(cat "$out/port")" > /dev/null 2>&1; echo "net=$?" >> "$out/r"
-/usr/bin/nc -z -w 1 192.0.2.1 9 2>&1 | grep -q "not permitted"; echo "remote_denied=$?" >> "$out/r"
+/usr/bin/nc -v -z -w 1 192.0.2.1 9 2>&1 | grep -q "not permitted"; echo "remote_denied=$?" >> "$out/r"
 herdr workspace list > "$out/ws.json" 2> "$out/ws.err"; echo "herdr=$?" >> "$out/r"
 "#,
     );
