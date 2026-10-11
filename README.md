@@ -81,9 +81,9 @@ mise run ci      # formatting, lints and tests, as CI runs them
 
 Vibeke is licensed under the [Apache License 2.0](LICENSE).
 
-## Related work
+## Why Vibeke
 
-Other projects explore similar ideas. [cmux](https://cmux.com/) brings agent notifications and a programmable browser into terminal workspaces. [Emdash](https://emdash.com/docs) and [Superset](https://docs.superset.sh/overview) explore parallel agents, isolated workspaces and review workflows. [Solo](https://soloterm.com/docs) brings agent CLIs and development services together. [Warp](https://www.warp.dev/) explores integrated terminal and agent workflows. These projects build on the foundations of [tmux](https://github.com/tmux/tmux/wiki) and [Zellij](https://zellij.dev/).
+Vibeke builds on the foundations of [tmux](https://github.com/tmux/tmux/wiki) and [Zellij](https://zellij.dev/).
 
 We created Vibeke to bring together the workflow we wanted: keep using our usual agent commands, run work on our own laptops and remote machines, and follow up from a terminal, browser, or phone. Its built-in, end-to-end encrypted relay makes hosts reachable without opening inbound ports or configuring a VPN.
 
