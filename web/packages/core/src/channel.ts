@@ -210,6 +210,11 @@ export class Channel implements MessageChannel {
     return this.closeReason !== undefined;
   }
 
+  /** The Noise handshake hash of this channel (pairing check codes come from it). */
+  get handshakeHash(): Uint8Array {
+    return this.session.handshakeHash;
+  }
+
   /** Serialize to JSON and send as one or more encrypted binary frames. */
   send(msg: unknown): void {
     if (this.closed) throw new ChannelError('closed', 'channel closed');
