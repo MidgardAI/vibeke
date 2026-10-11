@@ -1141,8 +1141,9 @@ impl Agents {
     }
 
     /// Is the screen dialog `d` one the user already dismissed in this turn? Forgets the
-    /// pane's dismissals once the run's turn moved on, and when the screen shows the agent
-    /// working with no dialog (the dialog was answered in the pane or went away).
+    /// pane's dismissals once the run's turn moved on, and a dismissed dialog that was seen
+    /// once the screen shows the agent working with no dialog (it was answered in the pane or
+    /// went away).
     fn dialog_dismissed(&self, server: &Server, run: &AgentRun, m: &screen::ScreenMatch) -> bool {
         let pane = run.pane.as_str();
         if !self.inner.lock().unwrap().dismissed.contains_key(pane) {
@@ -1162,7 +1163,10 @@ impl Agents {
         list.retain(|x| x.run == run.id && x.turn_at == turn_at);
         let moved_on = m.dialog.is_none() && matches!(m.state, Some((Execution::Working, _)));
         if moved_on {
-            list.clear();
+            // A dialog that was seen and is gone now was answered or closed in the pane. One
+            // not drawn yet stays remembered: while a released gate hands the request back,
+            // the screen can still show the agent working.
+            list.retain(|x| x.fingerprint.is_none());
         }
         let hit = match &m.dialog {
             Some(d) => {
