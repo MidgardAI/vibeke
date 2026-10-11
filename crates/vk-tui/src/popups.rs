@@ -163,6 +163,7 @@ pub fn key(app: &mut App, ev: KeyEvent, p: Popup) {
         Popup::PendingOps { sel, confirm } => crate::app::pending_ops_key(app, ev, sel, confirm),
         Popup::Previews => crate::preview_manager::key(app, ev),
         Popup::Gallery => crate::gallery::key(app, ev),
+        Popup::ImageViewer => crate::viewer::key(app, ev),
         Popup::Desk => crate::desk::key(app, ev),
         Popup::Drafts => crate::drafts::key(app, ev),
         Popup::Assist => crate::assist::key(app, ev),
@@ -501,6 +502,7 @@ pub fn draw(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
             }
             Popup::Previews => crate::preview_manager::draw(app, g),
             Popup::Gallery => crate::gallery::draw(app, g),
+            Popup::ImageViewer => crate::viewer::draw(app, g),
             Popup::Desk => crate::desk::draw(app, g),
             Popup::Drafts => crate::drafts::draw(app, g),
             Popup::Assist => crate::assist::draw(app, g),

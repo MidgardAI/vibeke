@@ -294,6 +294,7 @@ pub fn placements(app: &App) -> Vec<Placement> {
     let mut v = Vec::new();
     v.extend(crate::gallery::placements(app));
     v.extend(crate::preview_ui::placements(app));
+    v.extend(crate::viewer::placements(app));
     v
 }
 

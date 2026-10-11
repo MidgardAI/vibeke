@@ -118,6 +118,7 @@ const GROUPS: &[(&str, &[&str])] = &[
             "focus_agent",
             "batch_approvals",
             "collisions",
+            "open_images",
         ],
     ),
     (
@@ -214,6 +215,7 @@ const LABELS: &[(&str, &str)] = &[
     ("batch_approvals", "batch approvals"),
     ("elevation_requests", "elevation requests"),
     ("collisions", "collisions"),
+    ("open_images", "view new images"),
     ("connections", "connections"),
     ("share_pane", "share pane"),
     ("handoffs", "handoffs"),
