@@ -17,3 +17,9 @@ A broker exposes only the APIs permitted for that pane. Network access, Git push
 If the selected isolation provider is unavailable, Vibeke refuses to start the process. It does not start the process in host mode instead.
 
 Use `vibeke sandbox status` to check available providers. See the [security model](../security.md) for limits.
+
+## Next steps
+
+- [Security model](../security.md): read the limits of isolation.
+- [Tasks and review](tasks.md): start a task in a sandbox.
+- [Cloud sandboxes](../cloud-sandboxes.md): run an agent on a cloud host.

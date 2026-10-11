@@ -41,4 +41,19 @@ Open **Setup** in the command palette to select integrations, inspect changes, a
 Then run your usual `claude`, `codex`, `pi`, or `omp` command in a shell pane.
 For scripts and troubleshooting, use `vibeke integration install|status|uninstall|doctor`.
 
+Each agent has its own page:
+
+- [Claude Code](../agents/claude-code.md)
+- [Codex CLI](../agents/codex.md)
+- [pi and oh-my-pi](../agents/pi.md)
+- [OpenCode](../agents/opencode.md)
+- [Gemini CLI](../agents/gemini.md)
+- [Other agents](../agents/other.md): terminal detection, custom manifests and ACP agents
+
 Use `vibeke agent start|prompt|wait|read|send-keys|get|list` to control agent runs. See the [CLI reference](../reference/cli.md) for command arguments.
+
+## Next steps
+
+- [Run agents in parallel](../parallel-agents.md): run several agents and find the one that needs you.
+- [Tasks and review](tasks.md): give an agent its own worktree.
+- [Execution levels](sandboxes.md): limit what an agent can reach.

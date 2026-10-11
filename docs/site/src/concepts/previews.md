@@ -204,3 +204,9 @@ Set `ui.sidebar.preview_thumbnails = true` to show a small image of the newest s
 While you control the page, agent browser commands return `human_control`. This prevents simultaneous input from you and the agent.
 
 See the [browser commands](../reference/cli.md#vibeke-browser) and [control API](../reference/api.md) for arguments.
+
+## Next steps
+
+- [Using the terminal interface](../terminal.md): learn the default keys, including the image gallery.
+- [Agents and interactions](agents.md): see how agents attach images and previews.
+- [Customize keys and appearance](../customize.md): change the sidebar.

@@ -102,3 +102,9 @@ curl -fsSL https://vibeke.dev/install.sh | VIBEKE_VERSION=0.2.0 sh
 
 For mirrors, offline installation, signatures, and development builds, see [release verification](reference/releases.md).
 To contribute code, see [building from source](development.md).
+
+## Next steps
+
+- [Your first workspace](quickstart.md) to start Vibeke in a project.
+- [Connect the desktop app](desktop.md) to your host.
+- [Troubleshooting](troubleshooting.md) if the installation does not work.

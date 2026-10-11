@@ -5,8 +5,31 @@
 # Getting started
 
 - [Install](install.md)
-- [Quickstart](quickstart.md)
+- [Your first workspace](quickstart.md)
+- [Your first task](first-task.md)
+- [Answer agents from your phone](phone-quickstart.md)
 - [Using the terminal](terminal.md)
+
+# Guides
+
+- [Run agents in parallel](parallel-agents.md)
+- [Customize keys and appearance](customize.md)
+- [Work on a remote machine](remote.md)
+- [Desktop app](desktop.md)
+- [Phone and browser access](mobile.md)
+- [Move work to another host](handoff.md)
+- [Work with a teammate](sharing.md)
+- [Cloud sandboxes](cloud-sandboxes.md)
+- [Script and automate Vibeke](scripting.md)
+
+# Agents
+
+- [Claude Code](agents/claude-code.md)
+- [Codex CLI](agents/codex.md)
+- [pi and oh-my-pi](agents/pi.md)
+- [OpenCode](agents/opencode.md)
+- [Gemini CLI](agents/gemini.md)
+- [Other agents](agents/other.md)
 
 # Concepts
 
@@ -17,13 +40,10 @@
 - [Previews and browsers](concepts/previews.md)
 - [Sandboxes and execution levels](concepts/sandboxes.md)
 
-# Guides
+# Help
 
-- [Phone and browser access](mobile.md)
-- [Desktop app](desktop.md)
-- [Connect through SSH](remote.md)
-- [Sharing and handoff](handoff.md)
-- [Cloud sandboxes](cloud-sandboxes.md)
+- [Troubleshooting](troubleshooting.md)
+- [Frequently asked questions](faq.md)
 
 # Advanced
 

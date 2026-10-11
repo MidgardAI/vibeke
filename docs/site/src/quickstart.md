@@ -20,6 +20,8 @@ The setup screen checks your terminal and offers agent integrations, notificatio
 Select the integrations you use, review their changes, and confirm installation.
 Save the configuration when you finish. You can reopen **Setup** from the command palette at any time.
 
+![The setup screen lists the agent CLIs it found and offers to install their integrations.](images/setup.png)
+
 Integrations report structured agent state and deliver supported answers.
 
 ## Start your agent
@@ -48,8 +50,12 @@ Wait a moment instead, and a menu shows every key.
 | `i` | Open the attention inbox. |
 | `q` | Detach this terminal client. |
 
+![Ctrl+B shows the key menu. The recording splits the pane, then opens a new tab from the command palette.](images/key-menu.webp)
+
 For an agent request, open the inbox, review the details, and send your answer.
 Supported integrations deliver the answer through the agent's own interface.
+
+![An agent asks to run a command. Ctrl+B, then i opens the inbox, and y allows the command once.](images/inbox.webp)
 
 See [using the terminal interface](terminal.md) for more controls.
 
@@ -63,10 +69,9 @@ See [process durability](concepts/holders.md).
 
 ## Next steps
 
+- [Run your first task](first-task.md) in a separate git worktree and review the result.
+- [Answer agents from your phone](phone-quickstart.md).
 - [Connect the desktop app](desktop.md) to your local or remote host.
-- [Pair your phone or browser](mobile.md) to answer requests away from your terminal.
-- Use **New task (git worktree)** in the command palette to create a separate checkout. See [tasks and review](concepts/tasks.md).
 - [Connect through SSH](remote.md) to work on another machine.
-- Use the [CLI reference](reference/cli.md) for scripting and automation.
 
 Run `vibeke doctor` if something does not work. It checks your installation, terminal, sockets, and integrations.

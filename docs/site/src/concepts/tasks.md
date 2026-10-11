@@ -63,4 +63,10 @@ A pane in a `high` or `medium` collision shows `⚠`. Under the workspace, the s
 
 Use `vibeke collision list` and `vibeke task get <task> --collisions` to read collisions from the command line. See [the `[collision]` settings](../reference/config.md).
 
-See the [task commands](../reference/cli.md#vibeke-task) for arguments. See [transfers and shared access](../handoff.md) to transfer work to another host.
+See the [task commands](../reference/cli.md#vibeke-task) for arguments. See [moving work to another host](../handoff.md) to transfer work to another host.
+
+## Next steps
+
+- [Run agents in parallel](../parallel-agents.md): start several tasks and clean them up.
+- [Agents and interactions](agents.md): answer agent requests.
+- [Execution levels](sandboxes.md): run a task in an isolated environment.

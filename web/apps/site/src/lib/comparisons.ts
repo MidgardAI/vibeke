@@ -439,7 +439,7 @@ export const comparisonRows: ComparisonRow[] = [
       "vibeke": {
         "label": "Yes",
         "detail": "Import work on their host. They decide when to start the agent.",
-        "source": "/docs/handoff",
+        "source": "/docs/sharing",
         "state": "yes"
       },
       "herdr": {

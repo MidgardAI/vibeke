@@ -127,7 +127,7 @@ test('one comparison table filters features and links every product to its sourc
   await page.getByRole('button', { name: 'Machines and teams', exact: true }).click()
   await table.getByRole('button', { name: 'Details: Transfer work to a teammate', exact: true }).click()
   await table.getByRole('link', { name: 'Vibeke source: Transfer work to a teammate' }).click()
-  await expect(page).toHaveURL('/docs/handoff')
+  await expect(page).toHaveURL('/docs/sharing')
   await expect(page.locator('article')).toContainText('is never imported automatically')
   await expect(page.locator('article')).toContainText('decides whether to resume the agent')
 })
