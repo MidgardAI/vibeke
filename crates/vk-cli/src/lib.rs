@@ -2238,7 +2238,10 @@ pub fn build_params_for(
 
 /// The words of argv per param, untyped: `{key: {value: "raw" | true | false | [..], flag, rest}}`.
 fn build_raw_params(positional: &[&str], args: &[String]) -> Result<Value, String> {
-    let scalar = |v: &str| Value::String(v.to_string());
+    // Untyped here: `build_params_for` types every value.
+    fn scalar(v: &str) -> Value {
+        Value::String(v.to_string())
+    }
     let mut map = Map::new();
     let mut flags = std::collections::BTreeSet::new();
     let mut rests = std::collections::BTreeSet::new();
