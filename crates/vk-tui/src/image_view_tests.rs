@@ -286,5 +286,6 @@ fn remote_keys_carry_the_size_and_deletions_forget_them() {
     assert!(app.imgview.image("1:S1@300").is_none() && app.imgview.image("1:S1@600").is_none());
     assert!(app.imgview.image("1:S10@600").is_some());
     assert_eq!(thumb_px(&app, 1), 64);
+    assert_eq!(thumb_px(&app, 9), 128, "rounded up to 64 px");
     assert_eq!(thumb_px(&app, 500), 1024);
 }

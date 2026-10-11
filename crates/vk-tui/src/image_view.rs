@@ -129,10 +129,14 @@ pub fn readable(app: &App, mi: usize) -> bool {
     !cfg!(target_arch = "wasm32") && app.machines.get(mi).is_some_and(|m| m.local)
 }
 
-/// Thumbnail width to fetch for a placement `cols` cells wide (the server clamps to 64..=1024).
+/// Thumbnail width to fetch for a placement `cols` cells wide, rounded up to 64 px so a small
+/// layout change does not fetch again (the server clamps to 64..=1024).
 pub fn thumb_px(app: &App, cols: u16) -> u32 {
     let (cw, _, _) = crate::browser::cell_geom(app);
-    (cols as u32 * cw as u32).clamp(64, 1024)
+    (cols as u32 * cw as u32)
+        .div_ceil(64)
+        .saturating_mul(64)
+        .clamp(64, 1024)
 }
 
 /// Cache key of screenshot `id` on machine `mi`: read from disk (`px` unused) or fetched at

@@ -3085,12 +3085,13 @@ impl App {
         self.dirty = false;
         self.send_view_hints(false);
         crate::browser::update_views(self);
-        crate::image_view::before_draw(self);
         crate::preview_ui::observe(self);
         crate::pane_images::before_draw(self);
         crate::nav::observe(self);
         crate::plugins::observe(self);
         crate::sidebar::fit(self);
+        // After the layout is final: placements depend on the sidebar width.
+        crate::image_view::before_draw(self);
         let (cols, rows) = self.size;
         let mut grid = Grid::new(cols, rows);
         let cursor = draw::compose(self, &mut grid);

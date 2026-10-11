@@ -340,6 +340,8 @@ fn remote_image_is_fetched_at_the_view_width_on_kitty_and_iterm() {
             vec![rec("S7", "agent", "p1", now_ms() - 1_000)],
             1,
         );
+        // A first frame settles the layout (the sidebar width) the fetch size follows.
+        app.draw_bytes();
         open(&mut app, (1, "S7".into()), false);
         let px = crate::image_view::thumb_px(&app, app.pane_area().w - 2);
         let (req, p) = only(&commands(&mut rxs[1]), "screenshot.get");
