@@ -19,6 +19,10 @@ pub struct Events {
     /// Unreferenced uploads and tool-output payloads in the blob store are collected after this
     /// many days (default 30).
     pub blob_days: i64,
+    /// Closed agent runs, interactions and panes (and the per-turn usage and tool records of
+    /// runs that are gone) are deleted after this many days (default 90). Runs of a task that
+    /// is still open are kept.
+    pub closed_days: i64,
     /// Hard cap on event rows (default 2 000 000); the oldest `sync` rows go first, `history` only
     /// when no `sync` row is left. `0` disables the cap.
     pub max_rows: i64,
@@ -30,6 +34,7 @@ impl Default for Events {
             sync_days: 7,
             history_days: 365,
             blob_days: 30,
+            closed_days: 90,
             max_rows: 2_000_000,
         }
     }
@@ -39,6 +44,7 @@ const KEYS: &[&str] = &[
     "sync_retention",
     "history_retention",
     "blob_retention",
+    "closed_retention",
     "max_rows",
 ];
 
@@ -91,6 +97,7 @@ impl Events {
                 Ok(d) => match k.as_str() {
                     "sync_retention" => out.sync_days = d,
                     "history_retention" => out.history_days = d,
+                    "closed_retention" => out.closed_days = d,
                     _ => out.blob_days = d,
                 },
                 Err(e) => warns.push(Warning::new(&key, format!("{key}: {e}"))),

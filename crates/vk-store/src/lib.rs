@@ -116,6 +116,14 @@ const MIGRATIONS: &[&str] = &[
         status TEXT NOT NULL, started_at INTEGER NOT NULL, ended_at INTEGER, json TEXT NOT NULL);
     CREATE INDEX IF NOT EXISTS plugin_commands_plugin ON plugin_commands(plugin_id, started_at);
     "#,
+    // 7: retention of the Turn/Item stream and of closed history rows
+    // ([`Store::prune_ended_turns`], [`Store::prune_closed`]) finds a turn's items and a run's
+    // records through these indexes instead of scanning every row per turn.
+    r#"
+    CREATE INDEX IF NOT EXISTS entities_turn ON entities(kind, json_extract(json, '$.turn_id'));
+    CREATE INDEX IF NOT EXISTS entities_run_id ON entities(kind, json_extract(json, '$.run_id'));
+    CREATE INDEX IF NOT EXISTS entities_run ON entities(kind, json_extract(json, '$.run'));
+    "#,
 ];
 
 /// Event-log retention (02 §2.3): `events.sync_retention`, `events.history_retention` and the
@@ -240,7 +248,8 @@ enum Write {
         offset: u64,
         engine: String,
         version: String,
-        blob: Vec<u8>,
+        /// zstd-compressed when the mutation was built, or why compression failed.
+        zblob: Result<Vec<u8>, String>,
         incarnation: String,
     },
     SnapshotDelete {
@@ -344,6 +353,9 @@ impl Mutation {
     }
     /// Store a VT snapshot taken at holder ring `offset`; `incarnation` identifies the holder
     /// process whose ring that offset refers to (see `SnapshotRecord::incarnation`).
+    ///
+    /// The blob is compressed here, while the mutation is built: callers build it before they
+    /// take the server's state lock, so the compression does not run under it.
     pub fn snapshot(
         &mut self,
         pane: &str,
@@ -358,7 +370,7 @@ impl Mutation {
             offset,
             engine: engine.into(),
             version: version.into(),
-            blob,
+            zblob: zstd::encode_all(&blob[..], 3).map_err(|e| e.to_string()),
             incarnation: incarnation.into(),
         });
         self
@@ -629,10 +641,10 @@ impl Store {
                     offset,
                     engine,
                     version,
-                    blob,
+                    zblob,
                     incarnation,
                 } => {
-                    let blob = zstd::encode_all(&blob[..], 3)?;
+                    let blob = zblob.map_err(|e| anyhow::anyhow!("compress VT snapshot: {e}"))?;
                     tx.execute(
                         "INSERT INTO vt_snapshots (pane_id, holder_offset, engine, engine_version, blob, taken_at, holder_incarnation) VALUES (?1,?2,?3,?4,?5,?6,?7)
                          ON CONFLICT(pane_id) DO UPDATE SET holder_offset=?2, engine=?3, engine_version=?4, blob=?5, taken_at=?6, holder_incarnation=?7",
@@ -997,6 +1009,65 @@ impl Store {
             }
         }
         Ok(PruneReport { aged, capped })
+    }
+
+    /// Delete the turns of kind `turn_kind` that ended before `cutoff_ms` (JSON `ended_at_ms`)
+    /// together with their items (kind `item_kind`, JSON `turn_id`), in one transaction. Open
+    /// turns are kept. Returns the rows removed. Uses the `entities_turn` index.
+    pub fn prune_ended_turns(
+        &self,
+        turn_kind: &str,
+        item_kind: &str,
+        cutoff_ms: i64,
+    ) -> Result<usize> {
+        let tx = self.conn.unchecked_transaction()?;
+        let items = tx.execute(
+            "DELETE FROM entities WHERE kind=?1 AND json_extract(json, '$.turn_id') IN (
+               SELECT id FROM entities WHERE kind=?2 AND json_extract(json, '$.ended_at_ms') < ?3)",
+            params![item_kind, turn_kind, cutoff_ms],
+        )?;
+        let turns = tx.execute(
+            "DELETE FROM entities WHERE kind=?1 AND json_extract(json, '$.ended_at_ms') < ?2",
+            params![turn_kind, cutoff_ms],
+        )?;
+        tx.commit()?;
+        Ok(items + turns)
+    }
+
+    /// Age-based retention of closed history rows (`events.closed_retention`): rows last
+    /// written before `cutoff_ms` of
+    ///
+    /// - closed runs, except runs of a task that is still open (a parked task resumes them);
+    /// - closed interactions and panes;
+    /// - per-turn usage (`turn_usage`, JSON `run`) and tool records (`tool_item`, JSON
+    ///   `run_id`) whose run no longer exists.
+    ///
+    /// Open rows are never touched. Returns the rows removed.
+    pub fn prune_closed(&self, cutoff_ms: i64) -> Result<usize> {
+        let tx = self.conn.unchecked_transaction()?;
+        let mut n = tx.execute(
+            "DELETE FROM entities WHERE kind='run' AND closed=1 AND updated_at < ?1
+               AND (json_extract(json, '$.task') IS NULL
+                    OR json_extract(json, '$.task') NOT IN
+                       (SELECT id FROM entities WHERE kind='task' AND closed=0))",
+            [cutoff_ms],
+        )?;
+        n += tx.execute(
+            "DELETE FROM entities WHERE kind IN ('interaction', 'pane') AND closed=1 AND updated_at < ?1",
+            [cutoff_ms],
+        )?;
+        n += tx.execute(
+            "DELETE FROM entities WHERE kind='turn_usage' AND updated_at < ?1
+               AND json_extract(json, '$.run') NOT IN (SELECT id FROM entities WHERE kind='run')",
+            [cutoff_ms],
+        )?;
+        n += tx.execute(
+            "DELETE FROM entities WHERE kind='tool_item' AND updated_at < ?1
+               AND json_extract(json, '$.run_id') NOT IN (SELECT id FROM entities WHERE kind='run')",
+            [cutoff_ms],
+        )?;
+        tx.commit()?;
+        Ok(n)
     }
 
     /// Number of rows in the event log.

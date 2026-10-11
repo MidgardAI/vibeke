@@ -81,3 +81,11 @@ fn a_non_table_section_warns() {
     assert_eq!(cfg.events(), Events::default());
     assert!(w.iter().any(|w| w.key == "events"), "{w:?}");
 }
+
+#[test]
+fn closed_retention_defaults_to_ninety_days_and_parses() {
+    assert_eq!(Events::default().closed_days, 90);
+    let (cfg, w) = parse("[events]\nclosed_retention = \"30d\"\n");
+    assert_eq!(w, vec![]);
+    assert_eq!(cfg.events().closed_days, 30);
+}
