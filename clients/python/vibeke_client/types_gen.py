@@ -8740,7 +8740,7 @@ METHODS: Dict[str, Dict[str, Any]] = {
     "sandbox.status": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "sandbox.stop": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "screenshot.add": {"mutating": True, "scope": "pane", "pane_scope": "open"},
-    "screenshot.delete": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "screenshot.delete": {"mutating": True, "scope": "pane", "pane_scope": "open"},
     "screenshot.get": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "screenshot.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "screenshot.open": {"mutating": False, "scope": "pane", "pane_scope": "open"},

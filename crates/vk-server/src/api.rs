@@ -358,7 +358,6 @@ pub const PANE_FORBIDDEN: &[&str] = &[
     "preview.profile.reset",
     "preview.profile_reset",
     "client.focus",
-    "screenshot.delete",
     "browser.watch",
     "browser.install",
     "browser.take_over",
@@ -409,7 +408,8 @@ pub const PANE_FORBIDDEN_PREFIXES: &[&str] = &["assistant.", "cloud."];
 // pane, `browser.eval` without the `browser.script` capability (`preview.browser_script`),
 // `git.status|diff {path}`, `worktree.create {focus: true}`, `compat.herdr.call` of a
 // focus/close method, `screenshot.*` / `task.*` / `draft.*` reads outside the caller's
-// workspace, and `task.operation.get` receipts.
+// workspace, `screenshot.delete` of an image the caller's pane did not attach, and
+// `task.operation.get` receipts.
 
 /// How a pane-scoped caller may use a method (09 §5.2). The single source for both
 /// [`authorize`] (dispatch) and the generated API catalog (`docs/api/methods.json`).

@@ -902,7 +902,7 @@ async fn pane_scope_sees_only_its_workspace() {
         .await
         .unwrap_err();
     assert_eq!(err.data.kind, "not_found");
-    // Agents can't delete evidence.
+    // Agents can't delete captured evidence, even from their own pane.
     let err = e
         .call(
             &ctx_pane("pane-a"),
@@ -1390,4 +1390,32 @@ fn decodes_are_bounded_by_the_allocation_limit() {
     // PNG is only checked, never decoded: the cap does not apply to it.
     let (same, w, h) = normalize_image(tall.clone(), 1).unwrap();
     assert_eq!((w, h, same), (40, 400, tall));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pane_deletes_only_images_it_attached() {
+    let e = Env::new();
+    let data = png(3, 2, |_, _| [9, 9, 9, 255]);
+    let r = e
+        .call(
+            &ctx_pane("pane-a"),
+            "screenshot.add",
+            json!({"data_b64": b64(&data)}),
+        )
+        .await
+        .unwrap();
+    let id = r["id"].as_str().unwrap().to_owned();
+    for (ctx, params) in [
+        (ctx_pane("pane-b"), json!({"id": id})),
+        (ctx_pane("pane-a"), json!({"id": id, "force": true})),
+    ] {
+        let err = e.call(&ctx, "screenshot.delete", params).await.unwrap_err();
+        assert_eq!(err.data.kind, "permission_denied");
+    }
+    let ok = e
+        .call(&ctx_pane("pane-a"), "screenshot.delete", json!({"id": id}))
+        .await
+        .unwrap();
+    assert_eq!(ok["deleted"], true);
+    assert!(find(&e.server, &id).is_none());
 }

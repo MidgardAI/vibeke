@@ -4556,14 +4556,14 @@
     {
       "name": "screenshot.delete",
       "mutating": true,
-      "scope": "full",
-      "pane_scope": "forbidden",
+      "scope": "pane",
+      "pane_scope": "open",
       "gateway": "actor_required",
       "tables": [
         "screenshots"
       ],
       "milestone": "M3",
-      "spec": "`{id, force?}` → `{id, handle, deleted, blob_removed}` — human only (`permission_denied` for panes). A screenshot referenced by a review acceptance needs `force` (`conflict {reason: \"referenced_by_acceptance\"}`). The blob goes when no other record references it. Event `screenshot.deleted {ids, reason: deleted\\|retention}`.",
+      "spec": "`{id, force?}` → `{id, handle, deleted, blob_removed}` — a pane may delete only images it attached itself (`screenshot.add`), without `force`; anything else is `permission_denied` for panes. A screenshot referenced by a review acceptance needs `force` (`conflict {reason: \"referenced_by_acceptance\"}`). The blob goes when no other record references it. Event `screenshot.deleted {ids, reason: deleted\\|retention}`.",
       "params": "{id: string, force?: bool}",
       "result": "{id: string, handle: string, deleted: bool, blob_removed: bool}"
     },

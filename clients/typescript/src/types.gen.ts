@@ -8564,7 +8564,7 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "sandbox.status": { mutating: false, scope: "pane", paneScope: "open" },
   "sandbox.stop": { mutating: true, scope: "full", paneScope: "forbidden" },
   "screenshot.add": { mutating: true, scope: "pane", paneScope: "open" },
-  "screenshot.delete": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "screenshot.delete": { mutating: true, scope: "pane", paneScope: "open" },
   "screenshot.get": { mutating: false, scope: "pane", paneScope: "open" },
   "screenshot.list": { mutating: false, scope: "pane", paneScope: "open" },
   "screenshot.open": { mutating: false, scope: "pane", paneScope: "open" },

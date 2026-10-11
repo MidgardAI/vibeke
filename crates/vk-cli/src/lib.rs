@@ -1554,7 +1554,7 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         "delete",
         "screenshot.delete",
         &["id"],
-        "<sN|id> [--force] Human access only. Use --force for screenshots in an accepted review.",
+        "<sN|id> [--force] From a pane, only images that pane attached. Use --force for screenshots in an accepted review.",
     ),
     (
         "screenshot",

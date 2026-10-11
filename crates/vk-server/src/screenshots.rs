@@ -1289,18 +1289,25 @@ pub(crate) fn thumbnail_png(
 }
 
 fn delete(server: &Server, ctx: &Ctx, p: &Value) -> R {
-    if ctx.pane_scope.is_some() {
-        return Err(err(
-            ErrorKind::PermissionDenied,
-            "screenshot.delete is a human action (evidence can't be deleted by agents)",
-        )
-        .details(json!({"scope": "pane"})));
-    }
     let t = s(p, "id")
         .or_else(|| s(p, "screenshot"))
         .ok_or_else(|| invalid("missing param `id`"))?;
     let m = find(server, t).ok_or_else(|| not_found("screenshot", t))?;
-    if !b(p, "force").unwrap_or(false) && referenced_by_acceptance(server, &m) {
+    let force = b(p, "force").unwrap_or(false);
+    // A pane may delete the images it attached itself (`screenshot.add`), so a person working
+    // in a pane can clean up. Captured screenshots are evidence: only the user deletes them.
+    if let Some(own) = &ctx.pane_scope {
+        let attached_here =
+            m.environment.kind == EnvKind::Agent && m.taken_by.pane.as_deref() == Some(own);
+        if !attached_here || force {
+            return Err(err(
+                ErrorKind::PermissionDenied,
+                "a pane can delete only the images it attached itself, without force",
+            )
+            .details(json!({"scope": "pane"})));
+        }
+    }
+    if !force && referenced_by_acceptance(server, &m) {
         return Err(err(
             ErrorKind::Conflict,
             "this screenshot is part of an accepted review; pass force to delete it anyway",

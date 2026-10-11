@@ -1630,8 +1630,8 @@
     },
     "screenshot.delete": {
       "mutating": true,
-      "scope": "full",
-      "pane_scope": "forbidden"
+      "scope": "pane",
+      "pane_scope": "open"
     },
     "screenshot.get": {
       "mutating": false,

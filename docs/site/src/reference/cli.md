@@ -472,7 +472,7 @@ Use `--json` to print JSON. Non-terminal output also uses JSON.
 | `open` | `<id>` | `screenshot.open` | <sN\|id> — copy to a local temp file and open it |
 | `diff` | `<a>` `<b>` | `browser.diff` | <shotA> <shotB> [--threshold 0.1] [--force] [--out diff.png] |
 | `add` | `<files...>` | `screenshot.add` | <file>... [--caption text] [--pane p] — attach PNG or JPEG files so the user can see them (terminal, desktop app, phone) |
-| `delete` | `<id>` | `screenshot.delete` | <sN\|id> [--force] Human access only. Use --force for screenshots in an accepted review. |
+| `delete` | `<id>` | `screenshot.delete` | <sN\|id> [--force] From a pane, only images that pane attached. Use --force for screenshots in an accepted review. |
 | `code-state` | `<path>` | `screenshot.code_state` | [dir] — Print local code state as JSON. Serve the result at /__vibeke_build. |
 
 ## `vibeke desk`
