@@ -67,6 +67,20 @@ class UnpackTest(unittest.TestCase):
         with open(os.path.join(self.dest, "a-linux.json"), "rb") as f:
             self.assertEqual(f.read(), b"{}")
 
+    def test_keeps_the_run_logs(self):
+        ok = self.run_unpack(
+            [
+                reg("./a-linux.json", b"{}"),
+                reg("./a-linux/logs/vibeke-server.log", b"log"),
+                reg("./a-linux/logs/herdr-trace.jsonl", b"{}\n"),
+            ]
+        )
+        self.assertTrue(ok, self.log)
+        self.assertEqual(
+            self.files(),
+            ["a-linux.json", "a-linux/logs/herdr-trace.jsonl", "a-linux/logs/vibeke-server.log"],
+        )
+
     def test_skips_links_devices_and_unsafe_names(self):
         ok = self.run_unpack(
             [

@@ -393,4 +393,13 @@ describe("collect", () => {
       ["artifact-a/owner__repo-linux.json", "ok"],
     ]);
   });
+
+  test("ignores the diagnostics under <stem>-<os>/logs/", () => {
+    const dir = mkdtempSync(join(tmpdir(), "hp-logs-"));
+    mkdirSync(join(dir, "artifact-a", "owner__repo-linux", "logs"), { recursive: true });
+    writeFileSync(join(dir, "artifact-a", "owner__repo-linux.json"), JSON.stringify(result()));
+    writeFileSync(join(dir, "artifact-a", "owner__repo-linux", "logs", "forged-linux.json"), "{}");
+    writeFileSync(join(dir, "artifact-a", "owner__repo-linux", "logs", "vibeke-server.log"), "log");
+    expect(collect(dir).map((i) => i.file)).toEqual(["artifact-a/owner__repo-linux.json"]);
+  });
 });

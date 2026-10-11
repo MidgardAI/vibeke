@@ -341,11 +341,20 @@ jobs:
           export RUSTUP_HOME="$HP/tools/rustup" CARGO_HOME="$HP/tools/cargo"
           tool_path=""
           rust=""
+          lock_tools=""
           while IFS='=' read -r name version; do
+            lock_tools="$lock_tools $name"
             case $name in
               node | go | bun)
                 (cd "$HP" && mise install "$name@$version")
                 tool_path="$tool_path:$(cd "$HP" && mise where "$name@$version")/bin"
+                ;;
+              uv | neovim)
+                # Their binaries are not always in <install>/bin, so ask mise where they are.
+                exe=$name
+                [ "$name" != neovim ] || exe=nvim
+                (cd "$HP" && mise install "$name@$version")
+                tool_path="$tool_path:$(dirname "$(cd "$HP" && mise which --tool "$name@$version" "$exe")")"
                 ;;
               rust)
                 (cd "$HP" && mise install "rust@$version")
@@ -355,8 +364,67 @@ jobs:
               *) echo "unknown toolchain $name"; exit 1 ;;
             esac
           done < "$RUNNER_TEMP/toolchains.txt"
+          {
+            echo "TOOL_PATH=${tool_path#:}"
+            echo "RUST_TOOLCHAIN=$rust"
+            echo "LOCK_TOOLS=$lock_tools"
+          } >> "$GITHUB_ENV"
+
+      - name: Install uv and Neovim for the plugin
+        # Plugins call `uv run --script` (hooks) and `nvim` like any Herdr user's machine has
+        # them. Pinned release archives, checked against their sha256 before use. A version
+        # in the lock's toolchains replaces these.
+        timeout-minutes: 10
+        env:
+          UV_VERSION: "0.12.13"
+          UV_SHA256_LINUX: 745765a3b6e360ad76743599ae5c42e9278c7edf8bbff9fc76d05bf2623a04dd
+          UV_SHA256_MACOS: 7e6ddb9316acc00f2296c82ff4d99977870ee34b2f0ddcae9444d714db9364ed
+          NVIM_VERSION: "0.12.5"
+          NVIM_SHA256_LINUX: bce0f56eda1f1b1db6eee8f4133d7a38813ea07933837dd1777411ca384c6875
+          NVIM_SHA256_MACOS: 65fb000099e47ca1b762584c484cc833f40e30851a0ec450d4174e16317c1f9b
+        run: |
+          set -eu
+          case $PLUGIN_OS in
+            linux)
+              uv_asset=uv-x86_64-unknown-linux-gnu uv_sha=$UV_SHA256_LINUX
+              nvim_asset=nvim-linux-x86_64 nvim_sha=$NVIM_SHA256_LINUX
+              ;;
+            macos)
+              uv_asset=uv-aarch64-apple-darwin uv_sha=$UV_SHA256_MACOS
+              nvim_asset=nvim-macos-arm64 nvim_sha=$NVIM_SHA256_MACOS
+              ;;
+            *) echo "unknown OS $PLUGIN_OS"; exit 1 ;;
+          esac
+          dl="$RUNNER_TEMP/extra-tools"
+          mkdir -p "$dl"
+          fetch() {
+            curl -fsSL --retry 3 -o "$dl/$2" "$1"
+            echo "$3  $dl/$2" | shasum -a 256 -c -
+          }
+          extra=""
+          case " $LOCK_TOOLS " in
+            *" uv "*) echo "uv comes from the lock" ;;
+            *)
+              fetch "https://github.com/astral-sh/uv/releases/download/$UV_VERSION/$uv_asset.tar.gz" uv.tar.gz "$uv_sha"
+              install -d "$HP/tools/uv"
+              tar -xzf "$dl/uv.tar.gz" -C "$HP/tools/uv" --strip-components 1
+              "$HP/tools/uv/uv" --version
+              extra="$extra:$HP/tools/uv"
+              ;;
+          esac
+          case " $LOCK_TOOLS " in
+            *" neovim "*) echo "Neovim comes from the lock" ;;
+            *)
+              fetch "https://github.com/neovim/neovim/releases/download/v$NVIM_VERSION/$nvim_asset.tar.gz" nvim.tar.gz "$nvim_sha"
+              install -d "$HP/tools/nvim"
+              tar -xzf "$dl/nvim.tar.gz" -C "$HP/tools/nvim" --strip-components 1
+              "$HP/tools/nvim/bin/nvim" --version | head -n 1
+              extra="$extra:$HP/tools/nvim/bin"
+              ;;
+          esac
+          # After the lock's toolchains on the plugin PATH of both sides.
+          tool_path="$TOOL_PATH$extra"
           echo "TOOL_PATH=${tool_path#:}" >> "$GITHUB_ENV"
-          echo "RUST_TOOLCHAIN=$rust" >> "$GITHUB_ENV"
 
       - name: Fetch and scan the plugin source
         timeout-minutes: 15
@@ -463,7 +531,8 @@ jobs:
             --binaries-metadata "$HP/ex/target/nextest/binaries-metadata.json" \
             --cargo-metadata "$HP/ex/target/nextest/cargo-metadata.json" \
             --target-dir-remap "$HP/ex/target" --workspace-remap "$HP/src" \
-            --run-ignored only --no-fail-fast --no-tests fail -E "$TEST_FILTER" || status=$?
+            --run-ignored only --no-fail-fast --no-tests fail --success-output final \
+            -E "$TEST_FILTER" || status=$?
           echo "status=$status" >> "$GITHUB_OUTPUT"
           echo "Plugin test exit status $status. The report job decides the outcome."
           # Plugin failures do not fail this job (125 is a boundary setup error).
