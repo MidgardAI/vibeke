@@ -454,3 +454,223 @@ fn closing_the_popup_leaves_a_running_job_in_the_tab_bar() {
     let s = status(&app).unwrap();
     assert!(s.contains("creating") && s.contains("bootstrapping"), "{s}");
 }
+
+// ---- review, shared checkout, input while moving ---------------------------------------------
+
+fn review_job(state: &str, confirmed: bool) -> Value {
+    let mut j = job(state, 0);
+    j["direction"] = json!("bring_back");
+    j["from"] = json!({"kind": "cloud", "provider": "sprites"});
+    j["to"] = json!({"kind": "local"});
+    j["confirmed"] = json!(confirmed);
+    j["result"] = json!({"review": {
+        "warning": "The sandbox ran with full permissions.",
+        "files": [{"path": "src/login.rs", "added": 3, "removed": 1}],
+        "files_total": 4, "added": 10, "removed": 2,
+        "untracked": ["notes.txt"], "untracked_total": 1,
+        "skipped": [{"path": ".env", "reason": "secret"}],
+        "harness": "claude", "transcript": true}});
+    j
+}
+
+fn stage_is_review(app: &App) -> bool {
+    matches!(
+        app.ux.cloud.flow.as_ref().map(|f| &f.stage),
+        Some(Stage::Review { .. })
+    )
+}
+
+/// Start a bring-back of `p1` to this host and let its job reach the review.
+fn bring_back_to_review(
+    app: &mut App,
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<vk_proto::render::ClientFrame>,
+) {
+    commands(rx);
+    app.action("cloud_bring_back", None);
+    let cmds = commands(rx);
+    let (req, _) = only(&cmds, "handoff.peers");
+    reply(app, 0, req, json!({"peers": []}));
+    app.on_key(named(NamedKey::Enter));
+    let cmds = commands(rx);
+    let (req, _) = only(&cmds, "cloud.move");
+    reply(app, 0, req, review_job("exporting", false));
+    push(
+        app,
+        "cloud.job",
+        json!({"job": "j1"}),
+        review_job("awaiting_confirmation", false),
+    );
+}
+
+#[test]
+fn a_review_lists_the_changes_and_what_stays_behind() {
+    let r = Review::from_value(&review_job("awaiting_confirmation", false)["result"]["review"])
+        .unwrap();
+    let l = r.lines().join("\n");
+    assert!(l.contains("4 changed files (+10 −2), 1 new file"), "{l}");
+    assert!(l.contains("src/login.rs  +3 −1"), "{l}");
+    assert!(l.contains("… 3 more changed files"), "{l}");
+    assert!(l.contains(".env (secret)"), "{l}");
+    assert!(l.contains("resumes claude"), "{l}");
+    assert!(Review::from_value(&Value::Null).is_none());
+}
+
+#[test]
+fn a_bring_back_stops_for_review_and_applies_on_a() {
+    let (mut app, mut rxs) = fleet();
+    bring_back_to_review(&mut app, &mut rxs[0]);
+    assert!(stage_is_review(&app));
+    let s = screen(&app);
+    assert!(s.contains("review the changes"), "{s}");
+    assert!(
+        s.contains("full permissions") && s.contains("src/login.rs"),
+        "{s}"
+    );
+    // Enter decides nothing here.
+    app.on_key(named(NamedKey::Enter));
+    assert!(commands(&mut rxs[0]).is_empty());
+    app.on_key(ch('a'));
+    let cmds = commands(&mut rxs[0]);
+    let (req, p) = only(&cmds, "cloud.confirm");
+    assert_eq!(p, json!({"id": "j1", "code_only": false}));
+    reply(
+        &mut app,
+        0,
+        req,
+        json!({"job": review_job("awaiting_confirmation", true)}),
+    );
+    // Confirmed: the popup follows the job again.
+    assert!(!stage_is_review(&app));
+    assert!(screen(&app).contains("applying the changes"));
+}
+
+#[test]
+fn code_only_and_cancel_from_a_review_opened_later() {
+    let (mut app, mut rxs) = fleet();
+    commands(&mut rxs[0]);
+    // The review arrives while no popup is open: a toast says how to open it.
+    push(
+        &mut app,
+        "cloud.job",
+        json!({"job": "j1"}),
+        review_job("awaiting_confirmation", false),
+    );
+    assert!(matches!(app.mode, Mode::Normal));
+    assert!(
+        app.toasts
+            .iter()
+            .any(|t| t.text.contains("waits for your review")),
+        "{:?}",
+        app.toasts.iter().map(|t| &t.text).collect::<Vec<_>>()
+    );
+    assert!(cloud_status_text(&app).contains("review waiting"));
+    // Bring back from cloud on that pane opens the review.
+    app.action("cloud_bring_back", None);
+    assert!(stage_is_review(&app));
+    assert!(commands(&mut rxs[0]).iter().all(|c| c.1 != "handoff.peers"));
+    app.on_key(ch('c'));
+    let cmds = commands(&mut rxs[0]);
+    assert_eq!(
+        only(&cmds, "cloud.confirm").1,
+        json!({"id": "j1", "code_only": true})
+    );
+    // Esc leaves it waiting; x in a reopened review cancels the move.
+    app.on_key(named(NamedKey::Escape));
+    assert!(matches!(app.mode, Mode::Normal));
+    app.action("cloud_bring_back", None);
+    app.on_key(ch('x'));
+    let cmds = commands(&mut rxs[0]);
+    assert_eq!(only(&cmds, "cloud.cancel").1, json!({"id": "j1"}));
+}
+
+fn cloud_status_text(app: &App) -> String {
+    status(app).unwrap_or_default()
+}
+
+#[test]
+fn review_keys_wait_when_the_review_appears_on_its_own() {
+    let (mut app, mut rxs) = fleet();
+    app.decide.delay = crate::decide::ARM_DELAY;
+    bring_back_to_review(&mut app, &mut rxs[0]);
+    assert!(stage_is_review(&app));
+    // An `a` typed right after the review replaced the progress decides nothing.
+    app.on_key(ch('a'));
+    assert!(commands(&mut rxs[0]).iter().all(|c| c.1 != "cloud.confirm"));
+    assert!(screen(&app).contains(crate::decide::WAIT_HINT));
+}
+
+#[test]
+fn a_shared_checkout_offers_to_send_a_new_task() {
+    let (mut app, mut rxs) = fleet();
+    commands(&mut rxs[0]);
+    app.action("cloud_send", None);
+    let cmds = commands(&mut rxs[0]);
+    let (req, _) = only(&cmds, "cloud.providers");
+    reply(&mut app, 0, req, providers());
+    app.on_key(named(NamedKey::Enter));
+    let cmds = commands(&mut rxs[0]);
+    let (req, _) = only(&cmds, "cloud.box.list");
+    reply(&mut app, 0, req, json!({"boxes": [], "errors": []}));
+    app.on_key(named(NamedKey::Enter));
+    let cmds = commands(&mut rxs[0]);
+    let (req, p) = only(&cmds, "cloud.move");
+    assert!(p.get("new_task").is_none());
+    reply_err(
+        &mut app,
+        0,
+        req,
+        "conflict",
+        json!({"reason": "shared_checkout", "why": "the repository's main checkout", "retry": {"new_task": true}}),
+    );
+    let s = screen(&app);
+    assert!(s.contains("create a task and send"), "{s}");
+    app.on_key(ch('t'));
+    let cmds = commands(&mut rxs[0]);
+    let (_, p) = only(&cmds, "cloud.move");
+    assert_eq!(p["new_task"], true);
+}
+
+#[test]
+fn input_refused_while_the_agent_moves_says_so() {
+    let (mut app, mut rxs) = fleet();
+    commands(&mut rxs[0]);
+    // Still waiting for the turn: input goes on, nothing to say.
+    push(
+        &mut app,
+        "cloud.job",
+        json!({"job": "j1"}),
+        job("waiting_turn", 0),
+    );
+    app.on_frame(
+        0,
+        vk_proto::render::ServerFrame::InputAck {
+            input_id: 1,
+            status: vk_proto::render::AckStatus::Rejected,
+        },
+    );
+    assert!(
+        !app.toasts
+            .iter()
+            .any(|t| t.text.contains("Moving to the cloud"))
+    );
+    push(
+        &mut app,
+        "cloud.job",
+        json!({"job": "j1"}),
+        job("exporting", 1),
+    );
+    app.on_frame(
+        0,
+        vk_proto::render::ServerFrame::InputAck {
+            input_id: 2,
+            status: vk_proto::render::AckStatus::Rejected,
+        },
+    );
+    assert!(
+        app.toasts
+            .iter()
+            .any(|t| t.text.contains("Moving to the cloud"))
+    );
+    assert!(moving(&app, 0, "p1"));
+    assert!(!moving(&app, 0, "p2"));
+}

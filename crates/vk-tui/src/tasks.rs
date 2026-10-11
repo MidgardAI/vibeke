@@ -2059,7 +2059,11 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
                     };
                 }
                 Err(e) => {
-                    m.error = Some(e.message);
+                    m.error = Some(if e.pane_moving() {
+                        crate::cloud::MOVING.into()
+                    } else {
+                        e.message
+                    });
                     m.phase = MsgPhase::ConfirmRetry {
                         message,
                         despite_unknown: false,

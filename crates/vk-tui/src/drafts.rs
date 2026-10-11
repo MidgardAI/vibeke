@@ -1477,6 +1477,7 @@ pub fn on_reply(app: &mut App, _mi: usize, r: Reply, res: Result<Value, RpcErr>)
                             "{} — outcome unknown; checked with the server on reconnect",
                             e.message
                         )),
+                        _ if e.pane_moving() => SendPhase::Failed(crate::cloud::MOVING.into()),
                         _ => SendPhase::Failed(e.message),
                     },
                 };

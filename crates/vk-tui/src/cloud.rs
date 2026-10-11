@@ -6,6 +6,18 @@
 //!   one (`cloud.box.list`), confirm, then follow the job (`cloud.move`, `cloud.job` events).
 //! - **Bring back** (`cloud_bring_back`, "Bring back from cloud…"): pick this host or a paired host
 //!   (`handoff.peers`), then follow the job (`cloud.move {to: {kind: "local" | "peer"}}`).
+//! - **Review**: a bring-back to this host stops in `awaiting_confirmation` with `result.review`
+//!   (the changed files with line counts, new and skipped files, and a warning: the sandbox ran
+//!   with full permissions). The popup shows it; `a` applies (`cloud.confirm`), `c` brings back
+//!   the code only (`code_only: true`, the agent does not resume from the sandbox's
+//!   transcript), `x` cancels the move. The keys go through the decision guard
+//!   ([`crate::decide`]). A review that arrives while the popup is closed is announced with a
+//!   toast; "Bring back from cloud…" on that pane, or the sandbox in the sandboxes view, opens it.
+//! - **Shared checkout**: a send from a checkout other agents or the user also use is refused
+//!   (`shared_checkout`); the Confirm stage then offers to create a task (a worktree) and send
+//!   that (`new_task: true`).
+//! - **Input while moving**: the server refuses input to a pane whose agent is moving
+//!   (`pane_moving`); the TUI says "Moving to the cloud…" instead of dropping keys silently.
 //! - **Auth**: renders the `methods` the server sends. A pasted token goes in a masked field (one
 //!   `•` per character; a bracketed paste works), `import` rows call `cloud.auth.import`, an `env`
 //!   row is a note. `o` (or `ctrl+o` in the token field) opens the token page. The token leaves
@@ -500,7 +512,146 @@ pub struct Job {
     pub error: Option<JobError>,
     pub result: Value,
     pub updated_at: i64,
+    /// `cloud.confirm` was called for a bring-back waiting for review.
+    pub confirmed: bool,
 }
+
+/// What a bring-back would apply (`result.review` of a job in `awaiting_confirmation`).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Review {
+    pub warning: String,
+    pub branch: Option<String>,
+    /// Changed files: path, added and removed lines.
+    pub files: Vec<(String, u64, u64)>,
+    pub files_total: u64,
+    pub added: u64,
+    pub removed: u64,
+    pub untracked: Vec<String>,
+    pub untracked_total: u64,
+    /// Files the export left out: path and why.
+    pub skipped: Vec<(String, String)>,
+    pub harness: Option<String>,
+    /// The agent's transcript comes along (an agent resumes from it unless code only).
+    pub transcript: bool,
+}
+
+impl Review {
+    pub fn from_value(v: &Value) -> Option<Review> {
+        if !v.is_object() {
+            return None;
+        }
+        let n = |k: &str| v.get(k).and_then(Value::as_u64).unwrap_or(0);
+        let files: Vec<(String, u64, u64)> = v["files"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|f| {
+                        Some((
+                            s_of(f, "path")?,
+                            f["added"].as_u64().unwrap_or(0),
+                            f["removed"].as_u64().unwrap_or(0),
+                        ))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let untracked: Vec<String> = v["untracked"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str().map(clean))
+                    .filter(|x| !x.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let skipped: Vec<(String, String)> = v["skipped"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| Some((s_of(x, "path")?, s_of(x, "reason").unwrap_or_default())))
+                    .collect()
+            })
+            .unwrap_or_default();
+        Some(Review {
+            warning: s_of(v, "warning").unwrap_or_else(|| {
+                "The sandbox ran with full permissions: check the changes before you apply them."
+                    .into()
+            }),
+            branch: s_of(v, "branch"),
+            files_total: n("files_total").max(files.len() as u64),
+            files,
+            added: n("added"),
+            removed: n("removed"),
+            untracked_total: n("untracked_total").max(untracked.len() as u64),
+            untracked,
+            skipped,
+            harness: s_of(v, "harness"),
+            transcript: v["transcript"].as_bool().unwrap_or(false),
+        })
+    }
+
+    /// The review's lines below the warning, in order: a summary, then each list.
+    pub fn lines(&self) -> Vec<String> {
+        let mut out = vec![format!(
+            "{} changed file{} (+{} −{}){}",
+            self.files_total,
+            if self.files_total == 1 { "" } else { "s" },
+            self.added,
+            self.removed,
+            match self.untracked_total {
+                0 => String::new(),
+                n => format!(", {n} new file{}", if n == 1 { "" } else { "s" }),
+            }
+        )];
+        if let Some(b) = &self.branch {
+            out.push(format!("branch {b}"));
+        }
+        for (p, a, r) in &self.files {
+            out.push(format!("  {p}  +{a} −{r}"));
+        }
+        let more = self.files_total.saturating_sub(self.files.len() as u64);
+        if more > 0 {
+            out.push(format!("  … {more} more changed files"));
+        }
+        if !self.untracked.is_empty() {
+            out.push("New files:".into());
+            for p in &self.untracked {
+                out.push(format!("  {p}"));
+            }
+            let more = self
+                .untracked_total
+                .saturating_sub(self.untracked.len() as u64);
+            if more > 0 {
+                out.push(format!("  … {more} more new files"));
+            }
+        }
+        if !self.skipped.is_empty() {
+            out.push("Left in the sandbox (not brought back):".into());
+            for (p, why) in &self.skipped {
+                if why.is_empty() {
+                    out.push(format!("  {p}"));
+                } else {
+                    out.push(format!("  {p} ({why})"));
+                }
+            }
+        }
+        out.push(String::new());
+        if self.transcript {
+            out.push(format!(
+                "Apply brings back the files and resumes {} here from the sandbox's transcript.",
+                self.harness.as_deref().unwrap_or("the agent")
+            ));
+            out.push("Code only brings back the files. The agent does not resume.".into());
+        } else {
+            out.push("Apply brings back the files. No agent transcript comes along.".into());
+        }
+        out
+    }
+}
+
+/// What the TUI says while a pane's agent moves and the pane takes no input.
+pub const MOVING: &str =
+    "Moving to the cloud… input to this pane is paused until the move finishes";
 
 impl Job {
     pub fn from_value(v: &Value) -> Option<Job> {
@@ -526,11 +677,27 @@ impl Job {
                 .map(JobError::from_value),
             result: v.get("result").cloned().unwrap_or(Value::Null),
             updated_at: time_of(v, "updated_at"),
+            confirmed: v["confirmed"].as_bool().unwrap_or(false),
         })
     }
 
     pub fn active(&self) -> bool {
         !matches!(self.state.as_str(), "done" | "failed" | "cancelled")
+    }
+
+    /// A bring-back that waits for the user to review what it would apply.
+    pub fn awaiting_review(&self) -> bool {
+        self.state == "awaiting_confirmation" && !self.confirmed
+    }
+
+    /// The summary of what the bring-back would apply, while it waits for review.
+    pub fn review(&self) -> Option<Review> {
+        Review::from_value(self.result.get("review")?)
+    }
+
+    /// The pane's input is paused: the move is past the agent's turn and not finished.
+    pub fn freezes_input(&self) -> bool {
+        self.active() && !matches!(self.state.as_str(), "queued" | "waiting_turn")
     }
 
     /// The cloud end's provider: where it goes (send) or where it comes from (bring back).
@@ -559,6 +726,8 @@ impl Job {
             "creating" => "creating the sandbox".into(),
             "bootstrapping" => "setting up Vibeke in the sandbox".into(),
             "exporting" => "exporting the work".into(),
+            "awaiting_confirmation" if self.confirmed => "applying the changes".into(),
+            "awaiting_confirmation" => "waiting for you to review the changes".into(),
             "uploading" => "uploading".into(),
             "importing" => "importing".into(),
             "resuming" => "resuming the agent".into(),
@@ -571,6 +740,9 @@ impl Job {
 
     /// The tab bar's text: "☁ sprites creating 42%".
     pub fn status(&self) -> String {
+        if self.awaiting_review() {
+            return format!("☁ {} review waiting", self.provider());
+        }
         let mut s = format!("☁ {} {}", self.provider(), self.state.replace('_', " "));
         if let Some(p) = self.percent().filter(|_| self.total > 0) {
             s.push_str(&format!(" {p}%"));
@@ -602,12 +774,22 @@ pub enum Source {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Stage {
-    PickProvider { sel: usize },
+    PickProvider {
+        sel: usize,
+    },
     Auth(AuthState),
-    PickBox { sel: usize },
+    PickBox {
+        sel: usize,
+    },
     Confirm,
-    PickTarget { sel: usize },
+    PickTarget {
+        sel: usize,
+    },
     Sending,
+    /// A bring-back waits for review (`awaiting_confirmation`): the flow's job has the summary.
+    Review {
+        scroll: usize,
+    },
 }
 
 /// The call to repeat once after signing in.
@@ -646,6 +828,11 @@ pub struct Flow {
     pub retried: bool,
     pub job: Option<Job>,
     polled_at: Option<Instant>,
+    /// The send was refused because the checkout is shared (`shared_checkout`): the reason.
+    /// The Confirm stage then offers to send a new task instead.
+    pub shared: Option<String>,
+    /// Send with `new_task: true` (a new task worktree gets the work).
+    pub new_task: bool,
 }
 
 #[derive(Default)]
@@ -655,6 +842,8 @@ pub struct State {
     pub flow: Option<Flow>,
     /// Machines whose server has no `cloud.jobs`.
     pub unsupported: HashSet<usize>,
+    /// When "Moving to the cloud…" was last shown for refused input.
+    pub moving_toast: Option<Instant>,
 }
 
 #[derive(Debug, Clone)]
@@ -668,6 +857,8 @@ pub enum Call {
     /// `cloud.jobs`, polled for the flow's job.
     Jobs,
     Cancel,
+    /// `cloud.confirm` of a reviewed bring-back.
+    Confirm,
     /// `cloud.jobs` on connecting (no flow).
     AllJobs,
 }
@@ -762,6 +953,8 @@ fn open(app: &mut App, mi: usize, kind: Kind, src: Source, label: String) {
         retried: false,
         job: None,
         polled_at: None,
+        shared: None,
+        new_task: false,
     });
     app.mode = Mode::Popup(Popup::CloudSend);
     match kind {
@@ -780,9 +973,20 @@ pub fn open_send(app: &mut App) {
     open(app, mi, Kind::Send, Source::Pane(pane), label);
 }
 
-/// `cloud_bring_back`: the focused (or right-clicked) cloud pane comes back.
+/// `cloud_bring_back`: the focused (or right-clicked) cloud pane comes back. A bring-back of
+/// that pane that waits for review opens its review instead (else, without a pane, the newest
+/// one waiting).
 pub fn open_bring_back(app: &mut App) {
-    let Some((mi, pane)) = crate::handoff::take_target(app) else {
+    let target = crate::handoff::take_target(app);
+    let waiting = match &target {
+        Some((mi, pane)) => waiting_review(app, *mi, |j| j.pane.as_deref() == Some(pane.as_str())),
+        None => (0..app.machines.len()).find_map(|mi| waiting_review(app, mi, |_| true)),
+    };
+    if let Some((mi, job)) = waiting {
+        open_review(app, mi, job);
+        return;
+    }
+    let Some((mi, pane)) = target else {
         app.toast("no focused pane to bring back");
         return;
     };
@@ -790,8 +994,66 @@ pub fn open_bring_back(app: &mut App) {
     open(app, mi, Kind::BringBack, Source::Pane(pane), label);
 }
 
-/// Bring back everything in sandbox `box_id` (`provider/id`), from the sandboxes overview.
+/// The newest bring-back on machine `mi` that waits for review and matches `f`.
+pub(crate) fn waiting_review(
+    app: &App,
+    mi: usize,
+    f: impl Fn(&Job) -> bool,
+) -> Option<(usize, Job)> {
+    app.ux
+        .cloud
+        .jobs
+        .get(&mi)?
+        .iter()
+        .find(|j| j.awaiting_review() && j.review().is_some() && f(j))
+        .map(|j| (mi, j.clone()))
+}
+
+/// Open the review of a bring-back waiting in `awaiting_confirmation`.
+pub(crate) fn open_review(app: &mut App, mi: usize, job: Job) {
+    let (src, label) = match (&job.pane, &job.box_id) {
+        (Some(p), _) => (
+            Source::Pane(p.clone()),
+            crate::handoff::pane_label(app, mi, p),
+        ),
+        (None, Some(b)) => (Source::Box(b.clone()), format!("sandbox {b}")),
+        (None, None) => (Source::Box(String::new()), "the sandbox's work".into()),
+    };
+    app.ux.cloud.flow = Some(Flow {
+        op: next_op(),
+        mi,
+        kind: Kind::BringBack,
+        src,
+        label,
+        task_keys: Vec::new(),
+        providers: Vec::new(),
+        provider: None,
+        boxes: Vec::new(),
+        box_sel: None,
+        peers: Vec::new(),
+        interrupt: false,
+        stage: Stage::Review { scroll: 0 },
+        loading: false,
+        busy: None,
+        error: None,
+        retry: None,
+        retried: false,
+        job: Some(job),
+        polled_at: None,
+        shared: None,
+        new_task: false,
+    });
+    app.mode = Mode::Popup(Popup::CloudSend);
+    app.dirty = true;
+}
+
+/// Bring back everything in sandbox `box_id` (`provider/id`), from the sandboxes overview. A
+/// bring-back of that sandbox that waits for review opens its review instead.
 pub(crate) fn open_bring_back_box(app: &mut App, mi: usize, box_id: &str, name: &str) {
+    if let Some((mi, job)) = waiting_review(app, mi, |j| j.box_id.as_deref() == Some(box_id)) {
+        open_review(app, mi, job);
+        return;
+    }
     open(
         app,
         mi,
@@ -848,6 +1110,16 @@ fn upsert_job(app: &mut App, mi: usize, j: Job) {
         .flow
         .as_ref()
         .is_some_and(|f| f.mi == mi && f.job.as_ref().is_some_and(|x| x.id == j.id));
+    let shown = own && matches!(app.mode, Mode::Popup(Popup::CloudSend));
+    let new_review = j.awaiting_review()
+        && j.review().is_some()
+        && before.as_ref().is_none_or(|b| !b.awaiting_review());
+    if new_review && !shown {
+        app.toast(format!(
+            "☁ The bring-back from {} waits for your review: open it with Bring back from cloud…",
+            j.provider()
+        ));
+    }
     if own {
         flow_job(app, j);
     }
@@ -863,10 +1135,20 @@ fn flow_job(app: &mut App, j: Job) {
         .filter(|e| e.reason() == Some("needs_auth"))
         .map(|e| e.details.clone());
     let ended = !j.active();
+    let review = j.awaiting_review() && j.review().is_some();
     let Some(f) = app.ux.cloud.flow.as_mut() else {
         return;
     };
     f.job = Some(j);
+    // The job reached its review, or left it (applied, cancelled, timed out).
+    let sending = matches!(f.stage, Stage::Sending);
+    let reviewing = matches!(f.stage, Stage::Review { .. });
+    if sending && review {
+        f.stage = Stage::Review { scroll: 0 };
+    } else if reviewing && !review {
+        f.stage = Stage::Sending;
+        f.busy = None;
+    }
     if let Some(d) = needs {
         enter_auth(f, &d);
     } else if ended {
@@ -928,6 +1210,49 @@ pub fn status(app: &App) -> Option<String> {
     }
 }
 
+/// The server refused input to a pane (`InputAck` rejected). While the focused pane's agent
+/// moves to or from a sandbox, say so (at most every few seconds) instead of dropping keys
+/// silently.
+pub fn on_input_rejected(app: &mut App, mi: usize) {
+    let Some(pane) = (mi == app.cur).then(|| app.focused_pane()).flatten() else {
+        return;
+    };
+    if !moving(app, mi, &pane) {
+        return;
+    }
+    let now = Instant::now();
+    if app
+        .ux
+        .cloud
+        .moving_toast
+        .is_some_and(|t| now.duration_since(t) < MOVING_TOAST_EVERY)
+    {
+        return;
+    }
+    app.ux.cloud.moving_toast = Some(now);
+    app.toast(format!("☁ {MOVING}"));
+}
+
+/// How often the "Moving to the cloud…" toast repeats while keys keep being refused.
+const MOVING_TOAST_EVERY: Duration = Duration::from_secs(4);
+
+/// The agent of `pane` is being moved: its input is paused.
+pub fn moving(app: &App, mi: usize, pane: &str) -> bool {
+    app.ux.cloud.jobs.get(&mi).is_some_and(|l| {
+        l.iter()
+            .any(|j| j.pane.as_deref() == Some(pane) && j.freezes_input())
+    })
+}
+
+/// What the decision keys of the cloud popup act on: the reviewed job ([`crate::decide`]).
+pub fn review_target(app: &App) -> Option<String> {
+    let f = app.ux.cloud.flow.as_ref()?;
+    match (&f.stage, &f.job) {
+        (Stage::Review { .. }, Some(j)) => Some(format!("cloud_review:{}:{}", f.mi, j.id)),
+        _ => None,
+    }
+}
+
 // ---- polling ---------------------------------------------------------------------------------
 
 fn polling(app: &App) -> Option<&Flow> {
@@ -980,6 +1305,13 @@ pub enum Act {
     Focus(String),
     /// Leave the Auth stage for the provider list.
     LeaveAuth,
+    /// `cloud.confirm` the reviewed bring-back (`code_only`: no agent resume).
+    Confirm {
+        id: String,
+        code_only: bool,
+    },
+    /// Close the review; the bring-back keeps waiting.
+    LaterReview,
 }
 
 fn moved(sel: &mut usize, n: usize, up: bool, down: bool) {
@@ -1039,6 +1371,8 @@ pub fn on_key(f: &mut Flow, ev: &KeyEvent) -> Act {
         Stage::Confirm => {
             if esc {
                 f.error = None;
+                f.shared = None;
+                f.new_task = false;
                 f.stage = if f.boxes.is_empty() {
                     Stage::PickProvider { sel: 0 }
                 } else {
@@ -1051,8 +1385,14 @@ pub fn on_key(f: &mut Flow, ev: &KeyEvent) -> Act {
             }
             let toggle = matches!(ev.key, Key::Named(NamedKey::Space))
                 || (plain && matches!(ev.key, Key::Char('i' | ' ')));
+            let new_task =
+                f.shared.is_some() && (enter || (plain && matches!(ev.key, Key::Char('t'))));
             if toggle {
                 f.interrupt = !f.interrupt;
+            } else if new_task {
+                // The checkout is shared: copy the work into a new task and send that.
+                f.new_task = true;
+                return Act::StartMove;
             } else if enter {
                 return Act::StartMove;
             }
@@ -1064,6 +1404,46 @@ pub fn on_key(f: &mut Flow, ev: &KeyEvent) -> Act {
             moved(sel, f.peers.len() + 1, up, down);
             if enter && f.busy.is_none() {
                 return Act::StartMove;
+            }
+        }
+        Stage::Review { scroll } => {
+            if quit {
+                return Act::LaterReview;
+            }
+            if up {
+                *scroll = scroll.saturating_sub(1);
+                return Act::None;
+            }
+            if down {
+                let n = f
+                    .job
+                    .as_ref()
+                    .and_then(Job::review)
+                    .map_or(0, |r| r.lines().len());
+                *scroll = (*scroll + 1).min(n.saturating_sub(1));
+                return Act::None;
+            }
+            let Some(j) = f.job.clone() else {
+                return Act::None;
+            };
+            if !plain || f.busy.is_some() {
+                return Act::None;
+            }
+            match ev.key {
+                Key::Char('a') => {
+                    return Act::Confirm {
+                        id: j.id,
+                        code_only: false,
+                    };
+                }
+                Key::Char('c') => {
+                    return Act::Confirm {
+                        id: j.id,
+                        code_only: true,
+                    };
+                }
+                Key::Char('x') => return Act::CancelJob(j.id),
+                _ => {}
             }
         }
         Stage::Sending => {
@@ -1100,8 +1480,28 @@ pub fn on_key(f: &mut Flow, ev: &KeyEvent) -> Act {
     Act::None
 }
 
+/// The keys of the review that decide something (apply, code only, cancel the move).
+pub fn review_decides(ev: &KeyEvent) -> bool {
+    matches!(ev.key, Key::Char('a' | 'c' | 'x'))
+}
+
 pub fn key(app: &mut App, ev: KeyEvent) {
     app.mode = Mode::Popup(Popup::CloudSend);
+    // The review's decision keys go through the decision guard: only a fresh press, and not
+    // right after the review appeared on its own (releases go there too, so it sees them).
+    if let Some(target) = review_target(app) {
+        let gate = app.decide.gate(
+            Some(&target),
+            &ev,
+            Instant::now(),
+            app.kitty,
+            review_decides(&ev),
+        );
+        if gate != crate::decide::Gate::Go {
+            app.dirty = true;
+            return;
+        }
+    }
     if ev.kind == KeyKind::Release {
         return;
     }
@@ -1156,6 +1556,36 @@ fn run(app: &mut App, act: Act) {
                     Kind::BringBack => Stage::PickTarget { sel: 0 },
                 };
             }
+        }
+        Act::Confirm { id, code_only } => {
+            let Some(f) = app.ux.cloud.flow.as_mut() else {
+                return;
+            };
+            f.busy = Some(if code_only {
+                "bringing back the code…".into()
+            } else {
+                "applying…".into()
+            });
+            f.error = None;
+            let (mi, op) = (f.mi, f.op);
+            send_call(
+                app,
+                mi,
+                "cloud.confirm",
+                json!({"id": id, "code_only": code_only}),
+                op,
+                Call::Confirm,
+            );
+        }
+        Act::LaterReview => {
+            let decided = app.ux.cloud.flow.as_ref().is_some_and(|f| f.busy.is_some());
+            close(app);
+            if decided {
+                return;
+            }
+            app.toast(
+                "☁ The bring-back waits for your review (up to 24 hours): Bring back from cloud… opens it again",
+            );
         }
     }
 }
@@ -1256,6 +1686,9 @@ pub fn move_params(f: &Flow) -> Option<Value> {
     p["to"] = move_target(f)?;
     if f.kind == Kind::Send {
         p["interrupt"] = json!(f.interrupt);
+        if f.new_task {
+            p["new_task"] = json!(true);
+        }
     }
     Some(p)
 }
@@ -1268,7 +1701,11 @@ fn start_move(app: &mut App) {
         f.error = Some("nothing chosen".into());
         return;
     };
-    f.busy = Some("starting…".into());
+    f.busy = Some(if f.new_task {
+        "creating a task and sending…".into()
+    } else {
+        "starting…".into()
+    });
     f.error = None;
     f.retried = false;
     f.job = None;
@@ -1449,13 +1886,33 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
         }
         (Call::Cancel, Err(e)) => f.error = Some(err_text(&e)),
         (Call::Cancel, Ok(v)) => {
-            if let Some(j) = Job::from_value(&v) {
+            let job = v.get("job").filter(|j| j.is_object()).unwrap_or(&v);
+            if let Some(j) = Job::from_value(job) {
                 upsert_job(app, mi, j);
             }
+        }
+        (Call::Move, Err(e)) if e.reason() == Some("shared_checkout") && !f.new_task => {
+            // Offer the one-step way out: a new task (worktree) gets a copy of the work.
+            f.busy = None;
+            f.retried = false;
+            f.error = None;
+            f.shared = Some(clean(&e.message));
         }
         (Call::Move, Err(e)) => {
             f.busy = None;
             f.retried = false;
+            f.new_task = false;
+            f.error = Some(err_text(&e));
+        }
+        (Call::Confirm, Ok(v)) => {
+            f.busy = None;
+            let job = v.get("job").filter(|j| j.is_object()).unwrap_or(&v);
+            if let Some(j) = Job::from_value(job) {
+                upsert_job(app, mi, j);
+            }
+        }
+        (Call::Confirm, Err(e)) => {
+            f.busy = None;
             f.error = Some(err_text(&e));
         }
         (_, Err(e)) => {
@@ -1637,8 +2094,24 @@ pub fn draw(app: &App, g: &mut Grid) -> Option<(u16, u16)> {
             if let Some(b) = &f.busy {
                 a.line(&format!("⏳ {b}"), t.s(t.yellow));
             }
+            if let Some(why) = &f.shared {
+                crate::devices::wrap_lines(&mut a, &format!("⚠ {why}"), t.s(t.yellow));
+                a.line("", t.text());
+                crate::devices::wrap_lines(
+                    &mut a,
+                    "Create a task and send: Vibeke copies the work into a new task worktree and sends that. This checkout stays as it is.",
+                    t.text(),
+                );
+            }
             error_lines(&mut a, app, f);
-            a.footer("enter send · i interrupt · esc back", t.dim());
+            a.footer(
+                if f.shared.is_some() {
+                    "enter or t create a task and send · i interrupt · esc back"
+                } else {
+                    "enter send · i interrupt · esc back"
+                },
+                t.dim(),
+            );
         }
         Stage::PickTarget { sel } => {
             a.line(&format!("Bring {} back to:", f.label), t.bold(t.fg));
@@ -1661,6 +2134,47 @@ pub fn draw(app: &App, g: &mut Grid) -> Option<(u16, u16)> {
             }
             error_lines(&mut a, app, f);
             a.footer("j/k move · enter bring back · esc", t.dim());
+        }
+        Stage::Review { scroll } => {
+            a.line(
+                &format!("Bring {} back: review the changes", f.label),
+                t.bold(t.fg),
+            );
+            a.line("", t.text());
+            let review = f.job.as_ref().and_then(Job::review).unwrap_or_default();
+            crate::devices::wrap_lines(&mut a, &format!("⚠ {}", review.warning), t.bold(t.yellow));
+            a.line("", t.text());
+            let lines = review.lines();
+            // The hint, the busy and error lines stay visible: the list scrolls above them.
+            let room = (a.rest().h as usize).saturating_sub(4).max(1);
+            let max = lines.len().saturating_sub(room);
+            let first = (*scroll).min(max);
+            if first > 0 {
+                a.line(&format!("  ↑ {first} more"), t.dim());
+            }
+            let shown = if first > 0 { room - 1 } else { room };
+            let end = (first + shown).min(lines.len());
+            for l in &lines[first..end] {
+                a.line(l, t.text());
+            }
+            if end < lines.len() {
+                a.line(
+                    &format!("  ↓ {} more (j/k scroll)", lines.len() - end),
+                    t.dim(),
+                );
+            }
+            if let Some(b) = &f.busy {
+                a.line(&format!("⏳ {b}"), t.s(t.yellow));
+            }
+            error_lines(&mut a, app, f);
+            a.footer(
+                if crate::decide::live(app) {
+                    "a apply · c code only · x cancel the move · j/k scroll · esc later"
+                } else {
+                    crate::decide::WAIT_HINT
+                },
+                t.dim(),
+            );
         }
         Stage::Sending => {
             a.line(&f.label, t.bold(t.fg));
