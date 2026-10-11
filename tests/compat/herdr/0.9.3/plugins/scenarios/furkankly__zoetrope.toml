@@ -1,0 +1,159 @@
+# Plugin: furkankly/zoetrope (furkankly.zoetrope 0.1.0), locked commit
+# b1f31dd26bd4e9e513885e39edb78d0850a5d1fe, manifest herdr-plugin/herdr-plugin.toml.
+#
+# Covers: the five actions and the `graph` pane. The actions `open`, `open-split` and
+# `open-tab` run a script that calls `herdr plugin pane open` for the `graph` pane with the
+# placement overlay, split and tab. The pane script reads the focused pane with `pane get`
+# and runs the `zoe` program on the agent session that Herdr reports. The actions `setup-keys`
+# and `remove-keys` write and delete one marked block in the Herdr config file.
+#
+# The build step needs the `zoe` program (installed with Homebrew or cargo) and the pane
+# script needs `jq`. The fake agent has no session id from a real agent integration, so the
+# pane is expected to explain why it cannot open a session and wait for Enter. The scenario
+# accepts that text as evidence that the pane ran. Pane contents depend on the agent, so they
+# are compared for placement only.
+#
+# The plugin declares no event hooks, startup commands or link handlers.
+#
+# Confirms no category of spec 18 §8.5.
+
+plugin_id = "furkankly.zoetrope"
+repository = "furkankly/zoetrope"
+timeout_ms = 120000
+
+[setup]
+fake_agent = true
+
+[setup.files]
+".config/herdr/config.toml" = """
+# user config
+"""
+
+[[step]]
+id = "setup-keys"
+kind = "action"
+action = "setup-keys"
+context = "workspace"
+timeout_ms = 60000
+expect_calls = [{ method = "notification.show", ok = true }]
+[[step.expect]]
+kind = "invocation_final"
+[[step.expect]]
+kind = "file"
+path = "{home}/.config/herdr/config.toml"
+contains = "furkankly.zoetrope.open"
+[[step.expect]]
+kind = "file"
+path = "{home}/.config/herdr/config.toml"
+contains = "# user config"
+[[step.expect]]
+kind = "file"
+path = "{home}/.config/herdr/config.toml.zoetrope-backup"
+contains = "# user config"
+
+[[step]]
+id = "open"
+kind = "action"
+action = "open"
+context = "pane"
+timeout_ms = 60000
+expect_calls = [
+  { method = "pane.get", ok = true },
+  { method = "plugin.pane.open", ok = true },
+]
+[[step.expect]]
+kind = "invocation_final"
+[[step.expect]]
+kind = "pane"
+pane = "graph"
+placement = "overlay"
+[[step.expect]]
+kind = "screen_text"
+pane = "graph"
+regex = 'press enter to close'
+[[step.compare]]
+pane = "graph"
+placement_only = true
+
+# Closes the pane whether it shows the prompt (Enter) or the graph (q).
+[[step]]
+id = "close-open"
+kind = "input"
+pane = "graph"
+keys = ["q", "Enter"]
+
+[[step]]
+id = "open-split"
+kind = "action"
+action = "open-split"
+context = "pane"
+timeout_ms = 60000
+expect_calls = [
+  { method = "pane.get", ok = true },
+  { method = "plugin.pane.open", ok = true },
+]
+[[step.expect]]
+kind = "invocation_final"
+[[step.expect]]
+kind = "pane"
+pane = "graph"
+placement = "split"
+[[step.expect]]
+kind = "screen_text"
+pane = "graph"
+regex = 'press enter to close'
+[[step.compare]]
+pane = "graph"
+placement_only = true
+
+# Closes the pane whether it shows the prompt (Enter) or the graph (q).
+[[step]]
+id = "close-open-split"
+kind = "input"
+pane = "graph"
+keys = ["q", "Enter"]
+
+[[step]]
+id = "open-tab"
+kind = "action"
+action = "open-tab"
+context = "pane"
+timeout_ms = 60000
+expect_calls = [
+  { method = "pane.get", ok = true },
+  { method = "plugin.pane.open", ok = true },
+]
+[[step.expect]]
+kind = "invocation_final"
+[[step.expect]]
+kind = "pane"
+pane = "graph"
+placement = "tab"
+[[step.expect]]
+kind = "screen_text"
+pane = "graph"
+regex = 'press enter to close'
+[[step.compare]]
+pane = "graph"
+placement_only = true
+
+# Closes the pane whether it shows the prompt (Enter) or the graph (q).
+[[step]]
+id = "close-open-tab"
+kind = "input"
+pane = "graph"
+keys = ["q", "Enter"]
+
+[[step]]
+id = "remove-keys"
+kind = "action"
+action = "remove-keys"
+context = "workspace"
+timeout_ms = 60000
+expect_calls = [{ method = "notification.show", ok = true }]
+[[step.expect]]
+kind = "invocation_final"
+[[step.expect]]
+kind = "file"
+path = "{home}/.config/herdr/config.toml.zoetrope-backup"
+contains = "furkankly.zoetrope.open"

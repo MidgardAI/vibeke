@@ -1,0 +1,139 @@
+# Plugin: persiyanov/herdr-reviewr (persiyanov.reviewr 0.46.0), locked commit
+# 859dd5b11a5280fe282de56b52378b20a54fa10a, manifest herdr-plugin.toml.
+#
+# Covers: the actions `open`, `close` and `toggle`, the event hooks for `worktree.created` and
+# `worktree.opened` (both run `--action auto-open`), and the `pane` split pane. The pane runs a
+# diff review program. It reads the workspace with `pane list` and `pane process-info`, and it
+# reads the session with socket requests such as `session.snapshot`, so it exercises Herdr
+# calls that go over the raw socket as well as the command line. The build step downloads the
+# program for the platform from a release.
+#
+# The review pane shows the state of a git checkout and the agent session, so its contents are
+# compared for placement only. The plugin has no startup commands and no link handlers.
+#
+# The worktree events are triggered through `herdr worktree open <path>` and
+# `herdr worktree create <branch>`. The flag grammar of these commands is not verified in the
+# compatibility notes, so a CLI parse error on either side is a scenario problem to inspect
+# first.
+#
+# Confirms the "layout or worktree workflow" category of spec 18 §8.5 as a second candidate
+# (the first is cloudmanic/herdr-plus), and offers a raw socket user for the last category.
+
+plugin_id = "persiyanov.reviewr"
+repository = "persiyanov/herdr-reviewr"
+timeout_ms = 120000
+
+[setup]
+[[setup.repo]]
+name = "app"
+files = { "README.md" = "sample\n", "src/main.txt" = "line one\nline two\n" }
+worktrees = ["feature"]
+
+[[step]]
+id = "open"
+kind = "action"
+action = "open"
+context = "workspace"
+timeout_ms = 60000
+expect_calls = [
+  { method = "pane.list", ok = true },
+  { method = "plugin.pane.open", ok = true },
+  { method = "session.snapshot", ok = true },
+]
+[[step.expect]]
+kind = "invocation_final"
+[[step.expect]]
+kind = "pane"
+pane = "pane"
+placement = "split"
+[[step.expect]]
+kind = "screen_text"
+pane = "pane"
+text = "Changes"
+[[step.compare]]
+pane = "pane"
+placement_only = true
+
+# A second open finds the running pane and opens nothing.
+[[step]]
+id = "open-again"
+kind = "action"
+action = "open"
+context = "workspace"
+timeout_ms = 60000
+expect_calls = [{ method = "pane.list", ok = true }]
+[[step.expect]]
+kind = "invocation_final"
+
+[[step]]
+id = "close"
+kind = "action"
+action = "close"
+context = "workspace"
+timeout_ms = 60000
+expect_calls = [{ method = "pane.close", ok = true }]
+[[step.expect]]
+kind = "invocation_final"
+
+[[step]]
+id = "toggle-open"
+kind = "action"
+action = "toggle"
+context = "pane"
+timeout_ms = 60000
+expect_calls = [{ method = "plugin.pane.open", ok = true }]
+[[step.expect]]
+kind = "invocation_final"
+[[step.expect]]
+kind = "pane"
+pane = "pane"
+placement = "split"
+[[step.compare]]
+pane = "pane"
+placement_only = true
+
+[[step]]
+id = "toggle-close"
+kind = "action"
+action = "toggle"
+context = "pane"
+timeout_ms = 60000
+expect_calls = [{ method = "pane.close", ok = true }]
+[[step.expect]]
+kind = "invocation_final"
+
+# A worktree that exists on disk is opened as a workspace. The hook then opens the pane there.
+[[step]]
+id = "worktree-opened"
+kind = "event"
+event = "worktree.opened"
+cli = ["worktree", "open", "{worktree.app.feature}"]
+timeout_ms = 60000
+[[step.expect]]
+kind = "event"
+type = "worktree.opened"
+[[step.expect]]
+kind = "pane"
+pane = "pane"
+placement = "split"
+[[step.compare]]
+pane = "pane"
+placement_only = true
+
+# A new worktree also opens a workspace. The hook opens the pane there as well.
+[[step]]
+id = "worktree-created"
+kind = "event"
+event = "worktree.created"
+cli = ["worktree", "create", "review-sample"]
+timeout_ms = 60000
+[[step.expect]]
+kind = "event"
+type = "worktree.created"
+[[step.expect]]
+kind = "pane"
+pane = "pane"
+placement = "split"
+[[step.compare]]
+pane = "pane"
+placement_only = true
