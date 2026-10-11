@@ -20,22 +20,31 @@ pub struct SideRow {
     pub preview: Option<(usize, String)>,
     /// Chips on this line and their x ranges, relative to the sidebar's left edge.
     pub chips: Vec<(crate::preview_manager::Chip, u16, u16)>,
+    /// An image row (machine, screenshot id) of the Images section (spec 18 §4).
+    pub image: Option<(usize, String)>,
+    /// A `+N more on <machine>` row of the Images section: opens that machine's gallery.
+    pub image_more: Option<usize>,
 }
 
 impl SideRow {
-    /// Navigate mode can select it (a pane target, a group or a preview row).
+    /// Navigate mode can select it (a pane target, a group, a preview or an image row).
     pub fn selectable(&self) -> bool {
         self.target.is_some()
             || self.group.is_some()
             || (self.preview.is_some() && self.chips.is_empty())
+            || self.image.is_some()
+            || self.image_more.is_some()
     }
 
-    /// What navigate mode selects on this row (pane, group or preview id).
+    /// What navigate mode selects on this row (pane, group, preview or screenshot id; an empty
+    /// id for `+N more`). `crate::images::navigate_key` handles image rows first.
     fn selection(&self) -> Option<(usize, String)> {
         self.target
             .clone()
             .or(self.group.clone())
             .or(self.preview.clone().filter(|_| self.chips.is_empty()))
+            .or(self.image.clone())
+            .or(self.image_more.map(|mi| (mi, String::new())))
     }
 }
 
@@ -65,7 +74,13 @@ pub(crate) fn deadlines(app: &App, now: crate::time::Instant, d: &mut crate::dea
     }
     if matches!(
         app.mode,
-        Mode::Popup(Popup::Inbox | Popup::Desk | Popup::Gallery | Popup::PendingOps { .. })
+        Mode::Popup(
+            Popup::Inbox
+                | Popup::Desk
+                | Popup::Gallery
+                | Popup::ImageViewer
+                | Popup::PendingOps { .. }
+        )
     ) {
         let ms = crate::deadline::age_change_in(wall.rem_euclid(1_000));
         next = Some(next.map_or(ms, |n| n.min(ms)));
@@ -282,7 +297,7 @@ fn agent_row(app: &App, mi: usize, r: &AgentRun, indent: &str) -> SideRow {
         segs.push((format!(" ▸ {}", v.text), t.s(c)));
     }
     crate::plugin_ui::decorate(app, mi, &r.pane, &mut segs);
-    // Screenshots captured since the gallery was last opened for this agent (06 B7/B8).
+    // Images this agent attached or captured that nobody looked at here yet (spec 18 §4.2).
     if let Some(n) = crate::gallery::badge(app, mi, &r.pane) {
         segs.push((format!(" 📷{n}"), t.s(t.accent)));
     }
@@ -354,6 +369,8 @@ pub fn sidebar_rows(app: &App) -> Vec<SideRow> {
             });
         }
     }
+    // Images (spec 18 §4): near the top, the sidebar cuts rows at the screen height.
+    crate::images::sidebar_rows(app, &mut rows);
     let multi = app.machines.len() > 1;
     for (mi, m) in app.machines.iter().enumerate() {
         if multi || !m.connected() {

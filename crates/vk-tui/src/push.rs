@@ -119,24 +119,24 @@ pub fn on_events(app: &mut App, i: usize, events: Vec<PushedEvent>, lagged: bool
         } else if k.starts_with("browser.") {
             refresh_sessions = true;
         } else if k == "screenshot.captured" {
-            let what = v["data"]["url"]
-                .as_str()
-                .filter(|s| !s.is_empty())
-                .or_else(|| v["data"]["caption"].as_str().filter(|s| !s.is_empty()))
-                .or_else(|| v["subject"]["browser_session"].as_str())
-                .unwrap_or("")
-                .to_string();
-            app.toast(
-                format!("📷 screenshot captured {what}")
-                    .trim_end()
-                    .to_string(),
-            );
+            let toast = captured_toast(app, i, &v);
+            app.toast(toast);
+            crate::images::on_captured(app, i, &v);
             crate::gallery::on_captured(app, i, &v);
             crate::preview_ui::on_captured(app, i, &v);
         } else if k == "preview.console_error" {
             crate::preview_ui::on_console_error(app, i, &v);
         } else if k == "screenshot.deleted" {
-            crate::gallery::on_deleted(app, i);
+            let ids: Vec<String> = v["data"]["ids"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|x| x.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default();
+            crate::images::on_deleted(app, i, &ids);
+            crate::gallery::on_deleted(app, i, &ids);
         } else if k.starts_with("draft.") || k == "notes.updated" {
             crate::drafts::on_event(app, i, k, &v);
         } else if k.starts_with("assistant.") {
@@ -184,6 +184,39 @@ pub fn on_events(app: &mut App, i: usize, events: Vec<PushedEvent>, lagged: bool
         crate::gateway::catch_up(app, i);
     }
     app.dirty = true;
+}
+
+/// The toast for a new image, naming the key that opens it (spec 18 §5.3):
+/// `📷 s5 attached by claude · prefix+alt+i to view`, or the captured-screenshot text with the
+/// same hint.
+fn captured_toast(app: &App, i: usize, v: &Value) -> String {
+    let key = app
+        .keymap
+        .binding_for("open_images")
+        .unwrap_or_else(|| "prefix+alt+i".into());
+    if v["data"]["environment"].as_str() == Some("agent") {
+        let handle = v["data"]["handle"]
+            .as_str()
+            .or_else(|| v["subject"]["handle"].as_str())
+            .unwrap_or("image");
+        let pane = v["subject"]["pane"]
+            .as_str()
+            .or_else(|| v["data"]["pane"].as_str());
+        let who = crate::images::agent(app, i, pane).unwrap_or_else(|| "agent".into());
+        return format!(
+            "📷 {} attached by {} · {key} to view",
+            vk_proto::text::escape_controls(handle),
+            vk_proto::text::escape_controls(&who)
+        );
+    }
+    let what = v["data"]["url"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .or_else(|| v["data"]["caption"].as_str().filter(|s| !s.is_empty()))
+        .or_else(|| v["subject"]["browser_session"].as_str())
+        .unwrap_or("");
+    let text = format!("📷 screenshot captured {what}");
+    format!("{} · {key} to view", text.trim_end())
 }
 
 fn now_ms() -> i64 {

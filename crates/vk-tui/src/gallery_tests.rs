@@ -1,7 +1,8 @@
 //! Gallery tests: navigation and the full view, environment / binding labels, open locally
 //! (explicit only), diff selection (marked base or next older; environment mismatch needs `!`),
-//! delete with confirmation and the acceptance-reference force, 📷 counters from
-//! `screenshot.captured` (sidebar, peek, cleared by opening), the screenshot pane following new
+//! delete with confirmation and the acceptance-reference force, 📷 counters of unseen images
+//! (sidebar, peek, cleared by showing the image, not by opening the list), the screenshot pane
+//! following new
 //! screenshots, and kitty images: local files read directly, remote images only after `v`.
 
 use super::*;
@@ -202,15 +203,18 @@ fn delete_confirms_and_force_for_acceptance() {
 }
 
 fn captured(seq: i64, pane: &str) -> PushedEvent {
+    let id = format!("C{seq}");
     PushedEvent {
         seq,
         kind: "screenshot.captured".into(),
-        json: json!({"type": "screenshot.captured", "subject": {"screenshot": "S9", "pane": pane}, "data": {"handle": "s9"}}).to_string(),
+        json: json!({"type": "screenshot.captured", "subject": {"screenshot": id, "pane": pane},
+            "data": {"id": id, "handle": format!("s{seq}")}})
+        .to_string(),
     }
 }
 
 #[test]
-fn counters_from_captured_events() {
+fn counters_count_unseen_images() {
     let (mut app, mut rxs) = fleet();
     crate::push::on_events(
         &mut app,
@@ -224,24 +228,30 @@ fn counters_from_captured_events() {
     app.machines[0].focus.pane = Some("p2".into());
     assert!(screen(&app).contains("📷2"));
     app.machines[0].focus.pane = Some("p1".into());
-    // Peek shows it and p opens that agent's screenshots, clearing the counter.
+    // Peek shows it and p opens that agent's screenshots; the list alone sees nothing.
     app.mode = Mode::Popup(Popup::Peek { pane: "p1".into() });
     assert!(screen(&app).contains("📷 2 new screenshot(s)"));
     app.on_key(ch('p'));
-    assert_eq!(badge(&app, 0, "p1"), None);
+    assert_eq!(badge(&app, 0, "p1"), Some(2));
     let (req, _) = only(&commands(&mut rxs[0]), "screenshot.list");
     let mut l = list();
     l["screenshots"][0]["pane"] = json!("p2");
+    l["screenshots"][1]["id"] = json!("C2");
     reply(&mut app, 0, req, l);
     assert_eq!(app.gallery.view.as_ref().unwrap().shots.len(), 2);
-    // While open for that pane, new captures refresh instead of counting.
+    // Showing one in the full view counts as seeing it.
+    app.on_key(named(NamedKey::Enter));
+    assert_eq!(badge(&app, 0, "p1"), Some(1));
+    assert!(!crate::images::is_unseen(&app, 0, "C2"));
+    // New captures count while the gallery is open, and refresh it.
     crate::push::on_events(&mut app, 0, vec![captured(3, "p1")], false);
-    assert_eq!(badge(&app, 0, "p1"), None);
+    assert_eq!(badge(&app, 0, "p1"), Some(2));
     assert!(
         commands(&mut rxs[0])
             .iter()
             .any(|c| c.1 == "screenshot.list")
     );
+    app.on_key(named(NamedKey::Escape));
     app.on_key(named(NamedKey::Escape));
     assert!(matches!(&app.mode, Mode::Popup(Popup::Peek { pane }) if pane == "p1"));
 }

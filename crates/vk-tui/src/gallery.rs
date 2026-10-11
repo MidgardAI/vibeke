@@ -16,8 +16,9 @@
 //!   selected one with `browser.diff`; different environments are refused unless `!` forces.
 //! - `x` delete (confirm; a screenshot kept for a review acceptance needs `!`), `t` scope
 //!   (all / this task), `L` open the live preview in a browser pane, `y` copy handle + path.
-//! - **📷 counters**: `screenshot.captured` events count per requesting pane; sidebar agent rows
-//!   and unfocused pane corners show `📷N` until the gallery is opened for them.
+//! - **📷 counters**: sidebar agent rows and unfocused pane corners show `📷N`, the pane's unseen
+//!   images ([`crate::images`]). Showing an image in the full view counts as seeing it; opening
+//!   the list does not.
 
 use crate::app::{App, Mode, Pending, Popup, RpcErr};
 use crate::drafts::{Area, arr, now_ms, st};
@@ -25,7 +26,6 @@ use crate::draw::truncate;
 use crate::screen::Grid;
 use base64::Engine as _;
 use serde_json::{Value, json};
-use std::collections::HashMap;
 use vk_proto::input::{Key, KeyEvent, KeyKind, NamedKey};
 
 use crate::image_view::{self as iv, Placement};
@@ -60,6 +60,18 @@ pub enum Reply {
     /// The image of a remote sidebar thumbnail (`screenshot.get {inline, thumb}`).
     ThumbImage {
         key: String,
+    },
+    /// The recent images of a machine (sidebar section, viewer), [`crate::images`].
+    Recent {
+        seq: u64,
+    },
+    /// The viewer's image.
+    Viewer {
+        key: String,
+    },
+    /// `screenshot.delete` from the viewer or a sidebar row.
+    Removed {
+        id: String,
     },
 }
 
@@ -229,6 +241,8 @@ pub struct Gallery {
     pub notice: Option<String>,
     pub error: Option<String>,
     pub origin_peek: Option<String>,
+    /// Select this screenshot when the list arrives (opened from the viewer).
+    pub want_sel: Option<String>,
 }
 
 impl Gallery {
@@ -237,12 +251,11 @@ impl Gallery {
     }
 }
 
-/// Client state: the open view and 📷 counters (images are in [`crate::image_view`]).
+/// Client state: the open view (images are in [`crate::image_view`], 📷 counters in
+/// [`crate::images`]).
 #[derive(Debug, Default)]
 pub struct GalleryState {
     pub view: Option<Gallery>,
-    /// (machine, pane) → screenshots captured since the gallery was last opened for it.
-    pub counts: HashMap<(usize, String), u32>,
     /// Files handed to the OS opener (tests read this instead of spawning).
     pub opened: Vec<String>,
     #[cfg(target_arch = "wasm32")]
@@ -251,33 +264,46 @@ pub struct GalleryState {
 
 // ---- counters ----------------------------------------------------------------------------------------
 
-/// The 📷 counter for a pane (sidebar rows, pane corners).
+/// The 📷 counter for a pane (sidebar rows, pane corners): its unseen images.
 pub fn badge(app: &App, mi: usize, pane: &str) -> Option<u32> {
-    app.gallery
-        .counts
-        .get(&(mi, pane.to_string()))
-        .copied()
-        .filter(|n| *n > 0)
+    Some(crate::images::unseen_count(app, mi, pane)).filter(|n| *n > 0)
 }
 
-/// A pushed `screenshot.captured`.
-pub fn on_captured(app: &mut App, mi: usize, v: &Value) {
-    if let Some(p) = v["subject"]["pane"].as_str() {
-        let open_here = app.gallery.view.as_ref().is_some_and(|g| {
-            g.machine == mi && (g.scope == Scope::All || g.scope == Scope::Pane(p.to_string()))
-        });
-        if !open_here {
-            *app.gallery.counts.entry((mi, p.to_string())).or_insert(0) += 1;
-        }
-    }
+/// A pushed `screenshot.captured` (the unseen state is [`crate::images::on_captured`]).
+pub fn on_captured(app: &mut App, mi: usize, _v: &Value) {
     if app.gallery.view.as_ref().is_some_and(|g| g.machine == mi) {
         refresh(app);
     }
 }
 
-pub fn on_deleted(app: &mut App, mi: usize) {
-    if app.gallery.view.as_ref().is_some_and(|g| g.machine == mi) {
-        refresh(app);
+/// A pushed `screenshot.deleted` (`data.ids`): a pending delete of one of them is off.
+pub fn on_deleted(app: &mut App, mi: usize, ids: &[String]) {
+    let Some(g) = app.gallery.view.as_mut().filter(|g| g.machine == mi) else {
+        return;
+    };
+    let gone = |x: &Option<String>| x.as_ref().is_some_and(|id| ids.contains(id));
+    if gone(&g.confirm_delete) {
+        g.confirm_delete = None;
+    }
+    if gone(&g.force_delete) {
+        g.force_delete = None;
+    }
+    refresh(app);
+}
+
+/// The full view shows an image: it counts as seen (spec 18 §4.2).
+fn mark_shown_seen(app: &mut App) {
+    if !matches!(app.mode, Mode::Popup(Popup::Gallery)) {
+        return;
+    }
+    let shown = app
+        .gallery
+        .view
+        .as_ref()
+        .filter(|g| g.view == View::Full && g.diff.is_none())
+        .and_then(|g| g.cur().map(|s| (g.machine, s.id.clone())));
+    if let Some((mi, id)) = shown {
+        crate::images::mark_seen(app, mi, &id);
     }
 }
 
@@ -295,12 +321,6 @@ pub fn action(app: &mut App, action: &str) -> bool {
 
 pub fn open(app: &mut App, mi: usize, scope: Scope, view: View, pane_mode: bool) {
     let id = app.next_ui_id();
-    match &scope {
-        Scope::Pane(p) => {
-            app.gallery.counts.remove(&(mi, p.clone()));
-        }
-        _ => app.gallery.counts.retain(|(m, _), _| *m != mi),
-    }
     app.gallery.view = Some(Gallery {
         id,
         machine: mi,
@@ -318,9 +338,18 @@ pub fn open(app: &mut App, mi: usize, scope: Scope, view: View, pane_mode: bool)
         notice: None,
         error: None,
         origin_peek: None,
+        want_sel: None,
     });
     app.mode = Mode::Popup(Popup::Gallery);
     refresh(app);
+}
+
+/// Machine `mi`'s gallery with screenshot `id` selected once the list arrives (viewer `g`).
+pub fn open_on(app: &mut App, mi: usize, id: &str) {
+    open(app, mi, Scope::All, View::List, false);
+    if let Some(g) = &mut app.gallery.view {
+        g.want_sel = Some(id.to_string());
+    }
 }
 
 /// Peek `p`: the agent's screenshots.
@@ -495,32 +524,40 @@ fn os_open(app: &mut App, path: &str) {
 }
 
 /// `o`: open the image with the OS opener. Local: the blob file itself; remote: fetched
-/// (`screenshot.open`, explicit) into `$TMPDIR/vibeke-screenshots/<id>.png` first.
+/// (`screenshot.open`, explicit) into `$TMPDIR/vibeke-screenshots/<id>.png` first (a download
+/// in the WASM TUI).
 fn open_locally(app: &mut App, g: &mut Gallery) {
-    let Some(s) = g.cur() else { return };
-    if let Some(msg) = too_large_to_open(app, g.machine, s) {
+    let Some(s) = g.cur().cloned() else { return };
+    if let Some(msg) = open_shot(app, g.machine, &s) {
         g.notice = Some(msg);
-        return;
     }
-    if iv::readable(app, g.machine) {
+}
+
+/// Open screenshot `s` of machine `mi` on this machine (gallery and viewer `o`). Returns the
+/// notice to show instead when a remote original is too large to transfer.
+pub(crate) fn open_shot(app: &mut App, mi: usize, s: &Shot) -> Option<String> {
+    if let Some(msg) = too_large_to_open(app, mi, s) {
+        return Some(msg);
+    }
+    if iv::readable(app, mi) {
         if s.exists {
-            let p = s.path.clone();
-            os_open(app, &p);
+            os_open(app, &s.path);
         } else {
             app.toast("the image file is gone (retention)");
         }
-        return;
+        return None;
     }
     app.command_on(
-        g.machine,
+        mi,
         "screenshot.open",
         json!({"id": s.id}),
         Pending::Gallery(Reply::Opened),
     );
     app.toast(format!(
         "fetching {} from {}…",
-        s.handle, app.machines[g.machine].label
+        s.handle, app.machines[mi].label
     ));
+    None
 }
 
 fn start_diff(app: &mut App, g: &mut Gallery, force: bool) {
@@ -708,6 +745,7 @@ pub fn key(app: &mut App, ev: KeyEvent) {
     }
     app.gallery.view = Some(g);
     ensure_local_image(app);
+    mark_shown_seen(app);
 }
 
 // ---- replies ---------------------------------------------------------------------------------------------
@@ -722,12 +760,21 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
             crate::preview_ui::on_reply(app, machine, preview, res)
         }
         Reply::ThumbImage { key } => crate::preview_ui::on_image(app, &key, &res),
+        Reply::Recent { seq } => crate::images::on_recent(app, mi, seq, res),
+        Reply::Viewer { key } => {
+            iv::on_fetched(app, &key, &res);
+        }
+        Reply::Removed { id } => crate::images::on_removed(app, mi, id, res),
         Reply::List { view } => {
             let Some(g) = view_mut(app, view) else { return };
             g.loading = false;
             match res {
                 Ok(x) => {
-                    let keep = g.cur().map(|s| s.id.clone());
+                    let want = g.want_sel.take();
+                    if want.is_some() {
+                        g.follow = false;
+                    }
+                    let keep = want.or_else(|| g.cur().map(|s| s.id.clone()));
                     let mut shots: Vec<Shot> = arr(&x, "screenshots")
                         .iter()
                         .filter_map(Shot::parse)
@@ -751,6 +798,7 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
                 Err(e) => g.error = Some(e.message),
             }
             ensure_local_image(app);
+            mark_shown_seen(app);
         }
         Reply::Image { view, key } => {
             if iv::on_fetched(app, &key, &res).is_some() {
@@ -840,7 +888,7 @@ pub fn placements(app: &App) -> Option<Placement> {
 
 // ---- drawing ---------------------------------------------------------------------------------------------
 
-fn age(ms: i64) -> String {
+pub(crate) fn age(ms: i64) -> String {
     if ms <= 0 {
         return "—".into();
     }

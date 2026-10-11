@@ -283,6 +283,8 @@ pub enum Popup {
     Task,
     /// Screenshot gallery / screenshot pane (06 B8); state in `App::gallery`.
     Gallery,
+    /// One image with direct actions (spec 18 §5); state in `App::images_ui.viewer`.
+    ImageViewer,
     /// Session desk (08 §6.7); state in `App::desk`.
     Desk,
     /// Drafts composer and notes (08 §6.7); state in `App::drafts`.
@@ -543,6 +545,8 @@ pub struct App {
     pub gallery: crate::gallery::GalleryState,
     /// Images the TUI draws itself (gallery, viewer, pop-up, thumbnails), spec 18 §3.
     pub imgview: crate::image_view::State,
+    /// Recent images, the unseen state and the image viewer (spec 18 §4–§5).
+    pub images_ui: crate::images::State,
     /// `!N` console-error badges and sidebar preview thumbnails.
     pub previews_ui: crate::preview_ui::State,
     /// Preview manager popup and sidebar preview chips (06 B2/B4).
@@ -966,6 +970,7 @@ impl App {
             parity: Default::default(),
             gallery: Default::default(),
             imgview: crate::image_view::State::new(),
+            images_ui: Default::default(),
             previews_ui: Default::default(),
             preview_mgr: Default::default(),
             desk: None,
@@ -1217,6 +1222,7 @@ impl App {
         }
         crate::gateway::on_connected(self, i);
         crate::push::on_connected(self, i);
+        crate::images::on_connected(self, i);
         crate::parity::on_connected(self, i);
         crate::plugins::on_connected(self, i);
         crate::remote_view::on_connected(self, i);
@@ -1852,6 +1858,7 @@ impl App {
         crate::assist::tick(self);
         crate::browser::tick(self);
         crate::preview_manager::tick(self);
+        crate::images::tick(self);
         crate::plugins::report_scroll(self, now);
         crate::selection::tick(self, now);
         crate::remote_view::release_due(self, now);
@@ -2119,7 +2126,7 @@ impl App {
                 crate::sandboxes::on_paste(self, &text);
                 return;
             }
-            Mode::Popup(Popup::Devices | Popup::Updates) => return,
+            Mode::Popup(Popup::Devices | Popup::Updates | Popup::ImageViewer) => return,
             Mode::Popup(_) => {
                 // Editors in the drafts, desk and assist views.
                 crate::drafts::on_paste(self, &text);
@@ -2190,6 +2197,10 @@ impl App {
         // A selection drag in progress follows the pointer past the pane (03 §11.1); the
         // scrollback viewer selects over its own text.
         if crate::selection::on_active_drag(self, &me) || crate::scrollback::on_mouse(self, &me) {
+            return;
+        }
+        // Sidebar image rows and 📷N badges, before any pane click (spec 18 §4.4).
+        if crate::images::on_mouse(self, &me) {
             return;
         }
         // Tab drag/overflow/middle-click, sidebar border and rail, focus follows mouse (08).
@@ -2315,6 +2326,7 @@ impl App {
         }
         // Gallery, desk, drafts/notes and assist palette commands (08 §6.7, 06 B8, 14).
         if crate::gallery::action(self, action)
+            || crate::viewer::action(self, action)
             || crate::desk::action(self, action)
             || crate::drafts::action(self, action)
             || crate::assist::action(self, action)
@@ -2775,7 +2787,9 @@ impl App {
     }
 
     fn navigate_key(&mut self, ev: KeyEvent, sel: usize) {
-        if crate::preview_manager::navigate_key(self, &ev, sel)
+        // Image rows first: they never reach a pane action (spec 18 §4.4).
+        if crate::images::navigate_key(self, &ev, sel)
+            || crate::preview_manager::navigate_key(self, &ev, sel)
             || crate::ux::navigate_key(self, &ev, sel)
             || crate::groups::navigate_key(self, &ev, sel)
         {

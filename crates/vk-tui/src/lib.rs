@@ -34,6 +34,7 @@ pub mod groups;
 pub mod gw_indicator;
 pub mod handoff;
 pub mod image_view;
+pub mod images;
 pub mod inbox;
 pub mod input;
 pub mod keymap;
@@ -90,5 +91,6 @@ pub mod trust;
 pub mod updates;
 pub mod upload;
 pub mod ux;
+pub mod viewer;
 #[cfg(target_arch = "wasm32")]
 mod web;
