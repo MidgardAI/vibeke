@@ -145,6 +145,21 @@ pub fn wrap_words(s: &str, width: usize) -> Vec<String> {
     out
 }
 
+/// [`wrap_words`] to at most `max` lines; a longer text ends in `…`.
+pub fn wrap_capped(s: &str, width: usize, max: usize) -> Vec<String> {
+    let mut lines = wrap_words(s, width);
+    if lines.len() > max {
+        lines.truncate(max.max(1));
+        if let Some(last) = lines.last_mut() {
+            while !last.is_empty() && cols(last) + 1 > width {
+                last.pop();
+            }
+            last.push('…');
+        }
+    }
+    lines
+}
+
 /// Draw the tooltip over the main area, beside the sidebar. Returns its rectangle, so the
 /// pane cursor under it can be hidden.
 pub fn draw(app: &App, g: &mut Grid) -> Option<SRect> {
@@ -159,16 +174,7 @@ pub fn draw(app: &App, g: &mut Grid) -> Option<SRect> {
         return None;
     }
     let full = r.text();
-    let mut lines = wrap_words(full.trim_start(), text_w);
-    if lines.len() > MAX_LINES {
-        lines.truncate(MAX_LINES);
-        if let Some(last) = lines.last_mut() {
-            while !last.is_empty() && cols(last) + 1 > text_w {
-                last.pop();
-            }
-            last.push('…');
-        }
-    }
+    let lines = wrap_capped(full.trim_start(), text_w, MAX_LINES);
     let hint = r.collision.as_ref().map(|_| {
         if nav {
             "enter: details · d: dismiss"

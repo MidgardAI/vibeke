@@ -882,9 +882,10 @@ pub fn draw(app: &App, g: &mut Grid) {
         return;
     };
     let rs = rows(d);
-    // The whole headline, wrapped: the sidebar line is often cut off.
+    // The whole headline, wrapped (the sidebar line is often cut off), in at most three lines
+    // so the agents and paths below stay on screen.
     let width = a.r.w.saturating_sub(2) as usize;
-    for l in crate::sidebar_tip::wrap_words(&d.rec.headline, width) {
+    for l in crate::sidebar_tip::wrap_capped(&d.rec.headline, width, 3) {
         a.line(&l, sev_style(app, &d.rec.severity));
     }
     if d.rec.dismissed {

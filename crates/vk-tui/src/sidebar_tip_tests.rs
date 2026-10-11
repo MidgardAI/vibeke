@@ -41,6 +41,10 @@ fn words_wrap_and_long_words_break() {
     );
     assert_eq!(wrap_words("abcdefgh", 3), vec!["abc", "def", "gh"]);
     assert_eq!(wrap_words("", 10), vec![""]);
+    assert_eq!(
+        wrap_capped("one two three four five six", 9, 2),
+        vec!["one two", "three…"]
+    );
 }
 
 #[test]
