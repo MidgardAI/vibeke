@@ -726,7 +726,7 @@ impl Parser {
                         is_error,
                         ts_ms: ts,
                     });
-                    if let Some(sid) = codex_session_id(pty, p.get("output")) {
+                    for sid in codex_session_ids(pty, p.get("output")) {
                         self.bg_started(&sid, "shell", Some(id), None, ts, out);
                     }
                 }
@@ -898,31 +898,58 @@ pub fn codex_thread_name(index: &str, session: &str) -> Option<String> {
     name
 }
 
-/// The session id of a Codex command still running after its call returned: the legacy
+/// Session ids of Codex commands still running after their call returned: the legacy
 /// `exec_command` text says `Process running with session ID N`; code-mode `exec` answers JSON
-/// with `"session_id": N` and no `exit_code`.
-fn codex_session_id(pty: &str, output: Option<&Value>) -> Option<String> {
-    let text = match output? {
-        Value::String(s) => s.clone(),
-        Value::Array(a) => a
+/// objects (one per command it ran) with `"session_id": N` and no `exit_code`.
+fn codex_session_ids(pty: &str, output: Option<&Value>) -> Vec<String> {
+    let text = match output {
+        Some(Value::String(s)) => s.clone(),
+        Some(Value::Array(a)) => a
             .iter()
             .filter_map(|b| b.get("text").and_then(Value::as_str))
             .collect::<Vec<_>>()
             .join("\n"),
-        _ => return None,
+        _ => return vec![],
     };
     if pty == "function_call_output" {
-        let rest = text.split("Process running with session ID ").nth(1)?;
-        let n: String = rest.chars().take_while(char::is_ascii_digit).collect();
-        return (!n.is_empty()).then_some(n);
+        return text
+            .split("Process running with session ID ")
+            .skip(1)
+            .map(|rest| {
+                rest.chars()
+                    .take_while(char::is_ascii_digit)
+                    .collect::<String>()
+            })
+            .filter(|n| !n.is_empty())
+            .collect();
     }
-    if text.contains("\"exit_code\"") {
-        return None;
+    let mut ids = Vec::new();
+    let mut objects = vec![];
+    // Each text block may lead with prose; its JSON starts at the first brace or bracket.
+    for block in text.split('\n') {
+        let Some(at) = block.find(['{', '[']) else {
+            continue;
+        };
+        for v in serde_json::Deserializer::from_str(&block[at..]).into_iter::<Value>() {
+            match v {
+                Ok(Value::Array(a)) => objects.extend(a),
+                Ok(v) => objects.push(v),
+                Err(_) => break,
+            }
+        }
     }
-    let rest = text.split("\"session_id\"").nth(1)?;
-    let rest = rest.trim_start().strip_prefix(':')?.trim_start();
-    let n: String = rest.chars().take_while(char::is_ascii_digit).collect();
-    (!n.is_empty()).then_some(n)
+    for o in objects {
+        if o.get("exit_code").is_some_and(|c| !c.is_null()) {
+            continue;
+        }
+        let id = match o.get("session_id") {
+            Some(Value::Number(n)) => n.to_string(),
+            Some(Value::String(s)) => s.clone(),
+            _ => continue,
+        };
+        ids.push(id);
+    }
+    ids
 }
 
 fn n64(v: &Value, k: &str) -> u64 {
@@ -1326,19 +1353,23 @@ mod tests {
             json!({"timestamp":"2026-01-01T00:00:02Z","type":"response_item","payload":{"type":"function_call_output","call_id":"c2","output":"Process running with session ID 4242\nOutput:\n"}}),
             json!({"timestamp":"2026-01-01T00:00:03Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"c3","output":[{"type":"input_text","text":"{\"session_id\": 77, \"output\": \"\"}"}]}}),
             json!({"timestamp":"2026-01-01T00:00:04Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"c4","output":[{"type":"input_text","text":"{\"session_id\": 78, \"exit_code\": 0}"}]}}),
+            json!({"timestamp":"2026-01-01T00:00:05Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"c5","output":[{"type":"input_text","text":"{\"session_id\": 79, \"exit_code\": 0}"},{"type":"input_text","text":"{\"session_id\": 80, \"output\": \"\"}"},{"type":"input_text","text":"{\"session_id\": 81}"}]}}),
             json!({"timestamp":"2026-01-01T00:00:05Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"CommandExecution","id":"e1","process_id":"4242","status":"completed"}}}),
             json!({"timestamp":"2026-01-01T00:00:06Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"Plan","id":"e2"}}}),
         ]));
         let b = bg(&ev);
-        assert_eq!(b.len(), 3, "{b:?}");
+        assert_eq!(b.len(), 5, "{b:?}");
         assert!(
             matches!(b[0], Event::BgStarted { id, kind, label, tool_use_id, .. }
             if id == "4242" && kind == "shell" && label == "npm run dev"
                 && tool_use_id.as_deref() == Some("c1"))
         );
         assert!(matches!(b[1], Event::BgStarted { id, .. } if id == "77"));
+        // A batch: one command finished, two still run.
+        assert!(matches!(b[2], Event::BgStarted { id, .. } if id == "80"));
+        assert!(matches!(b[3], Event::BgStarted { id, .. } if id == "81"));
         assert!(
-            matches!(b[2], Event::BgEnded { id, status, .. } if id == "4242" && status == "completed")
+            matches!(b[4], Event::BgEnded { id, status, .. } if id == "4242" && status == "completed")
         );
     }
 }

@@ -26,6 +26,8 @@ use super::*;
 const BG_LIST: &str = "thread/backgroundTerminals/list";
 
 pub struct Codex {
+    /// A background-terminal list was asked for while one was in flight: ask again after it.
+    bg_dirty: bool,
     cwd: String,
     resume: Option<String>,
     initialized: bool,
@@ -63,6 +65,7 @@ impl Codex {
         // shows the handshake (ring overflow).
         let est = rec.established();
         Codex {
+            bg_dirty: false,
             cwd: rec.cwd.clone(),
             resume: rec.session.clone().filter(|_| rec.resume),
             initialized: est,
@@ -142,9 +145,10 @@ impl Codex {
 
     /// Ask for the thread's background terminals (`BG_LIST`); the reply becomes `BgTasks`.
     fn list_bg(&mut self, cx: &mut Cx) {
-        if let Some(t) = self.thread.clone()
-            && !self.inflight_has(BG_LIST)
-        {
+        if self.inflight_has(BG_LIST) {
+            self.bg_dirty = true;
+        } else if let Some(t) = self.thread.clone() {
+            self.bg_dirty = false;
             self.request(cx, BG_LIST, json!({"threadId": t}));
         }
     }
@@ -407,6 +411,7 @@ impl Adapter for Codex {
                     }
                     // An app-server without background terminals: nothing to report.
                     if m == BG_LIST {
+                        self.bg_dirty = false;
                         return;
                     }
                     cx.render(format!("! {m}: {msg}\n"));
@@ -433,7 +438,13 @@ impl Adapter for Codex {
                         }
                     }
                     "model/list" => cx.reply(id_str(id), Ok(self.models_result(&r))),
-                    BG_LIST => cx.signal("BgTasks", Self::bg_tasks(&r)),
+                    BG_LIST => {
+                        cx.signal("BgTasks", Self::bg_tasks(&r));
+                        // Something ended while this list was on its way: it may be stale.
+                        if self.bg_dirty {
+                            self.list_bg(cx);
+                        }
+                    }
                     "config/value/write" => {
                         cx.reply(id_str(id), Ok(json!({"default_changed": true})))
                     }

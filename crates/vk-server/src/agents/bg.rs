@@ -23,6 +23,30 @@ use vk_store::now_ms;
 
 /// Longest label kept (characters).
 const LABEL_MAX: usize = 160;
+/// A reported set reaches us a little after the harness took it: transcript starts this much
+/// older than its arrival may postdate it, and ends this recent may not be in it yet.
+const SKEW_MS: i64 = 2_000;
+/// How long an ended task is remembered, so a set taken before it ended does not bring it back.
+const ENDED_KEEP_MS: i64 = 10_000;
+
+/// Recently ended tasks per run: (run, task id) → when the end was seen.
+static ENDED: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<(String, String), i64>>,
+> = std::sync::LazyLock::new(Default::default);
+
+fn note_ended(run: &str, id: &str, now: i64) {
+    let mut m = ENDED.lock().unwrap();
+    m.retain(|_, t| now - *t < ENDED_KEEP_MS);
+    m.insert((run.to_string(), id.to_string()), now);
+}
+
+fn ended_recently(run: &str, id: &str, now: i64) -> bool {
+    ENDED
+        .lock()
+        .unwrap()
+        .get(&(run.to_string(), id.to_string()))
+        .is_some_and(|t| now - *t < ENDED_KEEP_MS)
+}
 
 /// A shortened, redacted label for a task.
 pub fn label(s: &str) -> String {
@@ -96,6 +120,10 @@ fn ids(tasks: &[BgTask]) -> Vec<&str> {
 fn store(server: &Arc<Server>, run: &str, f: impl FnOnce(&AgentRun) -> Option<(Vec<BgTask>, i64)>) {
     let finished = std::cell::Cell::new(None::<AgentRun>);
     update_run(server, run, |r, tx: &mut Tx| {
+        // An ended run keeps no background work (`end_run_tx` cleared it).
+        if r.ended_at_ms.is_some() {
+            return;
+        }
         let Some((tasks, level)) = f(r) else {
             return;
         };
@@ -141,6 +169,7 @@ pub fn replace(server: &Arc<Server>, run: &str, tasks: Vec<BgTask>) {
     store(server, run, |r| {
         let mut next: Vec<BgTask> = tasks
             .into_iter()
+            .filter(|t| !ended_recently(run, &t.id, now))
             .map(|mut t| {
                 if let Some(old) = r.bg_tasks.iter().find(|o| o.id == t.id) {
                     t.since_ms = old.since_ms;
@@ -158,7 +187,7 @@ pub fn replace(server: &Arc<Server>, run: &str, tasks: Vec<BgTask>) {
                 .filter(|t| t.source == StateSource::Process)
                 .cloned(),
         );
-        Some((next, now))
+        Some((next, now - SKEW_MS))
     });
 }
 
@@ -186,6 +215,7 @@ pub fn started(server: &Arc<Server>, run: &str, task: BgTask) {
 
 /// A transcript record (or a protocol event) says task `id` ended.
 pub fn ended(server: &Arc<Server>, run: &str, id: &str) {
+    note_ended(run, id, now_ms());
     store(server, run, |r| {
         if !r.bg_tasks.iter().any(|t| t.id == id) {
             return None;

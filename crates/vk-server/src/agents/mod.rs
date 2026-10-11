@@ -418,6 +418,8 @@ impl Agents {
     pub fn end_run_tx(&self, core: &mut Core, tx: &mut Tx, run: &AgentRun, reason: &str) {
         let mut r = run.clone();
         r.ended_at_ms = Some(now_ms());
+        // Background work dies with the harness or is no longer its work (`bg`).
+        r.bg_tasks.clear();
         crate::items::end_run_tx(core, tx, &r.id);
         let prev = r.execution.value.clone();
         r.execution = Facet {
