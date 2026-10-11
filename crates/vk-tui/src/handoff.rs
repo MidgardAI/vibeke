@@ -714,6 +714,7 @@ pub fn inbox_items(app: &App) -> Vec<Item> {
                 effort_estimate: None,
                 snoozed_until_ms: None,
                 woke_from_snooze: None,
+                item_rev: None,
                 urgent: false,
                 raw_key: json!({"kind": "handoff", "id": r.id}),
                 fallback: false,

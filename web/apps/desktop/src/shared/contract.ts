@@ -99,6 +99,7 @@ export const RENDERER_METHODS = [
   'interaction.get',
   'interaction.answer',
   'interaction.answer_batch',
+  'interaction.cancel',
   'git.status',
   'git.diff',
   'git.log',

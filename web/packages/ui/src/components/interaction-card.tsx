@@ -212,6 +212,8 @@ export function InteractionCard({
   const locked = view !== null && view !== 'stale' && view !== 'error';
   const disabled = !ctx.canAnswer || locked;
   const [confirm, setConfirm] = useState<Decision | null>(null);
+  const [dismissing, setDismissing] = useState(false);
+  const canDismiss = it.status === 'open' && ctx.online && ctx.scope !== 'view' && !leaving && (view === null || view === 'stale' || view === 'error');
 
   const send = (params: { decision?: Decision; choices?: Record<string, string[]>; text?: string; expected_signature?: string }, label: string) => {
     app.haptic('tap');
@@ -331,6 +333,13 @@ export function InteractionCard({
             </div>
           )}
           {canSwipe && !locked && <div className="text-center text-2xs text-faint pointer-fine:hidden">{t.inbox.swipeHint}</div>}
+          {canDismiss && (
+            <div className="flex justify-end">
+              <button type="button" data-act="dismiss" className="text-xs text-muted underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-accent" onClick={() => setDismissing(true)}>
+                {t.inbox.dismiss}
+              </button>
+            </div>
+          )}
           {view && <DeliveryLine view={view} error={local?.error} onOpenPane={openPane} onRefresh={refresh} />}
         </div>
       </Card>
@@ -352,6 +361,27 @@ export function InteractionCard({
               }}
             >
               {confirm === 'allow_always' ? t.inbox.allowAlways : t.inbox.confirmAllow}
+            </Button>
+          </div>
+        </div>
+      </Sheet>
+      <Sheet open={dismissing} onClose={() => setDismissing(false)} title={t.inbox.dismissTitle} role="alertdialog">
+        <div className="space-y-3">
+          <p className="text-sm">{t.inbox.dismissConfirm}</p>
+          <div className="flex gap-2">
+            <Button className="flex-1" variant="outline" onClick={() => setDismissing(false)}>
+              {t.cancel}
+            </Button>
+            <Button
+              className="flex-1"
+              variant="danger"
+              data-act="dismiss-confirm"
+              onClick={() => {
+                setDismissing(false);
+                void app.dismiss(item.host_id, it);
+              }}
+            >
+              {t.inbox.dismiss}
             </Button>
           </div>
         </div>

@@ -312,6 +312,24 @@ export class AppModel {
     }
   }
 
+  /** Dismiss an open interaction (`interaction.cancel`): the agent may still be waiting in the pane. */
+  async dismiss(hostId: string, it: Interaction): Promise<boolean> {
+    const conn = this.conn(hostId);
+    try {
+      if (!conn) throw new Error('host not paired');
+      await conn.request('interaction.cancel', { interaction: it.id });
+      this.haptic('success');
+      this.toast(t.inbox.dismissed);
+      void conn.refresh().catch(() => {});
+      return true;
+    } catch (e) {
+      this.haptic('error');
+      this.toast(errorMessage(e) || t.inbox.dismissFailed, 'error');
+      void conn?.refresh().catch(() => {});
+      return false;
+    }
+  }
+
   /** Poll `interaction.get` until the answer settles (delivered / failed / closed), ≤ ~30 s. */
   private async followDelivery(hostId: string, id: string): Promise<void> {
     const key = `${hostId}/${id}`;

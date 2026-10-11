@@ -266,8 +266,28 @@ pub fn key(app: &mut App, ev: KeyEvent, p: Popup) {
                 return;
             };
             let open = it.status == InteractionStatus::Open && it.answerable;
+            // `x` twice dismisses; any other key cancels the confirmation.
+            let ikey = crate::inbox::ItemKey {
+                machine: mi,
+                kind: "interaction".into(),
+                id: it.id.clone(),
+            };
+            let confirmed =
+                app.inbox.confirm.take() == Some(crate::inbox::Confirm::Item(ikey.clone()));
             match (it.kind, ev.key) {
                 (_, Key::Named(NamedKey::Escape)) => {}
+                (_, Key::Char('x')) => {
+                    if it.status != InteractionStatus::Open {
+                        app.toast("this question is already closed");
+                    } else if !app.machines[mi].capabilities().host {
+                        app.toast("Dismiss is unavailable in a shared terminal");
+                    } else if !confirmed {
+                        app.inbox.confirm = Some(crate::inbox::Confirm::Item(ikey));
+                        app.mode = Mode::Popup(Popup::Card { interaction, sel });
+                    } else {
+                        crate::inbox::dismiss_interaction(app, mi, &it.id);
+                    }
+                }
                 (_, Key::Char('o')) => {
                     app.cur = mi;
                     app.return_to.clear();
@@ -666,9 +686,9 @@ pub fn draw(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
                         .to_string()
                 } else {
                     match it.kind {
-                        InteractionKind::Approval => "[y] allow once  [s] allow for session  [n] deny  [e] deny with message  [A] batch  [o] open  [esc] later".into(),
-                        InteractionKind::PlanReview => "[y] approve  [e] request changes  [n] reject  [o] open  [esc] later".into(),
-                        InteractionKind::Question => "[j/k] choose  [enter] answer  [1-9] pick  [o] open  [esc] later".into(),
+                        InteractionKind::Approval => "[y] allow once  [s] allow for session  [n] deny  [e] deny with message  [A] batch  [x] dismiss  [o] open  [esc] later".into(),
+                        InteractionKind::PlanReview => "[y] approve  [e] request changes  [n] reject  [x] dismiss  [o] open  [esc] later".into(),
+                        InteractionKind::Question => "[j/k] choose  [enter] answer  [1-9] pick  [x] dismiss  [o] open  [esc] later".into(),
                         InteractionKind::Notice => "[o] open  [esc] close".into(),
                         InteractionKind::Picker if it.questions.iter().all(|q| q.options.is_empty()) => "[c] cancel the dialog  [o] open  [esc] later".into(),
                         InteractionKind::Picker if it.questions.first().is_some_and(|q| q.multi) => "[j/k] choose  [enter] toggle and confirm  [c] cancel  [o] open  [esc] later".into(),
@@ -676,6 +696,18 @@ pub fn draw(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
                     }
                 };
                 b.line("", t.text());
+                let confirming = app.inbox.confirm
+                    == Some(crate::inbox::Confirm::Item(crate::inbox::ItemKey {
+                        machine: mi,
+                        kind: "interaction".into(),
+                        id: it.id.clone(),
+                    }));
+                if confirming {
+                    b.line(
+                        "The agent may still be waiting in the pane. Press x again to dismiss.",
+                        t.s(t.yellow),
+                    );
+                }
                 b.line(&keys, t.dim());
             }
         },

@@ -48,6 +48,9 @@ pub struct Item {
     pub effort_estimate: Option<(String, String)>,
     pub snoozed_until_ms: Option<i64>,
     pub woke_from_snooze: Option<String>,
+    /// The item's revision when the server reports it; echoed in `attention.update` dismiss so
+    /// a later change brings the item back.
+    pub item_rev: Option<u64>,
     pub urgent: bool,
     /// The server's key object, echoed back in `attention.update`.
     pub raw_key: Value,
@@ -132,7 +135,30 @@ pub struct InboxState {
     /// `prefix+a` waiting for fresh rankings (`true`: focus the pane instead of the card).
     pub next_after: Option<bool>,
     pub notice: Option<String>,
+    /// A first `x` / `X` waiting for its second press.
+    pub confirm: Option<Confirm>,
+    /// The last item dismissed, for `u`.
+    pub last_dismissed: Option<Dismissed>,
 }
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Confirm {
+    Item(ItemKey),
+    DeliveryProblems,
+}
+
+#[derive(Debug, Clone)]
+pub struct Dismissed {
+    pub machine: usize,
+    pub key: ItemKey,
+    pub raw_key: Value,
+    /// Open interactions are cancelled and cannot be restored.
+    pub interaction: bool,
+}
+
+const CONFIRM_INTERACTION: &str =
+    "The agent may still be waiting in the pane. Press x again to dismiss.";
+const CONFIRM_DELIVERY: &str = "Press X again to dismiss all delivery problems.";
 
 impl Default for InboxState {
     fn default() -> Self {
@@ -149,15 +175,24 @@ impl Default for InboxState {
             outstanding: HashSet::new(),
             next_after: None,
             notice: None,
+            confirm: None,
+            last_dismissed: None,
         }
     }
 }
 
 #[derive(Debug, Clone)]
 pub enum Reply {
-    List { budget: bool },
+    List {
+        budget: bool,
+    },
     Updated,
     EffortSet,
+    /// `attention.update` with `dismiss`. `quiet`: part of a bulk dismiss, which has its own notice.
+    Dismiss {
+        undo: bool,
+        quiet: bool,
+    },
 }
 
 fn now_ms() -> i64 {
@@ -214,6 +249,7 @@ pub fn parse_item(machine: usize, v: &Value) -> Option<Item> {
         }),
         snoozed_until_ms: v.get("snoozed_until_ms").and_then(Value::as_i64),
         woke_from_snooze: opt_str(v, "woke_from_snooze"),
+        item_rev: v.get("item_rev").and_then(Value::as_u64),
         urgent: v.get("urgent").and_then(Value::as_bool).unwrap_or(false),
         raw_key: key.clone(),
         fallback: false,
@@ -385,6 +421,7 @@ pub fn fallback_items(app: &App, mi: usize) -> Vec<Item> {
             effort_estimate: None,
             snoozed_until_ms: None,
             woke_from_snooze: None,
+            item_rev: None,
             urgent: false,
             raw_key: json!({"kind": "interaction", "id": i.id}),
             fallback: true,
@@ -427,6 +464,7 @@ pub fn fallback_items(app: &App, mi: usize) -> Vec<Item> {
             effort_estimate: None,
             snoozed_until_ms: None,
             woke_from_snooze: None,
+            item_rev: None,
             urgent: false,
             raw_key: json!({"kind": "review", "id": t.id}),
             fallback: true,
@@ -633,7 +671,9 @@ pub fn sync_selection(st: &mut InboxState, items: &[Item]) {
             if let Some(p) = items.iter().position(|i| &i.key == k) {
                 st.sel_idx = p;
             } else {
-                st.notice = Some("The selected item no longer needs you".into());
+                if st.last_dismissed.as_ref().is_none_or(|d| &d.key != k) {
+                    st.notice = Some("The selected item no longer needs you".into());
+                }
                 st.sel_idx = st.sel_idx.min(items.len().saturating_sub(1));
                 st.selected = items.get(st.sel_idx).map(|i| i.key.clone());
                 st.sub = Sub::None;
@@ -760,6 +800,38 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
                 act_on_first(app, focus);
             }
         }
+        Reply::Dismiss { undo, quiet } => match res {
+            Ok(v) => {
+                if v.get("dismissed").is_none() {
+                    app.inbox.last_dismissed = None;
+                    app.inbox.notice = Some("dismiss needs a newer server on that machine".into());
+                    app.toast("dismiss needs a newer server on that machine");
+                } else if !quiet {
+                    let restorable = !undo
+                        && app
+                            .inbox
+                            .last_dismissed
+                            .as_ref()
+                            .is_some_and(|d| d.machine == mi && !d.interaction);
+                    app.inbox.notice = Some(
+                        if undo {
+                            "Restored"
+                        } else if restorable {
+                            "Dismissed · u undo"
+                        } else {
+                            "Dismissed"
+                        }
+                        .into(),
+                    );
+                }
+                app.inbox.stale = true;
+                app.inbox.last_fetch = None;
+            }
+            Err(e) if e.is_method_not_found() => {
+                app.inbox.notice = Some("dismiss needs a newer server on that machine".into());
+            }
+            Err(e) => app.toast(format!("✗ {}", e.message)),
+        },
         Reply::Updated | Reply::EffortSet => match res {
             Ok(_) => {
                 app.inbox.stale = true;
@@ -1002,6 +1074,58 @@ pub const EFFORTS: [(&str, &str); 4] = [
     ("unknown", "unknown"),
 ];
 
+/// Why `x` cannot dismiss this item right now, mirroring snooze.
+fn dismiss_blocked(app: &App, it: &Item) -> Option<String> {
+    Some(if !app.machines[it.key.machine].capabilities().host {
+        "Dismiss is unavailable in a shared terminal".into()
+    } else if it.key.kind == "handoff" {
+        "a handoff waits until it is accepted, declined or expires".into()
+    } else if it.stale {
+        "machine offline — dismiss when it reconnects".into()
+    } else if it.fallback {
+        "dismiss needs a newer server on that machine".into()
+    } else {
+        return None;
+    })
+}
+
+/// Dismiss an open interaction from its card: the server cancels it and remembers the choice.
+pub fn dismiss_interaction(app: &mut App, mi: usize, id: &str) {
+    let raw_key = json!({"kind": "interaction", "id": id});
+    app.command_on(
+        mi,
+        "attention.update",
+        json!({"key": raw_key, "dismiss": true}),
+        Pending::Attn(Reply::Dismiss {
+            undo: false,
+            quiet: false,
+        }),
+    );
+    app.inbox.last_dismissed = Some(Dismissed {
+        machine: mi,
+        key: ItemKey {
+            machine: mi,
+            kind: "interaction".into(),
+            id: id.to_string(),
+        },
+        raw_key,
+        interaction: true,
+    });
+}
+
+fn send_dismiss(app: &mut App, it: &Item, quiet: bool) {
+    let mut params = json!({"key": it.raw_key, "dismiss": true});
+    if let Some(rev) = it.item_rev {
+        params["item_rev"] = json!(rev);
+    }
+    app.command_on(
+        it.key.machine,
+        "attention.update",
+        params,
+        Pending::Attn(Reply::Dismiss { undo: false, quiet }),
+    );
+}
+
 // ---- keys ------------------------------------------------------------------------------------------
 
 pub fn key(app: &mut App, ev: KeyEvent) {
@@ -1009,6 +1133,17 @@ pub fn key(app: &mut App, ev: KeyEvent) {
     sync_selection(&mut app.inbox, &v.items);
     let sel = v.items.get(app.inbox.sel_idx).cloned();
     app.mode = Mode::Popup(Popup::Inbox);
+    // A pending dismiss confirmation survives only the matching second press.
+    let pend = app.inbox.confirm.take();
+    if pend.is_some()
+        && app
+            .inbox
+            .notice
+            .as_deref()
+            .is_some_and(|n| n == CONFIRM_INTERACTION || n.starts_with("Press X again"))
+    {
+        app.inbox.notice = None;
+    }
     // Sub-choosers first.
     match app.inbox.sub.clone() {
         Sub::Snooze(mut ch) => {
@@ -1091,7 +1226,67 @@ pub fn key(app: &mut App, ev: KeyEvent) {
             refresh(app);
         }
         Key::Char('r') => refresh(app),
+        Key::Char('u') => match app.inbox.last_dismissed.take() {
+            Some(d) if !d.interaction && app.machines[d.machine].connected() => {
+                app.command_on(
+                    d.machine,
+                    "attention.update",
+                    json!({"key": d.raw_key, "dismiss": false}),
+                    Pending::Attn(Reply::Dismiss {
+                        undo: true,
+                        quiet: false,
+                    }),
+                );
+            }
+            Some(_) => app.inbox.notice = Some("this dismissal cannot be undone".into()),
+            None => app.inbox.notice = Some("nothing to undo".into()),
+        },
+        Key::Char('X') => {
+            let targets: Vec<Item> = v
+                .items
+                .iter()
+                .filter(|i| i.key.kind == "send_unknown" && dismiss_blocked(app, i).is_none())
+                .cloned()
+                .collect();
+            if targets.is_empty() {
+                app.inbox.notice = Some("no delivery problems to dismiss".into());
+            } else if pend != Some(Confirm::DeliveryProblems) {
+                app.inbox.confirm = Some(Confirm::DeliveryProblems);
+                app.inbox.notice = Some(format!(
+                    "Press X again to dismiss {} delivery problem{}.",
+                    targets.len(),
+                    if targets.len() == 1 { "" } else { "s" }
+                ));
+            } else {
+                for it in &targets {
+                    send_dismiss(app, it, true);
+                }
+                app.inbox.last_dismissed = None;
+                app.inbox.notice = Some(format!(
+                    "Dismissed {} delivery problem{}",
+                    targets.len(),
+                    if targets.len() == 1 { "" } else { "s" }
+                ));
+            }
+        }
         _ if sel.is_none() => {}
+        Key::Char('x') => {
+            let it = sel.unwrap();
+            if let Some(why) = dismiss_blocked(app, &it) {
+                app.inbox.notice = Some(why);
+            } else if it.key.kind == "interaction" && pend != Some(Confirm::Item(it.key.clone())) {
+                app.inbox.confirm = Some(Confirm::Item(it.key.clone()));
+                app.inbox.notice = Some(CONFIRM_INTERACTION.into());
+            } else {
+                send_dismiss(app, &it, false);
+                app.inbox.last_dismissed = Some(Dismissed {
+                    machine: it.key.machine,
+                    key: it.key.clone(),
+                    raw_key: it.raw_key.clone(),
+                    interaction: it.key.kind == "interaction",
+                });
+            }
+        }
         // Batch view seeded with the selected approval (15 §8.3).
         Key::Char('A') => {
             let it = sel.unwrap();
@@ -1491,7 +1686,7 @@ pub fn draw(app: &App, g: &mut Grid) {
     }
     keys.push_str(" · o open pane");
     if caps.is_some_and(|c| c.host) {
-        keys.push_str(" · s snooze · e effort");
+        keys.push_str(" · s snooze · e effort · x dismiss");
     }
     keys.push_str(" · f 5-minute view · esc close");
     g.put_str(r.x + 1, bottom, &keys, t.dim(), r.w.saturating_sub(2));
@@ -1954,6 +2149,123 @@ mod tests {
         assert!(matches!(app.inbox.sub, Sub::None));
         assert!(commands(&mut rxs[0]).is_empty());
         assert!(app.inbox.notice.as_deref().unwrap().contains("unavailable"));
+    }
+
+    fn open_with(
+        items: Vec<Value>,
+    ) -> (App, Vec<tokio::sync::mpsc::UnboundedReceiver<ClientFrame>>) {
+        let (mut app, mut rxs) = test_app(1);
+        open(&mut app);
+        let c = commands(&mut rxs[0]);
+        reply(
+            &mut app,
+            0,
+            c[0].0,
+            json!({"items": items, "coverage": {"complete": true, "notes": []}}),
+        );
+        (app, rxs)
+    }
+
+    fn updates(rx: &mut tokio::sync::mpsc::UnboundedReceiver<ClientFrame>) -> Vec<(u64, Value)> {
+        commands(rx)
+            .into_iter()
+            .filter(|(_, v)| v["method"] == "attention.update")
+            .collect()
+    }
+
+    #[test]
+    fn x_dismisses_the_selected_item_and_u_undoes_it() {
+        let (mut app, mut rxs) = open_with(vec![item("review", "a", json!(4), 600_000, false)]);
+        app.on_key(key(Key::Char('x')));
+        let u = updates(&mut rxs[0]);
+        assert_eq!(u.len(), 1);
+        assert_eq!(
+            u[0].1["params"]["key"],
+            json!({"kind": "review", "id": "a"})
+        );
+        assert_eq!(u[0].1["params"]["dismiss"], json!(true));
+        reply(
+            &mut app,
+            0,
+            u[0].0,
+            json!({"dismissed": true, "dismissed_rev": 1}),
+        );
+        assert_eq!(app.inbox.notice.as_deref(), Some("Dismissed · u undo"));
+        app.on_key(key(Key::Char('u')));
+        let u = updates(&mut rxs[0]);
+        assert_eq!(u.len(), 1);
+        assert_eq!(
+            u[0].1["params"]["key"],
+            json!({"kind": "review", "id": "a"})
+        );
+        assert_eq!(u[0].1["params"]["dismiss"], json!(false));
+    }
+
+    #[test]
+    fn open_interaction_needs_a_second_x() {
+        let (mut app, mut rxs) = open_with(vec![
+            item("interaction", "i1", json!(3), 600_000, false),
+            item("review", "a", json!(4), 600_000, false),
+        ]);
+        app.on_key(key(Key::Char('x')));
+        assert!(updates(&mut rxs[0]).is_empty());
+        assert!(
+            app.inbox
+                .notice
+                .as_deref()
+                .unwrap()
+                .contains("Press x again")
+        );
+        // Another key cancels the confirmation.
+        app.on_key(key(Key::Char('j')));
+        app.on_key(key(Key::Char('k')));
+        app.on_key(key(Key::Char('x')));
+        assert!(updates(&mut rxs[0]).is_empty());
+        app.on_key(key(Key::Char('x')));
+        let u = updates(&mut rxs[0]);
+        assert_eq!(u.len(), 1);
+        assert_eq!(
+            u[0].1["params"]["key"],
+            json!({"kind": "interaction", "id": "i1"})
+        );
+        reply(&mut app, 0, u[0].0, json!({"dismissed": true}));
+        assert_eq!(app.inbox.notice.as_deref(), Some("Dismissed"));
+        app.on_key(key(Key::Char('u')));
+        assert!(updates(&mut rxs[0]).is_empty());
+    }
+
+    #[test]
+    fn capital_x_only_targets_delivery_problems() {
+        let (mut app, mut rxs) = open_with(vec![
+            item("send_unknown", "s1", json!(4), 600_000, false),
+            item("review", "a", json!(4), 600_000, false),
+            item("send_unknown", "s2", json!(4), 700_000, false),
+        ]);
+        app.on_key(key(Key::Char('X')));
+        assert!(updates(&mut rxs[0]).is_empty());
+        app.on_key(key(Key::Char('X')));
+        let u = updates(&mut rxs[0]);
+        assert_eq!(u.len(), 2);
+        assert!(
+            u.iter()
+                .all(|(_, v)| v["params"]["key"]["kind"] == "send_unknown")
+        );
+        assert_eq!(
+            app.inbox.notice.as_deref(),
+            Some("Dismissed 2 delivery problems")
+        );
+    }
+
+    #[test]
+    fn dismiss_without_dismissed_field_means_older_server() {
+        let (mut app, mut rxs) = open_with(vec![item("review", "a", json!(4), 600_000, false)]);
+        app.on_key(key(Key::Char('x')));
+        let u = updates(&mut rxs[0]);
+        reply(&mut app, 0, u[0].0, json!({}));
+        assert_eq!(
+            app.inbox.notice.as_deref(),
+            Some("dismiss needs a newer server on that machine")
+        );
     }
 
     #[test]

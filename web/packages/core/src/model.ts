@@ -1076,6 +1076,8 @@ export interface AppApi {
     /** `delivery` is `{channel: native|keystrokes|recorded}`; the state is `interaction.delivery`. */
     result: { interaction: Interaction; delivery: { channel?: string } | DeliveryState; duplicate?: boolean };
   };
+  /** Closes an open interaction as cancelled (Approve scope). A held hook gate is released, so the agent shows its own dialog. */
+  'interaction.cancel': { params: { interaction: string }; result: { interaction: Interaction } };
   'interaction.answer_batch': {
     params: { items: { interaction: string; decision_rev: number }[]; decision: 'allow' | 'deny' };
     result: { results: BatchResult[] };
@@ -1390,6 +1392,7 @@ export const MUTATING_METHODS: ReadonlySet<string> = new Set([
   'preview.forget',
   'interaction.answer',
   'interaction.answer_batch',
+  'interaction.cancel',
   'notification.read',
   'prefs.set',
   'devices.revoke',

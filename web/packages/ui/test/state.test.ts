@@ -247,4 +247,13 @@ describe('answer calls send decision_rev', () => {
     expect(calls.length).toBe(before);
     expect(app.answers.get('h1/n')?.phase).toBe('error');
   });
+
+  test('dismiss cancels the interaction and toasts', async () => {
+    const { app, calls, setFail } = await model();
+    expect(await app.dismiss('h1', interaction({ id: 'd' }))).toBe(true);
+    expect(calls).toEqual([['interaction.cancel', { interaction: 'd' }]]);
+    expect(app.toasts.get().some((x) => x.text === 'Dismissed')).toBe(true);
+    setFail(new Error('nope'));
+    expect(await app.dismiss('h1', interaction({ id: 'e' }))).toBe(false);
+  });
 });
