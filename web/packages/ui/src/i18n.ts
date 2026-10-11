@@ -1118,6 +1118,8 @@ export const en = {
     back: 'All previews',
     open: 'Open',
     forget: 'Forget',
+    forgetTitle: (name: string) => `Forget ${name}?`,
+    forgetBody: 'The preview leaves this list on every device. The dev server keeps running. Vibeke lists it again when it is declared or found again.',
     rowMenu: (name: string) => `Options for ${name}`,
     expanded: 'Shown in the main area',
     other: 'Other previews on this host',

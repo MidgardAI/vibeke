@@ -1290,7 +1290,8 @@ export interface AppApi {
   'browser.release': { params: { session: string }; result: { session: string; human_control: boolean } };
   /** Phones: open a host-rendered mobile session on a preview; this device owns it and has taken it over (full scope). */
   'browser.preview_open': {
-    params: { preview: string; machine?: string; viewport: { width: number; height: number }; dpr: number; dark?: boolean };
+    /** `mobile: false` asks for a desktop page (a wide window); default a phone (touch, mobile UA). */
+    params: { preview: string; machine?: string; viewport: { width: number; height: number }; dpr: number; dark?: boolean; mobile?: boolean };
     result: BrowserSession;
   };
   /** At most 64 events per call, applied in order; only from the device that holds the take-over. */

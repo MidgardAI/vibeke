@@ -9,7 +9,7 @@ import { RpcError, type BrowserSession } from '@vibeke/core';
 import { useApp } from '../app/hooks';
 import { t } from '../i18n';
 import { errorMessage } from '../lib/answer';
-import { InputBatcher, inputToEvent, namedKey, sizeChanged, toViewport, usableSize } from '../lib/phone-preview';
+import { InputBatcher, inputToEvent, namedKey, sizeChanged, toViewport, usableSize, wantsMobileLayout } from '../lib/phone-preview';
 import { FRAME_FPS, frameDelayMs, frameSrc, needsReattach, nextSeq, normalizeUrl, type Size } from '../lib/screencast';
 import { useStore } from '../lib/store';
 import { Button, IconButton, Notice, Spinner, cx } from './ui';
@@ -138,6 +138,7 @@ export function PhonePreview({
         viewport: sizeRef.current,
         dpr: window.devicePixelRatio || 1,
         dark: window.matchMedia?.('(prefers-color-scheme: dark)').matches,
+        mobile: wantsMobileLayout(sizeRef.current.width, window.matchMedia?.('(pointer: coarse)').matches ?? true),
       });
       if (!live) {
         void conn.request('browser.session_close', { session: s.session }).catch(() => {});
