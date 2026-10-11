@@ -389,3 +389,58 @@ async fn user_only_params_are_refused_to_every_other_caller() {
         .is_ok()
     );
 }
+
+/// The generic receipt layer: a retried keyed call runs once, a reused key with other params
+/// is a conflict, and keys are scoped to the caller.
+#[tokio::test(flavor = "multi_thread")]
+async fn keyed_calls_run_once() {
+    let e = Env::new();
+    let user = ctx_full();
+    let p = json!({"title": "built", "idempotency_key": "k-1"});
+    let a = e
+        .call(&user, "notification.send", p.clone())
+        .await
+        .unwrap()
+        .unwrap();
+    let b = e
+        .call(&user, "notification.send", p.clone())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(a["notification"]["id"], b["notification"]["id"]);
+    assert_eq!(b["replayed"], true);
+    let n = e.server.with_core(|c| c.notifications.len());
+    assert_eq!(n, 1, "the retry did not notify twice");
+    let c = e
+        .call(
+            &user,
+            "notification.send",
+            json!({"title": "other", "idempotency_key": "k-1"}),
+        )
+        .await
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(c.data.kind, "conflict");
+    // Another caller with the same key is a different call.
+    let pane = ctx_pane();
+    let d = e
+        .call(&pane, "notification.send", p.clone())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_ne!(d["notification"]["id"], a["notification"]["id"]);
+    assert!(d.get("replayed").is_none());
+    // Without a key every call runs.
+    let plain = json!({"title": "plain"});
+    let x = e
+        .call(&user, "notification.send", plain.clone())
+        .await
+        .unwrap()
+        .unwrap();
+    let y = e
+        .call(&user, "notification.send", plain)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_ne!(x["notification"]["id"], y["notification"]["id"]);
+}

@@ -934,6 +934,97 @@ pub async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) 
     crate::search::authorize_read(server, ctx, method, p)?;
     crate::browser_pane::page_io::authorize_output_read(server, ctx, method, p)?;
     crate::limits::check(server, ctx, method, p)?;
+    if let Some(key) = idempotency_scope(ctx, method, p) {
+        return Box::pin(keyed(server, ctx, method, p, key)).await;
+    }
+    Box::pin(handlers(server, ctx, method, p)).await
+}
+
+/// Mutating methods that clients retry after a dropped connection (the CLI's MCP server, the
+/// phone gateway, the generated clients) and that accept an optional `idempotency_key`
+/// through the generic receipt layer below. Methods with their own receipts (task tracking,
+/// drafts, interaction answers, reviews, assistance) handle the key themselves.
+pub const KEYED_METHODS: &[&str] = &[
+    "agent.prompt",
+    "agent.send_keys",
+    "agent.spawn",
+    "agent.start",
+    "browser.click",
+    "browser.close",
+    "browser.navigate",
+    "browser.open",
+    "browser.press",
+    "browser.type",
+    "notification.send",
+    "pane.run",
+    "pane.send_bytes",
+    "pane.send_keys",
+    "pane.send_text",
+    "pane.split",
+    "preview.declare",
+    "screenshot.add",
+    "tab.create",
+    "task.create",
+    "workspace.create",
+];
+
+/// The receipt key of a keyed call: the caller's `idempotency_key`, scoped to the caller (a
+/// pane, plugin or device never replays another caller's result).
+fn idempotency_scope(ctx: &Ctx, method: &str, p: &Value) -> Option<String> {
+    if !KEYED_METHODS.contains(&method) {
+        return None;
+    }
+    let key = s(p, "idempotency_key").filter(|k| !k.trim().is_empty())?;
+    let who = match &ctx.pane_scope {
+        Some(pane) => format!("pane:{pane}"),
+        None if is_user(ctx) => "user".to_string(),
+        None => ctx.kind.clone(),
+    };
+    Some(format!("api:{who}:{key}"))
+}
+
+/// Calls whose key is being handled now: a retry that arrives while the first attempt still
+/// runs is told to wait instead of running twice.
+fn keys_in_flight() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
+    static K: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+        std::sync::OnceLock::new();
+    K.get_or_init(Default::default)
+}
+
+/// Run a keyed call once: a repeat with the same key and params returns the stored result
+/// (`replayed: true`); the same key with other params is a conflict.
+async fn keyed(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value, key: String) -> R {
+    let mut scoped = p.clone();
+    scoped["idempotency_key"] = json!(key);
+    if let Some(r) = crate::tracking::replay(server, method, &scoped) {
+        return r;
+    }
+    if !keys_in_flight().lock().unwrap().insert(key.clone()) {
+        return Err(err(
+            ErrorKind::Conflict,
+            "a call with this idempotency_key is still running; retry in a moment",
+        )
+        .details(json!({"reason": "in_progress"})));
+    }
+    struct Release(String);
+    impl Drop for Release {
+        fn drop(&mut self) {
+            keys_in_flight().lock().unwrap().remove(&self.0);
+        }
+    }
+    let _release = Release(key);
+    let r = handlers(server, ctx, method, p).await;
+    if let Ok(v) = &r {
+        let mut c = server.core.lock().unwrap();
+        let mut tx = Tx::new();
+        crate::tracking::record(&mut tx, method, &scoped, v);
+        let _ = server.commit(&mut c, tx);
+    }
+    r
+}
+
+/// The method handlers, after authorization.
+async fn handlers(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> R {
     // Lane 3E: search result redaction, state.forget, encryption status/migrate.
     if let Some(r) = crate::privacy::api(server, ctx, method, p).await {
         return r;

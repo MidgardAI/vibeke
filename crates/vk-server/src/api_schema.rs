@@ -280,8 +280,25 @@ fn build() -> Result<Registry, Vec<String>> {
         if mutating.get(name.as_str()) == Some(&true) {
             add_cursor(&mut e.result);
         }
+        // The generic receipt layer (`api::KEYED_METHODS`) takes an optional idempotency key.
+        if crate::api::KEYED_METHODS.contains(&name.as_str()) {
+            add_idempotency_key(&mut e.params);
+        }
     }
     if errs.is_empty() { Ok(reg) } else { Err(errs) }
+}
+
+fn add_idempotency_key(s: &mut Shape) {
+    match s {
+        Shape::Obj(fs) if !fs.iter().any(|f| f.name == "idempotency_key") => fs.push(Field {
+            name: "idempotency_key".into(),
+            optional: true,
+            shape: Shape::Str,
+            default: None,
+        }),
+        Shape::Union(arms) => arms.iter_mut().for_each(add_idempotency_key),
+        _ => {}
+    }
 }
 
 fn add_cursor(s: &mut Shape) {
