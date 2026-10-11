@@ -398,6 +398,29 @@ fn pick_nullable(p: &Value, keys: &[&str]) -> Value {
     Value::Object(m)
 }
 
+/// Pass the client's `idempotency_key` on to a server call the client's call makes, so the
+/// host runs a retried call once (the web client sends one on every keyed call). The server
+/// call of the client's own method carries it unchanged; another keyed call it makes (the Enter
+/// after a text, the tab an agent starts in) gets the key with that method appended, so each
+/// step runs once too. A call that already has a key keeps it.
+fn pass_key(p: &Value, params: &mut Value, client_method: &str, method: &str) {
+    let Some(key) = s(p, "idempotency_key").filter(|k| !k.trim().is_empty()) else {
+        return;
+    };
+    let Some(m) = params.as_object_mut() else {
+        return;
+    };
+    if m.contains_key("idempotency_key") {
+        return;
+    }
+    let v = if method == client_method {
+        key.to_string()
+    } else {
+        format!("{key}:{method}")
+    };
+    m.insert("idempotency_key".into(), v.into());
+}
+
 fn pick(p: &Value, keys: &[&str]) -> Value {
     let mut m = Map::new();
     for k in keys {
@@ -1234,23 +1257,22 @@ impl Call<'_> {
             "pane.send_text" => {
                 let pane = req(&p, "pane")?;
                 let text = s(&p, "text").unwrap_or("");
-                let r = self
-                    .server(
-                        "pane.send_text",
-                        json!({"pane": pane, "text": text, "paste": "auto"}),
-                    )
-                    .await?;
+                let mut params = json!({"pane": pane, "text": text, "paste": "auto"});
+                pass_key(&p, &mut params, method, "pane.send_text");
+                let r = self.server("pane.send_text", params).await?;
                 if p.get("submit").and_then(|v| v.as_bool()) == Some(true) {
                     // Give the TUI a beat to take the paste before Enter (350 ms works well).
                     tokio::time::sleep(Duration::from_millis(150)).await;
-                    self.server("pane.send_keys", json!({"pane": pane, "keys": ["Enter"]}))
-                        .await?;
+                    let mut enter = json!({"pane": pane, "keys": ["Enter"]});
+                    pass_key(&p, &mut enter, method, "pane.send_keys");
+                    self.server("pane.send_keys", enter).await?;
                 }
                 Ok(r)
             }
             "pane.send_keys" => {
-                self.server("pane.send_keys", pick(&p, &["pane", "keys"]))
-                    .await
+                let mut params = pick(&p, &["pane", "keys"]);
+                pass_key(&p, &mut params, method, "pane.send_keys");
+                self.server("pane.send_keys", params).await
             }
             "pane.rename" => {
                 self.server("pane.rename", pick(&p, &["pane", "name", "title"]))
@@ -1259,8 +1281,9 @@ impl Call<'_> {
             "pane.close" => self.server("pane.close", pick(&p, &["pane"])).await,
             "pane.focus" => self.server("pane.focus", pick(&p, &["pane"])).await,
             "agent.prompt" => {
-                self.server("agent.prompt", pick(&p, &["target", "text"]))
-                    .await
+                let mut params = pick(&p, &["target", "text"]);
+                pass_key(&p, &mut params, method, "agent.prompt");
+                self.server("agent.prompt", params).await
             }
             "agent.interrupt" => self.server("agent.interrupt", pick(&p, &["target"])).await,
             "agent.commands" | "agent.models" => {
@@ -1299,29 +1322,31 @@ impl Call<'_> {
                     // Path pickers show `~/…`; the host takes the folder as given.
                     let cwd = vk_handoff::expand_home(req(&params, "cwd")?);
                     params["cwd"] = cwd.to_string_lossy().into_owned().into();
+                    pass_key(&p, &mut params, method, "workspace.create");
                     let r = self.server("workspace.create", params).await?;
                     root_pane_id(&r, "workspace.create")?
                 } else {
                     match s(&p, "pane") {
                         Some(pane) => pane.to_string(),
                         None => {
-                            let t = self
-                                .server("tab.create", pick(&p, &["workspace", "cwd"]))
-                                .await?;
+                            let mut params = pick(&p, &["workspace", "cwd"]);
+                            pass_key(&p, &mut params, method, "tab.create");
+                            let t = self.server("tab.create", params).await?;
                             root_pane_id(&t, "tab.create")?
                         }
                     }
                 };
                 let mut params = pick(&p, &["harness", "prompt", "name"]);
                 params["pane"] = pane.clone().into();
+                pass_key(&p, &mut params, method, "agent.start");
                 let mut r = self.server("agent.start", params).await?;
                 r["pane"] = pane.into();
                 Ok(r)
             }
             "tab.create" => {
-                let mut r = self
-                    .server("tab.create", pick(&p, &["workspace", "cwd", "title"]))
-                    .await?;
+                let mut params = pick(&p, &["workspace", "cwd", "title"]);
+                pass_key(&p, &mut params, method, "tab.create");
+                let mut r = self.server("tab.create", params).await?;
                 // Spec 16 §7.4 shape: {tab, pane} (the server calls it root_pane).
                 if let Some(rp) = r.get("root_pane").cloned() {
                     r["pane"] = rp;
@@ -1510,7 +1535,9 @@ impl Call<'_> {
             // A workspace in a host folder (never a `command` or `layout`).
             "workspace.create" => {
                 req(&p, "cwd")?;
-                self.server(method, pick(&p, &["cwd", "name"])).await
+                let mut params = pick(&p, &["cwd", "name"]);
+                pass_key(&p, &mut params, method, method);
+                self.server(method, params).await
             }
             "agent.turns" => {
                 req(&p, "run")?;
@@ -1739,7 +1766,9 @@ impl Call<'_> {
                     "browser.input" => &["session", "events"],
                     _ => &["session", "url", "path", "wait", "timeout_ms"],
                 };
-                self.server(method, pick(&p, keys)).await
+                let mut params = pick(&p, keys);
+                pass_key(&p, &mut params, method, method);
+                self.server(method, params).await
             }
             "fs.browse" => self.server(method, pick(&p, &["path", "prefix"])).await,
             "repo.candidates" => {
@@ -3284,6 +3313,29 @@ mod workspace_tests {
         );
         assert_eq!(run["idempotency_key"], "gw:d1:o2");
         assert_eq!(run["authorize"], true);
+        // A client's idempotency key reaches the server unchanged on keyed calls.
+        for (i, (m, params)) in [
+            ("pane.send_keys", json!({"pane": "p1", "keys": ["a"]})),
+            ("agent.prompt", json!({"target": "r1", "text": "hi"})),
+            ("tab.create", json!({"workspace": "w1"})),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut params = params;
+            params["idempotency_key"] = json!("client-key-1");
+            params["op_id"] = json!(format!("k{i}"));
+            let r = echo(call.dispatch(m, params).await);
+            assert_eq!(r["idempotency_key"], "client-key-1", "{m}");
+        }
+        let plain = echo(
+            call.dispatch(
+                "pane.send_keys",
+                json!({"pane": "p1", "keys": ["a"], "op_id": "o4"}),
+            )
+            .await,
+        );
+        assert!(plain.get("idempotency_key").is_none());
         assert_eq!(
             echo(
                 call.dispatch(
