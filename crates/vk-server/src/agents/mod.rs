@@ -755,8 +755,9 @@ impl Agents {
     /// Open interactions whose dialog never shows (04 §2.5): when the screen has shown the agent
     /// working, with no dialog, for [`NO_DIALOG_CLOSE`] while the run is working, the pane's
     /// structured interactions older than that were answered or dismissed in the pane without a
-    /// report. Only for harnesses whose screen rules recognise their dialogs and working state;
-    /// held gates (the harness waits on Vibeke, so no dialog is expected) are never touched.
+    /// report. Only for a validated harness version whose screen rules recognise its dialogs
+    /// and working state; held gates (the harness waits on Vibeke, so no dialog is expected)
+    /// are never touched. The close is a guess, recorded as such ([`NO_DIALOG_SEEN`]).
     fn close_unseen_dialogs(
         &self,
         server: &Arc<Server>,
@@ -765,10 +766,18 @@ impl Agents {
         m: &screen::ScreenMatch,
     ) {
         let pane = run.pane.as_str();
+        // "No dialog" is only evidence when the screen rules are known to recognise every
+        // dialog of this harness version: an unvalidated or unknown version keeps items open.
+        let rules_trusted = screen::has_screen_rules(h)
+            && run.health != AdapterHealth::UnvalidatedVersion
+            && run
+                .harness_version
+                .as_deref()
+                .is_some_and(|v| harness::validated(h, v));
         let quiet = m.dialog.is_none()
             && matches!(m.state, Some((Execution::Working, _)))
             && run.execution.value == Execution::Working
-            && screen::has_screen_rules(h);
+            && rules_trusted;
         let (since, gates) = {
             let mut i = self.inner.lock().unwrap();
             if !quiet {
@@ -811,12 +820,7 @@ impl Agents {
             let open_for = Duration::from_millis((now - opened).max(0) as u64);
             let age = quiet_for.min(open_for);
             if age >= NO_DIALOG_CLOSE {
-                resolve(
-                    server,
-                    &id,
-                    InteractionStatus::ResolvedElsewhere,
-                    "no dialog on screen",
-                );
+                resolve(server, &id, InteractionStatus::Cancelled, NO_DIALOG_SEEN);
             } else {
                 let left = NO_DIALOG_CLOSE - age;
                 wait = Some(wait.map_or(left, |w| w.min(left)));
@@ -1055,11 +1059,16 @@ fn resolve(server: &Server, id: &str, status: InteractionStatus, reason: &str) {
                 .map(|m| m.at_ms);
             (it.clone(), turn_at)
         });
+    let data = if heuristic_close(reason) {
+        json!({"reason": reason, "closed_by": "heuristic", "answered": false})
+    } else {
+        json!({"reason": reason})
+    };
     let mut tx = Tx::new();
     tx.event(
         event,
         json!({"interaction": it.id, "pane": it.pane, "run": it.run}),
-        json!({"reason": reason}),
+        data,
     );
     tx.interaction(it);
     let _ = server.commit(&mut c, tx);
@@ -1308,6 +1317,22 @@ fn held_gates(server: &Server) -> std::collections::HashSet<String> {
 /// waiting on Vibeke; `gate` is set before the commit, the gate itself is registered after it)
 /// and a sandbox request are never closed here: releasing them would deny without a decision.
 fn resolve_open(server: &Server, run: &str, reason: &str, pick: impl Fn(&Interaction) -> bool) {
+    resolve_open_as(
+        server,
+        run,
+        InteractionStatus::ResolvedElsewhere,
+        reason,
+        pick,
+    );
+}
+
+fn resolve_open_as(
+    server: &Server,
+    run: &str,
+    status: InteractionStatus,
+    reason: &str,
+    pick: impl Fn(&Interaction) -> bool,
+) {
     let gates = held_gates(server);
     let ids: Vec<String> = server.with_core(|c| {
         c.model
@@ -1325,7 +1350,7 @@ fn resolve_open(server: &Server, run: &str, reason: &str, pick: impl Fn(&Interac
             .collect()
     });
     for id in ids {
-        resolve(server, &id, InteractionStatus::ResolvedElsewhere, reason);
+        resolve(server, &id, status, reason);
     }
 }
 
@@ -1352,17 +1377,36 @@ fn screen_shows_no_dialog(server: &Server, run: &AgentRun) -> bool {
     screen::evaluate(h, &text).dialog.is_none()
 }
 
+/// Closes only requests older than [`SCREEN_GRACE`]: hooks fire before the harness draws its
+/// dialog, so a parallel tool's `PreToolUse` can arrive before the question was ever shown.
+/// The close is a guess, recorded as such ([`OTHER_TOOL_STARTED`]).
 fn close_questions_for_tool(server: &Server, run: &AgentRun, tool_use: &str) {
-    let now = now_ms();
-    resolve_open(server, &run.id, "tool ran", |i| {
-        matches!(
-            i.kind,
-            InteractionKind::Question | InteractionKind::Picker | InteractionKind::PlanReview
-        ) && i.source != StateSource::Screen
-            && i.native_ref.as_deref() != Some(tool_use)
-            && i.opened_at_ms < now
-            && !harness::is_elicitation(i)
-    });
+    let shown_by = now_ms() - SCREEN_GRACE.as_millis() as i64;
+    resolve_open_as(
+        server,
+        &run.id,
+        InteractionStatus::Cancelled,
+        OTHER_TOOL_STARTED,
+        |i| {
+            matches!(
+                i.kind,
+                InteractionKind::Question | InteractionKind::Picker | InteractionKind::PlanReview
+            ) && i.source != StateSource::Screen
+                && i.native_ref.as_deref() != Some(tool_use)
+                && i.opened_at_ms <= shown_by
+                && !harness::is_elicitation(i)
+        },
+    );
+}
+
+/// Reasons of closes Vibeke guessed (nobody answered through Vibeke, and the harness did not
+/// report an answer). They are recorded as `Cancelled` with `closed_by: "heuristic"`, never as
+/// resolved elsewhere, so the history does not claim that someone answered.
+pub(crate) const OTHER_TOOL_STARTED: &str = "another tool started";
+pub(crate) const NO_DIALOG_SEEN: &str = "no dialog on screen";
+
+fn heuristic_close(reason: &str) -> bool {
+    reason == OTHER_TOOL_STARTED || reason == NO_DIALOG_SEEN
 }
 
 // ---- hook transport ---------------------------------------------------------------------------

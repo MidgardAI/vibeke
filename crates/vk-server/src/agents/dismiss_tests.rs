@@ -82,12 +82,13 @@ fn open(e: &Env, run: &AgentRun, event: &str, p: Value, age_ms: i64) -> String {
 }
 
 fn ask(e: &Env, run: &AgentRun, tool_use: &str) -> String {
+    // Older than `SCREEN_GRACE`: the question had time to show.
     open(
         e,
         run,
         "PreToolUse",
         json!({"tool_name": "AskUserQuestion", "tool_use_id": tool_use, "tool_input": {"questions": [{"question": "Which database?", "options": [{"label": "Postgres"}, {"label": "SQLite"}], "multiSelect": false}]}}),
-        1000,
+        5000,
     )
 }
 
@@ -115,10 +116,31 @@ fn status(e: &Env, id: &str) -> InteractionStatus {
         .status
 }
 
+fn closed_by(e: &Env, id: &str) -> Vec<String> {
+    e.server.with_core(|c| {
+        c.store
+            .events_after(0, 10_000, &["interaction.cancelled".to_string()])
+            .unwrap()
+            .into_iter()
+            .map(|ev| serde_json::to_value(ev).unwrap())
+            .filter(|v| v["subject"]["interaction"] == id)
+            .filter_map(|v| v["data"]["closed_by"].as_str().map(str::to_string))
+            .collect()
+    })
+}
+
+/// Close reasons of `id`: resolved elsewhere, or cancelled (dismissals and heuristics).
 fn reasons(e: &Env, id: &str) -> Vec<String> {
     e.server.with_core(|c| {
         c.store
-            .events_after(0, 10_000, &["interaction.resolved_elsewhere".to_string()])
+            .events_after(
+                0,
+                10_000,
+                &[
+                    "interaction.resolved_elsewhere".to_string(),
+                    "interaction.cancelled".to_string(),
+                ],
+            )
             .unwrap()
             .into_iter()
             .map(|ev| serde_json::to_value(ev).unwrap())
@@ -179,6 +201,14 @@ async fn another_tool_closes_a_question_but_not_an_approval() {
     let run = add_run(&e, "r-tool", "p-tool", |_| {});
     let q = ask(&e, &run, "toolu_q");
     let a = approval(&e, &run, "toolu_a");
+    // A question opened a moment ago may not be drawn yet: a parallel tool leaves it.
+    let fresh = open(
+        &e,
+        &run,
+        "PreToolUse",
+        json!({"tool_name": "AskUserQuestion", "tool_use_id": "toolu_fresh", "tool_input": {"questions": [{"question": "Which port?", "options": [{"label": "8080"}, {"label": "3000"}], "multiSelect": false}]}}),
+        100,
+    );
     // Without a readable screen a parallel tool proves nothing: the question may still show.
     on_signal(
         &e.server,
@@ -192,8 +222,11 @@ async fn another_tool_closes_a_question_but_not_an_approval() {
     close_questions_for_tool(&e.server, &run, "toolu_q");
     assert_eq!(status(&e, &q), InteractionStatus::Open);
     close_questions_for_tool(&e.server, &run, "toolu_b");
-    assert_eq!(status(&e, &q), InteractionStatus::ResolvedElsewhere);
-    assert_eq!(reasons(&e, &q), vec!["tool ran".to_string()]);
+    // A guess, recorded as one: cancelled by a heuristic, not answered elsewhere.
+    assert_eq!(status(&e, &q), InteractionStatus::Cancelled);
+    assert_eq!(reasons(&e, &q), vec![OTHER_TOOL_STARTED.to_string()]);
+    assert_eq!(closed_by(&e, &q), vec!["heuristic".to_string()]);
+    assert_eq!(status(&e, &fresh), InteractionStatus::Open, "not drawn yet");
     // Parallel tool calls can each wait for a permission: the approval stays open.
     assert_eq!(status(&e, &a), InteractionStatus::Open);
 }
@@ -244,6 +277,7 @@ async fn a_quiet_working_screen_closes_old_interactions_only() {
     let e = env();
     let run = add_run(&e, "r-quiet", "p-quiet", |r| {
         r.execution = facet(Execution::Working, StateSource::Structured, 1.0);
+        r.harness_version = Some("2.1.5".into());
     });
     let working = screen::ScreenMatch {
         state: Some((Execution::Working, 0.8)),
@@ -288,8 +322,9 @@ async fn a_quiet_working_screen_closes_old_interactions_only() {
     e.server
         .agents
         .close_unseen_dialogs(&e.server, &run, Harness::Claude, &working);
-    assert_eq!(status(&e, &old), InteractionStatus::ResolvedElsewhere);
-    assert_eq!(reasons(&e, &old), vec!["no dialog on screen".to_string()]);
+    assert_eq!(status(&e, &old), InteractionStatus::Cancelled);
+    assert_eq!(reasons(&e, &old), vec![NO_DIALOG_SEEN.to_string()]);
+    assert_eq!(closed_by(&e, &old), vec!["heuristic".to_string()]);
     assert_eq!(
         status(&e, &young),
         InteractionStatus::Open,
@@ -676,4 +711,38 @@ async fn a_dismissed_screen_dialog_is_forgotten_once_the_agent_works_again() {
     };
     assert!(!agents.dialog_dismissed(&e.server, &run, &working));
     assert!(!agents.dialog_dismissed(&e.server, &run, &shown));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_quiet_screen_closes_nothing_for_an_unvalidated_harness_version() {
+    let e = env();
+    for (n, version) in [(1, None), (2, Some("9.0.0"))] {
+        let (rid, pid) = (format!("r-unval{n}"), format!("p-unval{n}"));
+        let run = add_run(&e, &rid, &pid, |r| {
+            r.execution = facet(Execution::Working, StateSource::Structured, 1.0);
+            r.harness_version = version.map(str::to_string);
+        });
+        let old = open(
+            &e,
+            &run,
+            "PermissionRequest",
+            json!({"tool_name": "Bash", "tool_use_id": "toolu_old", "tool_input": {"command": "ls"}}),
+            40_000,
+        );
+        let working = screen::ScreenMatch {
+            state: Some((Execution::Working, 0.8)),
+            dialog: None,
+        };
+        e.server
+            .agents
+            .inner
+            .lock()
+            .unwrap()
+            .no_dialog_since
+            .insert(pid.clone(), Instant::now() - Duration::from_secs(31));
+        e.server
+            .agents
+            .close_unseen_dialogs(&e.server, &run, Harness::Claude, &working);
+        assert_eq!(status(&e, &old), InteractionStatus::Open, "{version:?}");
+    }
 }
