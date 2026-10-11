@@ -52,9 +52,13 @@ fn release_version(s: &str, preview: bool) -> Result<Version> {
 /// The configured update channel (`[update] channel`); a config that does not load keeps the
 /// stable channel.
 fn preview_channel() -> bool {
-    vk_config::Config::load(vk_config::config_path())
-        .map(|(c, _)| c.update.channel == vk_config::UpdateChannel::Preview)
-        .unwrap_or(false)
+    match vk_config::Config::load(vk_config::config_path()) {
+        Ok((c, _)) => c.update.channel == vk_config::UpdateChannel::Preview,
+        Err(e) => {
+            eprintln!("warning: config.toml does not load ({e}); using the stable update channel");
+            false
+        }
+    }
 }
 
 fn options(args: &[String], preview: bool) -> Result<Options> {
