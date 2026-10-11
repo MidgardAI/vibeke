@@ -189,19 +189,51 @@ fn validation_errors_are_located() {
     let find = |needle: &str| diags.iter().find(|d| d.message.contains(needle)).unwrap();
     assert_eq!(find("keys.zoom").line, 2);
     assert_eq!(find("command_regex").line, 4);
-    assert_eq!(find("min_width").line, 7);
+    // A cosmetic range problem is a located warning, not an error.
+    assert!(!diags.iter().any(|d| d.message.contains("min_width")));
+    let (c, w) = parse("[ui.sidebar]\nmin_width = 50\nmax_width = 40\n").unwrap();
+    assert_eq!(c.ui.sidebar.min_width, 40);
+    let mw = w.iter().find(|w| w.key == "ui.sidebar.min_width").unwrap();
+    assert_eq!(mw.pos.unwrap().line, 2);
+}
+
+/// Preference ranges clamp with a warning: the rest of the file (security settings included)
+/// still loads.
+#[test]
+fn preference_ranges_clamp_with_warnings() {
+    let src = "[keys]\nprefix_timeout_ms = 0\n[ui]\nmax_fps = 0\n[ui.images]\nrecent = 40\n[notifications]\nquiet_hours = \"late\"\n[[ui.sidebar.token]]\nmatch = { regex = \"(\" }\n[[policy.rule]]\nmatch = { tool = \"Bash\" }\neffect = \"deny\"\n";
+    let (c, w) = parse(src).unwrap();
+    let d = Config::default();
+    assert_eq!(c.keys.prefix_timeout_ms, d.keys.prefix_timeout_ms);
+    assert_eq!(c.ui.max_fps, d.ui.max_fps);
+    assert_eq!(c.ui.images.recent, 20);
+    assert!(c.notifications.quiet_hours.is_empty());
+    assert!(c.ui.sidebar.token.is_empty());
+    assert_eq!(c.policy.rule.len(), 1, "the deny rule still applies");
+    for key in [
+        "keys.prefix_timeout_ms",
+        "ui.max_fps",
+        "ui.images.recent",
+        "notifications.quiet_hours",
+        "ui.sidebar.token[0].match.regex",
+    ] {
+        assert!(
+            w.iter().any(|x| x.key == key),
+            "no warning for {key}: {w:?}"
+        );
+    }
 }
 
 #[test]
 fn more_validation() {
     assert!(parse("[notifications]\nquiet_hours = \"22:00-07:00\"\n").is_ok());
-    assert!(parse("[notifications]\nquiet_hours = \"late\"\n").is_err());
+    assert!(parse("[notifications]\nquiet_hours = \"late\"\n").is_ok());
     assert!(parse("[tasks]\nport_block = 0\n").is_err());
     assert!(parse("[tasks]\nport_pool = \"20000-20004\"\nport_block = 10\n").is_err());
     assert!(parse("[[remote.machine]]\nlabel = \"a\"\naddress = \"x\"\n[[remote.machine]]\nlabel = \"a\"\naddress = \"y\"\n").is_err());
     assert!(parse("[[policy.rule]]\neffect = \"allow\"\n").is_err());
     assert!(parse("[keys]\nprefix = \"nonsense+x\"\n").is_err());
-    assert!(parse("[keys]\nprefix_timeout_ms = 0\n").is_err());
+    assert!(parse("[keys]\nprefix_timeout_ms = 0\n").is_ok());
 }
 
 #[test]
@@ -512,20 +544,16 @@ fn ui_images_defaults() {
 #[test]
 fn ui_images_recent_range() {
     for ok in [1, 20] {
-        assert!(
-            parse(&format!("[ui.images]\nrecent = {ok}\n")).is_ok(),
-            "{ok}"
-        );
+        let (c, w) = parse(&format!("[ui.images]\nrecent = {ok}\n")).unwrap();
+        assert_eq!(c.ui.images.recent, ok);
+        assert!(!w.iter().any(|w| w.key == "ui.images.recent"));
     }
-    for bad in [0, 21] {
-        let err = parse(&format!("[ui.images]\nrecent = {bad}\n")).unwrap_err();
-        let ConfigError::Invalid(diags) = err else {
-            panic!("expected Invalid")
-        };
+    for (bad, clamped) in [(0, 1), (21, 20)] {
+        let (c, w) = parse(&format!("[ui.images]\nrecent = {bad}\n")).unwrap();
+        assert_eq!(c.ui.images.recent, clamped);
         assert!(
-            diags
-                .iter()
-                .any(|d| d.message.contains("must be between 1 and 20"))
+            w.iter()
+                .any(|w| w.key == "ui.images.recent" && w.message.contains("between 1 and 20"))
         );
     }
 }

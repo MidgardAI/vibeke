@@ -377,9 +377,7 @@ pub fn cloud_cfg() -> vk_cloud::CloudConfig {
 
 /// The `[security] keychain` backend.
 pub fn keychain() -> Result<vk_store::keychain::Keychain, RpcError> {
-    let cfg = vk_config::Config::load(vk_config::config_path())
-        .map(|(c, _)| c)
-        .unwrap_or_default();
+    let cfg = crate::config_api::checked();
     vk_cloud::auth::keychain(&cfg).map_err(|e| invalid(format!("[security] keychain: {e}")))
 }
 

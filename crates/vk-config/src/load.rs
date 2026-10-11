@@ -367,17 +367,98 @@ impl Config {
         Ok((cfg, warnings))
     }
 
+    /// Out-of-range **preferences** (sizes, rates, counts, display tokens, quiet hours) are
+    /// warnings that clamp or drop the value: a typo in a cosmetic key must not make the whole
+    /// file fail to load (which keeps every other edit, security settings included, from
+    /// applying). Keys whose wrong value changes what runs or who may do what stay errors.
+    fn clamp_preferences(&mut self) -> Vec<Warning> {
+        let mut warns = Vec::new();
+        let d = Config::default();
+        if self.keys.prefix_timeout_ms == 0 {
+            self.keys.prefix_timeout_ms = d.keys.prefix_timeout_ms;
+            warns.push(Warning::new(
+                "keys.prefix_timeout_ms",
+                format!("must be greater than 0; using {}", d.keys.prefix_timeout_ms),
+            ));
+        }
+        let sb = &mut self.ui.sidebar;
+        if sb.min_width > sb.max_width {
+            warns.push(Warning::new(
+                "ui.sidebar.min_width",
+                format!(
+                    "greater than max_width ({}); using {}",
+                    sb.max_width, sb.max_width
+                ),
+            ));
+            sb.min_width = sb.max_width;
+        }
+        let recent = self.ui.images.recent;
+        if !(1..=20).contains(&recent) {
+            let clamped = recent.clamp(1, 20);
+            warns.push(Warning::new(
+                "ui.images.recent",
+                format!("must be between 1 and 20; using {clamped}"),
+            ));
+            self.ui.images.recent = clamped;
+        }
+        if self.ui.max_fps == 0 {
+            self.ui.max_fps = d.ui.max_fps;
+            warns.push(Warning::new(
+                "ui.max_fps",
+                format!("must be greater than 0; using {}", d.ui.max_fps),
+            ));
+        }
+        let mut kept = Vec::new();
+        for (i, t) in std::mem::take(&mut self.ui.sidebar.token)
+            .into_iter()
+            .enumerate()
+        {
+            let m = &t.matcher;
+            if m.harness.is_none() && m.state.is_none() && m.regex.is_none() {
+                warns.push(Warning::new(
+                    format!("ui.sidebar.token[{i}].match"),
+                    "must set at least one of harness, state, regex; ignoring this token",
+                ));
+                continue;
+            }
+            if let Some(r) = &m.regex
+                && let Err(e) = regex::Regex::new(r)
+            {
+                warns.push(Warning::new(
+                    format!("ui.sidebar.token[{i}].match.regex"),
+                    format!("invalid regex: {e}; ignoring this token"),
+                ));
+                continue;
+            }
+            kept.push(t);
+        }
+        self.ui.sidebar.token = kept;
+        let q = &self.notifications.quiet_hours;
+        if !q.is_empty() && !valid_quiet_hours(q) {
+            warns.push(Warning::new(
+                "notifications.quiet_hours",
+                "expected `HH:MM-HH:MM`; quiet hours are off",
+            ));
+            self.notifications.quiet_hours.clear();
+        }
+        if self.render.max_unacked == 0 {
+            self.render.max_unacked = d.render.max_unacked;
+            warns.push(Warning::new(
+                "render.max_unacked",
+                format!("must be greater than 0; using {}", d.render.max_unacked),
+            ));
+        }
+        warns
+    }
+
     /// Validate semantic constraints. Returns `(errors, warnings)`.
-    fn validate(&self) -> (Vec<Problem>, Vec<Warning>) {
+    fn validate(&mut self) -> (Vec<Problem>, Vec<Warning>) {
         let mut errs: Vec<Problem> = Vec::new();
-        let mut warns: Vec<Warning> = Vec::new();
+        let mut warns: Vec<Warning> = self.clamp_preferences();
         let k = &self.keys;
 
         if let Err(e) = parse_prefix_key(&k.prefix) {
             errs.push(problem("keys.prefix", e));
-        }
-        if k.prefix_timeout_ms == 0 {
-            errs.push(problem("keys.prefix_timeout_ms", "must be greater than 0"));
         }
 
         for (action, raw) in &k.bindings {
@@ -437,20 +518,11 @@ impl Config {
         }
 
         let sb = &self.ui.sidebar;
-        if sb.min_width > sb.max_width {
-            errs.push(problem("ui.sidebar.min_width", "greater than max_width"));
-        }
         if sb.width < sb.min_width || sb.width > sb.max_width {
             warns.push(Warning::new(
                 "ui.sidebar.width",
                 "outside min_width..max_width; it will be clamped",
             ));
-        }
-        if !(1..=20).contains(&self.ui.images.recent) {
-            errs.push(problem("ui.images.recent", "must be between 1 and 20"));
-        }
-        if self.ui.max_fps == 0 {
-            errs.push(problem("ui.max_fps", "must be greater than 0"));
         }
         for (name, list) in [
             ("left", &self.ui.status_bar.left),
@@ -466,32 +538,6 @@ impl Config {
                 }
             }
         }
-        for (i, t) in sb.token.iter().enumerate() {
-            let m = &t.matcher;
-            if m.harness.is_none() && m.state.is_none() && m.regex.is_none() {
-                errs.push(problem(
-                    format!("ui.sidebar.token[{i}].match"),
-                    "must set at least one of harness, state, regex",
-                ));
-            }
-            if let Some(r) = &m.regex
-                && let Err(e) = regex::Regex::new(r)
-            {
-                errs.push(problem(
-                    format!("ui.sidebar.token[{i}].match.regex"),
-                    format!("invalid regex: {e}"),
-                ));
-            }
-        }
-
-        let q = &self.notifications.quiet_hours;
-        if !q.is_empty() && !valid_quiet_hours(q) {
-            errs.push(problem(
-                "notifications.quiet_hours",
-                "expected `HH:MM-HH:MM`",
-            ));
-        }
-
         for (i, r) in self.policy.rule.iter().enumerate() {
             let m = &r.matcher;
             if m.tool.is_none() && m.command_regex.is_none() && m.path_glob.is_none() {
@@ -562,10 +608,6 @@ impl Config {
                     "missing address",
                 ));
             }
-        }
-
-        if self.render.max_unacked == 0 {
-            errs.push(problem("render.max_unacked", "must be greater than 0"));
         }
 
         if errs.is_empty() {

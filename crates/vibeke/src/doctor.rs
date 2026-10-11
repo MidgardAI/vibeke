@@ -314,6 +314,53 @@ const REMOTE: &str = "remote";
 const TOPOLOGY: &str = "topology";
 const ISOLATION: &str = "isolation";
 const TASKS: &str = "tasks";
+const CONFIG: &str = "config";
+
+/// Does `config.toml` load? A file that does not keeps the server on the last settings that
+/// did (or the defaults at start), so the user's edits, security rules included, do not apply.
+fn check_config(r: &mut Report) {
+    let path = vk_config::config_path();
+    if !path.exists() {
+        r.add(
+            CONFIG,
+            Level::Pass,
+            format!("{} not present: defaults apply", path.display()),
+        );
+        return;
+    }
+    match vk_config::Config::load(&path) {
+        Ok((_, warnings)) => {
+            r.add(CONFIG, Level::Pass, format!("{} loads", path.display()));
+            for w in warnings {
+                let at = w
+                    .pos
+                    .map(|p| format!(" (line {})", p.line))
+                    .unwrap_or_default();
+                r.add(CONFIG, Level::Warn, format!("{}{at}: {}", w.key, w.message));
+            }
+        }
+        Err(e) => {
+            let detail = match &e {
+                vk_config::ConfigError::Parse(d) => vec![format!("line {}: {}", d.line, d.message)],
+                vk_config::ConfigError::Invalid(v) => v
+                    .iter()
+                    .map(|d| format!("line {}: {}", d.line, d.message))
+                    .collect(),
+                other => vec![other.to_string()],
+            };
+            r.add_hint(
+                CONFIG,
+                Level::Fail,
+                format!(
+                    "{} does not load; the server keeps the last settings that did: {}",
+                    path.display(),
+                    detail.join("; ")
+                ),
+                "fix the file (`vibeke config validate` shows every problem); the server reloads it when you save",
+            );
+        }
+    }
+}
 
 /// Which execution isolation levels work here (13 §11, acceptance 7). Never starts anything.
 fn check_isolation(r: &mut Report) {
@@ -1556,6 +1603,7 @@ pub async fn run(g: &Global, args: &[String]) -> i32 {
     let mut r = Report::default();
     check_audit(&mut r, g, false);
     check_install(&mut r);
+    check_config(&mut r);
     check_sockets(&mut r, g).await;
     check_integrations(&mut r).await;
     check_terminal(&mut r);

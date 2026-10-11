@@ -299,9 +299,9 @@ impl State {
 }
 
 pub fn load_cfg() -> IsolationConfig {
-    let cfg = vk_config::Config::load(vk_config::config_path())
-        .map(|(c, _)| c)
-        .unwrap_or_default();
+    // A broken config.toml keeps the last `[isolation]` that loaded (config_api::checked), not
+    // the defaults.
+    let cfg = crate::config_api::checked();
     let (c, e) = IsolationConfig::from_toml(cfg.extra.get("isolation"));
     if let Some(e) = e {
         tracing::warn!(error = %e, "invalid [isolation] config; using defaults");

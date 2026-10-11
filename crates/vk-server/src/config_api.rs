@@ -34,17 +34,118 @@ fn set_lock() -> &'static tokio::sync::Mutex<()> {
     L.get_or_init(tokio::sync::Mutex::default)
 }
 
-/// The config this server applies now (loaded on first use).
+/// The config this server applies now (loaded on first use). When the file does not load at
+/// first use, the defaults apply and the error is recorded ([`load_error`]).
 pub fn current() -> Config {
     let mut a = applied().lock().unwrap();
     if a.is_none() {
-        *a = Some(load_effective().unwrap_or_default());
+        *a = Some(match load_effective() {
+            Ok(c) => {
+                loaded_ok(&c);
+                c
+            }
+            Err(e) => {
+                record_error(&e);
+                Config::default()
+            }
+        });
     }
     a.clone().unwrap_or_default()
 }
 
 fn load_effective() -> Result<Config, ConfigError> {
     Config::load(vk_config::config_path()).map(|(c, _)| c)
+}
+
+/// The last user config that loaded, and the error of the newest load attempt when it failed.
+#[derive(Default)]
+struct Health {
+    last_good: Option<Config>,
+    error: Option<Vec<Value>>,
+}
+
+fn health() -> &'static Mutex<Health> {
+    static H: OnceLock<Mutex<Health>> = OnceLock::new();
+    H.get_or_init(Mutex::default)
+}
+
+fn loaded_ok(c: &Config) {
+    let mut h = health().lock().unwrap();
+    h.last_good = Some(c.clone());
+    h.error = None;
+}
+
+fn record_error(e: &ConfigError) {
+    let d = diagnostics(e);
+    let mut h = health().lock().unwrap();
+    if h.error.as_ref() != Some(&d) {
+        tracing::warn!(error = %e, "config.toml does not load; keeping the last config that did");
+    }
+    h.error = Some(d);
+}
+
+/// The diagnostics of the newest failed load of `config.toml` (`None` when it loads). Shown by
+/// `config.get` (`load_error`), `server.status` readers and `vibeke doctor`.
+pub fn load_error() -> Option<Value> {
+    let h = health().lock().unwrap();
+    h.error
+        .as_ref()
+        .map(|d| json!({"path": vk_config::config_path(), "errors": d}))
+}
+
+/// The user config for **security-relevant** readers (policy rules, `[isolation]`,
+/// `[security]`, the gateway): a fresh read of `config.toml` so an edit applies at once; when
+/// the file does not load, the last config that did (before any did: the defaults) instead of
+/// silently dropping the user's rules. The error is recorded ([`load_error`]) and the user is
+/// told (`session.config_rejected` and a notification, from the watcher and at start).
+pub fn checked() -> Config {
+    match load_effective() {
+        Ok(c) => {
+            loaded_ok(&c);
+            c
+        }
+        Err(e) => {
+            record_error(&e);
+            let last = health().lock().unwrap().last_good.clone();
+            last.unwrap_or_else(current)
+        }
+    }
+}
+
+/// Tell the user that `config.toml` does not load: an event for clients that follow config
+/// changes and a notification every client shows.
+fn announce_error(server: &Server, errors: &[Value], source: &str) {
+    {
+        let mut c = server.core.lock().unwrap();
+        let mut tx = Tx::new();
+        tx.event(
+            "session.config_rejected",
+            json!({}),
+            json!({"errors": errors, "source": source}),
+        );
+        let _ = server.commit(&mut c, tx);
+    }
+    let first = errors
+        .first()
+        .and_then(|e| {
+            let line = e["line"].as_u64().unwrap_or(0);
+            let msg = e["message"].as_str()?;
+            Some(if line > 0 {
+                format!("line {line}: {msg}")
+            } else {
+                msg.to_string()
+            })
+        })
+        .unwrap_or_default();
+    server.notify(
+        "config",
+        None,
+        "config.toml has an error",
+        &format!(
+            "{first}. Vibeke keeps the last settings that loaded. Fix the file, or run `vibeke doctor` for details."
+        ),
+        "high",
+    );
 }
 
 pub fn diagnostics(e: &ConfigError) -> Vec<Value> {
@@ -70,6 +171,10 @@ fn warnings_json(w: &[vk_config::Warning]) -> Vec<Value> {
 pub fn start(server: &Arc<Server>) {
     let cfg = current();
     crate::limits::refresh(&cfg);
+    if let Some(e) = load_error() {
+        let errors = e["errors"].as_array().cloned().unwrap_or_default();
+        announce_error(server, &errors, "startup");
+    }
     if !cfg.config.watch {
         return;
     }
@@ -93,14 +198,8 @@ pub fn start(server: &Arc<Server>) {
                     }
                     vk_config::ReloadEvent::Rejected(e) => {
                         tracing::warn!(error = %e, "config change rejected; keeping the applied config");
-                        let mut c = srv.core.lock().unwrap();
-                        let mut tx = Tx::new();
-                        tx.event(
-                            "session.config_rejected",
-                            json!({}),
-                            json!({"errors": diagnostics(&e), "source": "watch"}),
-                        );
-                        let _ = srv.commit(&mut c, tx);
+                        record_error(&e);
+                        announce_error(&srv, &diagnostics(&e), "watch");
                     }
                 }
             }
@@ -111,6 +210,7 @@ pub fn start(server: &Arc<Server>) {
 /// Apply a newly loaded config: diff against the applied one, store it, emit the event.
 /// Returns the changed keys.
 fn apply(server: &Server, new: Config, source: &str) -> Vec<String> {
+    loaded_ok(&new);
     let changed = {
         let mut a = applied().lock().unwrap();
         let old = a.clone().unwrap_or_default();
@@ -143,7 +243,10 @@ pub fn reload(server: &Server, source: &str) -> R {
             let changed = apply(server, cfg, source);
             Ok(json!({"changed": changed, "errors": [], "warnings": warnings_json(&warnings)}))
         }
-        Err(e) => Ok(json!({"changed": [], "errors": diagnostics(&e)})),
+        Err(e) => {
+            record_error(&e);
+            Ok(json!({"changed": [], "errors": diagnostics(&e)}))
+        }
     }
 }
 
@@ -274,7 +377,10 @@ fn config_get(server: &Server, p: &Value) -> R {
     let (repo, repo_info) = repo_layer(server, p);
     let (cfg, errors) = match Config::load_layered(&path, repo.as_ref()) {
         Ok((c, _)) => (c, vec![]),
-        Err(e) => (current(), diagnostics(&e)),
+        Err(e) => {
+            record_error(&e);
+            (current(), diagnostics(&e))
+        }
     };
     let root = cfg.to_value();
     let file: Option<toml::Value> = file_text()
@@ -300,11 +406,11 @@ fn config_get(server: &Server, p: &Value) -> R {
                     .details(json!({"object": "config_key", "target": key})));
             };
             Ok(
-                json!({"key": key, "value": to_json(v), "source": source_of(key, file.as_ref(), repo.as_ref()), "path": path, "overrides": overrides, "cli_overrides": cli, "layers": layers, "repo": repo_info, "errors": errors}),
+                json!({"key": key, "value": to_json(v), "source": source_of(key, file.as_ref(), repo.as_ref()), "path": path, "overrides": overrides, "cli_overrides": cli, "layers": layers, "repo": repo_info, "errors": errors, "load_error": load_error()}),
             )
         }
         None => Ok(
-            json!({"value": to_json(&root), "source": if file.is_some() { "user" } else { "default" }, "path": path, "overrides": overrides, "cli_overrides": cli, "layers": layers, "repo": repo_info, "errors": errors}),
+            json!({"value": to_json(&root), "source": if file.is_some() { "user" } else { "default" }, "path": path, "overrides": overrides, "cli_overrides": cli, "layers": layers, "repo": repo_info, "errors": errors, "load_error": load_error()}),
         ),
     }
 }

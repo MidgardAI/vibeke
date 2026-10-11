@@ -1054,8 +1054,9 @@ server.restart :: {binary?: string} => {new_pid: int, binary: string}
 
 # --- config.* (layers, lowest first: default < user < repo < runtime < cli) ---
 # repo | cwd | pane: layer that repository's .vibeke/config.toml in (only while trusted)
+# load_error: config.toml does not load now; the server keeps the last settings that did
 config.get :: {key?: string, repo?: string, cwd?: string, pane?: Target}
-  => {key?: string, value: any, source: default|user|repo|runtime|cli, path: string, overrides: [string], cli_overrides: [string], layers: [ConfigLayer], repo: {root: string, file: string|null, trusted: bool, applied: bool, warnings?: [string], error?: string}|null, errors: [ConfigDiagnostic]}
+  => {key?: string, value: any, source: default|user|repo|runtime|cli, path: string, overrides: [string], cli_overrides: [string], layers: [ConfigLayer], repo: {root: string, file: string|null, trusted: bool, applied: bool, warnings?: [string], error?: string}|null, errors: [ConfigDiagnostic], load_error?: {path: string, errors: [ConfigDiagnostic]}|null}
 # runtime override unless persist (written to config.toml atomically, comments kept); value null resets the key; full scope only
 config.set :: {key: string, value: any, persist?: bool = false}
   => {key: string, value: any, persisted: bool, path: string, changed: [string]}
