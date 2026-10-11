@@ -40,8 +40,8 @@ pub(crate) struct GitOutput {
 
 /// A `git -C <dir>` command with Vibeke's hardening applied.
 ///
-/// Hooks never run. In a checkout a contained process can write (sandbox, container, VM or
-/// cloud task), the shared hardening from `vk_tasks::harden_command` also applies: no fsmonitor,
+/// Hooks never run. In a checkout a contained process can write (sandbox, container or VM
+/// task), the shared hardening from `vk_tasks::harden_command` also applies: no fsmonitor,
 /// filter/diff/merge drivers neutralized, no submodule recursion, and git refuses to run when
 /// the checkout's `.git` was swapped. Host checkouts keep the user's own configuration (LFS
 /// filters, fsmonitor speedups).
@@ -52,7 +52,9 @@ pub(crate) fn command(dir: &Path) -> Result<Command, GitError> {
     use std::os::unix::process::CommandExt;
     let mut c = Command::new("git");
     c.arg("-C").arg(dir);
-    vk_tasks::harden_command(&mut c, dir).map_err(|e| GitError::Refused(e.to_string()))?;
+    if vk_tasks::is_contained(dir) {
+        vk_tasks::harden_command(&mut c, dir).map_err(|e| GitError::Refused(e.to_string()))?;
+    }
     // Never run the user's hooks or prompt for credentials from a background capture.
     c.args(["-c", "core.hooksPath=/dev/null"])
         .env("GIT_TERMINAL_PROMPT", "0")
@@ -220,9 +222,20 @@ mod tests {
             .map(|a| a.to_string_lossy().into_owned())
             .collect();
         assert!(args.iter().any(|a| a == "core.hooksPath=/dev/null"));
-        // Not a contained checkout: only the always-on fsmonitor override, no driver overrides.
-        assert!(args.iter().any(|a| a == "core.fsmonitor=false"));
+        // Not a contained checkout: the user's own configuration (fsmonitor, LFS) applies.
+        assert!(!args.iter().any(|a| a == "core.fsmonitor=false"));
         assert!(!args.iter().any(|a| a == "diff.ignoreSubmodules=all"));
+        // A contained one runs hardened.
+        vk_tasks::register_contained_checkout(t.path());
+        let c = command(t.path()).unwrap();
+        let args: Vec<String> = c
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        vk_tasks::unregister_contained_checkout(t.path());
+        assert!(args.iter().any(|a| a == "core.fsmonitor=false"));
+        assert!(args.iter().any(|a| a == "diff.ignoreSubmodules=all"));
+        assert!(args.iter().any(|a| a == "core.hooksPath=/dev/null"));
     }
 
     #[test]
