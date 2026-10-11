@@ -766,6 +766,12 @@ export type RunUsage = {
 
 export type ScreenshotMeta = {
   id: string;
+  taken_by?: {
+    kind: "agent" | "user" | "plugin";
+    pane: string | null;
+    run: string | null;
+    client: string | null;
+  };
   handle?: string;
   workspace?: string;
   task?: string | null;
@@ -1169,6 +1175,7 @@ export type AgentPromptParams = {
   wait?: boolean;
   until?: string[];
   timeout_ms?: number;
+  idempotency_key?: string;
 };
 
 export type AgentPromptResult = {
@@ -1243,6 +1250,7 @@ export type AgentResumeResult = {
 export type AgentSendKeysParams = {
   target: Target;
   keys: string[];
+  idempotency_key?: string;
 };
 
 export type AgentSendKeysResult = {
@@ -1262,12 +1270,21 @@ export type AgentSetModelResult = {
 };
 
 export type AgentSpawnParams = {
-  harness: string;
+  harness?: string;
   name?: string;
-  where?: Record<string, unknown>;
+  split_of?: Target;
+  pane?: Target;
+  direction?: "right" | "down" | "left" | "up";
+  cwd?: string;
   prompt?: string;
+  wait?: boolean;
   args?: string[];
   focus?: boolean;
+  yolo?: boolean;
+  isolate?: IsolationLevel;
+  network?: string;
+  confirm_host_yolo?: boolean;
+  idempotency_key?: string;
 };
 
 export type AgentSpawnResult = {
@@ -1286,11 +1303,25 @@ export type AgentStartParams = {
   model?: string;
   task?: Target;
   ready_timeout_ms?: number;
+  idempotency_key?: string;
 };
 
 export type AgentStartResult = {
   run: AgentRun;
   cursor?: Cursor;
+};
+
+export type AgentTranscriptParams = {
+  target?: Target;
+  run?: Target;
+  limit?: number;
+  before?: number;
+  items?: boolean;
+  image?: string;
+};
+
+export type AgentTranscriptResult = {
+  turns?: unknown[];
 };
 
 export type AgentTurnUsageParams = {
@@ -1359,6 +1390,7 @@ export type ApiMethodsResult = {
   methods: {
     name: string;
     mutating: boolean;
+    stability?: "stable" | "experimental";
     milestone?: string;
     capability?: string;
   }[];
@@ -2016,6 +2048,7 @@ export type BrowserClickParams = {
   y?: number;
   click_count?: number;
   timeout_ms?: number;
+  idempotency_key?: string;
 };
 
 export type BrowserClickResult = {
@@ -2037,6 +2070,7 @@ export type BrowserCloseParams = {
   session?: string;
   browser_session?: string;
   target?: string;
+  idempotency_key?: string;
 };
 
 export type BrowserCloseResult = {
@@ -2311,6 +2345,7 @@ export type BrowserNavigateParams = {
   path?: string;
   wait?: "load" | "domcontentloaded" | "commit" | "none" | string;
   timeout_ms?: number;
+  idempotency_key?: string;
 };
 
 export type BrowserNavigateResult = {
@@ -2383,6 +2418,7 @@ export type BrowserOpenParams = {
   dark?: boolean;
   wait?: string;
   timeout_ms?: number;
+  idempotency_key?: string;
 };
 
 export type BrowserOpenResult = BrowserSession;
@@ -2528,6 +2564,7 @@ export type BrowserPressParams = {
   browser_session?: string;
   target?: string;
   key: string;
+  idempotency_key?: string;
 };
 
 export type BrowserPressResult = {
@@ -2554,6 +2591,7 @@ export type BrowserScreencastFrameParams = {
   target?: string;
   after_seq?: number;
   wait_ms?: number;
+  data_saver?: boolean;
 };
 
 export type BrowserScreencastFrameResult = {
@@ -2704,6 +2742,7 @@ export type BrowserTypeParams = {
   clear?: boolean;
   submit?: boolean;
   timeout_ms?: number;
+  idempotency_key?: string;
 };
 
 export type BrowserTypeResult = {
@@ -2747,6 +2786,12 @@ export type BrowserWatchResult = {
   cursor?: Cursor;
 };
 
+export type ClientActivityParams = {
+  last_input_ms?: number;
+};
+
+export type ClientActivityResult = Record<string, unknown>;
+
 export type ClientAppearanceParams = {
   dark: boolean;
   source?: "osc11" | "csi996" | string;
@@ -2755,6 +2800,41 @@ export type ClientAppearanceParams = {
 export type ClientAppearanceResult = {
   appearance: Appearance;
   colorfgbg: string;
+  cursor?: Cursor;
+};
+
+export type ClientConfirmParams = {
+  title: string;
+  body?: string;
+  options?: {
+    id: string;
+    label: string;
+  }[];
+  timeout_ms?: number;
+};
+
+export type ClientConfirmResult = {
+  confirm: string;
+  choice: string | null;
+  timed_out: boolean;
+  cursor?: Cursor;
+};
+
+export type ClientConfirmAnswerParams = {
+  confirm: string;
+  choice?: string;
+};
+
+export type ClientConfirmAnswerResult = {
+  confirm: string;
+  cursor?: Cursor;
+};
+
+export type ClientDevicesParams = {
+  devices: Record<string, unknown>[];
+};
+
+export type ClientDevicesResult = {
   cursor?: Cursor;
 };
 
@@ -2936,7 +3016,7 @@ export type CloudCancelResult = {
     box?: string;
     from: Record<string, unknown>;
     to: Record<string, unknown>;
-    state: "queued" | "waiting_turn" | "creating" | "bootstrapping" | "exporting" | "uploading" | "importing" | "resuming" | "done" | "failed" | "cancelled";
+    state: "queued" | "waiting_turn" | "creating" | "bootstrapping" | "exporting" | "awaiting_confirmation" | "uploading" | "importing" | "resuming" | "done" | "failed" | "cancelled";
     progress?: {
       done: number;
       total: number;
@@ -2951,6 +3031,49 @@ export type CloudCancelResult = {
     source_after?: "keep" | "suspend" | "destroy";
     task?: string;
     by?: string;
+    new_task: boolean;
+    review: boolean;
+    code_only: boolean;
+    confirmed: boolean;
+    created_at: number;
+    updated_at: number;
+  };
+  cursor?: Cursor;
+};
+
+export type CloudConfirmParams = {
+  id: string;
+  code_only?: boolean;
+};
+
+export type CloudConfirmResult = {
+  job: {
+    id: string;
+    direction: "send" | "bring_back";
+    pane?: string;
+    run?: string;
+    box?: string;
+    from: Record<string, unknown>;
+    to: Record<string, unknown>;
+    state: "queued" | "waiting_turn" | "creating" | "bootstrapping" | "exporting" | "awaiting_confirmation" | "uploading" | "importing" | "resuming" | "done" | "failed" | "cancelled";
+    progress?: {
+      done: number;
+      total: number;
+    };
+    error?: {
+      kind: string;
+      message: string;
+      details?: unknown;
+    };
+    result?: Record<string, unknown>;
+    interrupt: boolean;
+    source_after?: "keep" | "suspend" | "destroy";
+    task?: string;
+    by?: string;
+    new_task: boolean;
+    review: boolean;
+    code_only: boolean;
+    confirmed: boolean;
     created_at: number;
     updated_at: number;
   };
@@ -2968,7 +3091,7 @@ export type CloudJobsResult = {
     box?: string;
     from: Record<string, unknown>;
     to: Record<string, unknown>;
-    state: "queued" | "waiting_turn" | "creating" | "bootstrapping" | "exporting" | "uploading" | "importing" | "resuming" | "done" | "failed" | "cancelled";
+    state: "queued" | "waiting_turn" | "creating" | "bootstrapping" | "exporting" | "awaiting_confirmation" | "uploading" | "importing" | "resuming" | "done" | "failed" | "cancelled";
     progress?: {
       done: number;
       total: number;
@@ -2983,6 +3106,10 @@ export type CloudJobsResult = {
     source_after?: "keep" | "suspend" | "destroy";
     task?: string;
     by?: string;
+    new_task: boolean;
+    review: boolean;
+    code_only: boolean;
+    confirmed: boolean;
     created_at: number;
     updated_at: number;
   }[];
@@ -3000,6 +3127,9 @@ export type CloudMoveParams = {
   };
   interrupt?: boolean;
   source_after?: "keep" | "suspend" | "destroy";
+  new_task?: boolean;
+  review?: boolean;
+  code_only?: boolean;
 };
 
 export type CloudMoveResult = {
@@ -3011,7 +3141,7 @@ export type CloudMoveResult = {
     box?: string;
     from: Record<string, unknown>;
     to: Record<string, unknown>;
-    state: "queued" | "waiting_turn" | "creating" | "bootstrapping" | "exporting" | "uploading" | "importing" | "resuming" | "done" | "failed" | "cancelled";
+    state: "queued" | "waiting_turn" | "creating" | "bootstrapping" | "exporting" | "awaiting_confirmation" | "uploading" | "importing" | "resuming" | "done" | "failed" | "cancelled";
     progress?: {
       done: number;
       total: number;
@@ -3026,6 +3156,10 @@ export type CloudMoveResult = {
     source_after?: "keep" | "suspend" | "destroy";
     task?: string;
     by?: string;
+    new_task: boolean;
+    review: boolean;
+    code_only: boolean;
+    confirmed: boolean;
     created_at: number;
     updated_at: number;
   };
@@ -3326,6 +3460,10 @@ export type ConfigGetResult = {
     error?: string;
   } | null;
   errors: ConfigDiagnostic[];
+  load_error?: {
+    path: string;
+    errors: ConfigDiagnostic[];
+  } | null;
 };
 
 export type ConfigReloadParams = Record<string, unknown>;
@@ -3760,6 +3898,17 @@ export type GatewayCallParams = {
 
 export type GatewayCallResult = unknown;
 
+export type GatewayNoticeParams = {
+  event: string;
+  title: string;
+  body?: string;
+  urgency?: "normal" | "high";
+};
+
+export type GatewayNoticeResult = {
+  cursor?: Cursor;
+};
+
 export type GatewayReplyParams = {
   id: string;
   result?: unknown;
@@ -3820,6 +3969,15 @@ export type GitDiffResult = {
   binary: boolean;
   untracked: boolean;
   secret?: boolean;
+};
+
+export type GitImportBoxObjectsParams = {
+  pane?: Target;
+  path?: string;
+};
+
+export type GitImportBoxObjectsResult = {
+  cursor?: Cursor;
 };
 
 export type GitLogParams = {
@@ -4676,6 +4834,7 @@ export type NotificationSendParams = {
   urgency?: string;
   subject?: string;
   sound?: boolean;
+  idempotency_key?: string;
 };
 
 export type NotificationSendResult = {
@@ -4739,7 +4898,7 @@ export type PaneFloatParams = {
     h?: number;
   };
   cwd?: string;
-  command?: string[];
+  command?: string[] | string;
   focus?: boolean;
 };
 
@@ -4917,6 +5076,7 @@ export type PaneRunParams = {
   command: string;
   wait?: boolean;
   timeout_ms?: number;
+  idempotency_key?: string;
 };
 
 export type PaneRunResult = {
@@ -4978,6 +5138,7 @@ export type PaneScrollResult = {
 export type PaneSendBytesParams = {
   pane?: Target;
   data_b64: string;
+  idempotency_key?: string;
 };
 
 export type PaneSendBytesResult = {
@@ -4987,6 +5148,7 @@ export type PaneSendBytesResult = {
 export type PaneSendKeysParams = {
   pane?: Target;
   keys: string[];
+  idempotency_key?: string;
 };
 
 export type PaneSendKeysResult = {
@@ -4997,6 +5159,7 @@ export type PaneSendTextParams = {
   pane?: Target;
   text: string;
   paste?: "auto" | "bracketed" | "raw";
+  idempotency_key?: string;
 };
 
 export type PaneSendTextResult = {
@@ -5009,10 +5172,11 @@ export type PaneSplitParams = {
   direction?: "right" | "down" | "left" | "up";
   ratio?: number;
   cwd?: string;
-  command?: string[];
+  command?: string[] | string;
   env?: { [key: string]: string };
   focus?: boolean;
   title?: string;
+  idempotency_key?: string;
 };
 
 export type PaneSplitResult = {
@@ -5471,17 +5635,6 @@ export type PolicyTrustResult = {
   cursor?: Cursor;
 };
 
-export type PreviewConnectParams = {
-  machine?: string;
-  host: string;
-  port: number;
-};
-
-export type PreviewConnectResult = {
-  connected: boolean;
-  cursor?: Cursor;
-};
-
 export type PreviewDeclareParams = {
   port: number | string;
   path?: string;
@@ -5494,6 +5647,7 @@ export type PreviewDeclareParams = {
   wait?: boolean;
   timeout_ms?: number;
   request?: string;
+  idempotency_key?: string;
 };
 
 export type PreviewDeclareResult = {
@@ -6040,6 +6194,7 @@ export type SandboxShellResult = {
   argv: string[];
   env: string[][];
   cwd: unknown;
+  cursor?: Cursor;
 };
 
 export type SandboxStartParams = {
@@ -6087,6 +6242,7 @@ export type ScreenshotAddParams = {
   caption?: string;
   name?: string;
   pane?: Target;
+  idempotency_key?: string;
 };
 
 export type ScreenshotAddResult = {
@@ -6279,6 +6435,10 @@ export type ServerStatusResult = {
   preview?: Record<string, unknown>;
   timers?: Record<string, unknown>;
   gateway?: GatewayStatus | null;
+  config_error?: {
+    path: string;
+    errors: ConfigDiagnostic[];
+  } | null;
   db_size?: number;
   rss?: number;
 };
@@ -6432,6 +6592,7 @@ export type StoragePruneResult = {
   events_capped: number;
   events_remaining: number;
   stream_removed: number;
+  closed_removed: number;
   blobs_removed: number;
   blob_bytes: number;
   cursor?: Cursor;
@@ -6456,6 +6617,7 @@ export type StorageStatusResult = {
       history_days: number;
       max_rows: number;
       blob_days: number;
+      closed_days: number;
     };
   };
   backups: {
@@ -6490,8 +6652,9 @@ export type TabCreateParams = {
   cwd?: string;
   title?: string;
   focus?: boolean;
-  command?: string[];
+  command?: string[] | string;
   layout?: LayoutSpec;
+  idempotency_key?: string;
 };
 
 export type TabCreateResult = {
@@ -6617,6 +6780,22 @@ export type TaskBestOfNResult = {
   tasks: (Task | null)[];
   runs: AgentRun[];
   warnings: unknown[];
+  cursor?: Cursor;
+};
+
+export type TaskBindParams = {
+  task: Target;
+  run?: Target;
+  pane?: Target;
+  role?: string;
+  start_turn?: number;
+  end_turn?: number;
+  idempotency_key?: string;
+};
+
+export type TaskBindResult = {
+  binding: unknown;
+  pending: boolean;
   cursor?: Cursor;
 };
 
@@ -6778,6 +6957,7 @@ export type TaskCreateParams = {
   branch_template?: string;
   fetch?: boolean;
   dry_run?: boolean;
+  idempotency_key?: string;
 };
 
 export type TaskCreateResult = {
@@ -6872,6 +7052,20 @@ export type TaskDependencyRemoveResult = {
   cursor?: Cursor;
 };
 
+export type TaskDetailParams = {
+  task: Target;
+};
+
+export type TaskDetailResult = {
+  task: Task;
+  intent: unknown;
+  bindings: unknown[];
+  runs: unknown[];
+  baseline: unknown;
+  uncommunicated: unknown[];
+  messages: unknown[];
+};
+
 export type TaskEffortEstimateParams = {
   task: Target;
 };
@@ -6933,6 +7127,40 @@ export type TaskGetResult = {
   collisions?: Collision[];
 };
 
+export type TaskIntentGetParams = {
+  task: Target;
+  revision?: number;
+};
+
+export type TaskIntentGetResult = {
+  task: string;
+  current_revision: number;
+  intent: unknown;
+  revisions: unknown[];
+};
+
+export type TaskIntentUpdateParams = {
+  task: Target;
+  expected_revision?: number;
+  title?: string;
+  objective?: string;
+  stop_detail?: string;
+  criteria?: unknown[];
+  criterion?: unknown;
+  add_criterion?: unknown;
+  constraints?: unknown[];
+  constraint?: unknown;
+  idempotency_key?: string;
+};
+
+export type TaskIntentUpdateResult = {
+  task: Task;
+  intent: unknown;
+  uncommunicated: unknown[];
+  note?: string | null;
+  cursor?: Cursor;
+};
+
 export type TaskLinkStatusParams = {
   run?: string;
   pane?: Target;
@@ -6966,6 +7194,59 @@ export type TaskListParams = {
 
 export type TaskListResult = {
   tasks: Task[];
+};
+
+export type TaskMessageCancelParams = {
+  message: string;
+  idempotency_key?: string;
+};
+
+export type TaskMessageCancelResult = {
+  message: Record<string, unknown>;
+  cursor?: Cursor;
+};
+
+export type TaskMessageGetParams = {
+  message: string;
+};
+
+export type TaskMessageGetResult = {
+  message: Record<string, unknown>;
+};
+
+export type TaskMessagePrepareParams = {
+  task: Target;
+  text: string;
+  idempotency_key?: string;
+};
+
+export type TaskMessagePrepareResult = {
+  message: Record<string, unknown>;
+  recipient: {
+    run: string | null;
+    binding: string | null;
+  };
+  send_path?: unknown;
+  cursor?: Cursor;
+};
+
+export type TaskMessageSendParams = {
+  message: string;
+  idempotency_key?: string;
+};
+
+export type TaskMessageSendResult = {
+  message: Record<string, unknown>;
+  cursor?: Cursor;
+};
+
+export type TaskOperationGetParams = {
+  idempotency_key: string;
+};
+
+export type TaskOperationGetResult = {
+  known: boolean;
+  note?: string;
 };
 
 export type TaskParkParams = {
@@ -7426,6 +7707,20 @@ export type TaskReviewStartReviewerResult = {
   cursor?: Cursor;
 };
 
+export type TaskSetParams = {
+  task: Target;
+  priority?: number | null;
+  effort?: string | null;
+  effort_source?: string;
+  expected_rev?: number;
+  idempotency_key?: string;
+};
+
+export type TaskSetResult = {
+  task: Task;
+  cursor?: Cursor;
+};
+
 export type TaskSetupParams = {
   task: Target;
   setup_script?: string;
@@ -7457,6 +7752,18 @@ export type TaskSetupLogResult = {
   size: number;
   truncated: boolean;
   setup_status: string | null;
+};
+
+export type TaskSourcesParams = {
+  run?: Target;
+  pane?: Target;
+  limit?: number;
+};
+
+export type TaskSourcesResult = {
+  run: string;
+  harness: string;
+  identity_verified: unknown;
 };
 
 export type TaskSplitParams = {
@@ -7510,6 +7817,38 @@ export type TaskSyncResult = {
     to: unknown;
     ref: unknown;
   }[];
+  cursor?: Cursor;
+};
+
+export type TaskTrackParams = {
+  run?: Target;
+  pane?: Target;
+  title?: string;
+  objective?: string;
+  stop_detail?: string;
+  target_branch?: string;
+  turn?: number;
+  turns?: number[];
+  idempotency_key?: string;
+};
+
+export type TaskTrackResult = {
+  task: Task;
+  intent: unknown;
+  binding: unknown;
+  baseline: unknown;
+  review_base: unknown;
+  cursor?: Cursor;
+};
+
+export type TaskUnbindParams = {
+  task?: Target;
+  binding?: string;
+  idempotency_key?: string;
+};
+
+export type TaskUnbindResult = {
+  closed: unknown;
   cursor?: Cursor;
 };
 
@@ -7739,7 +8078,8 @@ export type WorkspaceCreateParams = {
   group?: Target;
   focus?: boolean;
   layout?: LayoutSpec;
-  command?: string[];
+  command?: string[] | string;
+  idempotency_key?: string;
 };
 
 export type WorkspaceCreateResult = {
@@ -7900,6 +8240,7 @@ export interface Methods {
   "agent.set_model": { params: AgentSetModelParams; result: AgentSetModelResult };
   "agent.spawn": { params: AgentSpawnParams; result: AgentSpawnResult };
   "agent.start": { params: AgentStartParams; result: AgentStartResult };
+  "agent.transcript": { params: AgentTranscriptParams; result: AgentTranscriptResult };
   "agent.turn_usage": { params: AgentTurnUsageParams; result: AgentTurnUsageResult };
   "agent.turns": { params: AgentTurnsParams; result: AgentTurnsResult };
   "agent.wait": { params: AgentWaitParams; result: AgentWaitResult };
@@ -7973,7 +8314,11 @@ export interface Methods {
   "browser.type": { params: BrowserTypeParams; result: BrowserTypeResult };
   "browser.wait": { params: BrowserWaitParams; result: BrowserWaitResult };
   "browser.watch": { params: BrowserWatchParams; result: BrowserWatchResult };
+  "client.activity": { params: ClientActivityParams; result: ClientActivityResult };
   "client.appearance": { params: ClientAppearanceParams; result: ClientAppearanceResult };
+  "client.confirm": { params: ClientConfirmParams; result: ClientConfirmResult };
+  "client.confirm_answer": { params: ClientConfirmAnswerParams; result: ClientConfirmAnswerResult };
+  "client.devices": { params: ClientDevicesParams; result: ClientDevicesResult };
   "client.focus": { params: ClientFocusParams; result: ClientFocusResult };
   "client.hello": { params: ClientHelloParams; result: ClientHelloResult };
   "client.list": { params: ClientListParams; result: ClientListResult };
@@ -7988,6 +8333,7 @@ export interface Methods {
   "cloud.box.resume": { params: CloudBoxResumeParams; result: CloudBoxResumeResult };
   "cloud.box.suspend": { params: CloudBoxSuspendParams; result: CloudBoxSuspendResult };
   "cloud.cancel": { params: CloudCancelParams; result: CloudCancelResult };
+  "cloud.confirm": { params: CloudConfirmParams; result: CloudConfirmResult };
   "cloud.jobs": { params: CloudJobsParams; result: CloudJobsResult };
   "cloud.move": { params: CloudMoveParams; result: CloudMoveResult };
   "cloud.providers": { params: CloudProvidersParams; result: CloudProvidersResult };
@@ -8042,11 +8388,13 @@ export interface Methods {
   "fs.list": { params: FsListParams; result: FsListResult };
   "fs.read": { params: FsReadParams; result: FsReadResult };
   "gateway.call": { params: GatewayCallParams; result: GatewayCallResult };
+  "gateway.notice": { params: GatewayNoticeParams; result: GatewayNoticeResult };
   "gateway.reply": { params: GatewayReplyParams; result: GatewayReplyResult };
   "gateway.start": { params: GatewayStartParams; result: GatewayStartResult };
   "gateway.status": { params: GatewayStatusParams; result: GatewayStatusResult };
   "gateway.stop": { params: GatewayStopParams; result: GatewayStopResult };
   "git.diff": { params: GitDiffParams; result: GitDiffResult };
+  "git.import_box_objects": { params: GitImportBoxObjectsParams; result: GitImportBoxObjectsResult };
   "git.log": { params: GitLogParams; result: GitLogResult };
   "git.status": { params: GitStatusParams; result: GitStatusResult };
   "goal.approve": { params: GoalApproveParams; result: GoalApproveResult };
@@ -8161,7 +8509,6 @@ export interface Methods {
   "policy.remove": { params: PolicyRemoveParams; result: PolicyRemoveResult };
   "policy.test": { params: PolicyTestParams; result: PolicyTestResult };
   "policy.trust": { params: PolicyTrustParams; result: PolicyTrustResult };
-  "preview.connect": { params: PreviewConnectParams; result: PreviewConnectResult };
   "preview.declare": { params: PreviewDeclareParams; result: PreviewDeclareResult };
   "preview.dismiss": { params: PreviewDismissParams; result: PreviewDismissResult };
   "preview.forget": { params: PreviewForgetParams; result: PreviewForgetResult };
@@ -8231,6 +8578,7 @@ export interface Methods {
   "task.adopt": { params: TaskAdoptParams; result: TaskAdoptResult };
   "task.archive": { params: TaskArchiveParams; result: TaskArchiveResult };
   "task.best_of_n": { params: TaskBestOfNParams; result: TaskBestOfNResult };
+  "task.bind": { params: TaskBindParams; result: TaskBindResult };
   "task.check.authorize": { params: TaskCheckAuthorizeParams; result: TaskCheckAuthorizeResult };
   "task.check.cancel": { params: TaskCheckCancelParams; result: TaskCheckCancelResult };
   "task.check.get": { params: TaskCheckGetParams; result: TaskCheckGetResult };
@@ -8244,12 +8592,20 @@ export interface Methods {
   "task.dependency.add": { params: TaskDependencyAddParams; result: TaskDependencyAddResult };
   "task.dependency.list": { params: TaskDependencyListParams; result: TaskDependencyListResult };
   "task.dependency.remove": { params: TaskDependencyRemoveParams; result: TaskDependencyRemoveResult };
+  "task.detail": { params: TaskDetailParams; result: TaskDetailResult };
   "task.effort.estimate": { params: TaskEffortEstimateParams; result: TaskEffortEstimateResult };
   "task.finish": { params: TaskFinishParams; result: TaskFinishResult };
   "task.forget": { params: TaskForgetParams; result: TaskForgetResult };
   "task.get": { params: TaskGetParams; result: TaskGetResult };
+  "task.intent.get": { params: TaskIntentGetParams; result: TaskIntentGetResult };
+  "task.intent.update": { params: TaskIntentUpdateParams; result: TaskIntentUpdateResult };
   "task.link.status": { params: TaskLinkStatusParams; result: TaskLinkStatusResult };
   "task.list": { params: TaskListParams; result: TaskListResult };
+  "task.message.cancel": { params: TaskMessageCancelParams; result: TaskMessageCancelResult };
+  "task.message.get": { params: TaskMessageGetParams; result: TaskMessageGetResult };
+  "task.message.prepare": { params: TaskMessagePrepareParams; result: TaskMessagePrepareResult };
+  "task.message.send": { params: TaskMessageSendParams; result: TaskMessageSendResult };
+  "task.operation.get": { params: TaskOperationGetParams; result: TaskOperationGetResult };
   "task.park": { params: TaskParkParams; result: TaskParkResult };
   "task.pick": { params: TaskPickParams; result: TaskPickResult };
   "task.ports": { params: TaskPortsParams; result: TaskPortsResult };
@@ -8275,10 +8631,14 @@ export interface Methods {
   "task.review.snapshot": { params: TaskReviewSnapshotParams; result: TaskReviewSnapshotResult };
   "task.review.snapshot.gc": { params: TaskReviewSnapshotGcParams; result: TaskReviewSnapshotGcResult };
   "task.review.start_reviewer": { params: TaskReviewStartReviewerParams; result: TaskReviewStartReviewerResult };
+  "task.set": { params: TaskSetParams; result: TaskSetResult };
   "task.setup": { params: TaskSetupParams; result: TaskSetupResult };
   "task.setup_log": { params: TaskSetupLogParams; result: TaskSetupLogResult };
+  "task.sources": { params: TaskSourcesParams; result: TaskSourcesResult };
   "task.split": { params: TaskSplitParams; result: TaskSplitResult };
   "task.sync": { params: TaskSyncParams; result: TaskSyncResult };
+  "task.track": { params: TaskTrackParams; result: TaskTrackResult };
+  "task.unbind": { params: TaskUnbindParams; result: TaskUnbindResult };
   "theme.get": { params: ThemeGetParams; result: ThemeGetResult };
   "theme.set_mode": { params: ThemeSetModeParams; result: ThemeSetModeResult };
   "ui.contribute": { params: UiContributeParams; result: UiContributeResult };
@@ -8316,447 +8676,467 @@ export interface Methods {
 export type MethodName = keyof Methods;
 
 /** Mutating flag and scope of every method (`full`: not callable with a pane token). */
-export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" | "pane"; paneScope: "forbidden" | "own_target" | "open" }> = {
-  "adapter.control": { mutating: true, scope: "pane", paneScope: "open" },
-  "adapter.delivery_ack": { mutating: true, scope: "pane", paneScope: "open" },
-  "adapter.gate": { mutating: true, scope: "pane", paneScope: "open" },
-  "adapter.report_self": { mutating: true, scope: "pane", paneScope: "open" },
-  "adapter.signal": { mutating: true, scope: "pane", paneScope: "open" },
-  "agent.commands": { mutating: false, scope: "pane", paneScope: "open" },
-  "agent.drift": { mutating: false, scope: "pane", paneScope: "open" },
-  "agent.get": { mutating: false, scope: "pane", paneScope: "open" },
-  "agent.harnesses": { mutating: false, scope: "pane", paneScope: "open" },
-  "agent.interrupt": { mutating: true, scope: "pane", paneScope: "own_target" },
-  "agent.items": { mutating: false, scope: "full", paneScope: "forbidden" },
-  "agent.limits": { mutating: false, scope: "pane", paneScope: "open" },
-  "agent.list": { mutating: false, scope: "pane", paneScope: "open" },
-  "agent.manifest_pin": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "agent.manifests": { mutating: false, scope: "pane", paneScope: "open" },
-  "agent.manifests_check": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "agent.manifests_reload": { mutating: true, scope: "pane", paneScope: "open" },
-  "agent.models": { mutating: false, scope: "pane", paneScope: "open" },
-  "agent.prompt": { mutating: true, scope: "pane", paneScope: "own_target" },
-  "agent.read": { mutating: false, scope: "pane", paneScope: "open" },
-  "agent.release": { mutating: true, scope: "pane", paneScope: "own_target" },
-  "agent.rename": { mutating: true, scope: "pane", paneScope: "own_target" },
-  "agent.report": { mutating: true, scope: "pane", paneScope: "open" },
-  "agent.resumable": { mutating: false, scope: "pane", paneScope: "open" },
-  "agent.resume": { mutating: true, scope: "pane", paneScope: "own_target" },
-  "agent.send_keys": { mutating: true, scope: "pane", paneScope: "own_target" },
-  "agent.set_model": { mutating: true, scope: "pane", paneScope: "own_target" },
-  "agent.spawn": { mutating: true, scope: "pane", paneScope: "open" },
-  "agent.start": { mutating: true, scope: "pane", paneScope: "own_target" },
-  "agent.turn_usage": { mutating: false, scope: "pane", paneScope: "open" },
-  "agent.turns": { mutating: false, scope: "full", paneScope: "forbidden" },
-  "agent.wait": { mutating: false, scope: "pane", paneScope: "open" },
-  "api.methods": { mutating: false, scope: "pane", paneScope: "open" },
-  "api.schema": { mutating: false, scope: "pane", paneScope: "open" },
-  "assistant.background": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "assistant.cancel": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "assistant.confirm": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "assistant.consent": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "assistant.generate": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "assistant.get": { mutating: false, scope: "full", paneScope: "forbidden" },
-  "assistant.list": { mutating: false, scope: "full", paneScope: "forbidden" },
-  "assistant.models": { mutating: false, scope: "full", paneScope: "forbidden" },
-  "assistant.providers": { mutating: false, scope: "full", paneScope: "forbidden" },
-  "assistant.purge": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "assistant.revoke": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "assistant.status": { mutating: false, scope: "full", paneScope: "forbidden" },
-  "assistant.test": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "attention.batch": { mutating: false, scope: "pane", paneScope: "open" },
-  "attention.list": { mutating: false, scope: "pane", paneScope: "open" },
-  "attention.update": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "audit.search": { mutating: false, scope: "full", paneScope: "forbidden" },
-  "audit.tail": { mutating: false, scope: "full", paneScope: "forbidden" },
-  "audit.verify": { mutating: false, scope: "full", paneScope: "forbidden" },
-  "auth.approve": { mutating: true, scope: "pane", paneScope: "open" },
-  "auth.approve.decide": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "auth.approve.withdraw": { mutating: true, scope: "pane", paneScope: "open" },
-  "auth.elevate": { mutating: true, scope: "pane", paneScope: "open" },
-  "auth.elevate.decide": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "auth.list": { mutating: false, scope: "full", paneScope: "forbidden" },
-  "auth.revoke_token": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "blob.abort": { mutating: true, scope: "pane", paneScope: "open" },
-  "blob.append": { mutating: true, scope: "pane", paneScope: "open" },
-  "blob.begin": { mutating: true, scope: "pane", paneScope: "open" },
-  "blob.commit": { mutating: true, scope: "pane", paneScope: "open" },
-  "blob.gc": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "blob.get": { mutating: false, scope: "pane", paneScope: "open" },
-  "blob.put": { mutating: true, scope: "pane", paneScope: "open" },
-  "blob.stat": { mutating: false, scope: "pane", paneScope: "open" },
-  "blob.stats": { mutating: false, scope: "full", paneScope: "forbidden" },
-  "browser.attach_screencast": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "browser.click": { mutating: true, scope: "pane", paneScope: "open" },
-  "browser.close": { mutating: true, scope: "pane", paneScope: "open" },
-  "browser.command": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "browser.console": { mutating: false, scope: "pane", paneScope: "open" },
-  "browser.detach_screencast": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "browser.diff": { mutating: true, scope: "pane", paneScope: "open" },
-  "browser.dom": { mutating: false, scope: "pane", paneScope: "open" },
-  "browser.eval": { mutating: true, scope: "pane", paneScope: "open" },
-  "browser.input": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "browser.install": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "browser.list": { mutating: false, scope: "pane", paneScope: "open" },
-  "browser.navigate": { mutating: true, scope: "pane", paneScope: "open" },
-  "browser.network": { mutating: false, scope: "pane", paneScope: "open" },
-  "browser.open": { mutating: true, scope: "pane", paneScope: "open" },
-  "browser.pane.console": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "browser.pane.console_push": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "browser.pane.create": { mutating: true, scope: "pane", paneScope: "open" },
-  "browser.pane.list": { mutating: false, scope: "pane", paneScope: "open" },
-  "browser.pane.status": { mutating: false, scope: "pane", paneScope: "open" },
-  "browser.pane.update": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "browser.press": { mutating: true, scope: "pane", paneScope: "open" },
-  "browser.release": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "browser.screencast_frame": { mutating: false, scope: "full", paneScope: "forbidden" },
-  "browser.screenshot": { mutating: true, scope: "pane", paneScope: "open" },
-  "browser.session_close": { mutating: true, scope: "pane", paneScope: "open" },
-  "browser.session_open": { mutating: true, scope: "pane", paneScope: "open" },
-  "browser.snapshot": { mutating: false, scope: "pane", paneScope: "open" },
-  "browser.status": { mutating: false, scope: "pane", paneScope: "open" },
-  "browser.take_over": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "browser.type": { mutating: true, scope: "pane", paneScope: "open" },
-  "browser.wait": { mutating: false, scope: "pane", paneScope: "open" },
-  "browser.watch": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "client.appearance": { mutating: true, scope: "pane", paneScope: "open" },
-  "client.focus": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "client.hello": { mutating: false, scope: "pane", paneScope: "open" },
-  "client.list": { mutating: false, scope: "pane", paneScope: "open" },
-  "cloud.auth.clear": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "cloud.auth.import": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "cloud.auth.set": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "cloud.box.adopt": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "cloud.box.checkpoint": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "cloud.box.destroy": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "cloud.box.forget": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "cloud.box.list": { mutating: false, scope: "full", paneScope: "forbidden" },
-  "cloud.box.resume": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "cloud.box.suspend": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "cloud.cancel": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "cloud.jobs": { mutating: false, scope: "full", paneScope: "forbidden" },
-  "cloud.move": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "cloud.providers": { mutating: false, scope: "full", paneScope: "forbidden" },
-  "cloud.prune": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "collision.claim": { mutating: true, scope: "pane", paneScope: "open" },
-  "collision.claim_release": { mutating: true, scope: "pane", paneScope: "open" },
-  "collision.claims": { mutating: false, scope: "pane", paneScope: "open" },
-  "collision.dismiss": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "collision.get": { mutating: false, scope: "pane", paneScope: "open" },
-  "collision.ignore": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "collision.ignores": { mutating: false, scope: "full", paneScope: "forbidden" },
-  "collision.list": { mutating: false, scope: "pane", paneScope: "open" },
-  "collision.pause": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "collision.start_task": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "collision.status": { mutating: false, scope: "full", paneScope: "forbidden" },
-  "collision.tell": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "collision.unignore": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "compat.herdr.call": { mutating: true, scope: "pane", paneScope: "open" },
-  "compat.invocation.verify": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "compat.status": { mutating: false, scope: "pane", paneScope: "open" },
-  "compat.ui.state": { mutating: false, scope: "pane", paneScope: "open" },
-  "config.get": { mutating: false, scope: "pane", paneScope: "open" },
-  "config.reload": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "config.set": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "config.validate": { mutating: false, scope: "pane", paneScope: "open" },
-  "desk.context": { mutating: false, scope: "pane", paneScope: "open" },
-  "desk.forget": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "desk.index": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "desk.open": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "desk.resume": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "desk.search": { mutating: false, scope: "pane", paneScope: "open" },
-  "desk.sessions": { mutating: false, scope: "pane", paneScope: "open" },
-  "desk.status": { mutating: false, scope: "full", paneScope: "forbidden" },
-  "draft.check": { mutating: false, scope: "pane", paneScope: "open" },
-  "draft.combine": { mutating: true, scope: "pane", paneScope: "open" },
-  "draft.create": { mutating: true, scope: "pane", paneScope: "open" },
-  "draft.delete": { mutating: true, scope: "pane", paneScope: "open" },
-  "draft.get": { mutating: false, scope: "pane", paneScope: "open" },
-  "draft.list": { mutating: false, scope: "pane", paneScope: "open" },
-  "draft.reconcile": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "draft.reorder": { mutating: true, scope: "pane", paneScope: "open" },
-  "draft.send": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "draft.update": { mutating: true, scope: "pane", paneScope: "open" },
-  "events.read": { mutating: false, scope: "pane", paneScope: "open" },
-  "events.subscribe": { mutating: false, scope: "pane", paneScope: "open" },
-  "events.unsubscribe": { mutating: false, scope: "pane", paneScope: "open" },
-  "events.wait": { mutating: false, scope: "pane", paneScope: "open" },
-  "family.check": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "family.get": { mutating: false, scope: "pane", paneScope: "open" },
-  "family.list": { mutating: false, scope: "pane", paneScope: "open" },
-  "fs.browse": { mutating: false, scope: "full", paneScope: "forbidden" },
-  "fs.list": { mutating: false, scope: "pane", paneScope: "open" },
-  "fs.read": { mutating: false, scope: "pane", paneScope: "open" },
-  "gateway.call": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "gateway.reply": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "gateway.start": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "gateway.status": { mutating: false, scope: "pane", paneScope: "open" },
-  "gateway.stop": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "git.diff": { mutating: false, scope: "pane", paneScope: "open" },
-  "git.log": { mutating: false, scope: "pane", paneScope: "open" },
-  "git.status": { mutating: false, scope: "pane", paneScope: "open" },
-  "goal.approve": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "goal.briefing": { mutating: false, scope: "pane", paneScope: "open" },
-  "goal.cancel": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "goal.create": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "goal.get": { mutating: false, scope: "pane", paneScope: "open" },
-  "goal.list": { mutating: false, scope: "pane", paneScope: "open" },
-  "goal.plan": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "goal.plan_submit": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "goal.start": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "goal.step_done": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "group.add": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "group.collapse": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "group.create": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "group.delete": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "group.list": { mutating: false, scope: "pane", paneScope: "open" },
-  "group.move": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "group.remove": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "group.rename": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "handoff.accept": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "handoff.cancel": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "handoff.decline": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "handoff.incoming.add": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "handoff.incoming.get": { mutating: false, scope: "full", paneScope: "forbidden" },
-  "handoff.incoming.list": { mutating: false, scope: "full", paneScope: "forbidden" },
-  "handoff.job.update": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "handoff.jobs": { mutating: false, scope: "pane", paneScope: "open" },
-  "handoff.peers": { mutating: false, scope: "pane", paneScope: "open" },
-  "handoff.peers.set": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "handoff.prefs": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "handoff.resume": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "handoff.send": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "image.upload": { mutating: true, scope: "pane", paneScope: "open" },
-  "integration.doctor": { mutating: false, scope: "full", paneScope: "forbidden" },
-  "interaction.answer": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "interaction.cancel": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "interaction.get": { mutating: false, scope: "pane", paneScope: "open" },
-  "interaction.list": { mutating: false, scope: "pane", paneScope: "open" },
-  "layout.apply": { mutating: true, scope: "pane", paneScope: "open" },
-  "layout.export": { mutating: false, scope: "pane", paneScope: "open" },
-  "layout.get": { mutating: false, scope: "pane", paneScope: "open" },
-  "layout.list": { mutating: false, scope: "pane", paneScope: "open" },
-  "machine.get": { mutating: false, scope: "pane", paneScope: "open" },
-  "machine.list": { mutating: false, scope: "pane", paneScope: "open" },
-  "machine.remove": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "machine.upsert": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "merge.predict": { mutating: false, scope: "pane", paneScope: "open" },
-  "merge.queue.add": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "merge.queue.cancel": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "merge.queue.list": { mutating: false, scope: "pane", paneScope: "open" },
-  "merge.queue.requeue": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "merge.queue.run": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "notes.get": { mutating: false, scope: "pane", paneScope: "open" },
-  "notes.set": { mutating: true, scope: "pane", paneScope: "open" },
-  "notification.config": { mutating: false, scope: "pane", paneScope: "open" },
-  "notification.list": { mutating: false, scope: "pane", paneScope: "open" },
-  "notification.read": { mutating: true, scope: "pane", paneScope: "open" },
-  "notification.send": { mutating: true, scope: "pane", paneScope: "open" },
-  "pane.can_see_paths": { mutating: false, scope: "pane", paneScope: "open" },
-  "pane.close": { mutating: true, scope: "pane", paneScope: "own_target" },
-  "pane.current": { mutating: false, scope: "pane", paneScope: "open" },
-  "pane.embed": { mutating: true, scope: "pane", paneScope: "own_target" },
-  "pane.equalize": { mutating: true, scope: "pane", paneScope: "own_target" },
-  "pane.float": { mutating: true, scope: "pane", paneScope: "own_target" },
-  "pane.focus": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "pane.get": { mutating: false, scope: "pane", paneScope: "open" },
-  "pane.list": { mutating: false, scope: "pane", paneScope: "open" },
-  "pane.mark_seen": { mutating: true, scope: "pane", paneScope: "own_target" },
-  "pane.mark_unread": { mutating: true, scope: "pane", paneScope: "own_target" },
-  "pane.move": { mutating: true, scope: "pane", paneScope: "own_target" },
-  "pane.pin": { mutating: true, scope: "pane", paneScope: "own_target" },
-  "pane.read": { mutating: false, scope: "pane", paneScope: "open" },
-  "pane.rename": { mutating: true, scope: "pane", paneScope: "own_target" },
-  "pane.report_agent": { mutating: true, scope: "pane", paneScope: "own_target" },
-  "pane.report_agent_session": { mutating: true, scope: "pane", paneScope: "own_target" },
-  "pane.resize": { mutating: true, scope: "pane", paneScope: "own_target" },
-  "pane.run": { mutating: true, scope: "pane", paneScope: "own_target" },
-  "pane.screenshot": { mutating: false, scope: "pane", paneScope: "own_target" },
-  "pane.scroll": { mutating: true, scope: "pane", paneScope: "own_target" },
-  "pane.send_bytes": { mutating: true, scope: "pane", paneScope: "own_target" },
-  "pane.send_keys": { mutating: true, scope: "pane", paneScope: "own_target" },
-  "pane.send_text": { mutating: true, scope: "pane", paneScope: "own_target" },
-  "pane.split": { mutating: true, scope: "pane", paneScope: "own_target" },
-  "pane.sync_input": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "pane.wait_idle": { mutating: false, scope: "pane", paneScope: "open" },
-  "pane.wait_output": { mutating: false, scope: "pane", paneScope: "open" },
-  "pane.zoom": { mutating: true, scope: "pane", paneScope: "own_target" },
-  "paste.translated": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "plugin.action": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "plugin.action.list": { mutating: false, scope: "pane", paneScope: "open" },
-  "plugin.action.run": { mutating: true, scope: "pane", paneScope: "open" },
-  "plugin.consent": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "plugin.disable": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "plugin.enable": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "plugin.install": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "plugin.kv.delete": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "plugin.kv.get": { mutating: false, scope: "full", paneScope: "forbidden" },
-  "plugin.kv.list": { mutating: false, scope: "full", paneScope: "forbidden" },
-  "plugin.kv.set": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "plugin.link": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "plugin.link.open": { mutating: true, scope: "pane", paneScope: "open" },
-  "plugin.link_handler.list": { mutating: false, scope: "pane", paneScope: "open" },
-  "plugin.list": { mutating: false, scope: "pane", paneScope: "open" },
-  "plugin.log.list": { mutating: false, scope: "pane", paneScope: "open" },
-  "plugin.registry.notify": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "plugin.remove": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "plugin.restart": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "plugin.surface.close": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "policy.add": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "policy.list": { mutating: false, scope: "full", paneScope: "forbidden" },
-  "policy.remove": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "policy.test": { mutating: false, scope: "full", paneScope: "forbidden" },
-  "policy.trust": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "preview.connect": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "preview.declare": { mutating: true, scope: "pane", paneScope: "open" },
-  "preview.dismiss": { mutating: true, scope: "pane", paneScope: "open" },
-  "preview.forget": { mutating: true, scope: "pane", paneScope: "open" },
-  "preview.get": { mutating: false, scope: "pane", paneScope: "open" },
-  "preview.list": { mutating: false, scope: "pane", paneScope: "open" },
-  "preview.mirror": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "preview.open": { mutating: true, scope: "pane", paneScope: "open" },
-  "preview.profile": { mutating: true, scope: "pane", paneScope: "open" },
-  "preview.profile.list": { mutating: false, scope: "pane", paneScope: "open" },
-  "preview.profile.reset": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "preview.promote": { mutating: true, scope: "pane", paneScope: "open" },
-  "preview.status": { mutating: false, scope: "pane", paneScope: "open" },
-  "preview.unmirror": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "preview.url": { mutating: false, scope: "pane", paneScope: "open" },
-  "quota.resume": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "quota.route": { mutating: false, scope: "pane", paneScope: "open" },
-  "quota.status": { mutating: false, scope: "pane", paneScope: "open" },
-  "quota.tick": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "repo.candidates": { mutating: false, scope: "full", paneScope: "forbidden" },
-  "sandbox.allow": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "sandbox.copy_out": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "sandbox.disallow": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "sandbox.list": { mutating: false, scope: "pane", paneScope: "open" },
-  "sandbox.logs": { mutating: false, scope: "full", paneScope: "forbidden" },
-  "sandbox.prune": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "sandbox.push": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "sandbox.recover": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "sandbox.relaunch": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "sandbox.remove": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "sandbox.request": { mutating: true, scope: "pane", paneScope: "open" },
-  "sandbox.setup_token": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "sandbox.shell": { mutating: false, scope: "full", paneScope: "forbidden" },
-  "sandbox.start": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "sandbox.status": { mutating: false, scope: "pane", paneScope: "open" },
-  "sandbox.stop": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "screenshot.add": { mutating: true, scope: "pane", paneScope: "open" },
-  "screenshot.delete": { mutating: true, scope: "pane", paneScope: "open" },
-  "screenshot.get": { mutating: false, scope: "pane", paneScope: "open" },
-  "screenshot.list": { mutating: false, scope: "pane", paneScope: "open" },
-  "screenshot.open": { mutating: false, scope: "pane", paneScope: "open" },
-  "scrollback.forget": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "search.query": { mutating: false, scope: "pane", paneScope: "open" },
-  "security.encryption.migrate": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "security.encryption.status": { mutating: false, scope: "full", paneScope: "forbidden" },
-  "server.reload_config": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "server.restart": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "server.status": { mutating: false, scope: "pane", paneScope: "open" },
-  "server.stop": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "session.create": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "session.info": { mutating: false, scope: "pane", paneScope: "open" },
-  "session.list": { mutating: false, scope: "pane", paneScope: "open" },
-  "session.rename": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "session.snapshot": { mutating: false, scope: "pane", paneScope: "open" },
-  "session.stop": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "state.forget": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "status.segments": { mutating: false, scope: "pane", paneScope: "open" },
-  "storage.prune": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "storage.status": { mutating: false, scope: "full", paneScope: "forbidden" },
-  "tab.close": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "tab.create": { mutating: true, scope: "pane", paneScope: "open" },
-  "tab.floats": { mutating: true, scope: "pane", paneScope: "open" },
-  "tab.focus": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "tab.list": { mutating: false, scope: "pane", paneScope: "open" },
-  "tab.move": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "tab.rename": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "tab.renumber": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "task.adopt": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "task.archive": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "task.best_of_n": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "task.check.authorize": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "task.check.cancel": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "task.check.get": { mutating: false, scope: "pane", paneScope: "open" },
-  "task.check.list": { mutating: false, scope: "pane", paneScope: "open" },
-  "task.check.run": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "task.claim": { mutating: true, scope: "pane", paneScope: "open" },
-  "task.claim.list": { mutating: false, scope: "pane", paneScope: "open" },
-  "task.claim.remove": { mutating: true, scope: "pane", paneScope: "open" },
-  "task.compare": { mutating: false, scope: "pane", paneScope: "open" },
-  "task.create": { mutating: true, scope: "pane", paneScope: "open" },
-  "task.dependency.add": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "task.dependency.list": { mutating: false, scope: "pane", paneScope: "open" },
-  "task.dependency.remove": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "task.effort.estimate": { mutating: false, scope: "pane", paneScope: "open" },
-  "task.finish": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "task.forget": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "task.get": { mutating: false, scope: "pane", paneScope: "open" },
-  "task.link.status": { mutating: false, scope: "pane", paneScope: "open" },
-  "task.list": { mutating: false, scope: "pane", paneScope: "open" },
-  "task.park": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "task.pick": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "task.ports": { mutating: false, scope: "pane", paneScope: "open" },
-  "task.ports.re_lease": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "task.pr": { mutating: false, scope: "pane", paneScope: "open" },
-  "task.pr.claim": { mutating: true, scope: "pane", paneScope: "open" },
-  "task.pr.list": { mutating: false, scope: "pane", paneScope: "open" },
-  "task.pr.observe": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "task.reconcile": { mutating: true, scope: "pane", paneScope: "open" },
-  "task.recreate": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "task.resume": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "task.review.accept": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "task.review.candidates": { mutating: false, scope: "pane", paneScope: "open" },
-  "task.review.diff": { mutating: false, scope: "pane", paneScope: "open" },
-  "task.review.forget": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "task.review.get": { mutating: false, scope: "pane", paneScope: "open" },
-  "task.review.human_review": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "task.review.interval_status": { mutating: false, scope: "pane", paneScope: "open" },
-  "task.review.intervals": { mutating: false, scope: "pane", paneScope: "open" },
-  "task.review.note.classify": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "task.review.notes": { mutating: false, scope: "pane", paneScope: "open" },
-  "task.review.request_reviewer": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "task.review.snapshot": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "task.review.snapshot.gc": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "task.review.start_reviewer": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "task.setup": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "task.setup_log": { mutating: false, scope: "pane", paneScope: "open" },
-  "task.split": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "task.sync": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "theme.get": { mutating: false, scope: "pane", paneScope: "open" },
-  "theme.set_mode": { mutating: true, scope: "pane", paneScope: "open" },
-  "ui.contribute": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "ui.contributions": { mutating: false, scope: "pane", paneScope: "open" },
-  "ui.pane.open": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "vm.create": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "vm.destroy": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "vm.fork": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "vm.list": { mutating: false, scope: "pane", paneScope: "open" },
-  "vm.resume": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "vm.snapshot": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "vm.snapshot.delete": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "vm.start": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "vm.status": { mutating: false, scope: "pane", paneScope: "open" },
-  "vm.stop": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "vm.suspend": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "vm.template.build": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "vm.template.delete": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "vm.template.list": { mutating: false, scope: "pane", paneScope: "open" },
-  "vm.transport": { mutating: false, scope: "pane", paneScope: "open" },
-  "workspace.close": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "workspace.create": { mutating: true, scope: "pane", paneScope: "open" },
-  "workspace.focus": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "workspace.get": { mutating: false, scope: "pane", paneScope: "open" },
-  "workspace.list": { mutating: false, scope: "pane", paneScope: "open" },
-  "workspace.move": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "workspace.rename": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "worktree.create": { mutating: true, scope: "pane", paneScope: "open" },
-  "worktree.list": { mutating: false, scope: "pane", paneScope: "open" },
-  "worktree.open": { mutating: true, scope: "pane", paneScope: "open" },
-  "worktree.remove": { mutating: true, scope: "full", paneScope: "forbidden" },
-  "worktree.repo_root": { mutating: false, scope: "pane", paneScope: "open" },
+export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" | "pane"; paneScope: "forbidden" | "own_target" | "open"; stability: "stable" | "experimental" }> = {
+  "adapter.control": { mutating: true, scope: "pane", paneScope: "open", stability: "stable" },
+  "adapter.delivery_ack": { mutating: true, scope: "pane", paneScope: "open", stability: "stable" },
+  "adapter.gate": { mutating: true, scope: "pane", paneScope: "open", stability: "stable" },
+  "adapter.report_self": { mutating: true, scope: "pane", paneScope: "open", stability: "stable" },
+  "adapter.signal": { mutating: true, scope: "pane", paneScope: "open", stability: "stable" },
+  "agent.commands": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "agent.drift": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "agent.get": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "agent.harnesses": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "agent.interrupt": { mutating: true, scope: "pane", paneScope: "own_target", stability: "stable" },
+  "agent.items": { mutating: false, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "agent.limits": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "agent.list": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "agent.manifest_pin": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "agent.manifests": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "agent.manifests_check": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "agent.manifests_reload": { mutating: true, scope: "pane", paneScope: "open", stability: "stable" },
+  "agent.models": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "agent.prompt": { mutating: true, scope: "pane", paneScope: "own_target", stability: "stable" },
+  "agent.read": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "agent.release": { mutating: true, scope: "pane", paneScope: "own_target", stability: "stable" },
+  "agent.rename": { mutating: true, scope: "pane", paneScope: "own_target", stability: "stable" },
+  "agent.report": { mutating: true, scope: "pane", paneScope: "own_target", stability: "stable" },
+  "agent.resumable": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "agent.resume": { mutating: true, scope: "pane", paneScope: "own_target", stability: "stable" },
+  "agent.send_keys": { mutating: true, scope: "pane", paneScope: "own_target", stability: "stable" },
+  "agent.set_model": { mutating: true, scope: "pane", paneScope: "own_target", stability: "stable" },
+  "agent.spawn": { mutating: true, scope: "pane", paneScope: "open", stability: "stable" },
+  "agent.start": { mutating: true, scope: "pane", paneScope: "own_target", stability: "stable" },
+  "agent.transcript": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "agent.turn_usage": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "agent.turns": { mutating: false, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "agent.wait": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "api.methods": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "api.schema": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "assistant.background": { mutating: true, scope: "full", paneScope: "forbidden", stability: "experimental" },
+  "assistant.cancel": { mutating: true, scope: "full", paneScope: "forbidden", stability: "experimental" },
+  "assistant.confirm": { mutating: true, scope: "full", paneScope: "forbidden", stability: "experimental" },
+  "assistant.consent": { mutating: true, scope: "full", paneScope: "forbidden", stability: "experimental" },
+  "assistant.generate": { mutating: true, scope: "full", paneScope: "forbidden", stability: "experimental" },
+  "assistant.get": { mutating: false, scope: "full", paneScope: "forbidden", stability: "experimental" },
+  "assistant.list": { mutating: false, scope: "full", paneScope: "forbidden", stability: "experimental" },
+  "assistant.models": { mutating: false, scope: "full", paneScope: "forbidden", stability: "experimental" },
+  "assistant.providers": { mutating: false, scope: "full", paneScope: "forbidden", stability: "experimental" },
+  "assistant.purge": { mutating: true, scope: "full", paneScope: "forbidden", stability: "experimental" },
+  "assistant.revoke": { mutating: true, scope: "full", paneScope: "forbidden", stability: "experimental" },
+  "assistant.status": { mutating: false, scope: "full", paneScope: "forbidden", stability: "experimental" },
+  "assistant.test": { mutating: true, scope: "full", paneScope: "forbidden", stability: "experimental" },
+  "attention.batch": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "attention.list": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "attention.update": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "audit.search": { mutating: false, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "audit.tail": { mutating: false, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "audit.verify": { mutating: false, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "auth.approve": { mutating: true, scope: "pane", paneScope: "open", stability: "stable" },
+  "auth.approve.decide": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "auth.approve.withdraw": { mutating: true, scope: "pane", paneScope: "open", stability: "stable" },
+  "auth.elevate": { mutating: true, scope: "pane", paneScope: "open", stability: "stable" },
+  "auth.elevate.decide": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "auth.list": { mutating: false, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "auth.revoke_token": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "blob.abort": { mutating: true, scope: "pane", paneScope: "open", stability: "stable" },
+  "blob.append": { mutating: true, scope: "pane", paneScope: "open", stability: "stable" },
+  "blob.begin": { mutating: true, scope: "pane", paneScope: "open", stability: "stable" },
+  "blob.commit": { mutating: true, scope: "pane", paneScope: "open", stability: "stable" },
+  "blob.gc": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "blob.get": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "blob.put": { mutating: true, scope: "pane", paneScope: "open", stability: "stable" },
+  "blob.stat": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "blob.stats": { mutating: false, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "browser.attach_screencast": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "browser.click": { mutating: true, scope: "pane", paneScope: "open", stability: "stable" },
+  "browser.close": { mutating: true, scope: "pane", paneScope: "open", stability: "stable" },
+  "browser.command": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "browser.console": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "browser.detach_screencast": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "browser.diff": { mutating: true, scope: "pane", paneScope: "open", stability: "stable" },
+  "browser.dom": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "browser.eval": { mutating: true, scope: "pane", paneScope: "open", stability: "stable" },
+  "browser.input": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "browser.install": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "browser.list": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "browser.navigate": { mutating: true, scope: "pane", paneScope: "open", stability: "stable" },
+  "browser.network": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "browser.open": { mutating: true, scope: "pane", paneScope: "open", stability: "stable" },
+  "browser.pane.console": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "browser.pane.console_push": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "browser.pane.create": { mutating: true, scope: "pane", paneScope: "open", stability: "stable" },
+  "browser.pane.list": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "browser.pane.status": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "browser.pane.update": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "browser.press": { mutating: true, scope: "pane", paneScope: "open", stability: "stable" },
+  "browser.release": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "browser.screencast_frame": { mutating: false, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "browser.screenshot": { mutating: true, scope: "pane", paneScope: "open", stability: "stable" },
+  "browser.session_close": { mutating: true, scope: "pane", paneScope: "open", stability: "stable" },
+  "browser.session_open": { mutating: true, scope: "pane", paneScope: "open", stability: "stable" },
+  "browser.snapshot": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "browser.status": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "browser.take_over": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "browser.type": { mutating: true, scope: "pane", paneScope: "open", stability: "stable" },
+  "browser.wait": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "browser.watch": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "client.activity": { mutating: false, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "client.appearance": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "client.confirm": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "client.confirm_answer": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "client.devices": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "client.focus": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "client.hello": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "client.list": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "cloud.auth.clear": { mutating: true, scope: "full", paneScope: "forbidden", stability: "experimental" },
+  "cloud.auth.import": { mutating: true, scope: "full", paneScope: "forbidden", stability: "experimental" },
+  "cloud.auth.set": { mutating: true, scope: "full", paneScope: "forbidden", stability: "experimental" },
+  "cloud.box.adopt": { mutating: true, scope: "full", paneScope: "forbidden", stability: "experimental" },
+  "cloud.box.checkpoint": { mutating: true, scope: "full", paneScope: "forbidden", stability: "experimental" },
+  "cloud.box.destroy": { mutating: true, scope: "full", paneScope: "forbidden", stability: "experimental" },
+  "cloud.box.forget": { mutating: true, scope: "full", paneScope: "forbidden", stability: "experimental" },
+  "cloud.box.list": { mutating: false, scope: "full", paneScope: "forbidden", stability: "experimental" },
+  "cloud.box.resume": { mutating: true, scope: "full", paneScope: "forbidden", stability: "experimental" },
+  "cloud.box.suspend": { mutating: true, scope: "full", paneScope: "forbidden", stability: "experimental" },
+  "cloud.cancel": { mutating: true, scope: "full", paneScope: "forbidden", stability: "experimental" },
+  "cloud.confirm": { mutating: true, scope: "full", paneScope: "forbidden", stability: "experimental" },
+  "cloud.jobs": { mutating: false, scope: "full", paneScope: "forbidden", stability: "experimental" },
+  "cloud.move": { mutating: true, scope: "full", paneScope: "forbidden", stability: "experimental" },
+  "cloud.providers": { mutating: false, scope: "full", paneScope: "forbidden", stability: "experimental" },
+  "cloud.prune": { mutating: true, scope: "full", paneScope: "forbidden", stability: "experimental" },
+  "collision.claim": { mutating: true, scope: "pane", paneScope: "open", stability: "experimental" },
+  "collision.claim_release": { mutating: true, scope: "pane", paneScope: "open", stability: "experimental" },
+  "collision.claims": { mutating: false, scope: "pane", paneScope: "open", stability: "experimental" },
+  "collision.dismiss": { mutating: true, scope: "full", paneScope: "forbidden", stability: "experimental" },
+  "collision.get": { mutating: false, scope: "pane", paneScope: "open", stability: "experimental" },
+  "collision.ignore": { mutating: true, scope: "full", paneScope: "forbidden", stability: "experimental" },
+  "collision.ignores": { mutating: false, scope: "full", paneScope: "forbidden", stability: "experimental" },
+  "collision.list": { mutating: false, scope: "pane", paneScope: "open", stability: "experimental" },
+  "collision.pause": { mutating: true, scope: "full", paneScope: "forbidden", stability: "experimental" },
+  "collision.start_task": { mutating: true, scope: "full", paneScope: "forbidden", stability: "experimental" },
+  "collision.status": { mutating: false, scope: "full", paneScope: "forbidden", stability: "experimental" },
+  "collision.tell": { mutating: true, scope: "full", paneScope: "forbidden", stability: "experimental" },
+  "collision.unignore": { mutating: true, scope: "full", paneScope: "forbidden", stability: "experimental" },
+  "compat.herdr.call": { mutating: true, scope: "pane", paneScope: "open", stability: "stable" },
+  "compat.invocation.verify": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "compat.status": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "compat.ui.state": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "config.get": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "config.reload": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "config.set": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "config.validate": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "desk.context": { mutating: false, scope: "pane", paneScope: "open", stability: "experimental" },
+  "desk.forget": { mutating: true, scope: "full", paneScope: "forbidden", stability: "experimental" },
+  "desk.index": { mutating: true, scope: "full", paneScope: "forbidden", stability: "experimental" },
+  "desk.open": { mutating: true, scope: "full", paneScope: "forbidden", stability: "experimental" },
+  "desk.resume": { mutating: true, scope: "full", paneScope: "forbidden", stability: "experimental" },
+  "desk.search": { mutating: false, scope: "pane", paneScope: "open", stability: "experimental" },
+  "desk.sessions": { mutating: false, scope: "pane", paneScope: "open", stability: "experimental" },
+  "desk.status": { mutating: false, scope: "full", paneScope: "forbidden", stability: "experimental" },
+  "draft.check": { mutating: false, scope: "pane", paneScope: "open", stability: "experimental" },
+  "draft.combine": { mutating: true, scope: "pane", paneScope: "open", stability: "experimental" },
+  "draft.create": { mutating: true, scope: "pane", paneScope: "open", stability: "experimental" },
+  "draft.delete": { mutating: true, scope: "pane", paneScope: "open", stability: "experimental" },
+  "draft.get": { mutating: false, scope: "pane", paneScope: "open", stability: "experimental" },
+  "draft.list": { mutating: false, scope: "pane", paneScope: "open", stability: "experimental" },
+  "draft.reconcile": { mutating: true, scope: "full", paneScope: "forbidden", stability: "experimental" },
+  "draft.reorder": { mutating: true, scope: "pane", paneScope: "open", stability: "experimental" },
+  "draft.send": { mutating: true, scope: "full", paneScope: "forbidden", stability: "experimental" },
+  "draft.update": { mutating: true, scope: "pane", paneScope: "open", stability: "experimental" },
+  "events.read": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "events.subscribe": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "events.unsubscribe": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "events.wait": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "family.check": { mutating: true, scope: "full", paneScope: "forbidden", stability: "experimental" },
+  "family.get": { mutating: false, scope: "pane", paneScope: "open", stability: "experimental" },
+  "family.list": { mutating: false, scope: "pane", paneScope: "open", stability: "experimental" },
+  "fs.browse": { mutating: false, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "fs.list": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "fs.read": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "gateway.call": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "gateway.notice": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "gateway.reply": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "gateway.start": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "gateway.status": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "gateway.stop": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "git.diff": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "git.import_box_objects": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "git.log": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "git.status": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "goal.approve": { mutating: true, scope: "full", paneScope: "forbidden", stability: "experimental" },
+  "goal.briefing": { mutating: false, scope: "pane", paneScope: "open", stability: "experimental" },
+  "goal.cancel": { mutating: true, scope: "full", paneScope: "forbidden", stability: "experimental" },
+  "goal.create": { mutating: true, scope: "full", paneScope: "forbidden", stability: "experimental" },
+  "goal.get": { mutating: false, scope: "pane", paneScope: "open", stability: "experimental" },
+  "goal.list": { mutating: false, scope: "pane", paneScope: "open", stability: "experimental" },
+  "goal.plan": { mutating: true, scope: "full", paneScope: "forbidden", stability: "experimental" },
+  "goal.plan_submit": { mutating: true, scope: "full", paneScope: "forbidden", stability: "experimental" },
+  "goal.start": { mutating: true, scope: "full", paneScope: "forbidden", stability: "experimental" },
+  "goal.step_done": { mutating: true, scope: "full", paneScope: "forbidden", stability: "experimental" },
+  "group.add": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "group.collapse": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "group.create": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "group.delete": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "group.list": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "group.move": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "group.remove": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "group.rename": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "handoff.accept": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "handoff.cancel": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "handoff.decline": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "handoff.incoming.add": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "handoff.incoming.get": { mutating: false, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "handoff.incoming.list": { mutating: false, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "handoff.job.update": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "handoff.jobs": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "handoff.peers": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "handoff.peers.set": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "handoff.prefs": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "handoff.resume": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "handoff.send": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "image.upload": { mutating: true, scope: "pane", paneScope: "open", stability: "stable" },
+  "integration.doctor": { mutating: false, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "interaction.answer": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "interaction.cancel": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "interaction.get": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "interaction.list": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "layout.apply": { mutating: true, scope: "pane", paneScope: "open", stability: "stable" },
+  "layout.export": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "layout.get": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "layout.list": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "machine.get": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "machine.list": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "machine.remove": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "machine.upsert": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "merge.predict": { mutating: false, scope: "pane", paneScope: "open", stability: "experimental" },
+  "merge.queue.add": { mutating: true, scope: "full", paneScope: "forbidden", stability: "experimental" },
+  "merge.queue.cancel": { mutating: true, scope: "full", paneScope: "forbidden", stability: "experimental" },
+  "merge.queue.list": { mutating: false, scope: "pane", paneScope: "open", stability: "experimental" },
+  "merge.queue.requeue": { mutating: true, scope: "full", paneScope: "forbidden", stability: "experimental" },
+  "merge.queue.run": { mutating: true, scope: "full", paneScope: "forbidden", stability: "experimental" },
+  "notes.get": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "notes.set": { mutating: true, scope: "pane", paneScope: "open", stability: "stable" },
+  "notification.config": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "notification.list": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "notification.read": { mutating: true, scope: "pane", paneScope: "open", stability: "stable" },
+  "notification.send": { mutating: true, scope: "pane", paneScope: "open", stability: "stable" },
+  "pane.can_see_paths": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "pane.close": { mutating: true, scope: "pane", paneScope: "own_target", stability: "stable" },
+  "pane.current": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "pane.embed": { mutating: true, scope: "pane", paneScope: "own_target", stability: "stable" },
+  "pane.equalize": { mutating: true, scope: "pane", paneScope: "own_target", stability: "stable" },
+  "pane.float": { mutating: true, scope: "pane", paneScope: "own_target", stability: "stable" },
+  "pane.focus": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "pane.get": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "pane.list": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "pane.mark_seen": { mutating: true, scope: "pane", paneScope: "own_target", stability: "stable" },
+  "pane.mark_unread": { mutating: true, scope: "pane", paneScope: "own_target", stability: "stable" },
+  "pane.move": { mutating: true, scope: "pane", paneScope: "own_target", stability: "stable" },
+  "pane.pin": { mutating: true, scope: "pane", paneScope: "own_target", stability: "stable" },
+  "pane.read": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "pane.rename": { mutating: true, scope: "pane", paneScope: "own_target", stability: "stable" },
+  "pane.report_agent": { mutating: true, scope: "pane", paneScope: "own_target", stability: "stable" },
+  "pane.report_agent_session": { mutating: true, scope: "pane", paneScope: "own_target", stability: "stable" },
+  "pane.resize": { mutating: true, scope: "pane", paneScope: "own_target", stability: "stable" },
+  "pane.run": { mutating: true, scope: "pane", paneScope: "own_target", stability: "stable" },
+  "pane.screenshot": { mutating: false, scope: "pane", paneScope: "own_target", stability: "stable" },
+  "pane.scroll": { mutating: true, scope: "pane", paneScope: "own_target", stability: "stable" },
+  "pane.send_bytes": { mutating: true, scope: "pane", paneScope: "own_target", stability: "stable" },
+  "pane.send_keys": { mutating: true, scope: "pane", paneScope: "own_target", stability: "stable" },
+  "pane.send_text": { mutating: true, scope: "pane", paneScope: "own_target", stability: "stable" },
+  "pane.split": { mutating: true, scope: "pane", paneScope: "own_target", stability: "stable" },
+  "pane.sync_input": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "pane.wait_idle": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "pane.wait_output": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "pane.zoom": { mutating: true, scope: "pane", paneScope: "own_target", stability: "stable" },
+  "paste.translated": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "plugin.action": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "plugin.action.list": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "plugin.action.run": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "plugin.consent": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "plugin.disable": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "plugin.enable": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "plugin.install": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "plugin.kv.delete": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "plugin.kv.get": { mutating: false, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "plugin.kv.list": { mutating: false, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "plugin.kv.set": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "plugin.link": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "plugin.link.open": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "plugin.link_handler.list": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "plugin.list": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "plugin.log.list": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "plugin.registry.notify": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "plugin.remove": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "plugin.restart": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "plugin.surface.close": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "policy.add": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "policy.list": { mutating: false, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "policy.remove": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "policy.test": { mutating: false, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "policy.trust": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "preview.declare": { mutating: true, scope: "pane", paneScope: "open", stability: "stable" },
+  "preview.dismiss": { mutating: true, scope: "pane", paneScope: "open", stability: "stable" },
+  "preview.forget": { mutating: true, scope: "pane", paneScope: "open", stability: "stable" },
+  "preview.get": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "preview.list": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "preview.mirror": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "preview.open": { mutating: true, scope: "pane", paneScope: "open", stability: "stable" },
+  "preview.profile": { mutating: true, scope: "pane", paneScope: "open", stability: "stable" },
+  "preview.profile.list": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "preview.profile.reset": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "preview.promote": { mutating: true, scope: "pane", paneScope: "open", stability: "stable" },
+  "preview.status": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "preview.unmirror": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "preview.url": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "quota.resume": { mutating: true, scope: "full", paneScope: "forbidden", stability: "experimental" },
+  "quota.route": { mutating: false, scope: "pane", paneScope: "open", stability: "experimental" },
+  "quota.status": { mutating: false, scope: "pane", paneScope: "open", stability: "experimental" },
+  "quota.tick": { mutating: true, scope: "full", paneScope: "forbidden", stability: "experimental" },
+  "repo.candidates": { mutating: false, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "sandbox.allow": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "sandbox.copy_out": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "sandbox.disallow": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "sandbox.list": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "sandbox.logs": { mutating: false, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "sandbox.prune": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "sandbox.push": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "sandbox.recover": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "sandbox.relaunch": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "sandbox.remove": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "sandbox.request": { mutating: true, scope: "pane", paneScope: "open", stability: "stable" },
+  "sandbox.setup_token": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "sandbox.shell": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "sandbox.start": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "sandbox.status": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "sandbox.stop": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "screenshot.add": { mutating: true, scope: "pane", paneScope: "open", stability: "stable" },
+  "screenshot.delete": { mutating: true, scope: "pane", paneScope: "open", stability: "stable" },
+  "screenshot.get": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "screenshot.list": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "screenshot.open": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "scrollback.forget": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "search.query": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "security.encryption.migrate": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "security.encryption.status": { mutating: false, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "server.reload_config": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "server.restart": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "server.status": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "server.stop": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "session.create": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "session.info": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "session.list": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "session.rename": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "session.snapshot": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "session.stop": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "state.forget": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "status.segments": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "storage.prune": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "storage.status": { mutating: false, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "tab.close": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "tab.create": { mutating: true, scope: "pane", paneScope: "open", stability: "stable" },
+  "tab.floats": { mutating: true, scope: "pane", paneScope: "open", stability: "stable" },
+  "tab.focus": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "tab.list": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "tab.move": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "tab.rename": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "tab.renumber": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "task.adopt": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "task.archive": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "task.best_of_n": { mutating: true, scope: "full", paneScope: "forbidden", stability: "experimental" },
+  "task.bind": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "task.check.authorize": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "task.check.cancel": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "task.check.get": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "task.check.list": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "task.check.run": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "task.claim": { mutating: true, scope: "pane", paneScope: "open", stability: "experimental" },
+  "task.claim.list": { mutating: false, scope: "pane", paneScope: "open", stability: "experimental" },
+  "task.claim.remove": { mutating: true, scope: "pane", paneScope: "open", stability: "experimental" },
+  "task.compare": { mutating: false, scope: "pane", paneScope: "open", stability: "experimental" },
+  "task.create": { mutating: true, scope: "pane", paneScope: "open", stability: "stable" },
+  "task.dependency.add": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "task.dependency.list": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "task.dependency.remove": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "task.detail": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "task.effort.estimate": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "task.finish": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "task.forget": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "task.get": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "task.intent.get": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "task.intent.update": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "task.link.status": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "task.list": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "task.message.cancel": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "task.message.get": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "task.message.prepare": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "task.message.send": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "task.operation.get": { mutating: false, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "task.park": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "task.pick": { mutating: true, scope: "full", paneScope: "forbidden", stability: "experimental" },
+  "task.ports": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "task.ports.re_lease": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "task.pr": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "task.pr.claim": { mutating: true, scope: "pane", paneScope: "open", stability: "stable" },
+  "task.pr.list": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "task.pr.observe": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "task.reconcile": { mutating: true, scope: "pane", paneScope: "open", stability: "stable" },
+  "task.recreate": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "task.resume": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "task.review.accept": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "task.review.candidates": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "task.review.diff": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "task.review.forget": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "task.review.get": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "task.review.human_review": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "task.review.interval_status": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "task.review.intervals": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "task.review.note.classify": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "task.review.notes": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "task.review.request_reviewer": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "task.review.snapshot": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "task.review.snapshot.gc": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "task.review.start_reviewer": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "task.set": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "task.setup": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "task.setup_log": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "task.sources": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "task.split": { mutating: true, scope: "full", paneScope: "forbidden", stability: "experimental" },
+  "task.sync": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "task.track": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "task.unbind": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "theme.get": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "theme.set_mode": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "ui.contribute": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "ui.contributions": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "ui.pane.open": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "vm.create": { mutating: true, scope: "full", paneScope: "forbidden", stability: "experimental" },
+  "vm.destroy": { mutating: true, scope: "full", paneScope: "forbidden", stability: "experimental" },
+  "vm.fork": { mutating: true, scope: "full", paneScope: "forbidden", stability: "experimental" },
+  "vm.list": { mutating: false, scope: "pane", paneScope: "open", stability: "experimental" },
+  "vm.resume": { mutating: true, scope: "full", paneScope: "forbidden", stability: "experimental" },
+  "vm.snapshot": { mutating: true, scope: "full", paneScope: "forbidden", stability: "experimental" },
+  "vm.snapshot.delete": { mutating: true, scope: "full", paneScope: "forbidden", stability: "experimental" },
+  "vm.start": { mutating: true, scope: "full", paneScope: "forbidden", stability: "experimental" },
+  "vm.status": { mutating: false, scope: "pane", paneScope: "open", stability: "experimental" },
+  "vm.stop": { mutating: true, scope: "full", paneScope: "forbidden", stability: "experimental" },
+  "vm.suspend": { mutating: true, scope: "full", paneScope: "forbidden", stability: "experimental" },
+  "vm.template.build": { mutating: true, scope: "full", paneScope: "forbidden", stability: "experimental" },
+  "vm.template.delete": { mutating: true, scope: "full", paneScope: "forbidden", stability: "experimental" },
+  "vm.template.list": { mutating: false, scope: "pane", paneScope: "open", stability: "experimental" },
+  "vm.transport": { mutating: false, scope: "pane", paneScope: "open", stability: "experimental" },
+  "workspace.close": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "workspace.create": { mutating: true, scope: "pane", paneScope: "open", stability: "stable" },
+  "workspace.focus": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "workspace.get": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "workspace.list": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "workspace.move": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "workspace.rename": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "worktree.create": { mutating: true, scope: "pane", paneScope: "open", stability: "stable" },
+  "worktree.list": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
+  "worktree.open": { mutating: true, scope: "pane", paneScope: "open", stability: "stable" },
+  "worktree.remove": { mutating: true, scope: "full", paneScope: "forbidden", stability: "stable" },
+  "worktree.repo_root": { mutating: false, scope: "pane", paneScope: "open", stability: "stable" },
 };
 
 // ---- events ----
@@ -9334,7 +9714,7 @@ export type CloudJobData = {
   box?: string;
   from: Record<string, unknown>;
   to: Record<string, unknown>;
-  state: "queued" | "waiting_turn" | "creating" | "bootstrapping" | "exporting" | "uploading" | "importing" | "resuming" | "done" | "failed" | "cancelled";
+  state: "queued" | "waiting_turn" | "creating" | "bootstrapping" | "exporting" | "awaiting_confirmation" | "uploading" | "importing" | "resuming" | "done" | "failed" | "cancelled";
   progress?: {
     done: number;
     total: number;
@@ -9349,6 +9729,10 @@ export type CloudJobData = {
   source_after?: "keep" | "suspend" | "destroy";
   task?: string;
   by?: string;
+  new_task: boolean;
+  review: boolean;
+  code_only: boolean;
+  confirmed: boolean;
   created_at: number;
   updated_at: number;
 };
@@ -9442,6 +9826,16 @@ export type FamilyPickedSubject = {
 export type FamilyPickedData = {
   picked: string;
   discarded: number;
+};
+
+export type GatewayAccessSubject = {
+  gateway_event: string;
+};
+
+export type GatewayAccessData = {
+  event: string;
+  title: string;
+  body: string;
 };
 
 export type GatewayRequestSubject = {
@@ -9670,6 +10064,8 @@ export type InteractionCancelledSubject = {
 
 export type InteractionCancelledData = {
   reason: string;
+  closed_by?: "heuristic";
+  answered?: boolean;
 };
 
 export type InteractionDecidedSubject = {
@@ -10838,7 +11234,8 @@ export type SecurityRateLimitedSubject = {
 
 export type SecurityRateLimitedData = {
   method: string;
-  limit: "requests" | "spawn" | "depth" | "descendants";
+  limit: "requests" | "hooks" | "spawn" | "depth" | "descendants";
+  refusals?: number;
 };
 
 export type SessionConfigRejectedSubject = Record<string, unknown>;
@@ -11567,6 +11964,7 @@ export interface EventMap {
   "family.checked": { subject: FamilyCheckedSubject; data: FamilyCheckedData };
   "family.created": { subject: FamilyCreatedSubject; data: FamilyCreatedData };
   "family.picked": { subject: FamilyPickedSubject; data: FamilyPickedData };
+  "gateway.access": { subject: GatewayAccessSubject; data: GatewayAccessData };
   "gateway.request": { subject: GatewayRequestSubject; data: GatewayRequestData };
   "gateway.status": { subject: GatewayStatusSubject; data: GatewayStatusData };
   "goal.approved": { subject: GoalApprovedSubject; data: GoalApprovedData };

@@ -1,7 +1,7 @@
 {
   "api": "vibeke/1",
   "status": "draft until 1.0",
-  "rule": "frozen methods may not be removed and their mutating/scope/pane_scope flags may not change; additions are allowed",
+  "rule": "frozen (stable) methods may not be removed, become experimental, or change their mutating/scope/pane_scope flags; additions are allowed; experimental methods are not frozen",
   "render_protocol": 8,
   "holder_protocol": {
     "proto": 2,
@@ -121,7 +121,7 @@
     "agent.report": {
       "mutating": true,
       "scope": "pane",
-      "pane_scope": "open"
+      "pane_scope": "own_target"
     },
     "agent.resumable": {
       "mutating": false,
@@ -153,6 +153,11 @@
       "scope": "pane",
       "pane_scope": "own_target"
     },
+    "agent.transcript": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
     "agent.turn_usage": {
       "mutating": false,
       "scope": "pane",
@@ -177,71 +182,6 @@
       "mutating": false,
       "scope": "pane",
       "pane_scope": "open"
-    },
-    "assistant.background": {
-      "mutating": true,
-      "scope": "full",
-      "pane_scope": "forbidden"
-    },
-    "assistant.cancel": {
-      "mutating": true,
-      "scope": "full",
-      "pane_scope": "forbidden"
-    },
-    "assistant.confirm": {
-      "mutating": true,
-      "scope": "full",
-      "pane_scope": "forbidden"
-    },
-    "assistant.consent": {
-      "mutating": true,
-      "scope": "full",
-      "pane_scope": "forbidden"
-    },
-    "assistant.generate": {
-      "mutating": true,
-      "scope": "full",
-      "pane_scope": "forbidden"
-    },
-    "assistant.get": {
-      "mutating": false,
-      "scope": "full",
-      "pane_scope": "forbidden"
-    },
-    "assistant.list": {
-      "mutating": false,
-      "scope": "full",
-      "pane_scope": "forbidden"
-    },
-    "assistant.models": {
-      "mutating": false,
-      "scope": "full",
-      "pane_scope": "forbidden"
-    },
-    "assistant.providers": {
-      "mutating": false,
-      "scope": "full",
-      "pane_scope": "forbidden"
-    },
-    "assistant.purge": {
-      "mutating": true,
-      "scope": "full",
-      "pane_scope": "forbidden"
-    },
-    "assistant.revoke": {
-      "mutating": true,
-      "scope": "full",
-      "pane_scope": "forbidden"
-    },
-    "assistant.status": {
-      "mutating": false,
-      "scope": "full",
-      "pane_scope": "forbidden"
-    },
-    "assistant.test": {
-      "mutating": true,
-      "scope": "full",
-      "pane_scope": "forbidden"
     },
     "attention.batch": {
       "mutating": false,
@@ -518,10 +458,30 @@
       "scope": "full",
       "pane_scope": "forbidden"
     },
+    "client.activity": {
+      "mutating": false,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
     "client.appearance": {
       "mutating": true,
-      "scope": "pane",
-      "pane_scope": "open"
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "client.confirm": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "client.confirm_answer": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "client.devices": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
     },
     "client.focus": {
       "mutating": true,
@@ -537,146 +497,6 @@
       "mutating": false,
       "scope": "pane",
       "pane_scope": "open"
-    },
-    "cloud.auth.clear": {
-      "mutating": true,
-      "scope": "full",
-      "pane_scope": "forbidden"
-    },
-    "cloud.auth.import": {
-      "mutating": true,
-      "scope": "full",
-      "pane_scope": "forbidden"
-    },
-    "cloud.auth.set": {
-      "mutating": true,
-      "scope": "full",
-      "pane_scope": "forbidden"
-    },
-    "cloud.box.adopt": {
-      "mutating": true,
-      "scope": "full",
-      "pane_scope": "forbidden"
-    },
-    "cloud.box.checkpoint": {
-      "mutating": true,
-      "scope": "full",
-      "pane_scope": "forbidden"
-    },
-    "cloud.box.destroy": {
-      "mutating": true,
-      "scope": "full",
-      "pane_scope": "forbidden"
-    },
-    "cloud.box.forget": {
-      "mutating": true,
-      "scope": "full",
-      "pane_scope": "forbidden"
-    },
-    "cloud.box.list": {
-      "mutating": false,
-      "scope": "full",
-      "pane_scope": "forbidden"
-    },
-    "cloud.box.resume": {
-      "mutating": true,
-      "scope": "full",
-      "pane_scope": "forbidden"
-    },
-    "cloud.box.suspend": {
-      "mutating": true,
-      "scope": "full",
-      "pane_scope": "forbidden"
-    },
-    "cloud.cancel": {
-      "mutating": true,
-      "scope": "full",
-      "pane_scope": "forbidden"
-    },
-    "cloud.jobs": {
-      "mutating": false,
-      "scope": "full",
-      "pane_scope": "forbidden"
-    },
-    "cloud.move": {
-      "mutating": true,
-      "scope": "full",
-      "pane_scope": "forbidden"
-    },
-    "cloud.providers": {
-      "mutating": false,
-      "scope": "full",
-      "pane_scope": "forbidden"
-    },
-    "cloud.prune": {
-      "mutating": true,
-      "scope": "full",
-      "pane_scope": "forbidden"
-    },
-    "collision.claim": {
-      "mutating": true,
-      "scope": "pane",
-      "pane_scope": "open"
-    },
-    "collision.claim_release": {
-      "mutating": true,
-      "scope": "pane",
-      "pane_scope": "open"
-    },
-    "collision.claims": {
-      "mutating": false,
-      "scope": "pane",
-      "pane_scope": "open"
-    },
-    "collision.dismiss": {
-      "mutating": true,
-      "scope": "full",
-      "pane_scope": "forbidden"
-    },
-    "collision.get": {
-      "mutating": false,
-      "scope": "pane",
-      "pane_scope": "open"
-    },
-    "collision.ignore": {
-      "mutating": true,
-      "scope": "full",
-      "pane_scope": "forbidden"
-    },
-    "collision.ignores": {
-      "mutating": false,
-      "scope": "full",
-      "pane_scope": "forbidden"
-    },
-    "collision.list": {
-      "mutating": false,
-      "scope": "pane",
-      "pane_scope": "open"
-    },
-    "collision.pause": {
-      "mutating": true,
-      "scope": "full",
-      "pane_scope": "forbidden"
-    },
-    "collision.start_task": {
-      "mutating": true,
-      "scope": "full",
-      "pane_scope": "forbidden"
-    },
-    "collision.status": {
-      "mutating": false,
-      "scope": "full",
-      "pane_scope": "forbidden"
-    },
-    "collision.tell": {
-      "mutating": true,
-      "scope": "full",
-      "pane_scope": "forbidden"
-    },
-    "collision.unignore": {
-      "mutating": true,
-      "scope": "full",
-      "pane_scope": "forbidden"
     },
     "compat.herdr.call": {
       "mutating": true,
@@ -718,96 +538,6 @@
       "scope": "pane",
       "pane_scope": "open"
     },
-    "desk.context": {
-      "mutating": false,
-      "scope": "pane",
-      "pane_scope": "open"
-    },
-    "desk.forget": {
-      "mutating": true,
-      "scope": "full",
-      "pane_scope": "forbidden"
-    },
-    "desk.index": {
-      "mutating": true,
-      "scope": "full",
-      "pane_scope": "forbidden"
-    },
-    "desk.open": {
-      "mutating": true,
-      "scope": "full",
-      "pane_scope": "forbidden"
-    },
-    "desk.resume": {
-      "mutating": true,
-      "scope": "full",
-      "pane_scope": "forbidden"
-    },
-    "desk.search": {
-      "mutating": false,
-      "scope": "pane",
-      "pane_scope": "open"
-    },
-    "desk.sessions": {
-      "mutating": false,
-      "scope": "pane",
-      "pane_scope": "open"
-    },
-    "desk.status": {
-      "mutating": false,
-      "scope": "full",
-      "pane_scope": "forbidden"
-    },
-    "draft.check": {
-      "mutating": false,
-      "scope": "pane",
-      "pane_scope": "open"
-    },
-    "draft.combine": {
-      "mutating": true,
-      "scope": "pane",
-      "pane_scope": "open"
-    },
-    "draft.create": {
-      "mutating": true,
-      "scope": "pane",
-      "pane_scope": "open"
-    },
-    "draft.delete": {
-      "mutating": true,
-      "scope": "pane",
-      "pane_scope": "open"
-    },
-    "draft.get": {
-      "mutating": false,
-      "scope": "pane",
-      "pane_scope": "open"
-    },
-    "draft.list": {
-      "mutating": false,
-      "scope": "pane",
-      "pane_scope": "open"
-    },
-    "draft.reconcile": {
-      "mutating": true,
-      "scope": "full",
-      "pane_scope": "forbidden"
-    },
-    "draft.reorder": {
-      "mutating": true,
-      "scope": "pane",
-      "pane_scope": "open"
-    },
-    "draft.send": {
-      "mutating": true,
-      "scope": "full",
-      "pane_scope": "forbidden"
-    },
-    "draft.update": {
-      "mutating": true,
-      "scope": "pane",
-      "pane_scope": "open"
-    },
     "events.read": {
       "mutating": false,
       "scope": "pane",
@@ -828,21 +558,6 @@
       "scope": "pane",
       "pane_scope": "open"
     },
-    "family.check": {
-      "mutating": true,
-      "scope": "full",
-      "pane_scope": "forbidden"
-    },
-    "family.get": {
-      "mutating": false,
-      "scope": "pane",
-      "pane_scope": "open"
-    },
-    "family.list": {
-      "mutating": false,
-      "scope": "pane",
-      "pane_scope": "open"
-    },
     "fs.browse": {
       "mutating": false,
       "scope": "full",
@@ -859,6 +574,11 @@
       "pane_scope": "open"
     },
     "gateway.call": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "gateway.notice": {
       "mutating": true,
       "scope": "full",
       "pane_scope": "forbidden"
@@ -888,6 +608,11 @@
       "scope": "pane",
       "pane_scope": "open"
     },
+    "git.import_box_objects": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
     "git.log": {
       "mutating": false,
       "scope": "pane",
@@ -897,56 +622,6 @@
       "mutating": false,
       "scope": "pane",
       "pane_scope": "open"
-    },
-    "goal.approve": {
-      "mutating": true,
-      "scope": "full",
-      "pane_scope": "forbidden"
-    },
-    "goal.briefing": {
-      "mutating": false,
-      "scope": "pane",
-      "pane_scope": "open"
-    },
-    "goal.cancel": {
-      "mutating": true,
-      "scope": "full",
-      "pane_scope": "forbidden"
-    },
-    "goal.create": {
-      "mutating": true,
-      "scope": "full",
-      "pane_scope": "forbidden"
-    },
-    "goal.get": {
-      "mutating": false,
-      "scope": "pane",
-      "pane_scope": "open"
-    },
-    "goal.list": {
-      "mutating": false,
-      "scope": "pane",
-      "pane_scope": "open"
-    },
-    "goal.plan": {
-      "mutating": true,
-      "scope": "full",
-      "pane_scope": "forbidden"
-    },
-    "goal.plan_submit": {
-      "mutating": true,
-      "scope": "full",
-      "pane_scope": "forbidden"
-    },
-    "goal.start": {
-      "mutating": true,
-      "scope": "full",
-      "pane_scope": "forbidden"
-    },
-    "goal.step_done": {
-      "mutating": true,
-      "scope": "full",
-      "pane_scope": "forbidden"
     },
     "group.add": {
       "mutating": true,
@@ -1119,36 +794,6 @@
       "pane_scope": "forbidden"
     },
     "machine.upsert": {
-      "mutating": true,
-      "scope": "full",
-      "pane_scope": "forbidden"
-    },
-    "merge.predict": {
-      "mutating": false,
-      "scope": "pane",
-      "pane_scope": "open"
-    },
-    "merge.queue.add": {
-      "mutating": true,
-      "scope": "full",
-      "pane_scope": "forbidden"
-    },
-    "merge.queue.cancel": {
-      "mutating": true,
-      "scope": "full",
-      "pane_scope": "forbidden"
-    },
-    "merge.queue.list": {
-      "mutating": false,
-      "scope": "pane",
-      "pane_scope": "open"
-    },
-    "merge.queue.requeue": {
-      "mutating": true,
-      "scope": "full",
-      "pane_scope": "forbidden"
-    },
-    "merge.queue.run": {
       "mutating": true,
       "scope": "full",
       "pane_scope": "forbidden"
@@ -1345,8 +990,8 @@
     },
     "plugin.action.run": {
       "mutating": true,
-      "scope": "pane",
-      "pane_scope": "open"
+      "scope": "full",
+      "pane_scope": "forbidden"
     },
     "plugin.consent": {
       "mutating": true,
@@ -1395,8 +1040,8 @@
     },
     "plugin.link.open": {
       "mutating": true,
-      "scope": "pane",
-      "pane_scope": "open"
+      "scope": "full",
+      "pane_scope": "forbidden"
     },
     "plugin.link_handler.list": {
       "mutating": false,
@@ -1533,26 +1178,6 @@
       "scope": "pane",
       "pane_scope": "open"
     },
-    "quota.resume": {
-      "mutating": true,
-      "scope": "full",
-      "pane_scope": "forbidden"
-    },
-    "quota.route": {
-      "mutating": false,
-      "scope": "pane",
-      "pane_scope": "open"
-    },
-    "quota.status": {
-      "mutating": false,
-      "scope": "pane",
-      "pane_scope": "open"
-    },
-    "quota.tick": {
-      "mutating": true,
-      "scope": "full",
-      "pane_scope": "forbidden"
-    },
     "repo.candidates": {
       "mutating": false,
       "scope": "full",
@@ -1619,7 +1244,7 @@
       "pane_scope": "forbidden"
     },
     "sandbox.shell": {
-      "mutating": false,
+      "mutating": true,
       "scope": "full",
       "pane_scope": "forbidden"
     },
@@ -1803,7 +1428,7 @@
       "scope": "full",
       "pane_scope": "forbidden"
     },
-    "task.best_of_n": {
+    "task.bind": {
       "mutating": true,
       "scope": "full",
       "pane_scope": "forbidden"
@@ -1833,26 +1458,6 @@
       "scope": "full",
       "pane_scope": "forbidden"
     },
-    "task.claim": {
-      "mutating": true,
-      "scope": "pane",
-      "pane_scope": "open"
-    },
-    "task.claim.list": {
-      "mutating": false,
-      "scope": "pane",
-      "pane_scope": "open"
-    },
-    "task.claim.remove": {
-      "mutating": true,
-      "scope": "pane",
-      "pane_scope": "open"
-    },
-    "task.compare": {
-      "mutating": false,
-      "scope": "pane",
-      "pane_scope": "open"
-    },
     "task.create": {
       "mutating": true,
       "scope": "pane",
@@ -1872,6 +1477,11 @@
       "mutating": true,
       "scope": "full",
       "pane_scope": "forbidden"
+    },
+    "task.detail": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
     },
     "task.effort.estimate": {
       "mutating": false,
@@ -1893,6 +1503,16 @@
       "scope": "pane",
       "pane_scope": "open"
     },
+    "task.intent.get": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "task.intent.update": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
     "task.link.status": {
       "mutating": false,
       "scope": "pane",
@@ -1903,12 +1523,32 @@
       "scope": "pane",
       "pane_scope": "open"
     },
-    "task.park": {
+    "task.message.cancel": {
       "mutating": true,
       "scope": "full",
       "pane_scope": "forbidden"
     },
-    "task.pick": {
+    "task.message.get": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "task.message.prepare": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "task.message.send": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "task.operation.get": {
+      "mutating": false,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "task.park": {
       "mutating": true,
       "scope": "full",
       "pane_scope": "forbidden"
@@ -2028,6 +1668,11 @@
       "scope": "full",
       "pane_scope": "forbidden"
     },
+    "task.set": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
     "task.setup": {
       "mutating": true,
       "scope": "full",
@@ -2038,12 +1683,22 @@
       "scope": "pane",
       "pane_scope": "open"
     },
-    "task.split": {
+    "task.sources": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "task.sync": {
       "mutating": true,
       "scope": "full",
       "pane_scope": "forbidden"
     },
-    "task.sync": {
+    "task.track": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "task.unbind": {
       "mutating": true,
       "scope": "full",
       "pane_scope": "forbidden"
@@ -2055,8 +1710,8 @@
     },
     "theme.set_mode": {
       "mutating": true,
-      "scope": "pane",
-      "pane_scope": "open"
+      "scope": "full",
+      "pane_scope": "forbidden"
     },
     "ui.contribute": {
       "mutating": true,
@@ -2072,81 +1727,6 @@
       "mutating": true,
       "scope": "full",
       "pane_scope": "forbidden"
-    },
-    "vm.create": {
-      "mutating": true,
-      "scope": "full",
-      "pane_scope": "forbidden"
-    },
-    "vm.destroy": {
-      "mutating": true,
-      "scope": "full",
-      "pane_scope": "forbidden"
-    },
-    "vm.fork": {
-      "mutating": true,
-      "scope": "full",
-      "pane_scope": "forbidden"
-    },
-    "vm.list": {
-      "mutating": false,
-      "scope": "pane",
-      "pane_scope": "open"
-    },
-    "vm.resume": {
-      "mutating": true,
-      "scope": "full",
-      "pane_scope": "forbidden"
-    },
-    "vm.snapshot": {
-      "mutating": true,
-      "scope": "full",
-      "pane_scope": "forbidden"
-    },
-    "vm.snapshot.delete": {
-      "mutating": true,
-      "scope": "full",
-      "pane_scope": "forbidden"
-    },
-    "vm.start": {
-      "mutating": true,
-      "scope": "full",
-      "pane_scope": "forbidden"
-    },
-    "vm.status": {
-      "mutating": false,
-      "scope": "pane",
-      "pane_scope": "open"
-    },
-    "vm.stop": {
-      "mutating": true,
-      "scope": "full",
-      "pane_scope": "forbidden"
-    },
-    "vm.suspend": {
-      "mutating": true,
-      "scope": "full",
-      "pane_scope": "forbidden"
-    },
-    "vm.template.build": {
-      "mutating": true,
-      "scope": "full",
-      "pane_scope": "forbidden"
-    },
-    "vm.template.delete": {
-      "mutating": true,
-      "scope": "full",
-      "pane_scope": "forbidden"
-    },
-    "vm.template.list": {
-      "mutating": false,
-      "scope": "pane",
-      "pane_scope": "open"
-    },
-    "vm.transport": {
-      "mutating": false,
-      "scope": "pane",
-      "pane_scope": "open"
     },
     "workspace.close": {
       "mutating": true,

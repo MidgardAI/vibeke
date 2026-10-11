@@ -3660,6 +3660,55 @@
         "id": {
           "type": "string"
         },
+        "taken_by": {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "agent",
+                "user",
+                "plugin"
+              ]
+            },
+            "pane": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "run": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "client": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "pane",
+            "run",
+            "client"
+          ]
+        },
         "handle": {
           "type": "string"
         },
@@ -4343,6 +4392,7 @@
   "x-methods": {
     "adapter.control": {
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -4421,6 +4471,7 @@
     },
     "adapter.delivery_ack": {
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -4452,6 +4503,7 @@
     },
     "adapter.gate": {
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -4509,6 +4561,7 @@
     },
     "adapter.report_self": {
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -4589,6 +4642,7 @@
     },
     "adapter.signal": {
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -4624,6 +4678,7 @@
     },
     "agent.commands": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -4686,6 +4741,7 @@
     },
     "agent.drift": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -4744,6 +4800,7 @@
     },
     "agent.get": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -4783,6 +4840,7 @@
     },
     "agent.harnesses": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -4835,6 +4893,7 @@
     },
     "agent.interrupt": {
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "own_target",
       "params": {
@@ -4865,6 +4924,7 @@
     },
     "agent.items": {
       "mutating": false,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -4915,6 +4975,7 @@
     },
     "agent.limits": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -4997,6 +5058,7 @@
     },
     "agent.list": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -5033,6 +5095,7 @@
     },
     "agent.manifest_pin": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -5079,6 +5142,7 @@
     },
     "agent.manifests": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -5156,6 +5220,7 @@
     },
     "agent.manifests_check": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -5214,6 +5279,7 @@
     },
     "agent.manifests_reload": {
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -5294,6 +5360,7 @@
     },
     "agent.models": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -5351,6 +5418,7 @@
     },
     "agent.prompt": {
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "own_target",
       "params": {
@@ -5388,6 +5456,9 @@
           },
           "timeout_ms": {
             "type": "integer"
+          },
+          "idempotency_key": {
+            "type": "string"
           }
         },
         "required": [
@@ -5419,6 +5490,7 @@
     },
     "agent.read": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -5476,6 +5548,7 @@
     },
     "agent.release": {
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "own_target",
       "params": {
@@ -5500,6 +5573,7 @@
     },
     "agent.rename": {
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "own_target",
       "params": {
@@ -5541,8 +5615,9 @@
     },
     "agent.report": {
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
-      "pane_scope": "open",
+      "pane_scope": "own_target",
       "params": {
         "type": "object",
         "properties": {
@@ -5575,6 +5650,7 @@
     },
     "agent.resumable": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -5597,6 +5673,7 @@
     },
     "agent.resume": {
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "own_target",
       "params": {
@@ -5633,6 +5710,7 @@
     },
     "agent.send_keys": {
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "own_target",
       "params": {
@@ -5646,6 +5724,9 @@
             "items": {
               "type": "string"
             }
+          },
+          "idempotency_key": {
+            "type": "string"
           }
         },
         "required": [
@@ -5664,6 +5745,7 @@
     },
     "agent.set_model": {
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "own_target",
       "params": {
@@ -5710,22 +5792,43 @@
     },
     "agent.spawn": {
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
         "type": "object",
         "properties": {
           "harness": {
-            "type": "string"
+            "type": "string",
+            "default": "claude"
           },
           "name": {
             "type": "string"
           },
-          "where": {
-            "type": "object"
+          "split_of": {
+            "$ref": "#/$defs/Target"
+          },
+          "pane": {
+            "$ref": "#/$defs/Target"
+          },
+          "direction": {
+            "type": "string",
+            "enum": [
+              "right",
+              "down",
+              "left",
+              "up"
+            ],
+            "default": "right"
+          },
+          "cwd": {
+            "type": "string"
           },
           "prompt": {
             "type": "string"
+          },
+          "wait": {
+            "type": "boolean"
           },
           "args": {
             "type": "array",
@@ -5736,11 +5839,23 @@
           "focus": {
             "type": "boolean",
             "default": false
+          },
+          "yolo": {
+            "type": "boolean"
+          },
+          "isolate": {
+            "$ref": "#/$defs/IsolationLevel"
+          },
+          "network": {
+            "type": "string"
+          },
+          "confirm_host_yolo": {
+            "type": "boolean"
+          },
+          "idempotency_key": {
+            "type": "string"
           }
-        },
-        "required": [
-          "harness"
-        ]
+        }
       },
       "result": {
         "type": "object",
@@ -5763,6 +5878,7 @@
     },
     "agent.start": {
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "own_target",
       "params": {
@@ -5806,6 +5922,9 @@
           "ready_timeout_ms": {
             "type": "integer",
             "default": 30000
+          },
+          "idempotency_key": {
+            "type": "string"
           }
         },
         "required": [
@@ -5827,8 +5946,47 @@
         ]
       }
     },
+    "agent.transcript": {
+      "mutating": false,
+      "stability": "stable",
+      "scope": "pane",
+      "pane_scope": "open",
+      "params": {
+        "type": "object",
+        "properties": {
+          "target": {
+            "$ref": "#/$defs/Target"
+          },
+          "run": {
+            "$ref": "#/$defs/Target"
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "before": {
+            "type": "integer"
+          },
+          "items": {
+            "type": "boolean"
+          },
+          "image": {
+            "type": "string"
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "turns": {
+            "type": "array",
+            "items": {}
+          }
+        }
+      }
+    },
     "agent.turn_usage": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -6000,6 +6158,7 @@
     },
     "agent.turns": {
       "mutating": false,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -6051,6 +6210,7 @@
     },
     "agent.wait": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -6094,6 +6254,7 @@
     },
     "api.methods": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -6112,6 +6273,13 @@
                 },
                 "mutating": {
                   "type": "boolean"
+                },
+                "stability": {
+                  "type": "string",
+                  "enum": [
+                    "stable",
+                    "experimental"
+                  ]
                 },
                 "milestone": {
                   "type": "string"
@@ -6134,6 +6302,7 @@
     },
     "api.schema": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -6158,6 +6327,7 @@
     },
     "assistant.background": {
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -6176,6 +6346,7 @@
     },
     "assistant.cancel": {
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -6212,6 +6383,7 @@
     },
     "assistant.confirm": {
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -6246,6 +6418,7 @@
     },
     "assistant.consent": {
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -6310,6 +6483,7 @@
     },
     "assistant.generate": {
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -6502,6 +6676,7 @@
     },
     "assistant.get": {
       "mutating": false,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -6529,6 +6704,7 @@
     },
     "assistant.list": {
       "mutating": false,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -6562,6 +6738,7 @@
     },
     "assistant.models": {
       "mutating": false,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -6688,6 +6865,7 @@
     },
     "assistant.providers": {
       "mutating": false,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -6786,6 +6964,7 @@
     },
     "assistant.purge": {
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -6819,6 +6998,7 @@
     },
     "assistant.revoke": {
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -6856,6 +7036,7 @@
     },
     "assistant.status": {
       "mutating": false,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -6990,6 +7171,7 @@
     },
     "assistant.test": {
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -7105,6 +7287,7 @@
     },
     "attention.batch": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -7194,6 +7377,7 @@
     },
     "attention.list": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -7663,6 +7847,7 @@
     },
     "attention.update": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -7795,6 +7980,7 @@
     },
     "audit.search": {
       "mutating": false,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -7846,6 +8032,7 @@
     },
     "audit.tail": {
       "mutating": false,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -7891,6 +8078,7 @@
     },
     "audit.verify": {
       "mutating": false,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -7962,6 +8150,7 @@
     },
     "auth.approve": {
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -8014,6 +8203,7 @@
     },
     "auth.approve.decide": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -8096,6 +8286,7 @@
     },
     "auth.approve.withdraw": {
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -8130,6 +8321,7 @@
     },
     "auth.elevate": {
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -8191,6 +8383,7 @@
     },
     "auth.elevate.decide": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -8252,6 +8445,7 @@
     },
     "auth.list": {
       "mutating": false,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -8326,6 +8520,7 @@
     },
     "auth.revoke_token": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -8368,6 +8563,7 @@
     },
     "blob.abort": {
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -8398,6 +8594,7 @@
     },
     "blob.append": {
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -8436,6 +8633,7 @@
     },
     "blob.begin": {
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -8477,6 +8675,7 @@
     },
     "blob.commit": {
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -8532,6 +8731,7 @@
     },
     "blob.gc": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -8595,6 +8795,7 @@
     },
     "blob.get": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -8653,6 +8854,7 @@
     },
     "blob.put": {
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -8693,6 +8895,7 @@
     },
     "blob.stat": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -8740,6 +8943,7 @@
     },
     "blob.stats": {
       "mutating": false,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -8771,6 +8975,7 @@
     },
     "browser.attach_screencast": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -8820,6 +9025,7 @@
     },
     "browser.click": {
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -8853,6 +9059,9 @@
           "timeout_ms": {
             "type": "integer",
             "default": 5000
+          },
+          "idempotency_key": {
+            "type": "string"
           }
         }
       },
@@ -8920,6 +9129,7 @@
     },
     "browser.close": {
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -8932,6 +9142,9 @@
             "type": "string"
           },
           "target": {
+            "type": "string"
+          },
+          "idempotency_key": {
             "type": "string"
           }
         }
@@ -8957,6 +9170,7 @@
     },
     "browser.command": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -9120,6 +9334,7 @@
     },
     "browser.console": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -9300,6 +9515,7 @@
     },
     "browser.detach_screencast": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -9337,6 +9553,7 @@
     },
     "browser.diff": {
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -9514,6 +9731,7 @@
     },
     "browser.dom": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -9576,6 +9794,7 @@
     },
     "browser.eval": {
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -9617,6 +9836,7 @@
     },
     "browser.input": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -9823,6 +10043,7 @@
     },
     "browser.install": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -10007,6 +10228,7 @@
     },
     "browser.list": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -10037,6 +10259,7 @@
     },
     "browser.navigate": {
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -10080,6 +10303,9 @@
           "timeout_ms": {
             "type": "integer",
             "default": 15000
+          },
+          "idempotency_key": {
+            "type": "string"
           }
         }
       },
@@ -10119,6 +10345,7 @@
     },
     "browser.network": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -10339,6 +10566,7 @@
     },
     "browser.open": {
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -10397,6 +10625,9 @@
           },
           "timeout_ms": {
             "type": "integer"
+          },
+          "idempotency_key": {
+            "type": "string"
           }
         }
       },
@@ -10406,6 +10637,7 @@
     },
     "browser.pane.console": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -10478,6 +10710,7 @@
     },
     "browser.pane.console_push": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -10519,6 +10752,7 @@
     },
     "browser.pane.create": {
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -10633,6 +10867,7 @@
     },
     "browser.pane.list": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -10675,6 +10910,7 @@
     },
     "browser.pane.status": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -10874,6 +11110,7 @@
     },
     "browser.pane.update": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -10947,6 +11184,7 @@
     },
     "browser.press": {
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -10962,6 +11200,9 @@
             "type": "string"
           },
           "key": {
+            "type": "string"
+          },
+          "idempotency_key": {
             "type": "string"
           }
         },
@@ -10990,6 +11231,7 @@
     },
     "browser.release": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -11027,6 +11269,7 @@
     },
     "browser.screencast_frame": {
       "mutating": false,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -11047,6 +11290,9 @@
           "wait_ms": {
             "type": "integer",
             "default": 0
+          },
+          "data_saver": {
+            "type": "boolean"
           }
         }
       },
@@ -11132,6 +11378,7 @@
     },
     "browser.screenshot": {
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -11301,6 +11548,7 @@
     },
     "browser.session_close": {
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -11338,6 +11586,7 @@
     },
     "browser.session_open": {
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -11405,6 +11654,7 @@
     },
     "browser.snapshot": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -11467,6 +11717,7 @@
     },
     "browser.status": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -11582,6 +11833,7 @@
     },
     "browser.take_over": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -11619,6 +11871,7 @@
     },
     "browser.type": {
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -11647,6 +11900,9 @@
           },
           "timeout_ms": {
             "type": "integer"
+          },
+          "idempotency_key": {
+            "type": "string"
           }
         },
         "required": [
@@ -11674,6 +11930,7 @@
     },
     "browser.wait": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -11716,6 +11973,7 @@
     },
     "browser.watch": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -11805,10 +12063,28 @@
         ]
       }
     },
+    "client.activity": {
+      "mutating": false,
+      "stability": "stable",
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "last_input_ms": {
+            "type": "integer"
+          }
+        }
+      },
+      "result": {
+        "type": "object"
+      }
+    },
     "client.appearance": {
       "mutating": true,
-      "scope": "pane",
-      "pane_scope": "open",
+      "stability": "stable",
+      "scope": "full",
+      "pane_scope": "forbidden",
       "params": {
         "type": "object",
         "properties": {
@@ -11852,8 +12128,142 @@
         ]
       }
     },
+    "client.confirm": {
+      "mutating": true,
+      "stability": "stable",
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string"
+          },
+          "body": {
+            "type": "string"
+          },
+          "options": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "label"
+              ]
+            }
+          },
+          "timeout_ms": {
+            "type": "integer",
+            "default": 60000
+          }
+        },
+        "required": [
+          "title"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "confirm": {
+            "type": "string"
+          },
+          "choice": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "timed_out": {
+            "type": "boolean"
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "confirm",
+          "choice",
+          "timed_out"
+        ]
+      }
+    },
+    "client.confirm_answer": {
+      "mutating": true,
+      "stability": "stable",
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "confirm": {
+            "type": "string"
+          },
+          "choice": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "confirm"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "confirm": {
+            "type": "string"
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "confirm"
+        ]
+      }
+    },
+    "client.devices": {
+      "mutating": true,
+      "stability": "stable",
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "devices": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          }
+        },
+        "required": [
+          "devices"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        }
+      }
+    },
     "client.focus": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -11902,6 +12312,7 @@
     },
     "client.hello": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -12003,6 +12414,7 @@
     },
     "client.list": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -12075,6 +12487,7 @@
     },
     "cloud.auth.clear": {
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -12113,6 +12526,7 @@
     },
     "cloud.auth.import": {
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -12151,6 +12565,7 @@
     },
     "cloud.auth.set": {
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -12189,6 +12604,7 @@
     },
     "cloud.box.adopt": {
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -12262,6 +12678,7 @@
     },
     "cloud.box.checkpoint": {
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -12299,6 +12716,7 @@
     },
     "cloud.box.destroy": {
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -12337,6 +12755,7 @@
     },
     "cloud.box.forget": {
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -12367,6 +12786,7 @@
     },
     "cloud.box.list": {
       "mutating": false,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -12431,6 +12851,7 @@
     },
     "cloud.box.resume": {
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -12450,6 +12871,7 @@
     },
     "cloud.box.suspend": {
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -12469,6 +12891,7 @@
     },
     "cloud.cancel": {
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -12521,6 +12944,7 @@
                   "creating",
                   "bootstrapping",
                   "exporting",
+                  "awaiting_confirmation",
                   "uploading",
                   "importing",
                   "resuming",
@@ -12580,6 +13004,18 @@
               "by": {
                 "type": "string"
               },
+              "new_task": {
+                "type": "boolean"
+              },
+              "review": {
+                "type": "boolean"
+              },
+              "code_only": {
+                "type": "boolean"
+              },
+              "confirmed": {
+                "type": "boolean"
+              },
               "created_at": {
                 "type": "integer"
               },
@@ -12594,6 +13030,171 @@
               "to",
               "state",
               "interrupt",
+              "new_task",
+              "review",
+              "code_only",
+              "confirmed",
+              "created_at",
+              "updated_at"
+            ]
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "job"
+        ]
+      }
+    },
+    "cloud.confirm": {
+      "mutating": true,
+      "stability": "experimental",
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "code_only": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "job": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "direction": {
+                "type": "string",
+                "enum": [
+                  "send",
+                  "bring_back"
+                ]
+              },
+              "pane": {
+                "type": "string"
+              },
+              "run": {
+                "type": "string"
+              },
+              "box": {
+                "type": "string"
+              },
+              "from": {
+                "type": "object"
+              },
+              "to": {
+                "type": "object"
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "queued",
+                  "waiting_turn",
+                  "creating",
+                  "bootstrapping",
+                  "exporting",
+                  "awaiting_confirmation",
+                  "uploading",
+                  "importing",
+                  "resuming",
+                  "done",
+                  "failed",
+                  "cancelled"
+                ]
+              },
+              "progress": {
+                "type": "object",
+                "properties": {
+                  "done": {
+                    "type": "integer"
+                  },
+                  "total": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "done",
+                  "total"
+                ]
+              },
+              "error": {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string"
+                  },
+                  "message": {
+                    "type": "string"
+                  },
+                  "details": {}
+                },
+                "required": [
+                  "kind",
+                  "message"
+                ]
+              },
+              "result": {
+                "type": "object"
+              },
+              "interrupt": {
+                "type": "boolean"
+              },
+              "source_after": {
+                "type": "string",
+                "enum": [
+                  "keep",
+                  "suspend",
+                  "destroy"
+                ]
+              },
+              "task": {
+                "type": "string"
+              },
+              "by": {
+                "type": "string"
+              },
+              "new_task": {
+                "type": "boolean"
+              },
+              "review": {
+                "type": "boolean"
+              },
+              "code_only": {
+                "type": "boolean"
+              },
+              "confirmed": {
+                "type": "boolean"
+              },
+              "created_at": {
+                "type": "integer"
+              },
+              "updated_at": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "id",
+              "direction",
+              "from",
+              "to",
+              "state",
+              "interrupt",
+              "new_task",
+              "review",
+              "code_only",
+              "confirmed",
               "created_at",
               "updated_at"
             ]
@@ -12609,6 +13210,7 @@
     },
     "cloud.jobs": {
       "mutating": false,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -12655,6 +13257,7 @@
                     "creating",
                     "bootstrapping",
                     "exporting",
+                    "awaiting_confirmation",
                     "uploading",
                     "importing",
                     "resuming",
@@ -12714,6 +13317,18 @@
                 "by": {
                   "type": "string"
                 },
+                "new_task": {
+                  "type": "boolean"
+                },
+                "review": {
+                  "type": "boolean"
+                },
+                "code_only": {
+                  "type": "boolean"
+                },
+                "confirmed": {
+                  "type": "boolean"
+                },
                 "created_at": {
                   "type": "integer"
                 },
@@ -12728,6 +13343,10 @@
                 "to",
                 "state",
                 "interrupt",
+                "new_task",
+                "review",
+                "code_only",
+                "confirmed",
                 "created_at",
                 "updated_at"
               ]
@@ -12741,6 +13360,7 @@
     },
     "cloud.move": {
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -12791,6 +13411,18 @@
               "suspend",
               "destroy"
             ]
+          },
+          "new_task": {
+            "type": "boolean",
+            "default": false
+          },
+          "review": {
+            "type": "boolean",
+            "default": true
+          },
+          "code_only": {
+            "type": "boolean",
+            "default": false
           }
         },
         "required": [
@@ -12836,6 +13468,7 @@
                   "creating",
                   "bootstrapping",
                   "exporting",
+                  "awaiting_confirmation",
                   "uploading",
                   "importing",
                   "resuming",
@@ -12895,6 +13528,18 @@
               "by": {
                 "type": "string"
               },
+              "new_task": {
+                "type": "boolean"
+              },
+              "review": {
+                "type": "boolean"
+              },
+              "code_only": {
+                "type": "boolean"
+              },
+              "confirmed": {
+                "type": "boolean"
+              },
               "created_at": {
                 "type": "integer"
               },
@@ -12909,6 +13554,10 @@
               "to",
               "state",
               "interrupt",
+              "new_task",
+              "review",
+              "code_only",
+              "confirmed",
               "created_at",
               "updated_at"
             ]
@@ -12924,6 +13573,7 @@
     },
     "cloud.providers": {
       "mutating": false,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -12952,6 +13602,7 @@
     },
     "cloud.prune": {
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -13033,6 +13684,7 @@
     },
     "collision.claim": {
       "mutating": true,
+      "stability": "experimental",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -13086,6 +13738,7 @@
     },
     "collision.claim_release": {
       "mutating": true,
+      "stability": "experimental",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -13122,6 +13775,7 @@
     },
     "collision.claims": {
       "mutating": false,
+      "stability": "experimental",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -13155,6 +13809,7 @@
     },
     "collision.dismiss": {
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -13189,6 +13844,7 @@
     },
     "collision.get": {
       "mutating": false,
+      "stability": "experimental",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -13252,6 +13908,7 @@
     },
     "collision.ignore": {
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -13302,6 +13959,7 @@
     },
     "collision.ignores": {
       "mutating": false,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -13329,6 +13987,7 @@
     },
     "collision.list": {
       "mutating": false,
+      "stability": "experimental",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -13376,6 +14035,7 @@
     },
     "collision.pause": {
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -13421,6 +14081,7 @@
     },
     "collision.start_task": {
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -13496,6 +14157,7 @@
     },
     "collision.status": {
       "mutating": false,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -13562,6 +14224,7 @@
     },
     "collision.tell": {
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -13640,6 +14303,7 @@
     },
     "collision.unignore": {
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -13670,6 +14334,7 @@
     },
     "compat.herdr.call": {
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -13746,6 +14411,7 @@
     },
     "compat.invocation.verify": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -13796,6 +14462,7 @@
     },
     "compat.status": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -13883,6 +14550,7 @@
     },
     "compat.ui.state": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -13959,6 +14627,7 @@
     },
     "config.get": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -14067,6 +14736,31 @@
             "items": {
               "$ref": "#/$defs/ConfigDiagnostic"
             }
+          },
+          "load_error": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string"
+                  },
+                  "errors": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/$defs/ConfigDiagnostic"
+                    }
+                  }
+                },
+                "required": [
+                  "path",
+                  "errors"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -14083,6 +14777,7 @@
     },
     "config.reload": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -14121,6 +14816,7 @@
     },
     "config.set": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -14174,6 +14870,7 @@
     },
     "config.validate": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -14216,6 +14913,7 @@
     },
     "desk.context": {
       "mutating": false,
+      "stability": "experimental",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -14266,6 +14964,7 @@
     },
     "desk.forget": {
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -14313,6 +15012,7 @@
     },
     "desk.index": {
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -14370,6 +15070,7 @@
     },
     "desk.open": {
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -14424,6 +15125,7 @@
     },
     "desk.resume": {
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -14457,6 +15159,7 @@
     },
     "desk.search": {
       "mutating": false,
+      "stability": "experimental",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -14535,6 +15238,7 @@
     },
     "desk.sessions": {
       "mutating": false,
+      "stability": "experimental",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -14642,6 +15346,7 @@
     },
     "desk.status": {
       "mutating": false,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -14684,6 +15389,7 @@
     },
     "draft.check": {
       "mutating": false,
+      "stability": "experimental",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -14749,6 +15455,7 @@
     },
     "draft.combine": {
       "mutating": true,
+      "stability": "experimental",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -14792,6 +15499,7 @@
     },
     "draft.create": {
       "mutating": true,
+      "stability": "experimental",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -14871,6 +15579,7 @@
     },
     "draft.delete": {
       "mutating": true,
+      "stability": "experimental",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -14899,6 +15608,7 @@
     },
     "draft.get": {
       "mutating": false,
+      "stability": "experimental",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -14926,6 +15636,7 @@
     },
     "draft.list": {
       "mutating": false,
+      "stability": "experimental",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -14963,6 +15674,7 @@
     },
     "draft.reconcile": {
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -15005,6 +15717,7 @@
     },
     "draft.reorder": {
       "mutating": true,
+      "stability": "experimental",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -15038,6 +15751,7 @@
     },
     "draft.send": {
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -15095,6 +15809,7 @@
     },
     "draft.update": {
       "mutating": true,
+      "stability": "experimental",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -15144,6 +15859,7 @@
     },
     "events.read": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -15212,6 +15928,7 @@
     },
     "events.subscribe": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -15287,6 +16004,7 @@
     },
     "events.unsubscribe": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -15314,6 +16032,7 @@
     },
     "events.wait": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -15365,6 +16084,7 @@
     },
     "family.check": {
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -15417,6 +16137,7 @@
     },
     "family.get": {
       "mutating": false,
+      "stability": "experimental",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -15489,6 +16210,7 @@
     },
     "family.list": {
       "mutating": false,
+      "stability": "experimental",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -15511,6 +16233,7 @@
     },
     "fs.browse": {
       "mutating": false,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -15577,6 +16300,7 @@
     },
     "fs.list": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -15645,6 +16369,7 @@
     },
     "fs.read": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -15703,6 +16428,7 @@
     },
     "gateway.call": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -15725,8 +16451,49 @@
       },
       "result": {}
     },
+    "gateway.notice": {
+      "mutating": true,
+      "stability": "stable",
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "event": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "body": {
+            "type": "string"
+          },
+          "urgency": {
+            "type": "string",
+            "enum": [
+              "normal",
+              "high"
+            ],
+            "default": "high"
+          }
+        },
+        "required": [
+          "event",
+          "title"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        }
+      }
+    },
     "gateway.reply": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -15768,6 +16535,7 @@
     },
     "gateway.start": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -15788,6 +16556,7 @@
     },
     "gateway.status": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -15892,6 +16661,7 @@
     },
     "gateway.stop": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -15908,6 +16678,7 @@
     },
     "git.diff": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -15961,8 +16732,34 @@
         ]
       }
     },
+    "git.import_box_objects": {
+      "mutating": true,
+      "stability": "stable",
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "pane": {
+            "$ref": "#/$defs/Target"
+          },
+          "path": {
+            "type": "string"
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        }
+      }
+    },
     "git.log": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -16028,6 +16825,7 @@
     },
     "git.status": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -16160,6 +16958,7 @@
     },
     "goal.approve": {
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -16213,6 +17012,7 @@
     },
     "goal.briefing": {
       "mutating": false,
+      "stability": "experimental",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -16289,6 +17089,7 @@
     },
     "goal.cancel": {
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -16346,6 +17147,7 @@
     },
     "goal.create": {
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -16408,6 +17210,7 @@
     },
     "goal.get": {
       "mutating": false,
+      "stability": "experimental",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -16451,6 +17254,7 @@
     },
     "goal.list": {
       "mutating": false,
+      "stability": "experimental",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -16497,6 +17301,7 @@
     },
     "goal.plan": {
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -16563,6 +17368,7 @@
     },
     "goal.plan_submit": {
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -16625,6 +17431,7 @@
     },
     "goal.start": {
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -16678,6 +17485,7 @@
     },
     "goal.step_done": {
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -16735,6 +17543,7 @@
     },
     "group.add": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -16782,6 +17591,7 @@
     },
     "group.collapse": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -16815,6 +17625,7 @@
     },
     "group.create": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -16848,6 +17659,7 @@
     },
     "group.delete": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -16872,6 +17684,7 @@
     },
     "group.list": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -16901,6 +17714,7 @@
     },
     "group.move": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -16947,6 +17761,7 @@
     },
     "group.remove": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -16988,6 +17803,7 @@
     },
     "group.rename": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -17022,6 +17838,7 @@
     },
     "handoff.accept": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -17102,6 +17919,7 @@
     },
     "handoff.cancel": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -17237,6 +18055,7 @@
     },
     "handoff.decline": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -17270,6 +18089,7 @@
     },
     "handoff.incoming.add": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -17315,6 +18135,7 @@
     },
     "handoff.incoming.get": {
       "mutating": false,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -17383,6 +18204,7 @@
     },
     "handoff.incoming.list": {
       "mutating": false,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -17405,6 +18227,7 @@
     },
     "handoff.job.update": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -17566,6 +18389,7 @@
     },
     "handoff.jobs": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -17693,6 +18517,7 @@
     },
     "handoff.peers": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -17772,6 +18597,7 @@
     },
     "handoff.peers.set": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -17840,6 +18666,7 @@
     },
     "handoff.prefs": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -17896,6 +18723,7 @@
     },
     "handoff.resume": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -17931,6 +18759,7 @@
     },
     "handoff.send": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -18073,6 +18902,7 @@
     },
     "image.upload": {
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -18116,6 +18946,7 @@
     },
     "integration.doctor": {
       "mutating": false,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -18208,6 +19039,7 @@
     },
     "interaction.answer": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -18313,6 +19145,7 @@
     },
     "interaction.cancel": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -18343,6 +19176,7 @@
     },
     "interaction.get": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -18370,6 +19204,7 @@
     },
     "interaction.list": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -18413,6 +19248,7 @@
     },
     "layout.apply": {
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -18481,6 +19317,7 @@
     },
     "layout.export": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -18508,6 +19345,7 @@
     },
     "layout.get": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -18590,6 +19428,7 @@
     },
     "layout.list": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -18672,6 +19511,7 @@
     },
     "machine.get": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -18699,6 +19539,7 @@
     },
     "machine.list": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -18725,6 +19566,7 @@
     },
     "machine.remove": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -18756,6 +19598,7 @@
     },
     "machine.upsert": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -18826,6 +19669,7 @@
     },
     "merge.predict": {
       "mutating": false,
+      "stability": "experimental",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -18911,6 +19755,7 @@
     },
     "merge.queue.add": {
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -18973,6 +19818,7 @@
     },
     "merge.queue.cancel": {
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -19010,6 +19856,7 @@
     },
     "merge.queue.list": {
       "mutating": false,
+      "stability": "experimental",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -19045,6 +19892,7 @@
     },
     "merge.queue.requeue": {
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -19082,6 +19930,7 @@
     },
     "merge.queue.run": {
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -19140,6 +19989,7 @@
     },
     "notes.get": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -19180,6 +20030,7 @@
     },
     "notes.set": {
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -19232,6 +20083,7 @@
     },
     "notification.config": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -19260,6 +20112,7 @@
     },
     "notification.list": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -19291,6 +20144,7 @@
     },
     "notification.read": {
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -19315,6 +20169,7 @@
     },
     "notification.send": {
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -19335,6 +20190,9 @@
           },
           "sound": {
             "type": "boolean"
+          },
+          "idempotency_key": {
+            "type": "string"
           }
         },
         "required": [
@@ -19358,6 +20216,7 @@
     },
     "pane.can_see_paths": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -19391,6 +20250,7 @@
     },
     "pane.close": {
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "own_target",
       "params": {
@@ -19415,6 +20275,7 @@
     },
     "pane.current": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -19434,6 +20295,7 @@
     },
     "pane.embed": {
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "own_target",
       "params": {
@@ -19484,6 +20346,7 @@
     },
     "pane.equalize": {
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "own_target",
       "params": {
@@ -19511,6 +20374,7 @@
     },
     "pane.float": {
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "own_target",
       "params": {
@@ -19543,10 +20407,17 @@
             "type": "string"
           },
           "command": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              {
+                "type": "string"
+              }
+            ]
           },
           "focus": {
             "type": "boolean"
@@ -19570,6 +20441,7 @@
     },
     "pane.focus": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -19603,6 +20475,7 @@
     },
     "pane.get": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -19653,6 +20526,7 @@
     },
     "pane.list": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -19686,6 +20560,7 @@
     },
     "pane.mark_seen": {
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "own_target",
       "params": {
@@ -19713,6 +20588,7 @@
     },
     "pane.mark_unread": {
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "own_target",
       "params": {
@@ -19740,6 +20616,7 @@
     },
     "pane.move": {
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "own_target",
       "params": {
@@ -19824,6 +20701,7 @@
     },
     "pane.pin": {
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "own_target",
       "params": {
@@ -19857,6 +20735,7 @@
     },
     "pane.read": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -19937,6 +20816,7 @@
     },
     "pane.rename": {
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "own_target",
       "params": {
@@ -19977,6 +20857,7 @@
     },
     "pane.report_agent": {
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "own_target",
       "params": {
@@ -20057,6 +20938,7 @@
     },
     "pane.report_agent_session": {
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "own_target",
       "params": {
@@ -20112,6 +20994,7 @@
     },
     "pane.resize": {
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "own_target",
       "params": {
@@ -20155,6 +21038,7 @@
     },
     "pane.run": {
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "own_target",
       "params": {
@@ -20171,6 +21055,9 @@
           },
           "timeout_ms": {
             "type": "integer"
+          },
+          "idempotency_key": {
+            "type": "string"
           }
         },
         "required": [
@@ -20201,6 +21088,7 @@
     },
     "pane.screenshot": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "own_target",
       "params": {
@@ -20329,6 +21217,7 @@
     },
     "pane.scroll": {
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "own_target",
       "params": {
@@ -20389,6 +21278,7 @@
     },
     "pane.send_bytes": {
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "own_target",
       "params": {
@@ -20398,6 +21288,9 @@
             "$ref": "#/$defs/Target"
           },
           "data_b64": {
+            "type": "string"
+          },
+          "idempotency_key": {
             "type": "string"
           }
         },
@@ -20416,6 +21309,7 @@
     },
     "pane.send_keys": {
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "own_target",
       "params": {
@@ -20429,6 +21323,9 @@
             "items": {
               "type": "string"
             }
+          },
+          "idempotency_key": {
+            "type": "string"
           }
         },
         "required": [
@@ -20446,6 +21343,7 @@
     },
     "pane.send_text": {
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "own_target",
       "params": {
@@ -20465,6 +21363,9 @@
               "raw"
             ],
             "default": "auto"
+          },
+          "idempotency_key": {
+            "type": "string"
           }
         },
         "required": [
@@ -20488,6 +21389,7 @@
     },
     "pane.split": {
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "own_target",
       "params": {
@@ -20514,10 +21416,17 @@
             "type": "string"
           },
           "command": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              {
+                "type": "string"
+              }
+            ]
           },
           "env": {
             "type": "object",
@@ -20530,6 +21439,9 @@
             "default": false
           },
           "title": {
+            "type": "string"
+          },
+          "idempotency_key": {
             "type": "string"
           }
         }
@@ -20551,6 +21463,7 @@
     },
     "pane.sync_input": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -20662,6 +21575,7 @@
     },
     "pane.wait_idle": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -20693,6 +21607,7 @@
     },
     "pane.wait_output": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -20738,6 +21653,7 @@
     },
     "pane.zoom": {
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "own_target",
       "params": {
@@ -20768,6 +21684,7 @@
     },
     "paste.translated": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -20824,6 +21741,7 @@
     },
     "plugin.action": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -20900,6 +21818,7 @@
     },
     "plugin.action.list": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -20994,8 +21913,9 @@
     },
     "plugin.action.run": {
       "mutating": true,
-      "scope": "pane",
-      "pane_scope": "open",
+      "stability": "stable",
+      "scope": "full",
+      "pane_scope": "forbidden",
       "params": {
         "anyOf": [
           {
@@ -21164,6 +22084,7 @@
     },
     "plugin.consent": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -21209,6 +22130,7 @@
     },
     "plugin.disable": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -21243,6 +22165,7 @@
     },
     "plugin.enable": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -21277,6 +22200,7 @@
     },
     "plugin.install": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -21349,6 +22273,7 @@
     },
     "plugin.kv.delete": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -21383,6 +22308,7 @@
     },
     "plugin.kv.get": {
       "mutating": false,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -21418,6 +22344,7 @@
     },
     "plugin.kv.list": {
       "mutating": false,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -21475,6 +22402,7 @@
     },
     "plugin.kv.set": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -21521,6 +22449,7 @@
     },
     "plugin.link": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -21565,8 +22494,9 @@
     },
     "plugin.link.open": {
       "mutating": true,
-      "scope": "pane",
-      "pane_scope": "open",
+      "stability": "stable",
+      "scope": "full",
+      "pane_scope": "forbidden",
       "params": {
         "type": "object",
         "properties": {
@@ -21626,6 +22556,7 @@
     },
     "plugin.link_handler.list": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -21678,6 +22609,7 @@
     },
     "plugin.list": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -21742,6 +22674,7 @@
     },
     "plugin.log.list": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -21772,6 +22705,7 @@
     },
     "plugin.registry.notify": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -21794,6 +22728,7 @@
     },
     "plugin.remove": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -21840,6 +22775,7 @@
     },
     "plugin.restart": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -21874,6 +22810,7 @@
     },
     "plugin.surface.close": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -21911,6 +22848,7 @@
     },
     "policy.add": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -21998,6 +22936,7 @@
     },
     "policy.list": {
       "mutating": false,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -22032,6 +22971,7 @@
     },
     "policy.remove": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -22066,6 +23006,7 @@
     },
     "policy.test": {
       "mutating": false,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -22169,6 +23110,7 @@
     },
     "policy.trust": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -22255,6 +23197,7 @@
     },
     "preview.connect": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -22268,6 +23211,13 @@
           },
           "port": {
             "type": "integer"
+          },
+          "allow_port": {
+            "type": "boolean",
+            "default": false
+          },
+          "actor": {
+            "type": "string"
           }
         },
         "required": [
@@ -22292,6 +23242,7 @@
     },
     "preview.declare": {
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -22344,6 +23295,9 @@
           },
           "request": {
             "type": "string"
+          },
+          "idempotency_key": {
+            "type": "string"
           }
         },
         "required": [
@@ -22374,6 +23328,7 @@
     },
     "preview.dismiss": {
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -22401,6 +23356,7 @@
     },
     "preview.forget": {
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -22428,6 +23384,7 @@
     },
     "preview.get": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -22458,6 +23415,7 @@
     },
     "preview.list": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -22508,6 +23466,7 @@
     },
     "preview.mirror": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -22590,6 +23549,7 @@
     },
     "preview.open": {
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -22880,6 +23840,7 @@
     },
     "preview.profile": {
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -23000,6 +23961,7 @@
     },
     "preview.profile.list": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -23079,6 +24041,7 @@
     },
     "preview.profile.reset": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -23113,6 +24076,7 @@
     },
     "preview.promote": {
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -23146,6 +24110,7 @@
     },
     "preview.status": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -23451,6 +24416,7 @@
     },
     "preview.unmirror": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -23499,6 +24465,7 @@
     },
     "preview.url": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -23544,6 +24511,7 @@
     },
     "quota.resume": {
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -23578,6 +24546,7 @@
     },
     "quota.route": {
       "mutating": false,
+      "stability": "experimental",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -23624,6 +24593,7 @@
     },
     "quota.status": {
       "mutating": false,
+      "stability": "experimental",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -23661,6 +24631,7 @@
     },
     "quota.tick": {
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -23696,6 +24667,7 @@
     },
     "repo.candidates": {
       "mutating": false,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -23738,6 +24710,7 @@
     },
     "sandbox.allow": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -23801,6 +24774,7 @@
     },
     "sandbox.copy_out": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -23851,6 +24825,7 @@
     },
     "sandbox.disallow": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -23910,6 +24885,7 @@
     },
     "sandbox.list": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -24045,6 +25021,7 @@
     },
     "sandbox.logs": {
       "mutating": false,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -24138,6 +25115,7 @@
     },
     "sandbox.prune": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -24219,6 +25197,7 @@
     },
     "sandbox.push": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -24279,6 +25258,7 @@
     },
     "sandbox.recover": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -24339,6 +25319,7 @@
     },
     "sandbox.relaunch": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -24394,6 +25375,7 @@
     },
     "sandbox.remove": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -24443,6 +25425,7 @@
     },
     "sandbox.request": {
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -24495,6 +25478,7 @@
     },
     "sandbox.setup_token": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -24532,7 +25516,8 @@
       }
     },
     "sandbox.shell": {
-      "mutating": false,
+      "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -24574,7 +25559,10 @@
               }
             }
           },
-          "cwd": {}
+          "cwd": {},
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
         },
         "required": [
           "sandbox",
@@ -24587,6 +25575,7 @@
     },
     "sandbox.start": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -24621,6 +25610,7 @@
     },
     "sandbox.status": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -24707,6 +25697,7 @@
     },
     "sandbox.stop": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -24737,6 +25728,7 @@
     },
     "screenshot.add": {
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -24753,6 +25745,9 @@
           },
           "pane": {
             "$ref": "#/$defs/Target"
+          },
+          "idempotency_key": {
+            "type": "string"
           }
         },
         "required": [
@@ -24858,6 +25853,7 @@
     },
     "screenshot.delete": {
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -24903,6 +25899,7 @@
     },
     "screenshot.get": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -24928,6 +25925,7 @@
     },
     "screenshot.list": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -24995,6 +25993,7 @@
     },
     "screenshot.open": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -25014,6 +26013,7 @@
     },
     "scrollback.forget": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -25096,6 +26096,7 @@
     },
     "search.query": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -25192,6 +26193,7 @@
     },
     "security.encryption.migrate": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -25257,6 +26259,7 @@
     },
     "security.encryption.status": {
       "mutating": false,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -25355,6 +26358,7 @@
     },
     "server.reload_config": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -25393,6 +26397,7 @@
     },
     "server.restart": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -25424,6 +26429,7 @@
     },
     "server.status": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -25506,6 +26512,31 @@
               }
             ]
           },
+          "config_error": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string"
+                  },
+                  "errors": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/$defs/ConfigDiagnostic"
+                    }
+                  }
+                },
+                "required": [
+                  "path",
+                  "errors"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "db_size": {
             "type": "integer"
           },
@@ -25528,6 +26559,7 @@
     },
     "server.stop": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -25550,6 +26582,7 @@
     },
     "session.create": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -25580,6 +26613,7 @@
     },
     "session.info": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -25614,6 +26648,7 @@
     },
     "session.list": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -25636,6 +26671,7 @@
     },
     "session.rename": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -25674,6 +26710,7 @@
     },
     "session.snapshot": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -25830,6 +26867,7 @@
     },
     "session.stop": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -25868,6 +26906,7 @@
     },
     "state.forget": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -26096,6 +27135,7 @@
     },
     "status.segments": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -26136,6 +27176,7 @@
     },
     "storage.prune": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -26156,6 +27197,9 @@
           "stream_removed": {
             "type": "integer"
           },
+          "closed_removed": {
+            "type": "integer"
+          },
           "blobs_removed": {
             "type": "integer"
           },
@@ -26171,6 +27215,7 @@
           "events_capped",
           "events_remaining",
           "stream_removed",
+          "closed_removed",
           "blobs_removed",
           "blob_bytes"
         ]
@@ -26178,6 +27223,7 @@
     },
     "storage.status": {
       "mutating": false,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -26243,13 +27289,17 @@
                   },
                   "blob_days": {
                     "type": "integer"
+                  },
+                  "closed_days": {
+                    "type": "integer"
                   }
                 },
                 "required": [
                   "sync_days",
                   "history_days",
                   "max_rows",
-                  "blob_days"
+                  "blob_days",
+                  "closed_days"
                 ]
               }
             },
@@ -26339,6 +27389,7 @@
     },
     "tab.close": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -26366,6 +27417,7 @@
     },
     "tab.create": {
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -26385,13 +27437,23 @@
             "default": false
           },
           "command": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              {
+                "type": "string"
+              }
+            ]
           },
           "layout": {
             "$ref": "#/$defs/LayoutSpec"
+          },
+          "idempotency_key": {
+            "type": "string"
           }
         }
       },
@@ -26416,6 +27478,7 @@
     },
     "tab.floats": {
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -26446,6 +27509,7 @@
     },
     "tab.focus": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -26479,6 +27543,7 @@
     },
     "tab.list": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -26506,6 +27571,7 @@
     },
     "tab.move": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -26546,6 +27612,7 @@
     },
     "tab.rename": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -26587,6 +27654,7 @@
     },
     "tab.renumber": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -26625,6 +27693,7 @@
     },
     "task.adopt": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -26680,6 +27749,7 @@
     },
     "task.archive": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -26735,6 +27805,7 @@
     },
     "task.best_of_n": {
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -26858,8 +27929,60 @@
         ]
       }
     },
+    "task.bind": {
+      "mutating": true,
+      "stability": "stable",
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "$ref": "#/$defs/Target"
+          },
+          "run": {
+            "$ref": "#/$defs/Target"
+          },
+          "pane": {
+            "$ref": "#/$defs/Target"
+          },
+          "role": {
+            "type": "string"
+          },
+          "start_turn": {
+            "type": "integer"
+          },
+          "end_turn": {
+            "type": "integer"
+          },
+          "idempotency_key": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "task"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "binding": {},
+          "pending": {
+            "type": "boolean"
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "binding",
+          "pending"
+        ]
+      }
+    },
     "task.check.authorize": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -26943,6 +28066,7 @@
     },
     "task.check.cancel": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -26977,6 +28101,7 @@
     },
     "task.check.get": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -27023,6 +28148,7 @@
     },
     "task.check.list": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -27078,6 +28204,7 @@
     },
     "task.check.run": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -27134,6 +28261,7 @@
     },
     "task.claim": {
       "mutating": true,
+      "stability": "experimental",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -27237,6 +28365,7 @@
     },
     "task.claim.list": {
       "mutating": false,
+      "stability": "experimental",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -27264,6 +28393,7 @@
     },
     "task.claim.remove": {
       "mutating": true,
+      "stability": "experimental",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -27294,6 +28424,7 @@
     },
     "task.compare": {
       "mutating": false,
+      "stability": "experimental",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -27398,6 +28529,7 @@
     },
     "task.create": {
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -27468,6 +28600,9 @@
           "dry_run": {
             "type": "boolean",
             "default": false
+          },
+          "idempotency_key": {
+            "type": "string"
           }
         },
         "required": [
@@ -27621,6 +28756,7 @@
     },
     "task.dependency.add": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -27670,6 +28806,7 @@
     },
     "task.dependency.list": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -27842,6 +28979,7 @@
     },
     "task.dependency.remove": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -27906,8 +29044,61 @@
         ]
       }
     },
+    "task.detail": {
+      "mutating": false,
+      "stability": "stable",
+      "scope": "pane",
+      "pane_scope": "open",
+      "params": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "$ref": "#/$defs/Target"
+          }
+        },
+        "required": [
+          "task"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "$ref": "#/$defs/Task"
+          },
+          "intent": {},
+          "bindings": {
+            "type": "array",
+            "items": {}
+          },
+          "runs": {
+            "type": "array",
+            "items": {}
+          },
+          "baseline": {},
+          "uncommunicated": {
+            "type": "array",
+            "items": {}
+          },
+          "messages": {
+            "type": "array",
+            "items": {}
+          }
+        },
+        "required": [
+          "task",
+          "intent",
+          "bindings",
+          "runs",
+          "baseline",
+          "uncommunicated",
+          "messages"
+        ]
+      }
+    },
     "task.effort.estimate": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -27980,6 +29171,7 @@
     },
     "task.finish": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -28032,6 +29224,7 @@
     },
     "task.forget": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -28070,6 +29263,7 @@
     },
     "task.get": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -28171,8 +29365,125 @@
         ]
       }
     },
+    "task.intent.get": {
+      "mutating": false,
+      "stability": "stable",
+      "scope": "pane",
+      "pane_scope": "open",
+      "params": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "$ref": "#/$defs/Target"
+          },
+          "revision": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "task"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "type": "string"
+          },
+          "current_revision": {
+            "type": "integer"
+          },
+          "intent": {},
+          "revisions": {
+            "type": "array",
+            "items": {}
+          }
+        },
+        "required": [
+          "task",
+          "current_revision",
+          "intent",
+          "revisions"
+        ]
+      }
+    },
+    "task.intent.update": {
+      "mutating": true,
+      "stability": "stable",
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "$ref": "#/$defs/Target"
+          },
+          "expected_revision": {
+            "type": "integer"
+          },
+          "title": {
+            "type": "string"
+          },
+          "objective": {
+            "type": "string"
+          },
+          "stop_detail": {
+            "type": "string"
+          },
+          "criteria": {
+            "type": "array",
+            "items": {}
+          },
+          "criterion": {},
+          "add_criterion": {},
+          "constraints": {
+            "type": "array",
+            "items": {}
+          },
+          "constraint": {},
+          "idempotency_key": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "task"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "$ref": "#/$defs/Task"
+          },
+          "intent": {},
+          "uncommunicated": {
+            "type": "array",
+            "items": {}
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "task",
+          "intent",
+          "uncommunicated"
+        ]
+      }
+    },
     "task.link.status": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -28275,6 +29586,7 @@
     },
     "task.list": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -28303,8 +29615,205 @@
         ]
       }
     },
+    "task.message.cancel": {
+      "mutating": true,
+      "stability": "stable",
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "string"
+          },
+          "idempotency_key": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "message"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "object"
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "message"
+        ]
+      }
+    },
+    "task.message.get": {
+      "mutating": false,
+      "stability": "stable",
+      "scope": "pane",
+      "pane_scope": "open",
+      "params": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "message"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "message"
+        ]
+      }
+    },
+    "task.message.prepare": {
+      "mutating": true,
+      "stability": "stable",
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "$ref": "#/$defs/Target"
+          },
+          "text": {
+            "type": "string"
+          },
+          "idempotency_key": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "task",
+          "text"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "object"
+          },
+          "recipient": {
+            "type": "object",
+            "properties": {
+              "run": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "binding": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "run",
+              "binding"
+            ]
+          },
+          "send_path": {},
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "message",
+          "recipient"
+        ]
+      }
+    },
+    "task.message.send": {
+      "mutating": true,
+      "stability": "stable",
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "string"
+          },
+          "idempotency_key": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "message"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "object"
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "message"
+        ]
+      }
+    },
+    "task.operation.get": {
+      "mutating": false,
+      "stability": "stable",
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "idempotency_key": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "idempotency_key"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "known": {
+            "type": "boolean"
+          },
+          "note": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "known"
+        ]
+      }
+    },
     "task.park": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -28384,6 +29893,7 @@
     },
     "task.pick": {
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -28458,6 +29968,7 @@
     },
     "task.ports": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -28477,6 +29988,7 @@
     },
     "task.ports.re_lease": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -28569,6 +30081,7 @@
     },
     "task.pr": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -28604,6 +30117,7 @@
     },
     "task.pr.claim": {
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -28652,6 +30166,7 @@
     },
     "task.pr.list": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -28704,6 +30219,7 @@
     },
     "task.pr.observe": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -28754,6 +30270,7 @@
     },
     "task.reconcile": {
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -28886,6 +30403,7 @@
     },
     "task.recreate": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -28928,6 +30446,7 @@
     },
     "task.resume": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -28984,6 +30503,7 @@
     },
     "task.review.accept": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -29070,6 +30590,7 @@
     },
     "task.review.candidates": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -29128,6 +30649,7 @@
     },
     "task.review.diff": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -29207,6 +30729,7 @@
     },
     "task.review.forget": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -29263,6 +30786,7 @@
     },
     "task.review.get": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -29587,6 +31111,7 @@
     },
     "task.review.human_review": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -29652,6 +31177,7 @@
     },
     "task.review.interval_status": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -29701,6 +31227,7 @@
     },
     "task.review.intervals": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -29738,6 +31265,7 @@
     },
     "task.review.note.classify": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -29783,6 +31311,7 @@
     },
     "task.review.notes": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -29824,6 +31353,7 @@
     },
     "task.review.request_reviewer": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -29926,6 +31456,7 @@
     },
     "task.review.snapshot": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -29983,6 +31514,7 @@
     },
     "task.review.snapshot.gc": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -30084,6 +31616,7 @@
     },
     "task.review.start_reviewer": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -30150,8 +31683,69 @@
         ]
       }
     },
+    "task.set": {
+      "mutating": true,
+      "stability": "stable",
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "$ref": "#/$defs/Target"
+          },
+          "priority": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "effort": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "effort_source": {
+            "type": "string"
+          },
+          "expected_rev": {
+            "type": "integer"
+          },
+          "idempotency_key": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "task"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "$ref": "#/$defs/Task"
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "task"
+        ]
+      }
+    },
     "task.setup": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -30234,6 +31828,7 @@
     },
     "task.setup_log": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -30294,8 +31889,46 @@
         ]
       }
     },
+    "task.sources": {
+      "mutating": false,
+      "stability": "stable",
+      "scope": "pane",
+      "pane_scope": "open",
+      "params": {
+        "type": "object",
+        "properties": {
+          "run": {
+            "$ref": "#/$defs/Target"
+          },
+          "pane": {
+            "$ref": "#/$defs/Target"
+          },
+          "limit": {
+            "type": "integer"
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "run": {
+            "type": "string"
+          },
+          "harness": {
+            "type": "string"
+          },
+          "identity_verified": {}
+        },
+        "required": [
+          "run",
+          "harness",
+          "identity_verified"
+        ]
+      }
+    },
     "task.split": {
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -30444,6 +32077,7 @@
     },
     "task.sync": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -30519,8 +32153,104 @@
         ]
       }
     },
+    "task.track": {
+      "mutating": true,
+      "stability": "stable",
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "run": {
+            "$ref": "#/$defs/Target"
+          },
+          "pane": {
+            "$ref": "#/$defs/Target"
+          },
+          "title": {
+            "type": "string"
+          },
+          "objective": {
+            "type": "string"
+          },
+          "stop_detail": {
+            "type": "string"
+          },
+          "target_branch": {
+            "type": "string"
+          },
+          "turn": {
+            "type": "integer"
+          },
+          "turns": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            }
+          },
+          "idempotency_key": {
+            "type": "string"
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "$ref": "#/$defs/Task"
+          },
+          "intent": {},
+          "binding": {},
+          "baseline": {},
+          "review_base": {},
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "task",
+          "intent",
+          "binding",
+          "baseline",
+          "review_base"
+        ]
+      }
+    },
+    "task.unbind": {
+      "mutating": true,
+      "stability": "stable",
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "$ref": "#/$defs/Target"
+          },
+          "binding": {
+            "type": "string"
+          },
+          "idempotency_key": {
+            "type": "string"
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "closed": {},
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "closed"
+        ]
+      }
+    },
     "theme.get": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -30545,8 +32275,9 @@
     },
     "theme.set_mode": {
       "mutating": true,
-      "scope": "pane",
-      "pane_scope": "open",
+      "stability": "stable",
+      "scope": "full",
+      "pane_scope": "forbidden",
       "params": {
         "type": "object",
         "properties": {
@@ -30593,6 +32324,7 @@
     },
     "ui.contribute": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -30649,6 +32381,7 @@
     },
     "ui.contributions": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -30671,6 +32404,7 @@
     },
     "ui.pane.open": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -30718,6 +32452,7 @@
     },
     "vm.create": {
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -30765,6 +32500,7 @@
     },
     "vm.destroy": {
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -30806,6 +32542,7 @@
     },
     "vm.fork": {
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -30862,6 +32599,7 @@
     },
     "vm.list": {
       "mutating": false,
+      "stability": "experimental",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -30929,6 +32667,7 @@
     },
     "vm.resume": {
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -30970,6 +32709,7 @@
     },
     "vm.snapshot": {
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -31003,6 +32743,7 @@
     },
     "vm.snapshot.delete": {
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -31037,6 +32778,7 @@
     },
     "vm.start": {
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -31078,6 +32820,7 @@
     },
     "vm.status": {
       "mutating": false,
+      "stability": "experimental",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -31136,6 +32879,7 @@
     },
     "vm.stop": {
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -31177,6 +32921,7 @@
     },
     "vm.suspend": {
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -31218,6 +32963,7 @@
     },
     "vm.template.build": {
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -31240,6 +32986,7 @@
     },
     "vm.template.delete": {
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -31270,6 +33017,7 @@
     },
     "vm.template.list": {
       "mutating": false,
+      "stability": "experimental",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -31292,6 +33040,7 @@
     },
     "vm.transport": {
       "mutating": false,
+      "stability": "experimental",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -31341,6 +33090,7 @@
     },
     "workspace.close": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -31366,6 +33116,7 @@
     },
     "workspace.create": {
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -31388,10 +33139,20 @@
             "$ref": "#/$defs/LayoutSpec"
           },
           "command": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              {
+                "type": "string"
+              }
+            ]
+          },
+          "idempotency_key": {
+            "type": "string"
           }
         }
       },
@@ -31420,6 +33181,7 @@
     },
     "workspace.focus": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -31453,6 +33215,7 @@
     },
     "workspace.get": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -31477,6 +33240,7 @@
     },
     "workspace.list": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -31504,6 +33268,7 @@
     },
     "workspace.move": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -31553,6 +33318,7 @@
     },
     "workspace.rename": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -31593,6 +33359,7 @@
     },
     "worktree.create": {
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -31643,6 +33410,7 @@
     },
     "worktree.list": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -31724,6 +33492,7 @@
     },
     "worktree.open": {
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -31758,6 +33527,7 @@
     },
     "worktree.remove": {
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
@@ -31843,6 +33613,7 @@
     },
     "worktree.repo_root": {
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "params": {
@@ -33795,6 +35566,7 @@
               "creating",
               "bootstrapping",
               "exporting",
+              "awaiting_confirmation",
               "uploading",
               "importing",
               "resuming",
@@ -33854,6 +35626,18 @@
           "by": {
             "type": "string"
           },
+          "new_task": {
+            "type": "boolean"
+          },
+          "review": {
+            "type": "boolean"
+          },
+          "code_only": {
+            "type": "boolean"
+          },
+          "confirmed": {
+            "type": "boolean"
+          },
           "created_at": {
             "type": "integer"
           },
@@ -33868,6 +35652,10 @@
           "to",
           "state",
           "interrupt",
+          "new_task",
+          "review",
+          "code_only",
+          "confirmed",
           "created_at",
           "updated_at"
         ]
@@ -34146,6 +35934,38 @@
         "required": [
           "picked",
           "discarded"
+        ]
+      }
+    },
+    "gateway.access": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "gateway_event": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "gateway_event"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "event": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "body": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "event",
+          "title",
+          "body"
         ]
       }
     },
@@ -34921,6 +36741,12 @@
         "properties": {
           "reason": {
             "type": "string"
+          },
+          "closed_by": {
+            "const": "heuristic"
+          },
+          "answered": {
+            "type": "boolean"
           }
         },
         "required": [
@@ -39181,10 +41007,14 @@
             "type": "string",
             "enum": [
               "requests",
+              "hooks",
               "spawn",
               "depth",
               "descendants"
             ]
+          },
+          "refusals": {
+            "type": "integer"
           }
         },
         "required": [
@@ -41569,6 +43399,9 @@
           },
           "resume_from": {
             "$ref": "#/$defs/Cursor"
+          },
+          "reason": {
+            "type": "string"
           }
         },
         "required": [
@@ -41689,7 +43522,17 @@
       "kind": "rate_limited",
       "code": -32009,
       "retryable": true,
-      "details": null
+      "details": {
+        "type": "object",
+        "properties": {
+          "retry_after_ms": {
+            "type": "integer"
+          },
+          "limit": {
+            "type": "string"
+          }
+        }
+      }
     },
     {
       "kind": "truncated",

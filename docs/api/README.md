@@ -39,447 +39,470 @@ Download the [method catalog](methods.json) or [complete schema](vibeke-1.schema
 
 Clients must accept new fields and event types. The API can change before version 1.0.
 
+**Stable** methods keep their name and flags. **Experimental** methods can still change. Some of them only work when you turn on their feature in the `[orchestrate]` section of the configuration.
+
 ## Methods
 
-| Method | Action | Access |
-|---|---|---|
-| `adapter.control` | Write | Pane |
-| `adapter.delivery_ack` | Write | Pane |
-| `adapter.gate` | Write | Pane |
-| `adapter.report_self` | Write | Pane |
-| `adapter.signal` | Write | Pane |
-| `agent.commands` | Read | Pane |
-| `agent.drift` | Read | Pane |
-| `agent.get` | Read | Pane |
-| `agent.harnesses` | Read | Pane |
-| `agent.interrupt` | Write | Own panes |
-| `agent.items` | Read | Full |
-| `agent.limits` | Read | Pane |
-| `agent.list` | Read | Pane |
-| `agent.manifest_pin` | Write | Full |
-| `agent.manifests` | Read | Pane |
-| `agent.manifests_check` | Write | Full |
-| `agent.manifests_reload` | Write | Pane |
-| `agent.models` | Read | Pane |
-| `agent.prompt` | Write | Own panes |
-| `agent.read` | Read | Pane |
-| `agent.release` | Write | Own panes |
-| `agent.rename` | Write | Own panes |
-| `agent.report` | Write | Pane |
-| `agent.resumable` | Read | Pane |
-| `agent.resume` | Write | Own panes |
-| `agent.send_keys` | Write | Own panes |
-| `agent.set_model` | Write | Own panes |
-| `agent.spawn` | Write | Pane |
-| `agent.start` | Write | Own panes |
-| `agent.turn_usage` | Read | Pane |
-| `agent.turns` | Read | Full |
-| `agent.wait` | Read | Pane |
-| `api.methods` | Read | Pane |
-| `api.schema` | Read | Pane |
-| `assistant.background` | Write | Full |
-| `assistant.cancel` | Write | Full |
-| `assistant.confirm` | Write | Full |
-| `assistant.consent` | Write | Full |
-| `assistant.generate` | Write | Full |
-| `assistant.get` | Read | Full |
-| `assistant.list` | Read | Full |
-| `assistant.models` | Read | Full |
-| `assistant.providers` | Read | Full |
-| `assistant.purge` | Write | Full |
-| `assistant.revoke` | Write | Full |
-| `assistant.status` | Read | Full |
-| `assistant.test` | Write | Full |
-| `attention.batch` | Read | Pane |
-| `attention.list` | Read | Pane |
-| `attention.update` | Write | Full |
-| `audit.search` | Read | Full |
-| `audit.tail` | Read | Full |
-| `audit.verify` | Read | Full |
-| `auth.approve` | Write | Pane |
-| `auth.approve.decide` | Write | Full |
-| `auth.approve.withdraw` | Write | Pane |
-| `auth.elevate` | Write | Pane |
-| `auth.elevate.decide` | Write | Full |
-| `auth.list` | Read | Full |
-| `auth.revoke_token` | Write | Full |
-| `blob.abort` | Write | Pane |
-| `blob.append` | Write | Pane |
-| `blob.begin` | Write | Pane |
-| `blob.commit` | Write | Pane |
-| `blob.gc` | Write | Full |
-| `blob.get` | Read | Pane |
-| `blob.put` | Write | Pane |
-| `blob.stat` | Read | Pane |
-| `blob.stats` | Read | Full |
-| `browser.attach_screencast` | Write | Full |
-| `browser.click` | Write | Pane |
-| `browser.close` | Write | Pane |
-| `browser.command` | Write | Full |
-| `browser.console` | Read | Pane |
-| `browser.detach_screencast` | Write | Full |
-| `browser.diff` | Write | Pane |
-| `browser.dom` | Read | Pane |
-| `browser.eval` | Write | Pane |
-| `browser.input` | Write | Full |
-| `browser.install` | Write | Full |
-| `browser.list` | Read | Pane |
-| `browser.navigate` | Write | Pane |
-| `browser.network` | Read | Pane |
-| `browser.open` | Write | Pane |
-| `browser.pane.console` | Write | Full |
-| `browser.pane.console_push` | Write | Full |
-| `browser.pane.create` | Write | Pane |
-| `browser.pane.list` | Read | Pane |
-| `browser.pane.status` | Read | Pane |
-| `browser.pane.update` | Write | Full |
-| `browser.press` | Write | Pane |
-| `browser.release` | Write | Full |
-| `browser.screencast_frame` | Read | Full |
-| `browser.screenshot` | Write | Pane |
-| `browser.session_close` | Write | Pane |
-| `browser.session_open` | Write | Pane |
-| `browser.snapshot` | Read | Pane |
-| `browser.status` | Read | Pane |
-| `browser.take_over` | Write | Full |
-| `browser.type` | Write | Pane |
-| `browser.wait` | Read | Pane |
-| `browser.watch` | Write | Full |
-| `client.appearance` | Write | Pane |
-| `client.focus` | Write | Full |
-| `client.hello` | Read | Pane |
-| `client.list` | Read | Pane |
-| `cloud.auth.clear` | Write | Full |
-| `cloud.auth.import` | Write | Full |
-| `cloud.auth.set` | Write | Full |
-| `cloud.box.adopt` | Write | Full |
-| `cloud.box.checkpoint` | Write | Full |
-| `cloud.box.destroy` | Write | Full |
-| `cloud.box.forget` | Write | Full |
-| `cloud.box.list` | Read | Full |
-| `cloud.box.resume` | Write | Full |
-| `cloud.box.suspend` | Write | Full |
-| `cloud.cancel` | Write | Full |
-| `cloud.jobs` | Read | Full |
-| `cloud.move` | Write | Full |
-| `cloud.providers` | Read | Full |
-| `cloud.prune` | Write | Full |
-| `collision.claim` | Write | Pane |
-| `collision.claim_release` | Write | Pane |
-| `collision.claims` | Read | Pane |
-| `collision.dismiss` | Write | Full |
-| `collision.get` | Read | Pane |
-| `collision.ignore` | Write | Full |
-| `collision.ignores` | Read | Full |
-| `collision.list` | Read | Pane |
-| `collision.pause` | Write | Full |
-| `collision.start_task` | Write | Full |
-| `collision.status` | Read | Full |
-| `collision.tell` | Write | Full |
-| `collision.unignore` | Write | Full |
-| `compat.herdr.call` | Write | Pane |
-| `compat.invocation.verify` | Write | Full |
-| `compat.status` | Read | Pane |
-| `compat.ui.state` | Read | Pane |
-| `config.get` | Read | Pane |
-| `config.reload` | Write | Full |
-| `config.set` | Write | Full |
-| `config.validate` | Read | Pane |
-| `desk.context` | Read | Pane |
-| `desk.forget` | Write | Full |
-| `desk.index` | Write | Full |
-| `desk.open` | Write | Full |
-| `desk.resume` | Write | Full |
-| `desk.search` | Read | Pane |
-| `desk.sessions` | Read | Pane |
-| `desk.status` | Read | Full |
-| `draft.check` | Read | Pane |
-| `draft.combine` | Write | Pane |
-| `draft.create` | Write | Pane |
-| `draft.delete` | Write | Pane |
-| `draft.get` | Read | Pane |
-| `draft.list` | Read | Pane |
-| `draft.reconcile` | Write | Full |
-| `draft.reorder` | Write | Pane |
-| `draft.send` | Write | Full |
-| `draft.update` | Write | Pane |
-| `events.read` | Read | Pane |
-| `events.subscribe` | Read | Pane |
-| `events.unsubscribe` | Read | Pane |
-| `events.wait` | Read | Pane |
-| `family.check` | Write | Full |
-| `family.get` | Read | Pane |
-| `family.list` | Read | Pane |
-| `fs.browse` | Read | Full |
-| `fs.list` | Read | Pane |
-| `fs.read` | Read | Pane |
-| `gateway.call` | Write | Full |
-| `gateway.reply` | Write | Full |
-| `gateway.start` | Write | Full |
-| `gateway.status` | Read | Pane |
-| `gateway.stop` | Write | Full |
-| `git.diff` | Read | Pane |
-| `git.log` | Read | Pane |
-| `git.status` | Read | Pane |
-| `goal.approve` | Write | Full |
-| `goal.briefing` | Read | Pane |
-| `goal.cancel` | Write | Full |
-| `goal.create` | Write | Full |
-| `goal.get` | Read | Pane |
-| `goal.list` | Read | Pane |
-| `goal.plan` | Write | Full |
-| `goal.plan_submit` | Write | Full |
-| `goal.start` | Write | Full |
-| `goal.step_done` | Write | Full |
-| `group.add` | Write | Full |
-| `group.collapse` | Write | Full |
-| `group.create` | Write | Full |
-| `group.delete` | Write | Full |
-| `group.list` | Read | Pane |
-| `group.move` | Write | Full |
-| `group.remove` | Write | Full |
-| `group.rename` | Write | Full |
-| `handoff.accept` | Write | Full |
-| `handoff.cancel` | Write | Full |
-| `handoff.decline` | Write | Full |
-| `handoff.incoming.add` | Write | Full |
-| `handoff.incoming.get` | Read | Full |
-| `handoff.incoming.list` | Read | Full |
-| `handoff.job.update` | Write | Full |
-| `handoff.jobs` | Read | Pane |
-| `handoff.peers` | Read | Pane |
-| `handoff.peers.set` | Write | Full |
-| `handoff.prefs` | Write | Full |
-| `handoff.resume` | Write | Full |
-| `handoff.send` | Write | Full |
-| `image.upload` | Write | Pane |
-| `integration.doctor` | Read | Full |
-| `interaction.answer` | Write | Full |
-| `interaction.cancel` | Write | Full |
-| `interaction.get` | Read | Pane |
-| `interaction.list` | Read | Pane |
-| `layout.apply` | Write | Pane |
-| `layout.export` | Read | Pane |
-| `layout.get` | Read | Pane |
-| `layout.list` | Read | Pane |
-| `machine.get` | Read | Pane |
-| `machine.list` | Read | Pane |
-| `machine.remove` | Write | Full |
-| `machine.upsert` | Write | Full |
-| `merge.predict` | Read | Pane |
-| `merge.queue.add` | Write | Full |
-| `merge.queue.cancel` | Write | Full |
-| `merge.queue.list` | Read | Pane |
-| `merge.queue.requeue` | Write | Full |
-| `merge.queue.run` | Write | Full |
-| `notes.get` | Read | Pane |
-| `notes.set` | Write | Pane |
-| `notification.config` | Read | Pane |
-| `notification.list` | Read | Pane |
-| `notification.read` | Write | Pane |
-| `notification.send` | Write | Pane |
-| `pane.can_see_paths` | Read | Pane |
-| `pane.close` | Write | Own panes |
-| `pane.current` | Read | Pane |
-| `pane.embed` | Write | Own panes |
-| `pane.equalize` | Write | Own panes |
-| `pane.float` | Write | Own panes |
-| `pane.focus` | Write | Full |
-| `pane.get` | Read | Pane |
-| `pane.list` | Read | Pane |
-| `pane.mark_seen` | Write | Own panes |
-| `pane.mark_unread` | Write | Own panes |
-| `pane.move` | Write | Own panes |
-| `pane.pin` | Write | Own panes |
-| `pane.read` | Read | Pane |
-| `pane.rename` | Write | Own panes |
-| `pane.report_agent` | Write | Own panes |
-| `pane.report_agent_session` | Write | Own panes |
-| `pane.resize` | Write | Own panes |
-| `pane.run` | Write | Own panes |
-| `pane.screenshot` | Read | Own panes |
-| `pane.scroll` | Write | Own panes |
-| `pane.send_bytes` | Write | Own panes |
-| `pane.send_keys` | Write | Own panes |
-| `pane.send_text` | Write | Own panes |
-| `pane.split` | Write | Own panes |
-| `pane.sync_input` | Write | Full |
-| `pane.wait_idle` | Read | Pane |
-| `pane.wait_output` | Read | Pane |
-| `pane.zoom` | Write | Own panes |
-| `paste.translated` | Write | Full |
-| `plugin.action` | Write | Full |
-| `plugin.action.list` | Read | Pane |
-| `plugin.action.run` | Write | Pane |
-| `plugin.consent` | Write | Full |
-| `plugin.disable` | Write | Full |
-| `plugin.enable` | Write | Full |
-| `plugin.install` | Write | Full |
-| `plugin.kv.delete` | Write | Full |
-| `plugin.kv.get` | Read | Full |
-| `plugin.kv.list` | Read | Full |
-| `plugin.kv.set` | Write | Full |
-| `plugin.link` | Write | Full |
-| `plugin.link.open` | Write | Pane |
-| `plugin.link_handler.list` | Read | Pane |
-| `plugin.list` | Read | Pane |
-| `plugin.log.list` | Read | Pane |
-| `plugin.registry.notify` | Write | Full |
-| `plugin.remove` | Write | Full |
-| `plugin.restart` | Write | Full |
-| `plugin.surface.close` | Write | Full |
-| `policy.add` | Write | Full |
-| `policy.list` | Read | Full |
-| `policy.remove` | Write | Full |
-| `policy.test` | Read | Full |
-| `policy.trust` | Write | Full |
-| `preview.connect` | Write | Full |
-| `preview.declare` | Write | Pane |
-| `preview.dismiss` | Write | Pane |
-| `preview.forget` | Write | Pane |
-| `preview.get` | Read | Pane |
-| `preview.list` | Read | Pane |
-| `preview.mirror` | Write | Full |
-| `preview.open` | Write | Pane |
-| `preview.profile` | Write | Pane |
-| `preview.profile.list` | Read | Pane |
-| `preview.profile.reset` | Write | Full |
-| `preview.promote` | Write | Pane |
-| `preview.status` | Read | Pane |
-| `preview.unmirror` | Write | Full |
-| `preview.url` | Read | Pane |
-| `quota.resume` | Write | Full |
-| `quota.route` | Read | Pane |
-| `quota.status` | Read | Pane |
-| `quota.tick` | Write | Full |
-| `repo.candidates` | Read | Full |
-| `sandbox.allow` | Write | Full |
-| `sandbox.copy_out` | Write | Full |
-| `sandbox.disallow` | Write | Full |
-| `sandbox.list` | Read | Pane |
-| `sandbox.logs` | Read | Full |
-| `sandbox.prune` | Write | Full |
-| `sandbox.push` | Write | Full |
-| `sandbox.recover` | Write | Full |
-| `sandbox.relaunch` | Write | Full |
-| `sandbox.remove` | Write | Full |
-| `sandbox.request` | Write | Pane |
-| `sandbox.setup_token` | Write | Full |
-| `sandbox.shell` | Read | Full |
-| `sandbox.start` | Write | Full |
-| `sandbox.status` | Read | Pane |
-| `sandbox.stop` | Write | Full |
-| `screenshot.add` | Write | Pane |
-| `screenshot.delete` | Write | Pane |
-| `screenshot.get` | Read | Pane |
-| `screenshot.list` | Read | Pane |
-| `screenshot.open` | Read | Pane |
-| `scrollback.forget` | Write | Full |
-| `search.query` | Read | Pane |
-| `security.encryption.migrate` | Write | Full |
-| `security.encryption.status` | Read | Full |
-| `server.reload_config` | Write | Full |
-| `server.restart` | Write | Full |
-| `server.status` | Read | Pane |
-| `server.stop` | Write | Full |
-| `session.create` | Write | Full |
-| `session.info` | Read | Pane |
-| `session.list` | Read | Pane |
-| `session.rename` | Write | Full |
-| `session.snapshot` | Read | Pane |
-| `session.stop` | Write | Full |
-| `state.forget` | Write | Full |
-| `status.segments` | Read | Pane |
-| `storage.prune` | Write | Full |
-| `storage.status` | Read | Full |
-| `tab.close` | Write | Full |
-| `tab.create` | Write | Pane |
-| `tab.floats` | Write | Pane |
-| `tab.focus` | Write | Full |
-| `tab.list` | Read | Pane |
-| `tab.move` | Write | Full |
-| `tab.rename` | Write | Full |
-| `tab.renumber` | Write | Full |
-| `task.adopt` | Write | Full |
-| `task.archive` | Write | Full |
-| `task.best_of_n` | Write | Full |
-| `task.check.authorize` | Write | Full |
-| `task.check.cancel` | Write | Full |
-| `task.check.get` | Read | Pane |
-| `task.check.list` | Read | Pane |
-| `task.check.run` | Write | Full |
-| `task.claim` | Write | Pane |
-| `task.claim.list` | Read | Pane |
-| `task.claim.remove` | Write | Pane |
-| `task.compare` | Read | Pane |
-| `task.create` | Write | Pane |
-| `task.dependency.add` | Write | Full |
-| `task.dependency.list` | Read | Pane |
-| `task.dependency.remove` | Write | Full |
-| `task.effort.estimate` | Read | Pane |
-| `task.finish` | Write | Full |
-| `task.forget` | Write | Full |
-| `task.get` | Read | Pane |
-| `task.link.status` | Read | Pane |
-| `task.list` | Read | Pane |
-| `task.park` | Write | Full |
-| `task.pick` | Write | Full |
-| `task.ports` | Read | Pane |
-| `task.ports.re_lease` | Write | Full |
-| `task.pr` | Read | Pane |
-| `task.pr.claim` | Write | Pane |
-| `task.pr.list` | Read | Pane |
-| `task.pr.observe` | Write | Full |
-| `task.reconcile` | Write | Pane |
-| `task.recreate` | Write | Full |
-| `task.resume` | Write | Full |
-| `task.review.accept` | Write | Full |
-| `task.review.candidates` | Read | Pane |
-| `task.review.diff` | Read | Pane |
-| `task.review.forget` | Write | Full |
-| `task.review.get` | Read | Pane |
-| `task.review.human_review` | Write | Full |
-| `task.review.interval_status` | Read | Pane |
-| `task.review.intervals` | Read | Pane |
-| `task.review.note.classify` | Write | Full |
-| `task.review.notes` | Read | Pane |
-| `task.review.request_reviewer` | Write | Full |
-| `task.review.snapshot` | Write | Full |
-| `task.review.snapshot.gc` | Write | Full |
-| `task.review.start_reviewer` | Write | Full |
-| `task.setup` | Write | Full |
-| `task.setup_log` | Read | Pane |
-| `task.split` | Write | Full |
-| `task.sync` | Write | Full |
-| `theme.get` | Read | Pane |
-| `theme.set_mode` | Write | Pane |
-| `ui.contribute` | Write | Full |
-| `ui.contributions` | Read | Pane |
-| `ui.pane.open` | Write | Full |
-| `vm.create` | Write | Full |
-| `vm.destroy` | Write | Full |
-| `vm.fork` | Write | Full |
-| `vm.list` | Read | Pane |
-| `vm.resume` | Write | Full |
-| `vm.snapshot` | Write | Full |
-| `vm.snapshot.delete` | Write | Full |
-| `vm.start` | Write | Full |
-| `vm.status` | Read | Pane |
-| `vm.stop` | Write | Full |
-| `vm.suspend` | Write | Full |
-| `vm.template.build` | Write | Full |
-| `vm.template.delete` | Write | Full |
-| `vm.template.list` | Read | Pane |
-| `vm.transport` | Read | Pane |
-| `workspace.close` | Write | Full |
-| `workspace.create` | Write | Pane |
-| `workspace.focus` | Write | Full |
-| `workspace.get` | Read | Pane |
-| `workspace.list` | Read | Pane |
-| `workspace.move` | Write | Full |
-| `workspace.rename` | Write | Full |
-| `worktree.create` | Write | Pane |
-| `worktree.list` | Read | Pane |
-| `worktree.open` | Write | Pane |
-| `worktree.remove` | Write | Full |
-| `worktree.repo_root` | Read | Pane |
+| Method | Action | Access | Stability |
+|---|---|---|---|
+| `adapter.control` | Write | Pane | Stable |
+| `adapter.delivery_ack` | Write | Pane | Stable |
+| `adapter.gate` | Write | Pane | Stable |
+| `adapter.report_self` | Write | Pane | Stable |
+| `adapter.signal` | Write | Pane | Stable |
+| `agent.commands` | Read | Pane | Stable |
+| `agent.drift` | Read | Pane | Stable |
+| `agent.get` | Read | Pane | Stable |
+| `agent.harnesses` | Read | Pane | Stable |
+| `agent.interrupt` | Write | Own panes | Stable |
+| `agent.items` | Read | Full | Stable |
+| `agent.limits` | Read | Pane | Stable |
+| `agent.list` | Read | Pane | Stable |
+| `agent.manifest_pin` | Write | Full | Stable |
+| `agent.manifests` | Read | Pane | Stable |
+| `agent.manifests_check` | Write | Full | Stable |
+| `agent.manifests_reload` | Write | Pane | Stable |
+| `agent.models` | Read | Pane | Stable |
+| `agent.prompt` | Write | Own panes | Stable |
+| `agent.read` | Read | Pane | Stable |
+| `agent.release` | Write | Own panes | Stable |
+| `agent.rename` | Write | Own panes | Stable |
+| `agent.report` | Write | Own panes | Stable |
+| `agent.resumable` | Read | Pane | Stable |
+| `agent.resume` | Write | Own panes | Stable |
+| `agent.send_keys` | Write | Own panes | Stable |
+| `agent.set_model` | Write | Own panes | Stable |
+| `agent.spawn` | Write | Pane | Stable |
+| `agent.start` | Write | Own panes | Stable |
+| `agent.transcript` | Read | Pane | Stable |
+| `agent.turn_usage` | Read | Pane | Stable |
+| `agent.turns` | Read | Full | Stable |
+| `agent.wait` | Read | Pane | Stable |
+| `api.methods` | Read | Pane | Stable |
+| `api.schema` | Read | Pane | Stable |
+| `assistant.background` | Write | Full | Experimental |
+| `assistant.cancel` | Write | Full | Experimental |
+| `assistant.confirm` | Write | Full | Experimental |
+| `assistant.consent` | Write | Full | Experimental |
+| `assistant.generate` | Write | Full | Experimental |
+| `assistant.get` | Read | Full | Experimental |
+| `assistant.list` | Read | Full | Experimental |
+| `assistant.models` | Read | Full | Experimental |
+| `assistant.providers` | Read | Full | Experimental |
+| `assistant.purge` | Write | Full | Experimental |
+| `assistant.revoke` | Write | Full | Experimental |
+| `assistant.status` | Read | Full | Experimental |
+| `assistant.test` | Write | Full | Experimental |
+| `attention.batch` | Read | Pane | Stable |
+| `attention.list` | Read | Pane | Stable |
+| `attention.update` | Write | Full | Stable |
+| `audit.search` | Read | Full | Stable |
+| `audit.tail` | Read | Full | Stable |
+| `audit.verify` | Read | Full | Stable |
+| `auth.approve` | Write | Pane | Stable |
+| `auth.approve.decide` | Write | Full | Stable |
+| `auth.approve.withdraw` | Write | Pane | Stable |
+| `auth.elevate` | Write | Pane | Stable |
+| `auth.elevate.decide` | Write | Full | Stable |
+| `auth.list` | Read | Full | Stable |
+| `auth.revoke_token` | Write | Full | Stable |
+| `blob.abort` | Write | Pane | Stable |
+| `blob.append` | Write | Pane | Stable |
+| `blob.begin` | Write | Pane | Stable |
+| `blob.commit` | Write | Pane | Stable |
+| `blob.gc` | Write | Full | Stable |
+| `blob.get` | Read | Pane | Stable |
+| `blob.put` | Write | Pane | Stable |
+| `blob.stat` | Read | Pane | Stable |
+| `blob.stats` | Read | Full | Stable |
+| `browser.attach_screencast` | Write | Full | Stable |
+| `browser.click` | Write | Pane | Stable |
+| `browser.close` | Write | Pane | Stable |
+| `browser.command` | Write | Full | Stable |
+| `browser.console` | Read | Pane | Stable |
+| `browser.detach_screencast` | Write | Full | Stable |
+| `browser.diff` | Write | Pane | Stable |
+| `browser.dom` | Read | Pane | Stable |
+| `browser.eval` | Write | Pane | Stable |
+| `browser.input` | Write | Full | Stable |
+| `browser.install` | Write | Full | Stable |
+| `browser.list` | Read | Pane | Stable |
+| `browser.navigate` | Write | Pane | Stable |
+| `browser.network` | Read | Pane | Stable |
+| `browser.open` | Write | Pane | Stable |
+| `browser.pane.console` | Write | Full | Stable |
+| `browser.pane.console_push` | Write | Full | Stable |
+| `browser.pane.create` | Write | Pane | Stable |
+| `browser.pane.list` | Read | Pane | Stable |
+| `browser.pane.status` | Read | Pane | Stable |
+| `browser.pane.update` | Write | Full | Stable |
+| `browser.press` | Write | Pane | Stable |
+| `browser.release` | Write | Full | Stable |
+| `browser.screencast_frame` | Read | Full | Stable |
+| `browser.screenshot` | Write | Pane | Stable |
+| `browser.session_close` | Write | Pane | Stable |
+| `browser.session_open` | Write | Pane | Stable |
+| `browser.snapshot` | Read | Pane | Stable |
+| `browser.status` | Read | Pane | Stable |
+| `browser.take_over` | Write | Full | Stable |
+| `browser.type` | Write | Pane | Stable |
+| `browser.wait` | Read | Pane | Stable |
+| `browser.watch` | Write | Full | Stable |
+| `client.activity` | Read | Full | Stable |
+| `client.appearance` | Write | Full | Stable |
+| `client.confirm` | Write | Full | Stable |
+| `client.confirm_answer` | Write | Full | Stable |
+| `client.devices` | Write | Full | Stable |
+| `client.focus` | Write | Full | Stable |
+| `client.hello` | Read | Pane | Stable |
+| `client.list` | Read | Pane | Stable |
+| `cloud.auth.clear` | Write | Full | Experimental |
+| `cloud.auth.import` | Write | Full | Experimental |
+| `cloud.auth.set` | Write | Full | Experimental |
+| `cloud.box.adopt` | Write | Full | Experimental |
+| `cloud.box.checkpoint` | Write | Full | Experimental |
+| `cloud.box.destroy` | Write | Full | Experimental |
+| `cloud.box.forget` | Write | Full | Experimental |
+| `cloud.box.list` | Read | Full | Experimental |
+| `cloud.box.resume` | Write | Full | Experimental |
+| `cloud.box.suspend` | Write | Full | Experimental |
+| `cloud.cancel` | Write | Full | Experimental |
+| `cloud.confirm` | Write | Full | Experimental |
+| `cloud.jobs` | Read | Full | Experimental |
+| `cloud.move` | Write | Full | Experimental |
+| `cloud.providers` | Read | Full | Experimental |
+| `cloud.prune` | Write | Full | Experimental |
+| `collision.claim` | Write | Pane | Experimental |
+| `collision.claim_release` | Write | Pane | Experimental |
+| `collision.claims` | Read | Pane | Experimental |
+| `collision.dismiss` | Write | Full | Experimental |
+| `collision.get` | Read | Pane | Experimental |
+| `collision.ignore` | Write | Full | Experimental |
+| `collision.ignores` | Read | Full | Experimental |
+| `collision.list` | Read | Pane | Experimental |
+| `collision.pause` | Write | Full | Experimental |
+| `collision.start_task` | Write | Full | Experimental |
+| `collision.status` | Read | Full | Experimental |
+| `collision.tell` | Write | Full | Experimental |
+| `collision.unignore` | Write | Full | Experimental |
+| `compat.herdr.call` | Write | Pane | Stable |
+| `compat.invocation.verify` | Write | Full | Stable |
+| `compat.status` | Read | Pane | Stable |
+| `compat.ui.state` | Read | Pane | Stable |
+| `config.get` | Read | Pane | Stable |
+| `config.reload` | Write | Full | Stable |
+| `config.set` | Write | Full | Stable |
+| `config.validate` | Read | Pane | Stable |
+| `desk.context` | Read | Pane | Experimental |
+| `desk.forget` | Write | Full | Experimental |
+| `desk.index` | Write | Full | Experimental |
+| `desk.open` | Write | Full | Experimental |
+| `desk.resume` | Write | Full | Experimental |
+| `desk.search` | Read | Pane | Experimental |
+| `desk.sessions` | Read | Pane | Experimental |
+| `desk.status` | Read | Full | Experimental |
+| `draft.check` | Read | Pane | Experimental |
+| `draft.combine` | Write | Pane | Experimental |
+| `draft.create` | Write | Pane | Experimental |
+| `draft.delete` | Write | Pane | Experimental |
+| `draft.get` | Read | Pane | Experimental |
+| `draft.list` | Read | Pane | Experimental |
+| `draft.reconcile` | Write | Full | Experimental |
+| `draft.reorder` | Write | Pane | Experimental |
+| `draft.send` | Write | Full | Experimental |
+| `draft.update` | Write | Pane | Experimental |
+| `events.read` | Read | Pane | Stable |
+| `events.subscribe` | Read | Pane | Stable |
+| `events.unsubscribe` | Read | Pane | Stable |
+| `events.wait` | Read | Pane | Stable |
+| `family.check` | Write | Full | Experimental |
+| `family.get` | Read | Pane | Experimental |
+| `family.list` | Read | Pane | Experimental |
+| `fs.browse` | Read | Full | Stable |
+| `fs.list` | Read | Pane | Stable |
+| `fs.read` | Read | Pane | Stable |
+| `gateway.call` | Write | Full | Stable |
+| `gateway.notice` | Write | Full | Stable |
+| `gateway.reply` | Write | Full | Stable |
+| `gateway.start` | Write | Full | Stable |
+| `gateway.status` | Read | Pane | Stable |
+| `gateway.stop` | Write | Full | Stable |
+| `git.diff` | Read | Pane | Stable |
+| `git.import_box_objects` | Write | Full | Stable |
+| `git.log` | Read | Pane | Stable |
+| `git.status` | Read | Pane | Stable |
+| `goal.approve` | Write | Full | Experimental |
+| `goal.briefing` | Read | Pane | Experimental |
+| `goal.cancel` | Write | Full | Experimental |
+| `goal.create` | Write | Full | Experimental |
+| `goal.get` | Read | Pane | Experimental |
+| `goal.list` | Read | Pane | Experimental |
+| `goal.plan` | Write | Full | Experimental |
+| `goal.plan_submit` | Write | Full | Experimental |
+| `goal.start` | Write | Full | Experimental |
+| `goal.step_done` | Write | Full | Experimental |
+| `group.add` | Write | Full | Stable |
+| `group.collapse` | Write | Full | Stable |
+| `group.create` | Write | Full | Stable |
+| `group.delete` | Write | Full | Stable |
+| `group.list` | Read | Pane | Stable |
+| `group.move` | Write | Full | Stable |
+| `group.remove` | Write | Full | Stable |
+| `group.rename` | Write | Full | Stable |
+| `handoff.accept` | Write | Full | Stable |
+| `handoff.cancel` | Write | Full | Stable |
+| `handoff.decline` | Write | Full | Stable |
+| `handoff.incoming.add` | Write | Full | Stable |
+| `handoff.incoming.get` | Read | Full | Stable |
+| `handoff.incoming.list` | Read | Full | Stable |
+| `handoff.job.update` | Write | Full | Stable |
+| `handoff.jobs` | Read | Pane | Stable |
+| `handoff.peers` | Read | Pane | Stable |
+| `handoff.peers.set` | Write | Full | Stable |
+| `handoff.prefs` | Write | Full | Stable |
+| `handoff.resume` | Write | Full | Stable |
+| `handoff.send` | Write | Full | Stable |
+| `image.upload` | Write | Pane | Stable |
+| `integration.doctor` | Read | Full | Stable |
+| `interaction.answer` | Write | Full | Stable |
+| `interaction.cancel` | Write | Full | Stable |
+| `interaction.get` | Read | Pane | Stable |
+| `interaction.list` | Read | Pane | Stable |
+| `layout.apply` | Write | Pane | Stable |
+| `layout.export` | Read | Pane | Stable |
+| `layout.get` | Read | Pane | Stable |
+| `layout.list` | Read | Pane | Stable |
+| `machine.get` | Read | Pane | Stable |
+| `machine.list` | Read | Pane | Stable |
+| `machine.remove` | Write | Full | Stable |
+| `machine.upsert` | Write | Full | Stable |
+| `merge.predict` | Read | Pane | Experimental |
+| `merge.queue.add` | Write | Full | Experimental |
+| `merge.queue.cancel` | Write | Full | Experimental |
+| `merge.queue.list` | Read | Pane | Experimental |
+| `merge.queue.requeue` | Write | Full | Experimental |
+| `merge.queue.run` | Write | Full | Experimental |
+| `notes.get` | Read | Pane | Stable |
+| `notes.set` | Write | Pane | Stable |
+| `notification.config` | Read | Pane | Stable |
+| `notification.list` | Read | Pane | Stable |
+| `notification.read` | Write | Pane | Stable |
+| `notification.send` | Write | Pane | Stable |
+| `pane.can_see_paths` | Read | Pane | Stable |
+| `pane.close` | Write | Own panes | Stable |
+| `pane.current` | Read | Pane | Stable |
+| `pane.embed` | Write | Own panes | Stable |
+| `pane.equalize` | Write | Own panes | Stable |
+| `pane.float` | Write | Own panes | Stable |
+| `pane.focus` | Write | Full | Stable |
+| `pane.get` | Read | Pane | Stable |
+| `pane.list` | Read | Pane | Stable |
+| `pane.mark_seen` | Write | Own panes | Stable |
+| `pane.mark_unread` | Write | Own panes | Stable |
+| `pane.move` | Write | Own panes | Stable |
+| `pane.pin` | Write | Own panes | Stable |
+| `pane.read` | Read | Pane | Stable |
+| `pane.rename` | Write | Own panes | Stable |
+| `pane.report_agent` | Write | Own panes | Stable |
+| `pane.report_agent_session` | Write | Own panes | Stable |
+| `pane.resize` | Write | Own panes | Stable |
+| `pane.run` | Write | Own panes | Stable |
+| `pane.screenshot` | Read | Own panes | Stable |
+| `pane.scroll` | Write | Own panes | Stable |
+| `pane.send_bytes` | Write | Own panes | Stable |
+| `pane.send_keys` | Write | Own panes | Stable |
+| `pane.send_text` | Write | Own panes | Stable |
+| `pane.split` | Write | Own panes | Stable |
+| `pane.sync_input` | Write | Full | Stable |
+| `pane.wait_idle` | Read | Pane | Stable |
+| `pane.wait_output` | Read | Pane | Stable |
+| `pane.zoom` | Write | Own panes | Stable |
+| `paste.translated` | Write | Full | Stable |
+| `plugin.action` | Write | Full | Stable |
+| `plugin.action.list` | Read | Pane | Stable |
+| `plugin.action.run` | Write | Full | Stable |
+| `plugin.consent` | Write | Full | Stable |
+| `plugin.disable` | Write | Full | Stable |
+| `plugin.enable` | Write | Full | Stable |
+| `plugin.install` | Write | Full | Stable |
+| `plugin.kv.delete` | Write | Full | Stable |
+| `plugin.kv.get` | Read | Full | Stable |
+| `plugin.kv.list` | Read | Full | Stable |
+| `plugin.kv.set` | Write | Full | Stable |
+| `plugin.link` | Write | Full | Stable |
+| `plugin.link.open` | Write | Full | Stable |
+| `plugin.link_handler.list` | Read | Pane | Stable |
+| `plugin.list` | Read | Pane | Stable |
+| `plugin.log.list` | Read | Pane | Stable |
+| `plugin.registry.notify` | Write | Full | Stable |
+| `plugin.remove` | Write | Full | Stable |
+| `plugin.restart` | Write | Full | Stable |
+| `plugin.surface.close` | Write | Full | Stable |
+| `policy.add` | Write | Full | Stable |
+| `policy.list` | Read | Full | Stable |
+| `policy.remove` | Write | Full | Stable |
+| `policy.test` | Read | Full | Stable |
+| `policy.trust` | Write | Full | Stable |
+| `preview.connect` | Write | Full | Stable |
+| `preview.declare` | Write | Pane | Stable |
+| `preview.dismiss` | Write | Pane | Stable |
+| `preview.forget` | Write | Pane | Stable |
+| `preview.get` | Read | Pane | Stable |
+| `preview.list` | Read | Pane | Stable |
+| `preview.mirror` | Write | Full | Stable |
+| `preview.open` | Write | Pane | Stable |
+| `preview.profile` | Write | Pane | Stable |
+| `preview.profile.list` | Read | Pane | Stable |
+| `preview.profile.reset` | Write | Full | Stable |
+| `preview.promote` | Write | Pane | Stable |
+| `preview.status` | Read | Pane | Stable |
+| `preview.unmirror` | Write | Full | Stable |
+| `preview.url` | Read | Pane | Stable |
+| `quota.resume` | Write | Full | Experimental |
+| `quota.route` | Read | Pane | Experimental |
+| `quota.status` | Read | Pane | Experimental |
+| `quota.tick` | Write | Full | Experimental |
+| `repo.candidates` | Read | Full | Stable |
+| `sandbox.allow` | Write | Full | Stable |
+| `sandbox.copy_out` | Write | Full | Stable |
+| `sandbox.disallow` | Write | Full | Stable |
+| `sandbox.list` | Read | Pane | Stable |
+| `sandbox.logs` | Read | Full | Stable |
+| `sandbox.prune` | Write | Full | Stable |
+| `sandbox.push` | Write | Full | Stable |
+| `sandbox.recover` | Write | Full | Stable |
+| `sandbox.relaunch` | Write | Full | Stable |
+| `sandbox.remove` | Write | Full | Stable |
+| `sandbox.request` | Write | Pane | Stable |
+| `sandbox.setup_token` | Write | Full | Stable |
+| `sandbox.shell` | Write | Full | Stable |
+| `sandbox.start` | Write | Full | Stable |
+| `sandbox.status` | Read | Pane | Stable |
+| `sandbox.stop` | Write | Full | Stable |
+| `screenshot.add` | Write | Pane | Stable |
+| `screenshot.delete` | Write | Pane | Stable |
+| `screenshot.get` | Read | Pane | Stable |
+| `screenshot.list` | Read | Pane | Stable |
+| `screenshot.open` | Read | Pane | Stable |
+| `scrollback.forget` | Write | Full | Stable |
+| `search.query` | Read | Pane | Stable |
+| `security.encryption.migrate` | Write | Full | Stable |
+| `security.encryption.status` | Read | Full | Stable |
+| `server.reload_config` | Write | Full | Stable |
+| `server.restart` | Write | Full | Stable |
+| `server.status` | Read | Pane | Stable |
+| `server.stop` | Write | Full | Stable |
+| `session.create` | Write | Full | Stable |
+| `session.info` | Read | Pane | Stable |
+| `session.list` | Read | Pane | Stable |
+| `session.rename` | Write | Full | Stable |
+| `session.snapshot` | Read | Pane | Stable |
+| `session.stop` | Write | Full | Stable |
+| `state.forget` | Write | Full | Stable |
+| `status.segments` | Read | Pane | Stable |
+| `storage.prune` | Write | Full | Stable |
+| `storage.status` | Read | Full | Stable |
+| `tab.close` | Write | Full | Stable |
+| `tab.create` | Write | Pane | Stable |
+| `tab.floats` | Write | Pane | Stable |
+| `tab.focus` | Write | Full | Stable |
+| `tab.list` | Read | Pane | Stable |
+| `tab.move` | Write | Full | Stable |
+| `tab.rename` | Write | Full | Stable |
+| `tab.renumber` | Write | Full | Stable |
+| `task.adopt` | Write | Full | Stable |
+| `task.archive` | Write | Full | Stable |
+| `task.best_of_n` | Write | Full | Experimental |
+| `task.bind` | Write | Full | Stable |
+| `task.check.authorize` | Write | Full | Stable |
+| `task.check.cancel` | Write | Full | Stable |
+| `task.check.get` | Read | Pane | Stable |
+| `task.check.list` | Read | Pane | Stable |
+| `task.check.run` | Write | Full | Stable |
+| `task.claim` | Write | Pane | Experimental |
+| `task.claim.list` | Read | Pane | Experimental |
+| `task.claim.remove` | Write | Pane | Experimental |
+| `task.compare` | Read | Pane | Experimental |
+| `task.create` | Write | Pane | Stable |
+| `task.dependency.add` | Write | Full | Stable |
+| `task.dependency.list` | Read | Pane | Stable |
+| `task.dependency.remove` | Write | Full | Stable |
+| `task.detail` | Read | Pane | Stable |
+| `task.effort.estimate` | Read | Pane | Stable |
+| `task.finish` | Write | Full | Stable |
+| `task.forget` | Write | Full | Stable |
+| `task.get` | Read | Pane | Stable |
+| `task.intent.get` | Read | Pane | Stable |
+| `task.intent.update` | Write | Full | Stable |
+| `task.link.status` | Read | Pane | Stable |
+| `task.list` | Read | Pane | Stable |
+| `task.message.cancel` | Write | Full | Stable |
+| `task.message.get` | Read | Pane | Stable |
+| `task.message.prepare` | Write | Full | Stable |
+| `task.message.send` | Write | Full | Stable |
+| `task.operation.get` | Read | Full | Stable |
+| `task.park` | Write | Full | Stable |
+| `task.pick` | Write | Full | Experimental |
+| `task.ports` | Read | Pane | Stable |
+| `task.ports.re_lease` | Write | Full | Stable |
+| `task.pr` | Read | Pane | Stable |
+| `task.pr.claim` | Write | Pane | Stable |
+| `task.pr.list` | Read | Pane | Stable |
+| `task.pr.observe` | Write | Full | Stable |
+| `task.reconcile` | Write | Pane | Stable |
+| `task.recreate` | Write | Full | Stable |
+| `task.resume` | Write | Full | Stable |
+| `task.review.accept` | Write | Full | Stable |
+| `task.review.candidates` | Read | Pane | Stable |
+| `task.review.diff` | Read | Pane | Stable |
+| `task.review.forget` | Write | Full | Stable |
+| `task.review.get` | Read | Pane | Stable |
+| `task.review.human_review` | Write | Full | Stable |
+| `task.review.interval_status` | Read | Pane | Stable |
+| `task.review.intervals` | Read | Pane | Stable |
+| `task.review.note.classify` | Write | Full | Stable |
+| `task.review.notes` | Read | Pane | Stable |
+| `task.review.request_reviewer` | Write | Full | Stable |
+| `task.review.snapshot` | Write | Full | Stable |
+| `task.review.snapshot.gc` | Write | Full | Stable |
+| `task.review.start_reviewer` | Write | Full | Stable |
+| `task.set` | Write | Full | Stable |
+| `task.setup` | Write | Full | Stable |
+| `task.setup_log` | Read | Pane | Stable |
+| `task.sources` | Read | Pane | Stable |
+| `task.split` | Write | Full | Experimental |
+| `task.sync` | Write | Full | Stable |
+| `task.track` | Write | Full | Stable |
+| `task.unbind` | Write | Full | Stable |
+| `theme.get` | Read | Pane | Stable |
+| `theme.set_mode` | Write | Full | Stable |
+| `ui.contribute` | Write | Full | Stable |
+| `ui.contributions` | Read | Pane | Stable |
+| `ui.pane.open` | Write | Full | Stable |
+| `vm.create` | Write | Full | Experimental |
+| `vm.destroy` | Write | Full | Experimental |
+| `vm.fork` | Write | Full | Experimental |
+| `vm.list` | Read | Pane | Experimental |
+| `vm.resume` | Write | Full | Experimental |
+| `vm.snapshot` | Write | Full | Experimental |
+| `vm.snapshot.delete` | Write | Full | Experimental |
+| `vm.start` | Write | Full | Experimental |
+| `vm.status` | Read | Pane | Experimental |
+| `vm.stop` | Write | Full | Experimental |
+| `vm.suspend` | Write | Full | Experimental |
+| `vm.template.build` | Write | Full | Experimental |
+| `vm.template.delete` | Write | Full | Experimental |
+| `vm.template.list` | Read | Pane | Experimental |
+| `vm.transport` | Read | Pane | Experimental |
+| `workspace.close` | Write | Full | Stable |
+| `workspace.create` | Write | Pane | Stable |
+| `workspace.focus` | Write | Full | Stable |
+| `workspace.get` | Read | Pane | Stable |
+| `workspace.list` | Read | Pane | Stable |
+| `workspace.move` | Write | Full | Stable |
+| `workspace.rename` | Write | Full | Stable |
+| `worktree.create` | Write | Pane | Stable |
+| `worktree.list` | Read | Pane | Stable |
+| `worktree.open` | Write | Pane | Stable |
+| `worktree.remove` | Write | Full | Stable |
+| `worktree.repo_root` | Read | Pane | Stable |

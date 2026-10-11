@@ -22,14 +22,16 @@ Vibeke reloads the file after a change. If parsing fails, it keeps the previous 
 # watch = true
 
 # [theme]
-# Built-ins: catppuccin, catppuccin-latte, terminal, tokyo-night, dracula, nord, gruvbox,
-# one-dark, solarized, kanagawa, rose-pine, vesper, plus any themes/*.toml.
+# Built-ins: catppuccin, catppuccin-latte, tokyo-night, dracula, nord, gruvbox, terminal.
+# A file themes/<name>.toml next to this file adds a theme: colour tokens such as
+# accent = "#f5c2e7", and base = "<built-in name>" to start from one.
 # mode        = "auto"                  # auto (follow the host terminal's light/dark) | light | dark
-# name        = "catppuccin"
-# auto_switch = true
+# name        = ""                      # "" follows auto_switch. A theme name here is always used
+# auto_switch = true                    # dark_name on a dark terminal, light_name on a light one
 # dark_name   = "catppuccin"
 # light_name  = "catppuccin-latte"
-# Token overrides: panel_bg, fg, muted, accent, red, yellow, green, blue, border, selection…
+# Token overrides on top of the theme: bg, panel, fg, muted, accent, red, yellow, green, blue,
+# border, selection. Values are "#rrggbb" or "reset".
 # [theme.custom]
 # accent = "#f5c2e7"
 # Default pane palette overrides: ansi0..ansi15, fg, bg, cursor.
@@ -70,7 +72,7 @@ Vibeke reloads the file after a change. If parsing fails, it keeps the previous 
 # inbox_retention = "2w"
 
 # [keys]
-# prefix             = "ctrl+b"
+# prefix             = "ctrl+q"
 # prefix_timeout_ms  = 1500
 # prefix_passthrough = true
 # prefix_menu        = true             # after the prefix, show every prefix key in groups (prefix+? shows it at once)
@@ -80,7 +82,7 @@ Vibeke reloads the file after a change. If parsing fails, it keeps the previous 
 # Action bindings. "prefix+x" needs the prefix. A chord without it is a direct binding.
 # "" unbinds. Ranges: "prefix+1..9".
 # help                     = "prefix+?"
-# settings                 = "prefix+s"
+# settings                 = "prefix+s"        # show where the settings file is (Setup repeats the first-run steps)
 # detach                   = "prefix+q"
 # reload_config            = "prefix+shift+r"
 # open_notification_target = "prefix+o"
@@ -130,7 +132,7 @@ Vibeke reloads the file after a change. If parsing fails, it keeps the previous 
 # next_attention_focus     = "prefix+shift+a"
 # inbox                    = "prefix+i"
 # mark_unread              = "prefix+u"
-# pin_pane                 = "prefix+alt+p"
+# pin_pane                 = "prefix+t"
 # float_new                = "prefix+f"
 # toggle_floats            = "prefix+shift+f"
 # sync_input               = "prefix+shift+s"
@@ -138,26 +140,27 @@ Vibeke reloads the file after a change. If parsing fails, it keeps the previous 
 # preview_list             = "prefix+shift+o" # previews on every machine: pane, window, proxy, mirror
 # last_workspace           = "prefix+shift+l" # toggle to the previously focused workspace
 # url_hints                = "prefix+shift+u" # label URLs/IDs in the focused pane: open or copy
-# sync_input_pane          = "prefix+alt+s"   # add/remove the focused pane from the tab's sync set
+# sync_input_pane          = "prefix+shift+y"   # add/remove the focused pane from the tab's sync set
 # fleet                    = "prefix+shift+m" # fleet grid: every agent on every machine
 # batch_approvals          = ""               # batch view of equivalent approvals (also `A` on a card)
 # collisions               = ""               # agents editing the same files in a shared checkout: pause, tell, fresh task, ignore
 # setup                    = ""               # onboarding: terminal check, integrations, notifications, theme
 # trust_repo               = ""               # review and trust this repo's .vibeke/ (repo-local config)
-# agent_list               = "prefix+alt+a"   # every agent on every machine, by attention; enter jumps
+# agent_list               = "prefix+shift+i"   # every agent on every machine, by attention; enter jumps
 # elevation_requests       = "prefix+shift+e" # review a pane's `vibeke auth elevate` request (y/n)
 # tab_renumber             = ""               # renumber this workspace's tabs 1..n in order
 # task_recreate            = ""               # recreate the checkout of a task marked missing
 # task_forget              = ""               # forget a task marked missing (nothing is deleted)
-# connections              = "prefix+alt+d"   # Connections: devices, people, hosts, handoffs (opens the last tab used)
+# connections              = "prefix+d"   # Connections: devices, people, hosts, handoffs (opens the last tab used)
 # handoffs                 = "prefix+shift+h" # Connections → Handoffs: incoming handoffs and the ones being sent
-# handoff_send             = "prefix+alt+h"   # hand off the focused pane to another host
+# handoff_send             = "prefix+shift+j"   # hand off the focused pane to another host
 # hosts                    = ""               # Connections → Hosts: peers, invitations, paste an invitation
-# share_pane               = "prefix+alt+v"   # share the focused pane or its workspace with someone (view or approve)
+# share_pane               = "prefix+shift+z"   # share the focused pane or its workspace with someone (view or approve)
 # cloud_send               = ""               # send the focused pane's agent to a cloud sandbox
 # cloud_bring_back         = ""               # bring the focused cloud pane back to this host or a paired host
 # sandboxes                = ""               # cloud sandboxes: sign-in, state, suspend, bring back, destroy, clean up
-# open_images              = "prefix+alt+i"   # view new images: the gallery of images agents and you attached
+# config_error             = ""               # why config.toml does not load (Vibeke keeps the last good config meanwhile)
+# open_images              = "prefix+shift+b"   # view new images: the gallery of images agents and you attached
 
 # [keys.copy_mode]
 # mode = "vi"                           # vi | emacs
@@ -172,7 +175,7 @@ Vibeke reloads the file after a change. If parsing fails, it keeps the previous 
 
 # Custom commands (type = shell | pane | popup | float. Other fields: cwd, env, title, when):
 # [[keys.command]]
-# key     = "prefix+alt+g"
+# key     = "prefix+0"
 # type    = "popup"
 # command = "lazygit"
 # width   = "80%"
@@ -185,7 +188,7 @@ Vibeke reloads the file after a change. If parsing fails, it keeps the previous 
 # animate                       = true
 # focus_follows_mouse           = false
 # focus_follows_mouse_delay_ms  = 120
-# confirm_close                 = "running"     # running | always | never
+# confirm_close                 = "running"     # running (ask when a program other than a shell runs) | always | never. One rule for panes, tabs and workspaces
 # marked_unread_clears_on_focus = false
 # title_sync                    = true          # set the outer terminal title (OSC 2)
 # title_format                  = "{workspace} · {pane}"   # also {tab}, {machine}, {session}
@@ -360,6 +363,7 @@ Vibeke reloads the file after a change. If parsing fails, it keeps the previous 
 # sync_retention    = "7d"          # catch-up/live-UI events (the `sync` tier)
 # history_retention = "365d"        # interactions, policy, task status, agent start/exit (`history`)
 # blob_retention    = "30d"         # unreferenced uploads and tool-output payloads in the blob store
+# closed_retention  = "90d"         # ended agent runs, closed interactions and panes, and their usage and tool records
 # max_rows          = 2000000       # hard cap on event rows; oldest `sync` rows go first; 0 = no cap
 
 # Review evidence (15 §6.3, §6.4). Read by the running server.
@@ -409,6 +413,14 @@ Vibeke reloads the file after a change. If parsing fails, it keeps the previous 
 # redact_scrollback_index = true      # the search index and search.query results hold redacted text; segments stay as shown
 # [security.redact]
 # patterns = []                       # extra regular expressions redacted in logs, events, bundles, index and assistant payloads
+# [security.limits]                   # request budgets of agents (pane tokens); over a budget a call fails with rate_limited
+# burst               = 50            # requests a pane may make at once
+# rate                = 10            # requests per second added back to that budget
+# hook_burst          = 200           # the agent's hooks (adapter.*) and client.hello have a budget of their own
+# hook_rate           = 50            # hook requests per second added back
+# spawns_per_min      = 10            # agents a pane may start per minute
+# max_spawn_depth     = 3             # agents started by agents, at most this deep
+# max_descendant_runs = 20            # live agents started from one root agent, at most
 # AI assistance (spec 14). Off by default: nothing is sent anywhere until you enable it, choose a
 # connection and a profile, and grant consent per workspace (`vibeke assist consent`). User config
 # only: a repository's own config cannot redirect assistant traffic. Requests run on the machine
@@ -451,6 +463,42 @@ Vibeke reloads the file after a change. If parsing fails, it keeps the previous 
 # # capabilities = { streaming = "supported", json_schema = "supported" }   # declare what the model supports; unknown otherwise
 # # Optional `background` and `review` profiles serve those features. Without one the default profile
 # # is used only if it meets the feature's requirements.
+
+# Experimental orchestration (12, 05 §11-12). Every feature is off by default, and its commands
+# and API methods are experimental: they can still change. A command of a feature that is off
+# fails and names the flag to turn on.
+# [orchestrate.best_of_n]
+# enabled             = false             # task new --agents claude:2,codex:1; task compare/pick
+# max_children        = 8
+# check               = true              # run the repo's check in each child when it finishes
+# check_command       = ""                # fallback when the repo declares no check
+# check_timeout       = "10m"
+# [orchestrate.split]
+# enabled             = false             # task split: move a running agent's changes into a new task
+# quiet_for           = "3s"
+# resume              = false
+# [orchestrate.merge]
+# enabled             = false             # claims, conflict prediction, merge queue
+# predict_every       = "30s"
+# queue_check         = ""                # command run in the integration worktree before a merge lands
+# queue_check_timeout = "15m"
+# strategy            = "merge"           # merge | squash
+# target              = ""                # branch the queue merges into (default: the task's base)
+# [orchestrate.planner]
+# enabled             = false             # goals: goal to plan to tasks
+# backend             = "heuristic"       # heuristic | agent | external
+# planner_harness     = "claude"
+# approval_required   = true              # nothing starts before `goal approve`
+# max_steps           = 12
+# briefing_window     = "12h"
+# [orchestrate.quota]
+# enabled             = false             # pause low-priority work near a usage limit
+# interval            = "30s"
+# pause_at            = 0.9
+# protect_priority    = 5
+# max_wait            = "6h"
+# resume_below        = 0.8
+# max_resumes_per_tick = 2
 
 # Sections owned by other components and documented with them:
 # [isolation], [preview], [security], [plugins]

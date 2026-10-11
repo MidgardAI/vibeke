@@ -8,11 +8,12 @@
     "proto": 2,
     "min": 1
   },
-  "method_count": 440,
+  "method_count": 461,
   "methods": [
     {
       "name": "adapter.control",
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "actor_required",
@@ -27,6 +28,7 @@
     {
       "name": "adapter.delivery_ack",
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "actor_required",
@@ -41,6 +43,7 @@
     {
       "name": "adapter.gate",
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "actor_required",
@@ -55,6 +58,7 @@
     {
       "name": "adapter.report_self",
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "actor_required",
@@ -69,6 +73,7 @@
     {
       "name": "adapter.signal",
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "actor_required",
@@ -83,6 +88,7 @@
     {
       "name": "agent.commands",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -97,6 +103,7 @@
     {
       "name": "agent.drift",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -111,6 +118,7 @@
     {
       "name": "agent.get",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -125,6 +133,7 @@
     {
       "name": "agent.harnesses",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -139,6 +148,7 @@
     {
       "name": "agent.interrupt",
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "own_target",
       "gateway": "actor_required",
@@ -153,6 +163,7 @@
     {
       "name": "agent.items",
       "mutating": false,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "open",
@@ -167,6 +178,7 @@
     {
       "name": "agent.limits",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -181,6 +193,7 @@
     {
       "name": "agent.list",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -195,6 +208,7 @@
     {
       "name": "agent.manifest_pin",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -209,6 +223,7 @@
     {
       "name": "agent.manifests",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -223,6 +238,7 @@
     {
       "name": "agent.manifests_check",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -237,6 +253,7 @@
     {
       "name": "agent.manifests_reload",
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "actor_required",
@@ -251,6 +268,7 @@
     {
       "name": "agent.models",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -265,6 +283,7 @@
     {
       "name": "agent.prompt",
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "own_target",
       "gateway": "actor_required",
@@ -279,6 +298,7 @@
     {
       "name": "agent.read",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -293,6 +313,7 @@
     {
       "name": "agent.release",
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "own_target",
       "gateway": "actor_required",
@@ -307,6 +328,7 @@
     {
       "name": "agent.rename",
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "own_target",
       "gateway": "actor_required",
@@ -321,8 +343,9 @@
     {
       "name": "agent.report",
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
-      "pane_scope": "open",
+      "pane_scope": "own_target",
       "gateway": "actor_required",
       "tables": [
         "agents"
@@ -335,6 +358,7 @@
     {
       "name": "agent.resumable",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -349,6 +373,7 @@
     {
       "name": "agent.resume",
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "own_target",
       "gateway": "actor_required",
@@ -363,6 +388,7 @@
     {
       "name": "agent.send_keys",
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "own_target",
       "gateway": "actor_required",
@@ -377,6 +403,7 @@
     {
       "name": "agent.set_model",
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "own_target",
       "gateway": "actor_required",
@@ -391,6 +418,7 @@
     {
       "name": "agent.spawn",
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "actor_required",
@@ -399,12 +427,13 @@
       ],
       "milestone": "M1",
       "spec": "`{harness, name?, where: {split_of: pane, direction?} | {new_tab_in: workspace} | {task: task} , prompt?, args?, focus?: false}` → `{pane, run}` — Creates a pane or tab, starts the agent, and optionally sends the first prompt.",
-      "params": "{harness: string, name?: string, where?: object, prompt?: string, args?: [string], focus?: bool = false}",
+      "params": "{harness?: string = claude, name?: string, split_of?: Target, pane?: Target, direction?: right|down|left|up = right, cwd?: string, prompt?: string, wait?: bool, args?: [string], focus?: bool = false, yolo?: bool, isolate?: IsolationLevel, network?: string, confirm_host_yolo?: bool}",
       "result": "{pane: Pane, run: AgentRun}"
     },
     {
       "name": "agent.start",
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "own_target",
       "gateway": "actor_required",
@@ -417,8 +446,24 @@
       "result": "{run: AgentRun}"
     },
     {
+      "name": "agent.transcript",
+      "mutating": false,
+      "stability": "stable",
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "gateway_api"
+      ],
+      "milestone": "M1",
+      "spec": "`{target, after_turn?, limit?: 20, include_items?: summary|full}` → `{turns: [Turn + {items}]}` — structured adapters only (`unsupported` + fallback hint otherwise). As built (gateway and `before`/`items` callers): `{target, before?, limit?}` → `{run, turns: [{n, ts, items: [{kind: text|thinking|tool_call|tool_result, ts (epoch ms or null), …}], duration_ms (last item ts − turn start, null when unknown), tool_count, subagent_count}], next_before}`. `subagent_count` counts tool calls that start a subagent (`Task`/`Agent`, or the agent-spawning tool in Codex rollouts)",
+      "params": "{target?: Target, run?: Target, limit?: int, before?: int, items?: bool, image?: string}",
+      "result": "{turns?: [any]}"
+    },
+    {
       "name": "agent.turn_usage",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -433,6 +478,7 @@
     {
       "name": "agent.turns",
       "mutating": false,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "open",
@@ -447,6 +493,7 @@
     {
       "name": "agent.wait",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -461,6 +508,7 @@
     {
       "name": "api.methods",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -470,11 +518,12 @@
       "milestone": "M1",
       "spec": "`{}` → `{methods: [{name, milestone, capability, mutating}]}`",
       "params": "{}",
-      "result": "{methods: [{name: string, mutating: bool, milestone?: string, capability?: string}]}"
+      "result": "{methods: [{name: string, mutating: bool, stability?: stable|experimental, milestone?: string, capability?: string}]}"
     },
     {
       "name": "api.schema",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -489,6 +538,7 @@
     {
       "name": "assistant.background",
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -503,6 +553,7 @@
     {
       "name": "assistant.cancel",
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -517,6 +568,7 @@
     {
       "name": "assistant.confirm",
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -531,6 +583,7 @@
     {
       "name": "assistant.consent",
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -545,6 +598,7 @@
     {
       "name": "assistant.generate",
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -559,6 +613,7 @@
     {
       "name": "assistant.get",
       "mutating": false,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "open",
@@ -573,6 +628,7 @@
     {
       "name": "assistant.list",
       "mutating": false,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "open",
@@ -587,6 +643,7 @@
     {
       "name": "assistant.models",
       "mutating": false,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "open",
@@ -601,6 +658,7 @@
     {
       "name": "assistant.providers",
       "mutating": false,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "open",
@@ -615,6 +673,7 @@
     {
       "name": "assistant.purge",
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -629,6 +688,7 @@
     {
       "name": "assistant.revoke",
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -643,6 +703,7 @@
     {
       "name": "assistant.status",
       "mutating": false,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "open",
@@ -657,6 +718,7 @@
     {
       "name": "assistant.test",
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -671,6 +733,7 @@
     {
       "name": "attention.batch",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -685,6 +748,7 @@
     {
       "name": "attention.list",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -699,6 +763,7 @@
     {
       "name": "attention.update",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -713,6 +778,7 @@
     {
       "name": "audit.search",
       "mutating": false,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "open",
@@ -727,6 +793,7 @@
     {
       "name": "audit.tail",
       "mutating": false,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "open",
@@ -741,6 +808,7 @@
     {
       "name": "audit.verify",
       "mutating": false,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "open",
@@ -755,6 +823,7 @@
     {
       "name": "auth.approve",
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "actor_required",
@@ -769,6 +838,7 @@
     {
       "name": "auth.approve.decide",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -783,6 +853,7 @@
     {
       "name": "auth.approve.withdraw",
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "actor_required",
@@ -797,6 +868,7 @@
     {
       "name": "auth.elevate",
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "actor_required",
@@ -811,6 +883,7 @@
     {
       "name": "auth.elevate.decide",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -825,6 +898,7 @@
     {
       "name": "auth.list",
       "mutating": false,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "open",
@@ -839,6 +913,7 @@
     {
       "name": "auth.revoke_token",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -853,6 +928,7 @@
     {
       "name": "blob.abort",
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "actor_required",
@@ -867,6 +943,7 @@
     {
       "name": "blob.append",
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "actor_required",
@@ -881,6 +958,7 @@
     {
       "name": "blob.begin",
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "actor_required",
@@ -895,6 +973,7 @@
     {
       "name": "blob.commit",
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "actor_required",
@@ -909,6 +988,7 @@
     {
       "name": "blob.gc",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -923,6 +1003,7 @@
     {
       "name": "blob.get",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -937,6 +1018,7 @@
     {
       "name": "blob.put",
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "actor_required",
@@ -951,6 +1033,7 @@
     {
       "name": "blob.stat",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -965,6 +1048,7 @@
     {
       "name": "blob.stats",
       "mutating": false,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "open",
@@ -979,6 +1063,7 @@
     {
       "name": "browser.attach_screencast",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -993,6 +1078,7 @@
     {
       "name": "browser.click",
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "actor_required",
@@ -1007,6 +1093,7 @@
     {
       "name": "browser.close",
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "actor_required",
@@ -1021,6 +1108,7 @@
     {
       "name": "browser.command",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -1035,6 +1123,7 @@
     {
       "name": "browser.console",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -1049,6 +1138,7 @@
     {
       "name": "browser.detach_screencast",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -1063,6 +1153,7 @@
     {
       "name": "browser.diff",
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "actor_required",
@@ -1077,6 +1168,7 @@
     {
       "name": "browser.dom",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -1091,6 +1183,7 @@
     {
       "name": "browser.eval",
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "actor_required",
@@ -1105,6 +1198,7 @@
     {
       "name": "browser.input",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -1119,6 +1213,7 @@
     {
       "name": "browser.install",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -1133,6 +1228,7 @@
     {
       "name": "browser.list",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -1147,6 +1243,7 @@
     {
       "name": "browser.navigate",
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "actor_required",
@@ -1161,6 +1258,7 @@
     {
       "name": "browser.network",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -1175,6 +1273,7 @@
     {
       "name": "browser.open",
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "actor_required",
@@ -1189,6 +1288,7 @@
     {
       "name": "browser.pane.console",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -1203,6 +1303,7 @@
     {
       "name": "browser.pane.console_push",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -1217,6 +1318,7 @@
     {
       "name": "browser.pane.create",
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "actor_required",
@@ -1231,6 +1333,7 @@
     {
       "name": "browser.pane.list",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -1245,6 +1348,7 @@
     {
       "name": "browser.pane.status",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -1259,6 +1363,7 @@
     {
       "name": "browser.pane.update",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -1273,6 +1378,7 @@
     {
       "name": "browser.press",
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "actor_required",
@@ -1287,6 +1393,7 @@
     {
       "name": "browser.release",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -1301,6 +1408,7 @@
     {
       "name": "browser.screencast_frame",
       "mutating": false,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "open",
@@ -1309,12 +1417,13 @@
       ],
       "milestone": "M3",
       "spec": "`{session}` → `{session, delivery: \"internal+poll\", width, height}` / `{session, detached}` / `{session, after_seq?}` → `{session, seq, mime: \"image/jpeg\", width, height, received_ms, data_b64 \\| null}` — full scope only. In-process browser panes use `AgentBrowsers::attach_screencast` (latest-wins `watch` channel) and `AgentBrowsers::human_input`.",
-      "params": "{session?: string, browser_session?: string, target?: string, after_seq?: int, wait_ms?: int = 0}",
+      "params": "{session?: string, browser_session?: string, target?: string, after_seq?: int, wait_ms?: int = 0, data_saver?: bool}",
       "result": "{session: string, seq: int, mime: string, width: int|null, height: int|null, received_ms: int, data_b64: string} | {session: string, seq: int|null, data_b64: null}"
     },
     {
       "name": "browser.screenshot",
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "actor_required",
@@ -1329,6 +1438,7 @@
     {
       "name": "browser.session_close",
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "actor_required",
@@ -1343,6 +1453,7 @@
     {
       "name": "browser.session_open",
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "actor_required",
@@ -1357,6 +1468,7 @@
     {
       "name": "browser.snapshot",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -1371,6 +1483,7 @@
     {
       "name": "browser.status",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -1385,6 +1498,7 @@
     {
       "name": "browser.take_over",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -1399,6 +1513,7 @@
     {
       "name": "browser.type",
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "actor_required",
@@ -1413,6 +1528,7 @@
     {
       "name": "browser.wait",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -1427,6 +1543,7 @@
     {
       "name": "browser.watch",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -1439,10 +1556,26 @@
       "result": "{opened_in: string, session: string, read_only: bool, pane: string, pane_handle: string, tab: string, url: string, machine: string, source_pane: string|null}"
     },
     {
+      "name": "client.activity",
+      "mutating": false,
+      "stability": "stable",
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "open",
+      "tables": [
+        "gateway_api"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{last_input_ms?: int}",
+      "result": "{}"
+    },
+    {
       "name": "client.appearance",
       "mutating": true,
-      "scope": "pane",
-      "pane_scope": "open",
+      "stability": "stable",
+      "scope": "full",
+      "pane_scope": "forbidden",
       "gateway": "actor_required",
       "tables": [
         "parity",
@@ -1454,8 +1587,54 @@
       "result": "{appearance: Appearance, colorfgbg: string}"
     },
     {
+      "name": "client.confirm",
+      "mutating": true,
+      "stability": "stable",
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "gateway_api"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{title: string, body?: string, options?: [{id: string, label: string}], timeout_ms?: int = 60000}",
+      "result": "{confirm: string, choice: string|null, timed_out: bool}"
+    },
+    {
+      "name": "client.confirm_answer",
+      "mutating": true,
+      "stability": "stable",
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "gateway_api"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{confirm: string, choice?: string}",
+      "result": "{confirm: string}"
+    },
+    {
+      "name": "client.devices",
+      "mutating": true,
+      "stability": "stable",
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "gateway_api"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{devices: [object]}",
+      "result": "{}"
+    },
+    {
       "name": "client.focus",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -1471,6 +1650,7 @@
     {
       "name": "client.hello",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -1485,6 +1665,7 @@
     {
       "name": "client.list",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -1499,6 +1680,7 @@
     {
       "name": "cloud.auth.clear",
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -1513,6 +1695,7 @@
     {
       "name": "cloud.auth.import",
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -1527,6 +1710,7 @@
     {
       "name": "cloud.auth.set",
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -1541,6 +1725,7 @@
     {
       "name": "cloud.box.adopt",
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -1555,6 +1740,7 @@
     {
       "name": "cloud.box.checkpoint",
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -1569,6 +1755,7 @@
     {
       "name": "cloud.box.destroy",
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -1583,6 +1770,7 @@
     {
       "name": "cloud.box.forget",
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -1597,6 +1785,7 @@
     {
       "name": "cloud.box.list",
       "mutating": false,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "open",
@@ -1611,6 +1800,7 @@
     {
       "name": "cloud.box.resume",
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -1625,6 +1815,7 @@
     {
       "name": "cloud.box.suspend",
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -1639,6 +1830,7 @@
     {
       "name": "cloud.cancel",
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -1648,11 +1840,27 @@
       "milestone": null,
       "spec": null,
       "params": "{id: string}",
-      "result": "{job: {id: string, direction: send|bring_back, pane?: string, run?: string, box?: string, from: object, to: object, state: queued|waiting_turn|creating|bootstrapping|exporting|uploading|importing|resuming|done|failed|cancelled, progress?: {done: int, total: int}, error?: {kind: string, message: string, details?: any}, result?: object, interrupt: bool, source_after?: keep|suspend|destroy, task?: string, by?: string, created_at: int, updated_at: int}}"
+      "result": "{job: {id: string, direction: send|bring_back, pane?: string, run?: string, box?: string, from: object, to: object, state: queued|waiting_turn|creating|bootstrapping|exporting|awaiting_confirmation|uploading|importing|resuming|done|failed|cancelled, progress?: {done: int, total: int}, error?: {kind: string, message: string, details?: any}, result?: object, interrupt: bool, source_after?: keep|suspend|destroy, task?: string, by?: string, new_task: bool, review: bool, code_only: bool, confirmed: bool, created_at: int, updated_at: int}}"
+    },
+    {
+      "name": "cloud.confirm",
+      "mutating": true,
+      "stability": "experimental",
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "cloud_move"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{id: string, code_only?: bool}",
+      "result": "{job: {id: string, direction: send|bring_back, pane?: string, run?: string, box?: string, from: object, to: object, state: queued|waiting_turn|creating|bootstrapping|exporting|awaiting_confirmation|uploading|importing|resuming|done|failed|cancelled, progress?: {done: int, total: int}, error?: {kind: string, message: string, details?: any}, result?: object, interrupt: bool, source_after?: keep|suspend|destroy, task?: string, by?: string, new_task: bool, review: bool, code_only: bool, confirmed: bool, created_at: int, updated_at: int}}"
     },
     {
       "name": "cloud.jobs",
       "mutating": false,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "open",
@@ -1662,11 +1870,12 @@
       "milestone": null,
       "spec": null,
       "params": "{}",
-      "result": "{jobs: [{id: string, direction: send|bring_back, pane?: string, run?: string, box?: string, from: object, to: object, state: queued|waiting_turn|creating|bootstrapping|exporting|uploading|importing|resuming|done|failed|cancelled, progress?: {done: int, total: int}, error?: {kind: string, message: string, details?: any}, result?: object, interrupt: bool, source_after?: keep|suspend|destroy, task?: string, by?: string, created_at: int, updated_at: int}]}"
+      "result": "{jobs: [{id: string, direction: send|bring_back, pane?: string, run?: string, box?: string, from: object, to: object, state: queued|waiting_turn|creating|bootstrapping|exporting|awaiting_confirmation|uploading|importing|resuming|done|failed|cancelled, progress?: {done: int, total: int}, error?: {kind: string, message: string, details?: any}, result?: object, interrupt: bool, source_after?: keep|suspend|destroy, task?: string, by?: string, new_task: bool, review: bool, code_only: bool, confirmed: bool, created_at: int, updated_at: int}]}"
     },
     {
       "name": "cloud.move",
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -1675,12 +1884,13 @@
       ],
       "milestone": null,
       "spec": null,
-      "params": "{pane?: Target, run?: string, box?: string, to: {kind: cloud|local|peer, provider?: string, box?: string, peer?: string}, interrupt?: bool = false, source_after?: keep|suspend|destroy}",
-      "result": "{job: {id: string, direction: send|bring_back, pane?: string, run?: string, box?: string, from: object, to: object, state: queued|waiting_turn|creating|bootstrapping|exporting|uploading|importing|resuming|done|failed|cancelled, progress?: {done: int, total: int}, error?: {kind: string, message: string, details?: any}, result?: object, interrupt: bool, source_after?: keep|suspend|destroy, task?: string, by?: string, created_at: int, updated_at: int}}"
+      "params": "{pane?: Target, run?: string, box?: string, to: {kind: cloud|local|peer, provider?: string, box?: string, peer?: string}, interrupt?: bool = false, source_after?: keep|suspend|destroy, new_task?: bool = false, review?: bool = true, code_only?: bool = false}",
+      "result": "{job: {id: string, direction: send|bring_back, pane?: string, run?: string, box?: string, from: object, to: object, state: queued|waiting_turn|creating|bootstrapping|exporting|awaiting_confirmation|uploading|importing|resuming|done|failed|cancelled, progress?: {done: int, total: int}, error?: {kind: string, message: string, details?: any}, result?: object, interrupt: bool, source_after?: keep|suspend|destroy, task?: string, by?: string, new_task: bool, review: bool, code_only: bool, confirmed: bool, created_at: int, updated_at: int}}"
     },
     {
       "name": "cloud.providers",
       "mutating": false,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "open",
@@ -1695,6 +1905,7 @@
     {
       "name": "cloud.prune",
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -1709,6 +1920,7 @@
     {
       "name": "collision.claim",
       "mutating": true,
+      "stability": "experimental",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "actor_required",
@@ -1723,6 +1935,7 @@
     {
       "name": "collision.claim_release",
       "mutating": true,
+      "stability": "experimental",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "actor_required",
@@ -1737,6 +1950,7 @@
     {
       "name": "collision.claims",
       "mutating": false,
+      "stability": "experimental",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -1751,6 +1965,7 @@
     {
       "name": "collision.dismiss",
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -1765,6 +1980,7 @@
     {
       "name": "collision.get",
       "mutating": false,
+      "stability": "experimental",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -1779,6 +1995,7 @@
     {
       "name": "collision.ignore",
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -1793,6 +2010,7 @@
     {
       "name": "collision.ignores",
       "mutating": false,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "open",
@@ -1807,6 +2025,7 @@
     {
       "name": "collision.list",
       "mutating": false,
+      "stability": "experimental",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -1821,6 +2040,7 @@
     {
       "name": "collision.pause",
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -1835,6 +2055,7 @@
     {
       "name": "collision.start_task",
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -1849,6 +2070,7 @@
     {
       "name": "collision.status",
       "mutating": false,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "open",
@@ -1863,6 +2085,7 @@
     {
       "name": "collision.tell",
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -1877,6 +2100,7 @@
     {
       "name": "collision.unignore",
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -1891,6 +2115,7 @@
     {
       "name": "compat.herdr.call",
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "actor_required",
@@ -1905,6 +2130,7 @@
     {
       "name": "compat.invocation.verify",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -1919,6 +2145,7 @@
     {
       "name": "compat.status",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -1933,6 +2160,7 @@
     {
       "name": "compat.ui.state",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -1947,6 +2175,7 @@
     {
       "name": "config.get",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -1956,11 +2185,12 @@
       "milestone": "M1",
       "spec": "`{key?}` → `{value, source: default|user|repo|cli}`",
       "params": "{key?: string, repo?: string, cwd?: string, pane?: Target}",
-      "result": "{key?: string, value: any, source: default|user|repo|runtime|cli, path: string, overrides: [string], cli_overrides: [string], layers: [ConfigLayer], repo: {root: string, file: string|null, trusted: bool, applied: bool, warnings?: [string], error?: string}|null, errors: [ConfigDiagnostic]}"
+      "result": "{key?: string, value: any, source: default|user|repo|runtime|cli, path: string, overrides: [string], cli_overrides: [string], layers: [ConfigLayer], repo: {root: string, file: string|null, trusted: bool, applied: bool, warnings?: [string], error?: string}|null, errors: [ConfigDiagnostic], load_error?: {path: string, errors: [ConfigDiagnostic]}|null}"
     },
     {
       "name": "config.reload",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -1975,6 +2205,7 @@
     {
       "name": "config.set",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -1989,6 +2220,7 @@
     {
       "name": "config.validate",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -2003,6 +2235,7 @@
     {
       "name": "desk.context",
       "mutating": false,
+      "stability": "experimental",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -2017,6 +2250,7 @@
     {
       "name": "desk.forget",
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -2031,6 +2265,7 @@
     {
       "name": "desk.index",
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -2045,6 +2280,7 @@
     {
       "name": "desk.open",
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -2059,6 +2295,7 @@
     {
       "name": "desk.resume",
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -2073,6 +2310,7 @@
     {
       "name": "desk.search",
       "mutating": false,
+      "stability": "experimental",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -2087,6 +2325,7 @@
     {
       "name": "desk.sessions",
       "mutating": false,
+      "stability": "experimental",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -2101,6 +2340,7 @@
     {
       "name": "desk.status",
       "mutating": false,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "open",
@@ -2115,6 +2355,7 @@
     {
       "name": "draft.check",
       "mutating": false,
+      "stability": "experimental",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -2129,6 +2370,7 @@
     {
       "name": "draft.combine",
       "mutating": true,
+      "stability": "experimental",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "actor_required",
@@ -2143,6 +2385,7 @@
     {
       "name": "draft.create",
       "mutating": true,
+      "stability": "experimental",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "actor_required",
@@ -2157,6 +2400,7 @@
     {
       "name": "draft.delete",
       "mutating": true,
+      "stability": "experimental",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "actor_required",
@@ -2171,6 +2415,7 @@
     {
       "name": "draft.get",
       "mutating": false,
+      "stability": "experimental",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -2185,6 +2430,7 @@
     {
       "name": "draft.list",
       "mutating": false,
+      "stability": "experimental",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -2199,6 +2445,7 @@
     {
       "name": "draft.reconcile",
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -2213,6 +2460,7 @@
     {
       "name": "draft.reorder",
       "mutating": true,
+      "stability": "experimental",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "actor_required",
@@ -2227,6 +2475,7 @@
     {
       "name": "draft.send",
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -2241,6 +2490,7 @@
     {
       "name": "draft.update",
       "mutating": true,
+      "stability": "experimental",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "actor_required",
@@ -2255,6 +2505,7 @@
     {
       "name": "events.read",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -2269,6 +2520,7 @@
     {
       "name": "events.subscribe",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -2283,6 +2535,7 @@
     {
       "name": "events.unsubscribe",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -2297,6 +2550,7 @@
     {
       "name": "events.wait",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -2311,6 +2565,7 @@
     {
       "name": "family.check",
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -2325,6 +2580,7 @@
     {
       "name": "family.get",
       "mutating": false,
+      "stability": "experimental",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -2339,6 +2595,7 @@
     {
       "name": "family.list",
       "mutating": false,
+      "stability": "experimental",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -2353,6 +2610,7 @@
     {
       "name": "fs.browse",
       "mutating": false,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "open",
@@ -2367,6 +2625,7 @@
     {
       "name": "fs.list",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -2381,6 +2640,7 @@
     {
       "name": "fs.read",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -2395,6 +2655,7 @@
     {
       "name": "gateway.call",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -2407,8 +2668,24 @@
       "result": "any"
     },
     {
+      "name": "gateway.notice",
+      "mutating": true,
+      "stability": "stable",
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "gateway_bridge"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{event: string, title: string, body?: string, urgency?: normal|high = high}",
+      "result": "{}"
+    },
+    {
       "name": "gateway.reply",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -2423,6 +2700,7 @@
     {
       "name": "gateway.start",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -2437,6 +2715,7 @@
     {
       "name": "gateway.status",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -2451,6 +2730,7 @@
     {
       "name": "gateway.stop",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -2465,6 +2745,7 @@
     {
       "name": "git.diff",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -2477,8 +2758,24 @@
       "result": "{file: string, diff: string, truncated: bool, binary: bool, untracked: bool, secret?: bool}"
     },
     {
+      "name": "git.import_box_objects",
+      "mutating": true,
+      "stability": "stable",
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "api"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{pane?: Target, path?: string}",
+      "result": "{}"
+    },
+    {
       "name": "git.log",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -2493,6 +2790,7 @@
     {
       "name": "git.status",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -2507,6 +2805,7 @@
     {
       "name": "goal.approve",
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -2521,6 +2820,7 @@
     {
       "name": "goal.briefing",
       "mutating": false,
+      "stability": "experimental",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -2535,6 +2835,7 @@
     {
       "name": "goal.cancel",
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -2549,6 +2850,7 @@
     {
       "name": "goal.create",
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -2563,6 +2865,7 @@
     {
       "name": "goal.get",
       "mutating": false,
+      "stability": "experimental",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -2577,6 +2880,7 @@
     {
       "name": "goal.list",
       "mutating": false,
+      "stability": "experimental",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -2591,6 +2895,7 @@
     {
       "name": "goal.plan",
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -2605,6 +2910,7 @@
     {
       "name": "goal.plan_submit",
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -2619,6 +2925,7 @@
     {
       "name": "goal.start",
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -2633,6 +2940,7 @@
     {
       "name": "goal.step_done",
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -2647,6 +2955,7 @@
     {
       "name": "group.add",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -2661,6 +2970,7 @@
     {
       "name": "group.collapse",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -2675,6 +2985,7 @@
     {
       "name": "group.create",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -2689,6 +3000,7 @@
     {
       "name": "group.delete",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -2703,6 +3015,7 @@
     {
       "name": "group.list",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -2717,6 +3030,7 @@
     {
       "name": "group.move",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -2731,6 +3045,7 @@
     {
       "name": "group.remove",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -2745,6 +3060,7 @@
     {
       "name": "group.rename",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -2759,6 +3075,7 @@
     {
       "name": "handoff.accept",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -2773,6 +3090,7 @@
     {
       "name": "handoff.cancel",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -2787,6 +3105,7 @@
     {
       "name": "handoff.decline",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -2801,6 +3120,7 @@
     {
       "name": "handoff.incoming.add",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -2815,6 +3135,7 @@
     {
       "name": "handoff.incoming.get",
       "mutating": false,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "open",
@@ -2829,6 +3150,7 @@
     {
       "name": "handoff.incoming.list",
       "mutating": false,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "open",
@@ -2843,6 +3165,7 @@
     {
       "name": "handoff.job.update",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -2857,6 +3180,7 @@
     {
       "name": "handoff.jobs",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -2871,6 +3195,7 @@
     {
       "name": "handoff.peers",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -2885,6 +3210,7 @@
     {
       "name": "handoff.peers.set",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -2899,6 +3225,7 @@
     {
       "name": "handoff.prefs",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -2913,6 +3240,7 @@
     {
       "name": "handoff.resume",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -2927,6 +3255,7 @@
     {
       "name": "handoff.send",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -2941,6 +3270,7 @@
     {
       "name": "image.upload",
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "actor_required",
@@ -2955,6 +3285,7 @@
     {
       "name": "integration.doctor",
       "mutating": false,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "open",
@@ -2969,6 +3300,7 @@
     {
       "name": "interaction.answer",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -2983,6 +3315,7 @@
     {
       "name": "interaction.cancel",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -2997,6 +3330,7 @@
     {
       "name": "interaction.get",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -3011,6 +3345,7 @@
     {
       "name": "interaction.list",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -3025,6 +3360,7 @@
     {
       "name": "layout.apply",
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "actor_required",
@@ -3040,6 +3376,7 @@
     {
       "name": "layout.export",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -3055,6 +3392,7 @@
     {
       "name": "layout.get",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -3070,6 +3408,7 @@
     {
       "name": "layout.list",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -3085,6 +3424,7 @@
     {
       "name": "machine.get",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -3099,6 +3439,7 @@
     {
       "name": "machine.list",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -3113,6 +3454,7 @@
     {
       "name": "machine.remove",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -3127,6 +3469,7 @@
     {
       "name": "machine.upsert",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -3141,6 +3484,7 @@
     {
       "name": "merge.predict",
       "mutating": false,
+      "stability": "experimental",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -3155,6 +3499,7 @@
     {
       "name": "merge.queue.add",
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -3169,6 +3514,7 @@
     {
       "name": "merge.queue.cancel",
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -3183,6 +3529,7 @@
     {
       "name": "merge.queue.list",
       "mutating": false,
+      "stability": "experimental",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -3197,6 +3544,7 @@
     {
       "name": "merge.queue.requeue",
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -3211,6 +3559,7 @@
     {
       "name": "merge.queue.run",
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -3225,6 +3574,7 @@
     {
       "name": "notes.get",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -3239,6 +3589,7 @@
     {
       "name": "notes.set",
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "actor_required",
@@ -3253,6 +3604,7 @@
     {
       "name": "notification.config",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -3268,6 +3620,7 @@
     {
       "name": "notification.list",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -3282,6 +3635,7 @@
     {
       "name": "notification.read",
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "actor_required",
@@ -3296,6 +3650,7 @@
     {
       "name": "notification.send",
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "actor_required",
@@ -3310,6 +3665,7 @@
     {
       "name": "pane.can_see_paths",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -3324,6 +3680,7 @@
     {
       "name": "pane.close",
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "own_target",
       "gateway": "actor_required",
@@ -3338,6 +3695,7 @@
     {
       "name": "pane.current",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -3352,6 +3710,7 @@
     {
       "name": "pane.embed",
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "own_target",
       "gateway": "actor_required",
@@ -3366,6 +3725,7 @@
     {
       "name": "pane.equalize",
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "own_target",
       "gateway": "actor_required",
@@ -3380,6 +3740,7 @@
     {
       "name": "pane.float",
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "own_target",
       "gateway": "actor_required",
@@ -3388,12 +3749,13 @@
       ],
       "milestone": "M1",
       "spec": "`{tab, rect?: {x%,y%,w%,h%}, cwd?, command?, focus?}` → `{pane}` [M4] — *implemented:* without `pane`, a new floating pane (default 70%×70% centered). With `pane`, floats a tiled pane (`conflict` for a tab's last tiled pane) or moves/resizes/raises a floating one. Floats live in `Tab.floating: [{pane, x, y, w, h, z}]` (percent), not in `layout`",
-      "params": "{pane?: Target, tab?: Target, rect?: {x?: number, y?: number, w?: number, h?: number}, cwd?: string, command?: [string], focus?: bool}",
+      "params": "{pane?: Target, tab?: Target, rect?: {x?: number, y?: number, w?: number, h?: number}, cwd?: string, command?: [string] | string, focus?: bool}",
       "result": "{pane: Pane}"
     },
     {
       "name": "pane.focus",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -3408,6 +3770,7 @@
     {
       "name": "pane.get",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -3422,6 +3785,7 @@
     {
       "name": "pane.list",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -3436,6 +3800,7 @@
     {
       "name": "pane.mark_seen",
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "own_target",
       "gateway": "actor_required",
@@ -3450,6 +3815,7 @@
     {
       "name": "pane.mark_unread",
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "own_target",
       "gateway": "actor_required",
@@ -3464,6 +3830,7 @@
     {
       "name": "pane.move",
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "own_target",
       "gateway": "actor_required",
@@ -3478,6 +3845,7 @@
     {
       "name": "pane.pin",
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "own_target",
       "gateway": "actor_required",
@@ -3492,6 +3860,7 @@
     {
       "name": "pane.read",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -3506,6 +3875,7 @@
     {
       "name": "pane.rename",
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "own_target",
       "gateway": "actor_required",
@@ -3520,6 +3890,7 @@
     {
       "name": "pane.report_agent",
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "own_target",
       "gateway": "actor_required",
@@ -3534,6 +3905,7 @@
     {
       "name": "pane.report_agent_session",
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "own_target",
       "gateway": "actor_required",
@@ -3548,6 +3920,7 @@
     {
       "name": "pane.resize",
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "own_target",
       "gateway": "actor_required",
@@ -3562,6 +3935,7 @@
     {
       "name": "pane.run",
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "own_target",
       "gateway": "actor_required",
@@ -3576,6 +3950,7 @@
     {
       "name": "pane.screenshot",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "own_target",
       "gateway": "open",
@@ -3590,6 +3965,7 @@
     {
       "name": "pane.scroll",
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "own_target",
       "gateway": "actor_required",
@@ -3604,6 +3980,7 @@
     {
       "name": "pane.send_bytes",
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "own_target",
       "gateway": "actor_required",
@@ -3618,6 +3995,7 @@
     {
       "name": "pane.send_keys",
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "own_target",
       "gateway": "actor_required",
@@ -3632,6 +4010,7 @@
     {
       "name": "pane.send_text",
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "own_target",
       "gateway": "actor_required",
@@ -3646,6 +4025,7 @@
     {
       "name": "pane.split",
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "own_target",
       "gateway": "actor_required",
@@ -3654,12 +4034,13 @@
       ],
       "milestone": "M1",
       "spec": "`{pane, direction: right|down|left|up, ratio?: 0.5, cwd?, command?: argv, env?: {k:v}, focus?: false, title?}` → `{pane}`",
-      "params": "{pane?: Target, direction?: right|down|left|up = right, ratio?: number = 0.5, cwd?: string, command?: [string], env?: {*: string}, focus?: bool = false, title?: string}",
+      "params": "{pane?: Target, direction?: right|down|left|up = right, ratio?: number = 0.5, cwd?: string, command?: [string] | string, env?: {*: string}, focus?: bool = false, title?: string}",
       "result": "{pane: Pane}"
     },
     {
       "name": "pane.sync_input",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -3674,6 +4055,7 @@
     {
       "name": "pane.wait_idle",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -3688,6 +4070,7 @@
     {
       "name": "pane.wait_output",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -3702,6 +4085,7 @@
     {
       "name": "pane.zoom",
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "own_target",
       "gateway": "actor_required",
@@ -3716,6 +4100,7 @@
     {
       "name": "paste.translated",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -3730,6 +4115,7 @@
     {
       "name": "plugin.action",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -3744,6 +4130,7 @@
     {
       "name": "plugin.action.list",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -3758,8 +4145,9 @@
     {
       "name": "plugin.action.run",
       "mutating": true,
-      "scope": "pane",
-      "pane_scope": "open",
+      "stability": "stable",
+      "scope": "full",
+      "pane_scope": "forbidden",
       "gateway": "actor_required",
       "tables": [
         "compat"
@@ -3772,6 +4160,7 @@
     {
       "name": "plugin.consent",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -3786,6 +4175,7 @@
     {
       "name": "plugin.disable",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -3800,6 +4190,7 @@
     {
       "name": "plugin.enable",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -3814,6 +4205,7 @@
     {
       "name": "plugin.install",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -3828,6 +4220,7 @@
     {
       "name": "plugin.kv.delete",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -3842,6 +4235,7 @@
     {
       "name": "plugin.kv.get",
       "mutating": false,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "open",
@@ -3856,6 +4250,7 @@
     {
       "name": "plugin.kv.list",
       "mutating": false,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "open",
@@ -3870,6 +4265,7 @@
     {
       "name": "plugin.kv.set",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -3884,6 +4280,7 @@
     {
       "name": "plugin.link",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -3898,8 +4295,9 @@
     {
       "name": "plugin.link.open",
       "mutating": true,
-      "scope": "pane",
-      "pane_scope": "open",
+      "stability": "stable",
+      "scope": "full",
+      "pane_scope": "forbidden",
       "gateway": "actor_required",
       "tables": [
         "compat"
@@ -3912,6 +4310,7 @@
     {
       "name": "plugin.link_handler.list",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -3926,6 +4325,7 @@
     {
       "name": "plugin.list",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -3940,6 +4340,7 @@
     {
       "name": "plugin.log.list",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -3954,6 +4355,7 @@
     {
       "name": "plugin.registry.notify",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -3968,6 +4370,7 @@
     {
       "name": "plugin.remove",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -3982,6 +4385,7 @@
     {
       "name": "plugin.restart",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -3996,6 +4400,7 @@
     {
       "name": "plugin.surface.close",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -4010,6 +4415,7 @@
     {
       "name": "policy.add",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -4024,6 +4430,7 @@
     {
       "name": "policy.list",
       "mutating": false,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "open",
@@ -4038,6 +4445,7 @@
     {
       "name": "policy.remove",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -4052,6 +4460,7 @@
     {
       "name": "policy.test",
       "mutating": false,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "open",
@@ -4066,6 +4475,7 @@
     {
       "name": "policy.trust",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -4080,6 +4490,7 @@
     {
       "name": "preview.connect",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -4088,12 +4499,13 @@
       ],
       "milestone": null,
       "spec": null,
-      "params": "{machine?: string, host: string, port: int}",
+      "params": "{machine?: string, host: string, port: int, allow_port?: bool = false, actor?: string}",
       "result": "{connected: bool}"
     },
     {
       "name": "preview.declare",
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "actor_required",
@@ -4108,6 +4520,7 @@
     {
       "name": "preview.dismiss",
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "actor_required",
@@ -4122,6 +4535,7 @@
     {
       "name": "preview.forget",
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "actor_required",
@@ -4136,6 +4550,7 @@
     {
       "name": "preview.get",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -4150,6 +4565,7 @@
     {
       "name": "preview.list",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -4164,6 +4580,7 @@
     {
       "name": "preview.mirror",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -4178,6 +4595,7 @@
     {
       "name": "preview.open",
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "actor_required",
@@ -4192,6 +4610,7 @@
     {
       "name": "preview.profile",
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "actor_required",
@@ -4206,6 +4625,7 @@
     {
       "name": "preview.profile.list",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -4220,6 +4640,7 @@
     {
       "name": "preview.profile.reset",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -4234,6 +4655,7 @@
     {
       "name": "preview.promote",
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "actor_required",
@@ -4248,6 +4670,7 @@
     {
       "name": "preview.status",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -4262,6 +4685,7 @@
     {
       "name": "preview.unmirror",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -4276,6 +4700,7 @@
     {
       "name": "preview.url",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -4290,6 +4715,7 @@
     {
       "name": "quota.resume",
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -4304,6 +4730,7 @@
     {
       "name": "quota.route",
       "mutating": false,
+      "stability": "experimental",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -4318,6 +4745,7 @@
     {
       "name": "quota.status",
       "mutating": false,
+      "stability": "experimental",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -4332,6 +4760,7 @@
     {
       "name": "quota.tick",
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -4346,6 +4775,7 @@
     {
       "name": "repo.candidates",
       "mutating": false,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "open",
@@ -4360,6 +4790,7 @@
     {
       "name": "sandbox.allow",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -4374,6 +4805,7 @@
     {
       "name": "sandbox.copy_out",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -4388,6 +4820,7 @@
     {
       "name": "sandbox.disallow",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -4402,6 +4835,7 @@
     {
       "name": "sandbox.list",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -4416,6 +4850,7 @@
     {
       "name": "sandbox.logs",
       "mutating": false,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "open",
@@ -4430,6 +4865,7 @@
     {
       "name": "sandbox.prune",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -4444,6 +4880,7 @@
     {
       "name": "sandbox.push",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -4458,6 +4895,7 @@
     {
       "name": "sandbox.recover",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -4472,6 +4910,7 @@
     {
       "name": "sandbox.relaunch",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -4486,6 +4925,7 @@
     {
       "name": "sandbox.remove",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -4500,6 +4940,7 @@
     {
       "name": "sandbox.request",
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "actor_required",
@@ -4514,6 +4955,7 @@
     {
       "name": "sandbox.setup_token",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -4527,10 +4969,11 @@
     },
     {
       "name": "sandbox.shell",
-      "mutating": false,
+      "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
-      "gateway": "open",
+      "gateway": "actor_required",
       "tables": [
         "sandbox"
       ],
@@ -4542,6 +4985,7 @@
     {
       "name": "sandbox.start",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -4556,6 +5000,7 @@
     {
       "name": "sandbox.status",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -4570,6 +5015,7 @@
     {
       "name": "sandbox.stop",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -4584,6 +5030,7 @@
     {
       "name": "screenshot.add",
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "actor_required",
@@ -4598,6 +5045,7 @@
     {
       "name": "screenshot.delete",
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "actor_required",
@@ -4612,6 +5060,7 @@
     {
       "name": "screenshot.get",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -4626,6 +5075,7 @@
     {
       "name": "screenshot.list",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -4640,6 +5090,7 @@
     {
       "name": "screenshot.open",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -4654,6 +5105,7 @@
     {
       "name": "scrollback.forget",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -4668,6 +5120,7 @@
     {
       "name": "search.query",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -4682,6 +5135,7 @@
     {
       "name": "security.encryption.migrate",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -4696,6 +5150,7 @@
     {
       "name": "security.encryption.status",
       "mutating": false,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "open",
@@ -4710,6 +5165,7 @@
     {
       "name": "server.reload_config",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -4724,6 +5180,7 @@
     {
       "name": "server.restart",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -4738,6 +5195,7 @@
     {
       "name": "server.status",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -4747,11 +5205,12 @@
       "milestone": "M1",
       "spec": "`{}` → `{pid, version, uptime_ms, session, panes, holders: {live, orphaned}, clients, event_seq, db_size, rss}`",
       "params": "{}",
-      "result": "{pid: int, version: string, uptime_ms: int, boot_id?: string, restart_error?: string|null, session: string, machine: string, panes: int, holders: {live: int, orphaned?: int}, clients: int, event_seq: int, socket?: string, degraded?: any, ephemeral?: int, preview?: object, timers?: object, gateway?: GatewayStatus|null, db_size?: int, rss?: int}"
+      "result": "{pid: int, version: string, uptime_ms: int, boot_id?: string, restart_error?: string|null, session: string, machine: string, panes: int, holders: {live: int, orphaned?: int}, clients: int, event_seq: int, socket?: string, degraded?: any, ephemeral?: int, preview?: object, timers?: object, gateway?: GatewayStatus|null, config_error?: {path: string, errors: [ConfigDiagnostic]}|null, db_size?: int, rss?: int}"
     },
     {
       "name": "server.stop",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -4766,6 +5225,7 @@
     {
       "name": "session.create",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -4780,6 +5240,7 @@
     {
       "name": "session.info",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -4794,6 +5255,7 @@
     {
       "name": "session.list",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -4808,6 +5270,7 @@
     {
       "name": "session.rename",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -4822,6 +5285,7 @@
     {
       "name": "session.snapshot",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -4836,6 +5300,7 @@
     {
       "name": "session.stop",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -4850,6 +5315,7 @@
     {
       "name": "state.forget",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -4864,6 +5330,7 @@
     {
       "name": "status.segments",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -4878,6 +5345,7 @@
     {
       "name": "storage.prune",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -4887,11 +5355,12 @@
       "milestone": null,
       "spec": null,
       "params": "{}",
-      "result": "{events_aged: int, events_capped: int, events_remaining: int, stream_removed: int, blobs_removed: int, blob_bytes: int}"
+      "result": "{events_aged: int, events_capped: int, events_remaining: int, stream_removed: int, closed_removed: int, blobs_removed: int, blob_bytes: int}"
     },
     {
       "name": "storage.status",
       "mutating": false,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "open",
@@ -4901,11 +5370,12 @@
       "milestone": null,
       "spec": null,
       "params": "{}",
-      "result": "{degraded: string|null, ephemeral: int, archive_rows_skipped: int, db: {path: string, bytes: int}, events: {count: int, first_seq: int, last_seq: int, retention: {sync_days: int, history_days: int, max_rows: int, blob_days: int}}, backups: [{name: string, schema_version: int, created_at: int, bytes: int}], keep_backups: int, blobs: {count: int, bytes: int}, cursor: {machine_uuid: string, session_uuid: string, log_epoch: string}}"
+      "result": "{degraded: string|null, ephemeral: int, archive_rows_skipped: int, db: {path: string, bytes: int}, events: {count: int, first_seq: int, last_seq: int, retention: {sync_days: int, history_days: int, max_rows: int, blob_days: int, closed_days: int}}, backups: [{name: string, schema_version: int, created_at: int, bytes: int}], keep_backups: int, blobs: {count: int, bytes: int}, cursor: {machine_uuid: string, session_uuid: string, log_epoch: string}}"
     },
     {
       "name": "tab.close",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -4920,6 +5390,7 @@
     {
       "name": "tab.create",
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "actor_required",
@@ -4928,12 +5399,13 @@
       ],
       "milestone": "M1",
       "spec": "`{workspace, cwd?, title?, focus?: false, command?: argv, layout?: LayoutSpec}` → `{tab, root_pane}`",
-      "params": "{workspace?: Target, cwd?: string, title?: string, focus?: bool = false, command?: [string], layout?: LayoutSpec}",
+      "params": "{workspace?: Target, cwd?: string, title?: string, focus?: bool = false, command?: [string] | string, layout?: LayoutSpec}",
       "result": "{tab: Tab, root_pane: Pane}"
     },
     {
       "name": "tab.floats",
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "actor_required",
@@ -4948,6 +5420,7 @@
     {
       "name": "tab.focus",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -4962,6 +5435,7 @@
     {
       "name": "tab.list",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -4976,6 +5450,7 @@
     {
       "name": "tab.move",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -4990,6 +5465,7 @@
     {
       "name": "tab.rename",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -5004,6 +5480,7 @@
     {
       "name": "tab.renumber",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -5018,6 +5495,7 @@
     {
       "name": "task.adopt",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -5032,6 +5510,7 @@
     {
       "name": "task.archive",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -5046,6 +5525,7 @@
     {
       "name": "task.best_of_n",
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -5058,8 +5538,24 @@
       "result": "{family: object, tasks: [Task|null], runs: [AgentRun], warnings: [any]}"
     },
     {
+      "name": "task.bind",
+      "mutating": true,
+      "stability": "stable",
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "tracking"
+      ],
+      "milestone": "M1; remote tasks M3; tracking per 15 T1–T4",
+      "spec": "`{task, run | pane, role?, start_turn?, end_turn?}` → `{binding, pending}` (a switch away from another task's active binding takes effect at the next turn boundary. A suspended binding is continued) / `{task, binding?}` → `{closed}`",
+      "params": "{task: Target, run?: Target, pane?: Target, role?: string, start_turn?: int, end_turn?: int, idempotency_key?: string}",
+      "result": "{binding: any, pending: bool}"
+    },
+    {
       "name": "task.check.authorize",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -5074,6 +5570,7 @@
     {
       "name": "task.check.cancel",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -5088,6 +5585,7 @@
     {
       "name": "task.check.get",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -5102,6 +5600,7 @@
     {
       "name": "task.check.list",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -5116,6 +5615,7 @@
     {
       "name": "task.check.run",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -5130,6 +5630,7 @@
     {
       "name": "task.claim",
       "mutating": true,
+      "stability": "experimental",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "actor_required",
@@ -5144,6 +5645,7 @@
     {
       "name": "task.claim.list",
       "mutating": false,
+      "stability": "experimental",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -5158,6 +5660,7 @@
     {
       "name": "task.claim.remove",
       "mutating": true,
+      "stability": "experimental",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "actor_required",
@@ -5172,6 +5675,7 @@
     {
       "name": "task.compare",
       "mutating": false,
+      "stability": "experimental",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -5186,6 +5690,7 @@
     {
       "name": "task.create",
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "actor_required",
@@ -5200,6 +5705,7 @@
     {
       "name": "task.dependency.add",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -5215,6 +5721,7 @@
     {
       "name": "task.dependency.list",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -5230,6 +5737,7 @@
     {
       "name": "task.dependency.remove",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -5243,8 +5751,24 @@
       "result": "{removed: [object], removed_by: object}"
     },
     {
+      "name": "task.detail",
+      "mutating": false,
+      "stability": "stable",
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "tracking"
+      ],
+      "milestone": "M1; remote tasks M3; tracking per 15 T1–T4",
+      "spec": "`{task}` → `{task, intent, bindings, runs, baseline, uncommunicated, messages}`",
+      "params": "{task: Target}",
+      "result": "{task: Task, intent: any, bindings: [any], runs: [any], baseline: any, uncommunicated: [any], messages: [any]}"
+    },
+    {
       "name": "task.effort.estimate",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -5260,6 +5784,7 @@
     {
       "name": "task.finish",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -5274,6 +5799,7 @@
     {
       "name": "task.forget",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -5288,6 +5814,7 @@
     {
       "name": "task.get",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -5300,8 +5827,39 @@
       "result": "{task: Task, branch_status: {branch: string|null, ahead: int, behind: int, dirty_files: int, upstream: string|null, compared_to: string|null}|null, pr?: PrLookup|null, collisions?: [Collision]}"
     },
     {
+      "name": "task.intent.get",
+      "mutating": false,
+      "stability": "stable",
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "tracking"
+      ],
+      "milestone": "M1; remote tasks M3; tracking per 15 T1–T4",
+      "spec": "`{task, revision?}` → `{intent, current_revision, revisions, uncommunicated: [criterion_id]}`",
+      "params": "{task: Target, revision?: int}",
+      "result": "{task: string, current_revision: int, intent: any, revisions: [any]}"
+    },
+    {
+      "name": "task.intent.update",
+      "mutating": true,
+      "stability": "stable",
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "tracking"
+      ],
+      "milestone": "M1; remote tasks M3; tracking per 15 T1–T4",
+      "spec": "`{task, expected_revision?, title?, objective?, criterion?/criteria?, add_criterion?, constraint?, stop_at?, stop_detail?, idempotency_key?}` → `{task, intent, uncommunicated, note}` — record-only. Never sends",
+      "params": "{task: Target, expected_revision?: int, title?: string, objective?: string, stop_detail?: string, criteria?: [any], criterion?: any, add_criterion?: any, constraints?: [any], constraint?: any, idempotency_key?: string}",
+      "result": "{task: Task, intent: any, uncommunicated: [any], note?: string|null}"
+    },
+    {
       "name": "task.link.status",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -5316,6 +5874,7 @@
     {
       "name": "task.list",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -5328,8 +5887,84 @@
       "result": "{tasks: [Task]}"
     },
     {
+      "name": "task.message.cancel",
+      "mutating": true,
+      "stability": "stable",
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "tracking"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{message: string, idempotency_key?: string}",
+      "result": "{message: object}"
+    },
+    {
+      "name": "task.message.get",
+      "mutating": false,
+      "stability": "stable",
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "tracking"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{message: string}",
+      "result": "{message: object}"
+    },
+    {
+      "name": "task.message.prepare",
+      "mutating": true,
+      "stability": "stable",
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "tracking"
+      ],
+      "milestone": "M1; remote tasks M3; tracking per 15 T1–T4",
+      "spec": "`{task, text, communicates_intent?}` → `{message, recipient, send_path: prompt_input|open_pane_only, unsafe?}`. `{message, retry?, retry_despite_unknown?}` → `{message}` or `conflict{reason: send_unsafe, detail, fallback: open_pane_to_send}` with zero bytes written. Delivery states `prepared|sending|delivered|delivery_unknown|failed|cancelled` (15 §9)",
+      "params": "{task: Target, text: string, idempotency_key?: string}",
+      "result": "{message: object, recipient: {run: string|null, binding: string|null}, send_path?: any}"
+    },
+    {
+      "name": "task.message.send",
+      "mutating": true,
+      "stability": "stable",
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "tracking"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{message: string, idempotency_key?: string}",
+      "result": "{message: object}"
+    },
+    {
+      "name": "task.operation.get",
+      "mutating": false,
+      "stability": "stable",
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "open",
+      "tables": [
+        "tracking"
+      ],
+      "milestone": "M1; remote tasks M3; tracking per 15 T1–T4",
+      "spec": "`{idempotency_key}` → `{known, method?, result?, at_ms?, expired?}` — mutation receipt (30-day window). Unknown never means safe to repeat",
+      "params": "{idempotency_key: string}",
+      "result": "{known: bool, note?: string}"
+    },
+    {
       "name": "task.park",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -5344,6 +5979,7 @@
     {
       "name": "task.pick",
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -5358,6 +5994,7 @@
     {
       "name": "task.ports",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -5372,6 +6009,7 @@
     {
       "name": "task.ports.re_lease",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -5386,6 +6024,7 @@
     {
       "name": "task.pr",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -5400,6 +6039,7 @@
     {
       "name": "task.pr.claim",
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "actor_required",
@@ -5414,6 +6054,7 @@
     {
       "name": "task.pr.list",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -5428,6 +6069,7 @@
     {
       "name": "task.pr.observe",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -5442,6 +6084,7 @@
     {
       "name": "task.reconcile",
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "actor_required",
@@ -5456,6 +6099,7 @@
     {
       "name": "task.recreate",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -5470,6 +6114,7 @@
     {
       "name": "task.resume",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -5484,6 +6129,7 @@
     {
       "name": "task.review.accept",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -5498,6 +6144,7 @@
     {
       "name": "task.review.candidates",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -5512,6 +6159,7 @@
     {
       "name": "task.review.diff",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -5526,6 +6174,7 @@
     {
       "name": "task.review.forget",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -5540,6 +6189,7 @@
     {
       "name": "task.review.get",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -5554,6 +6204,7 @@
     {
       "name": "task.review.human_review",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -5568,6 +6219,7 @@
     {
       "name": "task.review.interval_status",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -5582,6 +6234,7 @@
     {
       "name": "task.review.intervals",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -5596,6 +6249,7 @@
     {
       "name": "task.review.note.classify",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -5611,6 +6265,7 @@
     {
       "name": "task.review.notes",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -5626,6 +6281,7 @@
     {
       "name": "task.review.request_reviewer",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -5641,6 +6297,7 @@
     {
       "name": "task.review.snapshot",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -5656,6 +6313,7 @@
     {
       "name": "task.review.snapshot.gc",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -5671,6 +6329,7 @@
     {
       "name": "task.review.start_reviewer",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -5684,8 +6343,24 @@
       "result": "{request: object, run: Target, binding: object, note?: string, replayed?: bool}"
     },
     {
+      "name": "task.set",
+      "mutating": true,
+      "stability": "stable",
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "tracking"
+      ],
+      "milestone": "M1; remote tasks M3; tracking per 15 T1–T4",
+      "spec": "`{task, expected_rev?, priority?, effort?: quick|minutes|deep|unknown, effort_source?: user|heuristic|assistant:<request>}` → `{task}` — `effort_source` (default `user`) is recorded in `task.updated`. Estimates are only ever applied through this explicit call",
+      "params": "{task: Target, priority?: int|null, effort?: string|null, effort_source?: string, expected_rev?: int, idempotency_key?: string}",
+      "result": "{task: Task}"
+    },
+    {
       "name": "task.setup",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -5700,6 +6375,7 @@
     {
       "name": "task.setup_log",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -5712,8 +6388,24 @@
       "result": "{task: string, path: string, exists: bool, text: string, size: int, truncated: bool, setup_status: string|null}"
     },
     {
+      "name": "task.sources",
+      "mutating": false,
+      "stability": "stable",
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "tracking"
+      ],
+      "milestone": "M1; remote tasks M3; tracking per 15 T1–T4",
+      "spec": "`{run | pane, limit?}` → `{run, identity_verified, native_conversation_id, turns: [{n, prompt, native_conversation_id, started_at_ms, ended_at_ms}]}` — exact recorded prompts for the Track form",
+      "params": "{run?: Target, pane?: Target, limit?: int}",
+      "result": "{run: string, harness: string, identity_verified: any}"
+    },
+    {
       "name": "task.split",
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -5728,6 +6420,7 @@
     {
       "name": "task.sync",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -5740,8 +6433,39 @@
       "result": "{task: Target | null, synced: [{direction: string, status: string, commits: any, from: any, to: any, ref: any}]}"
     },
     {
+      "name": "task.track",
+      "mutating": true,
+      "stability": "stable",
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "tracking"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{run?: Target, pane?: Target, title?: string, objective?: string, stop_detail?: string, target_branch?: string, turn?: int, turns?: [int], idempotency_key?: string}",
+      "result": "{task: Task, intent: any, binding: any, baseline: any, review_base: any}"
+    },
+    {
+      "name": "task.unbind",
+      "mutating": true,
+      "stability": "stable",
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "tracking"
+      ],
+      "milestone": "M1; remote tasks M3; tracking per 15 T1–T4",
+      "spec": "`{task, run | pane, role?, start_turn?, end_turn?}` → `{binding, pending}` (a switch away from another task's active binding takes effect at the next turn boundary. A suspended binding is continued) / `{task, binding?}` → `{closed}`",
+      "params": "{task?: Target, binding?: string, idempotency_key?: string}",
+      "result": "{closed: any}"
+    },
+    {
       "name": "theme.get",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -5757,8 +6481,9 @@
     {
       "name": "theme.set_mode",
       "mutating": true,
-      "scope": "pane",
-      "pane_scope": "open",
+      "stability": "stable",
+      "scope": "full",
+      "pane_scope": "forbidden",
       "gateway": "actor_required",
       "tables": [
         "parity",
@@ -5772,6 +6497,7 @@
     {
       "name": "ui.contribute",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -5786,6 +6512,7 @@
     {
       "name": "ui.contributions",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -5800,6 +6527,7 @@
     {
       "name": "ui.pane.open",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -5814,6 +6542,7 @@
     {
       "name": "vm.create",
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -5828,6 +6557,7 @@
     {
       "name": "vm.destroy",
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -5842,6 +6572,7 @@
     {
       "name": "vm.fork",
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -5856,6 +6587,7 @@
     {
       "name": "vm.list",
       "mutating": false,
+      "stability": "experimental",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -5870,6 +6602,7 @@
     {
       "name": "vm.resume",
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -5884,6 +6617,7 @@
     {
       "name": "vm.snapshot",
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -5898,6 +6632,7 @@
     {
       "name": "vm.snapshot.delete",
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -5912,6 +6647,7 @@
     {
       "name": "vm.start",
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -5926,6 +6662,7 @@
     {
       "name": "vm.status",
       "mutating": false,
+      "stability": "experimental",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -5940,6 +6677,7 @@
     {
       "name": "vm.stop",
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -5954,6 +6692,7 @@
     {
       "name": "vm.suspend",
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -5968,6 +6707,7 @@
     {
       "name": "vm.template.build",
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -5982,6 +6722,7 @@
     {
       "name": "vm.template.delete",
       "mutating": true,
+      "stability": "experimental",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -5996,6 +6737,7 @@
     {
       "name": "vm.template.list",
       "mutating": false,
+      "stability": "experimental",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -6010,6 +6752,7 @@
     {
       "name": "vm.transport",
       "mutating": false,
+      "stability": "experimental",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -6024,6 +6767,7 @@
     {
       "name": "workspace.close",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -6038,6 +6782,7 @@
     {
       "name": "workspace.create",
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "actor_required",
@@ -6046,12 +6791,13 @@
       ],
       "milestone": "M1",
       "spec": "`{cwd, name?, group?, focus?: false, layout?: LayoutSpec, command?: argv}` → `{workspace, tab, root_pane}`",
-      "params": "{cwd?: string, name?: string, group?: Target, focus?: bool = false, layout?: LayoutSpec, command?: [string]}",
+      "params": "{cwd?: string, name?: string, group?: Target, focus?: bool = false, layout?: LayoutSpec, command?: [string] | string}",
       "result": "{workspace: Workspace, tab: Tab, root_pane: Pane}"
     },
     {
       "name": "workspace.focus",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -6066,6 +6812,7 @@
     {
       "name": "workspace.get",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -6080,6 +6827,7 @@
     {
       "name": "workspace.list",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -6094,6 +6842,7 @@
     {
       "name": "workspace.move",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -6108,6 +6857,7 @@
     {
       "name": "workspace.rename",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -6122,6 +6872,7 @@
     {
       "name": "worktree.create",
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "actor_required",
@@ -6136,6 +6887,7 @@
     {
       "name": "worktree.list",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
@@ -6150,6 +6902,7 @@
     {
       "name": "worktree.open",
       "mutating": true,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "actor_required",
@@ -6164,6 +6917,7 @@
     {
       "name": "worktree.remove",
       "mutating": true,
+      "stability": "stable",
       "scope": "full",
       "pane_scope": "forbidden",
       "gateway": "actor_required",
@@ -6178,6 +6932,7 @@
     {
       "name": "worktree.repo_root",
       "mutating": false,
+      "stability": "stable",
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",

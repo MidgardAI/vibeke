@@ -807,8 +807,16 @@ RunUsage = TypedDict("RunUsage", {
     "updated_at_ms": int,
 })
 
+ScreenshotMetaTakenBy = TypedDict("ScreenshotMetaTakenBy", {
+    "kind": Literal["agent", "user", "plugin"],
+    "pane": Optional[str],
+    "run": Optional[str],
+    "client": Optional[str],
+})
+
 ScreenshotMeta = TypedDict("ScreenshotMeta", {
     "id": str,
+    "taken_by": NotRequired["ScreenshotMetaTakenBy"],
     "handle": NotRequired[str],
     "workspace": NotRequired[str],
     "task": NotRequired[Optional[str]],
@@ -1234,6 +1242,7 @@ AgentPromptParams = TypedDict("AgentPromptParams", {
     "wait": NotRequired[bool],
     "until": NotRequired[List[str]],
     "timeout_ms": NotRequired[int],
+    "idempotency_key": NotRequired[str],
 })
 
 AgentPromptResult = TypedDict("AgentPromptResult", {
@@ -1308,6 +1317,7 @@ AgentResumeResult = TypedDict("AgentResumeResult", {
 AgentSendKeysParams = TypedDict("AgentSendKeysParams", {
     "target": "Target",
     "keys": List[str],
+    "idempotency_key": NotRequired[str],
 })
 
 AgentSendKeysResult = TypedDict("AgentSendKeysResult", {
@@ -1327,12 +1337,21 @@ AgentSetModelResult = TypedDict("AgentSetModelResult", {
 })
 
 AgentSpawnParams = TypedDict("AgentSpawnParams", {
-    "harness": str,
+    "harness": NotRequired[str],
     "name": NotRequired[str],
-    "where": NotRequired[Dict[str, Any]],
+    "split_of": NotRequired["Target"],
+    "pane": NotRequired["Target"],
+    "direction": NotRequired[Literal["right", "down", "left", "up"]],
+    "cwd": NotRequired[str],
     "prompt": NotRequired[str],
+    "wait": NotRequired[bool],
     "args": NotRequired[List[str]],
     "focus": NotRequired[bool],
+    "yolo": NotRequired[bool],
+    "isolate": NotRequired["IsolationLevel"],
+    "network": NotRequired[str],
+    "confirm_host_yolo": NotRequired[bool],
+    "idempotency_key": NotRequired[str],
 })
 
 AgentSpawnResult = TypedDict("AgentSpawnResult", {
@@ -1351,11 +1370,25 @@ AgentStartParams = TypedDict("AgentStartParams", {
     "model": NotRequired[str],
     "task": NotRequired["Target"],
     "ready_timeout_ms": NotRequired[int],
+    "idempotency_key": NotRequired[str],
 })
 
 AgentStartResult = TypedDict("AgentStartResult", {
     "run": "AgentRun",
     "cursor": NotRequired["Cursor"],
+})
+
+AgentTranscriptParams = TypedDict("AgentTranscriptParams", {
+    "target": NotRequired["Target"],
+    "run": NotRequired["Target"],
+    "limit": NotRequired[int],
+    "before": NotRequired[int],
+    "items": NotRequired[bool],
+    "image": NotRequired[str],
+})
+
+AgentTranscriptResult = TypedDict("AgentTranscriptResult", {
+    "turns": NotRequired[List[Any]],
 })
 
 AgentTurnUsageParams = TypedDict("AgentTurnUsageParams", {
@@ -1427,6 +1460,7 @@ ApiMethodsParams: TypeAlias = Dict[str, Any]
 ApiMethodsResultMethodsItem = TypedDict("ApiMethodsResultMethodsItem", {
     "name": str,
     "mutating": bool,
+    "stability": NotRequired[Literal["stable", "experimental"]],
     "milestone": NotRequired[str],
     "capability": NotRequired[str],
 })
@@ -2147,6 +2181,7 @@ BrowserClickParams = TypedDict("BrowserClickParams", {
     "y": NotRequired[float],
     "click_count": NotRequired[int],
     "timeout_ms": NotRequired[int],
+    "idempotency_key": NotRequired[str],
 })
 
 BrowserClickResultElementV0 = TypedDict("BrowserClickResultElementV0", {
@@ -2170,6 +2205,7 @@ BrowserCloseParams = TypedDict("BrowserCloseParams", {
     "session": NotRequired[str],
     "browser_session": NotRequired[str],
     "target": NotRequired[str],
+    "idempotency_key": NotRequired[str],
 })
 
 BrowserCloseResult = TypedDict("BrowserCloseResult", {
@@ -2496,6 +2532,7 @@ BrowserNavigateParams = TypedDict("BrowserNavigateParams", {
     "path": NotRequired[str],
     "wait": NotRequired[Union[Literal["load"], Literal["domcontentloaded"], Literal["commit"], Literal["none"], str]],
     "timeout_ms": NotRequired[int],
+    "idempotency_key": NotRequired[str],
 })
 
 BrowserNavigateResult = TypedDict("BrowserNavigateResult", {
@@ -2580,6 +2617,7 @@ BrowserOpenParams = TypedDict("BrowserOpenParams", {
     "dark": NotRequired[bool],
     "wait": NotRequired[str],
     "timeout_ms": NotRequired[int],
+    "idempotency_key": NotRequired[str],
 })
 
 BrowserOpenResult: TypeAlias = "BrowserSession"
@@ -2745,6 +2783,7 @@ BrowserPressParams = TypedDict("BrowserPressParams", {
     "browser_session": NotRequired[str],
     "target": NotRequired[str],
     "key": str,
+    "idempotency_key": NotRequired[str],
 })
 
 BrowserPressResult = TypedDict("BrowserPressResult", {
@@ -2771,6 +2810,7 @@ BrowserScreencastFrameParams = TypedDict("BrowserScreencastFrameParams", {
     "target": NotRequired[str],
     "after_seq": NotRequired[int],
     "wait_ms": NotRequired[int],
+    "data_saver": NotRequired[bool],
 })
 
 BrowserScreencastFrameResultXV0 = TypedDict("BrowserScreencastFrameResultXV0", {
@@ -2931,6 +2971,7 @@ BrowserTypeParams = TypedDict("BrowserTypeParams", {
     "clear": NotRequired[bool],
     "submit": NotRequired[bool],
     "timeout_ms": NotRequired[int],
+    "idempotency_key": NotRequired[str],
 })
 
 BrowserTypeResult = TypedDict("BrowserTypeResult", {
@@ -2974,6 +3015,12 @@ BrowserWatchResult = TypedDict("BrowserWatchResult", {
     "cursor": NotRequired["Cursor"],
 })
 
+ClientActivityParams = TypedDict("ClientActivityParams", {
+    "last_input_ms": NotRequired[int],
+})
+
+ClientActivityResult: TypeAlias = Dict[str, Any]
+
 ClientAppearanceParams = TypedDict("ClientAppearanceParams", {
     "dark": bool,
     "source": NotRequired[Union[Literal["osc11"], Literal["csi996"], str]],
@@ -2982,6 +3029,43 @@ ClientAppearanceParams = TypedDict("ClientAppearanceParams", {
 ClientAppearanceResult = TypedDict("ClientAppearanceResult", {
     "appearance": "Appearance",
     "colorfgbg": str,
+    "cursor": NotRequired["Cursor"],
+})
+
+ClientConfirmParamsOptionsItem = TypedDict("ClientConfirmParamsOptionsItem", {
+    "id": str,
+    "label": str,
+})
+
+ClientConfirmParams = TypedDict("ClientConfirmParams", {
+    "title": str,
+    "body": NotRequired[str],
+    "options": NotRequired[List["ClientConfirmParamsOptionsItem"]],
+    "timeout_ms": NotRequired[int],
+})
+
+ClientConfirmResult = TypedDict("ClientConfirmResult", {
+    "confirm": str,
+    "choice": Optional[str],
+    "timed_out": bool,
+    "cursor": NotRequired["Cursor"],
+})
+
+ClientConfirmAnswerParams = TypedDict("ClientConfirmAnswerParams", {
+    "confirm": str,
+    "choice": NotRequired[str],
+})
+
+ClientConfirmAnswerResult = TypedDict("ClientConfirmAnswerResult", {
+    "confirm": str,
+    "cursor": NotRequired["Cursor"],
+})
+
+ClientDevicesParams = TypedDict("ClientDevicesParams", {
+    "devices": List[Dict[str, Any]],
+})
+
+ClientDevicesResult = TypedDict("ClientDevicesResult", {
     "cursor": NotRequired["Cursor"],
 })
 
@@ -3181,7 +3265,7 @@ CloudCancelResultJob = TypedDict("CloudCancelResultJob", {
     "box": NotRequired[str],
     "from": Dict[str, Any],
     "to": Dict[str, Any],
-    "state": Literal["queued", "waiting_turn", "creating", "bootstrapping", "exporting", "uploading", "importing", "resuming", "done", "failed", "cancelled"],
+    "state": Literal["queued", "waiting_turn", "creating", "bootstrapping", "exporting", "awaiting_confirmation", "uploading", "importing", "resuming", "done", "failed", "cancelled"],
     "progress": NotRequired["CloudCancelResultJobProgress"],
     "error": NotRequired["CloudCancelResultJobError"],
     "result": NotRequired[Dict[str, Any]],
@@ -3189,12 +3273,61 @@ CloudCancelResultJob = TypedDict("CloudCancelResultJob", {
     "source_after": NotRequired[Literal["keep", "suspend", "destroy"]],
     "task": NotRequired[str],
     "by": NotRequired[str],
+    "new_task": bool,
+    "review": bool,
+    "code_only": bool,
+    "confirmed": bool,
     "created_at": int,
     "updated_at": int,
 })
 
 CloudCancelResult = TypedDict("CloudCancelResult", {
     "job": "CloudCancelResultJob",
+    "cursor": NotRequired["Cursor"],
+})
+
+CloudConfirmParams = TypedDict("CloudConfirmParams", {
+    "id": str,
+    "code_only": NotRequired[bool],
+})
+
+CloudConfirmResultJobProgress = TypedDict("CloudConfirmResultJobProgress", {
+    "done": int,
+    "total": int,
+})
+
+CloudConfirmResultJobError = TypedDict("CloudConfirmResultJobError", {
+    "kind": str,
+    "message": str,
+    "details": NotRequired[Any],
+})
+
+CloudConfirmResultJob = TypedDict("CloudConfirmResultJob", {
+    "id": str,
+    "direction": Literal["send", "bring_back"],
+    "pane": NotRequired[str],
+    "run": NotRequired[str],
+    "box": NotRequired[str],
+    "from": Dict[str, Any],
+    "to": Dict[str, Any],
+    "state": Literal["queued", "waiting_turn", "creating", "bootstrapping", "exporting", "awaiting_confirmation", "uploading", "importing", "resuming", "done", "failed", "cancelled"],
+    "progress": NotRequired["CloudConfirmResultJobProgress"],
+    "error": NotRequired["CloudConfirmResultJobError"],
+    "result": NotRequired[Dict[str, Any]],
+    "interrupt": bool,
+    "source_after": NotRequired[Literal["keep", "suspend", "destroy"]],
+    "task": NotRequired[str],
+    "by": NotRequired[str],
+    "new_task": bool,
+    "review": bool,
+    "code_only": bool,
+    "confirmed": bool,
+    "created_at": int,
+    "updated_at": int,
+})
+
+CloudConfirmResult = TypedDict("CloudConfirmResult", {
+    "job": "CloudConfirmResultJob",
     "cursor": NotRequired["Cursor"],
 })
 
@@ -3219,7 +3352,7 @@ CloudJobsResultJobsItem = TypedDict("CloudJobsResultJobsItem", {
     "box": NotRequired[str],
     "from": Dict[str, Any],
     "to": Dict[str, Any],
-    "state": Literal["queued", "waiting_turn", "creating", "bootstrapping", "exporting", "uploading", "importing", "resuming", "done", "failed", "cancelled"],
+    "state": Literal["queued", "waiting_turn", "creating", "bootstrapping", "exporting", "awaiting_confirmation", "uploading", "importing", "resuming", "done", "failed", "cancelled"],
     "progress": NotRequired["CloudJobsResultJobsItemProgress"],
     "error": NotRequired["CloudJobsResultJobsItemError"],
     "result": NotRequired[Dict[str, Any]],
@@ -3227,6 +3360,10 @@ CloudJobsResultJobsItem = TypedDict("CloudJobsResultJobsItem", {
     "source_after": NotRequired[Literal["keep", "suspend", "destroy"]],
     "task": NotRequired[str],
     "by": NotRequired[str],
+    "new_task": bool,
+    "review": bool,
+    "code_only": bool,
+    "confirmed": bool,
     "created_at": int,
     "updated_at": int,
 })
@@ -3249,6 +3386,9 @@ CloudMoveParams = TypedDict("CloudMoveParams", {
     "to": "CloudMoveParamsTo",
     "interrupt": NotRequired[bool],
     "source_after": NotRequired[Literal["keep", "suspend", "destroy"]],
+    "new_task": NotRequired[bool],
+    "review": NotRequired[bool],
+    "code_only": NotRequired[bool],
 })
 
 CloudMoveResultJobProgress = TypedDict("CloudMoveResultJobProgress", {
@@ -3270,7 +3410,7 @@ CloudMoveResultJob = TypedDict("CloudMoveResultJob", {
     "box": NotRequired[str],
     "from": Dict[str, Any],
     "to": Dict[str, Any],
-    "state": Literal["queued", "waiting_turn", "creating", "bootstrapping", "exporting", "uploading", "importing", "resuming", "done", "failed", "cancelled"],
+    "state": Literal["queued", "waiting_turn", "creating", "bootstrapping", "exporting", "awaiting_confirmation", "uploading", "importing", "resuming", "done", "failed", "cancelled"],
     "progress": NotRequired["CloudMoveResultJobProgress"],
     "error": NotRequired["CloudMoveResultJobError"],
     "result": NotRequired[Dict[str, Any]],
@@ -3278,6 +3418,10 @@ CloudMoveResultJob = TypedDict("CloudMoveResultJob", {
     "source_after": NotRequired[Literal["keep", "suspend", "destroy"]],
     "task": NotRequired[str],
     "by": NotRequired[str],
+    "new_task": bool,
+    "review": bool,
+    "code_only": bool,
+    "confirmed": bool,
     "created_at": int,
     "updated_at": int,
 })
@@ -3597,6 +3741,11 @@ ConfigGetResultRepoV0 = TypedDict("ConfigGetResultRepoV0", {
     "error": NotRequired[str],
 })
 
+ConfigGetResultLoadErrorV0 = TypedDict("ConfigGetResultLoadErrorV0", {
+    "path": str,
+    "errors": List["ConfigDiagnostic"],
+})
+
 ConfigGetResult = TypedDict("ConfigGetResult", {
     "key": NotRequired[str],
     "value": Any,
@@ -3607,6 +3756,7 @@ ConfigGetResult = TypedDict("ConfigGetResult", {
     "layers": List["ConfigLayer"],
     "repo": Optional["ConfigGetResultRepoV0"],
     "errors": List["ConfigDiagnostic"],
+    "load_error": NotRequired[Optional["ConfigGetResultLoadErrorV0"]],
 })
 
 ConfigReloadParams: TypeAlias = Dict[str, Any]
@@ -4057,6 +4207,17 @@ GatewayCallParams = TypedDict("GatewayCallParams", {
 
 GatewayCallResult: TypeAlias = Any
 
+GatewayNoticeParams = TypedDict("GatewayNoticeParams", {
+    "event": str,
+    "title": str,
+    "body": NotRequired[str],
+    "urgency": NotRequired[Literal["normal", "high"]],
+})
+
+GatewayNoticeResult = TypedDict("GatewayNoticeResult", {
+    "cursor": NotRequired["Cursor"],
+})
+
 GatewayReplyParamsError = TypedDict("GatewayReplyParamsError", {
     "kind": str,
     "message": str,
@@ -4119,6 +4280,15 @@ GitDiffResult = TypedDict("GitDiffResult", {
     "binary": bool,
     "untracked": bool,
     "secret": NotRequired[bool],
+})
+
+GitImportBoxObjectsParams = TypedDict("GitImportBoxObjectsParams", {
+    "pane": NotRequired["Target"],
+    "path": NotRequired[str],
+})
+
+GitImportBoxObjectsResult = TypedDict("GitImportBoxObjectsResult", {
+    "cursor": NotRequired["Cursor"],
 })
 
 GitLogParams = TypedDict("GitLogParams", {
@@ -5055,6 +5225,7 @@ NotificationSendParams = TypedDict("NotificationSendParams", {
     "urgency": NotRequired[str],
     "subject": NotRequired[str],
     "sound": NotRequired[bool],
+    "idempotency_key": NotRequired[str],
 })
 
 NotificationSendResult = TypedDict("NotificationSendResult", {
@@ -5120,7 +5291,7 @@ PaneFloatParams = TypedDict("PaneFloatParams", {
     "tab": NotRequired["Target"],
     "rect": NotRequired["PaneFloatParamsRect"],
     "cwd": NotRequired[str],
-    "command": NotRequired[List[str]],
+    "command": NotRequired[Union[List[str], str]],
     "focus": NotRequired[bool],
 })
 
@@ -5302,6 +5473,7 @@ PaneRunParams = TypedDict("PaneRunParams", {
     "command": str,
     "wait": NotRequired[bool],
     "timeout_ms": NotRequired[int],
+    "idempotency_key": NotRequired[str],
 })
 
 PaneRunResult = TypedDict("PaneRunResult", {
@@ -5369,6 +5541,7 @@ PaneScrollResult = TypedDict("PaneScrollResult", {
 PaneSendBytesParams = TypedDict("PaneSendBytesParams", {
     "pane": NotRequired["Target"],
     "data_b64": str,
+    "idempotency_key": NotRequired[str],
 })
 
 PaneSendBytesResult = TypedDict("PaneSendBytesResult", {
@@ -5378,6 +5551,7 @@ PaneSendBytesResult = TypedDict("PaneSendBytesResult", {
 PaneSendKeysParams = TypedDict("PaneSendKeysParams", {
     "pane": NotRequired["Target"],
     "keys": List[str],
+    "idempotency_key": NotRequired[str],
 })
 
 PaneSendKeysResult = TypedDict("PaneSendKeysResult", {
@@ -5388,6 +5562,7 @@ PaneSendTextParams = TypedDict("PaneSendTextParams", {
     "pane": NotRequired["Target"],
     "text": str,
     "paste": NotRequired[Literal["auto", "bracketed", "raw"]],
+    "idempotency_key": NotRequired[str],
 })
 
 PaneSendTextResult = TypedDict("PaneSendTextResult", {
@@ -5400,10 +5575,11 @@ PaneSplitParams = TypedDict("PaneSplitParams", {
     "direction": NotRequired[Literal["right", "down", "left", "up"]],
     "ratio": NotRequired[float],
     "cwd": NotRequired[str],
-    "command": NotRequired[List[str]],
+    "command": NotRequired[Union[List[str], str]],
     "env": NotRequired[Dict[str, str]],
     "focus": NotRequired[bool],
     "title": NotRequired[str],
+    "idempotency_key": NotRequired[str],
 })
 
 PaneSplitResult = TypedDict("PaneSplitResult", {
@@ -5892,17 +6068,6 @@ PolicyTrustResult = TypedDict("PolicyTrustResult", {
     "cursor": NotRequired["Cursor"],
 })
 
-PreviewConnectParams = TypedDict("PreviewConnectParams", {
-    "machine": NotRequired[str],
-    "host": str,
-    "port": int,
-})
-
-PreviewConnectResult = TypedDict("PreviewConnectResult", {
-    "connected": bool,
-    "cursor": NotRequired["Cursor"],
-})
-
 PreviewDeclareParams = TypedDict("PreviewDeclareParams", {
     "port": Union[int, str],
     "path": NotRequired[str],
@@ -5915,6 +6080,7 @@ PreviewDeclareParams = TypedDict("PreviewDeclareParams", {
     "wait": NotRequired[bool],
     "timeout_ms": NotRequired[int],
     "request": NotRequired[str],
+    "idempotency_key": NotRequired[str],
 })
 
 PreviewDeclareResultXV0 = TypedDict("PreviewDeclareResultXV0", {
@@ -6527,6 +6693,7 @@ SandboxShellResult = TypedDict("SandboxShellResult", {
     "argv": List[str],
     "env": List[List[str]],
     "cwd": Any,
+    "cursor": NotRequired["Cursor"],
 })
 
 SandboxStartParams = TypedDict("SandboxStartParams", {
@@ -6580,6 +6747,7 @@ ScreenshotAddParams = TypedDict("ScreenshotAddParams", {
     "caption": NotRequired[str],
     "name": NotRequired[str],
     "pane": NotRequired["Target"],
+    "idempotency_key": NotRequired[str],
 })
 
 ScreenshotAddResult = TypedDict("ScreenshotAddResult", {
@@ -6762,6 +6930,11 @@ ServerStatusResultHolders = TypedDict("ServerStatusResultHolders", {
     "orphaned": NotRequired[int],
 })
 
+ServerStatusResultConfigErrorV0 = TypedDict("ServerStatusResultConfigErrorV0", {
+    "path": str,
+    "errors": List["ConfigDiagnostic"],
+})
+
 ServerStatusResult = TypedDict("ServerStatusResult", {
     "pid": int,
     "version": str,
@@ -6780,6 +6953,7 @@ ServerStatusResult = TypedDict("ServerStatusResult", {
     "preview": NotRequired[Dict[str, Any]],
     "timers": NotRequired[Dict[str, Any]],
     "gateway": NotRequired[Optional["GatewayStatus"]],
+    "config_error": NotRequired[Optional["ServerStatusResultConfigErrorV0"]],
     "db_size": NotRequired[int],
     "rss": NotRequired[int],
 })
@@ -6947,6 +7121,7 @@ StoragePruneResult = TypedDict("StoragePruneResult", {
     "events_capped": int,
     "events_remaining": int,
     "stream_removed": int,
+    "closed_removed": int,
     "blobs_removed": int,
     "blob_bytes": int,
     "cursor": NotRequired["Cursor"],
@@ -6964,6 +7139,7 @@ StorageStatusResultEventsRetention = TypedDict("StorageStatusResultEventsRetenti
     "history_days": int,
     "max_rows": int,
     "blob_days": int,
+    "closed_days": int,
 })
 
 StorageStatusResultEvents = TypedDict("StorageStatusResultEvents", {
@@ -7017,8 +7193,9 @@ TabCreateParams = TypedDict("TabCreateParams", {
     "cwd": NotRequired[str],
     "title": NotRequired[str],
     "focus": NotRequired[bool],
-    "command": NotRequired[List[str]],
+    "command": NotRequired[Union[List[str], str]],
     "layout": NotRequired["LayoutSpec"],
+    "idempotency_key": NotRequired[str],
 })
 
 TabCreateResult = TypedDict("TabCreateResult", {
@@ -7144,6 +7321,22 @@ TaskBestOfNResult = TypedDict("TaskBestOfNResult", {
     "tasks": List[Optional["Task"]],
     "runs": List["AgentRun"],
     "warnings": List[Any],
+    "cursor": NotRequired["Cursor"],
+})
+
+TaskBindParams = TypedDict("TaskBindParams", {
+    "task": "Target",
+    "run": NotRequired["Target"],
+    "pane": NotRequired["Target"],
+    "role": NotRequired[str],
+    "start_turn": NotRequired[int],
+    "end_turn": NotRequired[int],
+    "idempotency_key": NotRequired[str],
+})
+
+TaskBindResult = TypedDict("TaskBindResult", {
+    "binding": Any,
+    "pending": bool,
     "cursor": NotRequired["Cursor"],
 })
 
@@ -7315,6 +7508,7 @@ TaskCreateParams = TypedDict("TaskCreateParams", {
     "branch_template": NotRequired[str],
     "fetch": NotRequired[bool],
     "dry_run": NotRequired[bool],
+    "idempotency_key": NotRequired[str],
 })
 
 TaskCreateResultXV0SetupCommandsItem = TypedDict("TaskCreateResultXV0SetupCommandsItem", {
@@ -7439,6 +7633,20 @@ TaskDependencyRemoveResult = TypedDict("TaskDependencyRemoveResult", {
     "cursor": NotRequired["Cursor"],
 })
 
+TaskDetailParams = TypedDict("TaskDetailParams", {
+    "task": "Target",
+})
+
+TaskDetailResult = TypedDict("TaskDetailResult", {
+    "task": "Task",
+    "intent": Any,
+    "bindings": List[Any],
+    "runs": List[Any],
+    "baseline": Any,
+    "uncommunicated": List[Any],
+    "messages": List[Any],
+})
+
 TaskEffortEstimateParams = TypedDict("TaskEffortEstimateParams", {
     "task": "Target",
 })
@@ -7506,6 +7714,40 @@ TaskGetResult = TypedDict("TaskGetResult", {
     "collisions": NotRequired[List["Collision"]],
 })
 
+TaskIntentGetParams = TypedDict("TaskIntentGetParams", {
+    "task": "Target",
+    "revision": NotRequired[int],
+})
+
+TaskIntentGetResult = TypedDict("TaskIntentGetResult", {
+    "task": str,
+    "current_revision": int,
+    "intent": Any,
+    "revisions": List[Any],
+})
+
+TaskIntentUpdateParams = TypedDict("TaskIntentUpdateParams", {
+    "task": "Target",
+    "expected_revision": NotRequired[int],
+    "title": NotRequired[str],
+    "objective": NotRequired[str],
+    "stop_detail": NotRequired[str],
+    "criteria": NotRequired[List[Any]],
+    "criterion": NotRequired[Any],
+    "add_criterion": NotRequired[Any],
+    "constraints": NotRequired[List[Any]],
+    "constraint": NotRequired[Any],
+    "idempotency_key": NotRequired[str],
+})
+
+TaskIntentUpdateResult = TypedDict("TaskIntentUpdateResult", {
+    "task": "Task",
+    "intent": Any,
+    "uncommunicated": List[Any],
+    "note": NotRequired[Optional[str]],
+    "cursor": NotRequired["Cursor"],
+})
+
 TaskLinkStatusParams = TypedDict("TaskLinkStatusParams", {
     "run": NotRequired[str],
     "pane": NotRequired["Target"],
@@ -7543,6 +7785,61 @@ TaskListParams = TypedDict("TaskListParams", {
 
 TaskListResult = TypedDict("TaskListResult", {
     "tasks": List["Task"],
+})
+
+TaskMessageCancelParams = TypedDict("TaskMessageCancelParams", {
+    "message": str,
+    "idempotency_key": NotRequired[str],
+})
+
+TaskMessageCancelResult = TypedDict("TaskMessageCancelResult", {
+    "message": Dict[str, Any],
+    "cursor": NotRequired["Cursor"],
+})
+
+TaskMessageGetParams = TypedDict("TaskMessageGetParams", {
+    "message": str,
+})
+
+TaskMessageGetResult = TypedDict("TaskMessageGetResult", {
+    "message": Dict[str, Any],
+})
+
+TaskMessagePrepareParams = TypedDict("TaskMessagePrepareParams", {
+    "task": "Target",
+    "text": str,
+    "idempotency_key": NotRequired[str],
+})
+
+TaskMessagePrepareResultRecipient = TypedDict("TaskMessagePrepareResultRecipient", {
+    "run": Optional[str],
+    "binding": Optional[str],
+})
+
+TaskMessagePrepareResult = TypedDict("TaskMessagePrepareResult", {
+    "message": Dict[str, Any],
+    "recipient": "TaskMessagePrepareResultRecipient",
+    "send_path": NotRequired[Any],
+    "cursor": NotRequired["Cursor"],
+})
+
+TaskMessageSendParams = TypedDict("TaskMessageSendParams", {
+    "message": str,
+    "idempotency_key": NotRequired[str],
+})
+
+TaskMessageSendResult = TypedDict("TaskMessageSendResult", {
+    "message": Dict[str, Any],
+    "cursor": NotRequired["Cursor"],
+})
+
+TaskOperationGetParams = TypedDict("TaskOperationGetParams", {
+    "idempotency_key": str,
+})
+
+TaskOperationGetResult = TypedDict("TaskOperationGetResult", {
+    "known": bool,
+    "note": NotRequired[str],
 })
 
 TaskParkParams = TypedDict("TaskParkParams", {
@@ -8041,6 +8338,20 @@ TaskReviewStartReviewerResult = TypedDict("TaskReviewStartReviewerResult", {
     "cursor": NotRequired["Cursor"],
 })
 
+TaskSetParams = TypedDict("TaskSetParams", {
+    "task": "Target",
+    "priority": NotRequired[Optional[int]],
+    "effort": NotRequired[Optional[str]],
+    "effort_source": NotRequired[str],
+    "expected_rev": NotRequired[int],
+    "idempotency_key": NotRequired[str],
+})
+
+TaskSetResult = TypedDict("TaskSetResult", {
+    "task": "Task",
+    "cursor": NotRequired["Cursor"],
+})
+
 TaskSetupParams = TypedDict("TaskSetupParams", {
     "task": "Target",
     "setup_script": NotRequired[str],
@@ -8074,6 +8385,18 @@ TaskSetupLogResult = TypedDict("TaskSetupLogResult", {
     "size": int,
     "truncated": bool,
     "setup_status": Optional[str],
+})
+
+TaskSourcesParams = TypedDict("TaskSourcesParams", {
+    "run": NotRequired["Target"],
+    "pane": NotRequired["Target"],
+    "limit": NotRequired[int],
+})
+
+TaskSourcesResult = TypedDict("TaskSourcesResult", {
+    "run": str,
+    "harness": str,
+    "identity_verified": Any,
 })
 
 TaskSplitParams = TypedDict("TaskSplitParams", {
@@ -8133,6 +8456,38 @@ TaskSyncResultSyncedItem = TypedDict("TaskSyncResultSyncedItem", {
 TaskSyncResult = TypedDict("TaskSyncResult", {
     "task": Optional["Target"],
     "synced": List["TaskSyncResultSyncedItem"],
+    "cursor": NotRequired["Cursor"],
+})
+
+TaskTrackParams = TypedDict("TaskTrackParams", {
+    "run": NotRequired["Target"],
+    "pane": NotRequired["Target"],
+    "title": NotRequired[str],
+    "objective": NotRequired[str],
+    "stop_detail": NotRequired[str],
+    "target_branch": NotRequired[str],
+    "turn": NotRequired[int],
+    "turns": NotRequired[List[int]],
+    "idempotency_key": NotRequired[str],
+})
+
+TaskTrackResult = TypedDict("TaskTrackResult", {
+    "task": "Task",
+    "intent": Any,
+    "binding": Any,
+    "baseline": Any,
+    "review_base": Any,
+    "cursor": NotRequired["Cursor"],
+})
+
+TaskUnbindParams = TypedDict("TaskUnbindParams", {
+    "task": NotRequired["Target"],
+    "binding": NotRequired[str],
+    "idempotency_key": NotRequired[str],
+})
+
+TaskUnbindResult = TypedDict("TaskUnbindResult", {
+    "closed": Any,
     "cursor": NotRequired["Cursor"],
 })
 
@@ -8368,7 +8723,8 @@ WorkspaceCreateParams = TypedDict("WorkspaceCreateParams", {
     "group": NotRequired["Target"],
     "focus": NotRequired[bool],
     "layout": NotRequired["LayoutSpec"],
-    "command": NotRequired[List[str]],
+    "command": NotRequired[Union[List[str], str]],
+    "idempotency_key": NotRequired[str],
 })
 
 WorkspaceCreateResult = TypedDict("WorkspaceCreateResult", {
@@ -8506,446 +8862,466 @@ WorktreeRepoRootResult = TypedDict("WorktreeRepoRootResult", {
 
 # Mutating flag and scope of every method (`full`: not callable with a pane token).
 METHODS: Dict[str, Dict[str, Any]] = {
-    "adapter.control": {"mutating": True, "scope": "pane", "pane_scope": "open"},
-    "adapter.delivery_ack": {"mutating": True, "scope": "pane", "pane_scope": "open"},
-    "adapter.gate": {"mutating": True, "scope": "pane", "pane_scope": "open"},
-    "adapter.report_self": {"mutating": True, "scope": "pane", "pane_scope": "open"},
-    "adapter.signal": {"mutating": True, "scope": "pane", "pane_scope": "open"},
-    "agent.commands": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "agent.drift": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "agent.get": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "agent.harnesses": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "agent.interrupt": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
-    "agent.items": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
-    "agent.limits": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "agent.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "agent.manifest_pin": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "agent.manifests": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "agent.manifests_check": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "agent.manifests_reload": {"mutating": True, "scope": "pane", "pane_scope": "open"},
-    "agent.models": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "agent.prompt": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
-    "agent.read": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "agent.release": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
-    "agent.rename": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
-    "agent.report": {"mutating": True, "scope": "pane", "pane_scope": "open"},
-    "agent.resumable": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "agent.resume": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
-    "agent.send_keys": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
-    "agent.set_model": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
-    "agent.spawn": {"mutating": True, "scope": "pane", "pane_scope": "open"},
-    "agent.start": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
-    "agent.turn_usage": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "agent.turns": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
-    "agent.wait": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "api.methods": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "api.schema": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "assistant.background": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "assistant.cancel": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "assistant.confirm": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "assistant.consent": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "assistant.generate": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "assistant.get": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
-    "assistant.list": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
-    "assistant.models": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
-    "assistant.providers": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
-    "assistant.purge": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "assistant.revoke": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "assistant.status": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
-    "assistant.test": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "attention.batch": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "attention.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "attention.update": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "audit.search": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
-    "audit.tail": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
-    "audit.verify": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
-    "auth.approve": {"mutating": True, "scope": "pane", "pane_scope": "open"},
-    "auth.approve.decide": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "auth.approve.withdraw": {"mutating": True, "scope": "pane", "pane_scope": "open"},
-    "auth.elevate": {"mutating": True, "scope": "pane", "pane_scope": "open"},
-    "auth.elevate.decide": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "auth.list": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
-    "auth.revoke_token": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "blob.abort": {"mutating": True, "scope": "pane", "pane_scope": "open"},
-    "blob.append": {"mutating": True, "scope": "pane", "pane_scope": "open"},
-    "blob.begin": {"mutating": True, "scope": "pane", "pane_scope": "open"},
-    "blob.commit": {"mutating": True, "scope": "pane", "pane_scope": "open"},
-    "blob.gc": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "blob.get": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "blob.put": {"mutating": True, "scope": "pane", "pane_scope": "open"},
-    "blob.stat": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "blob.stats": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
-    "browser.attach_screencast": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "browser.click": {"mutating": True, "scope": "pane", "pane_scope": "open"},
-    "browser.close": {"mutating": True, "scope": "pane", "pane_scope": "open"},
-    "browser.command": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "browser.console": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "browser.detach_screencast": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "browser.diff": {"mutating": True, "scope": "pane", "pane_scope": "open"},
-    "browser.dom": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "browser.eval": {"mutating": True, "scope": "pane", "pane_scope": "open"},
-    "browser.input": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "browser.install": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "browser.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "browser.navigate": {"mutating": True, "scope": "pane", "pane_scope": "open"},
-    "browser.network": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "browser.open": {"mutating": True, "scope": "pane", "pane_scope": "open"},
-    "browser.pane.console": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "browser.pane.console_push": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "browser.pane.create": {"mutating": True, "scope": "pane", "pane_scope": "open"},
-    "browser.pane.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "browser.pane.status": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "browser.pane.update": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "browser.press": {"mutating": True, "scope": "pane", "pane_scope": "open"},
-    "browser.release": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "browser.screencast_frame": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
-    "browser.screenshot": {"mutating": True, "scope": "pane", "pane_scope": "open"},
-    "browser.session_close": {"mutating": True, "scope": "pane", "pane_scope": "open"},
-    "browser.session_open": {"mutating": True, "scope": "pane", "pane_scope": "open"},
-    "browser.snapshot": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "browser.status": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "browser.take_over": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "browser.type": {"mutating": True, "scope": "pane", "pane_scope": "open"},
-    "browser.wait": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "browser.watch": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "client.appearance": {"mutating": True, "scope": "pane", "pane_scope": "open"},
-    "client.focus": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "client.hello": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "client.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "cloud.auth.clear": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "cloud.auth.import": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "cloud.auth.set": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "cloud.box.adopt": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "cloud.box.checkpoint": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "cloud.box.destroy": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "cloud.box.forget": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "cloud.box.list": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
-    "cloud.box.resume": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "cloud.box.suspend": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "cloud.cancel": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "cloud.jobs": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
-    "cloud.move": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "cloud.providers": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
-    "cloud.prune": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "collision.claim": {"mutating": True, "scope": "pane", "pane_scope": "open"},
-    "collision.claim_release": {"mutating": True, "scope": "pane", "pane_scope": "open"},
-    "collision.claims": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "collision.dismiss": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "collision.get": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "collision.ignore": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "collision.ignores": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
-    "collision.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "collision.pause": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "collision.start_task": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "collision.status": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
-    "collision.tell": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "collision.unignore": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "compat.herdr.call": {"mutating": True, "scope": "pane", "pane_scope": "open"},
-    "compat.invocation.verify": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "compat.status": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "compat.ui.state": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "config.get": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "config.reload": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "config.set": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "config.validate": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "desk.context": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "desk.forget": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "desk.index": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "desk.open": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "desk.resume": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "desk.search": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "desk.sessions": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "desk.status": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
-    "draft.check": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "draft.combine": {"mutating": True, "scope": "pane", "pane_scope": "open"},
-    "draft.create": {"mutating": True, "scope": "pane", "pane_scope": "open"},
-    "draft.delete": {"mutating": True, "scope": "pane", "pane_scope": "open"},
-    "draft.get": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "draft.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "draft.reconcile": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "draft.reorder": {"mutating": True, "scope": "pane", "pane_scope": "open"},
-    "draft.send": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "draft.update": {"mutating": True, "scope": "pane", "pane_scope": "open"},
-    "events.read": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "events.subscribe": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "events.unsubscribe": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "events.wait": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "family.check": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "family.get": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "family.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "fs.browse": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
-    "fs.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "fs.read": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "gateway.call": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "gateway.reply": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "gateway.start": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "gateway.status": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "gateway.stop": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "git.diff": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "git.log": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "git.status": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "goal.approve": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "goal.briefing": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "goal.cancel": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "goal.create": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "goal.get": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "goal.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "goal.plan": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "goal.plan_submit": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "goal.start": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "goal.step_done": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "group.add": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "group.collapse": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "group.create": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "group.delete": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "group.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "group.move": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "group.remove": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "group.rename": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "handoff.accept": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "handoff.cancel": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "handoff.decline": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "handoff.incoming.add": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "handoff.incoming.get": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
-    "handoff.incoming.list": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
-    "handoff.job.update": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "handoff.jobs": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "handoff.peers": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "handoff.peers.set": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "handoff.prefs": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "handoff.resume": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "handoff.send": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "image.upload": {"mutating": True, "scope": "pane", "pane_scope": "open"},
-    "integration.doctor": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
-    "interaction.answer": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "interaction.cancel": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "interaction.get": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "interaction.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "layout.apply": {"mutating": True, "scope": "pane", "pane_scope": "open"},
-    "layout.export": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "layout.get": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "layout.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "machine.get": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "machine.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "machine.remove": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "machine.upsert": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "merge.predict": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "merge.queue.add": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "merge.queue.cancel": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "merge.queue.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "merge.queue.requeue": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "merge.queue.run": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "notes.get": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "notes.set": {"mutating": True, "scope": "pane", "pane_scope": "open"},
-    "notification.config": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "notification.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "notification.read": {"mutating": True, "scope": "pane", "pane_scope": "open"},
-    "notification.send": {"mutating": True, "scope": "pane", "pane_scope": "open"},
-    "pane.can_see_paths": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "pane.close": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
-    "pane.current": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "pane.embed": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
-    "pane.equalize": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
-    "pane.float": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
-    "pane.focus": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "pane.get": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "pane.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "pane.mark_seen": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
-    "pane.mark_unread": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
-    "pane.move": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
-    "pane.pin": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
-    "pane.read": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "pane.rename": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
-    "pane.report_agent": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
-    "pane.report_agent_session": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
-    "pane.resize": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
-    "pane.run": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
-    "pane.screenshot": {"mutating": False, "scope": "pane", "pane_scope": "own_target"},
-    "pane.scroll": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
-    "pane.send_bytes": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
-    "pane.send_keys": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
-    "pane.send_text": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
-    "pane.split": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
-    "pane.sync_input": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "pane.wait_idle": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "pane.wait_output": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "pane.zoom": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
-    "paste.translated": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "plugin.action": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "plugin.action.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "plugin.action.run": {"mutating": True, "scope": "pane", "pane_scope": "open"},
-    "plugin.consent": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "plugin.disable": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "plugin.enable": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "plugin.install": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "plugin.kv.delete": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "plugin.kv.get": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
-    "plugin.kv.list": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
-    "plugin.kv.set": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "plugin.link": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "plugin.link.open": {"mutating": True, "scope": "pane", "pane_scope": "open"},
-    "plugin.link_handler.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "plugin.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "plugin.log.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "plugin.registry.notify": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "plugin.remove": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "plugin.restart": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "plugin.surface.close": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "policy.add": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "policy.list": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
-    "policy.remove": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "policy.test": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
-    "policy.trust": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "preview.connect": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "preview.declare": {"mutating": True, "scope": "pane", "pane_scope": "open"},
-    "preview.dismiss": {"mutating": True, "scope": "pane", "pane_scope": "open"},
-    "preview.forget": {"mutating": True, "scope": "pane", "pane_scope": "open"},
-    "preview.get": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "preview.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "preview.mirror": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "preview.open": {"mutating": True, "scope": "pane", "pane_scope": "open"},
-    "preview.profile": {"mutating": True, "scope": "pane", "pane_scope": "open"},
-    "preview.profile.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "preview.profile.reset": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "preview.promote": {"mutating": True, "scope": "pane", "pane_scope": "open"},
-    "preview.status": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "preview.unmirror": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "preview.url": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "quota.resume": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "quota.route": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "quota.status": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "quota.tick": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "repo.candidates": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
-    "sandbox.allow": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "sandbox.copy_out": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "sandbox.disallow": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "sandbox.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "sandbox.logs": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
-    "sandbox.prune": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "sandbox.push": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "sandbox.recover": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "sandbox.relaunch": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "sandbox.remove": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "sandbox.request": {"mutating": True, "scope": "pane", "pane_scope": "open"},
-    "sandbox.setup_token": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "sandbox.shell": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
-    "sandbox.start": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "sandbox.status": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "sandbox.stop": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "screenshot.add": {"mutating": True, "scope": "pane", "pane_scope": "open"},
-    "screenshot.delete": {"mutating": True, "scope": "pane", "pane_scope": "open"},
-    "screenshot.get": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "screenshot.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "screenshot.open": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "scrollback.forget": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "search.query": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "security.encryption.migrate": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "security.encryption.status": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
-    "server.reload_config": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "server.restart": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "server.status": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "server.stop": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "session.create": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "session.info": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "session.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "session.rename": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "session.snapshot": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "session.stop": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "state.forget": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "status.segments": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "storage.prune": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "storage.status": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
-    "tab.close": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "tab.create": {"mutating": True, "scope": "pane", "pane_scope": "open"},
-    "tab.floats": {"mutating": True, "scope": "pane", "pane_scope": "open"},
-    "tab.focus": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "tab.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "tab.move": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "tab.rename": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "tab.renumber": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "task.adopt": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "task.archive": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "task.best_of_n": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "task.check.authorize": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "task.check.cancel": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "task.check.get": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "task.check.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "task.check.run": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "task.claim": {"mutating": True, "scope": "pane", "pane_scope": "open"},
-    "task.claim.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "task.claim.remove": {"mutating": True, "scope": "pane", "pane_scope": "open"},
-    "task.compare": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "task.create": {"mutating": True, "scope": "pane", "pane_scope": "open"},
-    "task.dependency.add": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "task.dependency.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "task.dependency.remove": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "task.effort.estimate": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "task.finish": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "task.forget": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "task.get": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "task.link.status": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "task.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "task.park": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "task.pick": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "task.ports": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "task.ports.re_lease": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "task.pr": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "task.pr.claim": {"mutating": True, "scope": "pane", "pane_scope": "open"},
-    "task.pr.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "task.pr.observe": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "task.reconcile": {"mutating": True, "scope": "pane", "pane_scope": "open"},
-    "task.recreate": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "task.resume": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "task.review.accept": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "task.review.candidates": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "task.review.diff": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "task.review.forget": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "task.review.get": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "task.review.human_review": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "task.review.interval_status": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "task.review.intervals": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "task.review.note.classify": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "task.review.notes": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "task.review.request_reviewer": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "task.review.snapshot": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "task.review.snapshot.gc": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "task.review.start_reviewer": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "task.setup": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "task.setup_log": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "task.split": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "task.sync": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "theme.get": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "theme.set_mode": {"mutating": True, "scope": "pane", "pane_scope": "open"},
-    "ui.contribute": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "ui.contributions": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "ui.pane.open": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "vm.create": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "vm.destroy": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "vm.fork": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "vm.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "vm.resume": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "vm.snapshot": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "vm.snapshot.delete": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "vm.start": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "vm.status": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "vm.stop": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "vm.suspend": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "vm.template.build": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "vm.template.delete": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "vm.template.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "vm.transport": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "workspace.close": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "workspace.create": {"mutating": True, "scope": "pane", "pane_scope": "open"},
-    "workspace.focus": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "workspace.get": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "workspace.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "workspace.move": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "workspace.rename": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "worktree.create": {"mutating": True, "scope": "pane", "pane_scope": "open"},
-    "worktree.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
-    "worktree.open": {"mutating": True, "scope": "pane", "pane_scope": "open"},
-    "worktree.remove": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
-    "worktree.repo_root": {"mutating": False, "scope": "pane", "pane_scope": "open"},
+    "adapter.control": {"mutating": True, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "adapter.delivery_ack": {"mutating": True, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "adapter.gate": {"mutating": True, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "adapter.report_self": {"mutating": True, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "adapter.signal": {"mutating": True, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "agent.commands": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "agent.drift": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "agent.get": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "agent.harnesses": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "agent.interrupt": {"mutating": True, "scope": "pane", "pane_scope": "own_target", "stability": "stable"},
+    "agent.items": {"mutating": False, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "agent.limits": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "agent.list": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "agent.manifest_pin": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "agent.manifests": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "agent.manifests_check": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "agent.manifests_reload": {"mutating": True, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "agent.models": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "agent.prompt": {"mutating": True, "scope": "pane", "pane_scope": "own_target", "stability": "stable"},
+    "agent.read": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "agent.release": {"mutating": True, "scope": "pane", "pane_scope": "own_target", "stability": "stable"},
+    "agent.rename": {"mutating": True, "scope": "pane", "pane_scope": "own_target", "stability": "stable"},
+    "agent.report": {"mutating": True, "scope": "pane", "pane_scope": "own_target", "stability": "stable"},
+    "agent.resumable": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "agent.resume": {"mutating": True, "scope": "pane", "pane_scope": "own_target", "stability": "stable"},
+    "agent.send_keys": {"mutating": True, "scope": "pane", "pane_scope": "own_target", "stability": "stable"},
+    "agent.set_model": {"mutating": True, "scope": "pane", "pane_scope": "own_target", "stability": "stable"},
+    "agent.spawn": {"mutating": True, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "agent.start": {"mutating": True, "scope": "pane", "pane_scope": "own_target", "stability": "stable"},
+    "agent.transcript": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "agent.turn_usage": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "agent.turns": {"mutating": False, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "agent.wait": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "api.methods": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "api.schema": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "assistant.background": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "experimental"},
+    "assistant.cancel": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "experimental"},
+    "assistant.confirm": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "experimental"},
+    "assistant.consent": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "experimental"},
+    "assistant.generate": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "experimental"},
+    "assistant.get": {"mutating": False, "scope": "full", "pane_scope": "forbidden", "stability": "experimental"},
+    "assistant.list": {"mutating": False, "scope": "full", "pane_scope": "forbidden", "stability": "experimental"},
+    "assistant.models": {"mutating": False, "scope": "full", "pane_scope": "forbidden", "stability": "experimental"},
+    "assistant.providers": {"mutating": False, "scope": "full", "pane_scope": "forbidden", "stability": "experimental"},
+    "assistant.purge": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "experimental"},
+    "assistant.revoke": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "experimental"},
+    "assistant.status": {"mutating": False, "scope": "full", "pane_scope": "forbidden", "stability": "experimental"},
+    "assistant.test": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "experimental"},
+    "attention.batch": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "attention.list": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "attention.update": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "audit.search": {"mutating": False, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "audit.tail": {"mutating": False, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "audit.verify": {"mutating": False, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "auth.approve": {"mutating": True, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "auth.approve.decide": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "auth.approve.withdraw": {"mutating": True, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "auth.elevate": {"mutating": True, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "auth.elevate.decide": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "auth.list": {"mutating": False, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "auth.revoke_token": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "blob.abort": {"mutating": True, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "blob.append": {"mutating": True, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "blob.begin": {"mutating": True, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "blob.commit": {"mutating": True, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "blob.gc": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "blob.get": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "blob.put": {"mutating": True, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "blob.stat": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "blob.stats": {"mutating": False, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "browser.attach_screencast": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "browser.click": {"mutating": True, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "browser.close": {"mutating": True, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "browser.command": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "browser.console": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "browser.detach_screencast": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "browser.diff": {"mutating": True, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "browser.dom": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "browser.eval": {"mutating": True, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "browser.input": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "browser.install": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "browser.list": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "browser.navigate": {"mutating": True, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "browser.network": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "browser.open": {"mutating": True, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "browser.pane.console": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "browser.pane.console_push": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "browser.pane.create": {"mutating": True, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "browser.pane.list": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "browser.pane.status": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "browser.pane.update": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "browser.press": {"mutating": True, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "browser.release": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "browser.screencast_frame": {"mutating": False, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "browser.screenshot": {"mutating": True, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "browser.session_close": {"mutating": True, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "browser.session_open": {"mutating": True, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "browser.snapshot": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "browser.status": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "browser.take_over": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "browser.type": {"mutating": True, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "browser.wait": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "browser.watch": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "client.activity": {"mutating": False, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "client.appearance": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "client.confirm": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "client.confirm_answer": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "client.devices": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "client.focus": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "client.hello": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "client.list": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "cloud.auth.clear": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "experimental"},
+    "cloud.auth.import": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "experimental"},
+    "cloud.auth.set": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "experimental"},
+    "cloud.box.adopt": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "experimental"},
+    "cloud.box.checkpoint": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "experimental"},
+    "cloud.box.destroy": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "experimental"},
+    "cloud.box.forget": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "experimental"},
+    "cloud.box.list": {"mutating": False, "scope": "full", "pane_scope": "forbidden", "stability": "experimental"},
+    "cloud.box.resume": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "experimental"},
+    "cloud.box.suspend": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "experimental"},
+    "cloud.cancel": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "experimental"},
+    "cloud.confirm": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "experimental"},
+    "cloud.jobs": {"mutating": False, "scope": "full", "pane_scope": "forbidden", "stability": "experimental"},
+    "cloud.move": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "experimental"},
+    "cloud.providers": {"mutating": False, "scope": "full", "pane_scope": "forbidden", "stability": "experimental"},
+    "cloud.prune": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "experimental"},
+    "collision.claim": {"mutating": True, "scope": "pane", "pane_scope": "open", "stability": "experimental"},
+    "collision.claim_release": {"mutating": True, "scope": "pane", "pane_scope": "open", "stability": "experimental"},
+    "collision.claims": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "experimental"},
+    "collision.dismiss": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "experimental"},
+    "collision.get": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "experimental"},
+    "collision.ignore": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "experimental"},
+    "collision.ignores": {"mutating": False, "scope": "full", "pane_scope": "forbidden", "stability": "experimental"},
+    "collision.list": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "experimental"},
+    "collision.pause": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "experimental"},
+    "collision.start_task": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "experimental"},
+    "collision.status": {"mutating": False, "scope": "full", "pane_scope": "forbidden", "stability": "experimental"},
+    "collision.tell": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "experimental"},
+    "collision.unignore": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "experimental"},
+    "compat.herdr.call": {"mutating": True, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "compat.invocation.verify": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "compat.status": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "compat.ui.state": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "config.get": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "config.reload": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "config.set": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "config.validate": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "desk.context": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "experimental"},
+    "desk.forget": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "experimental"},
+    "desk.index": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "experimental"},
+    "desk.open": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "experimental"},
+    "desk.resume": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "experimental"},
+    "desk.search": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "experimental"},
+    "desk.sessions": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "experimental"},
+    "desk.status": {"mutating": False, "scope": "full", "pane_scope": "forbidden", "stability": "experimental"},
+    "draft.check": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "experimental"},
+    "draft.combine": {"mutating": True, "scope": "pane", "pane_scope": "open", "stability": "experimental"},
+    "draft.create": {"mutating": True, "scope": "pane", "pane_scope": "open", "stability": "experimental"},
+    "draft.delete": {"mutating": True, "scope": "pane", "pane_scope": "open", "stability": "experimental"},
+    "draft.get": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "experimental"},
+    "draft.list": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "experimental"},
+    "draft.reconcile": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "experimental"},
+    "draft.reorder": {"mutating": True, "scope": "pane", "pane_scope": "open", "stability": "experimental"},
+    "draft.send": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "experimental"},
+    "draft.update": {"mutating": True, "scope": "pane", "pane_scope": "open", "stability": "experimental"},
+    "events.read": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "events.subscribe": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "events.unsubscribe": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "events.wait": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "family.check": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "experimental"},
+    "family.get": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "experimental"},
+    "family.list": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "experimental"},
+    "fs.browse": {"mutating": False, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "fs.list": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "fs.read": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "gateway.call": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "gateway.notice": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "gateway.reply": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "gateway.start": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "gateway.status": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "gateway.stop": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "git.diff": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "git.import_box_objects": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "git.log": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "git.status": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "goal.approve": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "experimental"},
+    "goal.briefing": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "experimental"},
+    "goal.cancel": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "experimental"},
+    "goal.create": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "experimental"},
+    "goal.get": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "experimental"},
+    "goal.list": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "experimental"},
+    "goal.plan": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "experimental"},
+    "goal.plan_submit": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "experimental"},
+    "goal.start": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "experimental"},
+    "goal.step_done": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "experimental"},
+    "group.add": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "group.collapse": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "group.create": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "group.delete": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "group.list": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "group.move": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "group.remove": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "group.rename": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "handoff.accept": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "handoff.cancel": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "handoff.decline": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "handoff.incoming.add": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "handoff.incoming.get": {"mutating": False, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "handoff.incoming.list": {"mutating": False, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "handoff.job.update": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "handoff.jobs": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "handoff.peers": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "handoff.peers.set": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "handoff.prefs": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "handoff.resume": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "handoff.send": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "image.upload": {"mutating": True, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "integration.doctor": {"mutating": False, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "interaction.answer": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "interaction.cancel": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "interaction.get": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "interaction.list": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "layout.apply": {"mutating": True, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "layout.export": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "layout.get": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "layout.list": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "machine.get": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "machine.list": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "machine.remove": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "machine.upsert": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "merge.predict": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "experimental"},
+    "merge.queue.add": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "experimental"},
+    "merge.queue.cancel": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "experimental"},
+    "merge.queue.list": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "experimental"},
+    "merge.queue.requeue": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "experimental"},
+    "merge.queue.run": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "experimental"},
+    "notes.get": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "notes.set": {"mutating": True, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "notification.config": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "notification.list": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "notification.read": {"mutating": True, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "notification.send": {"mutating": True, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "pane.can_see_paths": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "pane.close": {"mutating": True, "scope": "pane", "pane_scope": "own_target", "stability": "stable"},
+    "pane.current": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "pane.embed": {"mutating": True, "scope": "pane", "pane_scope": "own_target", "stability": "stable"},
+    "pane.equalize": {"mutating": True, "scope": "pane", "pane_scope": "own_target", "stability": "stable"},
+    "pane.float": {"mutating": True, "scope": "pane", "pane_scope": "own_target", "stability": "stable"},
+    "pane.focus": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "pane.get": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "pane.list": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "pane.mark_seen": {"mutating": True, "scope": "pane", "pane_scope": "own_target", "stability": "stable"},
+    "pane.mark_unread": {"mutating": True, "scope": "pane", "pane_scope": "own_target", "stability": "stable"},
+    "pane.move": {"mutating": True, "scope": "pane", "pane_scope": "own_target", "stability": "stable"},
+    "pane.pin": {"mutating": True, "scope": "pane", "pane_scope": "own_target", "stability": "stable"},
+    "pane.read": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "pane.rename": {"mutating": True, "scope": "pane", "pane_scope": "own_target", "stability": "stable"},
+    "pane.report_agent": {"mutating": True, "scope": "pane", "pane_scope": "own_target", "stability": "stable"},
+    "pane.report_agent_session": {"mutating": True, "scope": "pane", "pane_scope": "own_target", "stability": "stable"},
+    "pane.resize": {"mutating": True, "scope": "pane", "pane_scope": "own_target", "stability": "stable"},
+    "pane.run": {"mutating": True, "scope": "pane", "pane_scope": "own_target", "stability": "stable"},
+    "pane.screenshot": {"mutating": False, "scope": "pane", "pane_scope": "own_target", "stability": "stable"},
+    "pane.scroll": {"mutating": True, "scope": "pane", "pane_scope": "own_target", "stability": "stable"},
+    "pane.send_bytes": {"mutating": True, "scope": "pane", "pane_scope": "own_target", "stability": "stable"},
+    "pane.send_keys": {"mutating": True, "scope": "pane", "pane_scope": "own_target", "stability": "stable"},
+    "pane.send_text": {"mutating": True, "scope": "pane", "pane_scope": "own_target", "stability": "stable"},
+    "pane.split": {"mutating": True, "scope": "pane", "pane_scope": "own_target", "stability": "stable"},
+    "pane.sync_input": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "pane.wait_idle": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "pane.wait_output": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "pane.zoom": {"mutating": True, "scope": "pane", "pane_scope": "own_target", "stability": "stable"},
+    "paste.translated": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "plugin.action": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "plugin.action.list": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "plugin.action.run": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "plugin.consent": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "plugin.disable": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "plugin.enable": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "plugin.install": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "plugin.kv.delete": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "plugin.kv.get": {"mutating": False, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "plugin.kv.list": {"mutating": False, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "plugin.kv.set": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "plugin.link": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "plugin.link.open": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "plugin.link_handler.list": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "plugin.list": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "plugin.log.list": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "plugin.registry.notify": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "plugin.remove": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "plugin.restart": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "plugin.surface.close": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "policy.add": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "policy.list": {"mutating": False, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "policy.remove": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "policy.test": {"mutating": False, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "policy.trust": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "preview.declare": {"mutating": True, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "preview.dismiss": {"mutating": True, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "preview.forget": {"mutating": True, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "preview.get": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "preview.list": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "preview.mirror": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "preview.open": {"mutating": True, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "preview.profile": {"mutating": True, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "preview.profile.list": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "preview.profile.reset": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "preview.promote": {"mutating": True, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "preview.status": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "preview.unmirror": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "preview.url": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "quota.resume": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "experimental"},
+    "quota.route": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "experimental"},
+    "quota.status": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "experimental"},
+    "quota.tick": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "experimental"},
+    "repo.candidates": {"mutating": False, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "sandbox.allow": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "sandbox.copy_out": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "sandbox.disallow": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "sandbox.list": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "sandbox.logs": {"mutating": False, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "sandbox.prune": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "sandbox.push": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "sandbox.recover": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "sandbox.relaunch": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "sandbox.remove": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "sandbox.request": {"mutating": True, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "sandbox.setup_token": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "sandbox.shell": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "sandbox.start": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "sandbox.status": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "sandbox.stop": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "screenshot.add": {"mutating": True, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "screenshot.delete": {"mutating": True, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "screenshot.get": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "screenshot.list": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "screenshot.open": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "scrollback.forget": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "search.query": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "security.encryption.migrate": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "security.encryption.status": {"mutating": False, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "server.reload_config": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "server.restart": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "server.status": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "server.stop": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "session.create": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "session.info": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "session.list": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "session.rename": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "session.snapshot": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "session.stop": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "state.forget": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "status.segments": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "storage.prune": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "storage.status": {"mutating": False, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "tab.close": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "tab.create": {"mutating": True, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "tab.floats": {"mutating": True, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "tab.focus": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "tab.list": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "tab.move": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "tab.rename": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "tab.renumber": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "task.adopt": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "task.archive": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "task.best_of_n": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "experimental"},
+    "task.bind": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "task.check.authorize": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "task.check.cancel": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "task.check.get": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "task.check.list": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "task.check.run": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "task.claim": {"mutating": True, "scope": "pane", "pane_scope": "open", "stability": "experimental"},
+    "task.claim.list": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "experimental"},
+    "task.claim.remove": {"mutating": True, "scope": "pane", "pane_scope": "open", "stability": "experimental"},
+    "task.compare": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "experimental"},
+    "task.create": {"mutating": True, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "task.dependency.add": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "task.dependency.list": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "task.dependency.remove": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "task.detail": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "task.effort.estimate": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "task.finish": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "task.forget": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "task.get": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "task.intent.get": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "task.intent.update": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "task.link.status": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "task.list": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "task.message.cancel": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "task.message.get": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "task.message.prepare": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "task.message.send": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "task.operation.get": {"mutating": False, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "task.park": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "task.pick": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "experimental"},
+    "task.ports": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "task.ports.re_lease": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "task.pr": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "task.pr.claim": {"mutating": True, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "task.pr.list": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "task.pr.observe": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "task.reconcile": {"mutating": True, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "task.recreate": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "task.resume": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "task.review.accept": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "task.review.candidates": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "task.review.diff": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "task.review.forget": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "task.review.get": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "task.review.human_review": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "task.review.interval_status": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "task.review.intervals": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "task.review.note.classify": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "task.review.notes": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "task.review.request_reviewer": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "task.review.snapshot": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "task.review.snapshot.gc": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "task.review.start_reviewer": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "task.set": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "task.setup": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "task.setup_log": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "task.sources": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "task.split": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "experimental"},
+    "task.sync": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "task.track": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "task.unbind": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "theme.get": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "theme.set_mode": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "ui.contribute": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "ui.contributions": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "ui.pane.open": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "vm.create": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "experimental"},
+    "vm.destroy": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "experimental"},
+    "vm.fork": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "experimental"},
+    "vm.list": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "experimental"},
+    "vm.resume": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "experimental"},
+    "vm.snapshot": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "experimental"},
+    "vm.snapshot.delete": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "experimental"},
+    "vm.start": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "experimental"},
+    "vm.status": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "experimental"},
+    "vm.stop": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "experimental"},
+    "vm.suspend": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "experimental"},
+    "vm.template.build": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "experimental"},
+    "vm.template.delete": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "experimental"},
+    "vm.template.list": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "experimental"},
+    "vm.transport": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "experimental"},
+    "workspace.close": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "workspace.create": {"mutating": True, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "workspace.focus": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "workspace.get": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "workspace.list": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "workspace.move": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "workspace.rename": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "worktree.create": {"mutating": True, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "worktree.list": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "worktree.open": {"mutating": True, "scope": "pane", "pane_scope": "open", "stability": "stable"},
+    "worktree.remove": {"mutating": True, "scope": "full", "pane_scope": "forbidden", "stability": "stable"},
+    "worktree.repo_root": {"mutating": False, "scope": "pane", "pane_scope": "open", "stability": "stable"},
 }
 
 # ---- events ----
@@ -9536,7 +9912,7 @@ CloudJobData = TypedDict("CloudJobData", {
     "box": NotRequired[str],
     "from": Dict[str, Any],
     "to": Dict[str, Any],
-    "state": Literal["queued", "waiting_turn", "creating", "bootstrapping", "exporting", "uploading", "importing", "resuming", "done", "failed", "cancelled"],
+    "state": Literal["queued", "waiting_turn", "creating", "bootstrapping", "exporting", "awaiting_confirmation", "uploading", "importing", "resuming", "done", "failed", "cancelled"],
     "progress": NotRequired["CloudJobDataProgress"],
     "error": NotRequired["CloudJobDataError"],
     "result": NotRequired[Dict[str, Any]],
@@ -9544,6 +9920,10 @@ CloudJobData = TypedDict("CloudJobData", {
     "source_after": NotRequired[Literal["keep", "suspend", "destroy"]],
     "task": NotRequired[str],
     "by": NotRequired[str],
+    "new_task": bool,
+    "review": bool,
+    "code_only": bool,
+    "confirmed": bool,
     "created_at": int,
     "updated_at": int,
 })
@@ -9639,6 +10019,16 @@ FamilyPickedSubject = TypedDict("FamilyPickedSubject", {
 FamilyPickedData = TypedDict("FamilyPickedData", {
     "picked": str,
     "discarded": int,
+})
+
+GatewayAccessSubject = TypedDict("GatewayAccessSubject", {
+    "gateway_event": str,
+})
+
+GatewayAccessData = TypedDict("GatewayAccessData", {
+    "event": str,
+    "title": str,
+    "body": str,
 })
 
 GatewayRequestSubject = TypedDict("GatewayRequestSubject", {
@@ -9869,6 +10259,8 @@ InteractionCancelledSubject = TypedDict("InteractionCancelledSubject", {
 
 InteractionCancelledData = TypedDict("InteractionCancelledData", {
     "reason": str,
+    "closed_by": NotRequired[Literal["heuristic"]],
+    "answered": NotRequired[bool],
 })
 
 InteractionDecidedSubject = TypedDict("InteractionDecidedSubject", {
@@ -11039,7 +11431,8 @@ SecurityRateLimitedSubject = TypedDict("SecurityRateLimitedSubject", {
 
 SecurityRateLimitedData = TypedDict("SecurityRateLimitedData", {
     "method": str,
-    "limit": Literal["requests", "spawn", "depth", "descendants"],
+    "limit": Literal["requests", "hooks", "spawn", "depth", "descendants"],
+    "refusals": NotRequired[int],
 })
 
 SessionConfigRejectedSubject: TypeAlias = Dict[str, Any]
@@ -11774,6 +12167,7 @@ EVENT_TYPES = (
     "family.checked",
     "family.created",
     "family.picked",
+    "gateway.access",
     "gateway.request",
     "gateway.status",
     "goal.approved",

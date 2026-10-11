@@ -12,8 +12,8 @@ Use `--json` to print JSON. Non-terminal output also uses JSON.
 
 - `vibeke` or `vibeke attach`: connect the terminal client. Start the server if necessary.
 - `vibeke ssh <host>`: connect to a remote host.
-- `vibeke update --check`: check the latest published stable release.
-- `vibeke update [--version VERSION]`: download and verify a signed stable release, install it, and restart the selected local session. Other sessions and remote hosts keep their running versions. `--json` emits newline-delimited progress objects for online checks and updates.
+- `vibeke update --check`: check the latest published release of your update channel. Set `update.channel` to `stable` (the default) or `preview`, which also offers prereleases.
+- `vibeke update [--version VERSION]`: download and verify a signed release of your channel, install it, and restart the selected local session. Other sessions and remote hosts keep their running versions. `--json` emits newline-delimited progress objects for online checks and updates.
 - `vibeke update --rollback`: restore the previous installed version. `--from PATH` installs a verified local artifact; `--cached` selects the newest cached artifact. Use `--pretty` for these offline operations. `--force` reinstalls; `--allow-downgrade` explicitly permits an older version.
 - `vibeke login [--server URL] [--no-browser]`: sign in to the account server of the hosted relay with a device code. The terminal prints a URL and a short code; open the URL on any device, sign in with GitHub, confirm the code. No browser is needed on this host.
 - `vibeke logout` and `vibeke whoami`: forget the stored credential, or print the signed-in account.
@@ -188,9 +188,9 @@ Use `--json` to print JSON. Non-terminal output also uses JSON.
 |---|---|---|---|
 | `new` | `<title>` | `task.create` | [--repo .] [--agent claude:name] [--base ref] [--root sibling] [--isolation worktree\|jj_workspace\|none\|auto] [--yolo] [--isolate host\|sandbox\|container] [--confirm-host-yolo] [--network none\|harness-apis\|package-registries\|dev\|open] [--image ref] [--code clone\|worktree] [--devcontainer] [--build] |
 | `list` | - | `task.list` |  |
-| `compare` | `<family>` | `task.compare` | <family> [--pair k7.1 --pair k7.2]: side-by-side diff stats, checks and ranking of a best-of-N family (orchestrate.best_of_n) |
-| `pick` | `<family>` `<child>` | `task.pick` | <family> <child> [--merge] [--discard] [--force] [--target branch]: pick the winner of a best-of-N family |
-| `split` | - | `task.split` | [--run a12 \| --pane p] [--paths a,b] [--title t] [--dry-run] [--resume]: move a running agent's uncommitted changes into a new task (orchestrate.split) |
+| `compare` | `<family>` | `task.compare` | (experimental, off by default: [orchestrate]) <family> [--pair k7.1 --pair k7.2]: side-by-side diff stats, checks and ranking of a best-of-N family (orchestrate.best_of_n) |
+| `pick` | `<family>` `<child>` | `task.pick` | (experimental, off by default: [orchestrate]) <family> <child> [--merge] [--discard] [--force] [--target branch]: pick the winner of a best-of-N family |
+| `split` | - | `task.split` | (experimental, off by default: [orchestrate]) [--run a12 \| --pane p] [--paths a,b] [--title t] [--dry-run] [--resume]: move a running agent's uncommitted changes into a new task (orchestrate.split) |
 | `park` | `<task>` | `task.park` | <task> stop its agents gracefully, keep the worktree |
 | `resume` | `<task>` | `task.resume` | <task> restart the parked agents from their sessions |
 | `sync` | `<task>` | `task.sync` | <task> [--direction pull\|push\|both] [--force]: host-side fetch of a container task's commits (push = host commits into the box) |
@@ -236,72 +236,72 @@ Use `--json` to print JSON. Non-terminal output also uses JSON.
 
 | Verb | Positionals | Method | Description |
 |---|---|---|---|
-| `list` | - | `family.list` |  |
-| `get` | `<family>` | `family.get` |  |
-| `check` | `<family>` | `family.check` | <family> [--child k7.1]: run the family's check command in each child |
+| `list` | - | `family.list` | (experimental, off by default: [orchestrate])  |
+| `get` | `<family>` | `family.get` | (experimental, off by default: [orchestrate])  |
+| `check` | `<family>` | `family.check` | (experimental, off by default: [orchestrate]) <family> [--child k7.1]: run the family's check command in each child |
 
 ## `vibeke claim`
 
 | Verb | Positionals | Method | Description |
 |---|---|---|---|
-| `add` | `<glob>` | `task.claim` | <glob> --task k7 \| --run a12 [--note text]: claim files for a task (advisory; orchestrate.merge); a run with no task gets a run claim for the collision tracker |
-| `list` | - | `task.claim.list` | [--task k7] |
-| `remove` | `<claim>` | `task.claim.remove` |  |
+| `add` | `<glob>` | `task.claim` | (experimental, off by default: [orchestrate]) <glob> --task k7 \| --run a12 [--note text]: claim files for a task (advisory; orchestrate.merge); a run with no task gets a run claim for the collision tracker |
+| `list` | - | `task.claim.list` | (experimental, off by default: [orchestrate]) [--task k7] |
+| `remove` | `<claim>` | `task.claim.remove` | (experimental, off by default: [orchestrate])  |
 
 ## `vibeke merge`
 
 | Verb | Positionals | Method | Description |
 |---|---|---|---|
-| `predict` | - | `merge.predict` | [--repo path] [--tasks k1,k2]: predicted conflicts between live worktrees |
-| `add` | `<task>` | `merge.queue.add` | <task> [--target main] [--priority n] [--run] [--allow-dirty]: queue a task branch |
-| `list` | - | `merge.queue.list` | [--all] |
-| `cancel` | `<entry>` | `merge.queue.cancel` |  |
-| `requeue` | `<entry>` | `merge.queue.requeue` |  |
-| `run` | - | `merge.queue.run` | [--entry id] [--count n \| --all]: merge the next queue entries |
+| `predict` | - | `merge.predict` | (experimental, off by default: [orchestrate]) [--repo path] [--tasks k1,k2]: predicted conflicts between live worktrees |
+| `add` | `<task>` | `merge.queue.add` | (experimental, off by default: [orchestrate]) <task> [--target main] [--priority n] [--run] [--allow-dirty]: queue a task branch |
+| `list` | - | `merge.queue.list` | (experimental, off by default: [orchestrate]) [--all] |
+| `cancel` | `<entry>` | `merge.queue.cancel` | (experimental, off by default: [orchestrate])  |
+| `requeue` | `<entry>` | `merge.queue.requeue` | (experimental, off by default: [orchestrate])  |
+| `run` | - | `merge.queue.run` | (experimental, off by default: [orchestrate]) [--entry id] [--count n \| --all]: merge the next queue entries |
 
 ## `vibeke goal`
 
 | Verb | Positionals | Method | Description |
 |---|---|---|---|
-| `create` | `<title>` | `goal.create` | <title> [--text t \| --text-file f] [--repo .] [--no-plan] |
-| `list` | - | `goal.list` |  |
-| `get` | `<goal>` | `goal.get` |  |
-| `plan` | `<goal>` | `goal.plan` | <goal> [--backend heuristic\|agent\|external] |
-| `plan-submit` | `<goal>` | `goal.plan_submit` | <goal> --file plan.json \| --plan '<json>' |
-| `approve` | `<goal>` | `goal.approve` | <goal> [--no-start]: approve the plan and start its ready steps |
-| `start` | `<goal>` | `goal.start` |  |
-| `step-done` | `<goal>` `<step>` | `goal.step_done` | <goal> <step> [--no-ok] [--error text] |
-| `cancel` | `<goal>` | `goal.cancel` | <goal> [--stop-tasks] |
-| `briefing` | - | `goal.briefing` | [--since 12h\|epoch-ms]: what happened while you were away |
+| `create` | `<title>` | `goal.create` | (experimental, off by default: [orchestrate]) <title> [--text t \| --text-file f] [--repo .] [--no-plan] |
+| `list` | - | `goal.list` | (experimental, off by default: [orchestrate])  |
+| `get` | `<goal>` | `goal.get` | (experimental, off by default: [orchestrate])  |
+| `plan` | `<goal>` | `goal.plan` | (experimental, off by default: [orchestrate]) <goal> [--backend heuristic\|agent\|external] |
+| `plan-submit` | `<goal>` | `goal.plan_submit` | (experimental, off by default: [orchestrate]) <goal> --file plan.json \| --plan '<json>' |
+| `approve` | `<goal>` | `goal.approve` | (experimental, off by default: [orchestrate]) <goal> [--no-start]: approve the plan and start its ready steps |
+| `start` | `<goal>` | `goal.start` | (experimental, off by default: [orchestrate])  |
+| `step-done` | `<goal>` `<step>` | `goal.step_done` | (experimental, off by default: [orchestrate]) <goal> <step> [--no-ok] [--error text] |
+| `cancel` | `<goal>` | `goal.cancel` | (experimental, off by default: [orchestrate]) <goal> [--stop-tasks] |
+| `briefing` | - | `goal.briefing` | (experimental, off by default: [orchestrate]) [--since 12h\|epoch-ms]: what happened while you were away |
 
 ## `vibeke quota`
 
 | Verb | Positionals | Method | Description |
 |---|---|---|---|
-| `status` | - | `quota.status` |  |
-| `tick` | - | `quota.tick` | [--dry-run] |
-| `route` | - | `quota.route` | [--harnesses claude,codex] |
-| `resume` | `<key>` | `quota.resume` | <task-or-run> resume work the scheduler paused |
+| `status` | - | `quota.status` | (experimental, off by default: [orchestrate])  |
+| `tick` | - | `quota.tick` | (experimental, off by default: [orchestrate]) [--dry-run] |
+| `route` | - | `quota.route` | (experimental, off by default: [orchestrate]) [--harnesses claude,codex] |
+| `resume` | `<key>` | `quota.resume` | (experimental, off by default: [orchestrate]) <task-or-run> resume work the scheduler paused |
 
 ## `vibeke vm`
 
 | Verb | Positionals | Method | Description |
 |---|---|---|---|
-| `status` | - | `vm.status` |  |
-| `list` | - | `vm.list` |  |
-| `create` | - | `vm.create` | [--name n] [--task t] [--checkout dir] [--no-template] |
-| `start` | `<vm>` | `vm.start` |  |
-| `stop` | `<vm>` | `vm.stop` |  |
-| `suspend` | `<vm>` | `vm.suspend` |  |
-| `resume` | `<vm>` | `vm.resume` |  |
-| `destroy` | `<vm>` | `vm.destroy` |  |
-| `snapshot` | `<vm>` | `vm.snapshot` | <vm> [--label l] |
-| `snapshot-delete` | `<snapshot>` | `vm.snapshot.delete` | <vm/label> [--force] |
-| `fork` | `<snapshot>` | `vm.fork` | <vm/label> [--count n] [--prefix p] |
-| `transport` | `<vm>` | `vm.transport` |  |
-| `template-list` | - | `vm.template.list` |  |
-| `template-build` | - | `vm.template.build` |  |
-| `template-delete` | `<key>` | `vm.template.delete` |  |
+| `status` | - | `vm.status` | (experimental, off by default: [orchestrate])  |
+| `list` | - | `vm.list` | (experimental, off by default: [orchestrate])  |
+| `create` | - | `vm.create` | (experimental, off by default: [orchestrate]) [--name n] [--task t] [--checkout dir] [--no-template] |
+| `start` | `<vm>` | `vm.start` | (experimental, off by default: [orchestrate])  |
+| `stop` | `<vm>` | `vm.stop` | (experimental, off by default: [orchestrate])  |
+| `suspend` | `<vm>` | `vm.suspend` | (experimental, off by default: [orchestrate])  |
+| `resume` | `<vm>` | `vm.resume` | (experimental, off by default: [orchestrate])  |
+| `destroy` | `<vm>` | `vm.destroy` | (experimental, off by default: [orchestrate])  |
+| `snapshot` | `<vm>` | `vm.snapshot` | (experimental, off by default: [orchestrate]) <vm> [--label l] |
+| `snapshot-delete` | `<snapshot>` | `vm.snapshot.delete` | (experimental, off by default: [orchestrate]) <vm/label> [--force] |
+| `fork` | `<snapshot>` | `vm.fork` | (experimental, off by default: [orchestrate]) <vm/label> [--count n] [--prefix p] |
+| `transport` | `<vm>` | `vm.transport` | (experimental, off by default: [orchestrate])  |
+| `template-list` | - | `vm.template.list` | (experimental, off by default: [orchestrate])  |
+| `template-build` | - | `vm.template.build` | (experimental, off by default: [orchestrate])  |
+| `template-delete` | `<key>` | `vm.template.delete` | (experimental, off by default: [orchestrate])  |
 
 ## `vibeke sandbox`
 
@@ -337,19 +337,19 @@ Use `--json` to print JSON. Non-terminal output also uses JSON.
 
 | Verb | Positionals | Method | Description |
 |---|---|---|---|
-| `claim` | `<glob>` | `collision.claim` | <glob> [--run r\|--task t] [--root dir] [--note text]: say which part of the checkout this run works in (advisory; another run writing there raises a high collision) |
-| `claims` | - | `collision.claims` | [--task t\|--run r\|--root dir]: run claims and the task claims that bind each checkout |
-| `unclaim` | `<claim>` | `collision.claim_release` | <claim> \| --run r [--glob g]: release a run claim |
-| `list` | - | `collision.list` | [--task t] [--run r] [--status open\|cleared\|ignored\|all]: shared-checkout collisions (advisory) |
-| `get` | `<collision>` | `collision.get` | <collision>: paths, runs, timeline and how each run can be told |
-| `status` | - | `collision.status` | tracker config, the checkouts followed, claims |
-| `ignore` | `<collision>` `<path>` | `collision.ignore` | <collision> <path> [--for-secs n]: stop tracking a path (or `--root dir <path>` without a collision) |
-| `ignores` | - | `collision.ignores` | [--root dir] |
-| `unignore` | `<ignore>` | `collision.unignore` | <ignore id> |
-| `dismiss` | `<collision>` | `collision.dismiss` | <collision> [--dismissed false]: hide the warning until it gets worse |
-| `pause` | `<collision>` `<run>` | `collision.pause` | <collision> <run>: the adapter's interrupt for one run |
-| `tell` | `<collision>` | `collision.tell` | <collision> [--runs r]... [--text t]: native steer only (never typed into a TUI) |
-| `fresh` | `<collision>` | `collision.start_task` | <collision> [--run r] [--title t] [--harness h] [--prompt text] [--dry-run]: a new task from the shared checkout's HEAD with a hand-off prompt; nothing is moved |
+| `claim` | `<glob>` | `collision.claim` | (experimental) <glob> [--run r\|--task t] [--root dir] [--note text]: say which part of the checkout this run works in (advisory; another run writing there raises a high collision) |
+| `claims` | - | `collision.claims` | (experimental) [--task t\|--run r\|--root dir]: run claims and the task claims that bind each checkout |
+| `unclaim` | `<claim>` | `collision.claim_release` | (experimental) <claim> \| --run r [--glob g]: release a run claim |
+| `list` | - | `collision.list` | (experimental) [--task t] [--run r] [--status open\|cleared\|ignored\|all]: shared-checkout collisions (advisory) |
+| `get` | `<collision>` | `collision.get` | (experimental) <collision>: paths, runs, timeline and how each run can be told |
+| `status` | - | `collision.status` | (experimental) tracker config, the checkouts followed, claims |
+| `ignore` | `<collision>` `<path>` | `collision.ignore` | (experimental) <collision> <path> [--for-secs n]: stop tracking a path (or `--root dir <path>` without a collision) |
+| `ignores` | - | `collision.ignores` | (experimental) [--root dir] |
+| `unignore` | `<ignore>` | `collision.unignore` | (experimental) <ignore id> |
+| `dismiss` | `<collision>` | `collision.dismiss` | (experimental) <collision> [--dismissed false]: hide the warning until it gets worse |
+| `pause` | `<collision>` `<run>` | `collision.pause` | (experimental) <collision> <run>: the adapter's interrupt for one run |
+| `tell` | `<collision>` | `collision.tell` | (experimental) <collision> [--runs r]... [--text t]: native steer only (never typed into a TUI) |
+| `fresh` | `<collision>` | `collision.start_task` | (experimental) <collision> [--run r] [--title t] [--harness h] [--prompt text] [--dry-run]: a new task from the shared checkout's HEAD with a hand-off prompt; nothing is moved |
 
 ## `vibeke worktree`
 
@@ -448,7 +448,7 @@ Use `--json` to print JSON. Non-terminal output also uses JSON.
 | `snapshot` | `<session>` | `browser.snapshot` | <session> [--format a11y\|text\|html] [--selector css] |
 | `dom` | `<session>` | `browser.dom` | alias of snapshot |
 | `console` | `<session>` | `browser.console` | <session> [--level error\|warn\|all] [--since 5m] \| --pane <browser pane> [--follow] [--console\|--network] [--errors] (follow keys: c n e a q) |
-| `console-split` | `<pane>` | `browser.pane.console` | <browser pane> toggle the console/network split under it (prefix+alt+c) |
+| `console-split` | `<pane>` | `browser.pane.console` | <browser pane> toggle the console/network split under it (prefix+m) |
 | `viewport` | `<pane>` `<viewport>` | `browser.pane.update` | <browser pane> <WxH \| fit> \| --device iphone-15\|pixel-8\|ipad\|desktop-1280\|desktop-1440\|desktop-1920 — pin the page size (letterboxed) |
 | `network` | `<session>` | `browser.network` | <session> [--failed] [--since 5m] |
 | `close` | `<session>` | `browser.close` |  |
@@ -480,29 +480,29 @@ Use `--json` to print JSON. Non-terminal output also uses JSON.
 
 | Verb | Positionals | Method | Description |
 |---|---|---|---|
-| `search` | `<text...>` | `desk.search` | <words> [--repo dir] [--harness h] [--since 7d\|YYYY-MM-DD] [--until …] [--limit n] [--sort recent] |
-| `sessions` | - | `desk.sessions` | [--repo dir] [--harness h] — live / resumable / neither |
-| `open` | `<session>` | `desk.open` | <session> [--turn n] [--focus] — Change focus only with --focus. Otherwise, show resume options. |
-| `resume` | `<session>` | `desk.resume` | <session> [--pane p] = Resume native session \| --mode new_agent [--start --harness h] = Start new agent with context (an unsent draft) |
-| `context` | `<session>` | `desk.context` | <session> [--turns 3-5] [--objective text] — editable context package |
-| `forget` | `<session>` | `desk.forget` | <session> \| --repo dir \| --workspace w \| --before date — purge from the conversation index |
-| `status` | - | `desk.status` | indexed sources, selection, exclusions, retention |
-| `index` | - | `desk.index` | run an indexing pass now |
+| `search` | `<text...>` | `desk.search` | (experimental) <words> [--repo dir] [--harness h] [--since 7d\|YYYY-MM-DD] [--until …] [--limit n] [--sort recent] |
+| `sessions` | - | `desk.sessions` | (experimental) [--repo dir] [--harness h] — live / resumable / neither |
+| `open` | `<session>` | `desk.open` | (experimental) <session> [--turn n] [--focus] — Change focus only with --focus. Otherwise, show resume options. |
+| `resume` | `<session>` | `desk.resume` | (experimental) <session> [--pane p] = Resume native session \| --mode new_agent [--start --harness h] = Start new agent with context (an unsent draft) |
+| `context` | `<session>` | `desk.context` | (experimental) <session> [--turns 3-5] [--objective text] — editable context package |
+| `forget` | `<session>` | `desk.forget` | (experimental) <session> \| --repo dir \| --workspace w \| --before date — purge from the conversation index |
+| `status` | - | `desk.status` | (experimental) indexed sources, selection, exclusions, retention |
+| `index` | - | `desk.index` | (experimental) run an indexing pass now |
 
 ## `vibeke draft`
 
 | Verb | Positionals | Method | Description |
 |---|---|---|---|
-| `new` | `<text>` | `draft.create` | <text\|-> [--workspace w \| --task t] [--file path]… [--screenshot path]… [--title t] |
-| `list` | - | `draft.list` | [--workspace w \| --task t] [--all] |
-| `show` | `<draft>` | `draft.get` |  |
-| `edit` | `<draft>` | `draft.update` | <draft> [--text t\|-] [--title t] [--file path] [--remove-attachment i] [--expected-rev n] |
-| `check` | `<draft>` | `draft.check` | <draft> --run r — send_path prompt_input \| open_pane_only and why |
-| `send` | `<draft>` | `draft.send` | <draft> --run r [--include-notes] [--keep] [--retry-despite-unknown] (zero bytes when unsafe) |
-| `reconcile` | `<draft>` | `draft.reconcile` | inspect an uncertain send before retrying |
-| `combine` | `<ids...>` | `draft.combine` | <draft> <draft>… [--title t] [--delete-sources] |
-| `reorder` | `<order...>` | `draft.reorder` | <draft>… in their new order |
-| `rm` | `<draft>` | `draft.delete` |  |
+| `new` | `<text>` | `draft.create` | (experimental) <text\|-> [--workspace w \| --task t] [--file path]… [--screenshot path]… [--title t] |
+| `list` | - | `draft.list` | (experimental) [--workspace w \| --task t] [--all] |
+| `show` | `<draft>` | `draft.get` | (experimental)  |
+| `edit` | `<draft>` | `draft.update` | (experimental) <draft> [--text t\|-] [--title t] [--file path] [--remove-attachment i] [--expected-rev n] |
+| `check` | `<draft>` | `draft.check` | (experimental) <draft> --run r — send_path prompt_input \| open_pane_only and why |
+| `send` | `<draft>` | `draft.send` | (experimental) <draft> --run r [--include-notes] [--keep] [--retry-despite-unknown] (zero bytes when unsafe) |
+| `reconcile` | `<draft>` | `draft.reconcile` | (experimental) inspect an uncertain send before retrying |
+| `combine` | `<ids...>` | `draft.combine` | (experimental) <draft> <draft>… [--title t] [--delete-sources] |
+| `reorder` | `<order...>` | `draft.reorder` | (experimental) <draft>… in their new order |
+| `rm` | `<draft>` | `draft.delete` | (experimental)  |
 
 ## `vibeke notes`
 
@@ -511,42 +511,24 @@ Use `--json` to print JSON. Non-terminal output also uses JSON.
 | `get` | - | `notes.get` | [--workspace w] — never sent unless included |
 | `set` | `<text>` | `notes.set` | <text\|-> [--workspace w] |
 
-## `vibeke assist`
-
-| Verb | Positionals | Method | Description |
-|---|---|---|---|
-| `status` | - | `assistant.status` | enabled/configured state, coordinator, profile, budgets, consents (no secrets) |
-| `providers` | - | `assistant.providers` | configured connections and profiles (no secrets) |
-| `consent` | `<workspace>` | `assistant.consent` | [workspace] [--connection c] [--classes selected_text,structured_state,review_package,screen] [--operations op,...] [--auto-send op,...] |
-| `revoke` | `<workspace>` | `assistant.revoke` | [workspace] [--connection c] — also cancels unfinished requests there |
-| `generate` | `<operation>` | `assistant.generate` | suggest_task_details\|review_summary\|pane_title\|briefing\|handoff\|effort_estimate\|navigate\|decision_card\|task_title\|reply_suggestions [--run r] [--turns 3,4] [--pane p] [--task t] [--workspace w] [--query text] [--interaction i] [--stream] [--priority background] [--include-screen] — Show the exact payload. Do not send it. |
-| `confirm` | `<request>` `<preview_digest>` | `assistant.confirm` | <request> <preview-digest> — send the previewed payload |
-| `show` | `<request>` | `assistant.get` | <request> — lifecycle, usage, cost, sources and the generated draft |
-| `list` | - | `assistant.list` | [--workspace w] [--state done] [--limit 50] |
-| `cancel` | `<request>` | `assistant.cancel` | <request> |
-| `purge` | `<request>` | `assistant.purge` | <request> \| --workspace w \| --all — forget generated outputs |
-| `models` | `<connection>` | `assistant.models` | [connection] [--profile p] [--refresh] — live\|cached\|bundled model list with capability records; --refresh asks the provider |
-| `test` | - | `assistant.test` | [--profile p] [--probe streaming,json_schema] — an explicit small generation, counted as usage; probes record what works |
-| `background` | `<action>` | `assistant.background` | [status\|tick] — the opt-in background sweeper (summaries, stall notices) |
-
 ## `vibeke assistant`
 
 | Verb | Positionals | Method | Description |
 |---|---|---|---|
-| `status` | - | `assistant.status` | enabled/configured state, coordinator, profile, budgets, consents (no secrets) |
-| `providers` | - | `assistant.providers` | configured connections and verified adapters (no secrets) |
-| `models` | `<connection>` | `assistant.models` | --connection <id> [--refresh] — model list with live\|cached\|bundled provenance and capability records |
-| `test` | - | `assistant.test` | [--profile p] [--probe streaming,json_schema] — explicit small generation, counted as usage |
-| `brief` | `<workspace>` | `assistant.generate` | [workspace] — preview a briefing request for a workspace (then `assistant confirm`) |
-| `generate` | `<operation>` | `assistant.generate` | <operation> [flags] — show the exact payload; nothing is sent |
-| `confirm` | `<request>` `<preview_digest>` | `assistant.confirm` | <request> <preview-digest> — send the previewed payload |
-| `get` | `<request>` | `assistant.get` | <request> — lifecycle, usage, cost, sources, staleness and the generated draft |
-| `list` | - | `assistant.list` | [--workspace w] [--state done] [--limit 50] |
-| `cancel` | `<request>` | `assistant.cancel` | <request> |
-| `consent` | `<workspace>` | `assistant.consent` | [workspace] [--remote-workspace machine:/path] [--connection c] [--classes ...] [--operations ...] [--auto-send ...] |
-| `revoke` | `<workspace>` | `assistant.revoke` | [workspace] [--remote-workspace machine:/path] [--connection c] |
-| `purge` | `<request>` | `assistant.purge` | <request> \| --workspace w \| --all — forget generated outputs and cached results |
-| `background` | `<action>` | `assistant.background` | [status\|tick] |
+| `status` | - | `assistant.status` | (experimental) enabled/configured state, coordinator, profile, budgets, consents (no secrets) |
+| `providers` | - | `assistant.providers` | (experimental) configured connections and verified adapters (no secrets) |
+| `models` | `<connection>` | `assistant.models` | (experimental) [connection] [--profile p] [--refresh] — model list with live\|cached\|bundled provenance and capability records; --refresh asks the provider |
+| `test` | - | `assistant.test` | (experimental) [--profile p] [--probe streaming,json_schema] — explicit small generation, counted as usage |
+| `brief` | `<workspace>` | `assistant.generate` | (experimental) [workspace] — preview a briefing request for a workspace (then `assistant confirm`) |
+| `generate` | `<operation>` | `assistant.generate` | (experimental) suggest_task_details\|review_summary\|pane_title\|briefing\|handoff\|effort_estimate\|navigate\|decision_card\|task_title\|reply_suggestions [--run r] [--turns 3,4] [--pane p] [--task t] [--workspace w] [--query text] [--interaction i] [--stream] [--priority background] [--include-screen] — show the exact payload; nothing is sent |
+| `confirm` | `<request>` `<preview_digest>` | `assistant.confirm` | (experimental) <request> <preview-digest> — send the previewed payload |
+| `get` | `<request>` | `assistant.get` | (experimental) <request> — lifecycle, usage, cost, sources, staleness and the generated draft |
+| `list` | - | `assistant.list` | (experimental) [--workspace w] [--state done] [--limit 50] |
+| `cancel` | `<request>` | `assistant.cancel` | (experimental) <request> |
+| `consent` | `<workspace>` | `assistant.consent` | (experimental) [workspace] [--remote-workspace machine:/path] [--connection c] [--classes selected_text,structured_state,review_package,screen] [--operations op,...] [--auto-send op,...] |
+| `revoke` | `<workspace>` | `assistant.revoke` | (experimental) [workspace] [--remote-workspace machine:/path] [--connection c] — also cancels unfinished requests there |
+| `purge` | `<request>` | `assistant.purge` | (experimental) <request> \| --workspace w \| --all — forget generated outputs and cached results |
+| `background` | `<action>` | `assistant.background` | (experimental) [status\|tick] — the opt-in background sweeper (summaries, stall notices) |
 
 ## `vibeke api`
 
@@ -585,19 +567,19 @@ Use `--json` to print JSON. Non-terminal output also uses JSON.
 
 | Verb | Positionals | Method | Description |
 |---|---|---|---|
-| `providers` | - | `cloud.providers` | providers: sign-in state and account [--verify] |
-| `logout` | `<provider>` | `cloud.auth.clear` | <provider> — forget the stored credential (running sandboxes keep running) |
-| `ls` | - | `cloud.box.list` | sandboxes of every signed-in provider [--provider P] [--ownership attached\|idle\|orphaned\|foreign\|missing] [--refresh] |
-| `rm` | `<box>` | `cloud.box.destroy` | <provider/id> [--force] — destroy a sandbox; unsynced work needs --force (put --force after the box) |
-| `suspend` | `<box>` | `cloud.box.suspend` | <provider/id> — suspend a sandbox (providers that sleep by themselves refuse) |
-| `resume` | `<box>` | `cloud.box.resume` | <provider/id> — wake a suspended sandbox |
-| `adopt` | `<box>` | `cloud.box.adopt` | <provider/id> — take over an orphaned or foreign sandbox: creates a task and reopens its sessions |
-| `forget` | `<box>` | `cloud.box.forget` | <provider/id> — drop the record of a sandbox the provider no longer lists |
-| `checkpoint` | `<box>` | `cloud.box.checkpoint` | <provider/id> [--note TEXT] — save a checkpoint (providers with checkpoints) |
-| `prune` | - | `cloud.prune` | [--dry-run] [--force] [--provider P] — destroy orphaned and idle sandboxes without unsynced work |
-| `jobs` | - | `cloud.jobs` | moves to and from sandboxes: state, progress, errors |
-| `cancel` | `<id>` | `cloud.cancel` | <job> — stop a move that is still running |
-| `move` | - | `cloud.move` | (--pane P \| --run R \| --box B) --to cloud\|local\|<peer> [--provider X] [--into BOX] [--interrupt] [--source-after keep\|suspend\|destroy] — start a move (`cloud send` and `cloud bring-back` follow it) |
+| `providers` | - | `cloud.providers` | (experimental) providers: sign-in state and account [--verify] |
+| `logout` | `<provider>` | `cloud.auth.clear` | (experimental) <provider> — forget the stored credential (running sandboxes keep running) |
+| `ls` | - | `cloud.box.list` | (experimental) sandboxes of every signed-in provider [--provider P] [--ownership attached\|idle\|orphaned\|foreign\|missing] [--refresh] |
+| `rm` | `<box>` | `cloud.box.destroy` | (experimental) <provider/id> [--force] — destroy a sandbox; unsynced work needs --force (put --force after the box) |
+| `suspend` | `<box>` | `cloud.box.suspend` | (experimental) <provider/id> — suspend a sandbox (providers that sleep by themselves refuse) |
+| `resume` | `<box>` | `cloud.box.resume` | (experimental) <provider/id> — wake a suspended sandbox |
+| `adopt` | `<box>` | `cloud.box.adopt` | (experimental) <provider/id> — take over an orphaned or foreign sandbox: creates a task and reopens its sessions |
+| `forget` | `<box>` | `cloud.box.forget` | (experimental) <provider/id> — drop the record of a sandbox the provider no longer lists |
+| `checkpoint` | `<box>` | `cloud.box.checkpoint` | (experimental) <provider/id> [--note TEXT] — save a checkpoint (providers with checkpoints) |
+| `prune` | - | `cloud.prune` | (experimental) [--dry-run] [--force] [--provider P] — destroy orphaned and idle sandboxes without unsynced work |
+| `jobs` | - | `cloud.jobs` | (experimental) moves to and from sandboxes: state, progress, errors |
+| `cancel` | `<id>` | `cloud.cancel` | (experimental) <job> — stop a move that is still running |
+| `move` | - | `cloud.move` | (experimental) (--pane P \| --run R \| --box B) --to cloud\|local\|<peer> [--provider X] [--into BOX] [--interrupt] [--source-after keep\|suspend\|destroy] — start a move (`cloud send` and `cloud bring-back` follow it) |
 
 ## `vibeke security`
 

@@ -14,6 +14,8 @@
       "msg1": "v-kqN0SDUX2ca6SBfJ4j5uiRjXzJzr3L_bxWUE_gGQ6Q5_8wrZZv6uSAu2OMUeGs_0Hh5CUmDIDVCI5VXQmNGlyrDLi2qM06nud4RWnPRwz7m14Qn-yxz8OmifZEs1Ju",
       "msg2": "XsrzsofgioweXGIpzhVlPT5WYHzd_LDnYqi6MNJcpF5jKgCSlX8q80lZaxiUApk9SO0wMcmP7xuApDCR57blK3COznkEqexXtnlxc0Q5TYD6HfzovIGZS5rlZNPV56hW0h40aSwg0jcyR0q5zowXTaheqWGUpU6C2zuqukfjeg",
       "msg2_payload": "{\"v\":1,\"host_name\":\"devbox\",\"gateway_version\":\"0.1.0\",\"server_version\":\"0.1.0\"}",
+      "handshake_hash": "Q3su3G2Ah2WRYaVU3BB9V8JnQajUC7kba1puNVF01Fg",
+      "check_code": "RRCT-GFZH-P2S3",
       "transport": {
         "small_plaintext": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\",\"params\":{}}",
         "big_plaintext_len": 70000,
@@ -46,6 +48,8 @@
       "msg1": "v-kqN0SDUX2ca6SBfJ4j5uiRjXzJzr3L_bxWUE_gGQ4PMH09jVYXgeFJKYOpeL4GuUJF5k33dyKzgveDrPNYVm8M7hytRrJbsj7q7qekbcFUS_Aqv6jonS1v0lcv85FV",
       "msg2": "XsrzsofgioweXGIpzhVlPT5WYHzd_LDnYqi6MNJcpF4oG4S1JKjiAETVTnBZeEZ6_mNJanVuHi1W5LGDUcER_cnk3FNAG9_bqCcnJ4KiMwUfoLImLPc4bB2G3ipneYUObh91QgzvwXj8jL16e-scTXC2uhoYsNTDB_thmdj6HA",
       "msg2_payload": "{\"v\":1,\"host_name\":\"devbox\",\"gateway_version\":\"0.1.0\",\"server_version\":\"0.1.0\"}",
+      "handshake_hash": "tiDp-lVo_1kNnWmGOtL-WSJ0kZcWv2PETCM-QrU4SB4",
+      "check_code": "2FWT-DULZ-3R4P",
       "transport": {
         "small_plaintext": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\",\"params\":{}}",
         "big_plaintext_len": 70000,
@@ -70,6 +74,13 @@
     "device_public": "rp1aCT3yLydAm-SflswNNZjcZ31qD1GtHSsSTnwTWX4",
     "device_fingerprint": "bskr-geya",
     "relay_public_for_host_id": "KjE4P0ZNVFtiaXB3foWMk5qhqK-2vcTL0tng5-71_AM",
-    "host_id": "6v75vv3gytdch5mbc44lfqqev4"
+    "host_id": "6v75vv3gytdch5mbc44lfqqev4",
+    "binding": {
+      "relay_seed": "MTg_Rk1UW2JpcHd-hYyTmqGor7a9xMvS2eDn7vX8Awo",
+      "relay_public": "9Ruj53vb1qAb1p2FcTqfsiY-Nx3te0x21QYaZM1HE1k",
+      "host_id": "ugcii72gk4gnc3hif6nzpofviy",
+      "noise_public": "fQyFy515BZg5ZArlFiQFWs9fGxyUgLujfB1m2AkAkhc",
+      "sig": "tEt2M94u_ZsZ21MXFIvAaoh6IHJJS4ow6qOa3eZ2vBkHK1OBNTqhxX_6mKDYxMvwLefSjhVhAOobFp_a0Iy9BA"
+    }
   }
 }
