@@ -2207,9 +2207,19 @@ pub async fn call(
         "pane.wait_for_output" => {
             let id = pane_target(caller, &sn, p)?;
             let mut np = json!({"pane": id, "timeout_ms": p.get("timeout_ms").and_then(Value::as_u64).unwrap_or(30_000)});
+            // Herdr's `OutputMatch` is `{type: "substring"|"regex", value}`; the flat
+            // `regex`/`match` strings stay accepted.
+            let m = p.get("match").filter(|m| m.is_object());
+            let typed_match = |kind: &str| {
+                m.filter(|m| m["type"] == kind)
+                    .and_then(|m| m["value"].as_str())
+            };
             match (
-                sp(p, "regex"),
-                sp(p, "match").or(sp(p, "pattern")).or(sp(p, "text")),
+                typed_match("regex").or(sp(p, "regex")),
+                typed_match("substring")
+                    .or(sp(p, "match"))
+                    .or(sp(p, "pattern"))
+                    .or(sp(p, "text")),
             ) {
                 (Some(r), _) => np["regex"] = json!(r),
                 (None, Some(m)) => np["match"] = json!(m),

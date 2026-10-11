@@ -34,7 +34,6 @@ preview.dismiss
 preview.profile.list
 sandbox.remove
 tab.focus
-tab.move
 worktree.create
 worktree.open
 

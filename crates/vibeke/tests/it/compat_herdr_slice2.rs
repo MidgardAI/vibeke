@@ -266,7 +266,7 @@ fn layout_pane_move_swap_metadata_and_their_events() {
     assert_eq!(splits[0]["direction"], "right");
     assert_eq!(splits[0]["ratio"], 0.5);
     assert_eq!(splits[0]["rect"], *area);
-    let snap = s_.herdr(&["session", "snapshot"]);
+    let snap = s_.herdr(&["api", "snapshot"]);
     assert!(
         snap["layouts"]
             .as_array()
@@ -289,7 +289,7 @@ fn layout_pane_move_swap_metadata_and_their_events() {
         "{r}"
     );
     let e = ev.until("layout_updated");
-    assert_eq!(e["data"]["tab_id"], t1.as_str());
+    assert!(e["data"].get("tab_id").is_none(), "Herdr: only `layout`: {e}");
     assert_eq!(e["data"]["layout"]["tab_id"], t1.as_str(), "{e}");
     assert!(
         (e["data"]["layout"]["splits"][0]["ratio"].as_f64().unwrap() - 0.7).abs() < 0.01,
