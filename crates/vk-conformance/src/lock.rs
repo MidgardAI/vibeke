@@ -99,33 +99,349 @@ impl LockedPlugin {
     /// `owner__repo`, the scenario and mirror file stem. A repository with several manifests
     /// adds `__<plugin_id>` so stems stay unique.
     pub fn stem(&self, lock: &Lock) -> String {
-        todo!("lane MODEL")
+        let base = self.repository.replace('/', "__");
+        let shared = lock
+            .plugins
+            .iter()
+            .any(|p| p.repository == self.repository && p.plugin_id != self.plugin_id);
+        if !shared {
+            return base;
+        }
+        let id: String = self
+            .plugin_id
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-') {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        format!("{base}__{id}")
     }
 
-    /// The install spec `owner/repo[/subdir]@<commit>` for `vibeke plugin install`.
+    /// The plugin directory inside the repository: the manifest's directory, or `None` when
+    /// the manifest sits at the repository root.
+    pub fn subdir(&self) -> Option<&str> {
+        self.manifest_path
+            .trim_start_matches("./")
+            .rsplit_once('/')
+            .map(|(dir, _)| dir.trim_end_matches('/'))
+            .filter(|d| !d.is_empty() && *d != ".")
+    }
+
+    /// The install spec `owner/repo[/subdir]@<commit>` for `vibeke plugin install`. This is
+    /// the spelling `vk_compat::herdr::source::parse` accepts (18 §7.1).
     pub fn install_spec(&self) -> String {
-        todo!("lane MODEL")
+        match self.subdir() {
+            Some(sub) => format!("{}/{sub}@{}", self.repository, self.commit),
+            None => format!("{}@{}", self.repository, self.commit),
+        }
     }
 
     /// Whether the plugin declares `os` (`"linux"` or `"macos"`). An empty list is all platforms.
     pub fn supports(&self, os: &str) -> bool {
-        todo!("lane MODEL")
+        self.platforms.is_empty() || self.platforms.iter().any(|p| p == os)
     }
 }
 
+/// The lock schema version this crate reads.
+pub const SCHEMA: u32 = 1;
+
+fn is_hex(s: &str, len: usize) -> bool {
+    s.len() == len
+        && s.bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
 impl Lock {
+    /// Read and validate the lock file.
     pub fn load(path: &Path) -> anyhow::Result<Lock> {
-        todo!("lane MODEL")
+        let text = std::fs::read_to_string(path)
+            .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
+        let lock: Lock =
+            toml::from_str(&text).map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
+        lock.validate()
+            .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
+        Ok(lock)
     }
 
     /// Structural checks: schema version, `plugins.len() == size`, unique ranks 1..=size,
     /// 40-hex commits, 64-hex sha256s, no plugin from an excluded repository id, and
-    /// `dependency` entries only in verified mode.
+    /// `dependency` entries only in verified mode. Plugin ids and file stems must also be
+    /// unique, and repositories must have the shape `owner/repo`.
     pub fn validate(&self) -> anyhow::Result<()> {
-        todo!("lane MODEL")
+        use anyhow::bail;
+        if self.schema != SCHEMA {
+            bail!(
+                "unsupported lock schema {} (expected {SCHEMA})",
+                self.schema
+            );
+        }
+        if !is_hex(&self.catalog_sha256, 64) {
+            bail!("catalog_sha256 is not 64 lowercase hex digits");
+        }
+        if self.plugins.len() != self.size {
+            bail!(
+                "lock has {} plugins but size = {}",
+                self.plugins.len(),
+                self.size
+            );
+        }
+        let mut ranks = std::collections::BTreeSet::new();
+        let mut ids = std::collections::BTreeSet::new();
+        let mut stems = std::collections::BTreeSet::new();
+        for p in &self.plugins {
+            let at = format!("plugin `{}` (rank {})", p.plugin_id, p.rank);
+            if p.rank == 0 || p.rank as usize > self.size {
+                bail!("{at}: rank is outside 1..={}", self.size);
+            }
+            if !ranks.insert(p.rank) {
+                bail!("{at}: duplicate rank");
+            }
+            if p.plugin_id.is_empty() || !ids.insert(p.plugin_id.as_str()) {
+                bail!("{at}: empty or duplicate plugin id");
+            }
+            match p.repository.split_once('/') {
+                Some((o, r)) if !o.is_empty() && !r.is_empty() && !r.contains('/') => {}
+                _ => bail!("{at}: repository `{}` is not owner/repo", p.repository),
+            }
+            if p.manifest_path.is_empty() || p.manifest_path.starts_with('/') {
+                bail!("{at}: manifest_path must be relative to the repository");
+            }
+            if !is_hex(&p.commit, 40) {
+                bail!("{at}: commit is not 40 lowercase hex digits");
+            }
+            if !is_hex(&p.manifest_sha256, 64) {
+                bail!("{at}: manifest_sha256 is not 64 lowercase hex digits");
+            }
+            if self.exclude.iter().any(|x| x.id == p.repo_id) {
+                bail!("{at}: repository id {} is excluded", p.repo_id);
+            }
+            if p.dependency_mode != DependencyMode::Verified && !p.dependencies.is_empty() {
+                bail!("{at}: dependency entries need dependency_mode = \"verified\"");
+            }
+            for d in &p.dependencies {
+                if !is_hex(&d.sha256, 64) {
+                    bail!(
+                        "{at}: dependency {} sha256 is not 64 lowercase hex digits",
+                        d.url
+                    );
+                }
+            }
+            if !stems.insert(p.stem(self)) {
+                bail!("{at}: duplicate file stem `{}`", p.stem(self));
+            }
+        }
+        Ok(())
     }
 
     pub fn plugin(&self, plugin_id: &str) -> Option<&LockedPlugin> {
-        todo!("lane MODEL")
+        self.plugins.iter().find(|p| p.plugin_id == plugin_id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const C: &str = "0123456789abcdef0123456789abcdef01234567";
+    const S: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    fn plugin(rank: u32, repo: &str, id: &str, manifest: &str) -> String {
+        format!(
+            r#"
+[[plugin]]
+rank = {rank}
+repository = "{repo}"
+repo_id = {rank}00
+plugin_id = "{id}"
+manifest_path = "{manifest}"
+commit = "{C}"
+manifest_sha256 = "{S}"
+stars = 10
+created_at = "2026-07-06T16:31:11Z"
+dependency_mode = "unpinned"
+"#
+        )
+    }
+
+    fn lock(plugins: &[String], size: usize) -> String {
+        format!(
+            r#"
+schema = 1
+baseline = "0.9.3"
+catalog = "catalog.json"
+catalog_sha256 = "{S}"
+catalog_generated_at = "2026-10-11T10:00:42.514Z"
+size = {size}
+
+[toolchains]
+node = "22.20.0"
+
+[[exclude]]
+id = 999
+reason = "covered elsewhere"
+{}"#,
+            plugins.concat()
+        )
+    }
+
+    fn parse(text: &str) -> Lock {
+        toml::from_str(text).unwrap()
+    }
+
+    fn two() -> Lock {
+        parse(&lock(
+            &[
+                plugin(1, "acme/tools", "acme.one", "one/herdr-plugin.toml"),
+                plugin(2, "acme/tools", "acme/two", "herdr-plugin.toml"),
+            ],
+            2,
+        ))
+    }
+
+    #[test]
+    fn valid_lock_and_lookups() {
+        let l = two();
+        l.validate().unwrap();
+        assert_eq!(l.plugin("acme.one").unwrap().rank, 1);
+        assert!(l.plugin("nope").is_none());
+        assert_eq!(l.toolchains["node"], "22.20.0");
+    }
+
+    #[test]
+    fn stems_are_unique_for_shared_repositories() {
+        let l = two();
+        assert_eq!(l.plugins[0].stem(&l), "acme__tools__acme.one");
+        assert_eq!(l.plugins[1].stem(&l), "acme__tools__acme_two");
+        let single = parse(&lock(&[plugin(1, "a/b", "x", "herdr-plugin.toml")], 1));
+        assert_eq!(single.plugins[0].stem(&single), "a__b");
+    }
+
+    #[test]
+    fn install_spec_uses_the_manifest_directory() {
+        let l = two();
+        assert_eq!(l.plugins[0].install_spec(), format!("acme/tools/one@{C}"));
+        assert_eq!(l.plugins[1].install_spec(), format!("acme/tools@{C}"));
+        // The install path parses the same spelling.
+        let src = vk_compat::herdr::source::parse(&l.plugins[0].install_spec(), None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(src.subdir.as_deref(), Some("one"));
+        assert_eq!(src.git_ref.as_deref(), Some(C));
+    }
+
+    #[test]
+    fn platforms() {
+        let mut p = two().plugins[0].clone();
+        assert!(p.supports("linux") && p.supports("macos"));
+        p.platforms = vec!["linux".into()];
+        assert!(p.supports("linux"));
+        assert!(!p.supports("macos"));
+    }
+
+    fn rejects(l: Lock, what: &str) {
+        let e = l.validate().expect_err(what).to_string();
+        assert!(e.contains(what), "{e} does not mention {what}");
+    }
+
+    #[test]
+    fn validation_failures() {
+        let mut l = two();
+        l.schema = 2;
+        rejects(l, "schema");
+
+        let mut l = two();
+        l.size = 3;
+        rejects(l, "size");
+
+        let mut l = two();
+        l.plugins[1].rank = 1;
+        rejects(l, "duplicate rank");
+
+        let mut l = two();
+        l.plugins[1].rank = 5;
+        rejects(l, "outside");
+
+        let mut l = two();
+        l.plugins[0].commit = "abc".into();
+        rejects(l, "commit");
+
+        let mut l = two();
+        l.plugins[0].commit = C.to_uppercase();
+        rejects(l, "commit");
+
+        let mut l = two();
+        l.plugins[0].manifest_sha256 = C.into();
+        rejects(l, "manifest_sha256");
+
+        let mut l = two();
+        l.catalog_sha256 = "x".into();
+        rejects(l, "catalog_sha256");
+
+        let mut l = two();
+        l.plugins[0].repo_id = 999;
+        rejects(l, "excluded");
+
+        let mut l = two();
+        l.plugins[0].dependencies.push(LockedDependency {
+            url: "https://example.com/x".into(),
+            sha256: S.into(),
+        });
+        rejects(l.clone(), "verified");
+        l.plugins[0].dependency_mode = DependencyMode::Verified;
+        l.validate().unwrap();
+        l.plugins[0].dependencies[0].sha256 = "bad".into();
+        rejects(l, "sha256");
+
+        let mut l = two();
+        l.plugins[1].plugin_id = "acme.one".into();
+        rejects(l, "duplicate plugin id");
+
+        let mut l = two();
+        l.plugins[1].repository = "acme".into();
+        rejects(l, "owner/repo");
+    }
+
+    #[test]
+    fn unknown_dependency_mode_does_not_parse() {
+        let text = lock(&[plugin(1, "a/b", "x", "herdr-plugin.toml")], 1)
+            .replace("\"unpinned\"", "\"whatever\"");
+        assert!(toml::from_str::<Lock>(&text).is_err());
+    }
+
+    #[test]
+    fn load_reads_and_validates() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lock.toml");
+        std::fs::write(
+            &path,
+            lock(&[plugin(1, "a/b", "x", "herdr-plugin.toml")], 1),
+        )
+        .unwrap();
+        assert_eq!(Lock::load(&path).unwrap().plugins.len(), 1);
+        std::fs::write(
+            &path,
+            lock(&[plugin(1, "a/b", "x", "herdr-plugin.toml")], 2),
+        )
+        .unwrap();
+        assert!(Lock::load(&path).is_err());
+    }
+
+    #[test]
+    fn checked_in_lock_is_valid() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/compat/herdr/0.9.3/plugins/top20.lock.toml");
+        if !path.exists() {
+            return;
+        }
+        let lock = Lock::load(&path).unwrap();
+        for p in &lock.plugins {
+            vk_compat::herdr::source::parse(&p.install_spec(), None)
+                .unwrap()
+                .unwrap_or_else(|| panic!("{} is not a git source", p.install_spec()));
+        }
     }
 }

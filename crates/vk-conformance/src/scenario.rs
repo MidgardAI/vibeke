@@ -51,7 +51,7 @@
 
 use crate::outcome::Outcome;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -315,15 +315,231 @@ pub struct NormalizeSpec {
 }
 
 impl Scenario {
+    /// Read and validate a scenario file.
     pub fn load(path: &Path) -> anyhow::Result<Scenario> {
-        todo!("lane MODEL")
+        let text = std::fs::read_to_string(path)
+            .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
+        let scenario: Scenario =
+            toml::from_str(&text).map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
+        scenario
+            .validate()
+            .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
+        Ok(scenario)
     }
 
     /// Checks that do not need the manifest: unique step ids, each step has the fields its
     /// kind needs, known outcomes are not `passed`, stub ids referenced by expectations exist,
     /// regexes compile.
     pub fn validate(&self) -> anyhow::Result<()> {
-        todo!("lane MODEL")
+        use anyhow::bail;
+        if self.plugin_id.is_empty() {
+            bail!("plugin_id is empty");
+        }
+        if self.repository.split('/').count() != 2 || self.repository.split('/').any(str::is_empty)
+        {
+            bail!("repository `{}` is not owner/repo", self.repository);
+        }
+        if self.timeout_ms == Some(0) {
+            bail!("timeout_ms must be positive");
+        }
+        let mut repos = BTreeSet::new();
+        for r in &self.setup.repos {
+            if r.name.is_empty() || r.name.contains('/') || !repos.insert(r.name.as_str()) {
+                bail!("setup.repo `{}`: empty, nested or duplicate name", r.name);
+            }
+        }
+        let mut stubs = BTreeMap::new();
+        for s in &self.stubs {
+            if s.id.is_empty() || stubs.insert(s.id.as_str(), s.kind).is_some() {
+                bail!("stub `{}`: empty or duplicate id", s.id);
+            }
+            if s.kind == StubKind::File && s.path.is_none() {
+                bail!("stub `{}`: a file stub needs `path`", s.id);
+            }
+        }
+        let mut ids = BTreeSet::new();
+        for step in &self.steps {
+            if step.id.is_empty() || !ids.insert(step.id.as_str()) {
+                bail!("step `{}`: empty or duplicate id", step.id);
+            }
+            step.validate(&self.setup, &stubs)
+                .map_err(|e| anyhow::anyhow!("step `{}`: {e}", step.id))?;
+        }
+        let mut skipped = BTreeSet::new();
+        for s in &self.skips {
+            if s.surface.is_empty() || !skipped.insert(s.surface.as_str()) {
+                bail!("skip `{}`: empty or duplicate surface", s.surface);
+            }
+            if s.reason.trim().is_empty() {
+                bail!("skip `{}`: a skip needs a reason", s.surface);
+            }
+        }
+        if self.normalize.fields.iter().any(|f| f.is_empty()) {
+            bail!("normalize.fields contains an empty name");
+        }
+        Ok(())
+    }
+}
+
+const CONTEXTS: [&str; 4] = ["global", "workspace", "tab", "pane"];
+const AGENT_STATUSES: [&str; 4] = ["working", "blocked", "done", "idle"];
+
+impl Step {
+    fn validate(&self, setup: &Setup, stubs: &BTreeMap<&str, StubKind>) -> anyhow::Result<()> {
+        use anyhow::bail;
+        let set = |o: &Option<String>| o.as_deref().is_some_and(|s| !s.is_empty());
+        match self.kind {
+            StepKind::Action => {
+                if !set(&self.action) {
+                    bail!("an action step needs `action`");
+                }
+            }
+            StepKind::Event => {
+                if !set(&self.event) {
+                    bail!("an event step needs `event`");
+                }
+                match (self.cli.is_empty(), &self.agent_status) {
+                    (false, None) => {}
+                    (true, Some(st)) => {
+                        if !AGENT_STATUSES.contains(&st.as_str()) {
+                            bail!("unknown agent_status `{st}`");
+                        }
+                        if !setup.fake_agent {
+                            bail!("agent_status needs setup.fake_agent = true");
+                        }
+                    }
+                    _ => bail!("an event step needs exactly one of `cli` or `agent_status`"),
+                }
+            }
+            StepKind::Link => {
+                if !set(&self.url) {
+                    bail!("a link step needs `url`");
+                }
+            }
+            StepKind::Lifecycle => {
+                if self.lifecycle.is_none() {
+                    bail!("a lifecycle step needs `lifecycle`");
+                }
+            }
+            StepKind::Pane => {
+                if !set(&self.pane) {
+                    bail!("a pane step needs `pane`");
+                }
+            }
+            StepKind::Input => {
+                if !set(&self.pane) {
+                    bail!("an input step needs `pane`");
+                }
+                if self.text.is_none() && self.keys.is_empty() {
+                    bail!("an input step needs `text` or `keys`");
+                }
+            }
+            StepKind::Restart | StepKind::Wait => {}
+        }
+        if let Some(c) = &self.context
+            && !CONTEXTS.contains(&c.as_str())
+        {
+            bail!("unknown context `{c}`");
+        }
+        if self.timeout_ms == Some(0) {
+            bail!("timeout_ms must be positive");
+        }
+        if let Some(k) = &self.known {
+            if k.outcome == Outcome::Passed {
+                bail!("a known result cannot be `passed`");
+            }
+            if k.reason.trim().is_empty() {
+                bail!("a known result needs a reason");
+            }
+        }
+        for c in &self.expect_calls {
+            if c.method.is_empty() {
+                bail!("expect_calls entry without a method");
+            }
+            if c.ok && c.code.is_some() {
+                bail!("expected call `{}`: `code` needs `ok = false`", c.method);
+            }
+            if c.min == Some(0) {
+                bail!("expected call `{}`: `min` must be positive", c.method);
+            }
+        }
+        for e in &self.expect {
+            e.validate(stubs)?;
+        }
+        for c in &self.compare {
+            if c.pane.is_empty() {
+                bail!("compare without a pane");
+            }
+            for m in &c.masks {
+                if let crate::mask::Mask::Regex { regex } = m {
+                    regex::Regex::new(regex)
+                        .map_err(|e| anyhow::anyhow!("compare `{}`: mask regex: {e}", c.pane))?;
+                }
+            }
+            if let Some(size) = c.size {
+                if size.cols == 0 || size.rows == 0 {
+                    bail!("compare `{}`: size must be positive", c.pane);
+                }
+                crate::mask::validate(&c.masks, size.cols, size.rows)
+                    .map_err(|e| anyhow::anyhow!("compare `{}`: {e}", c.pane))?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Expectation {
+    fn validate(&self, stubs: &BTreeMap<&str, StubKind>) -> anyhow::Result<()> {
+        use anyhow::bail;
+        match self {
+            Expectation::InvocationFinal { status } => {
+                if let Some(s) = status
+                    && s != "completed"
+                    && s != "failed"
+                {
+                    bail!("invocation_final status `{s}` is not completed or failed");
+                }
+            }
+            Expectation::Pane { pane, .. } | Expectation::Popup { pane } => {
+                if pane.is_empty() {
+                    bail!("pane expectation without a pane");
+                }
+            }
+            Expectation::ScreenText { pane, text, regex } => {
+                if pane.is_empty() {
+                    bail!("screen_text expectation without a pane");
+                }
+                match (text, regex) {
+                    (Some(_), None) => {}
+                    (None, Some(r)) => {
+                        regex::Regex::new(r)
+                            .map_err(|e| anyhow::anyhow!("screen_text regex: {e}"))?;
+                    }
+                    _ => bail!("screen_text needs exactly one of `text` or `regex`"),
+                }
+            }
+            Expectation::File { path, .. } => {
+                if path.is_empty() {
+                    bail!("file expectation without a path");
+                }
+            }
+            Expectation::HookLog { text } | Expectation::Ready { text } => {
+                if text.is_empty() {
+                    bail!("hook_log or ready expectation without text");
+                }
+            }
+            Expectation::Event { event_type } => {
+                if event_type.is_empty() {
+                    bail!("event expectation without a type");
+                }
+            }
+            Expectation::StubRequest { stub, .. } => match stubs.get(stub.as_str()) {
+                Some(StubKind::HttpSink) => {}
+                Some(_) => bail!("stub_request names stub `{stub}`, which is not an http_sink"),
+                None => bail!("stub_request names unknown stub `{stub}`"),
+            },
+        }
+        Ok(())
     }
 }
 
@@ -334,6 +550,331 @@ pub struct Vars {
 }
 
 /// Replace `{name}` placeholders with `vars`. An unknown placeholder is an error.
+///
+/// A placeholder is `{` + one or more of `[A-Za-z0-9_.-]` + `}`. Any other brace is kept as
+/// it is, so JSON in setup files stays intact. A brace right after `$` is also kept, so shell
+/// text such as `${HOME}` is not taken for a placeholder.
 pub fn expand(s: &str, vars: &Vars) -> anyhow::Result<String> {
-    todo!("lane MODEL")
+    static RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"\{([A-Za-z0-9_.\-]+)\}").expect("placeholder regex")
+    });
+    let mut out = String::with_capacity(s.len());
+    let mut last = 0;
+    for c in RE.captures_iter(s) {
+        let whole = c.get(0).expect("match");
+        if s[..whole.start()].ends_with('$') {
+            continue;
+        }
+        let name = &c[1];
+        let value = vars
+            .values
+            .get(name)
+            .ok_or_else(|| anyhow::anyhow!("unknown placeholder `{{{name}}}` in `{s}`"))?;
+        out.push_str(&s[last..whole.start()]);
+        out.push_str(value);
+        last = whole.end();
+    }
+    out.push_str(&s[last..]);
+    Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const GOOD: &str = r#"
+plugin_id = "herdr-projects"
+repository = "eliasstravik/herdr-projects"
+timeout_ms = 120000
+
+[setup]
+fake_agent = true
+[[setup.repo]]
+name = "app"
+files = { "README.md" = "hello\n" }
+worktrees = ["feature"]
+
+[[stub]]
+id = "notify"
+kind = "http_sink"
+env = { REMOTE_URL = "{stub.notify.url}" }
+
+[[step]]
+id = "open-popup"
+kind = "action"
+action = "open-popup"
+context = "workspace"
+timeout_ms = 30000
+expect_calls = [{ method = "popup.open", ok = true }, { method = "pane.get", ok = false, code = "not_found", min = 2 }]
+known = { outcome = "suspected_compat_failure", reason = "popup sizing" }
+[[step.expect]]
+kind = "popup"
+pane = "projects"
+[[step.expect]]
+kind = "screen_text"
+pane = "projects"
+text = "Projects"
+[[step.compare]]
+pane = "projects"
+masks = [{ rect = { row = 0, col = 60, rows = 1, cols = 20 } }, { regex = "\\d+s ago" }]
+
+[[step]]
+id = "status"
+kind = "event"
+event = "pane.agent_status_changed"
+agent_status = "blocked"
+[[step.expect]]
+kind = "stub_request"
+stub = "notify"
+contains = "blocked"
+
+[[step]]
+id = "cli-event"
+kind = "event"
+event = "workspace.created"
+cli = ["workspace", "create"]
+
+[[step]]
+id = "link"
+kind = "link"
+url = "https://github.com/a/b"
+
+[[step]]
+id = "restart"
+kind = "restart"
+
+[[step]]
+id = "uninstall"
+kind = "lifecycle"
+lifecycle = "uninstall"
+
+[[step]]
+id = "pane"
+kind = "pane"
+pane = "projects"
+
+[[step]]
+id = "type"
+kind = "input"
+pane = "projects"
+keys = ["Enter"]
+
+[[step]]
+id = "ready"
+kind = "wait"
+[[step.expect]]
+kind = "ready"
+text = "listening"
+
+[[skip]]
+surface = "action:doctor"
+reason = "needs a cloud account"
+
+[normalize]
+fields = ["project_id"]
+"#;
+
+    fn good() -> Scenario {
+        let s: Scenario = toml::from_str(GOOD).unwrap();
+        s.validate().unwrap();
+        s
+    }
+
+    #[test]
+    fn parses_the_documented_shape() {
+        let s = good();
+        assert_eq!(s.steps.len(), 9);
+        let first = &s.steps[0];
+        assert!(first.expect_calls[0].ok);
+        assert_eq!(first.expect_calls[1].code.as_deref(), Some("not_found"));
+        assert_eq!(
+            first.known.as_ref().unwrap().outcome,
+            Outcome::SuspectedCompatFailure
+        );
+        assert!(matches!(first.expect[0], Expectation::Popup { .. }));
+        assert_eq!(first.compare[0].masks.len(), 2);
+        assert_eq!(s.steps[5].lifecycle, Some(LifecycleOp::Uninstall));
+        assert_eq!(s.normalize.fields, ["project_id"]);
+    }
+
+    #[test]
+    fn unknown_fields_are_rejected() {
+        let text = GOOD.replace("timeout_ms = 120000", "timeout_ms = 120000\nextra = 1");
+        assert!(toml::from_str::<Scenario>(&text).is_err());
+        let text = GOOD.replace("kind = \"restart\"", "kind = \"reboot\"");
+        assert!(toml::from_str::<Scenario>(&text).is_err());
+    }
+
+    fn rejects(edit: impl FnOnce(&mut Scenario), what: &str) {
+        let mut s = good();
+        edit(&mut s);
+        let e = format!("{:#}", s.validate().expect_err(what));
+        assert!(e.contains(what), "`{e}` does not mention `{what}`");
+    }
+
+    fn step(s: &mut Scenario, id: &str) -> usize {
+        s.steps.iter().position(|x| x.id == id).unwrap()
+    }
+
+    #[test]
+    fn validation_failures() {
+        rejects(|s| s.steps[1].id = "open-popup".into(), "duplicate id");
+        rejects(|s| s.steps[0].action = None, "needs `action`");
+        rejects(|s| s.steps[1].event = None, "needs `event`");
+        rejects(
+            |s| s.steps[1].cli = vec!["x".into()],
+            "exactly one of `cli` or `agent_status`",
+        );
+        rejects(
+            |s| {
+                let i = step(s, "cli-event");
+                s.steps[i].cli.clear();
+            },
+            "exactly one of `cli` or `agent_status`",
+        );
+        rejects(
+            |s| s.steps[1].agent_status = Some("sleepy".into()),
+            "unknown agent_status",
+        );
+        rejects(|s| s.setup.fake_agent = false, "fake_agent");
+        rejects(
+            |s| {
+                let i = step(s, "link");
+                s.steps[i].url = None;
+            },
+            "needs `url`",
+        );
+        rejects(
+            |s| {
+                let i = step(s, "uninstall");
+                s.steps[i].lifecycle = None;
+            },
+            "needs `lifecycle`",
+        );
+        rejects(
+            |s| {
+                let i = step(s, "pane");
+                s.steps[i].pane = None;
+            },
+            "needs `pane`",
+        );
+        rejects(
+            |s| {
+                let i = step(s, "type");
+                s.steps[i].keys.clear();
+            },
+            "`text` or `keys`",
+        );
+        rejects(
+            |s| {
+                let i = step(s, "type");
+                s.steps[i].pane = None;
+            },
+            "needs `pane`",
+        );
+        rejects(
+            |s| s.steps[0].known.as_mut().unwrap().outcome = Outcome::Passed,
+            "cannot be `passed`",
+        );
+        rejects(
+            |s| s.steps[0].known.as_mut().unwrap().reason = " ".into(),
+            "needs a reason",
+        );
+        rejects(|s| s.stubs[0].kind = StubKind::Env, "not an http_sink");
+        rejects(|s| s.stubs.clear(), "unknown stub `notify`");
+        rejects(
+            |s| {
+                s.steps[0].expect[1] = Expectation::ScreenText {
+                    pane: "projects".into(),
+                    text: None,
+                    regex: Some("(".into()),
+                }
+            },
+            "regex",
+        );
+        rejects(
+            |s| {
+                s.steps[0].expect[1] = Expectation::ScreenText {
+                    pane: "projects".into(),
+                    text: Some("a".into()),
+                    regex: Some("a".into()),
+                }
+            },
+            "exactly one of `text` or `regex`",
+        );
+        rejects(
+            |s| s.steps[0].compare[0].masks = vec![crate::mask::Mask::Regex { regex: "[".into() }],
+            "mask regex",
+        );
+        rejects(|s| s.steps[0].context = Some("window".into()), "context");
+        rejects(
+            |s| s.steps[0].expect_calls[0].code = Some("x".into()),
+            "`code` needs `ok = false`",
+        );
+        rejects(|s| s.skips[0].reason.clear(), "needs a reason");
+        rejects(
+            |s| {
+                let dup = s.skips[0].clone();
+                s.skips.push(dup);
+            },
+            "duplicate surface",
+        );
+        rejects(|s| s.repository = "nope".into(), "owner/repo");
+        rejects(
+            |s| {
+                let dup = s.stubs[0].clone();
+                s.stubs.push(dup);
+            },
+            "duplicate id",
+        );
+    }
+
+    #[test]
+    fn expand_placeholders() {
+        let mut vars = Vars::default();
+        vars.values.insert("home".into(), "/h".into());
+        vars.values.insert("repo.app".into(), "/h/src/app".into());
+        vars.values
+            .insert("stub.notify.url".into(), "http://127.0.0.1:9".into());
+        assert_eq!(
+            expand("{home}/x {repo.app} {stub.notify.url}/hook", &vars).unwrap(),
+            "/h/x /h/src/app http://127.0.0.1:9/hook"
+        );
+        assert_eq!(expand("plain", &vars).unwrap(), "plain");
+        assert_eq!(
+            expand(r#"{"a": 1} {} ${HOME}"#, &vars).unwrap(),
+            r#"{"a": 1} {} ${HOME}"#
+        );
+        let e = expand("{state}/x", &vars).unwrap_err().to_string();
+        assert!(e.contains("{state}"), "{e}");
+    }
+
+    #[test]
+    fn load_reads_and_validates() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a__b.toml");
+        std::fs::write(&path, GOOD).unwrap();
+        assert_eq!(Scenario::load(&path).unwrap().plugin_id, "herdr-projects");
+        std::fs::write(
+            &path,
+            GOOD.replace("fake_agent = true", "fake_agent = false"),
+        )
+        .unwrap();
+        assert!(Scenario::load(&path).is_err());
+    }
+
+    #[test]
+    fn checked_in_scenarios_parse() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/compat/herdr/0.9.3/plugins/scenarios");
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            return;
+        };
+        for e in entries {
+            let path = e.unwrap().path();
+            if path.extension().is_some_and(|x| x == "toml") {
+                Scenario::load(&path).unwrap();
+            }
+        }
+    }
 }

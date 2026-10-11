@@ -95,6 +95,95 @@ pub struct GridArtifact {
 impl PluginResult {
     /// Serialize with the text fields redacted by `vk-redact`.
     pub fn to_json_redacted(&self) -> String {
-        todo!("lane MODEL")
+        let red = |s: &str| vk_redact::redact(s).into_owned();
+        let mut copy = self.clone();
+        for c in &mut copy.lifecycle {
+            c.reason = c.reason.as_deref().map(red);
+        }
+        for s in &mut copy.steps {
+            s.reason = s.reason.as_deref().map(red);
+            for e in &mut s.evidence {
+                *e = red(e);
+            }
+        }
+        let mut v = serde_json::to_value(&copy).expect("a plugin result is plain data");
+        vk_redact::redact_json(&mut v);
+        serde_json::to_string_pretty(&v).expect("a JSON value serializes")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SECRET: &str = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+
+    fn result() -> PluginResult {
+        PluginResult {
+            schema: SCHEMA.into(),
+            plugin_id: "acme.demo".into(),
+            repository: "acme/demo".into(),
+            rank: 1,
+            os: "linux".into(),
+            commit: "0123456789abcdef0123456789abcdef01234567".into(),
+            dependency_mode: DependencyMode::Unpinned,
+            reproducible: false,
+            outcome: Outcome::CompatFailure,
+            fails_run: false,
+            surfaces: vec!["action".into(), "pane:popup".into()],
+            coverage: CoverageSummary {
+                ok: true,
+                missing: vec![],
+                skipped: vec!["action:doctor".into()],
+            },
+            lifecycle: vec![CheckResult {
+                check: "startup_runs_once".into(),
+                outcome: Outcome::Passed,
+                reason: Some(format!("token {SECRET}")),
+            }],
+            steps: vec![StepResult {
+                id: "open".into(),
+                kind: "action".into(),
+                outcome: Outcome::CompatFailure,
+                vibeke: SideResult::Failed,
+                herdr: SideResult::Passed,
+                known: None,
+                unexpected_pass: false,
+                reason: Some(format!("failed with {SECRET}")),
+                evidence: vec![format!("popup {SECRET}"), "invocation completed".into()],
+                grids: vec![GridArtifact {
+                    pane: "main".into(),
+                    vibeke: Some("open-main-vibeke.json".into()),
+                    herdr: None,
+                    image: None,
+                    diff_cells: None,
+                    placement_matches: Some(true),
+                }],
+                duration_ms: 12,
+            }],
+            duration_ms: 34,
+        }
+    }
+
+    #[test]
+    fn redacted_json_round_trips_without_secrets() {
+        let r = result();
+        let json = r.to_json_redacted();
+        assert!(!json.contains(SECRET), "{json}");
+        assert!(json.contains("invocation completed"));
+        assert!(json.contains('\n'), "pretty-printed");
+        let back: PluginResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.plugin_id, r.plugin_id);
+        assert_eq!(back.steps[0].outcome, Outcome::CompatFailure);
+        assert_eq!(back.steps[0].herdr, SideResult::Passed);
+        assert_eq!(back.dependency_mode, DependencyMode::Unpinned);
+        assert_eq!(back.schema, SCHEMA);
+    }
+
+    #[test]
+    fn closed_schema_rejects_extra_fields() {
+        let mut v = serde_json::to_value(result()).unwrap();
+        v["extra"] = serde_json::json!(1);
+        assert!(serde_json::from_value::<PluginResult>(v).is_err());
     }
 }
