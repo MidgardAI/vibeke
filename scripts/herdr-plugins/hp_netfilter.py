@@ -182,7 +182,10 @@ def github_token_allowed(method, scheme, host, host_header, port, path, reposito
     return False
 
 
-_TOKEN = re.compile(r"[A-Za-z0-9_.-]{1,1000}")
+# Visible ASCII only: no spaces, controls or non-ASCII, so the token cannot end the header or
+# add another one. The format of GitHub's tokens is not fixed (base64 characters such as `+`,
+# `/` and `=` can appear), so the check does not narrow it further.
+_TOKEN = re.compile(r"[\x21-\x7e]{1,4096}")
 
 
 def valid_token(token):
