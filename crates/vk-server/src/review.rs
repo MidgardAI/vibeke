@@ -366,6 +366,8 @@ fn command_text(c: &CheckCommand) -> String {
 
 /// Read-only blob lookup at a commit (`git cat-file blob <sha>:<path>`).
 fn git_show(root: &Path, sha: &str, rel: &str) -> Option<Vec<u8>> {
+    // The commit may come from a sandboxed box's private object store (13 §6).
+    vk_tasks::import_box_objects(root);
     let out = std::process::Command::new("git")
         .arg("-C")
         .arg(root)

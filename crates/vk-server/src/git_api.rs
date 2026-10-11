@@ -58,8 +58,31 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
     match method {
         "git.status" => Some(status(server, ctx, p).await),
         "git.diff" => Some(diff(server, ctx, p).await),
+        "git.import_box_objects" => Some(import_for(server, ctx, p).await),
         _ => None,
     }
+}
+
+/// Bring the objects sandboxed boxes wrote to their private stores (13 §6) into the repository
+/// of `dir`, off the async workers. Cheap when no box store is registered.
+pub(crate) async fn import_box_objects(dir: &Path) {
+    let dir = dir.to_path_buf();
+    let _ = tokio::task::spawn_blocking(move || vk_tasks::import_box_objects(&dir)).await;
+}
+
+/// `git.import_box_objects {pane}`: git outside this server process (the gateway's handoff
+/// export) does not see a sandboxed box's commits until they are imported; the gateway asks
+/// for that right before it reads the pane's repository. Never from a pane.
+async fn import_for(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
+    if ctx.pane_scope.is_some() {
+        return Err(err(
+            ErrorKind::PermissionDenied,
+            "git.import_box_objects is not allowed from a pane token",
+        ));
+    }
+    let dir = target_dir(server, ctx, p)?;
+    import_box_objects(&dir).await;
+    Ok(json!({}))
 }
 
 pub(crate) fn not_a_repo() -> RpcError {
@@ -153,6 +176,7 @@ pub(crate) async fn git_raw(
     input: Option<Vec<u8>>,
     literal_pathspecs: bool,
 ) -> Result<(Option<i32>, Vec<u8>), RpcError> {
+    import_box_objects(dir).await;
     let filters = filter_overrides(dir).await;
     let mut child = tokio::process::Command::new("git")
         .args(literal_pathspecs.then_some("--literal-pathspecs"))

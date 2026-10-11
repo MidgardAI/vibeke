@@ -332,6 +332,11 @@ export interface Dashboard {
   /** Full-scope devices only (shares never see previews in the snapshot). */
   previews?: Preview[];
   notifications_unread: number;
+  /**
+   * The host's `config.toml` does not load (owner devices only; null when it loads). The live
+   * events `session.config_rejected` / `session.config_reloaded` follow it after connect.
+   */
+  config_error?: { path?: string; errors: unknown[] } | null;
 }
 
 export interface GitFile {

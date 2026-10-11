@@ -54,6 +54,11 @@ pub(crate) fn command(dir: &Path) -> Result<Command, GitError> {
     c.arg("-C").arg(dir);
     if vk_tasks::is_contained(dir) {
         vk_tasks::harden_command(&mut c, dir).map_err(|e| GitError::Refused(e.to_string()))?;
+    } else {
+        // A host checkout of a repository a sandboxed box also works in (13 §6): the box's
+        // commits sit in its private object store until imported. `harden_command` does this
+        // for contained checkouts.
+        vk_tasks::import_box_objects(dir);
     }
     // Never run the user's hooks or prompt for credentials from a background capture.
     c.args(["-c", "core.hooksPath=/dev/null"])
@@ -236,6 +241,79 @@ mod tests {
         assert!(args.iter().any(|a| a == "core.fsmonitor=false"));
         assert!(args.iter().any(|a| a == "diff.ignoreSubmodules=all"));
         assert!(args.iter().any(|a| a == "core.hooksPath=/dev/null"));
+    }
+
+    /// 13 §6: a sandboxed box's commits live in its private object store; review git in a
+    /// host checkout of the same repository (not contained) imports them before it runs.
+    #[test]
+    fn host_checkouts_see_a_sandboxed_box_commits() {
+        let g = |dir: &Path, env: &[(&str, &Path)], args: &[&str]| {
+            let mut c = Command::new("git");
+            c.arg("-C")
+                .arg(dir)
+                .args(["-c", "user.name=T", "-c", "user.email=t@example.invalid"])
+                .args([
+                    "-c",
+                    "commit.gpgsign=false",
+                    "-c",
+                    "core.hooksPath=/dev/null",
+                ])
+                .args(args)
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env_remove("GIT_OBJECT_DIRECTORY")
+                .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES");
+            for (k, v) in env {
+                c.env(k, v);
+            }
+            let out = c.output().unwrap();
+            assert!(out.status.success(), "git {args:?}");
+        };
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path().canonicalize().unwrap();
+        let repo = root.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        g(&repo, &[], &["init", "-q", "-b", "main"]);
+        std::fs::write(repo.join("a.txt"), "a\n").unwrap();
+        g(&repo, &[], &["add", "-A"]);
+        g(&repo, &[], &["commit", "-q", "-m", "base"]);
+        let wt = root.join("wt");
+        g(
+            &repo,
+            &[],
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "vk/box",
+                wt.to_str().unwrap(),
+            ],
+        );
+        let store = root.join("sbx/.git-objects");
+        std::fs::create_dir_all(&store).unwrap();
+        let host_objects = repo.join(".git/objects");
+        let box_env: [(&str, &Path); 2] = [
+            ("GIT_OBJECT_DIRECTORY", &store),
+            ("GIT_ALTERNATE_OBJECT_DIRECTORIES", &host_objects),
+        ];
+        std::fs::write(wt.join("b.txt"), "box\n").unwrap();
+        g(&wt, &box_env, &["add", "-A"]);
+        g(&wt, &box_env, &["commit", "-q", "-m", "box"]);
+        let has = || {
+            run_raw(
+                &repo,
+                &["cat-file", "-e", "vk/box^{commit}"],
+                Duration::from_secs(30),
+            )
+            .unwrap()
+            .code
+                == Some(0)
+        };
+        vk_tasks::register_box_objects(&wt, &store);
+        assert!(!vk_tasks::is_contained(&repo));
+        assert!(has(), "the box's commit was not imported");
+        let _ = vk_tasks::release_box_objects(&store);
     }
 
     #[test]

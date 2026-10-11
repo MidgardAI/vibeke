@@ -32,6 +32,10 @@ Use `vibeke sandbox status` to check available providers. `vibeke doctor` report
 
 The Linux sandbox uses Landlock ABI 6. This needs Linux 6.12 or newer. With an older kernel, Vibeke does not start sandbox or contained tasks. It shows an error that names the kernel requirement. It does not run the task with weaker limits.
 
+### Commits in the Linux sandbox
+
+An agent in a Linux sandbox cannot commit. The Linux sandbox can only make whole folders writable. The folder that holds the task branch also holds your other branches. Vibeke keeps that folder read-only. When the agent tries to commit, Git stops and explains this. The changes stay in the working tree. You can commit them on the host. On macOS, an agent in a sandbox can commit to its task branch.
+
 ### What the sandbox hides
 
 - Each box has its own private Git object store. The agent cannot change objects that your checkout uses. Vibeke imports the objects when it reviews or merges the work.

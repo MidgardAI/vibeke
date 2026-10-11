@@ -14,6 +14,7 @@ import {
   pair as corePair,
   pairingKey,
   type Batch,
+  type Dashboard,
   type Decision,
   type HostConnectionApi,
   type HostManagerApi,
@@ -67,13 +68,28 @@ export interface ConfigRejected {
 export function configErrorFromEvent(e: AppEvent): ConfigRejected | null | undefined {
   if (e.type === 'session.config_reloaded') return null;
   if (e.type !== 'session.config_rejected') return undefined;
-  const raw = Array.isArray(e.data?.errors) ? (e.data.errors as unknown[]) : [];
-  const errors = raw.slice(0, 3).map((x) => {
+  return { errors: configErrorLines(e.data?.errors), at: e.ts };
+}
+
+/**
+ * What a dashboard's `config_error` (from `server.status` on the host) means for the banner: a
+ * rejection, `null` for "it loads", or `undefined` when the host does not say (older hosts,
+ * shares).
+ */
+export function configErrorFromDashboard(d: Dashboard | null | undefined, now: number): ConfigRejected | null | undefined {
+  if (!d || d.config_error === undefined) return undefined;
+  if (d.config_error === null) return null;
+  return { errors: configErrorLines(d.config_error.errors), at: now };
+}
+
+/** The first problems, "line 3: unknown key `x`". */
+function configErrorLines(errors: unknown): string[] {
+  const raw = Array.isArray(errors) ? (errors as unknown[]) : [];
+  return raw.slice(0, 3).map((x) => {
     const o = (x ?? {}) as { line?: unknown; message?: unknown };
     const msg = typeof o.message === 'string' ? o.message : String(x);
     return typeof o.line === 'number' && o.line > 0 ? `line ${o.line}: ${msg}` : msg;
   });
-  return { errors, at: e.ts };
 }
 
 /** How an interaction closed when this device did not answer it. */
@@ -135,6 +151,8 @@ export class AppModel {
    */
   readonly configErrors = new ValueStore<Record<string, ConfigRejected>>({});
   private configSubs = new Map<string, () => void>();
+  /** The dashboard each host's config error was last seeded from (a new fetch seeds again). */
+  private configSeeded = new Map<string, Dashboard>();
   private saveTimers = new Map<string, TimerHandle>();
 
   constructor(readonly platform: UiPlatform) {
@@ -300,6 +318,28 @@ export class AppModel {
       if (ids.has(id)) continue;
       off();
       this.configSubs.delete(id);
+      this.configSeeded.delete(id);
+    }
+    // An app that connects after `session.config_rejected` still shows the banner: each newly
+    // fetched dashboard carries the host's current config state. Only a new dashboard counts, so
+    // an older snapshot never undoes a later event.
+    const now = this.platform.clock.now();
+    for (const h of this.manager.getSnapshot()) {
+      const id = h.record.host_id;
+      const d = h.dashboard;
+      if (!d || this.configSeeded.get(id) === d) continue;
+      this.configSeeded.set(id, d);
+      const next = configErrorFromDashboard(d, now);
+      if (next === undefined) continue;
+      const cur = this.configErrors.get()[id];
+      if (next && cur && cur.errors.join('\n') === next.errors.join('\n')) continue;
+      if (!next && !cur) continue;
+      this.configErrors.update((m) => {
+        const out = { ...m };
+        if (next) out[id] = next;
+        else delete out[id];
+        return out;
+      });
     }
   }
 
