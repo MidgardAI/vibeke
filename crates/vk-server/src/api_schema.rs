@@ -834,7 +834,7 @@ agent.report :: {pane?: Target, state: string, harness?: string = claude, messag
 agent.resumable :: {} => {runs: [AgentRun]}
 # pane-scoped callers only see items in their workspace; coverage.excluded counts the hidden ones
 attention.list :: {budget_ms?: int, effort?: quick|minutes|deep}
-  => {items: [{key: {kind: string, id: string}, class: int | 'finished_turns', title: string, subtitle: string, task: string | null, run: string | null, pane: string | null, interaction: string | null, explanation: string, age_ms: int, risk: string | null, effort: string | null, effort_estimate: {effort: string, source: 'heuristic'} | null, blocks_tasks: int, snoozed_until_ms: int | null, woke_from_snooze: string | null, urgent: bool, deadline_ms?: int | null, deadline_source?: native|gate|null, deadline_in_ms?: int | null, batch?: {id: string, size: int} | null}],
+  => {items: [{key: {kind: string, id: string}, item_rev: int, class: int | 'finished_turns', title: string, subtitle: string, task: string | null, run: string | null, pane: string | null, interaction: string | null, explanation: string, age_ms: int, risk: string | null, effort: string | null, effort_estimate: {effort: string, source: 'heuristic'} | null, blocks_tasks: int, snoozed_until_ms: int | null, woke_from_snooze: string | null, urgent: bool, deadline_ms?: int | null, deadline_source?: native|gate|null, deadline_in_ms?: int | null, batch?: {id: string, size: int} | null}],
   coverage: {complete: bool, notes: [string], scope: 'all' | {workspace: string}, excluded: int},
   five_minute: {keys: [{kind: string, id: string}], omitted_count: int, note: string, item_notes: [{key: {kind: string, id: string}, note: string}]} | null,
   batches?: [{id: string, members: [{kind: string, id: string}]}],

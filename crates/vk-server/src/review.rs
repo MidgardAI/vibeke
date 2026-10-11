@@ -3833,6 +3833,7 @@ pub fn attention_list(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
                 .or_else(|| r.woke_from_snooze.then(|| "Became urgent".to_string()));
             Some(json!({
                 "key": key_json(m),
+                "item_rev": r.item.key.revision,
                 "class": if r.class == att::AttentionClass::FinishedTurns { json!("finished_turns") } else { json!(r.class.number()) },
                 "title": m.title,
                 "subtitle": m.subtitle,
