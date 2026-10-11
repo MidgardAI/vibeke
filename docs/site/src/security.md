@@ -40,6 +40,55 @@ A pane token cannot approve interactions, change focus, modify other workspaces,
 
 See the [API reference](reference/api.md) for each method's scope.
 
+## Remote access
+
+Phones, browsers and the desktop app reach a host through the gateway.
+Each paired device has one of three access levels:
+
+| Level | What the device can do |
+| --- | --- |
+| Full | It can run any command as you on this host. It can type into panes, start agents and open previews. |
+| Approve | It can approve agent requests, including "always allow". It can also send text to agents. This is close to full access. |
+| View | It can read all pane output, transcripts, files and diffs. It cannot change anything. |
+
+A share gives one of these levels for one pane or workspace, for a limited time.
+When you revoke a device, Vibeke also revokes the shares, linked hosts and invitations that this device created.
+
+### Pairing links
+
+A pairing link holds a one-time secret.
+The first device that opens the link can ask to pair.
+Vibeke then shows a check code, and the device shows a check code too.
+Pair only when both codes are the same.
+A different code means that another party is in the middle.
+
+Share links and invitations work without a check code.
+Treat them like passwords, and send them only through a channel that you trust.
+Vibeke hides pairing links in logs.
+
+Inside a pane, `vibeke gateway pair`, `share`, `peer invite` and `peer add` ask you in Vibeke first.
+An agent cannot hand out access without your approval.
+Vibeke tells you each time a device pairs, a share is created, or someone opens an invitation.
+
+### The relay
+
+The relay forwards encrypted messages between devices and hosts. It cannot read them.
+The relay can see host ids, IP addresses, connection times, message sizes and timing.
+The relay admits a device only with a ticket that the host signed.
+
+### The app origin
+
+The browser app loads from its app origin. The app holds the device keys.
+Whoever controls that origin can change the app and can read those keys.
+Use an app origin that you trust.
+If you serve the app yourself, set it with `vibeke gateway pair --app-url <origin>`.
+
+### Previews from devices
+
+A device with full access can open previews of your host.
+Its preview streams reach only preview ports, the ports of a task, and ports that you allowed.
+The app asks you before a preview reaches any other local port.
+
 ## Data
 
 Pane output, scrollback archives, and `state.db` use restrictive file permissions. Redaction filters remove recognized secrets from logs, audit records, assistance prompts, and debug bundles. Filters cannot identify every possible secret.
