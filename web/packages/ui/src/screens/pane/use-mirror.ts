@@ -4,6 +4,10 @@
 //
 // Colour: `source: "styled"` (styled rows → spans); servers without it answer with an error and
 // the mirror falls back to plain text for the rest of the session on this pane.
+//
+// Cost: each poll first reads one line to learn the pane's `revision` (it grows with every
+// screen change). Only a new revision fetches the full 400 styled lines; an idle pane costs one
+// tiny read per poll. Hosts that send no revision get the full read every time.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { RpcError, type PaneText, type StyledScreen } from '@vibeke/core';
@@ -38,6 +42,8 @@ export function useMirror(hostId: string, pane: string, working: boolean): Mirro
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const inflight = useRef(false);
   const lastRev = useRef<number | string | null>(null);
+  /** Pane revision of the last full read (from the cheap probe before it). */
+  const shownRev = useRef<number | null>(null);
   const styled = useRef(true);
   const liveRef = useRef(false);
   const [kick, setKick] = useState(0);
@@ -59,6 +65,18 @@ export function useMirror(hostId: string, pane: string, working: boolean): Mirro
     if (!conn || inflight.current) return;
     inflight.current = true;
     try {
+      // Cheap probe: nothing changed since the last full read → only refresh "last seen".
+      let rev: number | null = null;
+      try {
+        const probe = (await conn.request('pane.read', { pane, source: 'visible', lines: 1 })) as PaneText;
+        rev = typeof probe?.revision === 'number' ? probe.revision : null;
+      } catch (e) {
+        if (!(e instanceof RpcError)) throw e;
+      }
+      if (rev !== null && rev === shownRev.current && liveRef.current) {
+        setM((cur) => ({ ...cur, at: app.platform.clock.now(), live: true, error: null }));
+        return;
+      }
       let snap: { text: string; lines: Segment[][] | null; rev: number | string };
       let r: StyledScreen | PaneText | null = null;
       if (styled.current) {
@@ -84,6 +102,7 @@ export function useMirror(hostId: string, pane: string, working: boolean): Mirro
         snap = { text: p.text, lines: null, rev: p.revision };
       }
       const at = app.platform.clock.now();
+      shownRev.current = rev;
       if (snap.rev !== lastRev.current || !liveRef.current) {
         liveRef.current = true;
         lastRev.current = snap.rev;
@@ -96,6 +115,7 @@ export function useMirror(hostId: string, pane: string, working: boolean): Mirro
       }
     } catch (e) {
       liveRef.current = false;
+      shownRev.current = null;
       setM((cur) => ({ ...cur, live: false, error: (e as Error).message }));
     } finally {
       inflight.current = false;
