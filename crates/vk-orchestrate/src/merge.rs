@@ -1202,13 +1202,15 @@ mod tests {
         let c2 = calls.clone();
         let g = GateBox {
             checkout: w1.clone(),
-            wrap: std::sync::Arc::new(move |argv, cwd, env| {
-                c2.lock()
-                    .unwrap()
-                    .push(format!("{} @ {}", argv[0], cwd.display()));
-                assert!(!env.iter().any(|(k, _)| k == "GITHUB_TOKEN"));
-                Ok((argv, vec![("PATH".into(), "/usr/bin:/bin".into())]))
-            }),
+            wrap: std::sync::Arc::new(
+                move |argv: Vec<String>, cwd: &Path, env: Vec<(String, String)>| {
+                    c2.lock()
+                        .unwrap()
+                        .push(format!("{} @ {}", argv[0], cwd.display()));
+                    assert!(!env.iter().any(|(k, _)| k == "GITHUB_TOKEN"));
+                    Ok((argv, vec![("PATH".into(), "/usr/bin:/bin".into())]))
+                },
+            ),
         };
         let mut o = opts();
         o.check = Some(("grep -q ONE b.txt".into(), Duration::from_secs(20)));

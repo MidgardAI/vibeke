@@ -2005,18 +2005,20 @@ mod tests {
             contained: Some(ContainedRun {
                 runner: "sandbox".into(),
                 checkout: task_checkout.path().to_path_buf(),
-                wrap: Arc::new(move |argv, cwd, _env| {
-                    c2.lock()
-                        .unwrap()
-                        .push(format!("{} @ {}", argv[0], cwd.display()));
-                    Ok((
-                        argv,
-                        vec![
-                            ("INSIDE".into(), "1".into()),
-                            ("PATH".into(), "/usr/bin:/bin".into()),
-                        ],
-                    ))
-                }),
+                wrap: Arc::new(
+                    move |argv: Vec<String>, cwd: &Path, _env: Vec<(String, String)>| {
+                        c2.lock()
+                            .unwrap()
+                            .push(format!("{} @ {}", argv[0], cwd.display()));
+                        Ok((
+                            argv,
+                            vec![
+                                ("INSIDE".into(), "1".into()),
+                                ("PATH".into(), "/usr/bin:/bin".into()),
+                            ],
+                        ))
+                    },
+                ),
             }),
             ..Default::default()
         };
@@ -2053,7 +2055,9 @@ mod tests {
             contained: Some(ContainedRun {
                 runner: "sandbox".into(),
                 checkout: task_checkout.path().to_path_buf(),
-                wrap: Arc::new(|_, _, _| Err(std::io::Error::other("box gone"))),
+                wrap: Arc::new(|_: Vec<String>, _: &Path, _: Vec<(String, String)>| {
+                    Err(std::io::Error::other("box gone"))
+                }),
             }),
             ..Default::default()
         };

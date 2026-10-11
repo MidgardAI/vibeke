@@ -536,21 +536,23 @@ pub(crate) fn box_wrap(
     kind: &'static str,
 ) -> BoxWrap {
     let srv = server.clone();
-    Arc::new(move |argv, cwd, env| {
-        // A paused (idle-suspended) box runs again first.
-        crate::sandbox::extras::before_spawn(&srv, &b);
-        let prepared = b
-            .runner
-            .runner()
-            .prepare(vk_sandbox::runner::SpawnRequest {
-                pane_id: format!("{kind}-{}", crate::core::ulid()),
-                argv,
-                cwd: cwd.to_path_buf(),
-                env,
-            })
-            .map_err(|e| std::io::Error::other(e.to_string()))?;
-        Ok((prepared.argv, prepared.env))
-    })
+    Arc::new(
+        move |argv: Vec<String>, cwd: &Path, env: Vec<(String, String)>| {
+            // A paused (idle-suspended) box runs again first.
+            crate::sandbox::extras::before_spawn(&srv, &b);
+            let prepared = b
+                .runner
+                .runner()
+                .prepare(vk_sandbox::runner::SpawnRequest {
+                    pane_id: format!("{kind}-{}", crate::core::ulid()),
+                    argv,
+                    cwd: cwd.to_path_buf(),
+                    env,
+                })
+                .map_err(|e| std::io::Error::other(e.to_string()))?;
+            Ok((prepared.argv, prepared.env))
+        },
+    )
 }
 
 /// The [`vk_orchestrate::family::GateBox`] of a task's gates (family and merge-queue checks):
