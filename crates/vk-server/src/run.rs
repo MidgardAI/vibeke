@@ -1270,7 +1270,7 @@ pub async fn tasks_api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value)
 }
 
 /// `[tasks]` worktree settings from the config, overridden by request params.
-fn worktree_cfg(p: &Value) -> vk_tasks::WorktreeConfig {
+pub(crate) fn worktree_cfg(p: &Value) -> vk_tasks::WorktreeConfig {
     let mut cfg = vk_tasks::WorktreeConfig::default();
     if let Ok((c, _)) = vk_config::Config::load(vk_config::config_path()) {
         if let Ok(r) = vk_tasks::WorktreeRoot::parse(&c.tasks.root) {

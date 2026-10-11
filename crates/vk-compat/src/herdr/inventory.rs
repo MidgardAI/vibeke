@@ -375,9 +375,9 @@ pub const ENTRIES: &[Entry] = &[
     e(
         Method,
         "worktree.list",
-        Partial,
+        Implemented,
         "spec",
-        "`{workspace_id? | cwd?}` (else the active workspace; both: `invalid_request`); `not_git_worktree`; `worktree_list {source: WorktreeSourceInfo, worktrees: [WorktreeInfo]}` from the main checkout (`label` = repository name, `open_workspace_id` by checkout path); `is_bare` always false; `trust_repository` ignored",
+        "`{workspace_id? | cwd?, trust_repository?}` (else the active workspace; both: `invalid_request`; `cwd` absolute, `~` expanded); `not_git_worktree`; `git worktree list --porcelain` in the main checkout (`-c safe.directory=<repo>` with `trust_repository`; `worktree_list_failed` with git's message); `worktree_list {source: WorktreeSourceInfo, worktrees: [WorktreeInfo]}` with Herdr's `is_bare`, `is_detached`, `is_prunable`, `label` = repository name and `open_workspace_id` by canonical checkout path",
     ),
     e(Method, "worktree.repo_root", Partial, "spec", ""),
     e(
@@ -385,14 +385,14 @@ pub const ENTRIES: &[Entry] = &[
         "worktree.create",
         Partial,
         "spec",
-        "`git worktree add` under `[tasks] root`, opens a workspace (`open` defaults to true); no `path` param; emits `worktree.created`",
+        "Herdr's params and checks: `branch` (default Herdr's generated `worktree/<adjective>-<noun>-<hex>`; blank: `invalid_request`), `base` (default `HEAD`), `path` (absolute, `~` expanded), `workspace_id | cwd` source (a linked worktree: `linked_worktree_source`), `label`, `focus`, `trust_repository`; an existing local branch is checked out, else `-b <branch>` from `base`; git's message as `worktree_create_failed`; the main checkout gets a parent workspace when none is open; `worktree_created {workspace, tab, root_pane, worktree}`; emits `worktree.created`. Without `path` the checkout goes under Vibeke's `[tasks] root` (`<root>/<repo>/<branch slug>`) instead of Herdr's `[worktrees] directory`; runs synchronously (no `worktree_operation_in_progress`)",
     ),
     e(
         Method,
         "worktree.open",
-        Partial,
+        Implemented,
         "spec",
-        "reuses the workspace rooted at the worktree or creates one; `worktree_opened {workspace, tab, root_pane, worktree, already_open}` (Vibeke extra `created`); only `path` is accepted; emits `worktree.opened`",
+        "Herdr's params: exactly one of `path`/`branch` (`invalid_request`), `workspace_id | cwd` source (a linked worktree: `linked_worktree_source`), `label`, `focus`, `trust_repository`; the worktree is looked up among the repository's worktrees (`worktree_not_found` `worktree path not found`/`worktree branch not found`, `ambiguous_worktree_branch`, bare or prunable: `worktree cannot be opened`); the main checkout gets a parent workspace when none is open; reuses the workspace rooted at the worktree or creates one (named `label`; an open one is renamed); `worktree_opened {workspace, tab, root_pane, worktree, already_open}` (Vibeke extra `created`); emits `worktree.opened`",
     ),
     e(
         Method,
@@ -709,7 +709,7 @@ pub const ENTRIES: &[Entry] = &[
         "worktree.remove",
         Partial,
         "corpus",
-        "`{workspace_id, force?}`: `not_linked_worktree` unless the workspace is a linked worktree checkout; `git worktree remove [--force]` in the main repository (`dirty_worktree_requires_force`, `worktree_remove_failed` with git's message); then the workspace closes and `worktree.removed` follows with `forced` and the workspace's last snapshot; `worktree_removed {workspace_id, path, forced}`; `trust_repository` ignored (git's own safe.directory rules apply); runs synchronously",
+        "`{workspace_id, force?}`: `not_linked_worktree` unless the workspace is a linked worktree checkout; `git worktree remove [--force]` in the main repository (`dirty_worktree_requires_force`, `worktree_remove_failed` with git's message); then the workspace closes and `worktree.removed` follows with `forced` and the workspace's last snapshot; `worktree_removed {workspace_id, path, forced}`; `trust_repository` adds `-c safe.directory=<repo>` as in Herdr; runs synchronously",
     ),
     e(
         Method,

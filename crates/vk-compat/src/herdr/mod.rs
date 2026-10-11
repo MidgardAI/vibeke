@@ -18,6 +18,7 @@ pub mod settings;
 pub mod source;
 pub mod status;
 pub mod wire;
+pub mod worktree;
 
 /// The Herdr version whose public contract the compat layer emulates (07 §8.0).
 pub const BASELINE_VERSION: &str = "0.9.3";

@@ -3071,15 +3071,109 @@ async fn pane_zoom(
     Ok(typed("pane_zoom", json!({"zoom": z})))
 }
 
-/// Herdr `worktree.list {workspace_id? | cwd?}`: the repository of the workspace (else the
-/// active one) or of `cwd`, as `worktree_list {source: WorktreeSourceInfo, worktrees:
-/// [WorktreeInfo]}`. A linked worktree lists from its main checkout.
-async fn worktree_list(
+// ---- worktrees --------------------------------------------------------------------------------
+
+/// Herdr's `absolute_user_path`: `~` expands to the home directory; the path must be absolute.
+fn user_path(path: &str) -> Result<String, WireError> {
+    let home = crate::paths::home();
+    let p = if path == "~" {
+        home
+    } else if let Some(rest) = path.strip_prefix("~/") {
+        home.join(rest)
+    } else {
+        PathBuf::from(path)
+    };
+    if p.is_absolute() {
+        Ok(p.to_string_lossy().into_owned())
+    } else {
+        Err(WireError::new(
+            "invalid_request",
+            "worktree path must be absolute",
+        ))
+    }
+}
+
+fn canon_path(s: &str) -> PathBuf {
+    std::fs::canonicalize(s).unwrap_or_else(|_| PathBuf::from(s))
+}
+
+/// The workspace rooted at `path` (compared canonically), as Herdr's
+/// `open_workspace_idx_for_checkout`.
+fn ws_at<'a>(sn: &'a Snap, path: &str) -> Option<&'a Workspace> {
+    let c = canon_path(path);
+    sn.ws.iter().find(|w| canon_path(&w.root_path) == c)
+}
+
+/// `git <git_args> <args>` with Git's English diagnostics; `Err` carries Git's message.
+fn run_git(repo: &str, trust: bool, args: &[String]) -> Result<std::process::Output, String> {
+    let mut all = herdr::worktree::git_args(Path::new(repo), trust);
+    all.extend(args.iter().cloned());
+    std::process::Command::new("git")
+        .env("LC_ALL", "C")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .args(&all)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|e| e.to_string())
+}
+
+fn git_failure(out: &std::process::Output, what: &str) -> String {
+    let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+    let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    match (stderr.is_empty(), stdout.is_empty()) {
+        (false, _) => stderr,
+        (true, false) => stdout,
+        (true, true) => format!("{what} failed with status {}", out.status),
+    }
+}
+
+/// Herdr's `list_existing_worktrees` (`trust_repository` adds `safe.directory`).
+async fn git_worktrees(
+    repo: &str,
+    trust: bool,
+) -> Result<Vec<herdr::worktree::ExistingWorktree>, WireError> {
+    let repo = repo.to_string();
+    let out = tokio::task::spawn_blocking(move || {
+        run_git(
+            &repo,
+            trust,
+            &["worktree".into(), "list".into(), "--porcelain".into()],
+        )
+    })
+    .await
+    .map_err(|e| WireError::new("worktree_list_failed", e.to_string()))?
+    .map_err(|e| WireError::new("worktree_list_failed", e))?;
+    if !out.status.success() {
+        return Err(WireError::new(
+            "worktree_list_failed",
+            git_failure(&out, "git worktree list"),
+        ));
+    }
+    Ok(herdr::worktree::parse_porcelain(&String::from_utf8_lossy(
+        &out.stdout,
+    )))
+}
+
+/// Herdr's `WorktreeSource`: the repository a worktree request starts from.
+struct WtSource {
+    /// The workspace the request named (or the active one) when it is the repository's parent.
+    workspace: Option<String>,
+    /// The main checkout (`source_checkout_path` and `repo_root`).
+    checkout: String,
+    repo_key: Value,
+    repo_name: String,
+}
+
+/// Herdr's source resolution: `workspace_id`, else `cwd` (absolute, `~` expanded), else the
+/// active workspace; both is `invalid_request`. A linked worktree is refused unless
+/// `allow_linked` (`worktree.list`, which then lists from its main checkout).
+async fn worktree_source(
     server: &Arc<Server>,
     caller: &Caller,
     sn: &Snap,
     p: &Value,
-) -> Result<Value, WireError> {
+    allow_linked: bool,
+) -> Result<WtSource, WireError> {
     let (ws_given, cwd) = (sp(p, "workspace_id"), sp(p, "cwd"));
     if ws_given.is_some() && cwd.is_some() {
         return Err(WireError::new(
@@ -3088,7 +3182,7 @@ async fn worktree_list(
         ));
     }
     let (from_ws, dir) = match (ws_given, cwd) {
-        (_, Some(c)) => (None, c.to_string()),
+        (_, Some(c)) => (None, user_path(c)?),
         (Some(id), None) => {
             let w = sn.ws(id).ok_or_else(|| {
                 WireError::new("workspace_not_found", format!("workspace {id} not found"))
@@ -3125,70 +3219,380 @@ async fn worktree_list(
         .to_string();
     let space = git_space(&checkout).ok_or_else(not_git)?;
     let linked = space["is_linked_worktree"] == true;
-    let repo_root = space["repo_root"].as_str().unwrap_or(&checkout).to_string();
-    let source_checkout = if linked {
-        repo_root.clone()
+    if linked && !allow_linked {
+        return Err(WireError::new(
+            "linked_worktree_source",
+            "New and open worktree actions start from the repo parent workspace.",
+        ));
+    }
+    let main = if linked {
+        space["repo_root"].as_str().unwrap_or(&checkout).to_string()
     } else {
         checkout.clone()
     };
-    let repo_name = space["repo_name"].as_str().unwrap_or("").to_string();
-    let canon = |s: &str| std::fs::canonicalize(s).unwrap_or_else(|_| PathBuf::from(s));
-    let open_ws = |path: &str| {
-        let c = canon(path);
-        sn.ws
-            .iter()
-            .find(|w| canon(&w.root_path) == c)
-            .map(|w| w.handle.clone())
-    };
-    let mut source = json!({
-        "repo_key": space["repo_key"],
-        "repo_name": repo_name,
-        "repo_root": source_checkout,
-        "source_checkout_path": source_checkout,
-    });
-    let source_ws = from_ws
+    let workspace = from_ws
         .filter(|_| !linked)
         .map(|w| w.handle)
-        .or_else(|| open_ws(&source_checkout));
-    if let Some(w) = source_ws {
+        .or_else(|| ws_at(sn, &main).map(|w| w.handle.clone()));
+    Ok(WtSource {
+        workspace,
+        checkout: main,
+        repo_key: space["repo_key"].clone(),
+        repo_name: space["repo_name"].as_str().unwrap_or("").to_string(),
+    })
+}
+
+/// Herdr's `WorktreeInfo` for one listed entry (`worktree_info_for_entry`).
+fn wt_entry_info(sn: &Snap, src: &WtSource, e: &herdr::worktree::ExistingWorktree) -> Value {
+    let path = e.path.to_string_lossy().into_owned();
+    let mut v = Map::new();
+    v.insert("path".into(), json!(path));
+    if let Some(b) = &e.branch {
+        v.insert("branch".into(), json!(b));
+    }
+    v.insert("is_bare".into(), json!(e.is_bare));
+    v.insert("is_detached".into(), json!(e.is_detached));
+    v.insert("is_prunable".into(), json!(e.is_prunable));
+    v.insert(
+        "is_linked_worktree".into(),
+        json!(canon_path(&path) != canon_path(&src.checkout)),
+    );
+    if let Some(w) = ws_at(sn, &path) {
+        v.insert("open_workspace_id".into(), json!(w.handle));
+    }
+    v.insert("label".into(), json!(src.repo_name));
+    Value::Object(v)
+}
+
+/// Herdr `worktree.list {workspace_id? | cwd?, trust_repository?}`: the repository of the
+/// workspace (else the active one) or of `cwd`, as `worktree_list {source: WorktreeSourceInfo,
+/// worktrees: [WorktreeInfo]}`. A linked worktree lists from its main checkout.
+async fn worktree_list(
+    server: &Arc<Server>,
+    caller: &Caller,
+    sn: &Snap,
+    p: &Value,
+) -> Result<Value, WireError> {
+    let src = worktree_source(server, caller, sn, p, true).await?;
+    let trust = p
+        .get("trust_repository")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let entries = git_worktrees(&src.checkout, trust).await?;
+    let mut source = json!({
+        "repo_key": src.repo_key,
+        "repo_name": src.repo_name,
+        "repo_root": src.checkout,
+        "source_checkout_path": src.checkout,
+    });
+    if let Some(w) = &src.workspace {
         source["source_workspace_id"] = json!(w);
     }
-    let r = native(
-        server,
-        caller,
-        "worktree.list",
-        json!({"cwd": source_checkout}),
-    )
-    .await?;
-    let main = canon(&source_checkout);
-    let worktrees: Vec<Value> = r["worktrees"]
-        .as_array()
-        .cloned()
-        .unwrap_or_default()
-        .iter()
-        .map(|e| {
-            let path = e["path"].as_str().unwrap_or("").to_string();
-            let branch = e["branch"]
-                .as_str()
-                .map(|b| b.strip_prefix("refs/heads/").unwrap_or(b).to_string());
-            let mut v = json!({"path": path});
-            if let Some(b) = &branch {
-                v["branch"] = json!(b);
-            }
-            v["is_bare"] = json!(false);
-            v["is_detached"] = json!(branch.is_none());
-            v["is_prunable"] = json!(e["prunable"].as_bool().unwrap_or(false));
-            v["is_linked_worktree"] = json!(canon(&path) != main);
-            if let Some(w) = open_ws(&path) {
-                v["open_workspace_id"] = json!(w);
-            }
-            v["label"] = json!(repo_name);
-            v
-        })
-        .collect();
+    let worktrees: Vec<Value> = entries.iter().map(|e| wt_entry_info(sn, &src, e)).collect();
     Ok(typed(
         "worktree_list",
         json!({"source": source, "worktrees": worktrees}),
+    ))
+}
+
+/// The active tab of a workspace (the focused one, else its first) and that tab's root pane,
+/// as Herdr reports them for an opened or created worktree workspace.
+fn ws_tab_root(server: &Server, sn: &Snap, ws_id: &str) -> (Value, Value) {
+    let Some(w) = sn.ws(ws_id) else {
+        return (Value::Null, Value::Null);
+    };
+    let tab = sn.active_tab(w);
+    let root = tab
+        .and_then(|t| t.layout.panes().first().cloned())
+        .and_then(|x| sn.pane(&x).map(|x| sn.pane_json(server, x)));
+    (
+        tab.map(|t| sn.tab_json(t)).unwrap_or(Value::Null),
+        root.unwrap_or(Value::Null),
+    )
+}
+
+/// Herdr's `ensure_source_parent_membership`: the repository's main checkout gets a workspace
+/// (not focused) when none is open there yet.
+fn ensure_parent_workspace(server: &Arc<Server>, src: &WtSource) -> Result<(), WireError> {
+    if ws_at(&snap(server), &src.checkout).is_some() {
+        return Ok(());
+    }
+    server
+        .create_workspace(&src.checkout, None, None, None)
+        .map(|_| ())
+        .map_err(|e| WireError::new("worktree_open_failed", format!("{e:#}")))
+}
+
+fn focus_allowed(caller: &Caller, focus: bool) -> Result<(), WireError> {
+    if focus && caller.ctx.pane_scope.is_some() {
+        return Err(WireError::new(
+            "permission_denied",
+            "agents can't move the user's focus",
+        ));
+    }
+    Ok(())
+}
+
+/// Herdr `worktree.open {path | branch, workspace_id? | cwd?, label?, focus?,
+/// trust_repository?}`: finds the worktree among the repository's worktrees (by path, or the
+/// one non-bare, non-prunable, attached checkout of `branch`), then reuses the workspace open
+/// there or opens one. `worktree_opened {workspace, tab, root_pane, worktree, already_open}`;
+/// emits `worktree.opened` (and `workspace.created` for a new workspace).
+async fn herdr_worktree_open(
+    server: &Arc<Server>,
+    caller: &Caller,
+    sn: &Snap,
+    p: &Value,
+) -> Result<Value, WireError> {
+    let (path, branch) = (sp(p, "path"), sp(p, "branch"));
+    if path.is_some() == branch.is_some() {
+        return Err(WireError::new(
+            "invalid_request",
+            "exactly one of path or branch is required",
+        ));
+    }
+    let focus = p.get("focus").and_then(Value::as_bool).unwrap_or(false);
+    focus_allowed(caller, focus)?;
+    let trust = p
+        .get("trust_repository")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let src = worktree_source(server, caller, sn, p, false).await?;
+    let entries = git_worktrees(&src.checkout, trust).await?;
+    let entry = match (path, branch) {
+        (Some(path), _) => {
+            let want = canon_path(&user_path(path)?);
+            entries
+                .into_iter()
+                .find(|e| canon_path(&e.path.to_string_lossy()) == want)
+                .ok_or_else(|| WireError::new("worktree_not_found", "worktree path not found"))?
+        }
+        (None, Some(branch)) => {
+            let mut m: Vec<_> = entries
+                .into_iter()
+                .filter(|e| {
+                    !e.is_bare
+                        && !e.is_prunable
+                        && !e.is_detached
+                        && e.branch.as_deref() == Some(branch)
+                })
+                .collect();
+            match m.len() {
+                0 => {
+                    return Err(WireError::new(
+                        "worktree_not_found",
+                        "worktree branch not found",
+                    ));
+                }
+                1 => m.remove(0),
+                _ => {
+                    return Err(WireError::new(
+                        "ambiguous_worktree_branch",
+                        "multiple worktrees matched branch",
+                    ));
+                }
+            }
+        }
+        (None, None) => unreachable!("checked above"),
+    };
+    if entry.is_bare || entry.is_prunable {
+        return Err(WireError::new(
+            "worktree_not_found",
+            "worktree cannot be opened",
+        ));
+    }
+    let target = entry.path.to_string_lossy().into_owned();
+    if canon_path(&target) != canon_path(&src.checkout) {
+        ensure_parent_workspace(server, &src)?;
+    }
+    let label = sp(p, "label").map(str::to_string);
+    let mut np = json!({"path": target, "focus": focus});
+    if let Some(l) = &label {
+        np["name"] = json!(l);
+    }
+    let r = native(server, caller, "worktree.open", np).await?;
+    let created = r["created"].as_bool().unwrap_or(false);
+    let ws_id = r["workspace"]["id"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    if let (Some(l), false) = (&label, created) {
+        native(
+            server,
+            caller,
+            "workspace.rename",
+            json!({"workspace": ws_id, "name": l}),
+        )
+        .await?;
+    }
+    let sn = snap(server);
+    let (tab, root) = ws_tab_root(server, &sn, &ws_id);
+    Ok(typed(
+        "worktree_opened",
+        json!({
+            "workspace": sn.ws(&ws_id).map(|w| sn.ws_json(w)),
+            "tab": tab,
+            "root_pane": root,
+            "worktree": wt_entry_info(&sn, &src, &entry),
+            "already_open": !created,
+            "created": created,
+        }),
+    ))
+}
+
+/// Herdr `worktree.create {branch?, base?, path?, workspace_id? | cwd?, label?, focus?,
+/// trust_repository?}`: `git worktree add` from the repository's main checkout (an existing
+/// local branch is checked out, otherwise `-b <branch>` from `base`, default `HEAD`), then a
+/// workspace opens at the checkout. Without `branch` Herdr's generated `worktree/<name>` is
+/// used; without `path` the checkout goes to `<[tasks] root>/<repo>/<branch slug>` (Herdr:
+/// `[worktrees] directory`). `worktree_created {workspace, tab, root_pane, worktree}`; emits
+/// `worktree.created`.
+async fn herdr_worktree_create(
+    server: &Arc<Server>,
+    caller: &Caller,
+    sn: &Snap,
+    p: &Value,
+) -> Result<Value, WireError> {
+    let branch = match sp(p, "branch") {
+        Some(b) => b.trim().to_string(),
+        None => herdr::worktree::generated_branch(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_micros().min(u128::from(u64::MAX)) as u64)
+                .unwrap_or(0),
+        ),
+    };
+    if branch.is_empty() {
+        return Err(WireError::new("invalid_request", "branch is required"));
+    }
+    let base = sp(p, "base").unwrap_or("HEAD").to_string();
+    let focus = p.get("focus").and_then(Value::as_bool).unwrap_or(false);
+    focus_allowed(caller, focus)?;
+    let trust = p
+        .get("trust_repository")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let src = worktree_source(server, caller, sn, p, false).await?;
+    let path = match sp(p, "path") {
+        Some(x) => user_path(x)?,
+        None => {
+            let cfg = crate::run::worktree_cfg(&json!({}));
+            vk_tasks::worktree_path(
+                &cfg.root,
+                Path::new(&src.checkout),
+                &herdr::worktree::branch_slug(&branch),
+            )
+            .to_string_lossy()
+            .into_owned()
+        }
+    };
+    {
+        let (repo, path, branch, base) = (
+            src.checkout.clone(),
+            PathBuf::from(&path),
+            branch.clone(),
+            base.clone(),
+        );
+        tokio::task::spawn_blocking(move || -> Result<(), String> {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            }
+            let exists = run_git(
+                &repo,
+                trust,
+                &[
+                    "show-ref".into(),
+                    "--verify".into(),
+                    "--quiet".into(),
+                    format!("refs/heads/{branch}"),
+                ],
+            )?
+            .status
+            .success();
+            let out = run_git(
+                &repo,
+                trust,
+                &herdr::worktree::add_args(&path, &branch, &base, exists),
+            )?;
+            if out.status.success() {
+                Ok(())
+            } else {
+                Err(git_failure(&out, "git worktree add"))
+            }
+        })
+        .await
+        .map_err(|e| WireError::new("worktree_create_failed", e.to_string()))?
+        .map_err(|e| WireError::new("worktree_create_failed", e))?;
+    }
+    ensure_parent_workspace(server, &src)?;
+    let label = sp(p, "label").map(str::to_string);
+    let open_fail = |e: anyhow::Error| {
+        WireError::new(
+            "worktree_open_failed",
+            format!("created worktree but failed to open workspace: {e:#}"),
+        )
+    };
+    let existing = ws_at(&snap(server), &path).cloned();
+    let ws_id = match existing {
+        Some(w) => {
+            if focus {
+                native(
+                    server,
+                    caller,
+                    "workspace.focus",
+                    json!({"workspace": w.id}),
+                )
+                .await?;
+            }
+            if let Some(l) = &label {
+                native(
+                    server,
+                    caller,
+                    "workspace.rename",
+                    json!({"workspace": w.id, "name": l}),
+                )
+                .await?;
+            }
+            w.id
+        }
+        None => {
+            let focus_client = focus.then_some(caller.ctx.client_id.as_str());
+            server
+                .create_workspace(&path, label.clone(), None, focus_client)
+                .map_err(open_fail)?
+                .0
+                .id
+        }
+    };
+    {
+        let mut c = server.core.lock().unwrap();
+        let mut tx = crate::core::Tx::new();
+        tx.event(
+            "worktree.created",
+            json!({"workspace": ws_id}),
+            json!({"path": path, "branch": branch, "base_ref": base, "repo_root": src.checkout}),
+        );
+        server
+            .commit(&mut c, tx)
+            .map_err(|e| WireError::new("internal_error", e.to_string()))?;
+    }
+    let sn = snap(server);
+    let (tab, root) = ws_tab_root(server, &sn, &ws_id);
+    let entry = herdr::worktree::ExistingWorktree {
+        path: PathBuf::from(&path),
+        branch: Some(branch),
+        is_bare: false,
+        is_detached: false,
+        is_prunable: false,
+    };
+    Ok(typed(
+        "worktree_created",
+        json!({
+            "workspace": sn.ws(&ws_id).map(|w| sn.ws_json(w)),
+            "tab": tab,
+            "root_pane": root,
+            "worktree": wt_entry_info(&sn, &src, &entry),
+        }),
     ))
 }
 

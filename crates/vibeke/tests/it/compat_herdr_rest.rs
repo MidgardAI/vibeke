@@ -381,7 +381,7 @@ fn herdr_rest_worktree_remove() {
     let o = ok(
         &s_,
         "worktree.open",
-        json!({"path": checkout.to_str().unwrap()}),
+        json!({"path": checkout.to_str().unwrap(), "cwd": main.to_str().unwrap()}),
     );
     let ws = s(&o["workspace"]["workspace_id"]);
     let r = ok(&s_, "worktree.remove", json!({"workspace_id": ws}));
@@ -411,7 +411,7 @@ fn herdr_rest_worktree_remove() {
     let o = ok(
         &s_,
         "worktree.open",
-        json!({"path": dirty.to_str().unwrap()}),
+        json!({"path": dirty.to_str().unwrap(), "cwd": main.to_str().unwrap()}),
     );
     let ws = s(&o["workspace"]["workspace_id"]);
     assert_eq!(
@@ -426,6 +426,151 @@ fn herdr_rest_worktree_remove() {
     );
     assert_eq!(r["forced"], true, "{r}");
     assert!(!dirty.exists());
+}
+
+#[test]
+fn herdr_rest_worktree_open_and_create_take_herdrs_params() {
+    let s_ = session("");
+    write(
+        &s_.path("config.toml"),
+        &format!(
+            "[tasks]\nroot = \"{}\"\nfetch_before_create = false\n",
+            s_.path("wt").display()
+        ),
+    );
+    let main = s_.path("app");
+    repo(&main);
+    let m = main.to_str().unwrap();
+    let feat = s_.path("app-feat");
+    git(
+        &main,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "feat",
+            feat.to_str().unwrap(),
+        ],
+    );
+
+    // `worktree.open` by branch from `cwd`; `label` names the new workspace. The main
+    // checkout gets its parent workspace first, as in Herdr.
+    let o = ok(
+        &s_,
+        "worktree.open",
+        json!({"cwd": m, "branch": "feat", "label": "Feature"}),
+    );
+    assert_eq!(o["type"], "worktree_opened", "{o}");
+    assert_eq!(o["already_open"], false, "{o}");
+    assert_eq!(o["worktree"]["path"], feat.to_str().unwrap(), "{o}");
+    assert_eq!(o["worktree"]["branch"], "feat", "{o}");
+    assert_eq!(o["worktree"]["is_linked_worktree"], true, "{o}");
+    assert_eq!(o["worktree"]["label"], "app", "{o}");
+    assert_eq!(o["workspace"]["label"], "Feature", "{o}");
+    let ws = s(&o["workspace"]["workspace_id"]);
+    assert_eq!(o["worktree"]["open_workspace_id"], ws.as_str(), "{o}");
+    assert_eq!(o["tab"]["workspace_id"], ws.as_str(), "{o}");
+    assert!(o["root_pane"]["pane_id"].is_string(), "{o}");
+    let l = ok(&s_, "worktree.list", json!({"cwd": m}));
+    let parent = s(&l["source"]["source_workspace_id"]);
+    assert!(!parent.is_empty() && parent != ws, "{l}");
+    // Again: the same workspace, `already_open`.
+    let o = ok(
+        &s_,
+        "worktree.open",
+        json!({"workspace_id": parent, "path": feat.to_str().unwrap()}),
+    );
+    assert_eq!(o["already_open"], true, "{o}");
+    assert_eq!(o["workspace"]["workspace_id"], ws.as_str(), "{o}");
+
+    // Herdr's errors: exactly one of path/branch, an unknown branch, a linked source, a
+    // relative path.
+    for (params, code) in [
+        (json!({"cwd": m}), "invalid_request"),
+        (
+            json!({"cwd": m, "path": "/x", "branch": "feat"}),
+            "invalid_request",
+        ),
+        (json!({"cwd": m, "branch": "nope"}), "worktree_not_found"),
+        (json!({"cwd": m, "path": "/nope"}), "worktree_not_found"),
+        (
+            json!({"cwd": feat.to_str().unwrap(), "branch": "feat"}),
+            "linked_worktree_source",
+        ),
+        (json!({"cwd": "app", "branch": "feat"}), "invalid_request"),
+    ] {
+        assert_eq!(
+            err_code(&s_, "worktree.open", params.clone()),
+            code,
+            "{params}"
+        );
+    }
+
+    // `worktree.create` with an explicit `path`, `base` and `label`.
+    let dest = s_.path("elsewhere/app-two");
+    let c = ok(
+        &s_,
+        "worktree.create",
+        json!({"cwd": m, "branch": "two", "base": "main", "path": dest.to_str().unwrap(), "label": "Two"}),
+    );
+    assert_eq!(c["type"], "worktree_created", "{c}");
+    assert_eq!(c["worktree"]["path"], dest.to_str().unwrap(), "{c}");
+    assert_eq!(c["worktree"]["branch"], "two", "{c}");
+    assert_eq!(c["worktree"]["is_linked_worktree"], true, "{c}");
+    assert_eq!(c["workspace"]["label"], "Two", "{c}");
+    assert!(dest.join("README.md").exists(), "{c}");
+    assert!(
+        c["tab"]["tab_id"].is_string() && c["root_pane"]["pane_id"].is_string(),
+        "{c}"
+    );
+    // An existing local branch is checked out rather than created.
+    git(&main, &["branch", "three"]);
+    let c = ok(
+        &s_,
+        "worktree.create",
+        json!({"cwd": m, "branch": "three", "path": s_.path("app-three").to_str().unwrap()}),
+    );
+    assert_eq!(c["worktree"]["branch"], "three", "{c}");
+    // Without `branch`, Herdr's generated `worktree/<adjective>-<noun>-<hex>`, under the
+    // tasks root.
+    let c = ok(&s_, "worktree.create", json!({"cwd": m}));
+    let b = s(&c["worktree"]["branch"]);
+    assert!(b.starts_with("worktree/"), "{c}");
+    assert!(
+        s(&c["worktree"]["path"]).starts_with(s_.path("wt/app").to_str().unwrap()),
+        "{c}"
+    );
+    assert_eq!(
+        err_code(&s_, "worktree.create", json!({"cwd": m, "branch": "  "})),
+        "invalid_request"
+    );
+    assert_eq!(
+        err_code(
+            &s_,
+            "worktree.create",
+            json!({"cwd": m, "branch": "x", "path": "rel/path"})
+        ),
+        "invalid_request"
+    );
+    assert_eq!(
+        err_code(
+            &s_,
+            "worktree.create",
+            json!({"cwd": m, "branch": "two", "path": dest.to_str().unwrap()})
+        ),
+        "worktree_create_failed"
+    );
+
+    // `worktree.list` reports bare entries as Herdr does, and `trust_repository` is accepted.
+    let l = ok(
+        &s_,
+        "worktree.list",
+        json!({"cwd": m, "trust_repository": true}),
+    );
+    let wts = l["worktrees"].as_array().unwrap();
+    assert!(wts.iter().all(|e| e["is_bare"] == false), "{l}");
+    assert_eq!(wts.len(), 5, "{l}");
 }
 
 fn write_plugin(dir: &Path) {
