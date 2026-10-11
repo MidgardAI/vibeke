@@ -755,6 +755,14 @@ pub async fn serve_wire(server: Arc<Server>, stream: UnixStream, caller: Caller)
                 return;
             }
         };
+        // Output events carry pane text, which a restricted plugin may not read (`pane.read`
+        // is not in `sandbox_allows`).
+        if caller.sandboxed && subs.iter().any(|x| x.kind == "pane.output_matched") {
+            let e = sandbox_denied("pane.output_matched");
+            traced(Err(e.code.as_str()));
+            let _ = write_line(&mut wr, &wire::err_line(&req.id, &e)).await;
+            return;
+        }
         // Herdr's output watchers: the pane must exist and the regex compile before the
         // subscription starts.
         let mut watchers = match output_watchers(&server, &subs) {
@@ -4112,6 +4120,9 @@ async fn events_wait(server: &Arc<Server>, caller: &Caller, p: &Value) -> Result
         return status_wait(server, caller, p).await;
     }
     let subs = hev::parse_subscriptions(p).map_err(|(c, m)| WireError::new(c, m))?;
+    if caller.sandboxed && subs.iter().any(|x| x.kind == "pane.output_matched") {
+        return Err(sandbox_denied("pane.output_matched"));
+    }
     let timeout = Duration::from_millis(
         p.get("timeout_ms")
             .and_then(Value::as_u64)

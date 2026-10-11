@@ -1835,6 +1835,15 @@ async fn worktree_remove(
     p: &Value,
 ) -> Result<Value, WireError> {
     let w = ws_target(sn, p)?;
+    // The removal ends with a native `workspace.close`; check that authority before git
+    // touches the checkout, so a refused caller deletes nothing.
+    crate::api::authorize(
+        server,
+        &caller.ctx,
+        "workspace.close",
+        &json!({"workspace": w.id}),
+    )
+    .map_err(super::native_err)?;
     let force = p.get("force").and_then(Value::as_bool).unwrap_or(false);
     let trust = p
         .get("trust_repository")
