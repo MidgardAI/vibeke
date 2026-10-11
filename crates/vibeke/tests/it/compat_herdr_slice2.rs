@@ -69,10 +69,21 @@ impl Session {
         );
         serde_json::from_slice(&out.stdout).unwrap_or(Value::Null)
     }
+    /// A `herdr` command; Herdr prints the whole response line, so this returns its `result`.
     fn herdr(&self, args: &[&str]) -> Value {
         let mut a = vec!["compat", "herdr"];
         a.extend(args);
-        self.json(&a)
+        self.json(&a)["result"].clone()
+    }
+    /// A Herdr socket method through the native `compat.herdr.call` (`{result}` or `{error}`),
+    /// for methods and parameters Herdr's CLI has no command for.
+    fn call(&self, method: &str, params: Value) -> Value {
+        self.json(&[
+            "api",
+            "call",
+            "compat.herdr.call",
+            &json!({"method": method, "params": params}).to_string(),
+        ])
     }
     fn fail(&self, args: &[&str]) -> (i32, Value) {
         let out = self.cmd(args).output().unwrap();
@@ -331,7 +342,7 @@ fn layout_pane_move_swap_metadata_and_their_events() {
     );
 
     // Move (Herdr's `destination`) to a new tab: `pane_move` and `pane.moved`.
-    let tab2 = s_.herdr(&["tab", "create", "--workspace-id", &ws, "--label", "two"]);
+    let tab2 = s_.herdr(&["tab", "create", "--workspace", &ws, "--label", "two"]);
     let t2 = s(&tab2["tab"]["tab_id"]);
     let moved = sock_req(
         "pane.move",
@@ -379,7 +390,7 @@ fn layout_pane_move_swap_metadata_and_their_events() {
     assert_eq!(e["error"]["code"], "invalid_params", "{e}");
 
     // Tab move emits `tab.moved` (native event now).
-    s_.herdr(&["tab", "move", &t2, "0"]);
+    s_.call("tab.move", json!({"tab_id": t2, "insert_index": 0}));
     let e = ev.until("tab_moved");
     assert_eq!(e["data"]["tab_id"], t2.as_str());
     assert_eq!(e["data"]["insert_index"], 0);
@@ -392,7 +403,7 @@ fn layout_pane_move_swap_metadata_and_their_events() {
         &p1,
         "--match",
         "slice-2-ok",
-        "--timeout-ms",
+        "--timeout",
         "15000",
     ]);
     assert_eq!(m["type"], "pane_output_matched");
@@ -423,10 +434,16 @@ fn layout_pane_move_swap_metadata_and_their_events() {
         procs.iter().any(|p| p["pid"].as_u64() == Some(shell)),
         "the idle shell leads the foreground group: {pi}"
     );
-    s_.herdr(&["pane", "report-metadata", &p1, "--ci", "green"]);
+    s_.call(
+        "pane.report_metadata",
+        json!({"pane_id": p1, "ci": "green"}),
+    );
     let g = s_.herdr(&["pane", "get", &p1]);
     assert_eq!(g["pane"]["metadata"]["ci"], "green", "{g}");
-    s_.herdr(&["workspace", "report-metadata", &ws, "--branch", "main"]);
+    s_.call(
+        "workspace.report_metadata",
+        json!({"workspace_id": ws, "branch": "main"}),
+    );
     let w = s_.herdr(&["workspace", "get", &ws]);
     assert_eq!(w["workspace"]["metadata"]["branch"], "main", "{w}");
     // No client is attached: Herdr's answer says nothing showed it (Vibeke keeps the title).
@@ -523,7 +540,7 @@ fn worktree_create_open_and_worktree_events_reach_streams_and_hooks() {
     assert_eq!(wt["is_linked_worktree"], true, "{e}");
 
     // Opening the same worktree reuses its workspace.
-    let o = s_.herdr(&["worktree", "open", &path]);
+    let o = s_.herdr(&["worktree", "open", "--path", &path]);
     assert_eq!(o["type"], "worktree_opened", "{o}");
     assert_eq!(o["created"], false);
     assert_eq!(o["workspace"]["workspace_id"], ws.as_str());
@@ -547,7 +564,12 @@ fn worktree_create_open_and_worktree_events_reach_streams_and_hooks() {
         "the hook gets Herdr's whole event envelope: {t}"
     );
 
-    let (_, e) = s_.herdr_fail(&["worktree", "open", "/tmp/definitely-not-a-worktree"]);
+    let (_, e) = s_.herdr_fail(&[
+        "worktree",
+        "open",
+        "--path",
+        "/tmp/definitely-not-a-worktree",
+    ]);
     assert_eq!(e["error"]["code"], "worktree_not_found", "{e}");
     let (_, e) = s_.herdr_fail(&[
         "worktree",
@@ -596,11 +618,13 @@ fn named_sessions_use_herdrs_socket_layout_and_session_selection() {
         .output()
         .unwrap();
     let v: Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert!(labels(&v).contains(&"inwork".into()), "{v}");
+    assert!(labels(&v["result"]).contains(&"inwork".into()), "{v}");
 
     // An explicitly selected session is never spawned.
     let (code, e) = s_.herdr_fail(&["--session", "nope", "workspace", "list"]);
-    assert_eq!(code, 4, "no server: {e}");
+    assert_eq!(code, 1, "no server: {e}");
+    assert_eq!(e["error"]["code"], "server_not_running", "{e}");
+    assert_eq!(e["id"], "cli:workspace:list", "{e}");
     assert!(!s_.path("run/nope/vibeke.sock").exists());
     let (code, _) = s_.herdr_fail(&["--session", "../x", "workspace", "list"]);
     assert_eq!(code, 2);
@@ -624,7 +648,7 @@ fn named_sessions_use_herdrs_socket_layout_and_session_selection() {
     });
     let out = read(&marker);
     assert!(
-        out.contains("permission_denied") && out.contains("rc=5"),
+        out.contains("permission_denied") && out.contains("rc=1"),
         "{out}"
     );
 
@@ -672,7 +696,7 @@ command = ["sh", "bin/viewer.sh"]
         "S=\"$HERDR_PLUGIN_STATE_DIR\"\n\
          [ -f \"$S/go\" ] || exit 0\n\
          rm -f \"$S/go\"\n\
-         ( sleep 1; herdr ping > \"$S/d1\" 2>&1\n\
+         ( sleep 1; herdr workspace list > \"$S/d1\" 2>&1\n\
            while [ ! -f \"$S/restarted\" ]; do sleep 0.2; done\n\
            sleep 1.5; herdr workspace list > \"$S/d2\" 2> \"$S/d2.err\"; echo $? > \"$S/d2.code\" ) &\n\
          echo started\n",
@@ -682,7 +706,7 @@ command = ["sh", "bin/viewer.sh"]
     std::fs::write(
         dir.join("bin/bg.sh"),
         "S=\"$HERDR_PLUGIN_STATE_DIR\"\n\
-         ( sleep 2; herdr ping > \"$S/a1\" 2> \"$S/a1.err\"; echo $? > \"$S/a1.code\" ) &\n\
+         ( sleep 2; herdr workspace list > \"$S/a1\" 2> \"$S/a1.err\"; echo $? > \"$S/a1.code\" ) &\n\
          echo spawned\n",
     )
     .unwrap();
@@ -734,7 +758,7 @@ fn brokers_survive_a_restart_only_for_live_long_running_invocations() {
 
     // The startup process exited at once; its child still reaches the broker.
     wait_for("daemon child callback", 15000, || {
-        read(&st.join("d1")).contains("pong")
+        read(&st.join("d1")).contains("workspace_list")
     });
     let startup_log = logs(&s_)
         .into_iter()
@@ -781,10 +805,9 @@ fn brokers_survive_a_restart_only_for_live_long_running_invocations() {
         "{}",
         read(&st.join("d2.err"))
     );
-    assert_eq!(
-        serde_json::from_str::<Value>(&read(&st.join("d2"))).unwrap()["type"],
-        "workspace_list"
-    );
+    let d2 = serde_json::from_str::<Value>(&read(&st.join("d2"))).unwrap();
+    assert_eq!(d2["id"], "cli:workspace:list", "{d2}");
+    assert_eq!(d2["result"]["type"], "workspace_list", "{d2}");
     // Logs survive the restart too.
     assert!(
         logs(&s_)
@@ -855,17 +878,11 @@ fn plugin_panes_audit_events_and_redacted_logs() {
     });
 
     // Plugin pane (split placement): its own broker, HERDR_* identity of the new pane.
-    let opened = s_.herdr(&[
-        "plugin",
-        "pane",
-        "open",
-        "--plugin",
-        "acme.daemon",
-        "--entrypoint",
-        "viewer",
-        "--pane-id",
-        &pane,
-    ]);
+    let opened = s_.call(
+        "plugin.pane.open",
+        json!({"plugin_id": "acme.daemon", "entrypoint": "viewer", "pane_id": pane}),
+    )["result"]
+        .clone();
     assert_eq!(opened["type"], "plugin_pane_opened", "{opened}");
     // Herdr's `PluginPaneInfo`.
     assert_eq!(
@@ -883,20 +900,13 @@ fn plugin_panes_audit_events_and_redacted_logs() {
     assert!(env.contains("HERDR_PLUGIN_ENTRYPOINT_ID=viewer"), "{env}");
     assert!(env.contains("/herdr-compat/brokers/"), "{env}");
     let cur: Value = serde_json::from_str(&read(&st.join("viewer-pane.json"))).unwrap();
-    assert_eq!(cur["pane"]["pane_id"], vp.as_str(), "{cur}");
+    assert_eq!(cur["id"], "cli:pane:current", "{cur}");
+    assert_eq!(cur["result"]["pane"]["pane_id"], vp.as_str(), "{cur}");
     // Only the pane's broker is left (the startup hook's group and the action have ended).
     wait_for("only the pane broker", 10000, || {
         s_.json(&["compat", "status"])["brokers"] == 1
     });
-    let f = s_.herdr(&[
-        "plugin",
-        "pane",
-        "focus",
-        "--plugin",
-        "acme.daemon",
-        "--entrypoint",
-        "viewer",
-    ]);
+    let f = s_.herdr(&["plugin", "pane", "focus", &vp]);
     assert_eq!(f["type"], "plugin_pane_focused", "{f}");
     assert_eq!(f["plugin_pane"]["pane"]["pane_id"], vp.as_str(), "{f}");
     assert_eq!(f["plugin_pane"]["entrypoint"], "viewer", "{f}");
@@ -908,15 +918,7 @@ fn plugin_panes_audit_events_and_redacted_logs() {
         &json!({"method": "plugin.pane.focus", "params": {"pane_id": pane}}).to_string(),
     ]);
     assert_eq!(r["error"]["code"], "plugin_pane_not_found", "{r}");
-    let c = s_.herdr(&[
-        "plugin",
-        "pane",
-        "close",
-        "--plugin",
-        "acme.daemon",
-        "--entrypoint",
-        "viewer",
-    ]);
+    let c = s_.herdr(&["plugin", "pane", "close", &vp]);
     assert_eq!(c["type"], "plugin_pane_closed", "{c}");
     assert_eq!(c["pane_id"], vp.as_str(), "{c}");
     wait_for("plugin pane gone with its broker", 15000, || {
@@ -994,36 +996,23 @@ fn plugin_panes_audit_events_and_redacted_logs() {
     );
     assert_eq!(ctx["correlation_id"], "plugin-pane", "{ctx}");
     assert_eq!(ctx["invocation_source"], "api", "{ctx}");
-    s_.herdr(&[
-        "plugin",
-        "pane",
-        "close",
-        "--plugin",
-        "acme.daemon",
-        "--entrypoint",
-        "viewer",
-    ]);
+    let vp2 = s(&r["result"]["plugin_pane"]["pane"]["pane_id"]);
+    s_.herdr(&["plugin", "pane", "close", &vp2]);
     wait_for("second plugin pane gone with its broker", 15000, || {
         s_.json(&["compat", "status"])["brokers"] == 0
     });
     // Popups open (without a pane identity) and close with `popup.close`; the TUI side is
     // covered in compat_herdr_surfaces.rs.
-    let opened = s_.herdr(&[
-        "plugin",
-        "pane",
-        "open",
-        "--plugin",
-        "acme.daemon",
-        "--entrypoint",
-        "pop",
-        "--pane-id",
-        &pane,
-    ]);
+    let opened = s_.call(
+        "plugin.pane.open",
+        json!({"plugin_id": "acme.daemon", "entrypoint": "pop"}),
+    )["result"]
+        .clone();
     // Like Herdr, opening a popup answers `ok` (no pane identity).
     assert_eq!(opened["type"], "ok", "{opened}");
     assert_eq!(opened["placement"], "popup", "{opened}");
     assert!(opened["plugin_pane"].is_null(), "{opened}");
-    s_.herdr(&["popup", "close"]);
+    s_.call("popup.close", json!({}));
     wait_for("popup broker gone", 15000, || {
         s_.json(&["compat", "status"])["brokers"] == 0
     });
@@ -1037,6 +1026,7 @@ fn plugin_panes_audit_events_and_redacted_logs() {
         "nope",
     ]);
     assert_eq!(e["error"]["code"], "plugin_pane_not_found", "{e}");
+    assert_eq!(e["id"], "cli:plugin", "Herdr's whole response line: {e}");
 
     // Registry methods over the socket path (the shim's server transport).
     let r = s_.json(&[
@@ -1061,6 +1051,8 @@ fn plugin_panes_audit_events_and_redacted_logs() {
         "pane",
         "report-agent",
         &pane,
+        "--source",
+        "test",
         "--agent",
         "claude",
         "--state",
@@ -1075,16 +1067,17 @@ fn plugin_panes_audit_events_and_redacted_logs() {
         "agent",
         "wait",
         "helper",
-        "--status",
+        "--until",
         "idle",
-        "--timeout-ms",
+        "--timeout",
         "5000",
     ]);
     assert_eq!(w["agent_status"], "idle", "{w}");
-    let (_, e) = s_.herdr_fail(&["agent", "wait", "helper", "--status", "sleepy"]);
-    assert_eq!(e["error"]["code"], "invalid_params");
-    let (_, e) = s_.herdr_fail(&["agent", "start"]);
-    assert_eq!(e["error"]["code"], "invalid_params");
+    // Bad arguments are usage errors (exit 2), checked by the shim like Herdr's CLI.
+    let (code, _) = s_.herdr_fail(&["agent", "wait", "helper", "--until", "sleepy"]);
+    assert_eq!(code, 2);
+    let (code, _) = s_.herdr_fail(&["agent", "start"]);
+    assert_eq!(code, 2);
 }
 
 #[test]

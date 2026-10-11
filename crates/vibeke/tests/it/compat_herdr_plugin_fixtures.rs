@@ -197,7 +197,7 @@ fn initial(s_: &Session, fx: &Fixture, cwd: &str) -> BTreeMap<String, String> {
     }
     let ws_id = vars["workspace"].as_str().unwrap().to_string();
     for i in 0..tabs {
-        let t = s_.herdr(&["tab", "create", "--workspace-id", &ws_id]);
+        let t = s_.herdr(&["tab", "create", "--workspace", &ws_id]);
         vars.insert(
             if i == 0 { "tab2" } else { "tab3" },
             t["tab"]["tab_id"].clone(),
@@ -231,8 +231,10 @@ fn answer(fx: &Fixture, state: &Path) -> Result<Value, String> {
             .unwrap_or(Value::Null)
     };
     if fx.transport == "cli" {
+        // Herdr prints the whole response line (`{"id":"cli:…","result":…}`) on stdout, or
+        // nothing for commands such as `pane send-text`; errors go to stderr.
         return Ok(if exit == 0 {
-            json!({"ok": true, "result": first_json(&read(&state.join("stdout")))})
+            json!({"ok": true, "result": first_json(&read(&state.join("stdout")))["result"]})
         } else {
             json!({"ok": false, "error": first_json(&read(&state.join("stderr")))["error"]})
         });

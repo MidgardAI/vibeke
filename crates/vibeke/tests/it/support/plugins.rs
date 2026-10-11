@@ -57,11 +57,12 @@ impl Session {
         )
     }
 
-    /// `vibeke compat herdr <args>`.
+    /// A socket-backed `vibeke compat herdr <args>`. Herdr prints the whole response line
+    /// (`{"id":"cli:…","result":…}`); this returns its `result`.
     pub fn herdr(&self, args: &[&str]) -> Value {
         let mut a = vec!["compat", "herdr"];
         a.extend(args);
-        self.json(&a)
+        self.json(&a)["result"].clone()
     }
 
     /// The stderr of a failing `vibeke compat herdr <args>`.
