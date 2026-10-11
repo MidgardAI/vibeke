@@ -23,6 +23,9 @@ use serde_json::{Value, json};
 use std::collections::{BTreeSet, HashMap};
 use vk_proto::input::{Key, KeyEvent, KeyKind, NamedKey};
 
+/// Most images kept as "new" at once.
+pub const MAX_UNSEEN: usize = 50;
+
 /// One machine's newest images and how many the server holds.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct Recent {
@@ -137,7 +140,15 @@ pub fn on_captured(app: &mut App, mi: usize, v: &Value) {
         .as_str()
         .or_else(|| v["subject"]["screenshot"].as_str())
         .filter(|s| !s.is_empty());
+    // An agent's own browser automation (`taken_by = agent`, a browser environment) is not a
+    // picture for the user: it shows in the gallery but never as "new". An attached image
+    // (`environment = agent`), a person's capture and an older server's record count.
+    let automation = v["data"]["taken_by"].as_str() == Some("agent")
+        && v["data"]["environment"]
+            .as_str()
+            .is_some_and(|e| e != "agent");
     if let Some(id) = id
+        && !automation
         && !is_unseen(app, mi, id)
     {
         let pane = v["subject"]["pane"]
@@ -149,6 +160,11 @@ pub fn on_captured(app: &mut App, mi: usize, v: &Value) {
             id: id.to_string(),
             pane,
         });
+        // The oldest fall off: nobody reads hundreds of "new" pictures.
+        let extra = app.images_ui.unseen.len().saturating_sub(MAX_UNSEEN);
+        if extra > 0 {
+            app.images_ui.unseen.drain(..extra);
+        }
     }
     app.images_ui.stale.insert(mi);
 }
@@ -470,7 +486,7 @@ fn image_row(app: &App, mi: usize, s: &Shot) -> SideRow {
 
 /// Navigate-mode keys on an image row (and a `+N more` row): `enter` opens the viewer (the
 /// gallery for `+N more`), `x` removes. Checked before every pane action, so an image row never
-/// acts on a pane (a digit that jumps to one opens it); moving, `/` and leaving still work.
+/// acts on a pane; moving, digits, `/` and leaving still work.
 pub fn navigate_key(app: &mut App, ev: &KeyEvent, sel: usize) -> bool {
     if ev.kind == KeyKind::Release || app.ux.nav.typing {
         return false;
@@ -496,21 +512,16 @@ pub fn navigate_key(app: &mut App, ev: &KeyEvent, sel: usize) -> bool {
             (None, Some(mi)) => crate::gallery::open(app, mi, Scope::All, View::List, false),
             (None, None) => {}
         };
-    if let Key::Char(c) = ev.key
-        && let Some(d) = c.to_digit(10)
-    {
-        let Some((image, more)) = target((d as usize).saturating_sub(1)) else {
-            return false;
-        };
-        open(app, image, more);
-        return true;
-    }
+    // Digits belong to the panes and agents (`draw::sidebar_digit_rows`): the images are
+    // reached with the arrow keys.
     let Some((image, more)) = target(sel) else {
         return false;
     };
     match ev.key {
         Key::Named(NamedKey::Escape | NamedKey::Down | NamedKey::Up)
         | Key::Char('j' | 'k' | 'q' | '/') => return false,
+        // Digits jump to panes and agents, whichever row is selected.
+        Key::Char(c) if c.is_ascii_digit() => return false,
         Key::Named(NamedKey::Enter) => open(app, image, more),
         Key::Char('x') => {
             if let Some((mi, id)) = image {

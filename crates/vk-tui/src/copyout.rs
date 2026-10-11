@@ -15,7 +15,7 @@
 
 use std::io::Write;
 #[cfg(not(target_arch = "wasm32"))]
-use std::process::{Command, Stdio};
+use std::process::Command;
 
 /// What the TUI knows about where it runs.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -164,25 +164,13 @@ pub fn native_copy(cmd: Option<&str>, data: &[u8], primary: bool) -> anyhow::Res
             crate::clipboard::os_copy(data)
         };
     };
-    let mut child = Command::new("sh")
-        .arg("-c")
-        .arg(cmd)
-        .env(
-            "VIBEKE_CLIPBOARD_SELECTION",
-            if primary { "primary" } else { "clipboard" },
-        )
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()?;
-    let mut stdin = child
-        .stdin
-        .take()
-        .ok_or_else(|| anyhow::anyhow!("no stdin"))?;
-    let w = stdin.write_all(data);
-    drop(stdin);
-    let st = child.wait()?;
-    w?;
+    let mut c = Command::new("sh");
+    c.arg("-c").arg(cmd).env(
+        "VIBEKE_CLIPBOARD_SELECTION",
+        if primary { "primary" } else { "clipboard" },
+    );
+    let (st, _) =
+        crate::clipboard::run_with_timeout(c, Some(data), crate::clipboard::TOOL_TIMEOUT)?;
     if !st.success() {
         anyhow::bail!("VIBEKE_CLIPBOARD_CMD exited with {st}");
     }

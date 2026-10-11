@@ -1,14 +1,14 @@
 //! Cross-machine agent list (06 A5, 08 §6.5): one popup listing every live agent run on every
 //! connected machine, most urgent first, with jump-to.
 //!
-//! Bound to `agent_list` (default **`prefix+alt+a`**: `prefix+a` is `next_attention` and
-//! `prefix+shift+a` `next_attention_focus`, so the list of all agents takes the same letter with
-//! `alt`, as `pin_pane`/`sync_input_pane` do). Ordering: open approvals and questions first
+//! Bound to `agent_list` (default **`prefix+shift+i`**: `prefix+a` is `next_attention` and
+//! `prefix+shift+a` `next_attention_focus`, so the list of all agents takes `shift+i`: `i` is the
+//! inbox, `shift+i` is the inbox of agents). No default binding uses `alt`. Ordering: open approvals and questions first
 //! (oldest open interaction first), then errors and rate limits, done-unseen, working, idle,
 //! the rest; ties by how long the run has been in that state (longest first), then machine and
 //! name. Each row: `machine · icon name · workspace · state glyph label · age`. Typing filters
 //! (fuzzy, over machine, name, harness, workspace, state and branch); `↑/↓`, `tab`, `ctrl+n/p`
-//! move; `enter` focuses the agent's pane on its machine; `alt+enter` opens its card when it has
+//! move; `enter` focuses the agent's pane on its machine; `ctrl+enter` (or `alt+enter`) opens its card when it has
 //! an open interaction (gated by `ui.interaction_overlay`, as everywhere); `esc` closes. Nothing
 //! is sent to an agent.
 
@@ -196,7 +196,7 @@ pub fn draw(app: &App, g: &mut Grid, filter: &str, sel: usize) -> (u16, u16) {
         app,
         g,
         &format!(
-            "agents · {total} on {machines} machine(s) · by attention · enter jump · alt+enter card"
+            "agents · {total} on {machines} machine(s) · by attention · enter jump · ctrl+enter card"
         ),
         filter,
     );

@@ -322,7 +322,7 @@ fn config_get_set_validate_reload_and_watch() {
         .unwrap();
     let g = r.call("config.get", json!({"key": "theme.name"})).unwrap();
     assert_eq!(g["source"], "runtime");
-    assert_eq!(g["value"], "catppuccin");
+    assert_eq!(g["value"], "");
 
     // Validate a broken file: located errors.
     let broken = s.dir.path().join("broken.toml");

@@ -107,7 +107,7 @@ fn state(here: bool, human: bool) -> BrowserStatus {
 }
 
 fn prefix_t(app: &mut App) {
-    app.on_key(KeyEvent::new(Key::Char('b'), Mods::CTRL));
+    app.on_key(KeyEvent::new(Key::Char('q'), Mods::CTRL));
     app.on_key(KeyEvent::new(Key::Char('t'), Mods::empty()));
 }
 

@@ -191,7 +191,7 @@ try {
   await screenContains('command palette', 5000);
   await page.locator('.xterm-helper-textarea').focus();
   await page.keyboard.press('Escape');
-  await page.keyboard.press('Control+b');
+  await page.keyboard.press('Control+q');
   await page.keyboard.press('v');
   await expect.poll(() => JSON.parse(cli('pane', 'list')).panes.length, { timeout: 15_000 }).toBe(2);
   await page.setViewportSize({ width: 1000, height: 700 });

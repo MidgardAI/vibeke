@@ -53,7 +53,7 @@ fn copy_mode_prompt_jump_selects_the_last_command_output() {
     // prompt. `\055` is `-`, so the typed command line never contains the output text.
     let marks = r"printf '\033]133;A\007P1$ \033]133;B\007make\r\n\033]133;C\007first\055out\r\n\033]133;D;0\007\033]133;A\007P2$ \033]133;B\007test\r\n\033]133;C\007out\055one\r\nout\055two\r\n\033]133;D;1\007\033]133;A\007P3$ \033]133;B\007'";
     let keys = format!(
-        "{{wait:$ }}{marks}{{enter}}{{wait:out-two}}{{sleep:300}}{{ctrl+b}}[{{sleep:400}}[{{sleep:200}}o{{sleep:200}}y{{sleep:600}}"
+        "{{wait:$ }}{marks}{{enter}}{{wait:out-two}}{{sleep:300}}{{ctrl+q}}[{{sleep:400}}[{{sleep:200}}o{{sleep:200}}y{{sleep:600}}"
     );
     let out = c
         .args([

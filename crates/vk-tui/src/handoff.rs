@@ -20,7 +20,7 @@
 //!   while N handoffs wait): incoming handoffs and the ones being sent. `enter` opens (accept,
 //!   or the imported pane), `d` declines, `r` retries the agent of an imported one, `x` cancels
 //!   a send.
-//! - **Send** (`handoff_send`, default `prefix+alt+h`): the peers from `handoff.peers` in a fuzzy
+//! - **Send** (`handoff_send`, default `prefix+shift+j`): the peers from `handoff.peers` in a fuzzy
 //!   list, then the user's other machines this TUI is attached to that are not peers yet ("Your
 //!   machines (will pair)": choosing one runs `gateway.call peer.invite` there and `gateway.call
 //!   peer.redeem` on the source first, the rules of the app's `planSend`), then a summary with

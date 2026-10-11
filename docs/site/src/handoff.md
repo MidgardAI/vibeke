@@ -23,7 +23,7 @@ The destination needs the agent CLI and its own agent login. It does not need a 
 6. Follow the progress, or close the sheet: the transfer continues in the background and the app
    tells you when it is delivered or failed. A failed transfer can be tried again from the sheet.
 
-In the terminal client, press `prefix+alt+h` (**Hand off this pane to another host…**,
+In the terminal client, press `prefix+shift+j` (**Hand off this pane to another host…**,
 `handoff_send`), or right-click the pane's row in the sidebar and choose **Hand off…**. Pick one
 of the hosts this one is paired with, tick **Interrupt agent if busy** if needed and press
 `enter`. When the terminal client is attached to several of your machines, the ones this host is
@@ -128,7 +128,7 @@ sending; there `d` declines, `r` retries the agent of an imported handoff and `x
 For a pane an import created, right-click its sidebar row and choose **Handoff details**
 (`handoff_details`) to see where it came from and retry the agent.
 
-To review every handoff first in the terminal client, open **Connections** (`prefix+alt+d`), go to
+To review every handoff first in the terminal client, open **Connections** (`prefix+d`), go to
 **Hosts** and press `a` for **Always ask before importing handoffs**.
 
 ### From the command line
@@ -178,7 +178,7 @@ The sender accepts the invitation on one of their hosts:
    recipient see who is sending; otherwise they only see your host's name.
 3. Hand off a pane on that host and select the teammate's host as the destination.
 
-In the terminal client, the recipient opens **Connections → Hosts** (`prefix+alt+d`, then
+In the terminal client, the recipient opens **Connections → Hosts** (`prefix+d`, then
 `tab`) on the receiving host and presses `n`, then `t` (**Invite a teammate to send to me**):
 the link shows with a QR code, and `c` copies it. The sender opens **Connections → Hosts** on their
 host, presses `p` and pastes the link. The view says what it is before anything happens
@@ -206,8 +206,8 @@ In the app:
 4. Set an expiry time.
 5. Create the invitation.
 
-In the terminal client, open **Connections → People** (`prefix+alt+d`, then `tab`), or run
-`share_pane` (**Share this pane or workspace with someone…**, `prefix+alt+v`, also in the
+In the terminal client, open **Connections → People** (`prefix+d`, then `tab`), or run
+`share_pane` (**Share this pane or workspace with someone…**, `prefix+shift+z`, also in the
 sidebar pane's right-click menu) to open the form for the focused pane:
 
 1. Choose **This pane** or **This workspace**.

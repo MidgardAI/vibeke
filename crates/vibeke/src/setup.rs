@@ -246,13 +246,15 @@ pub fn setup_with(
         Some(t) => t,
         None if interactive => {
             let list = ob::THEMES.join(" | ");
-            let Some(a) = ask_from(input, &format!("theme ({list}) — enter keeps catppuccin:"))
-            else {
+            let Some(a) = ask_from(
+                input,
+                &format!("theme ({list}) — enter follows the terminal's light or dark:"),
+            ) else {
                 return input_closed();
             };
-            if a.is_empty() { "catppuccin".into() } else { a }
+            if a.is_empty() { "auto".into() } else { a }
         }
-        None => "catppuccin".into(),
+        None => "auto".into(),
     };
     println!("  {theme}");
     choices.theme = Some(theme);

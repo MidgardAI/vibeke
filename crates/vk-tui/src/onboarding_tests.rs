@@ -25,7 +25,7 @@ fn temp_dirs(d: &Path) -> Dirs {
 fn starter_config_writes_only_non_default_choices() {
     let c = Choices {
         notifications: Some("osc".into()),
-        theme: Some("catppuccin".into()),
+        theme: Some("auto".into()),
         theme_mode: Some("auto".into()),
         herdr_toml: None,
     };
@@ -37,7 +37,7 @@ fn starter_config_writes_only_non_default_choices() {
     let existing = "# mine\n[theme]\nname = \"terminal\" # keep me?\n[ui]\nanimate = false\n";
     let c2 = Choices {
         notifications: Some("native".into()),
-        theme: Some("catppuccin".into()),
+        theme: Some("auto".into()),
         ..Default::default()
     };
     let t2 = starter_config(Some(existing), &c2).unwrap();
@@ -146,7 +146,8 @@ fn walks_every_step_installs_only_after_confirmation_and_writes_the_config() {
     let (_, p) = only(&cmds, "notification.send");
     assert_eq!(p["title"], "Vibeke test notification");
     enter(&mut app);
-    // Theme: latte, previewed live.
+    // Theme: latte (the third entry after auto and catppuccin), previewed live.
+    key(&mut app, Key::Char('j'));
     key(&mut app, Key::Char('j'));
     assert_eq!(
         format!("{:?}", app.theme.fg),
@@ -178,14 +179,17 @@ fn walks_every_step_installs_only_after_confirmation_and_writes_the_config() {
 }
 
 #[test]
-fn esc_closes_for_now_and_setup_reopens() {
+fn esc_dismisses_setup_for_good_and_the_palette_reopens_it() {
     let tmp = tempfile::tempdir().unwrap();
     let (mut app, _rx) = fleet();
     open_with(&mut app, temp_dirs(tmp.path()), tmp.path().join("c.toml"));
     key(&mut app, Key::Named(NamedKey::Escape));
     assert!(matches!(app.mode, Mode::Normal));
-    assert!(app.toasts.last().unwrap().text.contains(":setup"));
+    assert!(app.toasts.last().unwrap().text.contains("Setup"));
     assert!(!tmp.path().join("c.toml").exists());
+    // The marker keeps setup from opening by itself at the next start.
+    assert!(dismissed(&tmp.path().join("c.toml")));
+    assert!(!dismissed(&tmp.path().join("other.toml")));
     // `tab` / shift+tab move between steps.
     open_with(&mut app, temp_dirs(tmp.path()), tmp.path().join("c.toml"));
     app.ux.onboarding.as_mut().unwrap().herdr = None;
@@ -211,4 +215,32 @@ fn herdr_step_imports_into_the_written_config() {
     let f = app.ux.onboarding.as_ref().unwrap();
     assert!(f.choices.herdr_toml.as_deref().unwrap().contains("ctrl+a"));
     assert!(f.preview().unwrap().contains("prefix = \"ctrl+a\""));
+}
+
+#[test]
+fn a_chosen_theme_name_sticks_and_auto_writes_none() {
+    let c = Choices {
+        theme: Some("nord".into()),
+        ..Default::default()
+    };
+    let t = starter_config(None, &c).unwrap();
+    let (cfg, _) = vk_config::Config::parse(&t, Path::new("x")).unwrap();
+    assert_eq!(cfg.theme.name, "nord");
+    assert!(cfg.theme.auto_switch);
+    // The chosen name wins on a light host, too.
+    for dark in [Some(true), Some(false), None] {
+        assert_eq!(cfg.theme.effective_name(dark), "nord");
+    }
+}
+
+#[test]
+fn experimental_harnesses_are_never_preselected() {
+    let tmp = tempfile::tempdir().unwrap();
+    let rows = detect_harnesses(&temp_dirs(tmp.path()), Path::new("/usr/bin/vibeke"));
+    for r in &rows {
+        if r.experimental() {
+            assert!(!r.selected, "{}", r.harness.id());
+        }
+    }
+    assert!(rows.iter().any(|r| r.experimental()));
 }

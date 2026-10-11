@@ -63,7 +63,7 @@ fn keys_and_paste_mirror_to_shell_panes_agents_excluded() {
     let got = keys_to(&mut rxs[0]);
     assert_eq!(got.len(), 2);
     assert!(got.iter().all(|x| x.1 == "ls -la"));
-    // prefix+alt+s on the agent adds it; on p3 removes it.
+    // prefix+shift+y on the agent adds it; on p3 removes it.
     app.focus_pane(0, "p1");
     app.action("sync_input_pane", None);
     app.focus_pane(0, "p3");

@@ -5,8 +5,6 @@
 use std::io::Write as _;
 use std::process::{Command, Stdio};
 
-#[cfg(not(target_arch = "wasm32"))]
-use anyhow::Context;
 use anyhow::{Result, anyhow, bail};
 use base64::Engine as _;
 
@@ -17,20 +15,79 @@ pub fn osc52_set(data: &[u8], primary: bool) -> Vec<u8> {
     format!("\x1b]52;{sel};{b64}\x1b\\").into_bytes()
 }
 
+/// How long a clipboard tool may run before it is killed. A stuck `xclip` (no X server) or
+/// `osascript` (a permission dialog) must not hang anything.
+pub const TOOL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Run `cmd` with `input` on stdin (when given), collect its stdout, and kill it after
+/// `limit`. Meant for worker threads (`crate::jobs`); it blocks until the tool is done.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn run_with_timeout(
+    mut cmd: Command,
+    input: Option<&[u8]>,
+    limit: std::time::Duration,
+) -> Result<(std::process::ExitStatus, Vec<u8>)> {
+    use std::io::Read as _;
+    cmd.stdin(if input.is_some() {
+        Stdio::piped()
+    } else {
+        Stdio::null()
+    })
+    .stdout(Stdio::piped())
+    .stderr(Stdio::null());
+    let mut child = cmd.spawn()?;
+    // Both pipes are served from their own threads, so a tool that stops reading or never
+    // closes its output cannot block the wait below.
+    let writer = input.and_then(|data| {
+        let mut stdin = child.stdin.take()?;
+        let data = data.to_vec();
+        Some(std::thread::spawn(move || {
+            let r = stdin.write_all(&data);
+            drop(stdin);
+            r
+        }))
+    });
+    let reader = child.stdout.take().map(|mut out| {
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = out.read_to_end(&mut buf);
+            buf
+        })
+    });
+    let start = std::time::Instant::now();
+    let status = loop {
+        match child.try_wait()? {
+            Some(s) => break s,
+            None if start.elapsed() >= limit => {
+                let _ = child.kill();
+                let _ = child.wait();
+                bail!("timed out after {} s", limit.as_secs());
+            }
+            None => std::thread::sleep(std::time::Duration::from_millis(10)),
+        }
+    };
+    if let Some(w) = writer {
+        // A tool that exits early may close stdin first: that is not a failure of its own.
+        let _ = w.join();
+    }
+    let out = reader.and_then(|r| r.join().ok()).unwrap_or_default();
+    Ok((status, out))
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn run_with_timeout(
+    _cmd: Command,
+    _input: Option<&[u8]>,
+    _limit: std::time::Duration,
+) -> Result<(std::process::ExitStatus, Vec<u8>)> {
+    bail!("Use the browser clipboard controls")
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn pipe_to(cmd: &str, args: &[&str], data: &[u8]) -> Result<()> {
-    let mut child = Command::new(cmd)
-        .args(args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()?;
-    // Take stdin so it is closed (EOF) before we wait.
-    let mut stdin = child.stdin.take().context("no stdin")?;
-    let write = stdin.write_all(data);
-    drop(stdin);
-    let status = child.wait()?;
-    write?;
+    let mut c = Command::new(cmd);
+    c.args(args);
+    let (status, _) = run_with_timeout(c, Some(data), TOOL_TIMEOUT)?;
     if !status.success() {
         bail!("{cmd} exited with {status}");
     }
@@ -140,18 +197,26 @@ pub fn parse_osascript_data(out: &str, class: &str) -> Option<Vec<u8>> {
 
 const PNG_MAGIC: &[u8] = b"\x89PNG\r\n\x1a\n";
 
+#[cfg(not(target_arch = "wasm32"))]
 fn run_output(cmd: &str, args: &[&str]) -> Result<Option<Vec<u8>>> {
-    match Command::new(cmd)
-        .args(args)
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
-    {
-        Ok(o) if o.status.success() => Ok(Some(o.stdout)),
+    let mut c = Command::new(cmd);
+    c.args(args);
+    match run_with_timeout(c, None, TOOL_TIMEOUT) {
+        Ok((status, out)) if status.success() => Ok(Some(out)),
         Ok(_) => Ok(None),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(e.into()),
+        Err(e)
+            if e.downcast_ref::<std::io::Error>()
+                .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound) =>
+        {
+            Ok(None)
+        }
+        Err(e) => Err(e),
     }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn run_output(_cmd: &str, _args: &[&str]) -> Result<Option<Vec<u8>>> {
+    Ok(None)
 }
 
 /// Pick the best image MIME type from a `--list-types` / `TARGETS` listing.
@@ -271,6 +336,21 @@ mod tests {
     fn missing_tools_are_not_errors_for_reads() {
         // Must never panic or require a GUI; either Ok(None)/Ok(Some) or a plain Err is fine.
         let _ = os_clipboard_image();
+    }
+
+    #[test]
+    fn a_stuck_tool_is_killed() {
+        let mut c = Command::new("sleep");
+        c.arg("30");
+        let t = std::time::Instant::now();
+        let e = run_with_timeout(c, None, std::time::Duration::from_millis(200)).unwrap_err();
+        assert!(e.to_string().contains("timed out"), "{e}");
+        assert!(t.elapsed() < std::time::Duration::from_secs(10));
+        // Input goes in, output comes out.
+        let c = Command::new("cat");
+        let (st, out) = run_with_timeout(c, Some(b"abc"), TOOL_TIMEOUT).unwrap();
+        assert!(st.success());
+        assert_eq!(out, b"abc");
     }
 
     #[test]

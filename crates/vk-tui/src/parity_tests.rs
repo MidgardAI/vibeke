@@ -942,6 +942,60 @@ fn theme_name_resolution() {
     cfg.theme.auto_switch = false;
     cfg.theme.name = "terminal".into();
     assert_eq!(theme_name(&cfg, Some(false), &server_light), "terminal");
+    // A chosen name wins while `auto_switch` is on, on a light and on a dark host.
+    cfg.theme.auto_switch = true;
+    cfg.theme.mode = vk_config::ThemeMode::Auto;
+    for local in [Some(true), Some(false), None] {
+        assert_eq!(theme_name(&cfg, local, &server_light), "terminal");
+    }
+    // No name and no auto switch: the dark theme, whatever the host is.
+    cfg.theme.name.clear();
+    cfg.theme.auto_switch = false;
+    assert_eq!(theme_name(&cfg, Some(false), &server_light), "catppuccin");
+}
+
+#[test]
+fn theme_palettes_files_and_tokens() {
+    use crate::theme::{BUILTIN, Theme, parse_color, parse_theme_file};
+    use vk_proto::render::Color;
+    // Every advertised built-in exists and the palettes differ.
+    for n in BUILTIN {
+        assert!(Theme::builtin(n).is_some(), "{n}");
+    }
+    assert!(Theme::builtin("solarized").is_none());
+    assert_ne!(
+        format!("{:?}", Theme::nord().panel),
+        format!("{:?}", Theme::gruvbox().panel)
+    );
+    // The terminal theme marks selection with reverse video (no fixed black) and dims text.
+    let t = Theme::terminal();
+    assert!(t.sel_inverse && t.dim_attr);
+    assert_ne!(t.sel(t.fg).attrs & vk_proto::render::attr::INVERSE, 0);
+    assert_eq!(t.muted, Color::Default);
+    // Colours.
+    assert_eq!(parse_color("#ff8000"), Some(Color::Rgb(255, 128, 0)));
+    assert_eq!(parse_color("#f80"), Some(Color::Rgb(255, 136, 0)));
+    assert_eq!(parse_color("reset"), Some(Color::Default));
+    assert_eq!(parse_color("12"), Some(Color::Indexed(12)));
+    assert_eq!(parse_color("pink"), None);
+    // `[theme.custom]` tokens go on top, a bad one is reported.
+    let mut cfg = vk_config::Config::default();
+    cfg.theme.custom.insert("accent".into(), "#112233".into());
+    cfg.theme.custom.insert("glow".into(), "#112233".into());
+    cfg.theme.custom.insert("red".into(), "nope".into());
+    let (th, warnings) = Theme::build("dracula", &cfg);
+    assert_eq!(th.accent, Color::Rgb(0x11, 0x22, 0x33));
+    assert_eq!(warnings.len(), 2, "{warnings:?}");
+    // An unknown theme warns and falls back.
+    let (th, warnings) = Theme::build("no-such-theme-xyz", &vk_config::Config::default());
+    assert_eq!(th.fg, Theme::default().fg);
+    assert!(warnings[0].contains("unknown theme"), "{warnings:?}");
+    // A theme file: a base plus tokens.
+    let (th, warnings) = parse_theme_file("base = \"nord\"\naccent = \"#010203\"\n").unwrap();
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert_eq!(th.accent, Color::Rgb(1, 2, 3));
+    assert_eq!(th.fg, Theme::nord().fg);
+    assert!(parse_theme_file("base = \"zzz\"").is_err());
 }
 
 // ---- notifications --------------------------------------------------------------------------
@@ -1030,13 +1084,13 @@ fn palette_lists_the_m4_entries() {
         assert!(entries.iter().any(|e| e.id == id), "{id}");
     }
     let g = entries.iter().find(|e| e.id == "search_global").unwrap();
-    assert_eq!(g.binding.as_deref(), Some("prefix+alt+slash"));
+    assert_eq!(g.binding.as_deref(), Some("prefix+shift+q"));
     let ranked = crate::nav::palette_ranked(&app, "save layout");
     assert_eq!(ranked[0].0.id, "layout_save");
-    // `prefix+alt+/` opens the global search popup.
+    // `prefix+shift+q` opens the global search popup.
     let km = &app.keymap;
     let b = km
-        .prefixed(&KeyEvent::new(Key::Char('/'), Mods::ALT))
+        .prefixed(&KeyEvent::new(Key::Char('Q'), Mods::SHIFT))
         .unwrap();
     assert_eq!(b.action, "search_global");
 }

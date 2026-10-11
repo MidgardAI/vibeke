@@ -55,7 +55,7 @@ pub fn navigate_key(app: &mut App, ev: &KeyEvent, sel: usize) -> bool {
             }
             Key::Named(NamedKey::Enter) => app.ux.nav.typing = false,
             Key::Named(NamedKey::Backspace) => {
-                f.pop();
+                crate::draw::pop_grapheme(f);
             }
             Key::Char(c) if !ev.mods.ctrl() && !ev.mods.alt() => f.push(c),
             _ => {}

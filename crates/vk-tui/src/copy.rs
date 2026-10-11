@@ -396,7 +396,7 @@ impl CopyMode {
                     }
                 }
                 Key::Named(NamedKey::Backspace) => {
-                    q.pop();
+                    crate::draw::pop_grapheme(&mut q);
                     self.search_input = Some((q, back));
                 }
                 Key::Char(c) if !ev.mods.ctrl() => {
@@ -640,6 +640,18 @@ impl CopyMode {
         }
     }
 
+    /// A paste: into the search box when one is open (one line). False when copy mode has no
+    /// text field, so the caller can say so.
+    pub fn paste(&mut self, text: &str) -> bool {
+        match &mut self.search_input {
+            Some((q, _)) => {
+                q.push_str(&text.replace(['\n', '\r'], " "));
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Put the cursor on row `y` (index into the loaded rows), column `x`.
     pub fn jump(&mut self, y: usize, x: u16) {
         self.want_top = false;
@@ -677,42 +689,78 @@ impl CopyMode {
         };
     }
 
+    /// Move by words along the cursor row, in cell columns. A wide character takes two
+    /// columns (the second one is empty) and a combining mark stays with its base, so the
+    /// cursor never lands inside one.
     fn word(&mut self, fwd: bool) {
-        let chars: Vec<char> = self.text_of(self.cy).chars().collect();
+        let cells = self.lines.get(self.cy).map(row_chars).unwrap_or_default();
+        // A blank cell is a space; the empty second half of a wide character is not.
+        let blank = |x: usize| {
+            cells
+                .get(x)
+                .is_some_and(|c| !c.is_empty() && c.chars().all(char::is_whitespace))
+        };
         let mut x = self.cx as usize;
         if fwd {
-            while x < chars.len() && !chars[x].is_whitespace() {
+            while x < cells.len() && !blank(x) {
                 x += 1;
             }
-            while x < chars.len() && chars[x].is_whitespace() {
+            while x < cells.len() && blank(x) {
                 x += 1;
             }
-            if x >= chars.len() && self.cy + 1 < self.lines.len() {
+            if x >= cells.len() && self.cy + 1 < self.lines.len() {
                 self.cy += 1;
                 x = 0;
             }
         } else {
             x = x.saturating_sub(1);
-            while x > 0 && chars.get(x).is_some_and(|c| c.is_whitespace()) {
+            while x > 0 && blank(x) {
                 x -= 1;
             }
-            while x > 0 && chars.get(x - 1).is_some_and(|c| !c.is_whitespace()) {
+            while x > 0 && cells.get(x - 1).is_some() && !blank(x - 1) {
                 x -= 1;
             }
         }
         self.cx = x as u16;
     }
 
+    /// The cell column where `needle` first occurs in row `y`. `lower`: compare in lower
+    /// case (`needle` is already lower case). Columns count cells, not characters, so a
+    /// wide character before the match moves it two columns right.
+    fn match_col(&self, y: usize, needle: &str, lower: bool) -> Option<u16> {
+        let cells = self.lines.get(y).map(row_chars)?;
+        let mut hay = String::new();
+        // Where each cell starts in `hay`.
+        let mut starts = Vec::with_capacity(cells.len());
+        for c in &cells {
+            starts.push(hay.len());
+            if lower {
+                hay.push_str(&c.to_lowercase());
+            } else {
+                hay.push_str(c);
+            }
+        }
+        let byte = hay.find(needle)?;
+        // The last non-empty cell that starts at or before the match: the match may start in
+        // the middle of a grapheme (a base letter matches, its accent does not).
+        (0..cells.len())
+            .rev()
+            .find(|&i| starts[i] <= byte && !cells[i].is_empty())
+            .map(|i| i as u16)
+    }
+
+    /// Where the lower-cased `q` first occurs in loaded row `y` (cell column), for jumps.
+    pub fn match_col_lower(&self, y: usize, q: &str) -> Option<u16> {
+        self.match_col(y, &q.to_lowercase(), true)
+    }
+
     fn find(&mut self, q: &str, back: bool) -> bool {
         let smart_lower = !q.chars().any(|c| c.is_uppercase());
-        let norm = |s: &str| {
-            if smart_lower {
-                s.to_lowercase()
-            } else {
-                s.to_string()
-            }
+        let needle = if smart_lower {
+            q.to_lowercase()
+        } else {
+            q.to_string()
         };
-        let needle = norm(q);
         let n = self.lines.len();
         for step in 1..=n {
             let y = if back {
@@ -720,10 +768,9 @@ impl CopyMode {
             } else {
                 (self.cy + step) % n
             };
-            let hay = norm(&self.text_of(y));
-            if let Some(byte) = hay.find(&needle) {
+            if let Some(col) = self.match_col(y, &needle, smart_lower) {
                 self.cy = y;
-                self.cx = hay[..byte].chars().count() as u16;
+                self.cx = col;
                 self.clamp();
                 return true;
             }
@@ -919,5 +966,30 @@ mod tests {
             cm.key(&KeyEvent::new(Key::Char('c'), Mods::CTRL)),
             Outcome::Exit
         ));
+    }
+
+    #[test]
+    fn find_and_words_count_cells_not_characters() {
+        // Two wide characters take four cells: "foo" starts in column 5.
+        let mut cm = CopyMode::new("p", vec![row("日本 foo bar", false)], 20, Cursor::default());
+        cm.height.set(3);
+        assert!(cm.find_text("foo", false));
+        assert_eq!(cm.cx, 5);
+        cm.cx = 0;
+        cm.word(true);
+        assert_eq!(
+            cm.cx, 5,
+            "a word jump lands on a character, not inside a wide one"
+        );
+        cm.word(true);
+        assert_eq!(cm.cx, 9);
+        cm.word(false);
+        assert_eq!(cm.cx, 5);
+        // A combining accent stays in its base character's cell.
+        let mut cm = CopyMode::new("p", vec![row("e\u{301}xy", false)], 20, Cursor::default());
+        cm.height.set(3);
+        assert!(cm.find_text("x", false));
+        assert_eq!(cm.cx, 1);
+        assert_eq!(cm.match_col_lower(0, "Y"), Some(2));
     }
 }

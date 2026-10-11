@@ -278,6 +278,37 @@ mod tests {
     }
 
     #[test]
+    fn an_unused_prefix_menu_hides_again() {
+        let (mut app, _rxs) = idle_app();
+        let at = Instant::now();
+        app.mode = Mode::Prefix(crate::app::PrefixState {
+            since: at,
+            seq: vec![],
+            menu: true,
+        });
+        let d = app.deadlines(at);
+        assert_eq!(d.names(), vec!["prefix.menu_hide"]);
+        assert_eq!(
+            d.get("prefix.menu_hide"),
+            Some(at + crate::app::PREFIX_MENU_IDLE)
+        );
+        app.on_tick();
+        assert!(
+            matches!(app.mode, Mode::Prefix(_)),
+            "the menu waits at first"
+        );
+        let idle = crate::app::PREFIX_MENU_IDLE + Duration::from_millis(50);
+        if let Mode::Prefix(p) = &mut app.mode {
+            p.since = Instant::now() - idle;
+        }
+        app.on_tick();
+        assert!(
+            matches!(app.mode, Mode::Normal),
+            "and goes away when unused"
+        );
+    }
+
+    #[test]
     fn confirm_overlay_arms_countdown_and_expiry() {
         let (mut app, _rxs) = idle_app();
         let now = Instant::now();

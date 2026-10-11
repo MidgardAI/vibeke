@@ -9,8 +9,9 @@
 //! `toml_edit` so the user's comments and keys survive.
 //!
 //! The view opens by itself only when `onboarding = true` or no config file exists, on a client
-//! of the local machine; `esc` closes it for this run (it comes back next time until the config
-//! is written), `:setup` reopens it any time.
+//! of the local machine. `esc` closes it and writes a `setup-dismissed` marker next to the
+//! config file, so it does not come back by itself; **Setup** in the palette reopens it any time.
+//! The `settings` action does not reopen it: it shows where the config file is.
 
 use crate::app::{App, Mode, Pending, Popup};
 use crate::screen::{Grid, HostCaps};
@@ -40,7 +41,7 @@ pub fn terminal_checks(caps: &HostCaps, kitty_keyboard: bool, osc52: bool) -> Ve
             detail: if kitty_keyboard {
                 "kitty keyboard protocol (ctrl+enter, ctrl+shift+p work)".into()
             } else {
-                "legacy keys: use alt+enter where ctrl+enter is documented".into()
+                "legacy keys: ctrl+enter and ctrl+shift+p do not work here (use the palette)".into()
             },
         },
         Check {
@@ -130,6 +131,12 @@ pub struct HarnessRow {
 }
 
 impl HarnessRow {
+    /// Harnesses whose integration is not verified end to end: shown as experimental and never
+    /// selected by default.
+    pub fn experimental(&self) -> bool {
+        is_experimental(self.harness)
+    }
+
     pub fn state_text(&self) -> &'static str {
         match self.state {
             InstallState::Installed => "installed",
@@ -137,6 +144,11 @@ impl HarnessRow {
             InstallState::NotInstalled => "not installed",
         }
     }
+}
+
+/// OpenCode and Gemini CLI integrations are not verified against the real tools.
+pub fn is_experimental(h: Harness) -> bool {
+    matches!(h, Harness::OpenCode | Harness::Gemini)
 }
 
 /// The binary a harness runs as.
@@ -161,7 +173,8 @@ pub fn vibeke_bin() -> PathBuf {
 }
 
 /// Every known harness: binary on `PATH`, integration state in `dirs`, and the install plan's
-/// diff. Harnesses found on `PATH` without a complete integration start selected.
+/// diff. Verified harnesses (not [`is_experimental`]) found on `PATH` without a complete
+/// integration start selected.
 pub fn detect_harnesses(dirs: &Dirs, bin: &Path) -> Vec<HarnessRow> {
     Harness::ALL
         .iter()
@@ -189,6 +202,7 @@ pub fn detect_harnesses(dirs: &Dirs, bin: &Path) -> Vec<HarnessRow> {
             HarnessRow {
                 harness: h,
                 selected: binary.is_some()
+                    && !is_experimental(h)
                     && (state != InstallState::Installed || stale)
                     && !files.is_empty(),
                 binary,
@@ -231,8 +245,31 @@ pub struct Choices {
     pub herdr_toml: Option<String>,
 }
 
-/// Built-in chrome themes offered in step 5.
-pub const THEMES: &[&str] = &["catppuccin", "catppuccin-latte", "terminal"];
+/// Chrome themes offered in step 5. `auto` follows the host's light or dark appearance and
+/// writes no `theme.name`; every other entry is written as `theme.name` and always wins.
+pub const THEMES: &[&str] = &[
+    "auto",
+    "catppuccin",
+    "catppuccin-latte",
+    "tokyo-night",
+    "dracula",
+    "nord",
+    "gruvbox",
+    "terminal",
+];
+
+/// The theme to preview for an entry of [`THEMES`].
+fn preview_theme(app: &App, choice: &str) -> crate::theme::Theme {
+    if choice == "auto" {
+        let local = app.parity.appearance.detected.map(|d| d.dark);
+        let mut cfg = app.config.clone();
+        cfg.theme.name.clear();
+        let name = crate::appearance::theme_name(&cfg, local, &app.m().model.appearance);
+        crate::theme::Theme::named(&name)
+    } else {
+        crate::theme::Theme::named(choice)
+    }
+}
 
 /// The config text to write: `existing` (or the imported Herdr keys) with the non-default
 /// choices set and `onboarding = false`. Comments and other keys of `existing` are kept.
@@ -267,7 +304,9 @@ pub fn starter_config(existing: Option<&str>, c: &Choices) -> Result<String, Str
         );
     }
     if let Some(t) = &c.theme {
-        set("theme", "name", t, &def.theme.name);
+        // `auto` is "no name": the loader follows `auto_switch`.
+        let name = if t == "auto" { "" } else { t.as_str() };
+        set("theme", "name", name, &def.theme.name);
     }
     if let Some(m) = &c.theme_mode {
         set("theme", "mode", m, def.theme.mode.as_str());
@@ -344,7 +383,11 @@ impl Flow {
             confirm_install: false,
             choices: Choices {
                 notifications: Some(app.config.notifications.channel.as_str().to_string()),
-                theme: Some(app.config.theme.name.clone()),
+                theme: Some(if app.config.theme.name.is_empty() {
+                    "auto".to_string()
+                } else {
+                    app.config.theme.name.clone()
+                }),
                 theme_mode: Some(app.config.theme.mode.as_str().to_string()),
                 herdr_toml: None,
             },
@@ -402,9 +445,26 @@ impl Flow {
 pub fn maybe_open(app: &mut App) {
     let path = vk_config::config_path();
     let local = app.machines.first().is_some_and(|m| m.local);
-    if local && (app.config.onboarding || !path.exists()) {
+    if local && (app.config.onboarding || !path.exists()) && !dismissed(&path) {
         open_with(app, Dirs::from_env(), path);
     }
+}
+
+/// The marker `esc` leaves so the first-run setup does not open again by itself.
+fn dismissed_marker(config_path: &Path) -> PathBuf {
+    config_path.with_file_name("setup-dismissed")
+}
+
+fn dismissed(config_path: &Path) -> bool {
+    dismissed_marker(config_path).exists()
+}
+
+fn mark_dismissed(config_path: &Path) {
+    let marker = dismissed_marker(config_path);
+    if let Some(dir) = marker.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(marker, b"setup dismissed\n");
 }
 
 pub fn open_with(app: &mut App, dirs: Dirs, config_path: PathBuf) {
@@ -413,11 +473,26 @@ pub fn open_with(app: &mut App, dirs: Dirs, config_path: PathBuf) {
 }
 
 pub fn action(app: &mut App, action: &str) -> bool {
-    if matches!(action, "setup" | "settings" | "onboarding") {
-        open_with(app, Dirs::from_env(), vk_config::config_path());
-        return true;
+    match action {
+        "setup" | "onboarding" => {
+            open_with(app, Dirs::from_env(), vk_config::config_path());
+            true
+        }
+        // There is no settings screen. Point at the file and the way to apply an edit.
+        "settings" => {
+            let reload = app
+                .keymap
+                .how_to("reload_config")
+                .map(|k| format!(" ({k})"))
+                .unwrap_or_default();
+            app.toast(format!(
+                "settings are in {} · edit it, then run Reload config{reload} · Setup redoes the first-run steps",
+                vk_config::config_path().display()
+            ));
+            true
+        }
+        _ => false,
     }
-    false
 }
 
 fn keep(app: &mut App) {
@@ -436,9 +511,11 @@ pub fn key(app: &mut App, ev: KeyEvent) {
     if !f.confirm_install && f.diff.is_none() {
         match k {
             Key::Named(NamedKey::Escape) => {
-                // Closed for this run; `:setup` reopens it.
+                // Closed for good unless asked for: the marker keeps it from coming back by
+                // itself. **Setup** in the palette reopens it.
                 if f.written.is_none() {
-                    app.toast("setup skipped for now — :setup any time");
+                    mark_dismissed(&f.config_path);
+                    app.toast("setup skipped — run Setup from the command palette any time");
                 }
                 return;
             }
@@ -516,11 +593,11 @@ pub fn key(app: &mut App, ev: KeyEvent) {
         Step::Theme => match k {
             Key::Char('j') | Key::Named(NamedKey::Down) => {
                 f.sel = (f.sel + 1).min(THEMES.len() - 1);
-                app.theme = crate::theme::Theme::named(THEMES[f.sel]);
+                app.theme = preview_theme(app, THEMES[f.sel]);
             }
             Key::Char('k') | Key::Named(NamedKey::Up) => {
                 f.sel = f.sel.saturating_sub(1);
-                app.theme = crate::theme::Theme::named(THEMES[f.sel]);
+                app.theme = preview_theme(app, THEMES[f.sel]);
             }
             Key::Char('a') => {
                 let auto = f.choices.theme_mode.as_deref() == Some("auto");
@@ -528,7 +605,7 @@ pub fn key(app: &mut App, ev: KeyEvent) {
             }
             Key::Named(NamedKey::Enter) | Key::Char(' ') => {
                 f.choices.theme = Some(THEMES[f.sel].into());
-                app.theme = crate::theme::Theme::named(THEMES[f.sel]);
+                app.theme = preview_theme(app, THEMES[f.sel]);
                 if k == Key::Named(NamedKey::Enter) {
                     f.go(1);
                 }
@@ -704,8 +781,13 @@ pub fn draw(app: &App, g: &mut Grid) {
                     .as_ref()
                     .map(|b| b.display().to_string())
                     .unwrap_or_else(|| "not on PATH".into());
+                let exp = if r.experimental() {
+                    " (experimental)"
+                } else {
+                    ""
+                };
                 let line = format!(
-                    "{mark} {:<9} {:<14} {}",
+                    "{mark} {:<9} {:<14} {}{exp}",
                     r.harness.id(),
                     r.state_text(),
                     found
@@ -798,7 +880,7 @@ pub fn draw(app: &App, g: &mut Grid) {
             a.line("", t.text());
             a.line(
                 &format!(
-                    "[a] follow the terminal's light/dark: {}",
+                    "[a] panes and the auto theme follow the terminal's light/dark: {}",
                     if auto { "on" } else { "off" }
                 ),
                 t.text(),

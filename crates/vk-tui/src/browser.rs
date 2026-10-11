@@ -50,7 +50,7 @@ pub const DEFAULT_BROWSER_KEYS: &[(&str, &str)] = &[
     ("browser_hard_reload", "prefix+,"),
     ("browser_screenshot", "prefix+shift+s"),
     ("browser_window", "prefix+o"),
-    ("browser_console", "prefix+alt+c"),
+    ("browser_console", "prefix+m"),
     ("browser_take_over", "prefix+t"),
     ("browser_paste_image", "prefix+shift+v"),
 ];

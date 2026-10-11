@@ -498,8 +498,8 @@ fn pair_phone_opens_the_scope_picker() {
 #[test]
 fn the_action_is_bound_and_described() {
     let b = vk_config::default_bindings();
-    // `prefix+alt+d` opens the Connections view; `devices` is the palette's way to this tab.
-    assert_eq!(b["connections"], "prefix+alt+d");
+    // `prefix+d` opens the Connections view; `devices` is the palette's way to this tab.
+    assert_eq!(b["connections"], "prefix+d");
     assert!(crate::nav::describe("devices").starts_with("Devices"));
     assert_eq!(crate::nav::describe("pair_phone"), "Pair a phone");
 }

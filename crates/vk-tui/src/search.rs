@@ -7,7 +7,7 @@
 //! * **Archive paging.** Copy mode pages in-memory rows with `FetchHistory`; past the start of
 //!   memory (`pane.read … mem_first`) it pages the archive with `pane.read {to, lines}` and stops
 //!   at the archive's first row instead of paging blank rows.
-//! * **Global search** (`search_global`, `prefix+alt+/`): a popup over `search.query` on every
+//! * **Global search** (`search_global`, `prefix+shift+q`): a popup over `search.query` on every
 //!   connected machine; `enter` searches, `enter` again on a hit focuses the pane and opens copy
 //!   mode on the hit's absolute line.
 //!
@@ -198,11 +198,7 @@ fn goal_step(cm: &mut CopyMode) -> Next {
             let col = goal
                 .q
                 .as_deref()
-                .and_then(|q| {
-                    let hay = cm.row_text(idx).to_lowercase();
-                    hay.find(&q.to_lowercase())
-                        .map(|b| hay[..b].chars().count() as u16)
-                })
+                .and_then(|q| cm.match_col_lower(idx, q))
                 .unwrap_or(0);
             cm.jump(idx, col);
             cm.set_message(format!("line {} (history)", goal.line));
@@ -219,7 +215,7 @@ fn goal_step(cm: &mut CopyMode) -> Next {
     if top - goal.line > MAX_LOAD || cm.archive.rows as u64 >= MAX_LOAD {
         cm.archive.goal = None;
         cm.set_message(format!(
-            "match is {} lines back — too far to load here (prefix+alt+/ or `vibeke search`)",
+            "match is {} lines back — too far to load here (prefix+shift+q or `vibeke search`)",
             top - goal.line
         ));
         return Next::None;
@@ -541,7 +537,7 @@ pub fn popup_key(app: &mut App, ev: KeyEvent, mut s: Box<GlobalSearch>) {
         Key::Named(NamedKey::Up) => s.sel = s.sel.saturating_sub(1),
         Key::Char('p' | 'k') if ev.mods.ctrl() => s.sel = s.sel.saturating_sub(1),
         Key::Named(NamedKey::Backspace) => {
-            s.input.pop();
+            crate::draw::pop_grapheme(&mut s.input);
         }
         Key::Char('u') if ev.mods.ctrl() => s.input.clear(),
         Key::Char(c) if !ev.mods.ctrl() && !ev.mods.alt() => s.input.push(c),
@@ -603,10 +599,7 @@ pub fn draw_popup(app: &App, g: &mut Grid, s: &GlobalSearch) -> Option<(u16, u16
         ));
         let lw = (UnicodeWidthStr::width(label.as_str()) as u16).min(inner_w / 2);
         let dim = if i == s.sel {
-            Style {
-                bg: t.selection,
-                ..t.dim()
-            }
+            t.with_sel(t.dim())
         } else {
             t.dim()
         };

@@ -15,6 +15,10 @@
 //!   marks the cells of hidden, moved or removed images for a repaint ([`App::invalidate`]).
 //! - **None** (also inside tmux, §3.5): the view shows a text hint ([`hint`]).
 //!
+//! iTerm2 sends the image again whenever it moves. The PNG is therefore scaled once to the size
+//! it is shown at and base64-encoded once, on a worker thread ([`crate::jobs`]); the result
+//! is cached in bytes ([`Payload`]). Until it is ready the view shows its blank cells.
+//!
 //! Image bytes (PNG) live in a small cache keyed by [`key`]: `<machine>:<id>` for an image read
 //! from this machine's disk, `<machine>:<id>@<px>` for one fetched with `screenshot.get
 //! {inline, thumb: px}` (the transfer stays the size of the placement).
@@ -35,6 +39,24 @@ pub const ID_SPAN: u32 = 256;
 pub const MAX_IMAGE: usize = 16 << 20;
 /// Cached images (PNG bytes).
 const CACHE: usize = 16;
+/// Cached image bytes in all: images that are not on screen go first when it is exceeded.
+const CACHE_BYTES: usize = 64 << 20;
+/// Encoded iTerm2 payloads (base64 text) kept in all.
+const PAYLOAD_BYTES: usize = 48 << 20;
+/// A payload is scaled to a width that is a multiple of this many pixels, so a small layout
+/// change does not scale again.
+const PAYLOAD_STEP: u32 = 128;
+
+/// An image scaled to the size it is shown at and base64-encoded for iTerm2 (OSC 1337).
+#[derive(Debug, Clone)]
+pub struct Payload {
+    pub key: String,
+    /// The width in pixels it was made for.
+    pub px: u32,
+    /// Bytes of the PNG behind `b64`.
+    pub len: usize,
+    pub b64: String,
+}
 
 /// Where one image goes this frame.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,6 +94,12 @@ pub struct State {
     iterm: HashMap<String, (String, Rect)>,
     /// iTerm2: images to send after this frame is written.
     queued: Vec<(String, Rect)>,
+    /// iTerm2: scaled and encoded images, oldest first.
+    payloads: Vec<Payload>,
+    /// iTerm2: keys being prepared on a worker thread.
+    preparing: HashSet<String>,
+    /// iTerm2: placements waiting for their payload.
+    waiting: Vec<(String, Rect)>,
     /// Keys every view placed on the last frame, covered or not (never evicted).
     placed: HashSet<String>,
     /// Directory for `t=t` temp files (`None`: `$TMPDIR/vibeke-gfx-<uid>`; tests point it at a
@@ -101,17 +129,53 @@ impl State {
         self.problems.remove(&key);
         self.images.retain(|(k, _)| *k != key);
         self.images.push((key, data));
-        if self.images.len() > CACHE {
-            let shown: HashSet<&str> = self
-                .kitty
-                .values()
-                .map(|(k, _, _)| k.as_str())
-                .chain(self.iterm.values().map(|(k, _)| k.as_str()))
-                .chain(self.placed.iter().map(String::as_str))
-                .collect();
+        // Bound the cache by count and by bytes. The newest image and everything on screen
+        // stay; the oldest of the rest go first.
+        loop {
+            let bytes: usize = self.images.iter().map(|(_, d)| d.len()).sum();
+            if self.images.len() <= CACHE && bytes <= CACHE_BYTES {
+                break;
+            }
+            let shown = self.shown_keys();
             let last = self.images.len() - 1;
-            if let Some(i) = (0..last).find(|i| !shown.contains(self.images[*i].0.as_str())) {
-                self.images.remove(i);
+            match (0..last).find(|i| !shown.contains(self.images[*i].0.as_str())) {
+                Some(i) => {
+                    self.images.remove(i);
+                }
+                None => break,
+            }
+        }
+    }
+
+    /// Keys a view places or the terminal holds right now.
+    fn shown_keys(&self) -> HashSet<&str> {
+        self.kitty
+            .values()
+            .map(|(k, _, _)| k.as_str())
+            .chain(self.iterm.values().map(|(k, _)| k.as_str()))
+            .chain(self.placed.iter().map(String::as_str))
+            .chain(self.waiting.iter().map(|(k, _)| k.as_str()))
+            .collect()
+    }
+
+    /// The iTerm2 payload of `key` made for at least `px` pixels of width.
+    fn payload(&self, key: &str, px: u32) -> Option<&Payload> {
+        self.payloads.iter().find(|p| p.key == key && p.px >= px)
+    }
+
+    fn put_payload(&mut self, p: Payload) {
+        self.payloads.retain(|o| o.key != p.key);
+        self.payloads.push(p);
+        while self.payloads.iter().map(|p| p.b64.len()).sum::<usize>() > PAYLOAD_BYTES
+            && self.payloads.len() > 1
+        {
+            let shown = self.shown_keys();
+            let last = self.payloads.len() - 1;
+            match (0..last).find(|i| !shown.contains(self.payloads[*i].key.as_str())) {
+                Some(i) => {
+                    self.payloads.remove(i);
+                }
+                None => break,
             }
         }
     }
@@ -124,6 +188,7 @@ impl State {
         let thumb = format!("thumb:{local}");
         let gone = |k: &String| *k == local || *k == thumb || k.starts_with(&remote);
         self.images.retain(|(k, _)| !gone(k));
+        self.payloads.retain(|p| !gone(&p.key));
         self.problems.retain(|k, _| !gone(k));
     }
 
@@ -526,26 +591,138 @@ pub fn after_compose(app: &mut App, grid: &Grid) {
     app.imgview.iterm = now;
 }
 
-/// iTerm2: send the queued images (after the frame and the browser panes' frames).
+/// iTerm2: send the queued images (after the frame and the browser panes' frames). An image
+/// whose scaled payload is not ready yet waits; its placement is sent when the worker is done.
 pub fn after_write(app: &mut App, out: &mut Vec<u8>) {
-    for (key, r) in std::mem::take(&mut app.imgview.queued) {
-        if let Some(png) = app.imgview.image(&key) {
-            out.extend_from_slice(inline_image(png, r).as_bytes());
+    // A payload that is ready at once (tests, the browser client) queues its placement again
+    // while this runs, so go round until nothing new comes up.
+    for _ in 0..4 {
+        let batch = std::mem::take(&mut app.imgview.queued);
+        if batch.is_empty() {
+            break;
+        }
+        for (key, r) in batch {
+            if app.imgview.image(&key).is_none() {
+                continue;
+            }
+            let px = want_px(app, r);
+            if let Some(p) = app.imgview.payload(&key, px) {
+                out.extend_from_slice(inline_payload(p, r).as_bytes());
+            } else {
+                app.imgview.waiting.push((key.clone(), r));
+                prepare(app, key, px);
+            }
         }
     }
 }
 
+/// The width in pixels a placement of `r` is shown at, rounded up to [`PAYLOAD_STEP`].
+fn want_px(app: &App, r: Rect) -> u32 {
+    let (cw, _, _) = crate::browser::cell_geom(app);
+    (r.w as u32 * cw as u32)
+        .next_multiple_of(PAYLOAD_STEP)
+        .max(PAYLOAD_STEP)
+}
+
+/// Scale and encode `key` for `px` pixels of width on a worker thread, then send the
+/// placements that waited for it (if they still are where they were).
+fn prepare(app: &mut App, key: String, px: u32) {
+    if !app.imgview.preparing.insert(key.clone()) {
+        return;
+    }
+    let Some(png) = app.imgview.image(&key).map(<[u8]>::to_vec) else {
+        app.imgview.preparing.remove(&key);
+        return;
+    };
+    let k = key.clone();
+    crate::jobs::spawn(
+        app,
+        move || make_payload(&k, &png, px),
+        move |app, payload| {
+            app.imgview.preparing.remove(&key);
+            app.imgview.put_payload(payload);
+            let waiting = std::mem::take(&mut app.imgview.waiting);
+            for (k, r) in waiting {
+                if k != key {
+                    app.imgview.waiting.push((k, r));
+                } else if app
+                    .imgview
+                    .iterm
+                    .values()
+                    .any(|(sk, sr)| *sk == k && *sr == r)
+                {
+                    app.imgview.queued.push((k, r));
+                }
+            }
+            app.dirty = true;
+        },
+    );
+}
+
+/// `png` scaled down to at most `px` pixels wide (never up) and base64-encoded. An image that
+/// cannot be decoded, or that is small enough already, is sent as it is.
+fn make_payload(key: &str, png: &[u8], px: u32) -> Payload {
+    let small = scale_down(png, px);
+    let bytes: &[u8] = small.as_deref().unwrap_or(png);
+    Payload {
+        key: key.to_string(),
+        px,
+        len: bytes.len(),
+        b64: base64::engine::general_purpose::STANDARD.encode(bytes),
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[allow(clippy::field_reassign_with_default)]
+fn scale_down(png: &[u8], px: u32) -> Option<Vec<u8>> {
+    let (w, _) = png_size(png)?;
+    if w <= px {
+        return None;
+    }
+    let mut limits = image::Limits::default();
+    // A decompression bomb is refused: such an image goes out unscaled.
+    limits.max_alloc = Some(256 << 20);
+    let mut reader =
+        image::ImageReader::with_format(std::io::Cursor::new(png), image::ImageFormat::Png);
+    reader.limits(limits);
+    let img = reader.decode().ok()?;
+    let h = (img.height() as u64 * px as u64 / img.width().max(1) as u64).max(1) as u32;
+    let small = img.resize(px, h, image::imageops::FilterType::Triangle);
+    let mut out = Vec::new();
+    small
+        .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+        .ok()?;
+    // Never send something bigger than what was there.
+    (out.len() < png.len()).then_some(out)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn scale_down(_png: &[u8], _px: u32) -> Option<Vec<u8>> {
+    None
+}
+
 /// OSC 1337 inline image over `r`, aspect kept, cursor left where it was.
-pub fn inline_image(png: &[u8], r: Rect) -> String {
-    let b64 = base64::engine::general_purpose::STANDARD.encode(png);
+fn inline_payload(p: &Payload, r: Rect) -> String {
     format!(
-        "\x1b7\x1b[{};{}H\x1b]1337;File=inline=1;size={};width={};height={};preserveAspectRatio=1;doNotMoveCursor=1:{b64}\x07\x1b8",
+        "\x1b7\x1b[{};{}H\x1b]1337;File=inline=1;size={};width={};height={};preserveAspectRatio=1;doNotMoveCursor=1:{}\x07\x1b8",
         r.y + 1,
         r.x + 1,
-        png.len(),
+        p.len,
         r.w,
-        r.h
+        r.h,
+        p.b64
     )
+}
+
+/// OSC 1337 inline image over `r` for a PNG as it is (tests and tools).
+pub fn inline_image(png: &[u8], r: Rect) -> String {
+    let p = Payload {
+        key: String::new(),
+        px: 0,
+        len: png.len(),
+        b64: base64::engine::general_purpose::STANDARD.encode(png),
+    };
+    inline_payload(&p, r)
 }
 
 #[cfg(test)]

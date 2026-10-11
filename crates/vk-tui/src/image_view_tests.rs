@@ -351,3 +351,51 @@ fn a_covered_image_stays_cached_and_shows_again_when_uncovered() {
     assert!(app.imgview.image("0:S1").is_some(), "still placed, so kept");
     assert_eq!(osc1337(&app.draw_bytes()), 1, "shown again when uncovered");
 }
+
+#[test]
+fn the_cache_is_bounded_in_bytes_and_the_newest_image_stays() {
+    let mut st = State::default();
+    let big = vec![0u8; CACHE_BYTES / 2 + 1];
+    st.put("0:A".into(), big.clone());
+    st.put("0:B".into(), big.clone());
+    assert!(st.image("0:A").is_none(), "the oldest went to make room");
+    assert!(st.image("0:B").is_some());
+    // One image over the whole budget is still kept: it is the one being asked for.
+    st.put("0:C".into(), vec![0u8; CACHE_BYTES + 1]);
+    assert!(st.image("0:C").is_some());
+}
+
+fn big_png(w: u32, h: u32) -> Vec<u8> {
+    let mut out = Vec::new();
+    // Noise-free but not trivially small once scaled: a gradient.
+    let img = image::RgbaImage::from_fn(w, h, |x, y| {
+        image::Rgba([(x % 251) as u8, (y % 241) as u8, ((x + y) % 239) as u8, 255])
+    });
+    img.write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+        .unwrap();
+    out
+}
+
+#[test]
+fn an_iterm_payload_is_scaled_to_the_display_width_and_reused() {
+    let png = big_png(900, 450);
+    let p = make_payload("0:S1", &png, 256);
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(&p.b64)
+        .unwrap();
+    assert_eq!(bytes.len(), p.len);
+    assert_eq!(png_size(&bytes), Some((256, 128)));
+    assert!(p.len < png.len());
+    // A small image is sent as it is.
+    let small = big_png(64, 32);
+    let q = make_payload("0:S2", &small, 256);
+    assert_eq!(q.len, small.len());
+    // A payload made for 256 px serves a request for 128, not one for 512.
+    let mut st = State::default();
+    st.put_payload(p);
+    assert!(st.payload("0:S1", 128).is_some());
+    assert!(st.payload("0:S1", 512).is_none());
+    // Garbage that is not a PNG goes out unchanged.
+    let junk = make_payload("0:J", b"not a png at all", 128);
+    assert_eq!(junk.len, 16);
+}

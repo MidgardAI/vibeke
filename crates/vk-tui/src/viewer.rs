@@ -12,7 +12,7 @@
 //!   closes when none is left.
 //! - `←`/`→` step through every machine's recent images by time, the unseen ones first when it
 //!   was opened for them. The order is fixed when the viewer opens (deletions leave it).
-//! - Opened by `open_images` (`prefix+alt+i`, palette **View new images**: the newest unseen
+//! - Opened by `open_images` (`prefix+shift+b`, palette **View new images**: the newest unseen
 //!   image, else the gallery), sidebar image rows and 📷N badges.
 
 use crate::app::{App, Mode, Pending, Popup};

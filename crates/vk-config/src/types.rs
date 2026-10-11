@@ -145,6 +145,8 @@ pub struct Theme {
     /// `auto` follows the host terminal's light/dark appearance reported by clients;
     /// `light`/`dark` force it (theme propagation, 03 §10.4).
     pub mode: ThemeMode,
+    /// A theme to use always. Empty (the default) follows `auto_switch`: `dark_name` on a dark
+    /// host, `light_name` on a light one.
     pub name: String,
     pub auto_switch: bool,
     pub dark_name: String,
@@ -158,12 +160,27 @@ impl Default for Theme {
     fn default() -> Self {
         Theme {
             mode: ThemeMode::Auto,
-            name: s("catppuccin"),
+            name: String::new(),
             auto_switch: true,
             dark_name: s("catppuccin"),
             light_name: s("catppuccin-latte"),
             custom: BTreeMap::new(),
             pane: BTreeMap::new(),
+        }
+    }
+}
+
+impl Theme {
+    /// The chrome theme to use. A `name` the user set always wins. Without one,
+    /// `auto_switch` picks `dark_name` or `light_name` by the host's appearance (`dark`;
+    /// `None` when it is not known yet), else `dark_name`.
+    pub fn effective_name(&self, dark: Option<bool>) -> &str {
+        if !self.name.is_empty() {
+            return &self.name;
+        }
+        match dark {
+            Some(false) if self.auto_switch => &self.light_name,
+            _ => &self.dark_name,
         }
     }
 }
@@ -285,7 +302,7 @@ pub struct Keys {
 impl Default for Keys {
     fn default() -> Self {
         Keys {
-            prefix: s("ctrl+b"),
+            prefix: s("ctrl+q"),
             prefix_timeout_ms: 1500,
             prefix_passthrough: true,
             prefix_menu: true,

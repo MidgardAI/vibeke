@@ -382,6 +382,33 @@ fn detect_notifications(env: &EnvHints, xt: &str) -> Notifications {
     }
 }
 
+/// A terminal that offers only the 16 ANSI colours: no truecolor, and a `TERM` that does not
+/// name 256 colours (`linux`, `xterm`, `vt100`, `screen`). An unknown or empty `TERM`
+/// keeps full colour.
+pub fn detect_ansi16(env: &EnvHints, truecolor: bool) -> bool {
+    let ct = env.colorterm.to_ascii_lowercase();
+    if truecolor || ct.contains("truecolor") || ct.contains("24bit") || ct.contains("256") {
+        return false;
+    }
+    let term = env.term.to_ascii_lowercase();
+    if term.is_empty() || term.contains("256") || term.contains("direct") || term == "dumb" {
+        return false;
+    }
+    matches!(
+        term.as_str(),
+        "linux"
+            | "xterm"
+            | "vt100"
+            | "vt102"
+            | "vt220"
+            | "screen"
+            | "ansi"
+            | "cons25"
+            | "rxvt"
+            | "tmux"
+    ) && env.term_program.is_empty()
+}
+
 fn detect_truecolor(env: &EnvHints, xt: &str) -> bool {
     let ct = env.colorterm.to_ascii_lowercase();
     if ct == "truecolor" || ct == "24bit" {
@@ -439,6 +466,20 @@ fn detect_osc52(env: &EnvHints, xt: &str) -> Osc52 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_old_terminals_are_16_color() {
+        assert!(detect_ansi16(&env("linux", "", ""), false));
+        assert!(detect_ansi16(&env("xterm", "", ""), false));
+        assert!(!detect_ansi16(&env("xterm-256color", "", ""), false));
+        assert!(!detect_ansi16(&env("xterm", "", "truecolor"), false));
+        assert!(!detect_ansi16(&env("linux", "", ""), true));
+        assert!(
+            !detect_ansi16(&env("", "", ""), false),
+            "unknown keeps full color"
+        );
+        assert!(!detect_ansi16(&env("xterm", "iTerm.app", ""), false));
+    }
 
     fn env(term: &str, prog: &str, ct: &str) -> EnvHints {
         EnvHints {

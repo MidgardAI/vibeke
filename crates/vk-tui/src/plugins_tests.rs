@@ -216,11 +216,11 @@ fn popup_is_modal_for_keys() {
     app.on_key(KeyEvent::named(NamedKey::Escape));
     assert!(commands(&mut rx[0]).is_empty());
     // Prefix actions are refused with a hint; prefix+x closes the popup.
-    app.on_key(KeyEvent::new(Key::Char('b'), Mods::CTRL));
+    app.on_key(KeyEvent::new(Key::Char('q'), Mods::CTRL));
     app.on_key(KeyEvent::ch('c'));
     assert!(commands(&mut rx[0]).is_empty(), "no new tab under a popup");
     assert!(app.toasts.last().unwrap().text.contains("prefix+x"));
-    app.on_key(KeyEvent::new(Key::Char('b'), Mods::CTRL));
+    app.on_key(KeyEvent::new(Key::Char('q'), Mods::CTRL));
     app.on_key(KeyEvent::ch('x'));
     let c = commands(&mut rx[0]);
     assert_eq!(c.len(), 1, "{c:?}");
@@ -452,7 +452,7 @@ description = "Open the board"
     let (mut app, mut rx) = setup(&[], "p1");
     app.config = cfg;
     app.keymap = crate::keymap::Keymap::from_config(&app.config);
-    app.on_key(KeyEvent::new(Key::Char('b'), Mods::CTRL));
+    app.on_key(KeyEvent::new(Key::Char('q'), Mods::CTRL));
     app.on_key(KeyEvent::new(Key::Char('o'), Mods::ALT));
     let c = commands(&mut rx[0]);
     assert_eq!(c.len(), 1, "{c:?}");

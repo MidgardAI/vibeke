@@ -39,6 +39,7 @@ pub mod image_view;
 pub mod images;
 pub mod inbox;
 pub mod input;
+pub mod jobs;
 pub mod keymap;
 pub mod layouts;
 pub mod menu;

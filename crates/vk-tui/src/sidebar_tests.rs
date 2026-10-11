@@ -191,3 +191,83 @@ fn collapsed_sidebar_shows_the_urgency_rail() {
     app.ux.sidebar.hide_rail = true;
     assert_eq!(crate::chrome::main_x(&app), (0, 120));
 }
+
+#[test]
+fn a_long_state_label_does_not_resize_the_sidebar() {
+    let (mut app, _rx) = fleet();
+    fit(&mut app);
+    let w = app.sidebar_w;
+    let r = &mut app.machines[0].model.runs[0];
+    r.execution.value = Execution::Error;
+    r.execution.detail = Some("a very long error message that goes on and on and on and on".into());
+    fit(&mut app);
+    assert_eq!(app.sidebar_w, w, "the label is cut, not measured");
+    let text = crate::draw::agent_row_text(&app, 0, "r1");
+    assert!(text.contains("error: a very long"), "{text}");
+}
+
+#[test]
+fn a_shrinking_sidebar_waits_for_a_clear_gain() {
+    let (mut app, _rx) = fleet();
+    app.machines[0].model.workspaces[0].name = Some("w".repeat(36));
+    fit(&mut app);
+    let wide = app.sidebar_w;
+    assert!(wide > 28 && wide < 48, "{wide}");
+    // A name two columns shorter keeps the width; a much shorter one gives it back.
+    app.machines[0].model.workspaces[0].name = Some("w".repeat(34));
+    fit(&mut app);
+    assert_eq!(app.sidebar_w, wide);
+    app.machines[0].model.workspaces[0].name = Some("api".into());
+    fit(&mut app);
+    assert!(app.sidebar_w < wide);
+}
+
+#[test]
+fn a_narrow_terminal_hides_the_sidebar_and_a_toggle_opens_it() {
+    let (mut app, _rx) = fleet();
+    app.size = (70, 30);
+    fit(&mut app);
+    assert!(!app.sidebar, "under 80 columns the panes get the width");
+    app.action("toggle_sidebar", None);
+    assert!(app.sidebar);
+    fit(&mut app);
+    assert!(app.sidebar, "opened by hand: it stays");
+    // A wide terminal clears the hand-opened state; a narrow one hides it again.
+    app.size = (120, 40);
+    fit(&mut app);
+    assert!(app.sidebar);
+    app.size = (70, 30);
+    fit(&mut app);
+    assert!(!app.sidebar);
+    // Growing again brings the automatically hidden sidebar back.
+    app.size = (120, 40);
+    fit(&mut app);
+    assert!(app.sidebar);
+}
+
+#[test]
+fn agents_on_a_disconnected_machine_are_dimmed_and_marked() {
+    let (mut app, _rx) = fleet();
+    app.machines[0].model.runs[0].execution.value = Execution::Working;
+    app.machines[0].model.runs[0].execution.since_ms = crate::drafts::now_ms() - 5_000;
+    let live = crate::draw::agent_row_text(&app, 0, "r1");
+    assert!(
+        live.contains("working") && !live.contains("last known"),
+        "{live}"
+    );
+    app.machines[0].tx = None;
+    let gone = crate::draw::agent_row_text(&app, 0, "r1");
+    assert!(gone.contains("last known"), "{gone}");
+    let rows = crate::draw::sidebar_rows(&app);
+    let row = rows
+        .iter()
+        .find(|r| {
+            r.target.as_ref().is_some_and(|t| t.1 == "p1")
+                && r.segs.iter().any(|(s, _)| s.contains("working"))
+        })
+        .expect("the agent row");
+    assert!(
+        row.segs.iter().all(|(_, st)| *st == app.theme.dim()),
+        "all segments dim"
+    );
+}

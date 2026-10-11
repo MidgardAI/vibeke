@@ -407,15 +407,19 @@ pub enum Action {
     },
 }
 
+/// A prefix menu that gets no key hides again after this long.
+pub const PREFIX_MENU_IDLE: Duration = Duration::from_secs(10);
+
 /// The prefix is armed (08 §10.4): chords pressed after it so far and whether the prefix
-/// menu is up. Without the menu the prefix times out; with it, only Esc or a key ends it.
+/// menu is up. Without the menu the prefix times out. With it, a key or Esc ends it, and so does
+/// [`PREFIX_MENU_IDLE`] without a key.
 #[derive(Debug, Clone)]
 pub struct PrefixState {
-    /// When the prefix was pressed, or the last chord of `seq`.
+    /// When the prefix was pressed, the last chord of `seq`, or the menu came up.
     pub since: Instant,
     /// Chords after the prefix (empty at the top level).
     pub seq: Vec<KeyEvent>,
-    /// The menu is drawn; no timeout.
+    /// The menu is drawn; it hides again after [`PREFIX_MENU_IDLE`].
     pub menu: bool,
 }
 
@@ -594,6 +598,8 @@ pub enum Incoming {
     /// Progress from a transfer task (separate connection, see `upload`).
     Upload(crate::upload::UploadEvent),
     Update(crate::updates::Event),
+    /// A background job finished (`crate::jobs`): its callback runs on the event loop.
+    Job(crate::jobs::Job),
 }
 
 /// Attach the render stream on `stream` for machine `idx`: JSON-RPC `render.attach`, then
@@ -738,6 +744,10 @@ async fn run_inner(
                 || gcaps.kitty_graphics
                 || std::env::var("COLORTERM")
                     .is_ok_and(|c| c.contains("truecolor") || c.contains("24bit")),
+            ansi16: crate::caps::detect_ansi16(
+                &crate::caps::EnvHints::from_env(),
+                probe.truecolor || gcaps.kitty_graphics,
+            ),
             sync_update: probe.sync_update,
             undercurl: probe.undercurl,
             osc8: probe.osc8,
@@ -770,6 +780,7 @@ async fn run_inner(
         ));
     }
     crate::updates::init(&mut app, opts.update_args, inc_tx.clone());
+    crate::jobs::install(inc_tx.clone());
     // Connect every machine (in the background; reconnect with backoff, 06 A7).
     let mut connectors: Vec<std::sync::Arc<Connector>> = Vec::new();
     let mut bulk: Vec<std::sync::Arc<Connector>> = Vec::new();
@@ -877,6 +888,7 @@ async fn run_inner(
                     Incoming::Frame(i, f) => app.on_frame(i, f),
                     Incoming::Upload(e) => crate::upload::on_event(&mut app, e),
                     Incoming::Update(e) => crate::updates::on_event(&mut app, e),
+                    Incoming::Job(j) => j.run(&mut app),
                     Incoming::Disconnected(i, why) => {
                         app.machines[i].tx = None;
                         app.on_disconnected(i);
@@ -897,6 +909,7 @@ async fn run_inner(
                         Incoming::Frame(i, f) => app.on_frame(i, f),
                         Incoming::Upload(e) => crate::upload::on_event(&mut app, e),
                         Incoming::Update(e) => crate::updates::on_event(&mut app, e),
+                        Incoming::Job(j) => j.run(&mut app),
                         Incoming::Connected(i, tx, features) => { app.machines[i].tx = Some(tx); app.machines[i].features = features; app.machines[i].status = "connected".into(); app.machines[i].panes.clear(); app.machines[i].last_hint.clear(); app.on_connected(i); }
                         Incoming::Disconnected(i, _) => {
                             app.machines[i].tx = None;
@@ -936,7 +949,7 @@ impl App {
             caps,
             osc52,
             kitty,
-            theme: Theme::named(&config.theme.name),
+            theme: Theme::named(config.theme.effective_name(None)),
             keymap: Keymap::from_config(&config),
             sidebar: !config.ui.sidebar.collapsed,
             sidebar_w: config.ui.sidebar.width.clamp(18, 48),
@@ -1767,19 +1780,57 @@ impl App {
 
     /// Put `data` on the user's clipboard (`crate::copyout`: OSC 52, plus the platform tool
     /// when not over SSH) and toast `copied N chars` / `copy failed — why`. PRIMARY writes
-    /// are silent.
+    /// are silent. OSC 52 goes out at once. The platform tool runs on a worker thread with a
+    /// timeout (a stuck `xclip` must not freeze the screen), so the toast may follow a moment
+    /// later.
     pub fn set_clipboard(&mut self, data: &[u8], primary: bool) {
-        let res = if let Some(sink) = &mut self.clipboard_sink {
+        if let Some(sink) = &mut self.clipboard_sink {
             sink.push((data.to_vec(), primary));
-            Ok(())
-        } else {
-            let max = self.config.clipboard.remote_write_max_bytes.0;
-            let plan = crate::copyout::plan(data, primary, &self.copyout.env, max);
-            let cmd = self.copyout.native_cmd.clone();
-            crate::copyout::deliver(data, primary, &plan, &mut std::io::stdout(), &mut |d, p| {
-                crate::copyout::native_copy(cmd.as_deref(), d, p)
-            })
-        };
+            return self.copy_done(data, primary, Ok(()));
+        }
+        let max = self.config.clipboard.remote_write_max_bytes.0;
+        let plan = crate::copyout::plan(data, primary, &self.copyout.env, max);
+        let mut sent = false;
+        let mut why: Vec<String> = Vec::new();
+        if let Some(seq) = &plan.osc52 {
+            let mut out = std::io::stdout();
+            match std::io::Write::write_all(&mut out, seq)
+                .and_then(|_| std::io::Write::flush(&mut out))
+            {
+                Ok(()) => sent = true,
+                Err(e) => why.push(format!("terminal write failed: {e}")),
+            }
+        } else if let Some(s) = &plan.osc52_skipped {
+            why.push(s.clone());
+        }
+        if !plan.native {
+            if plan.osc52.is_none() {
+                why.push("no local clipboard over SSH".into());
+            }
+            let res = if sent { Ok(()) } else { Err(why.join("; ")) };
+            return self.copy_done(data, primary, res);
+        }
+        let cmd = self.copyout.native_cmd.clone();
+        let bytes = data.to_vec();
+        let for_tool = bytes.clone();
+        crate::jobs::spawn(
+            self,
+            move || {
+                crate::copyout::native_copy(cmd.as_deref(), &for_tool, primary)
+                    .map_err(|e| format!("{e:#}"))
+            },
+            move |app, tool| {
+                match tool {
+                    Ok(()) => sent = true,
+                    Err(e) => why.push(e),
+                }
+                let res = if sent { Ok(()) } else { Err(why.join("; ")) };
+                app.copy_done(&bytes, primary, res);
+            },
+        );
+    }
+
+    fn copy_done(&mut self, data: &[u8], primary: bool, res: Result<(), String>) {
         if primary {
             return;
         }
@@ -1857,12 +1908,22 @@ impl App {
             if show {
                 if let Mode::Prefix(p) = &mut self.mode {
                     p.menu = true;
+                    // The idle time counts from the moment the menu came up.
+                    p.since = Instant::now();
                 }
                 self.dirty = true;
             } else if elapsed > Duration::from_millis(self.keymap.prefix_timeout_ms) {
                 self.mode = Mode::Normal;
                 self.dirty = true;
             }
+        }
+        // A menu nobody uses goes away again: the next key then reaches the pane.
+        if let Mode::Prefix(p) = &self.mode
+            && p.menu
+            && p.since.elapsed() >= PREFIX_MENU_IDLE
+        {
+            self.mode = Mode::Normal;
+            self.dirty = true;
         }
         crate::inbox::tick(self);
         crate::tasks::tick(self);
@@ -1893,7 +1954,12 @@ impl App {
         if let Some(t) = self.toasts.iter().map(|t| t.until).min() {
             d.at("toast", t);
         }
-        // The menu, once up, waits for a key (no timeout).
+        // The menu, once up, waits for a key, then hides after `PREFIX_MENU_IDLE`.
+        if let Mode::Prefix(p) = &self.mode
+            && p.menu
+        {
+            d.at("prefix.menu_hide", p.since + PREFIX_MENU_IDLE);
+        }
         if let Mode::Prefix(p) = &self.mode
             && !p.menu
         {
@@ -2126,6 +2192,37 @@ impl App {
     }
 
     pub(crate) fn on_paste(&mut self, text: String) {
+        // Modes without a text field of their own do not swallow a paste in silence.
+        if matches!(self.mode, Mode::Navigate { .. }) && self.ux.nav.typing {
+            let line = text.replace(['\n', '\r'], " ");
+            self.ux
+                .nav
+                .filter
+                .get_or_insert_with(String::new)
+                .push_str(&line);
+            self.dirty = true;
+            return;
+        }
+        match &mut self.mode {
+            // The prefix was armed and a paste came instead of a key: leave the prefix, then
+            // paste into the pane as usual.
+            Mode::Prefix(_) => {
+                self.mode = Mode::Normal;
+                self.dirty = true;
+            }
+            Mode::Copy(cm) => {
+                if !cm.paste(&text) {
+                    self.toast("pasting is not possible in copy mode — press esc first");
+                }
+                self.dirty = true;
+                return;
+            }
+            Mode::Navigate { .. } | Mode::Resize => {
+                self.toast("pasting is not possible here — press esc first");
+                return;
+            }
+            _ => {}
+        }
         match &mut self.mode {
             Mode::Prompt(p) => {
                 p.input.push_str(&text.replace(['\n', '\r'], " "));
@@ -2416,7 +2513,10 @@ impl App {
                 }
             }
             "resize_mode" => self.mode = Mode::Resize,
-            "toggle_sidebar" => self.sidebar = !self.sidebar,
+            "toggle_sidebar" => {
+                self.sidebar = !self.sidebar;
+                crate::sidebar::toggled(self);
+            }
             "focus_pane_left" | "focus_pane_right" | "focus_pane_up" | "focus_pane_down" => {
                 let d = match action {
                     "focus_pane_left" => Direction::Left,
@@ -2613,7 +2713,6 @@ impl App {
                         self.copy_keys = std::sync::Arc::new(
                             crate::copykeys::CopyKeys::from_config(&c.keys.copy_mode),
                         );
-                        self.theme = Theme::named(&c.theme.name);
                         self.config = c;
                         crate::updates::on_config(self);
                         crate::appearance::apply(self, true);
@@ -2911,8 +3010,13 @@ impl App {
                 self.prompt(PromptKind::RenameWorkspace, "workspace name", String::new())
             }
             Key::Char(c) if c.is_ascii_digit() => {
+                // Digits count panes, agents and groups, not the Images rows above them.
                 let i = c.to_digit(10).unwrap_or(1).saturating_sub(1) as usize;
-                if let Some((mi, pane)) = rows.get(i).cloned() {
+                let target = draw::sidebar_digit_rows(self)
+                    .into_iter()
+                    .nth(i)
+                    .and_then(|r| r.target);
+                if let Some((mi, pane)) = target {
                     self.focus_pane(mi, &pane);
                 }
             }
@@ -2967,7 +3071,7 @@ impl App {
             Key::Named(NamedKey::Escape) => {}
             Key::Named(NamedKey::Enter) => self.submit_prompt(p),
             Key::Named(NamedKey::Backspace) => {
-                p.input.pop();
+                crate::draw::pop_grapheme(&mut p.input);
                 self.mode = Mode::Prompt(p);
             }
             Key::Char('u') if ev.mods.ctrl() => {
@@ -3134,13 +3238,14 @@ impl App {
     /// Compose one frame without choosing the host output device.
     pub(crate) fn draw_bytes(&mut self) -> Vec<u8> {
         self.dirty = false;
+        // The sidebar width decides the panes' widths: settle it before the hints go out.
+        crate::sidebar::fit(self);
         self.send_view_hints(false);
         crate::browser::update_views(self);
         crate::preview_ui::observe(self);
         crate::pane_images::before_draw(self);
         crate::nav::observe(self);
         crate::plugins::observe(self);
-        crate::sidebar::fit(self);
         crate::card::observe(self);
         crate::decide::before_draw(self);
         // After the layout is final: placements (and the size a remote image is fetched at)
@@ -3394,7 +3499,7 @@ mod clipboard_tests {
         app.on_clipboard(1, "p1".into(), false, b"from devbox".to_vec());
         assert_eq!(app.clip.pending.len(), 1);
         assert_eq!(sink(&app), 0);
-        app.on_key(KeyEvent::new(Key::Char('b'), Mods::CTRL));
+        app.on_key(KeyEvent::new(Key::Char('q'), Mods::CTRL));
         assert!(matches!(app.mode, Mode::Prefix(_)));
         app.on_key(key(Key::Char('y')));
         assert!(

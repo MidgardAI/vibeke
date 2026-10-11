@@ -12,7 +12,10 @@
 //! - **Pulse**: a working agent's `●` alternates bold/dim twice a second while `ui.animate` is
 //!   on (repaints ride on the working age label's deadline, so no extra wakeup class).
 //! - **Width**: `auto_width` grows the sidebar to fit the widest row (never below `width`),
-//!   clamped to `min_width..=max_width`. Dragging the border sets a manual width, saved in
+//!   clamped to `min_width..=max_width`. An agent's state label, image rows, collisions and
+//!   previews do not count, so they never resize the sidebar; a long one is cut with `…`. A
+//!   sidebar shrinks only when it gains 3 columns. A terminal narrower than 80 columns hides the
+//!   sidebar (the rail stays); `prefix+b` opens it again. Dragging the border sets a manual width, saved in
 //!   `<state>/<session>/sidebar-<client>.json` and restored on the next attach.
 //! - **Rail**: with the sidebar collapsed (`prefix+b`, `collapsed = true`), a 2-column rail
 //!   (glyph + border) shows one urgency glyph per workspace; clicking a glyph focuses that
@@ -40,6 +43,10 @@ pub struct State {
     pub hide_rail: bool,
     /// Where the manual width is saved.
     pub path: Option<PathBuf>,
+    /// The sidebar was hidden by the narrow-terminal rule (it returns when the terminal grows).
+    pub auto_collapsed: bool,
+    /// A person opened the sidebar on a narrow terminal: keep it.
+    pub forced_open: bool,
 }
 
 /// The state name a token rule's `state` matcher compares with.
@@ -211,27 +218,76 @@ pub fn desired_width(app: &App, rows: &[SideRow]) -> u16 {
     if !app.config.ui.sidebar.auto_width {
         return base.clamp(lo, hi);
     }
-    let widest = rows
-        .iter()
-        .map(|r| {
-            r.segs
-                .iter()
-                .map(|(s, _)| unicode_width::UnicodeWidthStr::width(s.as_str()) as u16)
-                .sum::<u16>()
-                + 1
-        })
-        .max()
-        .unwrap_or(0);
+    let widest = rows.iter().map(row_width).max().unwrap_or(0);
     widest.max(base).clamp(lo, hi)
 }
 
-/// Recompute `sidebar_w` (once per frame, before drawing).
+/// Columns a row asks for. Rows whose text changes by itself (images, collisions, previews)
+/// ask for none, and an agent row leaves out its label, so a new state or a new picture never
+/// resizes the sidebar and every pane with it.
+fn row_width(r: &SideRow) -> u16 {
+    if r.image.is_some() || r.image_more.is_some() || r.collision.is_some() || r.preview.is_some() {
+        return 0;
+    }
+    let n = r.volatile_from.unwrap_or(r.segs.len()).min(r.segs.len());
+    r.segs[..n]
+        .iter()
+        .map(|(s, _)| unicode_width::UnicodeWidthStr::width(s.as_str()) as u16)
+        .sum::<u16>()
+        + 1
+}
+
+/// Terminals narrower than this hide the sidebar (the rail stays) so panes keep a usable width.
+/// `prefix+b` opens it again for as long as the terminal stays that narrow.
+pub const NARROW_COLS: u16 = 80;
+
+/// A shrinking sidebar waits until it could give back this many columns.
+const SHRINK_SLACK: u16 = 3;
+
+/// Hide the sidebar on a narrow terminal and bring it back when the terminal grows again.
+fn auto_collapse(app: &mut App) {
+    let narrow = app.size.0 < NARROW_COLS;
+    let st = &mut app.ux.sidebar;
+    if narrow {
+        if app.sidebar && !st.forced_open {
+            app.sidebar = false;
+            st.auto_collapsed = true;
+            app.prev = Grid::new(0, 0);
+        }
+    } else {
+        st.forced_open = false;
+        if st.auto_collapsed {
+            st.auto_collapsed = false;
+            app.sidebar = true;
+            app.prev = Grid::new(0, 0);
+        }
+    }
+}
+
+/// `prefix+b`: a person's choice wins over the narrow-terminal rule until the size changes.
+pub fn toggled(app: &mut App) {
+    app.ux.sidebar.auto_collapsed = false;
+    app.ux.sidebar.forced_open = app.sidebar && app.size.0 < NARROW_COLS;
+}
+
+/// Recompute `sidebar_w` (once per frame, before the view hints and before drawing).
 pub fn fit(app: &mut App) {
+    auto_collapse(app);
     if !app.sidebar {
         return;
     }
     let rows = crate::draw::sidebar_rows(app);
-    let w = desired_width(app, &rows);
+    let want = desired_width(app, &rows);
+    let cur = app.sidebar_w;
+    let (lo, hi) = bounds(app);
+    let auto = app.ux.sidebar.manual.is_none() && app.config.ui.sidebar.auto_width;
+    // Growing is immediate. Shrinking waits for a clear gain, so a row that comes and goes
+    // does not make the sidebar breathe.
+    let w = if !auto || want > cur || cur.saturating_sub(want) >= SHRINK_SLACK {
+        want
+    } else {
+        cur.clamp(lo, hi)
+    };
     if w != app.sidebar_w {
         app.sidebar_w = w;
         app.prev = Grid::new(0, 0);
@@ -341,10 +397,7 @@ pub fn draw_rail(app: &App, g: &mut Grid) {
             break;
         }
         let st = if *mi == app.cur && Some(ws) == focused.as_ref() {
-            Style {
-                bg: t.selection,
-                ..t.bold(*c)
-            }
+            t.with_sel(t.bold(*c))
         } else {
             t.bold(*c)
         };
@@ -376,6 +429,7 @@ pub fn on_mouse(app: &mut App, me: &MouseEvent) -> bool {
             if let MouseEventKind::Down(CtButton::Left) = me.kind {
                 if me.row == 0 {
                     app.sidebar = true;
+                    toggled(app);
                     app.prev = Grid::new(0, 0);
                 } else if let Some((mi, ws, _, _)) =
                     rail_entries(app).get(me.row as usize - 1).cloned()
