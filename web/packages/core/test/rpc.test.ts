@@ -77,6 +77,22 @@ describe('rpc', () => {
     expect(uuidv4(randomBytes)).not.toBe(uuidv4(randomBytes));
   });
 
+  test('keyed calls carry an idempotency_key; a repeat with the same op_id repeats the key', () => {
+    const { ch, rpc } = setup();
+    void rpc.request('pane.send_text', { pane: 'p', text: 'x' }, { mutating: true });
+    void rpc.request('pane.send_text', { pane: 'p', text: 'x' }, { mutating: true });
+    void rpc.request('agent.prompt', { target: 'a', text: 'x', op_id: 'retry-1' }, { mutating: true });
+    void rpc.request('agent.prompt', { target: 'a', text: 'x', op_id: 'retry-1' }, { mutating: true });
+    void rpc.request('pane.send_keys', { pane: 'p', keys: ['enter'], idempotency_key: 'given' }, { mutating: true });
+    void rpc.request('pane.read', { pane: 'p' });
+    const [a, b, c, d, e, f] = ch.sent.map((m: any) => m.params);
+    expect(a.idempotency_key).toBe(a.op_id);
+    expect(b.idempotency_key).not.toBe(a.idempotency_key); // a fresh key per new call
+    expect([c.idempotency_key, d.idempotency_key]).toEqual(['retry-1', 'retry-1']);
+    expect(e.idempotency_key).toBe('given');
+    expect(f.idempotency_key).toBeUndefined(); // not a keyed method
+  });
+
   test('timeout → OutcomeUnknownError, late response ignored, no retry', async () => {
     const { clock, ch, rpc } = setup();
     const p = rpc.request('agent.prompt', { target: 'a', text: 'hi' }, { mutating: true, timeoutMs: 5000 });

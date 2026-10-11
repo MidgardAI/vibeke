@@ -1372,6 +1372,35 @@ export const TUNNEL_ACK_WINDOW = 512 * 1024;
 /** Open streams per device connection. */
 export const TUNNEL_MAX_STREAMS = 64;
 
+/**
+ * Methods that run once per `idempotency_key` (mirrors vk-server `api::KEYED_METHODS`). The client
+ * sends a key on every call and the same key when it repeats a call, so a retry after a lost
+ * answer never acts twice.
+ */
+export const KEYED_METHODS: ReadonlySet<string> = new Set([
+  'agent.prompt',
+  'agent.send_keys',
+  'agent.spawn',
+  'agent.start',
+  'browser.click',
+  'browser.close',
+  'browser.navigate',
+  'browser.open',
+  'browser.press',
+  'browser.type',
+  'notification.send',
+  'pane.run',
+  'pane.send_bytes',
+  'pane.send_keys',
+  'pane.send_text',
+  'pane.split',
+  'preview.declare',
+  'screenshot.add',
+  'tab.create',
+  'task.create',
+  'workspace.create',
+]);
+
 /** Methods that carry `op_id` (spec 16 §7.3/§7.4); mirrors vk-gateway api::is_mutating. */
 export const MUTATING_METHODS: ReadonlySet<string> = new Set([
   'pane.send_text',
