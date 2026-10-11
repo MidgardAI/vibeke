@@ -1104,28 +1104,28 @@ fn dismiss(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     let on = p["dismissed"].as_bool().unwrap_or(true);
     let rec = {
         let mut g = server.collision.inner.lock().unwrap();
-        match g.open.iter_mut().find(|r| r.id == id) {
-            Some(r) => {
-                r.dismissed_ms = on.then(now_ms);
-                r.clone()
-            }
-            None => {
-                drop(g);
-                return Err(match find_collision(server, id) {
-                    Some(_) => invalid("collision: no longer open"),
-                    None => not_found("collision", id),
-                });
-            }
-        }
+        let Some(r) = g.open.iter_mut().find(|r| r.id == id) else {
+            drop(g);
+            return Err(match find_collision(server, id) {
+                Some(_) => invalid("collision: no longer open"),
+                None => not_found("collision", id),
+            });
+        };
+        r.dismissed_ms = on.then(now_ms);
+        let rec = r.clone();
+        // Written under the tracker lock: a sweep that clears the record meanwhile cannot have
+        // its closed record overwritten by this open one. Nothing takes this lock while holding
+        // the core lock.
+        persist(
+            server,
+            &rec,
+            Some((
+                "task.collision_action",
+                json!({"action": if on { "dismiss" } else { "undismiss" }, "repo": rec.root, "by": ctx.client_id}),
+            )),
+        );
+        rec
     };
-    persist(
-        server,
-        &rec,
-        Some((
-            "task.collision_action",
-            json!({"action": if on { "dismiss" } else { "undismiss" }, "repo": rec.root, "by": ctx.client_id}),
-        )),
-    );
     Ok(json!({"collision": collision_json(server, &rec, false)}))
 }
 
