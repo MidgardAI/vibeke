@@ -1617,11 +1617,9 @@ pub async fn herdr_shim(g: &Global, args: &[String]) -> i32 {
     }
     match parsed {
         Parsed::Version => {
-            println!(
-                "herdr {} (Vibeke {} compatibility layer, partial)",
-                herdr::BASELINE_VERSION,
-                vk_proto::VERSION
-            );
+            // Exactly Herdr's line: plugins parse it for version checks. `herdr status`
+            // reports that Vibeke serves the shim.
+            println!("herdr {}", herdr::BASELINE_VERSION);
             EXIT_OK
         }
         Parsed::Help(h) => {

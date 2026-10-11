@@ -838,9 +838,9 @@ pub const ENTRIES: &[Entry] = &[
     e(
         Cli,
         "--version",
-        Partial,
+        Implemented,
         "spec",
-        "prints `herdr 0.9.3 (Vibeke … compatibility layer, partial)`; Herdr prints `herdr 0.9.3`",
+        "prints `herdr 0.9.3`, as Herdr does; the socket's `ping` names Vibeke (`emulator`)",
     ),
     e(
         Cli,
