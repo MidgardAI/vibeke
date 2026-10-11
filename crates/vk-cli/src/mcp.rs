@@ -358,12 +358,13 @@ pub async fn handle_in(msg: &Value, backend: &mut dyn Backend, mode: Mode) -> Op
                 return Some(json!({"jsonrpc": "2.0", "id": id, "result": result}));
             }
             if name == "show_image" {
-                let result = match show_image_params(&args) {
+                let params = show_image_params(&args).map(|mut p| {
+                    p["idempotency_key"] = json!(new_key());
+                    p
+                });
+                let result = match params {
                     Err(e) => json!({"content": [text(e)], "isError": true}),
-                    Ok(mut p) => match {
-                        p["idempotency_key"] = json!(new_key());
-                        backend.call("screenshot.add", p).await
-                    } {
+                    Ok(p) => match backend.call("screenshot.add", p).await {
                         Ok(v) => {
                             let handle = v["handle"].as_str().unwrap_or("");
                             let note = if v["duplicate"] == true {
