@@ -94,6 +94,12 @@ export class CatchUpStore {
     return s.away ? buildCatchUp(rows, s.baseline) : [];
   }
 
+  /** Put back the state from before a dismissal (the toast's Undo). */
+  restore(prev: CatchUpState): void {
+    this.state.set(prev);
+    this.save();
+  }
+
   /** Mark these cards seen (a dismissed card, or all of them). */
   dismiss(rows: readonly WorkspaceRow[], cards: readonly CatchUpCard[]): void {
     const s = this.state.get();

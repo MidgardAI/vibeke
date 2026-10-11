@@ -110,6 +110,66 @@ Files go only to a running agent.
 - **Long-press a row** in the workspace menu to **Pin**, **Rename** or **Close pane**. Tap **Close pane** twice to confirm.
 - **Search all agents** is a mode of the command palette. It searches terminals, sessions and past sessions on all your hosts. Type at least two characters.
 
+## Answer requests in the Inbox
+
+The **Inbox** shows every request that waits for you, from all your hosts.
+A request can be an approval, a question, a plan review or a choice from a menu.
+Each card names the agent, the workspace and the pane, and says how long the agent has waited.
+
+### Risk levels
+
+The host marks each approval as **low risk**, **medium risk**, **high risk** or **unknown risk**.
+High and unknown risk come first in the list.
+An approval without a known risk level counts as unknown risk.
+
+- **Allow** runs the action once.
+- **Allow always** lets the agent run the same action again without asking you. The app always asks you to confirm it.
+- **Deny** refuses the action.
+
+You can swipe a low-risk approval: swipe right to allow it, or swipe left to deny it.
+Medium-risk approvals need a tap on a button.
+High-risk and unknown-risk approvals need a tap and a confirmation.
+If the browser interrupts a swipe, for example when you start to scroll, the card goes back and nothing is sent.
+
+### Groups of the same request
+
+When several agents ask for the same low-risk or medium-risk action in the same repository, the Inbox shows one card for all of them.
+Use **Allow all** or **Deny all** to answer the group. Use **Show each** to answer them one by one.
+A group never offers **Allow always**.
+
+### Cards do not move under your finger
+
+While you touch or scroll the Inbox, the cards keep their order.
+New requests wait behind a **N new** button at the top. Tap it to show them.
+The cards also stay in place for about one second after you lift your finger.
+A tap on a card that just moved does nothing, so you never answer a request that slid into place.
+
+### What happens after you answer
+
+The card shows the delivery state of your answer:
+
+- **Delivering…**: the host passes your answer to the agent.
+- **Delivered**: the agent received your answer.
+- **Decision recorded**: the host keeps your answer until the agent asks for it.
+- **Delivery failed** or **Outcome unknown**: open the pane and check it there.
+- **This changed — decide again**: the request changed after you saw it. Look at it again.
+
+A card that closes without your answer says why:
+
+- **Answered in terminal**: someone answered it in the pane or on another device.
+- **Closed automatically**: the agent moved on, so the host closed the request.
+- **Dismissed**: you or another device dismissed it.
+- **Expired**: the request timed out.
+
+### Dismiss a request
+
+Use **Dismiss** to remove a request from the Inbox without an answer.
+Dismiss does not answer the agent. The agent may still wait in its pane until you answer it there.
+The app asks you to confirm before it dismisses a request.
+If the request changed after you saw it, the app does not dismiss it. It shows **This request changed** instead.
+
+Cards in **While you were away** also have **Dismiss**. After you dismiss one, the app shows **Undo** for a few seconds.
+
 ## Start an agent
 
 Use **New agent** to start an agent on a host.
@@ -184,10 +244,13 @@ Choose **Allow once** to permit that single action.
 A preview is a dev server that runs in a pane, for example a web app on port 3000.
 Tap the **Previews** button in the workspace header. The list opens full screen.
 Running previews come first. Previews that Vibeke found by itself are grey. Tap **Open** to show one.
-Use the menu of a row to **Forget** a preview.
+Use the menu of a row to **Forget** a preview. The app asks you to confirm first.
+Forget removes the preview from the list on every device. The dev server keeps running.
 
 Tap a preview to show the page. The host draws the page in its own browser and sends you pictures of it.
 Touch the page as you would any page on your phone. Use **Keyboard** to type into it.
+In a wide browser window on a computer, the host draws the desktop version of the page instead.
+On a mobile network or with **Save-Data** on, the app asks for smaller pictures.
 This needs full access to the host.
 
 ### Watch an agent's browser

@@ -119,3 +119,13 @@ describe('loopback URLs', () => {
     }
   });
 });
+
+import { DESKTOP_PREVIEW_MIN_WIDTH, wantsMobileLayout } from '../src/lib/phone-preview';
+
+describe('preview layout', () => {
+  test('wide views with a mouse get the desktop page; touch and narrow views a phone page', () => {
+    expect(wantsMobileLayout(1280, false)).toBe(false);
+    expect(wantsMobileLayout(DESKTOP_PREVIEW_MIN_WIDTH - 1, false)).toBe(true);
+    expect(wantsMobileLayout(1280, true)).toBe(true);
+  });
+});

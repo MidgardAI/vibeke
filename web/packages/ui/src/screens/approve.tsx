@@ -5,11 +5,12 @@
 // the cards with Approve / Deny; the review screen (`#/approve/<host>[/<request>]`, where the
 // push notification lands) also offers "Always for this pane" when the host allows it.
 
+import { useState } from 'react';
 import { ShieldAlert } from 'lucide-react';
 import type { ApprovalDecision, ApprovalRequest, HostState } from '@vibeke/core';
 import { useApprovalStores, useApprovals, useDeciding, useHostApprovals } from '../app/approval-stores';
 import { useAllHosts, useNow } from '../app/hooks';
-import { Button, Card, Empty, Notice, SectionLabel, Spinner, cx } from '../components/ui';
+import { Button, Card, Empty, Notice, SectionLabel, Sheet, Spinner, cx } from '../components/ui';
 import { t } from '../i18n';
 import { approvalTitle, decisionsFor } from '../lib/approvals';
 import { relTime } from '../lib/format';
@@ -82,7 +83,9 @@ export function ApprovalCard({ host, r, showHost, full = false }: { host: HostSt
   const hostId = host.record.host_id;
   const busy = deciding.has(`${hostId}:${r.request}`);
   const online = host.status === 'online';
-  const decide = (d: ApprovalDecision) => void stores.decide(hostId, r, d);
+  // "Always" lets the pane repeat the call without asking: it gets its own confirmation.
+  const [confirmAlways, setConfirmAlways] = useState(false);
+  const decide = (d: ApprovalDecision) => (d === 'always' ? setConfirmAlways(true) : void stores.decide(hostId, r, d));
   const offered = decisionsFor(r).filter((d) => full || d !== 'always');
   const peer = r.peer ? r.peer.name || r.peer.id : null;
   return (
@@ -126,6 +129,29 @@ export function ApprovalCard({ host, r, showHost, full = false }: { host: HostSt
           </Button>
         )}
       </div>
+      <Sheet open={confirmAlways} onClose={() => setConfirmAlways(false)} title={t.approve.alwaysTitle} role="alertdialog">
+        <div className="space-y-3">
+          <p className="text-sm">{t.approve.alwaysHint(peer)}</p>
+          <div className="whitespace-pre-wrap break-words rounded-xl border border-border px-3 py-2 text-sm font-medium">{r.summary}</div>
+          <div className="flex gap-2">
+            <Button className="flex-1" variant="outline" onClick={() => setConfirmAlways(false)}>
+              {t.cancel}
+            </Button>
+            <Button
+              className="flex-1"
+              variant="danger"
+              data-act="always-confirm"
+              disabled={!online}
+              onClick={() => {
+                setConfirmAlways(false);
+                void stores.decide(hostId, r, 'always');
+              }}
+            >
+              {t.approve.always}
+            </Button>
+          </div>
+        </div>
+      </Sheet>
     </Card>
   );
 }

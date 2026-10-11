@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import * as b64 from '../src/b64';
-import { HostManager, NotConnectedError, recordFromHello, type HostRecord, type HostStore } from '../src/hosts';
+import { HostManager, LIVENESS_PROBE_MS, NotConnectedError, recordFromHello, type HostRecord, type HostStore } from '../src/hosts';
 import { x25519Public } from '../src/keys';
 import type { AppEvent } from '../src/model';
 import { flush, serveGateway, testPlatform, type GatewayCtx, type MemSocket } from './helpers';
@@ -48,6 +48,8 @@ function harness(rec: HostRecord = record) {
     /** While true, `dashboard.get` answers only when its gate is released (in any order). */
     gated: false,
     gates: [] as { at: number; release(): void; fail(): void }[],
+    /** While true, `ping` never answers (a socket that died without a close). */
+    silentPing: false,
   };
   const platform = testPlatform((sock) => {
     if (state.refuse === 'offline') return false;
@@ -68,6 +70,8 @@ function harness(rec: HostRecord = record) {
         if (method !== 'relay.ticket') calls.push([method, params]);
         else state.ticketCalls++;
         switch (method) {
+          case 'ping':
+            return state.silentPing ? new Promise(() => {}) : {};
           case 'hello':
             return { host_name: 'devbox', device_id: 'd1', scope: 'full', server_version: '0.1.0', features: [], ...state.hello };
           case 'dashboard.get': {
@@ -392,12 +396,13 @@ describe('HostManager', () => {
     mgr.stop();
   });
 
-  test('connect URL carries the stored ticket; relay.ticket refresh is persisted', async () => {
+  test('the stored ticket goes beside the connect URL, never in it; relay.ticket refresh is persisted', async () => {
     const { mgr, h, state, platform } = harness({ ...record, ticket: 'a.b-c_d', ticket_exp: 1000 });
     state.ticket = { ticket: 'new.ticket', exp: 99_999 };
     await mgr.start();
     await flush(20);
-    expect(platform.urls[0]).toBe('wss://relay.example/v1/connect?host=h1&ticket=a.b-c_d');
+    expect(platform.urls[0]).toBe('wss://relay.example/v1/connect?host=h1');
+    expect(platform.tickets[0]).toBe('a.b-c_d');
     expect(state.puts.at(-1)).toMatchObject({ host_id: 'h1', ticket: 'new.ticket', ticket_exp: 99_999 });
     expect(h().getSnapshot().record.ticket).toBe('new.ticket');
     mgr.stop();
@@ -453,6 +458,52 @@ describe('HostManager', () => {
     platform.lifecycle.hide();
     await flush(10);
     expect(calls.at(-1)).toEqual(['client.visibility', { visible: false }]);
+    mgr.stop();
+  });
+
+  test('becoming visible pings online hosts and reconnects when the ping goes unanswered', async () => {
+    const { mgr, h, platform, state } = harness();
+    await mgr.start();
+    await flush(20);
+    expect(h().getSnapshot().status).toBe('online');
+    const before = platform.urls.length;
+    state.silentPing = true;
+    platform.lifecycle.show();
+    await flush(10);
+    state.silentPing = false; // the next connection works
+    await platform.clock.advance(LIVENESS_PROBE_MS);
+    await flush(20);
+    expect(platform.urls.length).toBe(before + 1);
+    expect(h().getSnapshot().status).toBe('online');
+    mgr.stop();
+  });
+
+  test('a ping that answers keeps the connection', async () => {
+    const { mgr, h, platform } = harness();
+    await mgr.start();
+    await flush(20);
+    const before = platform.urls.length;
+    platform.lifecycle.show();
+    await flush(10);
+    await platform.clock.advance(LIVENESS_PROBE_MS);
+    await flush(10);
+    expect(platform.urls.length).toBe(before);
+    expect(h().getSnapshot().status).toBe('online');
+    mgr.stop();
+  });
+
+  test('the browser online event retries an offline host without waiting for the backoff', async () => {
+    const { mgr, h, platform, state } = harness();
+    state.refuse = 'offline';
+    await mgr.start();
+    await flush(20);
+    expect(h().getSnapshot().status).toBe('offline');
+    state.refuse = false;
+    const before = platform.urls.length;
+    platform.lifecycle.online();
+    await flush(20);
+    expect(platform.urls.length).toBe(before + 1);
+    expect(h().getSnapshot().status).toBe('online');
     mgr.stop();
   });
 

@@ -48,6 +48,8 @@ export const INVOKE = {
   previewDevtools: 'vk:preview.view.devtools',
   previewSnapshot: 'vk:preview.view.snapshot',
   previewClose: 'vk:preview.view.close',
+  /** The user allowed the port a preview view was refused (`port_not_allowed`). */
+  previewAllowPort: 'vk:preview.view.allow-port',
 } as const;
 
 /** Main → renderer (webContents.send). */
@@ -150,6 +152,7 @@ export const RENDERER_METHODS = [
   'cloud.move',
   'cloud.jobs',
   'cloud.cancel',
+  'cloud.confirm',
   'auth.list',
   'auth.approve.decide',
   'assistant.status',
@@ -186,7 +189,7 @@ export type WireError =
   | { type: 'rpc'; method: string; code: number; message: string; data?: Record<string, unknown> }
   | { type: 'unknown'; method: string; mutating: boolean; opId?: string; reason: 'timeout' | 'closed' }
   | { type: 'not_connected'; hostId: string }
-  | { type: 'pairing'; code: string; message: string; channelCode?: string; closeCode?: number }
+  | { type: 'pairing'; code: string; message: string; channelCode?: string; closeCode?: number; reason?: string }
   | { type: 'error'; message: string; code?: string };
 
 export type WireResult<T> = { ok: true; value: T } | { ok: false; error: WireError };
@@ -297,6 +300,8 @@ export interface PreviewState {
   canGoForward: boolean;
   /** `host_offline` while the host connection is down; other values are load errors. */
   error?: string;
+  /** The host refused this port: the view is hidden until the user allows it. */
+  blocked?: { host: string; port: number };
 }
 
 /** What the preload exposes as `window.vibeke` (see preload/index.ts). */

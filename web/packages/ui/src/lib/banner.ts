@@ -15,11 +15,18 @@ export interface BannerState {
   down: string[];
   /** Down hosts that are revoked/incompatible/ticket-expired (no point retrying). */
   fatal: string[];
+  /** The fatal hosts by status, for one sentence per cause. */
+  fatalBy: { status: FatalStatus; names: string[] }[];
+  /** Hosts that are down but may come back (names). */
+  retrying: string[];
 }
+
+export type FatalStatus = 'revoked' | 'incompatible' | 'ticket_expired';
 
 // An expired share is not an outage; Settings shows it (and offers Forget).
 const isDown = (h: HostState) => h.status !== 'online' && h.status !== 'idle' && h.status !== 'expired';
-const isFatal = (h: HostState) => h.status === 'revoked' || h.status === 'incompatible' || h.status === 'ticket_expired';
+const isFatal = (h: HostState): h is HostState & { status: FatalStatus } =>
+  h.status === 'revoked' || h.status === 'incompatible' || h.status === 'ticket_expired';
 
 export class BannerTracker {
   private downSince = new Map<string, number>();
@@ -31,6 +38,8 @@ export class BannerTracker {
     let oldest = Infinity;
     const down: string[] = [];
     const fatal: string[] = [];
+    const retrying: string[] = [];
+    const byStatus = new Map<FatalStatus, string[]>();
     for (const h of hosts) {
       const id = h.record.host_id;
       present.add(id);
@@ -39,7 +48,12 @@ export class BannerTracker {
         oldest = Math.min(oldest, this.downSince.get(id)!);
         const name = h.info?.host_name ?? h.record.name;
         down.push(name);
-        if (isFatal(h)) fatal.push(name);
+        if (isFatal(h)) {
+          fatal.push(name);
+          const list = byStatus.get(h.status) ?? [];
+          list.push(name);
+          byStatus.set(h.status, list);
+        } else retrying.push(name);
       } else {
         this.downSince.delete(id);
       }
@@ -55,6 +69,29 @@ export class BannerTracker {
     if (level === 'none' && (this.shown === 'amber' || this.shown === 'red')) this.greenUntil = now + GREEN_FOR_MS;
     if (level === 'none' && now < this.greenUntil) level = 'green';
     this.shown = level === 'green' ? 'green' : level;
-    return { level, down, fatal };
+    return { level, down, fatal, fatalBy: [...byStatus].map(([status, names]) => ({ status, names })), retrying };
   }
+}
+
+export interface BannerWords {
+  back: string;
+  reconnecting: string;
+  offline(names: string): string;
+  revoked: string;
+  incompatible: string;
+  ticketExpired: string;
+}
+
+/**
+ * The banner sentence: one part per cause, each naming its hosts ("laptop: This device was
+ * revoked · studio: Host and app versions do not match · build offline").
+ */
+export function bannerText(b: BannerState, w: BannerWords): string {
+  if (b.level === 'green') return w.back;
+  if (b.level === 'amber') return w.reconnecting;
+  if (b.level === 'none') return '';
+  const why: Record<FatalStatus, string> = { revoked: w.revoked, incompatible: w.incompatible, ticket_expired: w.ticketExpired };
+  const parts = b.fatalBy.map((g) => `${g.names.join(', ')}: ${why[g.status]}`);
+  if (b.retrying.length) parts.push(w.offline(b.retrying.join(', ')));
+  return parts.join(' · ');
 }

@@ -21,6 +21,7 @@ import { linkExpired, linkHostKey, linkPsk, type PairingLink } from './link';
 import type { Scope } from './model';
 import type { Platform } from './platform';
 import { RpcClient } from './rpc';
+import type { StaticKey } from './noise';
 import type { HostRecord, HostStore } from './hosts';
 
 export class PairingError extends Error {
@@ -37,7 +38,7 @@ export class PairingError extends Error {
 export interface PairOptions {
   link: PairingLink;
   platform: Platform;
-  devicePrivate: Uint8Array;
+  devicePrivate: StaticKey;
   /** Keystore name of `devicePrivate` when it is an invitation's own key (kept on the record). */
   keyName?: string;
   /** Device display name, e.g. "Alice's iPhone". */
@@ -71,8 +72,8 @@ const trimSlashes = (s: string): string => {
   return s.slice(0, end);
 };
 
-export const relayConnectUrl = (relay: string, hostId: string, ticket?: string): string =>
-  `${trimSlashes(relay)}/v1/connect?host=${encodeURIComponent(hostId)}${ticket ? `&ticket=${encodeURIComponent(ticket)}` : ''}`;
+/** The relay's connect URL. The ticket travels beside it (`Platform.connect` options), never in it. */
+export const relayConnectUrl = (relay: string, hostId: string): string => `${trimSlashes(relay)}/v1/connect?host=${encodeURIComponent(hostId)}`;
 
 export async function pair(o: PairOptions): Promise<HostRecord> {
   const { link, platform } = o;
@@ -85,7 +86,7 @@ export async function pair(o: PairOptions): Promise<HostRecord> {
   let channel: Channel;
   try {
     channel = await Channel.connect({
-      socket: platform.connect(relayConnectUrl(link.relay, link.host, link.tk)),
+      socket: platform.connect(relayConnectUrl(link.relay, link.host), link.tk ? { ticket: link.tk } : undefined),
       hello: helloPair(link.pid),
       hostKey: linkHostKey(link),
       devicePrivate: o.devicePrivate,

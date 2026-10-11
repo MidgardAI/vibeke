@@ -24,7 +24,8 @@ If the CLI is not found, use **Choose…** to select the `vibeke` executable.
 ## Connect to a remote host
 
 On the remote host, follow the [pairing instructions](mobile.md#pair-your-device).
-Paste the resulting pairing link into the desktop app. Confirm the device fingerprint on the host.
+Paste the resulting pairing link into the desktop app.
+The app shows a check code. Check that the host shows the same code, then confirm the pairing on the host.
 The connection uses the public relay. The remote host needs no inbound port.
 
 ## Menu bar
@@ -47,11 +48,20 @@ The button shows how many previews are running.
 
 The **Previews** tab of the right panel lists the previews of the workspace.
 Running previews come first. Previews that Vibeke found by itself are grey. Select **Open** to show one.
-Use the menu of a row to **Forget** a preview.
+Use the menu of a row to **Forget** a preview. The app asks you to confirm first.
+Forget removes the preview from the list on every device. The dev server keeps running.
 
 Select a preview to show the page in the panel. The agent stays visible beside it.
 Select **Expand** to show the page in the main area. Select **Collapse** to move it back to the panel. The page does not reload.
 The page runs through the host connection, so it also works for a remote host.
+
+Previews inside the app need a device with full access to the host.
+A device with limited access, such as a shared link, shows a notice instead of the page.
+
+The host only lets a preview reach its own port and the ports of known previews.
+When a page asks for another port on the host, the app hides the page and asks: **Allow this preview to reach localhost:8000?**
+Select **Allow** only if you expect the page to use that port. The host remembers your choice for that machine.
+Select **Not now** to show the page without that port.
 
 ## Notifications and updates
 

@@ -4,8 +4,9 @@
 import {
   HostManager,
   fingerprint,
-  x25519Public,
+  staticPublic,
   PushSync,
+  RpcError,
   answerParams,
   batchAnswerParams,
   loadOrCreateDeviceKey,
@@ -19,6 +20,7 @@ import {
   type HostRecord,
   type Interaction,
   type PairingLink,
+  type StaticKey,
 } from '@vibeke/core';
 import { t } from '../i18n';
 import { isPickerChanged } from '../lib/pickers';
@@ -29,7 +31,7 @@ import { PrefsStore } from '../lib/prefs';
 import { ValueStore } from '../lib/store';
 import { runKey } from '../lib/tree';
 import type { CachedMirror, HapticKind, UiPlatform } from '../platform';
-import type { TimerHandle } from '@vibeke/core';
+import type { AppEvent, TimerHandle } from '@vibeke/core';
 
 export type Phase = 'loading' | 'ready' | 'error';
 
@@ -40,6 +42,8 @@ export interface Toast {
   id: number;
   text: string;
   tone: 'info' | 'ok' | 'warn' | 'error';
+  /** A button in the toast (Undo); it closes the toast. */
+  action?: { label: string; run(): void };
 }
 
 export interface AnswerParams {
@@ -47,6 +51,55 @@ export interface AnswerParams {
   choices?: Record<string, string[]>;
   text?: string;
   expected_signature?: string;
+}
+
+/** A host's config file that does not load (from `session.config_rejected`). */
+export interface ConfigRejected {
+  /** First problems, "line 3: unknown key `x`". */
+  errors: string[];
+  at: number;
+}
+
+/**
+ * What a config event means for the banner: a rejection, `null` for "it loads again", or
+ * `undefined` for an unrelated event.
+ */
+export function configErrorFromEvent(e: AppEvent): ConfigRejected | null | undefined {
+  if (e.type === 'session.config_reloaded') return null;
+  if (e.type !== 'session.config_rejected') return undefined;
+  const raw = Array.isArray(e.data?.errors) ? (e.data.errors as unknown[]) : [];
+  const errors = raw.slice(0, 3).map((x) => {
+    const o = (x ?? {}) as { line?: unknown; message?: unknown };
+    const msg = typeof o.message === 'string' ? o.message : String(x);
+    return typeof o.line === 'number' && o.line > 0 ? `line ${o.line}: ${msg}` : msg;
+  });
+  return { errors, at: e.ts };
+}
+
+/** How an interaction closed when this device did not answer it. */
+export type CloseReason = 'dismissed' | 'heuristic' | 'expired' | 'elsewhere' | 'cancelled';
+
+export function closeReasonFromEvent(e: AppEvent): { interaction: string; reason: CloseReason } | null {
+  const id = e.subject?.interaction;
+  if (!id) return null;
+  const data = (e.data ?? {}) as { reason?: unknown; closed_by?: unknown };
+  switch (e.type) {
+    case 'interaction.cancelled':
+      return { interaction: id, reason: data.closed_by === 'heuristic' ? 'heuristic' : data.reason === 'dismissed' ? 'dismissed' : 'cancelled' };
+    case 'interaction.expired':
+      return { interaction: id, reason: 'expired' };
+    case 'interaction.resolved_elsewhere':
+      return { interaction: id, reason: 'elsewhere' };
+    default:
+      return null;
+  }
+}
+
+/** `conflict` with `details.reason: "item_changed"`: the item changed since the user saw it. */
+export function itemChanged(e: unknown): boolean {
+  if (!(e instanceof RpcError)) return false;
+  const d = e.data?.details as { reason?: unknown } | undefined;
+  return d?.reason === 'item_changed';
 }
 
 export class AppModel {
@@ -72,10 +125,16 @@ export class AppModel {
   private _manager: HostManagerApi | null = null;
   private fingerprint: string | null = null;
   private _push: PushSync | null = null;
-  private devicePrivate: Uint8Array | null = null;
+  private devicePrivate: StaticKey | null = null;
   private toastSeq = 0;
   private offs: (() => void)[] = [];
   private lastSaved = new Map<string, { at: number; dashboard: unknown }>();
+  /**
+   * Hosts whose `config.toml` does not load (`session.config_rejected`, cleared by
+   * `session.config_reloaded`). The server keeps the last good settings meanwhile.
+   */
+  readonly configErrors = new ValueStore<Record<string, ConfigRejected>>({});
+  private configSubs = new Map<string, () => void>();
   private saveTimers = new Map<string, TimerHandle>();
 
   constructor(readonly platform: UiPlatform) {
@@ -107,7 +166,7 @@ export class AppModel {
         this.fingerprint = r.fingerprint;
       } else {
         this.devicePrivate = await loadOrCreateDeviceKey(p.keystore, (n) => p.random(n));
-        this.fingerprint = fingerprint(x25519Public(this.devicePrivate));
+        this.fingerprint = fingerprint(staticPublic(this.devicePrivate));
         const manager = new HostManager({
           platform: p,
           store: p.hostStore,
@@ -119,6 +178,7 @@ export class AppModel {
       }
       this._push = new PushSync({ manager: this._manager, push: p.push, keystore: p.keystore, random: (n) => p.random(n) });
       this.offs.push(this._manager.subscribe(() => this.onHostsChanged()));
+      this.watchConfigErrors();
       this.offs.push(p.lifecycle.onVisible(() => void this.housekeeping()));
       void this._push.start();
       void this.loadCached();
@@ -138,6 +198,8 @@ export class AppModel {
     this.saveTimers.clear();
     this.offs.forEach((f) => f());
     this.offs = [];
+    this.configSubs.forEach((f) => f());
+    this.configSubs.clear();
     this._push?.stop();
     this._manager?.stop();
   }
@@ -193,7 +255,56 @@ export class AppModel {
 
   // ---- seen/finished -----------------------------------------------------------------------
 
+  /**
+   * Why interactions closed without an answer from this device (from `interaction.cancelled` /
+   * `interaction.expired` / `interaction.resolved_elsewhere` events, and this device's own
+   * dismissals). Cards that leave the inbox say "Dismissed" or "Closed automatically" instead of
+   * "Answered in terminal". Bounded: the oldest entries go first.
+   */
+  readonly closeReasons = new Map<string, CloseReason>();
+  readonly closeReasonsVersion = new ValueStore(0);
+
+  noteClosed(key: string, reason: CloseReason): void {
+    // The device's own "dismissed" wins over the event that follows it.
+    if (this.closeReasons.get(key) === 'dismissed' && reason !== 'dismissed') return;
+    this.closeReasons.delete(key);
+    this.closeReasons.set(key, reason);
+    for (const k of this.closeReasons.keys()) {
+      if (this.closeReasons.size <= 500) break;
+      this.closeReasons.delete(k);
+    }
+    this.closeReasonsVersion.update((n) => n + 1);
+  }
+
+  private watchConfigErrors(): void {
+    const ids = new Set(this.manager.getSnapshot().map((h) => h.record.host_id));
+    for (const id of ids) {
+      if (this.configSubs.has(id)) continue;
+      this.configSubs.set(
+        id,
+        this.manager.subscribeEvents(id, (e) => {
+          const why = closeReasonFromEvent(e);
+          if (why) this.noteClosed(`${id}/${why.interaction}`, why.reason);
+          const next = configErrorFromEvent(e);
+          if (next === undefined) return;
+          this.configErrors.update((m) => {
+            const out = { ...m };
+            if (next) out[id] = next;
+            else delete out[id];
+            return out;
+          });
+        }),
+      );
+    }
+    for (const [id, off] of this.configSubs) {
+      if (ids.has(id)) continue;
+      off();
+      this.configSubs.delete(id);
+    }
+  }
+
   private onHostsChanged(): void {
+    this.watchConfigErrors();
     // Baseline done_rev for runs we have never seen so only *new* completions count as "finished".
     const seen = this.prefs.get().seenDone;
     const add: Record<string, number> = {};
@@ -269,10 +380,14 @@ export class AppModel {
     if (this.prefs.get().haptics) this.platform.haptics?.(kind);
   }
 
-  toast(text: string, tone: Toast['tone'] = 'info', ms = 3000): void {
+  toast(text: string, tone: Toast['tone'] = 'info', ms = 3000, action?: Toast['action']): void {
     const id = ++this.toastSeq;
-    this.toasts.update((l) => [...l.slice(-2), { id, text, tone }]);
-    this.platform.clock.setTimeout(() => this.toasts.update((l) => l.filter((x) => x.id !== id)), ms);
+    this.toasts.update((l) => [...l.slice(-2), { id, text, tone, ...(action ? { action } : {}) }]);
+    this.platform.clock.setTimeout(() => this.closeToast(id), ms);
+  }
+
+  closeToast(id: number): void {
+    this.toasts.update((l) => l.filter((x) => x.id !== id));
   }
 
   // ---- answers -----------------------------------------------------------------------------
@@ -318,13 +433,17 @@ export class AppModel {
     try {
       if (!conn) throw new Error('host not paired');
       await conn.request('interaction.cancel', { interaction: it.id });
+      this.noteClosed(`${hostId}/${it.id}`, 'dismissed');
       this.haptic('success');
       this.toast(t.inbox.dismissed);
       void conn.refresh().catch(() => {});
       return true;
     } catch (e) {
       this.haptic('error');
-      this.toast(errorMessage(e) || t.inbox.dismissFailed, 'error');
+      // The request changed after the user saw it (a new question, a new delivery problem):
+      // show it again instead of dismissing something they did not read.
+      if (itemChanged(e)) this.toast(t.inbox.itemChanged, 'warn', 4000);
+      else this.toast(errorMessage(e) || t.inbox.dismissFailed, 'error');
       void conn?.refresh().catch(() => {});
       return false;
     }

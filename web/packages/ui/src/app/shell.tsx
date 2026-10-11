@@ -6,7 +6,8 @@ import { emitUi, isMacLike } from './keyboard';
 import { Button, IconButton, cx } from '../components/ui';
 import { keyLabel } from '../lib/shortcuts';
 import { t } from '../i18n';
-import { BannerTracker } from '../lib/banner';
+import { BannerTracker, bannerText } from '../lib/banner';
+import { useOverlay } from '../lib/overlays';
 import { useStore } from '../lib/store';
 import { navigate } from '../router';
 
@@ -24,14 +25,7 @@ export function ConnectionBanner() {
     green: 'bg-ok/15 text-fg border-ok/40',
     none: '',
   }[b.level];
-  const text =
-    b.level === 'green'
-      ? t.conn.back
-      : b.level === 'amber'
-        ? t.conn.reconnecting
-        : fatalOnly
-          ? `${b.fatal.join(', ')}: ${hosts.every((h) => h.status === 'online' || h.status === 'idle' || h.status === 'ticket_expired') ? t.conn.ticketExpired : t.conn.revoked}`
-          : t.conn.offline(b.down.join(', '));
+  const text = bannerText(b, t.conn);
   return (
     <div role="status" className={cx('flex min-h-8 shrink-0 items-center gap-2 border-b px-3 py-1 text-xs', tone)}>
       <span className="flex-1">{text}</span>
@@ -52,6 +46,8 @@ export function ConnectionBanner() {
 export function Toasts() {
   const app = useApp();
   const toasts = useStore(app.toasts);
+  // Native layers (the desktop's embedded preview) would cover the toast: count it as an overlay.
+  useOverlay(toasts.length > 0);
   if (!toasts.length || typeof document === 'undefined') return null;
   // Portalled like dialogs: #root is its own stacking context in the installed app (styles.css).
   return createPortal(
@@ -65,7 +61,20 @@ export function Toasts() {
             x.tone === 'error' ? 'bg-danger text-danger-fg' : x.tone === 'ok' ? 'bg-surface-3 text-fg' : x.tone === 'warn' ? 'bg-warn text-black' : 'bg-surface-3 text-fg',
           )}
         >
-          {x.text}
+          <span>{x.text}</span>
+          {x.action && (
+            <button
+              type="button"
+              data-act="toast-action"
+              className="ml-3 font-semibold underline underline-offset-2 focus-visible:outline-2 focus-visible:outline-accent"
+              onClick={() => {
+                app.closeToast(x.id);
+                x.action!.run();
+              }}
+            >
+              {x.action.label}
+            </button>
+          )}
         </div>
       ))}
     </div>,

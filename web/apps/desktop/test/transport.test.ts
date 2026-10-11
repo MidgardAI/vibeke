@@ -20,12 +20,22 @@ describe('transport selection', () => {
     expect(transportOf(`local:${sock}`)).toBe('local');
   });
 
-  test('tickets pass the local path validator and the relay URL', () => {
-    const sock = '/tmp/vibeke/gateway.sock';
-    const t = parseConnectUrl(relayConnectUrl(`local:${sock}`, 'abc', 'abc.def'));
-    expect(t).toEqual({ kind: 'local', socketPath: sock, path: '/v1/connect?host=abc&ticket=abc.def' });
-    const r = parseConnectUrl(relayConnectUrl('wss://relay.example.com', 'abc', 'e30_-.sig_-'));
-    expect(r).toEqual({ kind: 'relay', url: 'wss://relay.example.com/v1/connect?host=abc&ticket=e30_-.sig_-' });
+  test('a ticket never goes in the URL; the relay gets it as a bearer header', () => {
+    const r = parseConnectUrl(relayConnectUrl('wss://relay.example.com', 'abc'));
+    expect(r).toEqual({ kind: 'relay', url: 'wss://relay.example.com/v1/connect?host=abc' });
+    const a = wsArgs(r, 'e30_-.sig_-');
+    expect(a.url).not.toContain('ticket');
+    expect((a.options.headers as Record<string, string>).Authorization).toBe('Bearer e30_-.sig_-');
+    expect(wsArgs(r).options.headers).toBeUndefined();
+    const local = wsArgs(parseConnectUrl(relayConnectUrl('local:/tmp/vibeke/gateway.sock', 'abc')), 'abc.def');
+    expect(local.options.headers).toBeUndefined();
+  });
+
+  test('browsers carry the ticket as a subprotocol', async () => {
+    const { relayProtocols } = await import('@vibeke/core');
+    expect(relayProtocols('e30.sig-x_y')).toEqual(['vibeke.v1', 'vibeke-ticket.e30.sig-x_y']);
+    expect(relayProtocols(undefined)).toEqual([]);
+    expect(relayProtocols('bad ticket')).toEqual([]);
   });
 
   test('rejects other schemes and malformed local paths', () => {

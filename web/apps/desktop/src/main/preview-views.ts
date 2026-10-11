@@ -9,7 +9,11 @@
 // - every permission denied except clipboard writes; WebRTC only over the proxy;
 // - certificate errors accepted only for loopback hosts (the tunnel is authenticated end to end
 //   and dev servers use self-signed certificates);
-// - the proxy credential is answered only for this view's webContents and the proxy's own port;
+// - each host and machine gets its own proxy listener; a view's webContents gets the view's
+//   credential, and requests without a webContents (service workers of that partition) get the
+//   partition's own credential, matched by the proxy port that challenged;
+// - a port the host has not allowed (`port_not_allowed`) hides the view and asks the user; only
+//   their "Allow" sends `allow_port: true`, once, and the host remembers the grant.
 // - `window.open` loads in the same view, `_blank` links to non-loopback sites open in the system
 //   browser, and nothing navigates to `app://`, `file://` or any other non-web scheme.
 
@@ -18,7 +22,7 @@ import { BrowserWindow, WebContentsView, session as electronSession, shell, type
 import { TUNNEL_FEATURE, type RpcLink } from '@vibeke/core';
 import { EVENT, type PreviewAction, type PreviewBounds, type PreviewOpen, type PreviewState } from '../shared/contract';
 import { PreviewProxy, isLoopbackName, isLoopbackUrl, isOurProxyChallenge, type PreviewRoute } from './preview-proxy';
-import { tunnelMux } from './preview-tunnel';
+import { portNotAllowed, tunnelMux } from './preview-tunnel';
 
 export interface PreviewViewsDeps {
   /** The host's live connection for `tunnel.*`, or null while it is offline. */
@@ -34,6 +38,8 @@ export interface PreviewViewsDeps {
 
 interface Entry {
   id: string;
+  /** The listener of this view's partition. */
+  part: Partition;
   owner: WebContents;
   win: BrowserWindow;
   view: WebContentsView;
@@ -46,6 +52,17 @@ interface Entry {
   wantVisible: boolean;
   lastUrl: string;
   error?: string;
+  /** A port the host refused (`port_not_allowed`): the view hides until the user allows it. */
+  blocked?: { host: string; port: number };
+  /** Ports the user said "Not now" to in this view: not asked again while it is open. */
+  declined: Set<number>;
+}
+
+/** One proxy listener per session partition (host + machine), with a credential for workers. */
+interface Partition {
+  proxy: PreviewProxy;
+  route: PreviewRoute;
+  worker: { username: string; password: string };
 }
 
 /** Views per owning window. */
@@ -70,7 +87,9 @@ const safeWebUrl = (url: string): string | null => {
 };
 
 export class PreviewViews {
-  private proxy: PreviewProxy;
+  private readonly partitions = new Map<string, Partition>();
+  /** Ports the user allowed for a route, sent once with `allow_port: true`. */
+  private readonly allowOnce = new Set<string>();
   private readonly views = new Map<string, Entry>();
   private readonly byContents = new WeakMap<WebContents, Entry>();
   private readonly sessions = new WeakSet<Session>();
@@ -79,15 +98,64 @@ export class PreviewViews {
   private readonly watchedWindows = new WeakSet<BrowserWindow>();
   private offHosts: (() => void) | null = null;
 
-  constructor(private readonly d: PreviewViewsDeps) {
-    this.proxy = new PreviewProxy({
-      tunnel: async (route, host, port) => {
-        const link = this.d.link(route.hostId);
-        if (!link) throw new Error('host is not connected');
-        return tunnelMux(link).open({ ...(route.machine ? { machine: route.machine } : {}), host, port });
-      },
-      log: d.log,
-    });
+  constructor(private readonly d: PreviewViewsDeps) {}
+
+  private partitionFor(route: PreviewRoute): Partition {
+    const name = previewPartition(route.hostId, route.machine);
+    let part = this.partitions.get(name);
+    if (!part) {
+      const proxy = new PreviewProxy({
+        tunnel: (r, host, port, view) => this.openTunnel(r, host, port, view),
+        log: this.d.log,
+      });
+      const worker = proxy.addView(`sw${randomBytes(12).toString('hex')}`, route);
+      part = { proxy, route: { ...route }, worker };
+      this.partitions.set(name, part);
+    }
+    return part;
+  }
+
+  private async openTunnel(route: PreviewRoute, host: string, port: number, view: string) {
+    const link = this.d.link(route.hostId);
+    if (!link) throw new Error('host is not connected');
+    const key = `${route.hostId}\0${route.machine}\0${port}`;
+    const allow = this.allowOnce.has(key);
+    try {
+      const s = await tunnelMux(link).open({ ...(route.machine ? { machine: route.machine } : {}), host, port, ...(allow ? { allow_port: true } : {}) });
+      if (allow) this.allowOnce.delete(key);
+      return s;
+    } catch (e) {
+      const refused = portNotAllowed(e);
+      if (refused) this.blocked(route, view, { host, port: refused.port });
+      throw e;
+    }
+  }
+
+  /** The host refused a port: hide the view(s) of that request and ask the user. */
+  private blocked(route: PreviewRoute, view: string, b: { host: string; port: number }): void {
+    const direct = this.views.get(view);
+    const hit = direct ? [direct] : [...this.views.values()].filter((e) => e.route.hostId === route.hostId && e.route.machine === route.machine);
+    for (const e of hit) {
+      if (e.blocked?.port === b.port || e.declined.has(b.port)) continue;
+      e.blocked = b;
+      e.view.setVisible(false);
+      this.emit(e);
+    }
+  }
+
+  /**
+   * The user answered the port question of a view. Allow: open the port once with `allow_port`
+   * and reload. Not now: show the page as it is (that port stays refused).
+   */
+  allowPort(owner: WebContents, view: string, allow: boolean): void {
+    const e = this.entry(owner, view);
+    if (!e.blocked) return;
+    if (!allow) e.declined.add(e.blocked.port);
+    if (allow) this.allowOnce.add(`${e.route.hostId}\0${e.route.machine}\0${e.blocked.port}`);
+    e.blocked = undefined;
+    e.view.setVisible(e.wantVisible && !e.hostDown);
+    if (allow && !e.hostDown) void e.view.webContents.loadURL(e.view.webContents.getURL() || e.lastUrl).catch(() => {});
+    this.emit(e);
   }
 
   /** Preview sessions are exempt from the app's navigation guard (they have their own rules). */
@@ -106,18 +174,20 @@ export class PreviewViews {
     const win = BrowserWindow.fromWebContents(owner);
     if (!win || win.isDestroyed()) throw new Error('no window');
     if (!this.d.features(p.hostId).includes(TUNNEL_FEATURE)) {
-      throw Object.assign(new Error('This host cannot show previews in the app. Update Vibeke on the host.'), { code: 'unsupported' });
+      // The gateway offers tunnels only to full, unlimited devices (and newer hosts).
+      throw Object.assign(new Error('Previews in the app need a device with full access to this host, and an up-to-date host.'), { code: 'unsupported' });
     }
     if ([...this.views.values()].filter((e) => e.owner === owner).length >= MAX_VIEWS_PER_WINDOW) {
       throw Object.assign(new Error('Too many open previews in this window.'), { code: 'busy' });
     }
-    const port = await this.proxy.start();
     const route: PreviewRoute = { hostId: p.hostId, machine: p.machine === 'local' ? '' : p.machine };
+    const part = this.partitionFor(route);
+    const port = await part.proxy.start();
     const ses = await this.sessionFor(route, port);
     if (owner.isDestroyed() || win.isDestroyed()) throw new Error('window closed');
 
     const id = `pv${randomBytes(12).toString('hex')}`;
-    const cred = this.proxy.addView(id, route);
+    const cred = part.proxy.addView(id, route);
     const view = new WebContentsView({
       webPreferences: {
         session: ses,
@@ -134,7 +204,7 @@ export class PreviewViews {
         spellcheck: true,
       },
     });
-    const e: Entry = { id, owner, win, view, route, username: cred.username, password: cred.password, hostDown: false, wantVisible: false, lastUrl: p.url };
+    const e: Entry = { id, part, owner, win, view, route, username: cred.username, password: cred.password, hostDown: false, wantVisible: false, lastUrl: p.url, declined: new Set() };
     this.views.set(id, e);
     this.byContents.set(view.webContents, e);
     this.configureContents(e);
@@ -154,7 +224,7 @@ export class PreviewViews {
     const zoom = owner.getZoomFactor() || 1;
     e.view.setBounds({ x: Math.round(b.x * zoom), y: Math.round(b.y * zoom), width: Math.round(b.width * zoom), height: Math.round(b.height * zoom) });
     e.wantVisible = b.visible;
-    e.view.setVisible(b.visible && !e.hostDown && b.width > 0 && b.height > 0);
+    e.view.setVisible(b.visible && !e.hostDown && !e.blocked && b.width > 0 && b.height > 0);
   }
 
   go(owner: WebContents, view: string, p: { url: string } | { action: PreviewAction }): void {
@@ -211,13 +281,23 @@ export class PreviewViews {
 
   /**
    * `app.on('login')`: answers the proxy challenge for a preview view with its own credential.
-   * Returns true when handled (the caller must have called `event.preventDefault()` then).
+   * A request without a webContents (a service worker of a preview page) gets the credential of
+   * the partition whose proxy port challenged it. Returns true when handled (the caller must have
+   * called `event.preventDefault()` then).
    */
   login(wc: WebContents | null, authInfo: { isProxy: boolean; host: string; port: number; realm?: string }, cb: (user?: string, pass?: string) => void): boolean {
-    if (!wc || !isOurProxyChallenge(authInfo, this.proxy.port)) return false;
-    const e = this.byContents.get(wc);
-    if (!e || e.view.webContents !== wc) return false;
-    cb(e.username, e.password);
+    if (wc) {
+      const e = this.byContents.get(wc);
+      if (e && e.view.webContents === wc && isOurProxyChallenge(authInfo, e.part.proxy.port)) {
+        cb(e.username, e.password);
+        return true;
+      }
+    }
+    const part = [...this.partitions.values()].find((x) => isOurProxyChallenge(authInfo, x.proxy.port));
+    if (!part) return false;
+    // A webContents of another session never gets a preview credential.
+    if (wc && !this.sessions.has(wc.session)) return false;
+    cb(part.worker.username, part.worker.password);
     return true;
   }
 
@@ -225,7 +305,8 @@ export class PreviewViews {
     for (const e of [...this.views.values()]) this.destroy(e);
     this.offHosts?.();
     this.offHosts = null;
-    this.proxy.close();
+    for (const part of this.partitions.values()) part.proxy.close();
+    this.partitions.clear();
   }
 
   // ---- internals -------------------------------------------------------------------------------
@@ -357,6 +438,7 @@ export class PreviewViews {
       canGoBack: wc.navigationHistory.canGoBack(),
       canGoForward: wc.navigationHistory.canGoForward(),
       ...(e.error ? { error: e.error } : {}),
+      ...(e.blocked ? { blocked: { ...e.blocked } } : {}),
     };
     e.owner.send(EVENT.previewState, state);
   }
@@ -378,7 +460,8 @@ export class PreviewViews {
   private forget(e: Entry): void {
     if (this.views.get(e.id) !== e) return;
     this.views.delete(e.id);
-    this.proxy.removeView(e.id);
+    e.part.proxy.removeView(e.id);
+    if (![...this.views.values()].some((x) => x.part === e.part)) e.part.proxy.dropPool(e.route);
     if (!this.views.size) {
       this.offHosts?.();
       this.offHosts = null;

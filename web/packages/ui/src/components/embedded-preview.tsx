@@ -7,7 +7,7 @@
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type FormEvent } from 'react';
 import { ArrowLeft, ArrowRight, Bug, ExternalLink, Globe, Maximize2, Minimize2, RefreshCw, X } from 'lucide-react';
-import type { Preview } from '@vibeke/core';
+import { hostKind, type Preview } from '@vibeke/core';
 import { useApp, useHost } from '../app/hooks';
 import { t } from '../i18n';
 import { errorMessage } from '../lib/answer';
@@ -54,10 +54,14 @@ export function EmbeddedPreview({ hostId, preview, expanded, onExpand }: { hostI
   const api = app.platform.previewView;
   const info = host?.info;
   if (!api) return null;
-  if (info && !info.features.includes(TUNNEL_FEATURE)) {
+  // Tunnels reach anything on the preview machine's loopback: the gateway offers them only to
+  // devices with full, unlimited access. Say so instead of embedding a page that cannot load.
+  const record = host?.record;
+  const limited = !!record && (hostKind(record) !== 'device' || !!record.limit || record.until !== undefined || (info?.scope ?? record.scope) !== 'full');
+  if (limited || (info && !info.features.includes(TUNNEL_FEATURE))) {
     return (
       <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 p-6">
-        <Notice className="max-w-md">{t.embeddedPreview.noTunnel}</Notice>
+        <Notice className="max-w-md">{limited ? t.embeddedPreview.needsFull : t.embeddedPreview.noTunnel}</Notice>
         {!isLoopbackUrl(preview.url) && (
           <Button size="sm" variant="outline" icon={<ExternalLink />} onClick={() => app.platform.openExternal(preview.url)}>
             {t.embeddedPreview.openBrowser}
@@ -153,7 +157,17 @@ function PreviewSurface({
 
   const hostOffline = state?.error === 'host_offline';
   const crashed = state?.error === 'crashed';
-  const visible = !!view && !covered && !hostOffline && !crashed && pageShown;
+  const blocked = state?.blocked ?? null;
+  const [allowing, setAllowing] = useState(false);
+  const visible = !!view && !covered && !hostOffline && !crashed && !blocked && pageShown;
+  const answerPort = (yes: boolean) => {
+    if (!view || !api.allowPort) return;
+    setAllowing(yes);
+    api
+      .allowPort(view, yes)
+      .catch((e) => app.toast(errorMessage(e), 'error'))
+      .finally(() => setAllowing(false));
+  };
   const last = useRef('');
 
   const report = useCallback(
@@ -261,6 +275,23 @@ function PreviewSurface({
       </div>
       <div ref={box} aria-label={state?.title || s.page} className="relative min-h-0 flex-1 bg-white">
         {covered && shot && <img src={shot} alt="" className="pointer-events-none absolute inset-0 size-full object-cover object-left-top" />}
+        {blocked && !openError && !hostOffline && (
+          <div role="alertdialog" aria-labelledby="vk-preview-port" className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-surface p-6 text-center">
+            <Globe className="size-6 text-muted" />
+            <div id="vk-preview-port" className="max-w-md text-base font-medium">
+              {s.allowPortTitle(`${blocked.host}:${blocked.port}`)}
+            </div>
+            <p className="max-w-md text-sm text-muted">{s.allowPortBody(machine)}</p>
+            <div className="flex gap-2">
+              <Button variant="outline" disabled={!api.allowPort} onClick={() => answerPort(false)}>
+                {s.notNow}
+              </Button>
+              <Button variant="primary" busy={allowing} disabled={!api.allowPort} data-act="allow-port" onClick={() => answerPort(true)}>
+                {s.allowPort}
+              </Button>
+            </div>
+          </div>
+        )}
         {(openError || hostOffline || crashed) && (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-surface p-6">
             <Globe className="size-6 text-muted" />

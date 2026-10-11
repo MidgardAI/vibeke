@@ -54,3 +54,16 @@ describe('screencast helpers', () => {
     expect(sessionsFor(list, 'not a url')).toEqual(list);
   });
 });
+
+import { wantsDataSaver } from '../src/lib/screencast';
+
+describe('data saver', () => {
+  test('cellular, Save-Data, slow links and hidden pages ask for fewer frames', () => {
+    expect(wantsDataSaver(undefined, false)).toBe(false);
+    expect(wantsDataSaver({ type: 'wifi', effectiveType: '4g' }, false)).toBe(false);
+    expect(wantsDataSaver({ type: 'cellular' }, false)).toBe(true);
+    expect(wantsDataSaver({ saveData: true }, false)).toBe(true);
+    expect(wantsDataSaver({ effectiveType: '3g' }, false)).toBe(true);
+    expect(wantsDataSaver(undefined, true)).toBe(true);
+  });
+});

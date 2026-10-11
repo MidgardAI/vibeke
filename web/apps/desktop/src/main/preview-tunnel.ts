@@ -13,7 +13,7 @@
 // (Node serializes `_write`), so the gateway's 8-write queue never answers `busy`.
 
 import { Duplex } from 'node:stream';
-import { TUNNEL_SEND_MAX, type RpcLink, type TunnelOpenParams } from '@vibeke/core';
+import { TUNNEL_ACK_WINDOW, TUNNEL_SEND_MAX, type RpcLink, type TunnelOpenParams } from '@vibeke/core';
 
 /** Acknowledge in batches of this many bytes (the gateway's window is 512 KiB). */
 const ACK_BATCH = 64 * 1024;
@@ -23,8 +23,14 @@ const OPEN_TIMEOUT_MS = 20_000;
 const SEND_TIMEOUT_MS = 60_000;
 /** A `tunnel.data` chunk is ≤ 48 KiB (64 Ki base64 characters); anything far larger is refused. */
 const MAX_DATA_B64 = 96 * 1024;
-/** Notifications for a stream whose `tunnel.open` response has not arrived yet. */
-const MAX_EARLY_BYTES = 1024 * 1024;
+/**
+ * Data for a stream whose `tunnel.open` response has not arrived yet. The gateway sends at most
+ * `TUNNEL_ACK_WINDOW` unacknowledged bytes per stream, so this holds a full window with room to
+ * spare; a stream that still goes over fails with an error instead of losing bytes.
+ */
+const MAX_EARLY_STREAM_BYTES = TUNNEL_ACK_WINDOW + 128 * 1024;
+/** All early data together (several streams opening at once). */
+const MAX_EARLY_BYTES = 8 * 1024 * 1024;
 
 export class TunnelError extends Error {
   constructor(
@@ -142,6 +148,8 @@ export class TunnelMux {
   /** Notifications that arrived for an unknown stream while an open was in flight. */
   private early = new Map<string, Early[]>();
   private earlyBytes = 0;
+  /** Streams whose early data did not fit: they open as failed, never with a gap in the data. */
+  private overflowed = new Set<string>();
   private opening = 0;
   private readonly offs: (() => void)[];
   private dead = false;
@@ -173,6 +181,11 @@ export class TunnelMux {
         throw new TunnelError('host disconnected', 'disconnected');
       }
       this.streams.set(id, s);
+      if (this.overflowed.delete(id)) {
+        this.early.delete(id);
+        s.destroy(new TunnelError('the preview sent data faster than the app could take it; reload the page', 'overflow'));
+        throw new TunnelError('tunnel stream overflowed before it opened', 'overflow');
+      }
       const queued = this.early.get(id);
       if (queued) {
         this.early.delete(id);
@@ -187,6 +200,7 @@ export class TunnelMux {
       if (--this.opening === 0) {
         this.early.clear();
         this.earlyBytes = 0;
+        this.overflowed.clear();
       }
     }
   }
@@ -214,11 +228,21 @@ export class TunnelMux {
   }
 
   private queue(id: string, e: Early): void {
-    if (!this.opening) return;
+    if (!this.opening || this.overflowed.has(id)) return;
     const n = e.data?.length ?? 0;
-    if (this.earlyBytes + n > MAX_EARLY_BYTES) return;
-    this.earlyBytes += n;
     const list = this.early.get(id);
+    const streamBytes = (list ?? []).reduce((sum, q) => sum + (q.data?.length ?? 0), 0);
+    if (this.earlyBytes + n > MAX_EARLY_BYTES || streamBytes + n > MAX_EARLY_STREAM_BYTES) {
+      // Dropping bytes would corrupt the stream silently: fail it loudly when it opens.
+      this.overflowed.add(id);
+      if (list) {
+        this.earlyBytes -= streamBytes;
+        this.early.delete(id);
+      }
+      this.link.request('tunnel.close', { stream: id }).catch(() => {});
+      return;
+    }
+    this.earlyBytes += n;
     if (list) list.push(e);
     else this.early.set(id, [e]);
   }
@@ -240,4 +264,16 @@ export function tunnelMux(link: RpcLink): TunnelMux {
   let m = muxes.get(link);
   if (!m) muxes.set(link, (m = new TunnelMux(link)));
   return m;
+}
+
+/** `tunnel.open` refused the port: `{kind: forbidden|permission_denied, details: {reason: port_not_allowed, port}}`. */
+export function portNotAllowed(e: unknown): { port: number; host: string } | null {
+  const x = e as { message?: unknown; data?: { details?: { reason?: unknown; port?: unknown; host?: unknown } } } | null;
+  const d = x?.data?.details;
+  const byDetails = d?.reason === 'port_not_allowed';
+  const byMessage = typeof x?.message === 'string' && x.message.includes('port_not_allowed');
+  if (!byDetails && !byMessage) return null;
+  const port = typeof d?.port === 'number' ? d.port : Number(/port_not_allowed\D*(\d{1,5})/.exec(String(x?.message))?.[1] ?? NaN);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return null;
+  return { port, host: typeof d?.host === 'string' ? d.host : 'localhost' };
 }

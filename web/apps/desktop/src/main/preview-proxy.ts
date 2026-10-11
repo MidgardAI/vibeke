@@ -3,8 +3,12 @@
 // which selects the host and machine to route to.
 //
 // - `CONNECT host:port` (HTTPS, WebSockets) and absolute-form HTTP (`GET http://host/…`, forwarded
-//   in origin form with `Connection: close`) are accepted; anything without a valid
-//   `Proxy-Authorization: Basic` gets 407, so other local processes cannot use the proxy.
+//   in origin form) are accepted; anything without a valid `Proxy-Authorization: Basic` gets 407,
+//   so other local processes cannot use the proxy.
+// - Plain HTTP keeps connections alive: the proxy finds where each response ends
+//   (http-framing.ts), puts the upstream connection (a tunnel stream) back into a small pool per
+//   view route and destination, and reads the next request from the same client connection. A
+//   page with 100 scripts opens a few tunnel streams, not 100.
 // - Loopback destinations (`localhost`, `*.localhost`, 127/8, ::1, and names that resolve only to
 //   loopback addresses) go through a tunnel stream to the preview machine. Everything else
 //   connects directly from this machine, never to this machine's own loopback.
@@ -16,6 +20,7 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { lookup as dnsLookup } from 'node:dns/promises';
 import { connect as netConnect, createServer, isIP, type Server, type Socket } from 'node:net';
 import type { Duplex } from 'node:stream';
+import { ByteReader, copyBody, keepAlive, parseResponseHead, readHead, requestFraming, responseFraming, writeAll, type Framing } from './http-framing';
 
 export interface PreviewRoute {
   hostId: string;
@@ -26,8 +31,11 @@ export interface PreviewRoute {
 export type Destination = { kind: 'tunnel'; host: string; port: number } | { kind: 'direct'; address: string; port: number };
 
 export interface ProxyDeps {
-  /** A byte stream to `host:port` on the route's preview machine (gateway `tunnel.open`). */
-  tunnel(route: PreviewRoute, host: string, port: number): Promise<Duplex>;
+  /**
+   * A byte stream to `host:port` on the route's preview machine (gateway `tunnel.open`). `view` is
+   * the credential's user name: the view whose request needs it.
+   */
+  tunnel(route: PreviewRoute, host: string, port: number, view: string): Promise<Duplex>;
   /** A direct TCP connection from this machine (default: `net.connect`). Never a loopback address. */
   direct?(address: string, port: number): Promise<Duplex>;
   /** Name resolution (default: `dns.lookup` with `all: true`). */
@@ -38,6 +46,12 @@ export interface ProxyDeps {
 export const PROXY_REALM = 'vibeke-preview';
 const MAX_HEAD = 64 * 1024;
 const HEAD_TIMEOUT_MS = 30_000;
+/** A kept-alive client connection waits this long for its next request. */
+const CLIENT_IDLE_MS = 60_000;
+/** An idle upstream connection stays in the pool this long. */
+const POOL_IDLE_MS = 30_000;
+/** Idle upstream connections per route and destination. */
+const POOL_PER_KEY = 6;
 const DIRECT_TIMEOUT_MS = 15_000;
 /** After the upstream closed, the client side gets this long to flush before it is cut. */
 const CLOSE_GRACE_MS = 10_000;
@@ -177,9 +191,10 @@ const HOP_BY_HOP = new Set(['proxy-authorization', 'proxy-connection', 'proxy-au
 
 /**
  * An absolute-form request rewritten for the origin: origin-form target, proxy and hop-by-hop
- * headers removed, `Connection: close` (or kept `Upgrade` for WebSocket handshakes).
+ * headers removed. The connection stays open for HTTP/1.1 (the proxy pools it), except when the
+ * client asked to close it; WebSocket handshakes keep their `Upgrade`.
  */
-export function originRequest(h: RequestHead): { host: string; port: number; head: string } | null {
+export function originRequest(h: RequestHead): { host: string; port: number; head: string; upgrade: boolean; close: boolean } | null {
   let u: URL;
   try {
     u = new URL(h.target);
@@ -188,12 +203,13 @@ export function originRequest(h: RequestHead): { host: string; port: number; hea
   }
   if (u.protocol !== 'http:' || u.username || u.password || !u.hostname) return null;
   const port = u.port ? Number(u.port) : 80;
-  const connTokens = (header(h, 'connection') ?? '')
+  const connTokens = (header(h, 'connection') ?? header(h, 'proxy-connection') ?? '')
     .split(',')
     .map((s) => s.trim().toLowerCase())
     .filter(Boolean);
   const upgrade = header(h, 'upgrade');
   const isUpgrade = !!upgrade && connTokens.includes('upgrade');
+  const close = h.version === 'HTTP/1.0' ? !connTokens.includes('keep-alive') : connTokens.includes('close');
   const drop = new Set([...HOP_BY_HOP, ...connTokens]);
   const lines = [`${h.method} ${u.pathname || '/'}${u.search} ${h.version}`];
   let hasHost = false;
@@ -205,8 +221,8 @@ export function originRequest(h: RequestHead): { host: string; port: number; hea
   }
   if (!hasHost) lines.push(`Host: ${u.host}`);
   if (isUpgrade) lines.push(`Upgrade: ${upgrade}`, 'Connection: Upgrade');
-  else lines.push('Connection: close');
-  return { host: normalizeHost(u.hostname), port, head: `${lines.join('\r\n')}\r\n\r\n` };
+  else if (close) lines.push('Connection: close');
+  return { host: normalizeHost(u.hostname), port, head: `${lines.join('\r\n')}\r\n\r\n`, upgrade: isUpgrade, close: close && !isUpgrade };
 }
 
 // ---- the proxy ---------------------------------------------------------------------------------
@@ -249,6 +265,7 @@ export class PreviewProxy {
   private listening: Promise<number> | null = null;
   private readonly creds = new Map<string, Credential>();
   private readonly sockets = new Set<Socket>();
+  private readonly pool = new Map<string, Upstream[]>();
   port = 0;
 
   constructor(private readonly deps: ProxyDeps) {}
@@ -276,6 +293,8 @@ export class PreviewProxy {
     this.server?.close();
     for (const s of this.sockets) s.destroy();
     this.sockets.clear();
+    for (const list of this.pool.values()) for (const up of list) up.stream.destroy();
+    this.pool.clear();
     this.server = null;
     this.listening = null;
   }
@@ -294,16 +313,29 @@ export class PreviewProxy {
 
   /** The route of a valid `Proxy-Authorization: Basic …` value, else null (constant-time compare). */
   authenticate(value: string | undefined): PreviewRoute | null {
+    return this.authenticateView(value)?.route ?? null;
+  }
+
+  /** The view (credential user name) and route of a valid `Proxy-Authorization` value. */
+  authenticateView(value: string | undefined): { view: string; route: PreviewRoute } | null {
     const m = /^Basic\s+([A-Za-z0-9+/=]{1,512})$/i.exec(value?.trim() ?? '');
     if (!m) return null;
     const decoded = Buffer.from(m[1]!, 'base64').toString('utf8');
     const i = decoded.indexOf(':');
     if (i <= 0) return null;
-    const c = this.creds.get(decoded.slice(0, i));
+    const view = decoded.slice(0, i);
+    const c = this.creds.get(view);
     if (!c) return null;
     const given = Buffer.from(decoded.slice(i + 1), 'utf8');
     if (given.length !== c.password.length || !timingSafeEqual(given, c.password)) return null;
-    return c.route;
+    return { view, route: c.route };
+  }
+
+  /** Idle upstream connections in the pool (for tests). */
+  get pooled(): number {
+    let n = 0;
+    for (const l of this.pool.values()) n += l.length;
+    return n;
   }
 
   private onConnection(sock: Socket): void {
@@ -311,75 +343,236 @@ export class PreviewProxy {
     sock.on('close', () => this.sockets.delete(sock));
     sock.on('error', () => {});
     sock.setNoDelay(true);
-    let buf: Buffer = Buffer.alloc(0);
-    let headDone = false;
-    const timer = setTimeout(() => sock.destroy(), HEAD_TIMEOUT_MS);
-    const onData = (d: Buffer) => {
-      buf = buf.length ? Buffer.concat([buf, d]) : d;
-      const end = buf.indexOf('\r\n\r\n');
-      if (end < 0) {
-        if (buf.length > MAX_HEAD) {
-          headDone = true;
-          sock.off('data', onData);
-          clearTimeout(timer);
-          reply(sock, 431, 'request head too large');
-        }
-        return;
-      }
-      headDone = true;
-      sock.off('data', onData);
-      sock.pause();
-      clearTimeout(timer);
-      if (end > MAX_HEAD) return reply(sock, 431, 'request head too large');
-      const head = parseHead(buf.subarray(0, end).toString('latin1'));
-      void this.handle(sock, head, buf.subarray(end + 4)).catch((e) => {
-        this.deps.log?.(`preview proxy: ${(e as Error).message}`);
-        sock.destroy();
-      });
-    };
-    sock.on('data', onData);
-    sock.once('end', () => {
-      if (headDone) return;
-      clearTimeout(timer);
+    void this.serve(sock).catch((e) => {
+      this.deps.log?.(`preview proxy: ${(e as Error).message}`);
       sock.destroy();
     });
   }
 
-  private async handle(sock: Socket, head: RequestHead | null, rest: Buffer): Promise<void> {
-    if (!head) return reply(sock, 400, 'malformed request');
-    const route = this.authenticate(header(head, 'proxy-authorization'));
-    if (!route) return reply(sock, 407, 'proxy authentication required', [`Proxy-Authenticate: Basic realm="${PROXY_REALM}"`]);
+  /** One client connection: requests one after another until it closes or upgrades. */
+  private async serve(sock: Socket): Promise<void> {
+    const client = new ByteReader(sock);
+    for (let first = true; ; first = false) {
+      const got = await readHead(client, MAX_HEAD, first ? HEAD_TIMEOUT_MS : CLIENT_IDLE_MS);
+      if ('error' in got) {
+        if (got.error === 'too_large') return reply(sock, 431, 'request head too large');
+        // The client closed between requests: let what we wrote reach it. A silent client is cut.
+        if (got.error === 'closed') sock.end();
+        else sock.destroy();
+        return;
+      }
+      const head = parseHead(got.head.toString('latin1'));
+      if (!head) return reply(sock, 400, 'malformed request');
+      const auth = this.authenticateView(header(head, 'proxy-authorization'));
+      if (!auth) return reply(sock, 407, 'proxy authentication required', [`Proxy-Authenticate: Basic realm="${PROXY_REALM}"`]);
+      const { view, route } = auth;
 
-    let target: { host: string; port: number };
-    let forward: string | null = null;
-    if (head.method === 'CONNECT') {
-      const a = parseAuthority(head.target);
-      if (!a) return reply(sock, 400, 'invalid CONNECT target');
-      target = a;
-    } else {
+      if (head.method === 'CONNECT') {
+        const a = parseAuthority(head.target);
+        if (!a) return reply(sock, 400, 'invalid CONNECT target');
+        const up = await this.dial(sock, route, view, a.host, a.port);
+        if (!up) return;
+        sock.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+        return this.spliceRest(sock, client, up.stream, up.reader?.detach());
+      }
+
       const o = originRequest(head);
       if (!o) return reply(sock, 400, 'only absolute-form http:// requests are proxied');
-      target = o;
-      forward = o.head;
+      if (o.upgrade) {
+        const up = await this.dial(sock, route, view, o.host, o.port);
+        if (!up) return;
+        await writeAll(up.stream, Buffer.from(o.head, 'latin1'));
+        return this.spliceRest(sock, client, up.stream, up.reader?.detach());
+      }
+      const framing = requestFraming(head.headers);
+      if (!framing) return reply(sock, 400, 'invalid request body framing');
+      const keep = await this.exchange(sock, client, route, view, head.method, o, framing);
+      if (!keep) return;
     }
+  }
 
-    let upstream: Duplex;
+  /** Dial `host:port` for a route, or answer 502 and return null. */
+  private async dial(sock: Socket, route: PreviewRoute, view: string, host: string, port: number): Promise<Upstream | null> {
+    let up: Upstream;
     try {
-      const d = await resolveDestination(target.host, target.port, this.deps.lookup);
-      upstream = d.kind === 'tunnel' ? await this.deps.tunnel(route, d.host, d.port) : await (this.deps.direct ?? connectDirect)(d.address, d.port);
+      const d = await resolveDestination(host, port, this.deps.lookup);
+      const stream = d.kind === 'tunnel' ? await this.deps.tunnel(route, d.host, d.port, view) : await (this.deps.direct ?? connectDirect)(d.address, d.port);
+      up = { stream, reader: null, key: poolKey(route, d) };
     } catch (e) {
-      return reply(sock, 502, `cannot reach ${target.host}:${target.port}: ${(e as Error).message}`);
+      reply(sock, 502, `cannot reach ${host}:${port}: ${(e as Error).message}`);
+      return null;
     }
     if (sock.destroyed) {
-      upstream.destroy();
-      return;
+      up.stream.destroy();
+      return null;
     }
-    if (forward === null) sock.write('HTTP/1.1 200 Connection Established\r\n\r\n');
-    else upstream.write(Buffer.from(forward, 'latin1'));
+    return up;
+  }
+
+  /** Raw two-way pipe for CONNECT, upgrades and non-HTTP answers. */
+  private spliceRest(sock: Socket, client: ByteReader, upstream: Duplex, upBuffered?: Buffer): void {
+    const rest = client.detach();
     if (rest.length) upstream.write(rest);
+    if (upBuffered?.length) sock.write(upBuffered);
     splice(sock, upstream);
   }
+
+  /**
+   * One request and its response over a pooled (or new) upstream connection. Returns true when the
+   * client connection may carry another request.
+   */
+  private async exchange(
+    sock: Socket,
+    client: ByteReader,
+    route: PreviewRoute,
+    view: string,
+    method: string,
+    o: { host: string; port: number; head: string; close: boolean },
+    framing: Framing,
+  ): Promise<boolean> {
+    let d: Destination;
+    try {
+      d = await resolveDestination(o.host, o.port, this.deps.lookup);
+    } catch (e) {
+      reply(sock, 502, `cannot reach ${o.host}:${o.port}: ${(e as Error).message}`);
+      return false;
+    }
+    const key = poolKey(route, d);
+    const headBuf = Buffer.from(o.head, 'latin1');
+    // A pooled connection the server already closed fails before any answer: a request without
+    // a body is sent once more on a fresh connection.
+    for (let attempt = 0; ; attempt++) {
+      if (sock.destroyed) return false;
+      let up = attempt === 0 ? this.take(key) : null;
+      const pooled = !!up;
+      if (!up) {
+        const fresh = await this.dial(sock, route, view, o.host, o.port);
+        if (!fresh) return false;
+        up = fresh;
+      }
+      const reader = (up.reader ??= new ByteReader(up.stream));
+      const upstream = up.stream;
+      const cut = () => upstream.destroy();
+      sock.once('close', cut);
+      try {
+        try {
+          await writeAll(upstream, headBuf);
+          await copyBody(client, framing, upstream);
+        } catch (e) {
+          upstream.destroy();
+          if (pooled && framing.kind === 'none') continue;
+          throw e;
+        }
+        const r = await this.relayResponse(sock, reader, method);
+        if (r === 'empty') {
+          upstream.destroy();
+          if (pooled && framing.kind === 'none') continue;
+          reply(sock, 502, `${o.host}:${o.port} closed the connection without an answer`);
+          return false;
+        }
+        if (r === 'raw') {
+          sock.off('close', cut);
+          this.spliceRest(sock, client, upstream, reader.detach());
+          return false;
+        }
+        if (r.reusable && !reader.buffered && !upstream.destroyed) this.put(key, up);
+        else upstream.destroy();
+        if (r.closeClient || o.close) {
+          sock.end();
+          return false;
+        }
+        return true;
+      } finally {
+        sock.off('close', cut);
+      }
+    }
+  }
+
+  /**
+   * Copy one response (after any 1xx) to the client. `empty`: the upstream closed before sending
+   * anything; `raw`: not HTTP (or an upgrade), the caller splices the connection.
+   */
+  private async relayResponse(sock: Socket, r: ByteReader, method: string): Promise<'empty' | 'raw' | { reusable: boolean; closeClient: boolean }> {
+    for (let first = true; ; first = false) {
+      const got = await readHead(r, MAX_HEAD);
+      if ('error' in got) {
+        if (got.error === 'closed' && first) return 'empty';
+        throw new Error(`upstream response: ${got.error}`);
+      }
+      const res = parseResponseHead(got.head.toString('latin1'));
+      if (!res) {
+        // Not an HTTP answer: pass it through untouched.
+        r.unread(Buffer.concat([got.head, Buffer.from('\r\n\r\n', 'latin1')]));
+        return 'raw';
+      }
+      await writeAll(sock, Buffer.concat([got.head, Buffer.from('\r\n\r\n', 'latin1')]));
+      if (res.status === 101) return 'raw';
+      if (res.status >= 100 && res.status < 200) continue;
+      const framing = responseFraming(method, res);
+      if (!framing) throw new Error('invalid response body framing');
+      await copyBody(r, framing, sock);
+      const persistent = keepAlive(res.version, res.headers) && framing.kind !== 'close';
+      return { reusable: persistent, closeClient: !persistent };
+    }
+  }
+
+  private take(key: string): Upstream | null {
+    const list = this.pool.get(key);
+    while (list?.length) {
+      const up = list.pop()!;
+      if (!list.length) this.pool.delete(key);
+      if (up.idle) clearTimeout(up.idle);
+      up.stream.off('close', up.onIdleClose!);
+      if (!up.stream.destroyed && !up.reader?.done) return up;
+    }
+    return null;
+  }
+
+  private put(key: string, up: Upstream): void {
+    const list = this.pool.get(key) ?? [];
+    if (list.length >= POOL_PER_KEY) {
+      up.stream.destroy();
+      return;
+    }
+    const drop = () => {
+      const l = this.pool.get(key);
+      const i = l?.indexOf(up) ?? -1;
+      if (l && i >= 0) l.splice(i, 1);
+      if (l && !l.length) this.pool.delete(key);
+      up.stream.destroy();
+    };
+    up.onIdleClose = drop;
+    up.idle = setTimeout(drop, POOL_IDLE_MS);
+    (up.idle as { unref?: () => void }).unref?.();
+    up.stream.once('close', drop);
+    list.push(up);
+    this.pool.set(key, list);
+  }
+
+  /** Drop pooled connections of a route (its view went away). */
+  dropPool(route: PreviewRoute): void {
+    const prefix = `${route.hostId}\0${route.machine}\0`;
+    for (const [k, list] of [...this.pool]) {
+      if (!k.startsWith(prefix)) continue;
+      this.pool.delete(k);
+      for (const up of list) {
+        if (up.idle) clearTimeout(up.idle);
+        up.stream.destroy();
+      }
+    }
+  }
 }
+
+interface Upstream {
+  stream: Duplex;
+  reader: ByteReader | null;
+  key: string;
+  idle?: ReturnType<typeof setTimeout>;
+  onIdleClose?: () => void;
+}
+
+const poolKey = (route: PreviewRoute, d: Destination): string =>
+  `${route.hostId}\0${route.machine}\0${d.kind}\0${d.kind === 'tunnel' ? d.host : d.address}\0${d.port}`;
 
 /** Does an Electron `login` auth request come from this proxy? */
 export function isOurProxyChallenge(authInfo: { isProxy: boolean; host: string; port: number; realm?: string }, port: number): boolean {

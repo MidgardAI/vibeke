@@ -93,6 +93,15 @@ export function PairScreen({ d }: { d: string | null }) {
     }
   }, [raw]);
   const link = parsed.link;
+  // Re-render when the link expires while the screen is open.
+  const [, tick] = useState(0);
+  useEffect(() => {
+    if (!link) return;
+    const left = link.exp * 1000 - app.platform.clock.now();
+    if (left <= 0) return;
+    const id = setTimeout(() => tick((n) => n + 1), Math.min(left + 50, 2 ** 31 - 1));
+    return () => clearTimeout(id);
+  }, [link, app]);
   const expired = link ? linkExpired(link, app.platform.clock.now()) : false;
   const existing = link ? hosts.find((h) => h.record.host_id === link.host) : undefined;
   const known = !!existing;
@@ -146,7 +155,7 @@ export function PairScreen({ d }: { d: string | null }) {
           {canOpenTerminal && <Button variant="primary" block size="lg" onClick={() => {
             app.prefs.patch({ preferredTuiHost: phase.kind === 'device' ? phase.id : null });
             navigate({ name: 'tui', host: phase.id });
-          }}>Open terminal</Button>}
+          }}>{t.pair.openTerminal}</Button>}
           <Button variant={canOpenTerminal ? 'secondary' : 'primary'} block size="lg" onClick={() => { app.prefs.patch({ preferredTuiHost: null }); navigate({ name: 'home' }); }}>
             {t.pair.openApp}
           </Button>
@@ -212,7 +221,7 @@ export function PairScreen({ d }: { d: string | null }) {
             ) : (
               <div className="flex items-start gap-3 text-sm">
                 <Spinner className="mt-0.5" />
-                <span>{share ? t.pair.joining : phase.k === 'connecting' ? t.pair.connecting : t.pair.waitingConfirm}</span>
+                <span>{share ? t.pair.joining : phase.k === 'connecting' ? t.pair.connecting : local ? t.pair.waitingConfirmLocal : t.pair.waitingConfirm}</span>
               </div>
             )}
             </>
@@ -277,6 +286,7 @@ function ShareHeader({ link }: { link: PairingLink }) {
       <div className="text-sm text-muted">
         {[t.pair.shareScope[s.scope] ?? s.scope, t.pair.shareUntil(whenText(s.until * 1000, now))].join(' · ')}
       </div>
+      {t.access.hints[s.scope] && <div className="text-xs text-muted">{t.pair.youCan(t.access.hints[s.scope]!)}</div>}
     </div>
   );
 }

@@ -17,6 +17,7 @@ import type { UiCommand } from '../platform';
 import { formatRoute, goBack, navigate, useRoute, workspaceRoute, type Route } from '../router';
 import { CloudAuthHost } from '../components/cloud-auth';
 import { CloudSheet } from '../screens/cloud-send';
+import { setCloudJobOpener } from '../lib/cloud-open';
 import { HandoffSheet } from '../screens/handoff';
 import { isOwnFullHost } from '../lib/handoff-send';
 import { ShareSheet } from '../screens/share';
@@ -61,7 +62,14 @@ export function openCloudSheet(mode: 'send' | 'bring_back', row: PaneRow): void 
   cloudOpener?.(mode, row);
 }
 
-type SheetState = { kind: 'new' } | { kind: 'share'; row: PaneRow } | { kind: 'handoff'; row: PaneRow } | { kind: 'cloud_send'; row: PaneRow } | { kind: 'cloud_back'; host: string; pane?: string } | null;
+type SheetState =
+  | { kind: 'new' }
+  | { kind: 'share'; row: PaneRow }
+  | { kind: 'handoff'; row: PaneRow }
+  | { kind: 'cloud_send'; row: PaneRow }
+  | { kind: 'cloud_back'; host: string; pane?: string }
+  | { kind: 'cloud_job'; host: string; job: string }
+  | null;
 
 const TYPING = /^(INPUT|TEXTAREA|SELECT)$/;
 const SUBPAGES = new Set<Route['name']>(['pane', 'interaction', 'run', 'settings', 'crew', 'sandboxes', 'pair', 'not_found']);
@@ -94,8 +102,10 @@ export function KeyboardLayer({ surface }: { surface: Surface }) {
   const [sheet, setSheet] = useState<SheetState>(null);
   useEffect(() => {
     cloudOpener = (mode, row) => setSheet(mode === 'send' ? { kind: 'cloud_send', row } : { kind: 'cloud_back', host: row.host, pane: row.pane.id });
+    setCloudJobOpener((host, job) => setSheet({ kind: 'cloud_job', host, job }));
     return () => {
       cloudOpener = null;
+      setCloudJobOpener(null);
     };
   }, []);
   const routeKey = formatRoute(route);
@@ -345,6 +355,7 @@ export function KeyboardLayer({ surface }: { surface: Surface }) {
       {sheet?.kind === 'handoff' && <HandoffSheet row={sheet.row} open onClose={() => setSheet(null)} />}
       {sheet?.kind === 'cloud_send' && <CloudSheet mode="send" host={sheet.row.host} pane={sheet.row.pane.id} open onClose={() => setSheet(null)} />}
       {sheet?.kind === 'cloud_back' && <CloudSheet mode="bring_back" host={sheet.host} pane={sheet.pane} open onClose={() => setSheet(null)} />}
+      {sheet?.kind === 'cloud_job' && <CloudSheet mode="bring_back" host={sheet.host} job={sheet.job} open onClose={() => setSheet(null)} />}
       {/* Every window that can open a cloud sheet (the main one and pop-out panes) signs in here. */}
       <CloudAuthHost />
     </>

@@ -155,3 +155,14 @@ export function isLoopbackUrl(url: string): boolean {
   const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
   return !!m && Number(m[1]) === 127;
 }
+
+/** Below this width (CSS pixels) a preview renders as a phone page. */
+export const DESKTOP_PREVIEW_MIN_WIDTH = 768;
+
+/**
+ * Should the host render the preview as a phone page? Yes on touch screens and narrow views; a
+ * wide view with a mouse (the PWA in a desktop browser) gets the desktop layout.
+ */
+export function wantsMobileLayout(width: number, coarsePointer: boolean): boolean {
+  return coarsePointer || width < DESKTOP_PREVIEW_MIN_WIDTH;
+}

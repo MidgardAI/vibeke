@@ -11,6 +11,7 @@ import { Channel, ChannelError } from './channel';
 import { helloDevice } from './hello';
 import * as b64 from './b64';
 import { recordKey } from './keys';
+import type { StaticKey } from './noise';
 import {
   MUTATING_METHODS,
   normalizeDashboard,
@@ -144,7 +145,7 @@ export interface ClientIdentity {
 
 export interface ConnectionOptions {
   platform: Platform;
-  devicePrivate: Uint8Array;
+  devicePrivate: StaticKey;
   client: ClientIdentity;
   backoffMinMs?: number;
   backoffMaxMs?: number;
@@ -160,6 +161,9 @@ const UNAUTHORIZED_LIMIT = 3;
 const REFRESH_BACKOFF_MS = 250;
 const REFRESH_BACKOFF_MAX_MS = 5_000;
 const REFRESH_MAX_RETRIES = 5;
+
+/** How long a liveness ping may take before the connection counts as dead (3–5 s). */
+export const LIVENESS_PROBE_MS = 4_000;
 
 export class HostConnection implements HostConnectionApi {
   private state: HostState;
@@ -263,7 +267,24 @@ export class HostConnection implements HostConnectionApi {
     if (visible && s !== 'revoked' && s !== 'incompatible' && s !== 'expired' && s !== 'ticket_expired') this.reconnectNow();
     if (this.rpc && this.state.status === 'online') {
       this.rpc.request('client.visibility', { visible }).catch(() => {});
+      // A phone that slept may hold a socket that died without a close: check it now instead
+      // of waiting for the idle timeout.
+      if (visible) this.checkLive();
     }
+  }
+
+  /**
+   * Ping an online host; when no answer comes within `timeoutMs`, drop the connection and
+   * connect again at once. Used when the app becomes visible and when the network comes back.
+   */
+  checkLive(timeoutMs = LIVENESS_PROBE_MS): void {
+    const rpc = this.rpc;
+    if (!rpc || rpc.closed || this.state.status !== 'online') return;
+    rpc.request('ping', {}, { timeoutMs }).catch(() => {
+      if (this.rpc !== rpc || rpc.closed) return;
+      rpc.close();
+      this.reconnectNow();
+    });
   }
 
   openTui(protocol: number, callbacks: TuiCallbacks, signal?: AbortSignal): Promise<TuiStream> {
@@ -385,7 +406,7 @@ export class HostConnection implements HostConnectionApi {
     let channel: Channel;
     try {
       channel = await Channel.connect({
-        socket: platform.connect(relayConnectUrl(rec.relay, rec.host_id, rec.ticket)),
+        socket: platform.connect(relayConnectUrl(rec.relay, rec.host_id), rec.ticket ? { ticket: rec.ticket } : undefined),
         hello: helloDevice(),
         hostKey: b64.decodeExact(rec.hk, 32),
         devicePrivate,
@@ -638,6 +659,19 @@ export class HostManager implements HostManagerApi {
     this.lifecycleOff = [
       lc.onVisible(() => this.conns.forEach((c) => c.setVisible(true))),
       lc.onHidden(() => this.conns.forEach((c) => c.setVisible(false))),
+      // Back on the network: retry hosts that are waiting out a backoff, and check that the
+      // live ones still answer (the old socket may belong to the network that went away).
+      ...(lc.onOnline
+        ? [
+            lc.onOnline(() =>
+              this.conns.forEach((c) => {
+                const s = c.getSnapshot().status;
+                if (s === 'online') c.checkLive();
+                else if (s === 'offline' || s === 'unauthorized') c.reconnectNow();
+              }),
+            ),
+          ]
+        : []),
     ];
     this.conns.forEach((c) => c.start());
   }

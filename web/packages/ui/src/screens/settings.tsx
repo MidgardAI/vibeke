@@ -19,11 +19,12 @@ import {
   type PeerInfo,
 } from '@vibeke/core';
 import { useAllHosts, useApp, useHosts, useNow, usePrefs } from '../app/hooks';
-import { Button, Card, Dot, Notice, SectionLabel, Segmented, Spinner, TextField, Toggle } from '../components/ui';
+import { Button, Card, Dot, Notice, SectionLabel, Segmented, Sheet, Spinner, TextField, Toggle } from '../components/ui';
 import { LANGUAGES, t } from '../i18n';
 import { AGENT_VIEWS } from '../lib/agent-view';
 import { CACHE_TTL_MIN_RANGE, cacheTtlMs } from '../lib/cache-clock';
 import { errorMessage } from '../lib/answer';
+import { alsoText, parseAlso, ticketDaysLeft } from '../lib/access';
 import { clockTime, whenText } from '../lib/format';
 import { DEFAULT_QUICK_REPLIES, harnessLabel } from '../lib/harness';
 import { useStore } from '../lib/store';
@@ -352,6 +353,28 @@ function HostAlertPrefs({ h, showName }: { h: HostState; showName: boolean }) {
         </Button>
       </Row>}
       {err && <div className="px-4 pb-2 text-xs text-danger">{err}</div>}
+      <Sheet open={revoking !== null} onClose={() => setRevoking(null)} title={revoking ? t.settings.revokeTitle(revoking.d.name) : ''} role="alertdialog">
+        {revoking && (
+          <div className="space-y-3">
+            <p className="text-sm">{t.settings.revokeBody}</p>
+            {revoking.checking && !revoking.also ? (
+              <div className="flex items-center gap-2 text-sm text-muted">
+                <Spinner /> {t.settings.revokeChecking}
+              </div>
+            ) : (
+              revoking.also && <Notice tone="warn">{revoking.also}</Notice>
+            )}
+            <div className="flex gap-2">
+              <Button className="flex-1" variant="outline" onClick={() => setRevoking(null)}>
+                {t.cancel}
+              </Button>
+              <Button className="flex-1" variant="danger" data-act="revoke-confirm" disabled={!online} onClick={() => void revoke(revoking.d)}>
+                {t.settings.revoke}
+              </Button>
+            </div>
+          </div>
+        )}
+      </Sheet>
     </div>
   );
 }
@@ -396,13 +419,39 @@ function HostCard({ h }: { h: HostState }) {
   const app = useApp();
   const [armed, setArmed] = useState(false);
   const [devices, setDevices] = useState<DeviceInfo[] | null>(null);
-  const [armedDev, setArmedDev] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const conn = app.conn(h.record.host_id);
   const online = h.status === 'online';
   const scope = h.info?.scope ?? h.record.scope;
   const kind = hostKind(h.record);
   const now = useNow(30_000);
+  const configError = useStore(app.configErrors)[h.record.host_id] ?? null;
+  const ticketDays = ticketDaysLeft(h.record, now);
+  // Revoke asks first and says what else goes (`dry_run`): shares and invitations it created.
+  const [revoking, setRevoking] = useState<{ d: DeviceInfo; also: string | null; checking: boolean } | null>(null);
+  const askRevoke = async (d: DeviceInfo) => {
+    const listed = alsoText(parseAlso(d.also), t.settings.also);
+    setRevoking({ d, also: listed, checking: true });
+    try {
+      const r = await conn!.request('devices.revoke', { device: d.id, dry_run: true });
+      const also = alsoText(parseAlso(r?.also), t.settings.also);
+      setRevoking((cur) => (cur?.d.id === d.id ? { d, also, checking: false } : cur));
+    } catch {
+      // The check failed (offline, not found): keep what the list said; the revoke shows its own error.
+      setRevoking((cur) => (cur?.d.id === d.id ? { ...cur, checking: false } : cur));
+    }
+  };
+  const revoke = async (d: DeviceInfo) => {
+    setRevoking(null);
+    try {
+      const r = await conn!.request('devices.revoke', { device: d.id });
+      const gone = new Set(Array.isArray(r?.revoked) ? (r.revoked as string[]) : [d.id]);
+      gone.add(d.id);
+      setDevices((l) => l?.filter((x) => !gone.has(x.id)) ?? null);
+    } catch (e) {
+      setErr(errorMessage(e));
+    }
+  };
 
   useEffect(() => {
     // Share devices may not list devices.
@@ -439,7 +488,7 @@ function HostCard({ h }: { h: HostState }) {
         <span className="text-xs text-muted">{statusText}</span>
       </div>
       {app.platform.tui && conn?.openTui && ((scope === 'full' && kind === 'device') || (kind === 'share' && h.status === 'online' && h.info?.features.includes('wasm_tui_share'))) && (
-        <div className="px-4 pt-3"><Button onClick={() => navigate({ name: 'tui', host: h.record.host_id })}>Open TUI</Button></div>
+        <div className="px-4 pt-3"><Button onClick={() => navigate({ name: 'tui', host: h.record.host_id })}>{t.settings.openTui}</Button></div>
       )}
       {kind !== 'device' && (
         <div className="px-4 pt-1 text-xs text-muted">
@@ -454,9 +503,30 @@ function HostCard({ h }: { h: HostState }) {
             .join(' · ')}
         </div>
       )}
+      {configError && (
+        <div className="px-4 pt-2">
+          <Notice tone="warn">
+            <div>{t.settings.configBroken}</div>
+            {configError.errors.map((x) => (
+              <div key={x} className="font-mono text-2xs">
+                {x}
+              </div>
+            ))}
+            <div className="text-xs text-muted">{t.settings.configFix}</div>
+          </Notice>
+        </div>
+      )}
+      {ticketDays !== null && h.status !== 'ticket_expired' && (
+        <div className="px-4 pt-2">
+          <Notice tone="warn">{t.settings.ticketSoon(ticketDays)}</Notice>
+        </div>
+      )}
       <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 px-4 py-2 text-xs">
         <dt className="text-muted">{t.settings.scope}</dt>
-        <dd>{scope}</dd>
+        <dd>
+          {t.access.names[scope] ?? scope}
+          {t.access.hints[scope] && <span className="text-muted"> · {t.access.hints[scope]}</span>}
+        </dd>
         <dt className="text-muted">{transportOf(h.record.relay) === 'local' ? t.settings.transport : 'Relay'}</dt>
         <dd className="truncate font-mono" title={h.record.relay}>{transportOf(h.record.relay) === 'local' ? t.pair.thisComputer : h.record.relay}</dd>
         <dt className="text-muted">Host id</dt>
@@ -492,26 +562,15 @@ function HostCard({ h }: { h: HostState }) {
                   {d.name} {d.this && <span className="text-muted">({t.settings.thisDevice})</span>}
                 </div>
                 <div className="font-mono text-2xs text-faint">
-                  {d.fingerprint} · {d.scope} · {d.platform}
+                  {d.fingerprint} · {t.access.names[d.scope] ?? d.scope} · {d.platform}
                 </div>
+                {t.access.hints[d.scope] && <div className="text-2xs text-muted">{t.access.hints[d.scope]}</div>}
+                {d.created_by && <div className="text-2xs text-muted">{t.settings.createdBy(devices.find((x) => x.id === d.created_by)?.name ?? d.created_by)}</div>}
                 {d.kind && d.kind !== 'device' && <DeviceShareInfo d={d} now={now} h={h} />}
               </div>
               {!d.this && scope === 'full' && (
-                <Button
-                  size="sm"
-                  variant={armedDev === d.id ? 'danger' : 'outline'}
-                  onClick={async () => {
-                    if (armedDev !== d.id) return setArmedDev(d.id);
-                    try {
-                      await conn!.request('devices.revoke', { device: d.id });
-                      setDevices((l) => l?.filter((x) => x.id !== d.id) ?? null);
-                    } catch (e) {
-                      setErr(errorMessage(e));
-                    }
-                    setArmedDev(null);
-                  }}
-                >
-                  {armedDev === d.id ? t.settings.revokeConfirm : t.settings.revoke}
+                <Button size="sm" variant="outline" data-act="revoke" onClick={() => void askRevoke(d)}>
+                  {t.settings.revoke}
                 </Button>
               )}
             </div>
@@ -519,6 +578,28 @@ function HostCard({ h }: { h: HostState }) {
         </div>
       )}
       {err && <div className="px-4 pb-2 text-xs text-danger">{err}</div>}
+      <Sheet open={revoking !== null} onClose={() => setRevoking(null)} title={revoking ? t.settings.revokeTitle(revoking.d.name) : ''} role="alertdialog">
+        {revoking && (
+          <div className="space-y-3">
+            <p className="text-sm">{t.settings.revokeBody}</p>
+            {revoking.checking && !revoking.also ? (
+              <div className="flex items-center gap-2 text-sm text-muted">
+                <Spinner /> {t.settings.revokeChecking}
+              </div>
+            ) : (
+              revoking.also && <Notice tone="warn">{revoking.also}</Notice>
+            )}
+            <div className="flex gap-2">
+              <Button className="flex-1" variant="outline" onClick={() => setRevoking(null)}>
+                {t.cancel}
+              </Button>
+              <Button className="flex-1" variant="danger" data-act="revoke-confirm" disabled={!online} onClick={() => void revoke(revoking.d)}>
+                {t.settings.revoke}
+              </Button>
+            </div>
+          </div>
+        )}
+      </Sheet>
       <div className="flex gap-2 border-t border-border px-4 py-2">
         {h.status === 'ticket_expired' && (
           <Button size="sm" variant="outline" onClick={() => navigate({ name: 'pair', d: null })}>

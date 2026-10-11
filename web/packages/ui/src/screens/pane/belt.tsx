@@ -2,7 +2,7 @@
 // slash commands, Display.
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { Check, Minus, Pencil, Plus, Send, Trash2, WrapText } from 'lucide-react';
+import { Check, Lock, Minus, Pencil, Plus, Send, Trash2, WrapText } from 'lucide-react';
 import type { AgentRun } from '@vibeke/core';
 import { useApp, usePrefs } from '../../app/hooks';
 import { SuggestReplies } from '../../components/suggest-replies';
@@ -76,18 +76,30 @@ export function ActionBelt({
   );
 }
 
+/**
+ * A belt toggle. Sticky modifiers report their state to assistive tech (`aria-pressed`, and a
+ * "locked" label) and show it in shape as well as colour: once = underlined, locked = a lock icon
+ * with a thick border.
+ */
 function KeyButton({ children, onClick, active, locked, h }: { children: ReactNode; onClick(): void; active?: boolean; locked?: boolean; h: string }) {
   return (
     <button
       type="button"
       onClick={onClick}
+      aria-pressed={!!(active || locked)}
       className={cx(
-        'min-w-0 flex-1 rounded-lg border font-mono text-sm active:bg-surface-2',
+        'inline-flex min-w-0 flex-1 items-center justify-center gap-1 rounded-lg border font-mono text-sm active:bg-surface-2',
         h,
-        locked ? 'border-accent bg-accent text-accent-fg' : active ? 'border-accent bg-accent/15 text-accent' : 'border-border bg-bg text-fg',
+        locked
+          ? 'border-2 border-accent bg-accent text-accent-fg'
+          : active
+            ? 'border-accent bg-accent/15 text-accent underline decoration-2 underline-offset-4'
+            : 'border-border bg-bg text-fg',
       )}
     >
+      {locked && <Lock aria-hidden className="size-3 shrink-0" />}
       {children}
+      {locked && <span className="sr-only"> ({t.belt.locked})</span>}
     </button>
   );
 }
@@ -281,7 +293,7 @@ function KeysPanel({ actions }: { actions: PaneActions }) {
           </KeyButton>
         ))}
         <input
-          aria-label="key"
+          aria-label={t.belt.typeKey}
           value={char}
           maxLength={1}
           autoCapitalize="off"
@@ -408,11 +420,11 @@ function DisplayPanel({ zen, setZen }: { zen?: boolean; setZen?(v: boolean): voi
       <div className="flex items-center justify-between">
         <span className="text-sm">{t.pane.textSize}</span>
         <div className="flex items-center gap-2">
-          <Button size="sm" variant="outline" aria-label="smaller" onClick={() => app.prefs.patch({ termFont: Math.max(8, prefs.termFont - 1) })}>
+          <Button size="sm" variant="outline" aria-label={t.belt.smaller} onClick={() => app.prefs.patch({ termFont: Math.max(8, prefs.termFont - 1) })}>
             <Minus className="size-4" />
           </Button>
           <span className="w-8 text-center text-sm tabular-nums">{prefs.termFont}</span>
-          <Button size="sm" variant="outline" aria-label="larger" onClick={() => app.prefs.patch({ termFont: Math.min(24, prefs.termFont + 1) })}>
+          <Button size="sm" variant="outline" aria-label={t.belt.larger} onClick={() => app.prefs.patch({ termFont: Math.min(24, prefs.termFont + 1) })}>
             <Plus className="size-4" />
           </Button>
         </div>

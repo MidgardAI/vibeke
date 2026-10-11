@@ -1,6 +1,8 @@
 // Platform capabilities injected into core (spec 16 §9.3). Shells (PWA, Electron, tests)
 // implement these; core never touches DOM, IndexedDB, WebSocket or timers directly.
 
+import type { StaticKey } from './noise';
+
 /** Opaque timer handle. */
 export type TimerHandle = unknown;
 
@@ -25,6 +27,16 @@ export type SocketState = 'connecting' | 'open' | 'closed';
  * Text messages are strings, binary messages are Uint8Array (type is preserved end to end).
  * Shells map socket errors to `onclose`.
  */
+export interface ConnectOptions {
+  /** The device's relay ticket for this host. */
+  ticket?: string;
+}
+
+/** WebSocket subprotocols that carry a relay ticket from a browser (the relay selects `vibeke.v1`). */
+export const RELAY_SUBPROTOCOL = 'vibeke.v1';
+export const relayProtocols = (ticket: string | undefined): string[] =>
+  ticket && /^[A-Za-z0-9._~-]{1,4096}$/.test(ticket) ? [RELAY_SUBPROTOCOL, `vibeke-ticket.${ticket}`] : [];
+
 export interface Socket {
   readonly state: SocketState;
   send(data: string | Uint8Array): void;
@@ -46,6 +58,15 @@ export interface KeyStore {
    * serialized in-process only.
    */
   getOrCreate?(name: string, make: () => Uint8Array, valid: (v: Uint8Array) => boolean): Promise<Uint8Array>;
+  /**
+   * Optional: Noise static keys the platform keeps as non-extractable keys (WebCrypto X25519 in
+   * IndexedDB). Returns the stored key (raw bytes stored earlier stay in use), else creates one:
+   * a WebCrypto key where supported, else `makeRaw()`. `get`/`set` stay for raw keys and other
+   * secrets; `delete` removes either kind.
+   */
+  getOrCreateStatic?(name: string, makeRaw: () => Uint8Array): Promise<StaticKey>;
+  /** The static key stored under `name` (raw or WebCrypto), or null. Required with `getOrCreateStatic`. */
+  getStatic?(name: string): Promise<StaticKey | null>;
 }
 
 const inflight = new WeakMap<KeyStore, Map<string, Promise<Uint8Array>>>();
@@ -86,6 +107,8 @@ export interface Lifecycle {
   /** Register a callback; returns an unsubscribe function. */
   onVisible(cb: () => void): () => void;
   onHidden(cb: () => void): () => void;
+  /** The network came back (browser `online` event). Optional: shells without it skip it. */
+  onOnline?(cb: () => void): () => void;
   /** Current visibility. */
   isVisible(): boolean;
 }
@@ -121,7 +144,12 @@ export interface PushSubscriptionInfo {
 export interface Platform {
   keystore: KeyStore;
   /** Open a socket; the returned socket starts in `connecting` (or already `open`). */
-  connect(url: string): Socket;
+  /**
+   * Open a socket to `url`. A relay `ticket` never goes in the URL (proxies and access logs keep
+   * URLs): browsers send it as the WebSocket subprotocol `vibeke-ticket.<ticket>` next to
+   * `vibeke.v1` (`relayProtocols`), native clients as `Authorization: Bearer <ticket>`.
+   */
+  connect(url: string, opts?: ConnectOptions): Socket;
   clock: Clock;
   /** Cryptographically secure random bytes. */
   random(n: number): Uint8Array;

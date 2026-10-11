@@ -1,7 +1,22 @@
 // The PWA's UiPlatform: IndexedDB keys and hosts, WebSocket transport, Web Push through the
 // service worker, install prompt capture, Web Speech / MediaRecorder, haptics.
 
-import { b64, systemClock, type Dashboard, type HostRecord, type HostStore, type KeyStore, type Lifecycle, type PushSubscriptionInfo, type PushSupport } from '@vibeke/core';
+import {
+  b64,
+  generateCryptoStaticKey,
+  isStoredCryptoKey,
+  opaqueFromStored,
+  systemClock,
+  type Dashboard,
+  type HostRecord,
+  type HostStore,
+  type KeyStore,
+  type Lifecycle,
+  type PushSubscriptionInfo,
+  type PushSupport,
+  type StaticKey,
+  type StoredCryptoKey,
+} from '@vibeke/core';
 import type { InstallCapability, NotificationsCapability, PermissionState, SharedItem, SpeechCapability, UiPlatform } from '@vibeke/ui';
 import { idbAll, idbDelete, idbGet, idbGetOrCreate, idbSet, persist } from './idb';
 import { connectWebSocket } from './ws-socket';
@@ -18,6 +33,14 @@ const asBytes = (v: unknown): Uint8Array | null =>
   v instanceof Uint8Array ? v : v instanceof ArrayBuffer ? new Uint8Array(v) : null;
 
 type Locks = { request<T>(name: string, cb: () => Promise<T>): Promise<T> };
+
+type StoredStatic = Uint8Array | StoredCryptoKey;
+const isStoredStatic = (v: unknown): v is StoredStatic => asBytes(v)?.length === 32 || isStoredCryptoKey(v);
+const toStatic = (v: unknown): StaticKey | null => (isStoredCryptoKey(v) ? opaqueFromStored(v) : asBytes(v)?.length === 32 ? asBytes(v) : null);
+const withLock = <T>(name: string, run: () => Promise<T>): Promise<T> => {
+  const locks = (navigator as Navigator & { locks?: Locks }).locks;
+  return locks ? locks.request(`vibeke-key:${name}`, run) : run();
+};
 
 const keystore: KeyStore = {
   async get(name) {
@@ -37,8 +60,25 @@ const keystore: KeyStore = {
         () => new Uint8Array(make()),
       ).then((v) => asBytes(v)!);
     // The transaction alone is atomic; a Web Lock additionally keeps tabs from even racing to it.
-    const locks = (navigator as Navigator & { locks?: Locks }).locks;
-    return locks ? locks.request(`vibeke-key:${name}`, run) : run();
+    return withLock(name, run);
+  },
+  // Noise static keys: a non-extractable WebCrypto X25519 key where the browser has one, so
+  // script on this origin can use the key but never read it out. A raw key stored before stays
+  // (pairings are bound to its public key); browsers without X25519 keep raw keys.
+  getOrCreateStatic(name, makeRaw) {
+    return withLock(name, async () => {
+      const have = toStatic(await idbGet<unknown>('keys', name));
+      if (have) return have;
+      // Generated outside the transaction: IndexedDB transactions cannot wait for WebCrypto.
+      const fresh: StoredStatic = (await generateCryptoStaticKey()) ?? new Uint8Array(makeRaw());
+      const v = await idbGetOrCreate<StoredStatic>('keys', name, isStoredStatic, () => fresh);
+      const k = toStatic(v);
+      if (!k) throw new Error('could not store the device key');
+      return k;
+    });
+  },
+  async getStatic(name) {
+    return toStatic(await idbGet<unknown>('keys', name));
   },
 };
 
@@ -62,6 +102,10 @@ const lifecycle: Lifecycle = {
     const f = () => document.visibilityState === 'hidden' && cb();
     document.addEventListener('visibilitychange', f);
     return () => document.removeEventListener('visibilitychange', f);
+  },
+  onOnline(cb) {
+    window.addEventListener('online', cb);
+    return () => window.removeEventListener('online', cb);
   },
   isVisible: () => document.visibilityState === 'visible',
 };

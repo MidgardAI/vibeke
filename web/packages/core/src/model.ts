@@ -586,6 +586,17 @@ export interface DeviceInfo {
   limit?: { workspace?: string; pane?: string } | null;
   /** For `peer` devices: whose host it is and how it introduced itself. */
   peer?: { owner: PeerOwner; host_name?: string; user?: GitUser } | null;
+  /** The device that created this share or link; absent/null: the host's owner. */
+  created_by?: string | null;
+  /** What revoking this device also removes (shares, hosts, invitations, peers it created). */
+  also?: { shares?: number; hosts?: number; invitations?: number; peers?: number } | null;
+}
+
+/** `devices.revoke` result: what went (or, with `dry_run`, what would go). */
+export interface RevokeResult {
+  revoked: string[];
+  also: { shares?: number; hosts?: number; invitations?: number; peers?: number };
+  summary?: string | null;
 }
 
 /** `self`: one of the owner's own hosts; `teammate`: a host that redeemed a handoff invitation. */
@@ -685,7 +696,39 @@ export interface CloudBox {
   host_tag?: string;
 }
 
-export type CloudJobState = 'queued' | 'waiting_turn' | 'creating' | 'bootstrapping' | 'exporting' | 'uploading' | 'importing' | 'resuming' | 'done' | 'failed' | 'cancelled';
+export type CloudJobState =
+  | 'queued'
+  | 'waiting_turn'
+  | 'creating'
+  | 'bootstrapping'
+  | 'exporting'
+  | 'uploading'
+  | 'importing'
+  | 'awaiting_confirmation'
+  | 'resuming'
+  | 'done'
+  | 'failed'
+  | 'cancelled';
+
+/**
+ * What a bring-back to this host would apply (`result.review` while the job waits in
+ * `awaiting_confirmation`): changed files with line counts, new and skipped files, and a warning.
+ */
+export interface CloudReview {
+  warning: string;
+  branch?: string | null;
+  head?: string | null;
+  files: { path: string; added: number; removed: number }[];
+  files_total: number;
+  added: number;
+  removed: number;
+  untracked: string[];
+  untracked_total: number;
+  skipped: { path: string; reason: string }[];
+  harness?: string | null;
+  /** A conversation comes along (resuming the agent applies it). */
+  transcript: boolean;
+}
 
 export interface CloudJob {
   id: string;
@@ -698,7 +741,7 @@ export interface CloudJob {
   state: CloudJobState;
   progress?: { done: number; total: number } | null;
   error?: { kind?: string; message?: string; details?: unknown } | null;
-  result?: { pane?: string; task?: string; box?: string; peer_job?: string } | null;
+  result?: { pane?: string; task?: string; box?: string; peer_job?: string; review?: CloudReview } | null;
   created_at: number;
   updated_at: number;
 }
@@ -1120,7 +1163,7 @@ export interface AppApi {
   /** `data_b64` is standard (padded) base64. */
   'stt.transcribe': { params: { mime: string; data_b64: string }; result: { text: string } };
   'devices.list': { params: Record<string, never>; result: { devices: DeviceInfo[] } };
-  'devices.revoke': { params: { device: string }; result: unknown };
+  'devices.revoke': { params: { device: string; dry_run?: boolean }; result: RevokeResult };
   ping: { params: Record<string, never>; result: Record<string, never> };
   /** Spec 16 §15: a scoped, expiring bearer pairing invitation (share) or a handoff invitation. */
   'share.create': {
@@ -1204,9 +1247,12 @@ export interface AppApi {
     result: { candidates: CloudBox[]; destroyed: string[]; skipped: { box: string; reason: string }[] };
   };
   'cloud.move': {
-    params: { pane?: string; run?: string; box?: string; to: CloudMoveTarget; interrupt?: boolean; source_after?: 'keep' | 'suspend' | 'destroy' };
+    /** `new_task`: copy the work into a new task first (the answer to a `shared_checkout` refusal). */
+    params: { pane?: string; run?: string; box?: string; to: CloudMoveTarget; interrupt?: boolean; source_after?: 'keep' | 'suspend' | 'destroy'; new_task?: boolean };
     result: { job: CloudJob };
   };
+  /** Go on with a bring-back waiting in `awaiting_confirmation`; `code_only` skips resuming the agent. */
+  'cloud.confirm': { params: { id: string; code_only?: boolean }; result: { job: CloudJob } };
   'cloud.jobs': { params: Record<string, never>; result: { jobs: CloudJob[] } };
   'cloud.cancel': { params: { id: string }; result: { job: CloudJob } };
   /** The hosts `handoff.send` can deliver to, as this host's gateway last published them. */
@@ -1272,14 +1318,16 @@ export interface AppApi {
     result: { session: string; delivery: string; width: number; height: number; poll: string };
   };
   /** With `wait_ms` (at most 15000) the call waits until a frame newer than `after_seq` exists. */
-  'browser.screencast_frame': { params: { session: string; after_seq?: number; wait_ms?: number }; result: BrowserFrame };
+  /** `data_saver`: smaller, fewer frames (cellular, Save-Data, or a hidden page that still polls). */
+  'browser.screencast_frame': { params: { session: string; after_seq?: number; wait_ms?: number; data_saver?: boolean }; result: BrowserFrame };
   'browser.detach_screencast': { params: { session: string }; result: { session: string; detached: boolean } };
   /** Pause the agent's use of the session and drive it from this device; ends with `browser.release` or when this device stops watching. */
   'browser.take_over': { params: { session: string }; result: { session: string; human_control: boolean } };
   'browser.release': { params: { session: string }; result: { session: string; human_control: boolean } };
   /** Phones: open a host-rendered mobile session on a preview; this device owns it and has taken it over (full scope). */
   'browser.preview_open': {
-    params: { preview: string; machine?: string; viewport: { width: number; height: number }; dpr: number; dark?: boolean };
+    /** `mobile: false` asks for a desktop page (a wide window); default a phone (touch, mobile UA). */
+    params: { preview: string; machine?: string; viewport: { width: number; height: number }; dpr: number; dark?: boolean; mobile?: boolean };
     result: BrowserSession;
   };
   /** At most 64 events per call, applied in order; only from the device that holds the take-over. */
@@ -1341,6 +1389,8 @@ export interface TunnelOpenParams {
   /** A loopback name or address on that machine (`localhost`, `*.localhost`, 127/8, ::1). */
   host: string;
   port: number;
+  /** The user agreed to let previews reach this port (after a `port_not_allowed` refusal). */
+  allow_port?: boolean;
 }
 
 /** `tunnel.data`: up to 48 KiB of stream data (unpadded base64url), in order. */
@@ -1371,6 +1421,35 @@ export const TUNNEL_SEND_MAX = 64 * 1024;
 export const TUNNEL_ACK_WINDOW = 512 * 1024;
 /** Open streams per device connection. */
 export const TUNNEL_MAX_STREAMS = 64;
+
+/**
+ * Methods that run once per `idempotency_key` (mirrors vk-server `api::KEYED_METHODS`). The client
+ * sends a key on every call and the same key when it repeats a call, so a retry after a lost
+ * answer never acts twice.
+ */
+export const KEYED_METHODS: ReadonlySet<string> = new Set([
+  'agent.prompt',
+  'agent.send_keys',
+  'agent.spawn',
+  'agent.start',
+  'browser.click',
+  'browser.close',
+  'browser.navigate',
+  'browser.open',
+  'browser.press',
+  'browser.type',
+  'notification.send',
+  'pane.run',
+  'pane.send_bytes',
+  'pane.send_keys',
+  'pane.send_text',
+  'pane.split',
+  'preview.declare',
+  'screenshot.add',
+  'tab.create',
+  'task.create',
+  'workspace.create',
+]);
 
 /** Methods that carry `op_id` (spec 16 §7.3/§7.4); mirrors vk-gateway api::is_mutating. */
 export const MUTATING_METHODS: ReadonlySet<string> = new Set([
@@ -1423,6 +1502,7 @@ export const MUTATING_METHODS: ReadonlySet<string> = new Set([
   'cloud.box.forget',
   'cloud.prune',
   'cloud.move',
+  'cloud.confirm',
   'cloud.cancel',
   'auth.approve.decide',
   'worktree.create',
@@ -1450,6 +1530,17 @@ export function snake(s: string): string {
 
 const snakeOr = <T>(v: unknown): T => (typeof v === 'string' ? (snake(v) as T) : (v as T));
 
+const RISKS: ReadonlySet<string> = new Set(['low', 'medium', 'high']);
+
+/**
+ * Any risk other than low/medium/high becomes `unknown`: a new or misspelled level must never
+ * skip the confirmation that `unknown` gets, nor break the inbox order.
+ */
+export function normalizeRisk(v: unknown): Risk {
+  const r = typeof v === 'string' ? snake(v) : '';
+  return RISKS.has(r) ? (r as Risk) : 'unknown';
+}
+
 export function normalizeInteraction(raw: unknown): Interaction {
   const i = { ...(raw as Record<string, unknown>) } as unknown as Interaction;
   i.kind = snakeOr(i.kind);
@@ -1457,7 +1548,7 @@ export function normalizeInteraction(raw: unknown): Interaction {
   i.delivery = snakeOr(i.delivery);
   i.source = snakeOr(i.source);
   i.answer_channel = snakeOr(i.answer_channel);
-  if (i.action) i.action = { ...i.action, risk: snakeOr(i.action.risk) };
+  if (i.action) i.action = { ...i.action, risk: normalizeRisk(i.action.risk) };
   if (i.answer) i.answer = { ...i.answer, decision: i.answer.decision === null ? null : snakeOr(i.answer.decision) };
   return i;
 }

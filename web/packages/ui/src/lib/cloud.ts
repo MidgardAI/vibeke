@@ -1,7 +1,7 @@
 // Cloud sandboxes (spec 17): pure helpers for the stores, the send sheet and the Sandboxes screen.
 // No React and no DOM, so they are unit tested directly.
 
-import { needsAuth, type AppEvent, type Dashboard, type CloudAuthMethod, type CloudBox, type CloudJob, type CloudJobState, type CloudProvider } from '@vibeke/core';
+import { needsAuth, type AppEvent, type Dashboard, type CloudAuthMethod, type CloudBox, type CloudJob, type CloudJobState, type CloudProvider, type CloudReview } from '@vibeke/core';
 
 const str = (v: unknown): string | undefined => (typeof v === 'string' && v ? v : undefined);
 const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
@@ -33,11 +33,54 @@ export function parseCloudJob(raw: unknown, fallbackId?: string): CloudJob | nul
           ...(str(result.task) ? { task: str(result.task)! } : {}),
           ...(str(result.box) ? { box: str(result.box)! } : {}),
           ...(str(result.peer_job) ? { peer_job: str(result.peer_job)! } : {}),
+          ...(parseReview(result.review) ? { review: parseReview(result.review)! } : {}),
         }
       : null,
     created_at: num(o.created_at),
     updated_at: num(o.updated_at),
   };
+}
+
+const strs = (v: unknown, max = 200): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string').slice(0, max) : []);
+
+/** A bring-back review (`result.review`); null when absent or malformed. */
+export function parseReview(raw: unknown): CloudReview | null {
+  const o = obj(raw);
+  if (!o) return null;
+  const files = (Array.isArray(o.files) ? o.files : [])
+    .map(obj)
+    .filter((f): f is Record<string, unknown> => !!f && typeof f.path === 'string')
+    .slice(0, 500)
+    .map((f) => ({ path: f.path as string, added: num(f.added), removed: num(f.removed) }));
+  const skipped = (Array.isArray(o.skipped) ? o.skipped : [])
+    .map(obj)
+    .filter((f): f is Record<string, unknown> => !!f && typeof f.path === 'string')
+    .slice(0, 200)
+    .map((f) => ({ path: f.path as string, reason: str(f.reason) ?? '' }));
+  const untracked = strs(o.untracked);
+  return {
+    warning: str(o.warning) ?? '',
+    branch: str(o.branch) ?? null,
+    head: str(o.head) ?? null,
+    files,
+    files_total: Math.max(num(o.files_total), files.length),
+    added: num(o.added),
+    removed: num(o.removed),
+    untracked,
+    untracked_total: Math.max(num(o.untracked_total), untracked.length),
+    skipped,
+    harness: str(o.harness) ?? null,
+    transcript: o.transcript === true,
+  };
+}
+
+/** `cloud.move` refused because the pane shares its checkout; the retry the host suggests. */
+export function sharedCheckout(e: unknown): { message: string } | null {
+  const x = e as { message?: unknown; data?: { details?: { reason?: unknown; retry?: { new_task?: unknown } } } } | null;
+  const d = x?.data?.details;
+  if (d?.reason !== 'shared_checkout') return null;
+  const m = typeof x?.message === 'string' ? x.message.replace(/^cloud\.move: /, '') : '';
+  return { message: m };
 }
 
 /** `cloud.job` carries the job as `data`, or as `data.job`. */

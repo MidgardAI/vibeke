@@ -2,11 +2,15 @@
 //
 // - Responses are matched by numeric id.
 // - Mutating calls get a client-generated `op_id` (UUID v4) unless the caller supplied one.
+// - Keyed methods (`KEYED_METHODS`) also get an `idempotency_key`: the caller's, else the op_id,
+//   else a fresh one. A caller that repeats a call with the same op_id repeats the key, and the
+//   server then returns the first result instead of acting twice.
 // - A request whose response is lost (timeout or channel close) rejects with OutcomeUnknownError.
 //   Nothing is ever retried automatically (§1.7): the UI refetches and asks the user.
 // - Liveness: `ping` every 20 s; the channel is closed when nothing authenticated arrived for 60 s.
 
 import { ChannelError, type MessageChannel } from './channel';
+import { KEYED_METHODS } from './model';
 import type { Clock, TimerHandle } from './platform';
 
 export interface RpcErrorObject {
@@ -94,6 +98,19 @@ export function uuidv4(random: (n: number) => Uint8Array): string {
   return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
 }
 
+/** Add an `idempotency_key` to a keyed call that has none (the op_id, else a fresh UUID). */
+export function withIdempotencyKey(
+  method: string,
+  params: Record<string, unknown>,
+  opId: string | undefined,
+  random: (n: number) => Uint8Array,
+): Record<string, unknown> {
+  if (!KEYED_METHODS.has(method)) return params;
+  const given = params.idempotency_key;
+  if (typeof given === 'string' && given.trim() !== '') return params;
+  return { ...params, idempotency_key: opId ?? uuidv4(random) };
+}
+
 export class RpcClient implements RpcLink {
   private nextId = 1;
   private readonly pending = new Map<number, Pending>();
@@ -135,6 +152,7 @@ export class RpcClient implements RpcLink {
       opId = typeof params.op_id === 'string' ? params.op_id : uuidv4(this.o.random);
       params = { ...params, op_id: opId };
     }
+    params = withIdempotencyKey(method, params, opId, this.o.random);
     if (this.channel.closed) {
       return Promise.reject(new OutcomeUnknownError(method, mutating, opId, 'closed'));
     }

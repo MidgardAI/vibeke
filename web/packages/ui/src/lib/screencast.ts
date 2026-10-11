@@ -80,3 +80,26 @@ export function sessionsFor<T extends { url: string }>(sessions: readonly T[], u
   const near = sessions.filter((s) => want !== null && origin(s.url) === want);
   return [...near, ...sessions.filter((s) => !near.includes(s))];
 }
+
+interface NetInfo {
+  saveData?: boolean;
+  type?: string;
+  effectiveType?: string;
+}
+
+/**
+ * Ask the host for smaller, fewer frames: the user turned on Save-Data, the device is on a
+ * cellular or slow network, or the page is hidden but still polling.
+ */
+export function wantsDataSaver(net: NetInfo | undefined, hidden: boolean): boolean {
+  if (hidden) return true;
+  if (!net) return false;
+  return !!net.saveData || net.type === 'cellular' || net.effectiveType === 'slow-2g' || net.effectiveType === '2g' || net.effectiveType === '3g';
+}
+
+/** `wantsDataSaver` for this browser right now. */
+export function dataSaverNow(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  const net = (navigator as Navigator & { connection?: NetInfo }).connection;
+  return wantsDataSaver(net, typeof document !== 'undefined' && document.visibilityState === 'hidden');
+}

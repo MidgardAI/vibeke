@@ -1,5 +1,5 @@
 // One open interaction as a card (spec 16 §9.2): approvals with Allow / Allow always / Deny and
-// swipe for low/medium risk, questions with options and free text, plan reviews, and the delivery
+// swipe for low risk, questions with options and free text, plan reviews, and the delivery
 // state after answering.
 
 import { useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
@@ -7,7 +7,8 @@ import { AlertTriangle, Check, CircleHelp, ClipboardList, ExternalLink, FileText
 import { displayName, interactionRisk, paneTitle, swipeAllowed, type BoundaryRequest, type Decision, type InboxItem, type Interaction } from '@vibeke/core';
 import { useAnswers, useApp, useHost, useNow } from '../app/hooks';
 import { t } from '../i18n';
-import { deliveryView, needsPane, type DeliveryView } from '../lib/answer';
+import { closedView, deliveryView, needsPane, type DeliveryView } from '../lib/answer';
+import { useStore } from '../lib/store';
 import { shortDuration } from '../lib/format';
 import { harnessLabel } from '../lib/harness';
 import { navigate } from '../router';
@@ -163,6 +164,10 @@ export function DeliveryLine({ view, error, onOpenPane, onRefresh }: { view: Del
     stale: { text: t.inbox.stale, tone: 'warn' },
     error: { text: error ?? t.unknownError, tone: 'danger' },
     answered_elsewhere: { text: t.inbox.answeredElsewhere, tone: 'muted' },
+    dismissed: { text: t.inbox.dismissedLine, tone: 'muted' },
+    closed_auto: { text: t.inbox.closedAuto, tone: 'muted' },
+    expired: { text: t.inbox.expired, tone: 'muted' },
+    closed: { text: t.inbox.closed, tone: 'muted' },
   };
   const m = map[view];
   const color = { muted: 'text-muted', ok: 'text-ok', warn: 'text-warn', danger: 'text-danger' }[m.tone];
@@ -208,7 +213,9 @@ export function InteractionCard({
   const it = item.interaction;
   const key = `${item.host_id}/${it.id}`;
   const local = app.answers.get(key);
-  const view = leaving && !local ? 'answered_elsewhere' : deliveryView(local, it);
+  useStore(app.closeReasonsVersion);
+  const how = app.closeReasons.get(key);
+  const view = leaving && !local ? closedView(how, it) : deliveryView(local, it, how);
   const locked = view !== null && view !== 'stale' && view !== 'error';
   const disabled = !ctx.canAnswer || locked;
   const [confirm, setConfirm] = useState<Decision | null>(null);
@@ -231,7 +238,7 @@ export function InteractionCard({
     void app.conn(item.host_id)?.refresh().catch(() => {});
   };
 
-  // Swipe (low/medium approvals only).
+  // Swipe (low-risk approvals only).
   const canSwipe = it.kind === 'approval' && !it.boundary && swipeAllowed(it) && !disabled;
   const [dx, setDx] = useState(0);
   const start = useRef<{ x: number; y: number; id: number } | null>(null);
@@ -265,6 +272,13 @@ export function InteractionCard({
     if (was > SWIPE_AT) send({ decision: 'allow' }, 'allow');
     else if (was < -SWIPE_AT) send({ decision: 'deny' }, 'deny');
   };
+  // The browser took the pointer (scroll, system gesture, lost capture): put the card back and
+  // decide nothing, however far it travelled.
+  const onCancel = () => {
+    start.current = null;
+    horizontal.current = false;
+    setDx(0);
+  };
 
   return (
     <div className={cx('relative', leaving && 'animate-leave')} data-nav-item={key} data-interaction={it.id} data-kind={it.kind} tabIndex={-1} aria-label={it.title}>
@@ -283,7 +297,8 @@ export function InteractionCard({
           onPointerDown={onDown}
           onPointerMove={onMove}
           onPointerUp={onUp}
-          onPointerCancel={onUp}
+          onPointerCancel={onCancel}
+          onLostPointerCapture={(e) => start.current?.id === e.pointerId && horizontal.current && onCancel()}
           style={dx ? { transform: `translateX(${dx}px)`, transition: 'none' } : { transition: 'transform .15s' }}
           className="space-y-2.5"
         >
@@ -343,9 +358,9 @@ export function InteractionCard({
           {view && <DeliveryLine view={view} error={local?.error} onOpenPane={openPane} onRefresh={refresh} />}
         </div>
       </Card>
-      <Sheet open={confirm !== null} onClose={() => setConfirm(null)} title={t.inbox.confirmTitle} role="alertdialog">
+      <Sheet open={confirm !== null} onClose={() => setConfirm(null)} title={confirm === 'allow_always' ? t.inbox.confirmAlwaysTitle : t.inbox.confirmTitle} role="alertdialog">
         <div className="space-y-3">
-          <p className="text-sm">{t.inbox.confirmHigh(it.action?.command ? `\`${it.action.command}\`` : it.title)}</p>
+          <p className="text-sm">{confirmText(confirm, it)}</p>
           {it.action?.command && <pre className="term max-h-48 overflow-auto whitespace-pre-wrap break-all rounded-xl border border-border p-2 text-xs">{it.action.command}</pre>}
           <div className="flex gap-2">
             <Button className="flex-1" variant="outline" onClick={() => setConfirm(null)}>
@@ -388,6 +403,14 @@ export function InteractionCard({
       </Sheet>
     </div>
   );
+}
+
+/** The confirmation sentence: "Allow always" says what it grants; high risk says so too. */
+export function confirmText(d: Decision | null, it: Interaction): string {
+  const what = it.action?.command ? `\`${it.action.command}\`` : it.title;
+  const risky = interactionRisk(it) === 'high' || interactionRisk(it) === 'unknown';
+  if (d === 'allow_always') return risky ? t.inbox.confirmAlwaysHigh(what) : t.inbox.confirmAlways(what);
+  return t.inbox.confirmHigh(what);
 }
 
 function QuestionBody({ it, disabled, locked, onSubmit }: { it: Interaction; disabled: boolean; locked: boolean; onSubmit(choices: Record<string, string[]> | null, text: string | null): void }) {

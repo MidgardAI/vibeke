@@ -14,6 +14,22 @@ import { hmac } from '@noble/hashes/hmac.js';
 import { randomBytes } from '@noble/hashes/utils.js';
 import type { Clock } from './platform';
 
+/**
+ * A static key that never leaves the platform's crypto: its public half and an async DH (WebCrypto
+ * X25519 with a non-extractable private key). Raw 32-byte keys keep the sync API.
+ */
+export interface OpaqueStaticKey {
+  readonly kind: 'opaque';
+  readonly publicKey: Uint8Array;
+  /** X25519(private, pub): 32 bytes. Rejects for a low-order public key. */
+  dh(pub: Uint8Array): Promise<Uint8Array>;
+}
+
+/** A Noise static private key: raw bytes or an opaque key. */
+export type StaticKey = Uint8Array | OpaqueStaticKey;
+
+export const isOpaqueKey = (k: StaticKey): k is OpaqueStaticKey => !(k instanceof Uint8Array);
+
 export const IK = 'Noise_IK_25519_ChaChaPoly_BLAKE2s';
 export const IK_PSK2 = 'Noise_IKpsk2_25519_ChaChaPoly_BLAKE2s';
 /** Noise's hard limit on one message. */
@@ -216,8 +232,8 @@ class Handshake {
 
 export interface InitiatorOptions {
   prologue: Uint8Array;
-  /** Device static private key. */
-  localPrivate: Uint8Array;
+  /** Device static private key (raw, or opaque: then use the `…Async` methods). */
+  localPrivate: StaticKey;
   /** Pinned host static public key. */
   remotePublic: Uint8Array;
   /** Present selects IKpsk2 (pairing); absent selects IK. */
@@ -229,42 +245,97 @@ export interface InitiatorOptions {
 
 /** Device side. */
 export class Initiator extends Handshake {
-  private readonly s: KeyPair;
+  /** Raw static private key; null for an opaque key (only the async methods work then). */
+  private readonly sPriv: Uint8Array | null;
+  private readonly sOpaque: OpaqueStaticKey | null;
+  private readonly sPub: Uint8Array;
   private readonly rs: Uint8Array;
   private readonly e: KeyPair;
   private step = 0;
 
   constructor(o: InitiatorOptions) {
     super(o.prologue, check32(o.remotePublic, 'remote public key'), o.psk ?? null);
-    this.s = keyPair(o.localPrivate);
+    if (isOpaqueKey(o.localPrivate)) {
+      this.sPriv = null;
+      this.sOpaque = o.localPrivate;
+      this.sPub = check32(o.localPrivate.publicKey, 'static public key');
+    } else {
+      const s = keyPair(o.localPrivate);
+      this.sPriv = s.priv;
+      this.sOpaque = null;
+      this.sPub = s.pub;
+    }
     this.rs = o.remotePublic;
     this.e = keyPair(o.ephemeral ?? (o.random ?? randomBytes)(32));
+  }
+
+  /** DH with the static key (`ss`, `se`): sync for raw keys. */
+  private staticDh(pub: Uint8Array): Uint8Array {
+    if (!this.sPriv) throw new NoiseError('an opaque static key needs the async handshake methods', 'state');
+    return dh(this.sPriv, pub);
+  }
+
+  private async staticDhAsync(pub: Uint8Array): Promise<Uint8Array> {
+    if (this.sPriv) return dh(this.sPriv, pub);
+    try {
+      return check32(await this.sOpaque!.dh(pub), 'shared secret');
+    } catch {
+      throw new NoiseError('invalid DH public key', 'decrypt');
+    }
   }
 
   /** Handshake message 1 (`-> e, es, s, ss`). */
   writeFirst(payload: Uint8Array = EMPTY): Uint8Array {
     if (this.step !== 0) throw new NoiseError('writeFirst called twice', 'state');
+    return this.writeFirstWith(payload, this.staticDh(this.rs));
+  }
+
+  /** `writeFirst` for any static key (an opaque key computes its DH asynchronously). */
+  async writeFirstAsync(payload: Uint8Array = EMPTY): Promise<Uint8Array> {
+    if (this.step !== 0) throw new NoiseError('writeFirst called twice', 'state');
+    const ssShared = await this.staticDhAsync(this.rs);
+    if (this.step !== 0) throw new NoiseError('writeFirst called twice', 'state');
+    return this.writeFirstWith(payload, ssShared);
+  }
+
+  private writeFirstWith(payload: Uint8Array, ssShared: Uint8Array): Uint8Array {
     this.step = 1;
     const parts = [this.writeE(this.e)];
     this.ss.mixKey(dh(this.e.priv, this.rs)); // es
-    parts.push(this.ss.encryptAndHash(this.s.pub)); // s
-    this.ss.mixKey(dh(this.s.priv, this.rs)); // ss
+    parts.push(this.ss.encryptAndHash(this.sPub)); // s
+    this.ss.mixKey(ssShared); // ss
     parts.push(this.ss.encryptAndHash(payload));
     const msg = concat(...parts);
     if (msg.length > NOISE_MAX) throw new NoiseError('handshake message too large', 'too_large');
     return msg;
   }
 
-  /** Handshake message 2 (`<- e, ee, se[, psk]`) → host payload and the transport session. */
-  readSecond(msg: Uint8Array, clock?: Clock): { payload: Uint8Array; session: Session } {
+  private checkSecond(msg: Uint8Array): void {
     if (this.step !== 1) throw new NoiseError('readSecond out of order', 'state');
-    this.step = 2;
     if (msg.length > NOISE_MAX) throw new NoiseError('handshake message too large', 'too_large');
     if (msg.length < DHLEN + TAGLEN) throw new NoiseError('handshake message too short', 'decrypt');
+  }
+
+  /** Handshake message 2 (`<- e, ee, se[, psk]`) → host payload and the transport session. */
+  readSecond(msg: Uint8Array, clock?: Clock): { payload: Uint8Array; session: Session } {
+    this.checkSecond(msg);
+    return this.readSecondWith(msg, clock, this.staticDh(msg.subarray(0, DHLEN)));
+  }
+
+  /** `readSecond` for any static key (an opaque key computes its DH asynchronously). */
+  async readSecondAsync(msg: Uint8Array, clock?: Clock): Promise<{ payload: Uint8Array; session: Session }> {
+    this.checkSecond(msg);
+    const seShared = await this.staticDhAsync(msg.subarray(0, DHLEN));
+    this.checkSecond(msg);
+    return this.readSecondWith(msg, clock, seShared);
+  }
+
+  private readSecondWith(msg: Uint8Array, clock: Clock | undefined, seShared: Uint8Array): { payload: Uint8Array; session: Session } {
+    this.step = 2;
     const re = msg.subarray(0, DHLEN);
     this.readE(re);
     this.ss.mixKey(dh(this.e.priv, re)); // ee
-    this.ss.mixKey(dh(this.s.priv, re)); // se
+    this.ss.mixKey(seShared); // se
     if (this.psk) this.ss.mixKeyAndHash(this.psk);
     const payload = this.ss.decryptAndHash(msg.subarray(DHLEN));
     const handshakeHash = this.ss.h.slice();

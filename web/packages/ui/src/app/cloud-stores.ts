@@ -6,6 +6,7 @@ import { useEffect } from 'react';
 import { RpcError, type AppEvent, type CloudBox, type CloudJob, type CloudProvider } from '@vibeke/core';
 import { t } from '../i18n';
 import { errorMessage } from '../lib/answer';
+import { openCloudJob } from '../lib/cloud-open';
 import { cloudBoxFromEvent, cloudJobError, cloudJobFinal, cloudJobFromEvent, upsertCloudBox, upsertCloudJob } from '../lib/cloud';
 import { isOwnFullHost } from '../lib/handoff-send';
 import { ValueStore, useStore } from '../lib/store';
@@ -213,6 +214,11 @@ export class CloudStores {
   private settle(hostId: string, job: CloudJob, before: CloudJob | undefined): void {
     const k = `${hostId}:${job.id}`;
     const hold = this.mine.get(k);
+    // A bring-back of this window waits for the user's review: say so when no sheet shows it.
+    if (hold && job.state === 'awaiting_confirmation' && before?.state !== 'awaiting_confirmation' && !this.watched.has(k)) {
+      this.app.toast(t.cloud.reviewReady, 'info', 15_000, { label: t.cloud.review, run: () => openCloudJob(hostId, job.id) });
+      return;
+    }
     if (!hold || !cloudJobFinal(job)) return;
     this.mine.delete(k);
     hold();

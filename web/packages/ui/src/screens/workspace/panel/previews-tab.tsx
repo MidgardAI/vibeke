@@ -9,7 +9,7 @@ import { ChevronLeft, MonitorPlay, MoreHorizontal, Play, Trash2 } from 'lucide-r
 import type { Preview } from '@vibeke/core';
 import { useApp, useHost } from '../../../app/hooks';
 import { useWorkspaceRows } from '../../../app/selection';
-import { Button, Empty, IconButton, StatusDot, cx } from '../../../components/ui';
+import { Button, Empty, IconButton, Sheet, StatusDot, cx } from '../../../components/ui';
 import { t } from '../../../i18n';
 import { errorMessage } from '../../../lib/answer';
 import { expandPreviewRoute, isSuggested, machineParam, panelPreviews, previewLabel, selectPreviewRoute, selectedPreview } from '../../../lib/previews';
@@ -31,6 +31,8 @@ export function PreviewsTab({ route, sheet = false }: { route: WorkspaceRoute; s
   );
   const full = (host?.info?.scope ?? host?.record.scope) === 'full' && host?.status === 'online';
   const [busy, setBusy] = useState<string | null>(null);
+  // Forget removes the preview from every device and stops it showing here: ask first.
+  const [forgetting, setForgetting] = useState<Preview | null>(null);
   // In the phone sheet a preview is never expanded: the sheet shows it itself.
   const go = (r: WorkspaceRoute) => navigate(sheet ? { ...r, expanded: false } : r, { replace: true });
   // A limited device may act only on its shared local previews, and the gateway refuses any
@@ -128,7 +130,7 @@ export function PreviewsTab({ route, sheet = false }: { route: WorkspaceRoute; s
                 <MenuButton
                   label={t.previews.rowMenu(label)}
                   icon={<MoreHorizontal />}
-                  items={[{ label: t.previews.forget, icon: <Trash2 />, tone: 'danger', onSelect: () => void forget(v) }]}
+                  items={[{ label: t.previews.forget, icon: <Trash2 />, tone: 'danger', onSelect: () => setForgetting(v) }]}
                 />
               )}
             </li>
@@ -137,6 +139,28 @@ export function PreviewsTab({ route, sheet = false }: { route: WorkspaceRoute; s
 
   return (
     <div className="vk-scroll min-h-0 flex-1 overflow-y-auto py-1">
+      <Sheet open={forgetting !== null} onClose={() => setForgetting(null)} title={forgetting ? t.previews.forgetTitle(previewLabel(forgetting)) : ''} role="alertdialog">
+        <div className="space-y-3">
+          <p className="text-sm">{t.previews.forgetBody}</p>
+          <div className="flex gap-2">
+            <Button className="flex-1" variant="outline" onClick={() => setForgetting(null)}>
+              {t.cancel}
+            </Button>
+            <Button
+              className="flex-1"
+              variant="danger"
+              data-act="forget-confirm"
+              onClick={() => {
+                const v = forgetting;
+                setForgetting(null);
+                if (v) void forget(v);
+              }}
+            >
+              {t.previews.forget}
+            </Button>
+          </div>
+        </div>
+      </Sheet>
       {previews.length > 0 && (
         <ul aria-label={t.previews.list} className="flex flex-col">
           {previews.map(renderRow)}

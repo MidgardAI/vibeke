@@ -72,7 +72,8 @@ describe('pair()', () => {
       onPending: (fp) => (shown = fp),
       store: { list: async () => stored, put: async (r) => void stored.push(r), remove: async () => {} },
     });
-    expect(platform.urls).toEqual([`wss://relay.example/v1/connect?host=${HOST_ID}&ticket=e30.sig-x_y`]);
+    expect(platform.urls).toEqual([`wss://relay.example/v1/connect?host=${HOST_ID}`]);
+    expect(platform.tickets).toEqual(['e30.sig-x_y']);
     expect(rec).toMatchObject({ ticket: 'dev.ticket', ticket_exp: 1_900_000_000 });
     expect(claim).toEqual({ name: "Alice's phone", platform: 'test', vapid_public: 'BPk' });
     expect(shown).toMatch(/^[A-Z2-7]{4}-[A-Z2-7]{4}-[A-Z2-7]{4}$/);

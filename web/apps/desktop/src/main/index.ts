@@ -452,7 +452,8 @@ app.on('web-contents-created', (_e, wc) => {
   wc.on('will-attach-webview', (e) => e.preventDefault());
 });
 
-// The in-app preview proxy asks for credentials; only a preview view's own webContents gets its own.
+// The in-app preview proxy asks for credentials: a preview view gets its own, and a service worker
+// of a preview session (no webContents) gets its partition's credential, matched by proxy port.
 app.on('login', (event, wc, _details, authInfo, callback) => {
   if (!authInfo.isProxy) return;
   event.preventDefault();

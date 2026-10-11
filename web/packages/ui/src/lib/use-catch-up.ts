@@ -1,6 +1,7 @@
 // React side of the catch-up: one store per app (lib/catch-up-store.ts), a tracker that records
 // when the window goes to the background, and a hook that gives the inbox its cards.
 
+import { t } from '../i18n';
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import type { AppModel } from '../app/model';
 import { useApp } from '../app/hooks';
@@ -45,7 +46,17 @@ export function useCatchUp(): { cards: CatchUpCard[]; dismiss(card: CatchUpCard)
   cardsRef.current = cards;
   const rowsRef = useRef(rows);
   rowsRef.current = rows;
-  const dismiss = useCallback((c: CatchUpCard) => store.dismiss(rowsRef.current, [c]), [store]);
-  const dismissAll = useCallback(() => store.dismiss(rowsRef.current, cardsRef.current), [store]);
+  // A dismissal can be undone for a few seconds from the toast.
+  const withUndo = useCallback(
+    (cards: readonly CatchUpCard[]) => {
+      if (!cards.length) return;
+      const prev = store.state.get();
+      store.dismiss(rowsRef.current, cards);
+      app.toast(t.catchUp.dismissed(cards.length), 'info', 5000, { label: t.undo, run: () => store.restore(prev) });
+    },
+    [store, app],
+  );
+  const dismiss = useCallback((c: CatchUpCard) => withUndo([c]), [withUndo]);
+  const dismissAll = useCallback(() => withUndo(cardsRef.current), [withUndo]);
   return { cards, dismiss, dismissAll };
 }
