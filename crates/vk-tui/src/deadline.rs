@@ -289,7 +289,7 @@ mod tests {
             body: String::new(),
             options: vec![("yes".into(), "Yes".into())],
             deadline,
-            sel: 0,
+            sel: None,
             shown_at: now,
         });
         let d = app.deadlines(now);

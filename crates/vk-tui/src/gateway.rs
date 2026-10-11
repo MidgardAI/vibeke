@@ -18,7 +18,8 @@ const LIST_EVERY: Duration = Duration::from_secs(15);
 const LIST_EVERY_PUSH: Duration = Duration::from_secs(120);
 /// A request with no answer for this long is considered lost (disconnect) and re-sent.
 const INFLIGHT_MAX: Duration = Duration::from_secs(10);
-/// Keys right after an overlay appears are swallowed: they were typed for the pane.
+/// Keys right after an overlay appears are swallowed: they were typed for the pane. The overlay
+/// arms only after this long without a key press (a pause in typing).
 const ARM_DELAY: Duration = Duration::from_millis(600);
 /// How long after an answer an `answered on …` toast is still worth showing.
 const ANNOUNCE_WINDOW_MS: i64 = 60_000;
@@ -57,7 +58,11 @@ pub struct Confirm {
     pub body: String,
     pub options: Vec<(String, String)>,
     pub deadline: Instant,
-    pub sel: usize,
+    /// The highlighted option. It starts on the reject/deny option (or on nothing when there is
+    /// none): `enter` never grants by default.
+    pub sel: Option<usize>,
+    /// Keys count from `ARM_DELAY` after this: when the card came to the front, pushed out by
+    /// every key pressed before it armed.
     pub shown_at: Instant,
 }
 
@@ -67,40 +72,17 @@ impl Confirm {
     }
 }
 
-/// The option `y` picks when no label starts with `y`: an affirmative id, never a position (an
-/// unknown option order must not turn a key into the wrong answer).
-fn yes_index(options: &[(String, String)]) -> Option<usize> {
-    const YES: [&str; 5] = ["pair", "ok", "yes", "allow", "approve"];
-    options
-        .iter()
-        .position(|(id, _)| YES.contains(&id.to_ascii_lowercase().as_str()))
-}
-
-/// The option `n` picks when no label starts with `n`: a negative id, never a position.
-fn no_index(options: &[(String, String)]) -> Option<usize> {
+/// Whether option `id` refuses (reject, cancel, no, deny). Everything else may grant access
+/// (pair a device, allow, approve, or an option this client does not know), so only these
+/// get shortcuts; the rest is chosen by moving the highlight and pressing `enter`.
+pub fn refuses(id: &str) -> bool {
     const NO: [&str; 4] = ["reject", "cancel", "no", "deny"];
-    options
-        .iter()
-        .position(|(id, _)| NO.contains(&id.to_ascii_lowercase().as_str()))
+    NO.contains(&id.to_ascii_lowercase().as_str())
 }
 
-/// The shortcut letter shown for option `i`, when `y`/`n` would pick it and its label's own
-/// initial doesn't already.
-fn yn_hint(options: &[(String, String)], i: usize) -> Option<char> {
-    let has = |c: char| {
-        options.iter().any(|(_, l)| {
-            l.chars()
-                .next()
-                .is_some_and(|f| f.to_ascii_lowercase() == c)
-        })
-    };
-    if !has('y') && yes_index(options) == Some(i) {
-        Some('y')
-    } else if !has('n') && no_index(options) == Some(i) {
-        Some('n')
-    } else {
-        None
-    }
+/// The option `n` picks: the first refusing one, never a position.
+fn no_index(options: &[(String, String)]) -> Option<usize> {
+    options.iter().position(|(id, _)| refuses(id))
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -203,15 +185,29 @@ impl State {
         self.queue.len() != n
     }
 
+    /// The front card is armed: `ARM_DELAY` passed since it came to the front and since the
+    /// last key pressed before it armed.
+    pub fn armed(&self, now: Instant) -> bool {
+        self.queue
+            .front()
+            .is_some_and(|c| now.saturating_duration_since(c.shown_at) >= ARM_DELAY)
+    }
+
     pub fn handle_key(&mut self, ev: &KeyEvent, now: Instant) -> KeyOutcome {
         let Some(c) = self.queue.front_mut() else {
             return KeyOutcome::None;
         };
-        // Only a fresh press with no modifier at all, once the front card was armed.
-        if ev.kind != KeyKind::Press
-            || !ev.mods.is_empty()
-            || now.saturating_duration_since(c.shown_at) < ARM_DELAY
-        {
+        if ev.kind == KeyKind::Release {
+            return KeyOutcome::None;
+        }
+        // Not armed yet: the key was typed for the pane. Every press (or repeat) before the
+        // overlay armed pushes the arming out, so it arms only after a pause in typing.
+        if now.saturating_duration_since(c.shown_at) < ARM_DELAY {
+            c.shown_at = now;
+            return KeyOutcome::None;
+        }
+        // Only a fresh press with no modifier at all.
+        if ev.kind != KeyKind::Press || !ev.mods.is_empty() {
             return KeyOutcome::None;
         }
         let n = c.options.len();
@@ -223,31 +219,33 @@ impl State {
                 return KeyOutcome::Dismissed;
             }
             Key::Named(NamedKey::Left | NamedKey::Up) => {
-                c.sel = (c.sel + n - 1) % n.max(1);
+                c.sel = Some(match c.sel {
+                    Some(i) => (i + n - 1) % n.max(1),
+                    None => n.saturating_sub(1),
+                });
                 None
             }
             Key::Named(NamedKey::Right | NamedKey::Down | NamedKey::Tab) => {
-                c.sel = (c.sel + 1) % n.max(1);
+                c.sel = Some(match c.sel {
+                    Some(i) => (i + 1) % n.max(1),
+                    None => 0,
+                });
                 None
             }
-            Key::Named(NamedKey::Enter) => Some(c.sel),
+            // Enter answers what is highlighted: the refusing option unless the user moved.
+            Key::Named(NamedKey::Enter) => c.sel,
+            // Digits and letters only pick options that refuse; granting needs the highlight.
             Key::Char(ch) if ch.is_ascii_digit() && *ch != '0' => {
                 let i = *ch as usize - '1' as usize;
-                (i < n).then_some(i)
+                (i < n && refuses(&c.options[i].0)).then_some(i)
             }
-            Key::Char(ch) => c
-                .options
-                .iter()
-                .position(|(_, l)| {
-                    l.chars()
+            Key::Char('n' | 'N') => no_index(&c.options),
+            Key::Char(ch) => c.options.iter().position(|(id, l)| {
+                refuses(id)
+                    && l.chars()
                         .next()
                         .is_some_and(|f| f.to_lowercase().eq(ch.to_lowercase()))
-                })
-                .or_else(|| match ch.to_ascii_lowercase() {
-                    'y' => yes_index(&c.options),
-                    'n' => no_index(&c.options),
-                    _ => None,
-                }),
+            }),
             _ => None,
         };
         match pick.filter(|i| *i < n) {
@@ -550,6 +548,7 @@ pub fn on_events(app: &mut App, i: usize, v: &Value, wall_ms: i64, now: Instant)
                         ("cancel".into(), "Cancel".into()),
                     ];
                 }
+                let sel = no_index(&options);
                 app.gateway.push(Confirm {
                     machine: i,
                     id: id.to_string(),
@@ -557,7 +556,7 @@ pub fn on_events(app: &mut App, i: usize, v: &Value, wall_ms: i64, now: Instant)
                     body: d["body"].as_str().unwrap_or("").to_string(),
                     options,
                     deadline: now + Duration::from_millis(left as u64),
-                    sel: 0,
+                    sel,
                     shown_at: now,
                 });
                 app.dirty = true;
@@ -648,21 +647,21 @@ pub fn draw_overlay(app: &App, g: &mut Grid) {
         b.line(l, t.text());
     }
     b.line("", t.text());
-    for (i, (_, l)) in c.options.iter().enumerate() {
-        let st = if i == c.sel {
-            t.sel(t.accent)
+    for (i, (id, l)) in c.options.iter().enumerate() {
+        let on = c.sel == Some(i);
+        let st = if on { t.sel(t.accent) } else { t.text() };
+        let mark = if on { "▸" } else { " " };
+        // Shortcuts only for refusing options: granting ones need the highlight and enter.
+        let keys = if refuses(id) {
+            format!("[{}] ", i + 1)
         } else {
-            t.text()
+            "    ".to_string()
         };
-        let mark = if i == c.sel { "▸" } else { " " };
-        let keys = match yn_hint(&c.options, i) {
-            Some(h) => format!("{}/{h}", i + 1),
-            None => (i + 1).to_string(),
-        };
-        b.line(&format!("{mark} [{keys}] {l}"), st);
+        b.line(&format!("{mark} {keys}{l}"), st);
     }
     b.line("", t.text());
-    let secs = c.remaining(Instant::now()).as_secs();
+    let now = Instant::now();
+    let secs = c.remaining(now).as_secs();
     let more = app.gateway.queue.len() - 1;
     let more = if more > 0 {
         format!(" · {more} more waiting")
@@ -674,7 +673,11 @@ pub fn draw_overlay(app: &App, g: &mut Grid) {
         if secs <= 10 { t.s(t.red) } else { t.dim() },
     );
     b.line(
-        "[1-9]/y/n/letter choose · [enter] selected · [esc] dismiss (no answer)",
+        if app.gateway.armed(now) {
+            "[←/→] highlight · [enter] answer the highlighted option · [esc] dismiss (no answer)"
+        } else {
+            "Keys work after a short pause in typing."
+        },
         t.dim(),
     );
 }
@@ -701,69 +704,118 @@ mod tests {
                 ("cancel".into(), "Cancel".into()),
             ],
             deadline: now + Duration::from_secs(secs),
-            sel: 0,
+            sel: no_index(&[
+                ("ok".into(), "Approve".into()),
+                ("cancel".into(), "Cancel".into()),
+            ]),
             shown_at: now,
         }
     }
 
+    fn pair_card(t0: Instant) -> Confirm {
+        let mut c = conf("p", t0, 30);
+        c.options = vec![
+            ("pair".into(), "Pair".into()),
+            ("reject".into(), "Reject".into()),
+        ];
+        c.sel = no_index(&c.options);
+        c
+    }
+
     #[test]
-    fn confirm_y_and_n_pick_affirmative_and_negative() {
+    fn pairing_starts_on_reject_and_only_the_highlight_grants() {
         let t0 = Instant::now();
         let later = t0 + Duration::from_secs(1);
-        let pair = |extra: bool| {
-            let mut c = conf("p", t0, 30);
-            c.options = vec![
-                ("pair".into(), "Pair".into()),
-                ("reject".into(), "Reject".into()),
-            ];
-            if extra {
-                c.options.push(("later".into(), "Later".into()));
-            }
-            c
-        };
-        for (key, want) in [('y', "pair"), ('n', "reject"), ('Y', "pair")] {
-            let mut s = State::default();
-            s.push(pair(false));
-            match s.handle_key(&kev(Key::Char(key)), later) {
-                KeyOutcome::Answer { choice, .. } => assert_eq!(choice, want, "{key}"),
-                o => panic!("{key}: {o:?}"),
-            }
-        }
-        // Digits still work; the overlay advertises the letters.
+        // The highlight starts on Reject: enter refuses.
         let mut s = State::default();
-        s.push(pair(false));
+        s.push(pair_card(t0));
+        assert_eq!(s.queue[0].sel, Some(1));
         assert!(matches!(
-            s.handle_key(&kev(Key::Char('2')), later),
+            s.handle_key(&kev(Key::Named(NamedKey::Enter)), later),
             KeyOutcome::Answer { choice, .. } if choice == "reject"
         ));
-        // `n` with three unlabelled-negative options and no negative id does nothing.
-        let mut c = pair(true);
-        c.options[1].0 = "other".into();
+        // y, the first letter of Pair and its digit never grant.
+        for k in ['y', 'Y', 'p', 'P', '1', 'o', 'a'] {
+            let mut s = State::default();
+            s.push(pair_card(t0));
+            assert_eq!(
+                s.handle_key(&kev(Key::Char(k)), later),
+                KeyOutcome::None,
+                "{k}"
+            );
+            assert!(s.modal(), "{k}");
+        }
+        // n, r and the digit of Reject refuse.
+        for k in ['n', 'r', '2'] {
+            let mut s = State::default();
+            s.push(pair_card(t0));
+            assert!(
+                matches!(
+                    s.handle_key(&kev(Key::Char(k)), later),
+                    KeyOutcome::Answer { choice, .. } if choice == "reject"
+                ),
+                "{k}"
+            );
+        }
+        // Pairing needs the highlight moved onto Pair, then enter.
         let mut s = State::default();
-        s.push(c);
-        assert_eq!(s.handle_key(&kev(Key::Char('n')), later), KeyOutcome::None);
-        // A label that starts with the letter wins (Yes/No-style options).
-        let mut c = conf("q", t0, 30);
-        c.options = vec![("a".into(), "No thanks".into()), ("b".into(), "Yes".into())];
-        let mut s = State::default();
-        s.push(c);
+        s.push(pair_card(t0));
+        assert_eq!(
+            s.handle_key(&kev(Key::Named(NamedKey::Left)), later),
+            KeyOutcome::None
+        );
         assert!(matches!(
-            s.handle_key(&kev(Key::Char('y')), later),
-            KeyOutcome::Answer { choice, .. } if choice == "b"
+            s.handle_key(&kev(Key::Named(NamedKey::Enter)), later),
+            KeyOutcome::Answer { choice, .. } if choice == "pair"
         ));
-        // Unknown ids: y/n never fall back to a position (Decline/Approve must not turn n into
-        // an approval).
-        let mut c = conf("r", t0, 30);
-        c.options = vec![
-            ("decline".into(), "Decline".into()),
-            ("go".into(), "Go ahead".into()),
-        ];
+        // Without a refusing option nothing is highlighted and enter does nothing.
+        let mut c = conf("q", t0, 30);
+        c.options = vec![("ok".into(), "OK".into()), ("later".into(), "Later".into())];
+        c.sel = no_index(&c.options);
         let mut s = State::default();
         s.push(c);
+        assert_eq!(s.queue[0].sel, None);
+        assert_eq!(
+            s.handle_key(&kev(Key::Named(NamedKey::Enter)), later),
+            KeyOutcome::None
+        );
         assert_eq!(s.handle_key(&kev(Key::Char('n')), later), KeyOutcome::None);
-        assert_eq!(s.handle_key(&kev(Key::Char('y')), later), KeyOutcome::None);
-        let o = pair(false).options;
-        assert_eq!((yn_hint(&o, 0), yn_hint(&o, 1)), (Some('y'), Some('n')));
+    }
+
+    #[test]
+    fn pairing_arms_only_after_a_pause_in_typing() {
+        let t0 = Instant::now();
+        let mut s = State::default();
+        s.push(pair_card(t0));
+        // Someone keeps typing into the pane: every key before arming pushes it out.
+        let mut t = t0;
+        for _ in 0..10 {
+            t += Duration::from_millis(400);
+            assert_eq!(
+                s.handle_key(&kev(Key::Named(NamedKey::Enter)), t),
+                KeyOutcome::None
+            );
+            assert!(!s.armed(t));
+        }
+        // An auto-repeat is typing too.
+        let mut rep = kev(Key::Named(NamedKey::Left));
+        rep.kind = KeyKind::Repeat;
+        t += Duration::from_millis(300);
+        assert_eq!(s.handle_key(&rep, t), KeyOutcome::None);
+        // A release is not typing.
+        let mut rel = kev(Key::Char('x'));
+        rel.kind = KeyKind::Release;
+        t += Duration::from_millis(599);
+        assert_eq!(s.handle_key(&rel, t), KeyOutcome::None);
+        assert!(!s.armed(t));
+        // After a pause of ARM_DELAY, keys count.
+        t += Duration::from_millis(1);
+        assert!(s.armed(t));
+        assert!(matches!(
+            s.handle_key(&kev(Key::Named(NamedKey::Enter)), t),
+            KeyOutcome::Answer { choice, .. } if choice == "reject"
+        ));
+        assert_eq!(s.queue.len(), 0);
     }
 
     #[test]
@@ -846,25 +898,27 @@ mod tests {
             k.kind = kind;
             assert_eq!(s.handle_key(&k, later), KeyOutcome::None);
         }
-        // Move highlight then Enter answers the highlighted button.
+        // Move the highlight (from Cancel onto Approve), then Enter answers it.
         s.handle_key(&kev(Key::Named(NamedKey::Right)), later);
         assert_eq!(
             s.handle_key(&kev(Key::Named(NamedKey::Enter)), later),
             KeyOutcome::Answer {
                 machine: 0,
                 id: "a".into(),
-                choice: "cancel".into()
+                choice: "ok".into()
             }
         );
-        // Next in queue: armed afresh once it is in front, then a letter picks by label initial.
-        assert_eq!(s.handle_key(&kev(Key::Char('A')), later), KeyOutcome::None);
+        // Next in queue: armed afresh once it is in front, then the initial of a refusing
+        // option picks it (a granting one's initial never does).
+        assert_eq!(s.handle_key(&kev(Key::Char('c')), later), KeyOutcome::None);
         let later = later + ARM_DELAY;
+        assert_eq!(s.handle_key(&kev(Key::Char('A')), later), KeyOutcome::None);
         assert_eq!(
-            s.handle_key(&kev(Key::Char('A')), later),
+            s.handle_key(&kev(Key::Char('c')), later),
             KeyOutcome::Answer {
                 machine: 0,
                 id: "b".into(),
-                choice: "ok".into()
+                choice: "cancel".into()
             }
         );
         assert!(!s.modal());
@@ -878,12 +932,13 @@ mod tests {
         assert!(!s.modal());
         // Number key; resolved elsewhere; countdown expiry.
         s.push(conf("d", t0, 30));
+        assert_eq!(s.handle_key(&kev(Key::Char('1')), later), KeyOutcome::None);
         assert_eq!(
-            s.handle_key(&kev(Key::Char('1')), later),
+            s.handle_key(&kev(Key::Char('2')), later),
             KeyOutcome::Answer {
                 machine: 0,
                 id: "d".into(),
-                choice: "ok".into()
+                choice: "cancel".into()
             }
         );
         s.push(conf("e", t0, 30));
@@ -940,8 +995,8 @@ mod tests {
             "Confirm · m0",
             "Pair device",
             "Fingerprint 12-34",
-            "[1/y] Approve",
-            "[2/n] Cancel",
+            "      Approve",
+            "▸ [2] Cancel",
             "expires in",
         ] {
             assert!(s.contains(needle), "missing {needle}:\n{s}");
