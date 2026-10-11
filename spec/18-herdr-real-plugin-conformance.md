@@ -151,7 +151,7 @@ Uninstall does not stop a plugin's own background services. Closing the broker o
 | Outcome | Meaning |
 |---|---|
 | `passed` | All expectations held. |
-| `suspected_compat_failure` | Vibeke did something wrong, but Herdr has not run the same step yet. |
+| `suspected_compat_failure` | Vibeke did something wrong, but Herdr has not run the same step yet. Or Herdr passed, but the harness could not compare the dependency bytes of the two sides. |
 | `compat_failure` | Herdr passes the step and Vibeke fails it, or the result breaks the pinned schema. It links to an inventory row. |
 | `dependency_failure` | A build or an external dependency failed or changed. |
 | `harness_error` | The harness, runner or scenario is broken. |
@@ -161,7 +161,7 @@ One rule decides between Vibeke, dependency and baseline failures for a step:
 
 1. If the two sides did not receive the same dependency bytes, the outcome is `dependency_failure`. In `verified` mode the lock guarantees equal bytes. In `unpinned` mode the harness runs both sides in the same boundary, one after the other, and compares the hashes of what each downloaded.
 2. If Herdr has not run the step, a Vibeke failure is `suspected_compat_failure`.
-3. If Herdr passes and Vibeke fails, the outcome is `compat_failure`.
+3. If Herdr passes and Vibeke fails, the outcome is `compat_failure`. This needs proof that both sides received the same dependency bytes. In `unpinned` mode the harness may not see the downloads. Then it cannot compare the bytes, and the outcome is `suspected_compat_failure` with the reason "dependency bytes not compared (unpinned)".
 4. If both sides fail, the outcome is `not_exercised`, with the Herdr result as the reason.
 
 A plugin's outcome is its worst step outcome. A step that has a known result and now passes is an **unexpected pass**, and fails the run until someone updates the scenario. This keeps known failures from hiding fixes and new failures.

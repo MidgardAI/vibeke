@@ -9,7 +9,11 @@
 //! The normal tests here check that the test list matches the lock, that every scenario is
 //! valid, and that each scenario covers what its manifest declares (18 §8.1).
 
-use crate::support::real_plugins::{self, ENV_ALLOW, secret_like, vibeke_key};
+use crate::support::real_plugins::{
+    self, ENV_ALLOW, TOOLCHAIN_PATH_VAR, has_url_credentials, herdr_opened_pane,
+    herdr_path_component, plugin_env, secret_like, vibeke_key,
+};
+use std::collections::BTreeMap;
 use vk_conformance::coverage;
 use vk_conformance::mask;
 use vk_conformance::scenario::Scenario;
@@ -195,6 +199,109 @@ fn the_environment_allowlist_never_passes_secrets() {
     for n in ENV_ALLOW {
         assert!(!secret_like(n), "{n}");
     }
+    // The dependency proxy reaches plugin processes (18 §7.2).
+    for n in [
+        "HTTPS_PROXY",
+        "https_proxy",
+        "NO_PROXY",
+        "SSL_CERT_FILE",
+        "NODE_EXTRA_CA_CERTS",
+        "GOPROXY",
+    ] {
+        assert!(ENV_ALLOW.contains(&n), "{n}");
+    }
+
+    // What plugin processes get from a parent environment full of secrets.
+    let parent: BTreeMap<&str, &str> = [
+        ("PATH", "/usr/bin:/bin"),
+        ("HOME", "/home/runner"),
+        ("GITHUB_TOKEN", "ghs_x"),
+        ("SSH_AUTH_SOCK", "/tmp/agent"),
+        ("AWS_SECRET_ACCESS_KEY", "x"),
+        ("HTTPS_PROXY", "http://127.0.0.1:8080"),
+        ("http_proxy", "http://user:pass@proxy:3128"),
+        ("NODE_EXTRA_CA_CERTS", "/ca.pem"),
+        (TOOLCHAIN_PATH_VAR, "/tc/node/bin:/tc/go/bin"),
+    ]
+    .into_iter()
+    .collect();
+    let get = |n: &str| parent.get(n).map(|v| v.to_string());
+    // Extra names from `VIBEKE_HERDR_PLUGINS_ENV_ALLOW` that look secret, or that would
+    // replace the fresh HOME, are still dropped.
+    let names: Vec<String> = ENV_ALLOW
+        .iter()
+        .map(|s| s.to_string())
+        .chain(["GITHUB_TOKEN".to_string(), "HOME".to_string()])
+        .collect();
+    let env: BTreeMap<String, String> = plugin_env(&names, get, &[]).into_iter().collect();
+    for n in [
+        "GITHUB_TOKEN",
+        "SSH_AUTH_SOCK",
+        "AWS_SECRET_ACCESS_KEY",
+        "http_proxy",
+        "HOME",
+    ] {
+        assert!(!env.contains_key(n), "{n} must not reach plugins");
+    }
+    assert_eq!(env["HTTPS_PROXY"], "http://127.0.0.1:8080");
+    assert_eq!(env["NODE_EXTRA_CA_CERTS"], "/ca.pem");
+    assert_eq!(env["PATH"], "/tc/node/bin:/tc/go/bin:/usr/bin:/bin");
+    for (k, v) in &env {
+        assert!(!secret_like(k), "{k}");
+        assert!(!v.contains("ghs_") && !v.contains("pass@"), "{k}={v}");
+    }
+    // The Herdr side puts Herdr's directory after the toolchains.
+    let env: BTreeMap<String, String> = plugin_env(&names, get, &["/opt/herdr".to_string()])
+        .into_iter()
+        .collect();
+    assert_eq!(
+        env["PATH"],
+        "/tc/node/bin:/tc/go/bin:/opt/herdr:/usr/bin:/bin"
+    );
+    // Without a toolchain path or an inherited PATH, plugins get a system PATH.
+    let env: BTreeMap<String, String> = plugin_env(&names, |_| None, &[]).into_iter().collect();
+    assert_eq!(env["PATH"], "/usr/bin:/bin:/usr/sbin:/sbin");
+}
+
+#[test]
+fn proxy_urls_with_credentials_are_found() {
+    assert!(has_url_credentials("http://user:pass@proxy:3128"));
+    assert!(has_url_credentials("user@proxy:3128"));
+    assert!(has_url_credentials("http://a:1, http://u@b:2"));
+    assert!(!has_url_credentials("http://127.0.0.1:8080"));
+    assert!(!has_url_credentials("http://proxy:8080/path@x"));
+    assert!(!has_url_credentials("localhost,.internal"));
+}
+
+#[test]
+fn herdr_plugin_dirs_use_plain_ids_only() {
+    assert_eq!(
+        herdr_path_component("zenbu.terminal-browser").as_deref(),
+        Some("zenbu.terminal-browser")
+    );
+    assert_eq!(herdr_path_component("Acme.Tool"), None);
+    assert_eq!(herdr_path_component("acme."), None);
+    assert_eq!(herdr_path_component("con.tool"), None);
+    assert_eq!(herdr_path_component("com1"), None);
+    assert_eq!(
+        herdr_path_component("community.tool").as_deref(),
+        Some("community.tool")
+    );
+    assert_eq!(herdr_path_component(""), None);
+}
+
+#[test]
+fn the_herdr_pane_open_reply_names_the_pane() {
+    let out = r#"{"id":"cli","result":{"type":"plugin_pane_opened","plugin_pane":{"plugin_id":"acme.tool","entrypoint":"main","pane":{"pane_id":"w1-3","workspace_id":"w1"}}}}"#;
+    assert_eq!(
+        herdr_opened_pane(&format!("{out}\n")),
+        Some(("main".to_string(), "w1-3".to_string()))
+    );
+    assert_eq!(
+        herdr_opened_pane(&format!("note\n{out}\n")),
+        Some(("main".to_string(), "w1-3".to_string()))
+    );
+    assert_eq!(herdr_opened_pane("Opened.\n"), None);
 }
 
 /// The gate refuses before any plugin code runs when the variable is missing.

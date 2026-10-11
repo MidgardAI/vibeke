@@ -36,10 +36,24 @@ use vk_conformance::scenario::{
 };
 use vk_conformance::{coverage, mask, render, trace};
 
-/// The repository root.
-pub fn workspace_root() -> PathBuf {
+/// The checkout this test binary was built from. A nextest archive runs on another machine,
+/// where this path does not exist, so repository data comes from [`workspace_root`].
+fn build_root() -> PathBuf {
     let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     p.canonicalize().unwrap_or(p)
+}
+
+/// The repository root that holds the lock, scenarios, manifests and snapshots:
+/// `$VIBEKE_HERDR_PLUGINS_ROOT` when set (the CI job's read-only copy of the repository data),
+/// otherwise the checkout the test was built from.
+pub fn workspace_root() -> PathBuf {
+    match std::env::var_os("VIBEKE_HERDR_PLUGINS_ROOT") {
+        Some(p) if !p.is_empty() => {
+            let p = PathBuf::from(p);
+            p.canonicalize().unwrap_or(p)
+        }
+        _ => build_root(),
+    }
 }
 
 /// `tests/compat/herdr/0.9.3`.
@@ -83,11 +97,12 @@ pub fn checked_in_manifest(lock: &Lock, lp: &LockedPlugin) -> Option<Manifest> {
     })
 }
 
-/// Where result files go: `$VIBEKE_HERDR_PLUGIN_RESULTS`, or `target/herdr-plugins`.
+/// Where result files go: `$VIBEKE_HERDR_PLUGIN_RESULTS`, or `target/herdr-plugins` of the
+/// build checkout (the repository data may be read-only).
 pub fn results_dir() -> PathBuf {
     std::env::var_os("VIBEKE_HERDR_PLUGIN_RESULTS")
         .map(PathBuf::from)
-        .unwrap_or_else(|| workspace_root().join("target/herdr-plugins"))
+        .unwrap_or_else(|| build_root().join("target/herdr-plugins"))
 }
 
 fn now_ms() -> u64 {
@@ -139,7 +154,8 @@ pub fn gate() -> Gate {
 
 /// Inherited variables a plugin run may see (18 §5.3): no credentials, agent sockets, cloud
 /// keys or tokens. `VIBEKE_HERDR_PLUGINS_ENV_ALLOW` (comma separated) adds names, such as
-/// toolchain variables the workflow sets, but never secret-looking ones.
+/// toolchain variables the workflow sets, but never secret-looking ones. The proxy and
+/// certificate variables let build steps reach the dependency proxy (18 §7.2).
 pub const ENV_ALLOW: &[&str] = &[
     "PATH",
     "LANG",
@@ -155,7 +171,29 @@ pub const ENV_ALLOW: &[&str] = &[
     "GOROOT",
     "GOTOOLCHAIN",
     "BUN_INSTALL",
+    // The dependency proxy (18 §7.2).
+    "HTTPS_PROXY",
+    "HTTP_PROXY",
+    "ALL_PROXY",
+    "NO_PROXY",
+    "https_proxy",
+    "http_proxy",
+    "all_proxy",
+    "no_proxy",
+    "SSL_CERT_FILE",
+    "NODE_EXTRA_CA_CERTS",
+    "CARGO_HTTP_CAINFO",
+    "GIT_SSL_CAINFO",
+    "REQUESTS_CA_BUNDLE",
+    "CURL_CA_BUNDLE",
+    "GOPROXY",
+    "GOFLAGS",
+    "GOSUMDB",
 ];
+
+/// Colon-separated directories the workflow puts first on every plugin process's PATH, on
+/// both sides: the pinned toolchains (18 §7.2).
+pub const TOOLCHAIN_PATH_VAR: &str = "VIBEKE_HERDR_PLUGINS_TOOLCHAIN_PATH";
 
 pub fn secret_like(name: &str) -> bool {
     let n = name.to_ascii_uppercase();
@@ -177,6 +215,73 @@ pub fn secret_like(name: &str) -> bool {
         ]
         .iter()
         .any(|p| n.starts_with(p))
+}
+
+/// A proxy URL with a user name or password in it (`http://user:pass@host`). Such a value
+/// is a credential, so it is never passed on.
+pub fn has_url_credentials(value: &str) -> bool {
+    value.split(',').any(|part| {
+        let rest = part
+            .trim()
+            .split_once("://")
+            .map_or(part.trim(), |(_, r)| r);
+        let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+        authority.contains('@')
+    })
+}
+
+/// Names each side sets for its own isolation (a fresh HOME, XDG dirs and TMPDIR, and the
+/// host's own variables). An extra allowlisted name never replaces them.
+fn isolated(name: &str) -> bool {
+    matches!(name, "HOME" | "TMPDIR")
+        || ["XDG_", "VIBEKE", "HERDR"]
+            .iter()
+            .any(|p| name.to_ascii_uppercase().starts_with(p))
+}
+
+/// The inherited environment of plugin processes on both sides: the variables in `names`
+/// that `get` knows, without secret-looking names or proxy values with credentials. PATH is
+/// [`TOOLCHAIN_PATH_VAR`], then `path_dirs`, then the inherited PATH (a system default when
+/// there is none).
+pub fn plugin_env(
+    names: &[String],
+    get: impl Fn(&str) -> Option<String>,
+    path_dirs: &[String],
+) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    for n in names {
+        if n == "PATH" || secret_like(n) || isolated(n) || out.iter().any(|(k, _)| k == n) {
+            continue;
+        }
+        let Some(v) = get(n) else { continue };
+        if n.to_ascii_uppercase().ends_with("_PROXY") && has_url_credentials(&v) {
+            eprintln!("note: {n} holds credentials, so plugin processes do not get it");
+            continue;
+        }
+        out.push((n.clone(), v));
+    }
+    let toolchain = get(TOOLCHAIN_PATH_VAR).unwrap_or_default();
+    let inherited = names
+        .iter()
+        .any(|n| n == "PATH")
+        .then(|| get("PATH"))
+        .flatten()
+        .filter(|p| !p.is_empty())
+        .unwrap_or_else(|| "/usr/bin:/bin:/usr/sbin:/sbin".into());
+    let path: Vec<&str> = [toolchain.as_str()]
+        .into_iter()
+        .chain(path_dirs.iter().map(String::as_str))
+        .chain([inherited.as_str()])
+        .map(|p| p.trim_matches(':'))
+        .filter(|p| !p.is_empty())
+        .collect();
+    out.push(("PATH".into(), path.join(":")));
+    out
+}
+
+/// [`plugin_env`] of this process's environment, for the Vibeke side.
+pub fn inherited_plugin_env() -> Vec<(String, String)> {
+    plugin_env(&env_allowlist(), |n| std::env::var(n).ok(), &[])
 }
 
 pub fn env_allowlist() -> Vec<String> {
@@ -256,6 +361,105 @@ fn serve_one(c: &mut std::net::TcpStream, log: &Path) -> std::io::Result<()> {
     c.write_all(
         b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
     )
+}
+
+/// The stubs of one side (18 §8): placeholder values, HTTP sink logs and stub environment.
+struct Stubs {
+    vars: Vars,
+    sinks: BTreeMap<String, PathBuf>,
+    env: Vec<(String, String)>,
+}
+
+/// Start the scenario's stubs for one side. `vars` holds the side's `{home}`, `{state}` and
+/// `{config}`. Files without a path and the sink logs go under `dir`. Each side has its own
+/// HTTP sinks, so a recorded request shows which side made it.
+fn start_stubs(sc: &Scenario, mut vars: Vars, home: &Path, dir: &Path) -> Result<Stubs, String> {
+    let mut sinks = BTreeMap::new();
+    for st in &sc.stubs {
+        let file = match st.kind {
+            StubKind::HttpSink => {
+                let log = dir.join(format!("{}.jsonl", st.id));
+                std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+                std::fs::write(&log, "").map_err(|e| e.to_string())?;
+                let url = http_sink(log.clone()).map_err(|e| e.to_string())?;
+                vars.values.insert(format!("stub.{}.url", st.id), url);
+                sinks.insert(st.id.clone(), log.clone());
+                Some(log)
+            }
+            StubKind::File => {
+                let p = st
+                    .path
+                    .as_deref()
+                    .map(|p| scenario::expand(p, &vars).map_err(|e| format!("{e:#}")))
+                    .transpose()?
+                    .map(|p| home.join(p))
+                    .unwrap_or_else(|| dir.join(&st.id));
+                let text = st
+                    .contents
+                    .as_deref()
+                    .map(|c| scenario::expand(c, &vars).map_err(|e| format!("{e:#}")))
+                    .transpose()?
+                    .unwrap_or_default();
+                write(&p, &text);
+                Some(p)
+            }
+            StubKind::Env => None,
+        };
+        if let Some(f) = file {
+            vars.values.insert(
+                format!("stub.{}.file", st.id),
+                f.to_string_lossy().into_owned(),
+            );
+        }
+    }
+    let mut env = Vec::new();
+    for st in &sc.stubs {
+        for (k, v) in &st.env {
+            env.push((
+                k.clone(),
+                scenario::expand(v, &vars).map_err(|e| format!("stub {}: {e:#}", st.id))?,
+            ));
+        }
+    }
+    Ok(Stubs { vars, sinks, env })
+}
+
+/// Herdr's `{home}`, `{state}` and `{config}` under the Herdr side's root ([`HerdrOptions`]
+/// root: `home`, and XDG config and state dirs `config` and `state`). At the pinned commit a
+/// plugin's config dir is `$XDG_CONFIG_HOME/herdr/plugins/config/<id>` and its state dir
+/// `$XDG_STATE_HOME/herdr/plugins/<id>` (`src/plugin_paths.rs`), with the id escaped.
+fn herdr_vars(root: &Path, plugin_id: &str) -> Result<Vars, String> {
+    let c = herdr_path_component(plugin_id).ok_or_else(|| {
+        format!("Herdr escapes the plugin id {plugin_id:?} in its dir names; the harness does not")
+    })?;
+    let mut vars = Vars::default();
+    for (k, v) in [
+        ("home", root.join("home")),
+        ("state", root.join("state/herdr/plugins").join(&c)),
+        ("config", root.join("config/herdr/plugins/config").join(&c)),
+    ] {
+        vars.values
+            .insert(k.into(), v.to_string_lossy().into_owned());
+    }
+    Ok(vars)
+}
+
+/// Herdr's dir name for a plugin id, for ids it keeps unchanged: lowercase ASCII letters,
+/// digits, `.`, `_` and `-`, not ending in `.`, at most 120 characters and without a Windows
+/// reserved stem. `None` for any other id (Herdr escapes or hashes those).
+pub fn herdr_path_component(id: &str) -> Option<String> {
+    let plain = !id.is_empty()
+        && id.len() <= 120
+        && !id.ends_with('.')
+        && id.bytes().all(|b| {
+            b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'.' | b'_' | b'-')
+        });
+    let stem = id.split('.').next().unwrap_or("");
+    let reserved = matches!(stem, "con" | "prn" | "aux" | "nul")
+        || ((stem.starts_with("com") || stem.starts_with("lpt"))
+            && stem.len() == 4
+            && stem.as_bytes()[3].is_ascii_digit());
+    (plain && !reserved).then(|| id.to_string())
 }
 
 fn git_try(dir: &Path, args: &[&str]) -> Result<String, String> {
@@ -508,8 +712,12 @@ struct Run<'a> {
     seq: i64,
     vars: Vars,
     ctx: Context,
-    stub_env: Vec<(String, String)>,
     sinks: BTreeMap<String, PathBuf>,
+    /// The Herdr side's stubs, or why they could not be set up.
+    herdr_stubs: Result<Stubs, String>,
+    herdr_root: PathBuf,
+    /// Herdr plugin panes the steps opened: entrypoint to Herdr pane id.
+    herdr_panes: BTreeMap<String, String>,
     manifest: Option<Manifest>,
     plugin_root: Option<PathBuf>,
     state_dir: Option<PathBuf>,
@@ -546,10 +754,12 @@ impl<'a> Run<'a> {
         let home = rp.join("home");
         std::fs::create_dir_all(&home).map_err(|e| e.to_string())?;
         let trace = rp.join("trace.jsonl");
+        let inherited = inherited_plugin_env();
         let s = Session::builder()
             .prefix("vkhp")
             .home(&home)
-            .allow_only(&env_allowlist())
+            // Nothing is copied by name: `inherited` is the filtered environment (18 §5.3).
+            .allow_only(&[])
             .env("VIBEKE_TEST_HOOKS", "1")
             .env(
                 "VIBEKE_PLUGIN_GIT_BASE",
@@ -570,55 +780,24 @@ impl<'a> Run<'a> {
                 .insert(k.into(), v.to_string_lossy().into_owned());
         }
         // Stubs: their URLs and files are placeholders in the session's environment.
-        let mut sinks = BTreeMap::new();
-        for st in &sc.stubs {
-            let file = match st.kind {
-                StubKind::HttpSink => {
-                    let log = rp.join(format!("stubs/{}.jsonl", st.id));
-                    std::fs::create_dir_all(log.parent().unwrap()).map_err(|e| e.to_string())?;
-                    std::fs::write(&log, "").map_err(|e| e.to_string())?;
-                    let url = http_sink(log.clone()).map_err(|e| e.to_string())?;
-                    vars.values.insert(format!("stub.{}.url", st.id), url);
-                    sinks.insert(st.id.clone(), log.clone());
-                    Some(log)
-                }
-                StubKind::File => {
-                    let p = st
-                        .path
-                        .as_deref()
-                        .map(|p| scenario::expand(p, &vars).map_err(|e| format!("{e:#}")))
-                        .transpose()?
-                        .map(|p| home.join(p))
-                        .unwrap_or_else(|| rp.join(format!("stubs/{}", st.id)));
-                    let text = st
-                        .contents
-                        .as_deref()
-                        .map(|c| scenario::expand(c, &vars).map_err(|e| format!("{e:#}")))
-                        .transpose()?
-                        .unwrap_or_default();
-                    write(&p, &text);
-                    Some(p)
-                }
-                StubKind::Env => None,
-            };
-            if let Some(f) = file {
-                vars.values.insert(
-                    format!("stub.{}.file", st.id),
-                    f.to_string_lossy().into_owned(),
-                );
-            }
-        }
-        let mut stub_env = Vec::new();
-        for st in &sc.stubs {
-            for (k, v) in &st.env {
-                stub_env.push((
-                    k.clone(),
-                    scenario::expand(v, &vars).map_err(|e| format!("stub {}: {e:#}", st.id))?,
-                ));
-            }
-        }
+        let stubs = start_stubs(sc, vars, &home, &rp.join("stubs"))?;
+        // The Herdr side gets its own stubs, with Herdr's dirs as `{home}`, `{state}` and
+        // `{config}`. If they cannot be set up, Herdr does not run (18 §11).
+        let herdr_root = rp.join("herdr");
+        let herdr_home = herdr_root.join("home");
+        let herdr_stubs = herdr_vars(&herdr_root, &lp.plugin_id)
+            .and_then(|v| start_stubs(sc, v, &herdr_home, &herdr_root.join("stubs")))
+            .map_err(|e| format!("Herdr side not set up: {e}"));
+        let Stubs {
+            vars,
+            sinks,
+            env: stub_env,
+        } = stubs;
         let mut s = s;
-        s.env.extend(stub_env.iter().cloned());
+        let mut env = inherited;
+        env.extend(std::mem::take(&mut s.env));
+        env.extend(stub_env);
+        s.env = env;
         let stem = lp.stem(lock);
         let grid_rel = format!("{stem}-{os}");
         Ok(Run {
@@ -638,8 +817,10 @@ impl<'a> Run<'a> {
             seq: 0,
             vars,
             ctx: Context::default(),
-            stub_env,
             sinks,
+            herdr_stubs,
+            herdr_root,
+            herdr_panes: BTreeMap::new(),
             manifest: None,
             plugin_root: None,
             state_dir: Some(state),
@@ -1375,15 +1556,31 @@ impl<'a> Run<'a> {
             ));
             return;
         }
-        let hroot = self.root.path().canonicalize().unwrap().join("herdr");
-        let _ = std::fs::create_dir_all(&hroot);
+        let stub_env = match &self.herdr_stubs {
+            Ok(st) => st.env.clone(),
+            Err(e) => {
+                self.herdr_note = e.clone();
+                return;
+            }
+        };
+        let _ = std::fs::create_dir_all(&self.herdr_root);
+        // The same allowlisted environment as the Vibeke side (18 §5.3), with Herdr's own
+        // directory on PATH after the toolchains. TERM stays Herdr's: its TUI runs in the
+        // harness's PTY.
+        let bin_dir = bin
+            .parent()
+            .map(|d| d.display().to_string())
+            .unwrap_or_default();
+        let mut env = plugin_env(&env_allowlist(), |n| std::env::var(n).ok(), &[bin_dir]);
+        env.retain(|(k, _)| k != "TERM");
+        env.extend(stub_env);
         let opts = HerdrOptions {
             bin,
-            root: hroot,
+            root: self.herdr_root.clone(),
             cols: 120,
             rows: 40,
             trace: self.herdr_trace.clone(),
-            env: self.stub_env.clone(),
+            env,
         };
         let side = match HerdrSide::start(opts) {
             Ok(h) => h,
@@ -1419,12 +1616,17 @@ impl<'a> Run<'a> {
         }
     }
 
-    /// Run one step on Herdr: the same Herdr CLI the step maps to, then its expected calls.
-    fn herdr_step(&mut self, step: &Step, deadline: Instant) -> (SideResult, Option<String>) {
-        let Some(h) = &self.herdr else {
+    /// Run one step on Herdr: the same Herdr CLI the step maps to, then its expectations and
+    /// expected calls, with the same timeout as on Vibeke, counted from the Herdr call.
+    ///
+    /// Herdr passes only when every expectation it can check holds and none is unknown. An
+    /// expectation Herdr cannot show (see [`Run::look_herdr`]) makes the result `NotRun` with
+    /// a reason, so a Vibeke failure stays suspected (18 §8.4 rule 2).
+    fn herdr_step(&mut self, step: &Step, ev: &mut Vec<String>) -> (SideResult, Option<String>) {
+        let Some(h) = self.herdr.as_ref() else {
             return (SideResult::NotRun, Some(self.herdr_note.clone()));
         };
-        let id = &self.lp.plugin_id;
+        let id = self.lp.plugin_id.clone();
         let args: Vec<String> = match step.kind {
             StepKind::Action => vec![
                 "plugin".into(),
@@ -1460,9 +1662,15 @@ impl<'a> Run<'a> {
                 );
             }
         };
+        let deadline = Instant::now() + self.step_timeout(Some(step));
+        let logs0: BTreeSet<String> = herdr_logs(h, &id)
+            .iter()
+            .filter_map(|l| l["log_id"].as_str().map(str::to_string))
+            .collect();
+        let from = self.herdr_off;
         let a: Vec<&str> = args.iter().map(String::as_str).collect();
-        match h.cli(&a) {
-            Ok((0, _, _)) => {}
+        let stdout = match h.cli(&a) {
+            Ok((0, out, _)) => out,
             Ok((code, _, err)) => {
                 return (
                     SideResult::Failed,
@@ -1470,29 +1678,245 @@ impl<'a> Run<'a> {
                 );
             }
             Err(e) => return (SideResult::HarnessError, Some(format!("{e:#}"))),
+        };
+        let opened = if step.kind == StepKind::Pane {
+            herdr_opened_pane(&stdout)
+        } else {
+            None
+        };
+        if let Some((entry, pane)) = &opened {
+            ev.push(format!("Herdr: pane {entry} opened as {pane}"));
+            self.herdr_panes.insert(entry.clone(), pane.clone());
         }
-        if step.expect_calls.is_empty() {
-            return (SideResult::Passed, None);
-        }
-        let from = self.herdr_off;
+        let mut pending: Vec<&Expectation> = step.expect.iter().collect();
+        let mut unknown: Vec<String> = Vec::new();
+        let mut calls_ok = step.expect_calls.is_empty();
         let mut mismatches = Vec::new();
         let mut off = from;
-        poll(remaining(deadline), || {
-            if let Ok((lines, o)) = trace::read(&self.herdr_trace, from) {
-                off = o;
-                mismatches = trace::match_calls(&lines, id, &step.expect_calls).0;
+        loop {
+            let mut still = Vec::new();
+            for e in pending {
+                match self.look_herdr(h, e, &logs0, opened.as_ref()) {
+                    Ok(HerdrLook::Holds(x)) => ev.push(format!("Herdr: {x}")),
+                    Ok(HerdrLook::NotYet) => still.push(e),
+                    Ok(HerdrLook::Unknown(w)) => unknown.push(w),
+                    Err(StepErr::Harness(w) | StepErr::Fail(w)) => {
+                        return (SideResult::HarnessError, Some(w));
+                    }
+                }
             }
-            mismatches.is_empty()
-        });
-        self.herdr_off = off;
-        if mismatches.is_empty() {
-            (SideResult::Passed, None)
-        } else {
-            (
-                SideResult::Failed,
-                Some(format!("expected calls missing on Herdr: {mismatches:?}")),
-            )
+            pending = still;
+            if !calls_ok && let Ok((lines, o)) = trace::read(&self.herdr_trace, from) {
+                off = o;
+                mismatches = trace::match_calls(&lines, &id, &step.expect_calls).0;
+                calls_ok = mismatches.is_empty();
+            }
+            if (pending.is_empty() && calls_ok) || Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(200));
         }
+        self.herdr_off = self.herdr_off.max(off);
+        let mut why = Vec::new();
+        for e in pending {
+            match e {
+                // Herdr records a startup command's output only when the command exits, so
+                // a long-running command's readiness line cannot be seen.
+                Expectation::Ready { text } => unknown.push(format!(
+                    "ready {text:?}: Herdr shows startup output only after the command exits"
+                )),
+                // Herdr has no API for the open popup. The screen search is not proven, so
+                // not finding the frame is not evidence that the popup is missing.
+                Expectation::Popup { pane } => unknown.push(format!(
+                    "popup {pane}: no popup frame found on Herdr's screen"
+                )),
+                other => why.push(format!("no evidence on Herdr for {other:?}")),
+            }
+        }
+        if !calls_ok {
+            why.push(format!("expected calls missing on Herdr: {mismatches:?}"));
+        }
+        if !why.is_empty() {
+            (SideResult::Failed, Some(why.join("; ")))
+        } else if !unknown.is_empty() {
+            (
+                SideResult::NotRun,
+                Some(format!(
+                    "Herdr cannot check {}; its other expectations held",
+                    unknown.join("; ")
+                )),
+            )
+        } else {
+            (SideResult::Passed, None)
+        }
+    }
+
+    /// The placement the manifest declares for the pane entrypoint `pane`.
+    fn declared_placement(&self, pane: &str) -> Option<String> {
+        self.manifest
+            .as_ref()?
+            .panes
+            .iter()
+            .find(|p| p.id == pane)
+            .map(|p| p.placement.clone())
+    }
+
+    /// One look at an expectation on Herdr. `logs0` are the Herdr log ids from before the
+    /// step, and `opened` is the plugin pane the step's own Herdr call opened.
+    ///
+    /// Herdr 0.9.3 has no event log the harness can read, no API that lists plugin panes,
+    /// and no API for the open popup. So `event` is always unknown, and `pane` and
+    /// `screen_text` are known only for a pane a step opened through the Herdr CLI.
+    fn look_herdr(
+        &self,
+        h: &HerdrSide,
+        e: &Expectation,
+        logs0: &BTreeSet<String>,
+        opened: Option<&(String, String)>,
+    ) -> StepRes<HerdrLook> {
+        use HerdrLook::{Holds, NotYet, Unknown};
+        let id = self.lp.plugin_id.as_str();
+        let output = |l: &Value| {
+            format!(
+                "{}{}",
+                l["stdout"].as_str().unwrap_or_default(),
+                l["stderr"].as_str().unwrap_or_default()
+            )
+        };
+        Ok(match e {
+            Expectation::InvocationFinal { status } => {
+                let want = match status.as_deref().unwrap_or("completed") {
+                    "completed" | "succeeded" => "succeeded",
+                    "failed" => "failed",
+                    other => return harness(format!("unknown invocation status `{other}`")),
+                };
+                herdr_logs(h, id)
+                    .into_iter()
+                    .filter(|l| {
+                        l["event"] != "startup"
+                            && !logs0.contains(l["log_id"].as_str().unwrap_or_default())
+                    })
+                    .find(|l| l["status"] == want)
+                    .map_or(NotYet, |l| {
+                        Holds(format!("invocation {} {want}", l["log_id"]))
+                    })
+            }
+            Expectation::HookLog { text } => herdr_logs(h, id)
+                .into_iter()
+                .find(|l| {
+                    l["event"].is_string()
+                        && l["event"] != "startup"
+                        && output(l).contains(text.as_str())
+                })
+                .map_or(NotYet, |l| {
+                    Holds(format!("event hook {} logged the text", l["event"]))
+                }),
+            Expectation::Ready { text } => herdr_logs(h, id)
+                .into_iter()
+                .find(|l| l["event"] == "startup" && output(l).contains(text.as_str()))
+                .map_or(NotYet, |_| Holds("startup command ready".into())),
+            Expectation::File { path, contains } => {
+                let Ok(st) = &self.herdr_stubs else {
+                    return Ok(Unknown("the Herdr side has no placeholder values".into()));
+                };
+                match scenario::expand(path, &st.vars) {
+                    Err(e) => Unknown(format!("file {path}: {e:#}")),
+                    Ok(p) => {
+                        let p = self.herdr_root.join("home").join(p);
+                        let ok =
+                            p.exists() && contains.as_deref().is_none_or(|c| read(&p).contains(c));
+                        if ok {
+                            Holds(format!("file {}", p.display()))
+                        } else {
+                            NotYet
+                        }
+                    }
+                }
+            }
+            Expectation::StubRequest { stub, contains } => {
+                let Some(log) = self
+                    .herdr_stubs
+                    .as_ref()
+                    .ok()
+                    .and_then(|st| st.sinks.get(stub))
+                else {
+                    return harness(format!("no http_sink stub `{stub}` on the Herdr side"));
+                };
+                let hit = read(log)
+                    .lines()
+                    .any(|l| contains.as_deref().is_none_or(|c| l.contains(c)));
+                if hit {
+                    Holds(format!("stub {stub} received a request"))
+                } else {
+                    NotYet
+                }
+            }
+            Expectation::Pane { pane, placement } => match opened {
+                Some((entry, pid)) if entry == pane => {
+                    // The step opened the pane without a placement, so Herdr used the
+                    // declared one.
+                    let declared = self.declared_placement(pane);
+                    match placement {
+                        None => Holds(format!("pane {pane} opened as {pid}")),
+                        Some(p) if declared.as_deref() == Some(p.as_str()) => {
+                            Holds(format!("pane {pane} opened as {pid} at {p}"))
+                        }
+                        Some(p) => Unknown(format!(
+                            "pane {pane} at {p}: Herdr does not report a plugin pane's placement"
+                        )),
+                    }
+                }
+                _ => Unknown(format!(
+                    "pane {pane}: Herdr has no API that lists plugin panes"
+                )),
+            },
+            Expectation::Popup { pane } => match h.capture_pane("", "popup") {
+                Ok(_) => Holds(format!("a popup frame for {pane} on Herdr's screen")),
+                Err(_) => NotYet,
+            },
+            Expectation::ScreenText { pane, text, regex } => {
+                let re = match regex {
+                    Some(r) => {
+                        Some(regex::Regex::new(r).map_err(|e| StepErr::Harness(e.to_string()))?)
+                    }
+                    None => None,
+                };
+                let Some(placement) = self.declared_placement(pane) else {
+                    return Ok(Unknown(format!(
+                        "screen text in {pane}: the manifest declares no such pane"
+                    )));
+                };
+                let pane_id = if placement == "popup" {
+                    String::new()
+                } else {
+                    match self.herdr_panes.get(pane) {
+                        Some(p) => p.clone(),
+                        None => {
+                            return Ok(Unknown(format!(
+                                "screen text in {pane}: Herdr has no API that finds a plugin \
+                                 pane the plugin opened itself"
+                            )));
+                        }
+                    }
+                };
+                match h.capture_pane(&pane_id, &placement) {
+                    Err(_) => NotYet,
+                    Ok(g) => {
+                        let screen = g.text();
+                        let hit = text.as_deref().is_none_or(|t| screen.contains(t))
+                            && re.as_ref().is_none_or(|r| r.is_match(&screen));
+                        if hit {
+                            Holds(format!("screen text in {pane}"))
+                        } else {
+                            NotYet
+                        }
+                    }
+                }
+            }
+            Expectation::Event { event_type } => Unknown(format!(
+                "event {event_type}: Herdr has no event log the harness can read"
+            )),
+        })
     }
 
     // ---- steps (18 §8) ----------------------------------------------------------------------
@@ -2144,7 +2568,7 @@ impl<'a> Run<'a> {
         let (herdr, herdr_reason) = if self.build_failed.is_some() {
             (SideResult::NotRun, Some("the Vibeke build failed".into()))
         } else {
-            self.herdr_step(step, deadline)
+            self.herdr_step(step, &mut ev)
         };
         let mut vibeke = vibeke;
         let mut vreason = vreason;
@@ -2183,7 +2607,8 @@ impl<'a> Run<'a> {
                 (true, DependencyMode::Verified) => Some(true),
                 // Unpinned: the harness cannot see what each side downloaded yet (build
                 // scripts fetch on their own, outside any proxy), so the bytes are unknown
-                // rather than known to differ.
+                // rather than known to differ. The rule then gives a Vibeke failure only
+                // `suspected_compat_failure` (18 §8.4 rule 3).
                 (true, DependencyMode::Unpinned) => None,
             },
             dependency_failed: self.build_failed.is_some(),
@@ -2347,6 +2772,40 @@ impl<'a> Run<'a> {
         r.coverage = self.coverage();
         r
     }
+}
+
+/// What one look at an expectation on Herdr found.
+enum HerdrLook {
+    Holds(String),
+    NotYet,
+    /// Herdr cannot show this expectation; the text says why.
+    Unknown(String),
+}
+
+/// This plugin's Herdr command logs (`plugin.log.list`), oldest first.
+fn herdr_logs(h: &HerdrSide, plugin_id: &str) -> Vec<Value> {
+    h.call(
+        "plugin.log.list",
+        json!({"plugin_id": plugin_id, "limit": 200}),
+    )
+    .ok()
+    .and_then(|v| v["logs"].as_array().cloned())
+    .unwrap_or_default()
+}
+
+/// The plugin pane that `herdr plugin pane open` printed, as (entrypoint, pane id). The CLI
+/// prints the JSON response (`result.type = "plugin_pane_opened"`).
+pub fn herdr_opened_pane(stdout: &str) -> Option<(String, String)> {
+    std::iter::once(stdout.trim())
+        .chain(stdout.lines())
+        .filter_map(|t| serde_json::from_str::<Value>(t.trim()).ok())
+        .find_map(|v| {
+            let pp = v.pointer("/result/plugin_pane").or(v.get("plugin_pane"))?;
+            Some((
+                pp["entrypoint"].as_str()?.to_string(),
+                pp["pane"]["pane_id"].as_str()?.to_string(),
+            ))
+        })
 }
 
 /// A scenario key name in Vibeke's key grammar (07 §2.6.1): tmux spellings (`C-c`, `M-x`)

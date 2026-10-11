@@ -32,7 +32,9 @@ pub struct StepFacts {
     pub vibeke: SideResult,
     pub herdr: SideResult,
     /// Both sides received the same dependency bytes: guaranteed in verified mode, compared by
-    /// download hashes in unpinned mode. `None` when Herdr did not run (nothing to compare).
+    /// download hashes in unpinned mode. `None` when the bytes were not compared: Herdr did not
+    /// run, or the harness did not observe the unpinned downloads. Rule 3 then gives only a
+    /// `suspected_compat_failure`.
     pub same_dependency_bytes: Option<bool>,
     /// A build or external dependency failed on the Vibeke side before the step could run.
     pub dependency_failed: bool,
@@ -47,7 +49,8 @@ pub struct StepFacts {
 ///    `dependency_failure`; a schema violation is `compat_failure`.
 /// 1. Different dependency bytes on the two sides: `dependency_failure`.
 /// 2. Herdr did not run the step: a Vibeke failure is `suspected_compat_failure`.
-/// 3. Herdr passes and Vibeke fails: `compat_failure`.
+/// 3. Herdr passes and Vibeke fails: `compat_failure`. If nobody compared the dependency bytes
+///    (`same_dependency_bytes` is `None`), the failure is only `suspected_compat_failure`.
 /// 4. Both fail: `not_exercised`, with the Herdr result as the reason.
 /// Otherwise `passed`.
 ///
@@ -89,6 +92,11 @@ pub fn attribute(f: &StepFacts) -> (Outcome, Option<String>) {
         (S::Failed, S::NotRun) => why(
             Outcome::SuspectedCompatFailure,
             "Vibeke failed and Herdr has not run the step",
+        ),
+        // Rule 3, without proof that both sides had the same dependency bytes.
+        (S::Failed, S::Passed) if f.same_dependency_bytes.is_none() => why(
+            Outcome::SuspectedCompatFailure,
+            "dependency bytes not compared (unpinned)",
         ),
         // Rule 3.
         (S::Failed, S::Passed) => why(
@@ -214,6 +222,34 @@ mod tests {
             outcome(&facts(S::Failed, S::Passed)),
             Outcome::CompatFailure
         );
+    }
+
+    #[test]
+    fn rule_three_needs_compared_bytes() {
+        let mut f = facts(S::Failed, S::Passed);
+        f.same_dependency_bytes = None;
+        assert_eq!(
+            attribute(&f),
+            (
+                Outcome::SuspectedCompatFailure,
+                Some("dependency bytes not compared (unpinned)".to_string())
+            )
+        );
+        // Verified mode sets `Some(true)` and confirms the failure.
+        f.same_dependency_bytes = Some(true);
+        assert_eq!(outcome(&f), Outcome::CompatFailure);
+        // Uncompared bytes do not change the other cases.
+        f.same_dependency_bytes = None;
+        f.vibeke = S::Passed;
+        assert_eq!(attribute(&f), (Outcome::Passed, None));
+        let mut f = facts(S::Failed, S::Failed);
+        f.same_dependency_bytes = None;
+        assert_eq!(outcome(&f), Outcome::NotExercised);
+        // A schema violation stays a confirmed failure without compared bytes.
+        let mut f = facts(S::Failed, S::Passed);
+        f.same_dependency_bytes = None;
+        f.schema_violation = true;
+        assert_eq!(outcome(&f), Outcome::CompatFailure);
     }
 
     #[test]
