@@ -1263,15 +1263,50 @@ impl Snap {
         }
         Value::Object(v)
     }
+    /// Herdr's `AgentInfo` (`src/api/schema/agents.rs`, built by `agent_info` in
+    /// `src/app/agents.rs` from the pane's `PaneInfo`): the pane fields flattened, with
+    /// `workspace_id`, `tab_id`, `pane_id`, `terminal_id`, `focused` and `revision` required,
+    /// and every absent optional field left out rather than sent as `null` (Herdr skips
+    /// `None`; plugins deserialize `name` and `cwd` as plain strings with a default).
+    /// `state_change_seq` stands in for Herdr's per-terminal change counter with the time of the
+    /// run's last execution change, which also only grows. `agent_id` is a Vibeke extra.
     fn agent_json(&self, server: &Server, r: &AgentRun) -> Value {
-        json!({
-            "agent_id": r.handle,
-            "name": r.name,
-            "agent": status::herdr_agent_name(&r.harness),
-            "agent_status": self.run_status(r),
-            "pane_id": self.pane(&r.pane).map(|p| p.handle.clone()),
-            "pane": self.pane(&r.pane).map(|p| self.pane_json(server, p)),
-        })
+        let mut v = Map::new();
+        v.insert("agent_id".into(), json!(r.handle));
+        if let Some(p) = self.pane(&r.pane) {
+            let pj = self.pane_json(server, p);
+            for k in [
+                "terminal_id",
+                "title",
+                "terminal_title",
+                "terminal_title_stripped",
+                "display_agent",
+                "state_labels",
+                "tokens",
+                "agent_session",
+                "workspace_id",
+                "tab_id",
+                "pane_id",
+                "focused",
+                "cwd",
+                "foreground_cwd",
+                "revision",
+            ] {
+                if let Some(x) = pj.get(k).filter(|x| !x.is_null()) {
+                    v.insert(k.into(), x.clone());
+                }
+            }
+        }
+        if let Some(n) = r.name.as_deref().filter(|n| !n.is_empty()) {
+            v.insert("name".into(), json!(n));
+        }
+        v.insert("agent".into(), json!(status::herdr_agent_name(&r.harness)));
+        v.insert("agent_status".into(), json!(self.run_status(r)));
+        v.insert(
+            "state_change_seq".into(),
+            json!(u64::try_from(r.execution.since_ms).unwrap_or(0)),
+        );
+        Value::Object(v)
     }
     /// Herdr's focused workspace, tab and pane ids (session-wide, see [`Self::active_ws`]).
     fn focused(&self) -> (Option<String>, Option<String>, Option<String>) {
@@ -2663,7 +2698,13 @@ pub async fn call(
         // ---- agents ----------------------------------------------------------------------
         "agent.list" => Ok(typed(
             "agent_list",
-            json!({"agents": sn.pane_run.values().map(|r| sn.agent_json(server, r)).collect::<Vec<_>>()}),
+            // Herdr lists only agents whose pane still exists (`agent_info` returns `None`).
+            json!({"agents": sn
+                .pane_run
+                .values()
+                .filter(|r| sn.pane(&r.pane).is_some())
+                .map(|r| sn.agent_json(server, r))
+                .collect::<Vec<_>>()}),
         )),
         "agent.get" => {
             let r = run_target(&sn, p)?;

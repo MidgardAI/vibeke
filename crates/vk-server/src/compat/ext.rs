@@ -18,7 +18,9 @@ use std::sync::Arc;
 use vk_compat::herdr::registry::{self, Registry, RegistryError, Status};
 use vk_compat::herdr::{self, launch, status};
 use vk_proto::layout::{self, Direction};
-use vk_proto::model::{FloatingPane, LayoutNode, Pane, PluginSurface, SplitDir, SurfaceKind, Tab};
+use vk_proto::model::{
+    AgentRun, FloatingPane, LayoutNode, Pane, PluginSurface, SplitDir, SurfaceKind, Tab,
+};
 
 /// Methods handled here.
 pub const METHODS: &[&str] = &[
@@ -2292,8 +2294,9 @@ pub async fn call(
             Ok(typed("agent_started", info))
         }
         "agent.prompt" => {
-            let r = run_target(sn, p)?;
-            let mut np = json!({"target": r.id, "text": req_s(p, "text")?});
+            let text = req_s(p, "text")?;
+            let r = prompt_ready(sn, p, text)?;
+            let mut np = json!({"target": r.id, "text": text});
             for k in ["wait", "timeout_ms"] {
                 if let Some(v) = p.get(k) {
                     np[k] = v.clone();
@@ -2417,6 +2420,58 @@ pub async fn call(
 /// trees below the group leader and the shell (`/proc`), keeps members of the group sorted by
 /// pid, uses the kernel `comm` as `name` and no `argv0`; macOS lists the group with libproc
 /// and adds `argv0` (the basename of `argv[0]` without a login shell's `-`).
+/// Herdr's checks before `agent.prompt` sends anything (`queue_agent_prompt` in
+/// `src/app/api/agents.rs`): an empty text is refused (`empty_agent_prompt`); a blocked agent
+/// needs interactive input (`agent_blocked`); the pane must still host a known agent
+/// (`agent_not_ready`), and that agent's program must be the pane's foreground process
+/// (`runtime_hosts_agent` in `src/app/agents.rs`), so a reported agent in a pane that runs only
+/// its shell is `agent_not_ready` too. Vibeke's native `agent.prompt` does not make the
+/// foreground check; only Herdr callers get it.
+fn prompt_ready(sn: &Snap, p: &Value, text: &str) -> Result<AgentRun, WireError> {
+    if text.is_empty() {
+        return Err(WireError::new(
+            "empty_agent_prompt",
+            "agent prompt must not be empty",
+        ));
+    }
+    let r = run_target(sn, p)?;
+    let target = sp(p, "target")
+        .or(sp(p, "agent_id"))
+        .unwrap_or(r.handle.as_str())
+        .to_string();
+    if sn.run_status(&r) == "blocked" {
+        return Err(WireError::new(
+            "agent_blocked",
+            format!("agent {target} is blocked and requires interactive input"),
+        ));
+    }
+    let expected = status::herdr_agent_label(status::herdr_agent_name(&r.harness));
+    let Some(expected) = expected.filter(|_| r.ended_at_ms.is_none()) else {
+        return Err(WireError::new(
+            "agent_not_ready",
+            format!("agent {target} is not an active named agent"),
+        ));
+    };
+    let Some(x) = sn.pane(&r.pane) else {
+        return Err(WireError::new(
+            "agent_not_found",
+            format!("agent target {target} not found"),
+        ));
+    };
+    let hosted = x
+        .child_pid
+        .filter(|pid| *pid > 0 && !x.exited)
+        .and_then(fgjob::job)
+        .and_then(|(pgid, procs)| status::job_agent(pgid, &procs));
+    if hosted != Some(expected) {
+        return Err(WireError::new(
+            "agent_not_ready",
+            format!("agent {target} is no longer the pane foreground process"),
+        ));
+    }
+    Ok(r)
+}
+
 mod fgjob {
     use serde_json::{Value, json};
 
