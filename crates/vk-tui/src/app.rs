@@ -3072,7 +3072,7 @@ impl App {
         self.send_view_hints(false);
         crate::browser::update_views(self);
         crate::image_view::before_draw(self);
-        crate::preview_ui::before_draw(self);
+        crate::preview_ui::observe(self);
         crate::pane_images::before_draw(self);
         crate::nav::observe(self);
         crate::plugins::observe(self);

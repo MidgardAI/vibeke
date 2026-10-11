@@ -57,6 +57,10 @@ pub enum Reply {
         machine: usize,
         preview: String,
     },
+    /// The image of a remote sidebar thumbnail (`screenshot.get {inline, thumb}`).
+    ThumbImage {
+        key: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -717,6 +721,7 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
         Reply::Thumb { machine, preview } => {
             crate::preview_ui::on_reply(app, machine, preview, res)
         }
+        Reply::ThumbImage { key } => crate::preview_ui::on_image(app, &key, &res),
         Reply::List { view } => {
             let Some(g) = view_mut(app, view) else { return };
             g.loading = false;

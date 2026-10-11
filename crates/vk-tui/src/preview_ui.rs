@@ -3,31 +3,34 @@
 //! - **`!N` on preview chips and sidebar rows**: pushed `preview.console_error` events count per
 //!   preview until the preview is opened (as a pane, a window or through the proxy).
 //! - **Sidebar thumbnails** (`ui.sidebar.preview_thumbnails`, off by default): with kitty
-//!   graphics, each preview row of a machine on this host gets a tiny image of its latest
-//!   screenshot, drawn with unicode placeholders at the right end of the row. The PNG is read
-//!   from the local blob store (never fetched from a remote machine), scaled down here to a few
-//!   dozen pixels and sent as a raw RGBA virtual placement under ids in the reserved range
-//!   [`THUMB_ID_BASE`]`..+`[`ID_SPAN`] (the gallery uses 16 700 001, `vibeke preview show` 16 700 010).
+//!   graphics or iTerm2 inline images, each preview row gets a tiny image of its latest
+//!   screenshot at the right end of the row. The image goes through [`crate::image_view`]
+//!   (spec 18 §3.6) under the slot `thumb:<machine>:<preview>`. A machine on this host is read
+//!   from the local blob store and scaled down here to a few dozen pixels; any other machine (and
+//!   the WASM TUI) fetches a `screenshot.get {inline, thumb}` of that size.
 
 use crate::app::{App, Pending};
+use crate::browser::Gfx;
 use crate::gallery::Reply;
-use crate::screen::Grid;
+use crate::image_view::{self, Placement, Problem};
+use crate::screen::{Grid, Rect};
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
-use vk_browser::frame::Rgba;
 use vk_proto::model::Preview;
 
-/// First kitty image id for thumbnails; ids `BASE..BASE + ID_SPAN`.
-pub const THUMB_ID_BASE: u32 = 16_710_000;
-pub const ID_SPAN: u32 = 90;
 /// Thumbnail size in cells.
 pub const THUMB_COLS: u16 = 4;
 /// Largest PNG decoded for a thumbnail.
 const MAX_PNG: u64 = 16 << 20;
 
+/// The newest screenshot of one preview and where its thumbnail image is cached.
 struct Thumb {
     shot: String,
-    rgba: Rgba,
+    /// Key in the image cache: `thumb:<machine>:<shot>` (scaled down from disk) or the fetched
+    /// image's [`image_view::key`].
+    key: String,
+    /// The PNG on this machine's disk (machines on this host only).
+    path: String,
 }
 
 #[derive(Default)]
@@ -37,10 +40,6 @@ pub struct State {
     thumbs: HashMap<(usize, String), Thumb>,
     /// Previews whose latest screenshot was asked for (cleared by `screenshot.captured`).
     asked: HashSet<(usize, String)>,
-    ids: HashMap<(usize, String), u32>,
-    next_id: u32,
-    /// Image id → (preview, screenshot id) currently held by the terminal.
-    sent: HashMap<u32, ((usize, String), String)>,
 }
 
 // ---- `!N` --------------------------------------------------------------------------------------
@@ -84,19 +83,16 @@ pub fn clear(app: &mut App, mi: usize, handle: &str) {
 // ---- thumbnails --------------------------------------------------------------------------------
 
 fn enabled(app: &App) -> bool {
-    app.config.ui.sidebar.preview_thumbnails
-        && app.sidebar
-        && crate::browser::gfx(app) == crate::browser::Gfx::Kitty
+    app.config.ui.sidebar.preview_thumbnails && app.sidebar && image_view::gfx(app) != Gfx::None
 }
 
-/// Previews that get a thumbnail: those of machines on this host (their blobs are readable).
+/// Previews that get a thumbnail.
 fn wanted(app: &App) -> Vec<(usize, Preview)> {
     if !enabled(app) {
         return Vec::new();
     }
     crate::browser::preview_entries(app)
         .into_iter()
-        .filter(|(mi, _)| app.machines[*mi].local)
         // `[preview] inline_thumbnails` (a trusted repo's value for its previews, 08 §11.1).
         .filter(|(mi, p)| crate::repo_preview::for_preview(app, *mi, p).inline_thumbnails)
         .collect()
@@ -112,22 +108,72 @@ pub fn on_captured(app: &mut App, mi: usize, v: &Value) {
     }
 }
 
-/// Ask for the newest screenshot of every wanted preview that has no answer yet.
+/// Ask for the newest screenshot of every wanted preview that has no answer yet, and make sure
+/// the image of the one we know is loaded (called from `App::draw_bytes` before the image layer).
 pub fn observe(app: &mut App) {
     for (mi, p) in wanted(app) {
         let key = (mi, p.handle.clone());
-        if !app.previews_ui.asked.insert(key) {
-            continue;
+        if app.previews_ui.asked.insert(key.clone()) {
+            app.command_on(
+                mi,
+                "screenshot.list",
+                json!({"preview": p.handle, "limit": 1}),
+                Pending::Gallery(Reply::Thumb {
+                    machine: mi,
+                    preview: p.handle.clone(),
+                }),
+            );
         }
-        app.command_on(
-            mi,
-            "screenshot.list",
-            json!({"preview": p.handle, "limit": 1}),
-            Pending::Gallery(Reply::Thumb {
-                machine: mi,
-                preview: p.handle.clone(),
-            }),
+        ensure(app, &key);
+    }
+}
+
+/// Load or fetch the thumbnail image of a preview's newest screenshot unless it is cached (or
+/// known to be unusable, or already on its way).
+fn ensure(app: &mut App, k: &(usize, String)) {
+    let Some(t) = app.previews_ui.thumbs.get(k) else {
+        return;
+    };
+    let (shot, key, path) = (t.shot.clone(), t.key.clone(), t.path.clone());
+    if image_view::readable(app, k.0) {
+        load_local(app, &key, &path);
+    } else {
+        let px = image_view::thumb_px(app, THUMB_COLS);
+        image_view::fetch(
+            app,
+            k.0,
+            &shot,
+            px,
+            &key,
+            Pending::Gallery(Reply::ThumbImage { key: key.clone() }),
         );
+    }
+}
+
+/// Read the PNG at `path`, scale it down to the thumbnail size and cache it as `key`. The
+/// full-size image of the same screenshot (gallery, viewer) has another key and stays as it is.
+fn load_local(app: &mut App, key: &str, path: &str) {
+    if app.imgview.image(key).is_some() || app.imgview.problem(key).is_some() {
+        return;
+    }
+    let ok = std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.len() <= MAX_PNG);
+    let Some(rgba) = ok
+        .then(|| std::fs::read(path).ok())
+        .flatten()
+        .and_then(|b| vk_browser::frame::decode(&b).ok())
+    else {
+        app.imgview.problems.insert(key.into(), Problem::Gone);
+        return;
+    };
+    let (cw, ch, _) = crate::browser::cell_geom(app);
+    let small = vk_browser::frame::scale_to_fit(&rgba, cw as u32 * THUMB_COLS as u32, ch as u32);
+    match vk_browser::frame::encode_png(small.width, small.height, &small.data, true) {
+        Ok(png) => app.imgview.put(key.into(), png),
+        Err(e) => {
+            app.imgview
+                .problems
+                .insert(key.into(), Problem::Failed(e.to_string()));
+        }
     }
 }
 
@@ -142,117 +188,49 @@ pub fn on_reply(app: &mut App, mi: usize, preview: String, res: Result<Value, cr
         return;
     };
     let id = shot["id"].as_str().unwrap_or("").to_string();
-    if app
-        .previews_ui
-        .thumbs
-        .get(&key)
-        .is_some_and(|t| t.shot == id)
+    if id.is_empty()
+        || app
+            .previews_ui
+            .thumbs
+            .get(&key)
+            .is_some_and(|t| t.shot == id)
     {
         return;
     }
-    let Some(path) = shot["path_on_machine"].as_str().filter(|p| !p.is_empty()) else {
-        return;
+    let path = shot["path_on_machine"].as_str().unwrap_or("").to_string();
+    let image_key = if image_view::readable(app, mi) {
+        // Not `<machine>:<id>`: that one is the full-size image the gallery may hold.
+        format!("thumb:{mi}:{id}")
+    } else {
+        let px = image_view::thumb_px(app, THUMB_COLS);
+        image_view::key(app, mi, &id, px)
     };
-    let ok = std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.len() <= MAX_PNG);
-    let Some(rgba) = ok
-        .then(|| std::fs::read(path).ok())
-        .flatten()
-        .and_then(|b| vk_browser::frame::decode(&b).ok())
-    else {
-        return;
-    };
-    let (cw, ch, _) = crate::browser::cell_geom(app);
-    let small = vk_browser::frame::scale_to_fit(&rgba, cw as u32 * THUMB_COLS as u32, ch as u32);
     app.previews_ui.thumbs.insert(
-        key,
+        key.clone(),
         Thumb {
             shot: id,
-            rgba: small,
+            key: image_key,
+            path,
         },
     );
+    ensure(app, &key);
 }
 
-fn id_for(app: &mut App, key: &(usize, String)) -> u32 {
-    if let Some(i) = app.previews_ui.ids.get(key) {
-        return *i;
-    }
-    let i = THUMB_ID_BASE + app.previews_ui.next_id % ID_SPAN;
-    app.previews_ui.next_id += 1;
-    app.previews_ui.ids.insert(key.clone(), i);
-    i
+/// Reply to the `screenshot.get {inline, thumb}` of a remote thumbnail.
+pub fn on_image(app: &mut App, key: &str, res: &Result<Value, crate::app::RpcErr>) {
+    let _ = image_view::on_fetched(app, key, res);
 }
 
-/// Transmit new thumbnails and delete the ones no longer shown (called from `App::draw` before
-/// composing, like the gallery image).
-pub fn before_draw(app: &mut App) {
-    observe(app);
-    let want: Vec<(usize, String)> = wanted(app)
-        .into_iter()
-        .map(|(mi, p)| (mi, p.handle))
-        .filter(|k| app.previews_ui.thumbs.contains_key(k))
-        .collect();
-    let mut out = Vec::new();
-    // Drop what is no longer wanted (or replaced by a newer screenshot).
-    let stale: Vec<u32> = app
-        .previews_ui
-        .sent
-        .iter()
-        .filter(|(_, (key, shot))| {
-            !want.contains(key)
-                || app
-                    .previews_ui
-                    .thumbs
-                    .get(key)
-                    .is_none_or(|t| &t.shot != shot)
-        })
-        .map(|(id, _)| *id)
-        .collect();
-    for id in stale {
-        vk_browser::kitty::delete_image(&mut out, id);
-        app.previews_ui.sent.remove(&id);
-    }
-    for key in want {
-        let id = id_for(app, &key);
-        let Some(t) = app.previews_ui.thumbs.get(&key) else {
-            continue;
-        };
-        if app
-            .previews_ui
-            .sent
-            .get(&id)
-            .is_some_and(|(_, s)| *s == t.shot)
-        {
-            continue;
-        }
-        let mut h = vk_browser::kitty::Header::new(
-            id,
-            vk_browser::kitty::PixelFormat::Rgba,
-            t.rgba.width,
-            t.rgba.height,
-        );
-        h.virtual_cells = Some((THUMB_COLS, 1));
-        h.placement = Some(1);
-        // A reused id: the previous image goes first.
-        if app.previews_ui.sent.contains_key(&id) {
-            vk_browser::kitty::delete_image(&mut out, id);
-        }
-        vk_browser::kitty::transmit_direct(&mut out, &h, &t.rgba.data);
-        let shot = t.shot.clone();
-        app.previews_ui.sent.insert(id, (key, shot));
-    }
-    app.browser.out.extend_from_slice(&out);
-}
-
-/// Draw the placeholder cells of the thumbnails at the right end of the sidebar's preview rows.
-/// `sx`/`w`: the sidebar's x and width.
-pub fn draw_thumbs(app: &App, g: &mut Grid, sx: u16, w: u16) {
-    if app.previews_ui.sent.is_empty() || !enabled(app) {
-        return;
+/// The thumbnails of the sidebar's preview rows (sidebar at `sx`, `w` wide) whose image is
+/// loaded, at the right end of each row where the row's own text leaves room.
+fn thumb_placements(app: &App, sx: u16, w: u16) -> Vec<Placement> {
+    if !enabled(app) || app.previews_ui.thumbs.is_empty() {
+        return Vec::new();
     }
     let entries = crate::browser::preview_entries(app);
-    let rows = crate::draw::sidebar_rows(app);
     let need = THUMB_COLS + 1;
-    for (row, r) in rows.iter().enumerate() {
+    let mut v = Vec::new();
+    for (row, r) in crate::draw::sidebar_rows(app).iter().enumerate() {
         // Preview rows only (not an expanded row's chips).
         let Some((mi, p)) = r
             .preview
@@ -262,18 +240,9 @@ pub fn draw_thumbs(app: &App, g: &mut Grid, sx: u16, w: u16) {
         else {
             continue;
         };
-        let key = (*mi, p.handle.clone());
-        let Some(id) = app.previews_ui.ids.get(&key) else {
+        let Some(t) = app.previews_ui.thumbs.get(&(*mi, p.handle.clone())) else {
             continue;
         };
-        if app
-            .previews_ui
-            .sent
-            .get(id)
-            .is_none_or(|(sk, _)| *sk != key)
-        {
-            continue;
-        }
         let y = row as u16 + 1;
         if y >= app.size.1 {
             continue;
@@ -287,15 +256,31 @@ pub fn draw_thumbs(app: &App, g: &mut Grid, sx: u16, w: u16) {
         if used as u16 + need > w {
             continue;
         }
-        let x0 = sx + w - need;
-        for col in 0..THUMB_COLS {
-            g.put_grapheme(
-                x0 + col,
-                y,
-                &crate::browser::placeholder(*id, 0, col),
-                crate::browser::id_style(*id),
-            );
-        }
+        let area = Rect {
+            x: sx + w - need,
+            y,
+            w: THUMB_COLS,
+            h: 1,
+        };
+        let slot = format!("thumb:{mi}:{}", p.handle);
+        v.extend(image_view::fit(app, &slot, &t.key, area));
+    }
+    v
+}
+
+/// Every thumbnail of this frame (for [`image_view::placements`]).
+pub fn placements(app: &App) -> Vec<Placement> {
+    match crate::chrome::sidebar_x(app) {
+        Some(sx) => thumb_placements(app, sx, app.sidebar_w),
+        None => Vec::new(),
+    }
+}
+
+/// Draw the cells of the thumbnails at the right end of the sidebar's preview rows.
+/// `sx`/`w`: the sidebar's x and width.
+pub fn draw_thumbs(app: &App, g: &mut Grid, sx: u16, w: u16) {
+    for p in thumb_placements(app, sx, w) {
+        image_view::draw(app, g, &p);
     }
 }
 

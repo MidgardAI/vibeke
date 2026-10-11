@@ -27,8 +27,8 @@ use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 
 /// First kitty image id for image views; ids `ID_BASE..ID_BASE + ID_SPAN` (above the gallery's
-/// old id 16 700 001, `vibeke preview show`'s 16 700 010 and the thumbnails' 16 710 000 range,
-/// below 2^24 so no MSB diacritic is needed).
+/// old id 16 700 001 and `vibeke preview show`'s 16 700 010, below 2^24 so no MSB diacritic is
+/// needed).
 pub const ID_BASE: u32 = 16_720_000;
 pub const ID_SPAN: u32 = 256;
 /// Largest image decoded or transmitted.
@@ -293,6 +293,7 @@ pub fn placements(app: &App) -> Vec<Placement> {
     }
     let mut v = Vec::new();
     v.extend(crate::gallery::placements(app));
+    v.extend(crate::preview_ui::placements(app));
     v
 }
 
