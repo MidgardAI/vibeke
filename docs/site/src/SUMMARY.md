@@ -27,8 +27,6 @@
 - [Claude Code](agents/claude-code.md)
 - [Codex CLI](agents/codex.md)
 - [pi and oh-my-pi](agents/pi.md)
-- [OpenCode](agents/opencode.md)
-- [Gemini CLI](agents/gemini.md)
 - [Other agents](agents/other.md)
 
 # Concepts

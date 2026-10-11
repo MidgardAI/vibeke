@@ -2,7 +2,7 @@
 
 Use this page to track an agent that has no dedicated integration. You can rely on terminal detection, describe your own agent in a manifest, or run an agent through the Agent Client Protocol (ACP).
 
-For the agents with an integration, see [Claude Code](claude-code.md), [Codex CLI](codex.md), [pi and oh-my-pi](pi.md), [OpenCode](opencode.md) and [Gemini CLI](gemini.md).
+For the agents with an integration, see [Claude Code](claude-code.md), [Codex CLI](codex.md), and [pi and oh-my-pi](pi.md).
 
 ## Terminal detection
 
