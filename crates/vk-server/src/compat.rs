@@ -4908,6 +4908,8 @@ async fn pane_link(
         .pane(pid)
         .cloned()
         .ok_or_else(|| WireError::new("pane_not_found", "pane not found"))?;
+    // Both answers come from the pane's screen, so the caller needs pane.read on it.
+    read_check(server, caller, &x.id).map_err(native_err)?;
     let visible = sn
         .tab(&x.tab)
         .is_some_and(|t| sn.tab_is_active(t) && t.zoomed_pane.as_deref().is_none_or(|z| z == x.id));
