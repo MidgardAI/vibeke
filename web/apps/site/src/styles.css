@@ -48,6 +48,8 @@
   .doc-prose ul { @apply my-5 list-disc space-y-2 pl-5; }
   .doc-prose ol { @apply my-5 list-decimal space-y-2 pl-5; }
   .doc-prose li > p { @apply my-2; }
+  .doc-prose .doc-figure { @apply my-8 block border border-line; }
+  .doc-prose .doc-figure img { display: block; width: 100%; height: auto; }
   .doc-prose :not(pre) > code { @apply rounded-sm border border-line bg-panel px-1.5 py-0.5 font-mono text-[0.83em] text-cream; }
   .doc-prose pre { @apply m-0 overflow-x-auto p-5 pr-14 font-mono text-xs leading-6; overflow-wrap: normal; }
   .doc-prose blockquote { @apply my-6 border-l-2 border-accent bg-panel px-5 py-1; }

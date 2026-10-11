@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { loadDocs } from '../content/docs-plugin'
+import { docsImage, loadDocs } from '../content/docs-plugin'
 import { docManifest } from '../content/manifest'
 import { searchDocs } from '../src/lib/search'
 import { latestRelease } from '../src/lib/release'
@@ -70,5 +70,15 @@ describe('home page release', () => {
       .sort((a, b) => a[0]! - b[0]! || a[1]! - b[1]! || a[2]! - b[2]!)
     expect(latestRelease.version).toBe(versions.at(-1)!.join('.'))
     expect(latestRelease.url).toBe(`https://github.com/MidgardAI/vibeke/releases/tag/v${latestRelease.version}`)
+  })
+})
+
+describe('documentation images', () => {
+  test('serves images from docs/site/src/images and makes SVGs dark on the site', () => {
+    expect(docs.find(doc => doc.slug === 'introduction')?.body).toContain('](/docs-images/architecture.svg)')
+    const svg = String(docsImage('architecture.svg'))
+    expect(svg).not.toContain('prefers-color-scheme')
+    expect(svg).not.toContain('relay.vibeke.dev')
+    expect(() => docsImage('../introduction.md')).toThrow()
   })
 })

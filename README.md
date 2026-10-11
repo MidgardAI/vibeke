@@ -18,6 +18,10 @@
 
 **A terminal workspace for supervising coding agents, on your laptop or a devbox.**
 
+<p align="center">
+  <img src="docs/site/src/images/architecture.svg" alt="Vibeke architecture: clients, the server and holders on your host, remote machines, cloud sandboxes, and the relay" width="100%" />
+</p>
+
 - **Knows what each agent is doing.** Vibeke reads Claude Code, Codex, pi and omp through their hooks, extensions and RPC streams instead of guessing from the screen. Terminal output is only the fallback, and every state says where it came from. [Agents and interactions →](https://vibeke.dev/docs/agents)
 - **Answer without hunting for the pane.** Permission requests, questions and plan reviews are real objects. Approve or reply from the sidebar, the inbox or your phone, and the answer goes back through the agent's own channel.
 - **Agents outlive the server.** Each pane runs under its own holder process, so a server crash, restart or upgrade doesn't stop running agents. [Process durability →](https://vibeke.dev/docs/holders)

@@ -39,6 +39,7 @@ export function DocArticle({ doc }: { doc: Doc }) {
     <article className="doc-prose mt-8"><Markdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeSlug, [rehypeHighlight, { detect: false }]]} components={{
       pre: ({ children }) => <div className="relative my-6 overflow-hidden border border-line bg-panel"><CopyButton className="absolute top-2 right-2 bg-panel" text={textContent(children).replace(/\n$/, '')} label="Copy code" /><pre>{children}</pre></div>,
       table: ({ children }) => <div className="my-6 overflow-x-auto border border-line" tabIndex={0} role="region" aria-label="Reference table"><table>{children}</table></div>,
+      img: ({ src, alt }) => <a href={src} className="doc-figure"><img src={src} alt={alt ?? ''} loading="lazy" /></a>,
       a: ({ href, children }) => href?.startsWith('/docs/') && !href.includes('#') ? <Link to="/docs/$slug" params={{ slug: href.slice('/docs/'.length) }}>{children}</Link> : <a href={href}>{children}</a>,
     }}>{doc.slug === 'api' ? doc.body.split('## Methods')[0] : doc.body}</Markdown>{doc.slug === 'api' && <ApiReference />}</article>
     <div className="mt-12 flex flex-wrap items-center justify-between gap-4 border-t border-line pt-6 text-[11px] text-muted"><a href={`https://github.com/MidgardAI/vibeke/blob/main/docs/site/src/${doc.file}`} className="inline-flex items-center gap-1 hover:text-accent">View page source <ArrowUpRight size={12} /></a></div>
