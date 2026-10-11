@@ -88,3 +88,24 @@ The sidebar selection moves the same way it does when a user selects the row. An
 - **`vibeke browser pane list` opens a pane.** `browser pane <url>` takes the next word as the URL, so `list` opens a browser pane at `http://list/`. Treat `list` (and other verbs) as reserved, or reject URLs without a scheme or a dot.
 - **A browser pane shown in two terminals has one size.** When a second TUI with a different pane size shows the same browser pane (for example the devbox's own TUI and the laptop's TUI through the remote link), the page keeps the viewport of the client that sized it last. The other client draws the frame small in a corner of its pane. Scale the frame to each client's pane, or follow the pane's size policy for the viewport too.
 - **Where the preview manager opens a browser pane.** `enter` in the preview manager (`prefix+shift+o`) opens the browser pane next to the pane that owns the port. When the dev server runs in its own small pane, the browser opens there instead of next to the agent the user is looking at. Consider opening it next to the focused pane when that pane is on the same machine.
+
+## 4. A new screenshot shows as "The image file is gone (retention)" (fix tested in the demo build)
+
+### Symptom
+
+When an agent attaches an image (`screenshot.add`), the pop-up card in the terminal interface often says "The image file is gone (retention)", and so does the viewer (`prefix+alt+i`) afterwards. The image is fine: `vibeke screenshot get` reads it, and a TUI started later shows it.
+
+### Cause
+
+`persist_screenshot` in `crates/vk-server/src/screenshots.rs` commits the record and the `screenshot.captured` event first, and stores the blob after the commit. The card fetches the image as soon as the event arrives (`screenshot.get {inline, thumb}`), before the blob exists. The server answers `inline_skipped: "blob unreadable"`, and the TUI caches that as `Problem::Gone` for the cache key. The viewer usually asks for the same thumbnail width, so it gets the cached problem too and never asks again.
+
+### Fix
+
+Store the blob before the commit, and write the JSON sidecar again after the commit so it carries the handle. Blobs are content-addressed, so an early write is harmless if the commit fails. With this change the card and the viewer show the image at once.
+
+Also consider not caching "unreadable" permanently in `image_view::on_fetched`, or retrying it once after a short delay.
+
+### Note for demos and tests
+
+Ghostty only reads kitty graphics temp files (`t=t`) from the system temp folder. A TUI started with its own `TMPDIR` (as the test harnesses do) shows no images at all in Ghostty, without an error. `VIBEKE_GFX_TRANSFER=direct` avoids this. Consider writing image temp files to the system temp folder, or falling back to direct transfer when the terminal does not confirm the image.
+
