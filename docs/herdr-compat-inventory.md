@@ -70,11 +70,11 @@ Real-plugin results: see the latest run of the [Herdr plugins workflow](https://
 | `pane.wait_for_output` | partial | spec | Herdr's `{pane_id, source, lines?, match: {type: substring|regex, value}, timeout_ms?}` (also a plain-string `match`); reads the pane every 100 ms (`recent` reads `recent_unwrapped`, as Herdr does) and matches line by line; `output_matched {pane_id, revision, matched_line, read}`; `invalid_regex`; no deadline without `timeout_ms`, else `timeout`; emits `pane.output_matched` |
 | `pane.report_agent` | implemented | spec | Herdr self-report path (selfreport.rs) |
 | `pane.report_agent_session` | implemented | spec |  |
-| `agent.list` | partial | spec | status projection unverified |
-| `agent.get` | partial | spec |  |
+| `agent.list` | partial | spec | Herdr's `AgentInfo`: the pane fields flattened (`workspace_id`, `tab_id`, `pane_id`, `terminal_id`, `focused`, `revision`), absent optional fields left out instead of `null`, only agents whose pane exists; `state_change_seq` is the time of the run's last execution change; no `completion_seq`, `launch_pending` or `interactive_ready` |
+| `agent.get` | partial | spec | the same `AgentInfo` as `agent.list` |
 | `agent.read` | partial | spec | reads the agent's pane; `pane_read {read: PaneReadResult}` as `pane.read` |
 | `agent.start` | partial | spec | Herdr's `kind` (also `agent`/`harness`) → harness; `pane_id` starts in that pane, else splits the target/focused pane; `agent_started {agent, argv}`, where `argv` is the harness and `args` (not the resolved command line) |
-| `agent.prompt` | partial | spec | text + Enter (native `agent.prompt`), `wait`, `timeout_ms`; `agent_prompted {agent}` |
+| `agent.prompt` | partial | spec | text + Enter (native `agent.prompt`), `wait`, `timeout_ms`; `agent_prompted {agent}`; Herdr's checks first: `empty_agent_prompt`, `agent_blocked`, and `agent_not_ready` unless the agent's program is the pane's foreground process (Herdr's process-name lookup, simplified for wrapped agents); the native method does not check the foreground process |
 | `agent.wait` | partial | spec | `status`/`until` in Herdr statuses mapped to Vibeke wait conditions; `timeout` |
 | `agent.rename` | partial | spec | `agent_info {agent}` |
 | `agent.explain` | partial | corpus | `agent_explain {explain}`; the object is Vibeke's (agent, agent_status, reason, execution, blocked, unseen_turn, turns_completed, last_tool, last_message, source), not Herdr's detection-manifest explanation |
