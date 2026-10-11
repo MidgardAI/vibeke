@@ -1,0 +1,105 @@
+# Plugin: ChmaraX/herdr-nvim (chmarax.herdr-nvim), locked commit e2ec32e7bbbb1eefd64363414b5806f84eedd6bc.
+# Covers: the sidebar toggle action and pane (an nvim sidebar split), the file link handlers
+# (`file-path` and `file-url`, which run the `open-link` action), the pick-file action with its
+# popup picker, and the startup command (`daemon-gc`).
+# Category (18 §8.5): link handler. The scenario opens a matching path and a matching file URL with
+# `link` steps and checks that the file opens in the sidebar.
+# The plugin uses the Herdr CLI only (`pane list`, `pane get`, `pane run`, `agent list`,
+# `plugin pane open`). It does not use the Herdr socket directly.
+# The path link uses `~`, which the plugin expands against the home directory; the repository
+# `app` is created at `{home}/src/app`.
+# The plugin needs `nvim` on PATH. The build step downloads a release binary or builds with cargo.
+# The tab.closed and workspace.closed hooks stop the editor daemon of a closed tab or workspace.
+# They are skipped because the scenario cannot name a generated tab or workspace id in a CLI call.
+
+plugin_id = "chmarax.herdr-nvim"
+repository = "ChmaraX/herdr-nvim"
+timeout_ms = 120000
+
+[setup]
+fake_agent = true
+
+[[setup.repo]]
+name = "app"
+files = { "README.md" = "hello\n", "src/notes.rs" = "fn needle_one() {}\nfn needle_two() {}\n", "src/second.rs" = "// second-file-marker\n" }
+
+[[step]]
+id = "toggle-open"
+kind = "action"
+action = "toggle"
+context = "pane"
+timeout_ms = 60000
+expect_calls = [{ method = "plugin.pane.open", ok = true }]
+[[step.expect]]
+kind = "invocation_final"
+[[step.expect]]
+kind = "pane"
+pane = "sidebar"
+placement = "split"
+[[step.compare]]
+pane = "sidebar"
+placement_only = true
+
+[[step]]
+id = "link-path"
+kind = "link"
+url = "~/src/app/src/notes.rs:2"
+timeout_ms = 60000
+[[step.expect]]
+kind = "screen_text"
+pane = "sidebar"
+text = "needle_one"
+
+[[step]]
+id = "link-url"
+kind = "link"
+url = "file://{repo.app}/src/second.rs"
+timeout_ms = 60000
+[[step.expect]]
+kind = "screen_text"
+pane = "sidebar"
+text = "second-file-marker"
+
+[[step]]
+id = "pick-file"
+kind = "action"
+action = "pick-file"
+context = "pane"
+timeout_ms = 60000
+expect_calls = [{ method = "agent.list", ok = true }]
+[[step.expect]]
+kind = "invocation_final"
+[[step.expect]]
+kind = "popup"
+pane = "picker"
+[[step.compare]]
+pane = "picker"
+placement_only = true
+
+[[step]]
+id = "pick-file-choose"
+kind = "input"
+pane = "picker"
+keys = ["Enter"]
+
+[[step]]
+id = "toggle-close"
+kind = "action"
+action = "toggle"
+context = "pane"
+timeout_ms = 60000
+expect_calls = [{ method = "pane.close", ok = true }]
+[[step.expect]]
+kind = "invocation_final"
+
+[[skip]]
+surface = "action:open-link"
+reason = "The action runs only from the link handlers and needs the clicked URL in its environment. The two link steps run it."
+
+[[skip]]
+surface = "event:tab.closed"
+reason = "The hook needs the id of a tab closed during the run, and a scenario step cannot name a generated id."
+
+[[skip]]
+surface = "event:workspace.closed"
+reason = "The hook needs the id of a workspace closed during the run, and a scenario step cannot name a generated id."

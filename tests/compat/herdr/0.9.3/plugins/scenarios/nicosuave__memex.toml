@@ -1,0 +1,130 @@
+# Plugin: nicosuave/memex (nicosuave.memex), locked commit 61194bf8f951afe4a4e00887bd63220a76952618.
+# Covers: the session desk (zoomed pane), the sidebar (split pane, toggled open and closed), the
+# session palette (overlay pane) in both its plain and repository-scoped forms, the index action
+# (which shows a Herdr notification), and the startup command that indexes in the background.
+# The plugin uses the Herdr CLI only (`pane list`, `pane close`, `plugin pane open`,
+# `notification show`). It does not use the Herdr socket directly.
+# The scripts need `jq`. The build step downloads a release build of memex or builds with cargo.
+# The home directory holds no agent session history, so the memex panes compare placement only.
+
+plugin_id = "nicosuave.memex"
+repository = "nicosuave/memex"
+timeout_ms = 120000
+
+[setup]
+fake_agent = false
+
+[[setup.repo]]
+name = "app"
+files = { "README.md" = "hello\n", "src/main.txt" = "main\n" }
+
+[[step]]
+id = "toggle-open"
+kind = "action"
+action = "toggle"
+context = "workspace"
+expect_calls = [
+  { method = "pane.list", ok = true },
+  { method = "plugin.pane.open", ok = true },
+]
+[[step.expect]]
+kind = "invocation_final"
+[[step.expect]]
+kind = "pane"
+pane = "sidebar"
+placement = "split"
+[[step.compare]]
+pane = "sidebar"
+placement_only = true
+
+[[step]]
+id = "toggle-close"
+kind = "action"
+action = "toggle"
+context = "workspace"
+expect_calls = [
+  { method = "pane.list", ok = true },
+  { method = "pane.close", ok = true },
+]
+[[step.expect]]
+kind = "invocation_final"
+
+[[step]]
+id = "desk"
+kind = "action"
+action = "desk"
+context = "workspace"
+expect_calls = [{ method = "plugin.pane.open", ok = true }]
+[[step.expect]]
+kind = "invocation_final"
+[[step.expect]]
+kind = "pane"
+pane = "desk"
+placement = "zoomed"
+[[step.compare]]
+pane = "desk"
+placement_only = true
+
+[[step]]
+id = "desk-close"
+kind = "input"
+pane = "desk"
+keys = ["Escape"]
+
+[[step]]
+id = "palette"
+kind = "action"
+action = "palette"
+context = "pane"
+expect_calls = [{ method = "plugin.pane.open", ok = true }]
+[[step.expect]]
+kind = "invocation_final"
+[[step.expect]]
+kind = "pane"
+pane = "palette"
+placement = "overlay"
+[[step.compare]]
+pane = "palette"
+placement_only = true
+
+[[step]]
+id = "palette-close"
+kind = "input"
+pane = "palette"
+keys = ["Escape"]
+
+[[step]]
+id = "recent-here"
+kind = "action"
+action = "recent-here"
+context = "pane"
+expect_calls = [{ method = "plugin.pane.open", ok = true }]
+[[step.expect]]
+kind = "invocation_final"
+[[step.expect]]
+kind = "pane"
+pane = "palette"
+placement = "overlay"
+
+[[step]]
+id = "recent-here-close"
+kind = "input"
+pane = "palette"
+keys = ["Escape"]
+
+[[step]]
+id = "index"
+kind = "action"
+action = "index"
+context = "global"
+expect_calls = [{ method = "notification.show", ok = true }]
+[[step.expect]]
+kind = "invocation_final"
+
+[[skip]]
+surface = "action:resume-last"
+reason = "Needs a recorded agent session in the home directory and an installed agent command to resume it."
+
+[[skip]]
+surface = "action:web"
+reason = "Starts a local web server and then opens it in a desktop browser, which a headless run does not have."

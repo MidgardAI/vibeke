@@ -1,0 +1,175 @@
+# Plugin: cloudmanic/herdr-plus (cloudmanic.herdr-plus), locked commit f38df3570bea8f7ca71dc1ba11bce3b123d14402.
+# Covers: the ping action, the Projects picker (zoomed pane) and the Quick Actions picker (overlay
+# pane), opening a project, and the worktree.created and worktree.opened hooks that lay a declared
+# tab and pane layout into the new workspace.
+# Category (18 §8.5): layout or worktree workflow. The scenario creates a worktree with the Herdr
+# CLI (`worktree create`), opens an existing one (`worktree open`), and checks the resulting layout
+# through the files the layout commands write in the checkout and through the hook log.
+# The plugin talks to Herdr over the socket directly (raw JSON lines on HERDR_SOCKET_PATH), and also
+# runs `herdr plugin pane open` from its actions.
+# The plugin reads its layouts and projects from its config directory. The files below assume the
+# plugin config directory is `{home}/.config/herdr/plugins/config/cloudmanic.herdr-plus`.
+
+plugin_id = "cloudmanic.herdr-plus"
+repository = "cloudmanic/herdr-plus"
+timeout_ms = 120000
+
+[setup]
+fake_agent = false
+
+[[setup.repo]]
+name = "app"
+files = { "README.md" = "hello\n", "src/main.txt" = "main\n" }
+worktrees = ["feature"]
+
+[setup.files]
+".config/herdr/plugins/config/cloudmanic.herdr-plus/projects/demo.toml" = '''
+name = "Demo Project"
+description = "A sample workspace template"
+working_dir = "{repo.app}"
+
+[[tabs]]
+name = "shell"
+'''
+".config/herdr/plugins/config/cloudmanic.herdr-plus/worktrees/app.toml" = '''
+repo = "app"
+
+[[tabs]]
+name = "editor"
+command = "touch layout-editor.txt"
+
+[[tabs]]
+name = "build"
+
+[[tabs.panes]]
+label = "One"
+command = "touch layout-one.txt"
+
+[[tabs.panes]]
+label = "Two"
+split = "right"
+command = "touch layout-two.txt"
+'''
+".config/herdr/plugins/config/cloudmanic.herdr-plus/quick-actions/say-hello.toml" = '''
+name = "say hello"
+description = "Write a greeting file"
+command = "echo hello > greeting.txt"
+'''
+
+[[step]]
+id = "ping"
+kind = "action"
+action = "ping"
+context = "workspace"
+expect_calls = [
+  { method = "pane.get", ok = true },
+  { method = "workspace.get", ok = true },
+]
+[[step.expect]]
+kind = "invocation_final"
+
+[[step]]
+id = "quick-actions"
+kind = "action"
+action = "quick-actions"
+context = "pane"
+expect_calls = [{ method = "plugin.pane.open", ok = true }]
+[[step.expect]]
+kind = "invocation_final"
+[[step.expect]]
+kind = "pane"
+pane = "quick-actions-picker"
+placement = "overlay"
+[[step.expect]]
+kind = "screen_text"
+pane = "quick-actions-picker"
+text = "Quick Actions"
+[[step.expect]]
+kind = "screen_text"
+pane = "quick-actions-picker"
+text = "say hello"
+[[step.compare]]
+pane = "quick-actions-picker"
+size = { cols = 100, rows = 30 }
+
+[[step]]
+id = "quick-actions-close"
+kind = "input"
+pane = "quick-actions-picker"
+keys = ["Escape"]
+
+[[step]]
+id = "projects"
+kind = "action"
+action = "projects"
+context = "workspace"
+expect_calls = [{ method = "plugin.pane.open", ok = true }]
+[[step.expect]]
+kind = "invocation_final"
+[[step.expect]]
+kind = "pane"
+pane = "picker"
+placement = "zoomed"
+[[step.expect]]
+kind = "screen_text"
+pane = "picker"
+text = "Demo Project"
+[[step.compare]]
+pane = "picker"
+size = { cols = 100, rows = 30 }
+masks = [{ regex = "(~|/\\S+)/src/app" }]
+
+[[step]]
+id = "projects-open"
+kind = "input"
+pane = "picker"
+keys = ["Enter"]
+expect_calls = [{ method = "workspace.create", ok = true }]
+[[step.expect]]
+kind = "event"
+type = "workspace.created"
+
+[[step]]
+id = "worktree-created"
+kind = "event"
+event = "worktree.created"
+cli = ["worktree", "create", "--cwd", "{repo.app}", "--branch", "feat/layout"]
+expect_calls = [
+  { method = "pane.list", ok = true },
+  { method = "tab.rename", ok = true },
+  { method = "tab.create", ok = true },
+  { method = "pane.split", ok = true },
+  { method = "pane.rename", ok = true },
+  { method = "pane.send_input", ok = true, min = 6 },
+]
+[[step.expect]]
+kind = "event"
+type = "worktree.created"
+[[step.expect]]
+kind = "hook_log"
+text = 'branch "feat/layout"): 2 tab(s)'
+
+[[step]]
+id = "worktree-opened"
+kind = "event"
+event = "worktree.opened"
+cli = ["worktree", "open", "{worktree.app.feature}"]
+expect_calls = [
+  { method = "pane.list", ok = true },
+  { method = "tab.rename", ok = true },
+  { method = "tab.create", ok = true },
+  { method = "pane.split", ok = true },
+  { method = "pane.send_input", ok = true, min = 6 },
+]
+[[step.expect]]
+kind = "event"
+type = "worktree.opened"
+[[step.expect]]
+kind = "file"
+path = "{worktree.app.feature}/layout-editor.txt"
+[[step.expect]]
+kind = "file"
+path = "{worktree.app.feature}/layout-one.txt"
+[[step.expect]]
+kind = "file"
+path = "{worktree.app.feature}/layout-two.txt"

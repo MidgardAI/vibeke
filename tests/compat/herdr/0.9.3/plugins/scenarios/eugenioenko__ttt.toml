@@ -1,0 +1,59 @@
+# Plugin: eugenioenko/ttt (ttt.editor), locked commit 8ff40fb2d2596cd7e22b1a684c965e5bae1a5825.
+# Covers: the `open` and `open-worktree` actions (both re-dispatch to the editor pane with
+# `herdr plugin pane open`) and the `editor` tab pane opened directly.
+# The editor is a full-screen terminal program with live content, so panes compare placement only.
+# The build step installs the `ttt` binary with the project's install script when it is not on PATH.
+# Category (18 §8.5): none. The scripts use the Herdr CLI only.
+
+plugin_id = "ttt.editor"
+repository = "eugenioenko/ttt"
+timeout_ms = 120000
+
+[setup]
+fake_agent = false
+
+[[setup.repo]]
+name = "app"
+files = { "README.md" = "hello\n", "src/main.txt" = "main\n" }
+worktrees = ["feature"]
+
+[[step]]
+id = "open"
+kind = "action"
+action = "open"
+context = "workspace"
+expect_calls = [{ method = "plugin.pane.open", ok = true }]
+[[step.expect]]
+kind = "invocation_final"
+[[step.expect]]
+kind = "pane"
+pane = "editor"
+placement = "tab"
+[[step.compare]]
+pane = "editor"
+placement_only = true
+
+[[step]]
+id = "open-worktree"
+kind = "action"
+action = "open-worktree"
+context = "workspace"
+expect_calls = [{ method = "plugin.pane.open", ok = true }]
+[[step.expect]]
+kind = "invocation_final"
+[[step.expect]]
+kind = "pane"
+pane = "editor"
+placement = "tab"
+
+[[step]]
+id = "editor-pane"
+kind = "pane"
+pane = "editor"
+[[step.expect]]
+kind = "pane"
+pane = "editor"
+placement = "tab"
+[[step.compare]]
+pane = "editor"
+placement_only = true

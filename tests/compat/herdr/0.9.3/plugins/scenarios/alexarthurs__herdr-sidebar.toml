@@ -1,0 +1,196 @@
+# Plugin: alexarthurs/herdr-sidebar (herdr-sidebar), locked commit 081ed133f3faa377438b51ce435fe8a87c439593.
+# Covers: the toggle, activity and maintenance actions, the sidebar pane in its default unified
+# mode, and the five focus and creation hooks that dock the sidebar (pane.focused, tab.created,
+# workspace.created, tab.focused, workspace.focused). The hooks are triggered with Herdr CLI
+# commands that create and focus workspaces and tabs.
+# Raw socket: yes. The native launcher (`herdr-sidebar --ensure`, `--toggle` and the show actions)
+# sends newline-delimited JSON to HERDR_SOCKET_PATH (src/ipc.rs): pane.list, pane.layout,
+# pane.split, pane.move, pane.resize, pane.close, pane.focus, pane.rename, pane.send_input,
+# pane.report_metadata and plugin.pane.open. The `redeploy` action uses the Herdr CLI.
+# Category (18 §8.5): raw socket callbacks.
+# The sidebar draws a live file tree, so its pane compares placement only. The build step downloads a
+# release binary or builds with cargo; `redeploy` needs python3.
+
+plugin_id = "herdr-sidebar"
+repository = "alexarthurs/herdr-sidebar"
+timeout_ms = 120000
+
+[setup]
+fake_agent = false
+
+[[setup.repo]]
+name = "app"
+files = { "README.md" = "hello\n", "src/main.txt" = "main\n" }
+
+[[step]]
+id = "open-sidebar"
+kind = "action"
+action = "open-sidebar"
+context = "workspace"
+expect_calls = [
+  { method = "pane.list", ok = true },
+  { method = "plugin.pane.open", ok = true },
+]
+[[step.expect]]
+kind = "invocation_final"
+[[step.expect]]
+kind = "pane"
+pane = "sidebar"
+placement = "split"
+[[step.compare]]
+pane = "sidebar"
+placement_only = true
+
+[[step]]
+id = "show-explorer"
+kind = "action"
+action = "show-explorer"
+context = "workspace"
+expect_calls = [{ method = "pane.list", ok = true }]
+[[step.expect]]
+kind = "invocation_final"
+[[step.expect]]
+kind = "pane"
+pane = "sidebar"
+placement = "split"
+
+[[step]]
+id = "show-search"
+kind = "action"
+action = "show-search"
+context = "workspace"
+expect_calls = [{ method = "pane.list", ok = true }]
+[[step.expect]]
+kind = "invocation_final"
+[[step.expect]]
+kind = "pane"
+pane = "sidebar"
+placement = "split"
+
+[[step]]
+id = "show-git"
+kind = "action"
+action = "show-git"
+context = "workspace"
+expect_calls = [{ method = "pane.list", ok = true }]
+[[step.expect]]
+kind = "invocation_final"
+[[step.expect]]
+kind = "pane"
+pane = "sidebar"
+placement = "split"
+
+[[step]]
+id = "quick-open"
+kind = "action"
+action = "quick-open"
+context = "workspace"
+expect_calls = [{ method = "pane.list", ok = true }]
+[[step.expect]]
+kind = "invocation_final"
+[[step.expect]]
+kind = "pane"
+pane = "sidebar"
+placement = "split"
+
+[[step]]
+id = "open-git"
+kind = "action"
+action = "open-git"
+context = "workspace"
+expect_calls = [{ method = "pane.list", ok = true }]
+[[step.expect]]
+kind = "invocation_final"
+
+[[step]]
+id = "refresh-sidebars"
+kind = "action"
+action = "refresh-sidebars"
+context = "workspace"
+expect_calls = [{ method = "pane.list", ok = true }]
+[[step.expect]]
+kind = "invocation_final"
+
+[[step]]
+id = "redeploy"
+kind = "action"
+action = "redeploy"
+context = "workspace"
+expect_calls = [
+  { method = "workspace.list", ok = true },
+  { method = "pane.list", ok = true },
+  { method = "plugin.action.invoke", ok = true },
+]
+[[step.expect]]
+kind = "invocation_final"
+[[step.expect]]
+kind = "pane"
+pane = "sidebar"
+placement = "split"
+
+[[step]]
+id = "workspace-created"
+kind = "event"
+event = "workspace.created"
+cli = ["workspace", "create", "--cwd", "{repo.app}", "--label", "second", "--focus"]
+[[step.expect]]
+kind = "event"
+type = "workspace.created"
+[[step.expect]]
+kind = "invocation_final"
+[[step.expect]]
+kind = "pane"
+pane = "sidebar"
+placement = "split"
+
+[[step]]
+id = "workspace-focused"
+kind = "event"
+event = "workspace.focused"
+cli = ["workspace", "create", "--cwd", "{repo.app}", "--label", "third", "--focus"]
+[[step.expect]]
+kind = "event"
+type = "workspace.focused"
+[[step.expect]]
+kind = "invocation_final"
+
+[[step]]
+id = "tab-created"
+kind = "event"
+event = "tab.created"
+cli = ["tab", "create", "--cwd", "{repo.app}", "--no-focus"]
+[[step.expect]]
+kind = "event"
+type = "tab.created"
+[[step.expect]]
+kind = "invocation_final"
+
+[[step]]
+id = "tab-focused"
+kind = "event"
+event = "tab.focused"
+cli = ["tab", "create", "--cwd", "{repo.app}", "--focus"]
+[[step.expect]]
+kind = "event"
+type = "tab.focused"
+[[step.expect]]
+kind = "invocation_final"
+
+[[step]]
+id = "pane-focused"
+kind = "event"
+event = "pane.focused"
+cli = ["tab", "create", "--cwd", "{repo.app}", "--focus"]
+[[step.expect]]
+kind = "event"
+type = "pane.focused"
+[[step.expect]]
+kind = "invocation_final"
+
+[[skip]]
+surface = "action:update"
+reason = "Downloads and installs the latest published release from the network, and the release changes over time."
+
+[[skip]]
+surface = "pane:source-control"
+reason = "The separate Source Control pane opens only when the sidebar is switched to separated mode in its own settings screen. The default unified mode uses the sidebar pane."

@@ -1,0 +1,29 @@
+# Plugin: osolmaz/pi-workflows (osolmaz.pi-workflows), locked commit 2cb8ab3a9c2e52d0c193d572728a9ccd7afdb77a.
+# Covers: the `piw` viewer pane (split placement), opened directly.
+# The viewer needs a workflow run id in PI_WORKFLOWS_RUN_ID and a compiled client, which the Pi
+# extension supplies when it opens the pane. A direct open has neither, so the pane process exits
+# with a message. The step runs and expects the placement, and is marked as partly exercised.
+# The plugin has no actions, events or build step. It uses the Herdr CLI only (`pane rename`,
+# and `plugin pane focus` and `plugin pane close` from the extension).
+# Category (18 §8.5): none.
+
+plugin_id = "osolmaz.pi-workflows"
+repository = "osolmaz/pi-workflows"
+timeout_ms = 60000
+
+[setup]
+fake_agent = false
+
+[[setup.repo]]
+name = "app"
+files = { "README.md" = "hello\n" }
+
+[[step]]
+id = "viewer-pane"
+kind = "pane"
+pane = "piw"
+known = { outcome = "not_exercised", reason = "The viewer needs a workflow run id and a client from a Pi session, so the pane process exits right after it starts." }
+[[step.expect]]
+kind = "pane"
+pane = "piw"
+placement = "split"

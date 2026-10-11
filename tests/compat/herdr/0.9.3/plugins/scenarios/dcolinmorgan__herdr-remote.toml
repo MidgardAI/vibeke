@@ -1,0 +1,52 @@
+# Plugin: dcolinmorgan/herdr-remote (herdr-remote.relay), locked commit bb70162eb6d3ab6413974b14cdd7f3763f14a38c.
+# Covers: the single event hook on pane.agent_status_changed (`uv run --script relay/on_event.py`).
+# Category (18 §8.5): event notification. The scenario changes the fake agent's status to blocked,
+# done and working and checks that the hook runs to a final state for each change.
+# The hook sends one UDP datagram with the agent event to 127.0.0.1:8376 (the local relay). The
+# address is fixed in the script, and an http_sink stub cannot receive a UDP datagram, so this
+# scenario has no stub_request expectation. The hook makes no Herdr calls.
+# The hook needs `uv` on PATH.
+
+plugin_id = "herdr-remote.relay"
+repository = "dcolinmorgan/herdr-remote"
+timeout_ms = 60000
+
+[setup]
+fake_agent = true
+
+[[setup.repo]]
+name = "app"
+files = { "README.md" = "hello\n" }
+
+[[step]]
+id = "agent-blocked"
+kind = "event"
+event = "pane.agent_status_changed"
+agent_status = "blocked"
+[[step.expect]]
+kind = "event"
+type = "pane.agent_status_changed"
+[[step.expect]]
+kind = "invocation_final"
+
+[[step]]
+id = "agent-done"
+kind = "event"
+event = "pane.agent_status_changed"
+agent_status = "done"
+[[step.expect]]
+kind = "event"
+type = "pane.agent_status_changed"
+[[step.expect]]
+kind = "invocation_final"
+
+[[step]]
+id = "agent-working"
+kind = "event"
+event = "pane.agent_status_changed"
+agent_status = "working"
+[[step.expect]]
+kind = "event"
+type = "pane.agent_status_changed"
+[[step.expect]]
+kind = "invocation_final"

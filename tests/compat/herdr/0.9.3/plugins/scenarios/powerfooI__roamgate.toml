@@ -1,0 +1,95 @@
+# Plugin: powerfooI/roamgate (roamgate), locked commit d1a22cb46ce0c07182ec5473454915f1f7ad251c.
+# Covers: the control panel popup pane, and the start, status, url, version, restart and uninstall actions
+# of the background web service. The actions run `bun scripts/studio-plugin.ts <verb>`.
+# The manifest commands make no Herdr calls. The service itself connects to the Herdr socket with a
+# Node net client (server/src/bridge/herdr-client.ts), but this scenario does not open a browser
+# session, so that client is not exercised.
+# Category (18 §8.5): none.
+# The build step downloads a checksum-verified release binary. The start and restart actions install
+# and run a user service, which needs systemd (Linux) or launchd (macOS) in the user session.
+
+plugin_id = "roamgate"
+repository = "powerfooI/roamgate"
+timeout_ms = 120000
+
+[setup]
+fake_agent = false
+
+[[setup.repo]]
+name = "app"
+files = { "README.md" = "hello\n" }
+
+[[step]]
+id = "panel"
+kind = "pane"
+pane = "panel"
+[[step.expect]]
+kind = "popup"
+pane = "panel"
+[[step.expect]]
+kind = "screen_text"
+pane = "panel"
+text = "[s] start  [r] restart  [u] uninstall  [q] close"
+[[step.compare]]
+pane = "panel"
+size = { cols = 80, rows = 12 }
+masks = [
+  { rect = { row = 2, col = 9, rows = 1, cols = 71 } },
+  { rect = { row = 4, col = 9, rows = 1, cols = 71 } },
+]
+
+[[step]]
+id = "panel-close"
+kind = "input"
+pane = "panel"
+keys = ["q"]
+
+[[step]]
+id = "start"
+kind = "action"
+action = "start"
+context = "workspace"
+timeout_ms = 180000
+[[step.expect]]
+kind = "invocation_final"
+
+[[step]]
+id = "status"
+kind = "action"
+action = "status"
+context = "workspace"
+[[step.expect]]
+kind = "invocation_final"
+
+[[step]]
+id = "url"
+kind = "action"
+action = "url"
+context = "workspace"
+[[step.expect]]
+kind = "invocation_final"
+
+[[step]]
+id = "version"
+kind = "action"
+action = "version"
+context = "workspace"
+[[step.expect]]
+kind = "invocation_final"
+
+[[step]]
+id = "restart"
+kind = "action"
+action = "restart"
+context = "workspace"
+timeout_ms = 180000
+[[step.expect]]
+kind = "invocation_final"
+
+[[step]]
+id = "uninstall"
+kind = "action"
+action = "uninstall"
+context = "workspace"
+[[step.expect]]
+kind = "invocation_final"

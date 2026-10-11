@@ -1,0 +1,87 @@
+# Plugin: ZingerLittleBee/Heeler (heeler), locked commit 85788eff639ded9db45a31480b5c78d1af3d82a2.
+# Covers: the startup command that writes a sidebar snapshot, the "Pair a mobile device" action and
+# its pairing popup, and the two hooks on pane.agent_status_changed (push notification and live
+# activity). The notification hook re-checks the agent through the Herdr CLI (`agent get`,
+# `workspace get`) and posts to a push relay over HTTP.
+# Stubs: the push relay URL comes from the plugin's notify.json, so the stub is a local HTTP sink.
+# The registration file holds one fake device with a made-up token and key.
+# Category (18 §8.5): none. The hooks use the Herdr CLI, not the socket.
+# The files below assume the plugin config directory is
+# `{home}/.config/herdr/plugins/config/heeler`. The build step runs `npm ci`.
+
+plugin_id = "heeler"
+repository = "ZingerLittleBee/Heeler"
+timeout_ms = 120000
+
+[setup]
+fake_agent = true
+
+[[setup.repo]]
+name = "app"
+files = { "README.md" = "hello\n" }
+
+[setup.files]
+".config/herdr/plugins/config/heeler/notify.json" = '''
+{"relay_url": "{stub.push.url}", "debounce_ms": 0, "retry_delay_ms": 0}
+'''
+".config/herdr/plugins/config/heeler/notifications.json" = '''
+{"v": 1, "devices": [{"token": "0123456789abcdef", "env": "sandbox", "notify": {"blocked": true, "done": true}, "key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"}]}
+'''
+
+[[stub]]
+id = "push"
+kind = "http_sink"
+
+[[step]]
+id = "startup-snapshot"
+kind = "wait"
+timeout_ms = 60000
+[[step.expect]]
+kind = "file"
+path = "{home}/.config/herdr/plugins/config/heeler/sidebar.json"
+contains = '"v":1'
+
+[[step]]
+id = "pair"
+kind = "action"
+action = "pair"
+context = "global"
+expect_calls = [{ method = "plugin.pane.open", ok = true }]
+[[step.expect]]
+kind = "invocation_final"
+[[step.expect]]
+kind = "popup"
+pane = "pair"
+[[step.expect]]
+kind = "screen_text"
+pane = "pair"
+regex = "Pair a Heeler device|Pairing cannot start"
+[[step.compare]]
+pane = "pair"
+placement_only = true
+
+[[step]]
+id = "pair-close"
+kind = "input"
+pane = "pair"
+keys = ["q"]
+
+[[step]]
+id = "agent-blocked"
+kind = "event"
+event = "pane.agent_status_changed"
+agent_status = "blocked"
+timeout_ms = 60000
+expect_calls = [
+  { method = "agent.get", ok = true },
+  { method = "workspace.get", ok = true },
+]
+[[step.expect]]
+kind = "event"
+type = "pane.agent_status_changed"
+[[step.expect]]
+kind = "invocation_final"
+[[step.expect]]
+kind = "stub_request"
+stub = "push"
+contains = '"token":"0123456789abcdef"'

@@ -1,0 +1,165 @@
+# Plugin: 0cv/herdr-mobile-relay (herdr-mobile-relay.events), locked commit 62115683986384468e53ed01ec993745749c09f7.
+# Covers: the setup menu, the status overlay and the phone setup link, each as an action that opens a
+# plugin pane through `herdr plugin pane open` (zoomed or overlay, with --env, --target-pane and
+# --focus), and the event hook on pane.agent_status_changed (a local UDP send from the installed
+# relay binary). The other actions and their panes need a tunnel account, a phone or a service
+# change and are skipped.
+# The manifest commands use the Herdr CLI only. The relay service has its own Herdr socket client
+# (internal/herdr/socket_api.go), but the service does not run in this scenario.
+# Category (18 §8.5): none.
+# The build step downloads a release bundle and installs it under the home directory.
+# The event hook sends to UDP port 8376 on 127.0.0.1 (the port can be changed with
+# HERDR_RELAY_PLUGIN_PORT), so an http_sink stub cannot observe it.
+
+plugin_id = "herdr-mobile-relay.events"
+repository = "0cv/herdr-mobile-relay"
+timeout_ms = 120000
+
+[setup]
+fake_agent = true
+
+[[setup.repo]]
+name = "app"
+files = { "README.md" = "hello\n" }
+
+[[step]]
+id = "setup"
+kind = "action"
+action = "setup"
+context = "workspace"
+expect_calls = [{ method = "plugin.pane.open", ok = true }]
+[[step.expect]]
+kind = "invocation_final"
+[[step.expect]]
+kind = "pane"
+pane = "setup"
+placement = "zoomed"
+[[step.expect]]
+kind = "screen_text"
+pane = "setup"
+text = "Herdr Mobile Relay Setup"
+[[step.expect]]
+kind = "screen_text"
+pane = "setup"
+text = "Choose a complete setup action:"
+[[step.compare]]
+pane = "setup"
+placement_only = true
+
+[[step]]
+id = "setup-close"
+kind = "input"
+pane = "setup"
+text = "q"
+keys = ["Enter"]
+
+[[step]]
+id = "status"
+kind = "action"
+action = "status"
+context = "workspace"
+expect_calls = [{ method = "plugin.pane.open", ok = true }]
+[[step.expect]]
+kind = "invocation_final"
+[[step.expect]]
+kind = "pane"
+pane = "status"
+placement = "overlay"
+[[step.expect]]
+kind = "screen_text"
+pane = "status"
+text = "Herdr Mobile Relay status"
+[[step.compare]]
+pane = "status"
+placement_only = true
+
+[[step]]
+id = "status-close"
+kind = "input"
+pane = "status"
+keys = ["Enter"]
+
+[[step]]
+id = "setup-link"
+kind = "action"
+action = "setup-link"
+context = "workspace"
+expect_calls = [{ method = "plugin.pane.open", ok = true }]
+[[step.expect]]
+kind = "invocation_final"
+[[step.expect]]
+kind = "pane"
+pane = "setup-link"
+placement = "zoomed"
+[[step.expect]]
+kind = "screen_text"
+pane = "setup-link"
+regex = "No stable phone setup link could be generated|phone setup"
+[[step.compare]]
+pane = "setup-link"
+placement_only = true
+
+[[step]]
+id = "setup-link-close"
+kind = "input"
+pane = "setup-link"
+keys = ["Enter"]
+
+[[step]]
+id = "agent-blocked"
+kind = "event"
+event = "pane.agent_status_changed"
+agent_status = "blocked"
+[[step.expect]]
+kind = "event"
+type = "pane.agent_status_changed"
+[[step.expect]]
+kind = "invocation_final"
+
+[[skip]]
+surface = "action:quick-start"
+reason = "Starts a relay with a temporary public tunnel from a third-party service, which needs network access to that service."
+
+[[skip]]
+surface = "pane:quick-start"
+reason = "Starts a relay with a temporary public tunnel from a third-party service, which needs network access to that service."
+
+[[skip]]
+surface = "action:install-service"
+reason = "Creates a permanent named tunnel with a third-party account and installs a background service. It needs an account login."
+
+[[skip]]
+surface = "pane:install-service"
+reason = "Creates a permanent named tunnel with a third-party account and installs a background service. It needs an account login."
+
+[[skip]]
+surface = "action:change-hostname"
+reason = "Changes the hostname of an existing stable tunnel, which needs a configured account and an installed service."
+
+[[skip]]
+surface = "pane:change-hostname"
+reason = "Changes the hostname of an existing stable tunnel, which needs a configured account and an installed service."
+
+[[skip]]
+surface = "action:configure-app-deploy"
+reason = "Pins a separately hosted phone app after a confirmation from a paired phone."
+
+[[skip]]
+surface = "pane:configure-app-deploy"
+reason = "Pins a separately hosted phone app after a confirmation from a paired phone."
+
+[[skip]]
+surface = "action:stable-teardown"
+reason = "Removes a stable tunnel and its service, which a fresh host does not have."
+
+[[skip]]
+surface = "pane:stable-teardown"
+reason = "Removes a stable tunnel and its service, which a fresh host does not have."
+
+[[skip]]
+surface = "action:uninstall"
+reason = "Removes the relay service and its files after an interactive confirmation."
+
+[[skip]]
+surface = "pane:uninstall"
+reason = "Removes the relay service and its files after an interactive confirmation."
