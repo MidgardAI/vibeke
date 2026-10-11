@@ -198,7 +198,7 @@ pub fn registered_broker(candidate: &Path) -> Result<(PathBuf, String), String> 
         return Err("not a broker socket path".into());
     };
     let session = session.to_str().unwrap_or_default();
-    if !herdr::valid_session_name(session)
+    if !valid_session_dir(session)
         || *compat != "herdr-compat"
         || *dir != "brokers"
         || !name.to_str().is_some_and(|n| n.ends_with(".sock"))
@@ -1888,13 +1888,31 @@ fn redeem_ticket(server: &Server, ticket: &str) -> Result<Value, String> {
     }))
 }
 
+/// A session's runtime directory name ([`crate::paths::runtime_dir_name`]): a session name, or
+/// the short form of a long one (`<7 characters>~<8 hex digits>`). Broker sockets live under
+/// it, so the session a broker names may be in either form.
+pub fn valid_session_dir(name: &str) -> bool {
+    if herdr::valid_session_name(name) {
+        return true;
+    }
+    let Some((head, hash)) = name.split_once('~') else {
+        return false;
+    };
+    herdr::valid_session_name(head)
+        && head.chars().count() <= 7
+        && hash.len() == 8
+        && hash.chars().all(|c| c.is_ascii_hexdigit())
+}
+
 /// Verify a ticket with the session that issued it (over its native socket; in process when
-/// that is this session).
+/// that is this session). `session` is a session name or its runtime directory name.
 async fn verify_ticket(server: &Server, session: &str, ticket: &str) -> Result<Value, String> {
-    if !herdr::valid_session_name(session) {
+    if !valid_session_dir(session) {
         return Err(format!("invalid session name {session:?}"));
     }
-    if session == server.opts.session {
+    if session == server.opts.session
+        || session == crate::paths::runtime_dir_name(&server.opts.session)
+    {
         return redeem_ticket(server, ticket);
     }
     let sock = crate::paths::Paths::new(session).socket();
@@ -3235,6 +3253,20 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_dirs_accept_names_and_the_short_form_of_long_names() {
+        assert!(valid_session_dir("work"));
+        let long = "x".repeat(64);
+        assert!(valid_session_dir(&crate::paths::runtime_dir_name(&long)));
+        assert!(!valid_session_dir("abc~xyz"));
+        assert!(
+            !valid_session_dir("abcdefgh~0123abcd"),
+            "the head has at most 7 characters"
+        );
+        assert!(!valid_session_dir("../x"));
+        assert!(!valid_session_dir("a/b~01234567"));
+    }
     use crate::paths::Paths;
     use crate::{Server, ServerOpts};
     use std::sync::Once;

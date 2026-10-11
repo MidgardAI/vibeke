@@ -37,13 +37,22 @@ pub fn expand_socket_path(configured: &str, home: &Path) -> Option<PathBuf> {
 
 /// The listener path of `session`. With a configured default-session path the named sessions
 /// live next to it (`<dir>/sessions/<name>/herdr.sock`), the layout Herdr itself uses.
+///
+/// `<name>` is the session's runtime directory name ([`crate::paths::runtime_dir_name`]): the
+/// session name itself up to 16 characters, else a short form with a hash, so the socket path
+/// stays under the 104-byte Unix socket limit for 64-character session names.
 pub fn session_listener(configured: Option<&Path>, runtime_root: &Path, session: &str) -> PathBuf {
+    let name = if session == herdr::DEFAULT_SESSION {
+        session.to_string()
+    } else {
+        crate::paths::runtime_dir_name(session)
+    };
     match configured {
-        None => herdr::session_socket(runtime_root, session),
+        None => herdr::session_socket(runtime_root, &name),
         Some(p) if session == herdr::DEFAULT_SESSION => p.to_path_buf(),
         Some(p) => {
             let dir = p.parent().unwrap_or_else(|| Path::new("/"));
-            herdr::session_socket(dir, session)
+            herdr::session_socket(dir, &name)
         }
     }
 }
@@ -242,6 +251,28 @@ mod tests {
         assert_eq!(
             session_listener(Some(&p), root, "work"),
             Path::new("/home/u/.config/herdr/sessions/work/herdr.sock")
+        );
+    }
+
+    /// A 64-character session name still gives a socket path under the 104-byte limit, with a
+    /// runtime root as long as a macOS `$TMPDIR` one.
+    #[test]
+    fn long_session_names_keep_the_listener_short() {
+        let root =
+            Path::new("/var/folders/xy/abcdefghijklmnopqrstuvwx0000gn/T/vibeke-501/herdr-compat");
+        let long = "a".repeat(64);
+        let p = session_listener(None, root, &long);
+        assert!(p.as_os_str().len() < 104, "{}", p.display());
+        assert_eq!(
+            p,
+            root.join("sessions")
+                .join(crate::paths::runtime_dir_name(&long))
+                .join("herdr.sock")
+        );
+        // Short names stay readable.
+        assert_eq!(
+            session_listener(None, root, "work"),
+            root.join("sessions/work/herdr.sock")
         );
     }
 
