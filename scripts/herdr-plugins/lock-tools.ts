@@ -59,7 +59,9 @@ export function parseLock(text: string): Lock {
 export function stem(lock: Lock, p: LockedPlugin): string {
   const [owner, repo] = p.repository.split("/");
   const shared = (lock.plugin ?? []).filter((q) => q.repository === p.repository).length > 1;
-  return shared ? `${owner}__${repo}__${p.plugin_id}` : `${owner}__${repo}`;
+  // Same rule as `LockedPlugin::stem` in crates/vk-conformance/src/lock.rs.
+  const id = p.plugin_id.replace(/[^A-Za-z0-9_.-]/g, "_");
+  return shared ? `${owner}__${repo}__${id}` : `${owner}__${repo}`;
 }
 
 export function supports(p: LockedPlugin, os: string): boolean {
