@@ -8,6 +8,105 @@ use serde::{Deserialize, Serialize};
 
 pub const SCHEMA: &str = "vibeke.herdr-plugin-result/1";
 
+/// The longest text field `scripts/herdr-plugins-report.ts` accepts (`LIMITS.text`), counted
+/// in UTF-16 code units as JavaScript counts string length.
+pub const REPORT_TEXT_LIMIT: usize = 2000;
+/// What the harness keeps of a reason or an evidence line: well under the report's limit, so
+/// redaction markers and later additions still fit.
+pub const TEXT_MAX: usize = 1800;
+/// The report accepts at most this many evidence lines per step (`LIMITS.listItems`).
+pub const EVIDENCE_MAX: usize = 200;
+
+/// `s` made safe for the report: terminal escape sequences removed, carriage returns turned
+/// into newlines, other control and bidirectional override characters replaced by `?`, and
+/// cut to `max` UTF-16 code units. A cut keeps the head and the longer tail (where build tools
+/// and stack traces put the error), joined by ` … `.
+pub fn clip(s: &str, max: usize) -> String {
+    let s = sanitize(s);
+    let units = |t: &str| t.encode_utf16().count();
+    if units(&s) <= max {
+        return s;
+    }
+    const SEP: &str = " … ";
+    let budget = max.saturating_sub(units(SEP));
+    let head_budget = budget / 5;
+    let tail_budget = budget - head_budget;
+    let mut head = String::new();
+    let mut n = 0;
+    for c in s.chars() {
+        if n + c.len_utf16() > head_budget {
+            break;
+        }
+        n += c.len_utf16();
+        head.push(c);
+    }
+    let mut tail = Vec::new();
+    let mut n = 0;
+    for c in s.chars().rev() {
+        if n + c.len_utf16() > tail_budget {
+            break;
+        }
+        n += c.len_utf16();
+        tail.push(c);
+    }
+    let tail: String = tail.into_iter().rev().collect();
+    format!("{head}{SEP}{tail}")
+}
+
+/// Remove ANSI escape sequences and replace the characters the report refuses.
+fn sanitize(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\u{1b}' => {
+                // CSI (`ESC [ … final`), OSC (`ESC ] … BEL|ST`) or a two-character escape.
+                match chars.peek() {
+                    Some('[') => {
+                        chars.next();
+                        for d in chars.by_ref() {
+                            if ('@'..='~').contains(&d) {
+                                break;
+                            }
+                        }
+                    }
+                    Some(']') => {
+                        chars.next();
+                        while let Some(d) = chars.next() {
+                            if d == '\u{7}' {
+                                break;
+                            }
+                            if d == '\u{1b}' && chars.peek() == Some(&'\\') {
+                                chars.next();
+                                break;
+                            }
+                        }
+                    }
+                    Some(_) => {
+                        chars.next();
+                    }
+                    None => {}
+                }
+            }
+            '\r' => {
+                if chars.peek() != Some(&'\n') {
+                    out.push('\n');
+                }
+            }
+            '\t' | '\n' => out.push(c),
+            c if (c as u32) < 0x20
+                || (0x7f..=0x9f).contains(&(c as u32))
+                || ('\u{202a}'..='\u{202e}').contains(&c)
+                || ('\u{2066}'..='\u{2069}').contains(&c) =>
+            {
+                out.push('?')
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct PluginResult {
@@ -93,15 +192,22 @@ pub struct GridArtifact {
 }
 
 impl PluginResult {
-    /// Serialize with the text fields redacted by `vk-redact`.
+    /// Serialize with the text fields redacted by `vk-redact` and cut to the report's limits
+    /// ([`clip`], [`EVIDENCE_MAX`]), so a long build log never makes the whole file invalid.
     pub fn to_json_redacted(&self) -> String {
-        let red = |s: &str| vk_redact::redact(s).into_owned();
+        let red = |s: &str| clip(&vk_redact::redact(s), TEXT_MAX);
         let mut copy = self.clone();
         for c in &mut copy.lifecycle {
             c.reason = c.reason.as_deref().map(red);
         }
         for s in &mut copy.steps {
             s.reason = s.reason.as_deref().map(red);
+            if s.evidence.len() > EVIDENCE_MAX {
+                let extra = s.evidence.len() - (EVIDENCE_MAX - 1);
+                s.evidence.truncate(EVIDENCE_MAX - 1);
+                s.evidence
+                    .push(format!("… {extra} more evidence line(s) cut"));
+            }
             for e in &mut s.evidence {
                 *e = red(e);
             }
@@ -178,6 +284,37 @@ mod tests {
         assert_eq!(back.steps[0].herdr, SideResult::Passed);
         assert_eq!(back.dependency_mode, DependencyMode::Unpinned);
         assert_eq!(back.schema, SCHEMA);
+    }
+
+    #[test]
+    fn clip_keeps_head_and_tail_within_the_report_limit() {
+        let long = format!("HEAD{}TAIL", "x".repeat(9000));
+        let c = clip(&long, TEXT_MAX);
+        assert!(c.encode_utf16().count() <= TEXT_MAX, "{}", c.len());
+        assert!(c.starts_with("HEAD") && c.ends_with("TAIL"));
+        assert!(c.contains(" … "));
+        assert_eq!(clip("short", TEXT_MAX), "short");
+        // Wide characters count as two UTF-16 units, as in JavaScript.
+        let wide = "😀".repeat(3000);
+        assert!(clip(&wide, TEXT_MAX).encode_utf16().count() <= TEXT_MAX);
+    }
+
+    #[test]
+    fn clip_removes_control_characters() {
+        let s = "\u{1b}[31merror\u{1b}[0m: bad\r\nnext\rline\u{7}\u{202e}x\u{1b}]0;title\u{7}end";
+        assert_eq!(clip(s, TEXT_MAX), "error: bad\nnext\nline??xend");
+    }
+
+    #[test]
+    fn long_fields_are_cut_on_write() {
+        let mut r = result();
+        r.lifecycle[0].reason = Some("y".repeat(8179));
+        r.steps[0].evidence = (0..300).map(|i| format!("line {i}")).collect();
+        let back: PluginResult = serde_json::from_str(&r.to_json_redacted()).unwrap();
+        let reason = back.lifecycle[0].reason.as_deref().unwrap();
+        assert!(reason.encode_utf16().count() <= REPORT_TEXT_LIMIT);
+        assert_eq!(back.steps[0].evidence.len(), EVIDENCE_MAX);
+        assert!(back.steps[0].evidence.last().unwrap().contains("101 more"));
     }
 
     #[test]

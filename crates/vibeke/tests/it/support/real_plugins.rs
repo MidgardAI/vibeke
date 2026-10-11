@@ -9,9 +9,12 @@
 //! One run: install from the `file://` mirror at the locked commit, check the commit and the
 //! manifest sha256, trust (legacy) and build, activate, run the scenario's steps with positive
 //! evidence for each (18 §8.2), compare the plugin pane grids (18 §10), then the lifecycle
-//! checks (18 §8.3). The Herdr side runs only when `VIBEKE_HERDR_BIN` is set. Every result goes
-//! into one `PluginResult` file; only harness errors, unexpected passes and coverage failures
-//! fail the test (other outcomes are data for the report).
+//! checks (18 §8.3). The Herdr side runs only when `VIBEKE_HERDR_BIN` is set; it installs the
+//! plugin with `herdr plugin install <owner/repo> --ref <commit> --yes` from the same mirror.
+//! Both sides keep a real TUI client attached for the whole run, so both have a focused pane.
+//! Every result goes into one `PluginResult` file; only harness errors, unexpected passes and
+//! coverage failures fail the test (other outcomes are data for the report). Traces, server
+//! logs and command logs go to `<results>/<stem>-<os>/logs/` for people; nothing judges them.
 
 use super::Session;
 use super::plugins::{poll, read, write};
@@ -28,13 +31,14 @@ use vk_conformance::grid::{Grid, Rect};
 use vk_conformance::herdr::{self, HerdrOptions, HerdrSide};
 use vk_conformance::lock::{DependencyMode, Lock, LockedPlugin};
 use vk_conformance::outcome::{self, Outcome, SideResult, StepFacts};
+use vk_conformance::pty::{PtyDriver, Spawn};
 use vk_conformance::result::{
-    CheckResult, CoverageSummary, GridArtifact, PluginResult, SCHEMA, StepResult,
+    CheckResult, CoverageSummary, GridArtifact, PluginResult, SCHEMA, StepResult, TEXT_MAX, clip,
 };
 use vk_conformance::scenario::{
     self, Compare, Expectation, LifecycleOp, Scenario, Step, StepKind, StubKind, Vars,
 };
-use vk_conformance::{coverage, mask, render, trace};
+use vk_conformance::{coverage, logs, mask, render, trace};
 
 /// The checkout this test binary was built from. A nextest archive runs on another machine,
 /// where this path does not exist, so repository data comes from [`workspace_root`].
@@ -268,20 +272,58 @@ pub fn plugin_env(
         .flatten()
         .filter(|p| !p.is_empty())
         .unwrap_or_else(|| "/usr/bin:/bin:/usr/sbin:/sbin".into());
-    let path: Vec<&str> = [toolchain.as_str()]
+    let mut path: Vec<&str> = Vec::new();
+    for dir in [toolchain.as_str()]
         .into_iter()
         .chain(path_dirs.iter().map(String::as_str))
         .chain([inherited.as_str()])
-        .map(|p| p.trim_matches(':'))
+        .flat_map(|p| p.split(':'))
         .filter(|p| !p.is_empty())
-        .collect();
+    {
+        if !path.contains(&dir) {
+            path.push(dir);
+        }
+    }
     out.push(("PATH".into(), path.join(":")));
     out
 }
 
-/// [`plugin_env`] of this process's environment, for the Vibeke side.
-pub fn inherited_plugin_env() -> Vec<(String, String)> {
-    plugin_env(&env_allowlist(), |n| std::env::var(n).ok(), &[])
+/// The directories where tools that plugins install for their user end up, in the order a
+/// real Herdr user's PATH usually has them: `~/.local/bin`, `~/.cargo/bin`, `~/go/bin` and
+/// `~/.bun/bin` of the plugin's HOME, the `bin` dirs of `CARGO_HOME`, `GOPATH` and
+/// `BUN_INSTALL` when `get` knows them, and on macOS Homebrew's and `/usr/local/bin`.
+/// Plugin builds that run an installer (`curl … | sh`, `cargo install`, `go install`) then
+/// find what they installed.
+pub fn user_bin_dirs(home: &Path, get: impl Fn(&str) -> Option<String>, os: &str) -> Vec<String> {
+    let mut dirs: Vec<String> = [".local/bin", ".cargo/bin", "go/bin", ".bun/bin"]
+        .iter()
+        .map(|d| home.join(d).display().to_string())
+        .collect();
+    for var in ["CARGO_HOME", "GOPATH", "BUN_INSTALL"] {
+        if let Some(d) = get(var).filter(|d| !d.is_empty()) {
+            dirs.push(Path::new(&d).join("bin").display().to_string());
+        }
+    }
+    if os == "macos" {
+        dirs.extend([
+            "/opt/homebrew/bin".to_string(),
+            "/usr/local/bin".to_string(),
+        ]);
+    }
+    let mut out: Vec<String> = Vec::new();
+    for d in dirs {
+        if !out.contains(&d) {
+            out.push(d);
+        }
+    }
+    out
+}
+
+/// [`plugin_env`] of this process's environment, for the Vibeke side, whose plugin processes
+/// have `home` as HOME.
+pub fn inherited_plugin_env(home: &Path, os: &str) -> Vec<(String, String)> {
+    let get = |n: &str| std::env::var(n).ok();
+    plugin_env(&env_allowlist(), get, &user_bin_dirs(home, get, os))
 }
 
 pub fn env_allowlist() -> Vec<String> {
@@ -492,12 +534,106 @@ fn git_try(dir: &Path, args: &[&str]) -> Result<String, String> {
 
 // ---- results --------------------------------------------------------------------------------
 
+/// One lifecycle check. Its reason is cut to fit the report (a failed build can print
+/// megabytes).
 fn check(name: &str, outcome: Outcome, reason: impl Into<Option<String>>) -> CheckResult {
     CheckResult {
         check: name.to_string(),
         outcome,
-        reason: reason.into(),
+        reason: reason.into().map(|r| clip(&r, TEXT_MAX)),
     }
+}
+
+/// The reason of a step: the outcome's own reason (or the known reason), then each side's
+/// failure reason, so the report shows why Vibeke failed and what Herdr did. Each part gets a
+/// share of the report's text limit.
+pub fn combine_reason(
+    head: Option<&str>,
+    vibeke: Option<&str>,
+    herdr: Option<&str>,
+) -> Option<String> {
+    let mut parts = Vec::new();
+    if let Some(h) = head.filter(|h| !h.is_empty()) {
+        parts.push(clip(h, 400));
+    }
+    if let Some(v) = vibeke.filter(|v| !v.is_empty()) {
+        parts.push(format!("vibeke: {}", clip(v, 800)));
+    }
+    // Rule 4 of the attribution already quotes Herdr's reason in the head.
+    if let Some(h) = herdr.filter(|h| !h.is_empty() && !head.is_some_and(|x| x.contains(*h))) {
+        parts.push(format!("herdr: {}", clip(h, 500)));
+    }
+    (!parts.is_empty()).then(|| clip(&parts.join("; "), TEXT_MAX))
+}
+
+/// What a finished plugin invocation record (`plugin.log.list`, on either side) says about
+/// itself: status, exit code, error and the last part of its output.
+pub fn invocation_details(l: &Value) -> String {
+    let tail = |k: &str| {
+        let t = l[k].as_str().unwrap_or_default().trim();
+        let n = t.chars().count();
+        t.chars().skip(n.saturating_sub(400)).collect::<String>()
+    };
+    let mut out = format!(
+        "invocation {} {} (exit code {})",
+        l["log_id"].as_str().unwrap_or("?"),
+        l["status"].as_str().unwrap_or("?"),
+        l["exit_code"]
+    );
+    if let Some(e) = l["error"].as_str().filter(|e| !e.is_empty()) {
+        out.push_str(&format!("; error: {e}"));
+    }
+    for k in ["stderr", "stdout"] {
+        let t = tail(k);
+        if !t.is_empty() {
+            out.push_str(&format!("; {k} tail: {t}"));
+        }
+    }
+    clip(&out, TEXT_MAX)
+}
+
+/// The `herdr plugin pane open` arguments of a pane step (Herdr 0.9.3 takes only flags).
+/// Overlay and popup panes target the active pane and refuse a target; split and zoomed
+/// panes take `--target-pane`, the pane Vibeke's side targets too.
+pub fn herdr_pane_open_args(
+    plugin_id: &str,
+    entrypoint: &str,
+    placement: Option<&str>,
+    target: Option<&str>,
+) -> Vec<String> {
+    let mut a: Vec<String> = [
+        "plugin",
+        "pane",
+        "open",
+        "--plugin",
+        plugin_id,
+        "--entrypoint",
+        entrypoint,
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    if let (Some("split" | "zoomed"), Some(t)) = (placement, target) {
+        a.extend(["--target-pane".to_string(), t.to_string()]);
+    }
+    a
+}
+
+/// The `herdr plugin install` arguments: `owner/repo[/subdir] --ref <commit> --yes` (stdin is
+/// not a terminal, so Herdr requires `--yes`).
+pub fn herdr_install_args(repository: &str, subdir: Option<&str>, commit: &str) -> Vec<String> {
+    let source = match subdir {
+        Some(d) => format!("{repository}/{d}"),
+        None => repository.to_string(),
+    };
+    vec![
+        "plugin".into(),
+        "install".into(),
+        source,
+        "--ref".into(),
+        commit.into(),
+        "--yes".into(),
+    ]
 }
 
 fn passed(name: &str) -> CheckResult {
@@ -732,11 +868,28 @@ struct Run<'a> {
     herdr_trace: PathBuf,
     herdr_off: u64,
     herdr_note: String,
+    /// Herdr's context pane (the TUI's focused pane at start) and its fake agent pane.
+    herdr_pane: Option<String>,
+    herdr_agent_pane: Option<String>,
+    /// The Vibeke TUI client attached for the whole run (18 §11: both sides have a focused
+    /// client), or `None` before `context`.
+    tui: Option<PtyDriver>,
     /// The grid files of this run: `<results>/<stem>-<os>/`.
     grid_dir: PathBuf,
     grid_rel: String,
+    /// Grid entries in this run's result (the screenshot renderer reads at most
+    /// `vk_conformance::shots::MAX_GRIDS`).
+    grid_count: usize,
     lifecycle: Vec<CheckResult>,
 }
+
+/// The size of both sides' TUI clients.
+const TUI_COLS: u16 = 120;
+const TUI_ROWS: u16 = 40;
+/// Grid entries one result may hold, under the screenshot renderer's limit.
+const MAX_GRIDS: usize = vk_conformance::shots::MAX_GRIDS - 4;
+/// How long `herdr plugin install` may take: it runs the plugin's build commands.
+const HERDR_INSTALL_TIMEOUT: Duration = Duration::from_secs(20 * 60);
 
 impl<'a> Run<'a> {
     fn new(
@@ -754,7 +907,7 @@ impl<'a> Run<'a> {
         let home = rp.join("home");
         std::fs::create_dir_all(&home).map_err(|e| e.to_string())?;
         let trace = rp.join("trace.jsonl");
-        let inherited = inherited_plugin_env();
+        let inherited = inherited_plugin_env(&home, os);
         let s = Session::builder()
             .prefix("vkhp")
             .home(&home)
@@ -832,6 +985,10 @@ impl<'a> Run<'a> {
             herdr: None,
             herdr_off: 0,
             herdr_note: "VIBEKE_HERDR_BIN is not set: Herdr has not run this step".into(),
+            herdr_pane: None,
+            herdr_agent_pane: None,
+            tui: None,
+            grid_count: 0,
             lifecycle: vec![],
         })
     }
@@ -954,12 +1111,84 @@ impl<'a> Run<'a> {
             .map_err(|e| StepErr::Harness(format!("trace: {e:#}")))
     }
 
+    /// Kill the server and start it again. The TUI client goes first and is attached again
+    /// afterwards, so the client never races the restart.
     fn restart(&mut self) {
+        let attached = self.detach_client();
         if self.s.server_pid() > 0 {
             self.s.kill_server();
         }
         let _ = self.cli(&["pane", "list"]);
         self.activations += 1;
+        if attached && let Err(e) = self.attach_client() {
+            eprintln!("note: {e}");
+        }
+    }
+
+    /// Attach a real Vibeke TUI client in a PTY (`vibeke attach`, the session's environment,
+    /// `TERM=xterm-256color`, a fixed size) and focus the context pane in it. Vibeke's compat
+    /// layer takes the focused pane from the most recently active TUI client, as Herdr takes it
+    /// from its own client, so global and workspace actions get the same focus on both sides.
+    fn attach_client(&mut self) -> Result<(), String> {
+        self.detach_client();
+        let c = self.s.cmd(&[]);
+        let program = PathBuf::from(c.get_program());
+        let mut env: Vec<(String, String)> = c
+            .get_envs()
+            .filter_map(|(k, v)| Some((k.to_str()?.to_string(), v?.to_str()?.to_string())))
+            .filter(|(k, _)| k != "TERM")
+            .collect();
+        env.push(("TERM".into(), "xterm-256color".into()));
+        let tui = PtyDriver::spawn(&Spawn {
+            program: &program,
+            args: &["attach".to_string()],
+            cwd: &self.home(),
+            env: &env,
+            cols: TUI_COLS,
+            rows: TUI_ROWS,
+        })
+        .map_err(|e| format!("attach a Vibeke TUI client: {e:#}"))?;
+        self.tui = Some(tui);
+        let pane = self.ctx.pane.clone();
+        let mut last = String::new();
+        let focused = poll(Duration::from_secs(30), || {
+            match self.api("client.focus", json!({"pane": pane, "raise": false})) {
+                Ok(r) if r["focused"] == true => true,
+                Ok(r) => {
+                    last = r.to_string();
+                    false
+                }
+                Err(e) => {
+                    last = e;
+                    false
+                }
+            }
+        });
+        if focused {
+            Ok(())
+        } else {
+            let screen = self.client_screen().unwrap_or_default();
+            Err(format!(
+                "the Vibeke TUI client did not take focus of {pane}: {last}\nscreen:\n{screen}"
+            ))
+        }
+    }
+
+    /// Shut the TUI client down; returns whether one was attached.
+    fn detach_client(&mut self) -> bool {
+        match self.tui.take() {
+            Some(t) => {
+                let _ = t.shutdown(Duration::from_secs(2));
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The text on the Vibeke TUI client's screen.
+    fn client_screen(&self) -> Option<String> {
+        let (rows, cols, nrows, _) = self.tui.as_ref()?.snapshot();
+        Some(Grid::from_rows(&rows, cols, nrows).text())
     }
 
     /// Wait until every startup command of every activation since install has a record.
@@ -1038,6 +1267,7 @@ impl<'a> Run<'a> {
         ] {
             self.vars.values.insert(k.into(), v.clone());
         }
+        self.attach_client()?;
         self.new_events();
         Ok(())
     }
@@ -1046,62 +1276,14 @@ impl<'a> Run<'a> {
     /// before trust, so `{state}` is known and no plugin code has run yet.
     fn setup_files(&mut self) -> StepRes<()> {
         let home = self.home();
-        for r in &self.sc.setup.repos {
-            let dir = home.join("src").join(&r.name);
-            std::fs::create_dir_all(&dir).map_err(|e| StepErr::Harness(e.to_string()))?;
-            self.vars.values.insert(
-                format!("repo.{}", r.name),
-                dir.to_string_lossy().into_owned(),
-            );
-            for (p, text) in &r.files {
-                let text = self.expand(text)?;
-                write(&dir.join(p), &text);
-            }
-            if r.files.is_empty() {
-                write(&dir.join("README.md"), &format!("{}\n", r.name));
-            }
-            let g = |args: &[&str]| git_try(&dir, args).map_err(StepErr::Harness);
-            g(&["init", "-q", "-b", "main"])?;
-            g(&["add", "."])?;
-            g(&["commit", "-qm", "initial"])?;
-            for wt in &r.worktrees {
-                let wdir = home.join("src").join(format!("{}-{wt}", r.name));
-                g(&[
-                    "worktree",
-                    "add",
-                    "-q",
-                    "-b",
-                    wt.as_str(),
-                    wdir.to_str().unwrap(),
-                ])?;
-                self.vars.values.insert(
-                    format!("worktree.{}.{wt}", r.name),
-                    wdir.to_string_lossy().into_owned(),
-                );
-            }
-        }
-        for (p, text) in &self.sc.setup.files {
-            let p = self.expand(p)?;
-            let text = self.expand(text)?;
-            write(&home.join(p), &text);
-        }
-        if let (Some(cfg), Some(dir)) = (&self.sc.setup.config, &self.config_dir) {
-            let text = self.expand(cfg)?;
-            write(&dir.join("config.toml"), &text);
-        }
-        // Scenarios write plugin config where Herdr keeps it. Vibeke gives a legacy plugin
-        // its own config dir (`HERDR_PLUGIN_CONFIG_DIR`, next to Vibeke's config), so the
-        // files are copied there too.
-        let herdr_cfg = home.join(format!(
-            ".config/herdr/plugins/config/{}",
-            self.lp.plugin_id
-        ));
-        if let Some(dir) = &self.config_dir
-            && herdr_cfg.is_dir()
-        {
-            copy_tree(&herdr_cfg, dir).map_err(|e| StepErr::Harness(e.to_string()))?;
-        }
-        Ok(())
+        let config = self.config_dir.clone();
+        materialize_setup(
+            self.sc,
+            &self.lp.plugin_id,
+            &home,
+            &mut self.vars,
+            config.as_deref(),
+        )
     }
 
     fn registered(&self) -> Option<Value> {
@@ -1565,20 +1747,23 @@ impl<'a> Run<'a> {
         };
         let _ = std::fs::create_dir_all(&self.herdr_root);
         // The same allowlisted environment as the Vibeke side (18 §5.3), with Herdr's own
-        // directory on PATH after the toolchains. TERM stays Herdr's: its TUI runs in the
-        // harness's PTY.
+        // directory on PATH after the toolchains, then the user tool dirs of Herdr's HOME.
+        // TERM stays Herdr's: its TUI runs in the harness's PTY.
         let bin_dir = bin
             .parent()
             .map(|d| d.display().to_string())
             .unwrap_or_default();
-        let mut env = plugin_env(&env_allowlist(), |n| std::env::var(n).ok(), &[bin_dir]);
+        let get = |n: &str| std::env::var(n).ok();
+        let mut dirs = vec![bin_dir];
+        dirs.extend(user_bin_dirs(&self.herdr_root.join("home"), get, self.os));
+        let mut env = plugin_env(&env_allowlist(), get, &dirs);
         env.retain(|(k, _)| k != "TERM");
         env.extend(stub_env);
         let opts = HerdrOptions {
             bin,
             root: self.herdr_root.clone(),
-            cols: 120,
-            rows: 40,
+            cols: TUI_COLS,
+            rows: TUI_ROWS,
             trace: self.herdr_trace.clone(),
             env,
         };
@@ -1593,27 +1778,108 @@ impl<'a> Run<'a> {
                 return;
             }
         };
-        let dir = match self.clone_dir() {
-            Ok(d) => d,
-            Err(e) => {
-                self.herdr_note = format!("Herdr side not set up: {e}");
-                return;
-            }
-        };
-        match side.cli(&["plugin", "install", dir.to_str().unwrap()]) {
-            Ok((0, _, _)) => {
+        match self.prepare_herdr(&side) {
+            Ok(()) => {
                 self.herdr = Some(side);
                 self.herdr_note.clear();
             }
-            Ok((code, _, err)) => {
-                self.herdr_note = format!("Herdr could not install the plugin ({code}): {err}");
-                let _ = side.stop();
-            }
             Err(e) => {
-                self.herdr_note = format!("Herdr could not install the plugin: {e:#}");
+                self.herdr_note = clip(&e, TEXT_MAX);
+                self.save_herdr_logs(&side);
                 let _ = side.stop();
             }
         }
+    }
+
+    /// The Herdr side's context (its TUI's workspace, tab and focused pane, and a fake agent
+    /// pane when the scenario asks for one), its `[setup]`, then the plugin installed the way a
+    /// Herdr user installs it: `herdr plugin install <owner/repo> --ref <commit> --yes`, which
+    /// previews, runs the manifest's build commands and registers the plugin. Git fetches the
+    /// plugin from the local mirror ([`herdr::git_mirror_env`]); the installed commit and
+    /// manifest are checked against the lock.
+    fn prepare_herdr(&mut self, side: &HerdrSide) -> Result<(), String> {
+        let (workspace, tab, pane) = side
+            .active()
+            .map_err(|e| format!("Herdr side not set up: {e:#}"))?;
+        if self.sc.setup.fake_agent {
+            let r = side
+                .call(
+                    "pane.split",
+                    json!({"target_pane_id": pane, "direction": "down", "focus": false}),
+                )
+                .map_err(|e| format!("Herdr fake agent pane: {e:#}"))?;
+            let id = r
+                .pointer("/pane/pane_id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| format!("Herdr fake agent pane: no pane id in {r}"))?;
+            self.herdr_agent_pane = Some(id.to_string());
+        }
+        self.herdr_pane = Some(pane.clone());
+        let id = self.lp.plugin_id.clone();
+        let home = side.home().to_path_buf();
+        let config = self
+            .herdr_root
+            .join("config/herdr/plugins/config")
+            .join(&id);
+        {
+            let Ok(st) = self.herdr_stubs.as_mut() else {
+                return Err("Herdr side not set up: no placeholder values".into());
+            };
+            for (k, v) in [("workspace", &workspace), ("tab", &tab), ("pane", &pane)] {
+                st.vars.values.insert(k.into(), v.clone());
+            }
+            if let Some(a) = &self.herdr_agent_pane {
+                st.vars.values.insert("agent_pane".into(), a.clone());
+            }
+            match materialize_setup(self.sc, &id, &home, &mut st.vars, Some(&config)) {
+                Ok(()) => {}
+                Err(StepErr::Harness(e) | StepErr::Fail(e)) => {
+                    return Err(format!("Herdr side setup: {e}"));
+                }
+            }
+        }
+        let args = herdr_install_args(&self.lp.repository, self.lp.subdir(), &self.lp.commit);
+        let a: Vec<&str> = args.iter().map(String::as_str).collect();
+        let git = herdr::git_mirror_env(
+            &self.gate.mirror.join(&self.lp.repository),
+            &self.lp.repository,
+        );
+        match side.cli_with(&a, &git, HERDR_INSTALL_TIMEOUT) {
+            Ok((0, _, _)) => {}
+            Ok((code, out, err)) => {
+                return Err(format!(
+                    "Herdr could not install the plugin (herdr {} exited {code}): {}{}",
+                    args.join(" "),
+                    err.trim(),
+                    if out.trim().is_empty() {
+                        String::new()
+                    } else {
+                        format!("; stdout: {}", out.trim())
+                    }
+                ));
+            }
+            Err(e) => return Err(format!("Herdr could not install the plugin: {e:#}")),
+        }
+        // The installed commit and manifest must be the locked ones.
+        let listed = side
+            .call("plugin.list", json!({"plugin_id": id}))
+            .map_err(|e| format!("Herdr plugin.list after install: {e:#}"))?;
+        let p = listed["plugins"]
+            .as_array()
+            .and_then(|a| a.iter().find(|p| p["plugin_id"] == id.as_str()))
+            .ok_or_else(|| format!("Herdr does not list {id} after install: {listed}"))?;
+        let commit = p.pointer("/source/resolved_commit").and_then(Value::as_str);
+        let manifest = p["manifest_path"].as_str().unwrap_or_default();
+        let sha = std::fs::read(manifest)
+            .map(|b| registry::sha256_hex(&b))
+            .unwrap_or_default();
+        if commit != Some(self.lp.commit.as_str()) || sha != self.lp.manifest_sha256 {
+            return Err(format!(
+                "Herdr installed commit {commit:?} with manifest sha256 {sha:?}; the lock says {} and {}",
+                self.lp.commit, self.lp.manifest_sha256
+            ));
+        }
+        Ok(())
     }
 
     /// Run one step on Herdr: the same Herdr CLI the step maps to, then its expectations and
@@ -1623,10 +1889,26 @@ impl<'a> Run<'a> {
     /// expectation Herdr cannot show (see [`Run::look_herdr`]) makes the result `NotRun` with
     /// a reason, so a Vibeke failure stays suspected (18 §8.4 rule 2).
     fn herdr_step(&mut self, step: &Step, ev: &mut Vec<String>) -> (SideResult, Option<String>) {
-        let Some(h) = self.herdr.as_ref() else {
+        let Some(h) = self.herdr.take() else {
             return (SideResult::NotRun, Some(self.herdr_note.clone()));
         };
+        let r = self.herdr_step_on(&h, step, ev);
+        self.herdr = Some(h);
+        r
+    }
+
+    fn herdr_step_on(
+        &mut self,
+        h: &HerdrSide,
+        step: &Step,
+        ev: &mut Vec<String>,
+    ) -> (SideResult, Option<String>) {
         let id = self.lp.plugin_id.clone();
+        let deadline = Instant::now() + self.step_timeout(Some(step));
+        let logs0: BTreeSet<String> = herdr_logs(h, &id)
+            .iter()
+            .filter_map(|l| l["log_id"].as_str().map(str::to_string))
+            .collect();
         let args: Vec<String> = match step.kind {
             StepKind::Action => vec![
                 "plugin".into(),
@@ -1634,23 +1916,66 @@ impl<'a> Run<'a> {
                 "invoke".into(),
                 format!("{id}.{}", step.action.clone().unwrap_or_default()),
             ],
-            StepKind::Pane => vec![
-                "plugin".into(),
-                "pane".into(),
-                "open".into(),
-                id.clone(),
-                step.pane.clone().unwrap_or_default(),
-            ],
+            StepKind::Pane => {
+                let entry = step.pane.clone().unwrap_or_default();
+                let placement = self.declared_placement(&entry);
+                herdr_pane_open_args(
+                    &id,
+                    &entry,
+                    placement.as_deref(),
+                    self.herdr_pane.as_deref(),
+                )
+            }
             StepKind::Event if !step.cli.is_empty() => {
+                let Ok(st) = &self.herdr_stubs else {
+                    return (
+                        SideResult::NotRun,
+                        Some("the Herdr side has no placeholder values".into()),
+                    );
+                };
                 match step
                     .cli
                     .iter()
-                    .map(|a| self.expand(a))
-                    .collect::<StepRes<Vec<String>>>()
+                    .map(|a| scenario::expand(a, &st.vars))
+                    .collect::<anyhow::Result<Vec<String>>>()
                 {
                     Ok(a) => a,
-                    Err(_) => return (SideResult::HarnessError, Some("placeholder".into())),
+                    Err(e) => {
+                        return (
+                            SideResult::HarnessError,
+                            Some(format!("placeholder on the Herdr side: {e:#}")),
+                        );
+                    }
                 }
+            }
+            // The fake agent reports through the socket, as `herdr pane report-agent --source`
+            // would (Herdr requires a source).
+            StepKind::Event if step.agent_status.is_some() => {
+                let st = step.agent_status.clone().unwrap_or_default();
+                let Some(p) = self.herdr_agent_pane.clone() else {
+                    return (
+                        SideResult::NotRun,
+                        Some("the Herdr side has no fake agent pane".into()),
+                    );
+                };
+                if !matches!(st.as_str(), "idle" | "working" | "blocked" | "unknown") {
+                    return (
+                        SideResult::NotRun,
+                        Some(format!("Herdr 0.9.3 has no agent state `{st}`")),
+                    );
+                }
+                let from = self.herdr_off;
+                if let Err(e) = h.call(
+                    "pane.report_agent",
+                    json!({"pane_id": p, "source": "vibeke-harness", "agent": "claude", "state": st}),
+                ) {
+                    return (
+                        SideResult::Failed,
+                        Some(format!("pane.report_agent: {e:#}")),
+                    );
+                }
+                ev.push(format!("Herdr: fake agent reported {st}"));
+                return self.herdr_expectations(h, step, &logs0, None, from, deadline, ev);
             }
             _ => {
                 return (
@@ -1662,11 +1987,6 @@ impl<'a> Run<'a> {
                 );
             }
         };
-        let deadline = Instant::now() + self.step_timeout(Some(step));
-        let logs0: BTreeSet<String> = herdr_logs(h, &id)
-            .iter()
-            .filter_map(|l| l["log_id"].as_str().map(str::to_string))
-            .collect();
         let from = self.herdr_off;
         let a: Vec<&str> = args.iter().map(String::as_str).collect();
         let stdout = match h.cli(&a) {
@@ -1688,6 +2008,22 @@ impl<'a> Run<'a> {
             ev.push(format!("Herdr: pane {entry} opened as {pane}"));
             self.herdr_panes.insert(entry.clone(), pane.clone());
         }
+        self.herdr_expectations(h, step, &logs0, opened.as_ref(), from, deadline, ev)
+    }
+
+    /// Wait for a step's expectations and expected calls on Herdr (see [`Run::herdr_step`]).
+    #[allow(clippy::too_many_arguments)]
+    fn herdr_expectations(
+        &mut self,
+        h: &HerdrSide,
+        step: &Step,
+        logs0: &BTreeSet<String>,
+        opened: Option<&(String, String)>,
+        from: u64,
+        deadline: Instant,
+        ev: &mut Vec<String>,
+    ) -> (SideResult, Option<String>) {
+        let id = self.lp.plugin_id.clone();
         let mut pending: Vec<&Expectation> = step.expect.iter().collect();
         let mut unknown: Vec<String> = Vec::new();
         let mut calls_ok = step.expect_calls.is_empty();
@@ -1696,13 +2032,15 @@ impl<'a> Run<'a> {
         loop {
             let mut still = Vec::new();
             for e in pending {
-                match self.look_herdr(h, e, &logs0, opened.as_ref()) {
+                match self.look_herdr(h, e, logs0, opened, step.action.as_deref()) {
                     Ok(HerdrLook::Holds(x)) => ev.push(format!("Herdr: {x}")),
                     Ok(HerdrLook::NotYet) => still.push(e),
                     Ok(HerdrLook::Unknown(w)) => unknown.push(w),
-                    Err(StepErr::Harness(w) | StepErr::Fail(w)) => {
-                        return (SideResult::HarnessError, Some(w));
+                    Err(StepErr::Fail(w)) => {
+                        self.herdr_off = self.herdr_off.max(off);
+                        return (SideResult::Failed, Some(w));
                     }
+                    Err(StepErr::Harness(w)) => return (SideResult::HarnessError, Some(w)),
                 }
             }
             pending = still;
@@ -1735,6 +2073,14 @@ impl<'a> Run<'a> {
         }
         if !calls_ok {
             why.push(format!("expected calls missing on Herdr: {mismatches:?}"));
+        }
+        if !why.is_empty() {
+            for l in new_invocations(herdr_logs(h, &id), logs0, "event")
+                .iter()
+                .take(5)
+            {
+                ev.push(format!("Herdr: {}", invocation_details(l)));
+            }
         }
         if !why.is_empty() {
             (SideResult::Failed, Some(why.join("; ")))
@@ -1773,6 +2119,7 @@ impl<'a> Run<'a> {
         e: &Expectation,
         logs0: &BTreeSet<String>,
         opened: Option<&(String, String)>,
+        action: Option<&str>,
     ) -> StepRes<HerdrLook> {
         use HerdrLook::{Holds, NotYet, Unknown};
         let id = self.lp.plugin_id.as_str();
@@ -1790,16 +2137,18 @@ impl<'a> Run<'a> {
                     "failed" => "failed",
                     other => return harness(format!("unknown invocation status `{other}`")),
                 };
-                herdr_logs(h, id)
+                let new: Vec<Value> = herdr_logs(h, id)
                     .into_iter()
                     .filter(|l| {
                         l["event"] != "startup"
                             && !logs0.contains(l["log_id"].as_str().unwrap_or_default())
                     })
-                    .find(|l| l["status"] == want)
-                    .map_or(NotYet, |l| {
-                        Holds(format!("invocation {} {want}", l["log_id"]))
-                    })
+                    .collect();
+                match final_invocation(&new, want, action) {
+                    Ok(Some(l)) => Holds(format!("invocation {} {want}", l["log_id"])),
+                    Ok(None) => NotYet,
+                    Err(why) => return fail(why),
+                }
             }
             Expectation::HookLog { text } => herdr_logs(h, id)
                 .into_iter()
@@ -2153,6 +2502,7 @@ impl<'a> Run<'a> {
         e: &Expectation,
         seq0: i64,
         logs0: &BTreeSet<String>,
+        action: Option<&str>,
     ) -> StepRes<Option<String>> {
         let id = self.lp.plugin_id.as_str();
         Ok(match e {
@@ -2162,14 +2512,18 @@ impl<'a> Run<'a> {
                     "failed" => "failed",
                     other => return harness(format!("unknown invocation status `{other}`")),
                 };
-                self.logs()
+                let new: Vec<Value> = self
+                    .logs()
                     .into_iter()
                     .filter(|l| {
                         l["source"] != "startup"
                             && !logs0.contains(l["log_id"].as_str().unwrap_or_default())
                     })
-                    .find(|l| l["status"] == want)
-                    .map(|l| format!("invocation {} {want}", l["log_id"]))
+                    .collect();
+                match final_invocation(&new, want, action) {
+                    Ok(l) => l.map(|l| format!("invocation {} {want}", l["log_id"])),
+                    Err(why) => return fail(why),
+                }
             }
             Expectation::Pane { pane, placement } => self
                 .events_since(seq0, "plugin.pane_opened")
@@ -2222,8 +2576,22 @@ impl<'a> Run<'a> {
                 .find(|l| format!("{}{}", l["stdout"], l["stderr"]).contains(text.as_str()))
                 .map(|l| format!("startup {} ready", l["entrypoint_id"])),
             Expectation::Event { event_type } => {
-                // Scenarios name Herdr events (`worktree.created`): a Vibeke event of that
-                // type, or one the compat projection turns into it, is the evidence.
+                // The server's own projection is the best evidence: a hook of this plugin
+                // that the server ran for the event since the step started. (The harness
+                // cannot project every event itself: `pane.agent_status_changed` needs the
+                // server's agent model, which events do not carry.)
+                let wire = vk_compat::herdr::events::wire_name(event_type);
+                if let Some(l) = self.logs().into_iter().find(|l| {
+                    !logs0.contains(l["log_id"].as_str().unwrap_or_default())
+                        && (l["event"] == event_type.as_str() || l["event"] == wire.as_str())
+                }) {
+                    return Ok(Some(format!(
+                        "event {event_type} (its hook ran: {})",
+                        l["log_id"]
+                    )));
+                }
+                // Otherwise a Vibeke event of that type, or one the compat projection turns
+                // into it (scenarios name Herdr events, such as `worktree.created`).
                 let evs = self
                     .api("events.read", json!({"after": seq0, "limit": 500}))
                     .ok()
@@ -2281,7 +2649,7 @@ impl<'a> Run<'a> {
         loop {
             let mut still = Vec::new();
             for e in pending {
-                match self.look(e, seq0, logs0)? {
+                match self.look(e, seq0, logs0, step.action.as_deref())? {
                     Some(x) => ev.push(x),
                     None => still.push(e),
                 }
@@ -2303,10 +2671,7 @@ impl<'a> Run<'a> {
         }
         self.trace_off = self.trace_off.max(off);
         for u in &unexpected {
-            ev.push(format!(
-                "unexpected failed call {} ({:?})",
-                u.method, u.code
-            ));
+            ev.push(describe_failed_call(u));
         }
         let mut why = Vec::new();
         if !pending.is_empty() {
@@ -2318,6 +2683,10 @@ impl<'a> Run<'a> {
         if why.is_empty() {
             Ok(())
         } else {
+            // What the step's invocations did, so a timeout says more than "no evidence".
+            for l in new_invocations(self.logs(), logs0, "source").iter().take(5) {
+                ev.push(invocation_details(l));
+            }
             fail(why.join("; "))
         }
     }
@@ -2373,21 +2742,26 @@ impl<'a> Run<'a> {
         Ok(g)
     }
 
+    /// Write a canonical grid file (compact JSON: a pretty-printed 120x40 grid is over 1 MiB,
+    /// and every step may keep one or two).
     fn write_grid(&self, name: &str, g: &Grid) -> Option<String> {
         let _ = std::fs::create_dir_all(&self.grid_dir);
-        let json = serde_json::to_string_pretty(g).ok()?;
+        let json = serde_json::to_string(g).ok()?;
         std::fs::write(self.grid_dir.join(name), json).ok()?;
         Some(format!("{}/{name}", self.grid_rel))
     }
 
     /// Visual comparison of one plugin pane (18 §10): placement, then contents when both sides
-    /// see the same inner size, then the reference snapshot (18 §10.5).
+    /// see the same inner size, then the reference snapshot (18 §10.5). With `judge` false (the
+    /// step already failed) it only captures and writes the grids for the screenshots; the
+    /// caller ignores what it adds to `why` and `herdr_missing`, and no snapshot is written.
     #[allow(clippy::too_many_arguments)]
     fn compare(
         &self,
         step: &Step,
         c: &Compare,
         herdr_ran: bool,
+        judge: bool,
         deadline: Instant,
         ev: &mut Vec<String>,
         why: &mut Vec<String>,
@@ -2522,7 +2896,11 @@ impl<'a> Run<'a> {
         if std::fs::write(self.grid_dir.join(format!("{base}.svg")), svg).is_ok() {
             art.image = Some(format!("{}/{base}.svg", self.grid_rel));
         }
-        // Reviewed reference snapshots of Vibeke's own grid (18 §10.5).
+        // Reviewed reference snapshots of Vibeke's own grid (18 §10.5). A failed step's
+        // screen is never a reference.
+        if !judge {
+            return Ok(art);
+        }
         let snap = plugins_dir().join(format!("snapshots/{}/{base}.json", self.stem));
         if std::env::var("VIBEKE_UPDATE_SNAPSHOTS").as_deref() == Ok("1") {
             write(
@@ -2551,6 +2929,55 @@ impl<'a> Run<'a> {
             }
         }
         Ok(art)
+    }
+
+    /// The grid of the plugin pane `name` as the step left it, for the screenshots: Vibeke's,
+    /// and Herdr's when Herdr ran the step and the pane can be found there. Nothing is judged.
+    fn snapshot_pane(&self, step: &Step, name: &str, herdr_ran: bool) -> Option<GridArtifact> {
+        let (pane, placement) = self.plugin_pane_placed(name)?;
+        let (vg, _) = mask::wait_stable(
+            || self.capture(&pane),
+            &[],
+            Duration::from_millis(300),
+            Duration::from_secs(3),
+        )
+        .ok()?;
+        let vg = render::redact(&vg);
+        let base = format!("{}__{name}", step.id);
+        let mut art = GridArtifact {
+            pane: name.to_string(),
+            vibeke: self.write_grid(&format!("{base}.vibeke.json"), &vg),
+            herdr: None,
+            image: None,
+            diff_cells: None,
+            placement_matches: None,
+        };
+        art.vibeke.as_ref()?;
+        let mut hg = None;
+        if herdr_ran && let Some(h) = self.herdr.as_ref() {
+            let id = if placement == "popup" {
+                Some(String::new())
+            } else {
+                self.herdr_panes.get(name).cloned()
+            };
+            if let Some(id) = id
+                && let Ok(g) = h.capture_pane(&id, &placement)
+            {
+                let g = render::redact(&g);
+                art.herdr = self.write_grid(&format!("{base}.herdr.json"), &g);
+                hg = Some(g);
+            }
+        }
+        let svg = render::side_by_side(
+            hg.as_ref(),
+            Some(&vg),
+            None,
+            &format!("{} {base}", self.lp.plugin_id),
+        );
+        if std::fs::write(self.grid_dir.join(format!("{base}.svg")), svg).is_ok() {
+            art.image = Some(format!("{}/{base}.svg", self.grid_rel));
+        }
+        Some(art)
     }
 
     fn run_step(&mut self, step: &Step) -> StepResult {
@@ -2601,12 +3028,16 @@ impl<'a> Run<'a> {
                     step,
                     c,
                     herdr == SideResult::Passed,
+                    true,
                     deadline,
                     &mut ev,
                     &mut why,
                     &mut herdr_missing,
                 ) {
-                    Ok(a) => grids.push(a),
+                    Ok(a) => {
+                        self.grid_count += 1;
+                        grids.push(a);
+                    }
                     Err(StepErr::Harness(w)) => {
                         vibeke = SideResult::HarnessError;
                         why.push(w);
@@ -2631,6 +3062,45 @@ impl<'a> Run<'a> {
             }
         }
         let both_ran = matches!(herdr, SideResult::Passed | SideResult::Failed);
+        // Screenshots on every run: a failed step still keeps the grids of its compared panes
+        // (captured only, never judged), and a step that opens a plugin pane or popup without
+        // a comparison keeps that pane's grid too.
+        if vibeke != SideResult::Passed && vibeke != SideResult::NotRun {
+            for c in &step.compare {
+                if self.grid_count >= MAX_GRIDS {
+                    break;
+                }
+                let (mut why, mut missing) = (Vec::new(), Vec::new());
+                if let Ok(a) = self.compare(
+                    step,
+                    c,
+                    both_ran,
+                    false,
+                    deadline,
+                    &mut ev,
+                    &mut why,
+                    &mut missing,
+                ) && (a.vibeke.is_some() || a.herdr.is_some())
+                {
+                    self.grid_count += 1;
+                    grids.push(a);
+                }
+            }
+        }
+        if vibeke != SideResult::NotRun {
+            for name in shot_panes(step) {
+                if self.grid_count >= MAX_GRIDS {
+                    break;
+                }
+                if step.compare.iter().any(|c| c.pane == name) {
+                    continue;
+                }
+                if let Some(a) = self.snapshot_pane(step, &name, both_ran) {
+                    self.grid_count += 1;
+                    grids.push(a);
+                }
+            }
+        }
         let facts = StepFacts {
             vibeke,
             herdr,
@@ -2650,15 +3120,17 @@ impl<'a> Run<'a> {
         let (actual, reason) = outcome::attribute(&facts);
         let known = step.known.as_ref().map(|k| k.outcome);
         let rec = outcome::reconcile(actual, known);
-        let reason = if rec.outcome == Outcome::Passed {
-            reason.or(vreason)
+        // Both sides' reasons are kept (18 §12): the outcome alone does not say why.
+        let head = if rec.outcome == Outcome::Passed {
+            None
         } else {
-            reason
-                .or(vreason)
-                .or(herdr_reason)
-                .or_else(|| step.known.as_ref().map(|k| k.reason.clone()))
-                .or_else(|| Some(format!("{:?}", rec.outcome)))
+            let head = reason.unwrap_or_else(|| format!("{:?}", rec.outcome));
+            Some(match &step.known {
+                Some(k) => format!("{head} (known: {})", k.reason),
+                None => head,
+            })
         };
+        let reason = combine_reason(head.as_deref(), vreason.as_deref(), herdr_reason.as_deref());
         StepResult {
             id: step.id.clone(),
             kind: kind_name(step.kind),
@@ -2671,6 +3143,89 @@ impl<'a> Run<'a> {
             evidence: ev,
             grids,
             duration_ms: t0.elapsed().as_millis() as u64,
+        }
+    }
+
+    /// Where diagnostics go: `<results>/<stem>-<os>/logs/`. They are uploaded with the result
+    /// for people to read; the report and the screenshot renderer never use them.
+    fn logs_dir(&self) -> PathBuf {
+        self.grid_dir.join("logs")
+    }
+
+    /// Both sides' `plugin.log.list` records, one JSON object per line, redacted.
+    fn save_plugin_logs(&self) {
+        let dir = self.logs_dir();
+        let lines = |logs: Vec<Value>| {
+            logs.iter()
+                .map(Value::to_string)
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let _ = logs::write_redacted(
+            &dir.join("vibeke-plugin-logs.jsonl"),
+            &lines(self.logs()),
+            logs::LOG_MAX_BYTES,
+        );
+        if let Some(h) = &self.herdr {
+            let _ = logs::write_redacted(
+                &dir.join("herdr-plugin-logs.jsonl"),
+                &lines(herdr_logs(h, &self.lp.plugin_id)),
+                logs::LOG_MAX_BYTES,
+            );
+        }
+    }
+
+    /// Vibeke's trace, server logs and client screen, and the Herdr trace.
+    fn save_logs(&self) {
+        let dir = self.logs_dir();
+        let max = logs::LOG_MAX_BYTES;
+        let _ = logs::copy_redacted(&self.trace, &dir.join("vibeke-trace.jsonl"), max);
+        let _ = logs::copy_redacted(&self.herdr_trace, &dir.join("herdr-trace.jsonl"), max);
+        if let Ok(rd) = std::fs::read_dir(self.s.path("state/default/logs")) {
+            let mut names: Vec<String> = rd
+                .flatten()
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .filter(|n| safe_file_name(n))
+                .collect();
+            names.sort();
+            for n in names.into_iter().take(8) {
+                let _ = logs::copy_redacted(
+                    &self.s.path(&format!("state/default/logs/{n}")),
+                    &dir.join(format!("vibeke-{n}")),
+                    max,
+                );
+            }
+        }
+        if let Some(t) = self.client_screen() {
+            let _ = logs::write_redacted(&dir.join("vibeke-client-screen.txt"), &t, max);
+        }
+    }
+
+    /// The Herdr server log, the last Herdr CLI output, its command logs and its screen.
+    fn save_herdr_logs(&self, h: &HerdrSide) {
+        let dir = self.logs_dir();
+        let max = logs::LOG_MAX_BYTES;
+        let _ = logs::copy_redacted(&h.server_log(), &dir.join("herdr-server.log"), max);
+        for f in ["cli.out", "cli.err"] {
+            let _ = logs::copy_redacted(
+                &self.herdr_root.join(f),
+                &dir.join(format!("herdr-last-{f}.log")),
+                max,
+            );
+        }
+        let lines: Vec<String> = herdr_logs(h, &self.lp.plugin_id)
+            .iter()
+            .map(Value::to_string)
+            .collect();
+        if !lines.is_empty() {
+            let _ = logs::write_redacted(
+                &dir.join("herdr-plugin-logs-end.jsonl"),
+                &lines.join("\n"),
+                max,
+            );
+        }
+        if let Ok(t) = h.screen_text() {
+            let _ = logs::write_redacted(&dir.join("herdr-client-screen.txt"), &t, max);
         }
     }
 
@@ -2761,6 +3316,8 @@ impl<'a> Run<'a> {
                         let res = self.run_step(step);
                         r.steps.push(res);
                     }
+                    // The command logs as the steps left them (uninstall may drop them).
+                    self.save_plugin_logs();
                     if self.build_failed.is_none() && self.registered().is_some() {
                         self.startup_checks();
                         self.reinstall_keeps_config_and_state();
@@ -2797,13 +3354,194 @@ impl<'a> Run<'a> {
             }
         }
         if let Some(h) = self.herdr.take() {
+            self.save_herdr_logs(&h);
             let _ = h.stop();
         }
+        self.save_logs();
+        self.detach_client();
         r.lifecycle = std::mem::take(&mut self.lifecycle);
         r.surfaces = self.surfaces();
         r.coverage = self.coverage();
         r
     }
+}
+
+/// A file name the result unpacker keeps (`A-Za-z0-9_.-`, short, not `.` or `..`).
+fn safe_file_name(n: &str) -> bool {
+    !n.is_empty()
+        && n.len() <= 80
+        && n != "."
+        && n != ".."
+        && n.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-'))
+}
+
+/// The plugin panes a step opens or expects open, for screenshots: the pane of a `pane` step
+/// and the panes of its `pane` and `popup` expectations, each once.
+pub fn shot_panes(step: &Step) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut add = |p: &str| {
+        if !p.is_empty() && !out.iter().any(|x| x == p) {
+            out.push(p.to_string());
+        }
+    };
+    if step.kind == StepKind::Pane
+        && let Some(p) = &step.pane
+    {
+        add(p);
+    }
+    for e in &step.expect {
+        match e {
+            Expectation::Pane { pane, .. } | Expectation::Popup { pane } => add(pane),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Among the invocation records a step started, the one that finished with the wanted status
+/// (`succeeded` or `failed`). For an action step only the action's own invocations count, and
+/// one that finished with the other status is an immediate failure (`Err`, with its exit
+/// code, error and output tail), so the step does not wait out its whole timeout.
+pub fn final_invocation<'v>(
+    logs: &'v [Value],
+    want: &str,
+    action: Option<&str>,
+) -> Result<Option<&'v Value>, String> {
+    // Herdr may record the qualified id (`<plugin>.<action>`).
+    let mine = |l: &&Value| {
+        action.is_none_or(|a| {
+            l["action_id"]
+                .as_str()
+                .is_some_and(|x| x == a || x.ends_with(&format!(".{a}")))
+        })
+    };
+    if let Some(l) = logs.iter().filter(mine).find(|l| l["status"] == want) {
+        return Ok(Some(l));
+    }
+    // Records without an action id: any invocation the step started counts, as before.
+    if !logs.iter().any(|l| mine(&l)) {
+        return Ok(logs.iter().find(|l| l["status"] == want));
+    }
+    if action.is_some()
+        && let Some(l) = logs
+            .iter()
+            .filter(mine)
+            .find(|l| matches!(l["status"].as_str(), Some("succeeded" | "failed")))
+    {
+        return Err(format!(
+            "expected the invocation to end {want}: {}",
+            invocation_details(l)
+        ));
+    }
+    Ok(None)
+}
+
+/// The invocation records that are not in `before` and are not startup commands (`key` is
+/// the field that says so: Vibeke's `source`, Herdr's `event`).
+fn new_invocations(logs: Vec<Value>, before: &BTreeSet<String>, key: &str) -> Vec<Value> {
+    logs.into_iter()
+        .filter(|l| {
+            l[key] != "startup" && !before.contains(l["log_id"].as_str().unwrap_or_default())
+        })
+        .collect()
+}
+
+/// An evidence line for a failed call no expectation names. Launcher lines (argument parsing
+/// in the `herdr` shim) have no method, so they show the first arguments and the parse error.
+pub fn describe_failed_call(u: &trace::TraceLine) -> String {
+    if u.transport == "launcher" {
+        let argv: Vec<&str> = u
+            .argv
+            .iter()
+            .flatten()
+            .take(4)
+            .map(String::as_str)
+            .collect();
+        format!(
+            "unexpected failed herdr command `{}` ({}): {}",
+            argv.join(" "),
+            u.code.as_deref().unwrap_or("?"),
+            u.parse_error
+                .as_deref()
+                .unwrap_or("no parse error recorded")
+        )
+    } else {
+        format!(
+            "unexpected failed call {} ({})",
+            u.method,
+            u.code.as_deref().unwrap_or("?")
+        )
+    }
+}
+
+/// Repositories, worktrees, files and plugin config from `[setup]`, for one side: under that
+/// side's `home`, expanded with and recorded into that side's `vars` (`{repo.<name>}`,
+/// `{worktree.<repo>.<name>}`). Scenarios write plugin config where Herdr keeps it
+/// (`~/.config/herdr/plugins/config/<id>`); those files are copied to the side's real plugin
+/// config dir `config_dir` (Vibeke's `HERDR_PLUGIN_CONFIG_DIR`, or Herdr's
+/// `$XDG_CONFIG_HOME/herdr/plugins/config/<id>`).
+fn materialize_setup(
+    sc: &Scenario,
+    plugin_id: &str,
+    home: &Path,
+    vars: &mut Vars,
+    config_dir: Option<&Path>,
+) -> StepRes<()> {
+    let expand = |s: &str, vars: &Vars| {
+        scenario::expand(s, vars).map_err(|e| StepErr::Harness(format!("{e:#}")))
+    };
+    for r in &sc.setup.repos {
+        let dir = home.join("src").join(&r.name);
+        std::fs::create_dir_all(&dir).map_err(|e| StepErr::Harness(e.to_string()))?;
+        vars.values.insert(
+            format!("repo.{}", r.name),
+            dir.to_string_lossy().into_owned(),
+        );
+        for (p, text) in &r.files {
+            let text = expand(text, vars)?;
+            write(&dir.join(p), &text);
+        }
+        if r.files.is_empty() {
+            write(&dir.join("README.md"), &format!("{}\n", r.name));
+        }
+        let g = |args: &[&str]| git_try(&dir, args).map_err(StepErr::Harness);
+        g(&["init", "-q", "-b", "main"])?;
+        g(&["add", "."])?;
+        g(&["commit", "-qm", "initial"])?;
+        for wt in &r.worktrees {
+            let wdir = home.join("src").join(format!("{}-{wt}", r.name));
+            g(&[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                wt.as_str(),
+                wdir.to_str().unwrap(),
+            ])?;
+            vars.values.insert(
+                format!("worktree.{}.{wt}", r.name),
+                wdir.to_string_lossy().into_owned(),
+            );
+        }
+    }
+    for (p, text) in &sc.setup.files {
+        let p = expand(p, vars)?;
+        let text = expand(text, vars)?;
+        write(&home.join(p), &text);
+    }
+    if let (Some(cfg), Some(dir)) = (&sc.setup.config, config_dir) {
+        let text = expand(cfg, vars)?;
+        write(&dir.join("config.toml"), &text);
+    }
+    let herdr_cfg = home.join(format!(".config/herdr/plugins/config/{plugin_id}"));
+    if let Some(dir) = config_dir
+        && herdr_cfg.is_dir()
+        && herdr_cfg != dir
+    {
+        copy_tree(&herdr_cfg, dir).map_err(|e| StepErr::Harness(e.to_string()))?;
+    }
+    Ok(())
 }
 
 /// What one look at an expectation on Herdr found.

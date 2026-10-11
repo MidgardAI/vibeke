@@ -10,10 +10,14 @@
 //! valid, and that each scenario covers what its manifest declares (18 §8.1).
 
 use crate::support::real_plugins::{
-    self, ENV_ALLOW, TOOLCHAIN_PATH_VAR, has_url_credentials, herdr_opened_pane,
-    herdr_path_component, plugin_env, secret_like, vibeke_key,
+    self, ENV_ALLOW, TOOLCHAIN_PATH_VAR, combine_reason, describe_failed_call, final_invocation,
+    has_url_credentials, herdr_install_args, herdr_opened_pane, herdr_pane_open_args,
+    herdr_path_component, invocation_details, plugin_env, secret_like, shot_panes, user_bin_dirs,
+    vibeke_key,
 };
+use serde_json::json;
 use std::collections::BTreeMap;
+use std::path::Path;
 use vk_conformance::coverage;
 use vk_conformance::mask;
 use vk_conformance::scenario::Scenario;
@@ -302,6 +306,216 @@ fn the_herdr_pane_open_reply_names_the_pane() {
         Some(("main".to_string(), "w1-3".to_string()))
     );
     assert_eq!(herdr_opened_pane("Opened.\n"), None);
+}
+
+#[test]
+fn plugins_find_the_tools_their_installers_put_in_home() {
+    let get = |n: &str| match n {
+        "CARGO_HOME" => Some("/box/home/.cargo".to_string()),
+        "GOPATH" => Some("/box/home/go".to_string()),
+        _ => None,
+    };
+    let dirs = user_bin_dirs(Path::new("/s/home"), get, "linux");
+    assert_eq!(
+        dirs,
+        [
+            "/s/home/.local/bin",
+            "/s/home/.cargo/bin",
+            "/s/home/go/bin",
+            "/s/home/.bun/bin",
+            "/box/home/.cargo/bin",
+            "/box/home/go/bin",
+        ]
+    );
+    let mac = user_bin_dirs(Path::new("/s/home"), |_| None, "macos");
+    assert_eq!(&mac[4..], ["/opt/homebrew/bin", "/usr/local/bin"]);
+    // After the toolchains, before the inherited PATH, without duplicates.
+    let parent: BTreeMap<&str, &str> = [
+        ("PATH", "/usr/local/bin:/usr/bin:/bin"),
+        (TOOLCHAIN_PATH_VAR, "/tc/go/bin"),
+    ]
+    .into_iter()
+    .collect();
+    let env: BTreeMap<String, String> = plugin_env(
+        &["PATH".to_string()],
+        |n| parent.get(n).map(|v| v.to_string()),
+        &mac,
+    )
+    .into_iter()
+    .collect();
+    assert_eq!(
+        env["PATH"],
+        "/tc/go/bin:/s/home/.local/bin:/s/home/.cargo/bin:/s/home/go/bin:/s/home/.bun/bin:\
+         /opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+    );
+}
+
+#[test]
+fn step_reasons_keep_both_sides_and_fit_the_report() {
+    assert_eq!(
+        combine_reason(
+            Some("Vibeke failed and Herdr has not run the step"),
+            Some("no evidence for [Pane]"),
+            Some("Herdr could not install the plugin"),
+        )
+        .as_deref(),
+        Some(
+            "Vibeke failed and Herdr has not run the step; vibeke: no evidence for [Pane]; \
+             herdr: Herdr could not install the plugin"
+        )
+    );
+    // Rule 4 already quotes Herdr's reason.
+    assert_eq!(
+        combine_reason(Some("Herdr failed too: boom"), Some("x"), Some("boom")).as_deref(),
+        Some("Herdr failed too: boom; vibeke: x")
+    );
+    assert_eq!(combine_reason(None, None, None), None);
+    let long = "e".repeat(10_000);
+    let r = combine_reason(Some(&long), Some(&long), Some(&long)).unwrap();
+    assert!(r.encode_utf16().count() <= 1800, "{}", r.len());
+    assert!(r.contains("; vibeke: ") && r.contains("; herdr: "));
+}
+
+#[test]
+fn herdr_cli_arguments_follow_herdr_0_9_3() {
+    assert_eq!(
+        herdr_install_args("acme/tools", Some("plugins/one"), "abc"),
+        [
+            "plugin",
+            "install",
+            "acme/tools/plugins/one",
+            "--ref",
+            "abc",
+            "--yes"
+        ]
+    );
+    assert_eq!(
+        herdr_install_args("acme/tools", None, "abc")[2],
+        "acme/tools"
+    );
+    let open = |placement| herdr_pane_open_args("acme.tool", "main", placement, Some("w1-1"));
+    assert_eq!(
+        open(Some("split")),
+        [
+            "plugin",
+            "pane",
+            "open",
+            "--plugin",
+            "acme.tool",
+            "--entrypoint",
+            "main",
+            "--target-pane",
+            "w1-1"
+        ]
+    );
+    assert!(open(Some("zoomed")).contains(&"--target-pane".to_string()));
+    // Herdr refuses a target for overlay and popup panes, and for tabs.
+    for p in [Some("overlay"), Some("popup"), Some("tab"), None] {
+        assert_eq!(open(p).len(), 7, "{p:?}");
+    }
+}
+
+#[test]
+fn a_failed_action_invocation_ends_the_step_at_once() {
+    let logs = vec![
+        json!({"log_id": "h1", "event": "pane.created", "status": "succeeded"}),
+        json!({"log_id": "a1", "action_id": "open", "status": "failed", "exit_code": 1,
+               "stderr": format!("{}\nopen: no directory context", "x".repeat(2000))}),
+    ];
+    let e = final_invocation(&logs, "succeeded", Some("open")).unwrap_err();
+    assert!(e.contains("a1 failed (exit code 1)"), "{e}");
+    assert!(e.contains("no directory context"), "{e}");
+    assert!(e.len() < 1000, "{}", e.len());
+    // A qualified id (Herdr) is the same action.
+    let ok = vec![json!({"log_id": "a2", "action_id": "acme.open", "status": "succeeded"})];
+    assert_eq!(
+        final_invocation(&ok, "succeeded", Some("open"))
+            .unwrap()
+            .unwrap()["log_id"],
+        "a2"
+    );
+    // Still running: wait.
+    let running = vec![json!({"log_id": "a3", "action_id": "open", "status": "running"})];
+    assert!(
+        final_invocation(&running, "succeeded", Some("open"))
+            .unwrap()
+            .is_none()
+    );
+    // Without an action, any new invocation counts and nothing fails early.
+    assert!(
+        final_invocation(&logs, "succeeded", None)
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        final_invocation(&logs[1..], "succeeded", None)
+            .unwrap()
+            .is_none()
+    );
+    let d = invocation_details(
+        &json!({"log_id": "z", "status": "failed", "exit_code": null,
+                                        "error": "spawn failed", "stdout": "out"}),
+    );
+    assert_eq!(
+        d,
+        "invocation z failed (exit code null); error: spawn failed; stdout tail: out"
+    );
+}
+
+#[test]
+fn launcher_failures_show_the_command() {
+    let line = vk_conformance::trace::TraceLine {
+        ts_ms: 0,
+        plugin: "p".into(),
+        invocation: None,
+        transport: "launcher".into(),
+        method: String::new(),
+        ok: false,
+        code: Some("usage".into()),
+        params: None,
+        argv: Some(vec![
+            "status".into(),
+            "server".into(),
+            "--json".into(),
+            "x".into(),
+            "y".into(),
+        ]),
+        parse_error: Some("unknown noun `status`".into()),
+    };
+    assert_eq!(
+        describe_failed_call(&line),
+        "unexpected failed herdr command `status server --json x` (usage): unknown noun `status`"
+    );
+    let socket = vk_conformance::trace::TraceLine {
+        transport: "socket".into(),
+        method: "pane.layout".into(),
+        code: Some("method_not_found".into()),
+        argv: None,
+        parse_error: None,
+        ..line
+    };
+    assert_eq!(
+        describe_failed_call(&socket),
+        "unexpected failed call pane.layout (method_not_found)"
+    );
+}
+
+#[test]
+fn screenshots_cover_the_panes_a_step_opens() {
+    let sc: Scenario = toml::from_str(
+        r#"
+plugin_id = "acme.tool"
+repository = "acme/tool"
+
+[[step]]
+id = "open"
+kind = "pane"
+pane = "main"
+expect = [{ kind = "pane", pane = "main" }, { kind = "popup", pane = "picker" }]
+"#,
+    )
+    .unwrap();
+    assert_eq!(shot_panes(&sc.steps[0]), ["main", "picker"]);
 }
 
 /// The gate refuses before any plugin code runs when the variable is missing.

@@ -26,6 +26,7 @@ pub mod diff;
 pub mod grid;
 pub mod herdr;
 pub mod lock;
+pub mod logs;
 pub mod mask;
 pub mod normalize;
 pub mod outcome;

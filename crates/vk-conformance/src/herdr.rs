@@ -277,6 +277,8 @@ fn log_tail(path: &Path) -> String {
 
 /// The parts of a `pane.layout` result the harness uses.
 struct Layout {
+    workspace: String,
+    tab: String,
     zoomed: bool,
     area: Rect,
     focused: String,
@@ -318,7 +320,15 @@ fn parse_layout(result: &Value) -> anyhow::Result<Layout> {
             ))
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
+    let text = |k: &str| {
+        l.get(k)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    };
     Ok(Layout {
+        workspace: text("workspace_id"),
+        tab: text("tab_id"),
         zoomed: l.get("zoomed").and_then(Value::as_bool).unwrap_or(false),
         area: rect_of(l.get("area").unwrap_or(&Value::Null))?,
         focused: l
@@ -529,6 +539,17 @@ impl HerdrSide {
     /// stderr). It sees the same environment as Herdr, so its calls go through the proxy
     /// (traced with `plugin = "unknown"`).
     pub fn cli(&self, args: &[&str]) -> anyhow::Result<(i32, String, String)> {
+        self.cli_with(args, &[], CLI_TIMEOUT)
+    }
+
+    /// [`HerdrSide::cli`] with extra environment for this one command and its own time limit
+    /// (`herdr plugin install` runs the plugin's build commands, which can take many minutes).
+    pub fn cli_with(
+        &self,
+        args: &[&str],
+        extra_env: &[(String, String)],
+        timeout: Duration,
+    ) -> anyhow::Result<(i32, String, String)> {
         let out_path = self.root.join("cli.out");
         let err_path = self.root.join("cli.err");
         let mut child = Command::new(&self.bin)
@@ -536,12 +557,13 @@ impl HerdrSide {
             .current_dir(&self.home)
             .env_clear()
             .envs(self.env.iter().map(|(k, v)| (k, v)))
+            .envs(extra_env.iter().map(|(k, v)| (k, v)))
             .stdin(Stdio::null())
             .stdout(Stdio::from(File::create(&out_path)?))
             .stderr(Stdio::from(File::create(&err_path)?))
             .spawn()
             .with_context(|| format!("run herdr {args:?}"))?;
-        let deadline = Instant::now() + CLI_TIMEOUT;
+        let deadline = Instant::now() + timeout;
         let status = loop {
             if let Some(s) = child.try_wait()? {
                 break s;
@@ -549,7 +571,7 @@ impl HerdrSide {
             if Instant::now() >= deadline {
                 let _ = child.kill();
                 let _ = child.wait();
-                bail!("herdr {args:?} did not finish within {CLI_TIMEOUT:?}");
+                bail!("herdr {args:?} did not finish within {timeout:?}");
             }
             std::thread::sleep(Duration::from_millis(20));
         };
@@ -571,6 +593,29 @@ impl HerdrSide {
     ) -> anyhow::Result<serde_json::Value> {
         let id = format!("harness-{}", self.next_id.fetch_add(1, Ordering::Relaxed));
         result_of(method, request(&self.socket, &id, method, &params)?)
+    }
+
+    /// The active workspace, tab and focused pane of Herdr's TUI client, from `pane.layout`.
+    pub fn active(&self) -> anyhow::Result<(String, String, String)> {
+        let l = self.layout(None)?;
+        ensure!(!l.focused.is_empty(), "pane.layout reports no focused pane");
+        Ok((l.workspace, l.tab, l.focused))
+    }
+
+    /// The text on Herdr's TUI screen right now.
+    pub fn screen_text(&self) -> anyhow::Result<String> {
+        let (rows, cols, nrows, _) = self.tui()?.snapshot();
+        Ok(Grid::from_rows(&rows, cols, nrows).text())
+    }
+
+    /// The server's log file (stdout and stderr of `herdr server`).
+    pub fn server_log(&self) -> PathBuf {
+        self.root.join("herdr-server.log")
+    }
+
+    /// HOME of Herdr and its plugin processes.
+    pub fn home(&self) -> &Path {
+        &self.home
     }
 
     fn layout(&self, pane: Option<&str>) -> anyhow::Result<Layout> {
@@ -704,6 +749,27 @@ impl HerdrSide {
         kill_group(&mut self.server);
         Ok(())
     }
+}
+
+/// Git settings for `herdr plugin install <owner/repo> --ref <commit>` that make it fetch from
+/// the local bare mirror `mirror_repo` instead of GitHub. Herdr fetches
+/// `https://github.com/<owner>/<repo>.git` (`src/cli/plugin.rs`, `remote_url`); the rewrite
+/// covers exactly that URL, so other fetches of the plugin's build commands are unchanged. Key
+/// 0 trusts the mirror, which another user owns.
+pub fn git_mirror_env(mirror_repo: &Path, repository: &str) -> Vec<(String, String)> {
+    let pairs = [
+        ("safe.directory".to_string(), "*".to_string()),
+        (
+            format!("url.file://{}.insteadOf", mirror_repo.display()),
+            format!("https://github.com/{repository}.git"),
+        ),
+    ];
+    let mut env = vec![("GIT_CONFIG_COUNT".to_string(), pairs.len().to_string())];
+    for (i, (k, v)) in pairs.into_iter().enumerate() {
+        env.push((format!("GIT_CONFIG_KEY_{i}"), k));
+        env.push((format!("GIT_CONFIG_VALUE_{i}"), v));
+    }
+    env
 }
 
 /// SIGKILL the process group led by `child` (it ran `setsid`) and reap it.
@@ -1029,9 +1095,31 @@ mod tests {
             "splits": []
         }});
         let l = parse_layout(&result).unwrap();
+        assert_eq!((l.workspace.as_str(), l.tab.as_str()), ("w1", "t1"));
         assert_eq!(l.rect_of("p2").unwrap(), rect(0, 0, 30, 100));
         assert_eq!(l.rect_of("p1").unwrap(), rect(0, 0, 30, 50));
         assert!(l.rect_of("p9").is_err());
+    }
+
+    #[test]
+    fn git_mirror_env_rewrites_only_the_plugin_repository() {
+        let env = git_mirror_env(Path::new("/opt/hp/mirror/acme/tools"), "acme/tools");
+        let get = |k: &str| {
+            env.iter()
+                .find(|(n, _)| n == k)
+                .map(|(_, v)| v.as_str())
+                .unwrap()
+        };
+        assert_eq!(get("GIT_CONFIG_COUNT"), "2");
+        assert_eq!(get("GIT_CONFIG_KEY_0"), "safe.directory");
+        assert_eq!(
+            get("GIT_CONFIG_KEY_1"),
+            "url.file:///opt/hp/mirror/acme/tools.insteadOf"
+        );
+        assert_eq!(
+            get("GIT_CONFIG_VALUE_1"),
+            "https://github.com/acme/tools.git"
+        );
     }
 
     #[test]
