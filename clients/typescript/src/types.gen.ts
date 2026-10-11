@@ -10001,6 +10001,16 @@ export type PaneMarkedUnreadData = {
   marked: boolean;
 };
 
+export type PaneMetadataReportedSubject = {
+  pane: string;
+  tab?: string;
+  workspace?: string;
+};
+
+export type PaneMetadataReportedData = {
+  source?: string | null;
+};
+
 export type PaneMovedSubject = {
   pane: string;
   tab?: string;
@@ -11468,6 +11478,14 @@ export type WorkspaceCreatedData = {
   cwd?: string;
 };
 
+export type WorkspaceMetadataReportedSubject = {
+  workspace: string;
+};
+
+export type WorkspaceMetadataReportedData = {
+  source?: string | null;
+};
+
 export type WorkspaceMovedSubject = {
   workspace: string;
 };
@@ -11647,6 +11665,7 @@ export interface EventMap {
   "pane.input_unconfirmed": { subject: PaneInputUnconfirmedSubject; data: PaneInputUnconfirmedData };
   "pane.isolation_changed": { subject: PaneIsolationChangedSubject; data: PaneIsolationChangedData };
   "pane.marked_unread": { subject: PaneMarkedUnreadSubject; data: PaneMarkedUnreadData };
+  "pane.metadata_reported": { subject: PaneMetadataReportedSubject; data: PaneMetadataReportedData };
   "pane.moved": { subject: PaneMovedSubject; data: PaneMovedData };
   "pane.output_matched": { subject: PaneOutputMatchedSubject; data: PaneOutputMatchedData };
   "pane.pinned": { subject: PanePinnedSubject; data: PanePinnedData };
@@ -11792,6 +11811,7 @@ export interface EventMap {
   "vm.template_built": { subject: VmTemplateBuiltSubject; data: VmTemplateBuiltData };
   "workspace.closed": { subject: WorkspaceClosedSubject; data: WorkspaceClosedData };
   "workspace.created": { subject: WorkspaceCreatedSubject; data: WorkspaceCreatedData };
+  "workspace.metadata_reported": { subject: WorkspaceMetadataReportedSubject; data: WorkspaceMetadataReportedData };
   "workspace.moved": { subject: WorkspaceMovedSubject; data: WorkspaceMovedData };
   "workspace.renamed": { subject: WorkspaceRenamedSubject; data: WorkspaceRenamedData };
   "worktree.created": { subject: WorktreeCreatedSubject; data: WorktreeCreatedData };

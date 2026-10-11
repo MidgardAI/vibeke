@@ -10200,6 +10200,16 @@ PaneMarkedUnreadData = TypedDict("PaneMarkedUnreadData", {
     "marked": bool,
 })
 
+PaneMetadataReportedSubject = TypedDict("PaneMetadataReportedSubject", {
+    "pane": str,
+    "tab": NotRequired[str],
+    "workspace": NotRequired[str],
+})
+
+PaneMetadataReportedData = TypedDict("PaneMetadataReportedData", {
+    "source": NotRequired[Optional[str]],
+})
+
 PaneMovedSubject = TypedDict("PaneMovedSubject", {
     "pane": str,
     "tab": NotRequired[str],
@@ -11675,6 +11685,14 @@ WorkspaceCreatedData = TypedDict("WorkspaceCreatedData", {
     "cwd": NotRequired[str],
 })
 
+WorkspaceMetadataReportedSubject = TypedDict("WorkspaceMetadataReportedSubject", {
+    "workspace": str,
+})
+
+WorkspaceMetadataReportedData = TypedDict("WorkspaceMetadataReportedData", {
+    "source": NotRequired[Optional[str]],
+})
+
 WorkspaceMovedSubject = TypedDict("WorkspaceMovedSubject", {
     "workspace": str,
 })
@@ -11854,6 +11872,7 @@ EVENT_TYPES = (
     "pane.input_unconfirmed",
     "pane.isolation_changed",
     "pane.marked_unread",
+    "pane.metadata_reported",
     "pane.moved",
     "pane.output_matched",
     "pane.pinned",
@@ -11999,6 +12018,7 @@ EVENT_TYPES = (
     "vm.template_built",
     "workspace.closed",
     "workspace.created",
+    "workspace.metadata_reported",
     "workspace.moved",
     "workspace.renamed",
     "worktree.created",

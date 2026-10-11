@@ -36061,6 +36061,40 @@
         ]
       }
     },
+    "pane.metadata_reported": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "pane": {
+            "type": "string"
+          },
+          "tab": {
+            "type": "string"
+          },
+          "workspace": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "pane"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      }
+    },
     "pane.moved": {
       "subject": {
         "type": "object",
@@ -41449,6 +41483,34 @@
         "properties": {
           "cwd": {
             "type": "string"
+          }
+        }
+      }
+    },
+    "workspace.metadata_reported": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "workspace": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "workspace"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       }
