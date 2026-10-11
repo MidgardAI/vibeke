@@ -9,11 +9,13 @@
 
 use std::collections::HashMap;
 
-/// Event names of the baseline as far as the spec and the plugin corpus name them. The full
-/// list comes from the baseline schema (07 §8.0) and is still to be captured.
+/// Subscription types of the baseline (Herdr 0.9.3 `Subscription`, dotted form), plus
+/// `pane.output_changed`: Herdr has that `EventKind` but no subscription for it, and Vibeke
+/// accepts it (it never fires, see [`PROJECTED`]).
 pub const BASELINE_EVENTS: &[&str] = &[
     "workspace.created",
     "workspace.updated",
+    "workspace.metadata_updated",
     "workspace.renamed",
     "workspace.closed",
     "workspace.focused",
@@ -26,8 +28,10 @@ pub const BASELINE_EVENTS: &[&str] = &[
     "tab.moved",
     "pane.created",
     "pane.closed",
+    "pane.updated",
     "pane.focused",
     "pane.moved",
+    "pane.output_changed",
     "pane.exited",
     "pane.agent_detected",
     "pane.agent_status_changed",
@@ -39,6 +43,42 @@ pub const BASELINE_EVENTS: &[&str] = &[
     "worktree.removed",
 ];
 
+/// Events that run `[[events]]` hooks (Herdr `PLUGIN_HOOK_EVENT_KINDS`). Herdr fires no hook
+/// for `workspace.metadata_updated`, `pane.updated`, `pane.output_changed` or `layout.updated`.
+pub const HOOK_EVENTS: &[&str] = &[
+    "workspace.created",
+    "workspace.updated",
+    "workspace.closed",
+    "workspace.renamed",
+    "workspace.moved",
+    "workspace.reordered",
+    "workspace.focused",
+    "worktree.created",
+    "worktree.opened",
+    "worktree.removed",
+    "tab.created",
+    "tab.closed",
+    "tab.renamed",
+    "tab.moved",
+    "tab.focused",
+    "pane.created",
+    "pane.closed",
+    "pane.focused",
+    "pane.moved",
+    "pane.exited",
+    "pane.agent_detected",
+    "pane.agent_status_changed",
+];
+
+/// Pane-scoped subscriptions whose stream events keep the dotted name in `event` and carry no
+/// `type` in `data` (Herdr `SubscriptionEventEnvelope`). Every other streamed event is a full
+/// `EventEnvelope` ([`envelope`]).
+pub const SUBSCRIPTION_ONLY: &[&str] = &[
+    "pane.output_matched",
+    "pane.agent_status_changed",
+    "pane.scroll_changed",
+];
+
 /// Subscription types that require a `pane_id` (Herdr rule, 07 §8.3).
 pub const PANE_SCOPED: &[&str] = &[
     "pane.agent_status_changed",
@@ -46,11 +86,12 @@ pub const PANE_SCOPED: &[&str] = &[
     "pane.output_matched",
 ];
 
-/// Herdr events this slice can emit from Vibeke's event log; the rest of [`BASELINE_EVENTS`]
-/// are accepted in subscriptions and manifests but never fire yet (inventory: missing).
+/// Herdr events Vibeke emits from its event log; the rest of [`BASELINE_EVENTS`] are accepted
+/// in subscriptions and manifests but never fire (inventory: missing).
 pub const PROJECTED: &[&str] = &[
     "workspace.created",
     "workspace.updated",
+    "workspace.metadata_updated",
     "workspace.renamed",
     "workspace.closed",
     "workspace.focused",
@@ -63,6 +104,7 @@ pub const PROJECTED: &[&str] = &[
     "tab.moved",
     "pane.created",
     "pane.closed",
+    "pane.updated",
     "pane.focused",
     "pane.moved",
     "pane.exited",
@@ -79,6 +121,28 @@ pub const PROJECTED: &[&str] = &[
 /// `pane.agent_status_changed` → `pane_agent_status_changed`.
 pub fn wire_name(dotted: &str) -> String {
     dotted.replace('.', "_")
+}
+
+/// Herdr's `EventEnvelope` for one event: `{"event": wire, "data": {"type": wire, …data}}`.
+/// This is `HERDR_PLUGIN_EVENT_JSON` for hooks and the streamed form of most subscriptions.
+pub fn envelope(dotted: &str, data: serde_json::Value) -> serde_json::Value {
+    let wire = wire_name(dotted);
+    let mut d = serde_json::Map::new();
+    d.insert("type".into(), serde_json::Value::String(wire.clone()));
+    if let serde_json::Value::Object(f) = data {
+        d.extend(f);
+    }
+    serde_json::json!({"event": wire, "data": d})
+}
+
+/// One line of an `events.subscribe` stream: [`envelope`], except the pane-scoped
+/// [`SUBSCRIPTION_ONLY`] events, which keep their dotted name and plain data.
+pub fn stream_event(dotted: &str, data: serde_json::Value) -> serde_json::Value {
+    if SUBSCRIPTION_ONLY.contains(&dotted) {
+        serde_json::json!({"event": dotted, "data": data})
+    } else {
+        envelope(dotted, data)
+    }
 }
 
 /// What the projector needs to know about one Vibeke event.
@@ -160,6 +224,12 @@ impl Projector {
                 out.push("pane.closed")
             }
             "pane.exited" => out.push("pane.exited"),
+            // Herdr reports a pane's changed title, cwd or reported metadata as `pane.updated`
+            // and a workspace's reported tokens as `workspace.metadata_updated`.
+            "pane.title_changed" | "pane.cwd_changed" | "pane.metadata_reported" => {
+                out.push("pane.updated")
+            }
+            "workspace.metadata_reported" => out.push("workspace.metadata_updated"),
             "pane.moved" => out.push("pane.moved"),
             // Emitted by the compat `pane.wait_for_output` matcher (07 §8.3).
             "pane.output_matched" => out.push("pane.output_matched"),
@@ -426,6 +496,54 @@ mod tests {
             wire_name("pane.agent_status_changed"),
             "pane_agent_status_changed"
         );
+    }
+
+    #[test]
+    fn envelopes_follow_herdr() {
+        let e = envelope("worktree.created", json!({"worktree": {"path": "/x"}}));
+        assert_eq!(
+            e,
+            json!({"event": "worktree_created", "data": {"type": "worktree_created", "worktree": {"path": "/x"}}})
+        );
+        // Pane-scoped subscription events keep the dotted name and carry no `type`.
+        let s = stream_event(
+            "pane.agent_status_changed",
+            json!({"pane_id": "w1:p1", "workspace_id": "w1", "agent_status": "idle"}),
+        );
+        assert_eq!(s["event"], "pane.agent_status_changed");
+        assert!(s["data"].get("type").is_none());
+        let s = stream_event("tab.created", json!({"tab": {}}));
+        assert_eq!(s["event"], "tab_created");
+        assert_eq!(s["data"]["type"], "tab_created");
+        for h in HOOK_EVENTS {
+            assert!(BASELINE_EVENTS.contains(h), "{h}");
+            assert!(PROJECTED.contains(h), "{h}");
+        }
+    }
+
+    #[test]
+    fn updates_and_metadata_project() {
+        let mut p = Projector::new();
+        let k = |p: &mut Projector, kind: &str| {
+            p.project(&Input {
+                kind,
+                ..Default::default()
+            })
+        };
+        assert_eq!(k(&mut p, "pane.title_changed"), vec!["pane.updated"]);
+        assert_eq!(k(&mut p, "pane.cwd_changed"), vec!["pane.updated"]);
+        assert_eq!(k(&mut p, "pane.metadata_reported"), vec!["pane.updated"]);
+        assert_eq!(
+            k(&mut p, "workspace.metadata_reported"),
+            vec!["workspace.metadata_updated"]
+        );
+        let ok = parse_subscriptions(&json!({"subscriptions": [
+            {"type": "workspace.metadata_updated"},
+            {"type": "pane.updated"},
+            {"type": "pane.output_changed"}
+        ]}))
+        .unwrap();
+        assert_eq!(ok.len(), 3);
     }
 
     #[test]

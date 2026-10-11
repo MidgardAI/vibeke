@@ -1010,6 +1010,49 @@ fn merge_meta(dst: &mut Map<String, Value>, p: &Value, skip: &[&str]) {
     }
 }
 
+/// A Herdr `*.report_metadata` request as a metadata update: `tokens` merge key by key (a
+/// `null` value removes the key) and `clear_title`, `clear_display_agent` and
+/// `clear_state_labels` remove those fields, as in Herdr.
+fn herdr_report(prev: Option<&Map<String, Value>>, p: &Value) -> Value {
+    let mut q = p.clone();
+    if let Some(Value::Object(new)) = p.get("tokens") {
+        let mut merged = prev
+            .and_then(|m| m.get("tokens"))
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
+        for (k, v) in new {
+            if v.is_null() {
+                merged.remove(k);
+            } else {
+                merged.insert(k.clone(), v.clone());
+            }
+        }
+        q["tokens"] = Value::Object(merged);
+    }
+    for (flag, key) in [
+        ("clear_title", "title"),
+        ("clear_display_agent", "display_agent"),
+        ("clear_state_labels", "state_labels"),
+    ] {
+        if p.get(flag).and_then(Value::as_bool) == Some(true) && p.get(key).is_none() {
+            q[key] = Value::Null;
+        }
+    }
+    q
+}
+
+/// Record a metadata report in the event log, so the compat projection emits Herdr's
+/// `pane.updated` / `workspace.metadata_updated`.
+fn metadata_event(server: &Server, kind: &str, subject: Value, p: &Value) -> Result<(), WireError> {
+    let mut c = server.core.lock().unwrap();
+    let mut tx = Tx::new();
+    tx.event(kind, subject, json!({"source": sp(p, "source")}));
+    tx.ephemeral = true;
+    server.commit(&mut c, tx).map_err(internal)?;
+    Ok(())
+}
+
 // ---- plugins ----------------------------------------------------------------------------------
 
 fn reg_err(e: RegistryError) -> WireError {
@@ -1109,18 +1152,81 @@ async fn plugin_pane_open(
         other => return Err(invalid(format!("unknown placement `{other}`"))),
     }
     let popup = placement == "popup";
-    if popup && let Some(open) = open_popup(server) {
-        return Err(WireError::new(
-            "popup_busy",
-            format!(
-                "a popup is already open ({}); close it first (`popup.close`)",
-                open.1.plugin
-            ),
+    // Herdr's parameter rules and messages (`handle_plugin_pane_open`,
+    // src/app/api/plugins/mod.rs), in Herdr's order.
+    let has = |k: &str| p.get(k).is_some_and(|v| !v.is_null());
+    if !popup && (has("width") || has("height")) {
+        return Err(invalid(
+            "width and height are only supported when placement is popup",
         ));
     }
+    if popup && open_popup(server).is_some() {
+        return Err(WireError::new("ui_busy", "a popup pane is already open"));
+    }
+    match placement.as_str() {
+        "overlay" | "popup" if has("workspace_id") || has("target_pane_id") || has("direction") => {
+            return Err(invalid(
+                "overlay and popup plugin panes target the active pane",
+            ));
+        }
+        "split" | "zoomed" if has("workspace_id") => {
+            return Err(invalid(
+                "split and zoomed plugin panes target an existing pane; use target_pane_id",
+            ));
+        }
+        "tab" if has("target_pane_id") || has("direction") => {
+            return Err(invalid(
+                "tab plugin panes support workspace_id but not target_pane_id or direction",
+            ));
+        }
+        _ => {}
+    }
+    // `env` (Herdr `normalize_launch_env`; protected keys dropped).
+    let caller_env =
+        launch::caller_env(p.get("env")).map_err(|(code, msg)| WireError::new(code, msg))?;
     let transient = matches!(placement.as_str(), "zoomed" | "overlay" | "popup");
     let focus = p.get("focus").and_then(Value::as_bool).unwrap_or(transient);
-    let target = pane_target(caller, sn, p).ok();
+    // The pane a split/zoomed pane splits (`target_pane_id`, else the active pane). Vibeke's
+    // `pane_id` also names it, and for an overlay or popup the pane it opens over.
+    let named = match sp(p, "target_pane_id").or(sp(p, "pane_id")) {
+        Some(id) => Some(
+            sn.pane(id)
+                .ok_or_else(|| WireError::new("pane_not_found", format!("pane {id} not found")))?,
+        ),
+        None => None,
+    };
+    let active = sn
+        .active_ws()
+        .and_then(|w| sn.active_tab(w))
+        .and_then(|t| sn.tab_focus(t));
+    let target = named.or(active).map(|x| x.id.clone());
+    // A tab opens in `workspace_id`, else the active workspace.
+    let tab_ws = match placement.as_str() {
+        "tab" => Some(match sp(p, "workspace_id") {
+            Some(id) => sn
+                .ws(id)
+                .ok_or_else(|| WireError::new("workspace_not_found", "workspace not found"))?,
+            None => named
+                .and_then(|x| sn.ws(&x.workspace))
+                .or_else(|| sn.active_ws())
+                .ok_or_else(|| WireError::new("no_active_workspace", "no active workspace"))?,
+        }),
+        _ => None,
+    };
+    // Herdr's plugin pane context (`panes.rs`): the active context for overlays and popups,
+    // the target pane's for splits, the workspace's for tabs.
+    let ictx = match placement.as_str() {
+        "tab" => tab_ws.map(|w| sn.ctx_for_ws(server, w, "plugin-pane")),
+        "split" | "zoomed" => {
+            let t = target
+                .as_deref()
+                .and_then(|t| sn.pane(t))
+                .ok_or_else(|| WireError::new("no_active_pane", "no active pane"))?;
+            sn.ctx_for_pane(server, t, "plugin-pane")
+        }
+        _ => named.and_then(|x| sn.ctx_for_pane(server, x, "plugin-pane")),
+    }
+    .unwrap_or_else(|| sn.current_ctx(server, "plugin-pane"));
     let cwd = sp(p, "cwd")
         .map(str::to_string)
         .unwrap_or_else(|| entry.root.to_string_lossy().into_owned());
@@ -1158,6 +1264,13 @@ async fn plugin_pane_open(
     )
     .map_err(internal)?;
     let dirs = plugin_dirs();
+    // Herdr's `PluginInvocationContext`, then Vibeke-only keys.
+    let mut context = ictx.to_json();
+    context.insert("source".into(), json!("pane"));
+    context.insert("plugin_id".into(), json!(entry.id));
+    context.insert("entrypoint_id".into(), json!(decl.id));
+    context.insert("placement".into(), json!(placement));
+    context.insert("plugin_version".into(), json!(m.version));
     let inv = launch::Invocation {
         plugin_id: entry.id.clone(),
         root: entry.root.clone(),
@@ -1165,13 +1278,7 @@ async fn plugin_pane_open(
         state_dir: dirs.state_dir(&entry.id),
         socket_path: broker.clone(),
         bin_path: launcher(server),
-        context: json!({
-            "source": "pane",
-            "plugin_id": entry.id,
-            "entrypoint_id": decl.id,
-            "placement": placement,
-            "plugin_version": m.version,
-        }),
+        context: Value::Object(context),
         entrypoint_id: Some(decl.id.clone()),
         ..Default::default()
     };
@@ -1182,6 +1289,16 @@ async fn plugin_pane_open(
         .parent()
         .map(|d| d.to_string_lossy().into_owned())
         .unwrap_or_default();
+    // The caller's `env` after the invocation's own values (no key overlaps: the protected
+    // ones are dropped). A caller `PATH` keeps the launcher first; `PWD` defaults to the
+    // pane's directory, as in Herdr.
+    let mut caller_env = caller_env;
+    if let Some((_, v)) = caller_env.iter_mut().find(|(k, _)| k == "PATH") {
+        *v = format!("{launcher_dir}:{v}");
+    }
+    if !caller_env.iter().any(|(k, _)| k == "PWD") {
+        caller_env.push(("PWD".into(), cwd.clone()));
+    }
     let mut argv = vec![
         "/bin/sh".to_string(),
         "-c".into(),
@@ -1196,6 +1313,7 @@ async fn plugin_pane_open(
             .filter(|(k, _)| k != "PATH")
             .map(|(k, v)| format!("{k}={v}")),
     );
+    argv.extend(caller_env.into_iter().map(|(k, v)| format!("{k}={v}")));
     // Pane environments drop VIBEKE_*; the launcher needs the same directory overrides as the
     // server to recognize its broker and the per-user registry.
     for k in ["VIBEKE_RUNTIME_DIR", "VIBEKE_STATE_DIR", "VIBEKE_CONFIG"] {
@@ -1217,8 +1335,12 @@ async fn plugin_pane_open(
                 .as_deref()
                 .and_then(|t| sn.pane(t))
                 .map(|x| x.tab.clone())
-                .or_else(|| sn.focus.tab.clone())
-                .ok_or_else(|| invalid("pane_id is required (no focused pane)"));
+                .or_else(|| {
+                    sn.active_ws()
+                        .and_then(|w| sn.active_tab(w))
+                        .map(|t| t.id.clone())
+                })
+                .ok_or_else(|| WireError::new("no_active_pane", "no active pane"));
             let dim = |k: &str, d: &Option<Value>| -> String {
                 match p.get(k).or(d.as_ref()) {
                     Some(Value::String(s)) => s.clone(),
@@ -1251,15 +1373,7 @@ async fn plugin_pane_open(
             }
         }
         "tab" => {
-            let ws = match sp(p, "workspace_id") {
-                Some(_) => ws_target(sn, p)?.id,
-                None => target
-                    .as_deref()
-                    .and_then(|t| sn.pane(t))
-                    .map(|x| x.workspace.clone())
-                    .or_else(|| sn.focus.workspace.clone())
-                    .ok_or_else(|| WireError::new("workspace_not_found", "no workspace"))?,
-            };
+            let ws = tab_ws.map(|w| w.id.clone()).unwrap_or_default();
             native(
                 server,
                 caller,
@@ -1272,7 +1386,7 @@ async fn plugin_pane_open(
         _ => {
             let t = target
                 .clone()
-                .ok_or_else(|| invalid("pane_id is required (no focused pane)"))?;
+                .ok_or_else(|| WireError::new("no_active_pane", "no active pane"))?;
             let r = native(
                 server,
                 caller,
@@ -1706,9 +1820,18 @@ pub async fn call(
             if !owns(caller, x) {
                 return Err(denied("the pane is not yours"));
             }
-            let st = state(server);
-            let mut meta = st.meta.lock().unwrap();
-            merge_meta(meta.panes.entry(x.id.clone()).or_default(), p, &["pane_id"]);
+            {
+                let st = state(server);
+                let mut meta = st.meta.lock().unwrap();
+                let report = herdr_report(meta.panes.get(&x.id), p);
+                merge_meta(
+                    meta.panes.entry(x.id.clone()).or_default(),
+                    &report,
+                    &["pane_id"],
+                );
+            }
+            // Herdr emits `pane.updated` for a metadata report.
+            metadata_event(server, "pane.metadata_reported", subject_pane(x), p)?;
             Ok(ok())
         }
         "workspace.report_metadata" => {
@@ -1727,13 +1850,23 @@ pub async fn call(
             {
                 return Err(denied("the workspace is not yours"));
             }
-            let st = state(server);
-            let mut meta = st.meta.lock().unwrap();
-            merge_meta(
-                meta.workspaces.entry(w.id.clone()).or_default(),
+            {
+                let st = state(server);
+                let mut meta = st.meta.lock().unwrap();
+                let report = herdr_report(meta.workspaces.get(&w.id), p);
+                merge_meta(
+                    meta.workspaces.entry(w.id.clone()).or_default(),
+                    &report,
+                    &["workspace_id", "pane_id"],
+                );
+            }
+            // Herdr emits `workspace.metadata_updated` for a token report.
+            metadata_event(
+                server,
+                "workspace.metadata_reported",
+                json!({"workspace": w.id}),
                 p,
-                &["workspace_id", "pane_id"],
-            );
+            )?;
             Ok(ok())
         }
         "client.window_title.set" | "client.window_title.clear" => {

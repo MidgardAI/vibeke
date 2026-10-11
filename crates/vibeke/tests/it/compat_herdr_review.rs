@@ -731,7 +731,10 @@ command = ["sh", "-c", "exit 3"]
         &sock,
         json!({"id": "1", "method": "plugin.action.invoke", "params": {"action_id": "acme.x.ok"}}),
     );
-    assert_eq!(v["result"]["type"], "plugin_action_started", "{v}");
+    assert_eq!(v["result"]["type"], "plugin_action_invoked", "{v}");
+    assert_eq!(v["result"]["action"]["action_id"], "ok", "{v}");
+    assert!(v["result"]["context"]["focused_pane_id"].is_string(), "{v}");
+    assert_eq!(v["result"]["context"]["invocation_source"], "api", "{v}");
     let log = &v["result"]["log"];
     assert_eq!(log["command"], json!(["sh", "bin/ok.sh"]), "{log}");
     assert!(log["started_unix_ms"].as_i64().is_some(), "{log}");

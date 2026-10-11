@@ -272,9 +272,15 @@ fn herdr_cli_shim_and_wire_protocol() {
         let ev: Value = serde_json::from_str(&l).unwrap();
         assert_no_ulids(&ev);
         seen.push(s(&ev["event"]));
+        // Herdr's `EventEnvelope`: `data.type` and the event's own fields only.
+        assert_eq!(ev["data"]["type"], ev["event"], "{ev}");
         if ev["event"] == "tab_created" {
-            assert_eq!(ev["data"]["workspace_id"], ws.as_str());
+            assert_eq!(ev["data"]["tab"]["workspace_id"], ws.as_str());
             assert_eq!(ev["data"]["tab"]["label"], "third");
+            assert!(ev["data"]["tab"]["agent_status"].is_string(), "{ev}");
+        }
+        if ev["event"] == "pane_created" {
+            assert_eq!(ev["data"]["pane"]["agent_status"], "unknown", "{ev}");
         }
     }
     assert!(seen.contains(&"tab_created".to_string()), "{seen:?}");
@@ -472,6 +478,23 @@ fn herdr_plugin_install_trust_actions_hooks_and_revocation() {
     assert!(env.contains(&format!("HERDR_PANE_ID={pane}")), "{env}");
     assert!(env.contains(&format!("HERDR_WORKSPACE_ID={wsid}")), "{env}");
     assert!(env.contains("HERDR_PLUGIN_ACTION_ID=probe"));
+    // Herdr sets no entrypoint id for actions (only plugin panes get one).
+    assert!(!env.contains("HERDR_PLUGIN_ENTRYPOINT_ID="), "{env}");
+    // Herdr's `PluginInvocationContext` field names.
+    let ctx_line = env
+        .lines()
+        .find_map(|l| l.strip_prefix("HERDR_PLUGIN_CONTEXT_JSON="))
+        .unwrap();
+    let ctx: Value = serde_json::from_str(ctx_line).unwrap();
+    assert_eq!(ctx["focused_pane_id"], pane.as_str(), "{ctx}");
+    assert_eq!(ctx["workspace_id"], wsid.as_str(), "{ctx}");
+    assert!(ctx["workspace_label"].is_string(), "{ctx}");
+    assert!(ctx["workspace_cwd"].is_string(), "{ctx}");
+    assert!(ctx["tab_id"].as_str().unwrap().starts_with(&wsid), "{ctx}");
+    assert!(ctx["tab_label"].is_string(), "{ctx}");
+    assert_eq!(ctx["focused_pane_status"], "unknown", "{ctx}");
+    assert_eq!(ctx["invocation_source"], "cli", "{ctx}");
+    assert_eq!(ctx["correlation_id"], log_id.as_str(), "{ctx}");
     let sock_line = env
         .lines()
         .find(|l| l.starts_with("HERDR_SOCKET_PATH="))
@@ -579,10 +602,28 @@ fn herdr_shim_plugin_commands_and_link() {
             .iter()
             .any(|a| a["qualified_id"] == "acme.probe.probe" && a["available"] == true)
     );
-    let ws = s_.herdr(&["workspace", "create", "--cwd", "/tmp"]);
-    let _ = ws;
+    s_.herdr(&["workspace", "create", "--cwd", "/tmp"]);
     let inv = s_.herdr(&["plugin", "action", "invoke", "acme.probe.probe"]);
-    assert_eq!(inv["type"], "plugin_action_started", "{inv}");
+    // Herdr `plugin_action_invoked {action, context, log}`; without a client the context is
+    // the active workspace (the one `workspace list` reports focused) and its focused pane.
+    assert_eq!(inv["type"], "plugin_action_invoked", "{inv}");
+    assert_eq!(inv["action"]["action_id"], "probe", "{inv}");
+    assert_eq!(inv["action"]["plugin_id"], "acme.probe", "{inv}");
+    assert!(inv["action"]["command"].is_array(), "{inv}");
+    let wl = s_.herdr(&["workspace", "list"]);
+    let active = wl["workspaces"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|w| w["focused"] == true)
+        .cloned()
+        .unwrap_or(Value::Null);
+    assert_eq!(
+        inv["context"]["workspace_id"], active["workspace_id"],
+        "{inv} {wl}"
+    );
+    assert!(inv["context"]["focused_pane_id"].is_string(), "{inv}");
+    assert!(inv["log"]["log_id"].is_string(), "{inv}");
     let logs = s_.herdr(&["plugin", "log", "list", "acme.probe"]);
     assert_eq!(logs["type"], "plugin_log_list");
     s_.herdr(&["plugin", "unlink", "acme.probe"]);

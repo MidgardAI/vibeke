@@ -128,6 +128,14 @@ Startup-hook background processes retain callback access across server restarts.
 
 Unsupported features are `agent.view.set/clear`, key bindings from plugin manifests, and Git installation. Put key bindings in your configuration instead.
 
+### Known differences
+
+Herdr gives every plugin command the socket of the Herdr server. Vibeke gives each action and each event hook its own private socket instead. This socket closes when the action or hook process exits.
+
+A plugin can start a long-running background process from an action. In Vibeke, this process cannot use the socket after the action exits. Its calls to the `herdr` command or the socket fail. For example, a web server that an action starts in the background cannot reach Vibeke.
+
+Start a long-running process from a `[[startup]]` entry in the plugin manifest instead. The socket of a startup command stays open while a process in its process group runs. A process group is the set of processes that a command starts, unless a process moves to a new group. A plugin pane also keeps its socket while the pane is open.
+
 ### Compatibility socket
 
 Set `[compat.herdr] enabled = true` to expose a Herdr-compatible socket for existing socket clients.

@@ -342,7 +342,8 @@ fn popup_and_overlay_from_a_trusted_plugin() {
         "--entrypoint",
         "pop",
     ]);
-    assert_eq!(e["error"]["code"], "popup_busy", "{e}");
+    assert_eq!(e["error"]["code"], "ui_busy", "{e}");
+    assert_eq!(e["error"]["message"], "a popup pane is already open", "{e}");
     // popup.close removes it and gives the focus back.
     s_.herdr(&["popup", "close"]);
     r.until("popup gone, focus restored", |m, f| {
@@ -467,8 +468,14 @@ fn popup_and_overlay_from_a_trusted_plugin() {
         total: 120,
     });
     wait_for("scroll in pane.list", 10000, || {
-        s_.herdr(&["pane", "list"])["panes"][0]["scroll"] == 7
+        s_.herdr(&["pane", "list"])["panes"][0]["scroll"]["offset_from_bottom"] == 7
     });
+    let scroll = &s_.herdr(&["pane", "list"])["panes"][0]["scroll"];
+    assert!(
+        scroll["max_offset_from_bottom"].as_u64().unwrap() >= 7,
+        "{scroll}"
+    );
+    assert!(scroll["viewport_rows"].as_u64().unwrap() > 0, "{scroll}");
     let evs = s_.api("events.read", json!({"types": "pane.scroll_changed"}));
     let e = &evs["events"][0];
     assert_eq!(e["data"]["offset"], 7, "{evs}");
