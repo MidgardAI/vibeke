@@ -336,7 +336,13 @@ mod tests {
         o.wrap = Some(StepWrapper(Arc::new(move |(argv, env): Step| {
             s2.lock().unwrap().push(argv.clone());
             assert!(env.iter().any(|(k, v)| k == "EXTRA" && v == "yes"));
-            Ok((argv, vec![("WRAPPED".into(), "1".into())]))
+            Ok((
+                argv,
+                vec![
+                    ("WRAPPED".into(), "1".into()),
+                    ("PATH".into(), "/usr/bin:/bin".into()),
+                ],
+            ))
         })));
         let out = run_setup(&o, &CancelToken::new()).unwrap();
         assert_eq!(out.status, SetupStatus::Succeeded);
