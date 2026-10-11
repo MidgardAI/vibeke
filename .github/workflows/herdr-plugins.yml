@@ -11,12 +11,9 @@ name: herdr-plugins
 # write issues, and it treats the plugin jobs' artifacts as hostile data. Caches use their own
 # `herdr-plugins-` key namespace and never touch the Rust caches that ci, nightly and weekly share.
 on:
-  # TEMPORARY: run every plugin from the development branch before the merge. Remove before
-  # merging to main.
-  push:
-    branches: [herdr-plugin-harness]
+  # Nightly on main (scheduled runs use the default branch), plus manual dispatch.
   schedule:
-    - cron: "29 4 * * 1"
+    - cron: "29 4 * * *"
   workflow_dispatch:
     inputs:
       plugins:
@@ -39,7 +36,7 @@ permissions: {}
 
 concurrency:
   group: herdr-plugins-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'push' }}
+  cancel-in-progress: false
 
 env:
   LOCK: tests/compat/herdr/0.9.3/plugins/top20.lock.toml
@@ -70,7 +67,7 @@ jobs:
           BASELINE_INPUT: ${{ inputs.capture_baseline }}
         run: |
           herdr=false
-          if [ "$EVENT" = schedule ] || [ "$EVENT" = push ] || [ "$HERDR_INPUT" = true ] || [ "$BASELINE_INPUT" = true ]; then
+          if [ "$EVENT" = schedule ] || [ "$HERDR_INPUT" = true ] || [ "$BASELINE_INPUT" = true ]; then
             herdr=true
           fi
           echo "herdr=$herdr" >> "$GITHUB_OUTPUT"
@@ -218,7 +215,7 @@ jobs:
     # Captures `herdr api schema --json` and every CLI help page for baseline.toml (18 §11).
     # A person reviews the artifact and commits it.
     needs: herdr
-    if: inputs.capture_baseline || github.event_name == 'push'
+    if: inputs.capture_baseline
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
