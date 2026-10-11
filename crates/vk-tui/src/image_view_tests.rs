@@ -329,3 +329,25 @@ fn images_on_screen_stay_cached_when_others_arrive() {
     assert!(app.imgview.image("0:S1").is_some());
     assert!(app.imgview.images.len() <= CACHE);
 }
+
+#[test]
+fn a_covered_image_stays_cached_and_shows_again_when_uncovered() {
+    let (_dir, path) = with_png();
+    let (mut app, _rxs) = fleet();
+    caps(&mut app, false);
+    gallery_full(&mut app, &path);
+    app.draw_bytes();
+    let p = crate::gallery::placements(&app).unwrap();
+    // Covered by something drawn over it: no longer on screen as far as iTerm2 goes.
+    let mut grid = Grid::new(app.size.0, app.size.1);
+    crate::draw::compose(&app, &mut grid);
+    grid.put_str(p.rect.x, p.rect.y, "menu", app.theme.text(), 4);
+    after_compose(&mut app, &grid);
+    app.prev = grid;
+    assert!(app.imgview.iterm.is_empty());
+    for i in 0..CACHE + 4 {
+        app.imgview.put(format!("thumb:1:T{i}"), tiny_png());
+    }
+    assert!(app.imgview.image("0:S1").is_some(), "still placed, so kept");
+    assert_eq!(osc1337(&app.draw_bytes()), 1, "shown again when uncovered");
+}

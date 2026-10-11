@@ -72,6 +72,8 @@ pub struct State {
     iterm: HashMap<String, (String, Rect)>,
     /// iTerm2: images to send after this frame is written.
     queued: Vec<(String, Rect)>,
+    /// Keys every view placed on the last frame, covered or not (never evicted).
+    placed: HashSet<String>,
     /// Directory for `t=t` temp files (`None`: `$TMPDIR/vibeke-gfx-<uid>`; tests point it at a
     /// temp dir of their own).
     pub gfx_dir: Option<std::path::PathBuf>,
@@ -92,9 +94,9 @@ impl State {
             .map(|(_, d)| d.as_slice())
     }
 
-    /// Cache `data` under `key`. The oldest image goes when the cache is full, unless it is on
-    /// screen (a view would lose it until the next key, and a remote one is only fetched when
-    /// asked for).
+    /// Cache `data` under `key`. The oldest image goes when the cache is full, unless a view
+    /// placed it on the last frame, even under a toast or menu (a view would lose it until the
+    /// next key, and a remote one is only fetched when asked for).
     pub fn put(&mut self, key: String, data: Vec<u8>) {
         self.problems.remove(&key);
         self.images.retain(|(k, _)| *k != key);
@@ -105,6 +107,7 @@ impl State {
                 .values()
                 .map(|(k, _, _)| k.as_str())
                 .chain(self.iterm.values().map(|(k, _)| k.as_str()))
+                .chain(self.placed.iter().map(String::as_str))
                 .collect();
             let last = self.images.len() - 1;
             if let Some(i) = (0..last).find(|i| !shown.contains(self.images[*i].0.as_str())) {
@@ -343,8 +346,10 @@ fn alloc_id(st: &mut State, slot: &str) -> Option<u32> {
 /// Kitty: transmit new or resized images and delete the ones no longer placed. Called from
 /// `App::draw_bytes` before composing (the output goes before the grid diff).
 pub fn before_draw(app: &mut App) {
+    let placed = placements(app);
+    app.imgview.placed = placed.iter().map(|p| p.key.clone()).collect();
     let want = if gfx(app) == Gfx::Kitty {
-        placements(app)
+        placed
     } else {
         Vec::new()
     };
