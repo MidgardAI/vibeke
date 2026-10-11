@@ -242,6 +242,8 @@ pub fn on_event(app: &mut App, event: Event) {
             u.installing = false;
             u.next = u.background_checks().then(|| Instant::now() + INTERVAL);
             match result {
+                // A background check that was running when the configuration turned checks off.
+                Ok(_) if u.background && u.off => {}
                 Ok(v) => u.status = v,
                 Err(e) if u.background => {
                     u.check_error = Some(format!("Could not check for updates: {e}"))
@@ -493,6 +495,24 @@ mod tests {
         // Turned back on (a config reload): background checks again.
         apply_config(&mut u, true);
         assert!(u.background_checks());
+    }
+    #[test]
+    fn a_background_check_finishing_after_checks_were_turned_off_shows_no_badge() {
+        let (mut app, _) = fleet();
+        app.ux.updates.background = true;
+        app.ux.updates.off = true;
+        on_event(
+            &mut app,
+            Event::Finished(Ok(json!({"state":"available","version":"0.3.0"}))),
+        );
+        assert!(badge(&app).is_none());
+        // A check the user asked for still shows its result.
+        app.ux.updates.background = false;
+        on_event(
+            &mut app,
+            Event::Finished(Ok(json!({"state":"available","version":"0.3.0"}))),
+        );
+        assert!(badge(&app).unwrap().contains("0.3.0"));
     }
     #[test]
     fn checks_never_steal_focus_or_send_pane_input() {
