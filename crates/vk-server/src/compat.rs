@@ -37,6 +37,7 @@ pub mod capture;
 mod ext;
 mod gap;
 mod limits;
+mod rest;
 pub mod trace;
 mod views;
 
@@ -579,6 +580,9 @@ fn read_only(method: &str) -> bool {
             | "plugin.list"
             | "plugin.action.list"
             | "plugin.log.list"
+            | "pane.selection.read"
+            | "pane.link.resolve"
+            | "server.agent_manifests"
     )
 }
 
@@ -2709,6 +2713,7 @@ pub async fn call(
             ))
         }
         m if gap::METHODS.contains(&m) => gap::call(server, caller, &sn, m, p).await,
+        m if rest::METHODS.contains(&m) => rest::call(server, caller, &sn, m, p).await,
         m if ext::METHODS.contains(&m) => ext::call(server, caller, &sn, m, p).await,
         other => match inventory::method_status(other) {
             Some(_) => Err(WireError::new(

@@ -809,6 +809,111 @@ action = "open"
     );
 }
 
+#[test]
+fn herdr_rest_clear_selection_and_agent_manifests() {
+    let s_ = session("");
+    let created = ok(&s_, "workspace.create", json!({"cwd": "/tmp"}));
+    let pane = s(&created["root_pane"]["pane_id"]);
+    s_.herdr(&[
+        "pane",
+        "send-text",
+        &pane,
+        "printf 'sel-%s one\\nsel-%s two\\n' $((1+1)) $((2+1))\n",
+    ]);
+    ok(
+        &s_,
+        "pane.wait_for_output",
+        json!({"pane_id": pane, "source": "recent", "match": {"type": "substring", "value": "sel-3 two"}, "timeout_ms": 20000}),
+    );
+
+    // `pane.selection.read` over absolute rows (no scrollback yet: row = screen row).
+    let read = ok(
+        &s_,
+        "pane.read",
+        json!({"pane_id": pane, "source": "visible"}),
+    );
+    let text = s(&read["read"]["text"]);
+    let row = text
+        .lines()
+        .position(|l| l.starts_with("sel-2 one"))
+        .unwrap();
+    let r = ok(
+        &s_,
+        "pane.selection.read",
+        json!({"pane_id": pane, "anchor": {"row": row, "col": 4}, "cursor": {"row": row + 1, "col": 4}}),
+    );
+    assert_eq!(
+        r,
+        json!({"type": "pane_selection", "pane_id": pane, "text": "2 one\nsel-3"})
+    );
+    assert_eq!(
+        err_code(
+            &s_,
+            "pane.selection.read",
+            json!({"pane_id": pane, "anchor": {"row": 0, "col": 0}, "cursor": {"row": 0, "col": 1}, "content_revision": 1})
+        ),
+        "stale_content"
+    );
+    assert_eq!(
+        err_code(
+            &s_,
+            "pane.selection.read",
+            json!({"pane_id": pane, "anchor": {"row": 0, "col": 0}, "cursor": {"row": 100000, "col": 1}})
+        ),
+        "selection_unavailable"
+    );
+    assert_eq!(
+        err_code(
+            &s_,
+            "pane.selection.read",
+            json!({"pane_id": "w99:p1", "anchor": {"row": 0, "col": 0}, "cursor": {"row": 0, "col": 1}})
+        ),
+        "pane_not_found"
+    );
+
+    // `pane.clear`: the rows above the cursor and the scrollback are gone.
+    assert_eq!(
+        ok(&s_, "pane.clear", json!({"pane_id": pane})),
+        json!({"type": "ok"})
+    );
+    let after = ok(
+        &s_,
+        "pane.read",
+        json!({"pane_id": pane, "source": "recent", "lines": 200}),
+    );
+    assert!(!s(&after["read"]["text"]).contains("sel-2 one"), "{after}");
+    assert_eq!(
+        err_code(&s_, "pane.clear", json!({"pane_id": "w99:p1"})),
+        "pane_not_found"
+    );
+
+    // Agent manifests in Herdr's `AgentManifestInfo` shape.
+    let m = ok(&s_, "server.agent_manifests", json!({}));
+    assert_eq!(m["type"], "agent_manifest_status", "{m}");
+    let list = m["manifests"].as_array().unwrap();
+    assert!(!list.is_empty(), "{m}");
+    let claude = list.iter().find(|x| x["agent"] == "claude").unwrap();
+    assert_eq!(claude["source"], "bundled", "{m}");
+    assert_eq!(claude["source_kind"], "bundled", "{m}");
+    assert_eq!(claude["local_override_shadowing_remote"], false, "{m}");
+    let r = ok(&s_, "server.reload_agent_manifests", json!({}));
+    assert_eq!(r["type"], "agent_manifest_reload", "{r}");
+    assert_eq!(r["manifests"].as_array().unwrap().len(), list.len(), "{r}");
+
+    // The client-only methods stay `unsupported` with their reason.
+    for m in [
+        "pane.copy_motion",
+        "pane.copy_search",
+        "pane.edit_scrollback",
+        "command.invoke",
+        "client_shell.surface.set",
+        "integration.list",
+        "server.live_handoff",
+    ] {
+        assert_eq!(err_code(&s_, m, json!({})), "unsupported", "{m}");
+    }
+}
+
 fn write_plugin(dir: &Path) {
     write(
         &dir.join("herdr-plugin.toml"),
