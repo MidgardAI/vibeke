@@ -123,7 +123,7 @@ pub const ENTRIES: &[Entry] = &[
         "error `{id, error: {code, message}}`",
         Implemented,
         "spec",
-        "string id echoed when recoverable; code set unverified",
+        "string id echoed when the line is an object with a string `id`; an unknown method or params of the wrong type answer `invalid_request` (message `invalid request: unknown variant …`; Herdr's serde message also lists every method), the retired `pane.graphics.*` methods `unknown_method`",
     ),
     e(
         Wire,
@@ -142,16 +142,16 @@ pub const ENTRIES: &[Entry] = &[
     e(
         Wire,
         "invalid UTF-8 / invalid JSON handling",
-        Partial,
+        Implemented,
         "spec",
-        "`parse_error`; exact baseline codes unverified",
+        "invalid JSON answers `invalid_request` (`invalid request: <reason>`, id `\"\"`); a line that is not UTF-8 or is blank gets no answer, as in Herdr",
     ),
     e(
         Wire,
         "line limit",
-        Partial,
+        Implemented,
         "spec",
-        "16 MiB; baseline limit unverified",
+        "1 MiB (Herdr's `MAX_INITIAL_REQUEST_BYTES`); a longer line is closed without an answer",
     ),
     e(
         Wire,
@@ -1701,7 +1701,8 @@ pub const ENTRIES: &[Entry] = &[
 ];
 
 /// Methods the baseline is known (by this inventory) to have. Requests for other methods get
-/// `method_not_found`; known-but-missing methods get an explicit `unsupported` error.
+/// `invalid_request` (as Herdr's typed parse answers them); known-but-missing methods get an
+/// explicit `unsupported` error.
 pub fn known_methods() -> impl Iterator<Item = &'static str> {
     ENTRIES.iter().filter(|e| e.kind == Method).map(|e| e.name)
 }

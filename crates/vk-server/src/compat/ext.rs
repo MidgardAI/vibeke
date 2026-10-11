@@ -1172,8 +1172,8 @@ fn metadata_event(server: &Server, kind: &str, subject: Value, p: &Value) -> Res
 
 fn reg_err(e: RegistryError) -> WireError {
     match e {
-        RegistryError::NotFound(id) => {
-            WireError::new("plugin_not_found", format!("plugin not found: {id}"))
+        RegistryError::NotFound(_) => {
+            WireError::new("plugin_not_found", "plugin not found".to_string())
         }
         RegistryError::Conflict(m) => WireError::new("conflict", m),
         RegistryError::Manifest(m) => WireError::new("invalid_manifest", m.to_string()),
@@ -1243,10 +1243,7 @@ pub fn registry_op(method: &str, p: &Value) -> Result<Value, WireError> {
             "plugin_list",
             json!({"plugins": super::herdr_plugin_list(sp(p, "plugin_id"))}),
         )),
-        other => Err(WireError::new(
-            "method_not_found",
-            format!("unknown method: {other}"),
-        )),
+        other => Err(super::wire::unknown_method(other)),
     }
 }
 
@@ -2438,10 +2435,7 @@ pub async fn call(
             close_surface(server, &id);
             Ok(ok())
         }
-        other => Err(WireError::new(
-            "method_not_found",
-            format!("unknown method: {other}"),
-        )),
+        other => Err(super::wire::unknown_method(other)),
     }
 }
 

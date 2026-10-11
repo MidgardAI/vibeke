@@ -267,12 +267,27 @@ fn herdr_cli_shim_and_wire_protocol() {
     let (v, _) = raw(&sock, r#"{"id":1,"method":"workspace.list"}"#);
     assert_eq!(v["id"], "");
     assert_eq!(v["error"]["code"], "invalid_request");
+    // Herdr answers an unknown method and an unparseable line `invalid_request`.
     let (v, _) = raw(&sock, r#"{"id":"x","method":"galaxy.explode","params":{}}"#);
-    assert_eq!(v["error"]["code"], "method_not_found");
+    assert_eq!(v["id"], "x");
+    assert_eq!(v["error"]["code"], "invalid_request");
+    assert!(
+        v["error"]["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("invalid request: "),
+        "{v}"
+    );
     let (v, _) = raw(&sock, r#"{"id":"y","method":"server.stop","params":{}}"#);
     assert_eq!(v["error"]["code"], "unsupported");
     let (v, _) = raw(&sock, "{oops");
-    assert_eq!(v["error"]["code"], "parse_error");
+    assert_eq!(v["error"]["code"], "invalid_request");
+    assert_eq!(v["id"], "");
+    let (v, _) = raw(
+        &sock,
+        r#"{"id":"g","method":"pane.graphics.info","params":{}}"#,
+    );
+    assert_eq!(v["error"]["code"], "unknown_method");
     let (v, _) = raw(&sock, r#"{"id":"z","method":"ping"}"#);
     assert_eq!(v["result"]["version"], "0.9.3");
 

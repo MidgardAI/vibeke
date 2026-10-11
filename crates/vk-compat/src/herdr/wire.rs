@@ -4,13 +4,16 @@
 //! `{"id", "error": {"code": "<snake_case>", "message"}}`; streamed events
 //! `{"event": "<snake_case>", "data": {...}}`. No JSON-RPC envelope and no handshake.
 //!
-//! Framing limits and the exact codes for malformed input are *unverified* against the
-//! baseline binary; the choices here are recorded in the inventory.
+//! Malformed input follows Herdr 0.9.3 (`src/api/server.rs`): a line that is not a valid
+//! request (bad JSON, a non-string id, no method, params of the wrong type, an unknown method)
+//! answers `invalid_request` with the message `invalid request: <reason>`, echoing the id only
+//! when the line is an object with a string `id`. A line over [`MAX_LINE`] bytes, a line that is
+//! not UTF-8 and an empty line get no answer: Herdr closes the connection.
 
 use serde_json::{Map, Value, json};
 
-/// Longest accepted request line (bytes, without the newline).
-pub const MAX_LINE: usize = 16 * 1024 * 1024;
+/// Longest accepted request line (bytes), Herdr's `MAX_INITIAL_REQUEST_BYTES`.
+pub const MAX_LINE: usize = 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Request {
@@ -45,52 +48,67 @@ impl std::fmt::Display for WireError {
     }
 }
 
+/// Herdr's `invalid_request` error: `invalid request: <reason>`.
+pub fn invalid_request(reason: impl std::fmt::Display) -> WireError {
+    WireError::new("invalid_request", format!("invalid request: {reason}"))
+}
+
+/// The error for a method Herdr 0.9.3 does not have: its typed request parse fails on the
+/// method tag, so it answers `invalid_request` (Herdr's message also lists every method).
+pub fn unknown_method(method: &str) -> WireError {
+    invalid_request(format!("unknown variant `{method}`"))
+}
+
+/// Herdr's answer to the retired `pane.graphics.*` methods (`retired_pane_graphics_method_error`).
+pub fn retired_method(method: &str) -> Option<WireError> {
+    matches!(
+        method,
+        "pane.graphics.info" | "pane.graphics.set" | "pane.graphics.clear" | "pane.graphics.stream"
+    )
+    .then(|| WireError::new("unknown_method", format!("unknown method: {method}")))
+}
+
+/// Whether Herdr answers a request line at all: it closes the connection without a response
+/// for an over-long line, a line that is not UTF-8 and a blank line.
+pub fn answers(line: &[u8]) -> bool {
+    line.len() <= MAX_LINE && std::str::from_utf8(line).is_ok_and(|t| !t.trim().is_empty())
+}
+
 /// Parse one request line. On error, returns the id to echo (the request's string id when it
 /// can be recovered, `""` otherwise) with the error.
 pub fn parse_request(line: &[u8]) -> Result<Request, (String, WireError)> {
     if line.len() > MAX_LINE {
         return Err((
             String::new(),
-            WireError::new("invalid_request", "request line too long"),
+            invalid_request("api request line is too large"),
         ));
     }
-    let text = std::str::from_utf8(line).map_err(|_| {
-        (
-            String::new(),
-            WireError::new("parse_error", "invalid UTF-8"),
-        )
-    })?;
-    let v: Value = serde_json::from_str(text.trim_end_matches(['\r', '\n']))
-        .map_err(|e| (String::new(), WireError::new("parse_error", e.to_string())))?;
+    let text = std::str::from_utf8(line)
+        .map_err(|e| (String::new(), invalid_request(e)))?
+        .trim();
+    let v: Value = serde_json::from_str(text).map_err(|e| (String::new(), invalid_request(e)))?;
     let Some(obj) = v.as_object() else {
         return Err((
             String::new(),
-            WireError::new("invalid_request", "request must be a JSON object"),
+            invalid_request("invalid type: expected struct Request"),
         ));
     };
     let id = match obj.get("id") {
         Some(Value::String(s)) => s.clone(),
-        Some(Value::Number(_)) => {
+        Some(_) => {
             return Err((
                 String::new(),
-                WireError::new("invalid_request", "id must be a string"),
+                invalid_request("invalid type: id must be a string"),
             ));
         }
-        Some(_) | None => {
-            return Err((
-                String::new(),
-                WireError::new("invalid_request", "id must be a string"),
-            ));
-        }
+        None => return Err((String::new(), invalid_request("missing field `id`"))),
     };
     let method = match obj.get("method") {
         Some(Value::String(m)) if !m.is_empty() => m.clone(),
-        _ => {
-            return Err((
-                id,
-                WireError::new("invalid_request", "method must be a non-empty string"),
-            ));
+        Some(_) => {
+            return Err((id, invalid_request("invalid type: method must be a string")));
         }
+        None => return Err((id, invalid_request("missing field `method`"))),
     };
     let params = match obj.get("params") {
         None | Some(Value::Null) => Value::Object(Map::new()),
@@ -98,7 +116,9 @@ pub fn parse_request(line: &[u8]) -> Result<Request, (String, WireError)> {
         Some(_) => {
             return Err((
                 id,
-                WireError::new("invalid_params", "params must be an object"),
+                invalid_request(format!(
+                    "invalid type: params of `{method}` must be an object"
+                )),
             ));
         }
     };
@@ -153,7 +173,7 @@ pub fn from_native(kind: &str, object: Option<&str>, message: &str) -> WireError
         ("permission_denied", _) | ("untrusted", _) => "permission_denied",
         ("timeout", _) => "timeout",
         ("conflict", _) => "conflict",
-        ("method_not_found", _) => "method_not_found",
+        ("method_not_found", _) => "invalid_request",
         ("unsupported", _) => "unsupported",
         _ => "internal_error",
     };
@@ -181,13 +201,27 @@ mod tests {
         let (id, e) = parse_request(br#"{"id":"7","params":{}}"#).unwrap_err();
         assert_eq!((id.as_str(), e.code.as_str()), ("7", "invalid_request"));
         let (id, e) = parse_request(br#"{"id":"7","method":"x","params":[1]}"#).unwrap_err();
-        assert_eq!((id.as_str(), e.code.as_str()), ("7", "invalid_params"));
-        let (_, e) = parse_request(b"{nope").unwrap_err();
-        assert_eq!(e.code, "parse_error");
+        assert_eq!((id.as_str(), e.code.as_str()), ("7", "invalid_request"));
+        // Herdr answers every unparseable line `invalid_request` ("invalid request: …").
+        let (id, e) = parse_request(b"{nope").unwrap_err();
+        assert_eq!((id.as_str(), e.code.as_str()), ("", "invalid_request"));
+        assert!(e.message.starts_with("invalid request: "), "{e}");
         let (_, e) = parse_request(&[0xff, 0xfe]).unwrap_err();
-        assert_eq!(e.code, "parse_error");
+        assert_eq!(e.code, "invalid_request");
         let (_, e) = parse_request(b"[1]").unwrap_err();
         assert_eq!(e.code, "invalid_request");
+        assert!(e.message.starts_with("invalid request: "), "{e}");
+        // No answer at all for blank, non-UTF-8 and over-long lines.
+        assert!(answers(br#"{"id":"1","method":"ping"}"#));
+        assert!(!answers(b"  \n"));
+        assert!(!answers(&[0xff, b'\n']));
+        assert!(!answers(&vec![b' '; MAX_LINE + 1]));
+        assert_eq!(unknown_method("nope").code, "invalid_request");
+        assert_eq!(
+            retired_method("pane.graphics.set").unwrap().code,
+            "unknown_method"
+        );
+        assert!(retired_method("pane.list").is_none());
     }
 
     #[test]

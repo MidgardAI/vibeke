@@ -21,8 +21,8 @@
 //! * **Method mapping**: Herdr methods are translated onto the native API (`api::dispatch`, so
 //!   native authorization and events apply) and results are projected to Herdr shapes with
 //!   Herdr-style ids (Vibeke handles); slice-2 methods live in [`ext`]. Known-but-unimplemented
-//!   baseline methods return an explicit `unsupported` error; `method_not_found` is reserved
-//!   for unknown methods.
+//!   baseline methods return an explicit `unsupported` error; unknown methods answer
+//!   `invalid_request`, as Herdr's typed request parse does.
 //! * **Plugins**: `plugin.action.list/run` (native) and `plugin.action.invoke` (compat) run
 //!   argv actions asynchronously with log records (output written by a [`capture`] helper into
 //!   files bounded per invocation and tailed from them, so it survives a server restart,
@@ -689,6 +689,11 @@ pub async fn serve_wire(server: Arc<Server>, stream: UnixStream, caller: Caller)
     } else {
         "socket"
     };
+    // Herdr closes the connection without an answer for a blank, non-UTF-8 or over-long line.
+    if !wire::answers(&buf) {
+        trace_result(&caller, transport, "", None, Err("invalid_request"));
+        return;
+    }
     let req = match wire::parse_request(&buf) {
         Ok(r) => r,
         Err((id, e)) => {
@@ -1812,7 +1817,7 @@ fn pane_target(caller: &Caller, sn: &Snap, p: &Value) -> Result<String, WireErro
         return sn
             .pane(id)
             .map(|x| x.id.clone())
-            .ok_or_else(|| WireError::new("pane_not_found", format!("pane not found: {id}")));
+            .ok_or_else(|| WireError::new("pane_not_found", format!("pane {id} not found")));
     }
     if let Some(d) = &caller.default_pane
         && let Some(x) = sn.pane(d)
@@ -1840,14 +1845,14 @@ fn ws_target(sn: &Snap, p: &Value) -> Result<Workspace, WireError> {
     let id = req_s(p, "workspace_id")?;
     sn.ws(id)
         .cloned()
-        .ok_or_else(|| WireError::new("workspace_not_found", format!("workspace not found: {id}")))
+        .ok_or_else(|| WireError::new("workspace_not_found", format!("workspace {id} not found")))
 }
 
 fn tab_target(sn: &Snap, p: &Value) -> Result<Tab, WireError> {
     let id = req_s(p, "tab_id")?;
     sn.tab(id)
         .cloned()
-        .ok_or_else(|| WireError::new("tab_not_found", format!("tab not found: {id}")))
+        .ok_or_else(|| WireError::new("tab_not_found", format!("tab {id} not found")))
 }
 
 fn run_target(sn: &Snap, p: &Value) -> Result<AgentRun, WireError> {
@@ -1857,7 +1862,7 @@ fn run_target(sn: &Snap, p: &Value) -> Result<AgentRun, WireError> {
         .find(|r| r.handle == t || r.id == t || r.name.as_deref() == Some(t))
         .or_else(|| sn.pane(t).and_then(|x| sn.pane_run.get(&x.id)))
         .cloned()
-        .ok_or_else(|| WireError::new("agent_not_found", format!("agent not found: {t}")))
+        .ok_or_else(|| WireError::new("agent_not_found", format!("agent target {t} not found")))
 }
 
 fn ok() -> Value {
@@ -2224,7 +2229,7 @@ pub async fn call(
             let sn = snap(server);
             let x = sn
                 .pane(&id)
-                .ok_or_else(|| WireError::new("pane_not_found", id.clone()))?;
+                .ok_or_else(|| WireError::new("pane_not_found", format!("pane {id} not found")))?;
             Ok(typed("pane_info", json!({"pane": sn.pane_json(server, x)})))
         }
         "pane.rename" => {
@@ -2240,7 +2245,7 @@ pub async fn call(
             let sn = snap(server);
             let x = sn
                 .pane(&id)
-                .ok_or_else(|| WireError::new("pane_not_found", id.clone()))?;
+                .ok_or_else(|| WireError::new("pane_not_found", format!("pane {id} not found")))?;
             Ok(typed("pane_info", json!({"pane": sn.pane_json(server, x)})))
         }
         "pane.close" => {
@@ -2289,9 +2294,9 @@ pub async fn call(
         "pane.report_agent" | "pane.report_agent_session" => {
             let mut np = p.clone();
             if let Some(id) = sp(p, "pane_id") {
-                let x = sn
-                    .pane(id)
-                    .ok_or_else(|| WireError::new("pane_not_found", id.to_string()))?;
+                let x = sn.pane(id).ok_or_else(|| {
+                    WireError::new("pane_not_found", format!("pane {id} not found"))
+                })?;
                 np["pane_id"] = json!(x.id);
             } else if let Some(d) = &caller.default_pane {
                 np["pane_id"] = json!(d);
@@ -2384,9 +2389,9 @@ pub async fn call(
                 u32::try_from(total).unwrap_or(u32::MAX),
             );
             let sn = snap(server);
-            let x = sn
-                .pane(&x.id)
-                .ok_or_else(|| WireError::new("pane_not_found", x.handle.clone()))?;
+            let x = sn.pane(&x.id).ok_or_else(|| {
+                WireError::new("pane_not_found", format!("pane {} not found", x.handle))
+            })?;
             Ok(typed("pane_info", json!({"pane": sn.pane_json(server, x)})))
         }
         // Herdr behaviours that need its own client or state; answered as Herdr answers when
@@ -2613,10 +2618,7 @@ pub async fn call(
                         .trim_start_matches("`unsupported`: ")
                 ),
             )),
-            None => Err(WireError::new(
-                "method_not_found",
-                format!("unknown method: {other}"),
-            )),
+            None => Err(wire::retired_method(other).unwrap_or_else(|| wire::unknown_method(other))),
         },
     }
 }
@@ -3382,10 +3384,7 @@ const TICKET_TTL: Duration = Duration::from_secs(30);
 /// session verify this invocation's identity with this server.
 fn invocation_ticket(server: &Server, caller: &Caller) -> Result<Value, WireError> {
     let Some(b) = &caller.broker else {
-        return Err(WireError::new(
-            "method_not_found",
-            "unknown method: vibeke.invocation_ticket",
-        ));
+        return Err(wire::unknown_method("vibeke.invocation_ticket"));
     };
     if caller.sandboxed {
         return Err(sandbox_denied("vibeke.invocation_ticket"));
@@ -3755,7 +3754,7 @@ fn action_list(plugin: Option<&str>) -> Result<Vec<Value>, WireError> {
     {
         return Err(WireError::new(
             "plugin_not_found",
-            format!("plugin not found: {id}"),
+            "plugin not found".to_string(),
         ));
     }
     let pf = herdr::current_platform();
@@ -3828,7 +3827,7 @@ fn open_link(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> Result<Value, WireEr
         .map_err(|e| WireError::new("internal_error", e.to_string()))?;
     let entry = reg
         .get(plugin)
-        .map_err(|_| WireError::new("plugin_not_found", format!("plugin not found: {plugin}")))?;
+        .map_err(|_| WireError::new("plugin_not_found", "plugin not found".to_string()))?;
     let (_, m) = registry::entry_status(entry);
     let m = m.ok_or_else(|| WireError::new("invalid_manifest", "manifest missing"))?;
     let pf = herdr::current_platform();
@@ -4037,7 +4036,7 @@ pub fn invoke_action(
     let reg = Registry::load(&dirs).map_err(|e| WireError::new("internal_error", e.to_string()))?;
     let entry = reg
         .get(plugin)
-        .map_err(|_| WireError::new("plugin_not_found", format!("plugin not found: {plugin}")))?
+        .map_err(|_| WireError::new("plugin_not_found", "plugin not found".to_string()))?
         .clone();
     let (st, m) = registry::entry_status(&entry);
     if st != Status::Active {
@@ -4906,7 +4905,7 @@ fn wire_to_rpc(e: WireError) -> vk_proto::rpc::RpcError {
         "invalid_params" | "invalid_request" => ErrorKind::InvalidParams,
         "timeout" => ErrorKind::Timeout,
         "unsupported" => ErrorKind::Unsupported,
-        "method_not_found" => ErrorKind::MethodNotFound,
+        "method_not_found" | "unknown_method" => ErrorKind::MethodNotFound,
         _ => ErrorKind::Internal,
     };
     err(kind, e.message).details(json!({"herdr_code": e.code}))
@@ -5246,7 +5245,9 @@ mod tests {
             }
         }
         let r = call(&srv, &user(), "galaxy.explode", &json!({})).await;
-        assert_eq!(r.unwrap_err().code, "method_not_found");
+        assert_eq!(r.unwrap_err().code, "invalid_request");
+        let r = call(&srv, &user(), "pane.graphics.info", &json!({})).await;
+        assert_eq!(r.unwrap_err().code, "unknown_method");
     }
 
     #[tokio::test]
@@ -5351,7 +5352,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(r["error"]["code"], "method_not_found");
+        assert_eq!(r["error"]["code"], "invalid_request");
         let st = api::dispatch(&srv, &user_ctx, "compat.status", &json!({}))
             .await
             .unwrap();

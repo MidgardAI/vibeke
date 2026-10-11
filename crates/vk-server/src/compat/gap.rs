@@ -195,10 +195,7 @@ pub async fn call(
                 }}),
             ))
         }
-        other => Err(WireError::new(
-            "method_not_found",
-            format!("unknown method {other}"),
-        )),
+        other => Err(super::wire::unknown_method(other)),
     }
 }
 
