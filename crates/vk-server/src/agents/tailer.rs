@@ -417,6 +417,34 @@ fn apply(
                 resolve_open(server, run_id, USER_MOVED_ON, |i| i.opened_at_ms < *ts);
             }
             Event::TurnStarted { .. } => {}
+            Event::BgStarted {
+                id,
+                kind,
+                label,
+                tool_use_id,
+                ts_ms,
+            } => {
+                // Without a timestamp a replayed start cannot be told from a new one: take it
+                // only for a run no harness report has covered yet.
+                let since_ms = match ts_ms {
+                    Some(t) => *t,
+                    None if run.bg_level_ms == 0 => now_ms(),
+                    None => continue,
+                };
+                super::bg::started(
+                    server,
+                    run_id,
+                    BgTask {
+                        id: id.clone(),
+                        kind: kind.clone(),
+                        label: super::bg::label(label),
+                        since_ms,
+                        source: StateSource::Structured,
+                        tool_use_id: tool_use_id.clone(),
+                    },
+                );
+            }
+            Event::BgEnded { id, .. } => super::bg::ended(server, run_id, id),
         }
     }
     if !totals.is_empty() {

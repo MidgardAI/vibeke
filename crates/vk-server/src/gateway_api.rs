@@ -281,11 +281,46 @@ fn image_item(k: usize, mime: &str, data: &str) -> Value {
     json!({"kind": "image", "mime": mime, "ref": k.to_string(), "size": data.len() / 4 * 3})
 }
 
+/// The `bg_event` item of a Claude line that is a task notification (background work ended, or
+/// a Monitor reported an event): `{kind, id, tool_use_id, status, summary}`.
+fn bg_event_item(v: &Value) -> Option<Value> {
+    if v.get("type").and_then(Value::as_str) != Some("user") {
+        return None;
+    }
+    let text = match v.pointer("/message/content")? {
+        Value::String(t) => t.clone(),
+        Value::Array(a) => a
+            .iter()
+            .filter(|c| c.get("type").and_then(Value::as_str) == Some("text"))
+            .filter_map(|c| c.get("text").and_then(Value::as_str))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => return None,
+    };
+    let n = vk_agents::transcript::parse_task_notification(&text)?;
+    let red = vk_redact::redact(&n.summary);
+    let mut summary: String = red.chars().take(300).collect();
+    if red.chars().count() > 300 {
+        summary.push('…');
+    }
+    Some(json!({
+        "kind": "bg_event",
+        "id": n.task_id,
+        "tool_use_id": n.tool_use_id,
+        "status": n.status.unwrap_or_else(|| "event".into()),
+        "summary": summary,
+    }))
+}
+
 /// Items from one transcript line, for Claude (`message.content[]`) and Codex rollout
 /// (`response_item` payloads). Returns (is_user_prompt, items).
 pub(crate) fn line_items(v: &Value) -> (bool, Vec<Value>) {
     let mut items = Vec::new();
     let mut user_prompt = false;
+    if let Some(item) = bg_event_item(v) {
+        // The agent wakes up for it: it starts a turn, like a prompt.
+        return (true, vec![item]);
+    }
     if let Some(msg) = v.get("message") {
         let role = v.get("type").and_then(Value::as_str).unwrap_or("");
         match msg.get("content") {
@@ -699,6 +734,42 @@ mod tests {
         // No parseable timestamps: duration unknown.
         assert!(turns[0]["duration_ms"].is_null());
         assert!(turns[0]["items"][0]["ts"].is_null());
+    }
+
+    #[test]
+    fn task_notifications_become_bg_events() {
+        let note = |status: &str| {
+            format!(
+                "<task-notification>\n<task-id>bg1</task-id>\n<tool-use-id>tu1</tool-use-id>\n{status}<summary>Build finished, token sk-ant-api03-{}</summary>\n</task-notification>",
+                "a".repeat(90)
+            )
+        };
+        let t = [
+            json!({"type": "user", "message": {"content": "start"}}),
+            json!({"type": "user", "origin": {"kind": "task-notification"}, "timestamp": "2026-01-01T00:00:10Z", "message": {"content": note("<status>completed</status>\n")}}),
+            json!({"type": "user", "message": {"content": note("")}}),
+        ]
+        .iter()
+        .map(|v| v.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+        let turns = transcript_items(&t);
+        assert_eq!(turns.len(), 3, "each notification starts a turn");
+        let i = &turns[1]["items"][0];
+        assert_eq!(i["kind"], "bg_event");
+        assert_eq!(i["id"], "bg1");
+        assert_eq!(i["tool_use_id"], "tu1");
+        assert_eq!(i["status"], "completed");
+        assert!(i["ts"].is_i64(), "ts is added like other items");
+        assert!(
+            !i["summary"]
+                .as_str()
+                .unwrap()
+                .contains("aaaaaaaaaaaaaaaaaaaa")
+        );
+        assert_eq!(turns[1]["tool_count"], 0);
+        assert_eq!(turns[2]["items"][0]["status"], "event");
+        assert_eq!(turns[2]["items"].as_array().unwrap().len(), 1);
     }
 
     #[test]
