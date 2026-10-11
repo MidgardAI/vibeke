@@ -115,7 +115,9 @@ pub(super) fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> R
     match method {
         "pane.report_agent_session" => {
             let sid = s(p, "agent_session_id").map(str::to_string);
-            let path = s(p, "agent_session_path").map(str::to_string);
+            // A path the server may not read for this pane is dropped (transcript_file).
+            let path = s(p, "agent_session_path")
+                .and_then(|raw| super::transcript_file::accept(server, &run.pane, raw));
             let rh = Harness::from_id(&run.harness).unwrap_or(h);
             update_run(server, &run.id, |r, tx| {
                 if let Some(sid) = &sid

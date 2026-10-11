@@ -568,17 +568,10 @@ pub(super) fn from_acp(server: &Server, run: &AgentRun, u: &Value) {
     store(server, &run.id, Some(add(run, d)), None);
 }
 
+/// The last `MAX_TRANSCRIPT` bytes of a regular file, from the first complete line.
 fn read_capped(path: &Path) -> Option<String> {
-    use std::io::{Read, Seek, SeekFrom};
-    let mut f = std::fs::File::open(path).ok()?;
-    let len = f.metadata().ok()?.len();
-    let start = len.saturating_sub(MAX_TRANSCRIPT);
-    f.seek(SeekFrom::Start(start)).ok()?;
-    let mut s = String::new();
-    f.read_to_string(&mut s).ok()?;
-    if start > 0
-        && let Some(i) = s.find('\n')
-    {
+    let (mut s, mid) = super::transcript_file::read_tail(path, MAX_TRANSCRIPT)?;
+    if mid && let Some(i) = s.find('\n') {
         s.drain(..=i);
     }
     Some(s)

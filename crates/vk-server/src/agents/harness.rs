@@ -1135,18 +1135,14 @@ pub fn decision_json_with(h: Harness, it: &Interaction, a: &Answer, persist: &Pe
 
 // ---- transcripts (04 §10) -----------------------------------------------------------------------
 
+/// The complete lines in the last `max_bytes` of a transcript. Only a regular file is read
+/// (`transcript_file::read_tail`): a FIFO or device yields nothing.
 fn tail_lines(path: &Path, max_bytes: u64) -> Vec<String> {
-    use std::io::{Read, Seek, SeekFrom};
-    let Ok(mut f) = std::fs::File::open(path) else {
+    let Some((s, mid)) = super::transcript_file::read_tail(path, max_bytes) else {
         return vec![];
     };
-    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
-    let start = len.saturating_sub(max_bytes);
-    let _ = f.seek(SeekFrom::Start(start));
-    let mut s = String::new();
-    let _ = f.read_to_string(&mut s);
     let mut lines: Vec<String> = s.lines().map(str::to_string).collect();
-    if start > 0 && !lines.is_empty() {
+    if mid && !lines.is_empty() {
         lines.remove(0);
     }
     lines

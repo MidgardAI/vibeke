@@ -82,12 +82,13 @@ fn open(e: &Env, run: &AgentRun, event: &str, p: Value, age_ms: i64) -> String {
 }
 
 fn ask(e: &Env, run: &AgentRun, tool_use: &str) -> String {
+    // Older than `SCREEN_GRACE`: the question had time to show.
     open(
         e,
         run,
         "PreToolUse",
         json!({"tool_name": "AskUserQuestion", "tool_use_id": tool_use, "tool_input": {"questions": [{"question": "Which database?", "options": [{"label": "Postgres"}, {"label": "SQLite"}], "multiSelect": false}]}}),
-        1000,
+        5000,
     )
 }
 
@@ -115,10 +116,31 @@ fn status(e: &Env, id: &str) -> InteractionStatus {
         .status
 }
 
+fn closed_by(e: &Env, id: &str) -> Vec<String> {
+    e.server.with_core(|c| {
+        c.store
+            .events_after(0, 10_000, &["interaction.cancelled".to_string()])
+            .unwrap()
+            .into_iter()
+            .map(|ev| serde_json::to_value(ev).unwrap())
+            .filter(|v| v["subject"]["interaction"] == id)
+            .filter_map(|v| v["data"]["closed_by"].as_str().map(str::to_string))
+            .collect()
+    })
+}
+
+/// Close reasons of `id`: resolved elsewhere, or cancelled (dismissals and heuristics).
 fn reasons(e: &Env, id: &str) -> Vec<String> {
     e.server.with_core(|c| {
         c.store
-            .events_after(0, 10_000, &["interaction.resolved_elsewhere".to_string()])
+            .events_after(
+                0,
+                10_000,
+                &[
+                    "interaction.resolved_elsewhere".to_string(),
+                    "interaction.cancelled".to_string(),
+                ],
+            )
             .unwrap()
             .into_iter()
             .map(|ev| serde_json::to_value(ev).unwrap())
@@ -179,6 +201,14 @@ async fn another_tool_closes_a_question_but_not_an_approval() {
     let run = add_run(&e, "r-tool", "p-tool", |_| {});
     let q = ask(&e, &run, "toolu_q");
     let a = approval(&e, &run, "toolu_a");
+    // A question opened a moment ago may not be drawn yet: a parallel tool leaves it.
+    let fresh = open(
+        &e,
+        &run,
+        "PreToolUse",
+        json!({"tool_name": "AskUserQuestion", "tool_use_id": "toolu_fresh", "tool_input": {"questions": [{"question": "Which port?", "options": [{"label": "8080"}, {"label": "3000"}], "multiSelect": false}]}}),
+        100,
+    );
     // Without a readable screen a parallel tool proves nothing: the question may still show.
     on_signal(
         &e.server,
@@ -192,8 +222,11 @@ async fn another_tool_closes_a_question_but_not_an_approval() {
     close_questions_for_tool(&e.server, &run, "toolu_q");
     assert_eq!(status(&e, &q), InteractionStatus::Open);
     close_questions_for_tool(&e.server, &run, "toolu_b");
-    assert_eq!(status(&e, &q), InteractionStatus::ResolvedElsewhere);
-    assert_eq!(reasons(&e, &q), vec!["tool ran".to_string()]);
+    // A guess, recorded as one: cancelled by a heuristic, not answered elsewhere.
+    assert_eq!(status(&e, &q), InteractionStatus::Cancelled);
+    assert_eq!(reasons(&e, &q), vec![OTHER_TOOL_STARTED.to_string()]);
+    assert_eq!(closed_by(&e, &q), vec!["heuristic".to_string()]);
+    assert_eq!(status(&e, &fresh), InteractionStatus::Open, "not drawn yet");
     // Parallel tool calls can each wait for a permission: the approval stays open.
     assert_eq!(status(&e, &a), InteractionStatus::Open);
 }
@@ -244,6 +277,7 @@ async fn a_quiet_working_screen_closes_old_interactions_only() {
     let e = env();
     let run = add_run(&e, "r-quiet", "p-quiet", |r| {
         r.execution = facet(Execution::Working, StateSource::Structured, 1.0);
+        r.harness_version = Some("2.1.5".into());
     });
     let working = screen::ScreenMatch {
         state: Some((Execution::Working, 0.8)),
@@ -288,8 +322,9 @@ async fn a_quiet_working_screen_closes_old_interactions_only() {
     e.server
         .agents
         .close_unseen_dialogs(&e.server, &run, Harness::Claude, &working);
-    assert_eq!(status(&e, &old), InteractionStatus::ResolvedElsewhere);
-    assert_eq!(reasons(&e, &old), vec!["no dialog on screen".to_string()]);
+    assert_eq!(status(&e, &old), InteractionStatus::Cancelled);
+    assert_eq!(reasons(&e, &old), vec![NO_DIALOG_SEEN.to_string()]);
+    assert_eq!(closed_by(&e, &old), vec!["heuristic".to_string()]);
     assert_eq!(
         status(&e, &young),
         InteractionStatus::Open,
@@ -407,4 +442,378 @@ async fn a_gated_question_whose_gate_is_not_yet_registered_stays_open() {
         &json!({"session_id": "sess-r-pend", "prompt": "next"}),
     );
     assert_eq!(status(&e, &q), InteractionStatus::Open);
+}
+
+/// Run `gate` for a Claude permission request as if it came on a hook connection, and wait
+/// until its gate is held.
+async fn held_gate(
+    e: &Env,
+    pane: &str,
+    tool_use: &str,
+) -> (crate::run::ConnCancel, tokio::task::JoinHandle<R>, String) {
+    let cancel = crate::run::ConnCancel::default();
+    let srv = e.server.clone();
+    let p = json!({"tool_name": "Bash", "tool_use_id": tool_use, "tool_input": {"command": "cargo test"}});
+    let pane_s = pane.to_string();
+    let task =
+        tokio::spawn(cancel.scope(async move {
+            gate(&srv, &pane_s, Harness::Claude, "PermissionRequest", &p).await
+        }));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let id = loop {
+        let held = e.server.with_core(|c| {
+            c.model
+                .interactions
+                .iter()
+                .find(|i| i.pane == pane && i.native_ref.as_deref() == Some(tool_use))
+                .map(|i| i.id.clone())
+        });
+        if let Some(id) = held
+            && e.server
+                .agents
+                .inner
+                .lock()
+                .unwrap()
+                .gates
+                .contains_key(&id)
+        {
+            break id;
+        }
+        assert!(Instant::now() < deadline, "gate was never held");
+        tokio::task::yield_now().await;
+    };
+    (cancel, task, id)
+}
+
+fn interaction(e: &Env, id: &str) -> Interaction {
+    e.server
+        .with_core(|c| c.interaction(id).cloned())
+        .expect("open interaction")
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_closed_hook_connection_releases_its_gate() {
+    let e = env();
+    let _run = add_run(&e, "r-hook", "p-hook", |_| {});
+    let (cancel, task, id) = held_gate(&e, "p-hook", "toolu_g").await;
+    assert!(interaction(&e, &id).gate);
+    // The hook process was killed: its connection closes.
+    cancel.cancel();
+    let reply = task.await.unwrap().unwrap();
+    assert!(reply["decision"].is_null());
+    assert!(
+        !e.server
+            .agents
+            .inner
+            .lock()
+            .unwrap()
+            .gates
+            .contains_key(&id),
+        "gate released"
+    );
+    let it = interaction(&e, &id);
+    assert!(!it.gate, "a later answer is typed, not sent to a dead hook");
+    assert_eq!(it.status, InteractionStatus::Open);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_hook_that_dies_before_its_ack_leaves_the_delivery_unknown() {
+    let e = env();
+    let _run = add_run(&e, "r-ack", "p-ack", |_| {});
+    let (cancel, task, id) = held_gate(&e, "p-ack", "toolu_k").await;
+    // What `interaction.answer` does for a held gate.
+    let (native, key) = record_decision(
+        &e.server,
+        &id,
+        Answer {
+            decision: Some(Decision::Allow),
+            choices: vec![],
+            text: None,
+        },
+        "tui:tester",
+        None,
+        None,
+        None,
+    )
+    .unwrap()
+    .unwrap();
+    let g = e
+        .server
+        .agents
+        .inner
+        .lock()
+        .unwrap()
+        .gates
+        .remove(&id)
+        .unwrap();
+    set_delivery(&e.server, &id, DeliveryState::Delivering, None);
+    assert!(g.tx.send(GateReply::Decision { json: native, key }).is_ok());
+    let reply = task.await.unwrap().unwrap();
+    assert!(reply["decision"].is_object());
+    // No ack arrives; the connection closes.
+    cancel.cancel();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while interaction(&e, &id).delivery != DeliveryState::DeliveryUnknown {
+        assert!(Instant::now() < deadline, "delivery stayed Delivering");
+        tokio::task::yield_now().await;
+    }
+    // The harness moving on later does not turn it into a confirmed delivery.
+    resolve(
+        &e.server,
+        &id,
+        InteractionStatus::ResolvedElsewhere,
+        "tool ran",
+    );
+    assert_eq!(
+        interaction_any(&e, &id).delivery,
+        DeliveryState::DeliveryUnknown
+    );
+}
+
+fn interaction_any(e: &Env, id: &str) -> Interaction {
+    e.server
+        .with_core(|c| {
+            c.interaction(id).cloned().or_else(|| {
+                c.store
+                    .find::<Interaction>("interaction", id)
+                    .ok()
+                    .flatten()
+            })
+        })
+        .expect("interaction record")
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cancelling_an_answer_in_flight_never_reports_it_delivered() {
+    let e = env();
+    let run = add_run(&e, "r-fly", "p-fly", |_| {});
+    let q = approval(&e, &run, "toolu_f");
+    record_decision(
+        &e.server,
+        &q,
+        Answer {
+            decision: Some(Decision::Allow),
+            choices: vec![],
+            text: None,
+        },
+        "tui:tester",
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+    set_delivery(&e.server, &q, DeliveryState::Delivering, None);
+    // `interaction.cancel` / an inbox dismissal while the answer is being delivered.
+    resolve(&e.server, &q, InteractionStatus::Cancelled, "dismissed");
+    assert_eq!(
+        interaction_any(&e, &q).delivery,
+        DeliveryState::DeliveryUnknown
+    );
+    // The harness moving on is still not taken as proof for an unknown delivery.
+    resolve(
+        &e.server,
+        &q,
+        InteractionStatus::ResolvedElsewhere,
+        "tool ran",
+    );
+    assert_eq!(
+        interaction_any(&e, &q).delivery,
+        DeliveryState::DeliveryUnknown
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_dismissed_dialog_does_not_reopen_while_it_shows() {
+    let e = env();
+    let run = add_run(&e, "r-dis", "p-dis", |_| {});
+    let a = open(
+        &e,
+        &run,
+        "PermissionRequest",
+        json!({"tool_name": "Bash", "tool_use_id": "toolu_d", "tool_input": {"command": "cargo test --all"}}),
+        1000,
+    );
+    // Dismiss in Vibeke: the gate is released and the harness draws its own dialog.
+    resolve(&e.server, &a, InteractionStatus::Cancelled, DISMISSED);
+    let same = screen::evaluate(
+        Harness::Claude,
+        "│ Bash command\n│   cargo test --all\n│ Do you want to proceed?\n│ ❯ 1. Yes\n│   2. No",
+    );
+    assert!(same.dialog.is_some());
+    let agents = &e.server.agents;
+    assert!(agents.dialog_dismissed(&e.server, &run, &same));
+    // Seen once, it stays dismissed by its fingerprint.
+    assert!(agents.dialog_dismissed(&e.server, &run, &same));
+    // Another dialog is a new request.
+    let other = screen::evaluate(
+        Harness::Claude,
+        "│ Bash command\n│   rm -rf build\n│ Do you want to proceed?\n│ ❯ 1. Yes\n│   2. No",
+    );
+    assert!(other.dialog.is_some());
+    assert!(!agents.dialog_dismissed(&e.server, &run, &other));
+    // A new turn forgets the dismissal: the same dialog then is a new request.
+    on_signal(
+        &e.server,
+        "p-dis",
+        Harness::Claude,
+        "UserPromptSubmit",
+        &json!({"session_id": "sess-r-dis", "prompt": "run the tests again"}),
+    );
+    // Turn marks have millisecond resolution: make sure the mark moved.
+    {
+        let mut c = e.server.core.lock().unwrap();
+        let mut tx = Tx::new();
+        tx.m.put(
+            K_TURN_MARK,
+            "r-dis",
+            None,
+            &TurnMark {
+                run: "r-dis".into(),
+                at_ms: now_ms() + 1,
+            },
+        );
+        e.server.commit(&mut c, tx).unwrap();
+    }
+    assert!(!agents.dialog_dismissed(&e.server, &run, &same));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_dismissed_screen_dialog_is_forgotten_once_the_agent_works_again() {
+    let e = env();
+    let run = add_run(&e, "r-scr", "p-scr", |_| {});
+    let shown = screen::evaluate(
+        Harness::Claude,
+        "│ Bash command\n│   make deploy\n│ Do you want to proceed?\n│ ❯ 1. Yes\n│   2. No",
+    );
+    let d = shown.dialog.clone().unwrap();
+    let id = open(
+        &e,
+        &run,
+        "PermissionRequest",
+        json!({"tool_name": "Bash", "tool_use_id": "toolu_s", "tool_input": {"command": "make deploy"}}),
+        1000,
+    );
+    {
+        let mut c = e.server.core.lock().unwrap();
+        let mut it = c.interaction(&id).cloned().unwrap();
+        it.source = StateSource::Screen;
+        it.native_ref = Some(format!("screen:{}", d.fingerprint));
+        let mut tx = Tx::new();
+        tx.interaction(it);
+        e.server.commit(&mut c, tx).unwrap();
+    }
+    resolve(&e.server, &id, InteractionStatus::Cancelled, DISMISSED);
+    let agents = &e.server.agents;
+    assert!(agents.dialog_dismissed(&e.server, &run, &shown));
+    let working = screen::ScreenMatch {
+        state: Some((Execution::Working, 0.8)),
+        dialog: None,
+    };
+    assert!(!agents.dialog_dismissed(&e.server, &run, &working));
+    assert!(!agents.dialog_dismissed(&e.server, &run, &shown));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_quiet_screen_closes_nothing_for_an_unvalidated_harness_version() {
+    let e = env();
+    for (n, version) in [(1, None), (2, Some("9.0.0"))] {
+        let (rid, pid) = (format!("r-unval{n}"), format!("p-unval{n}"));
+        let run = add_run(&e, &rid, &pid, |r| {
+            r.execution = facet(Execution::Working, StateSource::Structured, 1.0);
+            r.harness_version = version.map(str::to_string);
+        });
+        let old = open(
+            &e,
+            &run,
+            "PermissionRequest",
+            json!({"tool_name": "Bash", "tool_use_id": "toolu_old", "tool_input": {"command": "ls"}}),
+            40_000,
+        );
+        let working = screen::ScreenMatch {
+            state: Some((Execution::Working, 0.8)),
+            dialog: None,
+        };
+        e.server
+            .agents
+            .inner
+            .lock()
+            .unwrap()
+            .no_dialog_since
+            .insert(pid.clone(), Instant::now() - Duration::from_secs(31));
+        e.server
+            .agents
+            .close_unseen_dialogs(&e.server, &run, Harness::Claude, &working);
+        assert_eq!(status(&e, &old), InteractionStatus::Open, "{version:?}");
+    }
+}
+
+fn opened_events(e: &Env, id: &str) -> usize {
+    e.server.with_core(|c| {
+        c.store
+            .events_after(0, 10_000, &["interaction.opened".to_string()])
+            .unwrap()
+            .into_iter()
+            .map(|ev| serde_json::to_value(ev).unwrap())
+            .filter(|v| v["subject"]["interaction"] == id)
+            .count()
+    })
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_retried_hook_reattaches_without_opening_twice() {
+    let e = env();
+    let _run = add_run(&e, "r-re", "p-re", |_| {});
+    let (cancel, task, id) = held_gate(&e, "p-re", "toolu_re").await;
+    cancel.cancel();
+    task.await.unwrap().unwrap();
+    let pushes = |e: &Env| e.server.with_core(|c| c.notifications.len());
+    let before = pushes(&e);
+    // The hook retries the same request on a new connection.
+    let (cancel2, task2, id2) = held_gate(&e, "p-re", "toolu_re").await;
+    assert_eq!(id2, id, "same request, same interaction");
+    assert_eq!(opened_events(&e, &id), 1);
+    assert_eq!(pushes(&e), before, "no second push");
+    assert!(interaction(&e, &id).gate, "held again");
+    cancel2.cancel();
+    task2.await.unwrap().unwrap();
+
+    // A request the user dismissed stays closed when its hook retries.
+    resolve(&e.server, &id, InteractionStatus::Cancelled, DISMISSED);
+    let srv = e.server.clone();
+    let p = json!({"tool_name": "Bash", "tool_use_id": "toolu_re", "tool_input": {"command": "cargo test"}});
+    let r = gate(&srv, "p-re", Harness::Claude, "PermissionRequest", &p)
+        .await
+        .unwrap();
+    assert!(r["decision"].is_null());
+    assert_eq!(r["interaction"], id.as_str());
+    assert_eq!(opened_events(&e, &id), 1);
+    assert_eq!(status(&e, &id), InteractionStatus::Cancelled);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_observed_request_opens_once() {
+    let e = env();
+    let run = add_run(&e, "r-obs", "p-obs", |_| {});
+    let a = route::open_observed(
+        &e.server,
+        &run,
+        Some("blocked:1".into()),
+        "Bash",
+        json!({"command": "ls"}),
+        StateSource::SelfReport,
+        0.9,
+        false,
+    );
+    assert!(a.is_some());
+    let b = route::open_observed(
+        &e.server,
+        &run,
+        Some("blocked:1".into()),
+        "Bash",
+        json!({"command": "ls"}),
+        StateSource::SelfReport,
+        0.9,
+        false,
+    );
+    assert!(b.is_none());
 }

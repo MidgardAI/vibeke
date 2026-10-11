@@ -208,6 +208,19 @@ pub struct Requester {
     pub client: Option<String>,
 }
 
+/// Who a caller is, for [`Requester::kind`]: a native plugin is `plugin`, a pane token or an
+/// elevated agent connection (full scope granted to an agent's pane) is `agent`, and only the
+/// user's own clients are `user`.
+pub(crate) fn requester_kind(ctx: &Ctx) -> &'static str {
+    if crate::plugin_native::is_plugin_kind(&ctx.kind) {
+        "plugin"
+    } else if ctx.pane_scope.is_some() || ctx.kind.starts_with(crate::auth::ELEVATED_KIND) {
+        "agent"
+    } else {
+        "user"
+    }
+}
+
 /// The stored record (entity kind `screenshot`). Field names are part of the API (07).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScreenshotMeta {
@@ -872,12 +885,12 @@ async fn add(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         normalize_image(raw, DECODE_MAX_ALLOC)?
     };
     let blob = blake3::hash(&png).to_hex().to_string();
-    let agent = ctx.pane_scope.is_some();
+    let kind = requester_kind(ctx);
     let taken_by = Requester {
-        kind: if agent { "agent" } else { "user" }.into(),
+        kind: kind.into(),
         pane: pane.clone(),
         run: None,
-        client: (!agent).then(|| ctx.client_id.clone()),
+        client: (kind != "agent").then(|| ctx.client_id.clone()),
     };
     let environment = Environment {
         kind: EnvKind::Agent,

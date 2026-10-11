@@ -26,6 +26,7 @@ mod screen_picker_tests;
 mod screen_walk;
 mod selfreport;
 pub mod tailer;
+pub mod transcript_file;
 pub mod usage;
 
 use crate::Server;
@@ -121,6 +122,8 @@ struct Inner {
     no_dialog_since: HashMap<String, Instant>,
     /// Panes with a re-check of `no_dialog_since` scheduled.
     no_dialog_armed: std::collections::HashSet<String>,
+    /// Per pane: requests the user dismissed whose dialog may still show (see `resolve`).
+    dismissed: HashMap<String, Vec<DismissedDialog>>,
 }
 
 const SCREEN_GRACE: Duration = Duration::from_secs(2);
@@ -604,6 +607,11 @@ impl Agents {
             }
             (_, o) => o,
         };
+        // A dialog the user dismissed stays in the pane, without a new inbox item or push.
+        if open_screen.is_none() && self.dialog_dismissed(server, &run, &m) {
+            self.inner.lock().unwrap().screen_grace.remove(pane);
+            return;
+        }
         let is_picker = m.dialog.as_ref().is_some_and(|d| d.picker.is_some());
         let unknown = m
             .dialog
@@ -746,8 +754,9 @@ impl Agents {
     /// Open interactions whose dialog never shows (04 §2.5): when the screen has shown the agent
     /// working, with no dialog, for [`NO_DIALOG_CLOSE`] while the run is working, the pane's
     /// structured interactions older than that were answered or dismissed in the pane without a
-    /// report. Only for harnesses whose screen rules recognise their dialogs and working state;
-    /// held gates (the harness waits on Vibeke, so no dialog is expected) are never touched.
+    /// report. Only for a validated harness version whose screen rules recognise its dialogs
+    /// and working state; held gates (the harness waits on Vibeke, so no dialog is expected)
+    /// are never touched. The close is a guess, recorded as such ([`NO_DIALOG_SEEN`]).
     fn close_unseen_dialogs(
         &self,
         server: &Arc<Server>,
@@ -756,10 +765,18 @@ impl Agents {
         m: &screen::ScreenMatch,
     ) {
         let pane = run.pane.as_str();
+        // "No dialog" is only evidence when the screen rules are known to recognise every
+        // dialog of this harness version: an unvalidated or unknown version keeps items open.
+        let rules_trusted = screen::has_screen_rules(h)
+            && run.health != AdapterHealth::UnvalidatedVersion
+            && run
+                .harness_version
+                .as_deref()
+                .is_some_and(|v| harness::validated(h, v));
         let quiet = m.dialog.is_none()
             && matches!(m.state, Some((Execution::Working, _)))
             && run.execution.value == Execution::Working
-            && screen::has_screen_rules(h);
+            && rules_trusted;
         let (since, gates) = {
             let mut i = self.inner.lock().unwrap();
             if !quiet {
@@ -802,12 +819,7 @@ impl Agents {
             let open_for = Duration::from_millis((now - opened).max(0) as u64);
             let age = quiet_for.min(open_for);
             if age >= NO_DIALOG_CLOSE {
-                resolve(
-                    server,
-                    &id,
-                    InteractionStatus::ResolvedElsewhere,
-                    "no dialog on screen",
-                );
+                resolve(server, &id, InteractionStatus::Cancelled, NO_DIALOG_SEEN);
             } else {
                 let left = NO_DIALOG_CLOSE - age;
                 wait = Some(wait.map_or(left, |w| w.min(left)));
@@ -1002,6 +1014,18 @@ fn resolve(server: &Server, id: &str, status: InteractionStatus, reason: &str) {
         return;
     }
     let event = if it.delivery == DeliveryState::Delivering {
+        if status != InteractionStatus::ResolvedElsewhere {
+            // A dismissal or expiry says nothing about the answer in flight: never report it
+            // as delivered. The inbox keeps it as a delivery problem until it is confirmed.
+            drop(c);
+            set_delivery(
+                server,
+                id,
+                DeliveryState::DeliveryUnknown,
+                Some(format!("{reason} before the delivery was confirmed")),
+            );
+            return;
+        }
         // The harness moved on after our decision: native confirmation of delivery.
         it.delivery = DeliveryState::Delivered;
         "interaction.delivered"
@@ -1020,17 +1044,179 @@ fn resolve(server: &Server, id: &str, status: InteractionStatus, reason: &str) {
         && event == "interaction.resolved_elsewhere"
         && !arbiter::resolution_known(reason);
     let run_id = it.run.clone();
+    // The user dismissed an open request: its dialog may still show (or appear once a released
+    // gate hands it back to the harness). Remember it so the screen does not reopen it.
+    let dismissed = (status == InteractionStatus::Cancelled
+        && reason == DISMISSED
+        && event == "interaction.cancelled")
+        .then(|| {
+            let turn_at = c
+                .store
+                .find::<TurnMark>(K_TURN_MARK, &it.run)
+                .ok()
+                .flatten()
+                .map(|m| m.at_ms);
+            (it.clone(), turn_at)
+        });
+    let data = if heuristic_close(reason) {
+        json!({"reason": reason, "closed_by": "heuristic", "answered": false})
+    } else {
+        json!({"reason": reason})
+    };
     let mut tx = Tx::new();
     tx.event(
         event,
         json!({"interaction": it.id, "pane": it.pane, "run": it.run}),
-        json!({"reason": reason}),
+        data,
     );
     tx.interaction(it);
     let _ = server.commit(&mut c, tx);
     drop(c);
+    if let Some((it, turn_at)) = dismissed {
+        server.agents.remember_dismissal(&it, turn_at);
+    }
     if unknown_path && let Some(r) = server.with_core(|c| c.run(&run_id).cloned()) {
         arbiter::note(server, &r, arbiter::Kind::UnknownResolution);
+    }
+}
+
+/// Reason of a user's dismissal (`interaction.cancel`, the inbox's Dismiss).
+pub(crate) const DISMISSED: &str = "dismissed";
+
+/// A request the user dismissed in Vibeke. Its dialog stays in the pane (Dismiss does not
+/// answer the agent) but must not come back as a new inbox item and push while it shows.
+#[derive(Debug, Clone)]
+struct DismissedDialog {
+    /// The dismissed interaction and its native request id (a retried hook names it again).
+    id: String,
+    native_ref: Option<String>,
+    run: String,
+    kind: InteractionKind,
+    title: String,
+    command: Option<String>,
+    /// Screen fingerprint of the dialog: known for screen-sourced requests, learned for a
+    /// structured one when the harness draws its dialog after the gate was released.
+    fingerprint: Option<String>,
+    /// The run's turn boundary when it was dismissed: a new turn forgets the dismissal.
+    turn_at: Option<i64>,
+}
+
+/// Dismissals remembered per pane (a few dialogs can be stacked in one turn).
+const MAX_DISMISSED_PER_PANE: usize = 8;
+
+impl Agents {
+    fn remember_dismissal(&self, it: &Interaction, turn_at: Option<i64>) {
+        let d = DismissedDialog {
+            id: it.id.clone(),
+            native_ref: it.native_ref.clone(),
+            run: it.run.clone(),
+            kind: it.kind,
+            title: it.title.clone(),
+            command: it.action.as_ref().and_then(|a| a.command.clone()),
+            fingerprint: it
+                .native_ref
+                .as_deref()
+                .and_then(|r| r.strip_prefix("screen:"))
+                .map(str::to_string),
+            turn_at,
+        };
+        let mut i = self.inner.lock().unwrap();
+        let list = i.dismissed.entry(it.pane.clone()).or_default();
+        list.push(d);
+        if list.len() > MAX_DISMISSED_PER_PANE {
+            list.remove(0);
+        }
+    }
+
+    /// The dismissed interaction of `run` with this native request id, if any.
+    fn dismissed_request(&self, pane: &str, run: &str, native_ref: Option<&str>) -> Option<String> {
+        let native_ref = native_ref?;
+        let i = self.inner.lock().unwrap();
+        i.dismissed
+            .get(pane)?
+            .iter()
+            .find(|x| x.run == run && x.native_ref.as_deref() == Some(native_ref))
+            .map(|x| x.id.clone())
+    }
+
+    /// Is the screen dialog `d` one the user already dismissed in this turn? Forgets the
+    /// pane's dismissals once the run's turn moved on, and a dismissed dialog that was seen
+    /// once the screen shows the agent working with no dialog (it was answered in the pane or
+    /// went away).
+    fn dialog_dismissed(&self, server: &Server, run: &AgentRun, m: &screen::ScreenMatch) -> bool {
+        let pane = run.pane.as_str();
+        if !self.inner.lock().unwrap().dismissed.contains_key(pane) {
+            return false;
+        }
+        let turn_at = server.with_core(|c| {
+            c.store
+                .find::<TurnMark>(K_TURN_MARK, &run.id)
+                .ok()
+                .flatten()
+                .map(|m| m.at_ms)
+        });
+        let mut i = self.inner.lock().unwrap();
+        let Some(list) = i.dismissed.get_mut(pane) else {
+            return false;
+        };
+        list.retain(|x| x.run == run.id && x.turn_at == turn_at);
+        let moved_on = m.dialog.is_none() && matches!(m.state, Some((Execution::Working, _)));
+        if moved_on {
+            // A dialog that was seen and is gone now was answered or closed in the pane. One
+            // not drawn yet stays remembered: while a released gate hands the request back,
+            // the screen can still show the agent working.
+            list.retain(|x| x.fingerprint.is_none());
+        }
+        let hit = match &m.dialog {
+            Some(d) => {
+                if list
+                    .iter()
+                    .any(|x| x.fingerprint.as_deref() == Some(d.fingerprint.as_str()))
+                {
+                    true
+                } else if let Some(x) = list
+                    .iter_mut()
+                    .find(|x| x.fingerprint.is_none() && same_request(x, d))
+                {
+                    // The harness drew the dialog of the dismissed structured request.
+                    x.fingerprint = Some(d.fingerprint.clone());
+                    true
+                } else {
+                    false
+                }
+            }
+            None => false,
+        };
+        if list.is_empty() {
+            i.dismissed.remove(pane);
+        }
+        hit
+    }
+}
+
+/// Does the screen dialog `d` show the dismissed structured request `x`? Approvals compare
+/// their command (the screen may show only its first line); a question or plan review is the
+/// first dialog of a matching kind the harness draws after the dismissal in the same turn.
+fn same_request(x: &DismissedDialog, d: &screen::Dialog) -> bool {
+    let norm = |s: &str| s.lines().next().unwrap_or("").trim().to_string();
+    match x.kind {
+        InteractionKind::Approval => {
+            if d.kind != InteractionKind::Approval {
+                return false;
+            }
+            match (&x.command, &d.command) {
+                (Some(a), Some(b)) => {
+                    let (a, b) = (norm(a), norm(b));
+                    !a.is_empty() && !b.is_empty() && (a.starts_with(&b) || b.starts_with(&a))
+                }
+                _ => norm(&x.title) == norm(&d.title),
+            }
+        }
+        InteractionKind::Question | InteractionKind::PlanReview => matches!(
+            d.kind,
+            InteractionKind::Question | InteractionKind::Picker | InteractionKind::PlanReview
+        ),
+        _ => norm(&x.title) == norm(&d.title),
     }
 }
 
@@ -1150,6 +1336,22 @@ fn held_gates(server: &Server) -> std::collections::HashSet<String> {
 /// waiting on Vibeke; `gate` is set before the commit, the gate itself is registered after it)
 /// and a sandbox request are never closed here: releasing them would deny without a decision.
 fn resolve_open(server: &Server, run: &str, reason: &str, pick: impl Fn(&Interaction) -> bool) {
+    resolve_open_as(
+        server,
+        run,
+        InteractionStatus::ResolvedElsewhere,
+        reason,
+        pick,
+    );
+}
+
+fn resolve_open_as(
+    server: &Server,
+    run: &str,
+    status: InteractionStatus,
+    reason: &str,
+    pick: impl Fn(&Interaction) -> bool,
+) {
     let gates = held_gates(server);
     let ids: Vec<String> = server.with_core(|c| {
         c.model
@@ -1167,7 +1369,7 @@ fn resolve_open(server: &Server, run: &str, reason: &str, pick: impl Fn(&Interac
             .collect()
     });
     for id in ids {
-        resolve(server, &id, InteractionStatus::ResolvedElsewhere, reason);
+        resolve(server, &id, status, reason);
     }
 }
 
@@ -1194,17 +1396,36 @@ fn screen_shows_no_dialog(server: &Server, run: &AgentRun) -> bool {
     screen::evaluate(h, &text).dialog.is_none()
 }
 
+/// Closes only requests older than [`SCREEN_GRACE`]: hooks fire before the harness draws its
+/// dialog, so a parallel tool's `PreToolUse` can arrive before the question was ever shown.
+/// The close is a guess, recorded as such ([`OTHER_TOOL_STARTED`]).
 fn close_questions_for_tool(server: &Server, run: &AgentRun, tool_use: &str) {
-    let now = now_ms();
-    resolve_open(server, &run.id, "tool ran", |i| {
-        matches!(
-            i.kind,
-            InteractionKind::Question | InteractionKind::Picker | InteractionKind::PlanReview
-        ) && i.source != StateSource::Screen
-            && i.native_ref.as_deref() != Some(tool_use)
-            && i.opened_at_ms < now
-            && !harness::is_elicitation(i)
-    });
+    let shown_by = now_ms() - SCREEN_GRACE.as_millis() as i64;
+    resolve_open_as(
+        server,
+        &run.id,
+        InteractionStatus::Cancelled,
+        OTHER_TOOL_STARTED,
+        |i| {
+            matches!(
+                i.kind,
+                InteractionKind::Question | InteractionKind::Picker | InteractionKind::PlanReview
+            ) && i.source != StateSource::Screen
+                && i.native_ref.as_deref() != Some(tool_use)
+                && i.opened_at_ms <= shown_by
+                && !harness::is_elicitation(i)
+        },
+    );
+}
+
+/// Reasons of closes Vibeke guessed (nobody answered through Vibeke, and the harness did not
+/// report an answer). They are recorded as `Cancelled` with `closed_by: "heuristic"`, never as
+/// resolved elsewhere, so the history does not claim that someone answered.
+pub(crate) const OTHER_TOOL_STARTED: &str = "another tool started";
+pub(crate) const NO_DIALOG_SEEN: &str = "no dialog on screen";
+
+fn heuristic_close(reason: &str) -> bool {
+    reason == OTHER_TOOL_STARTED || reason == NO_DIALOG_SEEN
 }
 
 // ---- hook transport ---------------------------------------------------------------------------
@@ -1769,8 +1990,12 @@ fn on_signal(server: &Arc<Server>, pane: &str, h: Harness, event: &str, p: &Valu
             let msg = p
                 .get("last_assistant_message")
                 .and_then(Value::as_str)
-                .map(str::to_string)
-                .or_else(|| last_assistant_message(p));
+                .map(str::to_string);
+            // The adapter transport fills `last_assistant_message` from the transcript before
+            // it gets here (off the async workers). Other paths read it in the background.
+            if msg.is_none() {
+                fill_last_message_later(server, &run.id, p);
+            }
             update_run(server, &run.id, |r, tx| {
                 if let Some(m) = &msg {
                     r.last_message = Some(m.chars().take(2000).collect());
@@ -1903,9 +2128,62 @@ fn on_signal(server: &Arc<Server>, pane: &str, h: Harness, event: &str, p: &Valu
     }
 }
 
-fn last_assistant_message(p: &Value) -> Option<String> {
-    let path = p.get("transcript_path")?.as_str()?;
-    harness::transcript_last_message(std::path::Path::new(path))
+/// The run's transcript file if the server may read it for the run's pane: the stored path is
+/// checked again at read time (`transcript_file::accept`), since a contained agent can change
+/// its files after it reported the path.
+fn readable_transcript(server: &Server, r: &AgentRun) -> Option<std::path::PathBuf> {
+    let raw = r.transcript_path.as_deref()?;
+    transcript_file::accept(server, &r.pane, raw).map(std::path::PathBuf::from)
+}
+
+/// Read the last assistant message of a finished turn from the transcript on the blocking
+/// pool and store it on the run, when the hook payload did not carry it.
+fn fill_last_message_later(server: &Arc<Server>, run: &str, p: &Value) {
+    let Some(path) = p.get("transcript_path").and_then(Value::as_str) else {
+        return;
+    };
+    let Ok(rt) = tokio::runtime::Handle::try_current() else {
+        return;
+    };
+    let path = std::path::PathBuf::from(path);
+    let (server, run) = (server.clone(), run.to_string());
+    rt.spawn(async move {
+        let msg = tokio::task::spawn_blocking(move || harness::transcript_last_message(&path))
+            .await
+            .ok()
+            .flatten();
+        if let Some(m) = msg {
+            update_run(&server, &run, |r, _| {
+                r.last_message = Some(m.chars().take(2000).collect());
+            });
+        }
+    });
+}
+
+/// Prepare a hook payload from `pane` before it is routed: drop a transcript path the server
+/// may not read for this pane (`transcript_file::accept`), and fill a finished turn's
+/// `last_assistant_message` from the transcript on the blocking pool, so the state machine,
+/// turn tracking and notifications see it without blocking an async worker.
+async fn prepare_payload(server: &Arc<Server>, pane: &str, event: &str, payload: &mut Value) {
+    transcript_file::sanitize_payload(server, pane, payload);
+    if !matches!(event, "Stop" | "Interrupt")
+        || payload
+            .get("last_assistant_message")
+            .is_some_and(Value::is_string)
+    {
+        return;
+    }
+    let Some(path) = payload.get("transcript_path").and_then(Value::as_str) else {
+        return;
+    };
+    let path = std::path::PathBuf::from(path);
+    let msg = tokio::task::spawn_blocking(move || harness::transcript_last_message(&path))
+        .await
+        .ok()
+        .flatten();
+    if let (Some(m), Some(obj)) = (msg, payload.as_object_mut()) {
+        obj.insert("last_assistant_message".into(), Value::String(m));
+    }
 }
 
 /// `adapter.gate`: open an interaction and either answer by policy, hold until a client
@@ -1937,39 +2215,76 @@ async fn gate(server: &Arc<Server>, pane: &str, h: Harness, event: &str, p: &Val
     };
     it.answerable = native || h.keystroke_answers(it.kind);
     let (tx_reply, rx_reply) = oneshot::channel::<GateReply>();
+    // A hook retried after a dropped connection re-attaches to the request it opened before:
+    // no second `interaction.opened`, no second push.
+    let mut reattached = false;
+    // The user dismissed this request and its hook retried: the harness shows its own dialog,
+    // the request stays closed (no new inbox item, no push).
+    if let Some(id) = server
+        .agents
+        .dismissed_request(pane, &run.id, it.native_ref.as_deref())
+    {
+        return Ok(json!({"decision": null, "interaction": id}));
+    }
     {
         let mut c = server.core.lock().unwrap();
-        it.handle = c.next_interaction_handle();
         // Re-attach by native ref (a hook retried after a dropped connection, 04 §7.3 rule 4):
         // an already-decided interaction returns its recorded decision; never reopen it.
-        if let Some(existing) = c
+        let existing = c
             .model
             .interactions
             .iter()
             .find(|x| x.native_ref.is_some() && x.native_ref == it.native_ref && x.run == run.id)
-            .cloned()
-        {
-            if existing.status == InteractionStatus::Answered
-                && let Some(ans) = existing.answer.clone()
+            .cloned();
+        let mut tx = Tx::new();
+        match existing {
+            Some(existing)
+                if existing.status == InteractionStatus::Answered && existing.answer.is_some() =>
             {
+                let ans = existing.answer.clone().unwrap_or_default();
                 let json = harness::decision_json_cfg(h, &existing, &ans);
                 let key = format!("{}:{}", existing.id, existing.decision_rev);
                 return Ok(
                     json!({"decision": json, "interaction": existing.id, "idempotency_key": key, "resumed": true}),
                 );
             }
-            it.id = existing.id.clone();
-            it.handle = existing.handle.clone();
+            // The user dismissed it: the harness shows its own dialog, the request stays closed.
+            Some(existing) if existing.status == InteractionStatus::Cancelled => {
+                return Ok(json!({"decision": null, "interaction": existing.id}));
+            }
+            Some(existing) if existing.status == InteractionStatus::Open => {
+                reattached = true;
+                it = existing;
+                if it.gate != gate_mode {
+                    it.gate = gate_mode;
+                    tx.event(
+                        "interaction.updated",
+                        json!({"interaction": it.id, "pane": pane}),
+                        json!({"gate": gate_mode, "reason": "hook_reattached"}),
+                    );
+                    tx.interaction(it.clone());
+                }
+            }
+            existing => {
+                it.handle = match &existing {
+                    Some(x) => x.handle.clone(),
+                    None => c.next_interaction_handle(),
+                };
+                if let Some(x) = existing {
+                    it.id = x.id;
+                }
+                tx.counters = true;
+                tx.event(
+                    "interaction.opened",
+                    json!({"interaction": it.id, "pane": pane, "run": run.id}),
+                    json!({"kind": it.kind.as_str(), "source": "structured", "confidence": 1.0, "gate": gate_mode, "native_ref": it.native_ref, "risk": it.action.as_ref().map(|a| format!("{:?}", a.risk).to_lowercase())}),
+                );
+                tx.interaction(it.clone());
+            }
         }
-        let mut tx = Tx::new();
-        tx.counters = true;
-        tx.event(
-            "interaction.opened",
-            json!({"interaction": it.id, "pane": pane, "run": run.id}),
-            json!({"kind": it.kind.as_str(), "source": "structured", "confidence": 1.0, "gate": gate_mode, "native_ref": it.native_ref, "risk": it.action.as_ref().map(|a| format!("{:?}", a.risk).to_lowercase())}),
-        );
-        tx.interaction(it.clone());
-        server.commit(&mut c, tx).map_err(internal)?;
+        if !tx.interactions.is_empty() {
+            server.commit(&mut c, tx).map_err(internal)?;
+        }
     }
     if let Some((effect, rule)) = policy {
         let decision = if effect == "allow" {
@@ -1994,7 +2309,9 @@ async fn gate(server: &Arc<Server>, pane: &str, h: Harness, event: &str, p: &Val
         p,
         gate_mode.then_some(GATE_TIMEOUT),
     );
-    notify_interaction(server, &it, &run);
+    if !reattached {
+        notify_interaction(server, &it, &run);
+    }
     if !gate_mode {
         return Ok(json!({"decision": null, "interaction": it.id, "mode": "observe"}));
     }
@@ -2005,32 +2322,109 @@ async fn gate(server: &Arc<Server>, pane: &str, h: Harness, event: &str, p: &Val
             pane: pane.to_string(),
         },
     );
-    let reply = tokio::time::timeout(GATE_TIMEOUT, rx_reply).await;
+    // The gate belongs to the hook's connection: when the hook is killed (the harness was
+    // interrupted, or its own hook timeout fired) nobody can print a decision any more.
+    let mut rx_reply = rx_reply;
+    let reply = tokio::select! {
+        r = tokio::time::timeout(GATE_TIMEOUT, &mut rx_reply) => Some(r),
+        _ = crate::run::connection_closed() => None,
+    };
     match reply {
-        Ok(Ok(GateReply::Decision { json, key })) => {
+        Some(Ok(Ok(GateReply::Decision { json, key }))) => {
+            watch_hook_delivery(server, &it.id, &key);
             Ok(json!({"decision": json, "interaction": it.id, "idempotency_key": key}))
         }
-        Ok(Ok(GateReply::NoDecision)) | Ok(Err(_)) => {
+        Some(Ok(Ok(GateReply::NoDecision))) | Some(Ok(Err(_))) => {
             Ok(json!({"decision": null, "interaction": it.id}))
         }
-        Err(_) => {
+        Some(Err(_)) => {
             server.agents.inner.lock().unwrap().gates.remove(&it.id);
             // Harness-backed approval: no decision → the native dialog appears (§2.7).
-            let mut c = server.core.lock().unwrap();
-            if let Some(mut x) = c.interaction(&it.id).cloned() {
-                x.gate = false;
-                let mut tx = Tx::new();
-                tx.event(
-                    "interaction.updated",
-                    json!({"interaction": x.id}),
-                    json!({"gate": false, "reason": "gate_timeout"}),
-                );
-                tx.interaction(x);
-                let _ = server.commit(&mut c, tx);
-            }
+            release_gate_flag(server, &it.id, "gate_timeout");
+            Ok(json!({"decision": null, "interaction": it.id}))
+        }
+        None => {
+            hook_gone(server, &it.id, rx_reply);
             Ok(json!({"decision": null, "interaction": it.id}))
         }
     }
+}
+
+/// The hook holding the gate of `id` disconnected. The interaction stays open without a gate:
+/// the harness shows its own dialog (or has moved on, which closes the item), and a later
+/// answer is typed into the pane instead of being reported as delivered through a dead hook.
+/// A decision that was handed to the gate just before the hook went away never reached the
+/// harness for sure: it is recorded as `DeliveryUnknown`.
+fn hook_gone(server: &Server, id: &str, mut rx: oneshot::Receiver<GateReply>) {
+    server.agents.inner.lock().unwrap().gates.remove(id);
+    // Close the channel first: an answer that took the gate concurrently then fails its send
+    // and records the unknown delivery itself (`answer`).
+    rx.close();
+    if let Ok(GateReply::Decision { .. }) = rx.try_recv() {
+        set_delivery(
+            server,
+            id,
+            DeliveryState::DeliveryUnknown,
+            Some("hook disconnected before the agent received the answer".into()),
+        );
+        return;
+    }
+    release_gate_flag(server, id, "hook_disconnected");
+}
+
+/// Mark an open interaction as no longer held by a gate (`reason` in the event).
+fn release_gate_flag(server: &Server, id: &str, reason: &str) {
+    let mut c = server.core.lock().unwrap();
+    if let Some(mut x) = c.interaction(id).cloned()
+        && x.gate
+    {
+        x.gate = false;
+        let mut tx = Tx::new();
+        tx.event(
+            "interaction.updated",
+            json!({"interaction": x.id, "pane": x.pane}),
+            json!({"gate": false, "reason": reason}),
+        );
+        tx.interaction(x);
+        let _ = server.commit(&mut c, tx);
+    }
+}
+
+/// How long the hook has to confirm a decision it received before its connection closing
+/// stops counting as a lost delivery.
+const HOOK_ACK_WINDOW: Duration = Duration::from_secs(120);
+
+/// After a gate returned a decision, the hook prints it and acks on the same connection
+/// (`adapter.delivery_ack`). If the connection closes while the interaction is still
+/// `Delivering` with this decision, the hook died before the harness took the answer: record
+/// `DeliveryUnknown` instead of letting a later "tool ran" turn it into `Delivered`.
+fn watch_hook_delivery(server: &Arc<Server>, id: &str, key: &str) {
+    let Some(cancel) = crate::run::ConnCancel::current() else {
+        return;
+    };
+    let (server, id, key) = (server.clone(), id.to_string(), key.to_string());
+    tokio::spawn(async move {
+        if tokio::time::timeout(HOOK_ACK_WINDOW, cancel.cancelled())
+            .await
+            .is_err()
+        {
+            return;
+        }
+        let pending = server.with_core(|c| {
+            c.interaction(&id).is_some_and(|i| {
+                i.delivery == DeliveryState::Delivering
+                    && format!("{}:{}", i.id, i.decision_rev) == key
+            })
+        });
+        if pending {
+            set_delivery(
+                &server,
+                &id,
+                DeliveryState::DeliveryUnknown,
+                Some("hook disconnected before it confirmed the answer".into()),
+            );
+        }
+    });
 }
 
 fn match_policy(server: &Server, it: &Interaction) -> Option<(String, String)> {
@@ -3208,16 +3602,15 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
             Ok(r) => {
                 let source = s(p, "source").unwrap_or("recent");
                 if source == "transcript" {
-                    let text = r
-                        .transcript_path
-                        .as_deref()
-                        .map(|t| {
-                            harness::transcript_tail(
-                                std::path::Path::new(t),
-                                u(p, "lines").unwrap_or(20) as usize,
-                            )
-                        })
-                        .unwrap_or_default();
+                    let lines = u(p, "lines").unwrap_or(20) as usize;
+                    let text = match readable_transcript(server, &r) {
+                        Some(t) => {
+                            tokio::task::spawn_blocking(move || harness::transcript_tail(&t, lines))
+                                .await
+                                .unwrap_or_default()
+                        }
+                        None => String::new(),
+                    };
                     return Some(Ok(json!({"text": text, "source": "transcript"})));
                 }
                 Ok(
@@ -3227,10 +3620,15 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
             Err(e) => Err(e),
         },
         "agent.transcript" => match resolve_run(server, ctx, s(p, "target")) {
-            Ok(r) => match r.transcript_path {
-                Some(t) => Ok(
-                    json!({"turns": harness::transcript_turns(std::path::Path::new(&t), u(p, "limit").unwrap_or(20) as usize)}),
-                ),
+            Ok(r) => match readable_transcript(server, &r) {
+                Some(t) => {
+                    let limit = u(p, "limit").unwrap_or(20) as usize;
+                    let turns =
+                        tokio::task::spawn_blocking(move || harness::transcript_turns(&t, limit))
+                            .await
+                            .unwrap_or_default();
+                    Ok(json!({"turns": turns}))
+                }
                 None => Err(err(ErrorKind::Unsupported, "no transcript for this run")
                     .details(json!({"fallback": "agent.read"}))),
             },
@@ -3404,7 +3802,7 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
                     if let Some(e) = dismiss_refusal(server, &id) {
                         return Some(Err(e));
                     }
-                    resolve(server, &id, InteractionStatus::Cancelled, "dismissed");
+                    resolve(server, &id, InteractionStatus::Cancelled, DISMISSED);
                     Ok(json!({}))
                 }
                 None => Err(not_found("interaction", &id)),
@@ -3424,7 +3822,8 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
             };
             let h = route::effective(server, &pane, h);
             let event = s(p, "event").unwrap_or("").to_string();
-            let payload = p.get("payload").cloned().unwrap_or(Value::Null);
+            let mut payload = p.get("payload").cloned().unwrap_or(Value::Null);
+            prepare_payload(server, &pane, &event, &mut payload).await;
             let pid = p
                 .get("pid")
                 .and_then(Value::as_u64)

@@ -745,7 +745,16 @@ pub fn parse_rfc3339_ms(s: &str) -> Option<i64> {
     let (hms, frac) = time.split_once('.').unwrap_or((time, "0"));
     let mut t = hms.split(':').map(|x| x.parse::<i64>().ok());
     let (h, mi, se) = (t.next()??, t.next()??, t.next()??);
-    let ms: i64 = format!("{frac:0<3}")[..3].parse().ok()?;
+    // Milliseconds from the first three fraction digits. Check the bytes before slicing: a
+    // multibyte character in a malformed line must not split a char boundary.
+    if frac.is_empty() || !frac.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let ms = frac
+        .bytes()
+        .chain(std::iter::repeat(b'0'))
+        .take(3)
+        .fold(0i64, |acc, b| acc * 10 + i64::from(b - b'0'));
     // Days since 1970-01-01 (civil-from-days inverse).
     let y2 = if mo <= 2 { y - 1 } else { y };
     let era = y2.div_euclid(400);
@@ -847,6 +856,15 @@ mod tests {
             Some(951_868_801_500)
         );
         assert!(parse_rfc3339_ms("nonsense").is_none());
+        // Malformed fractions with multibyte characters return None instead of panicking.
+        assert!(parse_rfc3339_ms("2026-10-06T12:00:00.éZ").is_none());
+        assert!(parse_rfc3339_ms("2026-10-06T12:00:00.1é2Z").is_none());
+        assert!(parse_rfc3339_ms("2026-10-06T12:00:00.€€€Z").is_none());
+        assert!(parse_rfc3339_ms("2026-10-06T12:00:00.Z").is_none());
+        assert_eq!(
+            parse_rfc3339_ms("1970-01-01T00:00:00.123456789Z"),
+            Some(123)
+        );
     }
 
     fn claude_turn() -> Vec<Value> {

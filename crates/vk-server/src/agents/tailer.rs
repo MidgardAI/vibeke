@@ -104,12 +104,8 @@ fn format_for(h: Harness, path: &Path) -> Option<Format> {
             return None;
         }
     }
-    let mut head = vec![0u8; 8192];
-    use std::io::Read;
-    let n = std::fs::File::open(path)
-        .and_then(|mut f| f.read(&mut head))
-        .ok()?;
-    Format::sniff(&String::from_utf8_lossy(&head[..n]))
+    let (head, _) = read_from(path, 0, 8192).ok()?;
+    Format::sniff(&String::from_utf8_lossy(&head))
 }
 
 /// The run's transcript file: the path a hook reported, else the manifest's `[identity]`
@@ -117,6 +113,14 @@ fn format_for(h: Harness, path: &Path) -> Option<Format> {
 pub fn transcript_of(run: &AgentRun) -> Option<PathBuf> {
     if let Some(p) = &run.transcript_path {
         return Some(PathBuf::from(p));
+    }
+    // The session id comes from the agent: never let it walk out of the manifest's directory.
+    if run
+        .harness_session_id
+        .as_deref()
+        .is_some_and(|s| s.contains(['/', '\\', '\0']) || s.contains(".."))
+    {
+        return None;
     }
     let h = Harness::from_id(&run.harness)?;
     h.manifest()?.transcript_path(
@@ -189,16 +193,10 @@ pub fn tailing() -> Vec<(String, PathBuf, u64)> {
         .collect()
 }
 
+/// Only regular files are read (`transcript_file::read_from`): a FIFO or device named as a
+/// transcript yields an error instead of blocking the tailer.
 fn read_from(path: &Path, offset: u64, max: u64) -> std::io::Result<(Vec<u8>, u64)> {
-    use std::io::{Read, Seek, SeekFrom};
-    let mut f = std::fs::File::open(path)?;
-    let len = f.metadata()?.len();
-    // Truncated or replaced: start over.
-    let start = if len < offset { 0 } else { offset };
-    f.seek(SeekFrom::Start(start))?;
-    let mut buf = Vec::new();
-    f.take(max).read_to_end(&mut buf)?;
-    Ok((buf, start))
+    super::transcript_file::read_from(path, offset, max)
 }
 
 /// Read what each tail has not seen yet and apply the events. Returns the events applied.

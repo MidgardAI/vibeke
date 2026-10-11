@@ -2546,6 +2546,56 @@ async fn dismissing_an_open_interaction_cancels_it() {
     );
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn dismissing_a_changed_or_unknown_interaction_is_refused() {
+    let e = Env::new();
+    let t0 = now();
+    e.add_run("r1", &e.repo);
+    put_interaction(&e, "q1", "r1", t0 - 60_000);
+    let v = ok(&e, "attention.list", json!({})).await;
+    let rev = v["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["key"]["kind"] == "interaction" && i["key"]["id"] == "q1")
+        .and_then(|i| i["item_rev"].as_u64())
+        .expect("item revision");
+    // The user saw an older revision: the request changed since.
+    let e1 = call(
+        &e,
+        "attention.update",
+        json!({"key": {"kind": "interaction", "id": "q1"}, "dismiss": true, "item_rev": rev + 1}),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(e1.data.kind, "conflict");
+    assert_eq!(e1.message, "This request changed");
+    let open = e.server.with_core(|c| {
+        c.model
+            .interactions
+            .iter()
+            .any(|i| i.id == "q1" && i.status == InteractionStatus::Open)
+    });
+    assert!(open, "a refused dismissal changes nothing");
+    // The revision the user saw: dismissed.
+    let r = ok(
+        &e,
+        "attention.update",
+        json!({"key": {"kind": "interaction", "id": "q1"}, "dismiss": true, "item_rev": rev}),
+    )
+    .await;
+    assert_eq!(r["dismissed"], true);
+    // An interaction the server never had.
+    let e2 = call(
+        &e,
+        "attention.update",
+        json!({"key": {"kind": "interaction", "id": "nope"}, "dismiss": true}),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(e2.data.kind, "not_found");
+}
+
 // ---- delivery problems clear themselves ---------------------------------------------------------
 
 /// A closed interaction whose answer went out at `answered` and ended with `delivery`.

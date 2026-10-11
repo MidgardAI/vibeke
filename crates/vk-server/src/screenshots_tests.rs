@@ -1422,3 +1422,15 @@ async fn a_pane_deletes_only_images_it_attached() {
     assert_eq!(ok["deleted"], true);
     assert!(find(&e.server, &id).is_none());
 }
+
+#[test]
+fn requester_kind_names_plugins_and_elevated_agents() {
+    assert_eq!(requester_kind(&ctx_full()), "user");
+    assert_eq!(requester_kind(&ctx_pane("p1")), "agent");
+    let mut plugin = ctx_full();
+    plugin.kind = format!("{}example", crate::plugin_native::PLUGIN_KIND);
+    assert_eq!(requester_kind(&plugin), "plugin");
+    let mut elevated = ctx_full();
+    elevated.kind = format!("{}p1", crate::auth::ELEVATED_KIND);
+    assert_eq!(requester_kind(&elevated), "agent");
+}

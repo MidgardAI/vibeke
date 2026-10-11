@@ -48,21 +48,21 @@ pub(super) fn open_observed(
     confidence: f32,
     answerable: bool,
 ) -> Option<Interaction> {
-    if native_ref.is_some()
-        && server.with_core(|c| {
-            c.model.interactions.iter().any(|i| {
-                i.run == run.id && i.native_ref == native_ref && i.status == InteractionStatus::Open
-            })
-        })
-    {
-        return None;
-    }
     let mut it = harness::interaction_from_hook(
         Harness::Claude,
         "PermissionRequest",
         &json!({"tool_name": tool, "tool_input": input}),
     )?;
+    // Check and insert under one lock: two reports of the same request racing each other
+    // must not open it twice.
     let mut c = server.core.lock().unwrap();
+    if native_ref.is_some()
+        && c.model.interactions.iter().any(|i| {
+            i.run == run.id && i.native_ref == native_ref && i.status == InteractionStatus::Open
+        })
+    {
+        return None;
+    }
     it.handle = c.next_interaction_handle();
     it.run = run.id.clone();
     it.pane = run.pane.clone();

@@ -4005,10 +4005,24 @@ const KEY_KINDS: &[&str] = &[
     "binding_suspended",
 ];
 
+/// An interaction the server knows, open or closed.
+fn interaction_known(server: &Server, id: &str) -> bool {
+    server.with_core(|c| {
+        c.interaction(id).is_some()
+            || c.store
+                .find::<Interaction>("interaction", id)
+                .ok()
+                .flatten()
+                .is_some()
+    })
+}
+
 /// `attention.update {key, seen?, snooze_until_ms?, pin?, dismiss?, item_rev?}`: per-user
 /// preference only; never answers, sends or accepts (15 §8.3). `dismiss: true` hides the item
 /// until its revision changes (`item_rev` or the current one is stored as `dismissed_rev`);
-/// `dismiss: false` undoes that. Dismissing an open interaction also cancels it, which releases
+/// `dismiss: false` undoes that. A dismissal with an `item_rev` older or newer than the item's
+/// current revision is refused (`conflict`, "This request changed"); dismissing an unknown
+/// interaction is `not_found`. Dismissing an open interaction also cancels it, which releases
 /// a held hook gate so the agent falls back to its own dialog. A cancelled interaction stays
 /// cancelled after an undo.
 fn attention_update(server: &Arc<Server>, _ctx: &Ctx, p: &Value) -> R {
@@ -4074,6 +4088,18 @@ fn attention_update(server: &Arc<Server>, _ctx: &Ctx, p: &Value) -> R {
     let mut cancel_interaction = false;
     match p.get("dismiss").and_then(Value::as_bool) {
         Some(true) => {
+            // The user dismissed what they saw: if the item changed since (a new question in
+            // the same request, a new delivery problem), refuse so the client can show it.
+            if let (Some(seen), Some(i)) = (u(p, "item_rev"), item.as_ref())
+                && seen != i.key.revision
+            {
+                return Err(err(ErrorKind::Conflict, "This request changed").details(
+                    json!({"reason": "item_changed", "item_rev": i.key.revision, "seen_rev": seen}),
+                ));
+            }
+            if item.is_none() && kind == "interaction" && !interaction_known(server, id) {
+                return Err(not_found("interaction", id));
+            }
             let rev = match (u(p, "item_rev"), item.as_ref()) {
                 (Some(r), _) => r,
                 (None, Some(i)) => i.key.revision,
@@ -4095,7 +4121,12 @@ fn attention_update(server: &Arc<Server>, _ctx: &Ctx, p: &Value) -> R {
     pref.updated_at_ms = now_ms;
     if cancel_interaction {
         // Locks core itself, so it runs before this function takes the lock.
-        crate::agents::close_interaction(server, id, InteractionStatus::Cancelled, "dismissed");
+        crate::agents::close_interaction(
+            server,
+            id,
+            InteractionStatus::Cancelled,
+            crate::agents::DISMISSED,
+        );
     }
     // Preferences for objects that are gone and untouched for a week would pile up forever.
     let stale_prefs: Vec<String> = if col.complete {
