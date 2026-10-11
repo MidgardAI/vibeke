@@ -166,7 +166,7 @@ pub struct SandboxSpec {
     pub unix_sockets: Vec<PathBuf>,
     pub network: NetMode,
     /// Allow listening on localhost (dev servers for previews): only on [`Self::bind_ports`]
-    /// (the task's port lease) and on an ephemeral port (`0`).
+    /// (the task's port lease).
     pub allow_bind_localhost: bool,
     /// Loopback ports the box may listen on: the task's port lease. Never the configured host
     /// services of `[sandbox] local_ports` (a box listening there would impersonate them).
