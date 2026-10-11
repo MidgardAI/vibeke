@@ -3540,7 +3540,7 @@ dependencies = [
 
 [[package]]
 name = "vk-conformance"
-version = "0.13.0"
+version = "0.13.1"
 dependencies = [
  "anyhow",
  "font8x8",
