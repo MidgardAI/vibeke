@@ -401,6 +401,14 @@ manifest_check = true
 # redact_scrollback_index = true      # the search index and search.query results hold redacted text; segments stay as shown
 # [security.redact]
 # patterns = []                       # extra regular expressions redacted in logs, events, bundles, index and assistant payloads
+# [security.limits]                   # request budgets of agents (pane tokens); over a budget a call fails with rate_limited
+# burst               = 50            # requests a pane may make at once
+# rate                = 10            # requests per second added back to that budget
+# hook_burst          = 200           # the agent's hooks (adapter.*) and client.hello have a budget of their own
+# hook_rate           = 50            # hook requests per second added back
+# spawns_per_min      = 10            # agents a pane may start per minute
+# max_spawn_depth     = 3             # agents started by agents, at most this deep
+# max_descendant_runs = 20            # live agents started from one root agent, at most
 # AI assistance (spec 14). Off by default: nothing is sent anywhere until you enable it, choose a
 # connection and a profile, and grant consent per workspace (`vibeke assist consent`). User config
 # only: a repository's own config cannot redirect assistant traffic. Requests run on the machine

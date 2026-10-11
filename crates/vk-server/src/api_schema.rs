@@ -343,6 +343,8 @@ const ERROR_DETAILS: &[(&str, &str)] = &[
     ("not_found", "{object?: string, id?: string}"),
     ("permission_denied", "{scope?: string}"),
     ("conflict", "{reason?: string}"),
+    // A pane's request budget (`limits.rs`) or too many requests in flight on one connection.
+    ("rate_limited", "{retry_after_ms?: int, limit?: string}"),
     ("timeout", "{last_state?: any}"),
     ("unsupported", "{fallback?: any}"),
     ("truncated", "{earliest_seq?: int}"),
@@ -540,7 +542,7 @@ BrowserSession = {session: string, session_id: string, owner: {pane: string, pan
 Appearance = {known: bool, dark: bool, mode: string, theme: string, source: string}
 PaneLive = {pane: string, progress: {state: normal|error|indeterminate|paused, pct: int|null}|null, last_exit: {code: int, at_ms: int}|null, user_vars: [[string]]}
 LayoutSpec = object
-ScreenshotMeta = {id: string, handle?: string, workspace?: string, task?: string|null, run?: string|null, preview?: string|null, mime?: string, width?: int, height?: int, ts?: int, blob?: string, environment?: object, code?: object, pane?: string|null, caption?: string, source_name?: string}
+ScreenshotMeta = {id: string, taken_by?: {kind: agent|user|plugin, pane: string|null, run: string|null, client: string|null}, handle?: string, workspace?: string, task?: string|null, run?: string|null, preview?: string|null, mime?: string, width?: int, height?: int, ts?: int, blob?: string, environment?: object, code?: object, pane?: string|null, caption?: string, source_name?: string}
 AgentSummary = {working: int, needs_input: int, done: int, idle: int}
 RpcErrorData = {kind: string, details?: any, retryable: bool}
 RpcError = {code: int, message: string, data: RpcErrorData}
@@ -813,7 +815,8 @@ preview.status :: {} => {socks_port: int|null, browsers: [{profile: string, mach
 # full scope only
 preview.mirror :: {preview: Target, machine?: string} => {machine: string, preview: string, preview_handle: string, local_port: int, addrs: [string], since_ms: int, accepted: int, rejected: int, authenticated: bool, peer_check: same_user, warning: string, url?: string, already?: bool}
 # full scope, user clients only (the gateway's `tunnel.*`); after the result the connection carries raw bytes (06 B3.5)
-preview.connect :: {machine?: string, host: string, port: int} => {connected: bool}
+# a port that is not a declared preview, the task's port lease or a port the user allowed fails with conflict, details {reason: port_not_allowed, port, host, machine}: ask the user, then call again with allow_port: true (recorded per machine and port); actor names the device for the audit
+preview.connect :: {machine?: string, host: string, port: int, allow_port?: bool = false, actor?: string} => {connected: bool}
 # full scope only
 preview.unmirror :: {preview?: Target|int, port?: int, machine?: string} => {local_port: int, machine: string, preview: string}
 
@@ -890,7 +893,7 @@ browser.take_over :: {session?: string, browser_session?: string, target?: strin
 browser.release :: {session?: string, browser_session?: string, target?: string} => {session: string, human_control: bool}
 browser.attach_screencast :: {session?: string, browser_session?: string, target?: string} => {session: string, delivery: string, width: int, height: int, poll: string}
 browser.detach_screencast :: {session?: string, browser_session?: string, target?: string} => {session: string, detached: bool}
-browser.screencast_frame :: {session?: string, browser_session?: string, target?: string, after_seq?: int, wait_ms?: int = 0} => {session: string, seq: int, mime: string, width: int|null, height: int|null, received_ms: int, data_b64: string} | {session: string, seq: int|null, data_b64: null}
+browser.screencast_frame :: {session?: string, browser_session?: string, target?: string, after_seq?: int, wait_ms?: int = 0, data_saver?: bool} => {session: string, seq: int, mime: string, width: int|null, height: int|null, received_ms: int, data_b64: string} | {session: string, seq: int|null, data_b64: null}
 browser.input :: {session?: string, browser_session?: string, target?: string, events: [{type: touch, phase: start|move|end|cancel, points: [{id?: int, x: number, y: number}]} | {type: tap, x: number, y: number} | {type: wheel, x: number, y: number, dx?: number, dy?: number} | {type: text, text: string} | {type: key, key: string} | {type: history, action: back|forward|reload} | {type: resize, width: int, height: int, dpr?: number}]} => {session: string, applied: int}
 browser.watch :: {session?: string, agent_pane?: Target, pane?: Target, split?: right|down|left|up|tab|float = right, focus?: bool = true, focus_client?: string} => {opened_in: string, session: string, read_only: bool, pane: string, pane_handle: string, tab: string, url: string, machine: string, source_pane: string|null}
 browser.command :: {pane: Target, cmd: back|forward|reload|stop|navigate|screenshot|text|window|pane, url?: string, hard?: bool, text?: string}
@@ -934,6 +937,7 @@ attention.list :: {budget_ms?: int, effort?: quick|minutes|deep}
 attention.batch :: {interaction: string}
   => {interaction: string, batchable: bool, batch?: string, reason?: string, members: [{interaction: string, handle: string, run: string, pane: string, title: string, decision_rev: int, opened_at_ms: int}], facts?: object | null, note?: string}
 # key.kind is one of interaction|review|check_failed|send_unknown|finished_turn|binding_suspended; snooze_until_ms: null clears; dismiss: true hides the item until its revision changes (and cancels an open interaction), false undoes it
+# dismiss with an item_rev older than the item's fails with conflict, details {reason: item_changed, item_rev, seen_rev} (show the item again); dismissing an unknown interaction fails with not_found
 attention.update :: {key: {kind: string, id: string}, seen?: bool, item_rev?: int, snooze_until_ms?: int | null, pin?: bool, dismiss?: bool}
   => {key: {kind: string, id: string}, seen: bool, seen_rev: int | null, snoozed_until_ms: int | null, pinned: bool, dismissed: bool, dismissed_rev: int | null, warning: string | null}
 pane.can_see_paths :: {pane?: Target, paths?: [string]} => {visible: [bool]}
@@ -1193,7 +1197,8 @@ pub const EVENT_SHAPES: &str = r##"
 session.server_restarted :: {} => {recovered_panes?: int, pid?: int, prev_pid?: int}
 session.config_reloaded :: {} => {changed_keys: [string], new_panes_only: [string], source: watch|api|set|set_persist}
 session.config_rejected :: {} => {errors: [ConfigDiagnostic], source: watch}
-security.rate_limited :: {pane: string} => {method: string, limit: requests|spawn|depth|descendants}
+# at most one per pane and limit a minute; refusals counts the refused requests since the last one
+security.rate_limited :: {pane: string} => {method: string, limit: requests|hooks|spawn|depth|descendants, refusals?: int}
 pane.scroll_requested :: {pane: string, tab?: string, workspace?: string} => {offset: int, total: int, client: string|null}
 task.parked :: {task: string} => {runs: int, attached?: bool}
 tab.renumbered :: {workspace: string} => {tabs: [{tab: string, from: int, to: int}]}
@@ -1258,10 +1263,12 @@ agent.drift_detected :: {run: string, pane: string} => {harness: string, version
 harness.manifest_loaded :: {manifest: string} => {id: string, version: string, source: string, serial: int, verified: string}
 agent.exited :: {run: string, pane: string} => {reason: string, harness: string}
 interaction.opened :: {interaction?: string, pane?: string, run?: string} => any
+# reason hook_disconnected: the hook that held the gate went away (the dialog shows in the pane); hook_reattached: a retried hook holds it again
 interaction.updated :: {interaction: string, pane: string} => {gate?: bool, reason?: string}
 interaction.decided :: {interaction: string, pane: string, run: string} => {rev: int, by: string, decision: string|null, channel?: string}
 interaction.delivery_unknown :: {interaction: string, pane: string} => {reason: string}
-interaction.cancelled :: {interaction: string, pane: string} => {reason: string}
+# closed_by heuristic: Vibeke closed it because the agent moved on without the dialog (answered: false, nobody answered); reason dismissed: the user dismissed it
+interaction.cancelled :: {interaction: string, pane: string} => {reason: string, closed_by?: 'heuristic', answered?: bool}
 interaction.expired :: {interaction: string, pane?: string} => any
 policy.rule_matched :: {interaction: string} => {effect: string|null}
 policy.repo_trusted :: {} => {repo: string, digest: string, devcontainer_digest?: string|null}
@@ -1383,7 +1390,8 @@ integration.tampered :: {run: string|null} => {harness: string, reason: changed|
 /// JSON-RPC notifications the server pushes on a connection.
 pub const NOTIFICATION_SHAPES: &str = r##"
 events.event :: {subscription_id: string, event: Event} => {}
-events.overflow :: {subscription_id: string, resume_from: Cursor} => {}
+# reason slow_reader: the subscriber did not read its events fast enough
+events.overflow :: {subscription_id: string, resume_from: Cursor, reason?: string} => {}
 events.closed :: {subscription_id: string, reason: string} => {}
 "##;
 
@@ -1413,9 +1421,9 @@ machine.remove :: {machine: Target} => {removed: string, cursor: Cursor}
 
 # --- storage.* (retention, backups, degraded mode; full scope only) ---
 storage.status :: {}
-  => {degraded: string|null, ephemeral: int, archive_rows_skipped: int, db: {path: string, bytes: int}, events: {count: int, first_seq: int, last_seq: int, retention: {sync_days: int, history_days: int, max_rows: int, blob_days: int}}, backups: [{name: string, schema_version: int, created_at: int, bytes: int}], keep_backups: int, blobs: {count: int, bytes: int}, cursor: {machine_uuid: string, session_uuid: string, log_epoch: string}}
-# runs the retention sweep now (events past retention and over the row cap, old turns, unreferenced old blobs); refused while degraded
-storage.prune :: {} => {events_aged: int, events_capped: int, events_remaining: int, stream_removed: int, blobs_removed: int, blob_bytes: int}
+  => {degraded: string|null, ephemeral: int, archive_rows_skipped: int, db: {path: string, bytes: int}, events: {count: int, first_seq: int, last_seq: int, retention: {sync_days: int, history_days: int, max_rows: int, blob_days: int, closed_days: int}}, backups: [{name: string, schema_version: int, created_at: int, bytes: int}], keep_backups: int, blobs: {count: int, bytes: int}, cursor: {machine_uuid: string, session_uuid: string, log_epoch: string}}
+# runs the retention sweep now (events past retention and over the row cap, old turns, closed history past closed_retention, idempotency receipts older than a day, unreferenced old blobs); refused while degraded
+storage.prune :: {} => {events_aged: int, events_capped: int, events_remaining: int, stream_removed: int, closed_removed: int, blobs_removed: int, blob_bytes: int}
 
 # --- blob.stats / blob.gc (the unified blob store; full scope only) ---
 blob.stats :: {} => {count: int, bytes: int, by_source: object, path: string}
