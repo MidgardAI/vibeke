@@ -93,6 +93,7 @@ export const en = {
     multiHint: 'Choose any',
     preselected: (d: string) => `Opened from a notification — tap ${d} to confirm`,
     gone: 'This item is no longer open',
+    newItems: (n: number) => `${n} new`,
   },
 
   panes: {

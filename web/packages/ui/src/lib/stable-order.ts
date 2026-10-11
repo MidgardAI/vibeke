@@ -46,3 +46,55 @@ export function freezeSections<R extends { key: string }>(prev: readonly Section
   }
   return out;
 }
+
+/** A list row and the items it shows (a batch shows several; a card shows itself). */
+export interface MemberRow {
+  key: string;
+  members: readonly string[];
+}
+
+export interface FrozenRows<R extends MemberRow> {
+  rows: R[];
+  /** Rows that arrived while frozen and wait for the freeze to end. */
+  held: number;
+}
+
+/**
+ * Keep the order of `prev` while the user touches the list. A row that is still there stays in
+ * its place. When a row became another row (a card merged into a batch, or a batch split into
+ * cards), the new row takes the old place. A row that left disappears. Only rows whose items were
+ * never on screen are new: they wait, and `held` counts them for an "N new" pill.
+ */
+export function freezeRows<R extends MemberRow>(prev: readonly MemberRow[] | null, next: readonly R[]): FrozenRows<R> {
+  if (!prev) return { rows: [...next], held: 0 };
+  const byKey = new Map<string, R>();
+  const byMember = new Map<string, R>();
+  for (const r of next) {
+    byKey.set(r.key, r);
+    for (const m of r.members) if (!byMember.has(m)) byMember.set(m, r);
+  }
+  const placed = new Set<string>();
+  const rows: R[] = [];
+  const place = (r: R | undefined) => {
+    if (!r || placed.has(r.key)) return;
+    placed.add(r.key);
+    rows.push(r);
+  };
+  const seen = new Set<string>();
+  for (const p of prev) {
+    for (const m of p.members) seen.add(m);
+    if (byKey.has(p.key)) place(byKey.get(p.key));
+    else for (const m of p.members) place(byMember.get(m));
+  }
+  let held = 0;
+  for (const r of next) {
+    if (placed.has(r.key)) continue;
+    // A row with an item that was on screen keeps showing (at the end, so nothing above moves).
+    if (r.members.some((m) => seen.has(m))) place(r);
+    else held++;
+  }
+  return { rows, held };
+}
+
+/** Ignore taps for this long after a row moved under the pointer. */
+export const MOVED_TAP_GUARD_MS = 400;

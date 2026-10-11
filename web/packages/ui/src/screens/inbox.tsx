@@ -8,6 +8,7 @@ import { CatchUpSection } from '../components/catch-up';
 import { InteractionCard } from '../components/interaction-card';
 import { Empty } from '../components/ui';
 import { t } from '../i18n';
+import { useFrozenRows } from '../app/stable-list';
 import { InboxRetainer, itemKey, type RetainedEntry } from '../lib/retain';
 import { useCatchUp } from '../lib/use-catch-up';
 import { InboxApprovals } from './approve';
@@ -42,29 +43,45 @@ export function InboxScreen({ after }: { after?: ReactNode } = {}) {
   for (const b of batches) for (const it of b.items) batchOf.set(itemKey(it), b);
 
   const rendered = new Set<Batch>();
-  const rows: { key: string; node: ReactNode }[] = [];
+  const built: { key: string; members: string[]; node: ReactNode }[] = [];
   for (const e of entries) {
     const b = e.mode === 'open' ? batchOf.get(e.key) : undefined;
     if (b) {
       if (rendered.has(b)) continue;
       rendered.add(b);
-      rows.push({ key: `batch:${b.fingerprint}:${b.host_id}`, node: <BatchCard batch={b} showHost={showHost} /> });
+      built.push({ key: `batch:${b.fingerprint}:${b.host_id}`, members: b.items.map(itemKey), node: <BatchCard batch={b} showHost={showHost} /> });
       continue;
     }
-    rows.push({ key: e.key, node: <EntryCard entry={e} showHost={showHost} /> });
+    built.push({ key: e.key, members: [e.key], node: <EntryCard entry={e} showHost={showHost} /> });
   }
+  // Cards must not move under a finger: the order holds while the user touches the list.
+  const { rows, held, release, listProps } = useFrozenRows(built);
 
-  const empty = rows.length === 0 && approvals === 0 && catchUp.cards.length === 0;
+  const empty = built.length === 0 && approvals === 0 && catchUp.cards.length === 0;
   if (empty && !after) {
     return <Empty icon={<InboxIcon className="size-10" />} title={t.inbox.empty} hint={t.inbox.emptyHint} />;
   }
   if (empty) return <div data-nav-list>{after}</div>;
   const cards = (
-    <div className="space-y-3 px-3 pb-6 pt-2 sm:px-4" data-nav-list={after ? undefined : true}>
+    <div className="space-y-3 px-3 pb-6 pt-2 sm:px-4" data-nav-list={after ? undefined : true} {...listProps}>
       <CatchUpSection catchUp={catchUp} showHost={showHost} />
       <InboxApprovals showHost={showHost} />
+      {held > 0 && (
+        <div className="sticky top-2 z-10 flex justify-center">
+          <button
+            type="button"
+            data-act="show-new"
+            className="rounded-full bg-accent px-3 py-1 text-xs font-medium text-accent-fg shadow-md focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+            onClick={release}
+          >
+            {t.inbox.newItems(held)}
+          </button>
+        </div>
+      )}
       {rows.map((r) => (
-        <div key={r.key}>{r.node}</div>
+        <div key={r.key} data-row-key={r.key}>
+          {r.node}
+        </div>
       ))}
     </div>
   );
