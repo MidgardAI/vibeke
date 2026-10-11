@@ -6,7 +6,9 @@ The corpus is the 20 highest-ranked eligible plugins. Rank is stars, then older 
 ## Files
 
 - `catalog.json`: a reduced snapshot of the public plugin catalog. It keeps the first 40 eligible manifests that are not excluded, with only the fields that selection needs. It also records the time and sha256 of the full catalog. CI never reads the live catalog to choose plugins.
-- `exclude.toml`: repositories left out, keyed by numeric repository id. The next eligible plugin takes the slot.
+- `exclude.toml`: the inputs to the lock besides the snapshot.
+  - `[[exclude]]` entries leave a repository out, keyed by numeric repository id. The next eligible plugin takes the slot.
+  - `[[defer]]` entries keep a locked repository in its slot but do not run it for now. Each has a neutral reason. The lock carries the list. The workflow matrix leaves these plugins out, and the report lists them under "Deferred".
 - `top20.lock.toml`: the generated lock. It holds the commit, manifest hash and toolchain versions. Do not edit it by hand.
 
 ## Commands

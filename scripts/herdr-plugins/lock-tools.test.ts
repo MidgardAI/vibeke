@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { merge, parseRecords } from "../herdr-plugins-record";
-import { allowlist, matrix, parseLock } from "./lock-tools";
+import { allowlist, deferredPlugins, matrix, parseLock } from "./lock-tools";
 
 const LOCK = `schema = 1
 baseline = "0.9.3"
@@ -79,6 +79,20 @@ describe("lock tools", () => {
     expect(matrix(lock, "acme.one", ["linux"]).map((e) => e.plugin_id)).toEqual(["acme.one"]);
     expect(matrix(lock, "solo/tool, 1", ["linux"]).map((e) => e.plugin_id)).toEqual(["acme.one", "solo.tool"]);
     expect(matrix(lock, "nothing", ["linux"])).toEqual([]);
+  });
+
+  test("deferred plugins keep their rank but leave the matrix", () => {
+    const deferred = parseLock(
+      LOCK.replace("[[exclude]]", '[[defer]]\nrepository = "acme/multi"\nreason = "Needs an account."\n\n[[exclude]]'),
+    );
+    expect(matrix(deferred, "", ["linux", "macos"]).map((e) => e.plugin_id)).toEqual(["solo.tool", "solo.tool"]);
+    // Asking for it by name does not bring it back.
+    expect(matrix(deferred, "acme.one", ["linux"])).toEqual([]);
+    expect(deferredPlugins(deferred)).toEqual([
+      { rank: 1, plugin_id: "acme.one", repository: "acme/multi", reason: "Needs an account." },
+      { rank: 2, plugin_id: "acme.two", repository: "acme/multi", reason: "Needs an account." },
+    ]);
+    expect(deferredPlugins(lock)).toEqual([]);
   });
 
   test("allowlist lists the locked dependencies", () => {

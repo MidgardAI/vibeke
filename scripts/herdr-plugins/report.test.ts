@@ -306,6 +306,21 @@ describe("recomputed verdict", () => {
   test("the rendered matrix says that results can be forged", () => {
     expect(render(build([]))).toContain("not a security verdict");
   });
+
+  test("deferred plugins are listed with their reasons and do not fail the run", () => {
+    const deferred = [
+      { rank: 6, plugin_id: "web.ui", repository: "acme/web-ui", reason: "Needs a <server> & more." },
+      { rank: 3, plugin_id: "box", repository: "acme/box", reason: "Needs an account." },
+    ];
+    const m = build([], [], null, deferred);
+    expect(m.deferred.map((d) => d.rank)).toEqual([3, 6]);
+    expect(m.failing).toBe(false);
+    const text = render(m);
+    expect(text).toContain("## Deferred");
+    expect(text).toContain("- 3. box (acme\\/box): Needs an account\\.");
+    expect(text).toContain("&lt;server&gt; &amp; more");
+    expect(render(build([]))).not.toContain("## Deferred");
+  });
 });
 
 describe("test exit status", () => {

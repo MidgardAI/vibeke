@@ -6,8 +6,9 @@
 //   bun scripts/herdr-plugins/lock-tools.ts toolchains [--lock L]
 //   bun scripts/herdr-plugins/lock-tools.ts allowlist [--lock L] --plugin <plugin_id>
 //
-// `matrix` prints `{"include": [...]}` with one entry per plugin and OS. `toolchains` prints
-// `name=version` lines. `allowlist` prints the verified-mode allowlist the proxy reads (18 §7.2).
+// `matrix` prints `{"include": [...]}` with one entry per plugin and OS; deferred plugins
+// (`[[defer]]` in the lock, 18 §6) are left out. `toolchains` prints `name=version` lines.
+// `allowlist` prints the verified-mode allowlist the proxy reads (18 §7.2).
 
 import { readFileSync } from "node:fs";
 
@@ -26,11 +27,29 @@ export type LockedPlugin = {
   dependency?: { url: string; sha256: string }[];
 };
 
+export type Deferral = { repository: string; reason: string };
+
 export type Lock = {
   schema: number;
   toolchains?: Record<string, string>;
+  defer?: Deferral[];
   plugin?: LockedPlugin[];
 };
+
+/** Why `p` is deferred (its repository is in the lock's `defer` list), or `undefined`. */
+export function deferral(lock: Lock, p: LockedPlugin): Deferral | undefined {
+  return (lock.defer ?? []).find((d) => d.repository === p.repository);
+}
+
+/** The deferred plugins in rank order, with their reasons, for the report. */
+export function deferredPlugins(lock: Lock): { rank: number; plugin_id: string; repository: string; reason: string }[] {
+  return [...(lock.plugin ?? [])]
+    .sort((a, b) => a.rank - b.rank)
+    .flatMap((p) => {
+      const d = deferral(lock, p);
+      return d ? [{ rank: p.rank, plugin_id: p.plugin_id, repository: p.repository, reason: d.reason }] : [];
+    });
+}
 
 export type MatrixEntry = {
   plugin_id: string;
@@ -81,7 +100,7 @@ export function matrix(lock: Lock, filter: string, oses: ("linux" | "macos")[]):
   const out: MatrixEntry[] = [];
   const plugins = [...(lock.plugin ?? [])].sort((a, b) => a.rank - b.rank);
   for (const p of plugins) {
-    if (!selects(filter, p)) continue;
+    if (!selects(filter, p) || deferral(lock, p)) continue;
     if (!/^[A-Za-z0-9][A-Za-z0-9-]*\/(?!\.\.?$)[A-Za-z0-9_.-]+$/.test(p.repository)) {
       throw new Error(`bad repository ${JSON.stringify(p.repository)}`);
     }
