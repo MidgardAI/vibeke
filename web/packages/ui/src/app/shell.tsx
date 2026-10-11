@@ -58,7 +58,20 @@ export function Toasts() {
             x.tone === 'error' ? 'bg-danger text-danger-fg' : x.tone === 'ok' ? 'bg-surface-3 text-fg' : x.tone === 'warn' ? 'bg-warn text-black' : 'bg-surface-3 text-fg',
           )}
         >
-          {x.text}
+          <span>{x.text}</span>
+          {x.action && (
+            <button
+              type="button"
+              data-act="toast-action"
+              className="ml-3 font-semibold underline underline-offset-2 focus-visible:outline-2 focus-visible:outline-accent"
+              onClick={() => {
+                app.closeToast(x.id);
+                x.action!.run();
+              }}
+            >
+              {x.action.label}
+            </button>
+          )}
         </div>
       ))}
     </div>,

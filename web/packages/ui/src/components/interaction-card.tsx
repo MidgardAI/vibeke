@@ -7,7 +7,8 @@ import { AlertTriangle, Check, CircleHelp, ClipboardList, ExternalLink, FileText
 import { displayName, interactionRisk, paneTitle, swipeAllowed, type BoundaryRequest, type Decision, type InboxItem, type Interaction } from '@vibeke/core';
 import { useAnswers, useApp, useHost, useNow } from '../app/hooks';
 import { t } from '../i18n';
-import { deliveryView, needsPane, type DeliveryView } from '../lib/answer';
+import { closedView, deliveryView, needsPane, type DeliveryView } from '../lib/answer';
+import { useStore } from '../lib/store';
 import { shortDuration } from '../lib/format';
 import { harnessLabel } from '../lib/harness';
 import { navigate } from '../router';
@@ -163,6 +164,10 @@ export function DeliveryLine({ view, error, onOpenPane, onRefresh }: { view: Del
     stale: { text: t.inbox.stale, tone: 'warn' },
     error: { text: error ?? t.unknownError, tone: 'danger' },
     answered_elsewhere: { text: t.inbox.answeredElsewhere, tone: 'muted' },
+    dismissed: { text: t.inbox.dismissedLine, tone: 'muted' },
+    closed_auto: { text: t.inbox.closedAuto, tone: 'muted' },
+    expired: { text: t.inbox.expired, tone: 'muted' },
+    closed: { text: t.inbox.closed, tone: 'muted' },
   };
   const m = map[view];
   const color = { muted: 'text-muted', ok: 'text-ok', warn: 'text-warn', danger: 'text-danger' }[m.tone];
@@ -208,7 +213,9 @@ export function InteractionCard({
   const it = item.interaction;
   const key = `${item.host_id}/${it.id}`;
   const local = app.answers.get(key);
-  const view = leaving && !local ? 'answered_elsewhere' : deliveryView(local, it);
+  useStore(app.closeReasonsVersion);
+  const how = app.closeReasons.get(key);
+  const view = leaving && !local ? closedView(how, it) : deliveryView(local, it, how);
   const locked = view !== null && view !== 'stale' && view !== 'error';
   const disabled = !ctx.canAnswer || locked;
   const [confirm, setConfirm] = useState<Decision | null>(null);

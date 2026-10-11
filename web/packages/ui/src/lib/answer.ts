@@ -26,12 +26,42 @@ export type DeliveryView =
   | 'superseded'
   | 'stale'
   | 'error'
-  | 'answered_elsewhere';
+  | 'answered_elsewhere'
+  | 'dismissed'
+  | 'closed_auto'
+  | 'expired'
+  | 'closed';
+
+/** How a request closed that this device did not answer (see `AppModel.closeReasons`). */
+export type ClosedHow = 'dismissed' | 'heuristic' | 'expired' | 'elsewhere' | 'cancelled';
+
+/** The card's line for a request that closed without an answer from this device. */
+export function closedView(how: ClosedHow | undefined, live: Interaction | undefined): DeliveryView {
+  switch (how) {
+    case 'dismissed':
+      return 'dismissed';
+    case 'heuristic':
+      return 'closed_auto';
+    case 'expired':
+      return 'expired';
+    case 'elsewhere':
+      return 'answered_elsewhere';
+    case 'cancelled':
+      return 'closed';
+  }
+  if (live?.status === 'expired') return 'expired';
+  if (live?.status === 'cancelled') return 'closed';
+  return 'answered_elsewhere';
+}
 
 /** Combine what this device did with the live interaction from the dashboard. */
-export function deliveryView(local: LocalAnswer | undefined, live: Interaction | undefined): DeliveryView | null {
+export function deliveryView(local: LocalAnswer | undefined, live: Interaction | undefined, how?: ClosedHow): DeliveryView | null {
   if (!local) {
-    if (live && live.status !== 'open') return live.status === 'answered' && live.answered_by?.startsWith('gateway:') ? fromDelivery(live) : 'answered_elsewhere';
+    if (live && live.status !== 'open') {
+      if (live.status === 'answered' && live.answered_by?.startsWith('gateway:')) return fromDelivery(live);
+      if (live.status === 'answered' || live.status === 'resolved_elsewhere') return how === 'dismissed' ? 'dismissed' : 'answered_elsewhere';
+      return closedView(how, live);
+    }
     return null;
   }
   switch (local.phase) {
@@ -69,7 +99,14 @@ function fromDelivery(i: Interaction): DeliveryView {
 
 /** Terminal states: the card can leave the inbox after a short beat. */
 export const isSettled = (v: DeliveryView | null): boolean =>
-  v === 'delivered' || v === 'recorded' || v === 'superseded' || v === 'answered_elsewhere';
+  v === 'delivered' ||
+  v === 'recorded' ||
+  v === 'superseded' ||
+  v === 'answered_elsewhere' ||
+  v === 'dismissed' ||
+  v === 'closed_auto' ||
+  v === 'expired' ||
+  v === 'closed';
 
 /** Needs the user to look at the pane. */
 export const needsPane = (v: DeliveryView | null): boolean => v === 'failed' || v === 'unknown';

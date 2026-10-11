@@ -6,6 +6,7 @@ import {
   fingerprint,
   x25519Public,
   PushSync,
+  RpcError,
   answerParams,
   batchAnswerParams,
   loadOrCreateDeviceKey,
@@ -40,6 +41,8 @@ export interface Toast {
   id: number;
   text: string;
   tone: 'info' | 'ok' | 'warn' | 'error';
+  /** A button in the toast (Undo); it closes the toast. */
+  action?: { label: string; run(): void };
 }
 
 export interface AnswerParams {
@@ -70,6 +73,32 @@ export function configErrorFromEvent(e: AppEvent): ConfigRejected | null | undef
     return typeof o.line === 'number' && o.line > 0 ? `line ${o.line}: ${msg}` : msg;
   });
   return { errors, at: e.ts };
+}
+
+/** How an interaction closed when this device did not answer it. */
+export type CloseReason = 'dismissed' | 'heuristic' | 'expired' | 'elsewhere' | 'cancelled';
+
+export function closeReasonFromEvent(e: AppEvent): { interaction: string; reason: CloseReason } | null {
+  const id = e.subject?.interaction;
+  if (!id) return null;
+  const data = (e.data ?? {}) as { reason?: unknown; closed_by?: unknown };
+  switch (e.type) {
+    case 'interaction.cancelled':
+      return { interaction: id, reason: data.closed_by === 'heuristic' ? 'heuristic' : data.reason === 'dismissed' ? 'dismissed' : 'cancelled' };
+    case 'interaction.expired':
+      return { interaction: id, reason: 'expired' };
+    case 'interaction.resolved_elsewhere':
+      return { interaction: id, reason: 'elsewhere' };
+    default:
+      return null;
+  }
+}
+
+/** `conflict` with `details.reason: "item_changed"`: the item changed since the user saw it. */
+export function itemChanged(e: unknown): boolean {
+  if (!(e instanceof RpcError)) return false;
+  const d = e.data?.details as { reason?: unknown } | undefined;
+  return d?.reason === 'item_changed';
 }
 
 export class AppModel {
@@ -224,6 +253,27 @@ export class AppModel {
 
   // ---- seen/finished -----------------------------------------------------------------------
 
+  /**
+   * Why interactions closed without an answer from this device (from `interaction.cancelled` /
+   * `interaction.expired` / `interaction.resolved_elsewhere` events, and this device's own
+   * dismissals). Cards that leave the inbox say "Dismissed" or "Closed automatically" instead of
+   * "Answered in terminal". Bounded: the oldest entries go first.
+   */
+  readonly closeReasons = new Map<string, CloseReason>();
+  readonly closeReasonsVersion = new ValueStore(0);
+
+  noteClosed(key: string, reason: CloseReason): void {
+    // The device's own "dismissed" wins over the event that follows it.
+    if (this.closeReasons.get(key) === 'dismissed' && reason !== 'dismissed') return;
+    this.closeReasons.delete(key);
+    this.closeReasons.set(key, reason);
+    for (const k of this.closeReasons.keys()) {
+      if (this.closeReasons.size <= 500) break;
+      this.closeReasons.delete(k);
+    }
+    this.closeReasonsVersion.update((n) => n + 1);
+  }
+
   private watchConfigErrors(): void {
     const ids = new Set(this.manager.getSnapshot().map((h) => h.record.host_id));
     for (const id of ids) {
@@ -231,6 +281,8 @@ export class AppModel {
       this.configSubs.set(
         id,
         this.manager.subscribeEvents(id, (e) => {
+          const why = closeReasonFromEvent(e);
+          if (why) this.noteClosed(`${id}/${why.interaction}`, why.reason);
           const next = configErrorFromEvent(e);
           if (next === undefined) return;
           this.configErrors.update((m) => {
@@ -326,10 +378,14 @@ export class AppModel {
     if (this.prefs.get().haptics) this.platform.haptics?.(kind);
   }
 
-  toast(text: string, tone: Toast['tone'] = 'info', ms = 3000): void {
+  toast(text: string, tone: Toast['tone'] = 'info', ms = 3000, action?: Toast['action']): void {
     const id = ++this.toastSeq;
-    this.toasts.update((l) => [...l.slice(-2), { id, text, tone }]);
-    this.platform.clock.setTimeout(() => this.toasts.update((l) => l.filter((x) => x.id !== id)), ms);
+    this.toasts.update((l) => [...l.slice(-2), { id, text, tone, ...(action ? { action } : {}) }]);
+    this.platform.clock.setTimeout(() => this.closeToast(id), ms);
+  }
+
+  closeToast(id: number): void {
+    this.toasts.update((l) => l.filter((x) => x.id !== id));
   }
 
   // ---- answers -----------------------------------------------------------------------------
@@ -375,13 +431,17 @@ export class AppModel {
     try {
       if (!conn) throw new Error('host not paired');
       await conn.request('interaction.cancel', { interaction: it.id });
+      this.noteClosed(`${hostId}/${it.id}`, 'dismissed');
       this.haptic('success');
       this.toast(t.inbox.dismissed);
       void conn.refresh().catch(() => {});
       return true;
     } catch (e) {
       this.haptic('error');
-      this.toast(errorMessage(e) || t.inbox.dismissFailed, 'error');
+      // The request changed after the user saw it (a new question, a new delivery problem):
+      // show it again instead of dismissing something they did not read.
+      if (itemChanged(e)) this.toast(t.inbox.itemChanged, 'warn', 4000);
+      else this.toast(errorMessage(e) || t.inbox.dismissFailed, 'error');
       void conn?.refresh().catch(() => {});
       return false;
     }
