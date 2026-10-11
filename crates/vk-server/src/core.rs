@@ -205,7 +205,7 @@ impl Core {
         model.groups.sort_by(|a, b| a.order.total_cmp(&b.order));
         model.workspaces.sort_by(|a, b| a.order.total_cmp(&b.order));
         model.tabs.sort_by(|a, b| a.order.total_cmp(&b.order));
-        let counters = store
+        let counters: Counters = store
             .kv_get("server", "counters")?
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_default();

@@ -138,10 +138,13 @@ pub struct IntervalRec {
 fn probe_tools(
     command: &str,
     repo: &Path,
+    contained: bool,
 ) -> (BTreeMap<String, String>, BTreeSet<String>, Option<String>) {
     let (mut tools, mut probed) = (BTreeMap::new(), BTreeSet::new());
+    // A contained task's checkout is box-written: probe from `/` (see `tool_identity`).
+    let probe_cwd = if contained { Path::new("/") } else { repo };
     for t in command_tools(&CheckCommand::Shell(command.to_string())) {
-        match tool_identity(&t, repo) {
+        match tool_identity(&t, repo, probe_cwd) {
             Ok(Some(v)) => {
                 tools.insert(t.clone(), v);
             }
@@ -494,7 +497,14 @@ pub fn end(
     if binding.is_bound()
         && let Some(cmd) = rec.command.clone()
     {
-        (rec.tools, rec.tools_probed, rec.tools_error) = probe_tools(&cmd, &root);
+        let tasks = tasks_for_run(server, run);
+        let contained = server.with_core(|c| {
+            tasks.iter().any(|t| {
+                c.task(t)
+                    .is_some_and(|t| t.isolation.level != vk_proto::model::IsolationLevel::Host)
+            })
+        });
+        (rec.tools, rec.tools_probed, rec.tools_error) = probe_tools(&cmd, &root, contained);
     }
     rec.end_ms = Some(end_ms);
     rec.other_writers = writers;

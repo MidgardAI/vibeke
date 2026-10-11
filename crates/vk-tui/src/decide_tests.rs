@@ -489,7 +489,8 @@ fn a_click_outside_a_popup_closes_it_and_reaches_nothing_behind() {
     click(&mut app, r.x + 1, r.y + 1);
     assert!(matches!(app.mode, Mode::Popup(Popup::Confirm { .. })));
     // A click elsewhere closes it like esc (nothing is closed or focused).
-    click(&mut app, 0, app.size.1 - 1);
+    let bottom = app.size.1 - 1;
+    click(&mut app, 0, bottom);
     assert!(matches!(app.mode, Mode::Normal));
 }
 

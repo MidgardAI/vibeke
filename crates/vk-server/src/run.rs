@@ -503,7 +503,7 @@ impl ConnCancel {
     pub fn scope<F: std::future::Future>(
         &self,
         f: F,
-    ) -> impl std::future::Future<Output = F::Output> {
+    ) -> impl std::future::Future<Output = F::Output> + use<F> {
         CONN_CANCEL.scope(self.clone(), f)
     }
 

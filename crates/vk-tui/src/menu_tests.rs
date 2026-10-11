@@ -358,7 +358,7 @@ fn a_paste_is_never_swallowed_in_silence() {
             .text
             .contains("pasting is not possible"),
         "{:?}",
-        app.toasts.last()
+        app.toasts.last().map(|t| &t.text)
     );
     assert!(matches!(app.mode, Mode::Navigate { .. }));
     // Resize mode says so, too.

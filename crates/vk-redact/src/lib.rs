@@ -294,7 +294,8 @@ mod tests {
         );
         assert!(out.ends_with(" on your phone"), "{out}");
         // Other query parameters before `d` do not hide it.
-        let out = redact(&format!("https://app.example/#/pair?x=1&d={d}"));
+        let input = format!("https://app.example/#/pair?x=1&d={d}");
+        let out = redact(&input);
         assert!(!out.contains(d), "{out}");
         // A pair route without a payload is left alone.
         assert_eq!(redact("see #/pair?d=short"), "see #/pair?d=short");
