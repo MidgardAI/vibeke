@@ -57,6 +57,7 @@
 //! * Backends: worktree and none. `clone` for container boxes lives in [`sync`]:
 //!   the in-box clone script plus host-side fetch/push (`vibeke task sync`).
 
+mod box_objects;
 mod clone;
 pub mod collision;
 mod credenv;
@@ -79,6 +80,7 @@ pub mod sync;
 mod taskfile;
 mod worktree;
 
+pub use box_objects::{import_box_objects, register_box_objects, release_box_objects};
 pub use clone::{CloneMethod, clone_path, cow_available};
 pub use credenv::is_credential_env;
 pub use deps::{

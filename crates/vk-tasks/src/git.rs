@@ -236,11 +236,17 @@ pub fn safety_args(dir: &Path) -> Result<Vec<String>> {
 }
 
 /// Add the safety flags for `dir` to a `git` command (before its subcommand), plus whatever
-/// environment a git command on that checkout needs. Every crate that runs git on a task
-/// checkout calls this, so the rules stay in one place. Errors when a contained checkout's
-/// `.git` was swapped (see [`safety_args`]).
+/// a git command on that checkout needs. Every crate that runs git on a task checkout calls
+/// this, so the rules stay in one place. Errors when a contained checkout's `.git` was swapped
+/// (see [`safety_args`]).
+///
+/// When a sandboxed box works in the same repository, the objects it wrote to its private
+/// object store are first imported into the repository's own store
+/// ([`crate::register_box_objects`]), so the command sees the box's commits and anything it
+/// writes (a merge, a pushed pack) never depends on the box's directory.
 pub fn harden_command(cmd: &mut Command, dir: &Path) -> Result<()> {
     cmd.args(safety_args(dir)?);
+    crate::box_objects::import_box_objects(dir);
     Ok(())
 }
 
