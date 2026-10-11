@@ -2,7 +2,7 @@
   "api": "vibeke/1",
   "status": "draft until 1.0",
   "rule": "frozen (stable) methods may not be removed, become experimental, or change their mutating/scope/pane_scope flags; additions are allowed; experimental methods are not frozen",
-  "render_protocol": 8,
+  "render_protocol": 9,
   "holder_protocol": {
     "proto": 2,
     "min": 1

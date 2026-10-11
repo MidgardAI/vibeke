@@ -970,7 +970,10 @@ fn nested_agent_does_not_replace_the_pane_agent() {
     assert_eq!(
         after["transcript_path"],
         // Stored with its symlinks resolved (`/tmp` is a link on macOS).
-        format!("{}/claude.jsonl", std::fs::canonicalize(&d).unwrap().display())
+        format!(
+            "{}/claude.jsonl",
+            std::fs::canonicalize(&d).unwrap().display()
+        )
     );
 }
 
@@ -990,7 +993,10 @@ fn run_bound_mid_session_learns_its_transcript_from_any_hook() {
     assert_eq!(
         run["transcript_path"],
         // Stored with its symlinks resolved (`/tmp` is a link on macOS).
-        format!("{}/claude.jsonl", std::fs::canonicalize(&d).unwrap().display())
+        format!(
+            "{}/claude.jsonl",
+            std::fs::canonicalize(&d).unwrap().display()
+        )
     );
     assert_eq!(run["resume_argv"], json!(["claude", "--resume", "cl-1"]));
 }
