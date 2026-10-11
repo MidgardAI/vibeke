@@ -1,0 +1,201 @@
+# Plugin: smarzban/herdr-file-viewer (herdr-file-viewer 1.18.0), locked commit
+# 3996b88d6c6ca5608872abedf05067a803a168ec, manifest herdr-plugin.toml.
+#
+# Covers: the four actions and the two panes for Linux and macOS. The actions
+# `open-file-viewer` and `open-file-viewer-tab` run a launcher script. The script lists the
+# panes (`pane list`), asks the viewer program what to do, and then opens the `file-viewer`
+# pane (split or tab), or closes it when it already has focus. The actions
+# `open-file-viewer-at` and `open-file-viewer-at-tab` open the `root-picker` popup. The popup
+# asks for a directory and then opens the viewer there.
+#
+# The build step downloads a prebuilt viewer program, or builds it with cargo. The viewer
+# shows a file tree of a git checkout, so the setup creates a small repository. A stub turns
+# off the viewer's update check, so no request leaves the test environment. The first row of
+# the viewer shows the root directory and the last row shows the branch name, so the
+# comparison masks both rows.
+#
+# The plugin declares no event hooks, startup commands or link handlers. The manifest also
+# lists Windows-only actions, which are not part of this scenario.
+#
+# Confirms no category of spec 18 §8.5.
+
+plugin_id = "herdr-file-viewer"
+repository = "smarzban/herdr-file-viewer"
+timeout_ms = 120000
+
+[setup]
+[[setup.repo]]
+name = "app"
+files = { "README.md" = "# Sample\n\nSome text.\n", "src/main.txt" = "line one\nline two\n" }
+
+[[stub]]
+id = "no-update-check"
+kind = "env"
+env = { HERDR_FILE_VIEWER_NO_UPDATE_CHECK = "1" }
+
+# --- Split viewer ---------------------------------------------------------------------
+
+[[step]]
+id = "open-split"
+kind = "action"
+action = "open-file-viewer"
+context = "workspace"
+timeout_ms = 60000
+expect_calls = [
+  { method = "pane.list", ok = true },
+  { method = "plugin.pane.open", ok = true },
+]
+[[step.expect]]
+kind = "invocation_final"
+[[step.expect]]
+kind = "pane"
+pane = "file-viewer"
+placement = "split"
+[[step.expect]]
+kind = "screen_text"
+pane = "file-viewer"
+text = "README.md"
+[[step.compare]]
+pane = "file-viewer"
+size = { cols = 100, rows = 30 }
+masks = [
+  { rect = { row = 0, col = 0, rows = 1, cols = 100 } },
+  { rect = { row = 29, col = 0, rows = 1, cols = 100 } },
+]
+
+# The viewer pane has focus, so the same action closes it.
+[[step]]
+id = "toggle-split-closed"
+kind = "action"
+action = "open-file-viewer"
+context = "pane"
+timeout_ms = 60000
+expect_calls = [
+  { method = "pane.list", ok = true },
+  { method = "pane.close", ok = true },
+]
+[[step.expect]]
+kind = "invocation_final"
+
+# --- Tab viewer -----------------------------------------------------------------------
+
+[[step]]
+id = "open-tab"
+kind = "action"
+action = "open-file-viewer-tab"
+context = "workspace"
+timeout_ms = 60000
+expect_calls = [
+  { method = "pane.list", ok = true },
+  { method = "plugin.pane.open", ok = true },
+]
+[[step.expect]]
+kind = "invocation_final"
+[[step.expect]]
+kind = "pane"
+pane = "file-viewer"
+placement = "tab"
+[[step.expect]]
+kind = "screen_text"
+pane = "file-viewer"
+text = "README.md"
+[[step.compare]]
+pane = "file-viewer"
+placement_only = true
+
+[[step]]
+id = "toggle-tab-closed"
+kind = "action"
+action = "open-file-viewer-tab"
+context = "pane"
+timeout_ms = 60000
+expect_calls = [
+  { method = "pane.list", ok = true },
+  { method = "pane.close", ok = true },
+]
+[[step.expect]]
+kind = "invocation_final"
+
+# --- Root picker, split ---------------------------------------------------------------
+
+[[step]]
+id = "open-at-split"
+kind = "action"
+action = "open-file-viewer-at"
+context = "workspace"
+timeout_ms = 60000
+expect_calls = [{ method = "plugin.pane.open", ok = true }]
+[[step.expect]]
+kind = "invocation_final"
+[[step.expect]]
+kind = "popup"
+pane = "root-picker"
+
+[[step]]
+id = "pick-root-split"
+kind = "input"
+pane = "root-picker"
+text = "{repo.app}"
+
+[[step]]
+id = "confirm-root-split"
+kind = "input"
+pane = "root-picker"
+keys = ["Enter"]
+expect_calls = [{ method = "plugin.pane.open", ok = true }]
+[[step.expect]]
+kind = "pane"
+pane = "file-viewer"
+placement = "split"
+[[step.expect]]
+kind = "screen_text"
+pane = "file-viewer"
+text = "README.md"
+
+[[step]]
+id = "quit-viewer-split"
+kind = "input"
+pane = "file-viewer"
+text = "q"
+
+# --- Root picker, tab -----------------------------------------------------------------
+
+[[step]]
+id = "open-at-tab"
+kind = "action"
+action = "open-file-viewer-at-tab"
+context = "workspace"
+timeout_ms = 60000
+expect_calls = [{ method = "plugin.pane.open", ok = true }]
+[[step.expect]]
+kind = "invocation_final"
+[[step.expect]]
+kind = "popup"
+pane = "root-picker"
+
+[[step]]
+id = "pick-root-tab"
+kind = "input"
+pane = "root-picker"
+text = "{repo.app}"
+
+[[step]]
+id = "confirm-root-tab"
+kind = "input"
+pane = "root-picker"
+keys = ["Enter"]
+expect_calls = [{ method = "plugin.pane.open", ok = true }]
+[[step.expect]]
+kind = "pane"
+pane = "file-viewer"
+placement = "tab"
+[[step.expect]]
+kind = "screen_text"
+pane = "file-viewer"
+text = "README.md"
+
+[[step]]
+id = "quit-viewer-tab"
+kind = "input"
+pane = "file-viewer"
+text = "q"
