@@ -1,5 +1,7 @@
-//! Online updates for the public stable channel. The CLI is also the TUI's worker: `--json`
-//! emits one bounded JSON object per progress event. No candidate runs before verification.
+//! Online updates from the public releases: the stable channel (the latest published
+//! non-prerelease), or with `update.channel = "preview"` in config.toml the newest published
+//! release including prereleases. The CLI is also the TUI's worker: `--json` emits one bounded
+//! JSON object per progress event. No candidate runs before verification.
 use anyhow::{Context, Result, bail};
 use semver::Version;
 use serde_json::{Value, json};
@@ -28,18 +30,38 @@ struct Options {
     force: bool,
     allow_downgrade: bool,
     offline: bool,
+    /// `update.channel = "preview"`: prereleases count as updates.
+    preview: bool,
 }
 
-fn stable_version(s: &str) -> Result<Version> {
+/// A release version: `0.2.0`, or on the preview channel also `0.3.0-rc.1`. Never build
+/// metadata, a `v` prefix or a non-canonical spelling.
+fn release_version(s: &str, preview: bool) -> Result<Version> {
     let v = Version::parse(s).context("invalid release version")?;
-    if !v.pre.is_empty() || !v.build.is_empty() || v.to_string() != s {
-        bail!("updates use stable versions such as 0.2.0");
+    if !v.build.is_empty() || v.to_string() != s {
+        bail!("updates use release versions such as 0.2.0");
+    }
+    if !v.pre.is_empty() && !preview {
+        bail!(
+            "{s} is a preview release; set `update.channel = \"preview\"` in config.toml to install previews"
+        );
     }
     Ok(v)
 }
 
-fn options(args: &[String]) -> Result<Options> {
-    let mut o = Options::default();
+/// The configured update channel (`[update] channel`); a config that does not load keeps the
+/// stable channel.
+fn preview_channel() -> bool {
+    vk_config::Config::load(vk_config::config_path())
+        .map(|(c, _)| c.update.channel == vk_config::UpdateChannel::Preview)
+        .unwrap_or(false)
+}
+
+fn options(args: &[String], preview: bool) -> Result<Options> {
+    let mut o = Options {
+        preview,
+        ..Options::default()
+    };
     let mut i = args.iter();
     while let Some(a) = i.next() {
         match a.as_str() {
@@ -47,8 +69,8 @@ fn options(args: &[String]) -> Result<Options> {
             "--force" => o.force = true,
             "--allow-downgrade" => o.allow_downgrade = true,
             "--version" => {
-                let v = i.next().context("--version needs a stable version")?;
-                stable_version(v)?;
+                let v = i.next().context("--version needs a release version")?;
+                release_version(v, preview)?;
                 o.version = Some(v.clone());
             }
             "--from" => {
@@ -102,7 +124,7 @@ fn lock(dir: &Path) -> Result<File> {
 
 pub async fn run(g: &Global, args: &[String]) -> i32 {
     let r = Reporter(g.json == Some(true));
-    let o = match options(args) {
+    let o = match options(args, preview_channel()) {
         Ok(o) => o,
         Err(e) => {
             r.emit("error", &format!("{e:#}"), json!({}));
@@ -156,15 +178,19 @@ struct Release {
     base: String,
 }
 impl Release {
-    fn parse(v: &Value, requested: Option<&str>) -> Result<Self> {
-        if v["draft"] != false || v["prerelease"] != false {
+    /// A published release (never a draft); a prerelease only on the preview channel.
+    fn parse(v: &Value, requested: Option<&str>, preview: bool) -> Result<Self> {
+        if v["draft"] != false {
+            bail!("release is not published");
+        }
+        if v["prerelease"] != false && !(preview && v["prerelease"] == true) {
             bail!("release is not a published stable release");
         }
         let version = v["tag_name"]
             .as_str()
             .and_then(|s| s.strip_prefix('v'))
             .context("release has no version tag")?;
-        stable_version(version)?;
+        release_version(version, preview)?;
         if requested.is_some_and(|want| want != version) {
             bail!("release tag does not match requested version");
         }
@@ -188,6 +214,21 @@ impl Release {
             base,
         })
     }
+}
+
+/// How many recent releases the preview channel considers.
+const PREVIEW_PAGE: u32 = 30;
+
+/// The preview channel's candidate: the highest version among the published releases
+/// (prereleases included) that are complete for this platform.
+fn newest_release(list: &Value) -> Result<Release> {
+    let list = list.as_array().context("release list is not a list")?;
+    list.iter()
+        .filter_map(|v| Release::parse(v, None, true).ok())
+        .filter_map(|r| Version::parse(&r.version).ok().map(|v| (v, r)))
+        .max_by(|a, b| a.0.cmp(&b.0))
+        .map(|(_, r)| r)
+        .context("no published release is available for this platform")
 }
 
 /// curl is already an installer prerequisite. Both initial and redirected requests require
@@ -327,14 +368,19 @@ async fn online_with(
     let temp = tempfile::tempdir_in(cache)?;
     let api = match &o.version {
         Some(v) => format!("{API}/tags/v{v}"),
+        // GitHub's `latest` is the newest non-prerelease; the preview channel reads the list.
+        None if o.preview => format!("{API}?per_page={PREVIEW_PAGE}"),
         None => format!("{API}/latest"),
     };
     let meta = temp.path().join("release.json");
     source.fetch(&api, &meta, META_LIMIT, None).await?;
-    let release = Release::parse(
-        &serde_json::from_slice(&std::fs::read(meta)?)?,
-        o.version.as_deref(),
-    )?;
+    let meta: Value = serde_json::from_slice(&std::fs::read(meta)?)?;
+    let release = if o.version.is_none() && o.preview {
+        newest_release(&meta)?
+    } else {
+        Release::parse(&meta, o.version.as_deref(), o.preview)?
+    };
+    let channel = if o.preview { "preview" } else { "stable" };
     let manifest = temp.path().join("manifest.json");
     let sig = temp.path().join("manifest.json.minisig");
     let manifest_url = format!("{}/manifest.json", release.base);
@@ -354,7 +400,7 @@ async fn online_with(
     let installed_v = installed.as_deref().and_then(|v| Version::parse(v).ok());
     // Another session may have installed a newer binary while this client kept running.
     let newest_local = installed_v.as_ref().map_or(&current, |v| v.max(&current));
-    let candidate = stable_version(&release.version)?;
+    let candidate = release_version(&release.version, o.preview)?;
     let available = &candidate > newest_local;
     let server = server_version(g).await;
     let detail = json!({"current_version": vk_proto::VERSION, "installed_version": installed, "server_version": server,
@@ -366,7 +412,7 @@ async fn online_with(
                 format!("Update available: v{}", release.version)
             } else {
                 format!(
-                    "Up to date (running {}, installed {}; latest stable {})",
+                    "Up to date (running {}, installed {}; latest {channel} {})",
                     vk_proto::VERSION,
                     layout
                         .current_version()
@@ -905,33 +951,76 @@ mod tests {
     }
     #[test]
     fn rejects_partial_prerelease_and_mismatched_releases() {
-        assert_eq!(Release::parse(&release(), None).unwrap().version, "99.0.0");
+        assert_eq!(
+            Release::parse(&release(), None, false).unwrap().version,
+            "99.0.0"
+        );
         for key in ["draft", "prerelease"] {
             let mut v = release();
             v[key] = json!(true);
-            assert!(Release::parse(&v, None).is_err());
+            assert!(Release::parse(&v, None, false).is_err());
         }
         let mut v = release();
         v["assets"][0]["browser_download_url"] = json!("https://example.com/manifest.json");
-        assert!(Release::parse(&v, None).is_err());
-        assert!(Release::parse(&release(), Some("0.4.0")).is_err());
+        assert!(Release::parse(&v, None, false).is_err());
+        assert!(Release::parse(&release(), Some("0.4.0"), false).is_err());
         let mut v = release();
         v["assets"] = json!([]);
-        assert!(Release::parse(&v, None).is_err());
+        assert!(Release::parse(&v, None, false).is_err());
+        // A draft is never a candidate, not even on the preview channel.
+        let mut v = release();
+        v["draft"] = json!(true);
+        assert!(Release::parse(&v, None, true).is_err());
     }
     #[test]
     fn strict_version_and_option_validation() {
         for v in ["../x", "0.3.0-rc.1", "0.3.0+dev", "v0.3.0", "01.2.3"] {
-            assert!(stable_version(v).is_err());
+            assert!(release_version(v, false).is_err());
         }
-        assert!(options(&args(&["--check", "--rollback"])).is_err());
-        assert!(options(&args(&["--version", "0.3.0", "--from", "x"])).is_err());
-        assert!(options(&args(&["--version"])).is_err());
+        assert!(options(&args(&["--check", "--rollback"]), false).is_err());
+        assert!(options(&args(&["--version", "0.3.0", "--from", "x"]), false).is_err());
+        assert!(options(&args(&["--version"]), false).is_err());
         assert!(
-            options(&args(&["--check", "--version", "0.3.0"]))
+            options(&args(&["--check", "--version", "0.3.0"]), false)
                 .unwrap()
                 .check
         );
+        // A prerelease needs the preview channel, and says how to choose it.
+        let e = options(&args(&["--version", "0.3.0-rc.1"]), false).unwrap_err();
+        assert!(e.to_string().contains("update.channel"), "{e}");
+        assert!(options(&args(&["--version", "0.3.0-rc.1"]), true).is_ok());
+        for v in ["0.3.0+dev", "v0.3.0", "01.2.3"] {
+            assert!(release_version(v, true).is_err(), "{v}");
+        }
+    }
+
+    #[test]
+    fn preview_channel_picks_the_newest_published_release() {
+        let rel = |tag: &str, pre: bool, draft: bool| {
+            let mut v = release();
+            let base = format!("{REPO}/releases/download/{tag}");
+            v["tag_name"] = json!(tag);
+            v["prerelease"] = json!(pre);
+            v["draft"] = json!(draft);
+            for a in v["assets"].as_array_mut().unwrap() {
+                let n = a["name"].as_str().unwrap().to_string();
+                a["browser_download_url"] = json!(format!("{base}/{n}"));
+            }
+            v
+        };
+        let list = json!([
+            rel("v0.13.0-rc.2", true, false),
+            rel("v0.12.0", false, false),
+            rel("v0.14.0-rc.1", true, true),
+        ]);
+        assert_eq!(newest_release(&list).unwrap().version, "0.13.0-rc.2");
+        // A stable release newer than the prereleases wins.
+        let list = json!([
+            rel("v0.13.0-rc.2", true, false),
+            rel("v0.13.0", false, false)
+        ]);
+        assert_eq!(newest_release(&list).unwrap().version, "0.13.0");
+        assert!(newest_release(&json!([])).is_err());
     }
     #[test]
     fn writers_are_serialized_and_crashed_writers_release_the_lock() {
@@ -943,7 +1032,7 @@ mod tests {
     }
     #[test]
     fn unsigned_metadata_is_never_accepted() {
-        let r = Release::parse(&release(), None).unwrap();
+        let r = Release::parse(&release(), None, false).unwrap();
         assert!(
             verify_manifest(
                 &bootstrap::trusted_keys(),
