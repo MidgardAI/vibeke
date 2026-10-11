@@ -268,6 +268,36 @@ fn set_peers(server: &Server, p: &Value) -> R {
     Ok(json!({"peers": n, "changed": changed}))
 }
 
+/// Whether the stored peer list has a peer with this id or name.
+fn knows_peer(server: &Server, want: &str) -> bool {
+    let (peers, _) = peer_list(server);
+    peers
+        .iter()
+        .any(|x| s(x, "id") == Some(want) || s(x, "name") == Some(want))
+}
+
+/// Right after a start the server may not have the gateway's peers yet (the gateway publishes
+/// them with `handoff.peers.set` a moment after it connects). When `p.peer` is not in the stored
+/// list, ask the connected gateway for its list once and store it, so the check that follows
+/// sees a peer a client has just listed. Does nothing without a gateway or when it doesn't answer.
+pub(crate) async fn sync_missing_peer(server: &std::sync::Arc<Server>, p: &Value) {
+    let Some(want) = s(p, "peer") else { return };
+    if knows_peer(server, want) || !crate::gateway_bridge::connected(server) {
+        return;
+    }
+    let Ok(r) = crate::gateway_bridge::call(
+        server,
+        "peer.list",
+        json!({}),
+        std::time::Duration::from_secs(3),
+    )
+    .await
+    else {
+        return;
+    };
+    let _ = set_peers(server, &r);
+}
+
 /// The pane and peer `handoff.send {pane, peer}` would use, refused as `handoff.send` refuses
 /// them: no such peer, expired access, a handoff of that pane already under way. `auth.approve`
 /// validates a pane's request with it before asking the user.

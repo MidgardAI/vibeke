@@ -275,6 +275,7 @@ async fn prepare(
     }
     match method {
         "handoff.send" => {
+            crate::handoff_out::sync_missing_peer(server, &params).await;
             let (pane, peer) = crate::handoff_out::check_send(server, ctx, &params)?;
             let my_ws = server.with_core(|c| c.pane(me).map(|x| x.workspace.clone()));
             if pane.id != me && my_ws.as_deref() != Some(pane.workspace.as_str()) {

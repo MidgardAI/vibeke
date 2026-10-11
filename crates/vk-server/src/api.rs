@@ -712,6 +712,9 @@ pub async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) 
     if let Some(r) = crate::browse_api::api(server, method, p).await {
         return r;
     }
+    if method == "handoff.send" {
+        crate::handoff_out::sync_missing_peer(server, p).await;
+    }
     if let Some(r) = crate::handoff_out::api(server, ctx, method, p) {
         return r;
     }
