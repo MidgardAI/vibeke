@@ -135,6 +135,82 @@ pub fn scale_to_fit(img: &Rgba, max_w: u32, max_h: u32) -> Rgba {
     }
 }
 
+/// The viewport's part of a screencast frame: the top-left `css`-shaped region at the frame's
+/// scale. Headless Chrome's frames follow the window, so a window wider than the viewport adds
+/// a band on the right; a frame from before a resize shows the old viewport scaled into the
+/// old size, and `Page.startScreencast {maxWidth}` scales the whole frame. Returns the image
+/// unchanged when it already has the viewport's shape.
+pub fn crop_viewport(img: Rgba, css: (u32, u32)) -> Rgba {
+    if css.0 == 0 || css.1 == 0 || img.width == 0 || img.height == 0 {
+        return img;
+    }
+    let k = (img.width as f64 / css.0 as f64).min(img.height as f64 / css.1 as f64);
+    let w = ((css.0 as f64 * k).round() as u32).clamp(1, img.width);
+    let h = ((css.1 as f64 * k).round() as u32).clamp(1, img.height);
+    if (w, h) == (img.width, img.height) {
+        return img;
+    }
+    let row = w as usize * 4;
+    let mut data = Vec::with_capacity(row * h as usize);
+    for y in 0..h as usize {
+        let start = y * img.width as usize * 4;
+        data.extend_from_slice(&img.data[start..start + row]);
+    }
+    Rgba {
+        width: w,
+        height: h,
+        data,
+    }
+}
+
+/// `img` scaled to exactly `w × h` (unchanged when it has that size).
+pub fn resize(img: Rgba, w: u32, h: u32) -> Rgba {
+    if (img.width, img.height) == (w, h) || w == 0 || h == 0 {
+        return img;
+    }
+    let Some(src) = image::RgbaImage::from_raw(img.width, img.height, img.data) else {
+        return Rgba::new(w, h);
+    };
+    let out = image::imageops::resize(&src, w, h, image::imageops::FilterType::Triangle);
+    Rgba {
+        width: w,
+        height: h,
+        data: out.into_raw(),
+    }
+}
+
+/// `img` extended to `w × h` by repeating its last column and row (a viewport rounded down to
+/// whole CSS px is up to a device pixel short of the pane's cells; a stretched edge tile would
+/// show as a seam). Larger images are cut.
+pub fn pad_edges(img: Rgba, w: u32, h: u32) -> Rgba {
+    if (img.width, img.height) == (w, h) || img.width == 0 || img.height == 0 {
+        return img;
+    }
+    let mut out = Rgba::new(w, h);
+    let (iw, ih) = (img.width as usize, img.height as usize);
+    for y in 0..h as usize {
+        let src = y.min(ih - 1) * iw * 4;
+        let dst = y * w as usize * 4;
+        let n = iw.min(w as usize);
+        out.data[dst..dst + n * 4].copy_from_slice(&img.data[src..src + n * 4]);
+        if w as usize > iw {
+            let last = [
+                img.data[src + (iw - 1) * 4],
+                img.data[src + (iw - 1) * 4 + 1],
+                img.data[src + (iw - 1) * 4 + 2],
+                img.data[src + (iw - 1) * 4 + 3],
+            ];
+            for px in out.data[dst + iw * 4..dst + w as usize * 4]
+                .as_chunks_mut::<4>()
+                .0
+            {
+                px.copy_from_slice(&last);
+            }
+        }
+    }
+    out
+}
+
 /// Encode RGBA as PNG (for kitty `f=100`).
 pub fn encode_png(width: u32, height: u32, rgba: &[u8], fast: bool) -> Result<Vec<u8>> {
     use image::ImageEncoder;
@@ -280,6 +356,55 @@ impl TileDiffer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An image whose pixel (x, y) is [x, y, 0, 255] (coordinates below 256).
+    fn coords(w: u32, h: u32) -> Rgba {
+        let mut img = Rgba::new(w, h);
+        for y in 0..h {
+            for x in 0..w {
+                let i = ((y * w + x) * 4) as usize;
+                img.data[i..i + 4].copy_from_slice(&[x as u8, y as u8, 0, 255]);
+            }
+        }
+        img
+    }
+
+    #[test]
+    fn crop_viewport_cuts_the_window_band_and_keeps_scaled_frames() {
+        // A 120×60 CSS window at DPR 2 around a 100×60 viewport: the right band goes.
+        let img = crop_viewport(coords(240, 120), (100, 60));
+        assert_eq!((img.width, img.height), (200, 120));
+        assert_eq!(img.pixel(199, 119), [199, 119, 0, 255]);
+        // A frame scaled as a whole (maxWidth, or from before a resize) has the viewport's
+        // shape already.
+        let img = crop_viewport(coords(50, 30), (100, 60));
+        assert_eq!((img.width, img.height), (50, 30));
+        // Taller window than viewport: the band below goes.
+        let img = crop_viewport(coords(100, 200), (100, 60));
+        assert_eq!((img.width, img.height), (100, 60));
+    }
+
+    #[test]
+    fn pad_edges_repeats_the_last_column_and_row() {
+        let img = pad_edges(coords(3, 2), 5, 4);
+        assert_eq!((img.width, img.height), (5, 4));
+        assert_eq!(img.pixel(1, 1), [1, 1, 0, 255]);
+        assert_eq!(img.pixel(4, 0), [2, 0, 0, 255]);
+        assert_eq!(img.pixel(0, 3), [0, 1, 0, 255]);
+        assert_eq!(img.pixel(4, 3), [2, 1, 0, 255]);
+        // Larger images are cut.
+        let img = pad_edges(coords(6, 6), 4, 3);
+        assert_eq!((img.width, img.height), (4, 3));
+        assert_eq!(img.pixel(3, 2), [3, 2, 0, 255]);
+    }
+
+    #[test]
+    fn resize_gives_the_exact_size() {
+        let img = resize(coords(10, 10), 7, 3);
+        assert_eq!((img.width, img.height, img.data.len()), (7, 3, 7 * 3 * 4));
+        let same = coords(4, 4);
+        assert_eq!(resize(same.clone(), 4, 4), same);
+    }
 
     fn img(w: u32, h: u32) -> Rgba {
         let mut i = Rgba::new(w, h);

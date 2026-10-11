@@ -36,6 +36,11 @@ struct Page {
     nav_seq: u32,
     /// `Page.startScreencast {maxWidth, maxHeight}`: frames are scaled down to fit.
     max: Option<(u32, u32)>,
+    /// The page window's content size in CSS px. Like full Chrome's headless window, frames
+    /// cover it rather than the emulated viewport (drawn from the top-left, clipped, the rest
+    /// [`WINDOW_FILL`]); `Browser.setWindowBounds` sizes it, never narrower than
+    /// [`MIN_WINDOW_W`], minus [`WINDOW_FRAME_H`] of toolbar.
+    window: (u32, u32),
     /// Last `Emulation.setDeviceMetricsOverride {deviceScaleFactor, mobile}`.
     emu_dpr: Option<f64>,
     mobile: bool,
@@ -51,21 +56,49 @@ struct Page {
     page_scale: f64,
 }
 
+/// Full Chrome's headless window: its default page area, its smallest width and the toolbar
+/// height it adds (CSS px).
+const WINDOW_DEFAULT: (u32, u32) = (500, 113);
+const MIN_WINDOW_W: u32 = 500;
+const WINDOW_FRAME_H: u32 = 143;
+/// Frame pixels outside the viewport.
+pub const WINDOW_FILL: [u8; 3] = [24, 24, 24];
+
 impl Page {
-    /// Frame size in device px: CSS × launch DPR, scaled down into `max` (aspect kept).
-    fn frame_size(&self) -> (u32, u32) {
-        let w = ((self.css.0 as f64 * self.dpr).round() as u32).max(1);
-        let h = ((self.css.1 as f64 * self.dpr).round() as u32).max(1);
+    /// Device px per CSS px of a frame: the launch DPR, scaled down so the window fits `max`.
+    fn frame_scale(&self) -> f64 {
+        let w = self.window.0 as f64 * self.dpr;
+        let h = self.window.1 as f64 * self.dpr;
         match self.max {
-            Some((mw, mh)) if mw > 0 && mh > 0 && (w > mw || h > mh) => {
-                let k = (mw as f64 / w as f64).min(mh as f64 / h as f64);
-                (
-                    ((w as f64 * k).round() as u32).max(1),
-                    ((h as f64 * k).round() as u32).max(1),
-                )
+            Some((mw, mh)) if mw > 0 && mh > 0 && (w > mw as f64 || h > mh as f64) => {
+                self.dpr * (mw as f64 / w).min(mh as f64 / h)
             }
-            _ => (w, h),
+            _ => self.dpr,
         }
+    }
+
+    /// Frame size in device px: the window's content area at [`Page::frame_scale`].
+    fn frame_size(&self) -> (u32, u32) {
+        let k = self.frame_scale();
+        (
+            ((self.window.0 as f64 * k).round() as u32).max(1),
+            ((self.window.1 as f64 * k).round() as u32).max(1),
+        )
+    }
+
+    /// The viewport's part of a frame (device px, from the top-left, clipped to the frame).
+    fn viewport_size(&self) -> (u32, u32) {
+        let k = self.frame_scale();
+        let (fw, fh) = self.frame_size();
+        (
+            ((self.css.0 as f64 * k).round() as u32).clamp(1, fw),
+            ((self.css.1 as f64 * k).round() as u32).clamp(1, fh),
+        )
+    }
+
+    fn window_bounds(&self) -> Value {
+        json!({"left": 22, "top": 22, "width": self.window.0,
+               "height": self.window.1 + WINDOW_FRAME_H, "windowState": "normal"})
     }
 }
 
@@ -194,9 +227,15 @@ pub fn color_for(generation: u32) -> [u8; 3] {
 }
 
 fn frame_jpeg(p: &Page, noise: bool) -> Vec<u8> {
-    let (w, h) = p.frame_size();
+    let (fw, fh) = p.frame_size();
+    let (w, h) = p.viewport_size();
     let c = color_for(p.generation);
-    let mut img = image::RgbImage::from_pixel(w, h, image::Rgb(c));
+    let mut img = image::RgbImage::from_pixel(fw, fh, image::Rgb(WINDOW_FILL));
+    for y in 0..h {
+        for x in 0..w {
+            img.put_pixel(x, y, image::Rgb(c));
+        }
+    }
     if noise {
         let mut x: u32 = 0x9e37_79b9 ^ p.generation;
         for px in img.pixels_mut() {
@@ -216,7 +255,7 @@ fn frame_jpeg(p: &Page, noise: bool) -> Vec<u8> {
     }
     let mut out = Vec::new();
     let mut enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 80);
-    let _ = enc.encode(img.as_raw(), w, h, image::ExtendedColorType::Rgb8);
+    let _ = enc.encode(img.as_raw(), fw, fh, image::ExtendedColorType::Rgb8);
     out
 }
 
@@ -417,6 +456,7 @@ fn handle<W: Write>(
                     frame_seq: 0,
                     nav_seq: 0,
                     max: None,
+                    window: WINDOW_DEFAULT,
                     emu_dpr: None,
                     mobile: false,
                     ua: None,
@@ -465,6 +505,32 @@ fn handle<W: Write>(
                 p.dirty = true;
             }
             json!({})
+        }
+        "Browser.getWindowForTarget" => {
+            let t = params["targetId"].as_str().unwrap_or("");
+            match st.pages.values().find(|p| p.target == t) {
+                Some(p) => json!({"windowId": p.target[1..].parse::<i64>().unwrap_or(0),
+                                  "bounds": p.window_bounds()}),
+                None => json!({}),
+            }
+        }
+        "Browser.setWindowBounds" | "Browser.getWindowBounds" => {
+            let t = format!("T{}", params["windowId"].as_i64().unwrap_or(-1));
+            let set = method == "Browser.setWindowBounds";
+            match st.pages.values_mut().find(|p| p.target == t) {
+                Some(p) => {
+                    let b = &params["bounds"];
+                    if set && let (Some(w), Some(h)) = (b["width"].as_u64(), b["height"].as_u64()) {
+                        p.window = (
+                            (w as u32).max(MIN_WINDOW_W),
+                            (h as u32).saturating_sub(WINDOW_FRAME_H).max(1),
+                        );
+                        p.dirty = true;
+                    }
+                    json!({"bounds": p.window_bounds()})
+                }
+                None => json!({}),
+            }
         }
         "Emulation.setUserAgentOverride" => {
             if let Some(p) = st.pages.get_mut(&sess) {
@@ -629,6 +695,10 @@ fn handle<W: Write>(
             let v = match (expr, st.pages.get(&sess)) {
                 ("location.href", Some(p)) => json!(p.url),
                 ("document.readyState", _) => json!("complete"),
+                // `Page::fit_window` measuring the window's toolbar.
+                ("[outerWidth - innerWidth, outerHeight - innerHeight]", Some(_)) => {
+                    json!([0, WINDOW_FRAME_H])
+                }
                 // The screenshot's document-identity read (vk-server screenshots).
                 (e, Some(p)) if e.contains("__VIBEKE_BUILD__") => {
                     let origin = url::Url::parse(&p.url)
@@ -768,9 +838,12 @@ mod tests {
         };
         let f = crate::cdp::ScreencastFrame::from_event(&ev).unwrap();
         let img = crate::frame::decode(&f.data).unwrap();
-        assert_eq!((img.width, img.height), (128, 64));
+        // The frame covers the default window (500×113 CSS px), the viewport its top-left.
+        assert_eq!((img.width, img.height), (1000, 226));
         let px = img.pixel(120, 60);
         assert!(px[0] > 200 && px[1] > 200, "first page colour {px:?}");
+        let px = img.pixel(500, 200);
+        assert!(px[0] < 60 && px[1] < 60, "outside the viewport {px:?}");
         // No second frame until acked, even when dirty.
         cdp.call(Some(&s), "Input.insertText", json!({"text": "a"}))
             .unwrap();
@@ -818,6 +891,18 @@ mod tests {
             .as_str()
             .unwrap()
             .to_string();
+        let w = cdp
+            .call(None, "Browser.getWindowForTarget", json!({"targetId": t}))
+            .unwrap();
+        let b = cdp
+            .call(
+                None,
+                "Browser.setWindowBounds",
+                json!({"windowId": w["windowId"], "bounds": {"width": 393, "height": 852 + 143}}),
+            )
+            .unwrap();
+        // Never narrower than 500 CSS px.
+        assert_eq!(b["bounds"]["width"], 500);
         cdp.call(
             Some(&s),
             "Emulation.setDeviceMetricsOverride",
@@ -850,9 +935,9 @@ mod tests {
                 .data,
         )
         .unwrap();
-        // 393×852 CSS at the launch DPR 2 = 786×1704, scaled into 200×300.
+        // The 500×852 CSS window at the launch DPR 2 = 1000×1704, scaled into 200×300.
         assert_eq!(img.height, 300);
-        assert!((img.width as i32 - 138).abs() <= 1, "{}", img.width);
+        assert!((img.width as i32 - 176).abs() <= 1, "{}", img.width);
         assert_eq!(
             state.lock().unwrap().emulation(&s),
             Some((Some(3.0), true, Some("UA-phone".into())))

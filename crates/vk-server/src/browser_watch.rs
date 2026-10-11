@@ -26,7 +26,7 @@ use crate::api::{Ctx, R, b, err, invalid, not_found, resolve_pane, s};
 use serde_json::{Value, json};
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
-use vk_browser::frame::{Rgba, decode, scale_to_fit};
+use vk_browser::frame::{Rgba, crop_viewport, decode, scale_to_fit};
 use vk_browser::input::{self, CdpInput, MapOptions};
 use vk_proto::input::{KeyKind, MouseButton, MouseKind};
 use vk_proto::render::BrowserCmd;
@@ -314,14 +314,22 @@ async fn pump(weak: Weak<Server>, t: Arc<Target>) {
     }
 }
 
+/// Decode an agent frame and cut its viewport out of it (frames can cover a window wider than
+/// the viewport, see `frame::crop_viewport`).
 async fn decode_frame(f: &agent_browser::Frame) -> Option<(Rgba, Option<u32>)> {
     let data = f.data.clone();
-    let css_w = f.width;
-    tokio::task::spawn_blocking(move || decode(&data).ok())
-        .await
-        .ok()
-        .flatten()
-        .map(|img| (img, css_w))
+    let (css_w, css_h) = (f.width, f.height);
+    tokio::task::spawn_blocking(move || {
+        let img = decode(&data).ok()?;
+        Some(match (css_w, css_h) {
+            (Some(w), Some(h)) => crop_viewport(img, (w, h)),
+            _ => img,
+        })
+    })
+    .await
+    .ok()
+    .flatten()
+    .map(|img| (img, css_w))
 }
 
 // ---- input and commands -------------------------------------------------------------------------

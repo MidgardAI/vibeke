@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -156,6 +156,9 @@ pub struct Cdp {
     writer: Mutex<Box<dyn Write + Send>>,
     next_id: AtomicU64,
     pending: Pending,
+    /// CSS px a browser window adds around its page (full Chrome's headless window has a
+    /// toolbar's height; the headless shell none), measured once on a fresh page.
+    window_frame: OnceLock<(u32, u32)>,
 }
 
 impl Cdp {
@@ -176,6 +179,7 @@ impl Cdp {
             writer: Mutex::new(Box::new(writer)),
             next_id: AtomicU64::new(1),
             pending,
+            window_frame: OnceLock::new(),
         });
         (cdp, ev_rx)
     }
@@ -623,8 +627,9 @@ impl Page {
     }
 
     /// Size the viewport for a pane: `cols×cell_w` by `rows×cell_h` device pixels at `dpr`.
-    /// CSS size is device size / dpr, so screenshots and screencast frames come out at exactly
-    /// the pane's pixel size.
+    /// CSS size is device size / dpr rounded down: a frame never exceeds the pane (a pixel more
+    /// would add a column of one-pixel tiles); the frame is padded to the pane's cells instead.
+    /// Returns the CSS viewport and the window's content size ([`Page::fit_window`]).
     pub fn set_viewport_for_cells(
         &self,
         cols: u32,
@@ -632,15 +637,55 @@ impl Page {
         cell_w: u32,
         cell_h: u32,
         dpr: f64,
-    ) -> Result<(u32, u32)> {
+    ) -> Result<((u32, u32), Option<(u32, u32)>)> {
         let (dev_w, dev_h) = (cols * cell_w, rows * cell_h);
-        let css_w = (dev_w as f64 / dpr).round() as u32;
-        let css_h = (dev_h as f64 / dpr).round() as u32;
+        let css_w = ((dev_w as f64 / dpr).floor() as u32).max(1);
+        let css_h = ((dev_h as f64 / dpr).floor() as u32).max(1);
+        let window = self.fit_window((css_w, css_h));
         self.call(
             "Emulation.setDeviceMetricsOverride",
             json!({ "width": css_w, "height": css_h, "deviceScaleFactor": dpr, "mobile": false }),
         )?;
-        Ok((css_w, css_h))
+        Ok(((css_w, css_h), window))
+    }
+
+    /// Size the page's window so its content area is `css` (call before
+    /// `Emulation.setDeviceMetricsOverride`: resizing the window afterwards resets the emulated
+    /// viewport). Headless screencast frames follow the window, not the emulated viewport: full
+    /// Chrome's default window is 500×113 CSS px of page, so a tall pane got a short strip, and
+    /// a viewport bigger than the window sometimes produced no new frame at all. Chrome keeps
+    /// windows at least ~500 CSS px wide, so a narrower viewport still sits in a wider frame
+    /// (see `frame::crop_viewport`). Best effort: returns the window's content size in CSS px,
+    /// or `None` when the browser has no window to size.
+    pub fn fit_window(&self, css: (u32, u32)) -> Option<(u32, u32)> {
+        let browser = |method: &str, params: Value| self.cdp.call(None, method, params);
+        let w = browser(
+            "Browser.getWindowForTarget",
+            json!({ "targetId": self.target_id }),
+        )
+        .ok()?;
+        let id = w["windowId"].as_i64()?;
+        let frame = *self.cdp.window_frame.get_or_init(|| {
+            // Measured once per browser, on its first page (before any viewport override).
+            self.eval("[outerWidth - innerWidth, outerHeight - innerHeight]")
+                .ok()
+                .and_then(|v| Some((v[0].as_i64()?, v[1].as_i64()?)))
+                .map(|(x, y)| (x.clamp(0, 400) as u32, y.clamp(0, 400) as u32))
+                .unwrap_or((0, 0))
+        });
+        browser(
+            "Browser.setWindowBounds",
+            json!({ "windowId": id, "bounds": {
+                "width": css.0 + frame.0, "height": css.1 + frame.1, "windowState": "normal" } }),
+        )
+        .ok()?;
+        let b = browser("Browser.getWindowBounds", json!({ "windowId": id })).ok()?;
+        let size = |k: &str, f: u32| {
+            b["bounds"][k]
+                .as_u64()
+                .map(|v| (v as u32).saturating_sub(f))
+        };
+        Some((size("width", frame.0)?, size("height", frame.1)?))
     }
 
     /// Navigate and wait for the load event (events must be drained by the caller's receiver;

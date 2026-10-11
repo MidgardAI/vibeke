@@ -38,7 +38,7 @@ use std::time::{Duration, Instant};
 use vk_browser::capture::{Capture, Captured, Filter, Kind};
 use vk_browser::cdp::{Event, Page};
 use vk_browser::devices::{FrameMeta, Letterbox, Pin};
-use vk_browser::frame::Rgba;
+use vk_browser::frame::{self, Rgba};
 use vk_proto::layout::Direction;
 use vk_proto::model::{BrowserPane, Pane};
 use vk_proto::rpc::{ErrorKind, RpcError};
@@ -79,6 +79,8 @@ pub struct PageIo {
     pub letterbox: Option<Letterbox>,
     /// What the last screencast frame showed (page scale, device size).
     pub meta: Option<FrameMeta>,
+    /// The page window's content size in CSS px after the last resize (`None`: not sized).
+    pub window: Option<(u32, u32)>,
     /// The user agent was overridden on the current page (restored when unpinned).
     ua_overridden: bool,
     touch: bool,
@@ -101,6 +103,7 @@ impl Default for PageIo {
             last_mouse: None,
             pin: None,
             letterbox: None,
+            window: None,
             meta: None,
             ua_overridden: false,
             touch: false,
@@ -349,37 +352,45 @@ pub(super) fn update_pin(st: &mut TState, spec: &BrowserPane) -> bool {
 pub(super) fn screencast_params(st: &TState) -> Value {
     let mut p = json!({"format": "jpeg", "quality": 80, "everyNthFrame": 1});
     if let Some(lb) = st.io.letterbox.filter(|_| st.io.pin.is_some()) {
-        p["maxWidth"] = json!(lb.rect.2);
-        p["maxHeight"] = json!(lb.rect.3);
+        // Frames cover the window, which can be wider than the pinned viewport (Chrome keeps
+        // windows ~500 CSS px wide): bound the frame so its viewport part fills the rectangle.
+        let (ww, wh) = st.io.window.unwrap_or(lb.css);
+        let grow = |win: u32, css: u32| (win as f64 / css.max(1) as f64).max(1.0);
+        p["maxWidth"] = json!((lb.rect.2 as f64 * grow(ww, lb.css.0)).ceil() as u32);
+        p["maxHeight"] = json!((lb.rect.3 as f64 * grow(wh, lb.css.1)).ceil() as u32);
     }
     p
 }
 
 /// Size the page for `g`: the pane's own size, or the pinned device letterboxed in it.
-/// Returns the CSS viewport; restarts a running screencast when its bounds changed.
+/// Returns the CSS viewport; restarts a running screencast when the viewport changed (headless
+/// Chrome does not always send a frame for a resize on its own, and the pane would keep showing
+/// the old size).
 pub fn set_viewport(page: &Page, t: &Target, g: Geom) -> anyhow::Result<(u32, u32)> {
-    let (pin, had_ua, had_touch, old_lb) = {
+    let (pin, had_ua, had_touch, old_lb, old_css) = {
         let st = t.st.lock().unwrap();
         (
             st.io.pin.clone(),
             st.io.ua_overridden,
             st.io.touch,
             st.io.letterbox,
+            st.css,
         )
     };
     let dpr = g.dpr as f64;
-    let (css, lb, ua, touch) = match &pin {
+    let (css, window, lb, ua, touch) = match &pin {
         None => {
-            let css = page.set_viewport_for_cells(
+            let (css, window) = page.set_viewport_for_cells(
                 g.cols as u32,
                 g.rows as u32,
                 g.cell_w as u32,
                 g.cell_h as u32,
                 dpr,
             )?;
-            (css, None, None, false)
+            (css, window, None, None, false)
         }
         Some(pin) => {
+            let window = page.fit_window((pin.width, pin.height));
             page.call("Emulation.setDeviceMetricsOverride", pin.metrics(dpr))?;
             let area = (
                 g.cols as u32 * g.cell_w as u32,
@@ -388,6 +399,7 @@ pub fn set_viewport(page: &Page, t: &Target, g: Geom) -> anyhow::Result<(u32, u3
             let lb = Letterbox::fit(area, (pin.width, pin.height), dpr);
             (
                 (pin.width, pin.height),
+                window,
                 Some(lb),
                 pin.user_agent.clone(),
                 pin.touch,
@@ -422,7 +434,9 @@ pub fn set_viewport(page: &Page, t: &Target, g: Geom) -> anyhow::Result<(u32, u3
         st.io.letterbox = lb;
         st.io.ua_overridden = ua_now;
         st.io.touch = touch;
-        st.screencast && old_lb.map(|l| l.rect) != lb.map(|l| l.rect)
+        let changed = st.io.window != window;
+        st.io.window = window;
+        st.screencast && (changed || css != old_css || old_lb.map(|l| l.rect) != lb.map(|l| l.rect))
     };
     if restart {
         let params = screencast_params(&t.st.lock().unwrap());
@@ -432,15 +446,47 @@ pub fn set_viewport(page: &Page, t: &Target, g: Geom) -> anyhow::Result<(u32, u3
     Ok(css)
 }
 
-/// A decoded frame, placed for the pane (letterboxed when pinned).
+/// A decoded frame, placed for the pane: exactly the pane's content area (whole cells), the
+/// pinned viewport letterboxed in it. Frames follow the browser window rather than the viewport
+/// (wider than a narrow viewport; a frame from before a resize is scaled into the old size), so
+/// the viewport is cut out of the frame first, using the size the frame's metadata reports.
 pub fn fit_frame(t: &Target, img: Rgba) -> Rgba {
-    let lb = {
+    let (lb, area, css, dpr, meta) = {
         let st = t.st.lock().unwrap();
-        st.io.letterbox.filter(|_| st.io.pin.is_some())
+        let g = st.applied.or(st.want);
+        (
+            st.io.letterbox.filter(|_| st.io.pin.is_some()),
+            g.map(|g| {
+                (
+                    g.cols as u32 * g.cell_w as u32,
+                    g.rows as u32 * g.cell_h as u32,
+                )
+            }),
+            st.css,
+            g.map_or(1.0, |g| g.dpr as f64),
+            st.io.meta,
+        )
     };
-    match lb {
-        Some(lb) if !(lb.is_full() && (img.width, img.height) == lb.area) => lb.compose(&img),
-        _ => img,
+    // The viewport this frame shows, in CSS px (its metadata; else the one last applied).
+    let shown = meta
+        .map(|m| {
+            (
+                m.device_width.round() as u32,
+                m.device_height.round() as u32,
+            )
+        })
+        .unwrap_or(css);
+    let img = frame::crop_viewport(img, shown);
+    match (lb, area) {
+        (Some(lb), _) if !(lb.is_full() && (img.width, img.height) == lb.area) => lb.compose(&img),
+        (Some(_), _) | (None, None) => img,
+        (None, Some(area)) => {
+            // The viewport at the pane's scale (CSS px rounded down: at most a pixel short of
+            // the cells), then its last column and row repeated out to whole cells.
+            let want = |c: u32, a: u32| ((c as f64 * dpr).round() as u32).clamp(1, a.max(1));
+            let img = frame::resize(img, want(css.0, area.0), want(css.1, area.1));
+            frame::pad_edges(img, area.0, area.1)
+        }
     }
 }
 

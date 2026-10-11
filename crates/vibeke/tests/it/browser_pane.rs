@@ -1334,3 +1334,220 @@ fn browser_pane_page_scale_and_clipboard_isolation_real_chromium() {
         "the first clipboard frame is the top document's"
     );
 }
+
+/// Playwright's newest full Chromium on disk (never downloaded here).
+fn playwright_full() -> Option<String> {
+    let home = std::env::var("HOME").ok()?;
+    let mut best: Option<(u32, String)> = None;
+    for root in [
+        format!("{home}/Library/Caches/ms-playwright"),
+        format!("{home}/.cache/ms-playwright"),
+    ] {
+        let Ok(rd) = std::fs::read_dir(&root) else {
+            continue;
+        };
+        for e in rd.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let Some(rev) = name
+                .strip_prefix("chromium-")
+                .and_then(|r| r.parse::<u32>().ok())
+            else {
+                continue;
+            };
+            for sub in [
+                "chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing",
+                "chrome-mac/Chromium.app/Contents/MacOS/Chromium",
+                "chrome-linux64/chrome",
+                "chrome-linux/chrome",
+            ] {
+                let p = e.path().join(sub);
+                if p.is_file() && best.as_ref().is_none_or(|b| b.0 < rev) {
+                    best = Some((rev, p.display().to_string()));
+                }
+            }
+        }
+    }
+    best.map(|b| b.1)
+}
+
+/// The pane's content area as the client would paint it: every tile placed at its cell.
+struct Canvas {
+    w: u32,
+    h: u32,
+    px: Vec<u8>,
+    seen: std::collections::HashSet<u32>,
+    grid: u32,
+}
+
+impl Canvas {
+    fn paint(&mut self, m: &MediaFrame) {
+        if m.reset || (m.width, m.height) != (self.w, self.h) {
+            self.w = m.width;
+            self.h = m.height;
+            self.px = vec![0; (m.width * m.height * 4) as usize];
+            self.seen.clear();
+        }
+        self.grid = m.grid_cols as u32 * m.grid_rows as u32;
+        for t in &m.tiles {
+            let data = tile_px(t);
+            let (x0, y0) = (
+                t.col as u32 * m.cell_w as u32,
+                t.row as u32 * m.cell_h as u32,
+            );
+            for y in 0..t.h.min(self.h.saturating_sub(y0)) {
+                for x in 0..t.w.min(self.w.saturating_sub(x0)) {
+                    let s = ((y * t.w + x) * 4) as usize;
+                    let d = (((y0 + y) * self.w + x0 + x) * 4) as usize;
+                    self.px[d..d + 4].copy_from_slice(&data[s..s + 4]);
+                }
+            }
+            self.seen.insert(t.index);
+        }
+    }
+    fn px(&self, x: u32, y: u32) -> [u8; 3] {
+        let i = ((y * self.w + x) * 4) as usize;
+        [self.px[i], self.px[i + 1], self.px[i + 2]]
+    }
+}
+
+/// Frames fill the pane at any pane size (findings from the product video): full Chrome's
+/// headless screencast follows its window, not the emulated viewport, so a tall pane showed the
+/// page in a strip, a narrow one (Chrome's windows are at least ~500 CSS px wide) left an empty
+/// band, and an odd pixel size added a seam of one-pixel tiles. Runs with every Playwright build
+/// on disk (headless shell and full Chromium), resizing one pane up and down and then pinning a
+/// phone; each frame must be exactly the pane's content area with the page's four corner markers
+/// in the corners of the page (the whole area, or the letterbox rectangle).
+#[test]
+fn browser_pane_frame_fills_pane_real_chromium() {
+    if std::env::var("VIBEKE_BROWSER_TESTS").as_deref() != Ok("1") {
+        eprintln!("VIBEKE_BROWSER_TESTS != 1; skipping");
+        return;
+    }
+    let builds: Vec<String> = [playwright_shell(), playwright_full()]
+        .into_iter()
+        .flatten()
+        .collect();
+    if builds.is_empty() {
+        eprintln!("no Playwright Chromium on disk; skipping");
+        return;
+    }
+    let page = r#"<html><head><style>
+        html,body{margin:0;background:#fff;overflow:hidden}
+        i{position:fixed;width:24px;height:24px}
+      </style></head><body>
+      <meta name=viewport content="width=device-width">
+      <i style="left:0;top:0;background:rgb(255,0,0)"></i>
+      <i style="right:0;top:0;background:rgb(0,255,0)"></i>
+      <i style="left:0;bottom:0;background:rgb(0,0,255)"></i>
+      <i style="right:0;bottom:0;background:rgb(255,255,0)"></i>
+      </body></html>"#;
+    let port = http(vec![("/", page.to_string())]);
+    let url = format!("http://localhost:{port}/");
+    // JPEG frames: colours within a small distance.
+    let near = |a: [u8; 3], b: [u8; 3]| a.iter().zip(b).all(|(x, y)| x.abs_diff(y) < 40);
+    let mut failures = vec![];
+    for chromium in builds {
+        let mut s = Session::new(false);
+        s.env.push(("VIBEKE_CHROMIUM".into(), chromium.clone()));
+        let src = root_pane(&s);
+        let o = s.json(&["preview", "open", &url, "--split", "right", "--pane", &src]);
+        let bp = o["pane"].as_str().unwrap().to_string();
+        let spec = s.browser_spec(&bp);
+        let mut r = Render::attach(&s.socket(), "bp-fill");
+        let mut canvas = Canvas {
+            w: 0,
+            h: 0,
+            px: vec![],
+            seen: Default::default(),
+            grid: 0,
+        };
+        // The four markers in the corners of `rect` (x, y, w, h) of a `w × h` frame.
+        let markers = |c: &Canvas, (w, h): (u32, u32), (x, y, rw, rh): (u32, u32, u32, u32)| {
+            let m = 10;
+            c.w == w
+                && c.h == h
+                && c.seen.len() as u32 == c.grid
+                && near(c.px(x + m, y + m), [255, 0, 0])
+                && near(c.px(x + rw - m, y + m), [0, 255, 0])
+                && near(c.px(x + m, y + rh - m), [0, 0, 255])
+                && near(c.px(x + rw - m, y + rh - m), [255, 255, 0])
+        };
+        let mut check = |r: &mut Render,
+                         canvas: &mut Canvas,
+                         what: String,
+                         size: (u32, u32),
+                         rect: (u32, u32, u32, u32)| {
+            if paint_until(r, canvas, |c| markers(c, size, rect)) {
+                return;
+            }
+            let corners = (canvas.w > 2 * 10 && canvas.h > 2 * 10).then(|| {
+                let (x, y, rw, rh) = rect;
+                let px = |px, py| (px < canvas.w && py < canvas.h).then(|| canvas.px(px, py));
+                [
+                    px(x + 10, y + 10),
+                    px(x + rw - 10, y + 10),
+                    px(x + 10, y + rh - 10),
+                    px(x + rw - 10, y + rh - 10),
+                ]
+            });
+            failures.push(format!(
+                "{chromium}: {what} wants a {}x{} frame with the corner markers at {rect:?}; got \
+                 {}x{} ({}/{} tiles), corners {corners:?}; status {}\n{}",
+                size.0,
+                size.1,
+                canvas.w,
+                canvas.h,
+                canvas.seen.len(),
+                canvas.grid,
+                s.json(&["browser", "pane-status"])["targets"][0],
+                s.log_tail()
+            ));
+        };
+        // (cols, rows, cell_w, cell_h): wide; tall and narrower than Chrome's smallest window;
+        // odd device size (half CSS px at DPR 2); large; then back down to the tall one.
+        for (cols, rows, cw, ch) in [
+            (100u16, 30u16, 16u16, 32u16),
+            (40, 45, 16, 32),
+            (61, 47, 17, 35),
+            (150, 60, 16, 32),
+            (40, 45, 16, 32),
+        ] {
+            let mut mp = media_pane(&bp, spec.clone(), cols, rows);
+            (mp.cell_w, mp.cell_h) = (cw, ch);
+            r.view(vec![mp]);
+            let size = (cols as u32 * cw as u32, rows as u32 * ch as u32);
+            let what = format!("pane {cols}x{rows} cells of {cw}x{ch}");
+            check(&mut r, &mut canvas, what, size, (0, 0, size.0, size.1));
+        }
+        // A pinned phone (393 CSS px, narrower than Chrome's smallest window) letterboxed.
+        s.json(&["browser", "viewport", &bp, "--device", "iphone-15"]);
+        r.view(vec![media_pane(&bp, s.browser_spec(&bp), 100, 45)]);
+        let size = (1600, 1440);
+        let lb = vk_browser::devices::Letterbox::fit(size, (393, 852), 2.0);
+        let what = "iphone-15 pinned in a 100x45 pane".to_string();
+        check(&mut r, &mut canvas, what, size, lb.rect);
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// Paint media frames onto `c` (acking them) until `ok` holds; false after 15 s.
+fn paint_until(r: &mut Render, c: &mut Canvas, ok: impl Fn(&Canvas) -> bool) -> bool {
+    let t0 = Instant::now();
+    while t0.elapsed() < Duration::from_secs(15) {
+        match r.rx.recv_timeout(Duration::from_secs(1)) {
+            Ok(ServerFrame::Media(m)) => {
+                r.send(&ClientFrame::MediaAck {
+                    pane: m.pane.clone(),
+                    seq: m.seq,
+                });
+                c.paint(&m);
+                if ok(c) {
+                    return true;
+                }
+            }
+            Ok(_) | Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(e) => panic!("render stream: {e}"),
+        }
+    }
+    false
+}
