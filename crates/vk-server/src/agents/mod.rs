@@ -115,6 +115,11 @@ struct Inner {
     /// Per pane: since when each `hold_ms` screen rule has matched (04 §9.1).
     holds: HashMap<String, vk_agents::manifest::HoldTracker>,
     resume_mode: String,
+    /// Self-reported runs whose agent process the process detection has seen. Only these end
+    /// when the foreground returns to the pane's shell: a hook-reported agent with no process
+    /// of its own stays until its hook releases it (Herdr clears a hook authority only when
+    /// the detected agent process exits).
+    self_report_process_seen: std::collections::HashSet<String>,
     /// Per pane: the harness process behind its run's hooks (harness id, process); see `nested`.
     harness_procs: HashMap<String, (String, nested::Proc)>,
     /// Per pane: since when the screen has shown the agent working with no dialog (see
@@ -389,11 +394,30 @@ impl Agents {
             (None, Some(r)) => {
                 // The run ended only when the foreground is back at the pane's own shell (a
                 // tool the agent runs in the foreground must not end it).
-                if st.fg_pgid == Some(st.child_pid) {
+                let unseen_self_report = r.integration == "self_report"
+                    && !self
+                        .inner
+                        .lock()
+                        .unwrap()
+                        .self_report_process_seen
+                        .contains(&r.id);
+                if st.fg_pgid == Some(st.child_pid) && !unseen_self_report {
+                    self.inner
+                        .lock()
+                        .unwrap()
+                        .self_report_process_seen
+                        .remove(&r.id);
                     self.end_run(server, &r.id, "exited");
                 }
             }
             (Some((h, argv)), Some(r)) => {
+                if r.integration == "self_report" {
+                    self.inner
+                        .lock()
+                        .unwrap()
+                        .self_report_process_seen
+                        .insert(r.id.clone());
+                }
                 let yolo = harness::yolo(h, &argv)
                     || r.permission_mode
                         .as_deref()
