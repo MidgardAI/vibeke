@@ -746,3 +746,74 @@ async fn a_quiet_screen_closes_nothing_for_an_unvalidated_harness_version() {
         assert_eq!(status(&e, &old), InteractionStatus::Open, "{version:?}");
     }
 }
+
+fn opened_events(e: &Env, id: &str) -> usize {
+    e.server.with_core(|c| {
+        c.store
+            .events_after(0, 10_000, &["interaction.opened".to_string()])
+            .unwrap()
+            .into_iter()
+            .map(|ev| serde_json::to_value(ev).unwrap())
+            .filter(|v| v["subject"]["interaction"] == id)
+            .count()
+    })
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_retried_hook_reattaches_without_opening_twice() {
+    let e = env();
+    let _run = add_run(&e, "r-re", "p-re", |_| {});
+    let (cancel, task, id) = held_gate(&e, "p-re", "toolu_re").await;
+    cancel.cancel();
+    task.await.unwrap().unwrap();
+    let pushes = |e: &Env| e.server.with_core(|c| c.notifications.len());
+    let before = pushes(&e);
+    // The hook retries the same request on a new connection.
+    let (cancel2, task2, id2) = held_gate(&e, "p-re", "toolu_re").await;
+    assert_eq!(id2, id, "same request, same interaction");
+    assert_eq!(opened_events(&e, &id), 1);
+    assert_eq!(pushes(&e), before, "no second push");
+    assert!(interaction(&e, &id).gate, "held again");
+    cancel2.cancel();
+    task2.await.unwrap().unwrap();
+
+    // A request the user dismissed stays closed when its hook retries.
+    resolve(&e.server, &id, InteractionStatus::Cancelled, DISMISSED);
+    let srv = e.server.clone();
+    let p = json!({"tool_name": "Bash", "tool_use_id": "toolu_re", "tool_input": {"command": "cargo test"}});
+    let r = gate(&srv, "p-re", Harness::Claude, "PermissionRequest", &p)
+        .await
+        .unwrap();
+    assert!(r["decision"].is_null());
+    assert_eq!(r["interaction"], id.as_str());
+    assert_eq!(opened_events(&e, &id), 1);
+    assert_eq!(status(&e, &id), InteractionStatus::Cancelled);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_observed_request_opens_once() {
+    let e = env();
+    let run = add_run(&e, "r-obs", "p-obs", |_| {});
+    let a = route::open_observed(
+        &e.server,
+        &run,
+        Some("blocked:1".into()),
+        "Bash",
+        json!({"command": "ls"}),
+        StateSource::SelfReport,
+        0.9,
+        false,
+    );
+    assert!(a.is_some());
+    let b = route::open_observed(
+        &e.server,
+        &run,
+        Some("blocked:1".into()),
+        "Bash",
+        json!({"command": "ls"}),
+        StateSource::SelfReport,
+        0.9,
+        false,
+    );
+    assert!(b.is_none());
+}

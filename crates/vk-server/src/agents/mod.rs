@@ -2196,39 +2196,68 @@ async fn gate(server: &Arc<Server>, pane: &str, h: Harness, event: &str, p: &Val
     };
     it.answerable = native || h.keystroke_answers(it.kind);
     let (tx_reply, rx_reply) = oneshot::channel::<GateReply>();
+    // A hook retried after a dropped connection re-attaches to the request it opened before:
+    // no second `interaction.opened`, no second push.
+    let mut reattached = false;
     {
         let mut c = server.core.lock().unwrap();
-        it.handle = c.next_interaction_handle();
         // Re-attach by native ref (a hook retried after a dropped connection, 04 §7.3 rule 4):
         // an already-decided interaction returns its recorded decision; never reopen it.
-        if let Some(existing) = c
+        let existing = c
             .model
             .interactions
             .iter()
             .find(|x| x.native_ref.is_some() && x.native_ref == it.native_ref && x.run == run.id)
-            .cloned()
-        {
-            if existing.status == InteractionStatus::Answered
-                && let Some(ans) = existing.answer.clone()
+            .cloned();
+        let mut tx = Tx::new();
+        match existing {
+            Some(existing)
+                if existing.status == InteractionStatus::Answered && existing.answer.is_some() =>
             {
+                let ans = existing.answer.clone().unwrap_or_default();
                 let json = harness::decision_json_cfg(h, &existing, &ans);
                 let key = format!("{}:{}", existing.id, existing.decision_rev);
                 return Ok(
                     json!({"decision": json, "interaction": existing.id, "idempotency_key": key, "resumed": true}),
                 );
             }
-            it.id = existing.id.clone();
-            it.handle = existing.handle.clone();
+            // The user dismissed it: the harness shows its own dialog, the request stays closed.
+            Some(existing) if existing.status == InteractionStatus::Cancelled => {
+                return Ok(json!({"decision": null, "interaction": existing.id}));
+            }
+            Some(existing) if existing.status == InteractionStatus::Open => {
+                reattached = true;
+                it = existing;
+                if it.gate != gate_mode {
+                    it.gate = gate_mode;
+                    tx.event(
+                        "interaction.updated",
+                        json!({"interaction": it.id, "pane": pane}),
+                        json!({"gate": gate_mode, "reason": "hook_reattached"}),
+                    );
+                    tx.interaction(it.clone());
+                }
+            }
+            existing => {
+                it.handle = match &existing {
+                    Some(x) => x.handle.clone(),
+                    None => c.next_interaction_handle(),
+                };
+                if let Some(x) = existing {
+                    it.id = x.id;
+                }
+                tx.counters = true;
+                tx.event(
+                    "interaction.opened",
+                    json!({"interaction": it.id, "pane": pane, "run": run.id}),
+                    json!({"kind": it.kind.as_str(), "source": "structured", "confidence": 1.0, "gate": gate_mode, "native_ref": it.native_ref, "risk": it.action.as_ref().map(|a| format!("{:?}", a.risk).to_lowercase())}),
+                );
+                tx.interaction(it.clone());
+            }
         }
-        let mut tx = Tx::new();
-        tx.counters = true;
-        tx.event(
-            "interaction.opened",
-            json!({"interaction": it.id, "pane": pane, "run": run.id}),
-            json!({"kind": it.kind.as_str(), "source": "structured", "confidence": 1.0, "gate": gate_mode, "native_ref": it.native_ref, "risk": it.action.as_ref().map(|a| format!("{:?}", a.risk).to_lowercase())}),
-        );
-        tx.interaction(it.clone());
-        server.commit(&mut c, tx).map_err(internal)?;
+        if !tx.is_empty() {
+            server.commit(&mut c, tx).map_err(internal)?;
+        }
     }
     if let Some((effect, rule)) = policy {
         let decision = if effect == "allow" {
@@ -2253,7 +2282,9 @@ async fn gate(server: &Arc<Server>, pane: &str, h: Harness, event: &str, p: &Val
         p,
         gate_mode.then_some(GATE_TIMEOUT),
     );
-    notify_interaction(server, &it, &run);
+    if !reattached {
+        notify_interaction(server, &it, &run);
+    }
     if !gate_mode {
         return Ok(json!({"decision": null, "interaction": it.id, "mode": "observe"}));
     }
