@@ -175,6 +175,9 @@ impl PluginBox {
                 NetMode::None
             },
             allow_bind_localhost: false,
+            bind_ports: vec![],
+            allow_host_loopback: false,
+            git_objects: None,
             protected: vec![],
             control_dir: Some(self.profile_dir.clone()),
         }

@@ -165,8 +165,23 @@ pub struct SandboxSpec {
     /// Unix sockets the tree may connect to (the per-pane broker, 13 §4.1).
     pub unix_sockets: Vec<PathBuf>,
     pub network: NetMode,
-    /// Allow listening on localhost (dev servers for previews).
+    /// Allow listening on localhost (dev servers for previews): only on [`Self::bind_ports`]
+    /// (the task's port lease) and on an ephemeral port (`0`).
     pub allow_bind_localhost: bool,
+    /// Loopback ports the box may listen on: the task's port lease. Never the configured host
+    /// services of `[sandbox] local_ports` (a box listening there would impersonate them).
+    #[serde(default)]
+    pub bind_ports: Vec<u16>,
+    /// Reach every loopback service of the host directly (`[sandbox] allow_host_loopback`,
+    /// default off). Off, loopback destinations are limited to the proxy, the port lease and
+    /// declared ports, whatever the network mode.
+    #[serde(default)]
+    pub allow_host_loopback: bool,
+    /// The box's private git object directory (13 §6): git inside the box writes new objects
+    /// here (`GIT_OBJECT_DIRECTORY`) and reads the host's objects as a read-only alternate. The
+    /// host's own object store is never writable, so the box cannot delete or rewrite it.
+    #[serde(default)]
+    pub git_objects: Option<PathBuf>,
     /// Files and dirs inside the checkout that host git executes or reads as config
     /// ([`crate::gitexec::exec_targets`]): never writable.
     #[serde(default)]
@@ -182,7 +197,10 @@ pub struct SandboxSpec {
 pub const DEFAULT_HOME_READ: &[&str] = &[
     ".gitconfig",
     ".gitignore_global",
-    ".config/git",
+    // Not the whole `~/.config/git`: `credentials` (the `store` helper's file) lives there.
+    ".config/git/config",
+    ".config/git/ignore",
+    ".config/git/attributes",
     ".cargo/bin",
     ".cargo/registry",
     ".cargo/git",
@@ -219,6 +237,7 @@ pub const HOME_NEVER_READ: &[&str] = &[
     ".pypirc",
     ".netrc",
     ".git-credentials",
+    ".config/git/credentials",
     ".config/gh",
     ".ssh",
     ".aws",
@@ -226,6 +245,49 @@ pub const HOME_NEVER_READ: &[&str] = &[
     ".docker/config.json",
     ".kube",
 ];
+
+/// Files in home directories that hold secrets next to allowlisted tool config, matched by name
+/// when the policy is built: `(dir, name prefix, name suffix)`. Every existing entry of `dir`
+/// whose name starts with the prefix and ends with the suffix is never readable (cargo registry
+/// tokens in any spelling, git credential stores, mise environment files and local overrides).
+pub const HOME_NEVER_READ_MATCH: &[(&str, &str, &str)] = &[
+    (".cargo", "credentials", ""),
+    (".config/git", "credentials", ""),
+    (".config/mise", ".env", ""),
+    (".config/mise", "", ".local.toml"),
+    (".config/mise/conf.d", ".env", ""),
+    (".config/mise/conf.d", "", ".local.toml"),
+];
+
+/// The existing paths [`HOME_NEVER_READ_MATCH`] names under `home`.
+pub fn home_never_read_matches(home: &Path) -> Vec<PathBuf> {
+    let mut v = Vec::new();
+    for (dir, prefix, suffix) in HOME_NEVER_READ_MATCH {
+        let Ok(rd) = std::fs::read_dir(home.join(dir)) else {
+            continue;
+        };
+        for e in rd.flatten() {
+            let name = e.file_name();
+            let n = name.to_string_lossy();
+            if n.starts_with(prefix) && n.ends_with(suffix) {
+                v.push(e.path());
+            }
+        }
+    }
+    v.sort();
+    v
+}
+
+/// The macOS per-user directory that holds `T/` (`$TMPDIR`), `C/` (caches: clang modules,
+/// app caches) and `0/`: `/var/folders/xx/yyy`. Every part of it is hidden from the box; the
+/// box gets its own temp and cache dirs. `None` on other platforms.
+pub fn os_user_dir() -> Option<PathBuf> {
+    let t = os_user_temp_dir()?;
+    let parent = t.parent()?;
+    // Only the expected layout (`…/T`): never hide something broader by accident.
+    (t.file_name().is_some_and(|n| n == "T") && parent.components().count() >= 4)
+        .then(|| parent.to_path_buf())
+}
 
 /// Resolved, canonical rule set.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -254,6 +316,12 @@ pub struct Policy {
     #[serde(default)]
     pub network_open: bool,
     pub allow_bind_localhost: bool,
+    /// Loopback ports the box may listen on ([`SandboxSpec::bind_ports`]).
+    #[serde(default)]
+    pub bind_ports: Vec<u16>,
+    /// [`SandboxSpec::allow_host_loopback`].
+    #[serde(default)]
+    pub allow_host_loopback: bool,
     /// The checkout (for cwd mapping and paste visibility).
     pub checkout: PathBuf,
 }
@@ -308,6 +376,15 @@ impl Policy {
         let mut p = Policy {
             checkout: checkout.clone(),
             allow_bind_localhost: spec.allow_bind_localhost,
+            bind_ports: if spec.allow_bind_localhost {
+                let mut b = spec.bind_ports.clone();
+                b.sort_unstable();
+                b.dedup();
+                b
+            } else {
+                vec![]
+            },
+            allow_host_loopback: spec.allow_host_loopback,
             ..Default::default()
         };
         // Layer 1: deny home and shared/removable locations.
@@ -321,6 +398,11 @@ impl Policy {
             if Path::new(d).exists() {
                 push_unique(&mut p.deny_read, canon(Path::new(d)));
             }
+        }
+        // The per-user `/var/folders/…` dir (temp, caches and other per-user state), not only
+        // its `T/`. The private dir and grants under it stay re-allowed in layer 2b.
+        if let Some(d) = os_user_dir() {
+            push_unique(&mut p.deny_read, canon(&d));
         }
         // Layer 2: home allowlist (only what exists; missing entries are harmless but noisy).
         let home_read: Vec<String> = spec
@@ -351,6 +433,14 @@ impl Policy {
             push_unique(&mut p.allow_read_late, canon(&g.git_dir));
         }
         push_unique(&mut p.allow_read_late, private.clone());
+        let git_objects = spec
+            .git
+            .as_ref()
+            .and(spec.git_objects.as_ref())
+            .map(|o| canon(o));
+        if let Some(o) = &git_objects {
+            push_unique(&mut p.allow_read_late, o.clone());
+        }
         // Writable extras are readable too (ephemeral harness homes live under the hidden
         // state root).
         for r in spec.extra_read.iter().chain(spec.extra_write.iter()) {
@@ -368,22 +458,37 @@ impl Policy {
             }
             push_unique(&mut p.never_read, literal);
         }
+        for f in home_never_read_matches(&home) {
+            if let Ok(target) = f.canonicalize() {
+                push_unique(&mut p.never_read, target);
+            }
+            push_unique(&mut p.never_read, f);
+        }
         if let Some(c) = &spec.control_dir {
             push_unique(&mut p.never_read, canon(c));
         }
         // Layer 3: writes.
         push_unique(&mut p.allow_write, checkout.clone());
         push_unique(&mut p.allow_write, private.clone());
+        if let Some(o) = &git_objects {
+            push_unique(&mut p.allow_write, o.clone());
+        }
         for w in &spec.extra_write {
             push_unique(&mut p.allow_write, canon(w));
         }
         if let Some(g) = &spec.git {
             let common = canon(&g.common_dir);
             let gitdir = canon(&g.git_dir);
-            // Everything under the git dirs is read-only unless re-allowed below.
+            // Everything under the git dirs is read-only unless re-allowed below. The shared
+            // object store and the shared reflogs stay read-only: new objects go to the box's
+            // private object dir ([`SandboxSpec::git_objects`]), and only the task branch's
+            // own reflog is writable (git appends to it on every commit).
             push_unique(&mut p.deny_write_git, common.clone());
             push_unique(&mut p.deny_write_git, gitdir.clone());
-            let mut late_allow: Vec<PathBuf> = vec![common.join("objects"), common.join("logs")];
+            let mut late_allow: Vec<PathBuf> = vec![];
+            if let Some(b) = &g.branch {
+                late_allow.push(common.join("logs/refs/heads").join(b));
+            }
             if gitdir != common {
                 // Worktree-private dir: index, HEAD, logs, rebase state.
                 late_allow.push(gitdir.clone());
@@ -405,7 +510,7 @@ impl Policy {
             }
             p.allow_write_git.extend(late_allow);
             // Layer 4 (final): never writable.
-            for rel in ["hooks", "config", "info", "config.worktree"] {
+            for rel in ["hooks", "config", "info", "config.worktree", "objects"] {
                 push_unique(&mut p.deny_write, common.join(rel));
             }
             for rel in ["config.worktree", "commondir", "gitdir", "hooks", "config"] {
@@ -594,6 +699,9 @@ pub(crate) mod tests {
                 local_ports: vec![20000],
             },
             allow_bind_localhost: true,
+            bind_ports: vec![20000],
+            allow_host_loopback: false,
+            git_objects: Some(root.join("state/sbx/.git-objects")),
             protected: vec![root.join("home/code/repo-task/.githooks")],
             control_dir: Some(root.join("state/sbx/.ctl")),
         }
@@ -654,7 +762,19 @@ pub(crate) mod tests {
                 .contains(&root.join("home/code/repo-task/.git"))
         );
         assert!(p.deny_write_git.contains(&common));
-        assert!(p.allow_write_git.contains(&common.join("objects")));
+        // The shared object store and reflogs are never writable: the box writes its objects
+        // to a private dir, and only its own branch's reflog.
+        assert!(!p.allow_write_git.contains(&common.join("objects")));
+        assert!(!p.allow_write_git.contains(&common.join("logs")));
+        assert!(p.deny_write.contains(&common.join("objects")));
+        assert!(
+            p.allow_write_git
+                .contains(&common.join("logs/refs/heads/vk/task"))
+        );
+        let objects = root.join("state/sbx/.git-objects");
+        assert!(p.allow_write.contains(&objects));
+        assert!(p.can_read(&objects.join("ab/cdef")));
+        assert!(p.can_read(&common.join("objects/pack/x.pack")));
         assert!(
             p.allow_write_git
                 .contains(&common.join("worktrees/repo-task"))
@@ -795,6 +915,75 @@ pub(crate) mod tests {
     fn os_user_temp_dir_is_a_directory() {
         let d = os_user_temp_dir().expect("confstr temp dir");
         assert!(d.is_absolute() && d.is_dir(), "{}", d.display());
+    }
+
+    #[test]
+    fn credential_files_next_to_tool_config_are_never_readable() {
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path().canonicalize().unwrap();
+        let home = root.join("home");
+        for d in [
+            "home/.config/git",
+            "home/.config/mise/conf.d",
+            "home/.cargo/bin",
+        ] {
+            std::fs::create_dir_all(root.join(d)).unwrap();
+        }
+        for f in [
+            ".config/git/config",
+            ".config/git/ignore",
+            ".config/git/credentials",
+            ".config/git/credentials.bak",
+            ".cargo/credentials.toml",
+            ".cargo/credentials-old",
+            ".cargo/config.toml",
+            ".config/mise/config.toml",
+            ".config/mise/.env",
+            ".config/mise/.env.production",
+            ".config/mise/config.local.toml",
+            ".config/mise/conf.d/secrets.local.toml",
+        ] {
+            std::fs::write(home.join(f), "x").unwrap();
+        }
+        let mut s = spec(&root);
+        s.home_read = None;
+        let p = Policy::from_spec(&s);
+        for ok in [
+            ".config/git/config",
+            ".config/git/ignore",
+            ".cargo/config.toml",
+            ".cargo/bin/cargo",
+            ".config/mise/config.toml",
+        ] {
+            assert!(p.can_read(&home.join(ok)), "{ok} should be readable");
+        }
+        for bad in [
+            ".config/git/credentials",
+            ".config/git/credentials.bak",
+            ".cargo/credentials.toml",
+            ".cargo/credentials-old",
+            ".config/mise/.env",
+            ".config/mise/.env.production",
+            ".config/mise/config.local.toml",
+            ".config/mise/conf.d/secrets.local.toml",
+        ] {
+            assert!(!p.can_read(&home.join(bad)), "{bad} must stay hidden");
+            assert!(p.deny_write.contains(&home.join(bad)), "{bad} write-denied");
+        }
+        // Only named files of `~/.config/git` are allowlisted, not the directory.
+        assert!(!p.can_read(&home.join(".config/git/other-helper-store")));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_whole_per_user_var_folders_dir_is_hidden() {
+        let d = os_user_dir().expect("per-user dir");
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path().canonicalize().unwrap();
+        let p = Policy::from_spec(&spec(&root));
+        assert!(p.deny_read.contains(&canon(&d)));
+        assert!(!p.can_read(&canon(&d).join("C/some-cache")));
+        assert!(!p.can_read(&canon(&d).join("0/state")));
     }
 
     #[test]

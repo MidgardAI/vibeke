@@ -631,6 +631,15 @@ pub async fn prepare_box_opts(
                 network: req.network,
                 proxy_port: req.proxy_port,
                 local_ports: req.local_ports.clone(),
+                // The box listens only on its own port lease, never on a configured host
+                // service port (it would impersonate that service to the host).
+                bind_ports: req
+                    .local_ports
+                    .iter()
+                    .copied()
+                    .filter(|p| !cfg.sandbox.local_ports.contains(p))
+                    .collect(),
+                allow_host_loopback: cfg.sandbox.allow_host_loopback,
                 extra_read,
                 extra_write,
                 hidden: hidden_paths(),
@@ -767,6 +776,13 @@ pub async fn prepare_box_opts(
     if writes_checkout {
         // Host-side git in this checkout now runs hardened and checks its `.git` (13 §6).
         vk_tasks::register_contained_checkout(&checkout);
+    }
+    if let BoxRunner::Sandbox(r) = &b.runner
+        && let Some(objects) = r.objects_dir()
+    {
+        // Git in the box writes objects to its private store: host-side git on this
+        // repository imports them first (13 §6).
+        vk_tasks::register_box_objects(&checkout, &objects);
     }
     server.sandbox.clear_failed(key);
     {
@@ -1972,6 +1988,14 @@ pub fn teardown(server: &Arc<Server>, key: &str) {
             json!({}),
         );
         let root = sbx_root(key);
+        if let BoxRunner::Sandbox(r) = &b.runner
+            && let Some(objects) = r.objects_dir()
+        {
+            // Keep every object the box wrote before its private store is deleted.
+            if let Err(e) = vk_tasks::release_box_objects(&objects) {
+                tracing::warn!(sandbox = %key, "importing the box's git objects: {e}");
+            }
+        }
         release_checkout(server, &b.checkout);
         drop(b);
         let _ = std::fs::remove_dir_all(root);
@@ -2296,6 +2320,9 @@ pub fn can_see(server: &Server, pane: &str, path: &str) -> Option<bool> {
         unix_sockets: vec![],
         network: vk_sandbox::NetMode::None,
         allow_bind_localhost: false,
+        bind_ports: vec![],
+        allow_host_loopback: false,
+        git_objects: r.objects_dir(),
         protected: vec![],
         control_dir: Some(r.control_root()),
     });

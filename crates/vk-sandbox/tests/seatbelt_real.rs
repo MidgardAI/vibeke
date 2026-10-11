@@ -19,6 +19,8 @@ struct Fx {
     repo: PathBuf,
     co: PathBuf,
     private: PathBuf,
+    /// The box's private git object directory.
+    objects: PathBuf,
 }
 
 fn git(dir: &Path, args: &[&str]) {
@@ -75,6 +77,8 @@ fn fixture() -> Fx {
     );
     let private = root.join("s/sbx/p1");
     std::fs::create_dir_all(private.join("tmp")).unwrap();
+    let objects = root.join("s/sbx/.git-objects");
+    std::fs::create_dir_all(&objects).unwrap();
     std::fs::create_dir_all(root.join("s/inbox/abc")).unwrap();
     std::fs::write(root.join("s/inbox/abc/drop.txt"), "dropped\n").unwrap();
     std::fs::write(root.join("s/state.db"), "db").unwrap();
@@ -85,6 +89,7 @@ fn fixture() -> Fx {
         repo,
         co,
         private,
+        objects,
     }
 }
 
@@ -102,6 +107,9 @@ fn spec(fx: &Fx, network: NetMode) -> SandboxSpec {
         unix_sockets: vec![],
         network,
         allow_bind_localhost: true,
+        bind_ports: vec![],
+        allow_host_loopback: false,
+        git_objects: Some(fx.objects.clone()),
         protected: vec![],
         control_dir: None,
     }
@@ -111,8 +119,8 @@ fn run(fx: &Fx, sp: &SandboxSpec, script: &str) -> Output {
     let policy = Policy::from_spec(sp);
     let profile = fx.private.join("profile.sb");
     std::fs::write(&profile, seatbelt::render(&policy)).unwrap();
-    Command::new(seatbelt::SANDBOX_EXEC)
-        .arg("-f")
+    let mut cmd = Command::new(seatbelt::SANDBOX_EXEC);
+    cmd.arg("-f")
         .arg(&profile)
         .args(["/bin/sh", "-c", script])
         .current_dir(&fx.co)
@@ -120,9 +128,15 @@ fn run(fx: &Fx, sp: &SandboxSpec, script: &str) -> Output {
         .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
         .env("HOME", &fx.home)
         .env("TMPDIR", fx.private.join("tmp"))
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .output()
-        .unwrap()
+        .env("GIT_CONFIG_NOSYSTEM", "1");
+    // The environment `SandboxRunner::env` gives a box with a git checkout.
+    if let (Some(o), Some(g)) = (&sp.git_objects, &sp.git) {
+        cmd.env("GIT_OBJECT_DIRECTORY", o).env(
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+            g.common_dir.join("objects"),
+        );
+    }
+    cmd.output().unwrap()
 }
 
 fn lines(o: &Output) -> String {
@@ -155,6 +169,10 @@ echo x > {h}/planted 2>/dev/null || echo W_HOME_DENIED
 echo x > {c}/hooks/pre-commit 2>/dev/null || echo W_HOOK_DENIED
 echo x >> {c}/config 2>/dev/null || echo W_CONFIG_DENIED
 echo 'gitdir: /tmp/evil' > .git 2>/dev/null || echo W_GITLINK_DENIED
+rm -rf {c}/objects 2>/dev/null; test -d {c}/objects/pack && echo RM_OBJECTS_DENIED
+for f in {c}/objects/??/*; do rm -f "$f" 2>/dev/null; test -f "$f" || echo OBJECT_REMOVED; done
+echo "unique-$$" | GIT_OBJECT_DIRECTORY={c}/objects git hash-object -w --stdin >/dev/null 2>&1 || echo W_HOST_OBJECTS_DENIED
+rm -f {c}/logs/HEAD 2>/dev/null; test -f {c}/logs/HEAD && echo RM_SHARED_LOG_DENIED
 mv {co} {co}.moved 2>/dev/null || echo MV_CHECKOUT_DENIED
 cat {repo}/README >/dev/null 2>&1 || echo R_MAIN_CHECKOUT_DENIED
 "#,
@@ -180,6 +198,9 @@ cat {repo}/README >/dev/null 2>&1 || echo R_MAIN_CHECKOUT_DENIED
         "W_HOOK_DENIED",
         "W_CONFIG_DENIED",
         "W_GITLINK_DENIED",
+        "RM_OBJECTS_DENIED",
+        "W_HOST_OBJECTS_DENIED",
+        "RM_SHARED_LOG_DENIED",
         "MV_CHECKOUT_DENIED",
         "R_MAIN_CHECKOUT_DENIED",
     ] {
@@ -188,14 +209,25 @@ cat {repo}/README >/dev/null 2>&1 || echo R_MAIN_CHECKOUT_DENIED
     assert!(!fx.home.join("planted").exists());
     assert!(!common.join("hooks/pre-commit").exists());
     assert!(fx.co.exists());
-    // The commit landed on the task branch, visible from the host.
+    assert!(!out.contains("OBJECT_REMOVED"), "{out}");
+    // The commit landed on the task branch; its objects sit in the box's private store, which
+    // the host reads (or imports) as an alternate.
     let log = Command::new("git")
         .arg("-C")
         .arg(&fx.repo)
         .args(["log", "-1", "--format=%s", "vk/t"])
+        .env("GIT_ALTERNATE_OBJECT_DIRECTORIES", &fx.objects)
         .output()
         .unwrap();
     assert_eq!(String::from_utf8_lossy(&log.stdout).trim(), "sbx");
+    // Nothing new was written to the shared store.
+    let bare = Command::new("git")
+        .arg("-C")
+        .arg(&fx.repo)
+        .args(["cat-file", "-e", "vk/t^{commit}"])
+        .output()
+        .unwrap();
+    assert!(!bare.status.success(), "the box wrote into the host store");
 }
 
 #[test]
@@ -569,12 +601,17 @@ fn tiocsti_cannot_inject_into_parent() {
 #[test]
 fn dev_server_can_listen_on_localhost() {
     let fx = fixture();
-    let sp = spec(&fx, NetMode::None);
-    // nc -l binds 127.0.0.1; the bind itself must be allowed (previews, 13 §7 inbound).
+    let mut sp = spec(&fx, NetMode::None);
+    // The task's port lease.
+    sp.bind_ports = vec![38917];
+    // nc -l binds 127.0.0.1; the bind on a leased port must be allowed (previews, 13 §7
+    // inbound), any other port is refused (the box must not stand in for a host service).
     let out = lines(&run(
         &fx,
         &sp,
-        "nc -l 127.0.0.1 38917 & P=$!; sleep 0.3; kill $P 2>/dev/null && echo LISTEN_OK",
+        "nc -l 127.0.0.1 38917 & P=$!; sleep 0.3; kill $P 2>/dev/null && echo LISTEN_OK\n\
+         nc -l 127.0.0.1 38918 2>/dev/null & Q=$!; sleep 0.3; kill $Q 2>/dev/null || echo OTHER_PORT_DENIED",
     ));
     assert!(out.contains("LISTEN_OK"), "{out}");
+    assert!(out.contains("OTHER_PORT_DENIED"), "{out}");
 }

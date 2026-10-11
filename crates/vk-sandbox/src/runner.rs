@@ -105,8 +105,13 @@ pub struct SandboxSetup {
     pub root: PathBuf,
     pub network: NetworkProfile,
     pub proxy_port: Option<u16>,
-    /// Loopback ports the box may reach directly (the task's port lease, for previews/tests).
+    /// Loopback ports the box may reach directly (the task's port lease, for previews/tests,
+    /// plus the configured `[sandbox] local_ports` host services).
     pub local_ports: Vec<u16>,
+    /// Loopback ports the box may listen on: the task's port lease only.
+    pub bind_ports: Vec<u16>,
+    /// `[sandbox] allow_host_loopback`: reach every host loopback service directly.
+    pub allow_host_loopback: bool,
     pub extra_read: Vec<PathBuf>,
     pub extra_write: Vec<PathBuf>,
     pub hidden: Vec<PathBuf>,
@@ -141,6 +146,11 @@ pub fn short_id(id: &str) -> String {
 /// specs). Pane ids are alphanumeric ([`short_id`]), so it cannot collide with a pane dir.
 pub const CONTROL_DIR: &str = ".ctl";
 
+/// Name of the box's private git object directory under a sandbox root (13 §6): git inside the
+/// box writes new objects there, and the host imports them into the repository
+/// (`vk_tasks::register_box_objects`). Not alphanumeric, so no pane dir has this name.
+pub const GIT_OBJECTS_DIR: &str = ".git-objects";
+
 impl SandboxRunner {
     pub fn pane_dir(&self, pane_id: &str) -> PathBuf {
         self.setup.root.join(short_id(pane_id))
@@ -151,6 +161,45 @@ impl SandboxRunner {
     /// profile or exec spec there could be rewritten by the box before the host reads it.
     pub fn control_root(&self) -> PathBuf {
         self.setup.root.join(CONTROL_DIR)
+    }
+
+    /// `<root>/.git-objects`: the task's private git object directory (shared by its panes),
+    /// or `None` when the checkout is not a git repository.
+    pub fn objects_dir(&self) -> Option<PathBuf> {
+        self.setup
+            .git
+            .as_ref()
+            .map(|_| self.setup.root.join(GIT_OBJECTS_DIR))
+    }
+
+    /// Create the private object dir (without following symlinks) and make sure the task
+    /// branch's reflog exists: the box may append to that one file, but cannot create the
+    /// directories above it in the shared reflog tree.
+    fn ensure_git_dirs(&self) -> std::io::Result<()> {
+        let Some(g) = &self.setup.git else {
+            return Ok(());
+        };
+        if !self.setup.root.exists() {
+            std::fs::create_dir_all(&self.setup.root)?;
+        }
+        crate::fsafe::ensure_dir_under(&self.setup.root, Path::new(GIT_OBJECTS_DIR))?;
+        if let Some(b) = &g.branch {
+            let log = g.common_dir.join("logs/refs/heads").join(b);
+            if std::fs::symlink_metadata(&log).is_err()
+                && let Some(parent) = log.parent()
+            {
+                // Best effort: a failure here only means the box's first commit cannot write
+                // its reflog entry.
+                let _ = std::fs::create_dir_all(parent).and_then(|_| {
+                    std::fs::OpenOptions::new()
+                        .append(true)
+                        .create(true)
+                        .open(&log)
+                        .map(drop)
+                });
+            }
+        }
+        Ok(())
     }
 
     /// The pane's control dir (`<root>/.ctl/<pane>`), created (or verified) without following
@@ -230,6 +279,9 @@ impl SandboxRunner {
             unix_sockets: broker.map(|b| vec![b.to_path_buf()]).unwrap_or_default(),
             network: crate::policy::net_mode(s.network, s.proxy_port, &s.local_ports),
             allow_bind_localhost: true,
+            bind_ports: s.bind_ports.clone(),
+            allow_host_loopback: s.allow_host_loopback,
+            git_objects: self.objects_dir(),
             protected: s.protected.clone(),
             control_dir: Some(self.control_root()),
         }
@@ -259,6 +311,16 @@ impl SandboxRunner {
             Some(b) => env::set(&mut e, "VIBEKE_SOCKET", b.to_string_lossy()),
             // No broker: point at a path that does not exist rather than the real socket.
             None => env::set(&mut e, "VIBEKE_SOCKET", "/nonexistent/vibeke-sandbox.sock"),
+        }
+        if let (Some(g), Some(objects)) = (&self.setup.git, self.objects_dir()) {
+            // New objects go to the box's private store; the host's objects are read through
+            // an alternate (they are read-only in here: 13 §6).
+            env::set(&mut e, "GIT_OBJECT_DIRECTORY", objects.to_string_lossy());
+            env::set(
+                &mut e,
+                "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+                g.common_dir.join("objects").to_string_lossy(),
+            );
         }
         env::set(&mut e, "VIBEKE_ISOLATION", "sandbox");
         env::set(&mut e, "VIBEKE_NETWORK", self.setup.network.as_str());
@@ -316,12 +378,18 @@ impl Runner for SandboxRunner {
             });
         }
         if cfg!(target_os = "linux") {
-            if crate::linux::bwrap_available() {
-                return Ok(());
+            if !crate::linux::bwrap_available() {
+                return Err(RunnerError::Unavailable {
+                    level: "sandbox",
+                    reason: "bubblewrap (bwrap) not installed".into(),
+                });
             }
-            return Err(RunnerError::Unavailable {
-                level: "sandbox",
-                reason: "bubblewrap (bwrap) not installed".into(),
+            // Fail closed on kernels without Landlock ABI 6 (Linux 6.12): no weaker sandbox.
+            return crate::linux::landlock_status().map(drop).map_err(|reason| {
+                RunnerError::Unavailable {
+                    level: "sandbox",
+                    reason,
+                }
             });
         }
         Err(RunnerError::Unavailable {
@@ -333,6 +401,7 @@ impl Runner for SandboxRunner {
         self.check()?;
         let private = self.ensure_pane_dir(&req.pane_id)?;
         let ctl = self.ensure_control_dir(&req.pane_id)?;
+        self.ensure_git_dirs()?;
         let broker = self.setup.broker.then(|| private.join("b.sock"));
         let (profile, policy) = self.write_profile(&ctl, &private, broker.as_deref())?;
         let env = self.env(&req.env, &private, broker.as_deref())?;
@@ -401,10 +470,21 @@ impl Runner for VmRunner {
 pub fn availability() -> Vec<(IsolationLevel, Result<String, String>)> {
     let sbx = if crate::seatbelt::available() {
         Ok("seatbelt (sandbox-exec; deprecated by Apple but shipped)".to_string())
-    } else if cfg!(target_os = "linux") && crate::linux::bwrap_available() {
-        Ok("bubblewrap + Landlock + seccomp (unverified)".to_string())
     } else if cfg!(target_os = "linux") {
-        Err("install bubblewrap (bwrap)".to_string())
+        let kernel = crate::linux::kernel_release()
+            .map(|k| format!("Linux {k}"))
+            .unwrap_or_else(|| "Linux".into());
+        match (
+            crate::linux::bwrap_available(),
+            crate::linux::landlock_status(),
+        ) {
+            (true, Ok(abi)) => Ok(format!(
+                "bubblewrap + Landlock ABI {abi} + seccomp on {kernel} (unverified)"
+            )),
+            (false, Ok(_)) => Err("install bubblewrap (bwrap)".to_string()),
+            (true, Err(e)) => Err(e),
+            (false, Err(e)) => Err(format!("install bubblewrap (bwrap); also, {e}")),
+        }
     } else {
         Err("no sandbox-exec".to_string())
     };
@@ -467,6 +547,8 @@ mod tests {
             network: NetworkProfile::None,
             proxy_port: None,
             local_ports: vec![],
+            bind_ports: vec![],
+            allow_host_loopback: false,
             extra_read: vec![],
             extra_write: vec![],
             hidden: vec![],
@@ -544,6 +626,8 @@ mod tests {
                 network: NetworkProfile::Dev,
                 proxy_port: Some(4123),
                 local_ports: vec![],
+                bind_ports: vec![],
+                allow_host_loopback: false,
                 extra_read: vec![],
                 extra_write: vec![],
                 hidden: vec![],
