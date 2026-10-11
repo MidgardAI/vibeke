@@ -7,6 +7,7 @@
 //! generated from it. Support is **partial** until the differential suite (07 §8.4) passes.
 
 pub mod cli;
+pub mod cli_config;
 pub mod events;
 pub mod inventory;
 pub mod launch;

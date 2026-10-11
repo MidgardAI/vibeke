@@ -21,6 +21,7 @@ socket_api = "https://github.com/herdrdev/herdr/blob/7b116c05bfda646af39d2524c54
 reference_binary_sha256 = { macos-arm64 = "29a48a8352829a66e42e828a052fb292d9a28800d84523f718f18780ebb8ccd9", linux-x86_64 = "f3b8ef623211b02415bdc98a12ee072f572c92da92e572a2bf6968002f7ee2e0" }
 api_schema_json = "api-schema.json"  # `herdr api schema --json` (protocol 22, 102 request methods)
 cli_help = "cli-help/"               # every `herdr <noun> [verb] --help`, plus index.txt
+default_config = "default-config.toml"  # `herdr --default-config` (DEFAULT_CONFIG in src/main.rs at tag_commit)
 manifest_schema = "pending"          # not captured by the first run; derive it from src/api/schema/plugins.rs at tag_commit
 plugin_manifests = "manifests/"    # 99 real manifests, sha256-verified against manifests/index.json
 
