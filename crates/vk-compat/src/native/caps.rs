@@ -49,9 +49,11 @@ pub struct Capabilities {
     pub agents_control: bool,
     /// `interaction.answer/cancel` (high risk).
     pub interactions_answer: bool,
-    /// `task.*` and `worktree.*` mutations.
+    /// `task.*` and `worktree.*` mutations. Methods that start agents or run commands also
+    /// need `agents_control` ([`launches_agents`]).
     pub tasks_write: bool,
-    /// `preview.*`, `browser.*` and screenshots (scripts need `browser_script`).
+    /// `preview.*`, `browser.*` and screenshots (scripts need `browser_script`; taking a
+    /// session over, its input and screencast, and `preview.connect` are never granted).
     pub preview_access: bool,
     /// `browser.eval` / page scripts (high risk).
     pub browser_script: bool,
@@ -199,7 +201,7 @@ impl Capabilities {
         if self.tasks_write {
             push(
                 "tasks_write".into(),
-                "create, change and finish tasks and worktrees",
+                "create, change and finish tasks and worktrees (starting agents in them also needs agents_control)",
                 Risk::Medium,
             );
         }
@@ -447,8 +449,13 @@ pub fn need(method: &str) -> Need {
         "group.",
         "client.focus",
     ];
-    if matches!(method, "server.status" | "session.snapshot") {
+    if method == "server.status" {
         return Base;
+    }
+    // The snapshot carries pane commands, agent runs and open interactions (their prompts and
+    // plans): content, not structure. Structure alone is `workspace.list`/`pane.list`/...
+    if method == "session.snapshot" {
+        return Cap("panes_read");
     }
     // The one render surface a plugin can be granted, explicitly.
     if method == "render.attach" {
@@ -498,6 +505,18 @@ pub fn need(method: &str) -> Need {
         "interaction.answer" | "interaction.cancel" => Cap("interactions_answer"),
         m if m.starts_with("task.") || m.starts_with("worktree.") => Cap("tasks_write"),
         "browser.eval" | "browser.script" => Cap("browser_script"),
+        // Human-only browser surfaces: taking a session over and sending a person's touches
+        // and keys, and the screencast that goes with it. A plugin is not a person.
+        "browser.take_over"
+        | "browser.release"
+        | "browser.input"
+        | "browser.attach_screencast"
+        | "browser.detach_screencast"
+        | "browser.screencast_frame" => Never,
+        // `preview.connect` turns the connection into a raw byte stream to a loopback port
+        // (the gateway's tunnels); mirroring publishes a preview on the network. Not for
+        // plugins (the server refuses them as well).
+        "preview.connect" | "preview.mirror" | "preview.unmirror" => Never,
         m if m.starts_with("preview.")
             || m.starts_with("browser.")
             || m.starts_with("screenshot.") =>
@@ -506,6 +525,47 @@ pub fn need(method: &str) -> Need {
         }
         _ => Never,
     }
+}
+
+/// Task and worktree methods that start an agent or run a command (setup scripts, checks,
+/// reviewers, best-of-N, resumed agents): they need `agents_control` on top of `tasks_write`.
+pub const AGENT_LAUNCHING_TASK_METHODS: &[&str] = &[
+    "task.best_of_n",
+    "task.check.authorize",
+    "task.check.run",
+    "task.recreate",
+    "task.resume",
+    "task.review.request_reviewer",
+    "task.review.start_reviewer",
+    "task.setup",
+    "task.split",
+];
+
+/// Does this call start an agent or run a command? `task.create` does when it names agents,
+/// a command or a setup script.
+pub fn launches_agents(method: &str, params: &Value) -> bool {
+    if AGENT_LAUNCHING_TASK_METHODS.contains(&method) {
+        return true;
+    }
+    if method == "task.create" {
+        let present = |k: &str| match params.get(k) {
+            None | Some(Value::Null) => false,
+            Some(Value::Array(a)) => !a.is_empty(),
+            Some(Value::String(s)) => !s.is_empty(),
+            Some(_) => true,
+        };
+        return [
+            "agents",
+            "agent",
+            "harness",
+            "command",
+            "prompt",
+            "setup_script",
+        ]
+        .iter()
+        .any(|k| present(k));
+    }
+    false
 }
 
 impl Capabilities {
@@ -528,6 +588,13 @@ impl Capabilities {
     /// the human-readable reason (the server turns it into `permission_denied` and a
     /// `plugin.capability_violation` event).
     pub fn check(&self, method: &str, params: &Value) -> Result<(), String> {
+        // Task methods that start agents or run commands are as risky as `agents_control`
+        // (high): `tasks_write` (medium) alone does not cover them.
+        if launches_agents(method, params) && !self.agents_control {
+            return Err(format!(
+                "{method} starts agents or runs commands: it needs the `agents_control` capability as well as `tasks_write`"
+            ));
+        }
         match need(method) {
             Need::Base => Ok(()),
             Need::Never => Err(format!("{method} is not available to plugins")),
@@ -707,6 +774,68 @@ mod tests {
         assert!(all.check("interaction.answer", &json!({})).is_ok());
         assert!(all.check("task.create", &json!({})).is_ok());
         assert!(all.check("browser.eval", &json!({})).is_ok());
+        // Human-only browser control and raw tunnels stay refused whatever was granted.
+        for m in [
+            "browser.take_over",
+            "browser.input",
+            "browser.release",
+            "browser.attach_screencast",
+            "browser.screencast_frame",
+            "preview.connect",
+        ] {
+            assert!(all.check(m, &json!({})).is_err(), "{m}");
+        }
+        assert!(all.check("browser.navigate", &json!({})).is_ok());
+    }
+
+    #[test]
+    fn snapshot_needs_panes_read() {
+        assert!(
+            Capabilities::default()
+                .check("session.snapshot", &json!({}))
+                .unwrap_err()
+                .contains("panes_read")
+        );
+        assert!(caps().check("session.snapshot", &json!({})).is_ok());
+        assert!(
+            Capabilities::default()
+                .check("server.status", &json!({}))
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn starting_agents_from_tasks_needs_agents_control() {
+        let tasks = Capabilities {
+            tasks_write: true,
+            ..Default::default()
+        };
+        assert!(tasks.check("task.create", &json!({"title": "t"})).is_ok());
+        assert!(tasks.check("task.finish", &json!({"task": "t"})).is_ok());
+        for (m, p) in [
+            (
+                "task.create",
+                json!({"title": "t", "agents": [{"harness": "claude"}]}),
+            ),
+            ("task.create", json!({"title": "t", "command": "make"})),
+            ("task.best_of_n", json!({})),
+            ("task.review.start_reviewer", json!({})),
+            ("task.setup", json!({})),
+            ("task.check.run", json!({})),
+        ] {
+            let e = tasks.check(m, &p).unwrap_err();
+            assert!(e.contains("agents_control"), "{m}: {e}");
+        }
+        let both = Capabilities {
+            tasks_write: true,
+            agents_control: true,
+            ..Default::default()
+        };
+        assert!(both.check("task.best_of_n", &json!({})).is_ok());
+        assert!(
+            both.check("task.create", &json!({"agents": [{"harness": "claude"}]}))
+                .is_ok()
+        );
     }
 
     #[test]
