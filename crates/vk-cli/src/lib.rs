@@ -2700,6 +2700,31 @@ pub fn exit_code_for(e: &CallError) -> i32 {
     }
 }
 
+/// A newer CLI calling a method an older running server does not know: say so, with both
+/// versions and the fix, instead of a bare "unknown method".
+pub fn explain_version_skew(e: CallError, method: &str, server_version: Option<&str>) -> CallError {
+    match e {
+        CallError::Rpc(mut r)
+            if r.data.kind == "method_not_found"
+                && server_version.is_some_and(|v| v != vk_proto::VERSION) =>
+        {
+            let sv = server_version.unwrap_or_default();
+            r.message = format!(
+                "the running server (vibeke {sv}) does not know `{method}`; this CLI is vibeke {}. Run `vibeke server restart` to restart the server on this version (panes keep running)",
+                vk_proto::VERSION
+            );
+            r.data.details = json!({
+                "method": method,
+                "server_version": sv,
+                "cli_version": vk_proto::VERSION,
+                "fix": "vibeke server restart",
+            });
+            CallError::Rpc(r)
+        }
+        other => other,
+    }
+}
+
 pub fn print_error(e: &CallError) {
     match e {
         CallError::Rpc(r) => eprintln!(
@@ -3264,11 +3289,18 @@ where
     if out.is_some() {
         params["inline"] = json!(true);
     }
-    if let Err(e) = client.hello("cli").await {
-        print_error(&e);
-        return exit_code_for(&e);
-    }
-    match client.call(method, params).await {
+    let server_version = match client.hello("cli").await {
+        Ok(h) => h["server_version"].as_str().map(str::to_string),
+        Err(e) => {
+            print_error(&e);
+            return exit_code_for(&e);
+        }
+    };
+    match client
+        .call(method, params)
+        .await
+        .map_err(|e| explain_version_skew(e, method, server_version.as_deref()))
+    {
         Ok(mut v) => {
             let mut method = method;
             if only_collisions {
@@ -3948,6 +3980,27 @@ mod tests {
         let e = build_params_for(Some("pane.read"), &["pane"], &a(&["p1", "--lines", "many"]))
             .unwrap_err();
         assert!(e.contains("--lines"), "{e}");
+    }
+
+    #[test]
+    fn unknown_method_on_an_older_server_names_both_versions() {
+        let nf = || {
+            CallError::Rpc(vk_proto::rpc::RpcError::new(
+                vk_proto::rpc::ErrorKind::MethodNotFound,
+                "unknown method",
+            ))
+        };
+        let CallError::Rpc(r) = explain_version_skew(nf(), "goal.create", Some("0.0.1")) else {
+            panic!()
+        };
+        assert!(r.message.contains("0.0.1") && r.message.contains(vk_proto::VERSION));
+        assert!(r.message.contains("vibeke server restart"));
+        // Same version: the server's own message stands.
+        let CallError::Rpc(r) = explain_version_skew(nf(), "goal.create", Some(vk_proto::VERSION))
+        else {
+            panic!()
+        };
+        assert_eq!(r.message, "unknown method");
     }
 
     #[test]
