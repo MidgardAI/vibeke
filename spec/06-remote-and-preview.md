@@ -604,6 +604,8 @@ struct CodeState { task: TaskId, repo_root: PathBuf, head_sha: String,
 
 ### B8. Displaying screenshots in the TUI
 
+> See [18](18-images-in-the-tui.md) for the later TUI work: the sidebar **Images** section, the viewer (`prefix+alt+i`), the pop-up card, unseen-based `📷N` badges (replacing the per-pane counters below) and iTerm2 support for the gallery and the preview thumbnails. Where this section says kitty graphics only, 18 applies.
+
 - Kitty graphics–capable terminals: `prefix+i` / `vibeke preview show v4` popup (←/→ history, `d` diff, `o` open the live preview in a browser pane, `c` copy image). A screenshot pane can be split into a tab and refreshes on new screenshots.
 - No graphics: metadata + `[o] open image locally` (temp file + `open`/`xdg-open`). Sixel M6.
 - Transmission: kitty `t=s`/`t=t` (shared memory / temp file) when the client is local to the terminal, else chunked `t=d`; cached per terminal session. Same code path as the browser pane's tiles (B3.2).

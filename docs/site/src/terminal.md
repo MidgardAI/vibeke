@@ -63,6 +63,10 @@ Open **Attention inbox** to review permission requests, questions, and plan revi
 Select the request, read its details, and answer it. Delivery depends on the agent integration.
 See [agents and interactions](concepts/agents.md).
 
+## Images
+
+Press `prefix+alt+i` to view new images. The sidebar also lists recent images. See [previews and browsers](concepts/previews.md#images-in-the-terminal-interface).
+
 ## Phone and desktop access
 
 The desktop app has a **Connect to this Mac/computer** flow.

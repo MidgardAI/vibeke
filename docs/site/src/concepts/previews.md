@@ -105,10 +105,80 @@ Use `codex` in place of `claude` for Codex. The pi extension adds the same tool 
 
 You can see attached images in these places:
 
-- In the terminal interface, run `:screenshots` to open the gallery. A camera counter next to an agent shows new images.
+- In the terminal interface, the **Images** section of the sidebar, the viewer and the gallery (see below).
 - In the desktop app and the phone app, open the **Screenshots** tab in the workspace panel.
 
-The gallery shows the caption of an attached image. It marks the image as "attached by agent". When you use a remote machine, the terminal interface loads the image only when you press `v`.
+The gallery shows the caption of an attached image. It marks the image as "attached by agent".
+
+## Images in the terminal interface
+
+### The Images section
+
+The sidebar has an **Images** section below the attention section. It lists the newest images, one row for each image. A row shows the handle, the caption, the agent that attached the image and its age. New images are bright. An image stays new until you look at it. The header counts the new images, for example `images · 2 new`.
+
+When more images exist, a row such as `+12 more on devbox` appears. Select it to open the gallery of that machine.
+
+Two settings control the section:
+
+```toml
+[ui.images]
+sidebar = true   # show the Images section
+recent  = 5      # how many images it lists (1 to 20)
+```
+
+Select a row and press `enter`, or click it, to open the image in the viewer. Press `x` on a selected row to remove the image. A camera badge such as `📷2` next to an agent shows how many new images that agent has. Click the badge to open the newest one.
+
+The **gallery** lists all images of one machine. Open it from the command palette with **Screenshot gallery**, or with `g` in the viewer.
+
+### The viewer
+
+The **viewer** shows one image over the pane area. Open it in one of these ways:
+
+- Press `prefix+alt+i`. This opens the newest new image. If no image is new, it opens the gallery.
+- Choose **View new images** in the command palette.
+- Select a row in the **Images** section, or click a `📷N` badge.
+
+These keys work in the viewer:
+
+| Key | Action |
+| --- | --- |
+| `esc` | Dismiss. The image counts as seen, and the viewer closes. The image stays in the gallery. |
+| `o` | Open the image on this machine, with your normal image program. |
+| `x` | Remove the image. For an image that an agent attached, press `x` a second time to confirm. For a screenshot, the viewer asks you to confirm. |
+| `←` and `→` | Show the older or the newer image. |
+| `g` | Open the gallery on this image. |
+| `y` | Copy the handle and the path of the image. |
+
+A screenshot that a review accepted needs one more confirmation before Vibeke removes it.
+
+### The pop-up card
+
+When an agent attaches an image to the pane you are using, a small card appears over that pane. The card shows the image and its caption. It does not take the keyboard. Every key you type still goes to the pane, and the first key you type closes the card. The image stays new in the sidebar.
+
+To look at the image, press `prefix+alt+i` or click the card. The viewer opens. Turn the card off in your configuration:
+
+```toml
+[ui.images]
+popup = false
+```
+
+The card appears only for images that an agent attached to your focused pane. It does not appear for screenshots that you take yourself.
+
+### Terminal support
+
+The terminal interface shows images in terminals that support the **kitty graphics protocol**, such as kitty and Ghostty. It also shows images in iTerm2. The same terminals show preview thumbnails.
+
+Other terminals show a short text hint in place of the image. The `o` key still opens the image on this machine. Images are not shown inside tmux. The hint appears there too.
+
+### Remote machines
+
+When the image lives on a remote machine, Vibeke fetches it when you open it in the viewer. It fetches the image at the size of the view, so the transfer stays small. In the gallery list, an image from a remote machine loads only when you press `v`.
+
+The `o` key needs the original file. A remote original larger than 8 MiB cannot be opened this way. The viewer then shows the path on the host, and `y` copies it.
+
+### Preview thumbnails
+
+Set `ui.sidebar.preview_thumbnails = true` to show a small image of the newest screenshot on each preview row. Thumbnails work in kitty graphics terminals and in iTerm2. They also work for previews on remote machines.
 
 ## View and control a session
 

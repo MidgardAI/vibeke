@@ -1,6 +1,6 @@
 # 18 — Images in the TUI
 
-**Status: planned (branch `tui-images`).** This spec makes screenshots and attached images easy to find and view in the terminal interface. It also makes the TUI's own image views work in iTerm2 as well as in kitty-compatible terminals. It builds on the gallery and 📷 counters of [06](06-remote-and-preview.md) B7/B8 and the `screenshot.*` API of [07](07-api-cli-plugins.md).
+**Status: implemented on branch `tui-images`.** This spec makes screenshots and attached images easy to find and view in the terminal interface. It also makes the TUI's own image views work in iTerm2 as well as in kitty-compatible terminals. It builds on the gallery and 📷 counters of [06](06-remote-and-preview.md) B7/B8 and the `screenshot.*` API of [07](07-api-cli-plugins.md).
 
 ## 1. Problem
 
