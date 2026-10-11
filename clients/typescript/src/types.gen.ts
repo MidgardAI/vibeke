@@ -1641,6 +1641,7 @@ export type AttentionListResult = {
       kind: string;
       id: string;
     };
+    item_rev: number;
     class: number | "finished_turns";
     title: string;
     subtitle: string;
@@ -1722,6 +1723,7 @@ export type AttentionUpdateParams = {
   item_rev?: number;
   snooze_until_ms?: number | null;
   pin?: boolean;
+  dismiss?: boolean;
 };
 
 export type AttentionUpdateResult = {
@@ -1733,6 +1735,8 @@ export type AttentionUpdateResult = {
   seen_rev: number | null;
   snoozed_until_ms: number | null;
   pinned: boolean;
+  dismissed: boolean;
+  dismissed_rev: number | null;
   warning: string | null;
   cursor?: Cursor;
 };

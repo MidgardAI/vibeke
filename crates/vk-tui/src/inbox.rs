@@ -158,7 +158,6 @@ pub struct Dismissed {
 
 const CONFIRM_INTERACTION: &str =
     "The agent may still be waiting in the pane. Press x again to dismiss.";
-const CONFIRM_DELIVERY: &str = "Press X again to dismiss all delivery problems.";
 
 impl Default for InboxState {
     fn default() -> Self {

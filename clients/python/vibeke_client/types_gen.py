@@ -1741,6 +1741,7 @@ AttentionListResultItemsItemBatchV0 = TypedDict("AttentionListResultItemsItemBat
 
 AttentionListResultItemsItem = TypedDict("AttentionListResultItemsItem", {
     "key": "AttentionListResultItemsItemKey",
+    "item_rev": int,
     "class": Union[int, Literal["finished_turns"]],
     "title": str,
     "subtitle": str,
@@ -1841,6 +1842,7 @@ AttentionUpdateParams = TypedDict("AttentionUpdateParams", {
     "item_rev": NotRequired[int],
     "snooze_until_ms": NotRequired[Optional[int]],
     "pin": NotRequired[bool],
+    "dismiss": NotRequired[bool],
 })
 
 AttentionUpdateResultKey = TypedDict("AttentionUpdateResultKey", {
@@ -1854,6 +1856,8 @@ AttentionUpdateResult = TypedDict("AttentionUpdateResult", {
     "seen_rev": Optional[int],
     "snoozed_until_ms": Optional[int],
     "pinned": bool,
+    "dismissed": bool,
+    "dismissed_rev": Optional[int],
     "warning": Optional[str],
     "cursor": NotRequired["Cursor"],
 })

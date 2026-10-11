@@ -7224,6 +7224,9 @@
                     "id"
                   ]
                 },
+                "item_rev": {
+                  "type": "integer"
+                },
                 "class": {
                   "anyOf": [
                     {
@@ -7412,6 +7415,7 @@
               },
               "required": [
                 "key",
+                "item_rev",
                 "class",
                 "title",
                 "subtitle",
@@ -7686,6 +7690,9 @@
           },
           "pin": {
             "type": "boolean"
+          },
+          "dismiss": {
+            "type": "boolean"
           }
         },
         "required": [
@@ -7736,6 +7743,19 @@
           "pinned": {
             "type": "boolean"
           },
+          "dismissed": {
+            "type": "boolean"
+          },
+          "dismissed_rev": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "warning": {
             "anyOf": [
               {
@@ -7756,6 +7776,8 @@
           "seen_rev",
           "snoozed_until_ms",
           "pinned",
+          "dismissed",
+          "dismissed_rev",
           "warning"
         ]
       }
