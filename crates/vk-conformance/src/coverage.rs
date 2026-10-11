@@ -84,10 +84,23 @@ pub fn declared(manifest: &Manifest, os: &str) -> Vec<Surface> {
 /// expression must match somewhere in the URL. The result is sorted and has no duplicates, and
 /// it may name surfaces that the manifest does not declare on this platform.
 pub fn covered(scenario: &Scenario, manifest: &Manifest) -> Vec<Surface> {
+    covered_by(scenario, manifest, None)
+}
+
+/// [`covered`] by the steps that run on `os` only (a step's `platforms`).
+pub fn covered_on(scenario: &Scenario, manifest: &Manifest, os: &str) -> Vec<Surface> {
+    covered_by(scenario, manifest, Some(os))
+}
+
+fn covered_by(scenario: &Scenario, manifest: &Manifest, os: Option<&str>) -> Vec<Surface> {
     let mut out = BTreeSet::new();
     let mut ready = false;
     let mut activated = false;
-    for step in &scenario.steps {
+    for step in scenario
+        .steps
+        .iter()
+        .filter(|s| os.is_none_or(|os| s.runs_on(os)))
+    {
         match step.kind {
             StepKind::Action => {
                 if let Some(a) = &step.action {
@@ -157,11 +170,18 @@ impl CoverageReport {
 
 /// Compare the scenario with what the manifest declares for `os`. A skip is unknown only when
 /// neither Linux nor macOS (nor `os`) declares its surface, so a scenario can skip a surface
-/// that exists on one platform only.
+/// that exists on one platform only. Steps and skips with `platforms` count only on those
+/// platforms, so a surface can be skipped on one platform and covered on the other.
 pub fn check(scenario: &Scenario, manifest: &Manifest, os: &str) -> CoverageReport {
     let declared_here = declared(manifest, os);
-    let covered: BTreeSet<Surface> = covered(scenario, manifest).into_iter().collect();
-    let skipped: BTreeSet<&str> = scenario.skips.iter().map(|s| s.surface.as_str()).collect();
+    let covered: BTreeSet<Surface> = covered_on(scenario, manifest, os).into_iter().collect();
+    let skipped: BTreeSet<&str> = scenario
+        .skips
+        .iter()
+        .filter(|s| s.applies_on(os))
+        .map(|s| s.surface.as_str())
+        .collect();
+    let all_skips: BTreeSet<&str> = scenario.skips.iter().map(|s| s.surface.as_str()).collect();
     let platforms = [HOST_PLATFORMS[0], HOST_PLATFORMS[1], os];
     let anywhere: BTreeSet<String> = platforms
         .into_iter()
@@ -174,7 +194,7 @@ pub fn check(scenario: &Scenario, manifest: &Manifest, os: &str) -> CoverageRepo
         .filter(|s| !covered.contains(*s) && !skipped.contains(s.name().as_str()))
         .cloned()
         .collect();
-    let unknown_skips = skipped
+    let unknown_skips = all_skips
         .iter()
         .filter(|s| !anywhere.contains(**s))
         .map(|s| s.to_string())
@@ -394,6 +414,33 @@ text = "listening"
         assert!(r.missing.is_empty());
         // `action:linux-only` is skipped on macOS too, where it is not declared: not stale.
         assert!(!r.unknown_skips.contains(&"action:linux-only".to_string()));
+    }
+
+    #[test]
+    fn platform_scoped_skips_and_steps() {
+        let m = manifest();
+        // `doctor` is skipped on Linux and covered by a macOS-only step on macOS.
+        let body = FULL.replace(
+            "reason = \"needs a cloud account\"",
+            "reason = \"needs a cloud account\"\nplatforms = [\"linux\"]",
+        ) + "\n[[step]]\nid = \"doctor\"\nkind = \"action\"\naction = \"doctor\"\nplatforms = [\"macos\"]\n";
+        let s = scenario(&body);
+        for os in ["linux", "macos"] {
+            let r = check(&s, &m, os);
+            assert!(r.ok(), "{os}: {r:?}");
+        }
+        assert!(covered_on(&s, &m, "macos").contains(&Surface::Action("doctor".into())));
+        assert!(!covered_on(&s, &m, "linux").contains(&Surface::Action("doctor".into())));
+        // Without the macOS step, macOS misses `doctor`.
+        let s = scenario(&FULL.replace(
+            "reason = \"needs a cloud account\"",
+            "reason = \"needs a cloud account\"\nplatforms = [\"linux\"]",
+        ));
+        assert!(check(&s, &m, "linux").ok());
+        assert_eq!(
+            check(&s, &m, "macos").missing,
+            vec![Surface::Action("doctor".into())]
+        );
     }
 
     #[test]
