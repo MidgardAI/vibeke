@@ -1,0 +1,228 @@
+# Plugin: plannotator/herdr-annotate, plugin id "annotate" (annotate 0.9.0), locked commit
+# e3ca7e88ada0c77baf5714c006a5abe36798349c, manifest herdr-plugin.toml.
+#
+# Covers: the ten actions and the three panes for Linux and macOS. The native program in
+# `bin/` (fetched by the build step) keeps annotations in `annotations.jsonl` and
+# `archives.jsonl` in the plugin state directory. A file stub writes one saved annotation
+# before the plugin starts. The steps then:
+#   - open the `manager` popup and read the saved annotation,
+#   - send the annotations to the fake agent (`agent get`, `agent prompt`) and archive them,
+#   - run the paste, copy and copy-and-archive actions on the now empty store (they report
+#     "nothing to do" and need no clipboard tool),
+#   - open the manager again and read the archive,
+#   - run the document review actions, which start a separate terminal program (plannotator-tui)
+#     that opens the `doc` overlay pane.
+#
+# Not run: `capture` needs a text selection or a clipboard tool, and `last` and `last-newest`
+# need the saved transcript of a supported agent program. The `editor` popup opens only from
+# `capture`. See the known results and skips below.
+#
+# The plugin declares no event hooks, startup commands or link handlers (the sibling manifest
+# `annotate-links` declares the link handler).
+#
+# Confirms no category of spec 18 §8.5.
+
+plugin_id = "annotate"
+repository = "plannotator/herdr-annotate"
+timeout_ms = 120000
+
+[setup]
+fake_agent = true
+
+[[setup.repo]]
+name = "app"
+files = { "README.md" = "# Sample\n\nSome text.\n", "docs/plan.md" = "# Plan\n\n- one\n- two\n" }
+
+[[stub]]
+id = "saved-annotation"
+kind = "file"
+path = "{state}/annotations.jsonl"
+contents = '''
+{"selectedText":"sample selection","capturedAt":"2026-09-24T10:00:00.000Z","context":{},"id":"a1","comment":"Sample comment","createdAt":"2026-09-24T10:00:01.000Z"}
+'''
+
+[[step]]
+id = "manage"
+kind = "action"
+action = "manage"
+context = "global"
+expect_calls = [{ method = "plugin.pane.open", ok = true }]
+[[step.expect]]
+kind = "invocation_final"
+[[step.expect]]
+kind = "popup"
+pane = "manager"
+[[step.expect]]
+kind = "screen_text"
+pane = "manager"
+text = "Annotations (1)"
+[[step.compare]]
+pane = "manager"
+size = { cols = 100, rows = 30 }
+masks = [
+  { regex = '\d{1,4}[-/.]\d{1,2}[-/.]\d{1,4}' },
+  { regex = '\d{1,2}:\d{2}(:\d{2})?( ?[AP]M)?' },
+]
+
+[[step]]
+id = "close-manager"
+kind = "input"
+pane = "manager"
+keys = ["Escape"]
+
+[[step]]
+id = "send-archive"
+kind = "action"
+action = "send-archive"
+context = "pane"
+timeout_ms = 60000
+expect_calls = [
+  { method = "agent.get", ok = true },
+  { method = "agent.prompt", ok = true },
+  { method = "notification.show", ok = true },
+]
+[[step.expect]]
+kind = "invocation_final"
+[[step.expect]]
+kind = "file"
+path = "{state}/archives.jsonl"
+contains = "Sample comment"
+
+# The store is empty now, so the next four actions report that there is nothing to do.
+[[step]]
+id = "paste-archive-empty"
+kind = "action"
+action = "paste-archive"
+context = "pane"
+expect_calls = [{ method = "notification.show", ok = true }]
+[[step.expect]]
+kind = "invocation_final"
+
+[[step]]
+id = "copy-context-empty"
+kind = "action"
+action = "copy-context"
+context = "global"
+expect_calls = [{ method = "notification.show", ok = true }]
+[[step.expect]]
+kind = "invocation_final"
+
+[[step]]
+id = "copy-archive-empty"
+kind = "action"
+action = "copy-archive"
+context = "global"
+expect_calls = [{ method = "notification.show", ok = true }]
+[[step.expect]]
+kind = "invocation_final"
+
+[[step]]
+id = "manage-after-archive"
+kind = "action"
+action = "manage"
+context = "global"
+expect_calls = [{ method = "plugin.pane.open", ok = true }]
+[[step.expect]]
+kind = "invocation_final"
+[[step.expect]]
+kind = "popup"
+pane = "manager"
+[[step.expect]]
+kind = "screen_text"
+pane = "manager"
+text = "No active annotations."
+
+[[step]]
+id = "manager-archives"
+kind = "input"
+pane = "manager"
+keys = ["Tab"]
+[[step.expect]]
+kind = "screen_text"
+pane = "manager"
+text = "Archives (1)"
+
+[[step]]
+id = "close-manager-archives"
+kind = "input"
+pane = "manager"
+keys = ["Escape", "Escape"]
+
+[[step]]
+id = "capture"
+kind = "action"
+action = "capture"
+context = "pane"
+expect_calls = [{ method = "notification.show", ok = true }]
+known = { outcome = "not_exercised", reason = "The action needs a text selection in the invocation or a clipboard tool (pbpaste, wl-paste, xclip or xsel). The test environment provides neither a selection nor a clipboard tool on Linux." }
+[[step.expect]]
+kind = "invocation_final"
+
+# The review actions start plannotator-tui, a separate program that the build step downloads.
+[[step]]
+id = "open"
+kind = "action"
+action = "open"
+context = "pane"
+timeout_ms = 60000
+[[step.expect]]
+kind = "invocation_final"
+[[step.expect]]
+kind = "pane"
+pane = "doc"
+placement = "overlay"
+[[step.compare]]
+pane = "doc"
+placement_only = true
+
+[[step]]
+id = "close-doc-open"
+kind = "input"
+pane = "doc"
+text = "q"
+
+[[step]]
+id = "terminal"
+kind = "action"
+action = "terminal"
+context = "pane"
+timeout_ms = 60000
+[[step.expect]]
+kind = "invocation_final"
+[[step.expect]]
+kind = "pane"
+pane = "doc"
+placement = "overlay"
+[[step.compare]]
+pane = "doc"
+placement_only = true
+
+[[step]]
+id = "close-doc-terminal"
+kind = "input"
+pane = "doc"
+text = "q"
+
+[[step]]
+id = "last"
+kind = "action"
+action = "last"
+context = "pane"
+timeout_ms = 60000
+known = { outcome = "not_exercised", reason = "The action reads the saved transcript of a supported agent program. The fake agent writes none." }
+[[step.expect]]
+kind = "invocation_final"
+
+[[step]]
+id = "last-newest"
+kind = "action"
+action = "last-newest"
+context = "pane"
+timeout_ms = 60000
+known = { outcome = "not_exercised", reason = "The action reads the saved transcript of a supported agent program. The fake agent writes none." }
+[[step.expect]]
+kind = "invocation_final"
+
+[[skip]]
+surface = "pane:editor"
+reason = "The comment editor popup opens only from the capture action, which needs a text selection or a clipboard tool."

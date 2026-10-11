@@ -1,0 +1,58 @@
+# Plugin: plannotator/herdr-annotate, plugin id "annotate-links" (annotate-links 0.9.0),
+# locked commit e3ca7e88ada0c77baf5714c006a5abe36798349c, manifest links/herdr-plugin.toml.
+#
+# Covers: the action `open-link` and the link handler `markdown-file` for Linux and macOS. The
+# handler matches `file://` links that end in `.md`, `.markdown` or `.mdx`. The action runs a
+# script that asks Herdr for the plugin `annotate` (`herdr plugin list --plugin annotate --json`)
+# and starts that plugin's review program. This plugin ships no program of its own.
+#
+# The scenario installs only this plugin. The `annotate` plugin is not installed in the same
+# environment, so the script is expected to report "plugin not installed" through a notification
+# and to exit with an error. The steps check that the link reaches the action, that the action
+# asks Herdr about `annotate`, and that it shows the notification. A second environment that
+# also installs `annotate` would exercise the review pane itself.
+#
+# The plugin declares no event hooks, panes or startup commands.
+#
+# Confirms the "link handler" category of spec 18 §8.5 only in part: the handler routing is
+# exercised here, and the candidate named for that category is ChmaraX/herdr-nvim.
+
+plugin_id = "annotate-links"
+repository = "plannotator/herdr-annotate"
+timeout_ms = 120000
+
+[setup]
+fake_agent = true
+
+[[setup.repo]]
+name = "app"
+files = { "README.md" = "# Sample\n\nSome text.\n" }
+
+# A Markdown link that the handler matches.
+[[step]]
+id = "markdown-link"
+kind = "link"
+url = "file://{repo.app}/README.md"
+timeout_ms = 60000
+expect_calls = [
+  { method = "plugin.list", ok = true },
+  { method = "notification.show", ok = true },
+]
+[[step.expect]]
+kind = "invocation_final"
+status = "failed"
+
+# The same action, run directly from a pane.
+[[step]]
+id = "open-link"
+kind = "action"
+action = "open-link"
+context = "pane"
+timeout_ms = 60000
+expect_calls = [
+  { method = "plugin.list", ok = true },
+  { method = "notification.show", ok = true },
+]
+[[step.expect]]
+kind = "invocation_final"
+status = "failed"
