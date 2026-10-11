@@ -268,7 +268,7 @@ fn layout_pane_move_swap_metadata_and_their_events() {
     assert_eq!(splits[0]["rect"], *area);
     let snap = s_.herdr(&["api", "snapshot"]);
     assert!(
-        snap["layouts"]
+        snap["snapshot"]["layouts"]
             .as_array()
             .unwrap()
             .iter()
@@ -406,7 +406,7 @@ fn layout_pane_move_swap_metadata_and_their_events() {
         "--timeout",
         "15000",
     ]);
-    assert_eq!(m["type"], "pane_output_matched");
+    assert_eq!(m["type"], "output_matched", "{m}");
     // A pane-scoped subscription event keeps its dotted name (Herdr
     // `SubscriptionEventEnvelope`).
     let e = ev.until("pane.output_matched");
@@ -893,7 +893,7 @@ fn plugin_panes_audit_events_and_redacted_logs() {
     let vp = s(&opened["plugin_pane"]["pane"]["pane_id"]);
     assert!(vp.starts_with("w") && vp != pane, "{opened}");
     wait_for("viewer pane callback", 15000, || {
-        read(&st.join("viewer-pane.json")).contains("pane_info")
+        read(&st.join("viewer-pane.json")).contains("pane_current")
     });
     let env = read(&st.join("viewer-env.txt"));
     assert!(env.contains(&format!("HERDR_PANE_ID={vp}")), "{env}");

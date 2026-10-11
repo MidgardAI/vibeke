@@ -225,7 +225,7 @@ fn entry_json(dirs: &registry::PluginDirs, e: &registry::Entry) -> Value {
 /// Registry operations shared by `vibeke plugin` and the shim's `herdr plugin`.
 fn local(g: &Global, op: Local) -> i32 {
     let dirs = vk_server::compat::plugin_dirs();
-    let mutating = !matches!(op, Local::PluginList | Local::PluginConfigDir { .. });
+    let mutating = !matches!(op, Local::PluginList { .. } | Local::PluginConfigDir { .. });
     if mutating && pane_scoped() {
         return fail(
             "permission_denied",
@@ -269,7 +269,7 @@ fn local(g: &Global, op: Local) -> i32 {
                 },
             )
         }
-        Local::PluginList => {
+        Local::PluginList { .. } => {
             let list: Vec<Value> = reg.plugins.values().map(|e| entry_json(&dirs, e)).collect();
             print(g, &json!({"plugins": list}), || {
                 if list.is_empty() {
@@ -891,7 +891,13 @@ async fn plugin_cmd_inner(g: &Global, args: &[String]) -> i32 {
             println!("{PLUGIN_HELP}\n\n{}", crate::plugin_native::HELP);
             if verb.is_empty() { EXIT_USAGE } else { EXIT_OK }
         }
-        "list" | "ls" => local(g, Local::PluginList),
+        "list" | "ls" => local(
+            g,
+            Local::PluginList {
+                plugin: None,
+                json: false,
+            },
+        ),
         "migrate" => migrate_cmd(g, rest),
         "install" => {
             let pos = positionals(rest, &["--ref"]);
@@ -1100,7 +1106,7 @@ fn local_method(op: &Local) -> &'static str {
         Local::PluginUninstall { .. } => "plugin.uninstall",
         Local::PluginEnable { .. } => "plugin.enable",
         Local::PluginDisable { .. } => "plugin.disable",
-        Local::PluginList => "plugin.list",
+        Local::PluginList { .. } => "plugin.list",
         Local::PluginConfigDir { .. } => "plugin.config_dir",
         Local::PluginUpdate { .. } => "plugin.update",
     }
@@ -1617,11 +1623,9 @@ pub async fn herdr_shim(g: &Global, args: &[String]) -> i32 {
     }
     match parsed {
         Parsed::Version => {
-            println!(
-                "herdr {} (Vibeke {} compatibility layer, partial)",
-                herdr::BASELINE_VERSION,
-                vk_proto::VERSION
-            );
+            // Exactly Herdr's line: plugins parse it for version checks. `herdr status`
+            // reports that Vibeke serves the shim.
+            println!("herdr {}", herdr::BASELINE_VERSION);
             EXIT_OK
         }
         Parsed::Help(h) => {
@@ -1681,9 +1685,9 @@ pub async fn herdr_shim(g: &Global, args: &[String]) -> i32 {
                 json: Some(true),
                 ..g.clone()
             };
-            let mutating = !matches!(op, Local::PluginList | Local::PluginConfigDir { .. });
+            let mutating = !matches!(op, Local::PluginList { .. } | Local::PluginConfigDir { .. });
             // The shim in a plugin invocation can never accept trust on the user's behalf.
-            let code = local(&g, op);
+            let code = herdr_local(&g, op);
             if mutating && code == EXIT_OK {
                 notify_registry(&g).await;
             }
@@ -1702,6 +1706,258 @@ pub async fn herdr_shim(g: &Global, args: &[String]) -> i32 {
             }
         },
     }
+}
+
+/// The id Herdr's CLI gives every `herdr plugin …` request.
+const PLUGIN_CLI_ID: &str = "cli:plugin";
+
+/// A Herdr error line for a `herdr plugin …` command on stderr (exit 1).
+fn plugin_cli_error(code: &str, msg: impl std::fmt::Display) -> i32 {
+    eprintln!("{}", sorted(&herdr_error(PLUGIN_CLI_ID, code, msg)));
+    1
+}
+
+/// Herdr's `source_display` for the human `plugin list`.
+fn plugin_source_display(p: &Value) -> String {
+    let src = &p["source"];
+    if src["kind"] == "github" {
+        let s = |k: &str| src[k].as_str().unwrap_or("unknown").to_string();
+        let subdir = src["subdir"]
+            .as_str()
+            .map(|d| format!("/{d}"))
+            .unwrap_or_default();
+        let reference = src["requested_ref"]
+            .as_str()
+            .or(src["resolved_commit"].as_str())
+            .unwrap_or("unknown");
+        format!("github:{}/{}{subdir}@{reference}", s("owner"), s("repo"))
+    } else {
+        format!("local:{}", p["plugin_root"].as_str().unwrap_or(""))
+    }
+}
+
+/// Herdr's human `plugin list` (`print_plugin_list_human`).
+fn plugin_list_human(plugins: &[Value], dirs: &registry::PluginDirs) -> String {
+    if plugins.is_empty() {
+        return "No plugins installed.\n".into();
+    }
+    let mut out = format!(
+        "{} plugin{} installed:\n",
+        plugins.len(),
+        if plugins.len() == 1 { "" } else { "s" }
+    );
+    for p in plugins {
+        let id = p["plugin_id"].as_str().unwrap_or("");
+        let warnings: Vec<&str> = p["warnings"]
+            .as_array()
+            .map(|w| w.iter().filter_map(Value::as_str).collect())
+            .unwrap_or_default();
+        let warning = if warnings.is_empty() {
+            String::new()
+        } else {
+            format!("; {} warning(s)", warnings.len())
+        };
+        out.push_str(&format!(
+            "- {} ({}) {} [{}{}]\n",
+            id,
+            p["name"].as_str().unwrap_or(id),
+            if p["enabled"] == true {
+                "enabled"
+            } else {
+                "disabled"
+            },
+            plugin_source_display(p),
+            warning
+        ));
+        out.push_str(&format!("  config: {}\n", dirs.config_dir(id).display()));
+        for w in warnings {
+            out.push_str(&format!("  warning: {w}\n"));
+        }
+    }
+    out
+}
+
+/// A plugin id that is safe as one path component (Herdr encodes any id into a directory name;
+/// Vibeke's per-plugin directories use the id itself).
+fn safe_plugin_id(id: &str) -> bool {
+    !id.is_empty()
+        && !id.starts_with('.')
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | ':'))
+}
+
+/// `herdr plugin …` registry commands as Herdr 0.9.3 prints them: the response line
+/// (`{"id":"cli:plugin","result":…}`) for `link`, `unlink`, `enable`, `disable` and
+/// `list --json`; Herdr's summary for `list`; the bare directory for `config-dir`; Herdr's
+/// lines for `install` and `uninstall`. Herdr's CLI changes the registry file itself when no
+/// server runs; the shim always does, and tells the server afterwards. Errors are Herdr error
+/// lines on stderr (exit 1).
+fn herdr_local(g: &Global, op: Local) -> i32 {
+    use std::io::Write;
+    let dirs = vk_server::compat::plugin_dirs();
+    let mutating = !matches!(op, Local::PluginList { .. } | Local::PluginConfigDir { .. });
+    if mutating && pane_scoped() {
+        return plugin_cli_error(
+            "permission_denied",
+            "plugin registry changes are not allowed from a pane; ask the user",
+        );
+    }
+    let respond = |method: &str, params: Value| -> i32 {
+        match vk_server::compat::herdr_registry_op(method, &params) {
+            Ok(result) => {
+                println!(
+                    "{}",
+                    sorted(&json!({"id": PLUGIN_CLI_ID, "result": result}))
+                );
+                EXIT_OK
+            }
+            Err(e) => plugin_cli_error(&e.code, e.message),
+        }
+    };
+    let code = match op {
+        Local::PluginLink { path, enabled, .. } => {
+            // Herdr sends an absolute path (`~` expanded, relative to the working directory).
+            let home = || PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+            let p = match path.strip_prefix("~/") {
+                Some(rest) => home().join(rest),
+                None if path == "~" => home(),
+                None => PathBuf::from(&path),
+            };
+            let p = if p.is_absolute() {
+                p
+            } else {
+                std::env::current_dir().unwrap_or_default().join(p)
+            };
+            respond(
+                "plugin.link",
+                json!({"path": p.display().to_string(), "enabled": enabled}),
+            )
+        }
+        Local::PluginUnlink { id } => respond("plugin.unlink", json!({"plugin_id": id})),
+        Local::PluginEnable { id } => respond("plugin.enable", json!({"plugin_id": id})),
+        Local::PluginDisable { id } => respond("plugin.disable", json!({"plugin_id": id})),
+        Local::PluginList { plugin, json } => {
+            let r = match vk_server::compat::herdr_registry_op(
+                "plugin.list",
+                &json!({"plugin_id": plugin}),
+            ) {
+                Ok(r) => r,
+                Err(e) => return plugin_cli_error(&e.code, e.message),
+            };
+            if json {
+                println!("{}", sorted(&json!({"id": PLUGIN_CLI_ID, "result": r})));
+            } else {
+                let plugins = r["plugins"].as_array().cloned().unwrap_or_default();
+                print!("{}", plugin_list_human(&plugins, &dirs));
+            }
+            EXIT_OK
+        }
+        Local::PluginConfigDir { id } => {
+            if !safe_plugin_id(&id) {
+                return plugin_cli_error(
+                    "invalid_plugin_id",
+                    "plugin id must be non-empty and contain only ASCII letters, digits, colon, dot, underscore, or hyphen",
+                );
+            }
+            let d = dirs.config_dir(&id);
+            let made = std::fs::create_dir_all(&d)
+                .and_then(|_| std::fs::create_dir_all(dirs.state_dir(&id)));
+            if let Err(e) = made {
+                eprintln!("Error: {e:?}");
+                return 1;
+            }
+            println!("{}", d.display());
+            EXIT_OK
+        }
+        Local::PluginUninstall { id: target } => {
+            let reg = match Registry::load(&dirs) {
+                Ok(r) => r,
+                Err(e) => return plugin_cli_error("plugin_registry_load_failed", e),
+            };
+            // A plugin id, or the `owner/repo[/subdir]` it was installed from.
+            let entry = reg.get(&target).ok().cloned().or_else(|| {
+                reg.plugins
+                    .values()
+                    .find(|e| e.origin.repo.as_deref() == Some(target.as_str()))
+                    .cloned()
+            });
+            let Some(entry) = entry else {
+                eprintln!("plugin not installed: {target}");
+                return 1;
+            };
+            let r = if entry.managed {
+                Registry::update(&dirs, |r| r.uninstall(&dirs, &entry.id))
+            } else {
+                Registry::update(&dirs, |r| r.unlink(&entry.id))
+            };
+            match r {
+                Ok(_) => {
+                    println!("Uninstalled {}.", entry.id);
+                    EXIT_OK
+                }
+                Err(RegistryError::NotFound(_)) => {
+                    eprintln!("plugin not installed: {target}");
+                    1
+                }
+                Err(e) => plugin_cli_error("plugin_uninstall_failed", e),
+            }
+        }
+        Local::PluginInstall {
+            source,
+            git_ref,
+            yes,
+        } => {
+            if !yes && !std::io::stdin().is_terminal() {
+                eprintln!("remote plugin install requires --yes when stdin is not interactive");
+                return 2;
+            }
+            let before = Registry::load(&dirs).ok();
+            let quiet = Global {
+                quiet: true,
+                ..g.clone()
+            };
+            let code = local(
+                &quiet,
+                Local::PluginInstall {
+                    source: source.clone(),
+                    git_ref,
+                    yes,
+                },
+            );
+            if code != EXIT_OK {
+                return code;
+            }
+            // The registration this install wrote: the newest one.
+            let installed = Registry::load(&dirs).ok().and_then(|r| {
+                r.plugins
+                    .values()
+                    .filter(|e| {
+                        before.as_ref().is_none_or(|b| {
+                            b.get(&e.id)
+                                .map(|o| o.installed_at_ms != e.installed_at_ms)
+                                .unwrap_or(true)
+                        })
+                    })
+                    .max_by_key(|e| e.installed_at_ms)
+                    .cloned()
+            });
+            if let Some(e) = installed {
+                println!("Installed {} from {}.", e.id, source);
+                println!("Config: {}", dirs.config_dir(&e.id).display());
+                if !yes {
+                    eprintln!(
+                        "{} is inactive until you trust it: vibeke plugin trust {} --legacy",
+                        e.id, e.id
+                    );
+                }
+            }
+            EXIT_OK
+        }
+        other => local(g, other),
+    };
+    let _ = std::io::stdout().flush();
+    code
 }
 
 /// Entry point when the binary runs as `herdr` (private launcher or installed shim).

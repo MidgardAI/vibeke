@@ -321,7 +321,7 @@ fn popup_and_overlay_from_a_trusted_plugin() {
         .collect();
     assert_eq!(ids, std::slice::from_ref(&root), "{list}");
     wait_for("popup callback", 15000, || {
-        read(&st.join("pop-current.json")).contains("pane_info")
+        read(&st.join("pop-current.json")).contains("pane_current")
     });
     let env = read(&st.join("pop-env.txt"));
     assert!(!env.contains("HERDR_PANE_ID="), "{env}");

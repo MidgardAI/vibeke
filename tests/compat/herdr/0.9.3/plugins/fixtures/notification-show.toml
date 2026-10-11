@@ -15,4 +15,4 @@ args = ["notification", "show", "Fixture", "--body", "agent finished"]
 
 [expect]
 ok = true
-type = "ok"
+type = "notification_show"

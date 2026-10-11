@@ -181,6 +181,7 @@ pub fn listener_path(server: &Server) -> PathBuf {
     )
 }
 
+pub use ext::registry_op as herdr_registry_op;
 pub use gap::{extend_pane_env, listener_for};
 
 fn private_dir(p: &Path) -> std::io::Result<()> {
@@ -505,6 +506,7 @@ pub fn sandbox_allows(method: &str) -> bool {
             | "workspace.list"
             | "workspace.get"
             | "tab.list"
+            | "tab.get"
             | "pane.list"
             | "pane.get"
             | "pane.current"
@@ -512,6 +514,8 @@ pub fn sandbox_allows(method: &str) -> bool {
             | "agent.get"
             | "layout.export"
             | "pane.layout"
+            | "pane.neighbor"
+            | "pane.edges"
             | "events.subscribe"
             | "events.wait"
             | "plugin.list"
@@ -553,9 +557,12 @@ fn read_only(method: &str) -> bool {
             | "workspace.list"
             | "workspace.get"
             | "tab.list"
+            | "tab.get"
             | "pane.list"
             | "pane.get"
             | "pane.current"
+            | "pane.neighbor"
+            | "pane.edges"
             | "pane.read"
             | "pane.wait_for_output"
             | "pane.process_info"
@@ -734,6 +741,16 @@ pub async fn serve_wire(server: Arc<Server>, stream: UnixStream, caller: Caller)
                 return;
             }
         };
+        // Herdr's output watchers: the pane must exist and the regex compile before the
+        // subscription starts.
+        let mut watchers = match output_watchers(&server, &subs) {
+            Ok(w) => w,
+            Err(e) => {
+                traced(Err(e.code.as_str()));
+                let _ = write_line(&mut wr, &wire::err_line(&req.id, &e)).await;
+                return;
+            }
+        };
         let mut rx = server.events.subscribe();
         let mut proj = seeded_projector(&server);
         traced(Ok(()));
@@ -744,11 +761,30 @@ pub async fn serve_wire(server: Arc<Server>, stream: UnixStream, caller: Caller)
         {
             return;
         }
+        let mut tick = tokio::time::interval(Duration::from_millis(100));
         loop {
-            let ev = match rx.recv().await {
-                Ok(e) => e,
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                Err(_) => return,
+            let ev = tokio::select! {
+                r = rx.recv() => match r {
+                    Ok(e) => Some(e),
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(_) => return,
+                },
+                _ = tick.tick(), if !watchers.is_empty() => None,
+            };
+            let Some(ev) = ev else {
+                for w in watchers.iter_mut() {
+                    let Some(data) = poll_watcher(&server, &caller, w).await else {
+                        continue;
+                    };
+                    if check_broker(&server, &caller).is_err() {
+                        return;
+                    }
+                    let line = hev::stream_event("pane.output_matched", data).to_string();
+                    if write_line(&mut wr, &line).await.is_err() {
+                        return;
+                    }
+                }
+                continue;
             };
             for (name, pane, data) in project_event(&server, &mut proj, &ev) {
                 if !subs.iter().any(|s| hev::matches(s, name, pane.as_deref())) {
@@ -1520,14 +1556,32 @@ fn event_data(
                     json!(
                         w.map(|w| w.handle.clone())
                             .or(ids.ws.clone())
+                            .or_else(|| ev.data["herdr_workspace"]["workspace_id"]
+                                .as_str()
+                                .map(str::to_string))
                             .unwrap_or_default()
                     ),
                 );
-                if let Some(w) = w {
-                    d.insert("workspace".into(), sn.ws_json(w));
+                // `worktree.remove` closes the workspace first and carries its last snapshot.
+                match (w, ev.data.get("herdr_workspace")) {
+                    (Some(w), _) => {
+                        d.insert("workspace".into(), sn.ws_json(w));
+                    }
+                    (None, Some(v)) if v.is_object() => {
+                        d.insert("workspace".into(), v.clone());
+                    }
+                    _ => {}
                 }
                 d.insert("worktree".into(), info);
-                d.insert("forced".into(), json!(false));
+                d.insert(
+                    "forced".into(),
+                    json!(
+                        ev.data
+                            .get("forced")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false)
+                    ),
+                );
             } else {
                 d.insert("workspace".into(), sn.ws_json(w?));
                 d.insert("worktree".into(), info);
@@ -1774,6 +1828,14 @@ fn pane_target(caller: &Caller, sn: &Snap, p: &Value) -> Result<String, WireErro
         .ok_or_else(|| WireError::new("invalid_params", "pane_id is required (no focused pane)"))
 }
 
+/// The pane a Herdr `PaneTarget` names: `pane_id` is required (no focus fallback).
+fn herdr_pane(sn: &Snap, p: &Value) -> Result<Pane, WireError> {
+    let id = req_s(p, "pane_id")?;
+    sn.pane(id)
+        .cloned()
+        .ok_or_else(|| WireError::new("pane_not_found", format!("pane {id} not found")))
+}
+
 fn ws_target(sn: &Snap, p: &Value) -> Result<Workspace, WireError> {
     let id = req_s(p, "workspace_id")?;
     sn.ws(id)
@@ -1823,9 +1885,24 @@ pub async fn call(
     }
     let sn = snap(server);
     match method {
+        // Herdr `pong {version, protocol, capabilities}`; Vibeke adds who answers.
         "ping" => Ok(typed(
             "pong",
-            json!({"version": herdr::BASELINE_VERSION, "emulator": "vibeke", "vibeke_version": vk_proto::VERSION, "compatibility": "partial"}),
+            json!({
+                "version": herdr::BASELINE_VERSION,
+                "protocol": herdr::cli::PROTOCOL_VERSION,
+                "capabilities": {
+                    "live_handoff": false,
+                    "detached_server_daemon": false,
+                    "ssh_agent_registration": false,
+                    "surface_interest": false,
+                    "health_check": false,
+                    "endpoint_protocol_generation": herdr::cli::ENDPOINT_PROTOCOL_GENERATION,
+                },
+                "emulator": "vibeke",
+                "vibeke_version": vk_proto::VERSION,
+                "compatibility": "partial",
+            }),
         )),
         "api.schema" => Ok(typed(
             "api_schema",
@@ -1835,24 +1912,10 @@ pub async fn call(
                 "events": hev::BASELINE_EVENTS,
             }),
         )),
-        "session.snapshot" => {
-            let (fw, ft, fp) = sn.focused();
-            Ok(typed(
-                "session_snapshot",
-                json!({
-                    "version": herdr::BASELINE_VERSION,
-                    "protocol": herdr::BASELINE_VERSION,
-                    "workspaces": sn.ws.iter().map(|w| sn.ws_json(w)).collect::<Vec<_>>(),
-                    "tabs": sn.tabs.iter().map(|t| sn.tab_json(t)).collect::<Vec<_>>(),
-                    "panes": sn.panes.iter().map(|x| sn.pane_json(server, x)).collect::<Vec<_>>(),
-                    "agents": sn.pane_run.values().map(|r| sn.agent_json(server, r)).collect::<Vec<_>>(),
-                    "layouts": sn.tabs.iter().map(|t| ext::tab_snapshot(&sn, t)).collect::<Vec<_>>(),
-                    "focused_workspace_id": fw,
-                    "focused_tab_id": ft,
-                    "focused_pane_id": fp,
-                }),
-            ))
-        }
+        "session.snapshot" => Ok(typed(
+            "session_snapshot",
+            json!({"snapshot": session_snapshot(server, &sn)}),
+        )),
         // ---- workspaces ------------------------------------------------------------------
         "workspace.list" => Ok(typed(
             "workspace_list",
@@ -1949,6 +2012,7 @@ pub async fn call(
             .await?;
             Ok(ok())
         }
+        "workspace.move_block" => workspace_move_block(server, caller, &sn, p).await,
         // ---- tabs ------------------------------------------------------------------------
         "tab.list" => {
             let ws = match sp(p, "workspace_id") {
@@ -2042,6 +2106,10 @@ pub async fn call(
             native(server, caller, "tab.close", json!({"tab": t.id})).await?;
             Ok(ok())
         }
+        "tab.get" => {
+            let t = tab_target(&sn, p)?;
+            Ok(typed("tab_info", json!({"tab": sn.tab_json(&t)})))
+        }
         // ---- panes -----------------------------------------------------------------------
         "pane.list" => {
             let ws = match sp(p, "workspace_id") {
@@ -2062,41 +2130,37 @@ pub async fn call(
                 .collect();
             Ok(typed("pane_list", json!({"panes": panes})))
         }
-        "pane.get" | "pane.current" => {
-            let id = if method == "pane.current" {
-                pane_target(caller, &sn, &json!({}))?
-            } else {
-                pane_target(caller, &sn, p)?
-            };
+        "pane.get" => {
+            let id = pane_target(caller, &sn, p)?;
             let x = sn
                 .pane(&id)
-                .ok_or_else(|| WireError::new("pane_not_found", id.clone()))?;
+                .ok_or_else(|| WireError::new("pane_not_found", format!("pane {id} not found")))?;
             Ok(typed("pane_info", json!({"pane": sn.pane_json(server, x)})))
+        }
+        "pane.current" => {
+            // Herdr: `caller_pane_id` (the CLI sends `HERDR_PANE_ID`), else the focused pane;
+            // `pane_current {pane}`.
+            let id = match sp(p, "caller_pane_id") {
+                Some(c) => sn.pane(c).map(|x| x.id.clone()),
+                None => pane_target(caller, &sn, &json!({})).ok(),
+            }
+            .ok_or_else(|| WireError::new("pane_not_found", "pane not found"))?;
+            let x = sn
+                .pane(&id)
+                .ok_or_else(|| WireError::new("pane_not_found", "pane not found"))?;
+            Ok(typed(
+                "pane_current",
+                json!({"pane": sn.pane_json(server, x)}),
+            ))
         }
         "pane.read" => {
             let id = pane_target(caller, &sn, p)?;
-            let source = sp(p, "source").unwrap_or("recent");
-            if !matches!(
-                source,
-                "visible" | "recent" | "recent_unwrapped" | "detection"
-            ) {
-                return Err(WireError::new(
-                    "invalid_params",
-                    format!("unknown source `{source}`"),
-                ));
-            }
-            let lines = p.get("lines").and_then(Value::as_u64).unwrap_or(50);
-            let r = native(
-                server,
-                caller,
-                "pane.read",
-                json!({"pane": id, "source": source, "lines": lines}),
-            )
-            .await?;
-            Ok(typed(
-                "pane_read",
-                json!({"read": {"text": r["text"], "truncated": false, "revision": r["revision"]}}),
-            ))
+            let x = sn
+                .pane(&id)
+                .cloned()
+                .ok_or_else(|| WireError::new("pane_not_found", format!("pane {id} not found")))?;
+            let read = herdr_read(server, caller, &sn, &x, p).await?;
+            Ok(typed("pane_read", json!({"read": read})))
         }
         "pane.send_text" => {
             let id = pane_target(caller, &sn, p)?;
@@ -2196,6 +2260,16 @@ pub async fn call(
             if let Some(c) = sp(p, "cwd") {
                 np["cwd"] = json!(c);
             }
+            // Herdr's `ratio` is the share of the split pane (the first side), clamped to
+            // 0.1..0.9; Vibeke's is the new pane's share.
+            if let Some(r) = p.get("ratio").and_then(Value::as_f64) {
+                let r = if r.is_finite() {
+                    r.clamp(0.1, 0.9)
+                } else {
+                    0.5
+                };
+                np["ratio"] = json!(1.0 - r);
+            }
             let r = native(server, caller, "pane.split", np).await?;
             let sn = snap(server);
             let new = r["pane"]["id"].as_str().unwrap_or_default();
@@ -2206,46 +2280,11 @@ pub async fn call(
         }
         "pane.wait_for_output" => {
             let id = pane_target(caller, &sn, p)?;
-            let mut np = json!({"pane": id, "timeout_ms": p.get("timeout_ms").and_then(Value::as_u64).unwrap_or(30_000)});
-            // Herdr's `OutputMatch` is `{type: "substring"|"regex", value}`; the flat
-            // `regex`/`match` strings stay accepted.
-            let m = p.get("match").filter(|m| m.is_object());
-            let typed_match = |kind: &str| {
-                m.filter(|m| m["type"] == kind)
-                    .and_then(|m| m["value"].as_str())
-            };
-            match (
-                typed_match("regex").or(sp(p, "regex")),
-                typed_match("substring")
-                    .or(sp(p, "match"))
-                    .or(sp(p, "pattern"))
-                    .or(sp(p, "text")),
-            ) {
-                (Some(r), _) => np["regex"] = json!(r),
-                (None, Some(m)) => np["match"] = json!(m),
-                _ => {
-                    return Err(WireError::new(
-                        "invalid_params",
-                        "match or regex is required",
-                    ));
-                }
-            }
-            let r = native(server, caller, "pane.wait_output", np).await?;
-            // Registered matchers feed the `pane.output_matched` event (07 §8.3).
-            if let Some(x) = sn.pane(&id) {
-                let mut c = server.core.lock().unwrap();
-                let mut tx = crate::core::Tx::new();
-                tx.event(
-                    "pane.output_matched",
-                    crate::core::subject_pane(x),
-                    json!({"matched": r["matched"], "revision": r["revision"]}),
-                );
-                let _ = server.commit(&mut c, tx);
-            }
-            Ok(typed(
-                "pane_output_matched",
-                json!({"pane_id": sn.pane(&id).map(|x| x.handle.clone()), "matched": r["matched"], "revision": r["revision"]}),
-            ))
+            let x = sn
+                .pane(&id)
+                .cloned()
+                .ok_or_else(|| WireError::new("pane_not_found", format!("pane {id} not found")))?;
+            wait_for_output(server, caller, &sn, &x, p).await
         }
         "pane.report_agent" | "pane.report_agent_session" => {
             let mut np = p.clone();
@@ -2260,23 +2299,116 @@ pub async fn call(
             native(server, caller, method, np).await?;
             Ok(ok())
         }
-        "pane.resize" => {
-            let id = pane_target(caller, &sn, p)?;
-            let mut np = json!({"pane": id, "direction": req_s(p, "direction")?});
-            if let Some(a) = p.get("amount").or(p.get("percent")) {
-                np["percent"] = a.clone();
+        "pane.resize" => pane_resize(server, caller, &sn, p).await,
+        "pane.zoom" => pane_zoom(server, caller, &sn, p).await,
+        "pane.input.set" => {
+            // Herdr routes right clicks to the pane's program (`pane`) or to its own menu
+            // (`herdr`). Vibeke's clients have no per-pane right-click routing: the setting is
+            // validated and acknowledged only.
+            herdr_pane(&sn, p)?;
+            match sp(p, "right_click") {
+                Some("herdr" | "pane") => {}
+                Some(o) => {
+                    return Err(WireError::new(
+                        "invalid_params",
+                        format!("unknown variant `{o}`, expected `herdr` or `pane`"),
+                    ));
+                }
+                None => return Err(WireError::new("invalid_params", "right_click is required")),
             }
-            native(server, caller, "pane.resize", np).await?;
             Ok(ok())
         }
-        "pane.zoom" => {
-            let id = pane_target(caller, &sn, p)?;
-            let mut np = json!({"pane": id});
-            if let Some(z) = p.get("zoomed") {
-                np["zoomed"] = z.clone();
+        "pane.release_agent" | "pane.clear_agent_authority" => {
+            let x = herdr_pane(&sn, p)?;
+            if let Some(scope) = &caller.ctx.pane_scope
+                && &x.id != scope
+                && x.created_by != format!("agent:{scope}")
+            {
+                return Err(WireError::new(
+                    "permission_denied",
+                    "self-report is limited to your own pane",
+                ));
             }
-            native(server, caller, "pane.zoom", np).await?;
+            if method == "pane.release_agent" {
+                req_s(p, "source")?;
+                let agent = req_s(p, "agent")?;
+                if agent.trim().is_empty() {
+                    return Err(WireError::new(
+                        "invalid_agent",
+                        "agent label must not be empty",
+                    ));
+                }
+            }
+            // The hook says its agent left the pane (release) or gives up its authority
+            // (clear): a run that only self-reports ends, so detection takes over again.
+            if let Some(r) = sn.pane_run.get(&x.id)
+                && r.ended_at_ms.is_none()
+                && r.integration == "self_report"
+            {
+                server.agents.end_run(server, &r.id, "released");
+            }
             Ok(ok())
+        }
+        "pane.scroll" => {
+            let x = herdr_pane(&sn, p)?;
+            let want = p
+                .get("offset_from_bottom")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| {
+                    WireError::new("invalid_params", "offset_from_bottom is required")
+                })?;
+            let now = native(
+                server,
+                caller,
+                "pane.scroll",
+                json!({"pane": x.id, "delta": 0}),
+            )
+            .await?;
+            let cur = now["scroll"]["offset"].as_u64().unwrap_or(0);
+            let total = now["scroll"]["total"].as_u64().unwrap_or(0);
+            let to = want.min(total);
+            if to != cur {
+                native(
+                    server,
+                    caller,
+                    "pane.scroll",
+                    json!({"pane": x.id, "delta": to as i64 - cur as i64}),
+                )
+                .await?;
+            }
+            scroll_changed(
+                server,
+                "api",
+                &x.id,
+                u32::try_from(to).unwrap_or(u32::MAX),
+                u32::try_from(total).unwrap_or(u32::MAX),
+            );
+            let sn = snap(server);
+            let x = sn
+                .pane(&x.id)
+                .ok_or_else(|| WireError::new("pane_not_found", x.handle.clone()))?;
+            Ok(typed("pane_info", json!({"pane": sn.pane_json(server, x)})))
+        }
+        // Herdr behaviours that need its own client or state; answered as Herdr answers when
+        // that state is absent, or `unsupported` with the reason.
+        "server.ssh_agent.register" => Err(WireError::new(
+            "connection_local_only",
+            "SSH agent registration requires a persistent local JSON API connection",
+        )),
+        "release_notes.dismiss" => {
+            req_s(p, "version")?;
+            Err(WireError::new(
+                "stale_release_notes",
+                "the release notes are no longer current",
+            ))
+        }
+        "product_announcement.dismiss" => {
+            req_s(p, "version")?;
+            req_s(p, "id")?;
+            Err(WireError::new(
+                "stale_announcement",
+                "the product announcement is no longer current",
+            ))
         }
         // ---- agents ----------------------------------------------------------------------
         "agent.list" => Ok(typed(
@@ -2303,29 +2435,47 @@ pub async fn call(
         }
         "agent.read" => {
             let r = run_target(&sn, p)?;
-            let rr = native(
-                server,
-                caller,
-                "pane.read",
-                json!({"pane": r.pane, "source": sp(p, "source").unwrap_or("recent"), "lines": p.get("lines").and_then(Value::as_u64).unwrap_or(50)}),
-            )
-            .await?;
+            let x = sn
+                .pane(&r.pane)
+                .cloned()
+                .ok_or_else(|| WireError::new("agent_not_found", "agent pane not found"))?;
+            let read = herdr_read(server, caller, &sn, &x, p).await?;
+            Ok(typed("pane_read", json!({"read": read})))
+        }
+        "agent.focus" => {
+            // Herdr: focus the agent's pane (and its tab and workspace), answer `agent_info`.
+            let r = run_target(&sn, p)?;
+            native(server, caller, "pane.focus", json!({"pane": r.pane})).await?;
+            let sn = snap(server);
+            let r = sn.pane_run.get(&r.pane).cloned().unwrap_or(r);
             Ok(typed(
-                "pane_read",
-                json!({"read": {"text": rr["text"], "truncated": false, "revision": rr["revision"]}}),
+                "agent_info",
+                json!({"agent": sn.agent_json(server, &r)}),
             ))
         }
-        // ---- worktrees, notifications, server --------------------------------------------
-        "worktree.list" => {
-            let r = native(
+        "agent.send_keys" => {
+            let r = run_target(&sn, p)?;
+            if r.ended_at_ms.is_some() {
+                return Err(WireError::new(
+                    "agent_not_ready",
+                    format!("agent {} is not an active named agent", r.handle),
+                ));
+            }
+            let k = match p.get("keys") {
+                Some(Value::Array(a)) => Value::Array(a.clone()),
+                _ => return Err(WireError::new("invalid_params", "keys is required")),
+            };
+            native(
                 server,
                 caller,
-                "worktree.list",
-                json!({"cwd": req_s(p, "cwd")?}),
+                "pane.send_keys",
+                json!({"pane": r.pane, "keys": k}),
             )
             .await?;
-            Ok(typed("worktree_list", json!({"worktrees": r["worktrees"]})))
+            Ok(ok())
         }
+        // ---- worktrees, notifications, server --------------------------------------------
+        "worktree.list" => worktree_list(server, caller, &sn, p).await,
         "worktree.repo_root" => {
             let r = native(
                 server,
@@ -2340,14 +2490,30 @@ pub async fn call(
             ))
         }
         "notification.show" => {
-            let mut np = json!({"title": req_s(p, "title")?});
+            let title = req_s(p, "title")?;
+            if title.trim().is_empty() {
+                return Err(WireError::new(
+                    "invalid_params",
+                    "notification title is empty",
+                ));
+            }
+            let mut np = json!({"title": title});
             if let Some(b) = sp(p, "body").or(sp(p, "message")) {
                 np["body"] = json!(b);
             }
             native(server, caller, "notification.send", np).await?;
-            Ok(ok())
+            // Herdr `notification_show {shown, reason}`; Vibeke delivers through its own
+            // notifier, so a sent notification counts as shown.
+            Ok(typed(
+                "notification_show",
+                json!({"shown": true, "reason": "shown"}),
+            ))
         }
-        "server.reload_config" => Ok(ok()),
+        // Vibeke does not read Herdr's config.toml; nothing to apply.
+        "server.reload_config" => Ok(typed(
+            "config_reload",
+            json!({"status": "applied", "diagnostics": []}),
+        )),
         "events.wait" => events_wait(server, caller, p).await,
         "vibeke.invocation_ticket" => invocation_ticket(server, caller),
         "events.subscribe" => Err(WireError::new(
@@ -2355,10 +2521,13 @@ pub async fn call(
             "events.subscribe streams on its own socket connection",
         )),
         // ---- plugins ---------------------------------------------------------------------
-        "plugin.list" => Ok(typed("plugin_list", json!({"plugins": plugin_list()}))),
+        "plugin.list" => Ok(typed(
+            "plugin_list",
+            json!({"plugins": herdr_plugin_list(sp(p, "plugin_id"))}),
+        )),
         "plugin.action.list" => Ok(typed(
             "plugin_action_list",
-            json!({"actions": action_list(sp(p, "plugin_id"))?}),
+            json!({"actions": herdr_action_list(sp(p, "plugin_id"))?}),
         )),
         "plugin.action.invoke" => {
             // Baseline: `action_id` is the qualified `<plugin>.<action>` id (as listed in
@@ -2405,12 +2574,14 @@ pub async fn call(
                 ctx,
                 "api",
             )?;
-            // Herdr `plugin_action_invoked {action: PluginActionInfo, context, log}`.
-            let mut info = action_list(Some(&plugin))?
+            // Herdr `plugin_action_invoked {action: PluginActionInfo, context, log}`; the
+            // action's `command` is the manifest argv, as in `plugin.action.list`.
+            let info = herdr_action_list(Some(&plugin))?
                 .into_iter()
                 .find(|a| a["action_id"] == action.as_str())
-                .unwrap_or_else(|| json!({"plugin_id": plugin, "action_id": action}));
-            info["command"] = log.get("command").cloned().unwrap_or_else(|| json!([]));
+                .unwrap_or_else(|| {
+                    json!({"plugin_id": plugin, "action_id": action, "title": action, "command": log.get("command").cloned().unwrap_or_else(|| json!([]))})
+                });
             let context = log.get("context").cloned().unwrap_or_else(|| json!({}));
             Ok(typed(
                 "plugin_action_invoked",
@@ -2435,8 +2606,11 @@ pub async fn call(
             Some(_) => Err(WireError::new(
                 "unsupported",
                 format!(
-                    "{other} is part of the Herdr {} surface but not implemented by Vibeke yet (see docs/herdr-compat-inventory.md)",
-                    herdr::BASELINE_VERSION
+                    "{other} is part of the Herdr {} surface but Vibeke does not serve it: {}",
+                    herdr::BASELINE_VERSION,
+                    inventory::method_note(other)
+                        .unwrap_or("see docs/herdr-compat-inventory.md")
+                        .trim_start_matches("`unsupported`: ")
                 ),
             )),
             None => Err(WireError::new(
@@ -2447,11 +2621,718 @@ pub async fn call(
     }
 }
 
+/// Herdr `workspace.move_block {workspace_ids, before_workspace_id?}`: move the listed
+/// workspaces, in the listed order, as one block before `before_workspace_id` (else to the
+/// end); answers `workspace_list`. Vibeke moves them one at a time, so subscribers see
+/// `workspace.moved` per workspace that changed place (Herdr: one `workspace.reordered`).
+async fn workspace_move_block(
+    server: &Arc<Server>,
+    caller: &Caller,
+    sn: &Snap,
+    p: &Value,
+) -> Result<Value, WireError> {
+    let failed = |m: String| WireError::new("workspace_move_block_failed", m);
+    let ids = p
+        .get("workspace_ids")
+        .and_then(Value::as_array)
+        .ok_or_else(|| WireError::new("invalid_params", "workspace_ids is required"))?;
+    if ids.is_empty() {
+        return Err(failed("workspace_ids must not be empty".into()));
+    }
+    let not_found =
+        |id: &str| WireError::new("workspace_not_found", format!("workspace {id} not found"));
+    let mut block: Vec<String> = Vec::new();
+    for v in ids {
+        let id = v
+            .as_str()
+            .ok_or_else(|| WireError::new("invalid_params", "workspace_ids must be strings"))?;
+        let w = sn.ws(id).ok_or_else(|| not_found(id))?;
+        if block.contains(&w.id) {
+            return Err(failed(format!("workspace {id} appears more than once")));
+        }
+        block.push(w.id.clone());
+    }
+    let before = match sp(p, "before_workspace_id") {
+        Some(id) => {
+            let w = sn.ws(id).ok_or_else(|| not_found(id))?;
+            if block.contains(&w.id) {
+                return Err(failed(
+                    "before_workspace_id must not be part of workspace_ids".into(),
+                ));
+            }
+            Some(w.id.clone())
+        }
+        None => None,
+    };
+    let mut cur: Vec<String> = sn.ws.iter().map(|w| w.id.clone()).collect();
+    let mut want: Vec<String> = cur
+        .iter()
+        .filter(|w| !block.contains(*w))
+        .cloned()
+        .collect();
+    let at = before
+        .as_ref()
+        .and_then(|b| want.iter().position(|w| w == b))
+        .unwrap_or(want.len());
+    for (i, id) in block.iter().enumerate() {
+        want.insert(at + i, id.clone());
+    }
+    for (k, id) in want.iter().enumerate() {
+        let Some(pos) = cur.iter().position(|w| w == id) else {
+            continue;
+        };
+        if pos != k {
+            native(
+                server,
+                caller,
+                "workspace.move",
+                json!({"workspace": id, "delta": k as i64 - pos as i64}),
+            )
+            .await?;
+            let w = cur.remove(pos);
+            cur.insert(k, w);
+        }
+    }
+    let sn = snap(server);
+    Ok(typed(
+        "workspace_list",
+        json!({"workspaces": sn.ws.iter().map(|w| sn.ws_json(w)).collect::<Vec<_>>()}),
+    ))
+}
+
+/// One Herdr `pane.output_matched` subscription with a matcher (Herdr
+/// `ActiveOutputMatchedSubscription`).
+struct OutputWatcher {
+    pane: String,
+    handle: String,
+    workspace: String,
+    tab: String,
+    watch: hev::OutputWatch,
+    re: Option<regex::Regex>,
+    /// The output revision last read; the pane is read again only when it changed.
+    rev: Option<u64>,
+    /// A line matched at the last read: the next event needs a read without a match first.
+    matching: bool,
+}
+
+/// The output watchers of `subs`; `pane_not_found` or `invalid_regex` refuse the subscription.
+fn output_watchers(
+    server: &Server,
+    subs: &[hev::Subscription],
+) -> Result<Vec<OutputWatcher>, WireError> {
+    let sn = snap(server);
+    let mut out = Vec::new();
+    for sub in subs {
+        let (Some(w), Some(id)) = (&sub.output, &sub.pane_id) else {
+            continue;
+        };
+        let x = sn
+            .pane(id)
+            .ok_or_else(|| WireError::new("pane_not_found", format!("pane {id} not found")))?;
+        let re = if w.regex {
+            Some(
+                regex::Regex::new(&w.value)
+                    .map_err(|e| WireError::new("invalid_regex", e.to_string()))?,
+            )
+        } else {
+            None
+        };
+        out.push(OutputWatcher {
+            pane: x.id.clone(),
+            handle: x.handle.clone(),
+            workspace: sn.ws_handle(&x.workspace).unwrap_or_default(),
+            tab: sn.tab_handle(&x.tab).unwrap_or_default(),
+            watch: w.clone(),
+            re,
+            rev: None,
+            matching: false,
+        });
+    }
+    Ok(out)
+}
+
+/// Read a watched pane when its output changed; Herdr's `{pane_id, matched_line, read}` when a
+/// line starts to match (once per run of matching reads, as Herdr does).
+async fn poll_watcher(
+    server: &Arc<Server>,
+    caller: &Caller,
+    w: &mut OutputWatcher,
+) -> Option<Value> {
+    let rev = server.pane_rt(&w.pane).map(|r| r.rev())?;
+    if w.rev == Some(rev) {
+        return None;
+    }
+    w.rev = Some(rev);
+    let mut np = json!({"pane": w.pane, "source": w.watch.source});
+    np["lines"] = json!(w.watch.lines.unwrap_or(50));
+    let r = native(server, caller, "pane.read", np).await.ok()?;
+    let text = r["text"].as_str().unwrap_or("");
+    let substring = w.re.is_none().then_some(w.watch.value.as_str());
+    let Some(line) = match_line(text, substring, w.re.as_ref()) else {
+        w.matching = false;
+        return None;
+    };
+    if std::mem::replace(&mut w.matching, true) {
+        return None;
+    }
+    Some(json!({
+        "pane_id": w.handle,
+        "matched_line": line,
+        "read": {
+            "pane_id": w.handle,
+            "workspace_id": w.workspace,
+            "tab_id": w.tab,
+            "source": w.watch.source,
+            "format": "text",
+            "text": text,
+            "revision": r["revision"].as_u64().unwrap_or(rev),
+            "truncated": false,
+        },
+    }))
+}
+
+/// Herdr's `PaneReadResult` of `x`: `{pane_id, workspace_id, tab_id, source, format, text,
+/// revision, truncated}`. `format: ansi` is echoed but the text is plain (Vibeke reads the
+/// rendered screen); `strip_ansi` has nothing to strip.
+async fn herdr_read(
+    server: &Arc<Server>,
+    caller: &Caller,
+    sn: &Snap,
+    x: &Pane,
+    p: &Value,
+) -> Result<Value, WireError> {
+    let source = sp(p, "source").unwrap_or("recent");
+    if !matches!(
+        source,
+        "visible" | "recent" | "recent_unwrapped" | "detection"
+    ) {
+        return Err(WireError::new(
+            "invalid_params",
+            format!("unknown source `{source}`"),
+        ));
+    }
+    let format = sp(p, "format").unwrap_or("text");
+    if !matches!(format, "text" | "ansi") {
+        return Err(WireError::new(
+            "invalid_params",
+            format!("unknown format `{format}`"),
+        ));
+    }
+    let lines = p.get("lines").and_then(Value::as_u64).unwrap_or(50);
+    let r = native(
+        server,
+        caller,
+        "pane.read",
+        json!({"pane": x.id, "source": source, "lines": lines}),
+    )
+    .await?;
+    Ok(json!({
+        "pane_id": x.handle,
+        "workspace_id": sn.ws_handle(&x.workspace).unwrap_or_default(),
+        "tab_id": sn.tab_handle(&x.tab).unwrap_or_default(),
+        "source": source,
+        "format": format,
+        "text": r["text"].as_str().unwrap_or(""),
+        "revision": r["revision"].as_u64().unwrap_or(0),
+        "truncated": false,
+    }))
+}
+
+/// Herdr's `match_output`: the first line containing the substring or matching the regex.
+fn match_line(text: &str, substring: Option<&str>, re: Option<&regex::Regex>) -> Option<String> {
+    text.lines()
+        .find(|l| match (substring, re) {
+            (Some(s), _) => l.contains(s),
+            (None, Some(re)) => re.is_match(l),
+            (None, None) => false,
+        })
+        .map(str::to_string)
+}
+
+/// Herdr `pane.wait_for_output {pane_id, source, lines?, match: {type: substring|regex,
+/// value}, strip_ansi?, timeout_ms?}`: reads the pane (`recent` reads `recent_unwrapped`, as
+/// Herdr does) until a line matches; `output_matched {pane_id, revision, matched_line, read}`.
+/// `invalid_regex`; `timeout` only with `timeout_ms` (Herdr waits without a deadline). Vibeke
+/// also accepts `match` as a plain string and the older `regex`/`pattern`/`text`.
+async fn wait_for_output(
+    server: &Arc<Server>,
+    caller: &Caller,
+    sn: &Snap,
+    x: &Pane,
+    p: &Value,
+) -> Result<Value, WireError> {
+    let (kind, value) = match p.get("match") {
+        Some(Value::Object(m)) => (
+            m.get("type").and_then(Value::as_str).unwrap_or(""),
+            m.get("value")
+                .and_then(Value::as_str)
+                .ok_or_else(|| WireError::new("invalid_params", "match.value is required"))?,
+        ),
+        Some(Value::String(v)) => ("substring", v.as_str()),
+        _ => match (sp(p, "regex"), sp(p, "pattern").or(sp(p, "text"))) {
+            (Some(r), _) => ("regex", r),
+            (None, Some(v)) => ("substring", v),
+            _ => {
+                return Err(WireError::new("invalid_params", "match is required"));
+            }
+        },
+    };
+    let re = match kind {
+        "regex" => Some(
+            regex::Regex::new(value).map_err(|e| WireError::new("invalid_regex", e.to_string()))?,
+        ),
+        "substring" => None,
+        other => {
+            return Err(WireError::new(
+                "invalid_params",
+                format!("unknown match type `{other}`"),
+            ));
+        }
+    };
+    let substring = re.is_none().then_some(value);
+    let source = match sp(p, "source").unwrap_or("recent") {
+        "recent" => "recent_unwrapped",
+        s => s,
+    };
+    let mut rp = p.clone();
+    rp["source"] = json!(source);
+    let deadline = p
+        .get("timeout_ms")
+        .and_then(Value::as_u64)
+        .map(|ms| tokio::time::Instant::now() + Duration::from_millis(ms));
+    loop {
+        let read = herdr_read(server, caller, sn, x, &rp).await?;
+        if let Some(line) = match_line(read["text"].as_str().unwrap_or(""), substring, re.as_ref())
+        {
+            // Registered matchers feed the `pane.output_matched` event (07 §8.3).
+            {
+                let mut c = server.core.lock().unwrap();
+                let mut tx = crate::core::Tx::new();
+                tx.event(
+                    "pane.output_matched",
+                    crate::core::subject_pane(x),
+                    json!({"matched": line, "revision": read["revision"]}),
+                );
+                let _ = server.commit(&mut c, tx);
+            }
+            return Ok(typed(
+                "output_matched",
+                json!({
+                    "pane_id": x.handle,
+                    "revision": read["revision"],
+                    "matched_line": line,
+                    "read": read,
+                }),
+            ));
+        }
+        if deadline.is_some_and(|d| tokio::time::Instant::now() >= d) {
+            return Err(WireError::new(
+                "timeout",
+                "timed out waiting for output match",
+            ));
+        }
+        check_broker(server, caller)?;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// Herdr `pane.resize {pane_id?, direction, amount?}` (`amount` a share of the tab, default
+/// 0.05, at most 0.5): `pane_resize {resize: {changed, reason?: unchanged, pane_id,
+/// focused_pane_id, layout}}`. Vibeke's `percent` is accepted too.
+async fn pane_resize(
+    server: &Arc<Server>,
+    caller: &Caller,
+    sn: &Snap,
+    p: &Value,
+) -> Result<Value, WireError> {
+    let id = pane_target(caller, sn, p)?;
+    let x = sn
+        .pane(&id)
+        .cloned()
+        .ok_or_else(|| WireError::new("pane_not_found", format!("pane {id} not found")))?;
+    let direction = req_s(p, "direction")?;
+    if !matches!(direction, "left" | "right" | "up" | "down") {
+        return Err(WireError::new(
+            "invalid_params",
+            format!("unknown direction `{direction}`"),
+        ));
+    }
+    let percent = match (
+        p.get("amount").and_then(Value::as_f64),
+        p.get("percent").and_then(Value::as_f64),
+    ) {
+        (Some(a), _) if a.is_finite() => a.abs().min(0.5) * 100.0,
+        (_, Some(pc)) => pc,
+        _ => 5.0,
+    };
+    let before = sn.tab(&x.tab).map(|t| json!(t.layout));
+    native(
+        server,
+        caller,
+        "pane.resize",
+        json!({"pane": x.id, "direction": direction, "percent": percent}),
+    )
+    .await?;
+    let sn = snap(server);
+    let t = sn
+        .tab(&x.tab)
+        .ok_or_else(|| WireError::new("pane_layout_unavailable", "pane layout unavailable"))?;
+    let changed = before.as_ref() != Some(&json!(t.layout));
+    let layout = ext::tab_snapshot(&sn, t);
+    let mut r = json!({"changed": changed});
+    if !changed {
+        r["reason"] = json!("unchanged");
+    }
+    r["pane_id"] = json!(x.handle);
+    r["focused_pane_id"] = layout["focused_pane_id"].clone();
+    r["layout"] = layout;
+    Ok(typed("pane_resize", json!({"resize": r})))
+}
+
+/// Herdr `pane.zoom {pane_id?, mode: toggle|on|off}`: focuses the pane, then zooms or unzooms
+/// its tab; `pane_zoom {zoom: {changed, zoom_changed, focus_changed, reason?, pane_id,
+/// focused_pane_id, zoomed, layout}}` with `single_pane`, `already_zoomed`,
+/// `already_unzoomed`. Vibeke's `zoomed: bool` is read as `on`/`off`.
+async fn pane_zoom(
+    server: &Arc<Server>,
+    caller: &Caller,
+    sn: &Snap,
+    p: &Value,
+) -> Result<Value, WireError> {
+    let id = pane_target(caller, sn, p)?;
+    let x = sn
+        .pane(&id)
+        .cloned()
+        .ok_or_else(|| WireError::new("pane_not_found", format!("pane {id} not found")))?;
+    let mode = match (sp(p, "mode"), p.get("zoomed").and_then(Value::as_bool)) {
+        (Some(m @ ("toggle" | "on" | "off")), _) => m,
+        (Some(m), _) => {
+            return Err(WireError::new(
+                "invalid_params",
+                format!("unknown zoom mode `{m}`"),
+            ));
+        }
+        (None, Some(true)) => "on",
+        (None, Some(false)) => "off",
+        (None, None) => "toggle",
+    };
+    let before = sn.focus.pane.clone();
+    // Herdr focuses the pane first; a caller that may not move the focus keeps it.
+    let _ = native(server, caller, "pane.focus", json!({"pane": x.id})).await;
+    let sn = snap(server);
+    let focus_changed = sn.focus.pane != before;
+    let t = sn
+        .tab(&x.tab)
+        .cloned()
+        .ok_or_else(|| WireError::new("pane_layout_unavailable", "pane layout unavailable"))?;
+    let zoomed = t.zoomed_pane.is_some();
+    let (zoom_changed, reason, now) = if t.layout.panes().len() <= 1 {
+        (false, Some("single_pane"), zoomed)
+    } else {
+        match (mode, zoomed) {
+            ("on", true) => (false, Some("already_zoomed"), true),
+            ("off", false) => (false, Some("already_unzoomed"), false),
+            _ => {
+                let want = match mode {
+                    "on" => true,
+                    "off" => false,
+                    _ => !zoomed,
+                };
+                native(
+                    server,
+                    caller,
+                    "pane.zoom",
+                    json!({"pane": x.id, "zoomed": want}),
+                )
+                .await?;
+                (true, None, want)
+            }
+        }
+    };
+    let sn = snap(server);
+    let t = sn
+        .tab(&x.tab)
+        .ok_or_else(|| WireError::new("pane_layout_unavailable", "pane layout unavailable"))?;
+    let layout = ext::tab_snapshot(&sn, t);
+    let mut z = json!({
+        "changed": zoom_changed || focus_changed,
+        "zoom_changed": zoom_changed,
+        "focus_changed": focus_changed,
+    });
+    if let Some(r) = reason {
+        z["reason"] = json!(r);
+    }
+    z["pane_id"] = json!(x.handle);
+    z["focused_pane_id"] = layout["focused_pane_id"].clone();
+    z["zoomed"] = json!(now);
+    z["layout"] = layout;
+    Ok(typed("pane_zoom", json!({"zoom": z})))
+}
+
+/// Herdr `worktree.list {workspace_id? | cwd?}`: the repository of the workspace (else the
+/// active one) or of `cwd`, as `worktree_list {source: WorktreeSourceInfo, worktrees:
+/// [WorktreeInfo]}`. A linked worktree lists from its main checkout.
+async fn worktree_list(
+    server: &Arc<Server>,
+    caller: &Caller,
+    sn: &Snap,
+    p: &Value,
+) -> Result<Value, WireError> {
+    let (ws_given, cwd) = (sp(p, "workspace_id"), sp(p, "cwd"));
+    if ws_given.is_some() && cwd.is_some() {
+        return Err(WireError::new(
+            "invalid_request",
+            "only one of workspace_id or cwd may be supplied",
+        ));
+    }
+    let (from_ws, dir) = match (ws_given, cwd) {
+        (_, Some(c)) => (None, c.to_string()),
+        (Some(id), None) => {
+            let w = sn.ws(id).ok_or_else(|| {
+                WireError::new("workspace_not_found", format!("workspace {id} not found"))
+            })?;
+            (Some(w.clone()), w.root_path.clone())
+        }
+        (None, None) => {
+            let w = sn.active_ws().ok_or_else(|| {
+                WireError::new(
+                    "invalid_request",
+                    "workspace_id or cwd is required when no workspace is active",
+                )
+            })?;
+            (Some(w.clone()), w.root_path.clone())
+        }
+    };
+    let not_git = || {
+        WireError::new(
+            "not_git_worktree",
+            if from_ws.is_some() {
+                "Herdr worktree actions require a workspace inside a Git work tree"
+            } else {
+                "Herdr worktree actions require a path inside a Git work tree"
+            },
+        )
+    };
+    let root = native(server, caller, "worktree.repo_root", json!({"cwd": dir}))
+        .await
+        .map_err(|_| not_git())?;
+    let checkout = root["worktree_root"]
+        .as_str()
+        .or(root["repo_root"].as_str())
+        .ok_or_else(not_git)?
+        .to_string();
+    let space = git_space(&checkout).ok_or_else(not_git)?;
+    let linked = space["is_linked_worktree"] == true;
+    let repo_root = space["repo_root"].as_str().unwrap_or(&checkout).to_string();
+    let source_checkout = if linked {
+        repo_root.clone()
+    } else {
+        checkout.clone()
+    };
+    let repo_name = space["repo_name"].as_str().unwrap_or("").to_string();
+    let canon = |s: &str| std::fs::canonicalize(s).unwrap_or_else(|_| PathBuf::from(s));
+    let open_ws = |path: &str| {
+        let c = canon(path);
+        sn.ws
+            .iter()
+            .find(|w| canon(&w.root_path) == c)
+            .map(|w| w.handle.clone())
+    };
+    let mut source = json!({
+        "repo_key": space["repo_key"],
+        "repo_name": repo_name,
+        "repo_root": source_checkout,
+        "source_checkout_path": source_checkout,
+    });
+    let source_ws = from_ws
+        .filter(|_| !linked)
+        .map(|w| w.handle)
+        .or_else(|| open_ws(&source_checkout));
+    if let Some(w) = source_ws {
+        source["source_workspace_id"] = json!(w);
+    }
+    let r = native(
+        server,
+        caller,
+        "worktree.list",
+        json!({"cwd": source_checkout}),
+    )
+    .await?;
+    let main = canon(&source_checkout);
+    let worktrees: Vec<Value> = r["worktrees"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .map(|e| {
+            let path = e["path"].as_str().unwrap_or("").to_string();
+            let branch = e["branch"]
+                .as_str()
+                .map(|b| b.strip_prefix("refs/heads/").unwrap_or(b).to_string());
+            let mut v = json!({"path": path});
+            if let Some(b) = &branch {
+                v["branch"] = json!(b);
+            }
+            v["is_bare"] = json!(false);
+            v["is_detached"] = json!(branch.is_none());
+            v["is_prunable"] = json!(e["prunable"].as_bool().unwrap_or(false));
+            v["is_linked_worktree"] = json!(canon(&path) != main);
+            if let Some(w) = open_ws(&path) {
+                v["open_workspace_id"] = json!(w);
+            }
+            v["label"] = json!(repo_name);
+            v
+        })
+        .collect();
+    Ok(typed(
+        "worktree_list",
+        json!({"source": source, "worktrees": worktrees}),
+    ))
+}
+
+/// Herdr's `SessionSnapshot`: `version`, the integer `protocol`, the focused ids (left out
+/// when unknown), every workspace, tab and live pane, one `PaneLayoutSnapshot` per tab (in
+/// workspace then tab order) and every agent.
+fn session_snapshot(server: &Server, sn: &Snap) -> Value {
+    let (fw, ft, fp) = sn.focused();
+    let mut v = Map::new();
+    v.insert("version".into(), json!(herdr::BASELINE_VERSION));
+    v.insert("protocol".into(), json!(herdr::cli::PROTOCOL_VERSION));
+    for (k, x) in [
+        ("focused_workspace_id", fw),
+        ("focused_tab_id", ft),
+        ("focused_pane_id", fp),
+    ] {
+        if let Some(x) = x {
+            v.insert(k.into(), json!(x));
+        }
+    }
+    v.insert(
+        "workspaces".into(),
+        json!(sn.ws.iter().map(|w| sn.ws_json(w)).collect::<Vec<_>>()),
+    );
+    // Tabs and layouts in workspace order, as Herdr walks them.
+    let tabs: Vec<&Tab> = sn
+        .ws
+        .iter()
+        .flat_map(|w| sn.tabs.iter().filter(move |t| t.workspace == w.id))
+        .collect();
+    v.insert(
+        "tabs".into(),
+        json!(tabs.iter().map(|t| sn.tab_json(t)).collect::<Vec<_>>()),
+    );
+    v.insert(
+        "panes".into(),
+        json!(
+            sn.panes
+                .iter()
+                .filter(|x| !x.exited)
+                .map(|x| sn.pane_json(server, x))
+                .collect::<Vec<_>>()
+        ),
+    );
+    v.insert(
+        "layouts".into(),
+        json!(
+            tabs.iter()
+                .map(|t| ext::tab_snapshot(sn, t))
+                .collect::<Vec<_>>()
+        ),
+    );
+    v.insert(
+        "agents".into(),
+        json!(
+            sn.pane_run
+                .values()
+                .map(|r| sn.agent_json(server, r))
+                .collect::<Vec<_>>()
+        ),
+    );
+    Value::Object(v)
+}
+
 fn keys(p: &Value) -> Result<Value, WireError> {
     match p.get("keys") {
         Some(Value::Array(a)) => Ok(Value::Array(a.clone())),
         Some(Value::String(s)) => Ok(json!(s.split_whitespace().collect::<Vec<_>>())),
         _ => Err(WireError::new("invalid_params", "keys is required")),
+    }
+}
+
+/// Herdr's `pane_agent_status_changed` data for `pane` now: `pane_id`, `workspace_id`,
+/// `agent_status` and the presentation fields `PaneInfo` carries.
+fn agent_status_data(server: &Server, sn: &Snap, x: &Pane) -> Value {
+    let mut d = Map::new();
+    d.insert("pane_id".into(), json!(x.handle));
+    d.insert(
+        "workspace_id".into(),
+        json!(sn.ws_handle(&x.workspace).unwrap_or_default()),
+    );
+    d.insert(
+        "agent_status".into(),
+        json!(sn.pane_status(&x.id).unwrap_or("unknown")),
+    );
+    let pj = sn.pane_json(server, x);
+    for k in ["agent", "title", "display_agent", "state_labels"] {
+        if let Some(v) = pj.get(k) {
+            d.insert(k.into(), v.clone());
+        }
+    }
+    Value::Object(d)
+}
+
+/// Herdr `events.wait {match_event: {event: "pane_agent_status_changed", pane_id,
+/// agent_status}, timeout_ms?}`: `wait_matched {event: EventEnvelope}` as soon as the pane has
+/// that status (at once when it already has it). Herdr waits without a deadline when
+/// `timeout_ms` is absent; `timeout` with Herdr's message otherwise.
+async fn status_wait(server: &Arc<Server>, caller: &Caller, p: &Value) -> Result<Value, WireError> {
+    let want = hev::parse_event_match(p).map_err(|(c, m)| WireError::new(c, m))?;
+    let matched = |data: Value| {
+        typed(
+            "wait_matched",
+            json!({"event": hev::envelope("pane.agent_status_changed", data)}),
+        )
+    };
+    // Subscribe before reading the current status so no change slips between the two.
+    let mut rx = server.events.subscribe();
+    let mut proj = seeded_projector(server);
+    let sn = snap(server);
+    let x = sn.pane(&want.pane_id).cloned().ok_or_else(|| {
+        WireError::new("pane_not_found", format!("pane {} not found", want.pane_id))
+    })?;
+    if sn.pane_status(&x.id).unwrap_or("unknown") == want.agent_status {
+        return Ok(matched(agent_status_data(server, &sn, &x)));
+    }
+    let deadline = want
+        .timeout_ms
+        .map(|ms| tokio::time::Instant::now() + Duration::from_millis(ms));
+    loop {
+        let next = match deadline {
+            Some(d) => match tokio::time::timeout_at(d, rx.recv()).await {
+                Ok(r) => r,
+                Err(_) => {
+                    return Err(WireError::new(
+                        "timeout",
+                        "timed out waiting for event match",
+                    ));
+                }
+            },
+            None => rx.recv().await,
+        };
+        let ev = match next {
+            Ok(e) => e,
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+            Err(_) => return Err(WireError::new("internal_error", "event stream closed")),
+        };
+        check_broker(server, caller)?;
+        for (name, pane, data) in project_event(server, &mut proj, &ev) {
+            if name == "pane.agent_status_changed"
+                && pane.as_deref() == Some(x.handle.as_str())
+                && data["agent_status"] == want.agent_status.as_str()
+            {
+                return Ok(matched(data));
+            }
+        }
     }
 }
 
@@ -2461,6 +3342,10 @@ async fn events_wait(server: &Arc<Server>, caller: &Caller, p: &Value) -> Result
             "unsupported",
             "events.wait is not available to plugins across sessions",
         ));
+    }
+    // Herdr 0.9.3: `{match_event, timeout_ms?}`; Vibeke's older `{subscriptions}` form stays.
+    if p.get("match_event").is_some() || p.get("subscriptions").is_none() {
+        return status_wait(server, caller, p).await;
     }
     let subs = hev::parse_subscriptions(p).map_err(|(c, m)| WireError::new(c, m))?;
     let timeout = Duration::from_millis(
@@ -2628,6 +3513,236 @@ fn plugin_list() -> Vec<Value> {
             })
         })
         .collect()
+}
+
+/// Herdr's `PluginSourceInfo` of a registration: `github` with owner, repo, subdirectory,
+/// ref, commit and managed checkout for repository installs; `local` otherwise.
+fn herdr_source(e: &Entry) -> Value {
+    if e.origin.kind != "git" {
+        return json!({"kind": "local"});
+    }
+    let mut v = Map::new();
+    v.insert("kind".into(), json!("github"));
+    if let Some(r) = &e.origin.repo {
+        let mut parts = r.splitn(3, '/');
+        for k in ["owner", "repo", "subdir"] {
+            if let Some(x) = parts.next().filter(|x| !x.is_empty()) {
+                v.insert(k.into(), json!(x));
+            }
+        }
+    }
+    if let Some(r) = &e.origin.requested_ref {
+        v.insert("requested_ref".into(), json!(r));
+    }
+    if let Some(c) = &e.origin.commit {
+        v.insert("resolved_commit".into(), json!(c));
+    }
+    if e.managed {
+        v.insert("managed_path".into(), json!(e.root.display().to_string()));
+    }
+    if e.installed_at_ms > 0 {
+        v.insert("installed_unix_ms".into(), json!(e.installed_at_ms));
+    }
+    Value::Object(v)
+}
+
+/// Herdr's `PluginManifestAction` (`id`, `title`, `description?`, declared `contexts`,
+/// `platforms?`, `command`).
+fn herdr_manifest_action(a: &herdr::manifest::Action) -> Value {
+    let mut v = Map::new();
+    v.insert("id".into(), json!(a.id));
+    v.insert("title".into(), json!(a.title));
+    if let Some(d) = &a.description {
+        v.insert("description".into(), json!(d));
+    }
+    if a.contexts_declared && !a.contexts.is_empty() {
+        v.insert("contexts".into(), json!(a.contexts));
+    }
+    if let Some(p) = &a.platforms {
+        v.insert("platforms".into(), json!(p));
+    }
+    v.insert("command".into(), json!(a.command));
+    Value::Object(v)
+}
+
+/// Herdr's `InstalledPluginInfo` of a registration: manifest fields in Herdr's order (actions
+/// and panes by id, events by name then command), empty lists left out, `source` as
+/// `PluginSourceInfo`, `warnings` with `manifest unavailable: …` for a manifest that no longer
+/// loads.
+fn herdr_installed_info(e: &Entry) -> Value {
+    let manifest_path = e.root.join(herdr::MANIFEST_FILE);
+    let manifest_path = std::fs::canonicalize(&manifest_path).unwrap_or(manifest_path);
+    let (_, m) = registry::entry_status(e);
+    let mut v = Map::new();
+    v.insert("plugin_id".into(), json!(e.id));
+    v.insert(
+        "name".into(),
+        json!(
+            m.as_ref()
+                .and_then(|m| m.name.clone())
+                .unwrap_or_else(|| e.id.clone())
+        ),
+    );
+    v.insert(
+        "version".into(),
+        json!(
+            m.as_ref()
+                .and_then(|m| m.version.clone())
+                .unwrap_or_default()
+        ),
+    );
+    v.insert(
+        "min_herdr_version".into(),
+        json!(
+            m.as_ref()
+                .and_then(|m| m.min_herdr_version.clone())
+                .unwrap_or_default()
+        ),
+    );
+    if let Some(d) = m.as_ref().and_then(|m| m.description.clone()) {
+        v.insert("description".into(), json!(d));
+    }
+    v.insert(
+        "manifest_path".into(),
+        json!(manifest_path.display().to_string()),
+    );
+    v.insert("plugin_root".into(), json!(e.root.display().to_string()));
+    v.insert("enabled".into(), json!(e.enabled));
+    let mut warnings = Vec::new();
+    match &m {
+        Some(m) => {
+            if let Some(p) = &m.platforms {
+                v.insert("platforms".into(), json!(p));
+            }
+            let mut put = |k: &str, x: Value| {
+                if x.as_array().is_some_and(|a| !a.is_empty()) {
+                    v.insert(k.into(), x);
+                }
+            };
+            put("build", json!(m.build));
+            put("startup", json!(m.startup));
+            let mut actions: Vec<&herdr::manifest::Action> = m.actions.iter().collect();
+            actions.sort_by(|a, b| a.id.cmp(&b.id));
+            put(
+                "actions",
+                json!(
+                    actions
+                        .iter()
+                        .map(|a| herdr_manifest_action(a))
+                        .collect::<Vec<_>>()
+                ),
+            );
+            let mut events: Vec<&herdr::manifest::EventHook> = m.events.iter().collect();
+            events.sort_by(|a, b| a.on.cmp(&b.on).then_with(|| a.command.cmp(&b.command)));
+            put(
+                "events",
+                json!(
+                    events
+                        .iter()
+                        .map(|h| {
+                            let mut x = json!({"on": h.on, "command": h.command});
+                            if let Some(p) = &h.platforms {
+                                x["platforms"] = json!(p);
+                            }
+                            x
+                        })
+                        .collect::<Vec<_>>()
+                ),
+            );
+            let mut panes: Vec<&herdr::manifest::PaneDecl> = m.panes.iter().collect();
+            panes.sort_by(|a, b| a.id.cmp(&b.id));
+            put("panes", json!(panes));
+            put("link_handlers", json!(m.link_handlers));
+            warnings.extend(m.warnings.iter().cloned());
+            if m.platforms.is_none() {
+                warnings.push(
+                    "manifest does not declare platforms; platform support unknown".to_string(),
+                );
+            }
+        }
+        None => {
+            let why = registry::read_manifest(&e.root)
+                .err()
+                .map(|e| e.to_string())
+                .unwrap_or_else(|| "manifest does not load".to_string());
+            warnings.push(format!("manifest unavailable: {why}"));
+        }
+    }
+    v.insert("source".into(), herdr_source(e));
+    if !warnings.is_empty() {
+        v.insert("warnings".into(), json!(warnings));
+    }
+    Value::Object(v)
+}
+
+/// `plugin.list` and the registry results for the Herdr surface: Herdr's `InstalledPluginInfo`
+/// over Vibeke's own record, whose extra fields (`status`, `trust`, `managed`, `origin`,
+/// `config_dir`, …) Herdr clients ignore.
+pub fn herdr_plugin_list(filter: Option<&str>) -> Vec<Value> {
+    let dirs = plugin_dirs();
+    let Ok(reg) = Registry::load(&dirs) else {
+        return vec![];
+    };
+    let mut extras: HashMap<String, Value> = plugin_list()
+        .into_iter()
+        .filter_map(|p| Some((p["plugin_id"].as_str()?.to_string(), p)))
+        .collect();
+    reg.plugins
+        .values()
+        .filter(|e| filter.is_none_or(|f| f == e.id))
+        .map(|e| {
+            let mut v = extras.remove(&e.id).unwrap_or_else(|| json!({}));
+            if let (Value::Object(v), Value::Object(h)) = (&mut v, herdr_installed_info(e)) {
+                v.extend(h);
+            }
+            v
+        })
+        .collect()
+}
+
+/// Herdr `plugin.action.list`: every action of every plugin whose manifest loads, sorted by
+/// qualified id, as `PluginActionInfo` (`command` is the manifest argv, `platforms` the
+/// action's or else the plugin's). Vibeke adds `qualified_id`, `available` and `status`.
+fn herdr_action_list(plugin: Option<&str>) -> Result<Vec<Value>, WireError> {
+    let reg = Registry::load(&plugin_dirs())
+        .map_err(|e| WireError::new("plugin_registry_load_failed", e.to_string()))?;
+    let pf = herdr::current_platform();
+    let mut out = Vec::new();
+    for e in reg
+        .plugins
+        .values()
+        .filter(|e| plugin.is_none_or(|p| p == e.id))
+    {
+        let (st, m) = registry::entry_status(e);
+        let Some(m) = m else { continue };
+        for a in &m.actions {
+            let mut v = herdr_manifest_action(a);
+            let platforms = a.platforms.as_ref().or(m.platforms.as_ref());
+            if let Value::Object(o) = &mut v {
+                let id = o.remove("id").unwrap_or_default();
+                o.insert("plugin_id".into(), json!(e.id));
+                o.insert("action_id".into(), id);
+                o.remove("platforms");
+                if let Some(p) = platforms {
+                    o.insert("platforms".into(), json!(p));
+                }
+                o.insert("qualified_id".into(), json!(format!("{}.{}", e.id, a.id)));
+                o.insert(
+                    "available".into(),
+                    json!(st == Status::Active && m.entry_on(a.platforms.as_ref(), pf)),
+                );
+                o.insert("status".into(), json!(st.as_str()));
+            }
+            out.push(v);
+        }
+    }
+    out.sort_by(|a, b| {
+        a["qualified_id"]
+            .as_str()
+            .unwrap_or("")
+            .cmp(b["qualified_id"].as_str().unwrap_or(""))
+    });
+    Ok(out)
 }
 
 /// Actions of active plugins (inactive plugins are listed with `available: false` so the
@@ -4080,6 +5195,19 @@ mod tests {
         })
     }
 
+    #[test]
+    fn output_matches_whole_lines_like_herdr() {
+        let text = "$ make\nbuilding\nbuild ok: 3 targets\n$ ";
+        assert_eq!(
+            match_line(text, Some("ok:"), None).as_deref(),
+            Some("build ok: 3 targets")
+        );
+        let re = regex::Regex::new(r"^\$ $").unwrap();
+        assert_eq!(match_line(text, None, Some(&re)).as_deref(), Some("$ "));
+        assert_eq!(match_line(text, Some("missing"), None), None);
+        assert_eq!(match_line(text, None, None), None);
+    }
+
     #[tokio::test]
     async fn inventory_status_matches_dispatch() {
         let (srv, _d) = server();
@@ -4132,8 +5260,36 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(v["type"], "session_snapshot");
-        assert_eq!(v["version"], herdr::BASELINE_VERSION);
-        assert!(v["focused_pane_id"].is_null());
+        let snap = &v["snapshot"];
+        assert_eq!(snap["version"], herdr::BASELINE_VERSION);
+        assert_eq!(snap["protocol"], herdr::cli::PROTOCOL_VERSION);
+        assert!(snap.get("focused_pane_id").is_none(), "{v}");
+        for k in ["workspaces", "tabs", "panes", "layouts", "agents"] {
+            assert!(snap[k].as_array().is_some_and(|a| a.is_empty()), "{k}: {v}");
+        }
+        let v = call(&srv, &user(), "ping", &json!({})).await.unwrap();
+        assert_eq!(v["type"], "pong");
+        assert_eq!(v["protocol"], herdr::cli::PROTOCOL_VERSION);
+        assert_eq!(v["capabilities"]["live_handoff"], false);
+        // Herdr's `events.wait {match_event}` waits only for agent status matches.
+        let e = call(
+            &srv,
+            &user(),
+            "events.wait",
+            &json!({"match_event": {"event": "tab_created"}}),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(e.code, "unsupported_event_wait_match");
+        let e = call(
+            &srv,
+            &user(),
+            "events.wait",
+            &json!({"match_event": {"event": "pane_agent_status_changed", "pane_id": "w9:p9", "agent_status": "idle"}, "timeout_ms": 10}),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(e.code, "pane_not_found");
         let e = call(
             &srv,
             &user(),

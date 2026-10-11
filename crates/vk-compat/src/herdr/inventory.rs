@@ -222,7 +222,7 @@ pub const ENTRIES: &[Entry] = &[
         "session.snapshot",
         Partial,
         "spec",
-        "`layouts` are per-tab layout snapshots (shape unverified); version/protocol report the emulated baseline",
+        "`session_snapshot {snapshot: SessionSnapshot}`: `version`, integer `protocol` (22), focused workspace/tab/pane ids (left out when unknown), workspaces, tabs and live panes, one `PaneLayoutSnapshot` per tab in workspace order, agents; the layouts share `pane.layout`'s rebuilt area",
     ),
     e(Method, "workspace.list", Implemented, "spec", ""),
     e(
@@ -261,13 +261,19 @@ pub const ENTRIES: &[Entry] = &[
         "spec",
         "Herdr `PaneInfo`, see `pane.list`",
     ),
-    e(Method, "pane.current", Implemented, "spec", ""),
+    e(
+        Method,
+        "pane.current",
+        Implemented,
+        "spec",
+        "`caller_pane_id`, else the focused pane; `pane_current {pane}`",
+    ),
     e(
         Method,
         "pane.read",
         Partial,
         "spec",
-        "`format: ansi` returns text; baseline wrapping rules unverified",
+        "`pane_read {read: PaneReadResult}` with `pane_id`, `workspace_id`, `tab_id`, `source`, `format`, `text`, `revision`, `truncated` (always false); `format: ansi` is echoed but the text is plain; `strip_ansi` ignored; `lines` defaults to 50",
     ),
     e(
         Method,
@@ -299,14 +305,14 @@ pub const ENTRIES: &[Entry] = &[
         "pane.split",
         Partial,
         "spec",
-        "splits `target_pane_id` (baseline), else `pane_id`, the invocation's pane or the focused pane; direction/cwd/focus; size params ignored",
+        "splits `target_pane_id` (baseline), else `pane_id`, the invocation's pane or the focused pane; direction/cwd/focus; Herdr's `ratio` (share of the split pane, 0.1..0.9); `env`, `workspace_id` and `right_click` are not applied (Vibeke's split takes no launch environment)",
     ),
     e(
         Method,
         "pane.wait_for_output",
         Partial,
         "spec",
-        "`match`/`regex`, `timeout_ms`; emits `pane.output_matched`",
+        "Herdr's `{pane_id, source, lines?, match: {type: substring|regex, value}, timeout_ms?}` (also a plain-string `match`); reads the pane every 100 ms (`recent` reads `recent_unwrapped`, as Herdr does) and matches line by line; `output_matched {pane_id, revision, matched_line, read}`; `invalid_regex`; no deadline without `timeout_ms`, else `timeout`; emits `pane.output_matched`",
     ),
     e(
         Method,
@@ -329,7 +335,7 @@ pub const ENTRIES: &[Entry] = &[
         "agent.read",
         Partial,
         "spec",
-        "reads the agent's pane",
+        "reads the agent's pane; `pane_read {read: PaneReadResult}` as `pane.read`",
     ),
     e(
         Method,
@@ -364,14 +370,14 @@ pub const ENTRIES: &[Entry] = &[
         "agent.explain",
         Partial,
         "corpus",
-        "`agent explain`: result `agent_explain` {agent, agent_status, reason, execution, blocked, unseen_turn, turns_completed, last_tool, last_message, source}; Vibeke's own shape, baseline unverified",
+        "`agent_explain {explain}`; the object is Vibeke's (agent, agent_status, reason, execution, blocked, unseen_turn, turns_completed, last_tool, last_message, source), not Herdr's detection-manifest explanation",
     ),
     e(
         Method,
         "worktree.list",
         Partial,
         "spec",
-        "native shape under `worktree_list`",
+        "`{workspace_id? | cwd?}` (else the active workspace; both: `invalid_request`); `not_git_worktree`; `worktree_list {source: WorktreeSourceInfo, worktrees: [WorktreeInfo]}` from the main checkout (`label` = repository name, `open_workspace_id` by checkout path); `is_bare` always false; `trust_repository` ignored",
     ),
     e(Method, "worktree.repo_root", Partial, "spec", ""),
     e(
@@ -388,13 +394,19 @@ pub const ENTRIES: &[Entry] = &[
         "spec",
         "reuses the workspace rooted at the worktree or creates one; `worktree_opened {workspace, tab, root_pane, worktree, already_open}` (Vibeke extra `created`); only `path` is accepted; emits `worktree.opened`",
     ),
-    e(Method, "events.subscribe", Partial, "spec", "see events"),
+    e(
+        Method,
+        "events.subscribe",
+        Partial,
+        "spec",
+        "`subscription_started`, then event lines; `pane.output_matched` with `source` and `match` runs an output watcher; see events",
+    ),
     e(
         Method,
         "events.wait",
         Partial,
         "spec",
-        "first projected event matching the subscription",
+        "Herdr's `{match_event, timeout_ms?}`: only `pane_agent_status_changed {pane_id, agent_status}` (every other `EventMatch` is `unsupported_event_wait_match`, as in Herdr); `wait_matched {event: EventEnvelope}` at once when the pane already has the status, else on the first projected change; `pane_not_found`; no deadline without `timeout_ms`, else `timeout`. Vibeke's older `{subscriptions}` form still answers the first matching projected event as `event`",
     ),
     // ---- methods: 07 §8.3 required-coverage list -------------------------------------------
     e(
@@ -402,14 +414,14 @@ pub const ENTRIES: &[Entry] = &[
         "plugin.list",
         Implemented,
         "spec",
-        "registry entries with status",
+        "Herdr's `InstalledPluginInfo` (`name`, `version`, `min_herdr_version`, `manifest_path`, `plugin_root`, `enabled`, manifest lists in Herdr's order, `source` as `PluginSourceInfo` with `local`/`github`, `warnings` incl. `manifest unavailable: …`); `plugin_id` filter; Vibeke extras `status`, `trust`, `managed`, `origin`, `config_dir`, `state_dir`, sandbox settings",
     ),
     e(
         Method,
         "plugin.link",
         Implemented,
         "spec",
-        "registers in place; never builds or trusts; refused from panes; `plugin_linked {plugin}`",
+        "registers in place; never builds or trusts; `enabled: false` links it disabled; refused from panes; `plugin_linked {plugin: InstalledPluginInfo}`",
     ),
     e(
         Method,
@@ -432,7 +444,13 @@ pub const ENTRIES: &[Entry] = &[
         "spec",
         "refused from panes; cuts live brokers; `plugin_disabled {plugin}`",
     ),
-    e(Method, "plugin.action.list", Implemented, "spec", ""),
+    e(
+        Method,
+        "plugin.action.list",
+        Implemented,
+        "spec",
+        "Herdr's `PluginActionInfo` (`plugin_id`, `action_id`, `title`, `description?`, declared `contexts`, manifest `command`, the action's or else the plugin's `platforms`) for every action of every plugin whose manifest loads, sorted by qualified id; an unknown `plugin_id` gives an empty list; Vibeke extras `qualified_id`, `available`, `status`",
+    ),
     e(
         Method,
         "plugin.action.invoke",
@@ -529,9 +547,15 @@ pub const ENTRIES: &[Entry] = &[
         "pane.resize",
         Partial,
         "spec",
-        "direction + percent",
+        "`{pane_id?, direction, amount?}` (share of the tab, default 0.05, at most 0.5; Vibeke's `percent` too); `pane_resize {resize: {changed, reason?: unchanged, pane_id, focused_pane_id, layout}}`; Vibeke's resize rule, not Herdr's border search",
     ),
-    e(Method, "pane.zoom", Partial, "spec", ""),
+    e(
+        Method,
+        "pane.zoom",
+        Partial,
+        "spec",
+        "`{pane_id?, mode: toggle|on|off}` (Vibeke's `zoomed` too): focuses the pane, then zooms or unzooms its tab; `pane_zoom {zoom: {changed, zoom_changed, focus_changed, reason?: single_pane|already_zoomed|already_unzoomed, pane_id, focused_pane_id, zoomed, layout}}`; a pane-scoped caller that may not move the focus keeps it",
+    ),
     e(
         Method,
         "client.window_title.set",
@@ -579,7 +603,7 @@ pub const ENTRIES: &[Entry] = &[
         "ping",
         Partial,
         "spec",
-        "reports the emulated baseline",
+        "`pong {version, protocol, capabilities}` with the emulated baseline (protocol 22; every capability false: no live handoff, daemon, SSH agent, surface interest or health check); Vibeke adds `emulator`, `vibeke_version`, `compatibility`",
     ),
     e(
         Method,
@@ -593,7 +617,7 @@ pub const ENTRIES: &[Entry] = &[
         "server.reload_config",
         Partial,
         "corpus",
-        "acknowledged; Vibeke reloads config itself",
+        "Vibeke does not read Herdr's config.toml: `config_reload {status: applied, diagnostics: []}`; Vibeke reloads its own config itself",
     ),
     e(
         Method,
@@ -615,7 +639,7 @@ pub const ENTRIES: &[Entry] = &[
         "notification.show",
         Partial,
         "corpus",
-        "`herdr notification show`; maps to a Vibeke notification",
+        "`{title, body?}` (`position`, `sound` ignored); empty title `invalid_params`; delivered through Vibeke's notifier; `notification_show {shown: true, reason: shown}` (Herdr's `disabled`, `rate_limited`, `busy` and `no_foreground_client` are never reported)",
     ),
     e(
         Method,
@@ -627,65 +651,212 @@ pub const ENTRIES: &[Entry] = &[
     e(
         Method,
         "pane.neighbor",
-        Missing,
+        Partial,
         "corpus",
-        "`herdr pane neighbor`; not served yet",
+        "`pane_neighbor {neighbor: {pane_id, direction, neighbor_pane_id?, layout}}` with Herdr's `find_in_direction` (edge distance, overlap, centre, layout order) over the tab's pane rects; `pane_id`, else the caller's or focused pane; the rects come from `pane.layout`'s rebuilt area",
     ),
     e(
         Method,
         "pane.edges",
-        Missing,
+        Partial,
         "corpus",
-        "`herdr pane edges`; not served yet",
+        "`pane_edges {edges: {pane_id, left, right, up, down, layout}}` against the tab's area; see `pane.neighbor` for the area",
     ),
     e(
         Method,
         "pane.focus_direction",
-        Missing,
+        Partial,
         "corpus",
-        "`herdr pane focus --direction`; not served yet",
+        "`pane_focus_direction {focus: {changed, reason?: no_neighbor, source_pane_id, focused_pane_id?, layout}}`; the move goes through Vibeke's `pane.focus` (most recent client); see `pane.neighbor`",
     ),
     e(
         Method,
         "pane.input.set",
-        Missing,
+        Partial,
         "corpus",
-        "`herdr pane input --right-click`; not served yet",
+        "`{pane_id, right_click: herdr|pane}` validated (`pane_not_found`, `invalid_params`) and answered `ok`, but it has no effect: Vibeke's clients have no per-pane right-click routing",
     ),
     e(
         Method,
         "pane.release_agent",
-        Missing,
+        Partial,
         "corpus",
-        "`herdr pane release-agent`; not served yet",
+        "`{pane_id, source, agent, seq?}`: `invalid_agent` for an empty label; a run that only self-reports ends (`released`) so detection takes over; `source`/`agent`/`seq` are not compared with the reporting hook (Herdr keeps per-source authority); a pane may release only itself",
     ),
     e(
         Method,
         "tab.get",
-        Missing,
+        Implemented,
         "corpus",
-        "`herdr tab get`; not served yet",
+        "`tab_info {tab}`; `tab_not_found`",
     ),
     e(
         Method,
         "agent.focus",
-        Missing,
+        Implemented,
         "corpus",
-        "`herdr agent focus`; not served yet",
+        "focuses the agent's pane (its tab and workspace) on the most recent client; `agent_info {agent}`; `agent_not_found`",
     ),
     e(
         Method,
         "agent.send_keys",
-        Missing,
+        Partial,
         "corpus",
-        "`herdr agent send-keys`; not served yet",
+        "`{target, keys[]}` to the agent's pane; `ok`; `agent_not_ready` for an ended run; Vibeke's key grammar, not restricted to Herdr's accepted set",
     ),
     e(
         Method,
         "worktree.remove",
-        Missing,
+        Partial,
         "corpus",
-        "`herdr worktree remove`; not served yet",
+        "`{workspace_id, force?}`: `not_linked_worktree` unless the workspace is a linked worktree checkout; `git worktree remove [--force]` in the main repository (`dirty_worktree_requires_force`, `worktree_remove_failed` with git's message); then the workspace closes and `worktree.removed` follows with `forced` and the workspace's last snapshot; `worktree_removed {workspace_id, path, forced}`; `trust_repository` ignored (git's own safe.directory rules apply); runs synchronously",
+    ),
+    e(
+        Method,
+        "workspace.move_block",
+        Partial,
+        "spec",
+        "`{workspace_ids, before_workspace_id?}` with Herdr's `workspace_move_block_failed` checks; `workspace_list`; Vibeke moves the workspaces one at a time, so subscribers see `workspace.moved` per moved workspace instead of one `workspace.reordered`",
+    ),
+    e(
+        Method,
+        "pane.scroll",
+        Partial,
+        "spec",
+        "`{pane_id, offset_from_bottom}` through Vibeke's `pane.scroll` (clamped to the scrollback); clients follow the request; `pane_info`; emits `pane.scroll_changed`",
+    ),
+    e(
+        Method,
+        "pane.clear_agent_authority",
+        Partial,
+        "spec",
+        "`{pane_id, source?, seq?}`: `ok`; a run that only self-reports ends so detection takes over (Herdr drops the hook's authority and keeps the run)",
+    ),
+    e(
+        Method,
+        "server.ssh_agent.register",
+        Partial,
+        "spec",
+        "answered `connection_local_only` as Herdr answers a one-request connection; Vibeke has no persistent JSON API connections on this socket",
+    ),
+    e(
+        Method,
+        "release_notes.dismiss",
+        Partial,
+        "spec",
+        "Vibeke never shows Herdr's release notes: always `stale_release_notes`, as Herdr answers when none are current",
+    ),
+    e(
+        Method,
+        "product_announcement.dismiss",
+        Partial,
+        "spec",
+        "Vibeke never shows Herdr's announcements: always `stale_announcement`, as Herdr answers when none is current",
+    ),
+    e(
+        Method,
+        "server.live_handoff",
+        Missing,
+        "spec",
+        "`unsupported`: hands a running Herdr server to a new binary; Vibeke upgrades with `vibeke update` and its holders keep panes alive",
+    ),
+    e(
+        Method,
+        "server.agent_manifests",
+        Missing,
+        "spec",
+        "`unsupported`: Herdr's agent-detection manifests; Vibeke's are listed with `vibeke agent manifests`",
+    ),
+    e(
+        Method,
+        "server.reload_agent_manifests",
+        Missing,
+        "spec",
+        "`unsupported`: see `server.agent_manifests`; Vibeke reloads with `agent.manifests_reload`",
+    ),
+    e(
+        Method,
+        "command.invoke",
+        Missing,
+        "spec",
+        "`unsupported`: runs a command id from Herdr's client-shell projection, which Vibeke does not publish",
+    ),
+    e(
+        Method,
+        "client_shell.surface.set",
+        Missing,
+        "spec",
+        "`unsupported`: Herdr's client-shell presentation protocol; Vibeke clients use the render stream",
+    ),
+    e(
+        Method,
+        "pane.clear",
+        Missing,
+        "spec",
+        "`unsupported`: Herdr clears the emulator's screen; Vibeke's terminal engine has no server-side clear that keeps the program's output consistent",
+    ),
+    e(
+        Method,
+        "pane.edit_scrollback",
+        Missing,
+        "spec",
+        "`unsupported`: opens the focused pane's scrollback in Herdr's client editor",
+    ),
+    e(
+        Method,
+        "pane.selection.read",
+        Missing,
+        "spec",
+        "`unsupported`: selections are client-side in Vibeke and not reported to the server",
+    ),
+    e(
+        Method,
+        "pane.copy_motion",
+        Missing,
+        "spec",
+        "`unsupported`: Herdr's copy-mode cursor; Vibeke's copy mode runs in the client",
+    ),
+    e(
+        Method,
+        "pane.copy_search",
+        Missing,
+        "spec",
+        "`unsupported`: see `pane.copy_motion`",
+    ),
+    e(
+        Method,
+        "pane.link.resolve",
+        Missing,
+        "spec",
+        "`unsupported`: Herdr resolves link regions at a viewport cell of its own renderer; Vibeke's clients detect links themselves",
+    ),
+    e(
+        Method,
+        "pane.link.activate",
+        Missing,
+        "spec",
+        "`unsupported`: see `pane.link.resolve`; plugin link handlers run through `plugin.link.open` on the native socket",
+    ),
+    e(
+        Method,
+        "integration.list",
+        Missing,
+        "spec",
+        "`unsupported`: Herdr's agent integrations; use `vibeke integration list`",
+    ),
+    e(
+        Method,
+        "integration.install",
+        Missing,
+        "spec",
+        "`unsupported`: installing hooks needs `vibeke integration install <harness>`, which writes Vibeke's own hooks",
+    ),
+    e(
+        Method,
+        "integration.uninstall",
+        Missing,
+        "spec",
+        "`unsupported`: see `integration.install`",
     ),
     // ---- events ---------------------------------------------------------------------------
     e(Event, "workspace.created", Implemented, "spec", ""),
@@ -774,7 +945,7 @@ pub const ENTRIES: &[Entry] = &[
         "pane.output_matched",
         Partial,
         "spec",
-        "fires when a compat `pane.wait_for_output` matcher matches (Herdr matches in the subscription itself); `{pane_id, matched_line, read}`",
+        "a subscription with Herdr's `source` and `match` watches the pane itself: it reads the source (`recent` as `recent_unwrapped`, `lines` default 50) whenever the output revision changes (checked every 100 ms) and fires `{pane_id, matched_line, read}` each time a line starts to match, as Herdr does; `invalid_regex`/`pane_not_found` refuse the subscription; Vibeke's older form without `match` relays `pane.wait_for_output` matches",
     ),
     e(
         Event,
@@ -838,9 +1009,9 @@ pub const ENTRIES: &[Entry] = &[
     e(
         Cli,
         "--version",
-        Partial,
+        Implemented,
         "spec",
-        "prints `herdr 0.9.3 (Vibeke … compatibility layer, partial)`; Herdr prints `herdr 0.9.3`",
+        "prints `herdr 0.9.3`, as Herdr does; the socket's `ping` names Vibeke (`emulator`)",
     ),
     e(
         Cli,
@@ -882,7 +1053,7 @@ pub const ENTRIES: &[Entry] = &[
         "plugin install owner/repo[/subdir] [--ref]",
         Partial,
         "spec",
-        "Herdr's grammar `[--ref REF] [--yes|-y] <source>`; shallow, hardened clone (no hooks/fsmonitor/filters, https+file only) of `https://github.com/owner/repo` at a tag, branch or sha (`@ref` or `--ref`); the resolved commit is recorded and pinned by the trust grant; prints Vibeke's registry JSON, not Herdr's install messages",
+        "Herdr's grammar `[--ref REF] [--yes|-y] <source>`; without `--yes` and without a terminal: Herdr's `remote plugin install requires --yes when stdin is not interactive` (exit 2); shallow, hardened clone (no hooks/fsmonitor/filters, https+file only) of `https://github.com/owner/repo` at a tag, branch or sha (`@ref` or `--ref`); the resolved commit is recorded and pinned by the trust grant; prints Herdr's `Installed <id> from <source>.` and `Config: <dir>`; no install preview or confirmation prompt; errors in Vibeke's JSON",
     ),
     e(
         Cli,
@@ -894,44 +1065,44 @@ pub const ENTRIES: &[Entry] = &[
     e(
         Cli,
         "plugin link",
-        Partial,
+        Implemented,
         "corpus",
-        "`<path> [--disabled|--enabled]`; no build; prints Vibeke's registry JSON, not Herdr's `cli:plugin` response",
+        "`<path> [--disabled|--enabled]`, path made absolute as Herdr does; no build; prints Herdr's `{\"id\":\"cli:plugin\",\"result\":{\"type\":\"plugin_linked\",…}}` line (Herdr error lines on stderr, exit 1); changes the registry without a server, as Herdr's offline fallback does",
     ),
     e(
         Cli,
         "plugin unlink",
-        Partial,
+        Implemented,
         "corpus",
-        "files preserved; prints Vibeke's registry JSON, not Herdr's `cli:plugin` response",
+        "files preserved; prints Herdr's `plugin_unlinked {plugin_id, removed}` response line",
     ),
     e(
         Cli,
         "plugin uninstall",
-        Partial,
+        Implemented,
         "corpus",
-        "plugin id only (not `owner/repo`); managed checkout removed, config/state kept; prints Vibeke's registry JSON, not `Uninstalled <id>.`",
+        "plugin id or the `owner/repo[/subdir]` it was installed from; managed checkout removed (a linked plugin is unlinked), config/state kept; prints `Uninstalled <id>.`, or `plugin not installed: <target>` (exit 1)",
     ),
     e(
         Cli,
         "plugin enable / disable",
-        Partial,
+        Implemented,
         "corpus",
-        "prints Vibeke's registry JSON, not Herdr's `cli:plugin` response",
+        "prints Herdr's `plugin_enabled`/`plugin_disabled` response line",
     ),
     e(
         Cli,
         "plugin list",
-        Partial,
+        Implemented,
         "corpus",
-        "`[--plugin ID] [--json]` accepted; always prints Vibeke's registry JSON (no filter, no table)",
+        "`[--plugin ID] [--json]`: Herdr's `N plugins installed:` summary (`- id (name) enabled [local:<root>|github:owner/repo@ref; n warning(s)]`, `config:` and `warning:` lines, or `No plugins installed.`); `--json` prints the `plugin_list` response line; `config:` is Vibeke's per-plugin config directory",
     ),
     e(
         Cli,
         "plugin config-dir",
         Partial,
         "corpus",
-        "prints a JSON object; Herdr prints the bare path",
+        "prints the bare path and creates the config and state directories, as Herdr does; the path is Vibeke's per-plugin config directory (Herdr's lies under its own config root); an id that is not a safe path component is refused (`invalid_plugin_id`), where Herdr encodes it",
     ),
     e(
         Cli,
@@ -1542,6 +1713,14 @@ pub fn method_status(m: &str) -> Option<Status> {
         .map(|e| e.status)
 }
 
+/// The inventory note of a method (the reason a missing method is `unsupported`).
+pub fn method_note(m: &str) -> Option<&'static str> {
+    ENTRIES
+        .iter()
+        .find(|e| e.kind == Method && e.name == m)
+        .map(|e| e.note)
+}
+
 /// `(implemented, partial, missing)` for one kind, or all kinds with `None`.
 pub fn counts(kind: Option<Kind>) -> (usize, usize, usize) {
     let mut c = (0, 0, 0);
@@ -1670,5 +1849,30 @@ mod tests {
         }
         let (i, p, m) = counts(None);
         assert_eq!(i + p + m, ENTRIES.len());
+    }
+
+    #[test]
+    fn every_baseline_request_method_is_inventoried() {
+        let schema: serde_json::Value =
+            serde_json::from_str(super::super::cli::API_SCHEMA_JSON).unwrap();
+        let methods: Vec<&str> = schema["schemas"]["request"]["oneOf"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|o| o["properties"]["method"]["const"].as_str())
+            .collect();
+        assert!(methods.len() > 100, "{}", methods.len());
+        for m in methods {
+            assert!(
+                method_status(m).is_some(),
+                "baseline method {m} missing from the inventory"
+            );
+            if method_status(m) == Some(Missing) {
+                assert!(
+                    method_note(m).is_some_and(|n| n.contains("unsupported")),
+                    "{m}: a missing method names why it is unsupported"
+                );
+            }
+        }
     }
 }

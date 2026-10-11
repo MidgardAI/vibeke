@@ -215,7 +215,7 @@ fn herdr_cli_shim_and_wire_protocol() {
         "--timeout",
         "15000",
     ]);
-    assert_eq!(m["type"], "pane_output_matched");
+    assert_eq!(m["type"], "output_matched", "{m}");
     // `pane read` prints the text itself, like Herdr.
     let out = s_
         .cmd(&[
@@ -610,17 +610,19 @@ fn herdr_shim_plugin_commands_and_link() {
     let s_ = Session::new("");
     let src = s_.path("src/probe");
     write_plugin(&src);
-    // Herdr's CLI grammar for the registry.
+    // Herdr's CLI grammar for the registry; Herdr prints the whole response line.
     let r = s_.herdr_line(&["plugin", "link", src.to_str().unwrap()]);
-    assert_eq!(r["plugin"]["status"], "untrusted");
-    assert_eq!(r["plugin"]["managed"], false);
+    assert_eq!(r["id"], "cli:plugin", "{r}");
+    assert_eq!(r["result"]["type"], "plugin_linked", "{r}");
+    assert_eq!(r["result"]["plugin"]["status"], "untrusted");
+    assert_eq!(r["result"]["plugin"]["managed"], false);
     assert!(!src.join("built.txt").exists(), "link never builds");
-    let l = s_.herdr_line(&["plugin", "list"]);
-    assert_eq!(l["plugins"][0]["plugin_id"], "acme.probe");
+    let l = s_.herdr_line(&["plugin", "list", "--json"]);
+    assert_eq!(l["result"]["plugins"][0]["plugin_id"], "acme.probe");
     s_.herdr_line(&["plugin", "disable", "acme.probe"]);
     s_.json(&["plugin", "trust", "acme.probe", "--legacy"]);
-    let l = s_.herdr_line(&["plugin", "list"]);
-    assert_eq!(l["plugins"][0]["status"], "disabled");
+    let l = s_.herdr_line(&["plugin", "list", "--json"]);
+    assert_eq!(l["result"]["plugins"][0]["status"], "disabled");
     s_.herdr_line(&["plugin", "enable", "acme.probe"]);
     let acts = s_.herdr(&["plugin", "action", "list"]);
     assert_eq!(acts["type"], "plugin_action_list");
@@ -657,8 +659,8 @@ fn herdr_shim_plugin_commands_and_link() {
     assert_eq!(logs["type"], "plugin_log_list");
     s_.herdr_line(&["plugin", "unlink", "acme.probe"]);
     assert!(src.join("herdr-plugin.toml").exists(), "unlink keeps files");
-    let l = s_.herdr_line(&["plugin", "list"]);
-    assert!(l["plugins"].as_array().unwrap().is_empty());
+    let l = s_.herdr_line(&["plugin", "list", "--json"]);
+    assert!(l["result"]["plugins"].as_array().unwrap().is_empty());
 }
 
 /// Stop the server and wait until it no longer answers.

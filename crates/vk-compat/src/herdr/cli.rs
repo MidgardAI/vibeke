@@ -111,7 +111,12 @@ pub enum Local {
     PluginDisable {
         id: String,
     },
-    PluginList,
+    /// `plugin list [--plugin ID] [--json]`: Herdr prints the response line with `--json`,
+    /// a summary otherwise.
+    PluginList {
+        plugin: Option<String>,
+        json: bool,
+    },
     PluginConfigDir {
         id: String,
     },
@@ -2792,18 +2797,22 @@ fn plugin(a: &[String]) -> R {
             }))
         }
         "list" => {
+            let (mut plugin, mut json) = (None, false);
             let mut i = 0;
             while i < a.len() {
                 match a[i].as_str() {
-                    "--json" => i += 1,
+                    "--json" => {
+                        json = true;
+                        i += 1;
+                    }
                     "--plugin" => {
-                        value(a, i, "--plugin")?;
+                        plugin = Some(value(a, i, "--plugin")?);
                         i += 2;
                     }
                     other => return Err(unknown(other)),
                 }
             }
-            Ok(Parsed::Local(Local::PluginList))
+            Ok(Parsed::Local(Local::PluginList { plugin, json }))
         }
         "config-dir" => Ok(Parsed::Local(Local::PluginConfigDir {
             id: id_arg("config-dir")?,
