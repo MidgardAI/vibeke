@@ -3090,12 +3090,45 @@ pub fn gateway_line(g: &Value) -> Option<String> {
     Some(line)
 }
 
+/// `browser pane <url>` takes the next word as the URL, so a mistyped verb such as
+/// `browser pane list` would open `http://list/`. A single bare word (no dot, port, path, query
+/// or fragment, and not `localhost`) is refused, with a hint when it names another browser verb.
+fn check_browser_pane_url(method: &str, params: &Value) -> Result<(), String> {
+    let Some(url) = params.get("url").and_then(Value::as_str) else {
+        return Ok(());
+    };
+    if method != "browser.pane.create"
+        || url.contains(['.', ':', '/', '?', '#'])
+        || url.eq_ignore_ascii_case("localhost")
+    {
+        return Ok(());
+    }
+    // `browser panes` is the listing verb; people type `list`.
+    let verb = if url == "list" { "panes" } else { url };
+    if COMMANDS.iter().any(|c| c.0 == "browser" && c.1 == verb) {
+        Err(format!(
+            "`{url}` is not a URL; did you mean `vibeke browser {verb}`?"
+        ))
+    } else {
+        Err(format!(
+            "`{url}` is not a URL; give a full address such as http://localhost:3000"
+        ))
+    }
+}
+
 /// Run one API command. Returns the process exit code.
 pub async fn run_api<S>(client: &mut Client<S>, g: &Global, method: &str, mut params: Value) -> i32
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
     adjust(method, &mut params);
+    if let Err(m) = check_browser_pane_url(method, &params) {
+        eprintln!(
+            "{}",
+            json!({"error": {"kind": "invalid_params", "message": m}})
+        );
+        return EXIT_API;
+    }
     // `task get <t> --collisions`: only the open collisions of the task.
     let only_collisions = method == "task.get"
         && params
@@ -4316,6 +4349,37 @@ mod tests {
             no_spawn: g.no_spawn,
             timeout_ms: g.timeout_ms,
         }
+    }
+
+    #[test]
+    fn browser_pane_refuses_a_bare_verb_word_as_url() {
+        let (m, pos) = lookup("browser", "pane").unwrap();
+        let check = |u: &str| {
+            let mut p = build_params(pos, &[u.into()]).unwrap();
+            adjust(m, &mut p);
+            check_browser_pane_url(m, &p)
+        };
+        let e = check("list").unwrap_err();
+        assert!(e.contains("did you mean `vibeke browser panes`"), "{e}");
+        let e = check("status").unwrap_err();
+        assert!(e.contains("`vibeke browser status`"), "{e}");
+        let e = check("myserver").unwrap_err();
+        assert!(
+            e.contains("not a URL") && !e.contains("did you mean"),
+            "{e}"
+        );
+        for ok in [
+            "localhost",
+            "example.com",
+            "localhost:3000",
+            "http://x",
+            "a/b",
+        ] {
+            assert!(check(ok).is_ok(), "{ok}");
+        }
+        // No url at all, or another method: untouched.
+        assert!(check_browser_pane_url(m, &json!({})).is_ok());
+        assert!(check_browser_pane_url("browser.open", &json!({"url": "list"})).is_ok());
     }
 
     #[test]
