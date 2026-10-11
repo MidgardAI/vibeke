@@ -11,10 +11,13 @@ use tokio::io::{AsyncWriteExt, BufWriter};
 use tokio::net::UnixStream;
 use tokio::net::unix::OwnedWriteHalf;
 use tokio::sync::{mpsc, oneshot, watch};
-use vk_proto::frame::asyncio;
+use vk_proto::frame::{MAX_HOLDER_FRAME, asyncio};
 use vk_proto::holder::*;
 use vk_store::archive::ArchivedRow;
 use vk_term::{Effect, Engine};
+
+/// Holder frames read ahead of the pane loop (output arrives in chunks of at most 64 KiB).
+const HOLDER_FRAME_QUEUE: usize = 64;
 
 /// Default and bounds for `terminal.scrollback_lines` (lines kept in each pane's engine).
 pub const SCROLLBACK: usize = 10_000;
@@ -407,7 +410,7 @@ async fn run_inner(
     )
     .await?;
     wr.flush().await?;
-    let hello: FromHolder = asyncio::read_frame(&mut rd).await?;
+    let hello: FromHolder = asyncio::read_frame_max(&mut rd, MAX_HOLDER_FRAME).await?;
     let FromHolder::HelloOk {
         nonce,
         epoch: holder_epoch,
@@ -433,7 +436,7 @@ async fn run_inner(
     )
     .await?;
     wr.flush().await?;
-    match asyncio::read_frame::<_, FromHolder>(&mut rd).await? {
+    match asyncio::read_frame_max::<_, FromHolder>(&mut rd, MAX_HOLDER_FRAME).await? {
         FromHolder::Acquired { .. } => {}
         other => bail!("acquire rejected: {other:?}"),
     }
@@ -568,10 +571,14 @@ async fn run_inner(
     }
     wr.flush().await?;
 
-    let (frame_tx, mut frame_rx) = mpsc::unbounded_channel::<FromHolder>();
+    // Bounded: while the pane loop is behind, the reader stops reading the socket, so the
+    // holder queues the output (and drops this connection past its `MAX_WBUF`; the pane then
+    // reconnects from the last offset it processed) instead of this server buffering it all.
+    let (frame_tx, mut frame_rx) = mpsc::channel::<FromHolder>(HOLDER_FRAME_QUEUE);
     let reader = tokio::spawn(async move {
-        while let Ok(f) = asyncio::read_frame::<_, FromHolder>(&mut rd).await {
-            if frame_tx.send(f).is_err() {
+        while let Ok(f) = asyncio::read_frame_max::<_, FromHolder>(&mut rd, MAX_HOLDER_FRAME).await
+        {
+            if frame_tx.send(f).await.is_err() {
                 break;
             }
         }
@@ -587,6 +594,7 @@ async fn run_inner(
         exited: None,
         closing: false,
         last_snapshot: Instant::now(),
+        last_snapshot_digest: None,
         snapshot_dirty: false,
         snapshot_armed: false,
         replaying: !conn.fresh,
@@ -652,6 +660,8 @@ struct PaneLoop {
     exited: Option<(Option<i32>, Option<i32>)>,
     closing: bool,
     last_snapshot: Instant,
+    /// Digest of the screen last stored for this holder incarnation.
+    last_snapshot_digest: Option<blake3::Hash>,
     snapshot_dirty: bool,
     /// A snapshot deadline is armed in the server scheduler for this pane.
     snapshot_armed: bool,
@@ -1263,14 +1273,31 @@ impl PaneLoop {
             return Ok(());
         }
         let blob = self.rt.screen.lock().unwrap().engine.snapshot();
+        // The same screen as the stored snapshot (a redraw that changed nothing): no write.
+        // `secure_delete` makes every replaced snapshot cost a second write, so a busy pane
+        // that keeps drawing the same screen should not rewrite it every 30 s. A forced
+        // snapshot (holder journal half full, shutdown) is always written: the holder needs
+        // the checkpoint at the current offset.
+        let digest = blake3::hash(&blob);
+        if !force && self.last_snapshot_digest == Some(digest) {
+            self.last_snapshot = Instant::now();
+            self.snapshot_dirty = false;
+            if self.snapshot_armed {
+                self.server.timers.cancel(&self.rt.id);
+                self.snapshot_armed = false;
+            }
+            return Ok(());
+        }
         let id = self.rt.id.clone();
         let server = self.server.clone();
         let inc = self.incarnation.clone();
+        // Compressed on the blocking thread, before `store_snapshot` takes `core`.
         let ok =
             tokio::task::spawn_blocking(move || server.store_snapshot(&id, offset, blob, &inc))
                 .await
                 .unwrap_or(false);
         if ok {
+            self.last_snapshot_digest = Some(digest);
             self.send(&ToHolder::Checkpoint {
                 epoch: self.epoch,
                 offset,
