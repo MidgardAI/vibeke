@@ -206,6 +206,15 @@ export class FakeLifecycle implements Lifecycle {
   visible = true;
   private v = new Set<() => void>();
   private h = new Set<() => void>();
+  private o = new Set<() => void>();
+  onOnline(cb: () => void) {
+    this.o.add(cb);
+    return () => this.o.delete(cb);
+  }
+  /** The browser fired `online`. */
+  online() {
+    this.o.forEach((f) => f());
+  }
   onVisible(cb: () => void) {
     this.v.add(cb);
     return () => this.v.delete(cb);

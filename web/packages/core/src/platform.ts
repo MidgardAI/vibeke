@@ -86,6 +86,8 @@ export interface Lifecycle {
   /** Register a callback; returns an unsubscribe function. */
   onVisible(cb: () => void): () => void;
   onHidden(cb: () => void): () => void;
+  /** The network came back (browser `online` event). Optional: shells without it skip it. */
+  onOnline?(cb: () => void): () => void;
   /** Current visibility. */
   isVisible(): boolean;
 }

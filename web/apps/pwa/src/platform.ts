@@ -63,6 +63,10 @@ const lifecycle: Lifecycle = {
     document.addEventListener('visibilitychange', f);
     return () => document.removeEventListener('visibilitychange', f);
   },
+  onOnline(cb) {
+    window.addEventListener('online', cb);
+    return () => window.removeEventListener('online', cb);
+  },
   isVisible: () => document.visibilityState === 'visible',
 };
 
