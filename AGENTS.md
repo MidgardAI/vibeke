@@ -53,7 +53,7 @@ Preserve unrelated changes in the shared checkout. Check `git status` and the cu
 - Sub-agents write code and run `cargo fmt -p <crate>` only. They do not compile, run clippy or run test suites: parallel cold builds slow the machine for everyone. The main agent merges the branches, then builds and tests once at the end.
 - Use a faster model for sub-agents that make straightforward changes: Sonnet 5.5 in Claude Code, `gpt-6.1-sol` in Codex. Keep the main model for design work and difficult fixes.
 - Before merging to `main`, have a different coding agent review the final diff, read-only:
-  - From Claude Code, use Codex: `codex exec -s read-only -m gpt-6-astra "<review prompt>"` (`codex review --base` does not accept a custom prompt).
+  - From Claude Code, use Codex: `codex exec -s read-only -m gpt-6-astra "<review prompt>" </dev/null > <file> 2>&1` (`codex review --base` does not accept a custom prompt). Close stdin with `</dev/null`. Without a terminal, `codex exec` also reads stdin and waits forever at 0% CPU. Write the output to a file and read it while the review runs. Do not pipe it through `tail`, because then you see nothing until it ends.
   - From Codex, use Claude Code: `claude -p --model claude-opus-5-5 --permission-mode plan "<review prompt>"`.
 - Fix the findings, review again, then fast-forward `main`.
 
