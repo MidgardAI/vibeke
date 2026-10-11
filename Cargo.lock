@@ -3753,6 +3753,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "ulid",
+ "vk-tasks",
 ]
 
 [[package]]
@@ -3845,6 +3846,7 @@ dependencies = [
  "libc",
  "serde",
  "serde_json",
+ "socket2",
  "tempfile",
  "thiserror",
  "toml",

@@ -10,7 +10,7 @@ use std::time::Duration;
 /// Where task worktrees live.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorktreeRoot {
-    /// `<dir>/<repo-name>/<slug>`
+    /// `<dir>/<repo-name>-<hash>/<slug>` (see [`repo_area_dir`])
     Dir(PathBuf),
     /// `<repo parent>/<repo-name>-<slug>`
     Sibling,
@@ -233,11 +233,32 @@ pub fn worktree_path(root: &WorktreeRoot, repo_root: &Path, slug: &str) -> PathB
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| "repo".into());
     match root {
-        WorktreeRoot::Dir(d) => d.join(&name).join(slug),
+        WorktreeRoot::Dir(_) => repo_area_dir(root, repo_root).join(slug),
         WorktreeRoot::Sibling => repo_root
             .parent()
             .unwrap_or(repo_root)
             .join(format!("{name}-{slug}")),
+    }
+}
+
+/// The directory that holds this repo's task worktrees (and its `.trash`): with a root
+/// directory, `<dir>/<repo-name>-<hash>`, where `<hash>` is 8 hex digits of blake3 over the
+/// repo's canonical path, so two repos with the same name never share a directory (or a
+/// trash). With `sibling`, the repo's parent directory.
+pub fn repo_area_dir(root: &WorktreeRoot, repo_root: &Path) -> PathBuf {
+    match root {
+        WorktreeRoot::Dir(d) => {
+            let name = repo_root
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "repo".into());
+            let canon = repo_root
+                .canonicalize()
+                .unwrap_or_else(|_| repo_root.to_path_buf());
+            let hash = blake3::hash(canon.as_os_str().as_encoded_bytes()).to_hex();
+            d.join(format!("{name}-{}", &hash[..8]))
+        }
+        WorktreeRoot::Sibling => repo_root.parent().unwrap_or(repo_root).to_path_buf(),
     }
 }
 
@@ -277,14 +298,7 @@ pub fn validate_base(repo: &Path, base: &str) -> Result<()> {
 
 /// The worktree path must be a direct child of the configured root's directory for this repo.
 fn check_contained(root: &WorktreeRoot, repo_root: &Path, path: &Path) -> Result<()> {
-    let name = repo_root
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "repo".into());
-    let parent = match root {
-        WorktreeRoot::Dir(d) => d.join(&name),
-        WorktreeRoot::Sibling => repo_root.parent().unwrap_or(repo_root).to_path_buf(),
-    };
+    let parent = repo_area_dir(root, repo_root);
     let ok = path.parent() == Some(parent.as_path())
         && matches!(
             path.components().next_back(),

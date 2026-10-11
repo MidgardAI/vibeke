@@ -1,6 +1,6 @@
 //! A small, hardened `git` runner for this crate.
 //!
-//! Every command goes through [`vk_tasks::safety_args`], so a checkout a contained process can
+//! Every command goes through [`vk_tasks::harden_command`], so a checkout a contained process can
 //! write to (13 §6) is never asked to run its own configured programs, and prompts are off.
 
 use crate::{Error, Result};
@@ -27,10 +27,9 @@ impl Out {
 
 fn build(dir: &Path, args: &[&str], envs: &[(&str, &str)]) -> Result<Command> {
     let mut c = Command::new("git");
-    c.arg("-C")
-        .arg(dir)
-        .args(vk_tasks::safety_args(dir).map_err(|e| Error::Refused(e.to_string()))?)
-        .args(args)
+    c.arg("-C").arg(dir);
+    vk_tasks::harden_command(&mut c, dir).map_err(|e| Error::Refused(e.to_string()))?;
+    c.args(args)
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_OPTIONAL_LOCKS", "0")
         .env("GIT_LITERAL_PATHSPECS", "1")

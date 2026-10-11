@@ -116,6 +116,8 @@ pub(crate) struct SetupPlan {
     pub trusted: bool,
     /// blake3 of that tree (shown with `task.setup_untrusted`).
     pub digest: Option<String>,
+    /// Problems with the plan the user should see (a refused script path).
+    pub warnings: Vec<String>,
 }
 
 impl SetupPlan {
@@ -161,8 +163,19 @@ pub(crate) fn plan_setup(
         .map(str::to_string)
         .or_else(|| file.setup.script.clone())
         .unwrap_or_else(|| cfg_script.to_string());
-    let script =
-        (!script_rel.is_empty() && checkout.join(&script_rel).is_file()).then_some(script_rel);
+    let mut warnings = Vec::new();
+    // The trust digest covers `.vibeke/` only: a script anywhere else would run code the user
+    // never reviewed. It is refused, with a warning that says why.
+    let script = if script_rel.is_empty() {
+        None
+    } else if !script_in_vibeke_dir(&script_rel) {
+        warnings.push(format!(
+            "setup script `{script_rel}` was not run: a setup script must be inside the repo's .vibeke/ directory, which `vibeke policy trust` reviews"
+        ));
+        None
+    } else {
+        checkout.join(&script_rel).is_file().then_some(script_rel)
+    };
     let install = deps.and_then(DepsPlan::install_command).map(str::to_string);
     let raw: Vec<PlannedCommand> = file
         .commands(install.as_deref())
@@ -210,7 +223,45 @@ pub(crate) fn plan_setup(
         env,
         trusted,
         digest: None,
+        warnings,
     }
+}
+
+/// Is `rel` a plain relative path below `.vibeke/` (no `..`, no absolute path)?
+pub(crate) fn script_in_vibeke_dir(rel: &str) -> bool {
+    use std::path::Component;
+    let mut parts = Path::new(rel).components();
+    if parts.next() != Some(Component::Normal(".vibeke".as_ref())) {
+        return false;
+    }
+    let mut rest = 0;
+    for c in parts {
+        match c {
+            Component::Normal(_) => rest += 1,
+            _ => return false,
+        }
+    }
+    rest > 0
+}
+
+/// Where the setup log of `task_id` lives: in the server's state dir, never in the checkout
+/// (a contained process could plant a symlink there).
+pub(crate) fn setup_log_path(server: &Server, task_id: &str) -> PathBuf {
+    let safe: String = task_id
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    server
+        .paths
+        .state
+        .join("task-setup")
+        .join(format!("{safe}.log"))
 }
 
 /// `{source, command}` JSON for events and the trust prompt.
@@ -277,31 +328,64 @@ pub(crate) fn launch_setup(
             pane: None,
         };
     }
-    let log = checkout.join(".vibeke/setup.log");
-    if let Some(d) = log.parent() {
-        let _ = std::fs::create_dir_all(d);
+    let log = setup_log_path(server, task_id);
+    // A contained task's setup runs through its box runner, like its panes (13 §6). Without a
+    // box, setup does not run at all: never on the host instead.
+    let level = server
+        .with_core(|c| c.task(task_id).map(|t| t.isolation.level))
+        .unwrap_or_default();
+    let wrap = if level == vk_proto::model::IsolationLevel::Host {
+        None
+    } else {
+        match setup_wrapper(server, task_id, checkout) {
+            Ok(w) => Some(w),
+            Err(reason) => {
+                let data = json!({
+                    "status": "not run",
+                    "reason": reason,
+                    "hint": "start the task's sandbox (`vibeke sandbox start`), then run `vibeke task setup`",
+                });
+                set_setup(server, task_id, "unavailable", "task.setup_failed", data);
+                return SetupLaunch {
+                    done: None,
+                    pane: None,
+                };
+            }
+        }
+    };
+    // Create the log now (safely) so the `setup` pane can follow it from the start.
+    if let Err(e) = vk_tasks::create_log(&log) {
+        tracing::warn!(task = %task_id, error = %e, "setup log not created");
     }
-    let _ = std::fs::File::create(&log);
-    let pane = server
-        .split_pane(
-            split_from,
-            vk_proto::layout::Direction::Down,
-            0.3,
-            Some(&checkout.to_string_lossy()),
-            Some(vec![
-                "tail".into(),
-                "-n".into(),
-                "+1".into(),
-                "-F".into(),
-                log.to_string_lossy().into_owned(),
-            ]),
-            Some("setup".into()),
-            None,
-            "task:setup",
-        )
-        .ok()
-        .map(|p| p.id);
-    let opts = setup_options(plan, task_id, checkout, lease, log);
+    // The `setup` pane follows the log. A pane of a contained task runs inside its box, which
+    // cannot read Vibeke's state dir: there the progress shows in the task's setup status, and
+    // `vibeke task setup-log` prints the log.
+    let pane = if wrap.is_none() {
+        server
+            .split_pane(
+                split_from,
+                vk_proto::layout::Direction::Down,
+                0.3,
+                Some(&checkout.to_string_lossy()),
+                Some(vec![
+                    "tail".into(),
+                    "-n".into(),
+                    "+1".into(),
+                    "-F".into(),
+                    log.to_string_lossy().into_owned(),
+                ]),
+                Some("setup".into()),
+                None,
+                "task:setup",
+            )
+            .ok()
+            .map(|p| p.id)
+    } else {
+        None
+    };
+    let mut opts = setup_options(plan, task_id, checkout, lease, log);
+    opts.wrap = wrap;
+    let contained = opts.wrap.is_some();
     let (tx_done, rx_done) = tokio::sync::oneshot::channel();
     let srv = server.clone();
     let id = task_id.to_string();
@@ -313,7 +397,7 @@ pub(crate) fn launch_setup(
             &id,
             "running",
             "task.setup_started",
-            json!({"commands": cmds, "pane": pane2}),
+            json!({"commands": cmds, "pane": pane2, "log": opts.log_path, "runs_in": if contained { "task_isolation" } else { "host" }}),
         );
         let out = vk_tasks::run_setup(&opts, &vk_tasks::CancelToken::default());
         let (status, ok, code, secs) = match &out {
@@ -343,11 +427,19 @@ pub(crate) fn launch_setup(
             tx.event("task.setup_failed", json!({"task": id}), data);
             let _ = srv.commit(&mut c, tx);
             drop(c);
+            let id_hint = srv
+                .with_core(|c| c.task(&id).map(|t| t.handle.clone()))
+                .unwrap_or_else(|| id.clone());
+            let see = if pane2.is_some() {
+                "see the setup pane".to_string()
+            } else {
+                format!("see `vibeke task setup-log {id_hint}`")
+            };
             srv.notify(
                 "task",
                 pane2.as_deref(),
                 "Task setup failed",
-                &format!("{status}; see the setup pane"),
+                &format!("{status}; {see}"),
                 "high",
             );
         }
@@ -377,7 +469,135 @@ fn setup_options(
         extra_env: plan.env.iter().chain(&plan.template_env).cloned().collect(),
         log_path: log,
         timeout: Some(plan.timeout),
+        wrap: None,
     }
+}
+
+/// A contained task's box: (runner name such as `sandbox`, task checkout, box).
+pub(crate) type ContainedBox = (String, PathBuf, Arc<crate::sandbox::TaskBox>);
+
+/// Runs a process (argv, cwd, full env) inside a box: returns the wrapped argv and the exact
+/// env to spawn it with. Shared by setup, review checks and orchestration gates.
+pub(crate) type BoxWrap = Arc<
+    dyn Fn(
+            Vec<String>,
+            &Path,
+            Vec<(String, String)>,
+        ) -> std::io::Result<(Vec<String>, Vec<(String, String)>)>
+        + Send
+        + Sync,
+>;
+
+/// Where host-side jobs that run task code (checks, gates) run for `task` (13 §6):
+/// `Ok(None)` for a host task, `Ok(Some(..))` inside its box (sandbox, VM), `Err` with what
+/// to do when they cannot run now. They never fall back to the host. `what` names the job in
+/// the message ("its checks").
+pub(crate) fn contained_box(
+    server: &Server,
+    task: &Task,
+    what: &str,
+) -> Result<Option<ContainedBox>, String> {
+    use vk_proto::model::IsolationLevel;
+    let runner = match task.isolation.level {
+        IsolationLevel::Host => return Ok(None),
+        IsolationLevel::Container => {
+            return Err(format!(
+                "This task runs in a container. Vibeke does not run {what} on this machine; run them in one of the task's panes."
+            ));
+        }
+        IsolationLevel::Cloud => {
+            return Err(format!(
+                "This task runs in a cloud sandbox. Run {what} in one of its panes, or bring the task back first."
+            ));
+        }
+        l => serde_json::to_value(l)
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_string))
+            .unwrap_or_else(|| "sandbox".into()),
+    };
+    let checkout = task
+        .worktree_path
+        .clone()
+        .map(PathBuf::from)
+        .ok_or_else(|| "The task has no checkout on this machine.".to_string())?;
+    let b = server.sandbox.get(&task.id).ok_or_else(|| {
+        format!(
+            "The task's {runner} is not running, and Vibeke never runs {what} outside it. Start it with `vibeke sandbox start`, then try again."
+        )
+    })?;
+    Ok(Some((runner, checkout, b)))
+}
+
+/// A [`BoxWrap`] that prepares every process like a pane spawn of the box (scrubbed
+/// environment, the box's policy). `kind` prefixes the synthetic pane id (`setup`, `check`).
+pub(crate) fn box_wrap(
+    server: &Arc<Server>,
+    b: Arc<crate::sandbox::TaskBox>,
+    kind: &'static str,
+) -> BoxWrap {
+    let srv = server.clone();
+    Arc::new(
+        move |argv: Vec<String>, cwd: &Path, env: Vec<(String, String)>| {
+            // A paused (idle-suspended) box runs again first.
+            crate::sandbox::extras::before_spawn(&srv, &b);
+            let prepared = b
+                .runner
+                .runner()
+                .prepare(vk_sandbox::runner::SpawnRequest {
+                    pane_id: format!("{kind}-{}", crate::core::ulid()),
+                    argv,
+                    cwd: cwd.to_path_buf(),
+                    env,
+                })
+                .map_err(|e| std::io::Error::other(e.to_string()))?;
+            Ok((prepared.argv, prepared.env))
+        },
+    )
+}
+
+/// The [`vk_orchestrate::family::GateBox`] of a task's gates (family and merge-queue checks):
+/// `Ok(None)` for a host task.
+pub(crate) fn gate_box(
+    server: &Arc<Server>,
+    task_id: &str,
+) -> Result<Option<vk_orchestrate::family::GateBox>, String> {
+    let Some(task) = server.with_core(|c| c.task(task_id).cloned()) else {
+        return Ok(None);
+    };
+    Ok(
+        contained_box(server, &task, "its merge and family checks")?.map(|(_, checkout, b)| {
+            vk_orchestrate::family::GateBox {
+                wrap: box_wrap(server, b, "gate"),
+                checkout,
+            }
+        }),
+    )
+}
+
+/// The wrapper that runs each setup step of a contained task through its box runner, exactly
+/// like a pane spawn of that task (scrubbed environment, the box's policy). `Err` with a
+/// reason when the box is not available.
+fn setup_wrapper(
+    server: &Arc<Server>,
+    task_id: &str,
+    checkout: &Path,
+) -> Result<vk_tasks::StepWrapper, String> {
+    let b = server.sandbox.get(task_id).ok_or_else(|| {
+        server
+            .sandbox
+            .failure(task_id)
+            .map(|r| format!("the task's sandbox is unavailable ({r})"))
+            .unwrap_or_else(|| "the task's sandbox is not running".to_string())
+    })?;
+    if matches!(b.runner, crate::sandbox::BoxRunner::Container(_)) {
+        // Container setup has its own path (`container_setup`).
+        return Err("a container task runs setup through its container".into());
+    }
+    let wrap = box_wrap(server, b, "setup");
+    let cwd = checkout.to_path_buf();
+    Ok(vk_tasks::StepWrapper(Arc::new(
+        move |(argv, env): vk_tasks::Step| wrap(argv, &cwd, env),
+    )))
 }
 
 fn set_setup(server: &Server, task_id: &str, status: &str, event: &str, data: Value) {
@@ -495,6 +715,8 @@ pub(crate) async fn task_setup(server: &Arc<Server>, p: &Value) -> R {
         "setup_status": status,
         "commands": commands_json(&plan),
         "needs_trust": plan.needs_trust && !trusted,
+        "log": setup_log_path(server, &task.id),
+        "warnings": plan.warnings,
     }))
 }
 
@@ -704,12 +926,52 @@ pub(crate) async fn task_reconcile(server: &Arc<Server>, p: &Value) -> R {
     Ok(json!({"reports": reports}))
 }
 
-/// Reconcile on start and every 60 s while there are tasks (05 §4).
+/// Most trash entries one sweep deletes (the next sweep continues).
+const TRASH_SWEEP_MAX: usize = 32;
+
+/// Delete leftovers in worktree trash directories (`.trash` next to task worktrees): a removal
+/// whose delete failed, or a crash between the rename and the delete, leaves a full copy of a
+/// checkout there (with its `.env`). Bounded per sweep; runs on a blocking thread.
+pub(crate) fn sweep_trash(server: &Server) {
+    let cfg = load_tasks_cfg();
+    let mut roots: Vec<PathBuf> = server.with_core(|c| {
+        c.model
+            .tasks
+            .iter()
+            .filter_map(|t| t.worktree_path.as_deref())
+            .filter_map(|p| Path::new(p).parent().map(|d| d.join(".trash")))
+            .collect()
+    });
+    // Every repo area under the configured root (also of tasks forgotten since).
+    if let Ok(vk_tasks::WorktreeRoot::Dir(d)) = vk_tasks::WorktreeRoot::parse(&cfg.root)
+        && let Ok(rd) = std::fs::read_dir(&d)
+    {
+        roots.extend(rd.flatten().map(|e| e.path().join(".trash")));
+    }
+    roots.sort();
+    roots.dedup();
+    let mut budget = TRASH_SWEEP_MAX;
+    for r in roots {
+        if budget == 0 {
+            break;
+        }
+        let (removed, failed) = vk_tasks::reap_trash_bounded(&r, budget);
+        budget = budget.saturating_sub(removed + failed.len());
+        for (p, e) in failed {
+            tracing::warn!(path = %p.display(), error = %e, "worktree trash entry not deleted");
+        }
+    }
+}
+
+/// Reconcile on start and every 60 s while there are tasks (05 §4). Worktree trash is swept on
+/// start and on every tick.
 pub fn start(server: &Arc<Server>) {
     let srv = server.clone();
     tokio::spawn(async move {
         let mut state = ReconcileState::default();
         loop {
+            let s3 = srv.clone();
+            let _ = tokio::task::spawn_blocking(move || sweep_trash(&s3)).await;
             let has_tasks = srv.with_core(|c| {
                 c.model
                     .tasks
@@ -862,6 +1124,43 @@ mod tests {
         let names: Vec<&str> = plan.env.iter().map(|(k, _)| k.as_str()).collect();
         assert!(names.contains(&"DEV_SERVER"), "{names:?}");
         assert!(!names.contains(&"ZDOTDIR"), "{names:?}");
+    }
+
+    /// Review finding D1.4: a setup script outside `.vibeke/` (not covered by the trust digest)
+    /// is never run, and the plan says why.
+    #[test]
+    fn setup_script_outside_vibeke_dir_is_refused() {
+        for bad in [
+            "../evil.sh",
+            "/tmp/evil.sh",
+            "scripts/setup.sh",
+            ".vibeke/../x.sh",
+            ".vibeke",
+        ] {
+            assert!(!script_in_vibeke_dir(bad), "{bad}");
+        }
+        for good in [
+            ".vibeke/setup.sh",
+            ".vibeke/bin/setup.sh",
+            "./.vibeke/setup.sh",
+        ] {
+            // `./` is a CurDir component: refused too, keeping the rule simple.
+            assert_eq!(
+                script_in_vibeke_dir(good),
+                !good.starts_with("./"),
+                "{good}"
+            );
+        }
+        let repo = repo_with("[setup]\nscript = \"evil.sh\"\n");
+        let dir = repo.path();
+        std::fs::write(dir.join("evil.sh"), "touch pwned\n").unwrap();
+        let (plan, _) = plan_for(dir, "main", &vk_config::Tasks::default(), true);
+        assert!(plan.script.is_none());
+        assert!(
+            plan.warnings.iter().any(|w| w.contains(".vibeke/")),
+            "{:?}",
+            plan.warnings
+        );
     }
 
     /// Finding: `echo "{branch}"` with a branch like `feature/$(…)` executed the substitution.

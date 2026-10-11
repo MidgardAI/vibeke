@@ -28,6 +28,20 @@
 //!
 //! Jobs left unfinished by an earlier server process are marked `failed` the first time a
 //! `cloud.*` method of this module is called.
+//!
+//! Safety rules (review findings D1.8 to D1.15):
+//! - From the turn boundary until the move commits or rolls back, the moving pane takes no
+//!   input and its agent no follow-ups ([`input_paused`]).
+//! - A send never takes uncommitted work from a shared checkout (the repository's main
+//!   checkout, or one other panes use): it is refused with `shared_checkout`, and `new_task`
+//!   copies the work into a new task worktree instead. A send from the task's own checkout
+//!   stashes only the paths it exported.
+//! - A failed send also forgets the task it adopted (releasing its ports) or removes the task
+//!   it created.
+//! - A local bring-back stops in `awaiting_confirmation` with `result.review` (the changes and
+//!   a warning: the box ran with full permissions) until `cloud.confirm`; `code_only` brings
+//!   the files back without resuming the agent from the box's transcript. A resumed agent's
+//!   first message says that its earlier turns came from the box.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -50,11 +64,12 @@ pub const METHODS: &[(&str, bool)] = &[
     ("cloud.move", true),
     ("cloud.jobs", false),
     ("cloud.cancel", true),
+    ("cloud.confirm", true),
 ];
 
 /// Every `cloud.*` method is the user's (spec 17 §10); a pane asks for a move through
 /// `auth.approve`.
-pub const PANE_FORBIDDEN: &[&str] = &["cloud.move", "cloud.jobs", "cloud.cancel"];
+pub const PANE_FORBIDDEN: &[&str] = &["cloud.move", "cloud.jobs", "cloud.cancel", "cloud.confirm"];
 
 /// In pipeline order; the last three are terminal.
 pub const STATES: &[&str] = &[
@@ -63,6 +78,7 @@ pub const STATES: &[&str] = &[
     "creating",
     "bootstrapping",
     "exporting",
+    "awaiting_confirmation",
     "uploading",
     "importing",
     "resuming",
@@ -85,6 +101,8 @@ const EXPORT_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 const TURN_WAIT: Duration = Duration::from_secs(2 * 3600);
 /// How long an interrupted agent gets to stop.
 const INTERRUPT_WAIT: Duration = Duration::from_secs(30);
+/// How long a bring-back waits in `awaiting_confirmation` for the user.
+const CONFIRM_WAIT: Duration = Duration::from_secs(24 * 3600);
 /// How long a bring-back to a peer waits for the gateway's delivery.
 const PEER_WAIT: Duration = Duration::from_secs(6 * 3600);
 /// Where uploads land in the box.
@@ -133,6 +151,21 @@ pub struct Job {
     /// Who started it (a client kind, or `pane:<id>` for a move approved from a pane).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub by: Option<String>,
+    /// Send: the pane works in a shared checkout (the repository's main checkout, or one other
+    /// panes use). The send creates a task worktree for the work first and leaves the shared
+    /// checkout as it was.
+    #[serde(default)]
+    pub new_task: bool,
+    /// Bring back to this host: stop after the export in `awaiting_confirmation` with a summary
+    /// of the changes (`result.review`) until `cloud.confirm`.
+    #[serde(default)]
+    pub review: bool,
+    /// Bring back the code only: the agent is not resumed from the box's transcript.
+    #[serde(default)]
+    pub code_only: bool,
+    /// Set by `cloud.confirm` (a bring-back waiting in `awaiting_confirmation` goes on).
+    #[serde(default)]
+    pub confirmed: bool,
     /// Unix seconds.
     pub created_at: u64,
     pub updated_at: u64,
@@ -277,6 +310,7 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
         "cloud.move" => start_move(server, ctx, p, None),
         "cloud.jobs" => Ok(json!({"jobs": list(server).iter().map(job_json).collect::<Vec<_>>()})),
         "cloud.cancel" => cancel(server, p),
+        "cloud.confirm" => confirm(server, p),
         _ => return None,
     })
 }
@@ -406,6 +440,61 @@ pub(crate) fn cancel(server: &Server, p: &Value) -> R {
     Ok(json!({"job": job_json(&job)}))
 }
 
+/// `cloud.confirm {id, code_only?}`: the user saw the bring-back's summary and warning
+/// (`result.review`) and lets it go on; `code_only` brings back the files without resuming the
+/// agent from the box's transcript.
+pub(crate) fn confirm(server: &Server, p: &Value) -> R {
+    let id = req(p, "id")?;
+    let code_only = b(p, "code_only");
+    let job = modify(server, id, |job| {
+        if job.state != "awaiting_confirmation" {
+            return Err(conflict(
+                format!("the move is {}, not waiting for confirmation", job.state),
+                job,
+            ));
+        }
+        job.confirmed = true;
+        if let Some(c) = code_only {
+            job.code_only = c;
+        }
+        Ok(true)
+    })?;
+    Ok(json!({"job": job_json(&job)}))
+}
+
+// ---------------------------------------------------------------------------------------------
+// input freeze
+
+fn frozen() -> &'static Mutex<HashSet<String>> {
+    static F: std::sync::OnceLock<Mutex<HashSet<String>>> = std::sync::OnceLock::new();
+    F.get_or_init(Mutex::default)
+}
+
+/// Why input to `pane` is refused right now: its agent is being moved between this host and a
+/// cloud box. From the turn boundary until the move commits or rolls back, the agent must not
+/// change anything (the export would miss it).
+pub(crate) fn input_paused(pane: &str) -> Option<&'static str> {
+    frozen().lock().unwrap().contains(pane).then_some(
+        "pane_moving: this agent is moving to or from a cloud box; input is paused until the move finishes",
+    )
+}
+
+/// Pauses input to a pane (and follow-ups to its agent) while it lives.
+struct Freeze(String);
+
+impl Freeze {
+    fn new(pane: &str) -> Freeze {
+        frozen().lock().unwrap().insert(pane.to_string());
+        Freeze(pane.to_string())
+    }
+}
+
+impl Drop for Freeze {
+    fn drop(&mut self) {
+        frozen().lock().unwrap().remove(&self.0);
+    }
+}
+
 /// Jobs this process runs, by state directory and id.
 static RUNNING: Mutex<Option<HashSet<String>>> = Mutex::new(None);
 /// State directories whose leftover jobs were already failed.
@@ -479,9 +568,7 @@ fn pane_task(server: &Server, pane: &str) -> Option<String> {
 /// `<provider>/<id>` of a task's cloud box, when it has one.
 fn box_of_task(server: &Server, task: &str) -> Option<String> {
     let tb = server.sandbox.get(task)?;
-    let c = crate::sandbox::cloud::ctx(&tb)?;
-    // LANE-B NEEDED: `CloudCtx { provider: String, box_id: String, .. }` (spec 17 §4).
-    Some(format!("{}/{}", c.provider, c.box_id))
+    crate::sandbox::cloud::ctx(&tb).map(|c| c.box_ref())
 }
 
 /// The agent run of a pane that has not exited, if any.
@@ -596,6 +683,24 @@ pub(crate) fn check_move(
     if !provider.is_empty() {
         crate::sandbox::cloud::credential(server, &provider)?;
     }
+    if matches!(dest, Dest::Cloud { .. })
+        && !b(p, "new_task").unwrap_or(false)
+        && let Some(why) = shared_checkout(server, &src)
+    {
+        return Err(err(
+            ErrorKind::Conflict,
+            format!(
+                "Pane {} works in {why}. Sending it would move uncommitted work that is not only this agent's. Send it with a new task instead: Vibeke copies the work into a new task worktree, sends that, and leaves this checkout as it is.",
+                src.pane.handle
+            ),
+        )
+        .details(json!({
+            "reason": "shared_checkout",
+            "why": why,
+            "retry": {"new_task": true},
+            "hint": "retry with new_task: true (`vibeke cloud move --new-task`), or create a task first with `vibeke task create`",
+        })));
+    }
     let jobs = server
         .with_core(|c| c.store.load::<Job>(K_JOB))
         .map_err(internal)?;
@@ -613,6 +718,47 @@ pub(crate) fn check_move(
         return Err(busy_err(&j, same));
     }
     Ok((src, dest, after))
+}
+
+/// Why the checkout of `src.pane` is shared, so a send must not take its uncommitted work:
+/// it is the repository's main checkout, or a pane outside the source's workspace (or another
+/// agent in it) works there. `None` when it is the source's own (a task worktree) or unknown.
+fn shared_checkout(server: &Server, src: &Source) -> Option<String> {
+    let cwd = server.pane_cwd(&src.pane.id)?;
+    let info = vk_tasks::repo_root(Path::new(&cwd))?;
+    if !info.is_linked_worktree {
+        return Some("the repository's main checkout".into());
+    }
+    let root = info
+        .worktree_root
+        .canonicalize()
+        .unwrap_or(info.worktree_root.clone());
+    let others: Vec<(String, String)> = server.with_core(|c| {
+        c.model
+            .panes
+            .iter()
+            .filter(|x| x.id != src.pane.id)
+            .map(|x| (x.id.clone(), x.workspace.clone()))
+            .collect()
+    });
+    let mut n = 0;
+    for (id, ws) in others {
+        let Some(pc) = server.pane_cwd(&id) else {
+            continue;
+        };
+        let pc = Path::new(&pc);
+        let inside = pc.starts_with(&root) || pc.canonicalize().is_ok_and(|c| c.starts_with(&root));
+        if !inside {
+            continue;
+        }
+        // Panes of the source's own workspace (its task) share its work; another agent there
+        // does not.
+        let agent = live_run(server, &id).is_some();
+        if ws != src.pane.workspace || agent {
+            n += 1;
+        }
+    }
+    (n > 0).then(|| format!("a checkout that {n} other pane(s) use"))
 }
 
 /// The unfinished move that keeps a new move of `pane` (in workspace `ws`, of `task`) from
@@ -678,6 +824,12 @@ pub(crate) fn start_move(server: &Arc<Server>, ctx: &Ctx, p: &Value, by: Option<
         source_after: after,
         task: src.task.clone(),
         by: Some(by.unwrap_or_else(|| ctx.kind.clone())),
+        new_task: matches!(dest, Dest::Cloud { .. }) && b(p, "new_task").unwrap_or(false),
+        // A bring-back to this host applies files and a transcript written in the box: the
+        // user sees what comes back before it is applied, unless they asked not to.
+        review: matches!(dest, Dest::Local) && b(p, "review").unwrap_or(true),
+        code_only: b(p, "code_only").unwrap_or(false),
+        confirmed: false,
         created_at: now,
         updated_at: now,
     };
@@ -891,20 +1043,27 @@ fn agent_facts(run: Option<&AgentRun>) -> AgentFacts {
 
 /// Start the agent in `pane` with `resume_argv` (`[harness, args...]`). Without a transcript to
 /// resume from it starts fresh with a short note.
+/// `resumed_note`: the first message of a resumed session (a transcript from a cloud box gets
+/// [`vk_handoff::RESUMED_FROM_BOX_NOTE`]).
 async fn resume_in(
     server: &Arc<Server>,
     pane: &str,
     task: Option<&str>,
     resume_argv: &[String],
     resumed: bool,
+    resumed_note: Option<&str>,
 ) -> Result<Option<Value>, RpcError> {
     let Some(harness) = resume_argv.first() else {
         return Ok(None);
     };
     let args: Vec<String> = resume_argv[1..].to_vec();
-    let prompt = (!resumed).then_some(
-        "This session was moved by Vibeke. The previous transcript could not be carried over; the files are as the last agent left them.",
-    );
+    let prompt = if resumed {
+        resumed_note
+    } else {
+        Some(
+            "This session was moved by Vibeke. The previous transcript could not be carried over; the files are as the last agent left them.",
+        )
+    };
     let opts = crate::sandbox::LaunchOpts::from_params(&json!({}))?;
     let r =
         crate::agents::start_in_pane_opts(server, pane, harness, None, prompt, &args, task, &opts)
@@ -912,16 +1071,62 @@ async fn resume_in(
     Ok(Some(r.get("run").cloned().unwrap_or(r)))
 }
 
-/// The task of a pane, adopting the pane's checkout as a task when it has none.
-async fn task_for(server: &Arc<Server>, pane: &str) -> Result<String, RpcError> {
+/// The task of a pane, adopting the pane's checkout as a task when it has none. Returns the
+/// task and whether this call adopted it (a failed send forgets it again).
+async fn task_for(server: &Arc<Server>, pane: &str) -> Result<(String, bool), RpcError> {
     if let Some(t) = pane_task(server, pane) {
-        return Ok(t);
+        return Ok((t, false));
     }
     let r = crate::orch::call(server, "task.adopt", json!({"pane": pane})).await?;
     r.pointer("/task/id")
         .and_then(Value::as_str)
-        .map(str::to_string)
+        .map(|t| (t.to_string(), true))
         .ok_or_else(|| internal("task.adopt returned no task"))
+}
+
+/// A send with `new_task`: a new task worktree at the source checkout's `HEAD` (no setup, no
+/// agents) takes the work; the shared source checkout stays as it is. Returns the task, its
+/// first pane and its worktree.
+async fn new_task_for(
+    server: &Arc<Server>,
+    pane: &str,
+    cwd: &str,
+) -> Result<(String, String, String), RpcError> {
+    let head = vk_tasks::branch_status(Path::new(cwd), None)
+        .ok()
+        .and_then(|s| s.oid)
+        .ok_or_else(|| {
+            err(
+                ErrorKind::Conflict,
+                "the checkout has no commit to start a task from",
+            )
+        })?;
+    let title = server
+        .with_core(|c| c.pane(pane).map(|p| p.display_title().to_string()))
+        .filter(|t| !t.trim().is_empty())
+        .unwrap_or_else(|| "Sent to the cloud".into());
+    let r = crate::orch::call(
+        server,
+        "task.create",
+        json!({"title": title, "repo": cwd, "base": head, "setup": false}),
+    )
+    .await?;
+    let task = r
+        .pointer("/task/id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| internal("task.create returned no task"))?
+        .to_string();
+    let first = r
+        .pointer("/panes/0/id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| internal("task.create returned no pane"))?
+        .to_string();
+    let wt = r
+        .pointer("/task/worktree_path")
+        .and_then(Value::as_str)
+        .ok_or_else(|| internal("task.create returned no worktree"))?
+        .to_string();
+    Ok((task, first, wt))
 }
 
 /// What a send changed before its commit point, so a failure can undo it ([`roll_back_send`]).
@@ -943,6 +1148,12 @@ struct SendUndo {
     imported: bool,
     /// The source pane closed: the move is done, nothing is undone any more.
     committed: bool,
+    /// The task this send adopted from the pane's checkout (forgotten again on failure, which
+    /// also releases its port lease).
+    adopted: Option<String>,
+    /// The task this send created for `new_task` (finished, with its worktree removed, on
+    /// failure).
+    created_task: Option<String>,
 }
 
 /// Send: host pane → cloud box. A failure or a cancel before the source pane closes puts the
@@ -959,7 +1170,10 @@ async fn send(
     if out.is_err() {
         note_created(server, &job.id, &undo);
     }
-    if out.is_err() && !undo.committed && undo.task.is_some() {
+    if out.is_err()
+        && !undo.committed
+        && (undo.task.is_some() || undo.adopted.is_some() || undo.created_task.is_some())
+    {
         let rb = roll_back_send(server, &undo).await;
         tracing::info!(job = %job.id, rollback = %rb, "cloud send rolled back");
         note(server, &job.id, json!({"rollback": rb}));
@@ -972,6 +1186,35 @@ async fn send(
 /// into it (a box that existed before, or holds an import, is kept). Returns
 /// `{box?, box_action}` for the job result.
 async fn roll_back_send(server: &Arc<Server>, undo: &SendUndo) -> Value {
+    let mut v = roll_back_box(server, undo).await;
+    // A task this send made for the move goes again: an adopted one is forgotten (its port
+    // lease is released, the pane's workspace is left as it was), a created one is finished
+    // and its new worktree removed.
+    if let Some(t) = &undo.adopted {
+        v["adopted_task"] =
+            match crate::orch::call(server, "task.forget", json!({"task": t, "force": true})).await
+            {
+                Ok(_) => json!({"task": t, "action": "forgotten"}),
+                Err(e) => json!({"task": t, "action": "kept", "error": error_json(&e)}),
+            };
+    }
+    if let Some(t) = &undo.created_task {
+        v["created_task"] = match crate::orch::call(
+            server,
+            "task.finish",
+            json!({"task": t, "remove_worktree": true, "force": true, "archive": true}),
+        )
+        .await
+        {
+            Ok(_) => json!({"task": t, "action": "removed"}),
+            Err(e) => json!({"task": t, "action": "kept", "error": error_json(&e)}),
+        };
+    }
+    v
+}
+
+/// The box part of [`roll_back_send`].
+async fn roll_back_box(server: &Arc<Server>, undo: &SendUndo) -> Value {
     let Some(task) = undo.task.as_deref() else {
         return json!({});
     };
@@ -1089,13 +1332,33 @@ async fn send_steps(
 ) -> R {
     let id = job.id.as_str();
     let run = turn_boundary(server, id, pane, job.interrupt).await?;
+    // From the turn boundary until the move commits or rolls back, the agent gets no input and
+    // no follow-ups: anything it did now would miss the export.
+    let _freeze = Freeze::new(pane);
     let cwd = server
         .pane_cwd(pane)
         .ok_or_else(|| err(ErrorKind::NotFound, "the pane has no working directory"))?;
 
     step(server, id, "creating")?;
-    let task = task_for(server, pane).await?;
-    note(server, id, json!({"task": task}));
+    // `split_from`/`dest_cwd`: where the box pane opens (a pane of the task's workspace, so it
+    // spawns through the task's box).
+    let (task, split_from, dest_cwd) = if job.new_task {
+        let (task, first, wt) = new_task_for(server, pane, &cwd).await?;
+        undo.created_task = Some(task.clone());
+        note(
+            server,
+            id,
+            json!({"task": task, "new_task": true, "worktree": wt}),
+        );
+        (task, first, wt)
+    } else {
+        let (task, adopted) = task_for(server, pane).await?;
+        if adopted {
+            undo.adopted = Some(task.clone());
+        }
+        note(server, id, json!({"task": task, "adopted": adopted}));
+        (task, pane.to_string(), cwd.clone())
+    };
     check_cancel(server, id)?;
     // Only a context this send creates is rolled back.
     if server.sandbox.get(&task).is_none() {
@@ -1110,17 +1373,19 @@ async fn send_steps(
         undo.ctx = Some(c.clone());
         note_created(server, id, undo);
     }
-    // LANE-B NEEDED: `CloudCtx { provider, box_id, workdir, bin, .. }` as plain `String`s.
-    let box_ref = format!("{}/{}", c.provider, c.box_id);
+    let box_ref = c.box_ref();
     if let Some(w) = want_box
         && w != box_ref
     {
-        // LANE-B NEEDED: `ensure_for_task` with a chosen existing box; until then only the
-        // task's own box is accepted.
+        // A send goes into the task's own box; moving into another existing box is not
+        // supported (review finding D1.16).
         return Err(err(
             ErrorKind::Unsupported,
-            format!("the task's box is {box_ref}; moving into another box ({w}) is not supported"),
-        ));
+            format!(
+                "Vibeke sends work into the task's own box ({box_ref}). Moving into another existing box ({w}) is not supported: send without choosing a box."
+            ),
+        )
+        .details(json!({"reason": "other_box", "box": box_ref})));
     }
     note(server, id, json!({"box": box_ref}));
 
@@ -1196,7 +1461,6 @@ async fn send_steps(
         IMPORT_TIMEOUT,
     )
     .await?;
-    // LANE-B NEEDED: `Captured { stdout: Vec<u8>, stderr: Vec<u8>, code: i32 }`.
     if cap.code != 0 {
         return Err(err(
             ErrorKind::Conflict,
@@ -1225,10 +1489,10 @@ async fn send_steps(
     // A new pane in the task's workspace spawns through the task's box.
     let new_pane = server
         .split_pane(
-            pane,
+            &split_from,
             Direction::Right,
             0.5,
-            Some(&cwd),
+            Some(&dest_cwd),
             None,
             Some(format!(
                 "☁ {}",
@@ -1255,6 +1519,7 @@ async fn send_steps(
             Some(task.as_str()),
             &resume_argv,
             resumed,
+            None,
         )
         .await
     }
@@ -1276,11 +1541,20 @@ async fn send_steps(
             return Err(e);
         }
     };
-    // The agent runs in the box: the source pane goes, and the host checkout's uncommitted
-    // changes (now in the box) are stashed, so a later bring-back lands in a clean checkout.
+    // The agent runs in the box: the source pane goes. In the task's own checkout the
+    // uncommitted changes that went to the box are stashed (only those paths), so a later
+    // bring-back lands in a clean checkout. A shared checkout (`new_task`) is left as it was.
     undo.committed = true;
     server.close_pane(pane);
-    let host_stash = stash_sent(&cwd, id, &box_ref).await;
+    let host_stash = if job.new_task {
+        // The new task's first pane is a host shell; the task now runs in the box.
+        if split_from != pane {
+            server.close_pane(&split_from);
+        }
+        json!({"stashed": false, "reason": "the work was copied from a shared checkout, which is left as it was"})
+    } else {
+        stash_sent(&cwd, id, &box_ref, &packed.manifest).await
+    };
     Ok(json!({
         "pane": new_pane.id,
         "task": task,
@@ -1294,57 +1568,82 @@ async fn send_steps(
     }))
 }
 
-/// Stash the uncommitted changes (untracked files included) of the host checkout at `cwd` after
-/// a send: they are in the box now. The stash keeps them recoverable on this host
-/// (`git stash list`). Returns `{stashed, reason?}` for the job result.
-async fn stash_sent(cwd: &str, job: &str, box_ref: &str) -> Value {
+/// Stash what a send exported from the host checkout at `cwd`: the tracked files with changes
+/// against `HEAD` and the untracked files the bundle carried (`manifest.untracked`), nothing
+/// else. Files the export skipped stay in the checkout. The stash keeps them recoverable on
+/// this host (`git stash list`). Returns `{stashed, paths?, reason?}` for the job result.
+async fn stash_sent(cwd: &str, job: &str, box_ref: &str, m: &vk_handoff::Manifest) -> Value {
     let git = |args: Vec<String>| {
         let cwd = cwd.to_string();
         async move {
             tokio::process::Command::new("git")
                 .arg("-C")
                 .arg(&cwd)
+                .args(["-c", "core.hooksPath=/dev/null"])
                 .args(&args)
                 .stdin(std::process::Stdio::null())
                 .output()
                 .await
         }
     };
-    let dirty = match git(vec!["status".into(), "--porcelain".into()]).await {
-        Ok(o) if o.status.success() => !o.stdout.is_empty(),
-        Ok(o) => {
-            return json!({"stashed": false, "reason": tail(&o.stderr)});
-        }
+    // Paths are relative to the repository root: run the stash there.
+    let tracked = match git(vec![
+        "diff".into(),
+        "--name-only".into(),
+        "-z".into(),
+        "--no-renames".into(),
+        "HEAD".into(),
+    ])
+    .await
+    {
+        Ok(o) if o.status.success() => o.stdout,
+        Ok(o) => return json!({"stashed": false, "reason": tail(&o.stderr)}),
         Err(e) => return json!({"stashed": false, "reason": e.to_string()}),
     };
-    if !dirty {
-        return json!({"stashed": false, "reason": "the checkout was clean"});
+    let skipped: HashSet<&str> = m.skipped.iter().map(|x| x.path.as_str()).collect();
+    let mut paths: Vec<String> = tracked
+        .split(|b| *b == 0)
+        .filter(|p| !p.is_empty())
+        .map(|p| String::from_utf8_lossy(p).into_owned())
+        .chain(m.untracked.iter().cloned())
+        .filter(|p| !skipped.contains(p.as_str()))
+        .collect();
+    paths.sort();
+    paths.dedup();
+    if paths.is_empty() {
+        return json!({"stashed": false, "reason": "nothing was exported from the checkout"});
     }
     let msg = format!("vibeke: sent to {box_ref} (job {job})");
-    match git(vec![
+    let mut args: Vec<String> = vec![
         "stash".into(),
         "push".into(),
         "-q".into(),
         "-u".into(),
         "-m".into(),
         msg.clone(),
-    ])
-    .await
-    {
-        Ok(o) if o.status.success() => json!({"stashed": true, "message": msg}),
+        "--".into(),
+    ];
+    // `top`: relative to the repository root, whatever `cwd` is; `literal`: no glob.
+    args.extend(paths.iter().map(|p| format!(":(top,literal){p}")));
+    match git(args).await {
+        Ok(o) if o.status.success() => {
+            json!({"stashed": true, "message": msg, "paths": paths.len()})
+        }
         Ok(o) => json!({"stashed": false, "reason": tail(&o.stderr)}),
         Err(e) => json!({"stashed": false, "reason": e.to_string()}),
     }
 }
 
 /// Bring back, first half: the box pane's work exported in the box into a local file.
+/// Also returns the [`Freeze`] of the box pane: it holds until the caller commits or fails.
 async fn export_from_box(
     server: &Arc<Server>,
     job: &Job,
     pane: &str,
-) -> Result<(PathBuf, String, Option<String>), RpcError> {
+) -> Result<(PathBuf, String, Option<String>, Freeze), RpcError> {
     let id = job.id.as_str();
     let run = turn_boundary(server, id, pane, job.interrupt).await?;
+    let freeze = Freeze::new(pane);
     let task = pane_task(server, pane)
         .ok_or_else(|| invalid("the pane belongs to no task, so it runs in no cloud box"))?;
     note(server, id, json!({"task": task}));
@@ -1371,7 +1670,7 @@ async fn export_from_box(
         "--cwd".into(),
         box_cwd,
         "--source-host".into(),
-        // LANE-B NEEDED: `CloudCtx.name` (the box name, `vk-<host8>-<key10>`).
+        // The box name (`vk-<host8>-<key10>`).
         c.name.clone(),
     ];
     // The box finds the transcript itself from the harness and session.
@@ -1385,7 +1684,8 @@ async fn export_from_box(
     for a in facts.resume_args {
         argv.extend(["--resume-arg".into(), a]);
     }
-    // LANE-B NEEDED: a size cap on `exec_capture`'s stdout (here MAX_BUNDLE); this checks after.
+    // Open (sandbox_cloud): `exec_capture` reads the whole stdout before this size check; a
+    // cap while reading (MAX_BUNDLE) would bound the memory a box can make the host use.
     // The panes' env, so the export finds the transcript where the box's agent wrote it.
     let cap = crate::sandbox::cloud::exec_capture_env(
         server,
@@ -1415,7 +1715,88 @@ async fn export_from_box(
         .await
         .map_err(internal)?
         .map_err(internal)?;
-    Ok((path, task, fp))
+    Ok((path, task, fp, freeze))
+}
+
+/// Most entries of each list in a bring-back review.
+const REVIEW_MAX: usize = 200;
+
+/// Files a unified diff touches, with added and removed line counts.
+fn patch_files(patch: &str) -> Vec<(String, u64, u64)> {
+    let mut out: Vec<(String, u64, u64)> = Vec::new();
+    for line in patch.lines() {
+        if let Some(rest) = line.strip_prefix("diff --git ") {
+            // `a/<path> b/<path>`: the `b/` side names the file after the change.
+            let path = rest
+                .rsplit_once(" b/")
+                .map(|(_, b)| b.to_string())
+                .unwrap_or_else(|| rest.to_string());
+            out.push((path, 0, 0));
+        } else if let Some(cur) = out.last_mut() {
+            if line.starts_with('+') && !line.starts_with("+++") {
+                cur.1 += 1;
+            } else if line.starts_with('-') && !line.starts_with("---") {
+                cur.2 += 1;
+            }
+        }
+    }
+    out
+}
+
+/// What a bring-back would apply (`result.review`): the changed and new files, what the export
+/// left out, whether a transcript comes along, and the warning to show (review finding D1.15).
+async fn review_summary(server: &Server, id: &str, bundle: &Path) -> Result<Value, RpcError> {
+    let d2 = moves_dir(server)?.join(format!("{id}.review"));
+    let b = bundle.to_path_buf();
+    let (m, patch) = tokio::task::spawn_blocking(move || {
+        let _ = std::fs::remove_dir_all(&d2);
+        std::fs::create_dir(&d2)?;
+        let m = vk_handoff::unpack(&b, &d2);
+        let patch = std::fs::read(d2.join("changes.patch")).unwrap_or_default();
+        let _ = std::fs::remove_dir_all(&d2);
+        m.map(|m| (m, patch))
+    })
+    .await
+    .map_err(internal)?
+    .map_err(|e| invalid(format!("bad bundle: {e}")))?;
+    let files = patch_files(&String::from_utf8_lossy(&patch));
+    let (added, removed) = files.iter().fold((0, 0), |(a, r), f| (a + f.1, r + f.2));
+    Ok(json!({
+        "warning": vk_handoff::BOX_BRING_BACK_WARNING,
+        "head": m.head,
+        "branch": m.branch,
+        "files": files.iter().take(REVIEW_MAX).map(|(p, a, r)| json!({"path": p, "added": a, "removed": r})).collect::<Vec<_>>(),
+        "files_total": files.len(),
+        "added": added,
+        "removed": removed,
+        "untracked": m.untracked.iter().take(REVIEW_MAX).collect::<Vec<_>>(),
+        "untracked_total": m.untracked.len(),
+        "skipped": m.skipped.iter().take(REVIEW_MAX).map(|x| json!({"path": x.path, "reason": x.reason})).collect::<Vec<_>>(),
+        "harness": m.harness,
+        "transcript": m.transcript_rel.is_some(),
+        "confirm": "cloud.confirm {id} to apply (code_only: true to bring back the files without resuming the agent), cloud.cancel {id} to stop",
+    }))
+}
+
+/// Wait in `awaiting_confirmation` until `cloud.confirm` (returns `code_only`), a cancel, or
+/// [`CONFIRM_WAIT`].
+async fn wait_confirmed(server: &Server, id: &str) -> Result<bool, RpcError> {
+    let deadline = Instant::now() + CONFIRM_WAIT;
+    loop {
+        let j = get(server, id)?;
+        match j.state.as_str() {
+            "cancelled" => return Err(cancelled_err(id)),
+            _ if j.confirmed => return Ok(j.code_only),
+            _ => {}
+        }
+        if Instant::now() > deadline {
+            return Err(err(
+                ErrorKind::Timeout,
+                "the bring-back was not confirmed within 24 hours; nothing was applied",
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
 }
 
 /// Fingerprint of the box repo's working tree ([`crate::sandbox::cloud::TREE_FINGERPRINT`]).
@@ -1502,9 +1883,8 @@ async fn mark_brought_back(
 /// Release the box after a bring-back. A refused suspend or destroy (unsynced work the bundle
 /// did not carry, say) keeps the box instead; the result says so.
 async fn release(server: &Arc<Server>, task: &str, after: &str) -> Result<Value, RpcError> {
-    // LANE-B NEEDED: `release_task` detaches the box from the task (the TaskBox leaves the
-    // sandbox state, so later panes of the task spawn on the host), closes the task's box panes,
-    // then keeps, suspends or destroys the remote box.
+    // `release_task` detaches the box from the task (later panes of the task spawn on the
+    // host), closes the task's box panes, then keeps, suspends or destroys the remote box.
     match crate::sandbox::cloud::release_task(server, task, after, false).await {
         Ok(v) => Ok(json!({"after": after, "result": v})),
         Err(e) if after != "keep" => {
@@ -1571,8 +1951,17 @@ fn host_pane_for_task(server: &Arc<Server>, task: &str, cwd: &str) -> Result<Pan
 /// Bring back to this host.
 async fn bring_back_local(server: &Arc<Server>, job: &Job, pane: &str) -> R {
     let id = job.id.as_str();
-    let (bundle, task, fp) = export_from_box(server, job, pane).await?;
+    let (bundle, task, fp, _freeze) = export_from_box(server, job, pane).await?;
     let _cleanup = Cleanup(bundle.clone());
+
+    // The user sees what comes back, and the warning, before anything is applied.
+    let mut code_only = job.code_only;
+    if job.review {
+        let summary = review_summary(server, id, &bundle).await?;
+        note(server, id, json!({"review": summary}));
+        step(server, id, "awaiting_confirmation")?;
+        code_only = wait_confirmed(server, id).await?;
+    }
 
     step(server, id, "importing")?;
     if let Err(e) = crate::orch::call(
@@ -1618,14 +2007,16 @@ async fn bring_back_local(server: &Arc<Server>, job: &Job, pane: &str) -> R {
             .map_err(internal)?
             .2
     };
+    // Code only: the files are here, the box's transcript is not resumed (the pane is a shell).
     let run = match &imp.resume_argv {
-        Some(argv) => {
+        Some(argv) if !code_only => {
             match resume_in(
                 server,
                 &host_pane.id,
                 Some(task.as_str()),
                 argv,
                 imp.resumed,
+                Some(vk_handoff::RESUMED_FROM_BOX_NOTE),
             )
             .await
             {
@@ -1633,7 +2024,7 @@ async fn bring_back_local(server: &Arc<Server>, job: &Job, pane: &str) -> R {
                 Err(e) => Some(json!({"agent_error": error_json(&e)})),
             }
         }
-        None => None,
+        _ => None,
     };
     if server.with_core(|c| c.pane(pane).is_some()) {
         server.close_pane(pane);
@@ -1645,7 +2036,8 @@ async fn bring_back_local(server: &Arc<Server>, job: &Job, pane: &str) -> R {
         "branch": imp.branch,
         "cwd": cwd,
         "in_place": imp.in_place,
-        "resumed": imp.resumed,
+        "resumed": imp.resumed && !code_only,
+        "code_only": code_only,
         "run": run.as_ref().and_then(|r| r.get("id")).cloned(),
         "not_written": imp.not_written,
         "skipped": imp.manifest.skipped,
@@ -1657,7 +2049,7 @@ async fn bring_back_local(server: &Arc<Server>, job: &Job, pane: &str) -> R {
 /// Bring back to a paired host: the gateway delivers the bundle as a handoff.
 async fn bring_back_peer(server: &Arc<Server>, job: &Job, pane: &str, peer: &str) -> R {
     let id = job.id.as_str();
-    let (bundle, task, _fp) = export_from_box(server, job, pane).await?;
+    let (bundle, task, _fp, _freeze) = export_from_box(server, job, pane).await?;
     // What the export left out; the gateway takes the file, so read it now.
     let b2 = bundle.clone();
     let skipped = match tokio::task::spawn_blocking(move || vk_handoff::read_manifest(&b2)).await {
@@ -1754,17 +2146,20 @@ async fn bring_back_peer(server: &Arc<Server>, job: &Job, pane: &str, peer: &str
 /// Schema registry entries (`api_schema` loads them next to its own tables).
 pub const SHAPES: &str = r##"
 # --- cloud moves (spec 17 §7): server jobs; full scope, never from a pane (a pane asks with auth.approve) ---
-cloud.move :: {pane?: Target, run?: string, box?: string, to: {kind: cloud|local|peer, provider?: string, box?: string, peer?: string}, interrupt?: bool = false, source_after?: keep|suspend|destroy}
-  => {job: {id: string, direction: send|bring_back, pane?: string, run?: string, box?: string, from: object, to: object, state: queued|waiting_turn|creating|bootstrapping|exporting|uploading|importing|resuming|done|failed|cancelled, progress?: {done: int, total: int}, error?: {kind: string, message: string, details?: any}, result?: object, interrupt: bool, source_after?: keep|suspend|destroy, task?: string, by?: string, created_at: int, updated_at: int}}
+cloud.move :: {pane?: Target, run?: string, box?: string, to: {kind: cloud|local|peer, provider?: string, box?: string, peer?: string}, interrupt?: bool = false, source_after?: keep|suspend|destroy, new_task?: bool = false, review?: bool = true, code_only?: bool = false}
+  => {job: {id: string, direction: send|bring_back, pane?: string, run?: string, box?: string, from: object, to: object, state: queued|waiting_turn|creating|bootstrapping|exporting|awaiting_confirmation|uploading|importing|resuming|done|failed|cancelled, progress?: {done: int, total: int}, error?: {kind: string, message: string, details?: any}, result?: object, interrupt: bool, source_after?: keep|suspend|destroy, task?: string, by?: string, new_task: bool, review: bool, code_only: bool, confirmed: bool, created_at: int, updated_at: int}}
 # newest first; finished jobs for 7 days
 cloud.jobs :: {}
-  => {jobs: [{id: string, direction: send|bring_back, pane?: string, run?: string, box?: string, from: object, to: object, state: queued|waiting_turn|creating|bootstrapping|exporting|uploading|importing|resuming|done|failed|cancelled, progress?: {done: int, total: int}, error?: {kind: string, message: string, details?: any}, result?: object, interrupt: bool, source_after?: keep|suspend|destroy, task?: string, by?: string, created_at: int, updated_at: int}]}
+  => {jobs: [{id: string, direction: send|bring_back, pane?: string, run?: string, box?: string, from: object, to: object, state: queued|waiting_turn|creating|bootstrapping|exporting|awaiting_confirmation|uploading|importing|resuming|done|failed|cancelled, progress?: {done: int, total: int}, error?: {kind: string, message: string, details?: any}, result?: object, interrupt: bool, source_after?: keep|suspend|destroy, task?: string, by?: string, new_task: bool, review: bool, code_only: bool, confirmed: bool, created_at: int, updated_at: int}]}
+# a local bring-back waiting in awaiting_confirmation goes on (code_only: no agent resume)
+cloud.confirm :: {id: string, code_only?: bool}
+  => {job: {id: string, direction: send|bring_back, pane?: string, run?: string, box?: string, from: object, to: object, state: queued|waiting_turn|creating|bootstrapping|exporting|awaiting_confirmation|uploading|importing|resuming|done|failed|cancelled, progress?: {done: int, total: int}, error?: {kind: string, message: string, details?: any}, result?: object, interrupt: bool, source_after?: keep|suspend|destroy, task?: string, by?: string, new_task: bool, review: bool, code_only: bool, confirmed: bool, created_at: int, updated_at: int}}
 cloud.cancel :: {id: string}
-  => {job: {id: string, direction: send|bring_back, pane?: string, run?: string, box?: string, from: object, to: object, state: queued|waiting_turn|creating|bootstrapping|exporting|uploading|importing|resuming|done|failed|cancelled, progress?: {done: int, total: int}, error?: {kind: string, message: string, details?: any}, result?: object, interrupt: bool, source_after?: keep|suspend|destroy, task?: string, by?: string, created_at: int, updated_at: int}}
+  => {job: {id: string, direction: send|bring_back, pane?: string, run?: string, box?: string, from: object, to: object, state: queued|waiting_turn|creating|bootstrapping|exporting|awaiting_confirmation|uploading|importing|resuming|done|failed|cancelled, progress?: {done: int, total: int}, error?: {kind: string, message: string, details?: any}, result?: object, interrupt: bool, source_after?: keep|suspend|destroy, task?: string, by?: string, new_task: bool, review: bool, code_only: bool, confirmed: bool, created_at: int, updated_at: int}}
 "##;
 
 pub const EVENTS: &str = r##"
-cloud.job :: {job: string} => {id: string, direction: send|bring_back, pane?: string, run?: string, box?: string, from: object, to: object, state: queued|waiting_turn|creating|bootstrapping|exporting|uploading|importing|resuming|done|failed|cancelled, progress?: {done: int, total: int}, error?: {kind: string, message: string, details?: any}, result?: object, interrupt: bool, source_after?: keep|suspend|destroy, task?: string, by?: string, created_at: int, updated_at: int}
+cloud.job :: {job: string} => {id: string, direction: send|bring_back, pane?: string, run?: string, box?: string, from: object, to: object, state: queued|waiting_turn|creating|bootstrapping|exporting|awaiting_confirmation|uploading|importing|resuming|done|failed|cancelled, progress?: {done: int, total: int}, error?: {kind: string, message: string, details?: any}, result?: object, interrupt: bool, source_after?: keep|suspend|destroy, task?: string, by?: string, new_task: bool, review: bool, code_only: bool, confirmed: bool, created_at: int, updated_at: int}
 "##;
 
 #[cfg(test)]

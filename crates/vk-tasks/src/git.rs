@@ -7,6 +7,10 @@
 //! ([`HOST_HARDEN`] plus every configured filter driver neutralized), and refuse to run at all
 //! when the checkout's `.git` no longer points at the git dir recorded at registration (a box
 //! that swapped its `.git` file for one naming a repository it controls).
+//!
+//! Other crates that run git on a task checkout (review, orchestration) go through
+//! [`harden_command`], so every hardening rule (and any environment a contained checkout needs)
+//! lives here, in one place.
 
 use crate::{Error, Result};
 use std::path::{Path, PathBuf};
@@ -42,6 +46,29 @@ pub const HOST_HARDEN: &[&str] = &[
     "protocol.ext.allow=never",
     "-c",
     "submodule.recurse=false",
+    // Never enter submodules: git would run commands with the submodule's own configuration.
+    "-c",
+    "diff.ignoreSubmodules=all",
+    "-c",
+    "status.submoduleSummary=false",
+    "-c",
+    "fetch.recurseSubmodules=false",
+    "-c",
+    "push.recurseSubmodules=no",
+    "-c",
+    "core.askPass=",
+    "-c",
+    "commit.gpgSign=false",
+    "-c",
+    "tag.gpgSign=false",
+    "-c",
+    "log.showSignature=false",
+    "-c",
+    "gpg.program=gpg",
+    "-c",
+    "gpg.ssh.program=ssh-keygen",
+    "-c",
+    "gpg.x509.program=gpgsm",
     "-c",
     "gc.auto=0",
 ];
@@ -118,9 +145,10 @@ fn contained_for(dir: &Path) -> Option<Contained> {
         .cloned()
 }
 
-/// `-c filter.<name>.{clean,smudge,process}=` for every filter driver configured for `dir`
-/// (git runs clean filters during `status`/`diff`). Reading config executes nothing.
-fn filter_overrides(dir: &Path) -> Vec<String> {
+/// `-c` overrides that neutralize every filter, diff and merge driver configured for `dir`.
+/// Git runs clean filters during `status`/`diff`, textconv and external diff drivers during
+/// `diff`/`log -p`, and merge drivers during merges. Reading config executes nothing.
+fn driver_overrides(dir: &Path) -> Vec<String> {
     let out = Command::new("git")
         .arg("-C")
         .arg(dir)
@@ -129,7 +157,7 @@ fn filter_overrides(dir: &Path) -> Vec<String> {
             "--null",
             "--name-only",
             "--get-regexp",
-            r"^filter\.",
+            r"^(filter|diff|merge)\.",
         ])
         .env_remove("GIT_DIR")
         .env_remove("GIT_WORK_TREE")
@@ -137,26 +165,49 @@ fn filter_overrides(dir: &Path) -> Vec<String> {
         .stderr(Stdio::null())
         .output();
     let Ok(out) = out else { return vec![] };
-    let mut names: Vec<String> = out
-        .stdout
+    driver_overrides_for(&out.stdout)
+}
+
+/// [`driver_overrides`] for the NUL-separated key names `git config --name-only` printed.
+fn driver_overrides_for(names: &[u8]) -> Vec<String> {
+    let mut drivers: Vec<(String, String)> = names
         .split(|&b| b == 0)
         .filter_map(|k| {
             let k = String::from_utf8_lossy(k);
-            let rest = k.strip_prefix("filter.")?;
-            rest.rsplit_once('.').map(|(n, _)| n.to_string())
+            let (section, rest) = k.split_once('.')?;
+            // `diff.external` and other two-part keys name no driver.
+            let (name, _) = rest.rsplit_once('.')?;
+            Some((section.to_ascii_lowercase(), name.to_string()))
         })
         .collect();
-    names.sort();
-    names.dedup();
-    names
-        .iter()
-        .flat_map(|n| {
-            ["clean", "smudge", "process"]
-                .iter()
-                .flat_map(move |k| ["-c".to_string(), format!("filter.{n}.{k}=")])
-                .chain(["-c".to_string(), format!("filter.{n}.required=false")])
-        })
-        .collect()
+    drivers.sort();
+    drivers.dedup();
+    let mut v = Vec::new();
+    let mut set = |k: String| {
+        v.push("-c".to_string());
+        v.push(k);
+    };
+    for (section, n) in &drivers {
+        match section.as_str() {
+            "filter" => {
+                for k in ["clean", "smudge", "process"] {
+                    set(format!("filter.{n}.{k}="));
+                }
+                set(format!("filter.{n}.required=false"));
+            }
+            "diff" => {
+                // `cat` prints the file unchanged: the same text as having no textconv.
+                set(format!("diff.{n}.textconv=cat"));
+                set(format!("diff.{n}.command="));
+            }
+            "merge" => {
+                // `false` reports a conflict: the merge stops for a person to resolve.
+                set(format!("merge.{n}.driver=false"));
+            }
+            _ => {}
+        }
+    }
+    v
 }
 
 /// The `-c` flags a git command in `dir` needs (plain, or hardened for a contained checkout),
@@ -180,8 +231,17 @@ pub fn safety_args(dir: &Path) -> Result<Vec<String>> {
         )));
     }
     let mut v: Vec<String> = HOST_HARDEN.iter().map(|s| s.to_string()).collect();
-    v.extend(filter_overrides(dir));
+    v.extend(driver_overrides(dir));
     Ok(v)
+}
+
+/// Add the safety flags for `dir` to a `git` command (before its subcommand), plus whatever
+/// environment a git command on that checkout needs. Every crate that runs git on a task
+/// checkout calls this, so the rules stay in one place. Errors when a contained checkout's
+/// `.git` was swapped (see [`safety_args`]).
+pub fn harden_command(cmd: &mut Command, dir: &Path) -> Result<()> {
+    cmd.args(safety_args(dir)?);
+    Ok(())
 }
 
 /// The user's umask for git commands that create checkout files (09 §3.1): the server runs
@@ -217,8 +277,8 @@ pub(crate) fn command(dir: &Path) -> Command {
 
 pub(crate) fn exec(dir: &Path, args: &[&str], timeout: Option<Duration>) -> Result<Output> {
     let mut cmd = command(dir);
-    cmd.args(safety_args(dir)?)
-        .args(args)
+    harden_command(&mut cmd, dir)?;
+    cmd.args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -324,6 +384,11 @@ pub(crate) fn ref_exists(dir: &Path, full_ref: &str) -> bool {
     git_ok(dir, &["rev-parse", "--verify", "-q", full_ref])
 }
 
+/// [`driver_overrides`] for a box repo whose config `config` lists (see `sync::box_git`).
+pub(crate) fn driver_overrides_from_names(names: &[u8]) -> Vec<String> {
+    driver_overrides_for(names)
+}
+
 pub(crate) fn same_path(a: &Path, b: &Path) -> bool {
     match (a.canonicalize(), b.canonicalize()) {
         (Ok(x), Ok(y)) => x == y,
@@ -363,6 +428,27 @@ mod tests {
                 .is_none()
         );
         assert!(t0.elapsed() < Duration::from_secs(3), "{:?}", t0.elapsed());
+    }
+
+    #[test]
+    fn driver_overrides_neutralize_filters_diff_and_merge_drivers() {
+        let names = b"filter.lfs.clean\0filter.lfs.smudge\0diff.evil.textconv\0diff.evil.command\0merge.ours.driver\0diff.external\0";
+        let v = driver_overrides_for(names);
+        let has = |k: &str| v.iter().any(|x| x == k);
+        assert!(has("filter.lfs.clean="));
+        assert!(has("filter.lfs.process="));
+        assert!(has("filter.lfs.required=false"));
+        assert!(has("diff.evil.textconv=cat"));
+        assert!(has("diff.evil.command="));
+        assert!(has("merge.ours.driver=false"));
+        // `diff.external` is not a driver (HOST_HARDEN clears it).
+        assert!(!v.iter().any(|x| x.starts_with("diff.external.")));
+        // Each override is preceded by `-c`, once per driver.
+        assert_eq!(
+            v.iter().filter(|x| *x == "diff.evil.textconv=cat").count(),
+            1
+        );
+        assert_eq!(v.iter().filter(|x| *x == "-c").count(), v.len() / 2);
     }
 
     fn g(dir: &Path, args: &[&str]) {
@@ -425,14 +511,20 @@ mod tests {
         g(&repo, &["config", "core.fsmonitor", &t_str]);
         g(&repo, &["config", "core.hooksPath", ".githooks"]);
         g(&repo, &["config", "filter.evil.clean", &t_str]);
-        std::fs::write(repo.join(".gitattributes"), "*.txt filter=evil\n").unwrap();
-        std::fs::write(wt.join(".gitattributes"), "*.txt filter=evil\n").unwrap();
+        g(&repo, &["config", "diff.evil.textconv", &t_str]);
+        g(&repo, &["config", "diff.evil.command", &t_str]);
+        let attrs = "*.txt filter=evil diff=evil\n";
+        std::fs::write(repo.join(".gitattributes"), attrs).unwrap();
+        std::fs::write(wt.join(".gitattributes"), attrs).unwrap();
         std::fs::write(repo.join("a.txt"), "changed\n").unwrap();
         std::fs::write(wt.join("a.txt"), "changed too\n").unwrap();
         for d in [&repo, &wt] {
             let s = crate::branch_status(d, Some("main")).unwrap();
             assert!(s.dirty_files > 0);
             let _ = crate::removal_blockers(d).unwrap();
+            // Textconv and external diff drivers are neutralized too.
+            let _ = git(d, &["diff"]);
+            let _ = git(d, &["log", "-p", "-1"]);
         }
         assert!(!marker.exists(), "host status ran repo-configured code");
 

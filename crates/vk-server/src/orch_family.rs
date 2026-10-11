@@ -369,8 +369,20 @@ async fn run_checks(
         .filter(|i| only.is_none_or(|o| o == i.handle || o == i.task))
     {
         let (wt, c2) = (i.worktree.clone(), cmd.clone());
+        // A contained child's check runs inside its box, never on the host (13 §6).
+        let gate = crate::task_workspace::gate_box(server, &i.task);
         let (outcome, summary) = tokio::task::spawn_blocking(move || {
-            let o = fam::run_check(&wt, &c2, timeout);
+            let o = match &gate {
+                Ok(g) => fam::run_check_in(&wt, &c2, timeout, g.as_ref()),
+                Err(why) => fam::CheckOutcome {
+                    command: c2.clone(),
+                    ok: false,
+                    exit_code: None,
+                    timed_out: false,
+                    duration_ms: 0,
+                    tail: format!("not run: {why}"),
+                },
+            };
             let s = fam::diff_summary(&wt, None).ok();
             (o, s)
         })

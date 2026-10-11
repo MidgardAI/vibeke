@@ -247,28 +247,141 @@ fn run(path: &Path, opts: &RemoveOptions, emit: &dyn Fn(RemovalEvent)) -> Result
         }
     }
     if let Some(t) = leftover {
-        fs::remove_dir_all(&t)?;
+        // On failure the trash entry stays; the server reaps trash at startup and on its
+        // periodic sweep ([`reap_trash`]).
+        remove_tree(&t)?;
     }
     Ok(())
 }
 
-/// Delete everything in a trash directory, one entry at a time (resumable
-/// after a crash). Returns the entries that could not be deleted.
+/// Delete a directory tree without following symlinks. When a first attempt fails (a
+/// read-only directory, as some package managers create), make every directory in the tree
+/// writable by its owner and try once more.
+pub(crate) fn remove_tree(p: &Path) -> std::io::Result<()> {
+    match fs::remove_dir_all(p) {
+        Ok(()) => return Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(_) => {}
+    }
+    make_dirs_writable(p);
+    fs::remove_dir_all(p)
+}
+
+fn make_dirs_writable(p: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let mut stack = vec![p.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        // `symlink_metadata`: a symlink is never followed (its target is not ours to change).
+        let Ok(m) = fs::symlink_metadata(&d) else {
+            continue;
+        };
+        if !m.is_dir() {
+            continue;
+        }
+        let mode = m.permissions().mode();
+        if mode & 0o700 != 0o700 {
+            let _ = fs::set_permissions(&d, fs::Permissions::from_mode(mode | 0o700));
+        }
+        if let Ok(rd) = fs::read_dir(&d) {
+            stack.extend(rd.flatten().map(|e| e.path()));
+        }
+    }
+}
+
+/// Is `name` a trash entry this module created (`<name>-<ULID>`)? Anything else in a
+/// `.trash` directory (which, for sibling worktrees, sits in the user's own project
+/// directory) is left alone.
+fn is_trash_entry(name: &str) -> bool {
+    name.len() > 27
+        && name.is_char_boundary(name.len() - 27)
+        && name[..name.len() - 26].ends_with('-')
+        && Ulid::from_string(&name[name.len() - 26..]).is_ok()
+}
+
+/// Delete every entry this module put in a trash directory, one at a time (resumable after a
+/// crash). Returns the entries that could not be deleted.
 pub fn reap_trash(trash_root: &Path) -> Vec<(PathBuf, String)> {
+    reap_trash_bounded(trash_root, usize::MAX).1
+}
+
+/// [`reap_trash`] for at most `max_entries` entries (a background sweep stays short).
+/// Returns how many entries were deleted and the ones that could not be.
+pub fn reap_trash_bounded(
+    trash_root: &Path,
+    max_entries: usize,
+) -> (usize, Vec<(PathBuf, String)>) {
     let mut failed = Vec::new();
+    let mut removed = 0;
+    // A trash root that is a symlink is not ours: never follow it.
+    if !fs::symlink_metadata(trash_root).is_ok_and(|m| m.is_dir()) {
+        return (0, failed);
+    }
     let Ok(rd) = fs::read_dir(trash_root) else {
-        return failed;
+        return (0, failed);
     };
-    for e in rd.flatten() {
+    let ours = rd
+        .flatten()
+        .filter(|e| is_trash_entry(&e.file_name().to_string_lossy()));
+    for e in ours.take(max_entries) {
         let p = e.path();
-        let r = if p.is_dir() && !p.is_symlink() {
-            fs::remove_dir_all(&p)
+        let is_dir = fs::symlink_metadata(&p).is_ok_and(|m| m.is_dir());
+        let r = if is_dir {
+            remove_tree(&p)
         } else {
             fs::remove_file(&p)
         };
-        if let Err(err) = r {
-            failed.push((p, err.to_string()));
+        match r {
+            Ok(()) => removed += 1,
+            Err(err) => failed.push((p, err.to_string())),
         }
     }
-    failed
+    (removed, failed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    /// Review finding D1.11: a trash entry with a read-only directory is still reaped, and a
+    /// symlink in the trash is removed without touching its target.
+    #[test]
+    fn reaping_handles_read_only_dirs_and_never_follows_symlinks() {
+        let t = tempfile::tempdir().unwrap();
+        let trash = t.path().join(".trash");
+        let wt = format!("wt-{}", Ulid::new());
+        let entry = trash.join(&wt).join("node_modules/pkg");
+        fs::create_dir_all(&entry).unwrap();
+        fs::write(entry.join("index.js"), "x").unwrap();
+        fs::write(trash.join(&wt).join(".env"), "SECRET=1").unwrap();
+        // Something of the user's own in the same `.trash`: never touched.
+        fs::create_dir_all(trash.join("my-notes")).unwrap();
+        fs::set_permissions(&entry, fs::Permissions::from_mode(0o555)).unwrap();
+        fs::set_permissions(entry.parent().unwrap(), fs::Permissions::from_mode(0o555)).unwrap();
+        let outside = t.path().join("keep");
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("f"), "keep").unwrap();
+        std::os::unix::fs::symlink(&outside, trash.join(format!("link-{}", Ulid::new()))).unwrap();
+        let (removed, failed) = reap_trash_bounded(&trash, 10);
+        assert!(failed.is_empty(), "{failed:?}");
+        assert_eq!(removed, 2);
+        let left: Vec<_> = fs::read_dir(&trash)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(left, ["my-notes"]);
+        assert_eq!(fs::read_to_string(outside.join("f")).unwrap(), "keep");
+    }
+
+    #[test]
+    fn reaping_is_bounded() {
+        let t = tempfile::tempdir().unwrap();
+        for i in 0..5 {
+            fs::create_dir_all(t.path().join(format!("e{i}-{}", Ulid::new()))).unwrap();
+        }
+        let (removed, _) = reap_trash_bounded(t.path(), 2);
+        assert_eq!(removed, 2);
+        assert_eq!(fs::read_dir(t.path()).unwrap().count(), 3);
+    }
 }

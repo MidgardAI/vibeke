@@ -14,7 +14,7 @@
 //!   `merge --ff-only` inside the one clean worktree that has it. A target checked out with
 //!   uncommitted changes blocks the entry instead of touching that checkout.
 
-use crate::family::{CheckOutcome, run_check};
+use crate::family::{CheckOutcome, GateBox, run_check_in};
 use crate::{Error, Result, gitx, glob_match, now_ms};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -460,6 +460,9 @@ pub struct MergeOptions {
     pub squash: bool,
     pub check: Option<(String, Duration)>,
     pub message: Option<String>,
+    /// The branch's task is contained: its check runs inside the task's box on a copy of the
+    /// integration tree, never on the host.
+    pub gate_box: Option<GateBox>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -611,7 +614,10 @@ pub fn merge_branch(repo: &Path, branch: &str, opts: &MergeOptions) -> Result<Me
         gitx::run(&path, &c)?;
     }
     if let Some((cmd, timeout)) = &opts.check {
-        let r = run_check(&path, cmd, *timeout);
+        let r = match &opts.gate_box {
+            None => run_check_in(&path, cmd, *timeout, None),
+            Some(g) => contained_gate(&path, g, cmd, *timeout)?,
+        };
         if !r.ok {
             return Ok(MergeOutcome::CheckFailed(r));
         }
@@ -670,6 +676,69 @@ pub fn merge_branch(repo: &Path, branch: &str, opts: &MergeOptions) -> Result<Me
     }
 }
 
+/// Removes a gate directory inside a task checkout (also on panic).
+struct GateDir(PathBuf);
+impl Drop for GateDir {
+    fn drop(&mut self) {
+        // `remove_dir_all` never follows symlinks, also not one the box put at this path.
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// Run a merge gate for a contained task: the integration tree's `HEAD` is exported with
+/// `git archive` on the host and extracted by `tar` **inside the box** into a new directory of
+/// the task checkout; the check then runs there through the box runner. The host never writes
+/// agent-written files into a path the box could redirect, and never runs them.
+fn contained_gate(
+    integration: &Path,
+    g: &GateBox,
+    cmd: &str,
+    timeout: Duration,
+) -> Result<CheckOutcome> {
+    use std::process::{Command, Stdio};
+    let dir = g
+        .checkout
+        .join(format!(".vibeke-gate-{}-{}", std::process::id(), now_ms()));
+    std::fs::create_dir(&dir)?;
+    let _guard = GateDir(dir.clone());
+    let (argv, env) = (g.wrap)(
+        vec!["tar".into(), "-xf".into(), "-".into()],
+        &dir,
+        std::env::vars().collect(),
+    )
+    .map_err(|e| Error::Refused(format!("the task's isolation is unavailable: {e}")))?;
+    let Some((prog, rest)) = argv.split_first() else {
+        return Err(Error::Refused("empty wrapped command".into()));
+    };
+    let mut archive = Command::new("git");
+    archive.arg("-C").arg(integration);
+    vk_tasks::harden_command(&mut archive, integration)
+        .map_err(|e| Error::Refused(e.to_string()))?;
+    let mut archive = archive
+        .args(["archive", "--format=tar", "HEAD"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()?;
+    let stdout = archive.stdout.take().expect("piped");
+    let tar = Command::new(prog)
+        .args(rest)
+        .env_clear()
+        .envs(env)
+        .current_dir(&dir)
+        .stdin(Stdio::from(stdout))
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()?;
+    let a = archive.wait()?;
+    if !a.success() || !tar.success() {
+        return Err(Error::Refused(format!(
+            "could not copy the merge result into the task's isolation (archive {a}, tar {tar})"
+        )));
+    }
+    Ok(run_check_in(&dir, cmd, timeout, Some(g)))
+}
+
 /// Merge the next open entry (or the open entry named by `only`) and record the outcome on it.
 /// Returns the entry id and outcome, or `None` when there is nothing to run.
 pub fn run_next(
@@ -677,6 +746,19 @@ pub fn run_next(
     only: Option<&str>,
     check: Option<(String, Duration)>,
     squash: bool,
+) -> Option<(String, Result<MergeOutcome>)> {
+    run_next_with(queue, only, check, squash, &|_| Ok(None))
+}
+
+/// [`run_next`] with `gate_for(task id)`: the box a contained task's gate runs in (`Ok(None)`
+/// for a host task). `Err(reason)` blocks the entry when a check is configured: the gate never
+/// falls back to the host.
+pub fn run_next_with(
+    queue: &mut MergeQueue,
+    only: Option<&str>,
+    check: Option<(String, Duration)>,
+    squash: bool,
+    gate_for: &dyn Fn(&str) -> std::result::Result<Option<GateBox>, String>,
 ) -> Option<(String, Result<MergeOutcome>)> {
     let e = match only {
         Some(o) => queue
@@ -686,11 +768,24 @@ pub fn run_next(
             .clone(),
         None => queue.next()?.clone(),
     };
+    let gate_box = match check.as_ref().map(|_| gate_for(&e.task)) {
+        None | Some(Ok(None)) => None,
+        Some(Ok(Some(g))) => Some(g),
+        Some(Err(reason)) => {
+            let slot = queue.entries.iter_mut().find(|x| x.id == e.id)?;
+            slot.updated_at_ms = now_ms();
+            slot.state = EntryState::Blocked;
+            let reason = format!("merge check not run: {reason}");
+            slot.error = Some(reason.clone());
+            return Some((e.id, Ok(MergeOutcome::Blocked { reason })));
+        }
+    };
     let opts = MergeOptions {
         target: e.target.clone(),
         squash,
         check,
         message: None,
+        gate_box,
     };
     let r = merge_branch(Path::new(&e.repo), &e.branch, &opts);
     let slot = queue.entries.iter_mut().find(|x| x.id == e.id)?;
@@ -758,6 +853,7 @@ mod tests {
             squash: false,
             check: None,
             message: None,
+            gate_box: None,
         }
     }
 
@@ -1092,6 +1188,64 @@ mod tests {
             merge_branch(&r.root, "t/one", &o).unwrap(),
             MergeOutcome::Merged { .. }
         ));
+    }
+
+    /// Review finding D1.6: a contained task's merge gate runs through its box wrapper, on a
+    /// copy of the merged tree inside the task checkout; without a box the entry is blocked
+    /// instead of running the gate on the host.
+    #[test]
+    fn contained_merge_gate_runs_in_the_box_or_blocks() {
+        let (r, w1, _w2) = two();
+        write(&w1, "b.txt", "b1\nONE\n");
+        commit_all(&w1, "one");
+        let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let c2 = calls.clone();
+        let g = GateBox {
+            checkout: w1.clone(),
+            wrap: std::sync::Arc::new(
+                move |argv: Vec<String>, cwd: &Path, env: Vec<(String, String)>| {
+                    c2.lock()
+                        .unwrap()
+                        .push(format!("{} @ {}", argv[0], cwd.display()));
+                    assert!(!env.iter().any(|(k, _)| k == "GITHUB_TOKEN"));
+                    Ok((argv, vec![("PATH".into(), "/usr/bin:/bin".into())]))
+                },
+            ),
+        };
+        let mut o = opts();
+        o.check = Some(("grep -q ONE b.txt".into(), Duration::from_secs(20)));
+        o.gate_box = Some(g);
+        let out = merge_branch(&r.root, "t/one", &o).unwrap();
+        assert!(matches!(out, MergeOutcome::Merged { .. }), "{out:?}");
+        let calls = calls.lock().unwrap().clone();
+        assert_eq!(calls.len(), 2, "{calls:?}");
+        assert!(calls[0].starts_with("tar @ "), "{calls:?}");
+        assert!(
+            calls.iter().all(|c| c.contains(".vibeke-gate-")),
+            "{calls:?}"
+        );
+        // The gate directory is gone again.
+        assert!(
+            !std::fs::read_dir(&w1)
+                .unwrap()
+                .flatten()
+                .any(|e| e.file_name().to_string_lossy().starts_with(".vibeke-gate-"))
+        );
+
+        // No box: blocked, nothing ran on the host.
+        let mut q = MergeQueue::default();
+        q.add(entry(&r, "k9", "t/one", 0, 1)).unwrap();
+        let (_, out) = run_next_with(
+            &mut q,
+            None,
+            Some(("touch ran-on-host".into(), Duration::from_secs(20))),
+            false,
+            &|_| Err("the task's sandbox is not running".into()),
+        )
+        .unwrap();
+        assert!(matches!(out, Ok(MergeOutcome::Blocked { .. })), "{out:?}");
+        assert_eq!(q.entries[0].state, EntryState::Blocked);
+        assert!(!r.root.join("ran-on-host").exists());
     }
 
     #[test]

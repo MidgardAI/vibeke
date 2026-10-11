@@ -96,6 +96,25 @@ fn detect_repo_and_linked_worktree() {
     assert_eq!(detect(&none).vcs, Vcs::None);
 }
 
+/// Review finding D1.14: two repos with the same name get separate worktree directories (and
+/// separate trash).
+#[test]
+fn same_named_repos_do_not_share_a_worktree_directory() {
+    let a = TempDir::new().unwrap();
+    let b = TempDir::new().unwrap();
+    let ra = a.path().join("app");
+    let rb = b.path().join("app");
+    fs::create_dir_all(&ra).unwrap();
+    fs::create_dir_all(&rb).unwrap();
+    let root = WorktreeRoot::Dir(PathBuf::from("/wts"));
+    let (da, db) = (repo_area_dir(&root, &ra), repo_area_dir(&root, &rb));
+    assert_ne!(da, db);
+    assert!(da.starts_with("/wts") && db.starts_with("/wts"));
+    assert_eq!(worktree_path(&root, &ra, "fix"), da.join("fix"));
+    // Stable for the same repo.
+    assert_eq!(repo_area_dir(&root, &ra), da);
+}
+
 #[test]
 fn create_in_dir_root_dedupes_and_lists() {
     let (tmp, repo) = fixture();
@@ -103,12 +122,18 @@ fn create_in_dir_root_dedupes_and_lists() {
     let c = cfg(WorktreeRoot::Dir(root.clone()));
     let a = create_worktree(&req(&repo, "Fix Login"), &c).unwrap();
     let b = create_worktree(&req(&repo, "Fix Login"), &c).unwrap();
-    let root = root.canonicalize().unwrap();
-    assert_eq!(a.path, root.join("myrepo/fix-login"));
+    let area = repo_area_dir(&WorktreeRoot::Dir(root.canonicalize().unwrap()), &repo);
+    let name = area.file_name().unwrap().to_string_lossy().into_owned();
+    // `<repo name>-<8 hex digits of the repo path hash>`.
+    assert!(
+        name.starts_with("myrepo-") && name.len() == "myrepo-".len() + 8,
+        "{name}"
+    );
+    assert_eq!(a.path, area.join("fix-login"));
     assert_eq!(a.branch.as_deref(), Some("alice/fix-login"));
     assert!(a.created_branch);
     assert_eq!(a.base_ref.as_deref(), Some("main"));
-    assert_eq!(b.path, root.join("myrepo/fix-login-2"));
+    assert_eq!(b.path, area.join("fix-login-2"));
     assert_eq!(b.branch.as_deref(), Some("alice/fix-login-2"));
     assert!(a.path.join("a.txt").exists());
 
@@ -310,6 +335,7 @@ fn setup_opts(wt: &Path, log: &Path, lease: Option<Lease>) -> SetupOptions {
         extra_env: vec![("EXTRA".into(), "yes".into())],
         log_path: log.to_path_buf(),
         timeout: Some(Duration::from_secs(20)),
+        wrap: None,
     }
 }
 
@@ -683,8 +709,8 @@ fn removal_clean_and_unpushed_protection() {
     assert_eq!(job.wait(), RemovalState::Done);
     assert!(!clean.path.exists());
     assert!(
-        !tmp.path()
-            .join("wts/myrepo/.trash")
+        !repo_area_dir(&WorktreeRoot::Dir(tmp.path().join("wts")), &repo)
+            .join(".trash")
             .read_dir()
             .unwrap()
             .any(|_| true)
@@ -729,9 +755,11 @@ fn removal_clean_and_unpushed_protection() {
 fn reap_trash_resumes() {
     let tmp = tempfile::tempdir().unwrap();
     let trash = tmp.path().join(".trash");
-    fs::create_dir_all(trash.join("a-1/deep")).unwrap();
-    fs::write(trash.join("a-1/deep/f"), "x").unwrap();
-    fs::create_dir_all(trash.join("b-2")).unwrap();
+    // Entries are named `<name>-<ULID>` by the removal job.
+    let a = trash.join("a-01ARZ3NDEKTSV4RRFFQ69G5FAV");
+    fs::create_dir_all(a.join("deep")).unwrap();
+    fs::write(a.join("deep/f"), "x").unwrap();
+    fs::create_dir_all(trash.join("b-01BX5ZZKBKACTAV9WEVGEMMVRZ")).unwrap();
     assert!(reap_trash(&trash).is_empty());
     assert_eq!(fs::read_dir(&trash).unwrap().count(), 0);
 }

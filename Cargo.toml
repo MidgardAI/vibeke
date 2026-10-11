@@ -45,6 +45,7 @@ crossterm = { version = "0.29", features = ["bracketed-paste", "event-stream"] }
 futures = "0.3"
 hmac = "0.12"
 libc = "0.2"
+socket2 = "0.6"
 notify = "8"
 polling = "3"
 postcard = { version = "1", default-features = false, features = ["use-std"] }

@@ -905,6 +905,70 @@ impl CancelToken {
     }
 }
 
+/// Turns a check process (argv, cwd, full env) into the command that runs it inside a task's
+/// isolation. The returned argv is spawned with exactly the returned env (nothing inherited).
+pub type WrapFn = dyn Fn(
+        Vec<String>,
+        &Path,
+        Vec<(String, String)>,
+    ) -> std::io::Result<(Vec<String>, Vec<(String, String)>)>
+    + Send
+    + Sync;
+
+/// Where a contained task's check runs: inside the task's isolation (sandbox, VM), never on
+/// the host with the host's credentials (13 §6).
+#[derive(Clone)]
+pub struct ContainedRun {
+    /// The isolation level (`sandbox`, `vm`, …), recorded as the run's environment runner.
+    pub runner: String,
+    /// The task checkout, which the box can see. The disposable checkout of the candidate is
+    /// created inside it (and extracted by a process inside the box).
+    pub checkout: PathBuf,
+    pub wrap: Arc<WrapFn>,
+}
+
+impl std::fmt::Debug for ContainedRun {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ContainedRun")
+            .field("runner", &self.runner)
+            .field("checkout", &self.checkout)
+            .finish_non_exhaustive()
+    }
+}
+
+pub use vk_tasks::is_credential_env;
+
+/// The environment of a check: the server's environment without `VIBEKE_*`/`HERDR_*`, without
+/// credentials (see [`is_credential_env`]) unless the definition names them, then the
+/// definition's `env`. A definition value of exactly `$NAME` for its own name passes the
+/// server's value through (`GITHUB_TOKEN = "$GITHUB_TOKEN"`).
+pub fn check_env(
+    host: impl IntoIterator<Item = (String, String)>,
+    def_env: &BTreeMap<String, String>,
+) -> Vec<(String, String)> {
+    let host: Vec<(String, String)> = host.into_iter().collect();
+    let mut out: Vec<(String, String)> = host
+        .iter()
+        .filter(|(k, _)| {
+            !k.starts_with("VIBEKE_")
+                && !k.starts_with("HERDR_")
+                && !def_env.contains_key(k)
+                && !is_credential_env(k)
+        })
+        .cloned()
+        .collect();
+    for (k, v) in def_env {
+        if v.strip_prefix('$') == Some(k.as_str()) {
+            if let Some((_, hv)) = host.iter().find(|(hk, _)| hk == k) {
+                out.push((k.clone(), hv.clone()));
+            }
+        } else {
+            out.push((k.clone(), v.clone()));
+        }
+    }
+    out
+}
+
 #[derive(Debug, Clone)]
 pub struct RunOptions {
     /// Caller-scoped idempotency key recorded on the run.
@@ -919,6 +983,8 @@ pub struct RunOptions {
     pub work_root: Option<PathBuf>,
     /// Skip `git worktree add` and export with `git archive` (diagnostics/tests).
     pub force_archive: bool,
+    /// Run inside a contained task's isolation instead of on the host.
+    pub contained: Option<ContainedRun>,
 }
 
 impl Default for RunOptions {
@@ -930,6 +996,7 @@ impl Default for RunOptions {
             kill_grace: Duration::from_secs(2),
             work_root: None,
             force_archive: false,
+            contained: None,
         }
     }
 }
@@ -959,6 +1026,9 @@ impl Drop for Disposable {
 }
 
 fn make_checkout(repo: &Path, sha: &str, opts: &RunOptions) -> Result<Disposable, CheckError> {
+    if let Some(c) = &opts.contained {
+        return make_contained_checkout(repo, sha, c);
+    }
     let root = opts.work_root.clone().unwrap_or_else(std::env::temp_dir);
     std::fs::create_dir_all(&root)?;
     let path = root.join(format!("vk-check-{}", new_id().to_lowercase()));
@@ -985,7 +1055,7 @@ fn make_checkout(repo: &Path, sha: &str, opts: &RunOptions) -> Result<Disposable
         path: path.clone(),
         method: CheckoutMethod::ArchiveExport,
     };
-    let mut archive = gitcmd::command(repo)
+    let mut archive = gitcmd::command(repo)?
         .args(["archive", "--format=tar", sha])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -1005,6 +1075,59 @@ fn make_checkout(repo: &Path, sha: &str, opts: &RunOptions) -> Result<Disposable
     if !a.success() || !tar.success() {
         return Err(CheckError::Checkout(format!(
             "git archive {sha} | tar failed (archive {a}, tar {tar})"
+        )));
+    }
+    Ok(guard)
+}
+
+/// The disposable checkout of a contained run: a new directory inside the task checkout (the
+/// box sees it), filled by `tar` running **inside the box** from the host's `git archive`
+/// stream. The host never extracts agent-written content into a path the box could redirect.
+fn make_contained_checkout(
+    repo: &Path,
+    sha: &str,
+    c: &ContainedRun,
+) -> Result<Disposable, CheckError> {
+    let path = c
+        .checkout
+        .join(format!(".vibeke-check-{}", new_id().to_lowercase()));
+    // `create_dir` never follows a link at the final component; the checkout root itself is
+    // the host's (its parent is not writable from the box).
+    std::fs::create_dir(&path)?;
+    let guard = Disposable {
+        repo: repo.to_path_buf(),
+        path: path.clone(),
+        method: CheckoutMethod::ArchiveExport,
+    };
+    let (argv, env) = (c.wrap)(
+        vec!["tar".into(), "-xf".into(), "-".into()],
+        &path,
+        std::env::vars().collect(),
+    )
+    .map_err(|e| CheckError::Checkout(format!("the task's isolation is unavailable: {e}")))?;
+    let Some((prog, rest)) = argv.split_first() else {
+        return Err(CheckError::Checkout("empty wrapped command".into()));
+    };
+    let mut archive = gitcmd::command(repo)?
+        .args(["archive", "--format=tar", sha])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()?;
+    let stdout = archive.stdout.take().expect("piped");
+    let tar = Command::new(prog)
+        .args(rest)
+        .env_clear()
+        .envs(env)
+        .current_dir(&path)
+        .stdin(Stdio::from(stdout))
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()?;
+    let a = archive.wait()?;
+    if !a.success() || !tar.success() {
+        return Err(CheckError::Checkout(format!(
+            "git archive {sha} | tar (in the task's isolation) failed (archive {a}, tar {tar})"
         )));
     }
     Ok(guard)
@@ -1053,7 +1176,8 @@ fn kill_group(pgid: i32, sig: i32) {
 /// (per-candidate, this subject, this digest) → `git worktree add --detach <tmp> <head_sha>`
 /// (falling back to a `git archive` export) → re-resolve the definition inside the checkout and
 /// refuse on digest mismatch → run in its own process group with the definition's timeout,
-/// bounded log capture to `log_dir/<run id>.log`, `VIBEKE_*` variables removed → kill the whole
+/// bounded log capture to `log_dir/<run id>.log`, `VIBEKE_*` and credential variables removed
+/// ([`check_env`]), inside the task's isolation when `opts.contained` is set → kill the whole
 /// group on timeout/cancel and after exit → remove the disposable checkout.
 ///
 /// Terminal states: exit 0 → `passed`; non-zero exit, crash signal, timeout or spawn failure →
@@ -1098,41 +1222,72 @@ pub fn run_in_disposable_checkout(
     run.log_path = Some(log_path.to_string_lossy().into_owned());
 
     let cwd = check_dir.join(&def.cwd);
-    let mut cmd = match &def.command {
-        CheckCommand::Argv(v) => {
-            let prog = &v[0];
-            let mut c = if prog.contains('/') && !Path::new(prog).is_absolute() {
-                Command::new(cwd.join(prog))
-            } else {
-                Command::new(prog)
+    let env = check_env(
+        std::env::vars_os().map(|(k, v)| {
+            (
+                k.to_string_lossy().into_owned(),
+                v.to_string_lossy().into_owned(),
+            )
+        }),
+        &def.env,
+    );
+    let (mut cmd, env_names, runner) = match &opts.contained {
+        None => {
+            let mut c = match &def.command {
+                CheckCommand::Argv(v) => {
+                    let prog = &v[0];
+                    let mut c = if prog.contains('/') && !Path::new(prog).is_absolute() {
+                        Command::new(cwd.join(prog))
+                    } else {
+                        Command::new(prog)
+                    };
+                    c.args(&v[1..]);
+                    c
+                }
+                CheckCommand::Shell(s) => {
+                    let mut c = Command::new("/bin/sh");
+                    c.arg("-c").arg(s);
+                    c
+                }
             };
-            c.args(&v[1..]);
-            c
+            c.env_clear().envs(env.iter().cloned());
+            let names = env.iter().map(|(k, _)| k.clone()).collect::<Vec<_>>();
+            (c, names, "host".to_string())
         }
-        CheckCommand::Shell(s) => {
-            let mut c = Command::new("/bin/sh");
-            c.arg("-c").arg(s);
-            c
+        Some(contained) => {
+            // Relative program paths stay relative: the box may see the checkout at another
+            // path, and the wrapper sets the cwd inside it.
+            let argv: Vec<String> = match &def.command {
+                CheckCommand::Argv(v) => v.clone(),
+                CheckCommand::Shell(s) => vec!["/bin/sh".into(), "-c".into(), s.clone()],
+            };
+            let (argv, wenv) = match (contained.wrap)(argv, &cwd, env) {
+                Ok(x) => x,
+                Err(e) => {
+                    run.transition(CheckState::Running).expect("queued→running");
+                    run.transition(CheckState::Failed).expect("running→failed");
+                    run.error = Some(format!("the task's isolation is unavailable: {e}"));
+                    run.started_at_ms = Some(now_ms());
+                    run.ended_at_ms = Some(now_ms());
+                    return Ok(run);
+                }
+            };
+            let Some((prog, rest)) = argv.split_first() else {
+                return Err(CheckError::Invalid("empty wrapped command".into()));
+            };
+            let mut c = Command::new(prog);
+            c.args(rest).env_clear().envs(wenv.iter().cloned());
+            let names = wenv.iter().map(|(k, _)| k.clone()).collect::<Vec<_>>();
+            (c, names, contained.runner.clone())
         }
     };
-    let mut env_names: Vec<String> = Vec::new();
-    for (k, _) in std::env::vars_os() {
-        let k = k.to_string_lossy().into_owned();
-        if k.starts_with("VIBEKE_") || k.starts_with("HERDR_") {
-            cmd.env_remove(&k);
-        } else {
-            env_names.push(k);
-        }
-    }
-    cmd.envs(&def.env);
-    env_names.extend(def.env.keys().cloned());
     cmd.current_dir(&cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .process_group(0);
     run.environment = Some(EnvironmentManifest::new(
-        "host",
+        &runner,
         Some(checkout.method),
         opts.tool_versions.clone(),
         env_names,
@@ -1803,6 +1958,117 @@ mod tests {
             "user edit"
         );
         assert!(r.root().join("untracked.txt").exists());
+    }
+
+    /// Review finding D1.6: host checks do not get credentials unless the definition names them.
+    #[test]
+    fn check_env_scrubs_credentials_unless_named() {
+        let host = vec![
+            ("PATH".to_string(), "/bin".to_string()),
+            ("AWS_SECRET_ACCESS_KEY".to_string(), "s3cr3t".to_string()),
+            ("AWS_REGION".to_string(), "eu-north-1".to_string()),
+            ("GITHUB_TOKEN".to_string(), "ghp".to_string()),
+            ("SSH_AUTH_SOCK".to_string(), "/tmp/agent".to_string()),
+            ("MY_API_KEY".to_string(), "k".to_string()),
+            ("VIBEKE_SOCKET".to_string(), "/x".to_string()),
+            ("NPM_TOKEN".to_string(), "npm".to_string()),
+        ];
+        let def: BTreeMap<String, String> = [
+            ("GITHUB_TOKEN".to_string(), "$GITHUB_TOKEN".to_string()),
+            ("NPM_TOKEN".to_string(), "fixed".to_string()),
+        ]
+        .into();
+        let env = check_env(host, &def);
+        let get = |k: &str| env.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
+        assert_eq!(get("PATH"), Some("/bin"));
+        assert_eq!(get("AWS_REGION"), Some("eu-north-1"));
+        assert_eq!(get("AWS_SECRET_ACCESS_KEY"), None);
+        assert_eq!(get("SSH_AUTH_SOCK"), None);
+        assert_eq!(get("MY_API_KEY"), None);
+        assert_eq!(get("VIBEKE_SOCKET"), None);
+        // Named by the definition: passed through, or set to the definition's value.
+        assert_eq!(get("GITHUB_TOKEN"), Some("ghp"));
+        assert_eq!(get("NPM_TOKEN"), Some("fixed"));
+    }
+
+    /// Review finding D1.6: a contained task's check runs through the task's runner: the
+    /// extraction and the check itself go through the wrapper, inside the task checkout, and
+    /// the run records the runner.
+    #[test]
+    fn contained_check_runs_through_the_wrapper() {
+        let (r, s) =
+            committed_repo("#!/bin/sh\necho \"inside=$INSIDE token=${GITHUB_TOKEN:-none}\"\n");
+        let task_checkout = tempfile::tempdir().unwrap();
+        let calls = Arc::new(Mutex::new(Vec::<String>::new()));
+        let c2 = calls.clone();
+        let opts = RunOptions {
+            contained: Some(ContainedRun {
+                runner: "sandbox".into(),
+                checkout: task_checkout.path().to_path_buf(),
+                wrap: Arc::new(
+                    move |argv: Vec<String>, cwd: &Path, _env: Vec<(String, String)>| {
+                        c2.lock()
+                            .unwrap()
+                            .push(format!("{} @ {}", argv[0], cwd.display()));
+                        Ok((
+                            argv,
+                            vec![
+                                ("INSIDE".into(), "1".into()),
+                                ("PATH".into(), "/usr/bin:/bin".into()),
+                            ],
+                        ))
+                    },
+                ),
+            }),
+            ..Default::default()
+        };
+        let run = run_check(
+            &r,
+            &s,
+            argv("./ci/check.sh"),
+            30_000,
+            &CancelToken::new(),
+            opts,
+        );
+        assert_eq!(run.state, CheckState::Passed, "{run:?}");
+        let env = run.environment.as_ref().unwrap();
+        assert_eq!(env.runner, "sandbox");
+        assert_eq!(env.checkout, Some(CheckoutMethod::ArchiveExport));
+        let log = std::fs::read_to_string(run.log_path.as_ref().unwrap()).unwrap();
+        assert!(log.contains("inside=1 token=none"), "{log}");
+        let calls = calls.lock().unwrap();
+        assert_eq!(calls.len(), 2, "{calls:?}");
+        assert!(calls[0].starts_with("tar @ "), "{calls:?}");
+        assert!(
+            calls.iter().all(|c| c.contains(".vibeke-check-")),
+            "{calls:?}"
+        );
+        // Cleaned up inside the task checkout.
+        assert_eq!(std::fs::read_dir(task_checkout.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn contained_check_fails_cleanly_when_the_box_is_gone() {
+        let (r, s) = committed_repo("#!/bin/sh\ntrue\n");
+        let task_checkout = tempfile::tempdir().unwrap();
+        let opts = RunOptions {
+            contained: Some(ContainedRun {
+                runner: "sandbox".into(),
+                checkout: task_checkout.path().to_path_buf(),
+                wrap: Arc::new(|_: Vec<String>, _: &Path, _: Vec<(String, String)>| {
+                    Err(std::io::Error::other("box gone"))
+                }),
+            }),
+            ..Default::default()
+        };
+        let def = resolve_definition_at(&s, &spec(argv("./ci/check.sh"))).unwrap();
+        let g = grant_per_candidate(&def, &s, Actor::user("alice"), 0).unwrap();
+        let logs = r.dir.path().join(".vk-logs");
+        let e =
+            run_in_disposable_checkout(r.root(), &s, &def, &g, &logs, &CancelToken::new(), &opts)
+                .unwrap_err();
+        assert!(e.to_string().contains("isolation is unavailable"), "{e}");
+        assert_eq!(std::fs::read_dir(task_checkout.path()).unwrap().count(), 0);
     }
 
     #[test]

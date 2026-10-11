@@ -126,26 +126,22 @@ pub fn reconcile(
             });
         }
     }
-    if let WorktreeRoot::Dir(d) = root {
-        let name = repo
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        if let Ok(rd) = fs::read_dir(d.join(&name)) {
-            for e in rd.flatten() {
-                let p = e.path();
-                let fname = e.file_name().to_string_lossy().into_owned();
-                if fname.starts_with('.') || !p.is_dir() {
-                    continue;
-                }
-                let registered = listed.iter().any(|w| same_path(&w.path, &p));
-                if !registered && !owned(&p) {
-                    rep.orphans.push(Orphan {
-                        path: p,
-                        kind: OrphanKind::Directory,
-                        branch: None,
-                    });
-                }
+    if let WorktreeRoot::Dir(_) = root
+        && let Ok(rd) = fs::read_dir(crate::worktree::repo_area_dir(root, repo))
+    {
+        for e in rd.flatten() {
+            let p = e.path();
+            let fname = e.file_name().to_string_lossy().into_owned();
+            if fname.starts_with('.') || !p.is_dir() {
+                continue;
+            }
+            let registered = listed.iter().any(|w| same_path(&w.path, &p));
+            if !registered && !owned(&p) {
+                rep.orphans.push(Orphan {
+                    path: p,
+                    kind: OrphanKind::Directory,
+                    branch: None,
+                });
             }
         }
     }
@@ -162,7 +158,7 @@ fn area_contains(root: &WorktreeRoot, repo: &Path, p: &Path) -> bool {
     let canon = |x: &Path| x.canonicalize().unwrap_or_else(|_| x.to_path_buf());
     let p = canon(p);
     match root {
-        WorktreeRoot::Dir(d) => p.starts_with(canon(&d.join(&name))),
+        WorktreeRoot::Dir(_) => p.starts_with(canon(&crate::worktree::repo_area_dir(root, repo))),
         WorktreeRoot::Sibling => {
             let parent = canon(repo.parent().unwrap_or(repo));
             p.parent() == Some(parent.as_path())

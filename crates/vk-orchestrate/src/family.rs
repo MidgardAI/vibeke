@@ -402,9 +402,48 @@ pub struct CheckOutcome {
 
 const TAIL_BYTES: usize = 4096;
 
+/// Turns a gate process (argv, cwd, full env) into the command that runs it inside a
+/// contained task's isolation (the same runner as its panes). The returned argv is spawned
+/// with exactly the returned env.
+pub type GateWrapFn = dyn Fn(
+        Vec<String>,
+        &Path,
+        Vec<(String, String)>,
+    ) -> std::io::Result<(Vec<String>, Vec<(String, String)>)>
+    + Send
+    + Sync;
+
+/// A contained task's box, for running gates (family checks, merge-queue checks) inside it.
+#[derive(Clone)]
+pub struct GateBox {
+    pub wrap: std::sync::Arc<GateWrapFn>,
+    /// The task checkout: the box sees it. A merge gate's integration tree is copied into a
+    /// new directory inside it.
+    pub checkout: PathBuf,
+}
+
+impl std::fmt::Debug for GateBox {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GateBox")
+            .field("checkout", &self.checkout)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Run `command` (`sh -c`) in `cwd` with a timeout. Output is read to the end on threads; the
-/// whole process group is killed on timeout.
+/// whole process group is killed on timeout. Runs on the host without credential variables
+/// (cloud keys, tokens, the SSH agent; see `vk_tasks::is_credential_env`).
 pub fn run_check(cwd: &Path, command: &str, timeout: Duration) -> CheckOutcome {
+    run_check_in(cwd, command, timeout, None)
+}
+
+/// [`run_check`], inside a contained task's box when `wrap` is given.
+pub fn run_check_in(
+    cwd: &Path,
+    command: &str,
+    timeout: Duration,
+    wrap: Option<&GateBox>,
+) -> CheckOutcome {
     use std::os::unix::process::CommandExt;
     let start = Instant::now();
     let fail = |msg: String, start: Instant| CheckOutcome {
@@ -415,9 +454,26 @@ pub fn run_check(cwd: &Path, command: &str, timeout: Duration) -> CheckOutcome {
         duration_ms: start.elapsed().as_millis() as u64,
         tail: msg,
     };
-    let mut cmd = Command::new("sh");
-    cmd.arg("-c")
-        .arg(command)
+    let env: Vec<(String, String)> = std::env::vars()
+        .filter(|(k, _)| {
+            !k.starts_with("VIBEKE_") && !k.starts_with("HERDR_") && !vk_tasks::is_credential_env(k)
+        })
+        .collect();
+    let argv = vec!["sh".to_string(), "-c".to_string(), command.to_string()];
+    let (argv, env) = match wrap {
+        None => (argv, env),
+        Some(g) => match (g.wrap)(argv, cwd, env) {
+            Ok(x) => x,
+            Err(e) => return fail(format!("the task's isolation is unavailable: {e}"), start),
+        },
+    };
+    let Some((prog, rest)) = argv.split_first() else {
+        return fail("empty command".into(), start);
+    };
+    let mut cmd = Command::new(prog);
+    cmd.args(rest)
+        .env_clear()
+        .envs(env)
         .current_dir(cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

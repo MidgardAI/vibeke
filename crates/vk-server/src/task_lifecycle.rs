@@ -1,7 +1,7 @@
 //! Task lifecycle methods beyond create/park/finish (05 §1, §4, §6, §7, §8; 07 §2.10):
 //!
-//! - `task.setup_log {task, max_bytes?}`: the tail of the task's setup log
-//!   (`<worktree>/.vibeke/setup.log`).
+//! - `task.setup_log {task, max_bytes?}`: the tail of the task's setup log (in the server's
+//!   state dir, `<state>/task-setup/<task>.log`; never read from the checkout).
 //! - `task.archive {task, force?}`: stop the agents (recording resume handles, as `task.park`),
 //!   delete the worktree directory, keep the branch, release the ports; the task record, its
 //!   events and transcripts stay. A dirty checkout or unpushed commits refuse without `force`.
@@ -77,7 +77,8 @@ fn commit(server: &Server, tx: Tx) -> Result<Option<i64>, RpcError> {
     Ok(events.last().map(|e| e.seq))
 }
 
-fn pool() -> vk_tasks::PortPool {
+/// The configured port pool (`tasks.port_pool`, `tasks.port_block`).
+pub(crate) fn pool() -> vk_tasks::PortPool {
     let cfg = crate::task_workspace::load_tasks_cfg();
     vk_tasks::PortPool {
         start: cfg.port_pool.start,
@@ -95,13 +96,17 @@ fn leases() -> vk_tasks::PortLeases {
 fn setup_log(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     let task = task_of(server, p)?;
     visible_to(server, ctx, &task)?;
-    let wt = task
-        .worktree_path
-        .clone()
-        .ok_or_else(|| conflict("no_checkout", "the task has no checkout"))?;
-    let path = Path::new(&wt).join(".vibeke/setup.log");
+    let path = crate::task_workspace::setup_log_path(server, &task.id);
     let max = u(p, "max_bytes").unwrap_or(LOG_DEFAULT).clamp(1, LOG_MAX);
-    let mut f = match std::fs::File::open(&path) {
+    // Never follow a link: the log is Vibeke's own file.
+    let opened = {
+        use std::os::unix::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(&path)
+    };
+    let mut f = match opened {
         Ok(f) => f,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             return Ok(json!({
@@ -111,7 +116,14 @@ fn setup_log(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         }
         Err(e) => return Err(internal(e)),
     };
-    let size = f.metadata().map_err(internal)?.len();
+    let md = f.metadata().map_err(internal)?;
+    if !md.is_file() {
+        return Err(conflict(
+            "not_a_file",
+            "the setup log is not a regular file",
+        ));
+    }
+    let size = md.len();
     let start = size.saturating_sub(max);
     f.seek(SeekFrom::Start(start)).map_err(internal)?;
     let mut buf = Vec::new();

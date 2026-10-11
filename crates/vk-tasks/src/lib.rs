@@ -59,6 +59,7 @@
 
 mod clone;
 pub mod collision;
+mod credenv;
 mod deps;
 mod error;
 mod files;
@@ -79,6 +80,7 @@ mod taskfile;
 mod worktree;
 
 pub use clone::{CloneMethod, clone_path, cow_available};
+pub use credenv::is_credential_env;
 pub use deps::{
     DepsAction, DepsPlan, PackageManager, detect_package_manager, plan_deps, run_deps_clone,
 };
@@ -93,7 +95,7 @@ pub use ghpr::{
 };
 pub use git::set_child_umask;
 pub use git::{
-    HOST_HARDEN, is_contained, register_contained_checkout, safety_args,
+    HOST_HARDEN, harden_command, is_contained, register_contained_checkout, safety_args,
     unregister_contained_checkout,
 };
 pub use naming::{DEFAULT_SLUG_MAX, render_branch, slugify, slugify_raw, unique_slug, user_handle};
@@ -109,11 +111,14 @@ pub use reconcile::{
     reconcile,
 };
 pub use recreate::recreate_worktree;
-pub use remove::{RemovalEvent, RemovalJob, RemovalState, RemoveOptions, reap_trash, start_remove};
+pub use remove::{
+    RemovalEvent, RemovalJob, RemovalState, RemoveOptions, reap_trash, reap_trash_bounded,
+    start_remove,
+};
 pub use repo::{RepoInfo, Vcs, detect, repo_root};
 pub use setup::{
-    CancelToken, DEFAULT_SETUP_SCRIPT, SetupHandle, SetupOptions, SetupOutcome, SetupStatus,
-    run_setup, setup_env, spawn_setup,
+    CancelToken, DEFAULT_SETUP_SCRIPT, SetupHandle, SetupOptions, SetupOutcome, SetupStatus, Step,
+    StepWrapper, create_log, run_setup, setup_env, spawn_setup,
 };
 pub use status::{Blockers, BranchStatus, branch_status, removal_blockers};
 pub use taskfile::{
@@ -124,5 +129,5 @@ pub use taskfile::{
 pub use worktree::{
     Checkout, CreateRequest, FetchOutcome, WorktreeConfig, WorktreeEntry, WorktreeRoot,
     create_worktree, default_base, find_worktree, find_worktree_by_branch, list_worktrees,
-    open_worktree, restore_worktree, validate_base, validate_slug, worktree_path,
+    open_worktree, repo_area_dir, restore_worktree, validate_base, validate_slug, worktree_path,
 };
