@@ -178,6 +178,7 @@ export class AppModel {
       }
       this._push = new PushSync({ manager: this._manager, push: p.push, keystore: p.keystore, random: (n) => p.random(n) });
       this.offs.push(this._manager.subscribe(() => this.onHostsChanged()));
+      this.watchConfigErrors();
       this.offs.push(p.lifecycle.onVisible(() => void this.housekeeping()));
       void this._push.start();
       void this.loadCached();
