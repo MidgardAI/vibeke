@@ -111,7 +111,10 @@ pub use reconcile::{
     reconcile,
 };
 pub use recreate::recreate_worktree;
-pub use remove::{RemovalEvent, RemovalJob, RemovalState, RemoveOptions, reap_trash, start_remove};
+pub use remove::{
+    RemovalEvent, RemovalJob, RemovalState, RemoveOptions, reap_trash, reap_trash_bounded,
+    start_remove,
+};
 pub use repo::{RepoInfo, Vcs, detect, repo_root};
 pub use setup::{
     CancelToken, DEFAULT_SETUP_SCRIPT, SetupHandle, SetupOptions, SetupOutcome, SetupStatus, Step,
@@ -126,5 +129,5 @@ pub use taskfile::{
 pub use worktree::{
     Checkout, CreateRequest, FetchOutcome, WorktreeConfig, WorktreeEntry, WorktreeRoot,
     create_worktree, default_base, find_worktree, find_worktree_by_branch, list_worktrees,
-    open_worktree, restore_worktree, validate_base, validate_slug, worktree_path,
+    open_worktree, repo_area_dir, restore_worktree, validate_base, validate_slug, worktree_path,
 };

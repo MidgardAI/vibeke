@@ -924,12 +924,52 @@ pub(crate) async fn task_reconcile(server: &Arc<Server>, p: &Value) -> R {
     Ok(json!({"reports": reports}))
 }
 
-/// Reconcile on start and every 60 s while there are tasks (05 §4).
+/// Most trash entries one sweep deletes (the next sweep continues).
+const TRASH_SWEEP_MAX: usize = 32;
+
+/// Delete leftovers in worktree trash directories (`.trash` next to task worktrees): a removal
+/// whose delete failed, or a crash between the rename and the delete, leaves a full copy of a
+/// checkout there (with its `.env`). Bounded per sweep; runs on a blocking thread.
+pub(crate) fn sweep_trash(server: &Server) {
+    let cfg = load_tasks_cfg();
+    let mut roots: Vec<PathBuf> = server.with_core(|c| {
+        c.model
+            .tasks
+            .iter()
+            .filter_map(|t| t.worktree_path.as_deref())
+            .filter_map(|p| Path::new(p).parent().map(|d| d.join(".trash")))
+            .collect()
+    });
+    // Every repo area under the configured root (also of tasks forgotten since).
+    if let Ok(vk_tasks::WorktreeRoot::Dir(d)) = vk_tasks::WorktreeRoot::parse(&cfg.root)
+        && let Ok(rd) = std::fs::read_dir(&d)
+    {
+        roots.extend(rd.flatten().map(|e| e.path().join(".trash")));
+    }
+    roots.sort();
+    roots.dedup();
+    let mut budget = TRASH_SWEEP_MAX;
+    for r in roots {
+        if budget == 0 {
+            break;
+        }
+        let (removed, failed) = vk_tasks::reap_trash_bounded(&r, budget);
+        budget = budget.saturating_sub(removed + failed.len());
+        for (p, e) in failed {
+            tracing::warn!(path = %p.display(), error = %e, "worktree trash entry not deleted");
+        }
+    }
+}
+
+/// Reconcile on start and every 60 s while there are tasks (05 §4). Worktree trash is swept on
+/// start and on every tick.
 pub fn start(server: &Arc<Server>) {
     let srv = server.clone();
     tokio::spawn(async move {
         let mut state = ReconcileState::default();
         loop {
+            let s3 = srv.clone();
+            let _ = tokio::task::spawn_blocking(move || sweep_trash(&s3)).await;
             let has_tasks = srv.with_core(|c| {
                 c.model
                     .tasks

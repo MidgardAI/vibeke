@@ -246,11 +246,12 @@ fn reconcile_reports_missing_moved_and_orphans_and_deletes_nothing() {
         assert_in(&tmp, &co.path);
     }
     // Leftover directory that is not a worktree.
-    let stray = tmp_path.join("wts/myrepo/leftover");
+    let area = repo_area_dir(&root, &repo);
+    let stray = area.join("leftover");
     fs::create_dir_all(&stray).unwrap();
     fs::write(stray.join("f"), "x").unwrap();
     // `.trash` is the reaper's, never reported.
-    fs::create_dir_all(tmp_path.join("wts/myrepo/.trash/x")).unwrap();
+    fs::create_dir_all(area.join(".trash/x")).unwrap();
 
     // Removed outside Vibeke.
     fs::remove_dir_all(&gone.path).unwrap();

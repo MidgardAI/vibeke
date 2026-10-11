@@ -1889,6 +1889,10 @@ async fn task_finish(server: &Arc<Server>, p: &Value) -> R {
                 },
             );
             let st = j.wait();
+            if matches!(st, vk_tasks::RemovalState::Failed(_)) {
+                // Leftovers in `.trash` (a full copy of the checkout) go now, not at restart.
+                crate::task_workspace::sweep_trash(&srv);
+            }
             let mut c = srv.core.lock().unwrap();
             let mut tx = Tx::new();
             tx.event(
