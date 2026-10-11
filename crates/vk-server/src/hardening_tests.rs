@@ -367,6 +367,8 @@ async fn storage_prune_is_refused_while_degraded_and_status_says_so() {
         .unwrap();
     assert!(status["degraded"].is_string());
     assert_eq!(status["ephemeral"], 0);
+    // A config that does not load is reported (null when it loads); the key is always there.
+    assert!(status.get("config_error").is_some());
 }
 
 #[test]

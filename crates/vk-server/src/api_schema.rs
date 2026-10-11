@@ -652,7 +652,7 @@ api.methods :: {} => {methods: [{name: string, mutating: bool, stability?: stabl
 api.schema :: {method?: string} => {schema: object}
 # `boot_id` changes when the server image changes (start or `server.restart`); `restart_error` says why the last restart could not exec (the old image keeps serving)
 server.status :: {}
-  => {pid: int, version: string, uptime_ms: int, boot_id?: string, restart_error?: string|null, session: string, machine: string, panes: int, holders: {live: int, orphaned?: int}, clients: int, event_seq: int, socket?: string, degraded?: any, ephemeral?: int, preview?: object, timers?: object, gateway?: GatewayStatus|null, db_size?: int, rss?: int}
+  => {pid: int, version: string, uptime_ms: int, boot_id?: string, restart_error?: string|null, session: string, machine: string, panes: int, holders: {live: int, orphaned?: int}, clients: int, event_seq: int, socket?: string, degraded?: any, ephemeral?: int, preview?: object, timers?: object, gateway?: GatewayStatus|null, config_error?: {path: string, errors: [ConfigDiagnostic]}|null, db_size?: int, rss?: int}
 # re-read config.toml (runtime overrides on top); errors leave the applied config in force; full scope only
 server.reload_config :: {} => {changed: [string], errors: [ConfigDiagnostic], warnings?: [ConfigWarning]}
 # with kill_panes false the holders keep running and the next server reattaches; full scope only

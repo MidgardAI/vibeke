@@ -1367,6 +1367,9 @@ async fn handlers(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> R
                 "preview": crate::preview::status_json(server),
                 "timers": crate::timers::status_json(server),
                 "gateway": crate::gateway_supervisor::status_json(server),
+                // `config.toml` does not load (null when it does): a client that connects after
+                // `session.config_rejected` still learns of it.
+                "config_error": crate::config_api::load_error(),
             }))
         }
         "server.stop" => {

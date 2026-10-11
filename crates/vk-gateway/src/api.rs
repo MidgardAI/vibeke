@@ -1249,6 +1249,17 @@ impl Call<'_> {
                 snap["at"] = snap.get("at_seq").cloned().unwrap_or(Value::Null);
                 snap["notifications_unread"] = unread.into();
                 snap["host_name"] = self.gw.host_name.clone().into();
+                // The owner's apps show a host config that does not load, also when they
+                // connect after the `session.config_rejected` event. Shares and peers never see
+                // it (a limited snapshot keeps only allowlisted keys).
+                if self.device.kind == "device" {
+                    snap["config_error"] = self
+                        .server("server.status", json!({}))
+                        .await
+                        .ok()
+                        .and_then(|st| st.get("config_error").cloned())
+                        .unwrap_or(Value::Null);
+                }
                 Ok(snap)
             }
             "pane.read" => {
@@ -2718,6 +2729,10 @@ mod workspace_tests {
                                 json!({"run": {"id": id, "pane": if id.ends_with('1') { "p1" } else { "p2" }}})
                             }
                             "browser.session_open" => json!({"session": "b9", "echo": p}),
+                            "server.status" => json!({"version": "test", "config_error": {
+                                "path": "/c/config.toml",
+                                "errors": [{"line": 3, "message": "unknown key"}]
+                            }}),
                             "search.query" => json!({"echo": p, "hits": [
                                 {"pane": "p1", "text": "in"}, {"pane": "p2", "text": "secret"},
                                 {"pane": "p9", "text": "archived"}, {"text": "no pane"}
@@ -2775,6 +2790,34 @@ mod workspace_tests {
             crate::server::Server::new(sock),
         )
         .unwrap()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn dashboards_carry_the_host_config_error_to_owner_devices_only() {
+        let t = tempfile::tempdir().unwrap();
+        let gw = gateway(&t).await;
+        let me = device("d1", Scope::Full, "device", None);
+        let mut share = device("s1", Scope::View, "share", None);
+        share.public = "k-share".into();
+        gw.add_device(me.clone()).unwrap();
+        gw.add_device(share.clone()).unwrap();
+        let mine = Call {
+            gw: &gw,
+            device: &me,
+        }
+        .dispatch("dashboard.get", json!({}))
+        .await
+        .unwrap();
+        assert_eq!(mine["config_error"]["path"], "/c/config.toml");
+        assert_eq!(mine["config_error"]["errors"][0]["line"], 3);
+        let theirs = Call {
+            gw: &gw,
+            device: &share,
+        }
+        .dispatch("dashboard.get", json!({}))
+        .await
+        .unwrap();
+        assert!(theirs.get("config_error").is_none());
     }
 
     #[test]

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { configErrorFromEvent } from '../src/app/model';
+import { configErrorFromDashboard, configErrorFromEvent } from '../src/app/model';
 import { t } from '../src/i18n';
 import { TICKET_WARN_MS, alsoText, parseAlso, ticketDaysLeft } from '../src/lib/access';
 
@@ -34,6 +34,16 @@ describe('config load errors', () => {
     });
     expect(configErrorFromEvent(ev('session.config_reloaded'))).toBeNull();
     expect(configErrorFromEvent(ev('pane.created'))).toBeUndefined();
+  });
+  test('a dashboard seeds the banner for an app that connects after the event', () => {
+    const base = { at: 1, session: 's', machine: 'm', workspaces: [], tabs: [], panes: [], runs: [], interactions: [], tasks: [], notifications_unread: 0 };
+    expect(configErrorFromDashboard({ ...base, config_error: { path: '/c/config.toml', errors: [{ line: 2, message: 'unknown key' }] } }, 9)).toEqual({
+      errors: ['line 2: unknown key'],
+      at: 9,
+    });
+    expect(configErrorFromDashboard({ ...base, config_error: null }, 9)).toBeNull();
+    expect(configErrorFromDashboard(base, 9)).toBeUndefined();
+    expect(configErrorFromDashboard(null, 9)).toBeUndefined();
   });
 });
 
