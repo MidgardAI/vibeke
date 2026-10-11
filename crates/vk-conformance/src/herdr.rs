@@ -1429,6 +1429,9 @@ pub fn traced_params(method: &str, params: Option<&Value>) -> Option<Value> {
     Some(Value::Object(out))
 }
 
+/// Pending requests of one proxied connection: request id to (method, the params the trace keeps).
+type Pending = HashMap<String, (String, Option<Value>)>;
+
 /// Forward one connection line by line in both directions; pair each response with its
 /// request by `id` and append a trace line for it.
 fn proxy_connection(client: UnixStream, upstream: &Path, trace: Arc<Mutex<File>>) {
@@ -1445,7 +1448,7 @@ fn proxy_connection(client: UnixStream, upstream: &Path, trace: Arc<Mutex<File>>
         return;
     };
     // Request id to (method, the params the trace keeps).
-    let pending: Arc<Mutex<HashMap<String, (String, Option<Value>)>>> = Arc::default();
+    let pending: Arc<Mutex<Pending>> = Arc::default();
 
     // Server to client, on its own thread.
     let back = {
