@@ -994,6 +994,11 @@ fn plugin_panes_audit_events_and_redacted_logs() {
     let tp = s(&r["result"]["plugin_pane"]["pane"]["pane_id"]);
     let g = s_.herdr(&["pane", "get", &tp]);
     assert_eq!(g["pane"]["label"], "Viewer", "{g}");
+    // The tab pane writes the same env file: let it finish before the next pane's run.
+    wait_for("tab viewer env", 15000, || {
+        read(&st.join("viewer-env.txt")).contains(r#""placement":"tab""#)
+    });
+    s_.herdr(&["plugin", "pane", "close", &tp]);
     let _ = std::fs::remove_file(st.join("viewer-env.txt"));
     let r = call(with(json!({
         "target_pane_id": pane,
@@ -1001,7 +1006,8 @@ fn plugin_panes_audit_events_and_redacted_logs() {
     })));
     assert_eq!(r["result"]["type"], "plugin_pane_opened", "{r}");
     wait_for("viewer pane with env", 15000, || {
-        read(&st.join("viewer-env.txt")).contains("HERDR_PLUGIN_ID=")
+        let env = read(&st.join("viewer-env.txt"));
+        env.contains("HERDR_PLUGIN_ID=") && !env.contains(r#""placement":"tab""#)
     });
     let env = read(&st.join("viewer-env.txt"));
     assert!(
