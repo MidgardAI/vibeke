@@ -1,6 +1,6 @@
 # 18 — Real Herdr plugin conformance harness
 
-**Status: plan (not built).** This spec adds a harness that runs popular Herdr plugins, unchanged, against Vibeke's compatibility layer. The harness also compares what each plugin draws in its pane in Vibeke with what it draws in the pinned Herdr baseline. It implements part of [07](07-api-cli-plugins.md) §8.4 item 2 ("unmodified plugins") and [10](10-quality-performance-testing.md) §4.8.
+**Status: built; first CI runs pending.** The code, the lock and 20 scenarios exist. Plugin results come only from the `herdr-plugins.yml` workflow (§12). This spec adds a harness that runs popular Herdr plugins, unchanged, against Vibeke's compatibility layer. The harness also compares what each plugin draws in its pane in Vibeke with what it draws in the pinned Herdr baseline. It implements part of [07](07-api-cli-plugins.md) §8.4 item 2 ("unmodified plugins") and [10](10-quality-performance-testing.md) §4.8.
 
 The harness is a regression signal. It is not the M5 certification gate. A sample of popular plugins cannot prove full compatibility (07 §8.0). The full inventory and the differential suite stay required.
 
@@ -173,10 +173,10 @@ The first plugins must cover the five categories in 07 §8.4 item 2. Each catego
 | Category | Candidate | How it is confirmed |
 |---|---|---|
 | Layout or worktree workflow | `cloudmanic/herdr-plus` (handles `worktree.created` and `worktree.opened`) | Its scenario creates a worktree and checks the resulting layout. |
-| Event notification | `dcolinmorgan/herdr-remote` (only event hooks, on agent status) | Its scenario changes agent status and checks the stubbed notification endpoint. |
+| Event notification | `ZingerLittleBee/Heeler` (posts to a push relay URL from its config) | Its scenario changes agent status and checks the stubbed HTTP endpoint. `dcolinmorgan/herdr-remote` sends a UDP datagram to a fixed local port, so its scenario checks only that its hooks finish. |
 | Link handler | `ChmaraX/herdr-nvim` | Its scenario opens a matching URL. |
 | Stateful startup restoration | `eliasstravik/herdr-projects` | Its scenario restarts the server and checks restored state. |
-| Raw socket callbacks | none confirmed | A scan of the mirrored source finds direct socket use. If no plugin in the corpus uses it, the harness adds the highest-ranked eligible plugin that does. |
+| Raw socket callbacks | `alexarthurs/herdr-sidebar` (JSON lines to `HERDR_SOCKET_PATH`) | Source review found direct socket use. `scripts/herdr-plugins-scan.ts` confirms it on the mirrored source in CI. `cloudmanic/herdr-plus` and `persiyanov/herdr-reviewr` also use the socket. |
 
 ## 9. Observation
 
