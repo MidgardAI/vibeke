@@ -393,4 +393,9 @@ fn a_disconnect_lets_the_previews_be_asked_again() {
     on_disconnected(&mut app, 0);
     observe(&mut app);
     only(&commands(&mut rxs[0]), "screenshot.list");
+    // Offline: not marked as asked, so the preview is asked for once the machine is back.
+    on_disconnected(&mut app, 0);
+    app.machines[0].tx = None;
+    observe(&mut app);
+    assert!(app.previews_ui.asked.is_empty());
 }

@@ -92,12 +92,24 @@ impl State {
             .map(|(_, d)| d.as_slice())
     }
 
+    /// Cache `data` under `key`. The oldest image goes when the cache is full, unless it is on
+    /// screen (a view would lose it until the next key, and a remote one is only fetched when
+    /// asked for).
     pub fn put(&mut self, key: String, data: Vec<u8>) {
         self.problems.remove(&key);
         self.images.retain(|(k, _)| *k != key);
         self.images.push((key, data));
         if self.images.len() > CACHE {
-            self.images.remove(0);
+            let shown: HashSet<&str> = self
+                .kitty
+                .values()
+                .map(|(k, _, _)| k.as_str())
+                .chain(self.iterm.values().map(|(k, _)| k.as_str()))
+                .collect();
+            let last = self.images.len() - 1;
+            if let Some(i) = (0..last).find(|i| !shown.contains(self.images[*i].0.as_str())) {
+                self.images.remove(i);
+            }
         }
     }
 
@@ -185,8 +197,11 @@ pub fn load_local(app: &mut App, key: &str, path: &str, exists: bool) {
 /// thumb}`), unless it is cached, known to be unusable or already on its way. `pending`
 /// routes the reply; its handler calls [`on_fetched`].
 pub fn fetch(app: &mut App, mi: usize, id: &str, px: u32, key: &str, pending: Pending) {
+    // Offline: nothing is sent, so nothing is marked as on its way (it is asked for again on a
+    // later frame once the machine is back).
     if app.imgview.image(key).is_some()
         || app.imgview.problem(key).is_some()
+        || !app.machines.get(mi).is_some_and(|m| m.connected())
         || !app.imgview.fetching.insert(key.to_string())
     {
         return;

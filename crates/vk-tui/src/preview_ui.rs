@@ -135,7 +135,7 @@ pub fn on_disconnected(app: &mut App, mi: usize) {
 pub fn observe(app: &mut App) {
     for (mi, p) in wanted(app) {
         let key = (mi, p.handle.clone());
-        if app.previews_ui.asked.insert(key.clone()) {
+        if app.machines[mi].connected() && app.previews_ui.asked.insert(key.clone()) {
             app.command_on(
                 mi,
                 "screenshot.list",

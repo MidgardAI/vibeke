@@ -300,7 +300,8 @@ pub fn title(s: &Shot) -> String {
 /// `x` on image `(mi, id)`: ask for the second key (a second `x` for an attached image, `y` for
 /// a captured screenshot).
 pub fn ask_remove(app: &mut App, mi: usize, id: String) {
-    let attached = shot(app, mi, &id).is_none_or(Shot::is_agent);
+    // The viewer's own record when the recent cache no longer holds it.
+    let attached = crate::viewer::shot(app, mi, &id).is_none_or(Shot::is_agent);
     app.images_ui.confirm = Some(Confirm {
         machine: mi,
         id,

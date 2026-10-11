@@ -305,4 +305,27 @@ fn a_disconnect_lets_interrupted_fetches_go_again() {
     );
     fetch(&mut app, 1, "S1", 128, "1:S1@128", Pending::Ignore);
     assert!(app.imgview.fetching.contains("1:S1@128"), "asked again");
+    // While the machine is offline nothing is sent, so nothing is marked as on its way.
+    app.on_disconnected(1);
+    app.machines[1].tx = None;
+    fetch(&mut app, 1, "S1", 128, "1:S1@128", Pending::Ignore);
+    assert!(!app.imgview.fetching.contains("1:S1@128"));
+}
+
+#[test]
+fn images_on_screen_stay_cached_when_others_arrive() {
+    let (_dir, path) = with_png();
+    let (mut app, _rxs) = fleet();
+    caps(&mut app, false);
+    gallery_full(&mut app, &path);
+    app.draw_bytes();
+    assert!(
+        !app.imgview.iterm.is_empty(),
+        "the gallery image is on screen"
+    );
+    for i in 0..CACHE + 4 {
+        app.imgview.put(format!("thumb:1:T{i}"), tiny_png());
+    }
+    assert!(app.imgview.image("0:S1").is_some());
+    assert!(app.imgview.images.len() <= CACHE);
 }

@@ -457,7 +457,10 @@ fn fetch_image(app: &mut App, g: &Gallery) {
     if let Some(d) = &g.diff {
         let Some(r) = &d.result else { return };
         let key = diff_key(g.machine, st(r, "blob"));
-        if app.imgview.image(&key).is_none() && app.imgview.fetching.insert(key.clone()) {
+        if app.imgview.image(&key).is_none()
+            && app.machines[g.machine].connected()
+            && app.imgview.fetching.insert(key.clone())
+        {
             app.command_on(
                 g.machine,
                 "browser.diff",
