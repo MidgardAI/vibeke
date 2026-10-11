@@ -1,0 +1,95 @@
+# Plugin: devswha/herdr-web-ui (devswha.herdr-web-ui 0.4.6), locked commit
+# b2c5b15cee6abdc28fbbf6e4c33f946a864fdbba, manifest herdr-plugin.toml.
+#
+# Covers: the startup command, the actions `start`, `stop`, `status` and `phone`, and the
+# `phone` pane (zoomed). The startup command and the `start` action run a script (with the Bun
+# runtime) that starts a detached web server and records its process id in the plugin state
+# directory. The server reads the Herdr session over the socket. The `stop` action ends that
+# server, so the scenario stops the service itself at the end. The `phone` action opens the
+# `phone` pane with `herdr plugin pane open`. The pane prints the address of the web app and
+# a pairing code.
+#
+# The build steps need the Bun runtime and network access to install packages. The manifest
+# also lists Windows-only entries (`start-windows`, `stop-windows`, `status-windows`,
+# `phone-windows` and the `phone-windows` pane). They do not apply to Linux or macOS and are
+# not part of this scenario. The `phone` action runs a plain `herdr` command, so the test
+# environment must have a `herdr` command that talks to Vibeke.
+#
+# Pane contents hold a random pairing code and a port, so they are compared for placement only.
+# The plugin declares no event hooks and no link handlers.
+#
+# Confirms no category of spec 18 §8.5.
+
+plugin_id = "devswha.herdr-web-ui"
+repository = "devswha/herdr-web-ui"
+timeout_ms = 180000
+
+[[step]]
+id = "startup"
+kind = "wait"
+timeout_ms = 180000
+[[step.expect]]
+kind = "ready"
+text = "herdr web ui listening at"
+[[step.expect]]
+kind = "file"
+path = "{state}/server.pid"
+
+[[step]]
+id = "status"
+kind = "action"
+action = "status"
+context = "workspace"
+timeout_ms = 60000
+[[step.expect]]
+kind = "invocation_final"
+
+# The server already answers, so a second start changes nothing.
+[[step]]
+id = "start"
+kind = "action"
+action = "start"
+context = "workspace"
+timeout_ms = 60000
+[[step.expect]]
+kind = "invocation_final"
+[[step.expect]]
+kind = "file"
+path = "{state}/server.pid"
+
+[[step]]
+id = "phone"
+kind = "action"
+action = "phone"
+context = "workspace"
+timeout_ms = 60000
+expect_calls = [{ method = "plugin.pane.open", ok = true }]
+[[step.expect]]
+kind = "invocation_final"
+[[step.expect]]
+kind = "pane"
+pane = "phone"
+placement = "zoomed"
+[[step.expect]]
+kind = "screen_text"
+pane = "phone"
+text = "Phone setup"
+[[step.compare]]
+pane = "phone"
+placement_only = true
+
+[[step]]
+id = "close-phone"
+kind = "input"
+pane = "phone"
+keys = ["Enter"]
+
+# The scenario stops the server itself: uninstalling the plugin does not.
+[[step]]
+id = "stop"
+kind = "action"
+action = "stop"
+context = "workspace"
+timeout_ms = 60000
+[[step.expect]]
+kind = "invocation_final"
