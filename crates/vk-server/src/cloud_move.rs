@@ -1102,7 +1102,7 @@ async fn new_task_for(
             )
         })?;
     let title = server
-        .with_core(|c| c.pane(pane).map(|p| p.title.clone()))
+        .with_core(|c| c.pane(pane).map(|p| p.display_title().to_string()))
         .filter(|t| !t.trim().is_empty())
         .unwrap_or_else(|| "Sent to the cloud".into());
     let r = crate::orch::call(
