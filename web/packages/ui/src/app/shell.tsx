@@ -7,6 +7,7 @@ import { Button, IconButton, cx } from '../components/ui';
 import { keyLabel } from '../lib/shortcuts';
 import { t } from '../i18n';
 import { BannerTracker, bannerText } from '../lib/banner';
+import { useOverlay } from '../lib/overlays';
 import { useStore } from '../lib/store';
 import { navigate } from '../router';
 
@@ -45,6 +46,8 @@ export function ConnectionBanner() {
 export function Toasts() {
   const app = useApp();
   const toasts = useStore(app.toasts);
+  // Native layers (the desktop's embedded preview) would cover the toast: count it as an overlay.
+  useOverlay(toasts.length > 0);
   if (!toasts.length || typeof document === 'undefined') return null;
   // Portalled like dialogs: #root is its own stacking context in the installed app (styles.css).
   return createPortal(

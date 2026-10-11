@@ -176,6 +176,8 @@ export interface PreviewViewState {
   canGoForward: boolean;
   /** `host_offline` while the host is not connected; other values describe a failed load. */
   error?: string;
+  /** The host refused a port this page uses (`port_not_allowed`); the view is hidden meanwhile. */
+  blocked?: { host: string; port: number };
 }
 
 /**
@@ -190,6 +192,8 @@ export interface PreviewViewApi {
   /** The page as an image data URL, or null (shown while an overlay hides the view). */
   snapshot(view: string): Promise<string | null>;
   close(view: string): void;
+  /** Answer the port question: allow (open the port once, then reload) or not now (show the page as is). */
+  allowPort?(view: string, allow: boolean): Promise<void>;
   onState(cb: (s: PreviewViewState) => void): () => void;
 }
 

@@ -1352,6 +1352,8 @@ export interface TunnelOpenParams {
   /** A loopback name or address on that machine (`localhost`, `*.localhost`, 127/8, ::1). */
   host: string;
   port: number;
+  /** The user agreed to let previews reach this port (after a `port_not_allowed` refusal). */
+  allow_port?: boolean;
 }
 
 /** `tunnel.data`: up to 48 KiB of stream data (unpadded base64url), in order. */

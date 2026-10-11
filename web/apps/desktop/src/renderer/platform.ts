@@ -186,10 +186,14 @@ function previewView(bridge: Bridge): PreviewViewApi {
     devtools: (view) => fire(INVOKE.previewDevtools, view),
     snapshot: (view) => call<string | null>(bridge, INVOKE.previewSnapshot, view).catch(() => null),
     close: (view) => fire(INVOKE.previewClose, view),
+    allowPort: (view, allow) => call<void>(bridge, INVOKE.previewAllowPort, view, allow),
     onState: (cb) =>
       bridge.on(EVENT.previewState, (p) => {
         const s = p as PreviewViewState;
-        if (s && typeof s.view === 'string' && typeof s.url === 'string') cb(s);
+        if (!s || typeof s.view !== 'string' || typeof s.url !== 'string') return;
+        const b = s.blocked;
+        const blocked = b && typeof b.host === 'string' && b.host.length <= 253 && Number.isInteger(b.port) && b.port > 0 && b.port < 65536 ? { host: b.host, port: b.port } : undefined;
+        cb({ ...s, blocked });
       }),
   };
 }

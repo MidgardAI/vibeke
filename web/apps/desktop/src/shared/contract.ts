@@ -48,6 +48,8 @@ export const INVOKE = {
   previewDevtools: 'vk:preview.view.devtools',
   previewSnapshot: 'vk:preview.view.snapshot',
   previewClose: 'vk:preview.view.close',
+  /** The user allowed the port a preview view was refused (`port_not_allowed`). */
+  previewAllowPort: 'vk:preview.view.allow-port',
 } as const;
 
 /** Main → renderer (webContents.send). */
@@ -297,6 +299,8 @@ export interface PreviewState {
   canGoForward: boolean;
   /** `host_offline` while the host connection is down; other values are load errors. */
   error?: string;
+  /** The host refused this port: the view is hidden until the user allows it. */
+  blocked?: { host: string; port: number };
 }
 
 /** What the preload exposes as `window.vibeke` (see preload/index.ts). */

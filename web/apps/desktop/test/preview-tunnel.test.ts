@@ -137,4 +137,43 @@ describe('tunnel streams', () => {
     await tick();
     expect(link.sent('tunnel.close')).toEqual([{ stream: 's1' }]);
   });
+
+  test('data that arrives before the open answer is delivered in order', async () => {
+    const link = new FakeLink();
+    let release!: () => void;
+    link.answer = (m) => (m === 'tunnel.open' ? new Promise((r) => (release = () => r({ stream: 's1' })) ) : Promise.resolve({}));
+    const opening = new TunnelMux(link).open({ host: 'localhost', port: 1 });
+    await tick();
+    link.notify('tunnel.data', { stream: 's1', data_b64: Buffer.from('early ').toString('base64url') });
+    link.notify('tunnel.data', { stream: 's1', data_b64: Buffer.from('bytes').toString('base64url') });
+    release();
+    const s = await opening;
+    const got = await new Promise<string>((r) => s.once('data', (d: Buffer) => r(d.toString())));
+    expect(got).toStartWith('early ');
+    s.destroy();
+  });
+
+  test('too much early data fails the stream instead of dropping bytes', async () => {
+    const link = new FakeLink();
+    let release!: () => void;
+    link.answer = (m) => (m === 'tunnel.open' ? new Promise((r) => (release = () => r({ stream: 's1' })) ) : Promise.resolve({}));
+    const opening = new TunnelMux(link).open({ host: 'localhost', port: 1 });
+    await tick();
+    const chunk = Buffer.alloc(48 * 1024, 1).toString('base64url');
+    for (let i = 0; i < 20; i++) link.notify('tunnel.data', { stream: 's1', data_b64: chunk }); // 960 KiB > window
+    release();
+    await expect(opening).rejects.toThrow(/overflow/);
+    expect(link.sent('tunnel.close').length).toBeGreaterThan(0);
+  });
+});
+
+describe('port_not_allowed', () => {
+  test('the refusal is recognised with its port', async () => {
+    const { RpcError } = await import('@vibeke/core');
+    const { portNotAllowed } = await import('../src/main/preview-tunnel');
+    const e = new RpcError('tunnel.open', { code: -32003, message: 'port_not_allowed: port 8000 is not a preview port', data: { kind: 'forbidden', details: { reason: 'port_not_allowed', port: 8000, host: 'localhost', machine: '' } } });
+    expect(portNotAllowed(e)).toEqual({ port: 8000, host: 'localhost' });
+    expect(portNotAllowed(new RpcError('tunnel.open', { code: -32000, message: 'port_not_allowed: 3001' }))).toEqual({ port: 3001, host: 'localhost' });
+    expect(portNotAllowed(new Error('refused'))).toBeNull();
+  });
 });

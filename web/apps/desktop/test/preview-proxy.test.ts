@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { connect, createServer, type Server, type Socket } from 'node:net';
+import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import type { Duplex } from 'node:stream';
 import { PreviewProxy, isLoopbackName, isOurProxyChallenge, loopbackIp, originRequest, parseAuthority, parseHead, resolveDestination, type PreviewRoute } from '../src/main/preview-proxy';
 
@@ -147,7 +148,7 @@ describe('preview proxy', () => {
     expect(sent).toStartWith('GET /app/page?x=1 HTTP/1.1\r\n');
     expect(sent).toContain('Host: localhost:3000\r\n');
     expect(sent).toContain('Accept: text/html\r\n');
-    expect(sent).toContain('Connection: close\r\n');
+    expect(sent).not.toContain('Connection: close'); // kept alive and pooled
     expect(sent.toLowerCase()).not.toContain('proxy-authorization');
     expect(sent.toLowerCase()).not.toContain('proxy-connection');
     expect(sent.toLowerCase()).not.toContain('keep-alive');
@@ -169,6 +170,101 @@ describe('preview proxy', () => {
     const text = await readUntil(s, (t) => t.includes('refused'));
     expect(text).toStartWith('HTTP/1.1 502');
     s.destroy();
+  });
+});
+
+/** A real HTTP/1.1 dev server behind the fake tunnel: counts connections and requests. */
+async function httpSetup(handler: (req: IncomingMessage, res: ServerResponse) => void) {
+  const server = createHttpServer({ keepAliveTimeout: 10_000 }, handler);
+  let connections = 0;
+  server.on('connection', () => connections++);
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  const a = server.address();
+  const devPort = typeof a === 'object' && a ? a.port : 0;
+  let tunnels = 0;
+  const proxy = new PreviewProxy({
+    tunnel: async () => {
+      tunnels++;
+      return (await dial(devPort)) as Duplex;
+    },
+  });
+  const port = await proxy.start();
+  const cred = proxy.addView('pvdddddddddddddddddddddddd', { hostId: 'HOST1', machine: '' });
+  cleanups.push(() => {
+    proxy.close();
+    server.close();
+    server.closeAllConnections?.();
+  });
+  const auth = `Proxy-Authorization: ${basic(cred.username, cred.password)}\r\n`;
+  return { proxy, port, auth, connections: () => connections, tunnels: () => tunnels };
+}
+
+/** Reads one full HTTP response with a Content-Length body. */
+function readResponse(s: Socket): Promise<string> {
+  return readUntil(s, (t) => {
+    const end = t.indexOf('\r\n\r\n');
+    if (end < 0) return false;
+    const len = Number(/content-length: (\d+)/i.exec(t.slice(0, end))?.[1] ?? 0);
+    return t.length >= end + 4 + len;
+  });
+}
+
+describe('keep-alive', () => {
+  test('requests on one client connection reuse one tunnel stream', async () => {
+    const { port, auth, tunnels, proxy } = await httpSetup((req, res) => res.end(`hello ${req.url}`));
+    const s = await dial(port);
+    for (const path of ['/a.js', '/b.js', '/c.js']) {
+      s.write(`GET http://localhost:5173${path} HTTP/1.1\r\nHost: localhost:5173\r\n${auth}\r\n`);
+      const res = await readResponse(s);
+      expect(res).toStartWith('HTTP/1.1 200');
+      expect(res).toEndWith(`hello ${path}`);
+    }
+    expect(tunnels()).toBe(1);
+    expect(proxy.pooled).toBe(1);
+    s.destroy();
+  });
+
+  test('a second client connection takes the pooled stream', async () => {
+    const { port, auth, tunnels } = await httpSetup((_req, res) => res.end('ok'));
+    const a = await dial(port);
+    a.write(`GET http://localhost:5173/ HTTP/1.1\r\nHost: localhost:5173\r\n${auth}\r\n`);
+    await readResponse(a);
+    const b = await dial(port);
+    b.write(`GET http://localhost:5173/x HTTP/1.1\r\nHost: localhost:5173\r\n${auth}\r\n`);
+    expect(await readResponse(b)).toEndWith('ok');
+    expect(tunnels()).toBe(1);
+    a.destroy();
+    b.destroy();
+  });
+
+  test('chunked responses and request bodies keep their boundaries', async () => {
+    const { port, auth, tunnels } = await httpSetup((req, res) => {
+      let body = '';
+      req.on('data', (d) => (body += d));
+      req.on('end', () => {
+        res.write('part1-');
+        res.end(`got:${body}`);
+      });
+    });
+    const s = await dial(port);
+    s.write(`POST http://localhost:5173/api HTTP/1.1\r\nHost: localhost:5173\r\n${auth}Content-Length: 5\r\n\r\nhello`);
+    const first = await readUntil(s, (t) => t.includes('0\r\n\r\n'));
+    expect(first).toContain('part1-');
+    expect(first).toContain('got:hello');
+    s.write(`GET http://localhost:5173/again HTTP/1.1\r\nHost: localhost:5173\r\n${auth}\r\n`);
+    const second = await readUntil(s, (t) => t.includes('0\r\n\r\n'));
+    expect(second).toContain('got:');
+    expect(tunnels()).toBe(1);
+    s.destroy();
+  });
+
+  test('Connection: close from the client is honoured', async () => {
+    const { port, auth, proxy } = await httpSetup((_req, res) => res.end('bye'));
+    const s = await dial(port);
+    s.write(`GET http://localhost:5173/ HTTP/1.1\r\nHost: localhost:5173\r\nConnection: close\r\n${auth}\r\n`);
+    const res = await readUntil(s, () => false); // until the proxy ends the connection
+    expect(res).toEndWith('bye');
+    expect(proxy.pooled).toBe(0);
   });
 });
 
@@ -205,6 +301,13 @@ describe('destinations and heads', () => {
     expect(ws.head).toContain('Upgrade: websocket\r\nConnection: Upgrade\r\n');
     expect(ws.head).toContain('Host: localhost:5173\r\n');
     expect(ws.head).not.toContain('Connection: close');
+    expect(ws.upgrade).toBe(true);
+    const old = originRequest(parseHead('GET http://localhost/ HTTP/1.0')!)!;
+    expect(old.close).toBe(true);
+    expect(old.head).toContain('Connection: close\r\n');
+    const closing = originRequest(parseHead('GET http://localhost/ HTTP/1.1\r\nConnection: close')!)!;
+    expect(closing.close).toBe(true);
+    expect(originRequest(parseHead('GET http://localhost/ HTTP/1.1')!)!.close).toBe(false);
   });
 
   test('login challenges are ours only for the proxy port on 127.0.0.1', () => {

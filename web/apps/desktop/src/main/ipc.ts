@@ -221,6 +221,14 @@ export function registerIpc(d: IpcDeps): void {
       return ok(null);
     }
   });
+  handle(INVOKE.previewAllowPort, (e, view, allow) => {
+    try {
+      d.previews.allowPort(e.sender, v.previewView(view), v.flag(allow, 'allow port'));
+      return ok(null);
+    } catch (x) {
+      return err(x);
+    }
+  });
   handle(INVOKE.previewClose, (e, view) => {
     d.previews.close(e.sender, v.previewView(view));
     return ok(null);
