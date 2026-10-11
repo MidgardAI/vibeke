@@ -862,11 +862,13 @@ async fn device_pin_emulates_letterboxes_and_maps_input() {
                 .any(|(p, _)| p["enabled"] == true)
         );
         assert_eq!(s.viewports(), vec![(393, 852)]);
-        // The screencast is bounded by the letterbox rectangle: 320 px tall → 148 px wide.
+        // The screencast is bounded by the letterbox rectangle (320 px tall → 148 px wide),
+        // widened by the window around the viewport (at least 500 CSS px wide).
         let sc = s.calls("Page.startScreencast");
         let last = &sc.last().unwrap().0;
         assert_eq!(last["maxHeight"], 320);
-        assert_eq!(last["maxWidth"], (393.0f64 * 320.0 / 852.0).round() as u64);
+        let rect_w = (393.0f64 * 320.0 / 852.0).round();
+        assert_eq!(last["maxWidth"], (rect_w * 500.0 / 393.0).ceil() as u64);
     }
     // Pixels: margins are the neutral fill, the middle is the page.
     let px_at = |m: &MediaFrame, x: u32, y: u32| -> [u8; 4] {

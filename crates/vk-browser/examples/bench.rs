@@ -248,7 +248,7 @@ fn launch(full: bool, extra: &[&str]) -> Result<Ctx> {
         "Emulation.setFocusEmulationEnabled",
         json!({"enabled": true}),
     )?;
-    let css = page.set_viewport_for_cells(COLS, ROWS, CELL_W, CELL_H, DPR)?;
+    let (css, _) = page.set_viewport_for_cells(COLS, ROWS, CELL_W, CELL_H, DPR)?;
     let srv = LocalServer::start(pages())?;
     Ok(Ctx {
         browser,

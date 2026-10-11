@@ -133,7 +133,7 @@ fn screencast_and_screenshot_are_pane_sized() {
     let events = browser.take_events();
     let page = browser.new_page("about:blank").unwrap();
     page.enable().unwrap();
-    let (css_w, css_h) = page.set_viewport_for_cells(50, 10, 16, 32, 2.0).unwrap();
+    let ((css_w, css_h), _) = page.set_viewport_for_cells(50, 10, 16, 32, 2.0).unwrap();
     assert_eq!((css_w, css_h), (400, 160));
     page.navigate(&srv.url("/")).unwrap();
     let shot = frame::decode(&page.capture_screenshot(false, 80).unwrap()).unwrap();

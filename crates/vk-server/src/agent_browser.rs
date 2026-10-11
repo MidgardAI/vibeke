@@ -1778,8 +1778,11 @@ async fn open(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         .await;
         // Full Chrome's headless screencast frames follow the window, not the emulated viewport
         // (`Page::fit_window`): size the window first; the watch view crops what is left over.
-        let page =
-            vk_browser::cdp::Page::attached(cdp.clone(), cdp_session.clone(), target.clone());
+        let page = vk_browser::cdp::Page::attached(
+            cdp.clone(),
+            cdp_session.clone(),
+            sess.target_id.clone(),
+        );
         let _ = tokio::task::spawn_blocking(move || page.fit_window(viewport)).await;
         call(
             &cdp,

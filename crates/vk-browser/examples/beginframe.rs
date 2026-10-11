@@ -107,7 +107,7 @@ fn main() -> Result<()> {
     let page =
         browser.new_page_with(json!({ "url": "about:blank", "enableBeginFrameControl": true }))?;
     page.enable()?;
-    let (css_w, css_h) = page.set_viewport_for_cells(100, 40, 16, 32, 2.0)?;
+    let ((css_w, css_h), _) = page.set_viewport_for_cells(100, 40, 16, 32, 2.0)?;
     page.call("Page.navigate", json!({ "url": srv.url("/") }))?;
     let begin = |shot: bool| -> Result<Option<Vec<u8>>> {
         let mut p = json!({ "interval": 16.666 });

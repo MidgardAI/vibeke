@@ -151,6 +151,9 @@ pub struct Event {
 
 type Pending = Arc<Mutex<HashMap<u64, Sender<std::result::Result<Value, CdpError>>>>>;
 
+/// A width and height (CSS or device px).
+pub type Size = (u32, u32);
+
 /// A CDP connection over any byte transport (the pipe pair in production, a socket in tests).
 pub struct Cdp {
     writer: Mutex<Box<dyn Write + Send>>,
@@ -637,7 +640,7 @@ impl Page {
         cell_w: u32,
         cell_h: u32,
         dpr: f64,
-    ) -> Result<((u32, u32), Option<(u32, u32)>)> {
+    ) -> Result<(Size, Option<Size>)> {
         let (dev_w, dev_h) = (cols * cell_w, rows * cell_h);
         let css_w = ((dev_w as f64 / dpr).floor() as u32).max(1);
         let css_h = ((dev_h as f64 / dpr).floor() as u32).max(1);
