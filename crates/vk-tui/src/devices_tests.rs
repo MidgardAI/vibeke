@@ -173,9 +173,9 @@ fn scope_texts_say_what_each_level_can_do() {
     let (mut app, _rxs) = opened();
     app.on_key(ch('n'));
     let s = screen(&app);
-    assert!(s.contains("can run any command as you on this host"), "{s}");
+    assert!(s.contains("can run any command"), "{s}");
     assert!(s.contains("always allow"), "{s}");
-    assert!(s.contains("transcripts, files and diffs"), "{s}");
+    assert!(s.contains("diffs"), "{s}");
 }
 
 #[test]

@@ -1316,7 +1316,9 @@ fn draw_pick(app: &App, a: &mut crate::drafts::Area<'_>, v: &View, sel: usize) {
     a.line("", t.text());
     for (i, (_, name, what)) in SCOPES.iter().enumerate() {
         let on = i == sel;
-        a.line(
+        // Wrapped, not cut: what a level can do is the point of the choice.
+        wrap_lines(
+            a,
             &format!("{} {:<8} {}", if on { "›" } else { " " }, name, what),
             if on { t.sel(t.fg) } else { t.text() },
         );
