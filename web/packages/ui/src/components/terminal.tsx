@@ -1,5 +1,6 @@
 // Terminal mirror: ANSI or styled rows → spans (never HTML), find highlighting, wrap and text size.
 
+import { t } from '../i18n';
 import { Fragment, memo, useEffect, useMemo, useRef, type CSSProperties, type ReactNode } from 'react';
 import { parseAnsi, type Segment, type Style } from '../lib/ansi';
 import { findLinks } from '../lib/linkify';
@@ -215,13 +216,16 @@ export const TerminalMirror = memo(function TerminalMirror({
   }, [find?.query, find?.current, lines]);
 
   const counter = { n: 0 };
+  // Not a live region: the mirror re-renders all the time, and a screen reader would read it out
+  // on every poll. The user reads it on demand.
   return (
     <div
       ref={ref}
       className={cx('term overflow-auto px-2 py-1.5', className)}
       style={{ fontSize }}
-      aria-label="terminal"
-      role="log"
+      aria-label={t.pane.terminalLabel}
+      role="region"
+      aria-live="off"
     >
       <pre className={cx('m-0 font-[inherit]', wrap ? 'whitespace-pre-wrap break-all' : 'whitespace-pre')}>
         {lines.map((segs, i) => (

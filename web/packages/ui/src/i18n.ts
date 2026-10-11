@@ -139,6 +139,7 @@ export const en = {
   focus: { empty: 'All clear', emptyHint: 'Only things that need you show up here.' },
 
   pane: {
+    terminalLabel: 'Terminal output',
     find: 'Find',
     findPlaceholder: 'Find in screen',
     history: 'History',
@@ -162,6 +163,10 @@ export const en = {
   },
 
   belt: {
+    locked: 'locked',
+    typeKey: 'Type one key',
+    smaller: 'Smaller text',
+    larger: 'Larger text',
     keys: 'Keys',
     quick: 'Quick',
     agent: 'Agent',
