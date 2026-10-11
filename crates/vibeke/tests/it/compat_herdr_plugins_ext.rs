@@ -459,6 +459,42 @@ command = ["sh", "-c", "herdr agent view-clear > \"$HERDR_PLUGIN_STATE_DIR/clear
     });
     s_.json(&["plugin", "untrust", "acme.view"]);
     assert!(views(&s_).is_empty());
+
+    // Herdr's agent-list view (`{source, label?, filter?, sort[]}`, as herdr-projects sends
+    // it): any caller may set it; one is active at a time and `agent_view` describes it.
+    let herdr = |method: &str, params: Value| -> Value {
+        s_.api(
+            "compat.herdr.call",
+            json!({"method": method, "params": params}),
+        )
+    };
+    let r = herdr(
+        "agent.view.set",
+        json!({"source": "herdr-projects", "label": "projects",
+            "sort": [{"field": {"token": "hp_group"}, "order": "asc"}, {"field": {"token": "hp_rank"}, "order": "asc"}]}),
+    );
+    assert_eq!(
+        r["result"],
+        json!({"type": "agent_view", "active": true, "source": "herdr-projects", "label": "projects"}),
+        "{r}"
+    );
+    let r = herdr(
+        "agent.view.set",
+        json!({"source": "herdr-projects", "filter": {"op": "eq", "field": "status", "value": "busy"}}),
+    );
+    assert_eq!(r["error"]["code"], "invalid_agent_view", "{r}");
+    let r = herdr("agent.view.set", json!({"source": "plugin:acme.nope"}));
+    assert_eq!(r["error"]["code"], "plugin_not_found", "{r}");
+    // A clear for another source leaves the view; a clear without a source removes it.
+    let r = herdr("agent.view.clear", json!({"source": "other"}));
+    assert_eq!(r["result"]["active"], true, "{r}");
+    assert_eq!(r["result"]["source"], "herdr-projects", "{r}");
+    let r = herdr("agent.view.clear", json!({}));
+    assert_eq!(
+        r["result"],
+        json!({"type": "agent_view", "active": false}),
+        "{r}"
+    );
 }
 
 // ---- restricted (sandboxed) legacy mode ----------------------------------------------------

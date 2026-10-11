@@ -199,38 +199,6 @@ fn layout_pane_move_swap_metadata_and_their_events() {
         ]),
     );
 
-    // Export: a binary split tree with stable split ids and Herdr pane ids.
-    let lay = s_.herdr(&["layout", "export", "--tab-id", &t1]);
-    assert_eq!(lay["type"], "layout_snapshot", "{lay}");
-    let root = &lay["layout"]["root"];
-    assert_eq!(root["type"], "split");
-    assert_eq!(root["split_id"], "s");
-    assert_eq!(root["direction"], "horizontal");
-    assert_eq!(pane_ids(root), vec![p1.clone(), p2.clone()]);
-    let snap = s_.herdr(&["session", "snapshot"]);
-    assert!(
-        snap["layouts"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|l| l["tab_id"] == t1.as_str()),
-        "session.snapshot carries layouts: {snap}"
-    );
-
-    // Split ratio, then apply a rearranged snapshot (panes swapped, vertical).
-    let r = s_.herdr(&["layout", "set-split-ratio", "s", "0.7", "--tab-id", &t1]);
-    assert!(
-        (r["layout"]["root"]["ratio"].as_f64().unwrap() - 0.7).abs() < 0.01,
-        "{r}"
-    );
-    let e = ev.until("layout_updated");
-    assert_eq!(e["data"]["tab_id"], t1.as_str());
-    assert_eq!(e["data"]["layout"]["root"]["type"], "split", "{e}");
-    let apply = json!({
-        "tab_id": t1,
-        "layout": {"root": {"type": "split", "direction": "vertical", "ratio": 0.4,
-            "first": {"type": "pane", "pane_id": p2}, "second": {"type": "pane", "pane_id": p1}}}
-    });
     let sock_req = |m: &str, p: &Value| -> Value {
         let mut st = UnixStream::connect(&sock).unwrap();
         st.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
@@ -240,9 +208,90 @@ fn layout_pane_move_swap_metadata_and_their_events() {
         BufReader::new(st).read_line(&mut l).unwrap();
         serde_json::from_str(&l).unwrap()
     };
+
+    // Export: Herdr's `LayoutDescription`, a binary split tree with Herdr pane ids.
+    let lay = sock_req("layout.export", &json!({"tab_id": t1}))["result"].clone();
+    assert_eq!(lay["type"], "layout_export", "{lay}");
+    assert_eq!(lay["layout"]["tab_id"], t1.as_str(), "{lay}");
+    assert_eq!(lay["layout"]["workspace_id"], ws.as_str(), "{lay}");
+    assert_eq!(lay["layout"]["zoomed"], false, "{lay}");
+    let root = &lay["layout"]["root"];
+    assert_eq!(root["type"], "split");
+    assert_eq!(root["direction"], "right");
+    assert_eq!(root["ratio"], 0.5, "{root}");
+    assert_eq!(pane_ids(root), vec![p1.clone(), p2.clone()]);
+
+    // `pane.layout`: Herdr's `PaneLayoutSnapshot` with pane and split rects. A pane's rect
+    // includes its border, so the two sides of a split share the area without a gap.
+    let pl = sock_req("pane.layout", &json!({"pane_id": p1}))["result"].clone();
+    assert_eq!(pl["type"], "pane_layout", "{pl}");
+    let l = &pl["layout"];
+    assert_eq!(l["tab_id"], t1.as_str(), "{pl}");
+    assert_eq!(l["workspace_id"], ws.as_str(), "{pl}");
+    assert_eq!(l["zoomed"], false);
+    let n = |v: &Value| v.as_u64().unwrap();
+    let area = &l["area"];
+    assert!(n(&area["width"]) > 0 && n(&area["height"]) > 0, "{pl}");
+    let panes = l["panes"].as_array().unwrap();
+    let ids: Vec<String> = panes.iter().map(|p| s(&p["pane_id"])).collect();
+    assert_eq!(ids, vec![p1.clone(), p2.clone()], "{pl}");
+    assert_eq!(
+        panes.iter().filter(|p| p["focused"] == true).count(),
+        1,
+        "{pl}"
+    );
+    assert_eq!(
+        l["focused_pane_id"],
+        panes.iter().find(|p| p["focused"] == true).unwrap()["pane_id"]
+    );
+    let (r1, r2) = (&panes[0]["rect"], &panes[1]["rect"]);
+    assert_eq!(n(&r1["x"]), n(&area["x"]), "{pl}");
+    assert_eq!(n(&r2["x"]), n(&r1["x"]) + n(&r1["width"]), "{pl}");
+    assert_eq!(n(&r1["width"]) + n(&r2["width"]), n(&area["width"]), "{pl}");
+    assert_eq!(r1["height"], area["height"], "{pl}");
+    let splits = l["splits"].as_array().unwrap();
+    assert_eq!(splits.len(), 1, "{pl}");
+    assert_eq!(splits[0]["id"], "split_0_root");
+    assert_eq!(splits[0]["direction"], "right");
+    assert_eq!(splits[0]["ratio"], 0.5);
+    assert_eq!(splits[0]["rect"], *area);
+    let snap = s_.herdr(&["session", "snapshot"]);
+    assert!(
+        snap["layouts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|l| l["tab_id"] == t1.as_str() && l["panes"].is_array()),
+        "session.snapshot carries layouts: {snap}"
+    );
+
+    // Split ratio by the split id from `pane.layout`, then apply a rearranged tree (panes
+    // swapped, stacked).
+    let r = sock_req(
+        "layout.set_split_ratio",
+        &json!({"tab_id": t1, "split_id": "split_0_root", "ratio": 0.7}),
+    )["result"]
+        .clone();
+    assert_eq!(r["type"], "layout_split_ratio_set", "{r}");
+    assert!(
+        (r["layout"]["root"]["ratio"].as_f64().unwrap() - 0.7).abs() < 0.01,
+        "{r}"
+    );
+    let e = ev.until("layout_updated");
+    assert_eq!(e["data"]["tab_id"], t1.as_str());
+    assert_eq!(e["data"]["layout"]["tab_id"], t1.as_str(), "{e}");
+    assert!(
+        (e["data"]["layout"]["splits"][0]["ratio"].as_f64().unwrap() - 0.7).abs() < 0.01,
+        "{e}"
+    );
+    let apply = json!({
+        "tab_id": t1,
+        "layout": {"root": {"type": "split", "direction": "down", "ratio": 0.4,
+            "first": {"type": "pane", "pane_id": p2}, "second": {"type": "pane", "pane_id": p1}}}
+    });
     let v = sock_req("layout.apply", &apply);
-    assert_eq!(v["result"]["type"], "layout_snapshot", "{v}");
-    assert_eq!(v["result"]["layout"]["root"]["direction"], "vertical");
+    assert_eq!(v["result"]["type"], "layout_apply", "{v}");
+    assert_eq!(v["result"]["layout"]["root"]["direction"], "down");
     assert_eq!(
         pane_ids(&v["result"]["layout"]["root"]),
         vec![p2.clone(), p1.clone()]
@@ -251,19 +300,59 @@ fn layout_pane_move_swap_metadata_and_their_events() {
     let v = sock_req("layout.apply", &bad);
     assert_eq!(v["error"]["code"], "invalid_params", "every pane once: {v}");
 
-    // Swap and move (to a new tab): `pane.moved` events.
-    let v = s_.herdr(&["pane", "swap", &p1, &p2]);
-    assert_eq!(v["type"], "pane_list");
+    // Swap (Herdr's `source_pane_id` + `target_pane_id`): `pane_swap` and `pane.moved`.
+    let v = sock_req(
+        "pane.swap",
+        &json!({"source_pane_id": p1, "target_pane_id": p2}),
+    )["result"]
+        .clone();
+    assert_eq!(v["type"], "pane_swap", "{v}");
+    assert_eq!(v["swap"]["changed"], true, "{v}");
+    assert_eq!(v["swap"]["source_pane_id"], p1.as_str());
+    assert_eq!(v["swap"]["target_pane_id"], p2.as_str());
+    assert_eq!(v["swap"]["layout"]["tab_id"], t1.as_str(), "{v}");
+    assert_eq!(
+        v["swap"]["focused_pane_id"],
+        v["swap"]["layout"]["focused_pane_id"]
+    );
     let e = ev.until("pane_moved");
     assert!(e["data"]["pane_id"] == p1.as_str() || e["data"]["pane_id"] == p2.as_str());
+    let v = sock_req(
+        "pane.swap",
+        &json!({"source_pane_id": p1, "target_pane_id": p1}),
+    )["result"]
+        .clone();
+    assert_eq!(
+        (&v["swap"]["changed"], &v["swap"]["reason"]),
+        (&json!(false), &json!("same_pane")),
+        "{v}"
+    );
+
+    // Move (Herdr's `destination`) to a new tab: `pane_move` and `pane.moved`.
     let tab2 = s_.herdr(&["tab", "create", "--workspace-id", &ws, "--label", "two"]);
     let t2 = s(&tab2["tab"]["tab_id"]);
-    let moved = s_.herdr(&["pane", "move", &p2, "--tab-id", &t2, "--direction", "down"]);
-    assert_eq!(moved["pane"]["tab_id"], t2.as_str(), "{moved}");
+    let moved = sock_req(
+        "pane.move",
+        &json!({"pane_id": p2, "destination": {"type": "tab", "tab_id": t2, "split": "down"}}),
+    )["result"]
+        .clone();
+    assert_eq!(moved["type"], "pane_move", "{moved}");
+    let mr = &moved["move_result"];
+    assert_eq!(mr["changed"], true, "{moved}");
+    assert_eq!(mr["pane"]["tab_id"], t2.as_str(), "{moved}");
     assert_eq!(
-        moved["pane"]["pane_id"],
+        mr["pane"]["pane_id"],
         p2.as_str(),
         "ids are stable across a move"
+    );
+    assert_eq!(mr["previous_pane_id"], p2.as_str());
+    assert_eq!(mr["previous_tab_id"], t1.as_str());
+    assert_eq!(mr["previous_workspace_id"], ws.as_str());
+    assert_eq!(mr["target_layout"]["tab_id"], t2.as_str(), "{moved}");
+    assert_eq!(mr["source_layout"]["tab_id"], t1.as_str(), "{moved}");
+    assert_eq!(
+        mr["focused_pane_id"],
+        mr["target_layout"]["focused_pane_id"]
     );
     loop {
         let e = ev.until("pane_moved");
@@ -272,9 +361,17 @@ fn layout_pane_move_swap_metadata_and_their_events() {
             break;
         }
     }
-    let l2 = s_.herdr(&["layout", "export", "--tab-id", &t2]);
-    assert!(pane_ids(&l2["layout"]["root"]).contains(&p2));
-    let (_, e) = s_.herdr_fail(&["pane", "move", &p2]);
+    let l2 = sock_req("layout.export", &json!({"tab_id": t2}));
+    assert!(pane_ids(&l2["result"]["layout"]["root"]).contains(&p2));
+    // A move into the pane's own tab changes nothing.
+    let same = sock_req(
+        "pane.move",
+        &json!({"pane_id": p2, "destination": {"type": "tab", "tab_id": t2, "split": "right"}}),
+    )["result"]
+        .clone();
+    assert_eq!(same["move_result"]["changed"], false, "{same}");
+    assert_eq!(same["move_result"]["reason"], "same_tab", "{same}");
+    let e = sock_req("pane.move", &json!({"pane_id": p2}));
     assert_eq!(e["error"]["code"], "invalid_params", "{e}");
 
     // Tab move emits `tab.moved` (native event now).
@@ -297,18 +394,39 @@ fn layout_pane_move_swap_metadata_and_their_events() {
     assert_eq!(m["type"], "pane_output_matched");
     let e = ev.until("pane_output_matched");
     assert_eq!(e["data"]["pane_id"], p1.as_str());
-    let pi = s_.herdr(&["pane", "process-info", &p1]);
+    // Herdr's `PaneProcessInfo`: the shell at its prompt is the foreground job.
+    let pi = sock_req("pane.process_info", &json!({"pane_id": p1}))["result"].clone();
     assert_eq!(pi["type"], "pane_process_info", "{pi}");
-    assert!(pi["pid"].as_u64().unwrap() > 0);
-    assert_eq!(pi["pane_id"], p1.as_str());
+    let info = &pi["process_info"];
+    assert_eq!(info["pane_id"], p1.as_str(), "{pi}");
+    let shell = info["shell_pid"].as_u64().unwrap();
+    assert!(shell > 0, "{pi}");
+    assert!(
+        info["foreground_process_group_id"].as_u64().unwrap() > 0,
+        "{pi}"
+    );
+    assert!(info.get("tty").is_none(), "Herdr never sets tty: {pi}");
+    let procs = info["foreground_processes"].as_array().unwrap();
+    assert!(!procs.is_empty(), "{pi}");
+    for p in procs {
+        assert!(p["pid"].as_u64().unwrap() > 0, "{pi}");
+        assert!(!s(&p["name"]).is_empty(), "{pi}");
+    }
+    assert!(
+        procs.iter().any(|p| p["pid"].as_u64() == Some(shell)),
+        "the idle shell leads the foreground group: {pi}"
+    );
     s_.herdr(&["pane", "report-metadata", &p1, "--ci", "green"]);
     let g = s_.herdr(&["pane", "get", &p1]);
     assert_eq!(g["pane"]["metadata"]["ci"], "green", "{g}");
     s_.herdr(&["workspace", "report-metadata", &ws, "--branch", "main"]);
     let w = s_.herdr(&["workspace", "get", &ws]);
     assert_eq!(w["workspace"]["metadata"]["branch"], "main", "{w}");
+    // No client is attached: Herdr's answer says nothing showed it (Vibeke keeps the title).
     let v = sock_req("client.window_title.set", &json!({"title": "build"}));
-    assert_eq!(v["result"]["type"], "ok", "{v}");
+    assert_eq!(v["result"]["type"], "client_window_title", "{v}");
+    assert_eq!(v["result"]["changed"], false, "{v}");
+    assert_eq!(v["result"]["reason"], "no_foreground_client", "{v}");
     assert!(!s_.events("client.window_title_changed").is_empty());
 }
 
@@ -722,7 +840,13 @@ fn plugin_panes_audit_events_and_redacted_logs() {
         &pane,
     ]);
     assert_eq!(opened["type"], "plugin_pane_opened", "{opened}");
-    let vp = s(&opened["pane"]["pane_id"]);
+    // Herdr's `PluginPaneInfo`.
+    assert_eq!(
+        opened["plugin_pane"]["plugin_id"], "acme.daemon",
+        "{opened}"
+    );
+    assert_eq!(opened["plugin_pane"]["entrypoint"], "viewer", "{opened}");
+    let vp = s(&opened["plugin_pane"]["pane"]["pane_id"]);
     assert!(vp.starts_with("w") && vp != pane, "{opened}");
     wait_for("viewer pane callback", 15000, || {
         read(&st.join("viewer-pane.json")).contains("pane_info")
@@ -746,8 +870,18 @@ fn plugin_panes_audit_events_and_redacted_logs() {
         "--entrypoint",
         "viewer",
     ]);
-    assert_eq!(f["pane"]["pane_id"], vp.as_str());
-    s_.herdr(&[
+    assert_eq!(f["type"], "plugin_pane_focused", "{f}");
+    assert_eq!(f["plugin_pane"]["pane"]["pane_id"], vp.as_str(), "{f}");
+    assert_eq!(f["plugin_pane"]["entrypoint"], "viewer", "{f}");
+    // Herdr addresses a plugin pane by `pane_id`; any other pane is not a plugin pane.
+    let r = s_.json(&[
+        "api",
+        "call",
+        "compat.herdr.call",
+        &json!({"method": "plugin.pane.focus", "params": {"pane_id": pane}}).to_string(),
+    ]);
+    assert_eq!(r["error"]["code"], "plugin_pane_not_found", "{r}");
+    let c = s_.herdr(&[
         "plugin",
         "pane",
         "close",
@@ -756,6 +890,8 @@ fn plugin_panes_audit_events_and_redacted_logs() {
         "--entrypoint",
         "viewer",
     ]);
+    assert_eq!(c["type"], "plugin_pane_closed", "{c}");
+    assert_eq!(c["pane_id"], vp.as_str(), "{c}");
     wait_for("plugin pane gone with its broker", 15000, || {
         s_.json(&["compat", "status"])["brokers"] == 0
     });
@@ -772,8 +908,10 @@ fn plugin_panes_audit_events_and_redacted_logs() {
         "--pane-id",
         &pane,
     ]);
+    // Like Herdr, opening a popup answers `ok` (no pane identity).
+    assert_eq!(opened["type"], "ok", "{opened}");
     assert_eq!(opened["placement"], "popup", "{opened}");
-    assert!(opened["pane"].is_null(), "{opened}");
+    assert!(opened["plugin_pane"].is_null(), "{opened}");
     s_.herdr(&["popup", "close"]);
     wait_for("popup broker gone", 15000, || {
         s_.json(&["compat", "status"])["brokers"] == 0
@@ -796,6 +934,7 @@ fn plugin_panes_audit_events_and_redacted_logs() {
         "compat.herdr.call",
         &json!({"method": "plugin.disable", "params": {"plugin_id": "acme.daemon"}}).to_string(),
     ]);
+    assert_eq!(r["result"]["type"], "plugin_disabled", "{r}");
     assert_eq!(r["result"]["plugin"]["status"], "disabled", "{r}");
     let r = s_.json(&[
         "api",
@@ -803,6 +942,7 @@ fn plugin_panes_audit_events_and_redacted_logs() {
         "compat.herdr.call",
         &json!({"method": "plugin.enable", "params": {"plugin_id": "acme.daemon"}}).to_string(),
     ]);
+    assert_eq!(r["result"]["type"], "plugin_enabled", "{r}");
     assert_eq!(r["result"]["plugin"]["status"], "active", "{r}");
 
     // Agent methods over a self-reported agent (Herdr's integration path).

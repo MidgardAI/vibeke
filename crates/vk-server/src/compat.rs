@@ -484,6 +484,7 @@ pub fn sandbox_allows(method: &str) -> bool {
             | "agent.list"
             | "agent.get"
             | "layout.export"
+            | "pane.layout"
             | "events.subscribe"
             | "events.wait"
             | "plugin.list"
@@ -538,6 +539,7 @@ fn read_only(method: &str) -> bool {
             | "worktree.list"
             | "worktree.repo_root"
             | "layout.export"
+            | "pane.layout"
             | "events.subscribe"
             | "events.wait"
             | "plugin.list"
@@ -3827,7 +3829,7 @@ mod tests {
         let e = call(&srv, &user(), "popup.close", &json!({}))
             .await
             .unwrap_err();
-        assert_eq!(e.code, "popup_not_found");
+        assert_eq!(e.code, "popup_not_open");
         let pane = Caller::user(Ctx {
             pane_scope: Some("P".into()),
             ..user().ctx

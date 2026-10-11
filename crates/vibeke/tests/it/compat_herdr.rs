@@ -220,7 +220,7 @@ fn herdr_cli_shim_and_wire_protocol() {
     let (code, e) = s_.fail(&["compat", "herdr", "popup", "close"]);
     assert_eq!(
         (code, s(&e["error"]["code"])),
-        (1, "popup_not_found".to_string()),
+        (1, "popup_not_open".to_string()),
         "no popup open: {e}"
     );
     let (code, _) = s_.fail(&["compat", "herdr", "pane", "teleport"]);
