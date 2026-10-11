@@ -36,6 +36,9 @@ struct Watch {
     taken_by: Option<String>,
     /// The host confirmed `taken_by`'s take-over: only then does its input reach the page.
     confirmed: bool,
+    /// The device that opened this session with `browser.preview_open` (06 B3.6): the session
+    /// closes on the host when that device's lease ends.
+    opened_by: Option<String>,
 }
 
 /// What to undo on the server after devices stopped watching a session.
@@ -45,6 +48,8 @@ pub struct Release {
     pub detach: bool,
     /// The device that took the session over left: hand control back to the agent.
     pub release: bool,
+    /// The device that opened the session left: close it on the host.
+    pub close: bool,
 }
 
 impl Screencasts {
@@ -73,6 +78,24 @@ impl Screencasts {
             }
             None => false,
         }
+    }
+
+    /// Record that `device` opened `session` (a phone preview); its lease end closes it.
+    pub fn set_opened(&self, session: &str, device: &str) {
+        self.map
+            .lock()
+            .unwrap()
+            .entry(session.to_string())
+            .or_default()
+            .opened_by = Some(device.to_string());
+    }
+
+    pub fn opened_by(&self, session: &str) -> Option<String> {
+        self.map
+            .lock()
+            .unwrap()
+            .get(session)
+            .and_then(|w| w.opened_by.clone())
     }
 
     pub fn set_taken(&self, session: &str, device: Option<&str>) {
@@ -166,17 +189,31 @@ impl Screencasts {
                 removed.iter().any(|r| r == d)
                     || (!w.viewers.contains_key(d) && gone(session, d, None))
             });
+            let close = w.opened_by.as_deref().is_some_and(|d| {
+                removed.iter().any(|r| r == d)
+                    || (!w.viewers.contains_key(d) && gone(session, d, None))
+            });
             w.viewers.retain(|d, _| !removed.contains(d));
             let detach = before > 0 && w.viewers.is_empty();
             if release {
                 w.taken_by = None;
                 w.confirmed = false;
             }
-            if detach || release {
-                out.push((session.clone(), Release { detach, release }));
+            if close {
+                w.opened_by = None;
+            }
+            if detach || release || close {
+                out.push((
+                    session.clone(),
+                    Release {
+                        detach,
+                        release,
+                        close,
+                    },
+                ));
             }
         }
-        m.retain(|_, w| !w.viewers.is_empty() || w.taken_by.is_some());
+        m.retain(|_, w| !w.viewers.is_empty() || w.taken_by.is_some() || w.opened_by.is_some());
         out
     }
 
@@ -227,11 +264,21 @@ async fn undo(gw: &Gateway, session: &str, r: Release) {
             )
             .await;
     }
+    if r.close {
+        let _ = gw
+            .server
+            .call_as(ACTOR, "browser.session_close", json!({"session": session}))
+            .await;
+    }
 }
 
 /// `browser.attach_screencast` for one device: attach on the server, then count the device.
 pub async fn attach(gw: &Gateway, actor: &str, device: &str, session: &str) -> ApiResult {
     let _seq = gw.screencasts.seq.lock().await;
+    attach_locked(gw, actor, device, session).await
+}
+
+async fn attach_locked(gw: &Gateway, actor: &str, device: &str, session: &str) -> ApiResult {
     let r = gw
         .server
         .call_as(
@@ -270,6 +317,16 @@ pub async fn control(
     take: bool,
 ) -> ApiResult {
     let _seq = gw.screencasts.seq.lock().await;
+    control_locked(gw, actor, device, session, take).await
+}
+
+async fn control_locked(
+    gw: &Gateway,
+    actor: &str,
+    device: &str,
+    session: &str,
+    take: bool,
+) -> ApiResult {
     if take && !gw.screencasts.is_viewer(session, device) {
         return Err(ApiError::new(
             "conflict",
@@ -315,16 +372,82 @@ pub async fn control(
     Ok(r)
 }
 
-/// `browser.screencast_frame`: renews the device's lease, then reads the latest frame.
-pub async fn frame(gw: &Gateway, device: &str, params: Value) -> ApiResult {
-    let session = params.get("session").and_then(|v| v.as_str()).unwrap_or("");
-    if !gw.screencasts.touch(session, device, Instant::now()) {
+/// The longest a frame poll may wait for a newer frame.
+pub const MAX_WAIT_MS: u64 = 15_000;
+
+/// `browser.screencast_frame`: renews the device's lease, then reads the latest frame. With
+/// `wait_ms` the host holds the call until a newer frame exists (a long poll): the wait runs in
+/// the request's own task, so it blocks neither the device's other requests nor the lease
+/// sweep, and it counts as polling at both ends.
+pub async fn frame(gw: &Gateway, device: &str, mut params: Value) -> ApiResult {
+    let session = params
+        .get("session")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    if !gw.screencasts.touch(&session, device, Instant::now()) {
         return Err(ApiError::new(
             "conflict",
             "attach to this session's screencast first (browser.attach_screencast)",
         ));
     }
-    gw.server.call("browser.screencast_frame", params).await
+    if let Some(w) = params.get("wait_ms").and_then(|v| v.as_u64()) {
+        params["wait_ms"] = w.min(MAX_WAIT_MS).into();
+    }
+    let r = gw.server.call("browser.screencast_frame", params).await;
+    gw.screencasts.touch(&session, device, Instant::now());
+    r
+}
+
+/// `browser.preview_open`: a host session on a preview for this device (06 B3.6). It opens the
+/// session as a mobile device, counts the device as its viewer, takes it over and remembers who
+/// opened it, so the session closes with the device's lease. `params` carries the server's
+/// `browser.session_open` parameters.
+pub async fn preview_open(gw: &Gateway, actor: &str, device: &str, params: Value) -> ApiResult {
+    let _seq = gw.screencasts.seq.lock().await;
+    let mut out = gw
+        .server
+        .call_as(actor, "browser.session_open", params)
+        .await?;
+    let Some(handle) = out
+        .get("session")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+    else {
+        return Err(ApiError::new("internal", "the host returned no session"));
+    };
+    let steps = async {
+        attach_locked(gw, actor, device, &handle).await?;
+        gw.screencasts.set_opened(&handle, device);
+        control_locked(gw, actor, device, &handle, true).await
+    };
+    if let Err(e) = steps.await {
+        // Nothing may be left behind: drop the record and close the host session.
+        let r = gw.screencasts.remove_viewer(&handle, device);
+        undo(gw, &handle, Release { close: true, ..r }).await;
+        gw.screencasts.set_taken(&handle, None);
+        return Err(e);
+    }
+    out["human_control"] = true.into();
+    Ok(out)
+}
+
+/// `browser.session_close`: only for a session this device opened with `browser.preview_open`.
+pub async fn close_session(gw: &Gateway, actor: &str, device: &str, session: &str) -> ApiResult {
+    let _seq = gw.screencasts.seq.lock().await;
+    if gw.screencasts.opened_by(session).as_deref() != Some(device) {
+        return Err(ApiError::new(
+            "forbidden",
+            "this device did not open that browser session",
+        ));
+    }
+    let r = gw.screencasts.remove_viewer(session, device);
+    undo(gw, session, Release { close: false, ..r }).await;
+    // The opener may already be gone from the viewer list: make sure the record ends too.
+    gw.screencasts.set_taken(session, None);
+    gw.server
+        .call_as(actor, "browser.session_close", json!({"session": session}))
+        .await
 }
 
 /// A device's last connection closed: it stops watching everything.
@@ -387,7 +510,8 @@ mod tests {
             s.remove_viewer("b1", "phone"),
             Release {
                 detach: false,
-                release: true
+                release: true,
+                close: false
             }
         );
         assert_eq!(s.taken_by("b1"), None);
@@ -396,7 +520,8 @@ mod tests {
             s.remove_viewer("b1", "tablet"),
             Release {
                 detach: true,
-                release: false
+                release: false,
+                close: false
             }
         );
         assert!(s.live().is_empty());
@@ -421,7 +546,8 @@ mod tests {
                 "b2".to_string(),
                 Release {
                     detach: true,
-                    release: true
+                    release: true,
+                    close: false
                 }
             )]
         );
@@ -453,10 +579,50 @@ mod tests {
                 "b3".to_string(),
                 Release {
                     detach: false,
-                    release: true
+                    release: true,
+                    close: false
                 }
             )]
         );
         assert_eq!(s.taken_by("b3"), None);
+    }
+
+    #[test]
+    fn the_session_a_device_opened_closes_with_its_lease() {
+        let s = Screencasts::default();
+        let t0 = Instant::now();
+        s.add_viewer("b1", "phone", t0);
+        s.set_opened("b1", "phone");
+        s.set_taken("b1", Some("phone"));
+        assert_eq!(s.opened_by("b1").as_deref(), Some("phone"));
+        // Other devices watching a session they did not open never close it.
+        s.add_viewer("b2", "tablet", t0);
+        assert_eq!(
+            s.remove_viewer("b2", "tablet"),
+            Release {
+                detach: true,
+                release: false,
+                close: false
+            }
+        );
+        // The lease ends: release, detach and close.
+        let gone = s.expire(t0 + LEASE + Duration::from_secs(1));
+        assert_eq!(
+            gone,
+            vec![(
+                "b1".to_string(),
+                Release {
+                    detach: true,
+                    release: true,
+                    close: true
+                }
+            )]
+        );
+        assert_eq!(s.opened_by("b1"), None);
+        // A disconnect closes it too.
+        s.add_viewer("b3", "phone", t0);
+        s.set_opened("b3", "phone");
+        let gone = s.device_gone("phone");
+        assert!(gone.iter().any(|(b, r)| b == "b3" && r.close));
     }
 }

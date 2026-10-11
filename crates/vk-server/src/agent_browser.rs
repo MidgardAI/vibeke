@@ -62,7 +62,13 @@ pub const METHODS: &[(&str, bool)] = &[
     ("browser.attach_screencast", true),
     ("browser.detach_screencast", true),
     ("browser.screencast_frame", false),
+    ("browser.input", true),
 ];
+
+/// `browser.screencast_frame` `wait_ms` ceiling.
+const MAX_FRAME_WAIT_MS: u64 = 15_000;
+/// `browser.input` batch ceiling.
+const MAX_INPUT_EVENTS: usize = 64;
 
 /// Ring sizes (06 B5).
 const RING: usize = 500;
@@ -266,9 +272,9 @@ pub struct Session {
     pub target_id: String,
     pub cdp_session: String,
     pub created_ms: i64,
-    pub viewport: (u32, u32),
+    viewport: Mutex<(u32, u32)>,
     /// Device scale factor and emulated `prefers-color-scheme` (screenshot environment, B6).
-    pub dpr: f64,
+    dpr: Mutex<f64>,
     pub color_scheme: Option<String>,
     /// Device preset the session emulates (`iphone-15`), and whether it is a mobile device.
     pub device: Option<String>,
@@ -296,6 +302,15 @@ impl Session {
         *self.last_used.lock().unwrap() = Instant::now();
     }
 
+    /// The emulated viewport in CSS pixels (`browser.input` `resize` changes it).
+    pub fn viewport(&self) -> (u32, u32) {
+        *self.viewport.lock().unwrap()
+    }
+
+    pub fn dpr(&self) -> f64 {
+        *self.dpr.lock().unwrap()
+    }
+
     pub fn human_control(&self) -> Option<String> {
         self.human.lock().unwrap().clone()
     }
@@ -320,7 +335,7 @@ impl Session {
             "preview": self.preview,
             "url": *self.url.lock().unwrap(),
             "created_ms": self.created_ms,
-            "viewport": {"width": self.viewport.0, "height": self.viewport.1},
+            "viewport": {"width": self.viewport().0, "height": self.viewport().1},
             "device": self.device,
             "previews": if self.scope.is_some() { "own" } else { "machine" },
             "human_control": self.human_control().is_some(),
@@ -443,7 +458,7 @@ impl AgentBrowsers {
             .ok_or_else(|| not_found("browser_session", target))?;
         let cdp = self.cdp().await?;
         if sess.screencast_subs.fetch_add(1, Ordering::SeqCst) == 0 {
-            let (w, h) = sess.viewport;
+            let (w, h) = sess.viewport();
             if let Err(e) = call(
                 &cdp,
                 Some(&sess.cdp_session),
@@ -1297,7 +1312,8 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
             | "browser.release"
             | "browser.attach_screencast"
             | "browser.detach_screencast"
-            | "browser.screencast_frame" => {
+            | "browser.screencast_frame"
+            | "browser.input" => {
                 return Some(Err(pane_denied(method, "human-only action")));
             }
             "browser.eval" if !server.agent_browser.config().browser_script => {
@@ -1344,6 +1360,7 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
             }
             Err(e) => Err(e),
         },
+        "browser.input" => input(server, ctx, p).await,
         "browser.list" => Ok(list(server, ctx).await),
         "browser.status" => Ok(status(server).await),
         "browser.install" => install(server, p).await,
@@ -1379,7 +1396,7 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
             };
             match server.agent_browser.attach_screencast(&t).await {
                 Ok(sub) => {
-                    let (w, h) = sub.sess.viewport;
+                    let (w, h) = sub.sess.viewport();
                     let handle = sub.session.clone();
                     let key = format!("{}:{}", ctx.client_id, handle);
                     server
@@ -1413,7 +1430,30 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
                 None => Err(not_found("browser_session", t)),
                 Some(sess) => {
                     use base64::Engine as _;
-                    let f = sess.frames.borrow().clone();
+                    let after = u(p, "after_seq");
+                    let wait =
+                        Duration::from_millis(u(p, "wait_ms").unwrap_or(0).min(MAX_FRAME_WAIT_MS));
+                    let mut f = sess.frames.borrow().clone();
+                    if let Some(after) = after
+                        && !wait.is_zero()
+                        && f.as_ref().is_none_or(|f| f.seq <= after)
+                    {
+                        // Long poll: wait for a newer frame or the end of the time.
+                        let mut rx = sess.frames.subscribe();
+                        let deadline = tokio::time::Instant::now() + wait;
+                        loop {
+                            if let Some(n) = rx.borrow_and_update().clone()
+                                && n.seq > after
+                            {
+                                f = Some(n);
+                                break;
+                            }
+                            match tokio::time::timeout_at(deadline, rx.changed()).await {
+                                Ok(Ok(())) => {}
+                                _ => break,
+                            }
+                        }
+                    }
                     Ok(match f {
                         Some(f) if u(p, "after_seq").is_none_or(|a| f.seq > a) => json!({
                             "session": sess.handle, "seq": f.seq, "mime": "image/jpeg",
@@ -1530,6 +1570,14 @@ async fn open(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
                 vk_browser::devices::names().join(", ")
             ))
         })?),
+        // `mobile: true` without a preset (the phone preview, 06 B3.6): a generic phone, sized
+        // by the caller's viewport and DPR.
+        None if b(p, "mobile").unwrap_or(false) => {
+            let mut d = vk_browser::devices::preset("pixel-8")
+                .ok_or_else(|| invalid("no mobile device preset"))?;
+            d.name = "mobile";
+            Some(d)
+        }
         None => None,
     };
     let viewport = p
@@ -1672,8 +1720,8 @@ async fn open(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         target_id: target,
         cdp_session: cdp_session.clone(),
         created_ms: vk_store::now_ms(),
-        viewport,
-        dpr,
+        viewport: Mutex::new(viewport),
+        dpr: Mutex::new(dpr),
         color_scheme: s(p, "color_scheme")
             .or(b(p, "dark").and_then(|d| d.then_some("dark")))
             .map(str::to_string),
@@ -1732,7 +1780,7 @@ async fn open(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
             &cdp,
             cs,
             "Emulation.setDeviceMetricsOverride",
-            json!({"width": viewport.0, "height": viewport.1, "deviceScaleFactor": sess.dpr, "mobile": sess.mobile}),
+            json!({"width": viewport.0, "height": viewport.1, "deviceScaleFactor": sess.dpr(), "mobile": sess.mobile}),
         )
         .await?;
         if let Some(d) = device {
@@ -1780,8 +1828,9 @@ async fn open(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     out["machine"] = json!(server.opts.machine);
     out["environment"] = environment(server, &proc_);
     out["environment"]["device"] = json!(sess.device);
-    out["environment"]["viewport"] = json!({"width": sess.viewport.0, "height": sess.viewport.1});
-    out["environment"]["dpr"] = json!(sess.dpr);
+    out["environment"]["viewport"] =
+        json!({"width": sess.viewport().0, "height": sess.viewport().1});
+    out["environment"]["dpr"] = json!(sess.dpr());
     if let Some(u) = url {
         match navigate(server, &sess, &u, p).await {
             Ok(nav) => {
@@ -2135,6 +2184,216 @@ async fn dispatch_key(cdp: &Arc<Cdp>, sess: &Session, key: &str) -> Result<(), R
     Ok(())
 }
 
+/// `browser.input {session, events[]}`: a human's touches, taps, keys, history and resizes,
+/// applied in order (06 B3.6). The caller must hold the take-over.
+async fn input(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
+    if ctx.pane_scope.is_some() {
+        return Err(pane_denied("browser.input", "human-only action"));
+    }
+    let t = session_param(p).ok_or_else(|| invalid("missing param `session`"))?;
+    let sess = server
+        .agent_browser
+        .session(t)
+        .ok_or_else(|| not_found("browser_session", t))?;
+    let events = p
+        .get("events")
+        .and_then(Value::as_array)
+        .ok_or_else(|| invalid("missing param `events` (an array)"))?;
+    if events.len() > MAX_INPUT_EVENTS {
+        return Err(invalid(format!(
+            "at most {MAX_INPUT_EVENTS} events per call"
+        )));
+    }
+    if sess.closed.load(Ordering::SeqCst) {
+        return Err(not_found("browser_session", t));
+    }
+    if sess.human_control().as_deref() != Some(ctx.client_id.as_str()) {
+        return Err(err(
+            ErrorKind::Conflict,
+            format!(
+                "browser.input needs the take-over of session {}: call browser.take_over first",
+                sess.handle
+            ),
+        ));
+    }
+    sess.touch();
+    // Validate the whole batch before applying any of it.
+    let mut steps = Vec::with_capacity(events.len());
+    for ev in events {
+        steps.push(parse_input_event(ev)?);
+    }
+    let cdp = server.agent_browser.cdp().await?;
+    for step in &steps {
+        apply_input(&cdp, &sess, step).await?;
+    }
+    Ok(json!({"session": sess.handle, "applied": steps.len()}))
+}
+
+enum InputStep {
+    Cdp(Vec<vk_browser::input::CdpInput>),
+    Key(String),
+    History(String),
+    Resize(u32, u32, Option<f64>),
+}
+
+fn num(ev: &Value, k: &str) -> Result<f64, RpcError> {
+    ev.get(k)
+        .and_then(Value::as_f64)
+        .filter(|v| v.is_finite())
+        .ok_or_else(|| invalid(format!("input event needs a numeric `{k}`")))
+}
+
+fn parse_input_event(ev: &Value) -> Result<InputStep, RpcError> {
+    use vk_browser::input::CdpInput;
+    let ty = ev
+        .get("type")
+        .and_then(Value::as_str)
+        .ok_or_else(|| invalid("input event needs a `type`"))?;
+    Ok(match ty {
+        "touch" => {
+            let kind = match ev.get("phase").and_then(Value::as_str) {
+                Some("start") => "touchStart",
+                Some("move") => "touchMove",
+                Some("end") => "touchEnd",
+                Some("cancel") => "touchCancel",
+                _ => return Err(invalid("touch `phase` is start, move, end or cancel")),
+            };
+            let pts = ev
+                .get("points")
+                .and_then(Value::as_array)
+                .ok_or_else(|| invalid("touch event needs `points`"))?;
+            if pts.len() > 10 {
+                return Err(invalid("a touch event has at most 10 points"));
+            }
+            let mut touch_points = Vec::with_capacity(pts.len());
+            for (i, pt) in pts.iter().enumerate() {
+                touch_points.push(json!({
+                    "x": num(pt, "x")?,
+                    "y": num(pt, "y")?,
+                    "id": pt.get("id").and_then(Value::as_i64).unwrap_or(i as i64),
+                }));
+            }
+            InputStep::Cdp(vec![CdpInput::Touch(
+                json!({"type": kind, "touchPoints": touch_points}),
+            )])
+        }
+        "tap" => {
+            let (x, y) = (num(ev, "x")?, num(ev, "y")?);
+            InputStep::Cdp(vec![
+                CdpInput::Mouse(json!({"type": "mouseMoved", "x": x, "y": y})),
+                CdpInput::Mouse(
+                    json!({"type": "mousePressed", "x": x, "y": y, "button": "left", "clickCount": 1}),
+                ),
+                CdpInput::Mouse(
+                    json!({"type": "mouseReleased", "x": x, "y": y, "button": "left", "clickCount": 1}),
+                ),
+            ])
+        }
+        "wheel" => InputStep::Cdp(vec![CdpInput::Mouse(json!({
+            "type": "mouseWheel",
+            "x": num(ev, "x")?,
+            "y": num(ev, "y")?,
+            "deltaX": ev.get("dx").and_then(Value::as_f64).unwrap_or(0.0),
+            "deltaY": ev.get("dy").and_then(Value::as_f64).unwrap_or(0.0),
+        }))]),
+        "text" => {
+            let text = ev
+                .get("text")
+                .and_then(Value::as_str)
+                .ok_or_else(|| invalid("text event needs `text`"))?;
+            if text.len() > 16 * 1024 {
+                return Err(invalid("text event is too long"));
+            }
+            InputStep::Cdp(vec![CdpInput::InsertText(text.to_string())])
+        }
+        "key" => InputStep::Key(
+            ev.get("key")
+                .and_then(Value::as_str)
+                .ok_or_else(|| invalid("key event needs `key`"))?
+                .to_string(),
+        ),
+        "history" => match ev.get("action").and_then(Value::as_str) {
+            Some(a @ ("back" | "forward" | "reload")) => InputStep::History(a.to_string()),
+            _ => return Err(invalid("history `action` is back, forward or reload")),
+        },
+        "resize" => {
+            let w = num(ev, "width")?;
+            let h = num(ev, "height")?;
+            if !(1.0..=8192.0).contains(&w) || !(1.0..=8192.0).contains(&h) {
+                return Err(invalid("resize width and height must be 1 to 8192"));
+            }
+            let dpr = ev.get("dpr").and_then(Value::as_f64);
+            if dpr.is_some_and(|d| !(0.5..=8.0).contains(&d)) {
+                return Err(invalid("resize dpr must be 0.5 to 8"));
+            }
+            InputStep::Resize(w as u32, h as u32, dpr)
+        }
+        other => return Err(invalid(format!("unknown input event type `{other}`"))),
+    })
+}
+
+async fn apply_input(
+    cdp: &Arc<Cdp>,
+    sess: &Arc<Session>,
+    step: &InputStep,
+) -> Result<(), RpcError> {
+    let cs = Some(sess.cdp_session.as_str());
+    match step {
+        InputStep::Cdp(cmds) => {
+            for c in cmds {
+                let (m, p) = c.to_command();
+                call(cdp, cs, m, p).await?;
+            }
+        }
+        InputStep::Key(k) => dispatch_key(cdp, sess, k).await?,
+        InputStep::History(action) => {
+            if action == "reload" {
+                call(cdp, cs, "Page.reload", json!({})).await?;
+            } else {
+                let h = call(cdp, cs, "Page.getNavigationHistory", json!({})).await?;
+                let cur = h["currentIndex"].as_i64().unwrap_or(0);
+                let entries = h["entries"].as_array().cloned().unwrap_or_default();
+                let to = if action == "back" { cur - 1 } else { cur + 1 };
+                if to >= 0
+                    && let Some(e) = entries.get(to as usize)
+                {
+                    call(
+                        cdp,
+                        cs,
+                        "Page.navigateToHistoryEntry",
+                        json!({"entryId": e["id"]}),
+                    )
+                    .await?;
+                }
+            }
+        }
+        InputStep::Resize(w, h, dpr) => {
+            let dpr = dpr.unwrap_or_else(|| sess.dpr());
+            call(
+                cdp,
+                cs,
+                "Emulation.setDeviceMetricsOverride",
+                json!({"width": w, "height": h, "deviceScaleFactor": dpr, "mobile": sess.mobile}),
+            )
+            .await?;
+            *sess.viewport.lock().unwrap() = (*w, *h);
+            *sess.dpr.lock().unwrap() = dpr;
+            if sess.screencast_subs.load(Ordering::SeqCst) > 0 {
+                // The screencast keeps its old size until restarted.
+                let _ = call(cdp, cs, "Page.stopScreencast", json!({})).await;
+                call(
+                    cdp,
+                    cs,
+                    "Page.startScreencast",
+                    json!({"format": "jpeg", "quality": 80, "maxWidth": w, "maxHeight": h, "everyNthFrame": 1}),
+                )
+                .await?;
+            }
+        }
+    }
+    Ok(())
+}
+
 async fn press(cdp: Arc<Cdp>, sess: Arc<Session>, p: Value) -> R {
     let key = s(&p, "key")
         .ok_or_else(|| invalid("missing param `key`"))?
@@ -2228,11 +2487,11 @@ async fn screenshot(server: &Arc<Server>, ctx: &Ctx, sess: &Arc<Session>, p: &Va
         };
         let w = size["width"]
             .as_f64()
-            .unwrap_or(sess.viewport.0 as f64)
+            .unwrap_or(sess.viewport().0 as f64)
             .max(1.0);
         let h = size["height"]
             .as_f64()
-            .unwrap_or(sess.viewport.1 as f64)
+            .unwrap_or(sess.viewport().1 as f64)
             .clamp(1.0, MAX_FULL_PAGE_H);
         params["clip"] = json!({"x": 0, "y": 0, "width": w, "height": h, "scale": 1});
         params["captureBeyondViewport"] = json!(true);
@@ -2297,10 +2556,10 @@ async fn screenshot(server: &Arc<Server>, ctx: &Ctx, sess: &Arc<Session>, p: &Va
         browser_version: product.split_once('/').map(|(_, v)| v.to_string()),
         browser: product,
         viewport: crate::screenshots::Viewport {
-            width: sess.viewport.0,
-            height: sess.viewport.1,
+            width: sess.viewport().0,
+            height: sess.viewport().1,
         },
-        dpr: sess.dpr,
+        dpr: sess.dpr(),
         color_scheme: sess.color_scheme.clone(),
         device: sess.device.clone(),
         fresh_context: true,
@@ -2656,7 +2915,7 @@ impl AgentBrowsers {
             id: sess.id.clone(),
             owner_pane: sess.owner_pane.clone(),
             url: sess.url.lock().unwrap().clone(),
-            viewport: sess.viewport,
+            viewport: sess.viewport(),
             human: sess.human_control(),
         })
     }

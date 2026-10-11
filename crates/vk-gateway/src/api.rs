@@ -232,7 +232,9 @@ pub fn required_scope(method: &str) -> Option<Scope> {
         // drives it instead of the agent.
         "worktree.create" | "workspace.create" | "assistant.generate" | "assistant.confirm"
         | "assistant.cancel" | "browser.take_over" | "browser.release" | "browser.click"
-        | "browser.type" | "browser.press" | "browser.navigate" => Full,
+        | "browser.type" | "browser.press" | "browser.navigate" | "browser.input"
+        // A host-rendered preview for a phone (06 B3.6): opened, driven and closed by the device.
+        | "browser.preview_open" | "browser.session_close" => Full,
         _ => return None,
     })
 }
@@ -1616,7 +1618,7 @@ impl Call<'_> {
                 crate::screencast::frame(
                     self.gw,
                     &self.device.id,
-                    pick(&p, &["session", "after_seq"]),
+                    pick(&p, &["session", "after_seq", "wait_ms"]),
                 )
                 .await
             }
@@ -1632,7 +1634,44 @@ impl Call<'_> {
                 )
                 .await
             }
-            "browser.click" | "browser.type" | "browser.press" | "browser.navigate" => {
+            "browser.preview_open" => {
+                let preview = req(&p, "preview")?;
+                let dim = |k: &str| {
+                    p.get("viewport")
+                        .and_then(|v| v.get(k))
+                        .and_then(Value::as_u64)
+                        .filter(|n| (1..=8192).contains(n))
+                        .ok_or_else(|| ApiError::invalid(format!("viewport.{k} must be 1 to 8192")))
+                };
+                let (width, height) = (dim("width")?, dim("height")?);
+                let dpr = p
+                    .get("dpr")
+                    .and_then(Value::as_f64)
+                    .filter(|d| (0.5..=8.0).contains(d))
+                    .ok_or_else(|| ApiError::invalid("dpr must be 0.5 to 8"))?;
+                let mut params = json!({
+                    "preview": preview,
+                    "viewport": {"width": width, "height": height},
+                    "dpr": dpr,
+                    "mobile": true,
+                });
+                for k in ["machine", "dark"] {
+                    if let Some(v) = p.get(k).filter(|v| !v.is_null()) {
+                        params[k] = v.clone();
+                    }
+                }
+                self.still_authorized()?;
+                crate::screencast::preview_open(self.gw, &self.actor(), &self.device.id, params)
+                    .await
+            }
+            "browser.session_close" => {
+                let session = req(&p, "session")?;
+                self.still_authorized()?;
+                crate::screencast::close_session(self.gw, &self.actor(), &self.device.id, session)
+                    .await
+            }
+            "browser.click" | "browser.type" | "browser.press" | "browser.navigate"
+            | "browser.input" => {
                 // Input goes to a session this device took over, so the agent is paused meanwhile.
                 let session = req(&p, "session")?;
                 if self.gw.screencasts.controller(session).as_deref()
@@ -1662,6 +1701,7 @@ impl Call<'_> {
                         "timeout_ms",
                     ],
                     "browser.press" => &["session", "key"],
+                    "browser.input" => &["session", "events"],
                     _ => &["session", "url", "path", "wait", "timeout_ms"],
                 };
                 self.server(method, pick(&p, keys)).await
@@ -2543,6 +2583,7 @@ mod workspace_tests {
                                 let id = p["target"].as_str().unwrap_or("");
                                 json!({"run": {"id": id, "pane": if id.ends_with('1') { "p1" } else { "p2" }}})
                             }
+                            "browser.session_open" => json!({"session": "b9", "echo": p}),
                             "search.query" => json!({"echo": p, "hits": [
                                 {"pane": "p1", "text": "in"}, {"pane": "p2", "text": "secret"},
                                 {"pane": "p9", "text": "archived"}, {"text": "no pane"}
@@ -3193,6 +3234,9 @@ mod workspace_tests {
         "browser.type",
         "browser.press",
         "browser.navigate",
+        "browser.input",
+        "browser.preview_open",
+        "browser.session_close",
     ];
 
     #[test]
@@ -3568,5 +3612,160 @@ mod workspace_tests {
         crate::screencast::device_gone(&gw, "d1").await;
         assert!(gw.screencasts.live().is_empty());
         assert_eq!(gw.screencasts.taken_by("b1"), None);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn phone_previews_belong_to_the_device_that_opened_them() {
+        let t = tempfile::tempdir().unwrap();
+        let gw = gateway(&t).await;
+        let me = device("d1", Scope::Full, "device", None);
+        let mut other = device("d2", Scope::Full, "device", None);
+        other.public = "k-other".into();
+        gw.add_device(me.clone()).unwrap();
+        gw.add_device(other.clone()).unwrap();
+        let call = Call {
+            gw: &gw,
+            device: &me,
+        };
+        let theirs = Call {
+            gw: &gw,
+            device: &other,
+        };
+        // Bad sizes are refused before anything reaches the host.
+        for p in [
+            json!({"preview": "v1", "dpr": 2, "op_id": "a"}),
+            json!({"preview": "v1", "viewport": {"width": 0, "height": 10}, "dpr": 2, "op_id": "a"}),
+            json!({"preview": "v1", "viewport": {"width": 390, "height": 800}, "op_id": "a"}),
+            json!({"viewport": {"width": 390, "height": 800}, "dpr": 2, "op_id": "a"}),
+        ] {
+            assert_eq!(
+                call.dispatch("browser.preview_open", p)
+                    .await
+                    .unwrap_err()
+                    .kind,
+                "invalid_params"
+            );
+        }
+        let r = call
+            .dispatch(
+                "browser.preview_open",
+                json!({"preview": "v1", "machine": "m", "viewport": {"width": 390, "height": 800},
+                       "dpr": 3, "dark": true, "junk": 1, "op_id": "o1"}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(r["session"], "b9");
+        assert_eq!(r["human_control"], true);
+        assert_eq!(
+            r["echo"],
+            json!({"preview": "v1", "machine": "m", "viewport": {"width": 390, "height": 800},
+                   "dpr": 3.0, "dark": true, "mobile": true, "actor": "gateway:d1"})
+        );
+        assert_eq!(gw.screencasts.opened_by("b9").as_deref(), Some("d1"));
+        assert_eq!(gw.screencasts.controller("b9").as_deref(), Some("d1"));
+        assert!(gw.screencasts.is_viewer("b9", "d1"));
+        // Input only from the device that holds the take-over; params are whitelisted.
+        let ev = json!([{"type": "tap", "x": 1, "y": 2}]);
+        assert_eq!(
+            theirs
+                .dispatch(
+                    "browser.input",
+                    json!({"session": "b9", "events": ev, "op_id": "i0"})
+                )
+                .await
+                .unwrap_err()
+                .kind,
+            "conflict"
+        );
+        let r = call
+            .dispatch(
+                "browser.input",
+                json!({"session": "b9", "events": ev, "junk": 1, "op_id": "i1"}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            r["echo"],
+            json!({"session": "b9", "events": ev, "actor": "gateway:d1"})
+        );
+        // Only the opener closes it.
+        assert_eq!(
+            theirs
+                .dispatch(
+                    "browser.session_close",
+                    json!({"session": "b9", "op_id": "c0"})
+                )
+                .await
+                .unwrap_err()
+                .kind,
+            "forbidden"
+        );
+        call.dispatch(
+            "browser.session_close",
+            json!({"session": "b9", "op_id": "c1"}),
+        )
+        .await
+        .unwrap();
+        assert!(gw.screencasts.live().is_empty());
+        assert_eq!(gw.screencasts.opened_by("b9"), None);
+        assert_eq!(gw.screencasts.taken_by("b9"), None);
+        // A second device cannot close a session it did not open, even a plain watched one.
+        call.dispatch("browser.attach_screencast", json!({"session": "b1"}))
+            .await
+            .unwrap();
+        assert_eq!(
+            call.dispatch(
+                "browser.session_close",
+                json!({"session": "b1", "op_id": "c2"})
+            )
+            .await
+            .unwrap_err()
+            .kind,
+            "forbidden"
+        );
+        // A disconnect ends an opened preview with the device.
+        call.dispatch(
+            "browser.preview_open",
+            json!({"preview": "v1", "viewport": {"width": 390, "height": 800}, "dpr": 2, "op_id": "o2"}),
+        )
+        .await
+        .unwrap();
+        crate::screencast::device_gone(&gw, "d1").await;
+        assert!(gw.screencasts.live().is_empty());
+        assert_eq!(gw.screencasts.opened_by("b9"), None);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn long_polls_are_clamped_and_renew_the_lease() {
+        let t = tempfile::tempdir().unwrap();
+        let gw = gateway(&t).await;
+        let me = device("d1", Scope::Full, "device", None);
+        gw.add_device(me.clone()).unwrap();
+        let call = Call {
+            gw: &gw,
+            device: &me,
+        };
+        call.dispatch("browser.attach_screencast", json!({"session": "b1"}))
+            .await
+            .unwrap();
+        let r = call
+            .dispatch(
+                "browser.screencast_frame",
+                json!({"session": "b1", "after_seq": 2, "wait_ms": 99_999, "junk": 1}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            r["echo"],
+            json!({"session": "b1", "after_seq": 2, "wait_ms": 15_000})
+        );
+        let r = call
+            .dispatch(
+                "browser.screencast_frame",
+                json!({"session": "b1", "after_seq": 2, "wait_ms": 500}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(r["echo"]["wait_ms"], 500);
     }
 }

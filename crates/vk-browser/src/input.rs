@@ -47,6 +47,8 @@ pub enum CdpInput {
     /// `Input.dispatchMouseEvent` params as given (mouse and wheel; the watch view forwards a
     /// taken-over pane's mouse this way).
     Mouse(Value),
+    /// `Input.dispatchTouchEvent` params as given (the phone preview, 06 B3.6).
+    Touch(Value),
 }
 
 impl CdpInput {
@@ -55,6 +57,7 @@ impl CdpInput {
         match self {
             CdpInput::InsertText(t) => ("Input.insertText", json!({ "text": t })),
             CdpInput::Mouse(p) => ("Input.dispatchMouseEvent", p.clone()),
+            CdpInput::Touch(p) => ("Input.dispatchTouchEvent", p.clone()),
             CdpInput::Key(k) => {
                 let mut p = json!({
                     "type": k.kind,

@@ -1719,3 +1719,215 @@ async fn background_install_reports_through_preview_status() {
     assert_eq!(job["binary"], Value::Null);
     assert!(vk_browser::install::installed(dir.path()).is_none());
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mobile_flag_emulates_a_phone_without_a_preset() {
+    let e = Env::new();
+    let user = ctx_full();
+    let r = e
+        .call(
+            &user,
+            "browser.session_open",
+            json!({"viewport": {"width": 360, "height": 700}, "dpr": 2, "mobile": true}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(r["viewport"], json!({"width": 360, "height": 700}));
+    let f = e.fake();
+    let m = f.calls_of("Emulation.setDeviceMetricsOverride");
+    assert_eq!(m[0].1["mobile"], true);
+    assert_eq!(m[0].1["deviceScaleFactor"], 2.0);
+    assert_eq!(m[0].1["width"], 360);
+    let t = f.calls_of("Emulation.setTouchEmulationEnabled");
+    assert_eq!(t[0].1["enabled"], true);
+    assert_eq!(t[0].1["maxTouchPoints"], 5);
+    assert!(
+        f.calls_of("Emulation.setUserAgentOverride")[0].1["userAgent"]
+            .as_str()
+            .unwrap()
+            .contains("Mobile")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn input_needs_the_take_over_and_is_human_only() {
+    let e = Env::new();
+    let a = ctx_pane("pane-a");
+    let user = ctx_full();
+    e.call(&user, "browser.open", json!({})).await.unwrap();
+    let tap = json!({"session": "b1", "events": [{"type": "tap", "x": 5, "y": 6}]});
+    // Without the take-over: conflict. Pane-scoped callers: permission_denied.
+    let err = e
+        .call(&user, "browser.input", tap.clone())
+        .await
+        .unwrap_err();
+    assert_eq!(kind(&err), "conflict");
+    let err = e.call(&a, "browser.input", tap.clone()).await.unwrap_err();
+    assert_eq!(kind(&err), "permission_denied");
+    // A different client than the one holding the take-over is refused too.
+    e.call(&user, "browser.take_over", json!({"session": "b1"}))
+        .await
+        .unwrap();
+    let mut other = ctx_full();
+    other.client_id = "someone-else".into();
+    let err = e
+        .call(&other, "browser.input", tap.clone())
+        .await
+        .unwrap_err();
+    assert_eq!(kind(&err), "conflict");
+    assert!(e.fake().calls_of("Input.dispatchMouseEvent").is_empty());
+
+    // Too many events and unknown types are refused whole.
+    let many: Vec<Value> = (0..65)
+        .map(|_| json!({"type": "tap", "x": 1, "y": 1}))
+        .collect();
+    let err = e
+        .call(
+            &user,
+            "browser.input",
+            json!({"session": "b1", "events": many}),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(kind(&err), "invalid_params");
+    let err = e
+        .call(
+            &user,
+            "browser.input",
+            json!({"session": "b1", "events": [{"type": "tap", "x": 1, "y": 1}, {"type": "zap"}]}),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(kind(&err), "invalid_params");
+    assert!(e.fake().calls_of("Input.dispatchMouseEvent").is_empty());
+
+    // With the take-over, events apply in order.
+    let r = e
+        .call(
+            &user,
+            "browser.input",
+            json!({"session": "b1", "events": [
+                {"type": "touch", "phase": "start", "points": [{"id": 1, "x": 10, "y": 20}]},
+                {"type": "touch", "phase": "end", "points": []},
+                {"type": "tap", "x": 5, "y": 6},
+                {"type": "wheel", "x": 5, "y": 6, "dx": 0, "dy": 40},
+                {"type": "text", "text": "hi"},
+                {"type": "key", "key": "Enter"},
+                {"type": "history", "action": "reload"},
+            ]}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(r["applied"], 7);
+    let f = e.fake();
+    let touch = f.calls_of("Input.dispatchTouchEvent");
+    assert_eq!(touch[0].1["type"], "touchStart");
+    assert_eq!(touch[0].1["touchPoints"][0]["x"], 10.0);
+    assert_eq!(touch[1].1["type"], "touchEnd");
+    let mouse: Vec<String> = f
+        .calls_of("Input.dispatchMouseEvent")
+        .iter()
+        .map(|c| c.1["type"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(
+        mouse,
+        ["mouseMoved", "mousePressed", "mouseReleased", "mouseWheel"]
+    );
+    assert_eq!(f.calls_of("Input.insertText")[0].1["text"], "hi");
+    assert!(!f.calls_of("Input.dispatchKeyEvent").is_empty());
+    assert_eq!(f.calls_of("Page.reload").len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn input_resize_updates_metrics_and_restarts_the_screencast() {
+    let e = Env::new();
+    let user = ctx_full();
+    e.call(
+        &user,
+        "browser.open",
+        json!({"viewport": "390x800", "dpr": 2, "mobile": true}),
+    )
+    .await
+    .unwrap();
+    e.call(&user, "browser.take_over", json!({"session": "b1"}))
+        .await
+        .unwrap();
+    let sub = e
+        .server
+        .agent_browser
+        .attach_screencast("b1")
+        .await
+        .unwrap();
+    e.call(
+        &user,
+        "browser.input",
+        json!({"session": "b1", "events": [{"type": "resize", "width": 800, "height": 390}]}),
+    )
+    .await
+    .unwrap();
+    let f = e.fake();
+    let m = f.calls_of("Emulation.setDeviceMetricsOverride");
+    let last = &m[m.len() - 1].1;
+    assert_eq!(
+        (last["width"].as_u64(), last["height"].as_u64()),
+        (Some(800), Some(390))
+    );
+    assert_eq!(last["mobile"], true);
+    assert_eq!(last["deviceScaleFactor"], 2.0);
+    let s = f.calls_of("Page.startScreencast");
+    assert_eq!(s.len(), 2);
+    assert_eq!(s[1].1["maxWidth"], 800);
+    let sess = e.server.agent_browser.session("b1").unwrap();
+    assert_eq!(sess.viewport(), (800, 390));
+    drop(sub);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn screencast_frame_long_poll_returns_when_a_frame_arrives() {
+    use base64::Engine as _;
+    let e = Env::new();
+    let user = ctx_full();
+    e.call(&user, "browser.open", json!({})).await.unwrap();
+    let _sub = e
+        .server
+        .agent_browser
+        .attach_screencast("b1")
+        .await
+        .unwrap();
+    let sess = e.server.agent_browser.session("b1").unwrap();
+    let f = e.fake();
+    // No frame in time: the poll answers with no data after about wait_ms.
+    let t0 = Instant::now();
+    let r = e
+        .call(
+            &user,
+            "browser.screencast_frame",
+            json!({"session": "b1", "after_seq": 0, "wait_ms": 150}),
+        )
+        .await
+        .unwrap();
+    assert!(r["data_b64"].is_null());
+    assert!(t0.elapsed() >= Duration::from_millis(100));
+    // A frame arriving during the wait ends it early.
+    let data = base64::engine::general_purpose::STANDARD.encode(b"\xff\xd8jpeg");
+    let cdp_session = sess.cdp_session.clone();
+    let em = f.emitter.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        em.emit(
+            "Page.screencastFrame",
+            json!({"sessionId": 1, "data": data, "metadata": {"deviceWidth": 10, "deviceHeight": 10}}),
+            Some(&cdp_session),
+        );
+    });
+    let r = e
+        .call(
+            &user,
+            "browser.screencast_frame",
+            json!({"session": "b1", "after_seq": 0, "wait_ms": 10_000}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(r["seq"], 1);
+    assert!(r["data_b64"].is_string());
+}

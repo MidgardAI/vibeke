@@ -367,6 +367,8 @@ pub const PANE_FORBIDDEN: &[&str] = &[
     "browser.attach_screencast",
     "browser.detach_screencast",
     "browser.screencast_frame",
+    // 06 B3.6: a phone's touches and keys, only from the client that took the session over.
+    "browser.input",
     "browser.pane.update",
     "browser.command",
     "browser.pane.console",

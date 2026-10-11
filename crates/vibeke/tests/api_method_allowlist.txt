@@ -15,6 +15,7 @@ agent.spawn
 blob.abort
 browser.detach_screencast
 browser.dom
+browser.input  # needs a take-over and a real page; covered by unit tests in vk-server agent_browser_tests.rs
 browser.session_close
 browser.session_open
 browser.status
