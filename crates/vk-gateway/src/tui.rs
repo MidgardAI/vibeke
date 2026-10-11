@@ -113,7 +113,7 @@ impl Bridge {
         .await?;
         let (tx, mut rx) = mpsc::channel::<Vec<ClientFrame>>(32);
         let device_id = device.id.clone();
-        let actor = format!("gateway:{} ({})", device.name, device.id);
+        let actor = device.actor();
         let stream_id = id.clone();
         let task = tokio::spawn(async move {
             // Keep read_exact out of the select: cancelling a partial read loses framing.

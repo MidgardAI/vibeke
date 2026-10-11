@@ -575,7 +575,7 @@ impl Call<'_> {
     }
 
     pub fn actor(&self) -> String {
-        format!("gateway:{}", self.device.name)
+        self.device.actor()
     }
 
     async fn interaction(&self, id: &str) -> ApiResult {
@@ -3241,7 +3241,7 @@ mod workspace_tests {
             .await,
         );
         assert!(up["snooze_until_ms"].is_null() && up.get("snooze_until_ms").is_some());
-        assert_eq!(up["actor"], "gateway:d1");
+        assert_eq!(up["actor"], "gateway:d1(d1)");
         let dis = echo(
             call.dispatch(
                 "attention.update",
@@ -3289,7 +3289,7 @@ mod workspace_tests {
                 )
                 .await
             ),
-            json!({"preview": "v1", "split": "down", "actor": "gateway:d1"})
+            json!({"preview": "v1", "split": "down", "actor": "gateway:d1(d1)"})
         );
     }
 
@@ -3491,7 +3491,7 @@ mod workspace_tests {
         assert_eq!(r["pane"], "p9");
         assert_eq!(
             r["echo"],
-            json!({"pane": "p9", "harness": "claude", "prompt": "hi", "actor": "gateway:d1"})
+            json!({"pane": "p9", "harness": "claude", "prompt": "hi", "actor": "gateway:d1(d1)"})
         );
         let r = call
             .dispatch(
@@ -3511,7 +3511,7 @@ mod workspace_tests {
             .unwrap();
         assert_eq!(
             r["echo"],
-            json!({"branch": "b", "cwd": "/repo/p1", "actor": "gateway:d1"})
+            json!({"branch": "b", "cwd": "/repo/p1", "actor": "gateway:d1(d1)"})
         );
         let r = call
             .dispatch(
@@ -3520,7 +3520,10 @@ mod workspace_tests {
             )
             .await
             .unwrap();
-        assert_eq!(r["echo"], json!({"cwd": "/tmp/x", "actor": "gateway:d1"}));
+        assert_eq!(
+            r["echo"],
+            json!({"cwd": "/tmp/x", "actor": "gateway:d1(d1)"})
+        );
         assert_eq!(
             call.dispatch(
                 "agent.start",
@@ -3565,7 +3568,7 @@ mod workspace_tests {
         assert_eq!(
             r["echo"],
             json!({"operation": "reply_suggestions", "pane": "p1", "include_screen": true,
-                   "idempotency_key": "gw:d1:o1", "actor": "gateway:d1"})
+                   "idempotency_key": "gw:d1:o1", "actor": "gateway:d1(d1)"})
         );
         // Boundary requests show what is asked and take allow (once) or deny only.
         let r = call
@@ -3690,7 +3693,7 @@ mod workspace_tests {
             .unwrap();
         assert_eq!(
             r["echo"],
-            json!({"session": "b1", "text": "hello", "submit": true, "actor": "gateway:d1"})
+            json!({"session": "b1", "text": "hello", "submit": true, "actor": "gateway:d1(d1)"})
         );
         // The device goes away: it stops watching and its take-over ends.
         crate::screencast::device_gone(&gw, "d1").await;
@@ -3743,7 +3746,7 @@ mod workspace_tests {
         assert_eq!(
             r["echo"],
             json!({"preview": "v1", "machine": "m", "viewport": {"width": 390, "height": 800},
-                   "dpr": 3.0, "dark": true, "mobile": true, "actor": "gateway:d1"})
+                   "dpr": 3.0, "dark": true, "mobile": true, "actor": "gateway:d1(d1)"})
         );
         assert_eq!(gw.screencasts.opened_by("b9").as_deref(), Some("d1"));
         assert_eq!(gw.screencasts.controller("b9").as_deref(), Some("d1"));
@@ -3770,7 +3773,7 @@ mod workspace_tests {
             .unwrap();
         assert_eq!(
             r["echo"],
-            json!({"session": "b9", "events": ev, "actor": "gateway:d1"})
+            json!({"session": "b9", "events": ev, "actor": "gateway:d1(d1)"})
         );
         // Only the opener closes it.
         assert_eq!(

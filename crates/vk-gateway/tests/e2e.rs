@@ -511,7 +511,10 @@ async fn pair_confirm_call_and_revoke() {
         )
         .await;
     assert_eq!(ok["result"]["interaction"]["status"], "answered");
-    assert_eq!(ok["result"]["echo"]["actor"], "gateway:test phone");
+    assert_eq!(
+        ok["result"]["echo"]["actor"],
+        format!("gateway:{device_id}(test phone)")
+    );
     // Same op_id + same params → same result, no second answer; different params → refused.
     let again = c
         .call(
@@ -1027,7 +1030,7 @@ async fn browser_tui_is_encrypted_scoped_and_closed_on_revocation() {
         {
             assert_eq!(req, 88);
             let command: Value = serde_json::from_str(&json).unwrap();
-            assert_eq!(command["params"]["actor"], "gateway:Browser (browser)");
+            assert_eq!(command["params"]["actor"], "gateway:browser(Browser)");
             break;
         }
     }
@@ -1055,7 +1058,7 @@ async fn browser_tui_is_encrypted_scoped_and_closed_on_revocation() {
                 .lock()
                 .unwrap()
                 .iter()
-                .any(|v| v["tui"] == "control-started" && v["actor"] == "gateway:Browser (browser)")
+                .any(|v| v["tui"] == "control-started" && v["actor"] == "gateway:browser(Browser)")
             {
                 break;
             }
@@ -1251,7 +1254,7 @@ async fn shared_tui_commands_use_the_existing_gateway_permissions() {
                         "{scope:?} {method}: {response}"
                     );
                     if permitted && method == "interaction.answer" {
-                        assert_eq!(response["result"]["echo"]["actor"], "gateway:Guest");
+                        assert_eq!(response["result"]["echo"]["actor"], "gateway:guest(Guest)");
                     }
                     break;
                 }

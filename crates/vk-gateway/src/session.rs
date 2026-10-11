@@ -420,7 +420,7 @@ async fn device_loop(gw: Arc<Gateway>, ws: impl Ws, session: Session, device_id:
                 let r = json!({"host_name": gw.host_name, "host_id": gw.keys.host_id(), "device_id": device.id,
                                "scope": device.scope, "kind": device.kind, "expires_at": device.expires_at, "limit": device.limit, "server_version": info.get("server_version"),
                                "gateway_version": env!("CARGO_PKG_VERSION"),
-                               "features": features(&gw)});
+                               "features": features(&gw, &device)});
                 respond(&out, id, Ok(r)).await;
                 continue;
             }
@@ -478,7 +478,13 @@ async fn device_loop(gw: Arc<Gateway>, ws: impl Ws, session: Session, device_id:
     tracing::info!(device = %device_id, "device disconnected");
 }
 
-fn features(gw: &Gateway) -> Vec<&'static str> {
+/// What this host offers `device`: `tunnel` (embedded previews) only to devices that may open
+/// preview streams ([`crate::tunnel::authorize`]).
+fn features(gw: &Gateway, device: &crate::state::Device) -> Vec<&'static str> {
+    feature_list(device, gw.cfg.stt.is_some())
+}
+
+fn feature_list(device: &crate::state::Device, stt: bool) -> Vec<&'static str> {
     let mut f = vec![
         "inbox",
         "batch",
@@ -496,10 +502,12 @@ fn features(gw: &Gateway) -> Vec<&'static str> {
         "cache_cold",
         "wasm_tui",
         "wasm_tui_share",
-        // Embedded previews in the desktop app (`tunnel.*`, spec 06 B3.5).
-        "tunnel",
     ];
-    if gw.cfg.stt.is_some() {
+    // Embedded previews in the desktop app (`tunnel.*`, spec 06 B3.5).
+    if crate::tunnel::authorize(device).is_ok() {
+        f.push("tunnel");
+    }
+    if stt {
         f.push("stt");
     }
     f
@@ -745,5 +753,21 @@ mod tests {
         assert_eq!(c.load(Ordering::SeqCst), 8);
         c.fetch_sub(1, Ordering::SeqCst);
         assert!(reserve_slot(&c, 8));
+    }
+
+    #[test]
+    fn only_devices_that_may_open_tunnels_hear_of_them() {
+        let mut d: crate::state::Device = serde_json::from_value(
+            json!({"id": "d1", "name": "Desk", "public": "", "scope": "full", "paired_at": 0}),
+        )
+        .unwrap();
+        assert!(feature_list(&d, false).contains(&"tunnel"));
+        assert!(!feature_list(&d, false).contains(&"stt"));
+        assert!(feature_list(&d, true).contains(&"stt"));
+        d.scope = crate::state::Scope::Approve;
+        assert!(!feature_list(&d, false).contains(&"tunnel"));
+        d.scope = crate::state::Scope::Full;
+        d.kind = "share".into();
+        assert!(!feature_list(&d, false).contains(&"tunnel"));
     }
 }

@@ -254,6 +254,18 @@ impl Device {
         self.expires_at.is_some_and(|t| t <= now_s())
     }
 
+    /// Who the server's audit names for this device's actions: `gateway:<id>(<name>)`. The id is
+    /// unique and the gateway's; the name is the device's own choice, so it comes second.
+    pub fn actor(&self) -> String {
+        let name: String = self
+            .name
+            .chars()
+            .filter(|c| !c.is_control() && !matches!(c, '(' | ')'))
+            .take(64)
+            .collect();
+        format!("gateway:{}({})", self.id, name.trim())
+    }
+
     pub fn fingerprint(&self) -> String {
         b64::decode(&self.public)
             .map(|k| vk_e2e::keys::fingerprint(&k))
