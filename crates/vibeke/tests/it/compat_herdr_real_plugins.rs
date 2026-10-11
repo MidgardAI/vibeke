@@ -10,11 +10,12 @@
 //! valid, and that each scenario covers what its manifest declares (18 §8.1).
 
 use crate::support::real_plugins::{
-    self, ENV_ALLOW, TOOLCHAIN_PATH_VAR, combine_reason, describe_failed_call, final_invocation,
-    has_url_credentials, herdr_install_args, herdr_opened_pane, herdr_pane_open_args,
-    herdr_path_component, herdr_result, invocation_context, invocation_details, link_position,
+    self, ENV_ALLOW, TOOLCHAIN_PATH_VAR, combine_reason, describe_failed_call,
+    fake_agent_report_args, final_invocation, has_url_credentials, herdr_install_args,
+    herdr_opened_pane, herdr_pane_open_args, herdr_path_component, herdr_result,
+    invocation_context, invocation_details, link_position, link_print_parts, log_output,
     names_path_under, plugin_env, popup_open_entrypoint, rate_limited, secret_like, sh_quote,
-    shot_panes, user_bin_dirs, vibeke_config, vibeke_key, without_path_dirs,
+    shot_panes, sink_request_matches, user_bin_dirs, vibeke_config, vibeke_key, without_path_dirs,
 };
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -417,6 +418,62 @@ fn herdr_cli_arguments_follow_herdr_0_9_3() {
 }
 
 #[test]
+fn the_fake_agent_reports_with_a_source_on_both_sides() {
+    // Herdr 0.9.3 rejects `pane report-agent` without `--source` ("missing required --source").
+    let a = fake_agent_report_args("w1:p2", "idle");
+    assert_eq!(
+        a,
+        [
+            "pane",
+            "report-agent",
+            "w1:p2",
+            "--source",
+            "vibeke-harness",
+            "--agent",
+            "claude",
+            "--state",
+            "idle"
+        ]
+    );
+    let help = std::fs::read_to_string(
+        real_plugins::workspace_root()
+            .join("tests/compat/herdr/0.9.3/cli-help/pane_report-agent.txt"),
+    )
+    .unwrap();
+    for flag in ["--source", "--agent", "--state"] {
+        assert!(help.contains(flag), "{flag} is not in Herdr's help");
+    }
+}
+
+#[test]
+fn stub_requests_match_the_raw_body() {
+    // The sink stores the body as a JSON string; a `contains` with quotes matches the body as
+    // the plugin sent it (heeler's push request).
+    let body = r#"{"token":"0123456789abcdef","title":"blocked"}"#;
+    let line = json!({"method": "POST", "path": "/push", "body": body}).to_string();
+    assert!(line.contains(r#"\"token\""#));
+    assert!(sink_request_matches(
+        &line,
+        Some(r#""token":"0123456789abcdef""#)
+    ));
+    assert!(sink_request_matches(&line, Some("/push")));
+    assert!(sink_request_matches(&line, None));
+    assert!(!sink_request_matches(&line, Some(r#""token":"other""#)));
+    assert!(!sink_request_matches("not json", None));
+}
+
+#[test]
+fn hook_output_is_read_as_text() {
+    // herdr-plus prints a quoted branch name; the record holds it as a JSON string.
+    let l = json!({
+        "stdout": "herdr-plus: applied worktree layout \"app.toml\" to repo \"app\" (branch \"feat/layout\"): 2 tab(s).\n",
+        "stderr": "",
+    });
+    assert!(log_output(&l).contains(r#"branch "feat/layout"): 2 tab(s)"#));
+    assert_eq!(log_output(&json!({"stdout": null, "stderr": "e"})), "e");
+}
+
+#[test]
 fn a_failed_action_invocation_ends_the_step_at_once() {
     let logs = vec![
         json!({"log_id": "h1", "event": "pane.created", "status": "succeeded"}),
@@ -619,6 +676,48 @@ fn links_are_found_on_screen_but_not_in_the_command_line() {
     );
     assert_eq!(link_position("nothing here", url), None);
     assert_eq!(sh_quote("it's"), "'it'\\''s'");
+}
+
+#[test]
+fn links_without_a_scheme_or_wrapped_are_found() {
+    // A plain path (herdr-nvim's `file-path` handler) is printed in two parts, too.
+    let path = "~/src/app/src/notes.rs:2";
+    let (a, b) = link_print_parts(path).unwrap();
+    assert_eq!((a.as_str(), b.as_str()), ("~", "/src/app/src/notes.rs:2"));
+    let cmd = format!(
+        "$ clear; printf '%s%s\\n' {} {}",
+        sh_quote(&a),
+        sh_quote(&b)
+    );
+    assert!(!cmd.contains(path));
+    assert_eq!(
+        link_position(&format!("{cmd}\n{path}\n$ "), path),
+        Some((1, 1))
+    );
+    assert_eq!(
+        link_print_parts("https://a/b"),
+        Some(("https:".to_string(), "//a/b".to_string()))
+    );
+    assert_eq!(link_print_parts(""), None);
+    // A 56-character URL in a 24-column pane wraps over three rows.
+    let url = "file:///tmp/vkhrxXayEt/herdr/home/src/app/src/second.rs";
+    let rows: Vec<String> = url
+        .chars()
+        .collect::<Vec<_>>()
+        .chunks(24)
+        .map(|c| c.iter().collect())
+        .collect();
+    let screen = format!("$ clear; printf ...\n{}\n$ ", rows.join("\n"));
+    assert_eq!(link_position(&screen, url), Some((1, 1)));
+    // It may start in the middle of a row.
+    let screen = format!("> {}\n{}", &url[..22], &url[22..]);
+    assert_eq!(link_position(&screen, url), Some((0, 3)));
+    // A row that only starts like the URL is not a match.
+    assert_eq!(link_position("x file:///tmp\nsomething else", url), None);
+    assert_eq!(
+        link_position("'file:///tmp/vkhr\nxXayEt", "file:///tmp/vkhrxXayEt"),
+        None
+    );
 }
 
 #[test]

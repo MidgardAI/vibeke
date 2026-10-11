@@ -8,6 +8,9 @@
 # pane.split, pane.move, pane.resize, pane.close, pane.focus, pane.rename, pane.send_input,
 # pane.report_metadata and plugin.pane.open. The `redeploy` action uses the Herdr CLI.
 # Category (18 §8.5): raw socket callbacks.
+# The show and quick-open actions switch the mode of the sidebar that `open-sidebar` opened
+# (pane.list, pane.focus, pane.send_input); they open no pane, so their `pane` expectations
+# accept the open sidebar (`reuse = true`).
 # The sidebar draws a live file tree, so its pane compares placement only. The build step downloads a
 # release binary or builds with cargo; `redeploy` needs python3.
 
@@ -53,6 +56,7 @@ kind = "invocation_final"
 kind = "pane"
 pane = "sidebar"
 placement = "split"
+reuse = true
 
 [[step]]
 id = "show-search"
@@ -66,6 +70,7 @@ kind = "invocation_final"
 kind = "pane"
 pane = "sidebar"
 placement = "split"
+reuse = true
 
 [[step]]
 id = "show-git"
@@ -79,6 +84,7 @@ kind = "invocation_final"
 kind = "pane"
 pane = "sidebar"
 placement = "split"
+reuse = true
 
 [[step]]
 id = "quick-open"
@@ -92,6 +98,7 @@ kind = "invocation_final"
 kind = "pane"
 pane = "sidebar"
 placement = "split"
+reuse = true
 
 [[step]]
 id = "open-git"

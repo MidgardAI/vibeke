@@ -8,9 +8,14 @@
 //
 // `matrix` prints `{"include": [...]}` with one entry per plugin and OS; deferred plugins
 // (`[[defer]]` in the lock, 18 §6) are left out. `toolchains` prints `name=version` lines.
-// `allowlist` prints the verified-mode allowlist the proxy reads (18 §7.2).
+// `allowlist` prints the allowlist the dependency proxy reads (18 §7.2): the verified-mode
+// dependencies, and the repositories whose GitHub API reads get the workflow's token.
+//
+// Both read the plugin's scenario next to the lock (`<lock dir>/scenarios/<stem>.toml`, also
+// trusted, checked-in data) for `setup.github_api`.
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 
 export const DEFAULT_LOCK = "tests/compat/herdr/0.9.3/plugins/top20.lock.toml";
 
@@ -59,9 +64,30 @@ export type MatrixEntry = {
   os: "linux" | "macos";
   runner: string;
   mode: "verified" | "unpinned";
+  /** The scenario sets `setup.github_api`: the proxy runs and adds the token (18 §7.2). */
+  github_api: boolean;
   /** nextest filter for the plugin test: `plugin_<rank:02>_…` (18 §12). */
   filter: string;
 };
+
+/** Whether a plugin reads its own repository from the GitHub API (its scenario's setup says so). */
+export type GithubApi = (p: LockedPlugin) => boolean;
+
+/** `setup.github_api` of a scenario file's text; `false` when it is missing or not `true`. */
+export function scenarioGithubApi(text: string | undefined): boolean {
+  if (text === undefined) return false;
+  const sc = Bun.TOML.parse(text) as { setup?: { github_api?: unknown } };
+  return sc.setup?.github_api === true;
+}
+
+/** Reads `setup.github_api` from the scenarios next to the lock at `lockPath`. */
+export function githubApiFromScenarios(lockPath: string, lock: Lock): GithubApi {
+  const dir = join(dirname(lockPath), "scenarios");
+  return (p) => {
+    const file = join(dir, `${stem(lock, p)}.toml`);
+    return scenarioGithubApi(existsSync(file) ? readFileSync(file, "utf8") : undefined);
+  };
+}
 
 export const RUNNERS: Record<"linux" | "macos", string> = {
   linux: "ubuntu-latest",
@@ -96,7 +122,12 @@ export function selects(filter: string, p: LockedPlugin): boolean {
   );
 }
 
-export function matrix(lock: Lock, filter: string, oses: ("linux" | "macos")[]): MatrixEntry[] {
+export function matrix(
+  lock: Lock,
+  filter: string,
+  oses: ("linux" | "macos")[],
+  githubApi: GithubApi = () => false,
+): MatrixEntry[] {
   const out: MatrixEntry[] = [];
   const plugins = [...(lock.plugin ?? [])].sort((a, b) => a.rank - b.rank);
   for (const p of plugins) {
@@ -117,6 +148,7 @@ export function matrix(lock: Lock, filter: string, oses: ("linux" | "macos")[]):
         os,
         runner: RUNNERS[os],
         mode: p.dependency_mode,
+        github_api: githubApi(p),
         filter: `test(/^compat_herdr_real_plugins::plugin_${String(p.rank).padStart(2, "0")}_/)`,
       });
     }
@@ -124,10 +156,20 @@ export function matrix(lock: Lock, filter: string, oses: ("linux" | "macos")[]):
   return out;
 }
 
-export function allowlist(lock: Lock, pluginId: string) {
+/**
+ * The proxy's allowlist for one plugin. `github_repositories` holds the plugin's own repository
+ * when its scenario sets `setup.github_api`; the proxy adds its token only to GitHub API reads of
+ * those repositories (`github_token_allowed` in hp_netfilter.py).
+ */
+export function allowlist(lock: Lock, pluginId: string, githubApi: GithubApi = () => false) {
   const p = (lock.plugin ?? []).find((q) => q.plugin_id === pluginId);
   if (!p) throw new Error(`plugin ${pluginId} is not in the lock`);
-  return { plugin_id: p.plugin_id, mode: p.dependency_mode, dependencies: p.dependency ?? [] };
+  return {
+    plugin_id: p.plugin_id,
+    mode: p.dependency_mode,
+    dependencies: p.dependency ?? [],
+    github_repositories: githubApi(p) ? [p.repository] : [],
+  };
 }
 
 function arg(args: string[], name: string, fallback?: string): string {
@@ -139,13 +181,15 @@ function arg(args: string[], name: string, fallback?: string): string {
 
 if (import.meta.main) {
   const [cmd, ...args] = Bun.argv.slice(2);
-  const lock = parseLock(readFileSync(arg(args, "--lock", DEFAULT_LOCK), "utf8"));
+  const lockPath = arg(args, "--lock", DEFAULT_LOCK);
+  const lock = parseLock(readFileSync(lockPath, "utf8"));
+  const githubApi = githubApiFromScenarios(lockPath, lock);
   switch (cmd) {
     case "matrix": {
       const oses = arg(args, "--os", "linux,macos")
         .split(",")
         .filter((o): o is "linux" | "macos" => o === "linux" || o === "macos");
-      const include = matrix(lock, arg(args, "--filter", ""), oses);
+      const include = matrix(lock, arg(args, "--filter", ""), oses, githubApi);
       console.log(JSON.stringify({ include }));
       break;
     }
@@ -158,7 +202,7 @@ if (import.meta.main) {
       }
       break;
     case "allowlist":
-      console.log(JSON.stringify(allowlist(lock, arg(args, "--plugin"))));
+      console.log(JSON.stringify(allowlist(lock, arg(args, "--plugin"), githubApi)));
       break;
     default:
       console.error("usage: lock-tools.ts matrix|toolchains|allowlist [--lock L] …");

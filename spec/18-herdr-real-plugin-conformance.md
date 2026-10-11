@@ -123,6 +123,8 @@ Unchanged build scripts download code and run it straight away, for example with
 
 The proxy covers build steps, runtime self-updates and transitive package downloads (npm, cargo, go modules). Toolchain versions (node, bun, go, rust) are part of the lock. `mise.toml` does not pin Node or Go today, so the harness workflow pins them.
 
+Some plugins read their own repository from the GitHub API while they build, for example to find a release. GitHub limits requests without a token, and shared runner addresses often reach that limit. A scenario marks such a plugin with `setup.github_api = true`. The workflow then gives the job's read-only token to the proxy, and only to the proxy. The proxy adds it to GET and HEAD requests to `api.github.com` for a fixed list of paths below `/repos/<owner>/<repo>` of the plugin's own repository: the repository itself, commits, releases and tags. The token never enters the boundary. An `unpinned` plugin with this setting also sends its downloads through the proxy, in an `open` mode. That mode forwards every request, refuses nothing but non-public addresses and other ports, and logs each request. The proxy writes its logs (`blocked.jsonl`, `record.jsonl`, `requests.jsonl` and `github-auth.jsonl`, without the token) to the job's harness artifact.
+
 ## 8. Scenarios
 
 Each plugin has a scenario at `tests/compat/herdr/0.9.3/plugins/scenarios/<owner>__<repo>.toml`. Calling every manifest action blindly gives false failures. For example, a file picker needs a handoff file, and an `open-link` action must arrive through a link handler.
@@ -147,10 +149,11 @@ A checker compares each scenario with its manifest. Every declared action, event
 No errors does not mean success. Every step needs positive evidence, such as:
 
 - The invocation reaches a final log state (completed or failed), not only "launched".
-- The expected pane appears at the declared placement.
+- The expected pane appears at the declared placement. With `reuse = true`, a pane of that entrypoint that an earlier step opened, and that is still open, counts too. An action that switches the mode of an open pane opens no new pane.
 - A popup appears. A popup result has `pane: null`, so the harness finds the popup through the popup surface, not through `pane.screenshot`.
 - The pane screen contains the expected text once it is stable.
 - An expected state file or event-hook log line appears.
+- The fake agent's status in Herdr's `pane.get` reaches a value (`agent_status`). Herdr derives `done` itself: an agent that goes from working to idle while its tab is not the active tab.
 - A long-running startup command reports that it is ready before dependent steps run.
 
 ### 8.3 Lifecycle checks
@@ -167,6 +170,10 @@ Each is its own assertion:
 - A revoked plugin's callbacks are rejected.
 - Uninstall removes managed files and the registration.
 
+The callback checks call the plugin's first action. A plugin without actions is checked through its first pane, which must not open. A plugin whose only hook is `pane.agent_status_changed` is checked by changing the fake agent's status: no hook may run.
+
+A check that does not apply to a plugin is `not_applicable` (§8.4). For example, the startup checks do not apply when the manifest declares no startup command, and the build check does not apply when it declares no build step.
+
 Uninstall does not stop a plugin's own background services. Closing the broker only ends its connections. The scenario stops those services itself.
 
 ### 8.4 Outcomes
@@ -179,6 +186,7 @@ Uninstall does not stop a plugin's own background services. Closing the broker o
 | `dependency_failure` | A build or an external dependency failed or changed. |
 | `harness_error` | The harness, runner or scenario is broken. |
 | `not_exercised` | The step did not run. It always has a reason. |
+| `not_applicable` | A lifecycle check that does not apply to the plugin. It always has a reason. Steps and known results never use it. |
 
 One rule decides between Vibeke, dependency and baseline failures for a step:
 
@@ -187,7 +195,7 @@ One rule decides between Vibeke, dependency and baseline failures for a step:
 3. If Herdr passes and Vibeke fails, the outcome is `compat_failure`. This needs proof that both sides received the same dependency bytes. In `unpinned` mode the harness may not see the downloads. Then it cannot compare the bytes, and the outcome is `suspected_compat_failure` with the reason "dependency bytes not compared (unpinned)".
 4. If both sides fail, the outcome is `not_exercised`, with the Herdr result as the reason.
 
-A plugin's outcome is its worst step outcome. A step that has a known result and now passes is an **unexpected pass**, and fails the run until someone updates the scenario. This keeps known failures from hiding fixes and new failures.
+A plugin's outcome is its worst step or lifecycle outcome, from best to worst: `passed`, `not_exercised`, `dependency_failure`, `suspected_compat_failure`, `compat_failure`, `harness_error`. The plugin outcome and the report ignore `not_applicable`, so a plugin can pass when a check does not apply to it. A step that has a known result and now passes is an **unexpected pass**, and fails the run until someone updates the scenario. This keeps known failures from hiding fixes and new failures.
 
 ### 8.5 First plugins
 
@@ -234,6 +242,7 @@ Both sides are converted to one structured format before comparison. Neither sid
 - **Text.** One grapheme per cell. A wide character takes its cell plus a marked continuation cell. Combining marks stay with their base character.
 - **Colors.** Default, indexed (0–255) or RGB. Both sides start with the same fixed palette and theme. A plugin can change palette entries (OSC 4) and the default colors (OSC 10 and 11). The two engines record such cells differently: Herdr's capture turns a changed palette entry into RGB, and `vk-term` keeps the index. So the harness tracks palette changes on each side. A cell whose index points at a changed entry becomes RGB on both sides. Unchanged indexed colors stay indexed and are compared as indexes.
 - **Attributes.** First version: bold, italic, inverse and "any underline". Other attributes come later.
+- **Inverse video.** Herdr draws a cell with inverse video (SGR 7) by swapping its colors. It turns "default" into its terminal's own colors first. So Herdr's capture has fixed RGB colors and no inverse flag, and Vibeke's grid keeps the flag. The comparison therefore draws inverse cells the same way on both sides: it swaps their colors and clears the flag. It learns Herdr's default colors from the cells where Vibeke shows inverse with default colors and Herdr shows the same text with RGB colors. All such cells must agree, or the colors stay unknown and the cells differ.
 - **Cursor.** Position and visibility are recorded, but not compared by default.
 
 Vibeke needs a structured grid export for this. It will be either a test-only API or a new `pane.screenshot` format. The choice follows the `vibeke/1` additive rules.

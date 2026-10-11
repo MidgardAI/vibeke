@@ -6,6 +6,7 @@
 # `link` steps and checks that the file opens in the sidebar.
 # The plugin uses the Herdr CLI only (`pane list`, `pane get`, `pane run`, `agent list`,
 # `plugin pane open`). It does not use the Herdr socket directly.
+# The pick-file action needs a reported agent, so the fake agent reports `idle` before it.
 # The path link uses `~`, which the plugin expands against the home directory; the repository
 # `app` is created at `{home}/src/app`.
 # The plugin needs `nvim` on PATH. The build step downloads a release binary or builds with cargo.
@@ -59,6 +60,24 @@ timeout_ms = 60000
 kind = "screen_text"
 pane = "sidebar"
 text = "second-file-marker"
+
+# The picker reads an agent pane from `agent list` (src/bridge.rs, target_agent_pane), so the
+# fake agent reports itself first. The picker offers the files it finds in that pane's text,
+# so the pane prints the absolute path of a repository file.
+[[step]]
+id = "agent-idle"
+kind = "event"
+event = "pane.agent_status_changed"
+agent_status = "idle"
+[[step.expect]]
+kind = "event"
+type = "pane.agent_status_changed"
+
+[[step]]
+id = "agent-shows-file"
+kind = "event"
+event = "pane.updated"
+cli = ["pane", "run", "{agent_pane}", "printf '%s\\n' {repo.app}/src/notes.rs"]
 
 [[step]]
 id = "pick-file"

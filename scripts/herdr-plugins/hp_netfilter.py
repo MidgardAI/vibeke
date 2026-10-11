@@ -8,6 +8,7 @@ decide which requests the proxy forwards and which upstream addresses it may con
 """
 
 import ipaddress
+import re
 
 ALLOWED_METHODS = frozenset({"GET", "HEAD"})
 ALLOWED_PORTS = frozenset({80, 443})
@@ -108,11 +109,82 @@ def resolved_target(addresses, port):
 def request_refusal(mode, method, url, allowed_urls):
     """Why the proxy must refuse an HTTP request before forwarding it, or None.
 
-    Both modes allow only GET and HEAD. Verify mode also allows only URLs listed in the lock; the
-    response hash check stays as a second check.
+    `record` and `verify` allow only GET and HEAD. Verify mode also allows only URLs listed in the
+    lock; the response hash check stays as a second check. `open` (an `unpinned` plugin that
+    reads the GitHub API) forwards every method: the plugin could reach the network without the
+    proxy too, and the proxy is there only to add the token (`github_token_allowed`).
     """
+    if mode == "open":
+        return None
     if method not in ALLOWED_METHODS:
         return f"method {method} is not GET or HEAD"
     if mode == "verify" and url not in allowed_urls:
         return "URL is not in the lock"
     return None
+
+
+GITHUB_API_HOST = "api.github.com"
+
+_REPOSITORY = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]*/(?!\.\.?\Z)[A-Za-z0-9_.-]+")
+# A tag, branch or commit name in one path segment. Dots are allowed (v1.2.3), but not a segment
+# of dots only.
+_REF = r"(?!\.+(?:/|\Z))[A-Za-z0-9._-]{1,100}"
+# The API paths below `/repos/<owner>/<repo>` that the locked plugins read to find a release.
+_REPO_PATHS = re.compile(
+    r"(?:"
+    r"|/commits/" + _REF
+    + r"|/releases|/releases/latest|/releases/tags/" + _REF
+    + r"|/releases/[0-9]{1,20}|/releases/assets/[0-9]{1,20}"
+    + r"|/tags|/git/ref/tags/" + _REF + r"|/git/refs/tags/" + _REF
+    + r")"
+)
+_QUERY = re.compile(r"(?:per_page|page)=[0-9]{1,4}(?:&(?:per_page|page)=[0-9]{1,4})?")
+
+
+def valid_repository(name):
+    """Whether `name` is an `owner/repo` GitHub repository name."""
+    return isinstance(name, str) and _REPOSITORY.fullmatch(name) is not None
+
+
+def github_token_allowed(method, scheme, host, host_header, port, path, repositories):
+    """Whether the proxy may add its GitHub token to this request.
+
+    Only GET and HEAD over HTTPS on port 443 to `api.github.com` (the connection's host and the
+    Host header), for the paths in `_REPO_PATHS` below `/repos/<owner>/<repo>` of one of
+    `repositories` (the plugin's own repository from the lock). The path must be plain: no
+    percent-encoding, no empty or dot segments, and a query of at most `per_page` and `page`.
+    Owner and repository names compare without case, as GitHub does.
+    """
+    if method not in ALLOWED_METHODS or scheme != "https" or port != 443:
+        return False
+    if not isinstance(host, str) or host.lower() != GITHUB_API_HOST:
+        return False
+    if host_header is not None and host_header.lower().split(":", 1)[0] != GITHUB_API_HOST:
+        return False
+    if not isinstance(path, str) or not path.startswith("/repos/"):
+        return False
+    path, _, query = path.partition("?")
+    if query and not _QUERY.fullmatch(query):
+        return False
+    if "%" in path or "//" in path or "\\" in path or not path.isascii():
+        return False
+    segments = path.split("/")[1:]
+    if any(seg in ("", ".", "..") for seg in segments):
+        return False
+    rest = path[len("/repos/"):]
+    for repo in repositories:
+        if not valid_repository(repo):
+            continue
+        prefix = repo.lower()
+        if rest.lower() == prefix or rest.lower().startswith(prefix + "/"):
+            if _REPO_PATHS.fullmatch(rest[len(prefix):]):
+                return True
+    return False
+
+
+_TOKEN = re.compile(r"[A-Za-z0-9_.-]{1,1000}")
+
+
+def valid_token(token):
+    """Whether `token` can go into an Authorization header unchanged (no spaces or controls)."""
+    return isinstance(token, str) and _TOKEN.fullmatch(token) is not None

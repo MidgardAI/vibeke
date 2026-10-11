@@ -10,6 +10,7 @@
 //! fake_agent = true                    # a pane whose agent status the harness can change
 //! workspace_cwd = "{repo.app}"         # the context workspace starts in this directory
 //! path_exclude = ["/opt/homebrew/bin"] # directories kept off the plugin PATH on both sides
+//! github_api = true                    # authenticated GitHub API reads of the plugin's repository
 //! [[setup.repo]]
 //! name = "app"                         # created under {home}/src/app, `git init` + one commit
 //! files = { "README.md" = "hello\n" }
@@ -105,6 +106,13 @@ pub struct Setup {
     /// package manager the plugin user cannot write to.
     #[serde(default)]
     pub path_exclude: Vec<String>,
+    /// The plugin reads its own repository from the GitHub API (for example the release its
+    /// build installs). The workflow then sends the plugin's downloads through the dependency
+    /// proxy also in `unpinned` mode, and the proxy adds the workflow's read-only token to
+    /// GET and HEAD requests for that repository's API paths (18 §7.2). The token never
+    /// enters the boundary. The harness itself does not read this field.
+    #[serde(default)]
+    pub github_api: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -192,7 +200,10 @@ pub struct Step {
     pub event: Option<String>,
     #[serde(default)]
     pub cli: Vec<String>,
-    /// Fake agent status for event steps: `working`, `blocked`, `done`, `idle`.
+    /// Fake agent status for event steps: `idle`, `working`, `blocked` or `unknown`, the states
+    /// `herdr pane report-agent --state` accepts. Herdr derives `done` itself: an agent that
+    /// goes from `working` or `blocked` to `idle` while its tab is not the active tab (see the
+    /// `agent_status` expectation).
     #[serde(default)]
     pub agent_status: Option<String>,
     #[serde(default)]
@@ -267,10 +278,14 @@ pub enum Expectation {
         status: Option<String>,
     },
     /// A plugin pane opens at the declared placement (`split`, `tab`, `overlay`, `zoomed`).
+    /// With `reuse = true`, a pane of that entrypoint that an earlier step opened and that is
+    /// still open counts too (an action that switches the mode of an open pane opens none).
     Pane {
         pane: String,
         #[serde(default)]
         placement: Option<String>,
+        #[serde(default)]
+        reuse: bool,
     },
     /// A popup opens, found through the popup surface, not `pane.screenshot`.
     Popup { pane: String },
@@ -297,12 +312,15 @@ pub enum Expectation {
         #[serde(rename = "type")]
         event_type: String,
     },
-    /// The HTTP sink stub received a request whose body contains `contains`.
+    /// The HTTP sink stub received a request whose method, path or body contains `contains`.
     StubRequest {
         stub: String,
         #[serde(default)]
         contains: Option<String>,
     },
+    /// The fake agent pane's `agent_status` in Herdr's `pane.get` is `status`, on both sides.
+    /// `done` is the status Herdr derives for an idle agent whose pane was not seen.
+    AgentStatus { status: String },
 }
 
 /// Visual comparison of one plugin pane (18 §10).
@@ -470,7 +488,9 @@ impl Scenario {
 }
 
 const CONTEXTS: [&str; 5] = ["global", "workspace", "tab", "pane", "agent_pane"];
-const AGENT_STATUSES: [&str; 4] = ["working", "blocked", "done", "idle"];
+const AGENT_STATUSES: [&str; 4] = ["idle", "working", "blocked", "unknown"];
+/// The `agent_status` values of Herdr's `PaneInfo`: the reported states and the derived `done`.
+const PANE_AGENT_STATUSES: [&str; 5] = ["idle", "working", "blocked", "done", "unknown"];
 
 impl Step {
     fn validate(&self, setup: &Setup, stubs: &BTreeMap<&str, StubKind>) -> anyhow::Result<()> {
@@ -537,8 +557,8 @@ impl Step {
             bail!("timeout_ms must be positive");
         }
         if let Some(k) = &self.known {
-            if k.outcome == Outcome::Passed {
-                bail!("a known result cannot be `passed`");
+            if matches!(k.outcome, Outcome::Passed | Outcome::NotApplicable) {
+                bail!("a known result cannot be `passed` or `not_applicable`");
             }
             if k.reason.trim().is_empty() {
                 bail!("a known result needs a reason");
@@ -558,6 +578,9 @@ impl Step {
         }
         for e in &self.expect {
             e.validate(stubs)?;
+            if matches!(e, Expectation::AgentStatus { .. }) && !setup.fake_agent {
+                bail!("an agent_status expectation needs setup.fake_agent = true");
+            }
         }
         for c in &self.compare {
             if c.pane.is_empty() {
@@ -631,6 +654,11 @@ impl Expectation {
                 Some(_) => bail!("stub_request names stub `{stub}`, which is not an http_sink"),
                 None => bail!("stub_request names unknown stub `{stub}`"),
             },
+            Expectation::AgentStatus { status } => {
+                if !PANE_AGENT_STATUSES.contains(&status.as_str()) {
+                    bail!("unknown pane agent status `{status}`");
+                }
+            }
         }
         Ok(())
     }
@@ -825,6 +853,30 @@ fields = ["project_id"]
             },
             "exactly one of `cli` or `agent_status`",
         );
+        // Herdr derives `done`; `pane report-agent` does not accept it.
+        rejects(
+            |s| s.steps[1].agent_status = Some("done".into()),
+            "unknown agent_status",
+        );
+        rejects(
+            |s| {
+                s.steps[1].expect = vec![Expectation::AgentStatus {
+                    status: "finished".into(),
+                }]
+            },
+            "unknown pane agent status",
+        );
+        rejects(
+            |s| {
+                let i = step(s, "cli-event");
+                s.steps[i].expect = vec![Expectation::AgentStatus {
+                    status: "done".into(),
+                }];
+                s.steps.retain(|x| x.agent_status.is_none());
+                s.setup.fake_agent = false;
+            },
+            "agent_status expectation needs setup.fake_agent",
+        );
         rejects(
             |s| s.steps[1].agent_status = Some("sleepy".into()),
             "unknown agent_status",
@@ -868,6 +920,10 @@ fields = ["project_id"]
         rejects(
             |s| s.steps[0].known.as_mut().unwrap().outcome = Outcome::Passed,
             "cannot be `passed`",
+        );
+        rejects(
+            |s| s.steps[0].known.as_mut().unwrap().outcome = Outcome::NotApplicable,
+            "or `not_applicable`",
         );
         rejects(
             |s| s.steps[0].known.as_mut().unwrap().reason = " ".into(),

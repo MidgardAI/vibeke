@@ -9,7 +9,8 @@
 # asks for a directory and then opens the viewer there.
 #
 # The build step downloads a prebuilt viewer program, or builds it with cargo. The viewer
-# shows a file tree of a git checkout, so the setup creates a small repository. A stub turns
+# shows a file tree of a git checkout, so the setup creates a small repository and starts the
+# context workspace in it. A stub turns
 # off the viewer's update check, so no request leaves the test environment. The first row of
 # the viewer shows the root directory and the last row shows the branch name, so the
 # comparison masks both rows.
@@ -24,6 +25,10 @@ repository = "smarzban/herdr-file-viewer"
 timeout_ms = 120000
 
 [setup]
+# The viewer roots at the invoking pane's directory (`focused_pane_cwd`, then `workspace_cwd`
+# in HERDR_PLUGIN_CONTEXT_JSON; src/host.rs), not at its own process directory, which is the
+# plugin checkout. So the context workspace starts in the repository.
+workspace_cwd = "{repo.app}"
 [[setup.repo]]
 name = "app"
 files = { "README.md" = "# Sample\n\nSome text.\n", "src/main.txt" = "line one\nline two\n" }
