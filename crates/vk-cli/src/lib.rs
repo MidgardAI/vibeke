@@ -2128,14 +2128,21 @@ fn field_shapes<'a>(
     }
 }
 
-/// Does the shape accept some string (a string, or a string literal)?
+/// Could the shape hold a word from the command line (a string, a string literal, or a list
+/// or object the command builds from it)? Numbers and booleans cannot.
 fn takes_text(
     s: &vk_server::shape::Shape,
     defs: &std::collections::BTreeMap<String, vk_server::shape::Shape>,
 ) -> bool {
     use vk_server::shape::Shape;
     match s {
-        Shape::Str | Shape::Lit(_) | Shape::Any => true,
+        Shape::Str
+        | Shape::Lit(_)
+        | Shape::Any
+        | Shape::Array(_)
+        | Shape::Map(_)
+        | Shape::Object
+        | Shape::Obj(_) => true,
         Shape::Union(arms) => arms.iter().any(|a| takes_text(a, defs)),
         Shape::Ref(n) => defs.get(n).is_some_and(|d| takes_text(d, defs)),
         _ => false,
@@ -2144,8 +2151,8 @@ fn takes_text(
 
 /// A value typed on the command line, as JSON: guessed (`42` is a number, `true` a bool,
 /// `[1]` an array), unless `method`'s schema says what `key` holds: then a string field keeps
-/// `42` as the string "42", a number field takes `0.5`, a list field takes a single value as a
-/// one-item list, and a value that fits nothing is refused with the type it needs.
+/// `42` as the string "42", a number field takes `0.5`, and a value a number or boolean field
+/// cannot hold is refused with the type it needs.
 fn coerce_param(
     method: Option<&str>,
     key: &str,
@@ -2184,13 +2191,12 @@ fn coerce_param(
     {
         candidates.push(serde_json::json!(f));
     }
-    candidates.push(Value::Array(vec![guessed.clone()]));
-    candidates.push(Value::Array(vec![raw.clone()]));
     if let Some(v) = candidates.into_iter().find(|v| fits(v)) {
         return Ok(v);
     }
-    // A word for a text field (a name, or one of a set of names the schema may not list in
-    // full): the server checks the value itself.
+    // A word for a text or list field (a name the schema may not list in full, or a
+    // comma-separated list the command splits later): passed on as the word, and the server
+    // checks it. Only a field that can never hold text refuses it here.
     if raw.is_string() && shapes.iter().any(|s| takes_text(s, defs)) {
         return Ok(raw);
     }
@@ -3968,6 +3974,14 @@ mod tests {
         )
         .unwrap();
         assert_eq!(p["keys"], serde_json::json!(["1", "2"]));
+        // A comma-separated list stays a word (`run_api` splits it).
+        let p = build_params_for(
+            Some("agent.spawn"),
+            &["name"],
+            &a(&["--harness", "claude", "--args", "a,b"]),
+        )
+        .unwrap();
+        assert_eq!(p["args"], "a,b");
         // A word the schema's list of names lacks still reaches the server, which decides.
         let p = build_params_for(
             Some("pane.read"),
