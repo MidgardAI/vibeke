@@ -4,10 +4,11 @@ Run by the trusted runner user, outside the execution boundary:
 
     mitmdump --listen-host 127.0.0.1 --listen-port 8899 --set confdir=<dir> \
         -s scripts/herdr-plugins/verified_proxy.py \
-        --set hp_mode=record|verify --set hp_cache=<dir> --set hp_log=<dir> [--set hp_allow=<file>]
+        --set hp_mode=record|verify|open --set hp_cache=<dir> --set hp_log=<dir> [--set hp_allow=<file>] \
+        [--set hp_github_token_file=<file>]
 
-Both modes forward only GET and HEAD requests, and only to public addresses on ports 80 and 443
-(`hp_netfilter.py`). The proxy resolves each upstream host name itself, refuses it when any of
+`record` and `verify` forward only GET and HEAD requests. Every mode connects only to public
+addresses on ports 80 and 443 (`hp_netfilter.py`). The proxy resolves each upstream host name itself, refuses it when any of
 its addresses is loopback, private, link-local (cloud metadata services), CGNAT, multicast or
 unspecified, and then connects to the checked address, so a second DNS answer cannot redirect the
 connection (DNS rebinding). TLS still verifies the certificate against the host name.
@@ -23,6 +24,16 @@ when the cached body still has a listed hash. Other responses are fetched in ful
 replaced by a 403 before any byte reaches the client. Redirects pass only for URLs listed in the
 lock. Every refusal is logged to `<log>/blocked.jsonl`. Raw TCP, UDP and WebSocket traffic is
 refused: plugins that need other protocols or pin certificates stay `unpinned` (18 §15).
+
+`open` is for an `unpinned` plugin whose scenario sets `setup.github_api`: it forwards every
+request, WebSocket and TCP stream (the plugin could also reach the network without the proxy) and
+logs `{method, url, status}` lines to `<log>/requests.jsonl`. It exists to add the token below.
+
+GitHub token: with `hp_github_token_file` (a file only the trusted runner user can read), every
+mode adds `Authorization: Bearer <token>` to GET and HEAD requests for the GitHub API paths of the
+repositories in the allowlist's `github_repositories` (the plugin's own repository from the lock;
+`hp_netfilter.github_token_allowed`). Each such response is logged with its status, without the
+token, to `<log>/github-auth.jsonl`. The token never enters the boundary: the plugin sees only the response.
 
 Bodies are hashed as the client receives them. The proxy drops `Accept-Encoding` so servers send
 the same bytes in both modes.
@@ -40,7 +51,14 @@ import threading
 from mitmproxy import ctx, http
 
 # mitmproxy puts this script's directory on sys.path while it loads the script.
-from hp_netfilter import port_refusal, request_refusal, resolved_target
+from hp_netfilter import (
+    github_token_allowed,
+    port_refusal,
+    request_refusal,
+    resolved_target,
+    valid_repository,
+    valid_token,
+)
 
 REDIRECTS = {301, 302, 303, 307, 308}
 KEPT_HEADERS = ("content-type", "content-encoding", "location", "content-disposition")
@@ -51,30 +69,44 @@ class VerifiedProxy:
         self.lock = threading.Lock()
         self.allowed_sha = set()
         self.url_shas = {}
+        self.github_token = None
+        self.github_repos = []
 
     def load(self, loader):
-        loader.add_option("hp_mode", str, "verify", "record or verify")
+        loader.add_option("hp_mode", str, "verify", "record, verify or open")
         loader.add_option("hp_cache", str, "", "content-addressed cache directory")
         loader.add_option("hp_log", str, "", "directory for record.jsonl and blocked.jsonl")
         loader.add_option("hp_allow", str, "", "allowlist JSON written from the lock")
+        loader.add_option("hp_github_token_file", str, "", "file with a GitHub token for API reads")
 
     def configure(self, updated):
-        if ctx.options.hp_mode not in ("record", "verify"):
-            raise ValueError("hp_mode must be record or verify")
+        if ctx.options.hp_mode not in ("record", "verify", "open"):
+            raise ValueError("hp_mode must be record, verify or open")
         if not ctx.options.hp_log:
             raise ValueError("hp_log is required")
         os.makedirs(ctx.options.hp_log, exist_ok=True)
         if ctx.options.hp_cache:
             os.makedirs(ctx.options.hp_cache, exist_ok=True)
+        allow = {}
+        if ctx.options.hp_allow:
+            with open(ctx.options.hp_allow, encoding="utf-8") as f:
+                allow = json.load(f)
         if ctx.options.hp_mode == "verify":
             if not ctx.options.hp_allow:
                 raise ValueError("hp_allow is required in verify mode")
-            with open(ctx.options.hp_allow, encoding="utf-8") as f:
-                deps = json.load(f).get("dependencies", [])
+            deps = allow.get("dependencies", [])
             self.allowed_sha = {d["sha256"] for d in deps}
             self.url_shas = {}
             for d in deps:
                 self.url_shas.setdefault(d["url"], []).append(d["sha256"])
+        self.github_repos = [r for r in allow.get("github_repositories", []) if valid_repository(r)]
+        self.github_token = None
+        if ctx.options.hp_github_token_file:
+            with open(ctx.options.hp_github_token_file, encoding="utf-8") as f:
+                token = f.read().strip()
+            if token and not valid_token(token):
+                raise ValueError("the GitHub token file holds an unexpected value")
+            self.github_token = token or None
 
     # Logging and cache helpers.
 
@@ -155,6 +187,20 @@ class VerifiedProxy:
             if cached is not None:
                 flow.response = cached
                 flow.metadata["hp_from_cache"] = True
+                return
+        self._add_github_token(flow)
+
+    def _add_github_token(self, flow: http.HTTPFlow):
+        """Adds the token to an allowed GitHub API read that carries no credentials of its own."""
+        if not self.github_token or "authorization" in flow.request.headers:
+            return
+        r = flow.request
+        if not github_token_allowed(
+            r.method, r.scheme, r.host, r.headers.get("host"), r.port, r.path, self.github_repos
+        ):
+            return
+        r.headers["authorization"] = f"Bearer {self.github_token}"
+        flow.metadata["hp_github_token"] = True
 
     async def server_connect(self, data):
         """Checks every upstream connection before mitmproxy opens it, and pins its address."""
@@ -192,6 +238,11 @@ class VerifiedProxy:
         sha = hashlib.sha256(body).hexdigest()
         url = flow.request.pretty_url
         status = flow.response.status_code
+        if flow.metadata.get("hp_github_token"):
+            self._append("github-auth.jsonl", {"method": flow.request.method, "url": url, "status": status})
+        if ctx.options.hp_mode == "open":
+            self._append("requests.jsonl", {"method": flow.request.method, "url": url, "status": status})
+            return
         if ctx.options.hp_mode == "record":
             self._store(sha, body, flow.response)
             self._append("record.jsonl", {"url": url, "sha256": sha, "status": status})
@@ -210,10 +261,16 @@ class VerifiedProxy:
         self._append("blocked.jsonl", {"url": flow.request.pretty_url, "sha256": None, "reason": "upstream error"})
 
     def websocket_start(self, flow: http.HTTPFlow):
+        if ctx.options.hp_mode == "open":
+            self._append("requests.jsonl", {"method": "WEBSOCKET", "url": flow.request.pretty_url, "status": None})
+            return
         self._append("blocked.jsonl", {"url": flow.request.pretty_url, "sha256": None, "reason": "websocket"})
         flow.kill()
 
     def tcp_start(self, flow):
+        if ctx.options.hp_mode == "open":
+            self._append("requests.jsonl", {"method": "TCP", "url": f"tcp://{flow.server_conn.address}", "status": None})
+            return
         self._append("blocked.jsonl", {"url": f"tcp://{flow.server_conn.address}", "sha256": None, "reason": "raw TCP"})
         flow.kill()
 
@@ -223,6 +280,9 @@ class VerifiedProxy:
         self._append("blocked.jsonl", {"url": f"tls://{sni}", "sha256": None, "reason": "client TLS handshake failed"})
 
     def udp_start(self, flow):
+        if ctx.options.hp_mode == "open":
+            self._append("requests.jsonl", {"method": "UDP", "url": f"udp://{flow.server_conn.address}", "status": None})
+            return
         self._append("blocked.jsonl", {"url": f"udp://{flow.server_conn.address}", "sha256": None, "reason": "raw UDP"})
         flow.kill()
 

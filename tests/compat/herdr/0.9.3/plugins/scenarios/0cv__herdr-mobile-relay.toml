@@ -17,6 +17,11 @@ timeout_ms = 120000
 
 [setup]
 fake_agent = true
+# install.sh resolves the release tag through the GitHub API (`/repos/<repo>`,
+# `/repos/<repo>/commits/<tag>`, `/repos/<repo>/releases/tags/<tag>`). Shared runner addresses hit
+# the limit for requests without a token, so the dependency proxy adds the workflow's read-only
+# token to these requests (18 §7.2). The token stays outside the boundary.
+github_api = true
 
 [[setup.repo]]
 name = "app"

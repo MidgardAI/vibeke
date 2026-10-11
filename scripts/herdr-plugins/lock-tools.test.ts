@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { merge, parseRecords } from "../herdr-plugins-record";
-import { allowlist, deferredPlugins, matrix, parseLock } from "./lock-tools";
+import { allowlist, deferredPlugins, githubApiFromScenarios, matrix, parseLock, scenarioGithubApi } from "./lock-tools";
 
 const LOCK = `schema = 1
 baseline = "0.9.3"
@@ -97,7 +99,33 @@ describe("lock tools", () => {
 
   test("allowlist lists the locked dependencies", () => {
     expect(allowlist(lock, "acme.two").dependencies).toEqual([{ url: "https://example.com/old", sha256: "d".repeat(64) }]);
+    expect(allowlist(lock, "acme.two").github_repositories).toEqual([]);
     expect(() => allowlist(lock, "missing")).toThrow();
+  });
+
+  test("only a scenario with setup.github_api gets the GitHub token for its own repository", () => {
+    const api = (p: { plugin_id: string }) => p.plugin_id === "solo.tool";
+    expect(allowlist(lock, "solo.tool", api).github_repositories).toEqual(["solo/tool"]);
+    expect(allowlist(lock, "acme.one", api).github_repositories).toEqual([]);
+    const m = matrix(lock, "", ["linux"], api);
+    expect(m.map((e) => [e.plugin_id, e.github_api])).toEqual([
+      ["acme.one", false],
+      ["acme.two", false],
+      ["solo.tool", true],
+    ]);
+    expect(matrix(lock, "", ["linux"]).every((e) => !e.github_api)).toBe(true);
+    expect(scenarioGithubApi('plugin_id = "x"\n[setup]\ngithub_api = true\n')).toBe(true);
+    expect(scenarioGithubApi('plugin_id = "x"\n[setup]\ngithub_api = "yes"\n')).toBe(false);
+    expect(scenarioGithubApi('plugin_id = "x"\n')).toBe(false);
+    expect(scenarioGithubApi(undefined)).toBe(false);
+  });
+
+  test("the checked-in scenarios opt in only the plugin that needs the GitHub API", () => {
+    const path = join(import.meta.dir, "../../tests/compat/herdr/0.9.3/plugins/top20.lock.toml");
+    const real = parseLock(readFileSync(path, "utf8"));
+    const api = githubApiFromScenarios(path, real);
+    const opted = (real.plugin ?? []).filter(api).map((p) => p.repository);
+    expect(opted).toEqual(["0cv/herdr-mobile-relay"]);
   });
 });
 
