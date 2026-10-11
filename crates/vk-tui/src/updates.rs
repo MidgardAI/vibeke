@@ -16,6 +16,8 @@ pub struct State {
     pub status: Value,
     pub busy: bool,
     pub automatic: bool,
+    /// `[update] version_check = false`: no background checks, whatever `automatic` says.
+    pub off: bool,
     pub confirm: bool,
     installing: bool,
     background: bool,
@@ -81,14 +83,21 @@ pub fn init(app: &mut App, args: Option<Vec<String>>, inc: mpsc::UnboundedSender
 }
 
 /// `[update] version_check = false` turns the release check off: no schedule and no saved result
-/// to show as a badge. The saved preference file stays as it is, and `r` in the Updates popup
-/// still checks on request.
+/// to show as a badge. The user's own `automatic` preference is kept (and saved unchanged), and
+/// `r` in the Updates popup still checks on request.
 #[cfg(not(target_arch = "wasm32"))]
 fn apply_config(u: &mut State, version_check: bool) {
-    if !version_check {
-        u.automatic = false;
+    u.off = !version_check;
+    if u.off {
         u.next = None;
         u.status = Value::Null;
+    }
+}
+
+impl State {
+    /// Background checks run: the user's preference, unless the configuration turns them off.
+    fn background_checks(&self) -> bool {
+        self.automatic && !self.off
     }
 }
 
@@ -215,7 +224,7 @@ pub fn on_event(app: &mut App, event: Event) {
             let u = &mut app.ux.updates;
             u.busy = false;
             u.installing = false;
-            u.next = u.automatic.then(|| Instant::now() + INTERVAL);
+            u.next = u.background_checks().then(|| Instant::now() + INTERVAL);
             match result {
                 Ok(v) => u.status = v,
                 Err(e) if u.background => {
@@ -273,6 +282,9 @@ pub fn key(app: &mut App, ev: &KeyEvent) {
             app.mode = Mode::Normal;
         }
         Key::Char('r') if !app.ux.updates.busy => start(app, false, false),
+        Key::Char('b') if app.ux.updates.off => {
+            app.toast("Background checks are off in the configuration ([update] version_check)")
+        }
         Key::Char('b') => {
             app.ux.updates.automatic = !app.ux.updates.automatic;
             app.ux.updates.next = app.ux.updates.automatic.then(Instant::now);
@@ -305,7 +317,11 @@ pub fn tick(app: &mut App) {
         app.ux.updates.resume = None;
     }
     let u = &app.ux.updates;
-    if u.worker.is_some() && u.automatic && !u.busy && u.next.is_some_and(|t| t <= Instant::now()) {
+    if u.worker.is_some()
+        && u.background_checks()
+        && !u.busy
+        && u.next.is_some_and(|t| t <= Instant::now())
+    {
         start(app, false, true);
     }
 }
@@ -323,7 +339,7 @@ pub fn deadlines(app: &App, d: &mut crate::deadline::Deadlines) {
     let u = &app.ux.updates;
     if u.worker.is_some()
         && !u.busy
-        && u.automatic
+        && u.background_checks()
         && let Some(t) = u.next
     {
         d.at("updates", t);
@@ -406,7 +422,13 @@ pub fn draw(app: &App, g: &mut Grid) {
     a.line(
         &format!(
             "b: background checks {}   r: check again   Esc: close",
-            if u.automatic { "on" } else { "off" }
+            if u.off {
+                "off (configuration)"
+            } else if u.automatic {
+                "on"
+            } else {
+                "off"
+            }
         ),
         t.text(),
     );
@@ -445,11 +467,13 @@ mod tests {
             ..Default::default()
         };
         apply_config(&mut u, true);
-        assert!(u.automatic && u.next.is_some());
+        assert!(u.background_checks() && u.next.is_some());
         assert_eq!(u.status["state"], "available");
         apply_config(&mut u, false);
-        assert!(!u.automatic && u.next.is_none());
+        assert!(!u.background_checks() && u.next.is_none());
         assert!(u.status.is_null());
+        // The user's own preference is untouched (it is what `save` writes).
+        assert!(u.automatic);
     }
     #[test]
     fn checks_never_steal_focus_or_send_pane_input() {
