@@ -41,6 +41,7 @@ Preserve unrelated changes in the shared checkout. Check `git status` and the cu
 - Many unit tests sit in sibling `*_tests.rs` files. Most integration tests use `crates/vibeke/tests/it/support/mod.rs::Session`, which runs the real binary in isolated `VIBEKE_*` directories.
 - Unix socket paths must stay under 104 bytes (macOS limit). Tests create short directories under `/tmp`; do not root test sockets in a long `TMPDIR`.
 - Fix flaky tests at the cause: wait for a condition instead of sleeping, use relative time bounds and free ports, and assume a loaded machine.
+- Images and other visual output in the TUI (screenshots, previews, thumbnails, browser frames) must work with both kitty graphics (unicode placeholders) and iTerm2 inline images (OSC 1337). Choose the path with `browser::gfx` and show the text hint only when neither is available. Test both with `caps.kitty_graphics` and `caps.iterm2_images`. The WASM TUI in the browser app uses the iTerm2 path. See `spec/18-images-in-the-tui.md`.
 - Redact sensitive output with `vk-redact` before it reaches logs, events or debug bundles; event storage does not redact for you.
 - Host CLI targets are macOS and Linux only; Windows is desktop-only. Sandboxing is Seatbelt on macOS and bubblewrap on Linux.
 - Fuzz targets are `fn(&[u8])`, registered in `vk-fuzz/src/targets.rs`. Do not add fuzzing crates to the main lockfile (`docs/hardening.md`).
