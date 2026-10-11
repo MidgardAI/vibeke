@@ -1,0 +1,4 @@
+Reload local agent detection manifest overrides
+
+Usage: herdr server reload-agent-manifests
+

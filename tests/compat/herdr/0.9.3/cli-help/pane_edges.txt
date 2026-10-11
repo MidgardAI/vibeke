@@ -1,0 +1,10 @@
+Show pane edge information
+
+Usage: herdr pane edges [OPTIONS]
+
+Options:
+      --pane <ID>
+          
+
+      --current
+

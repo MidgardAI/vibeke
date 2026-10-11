@@ -1,0 +1,14 @@
+Observe a terminal stream
+
+Usage: herdr terminal session observe [OPTIONS] <TARGET>
+
+Arguments:
+  <TARGET>
+          
+
+Options:
+      --cols <N>
+          
+
+      --rows <N>
+

@@ -1,0 +1,11 @@
+Delete a stopped session
+
+Usage: herdr session delete [OPTIONS] <NAME>
+
+Arguments:
+  <NAME>
+          
+
+Options:
+      --json
+

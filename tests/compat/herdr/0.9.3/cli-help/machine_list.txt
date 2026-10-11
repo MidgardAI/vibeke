@@ -1,0 +1,7 @@
+List saved SSH machines
+
+Usage: herdr machine list [OPTIONS]
+
+Options:
+      --json
+

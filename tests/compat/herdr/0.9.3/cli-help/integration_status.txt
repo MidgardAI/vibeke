@@ -1,0 +1,7 @@
+Show integration status
+
+Usage: herdr integration status [OPTIONS]
+
+Options:
+      --outdated-only
+

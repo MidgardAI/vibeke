@@ -1,0 +1,28 @@
+Open an existing Git worktree
+
+Usage: herdr worktree open [OPTIONS]
+
+Options:
+      --workspace <ID>
+          
+
+      --cwd <PATH>
+          
+
+      --path <PATH>
+          
+
+      --branch <NAME>
+          
+
+      --label <TEXT>
+          
+
+      --focus
+          
+
+      --no-focus
+          
+
+      --trust-repository
+

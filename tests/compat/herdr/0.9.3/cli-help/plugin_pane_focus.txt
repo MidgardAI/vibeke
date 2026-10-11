@@ -1,0 +1,7 @@
+Focus a plugin pane
+
+Usage: herdr plugin pane focus <PANE_ID>
+
+Arguments:
+  <PANE_ID>
+

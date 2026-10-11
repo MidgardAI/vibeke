@@ -1,0 +1,10 @@
+List plugin command logs
+
+Usage: herdr plugin log list [OPTIONS]
+
+Options:
+      --plugin <ID>
+          
+
+      --limit <N>
+

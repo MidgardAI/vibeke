@@ -1,0 +1,4 @@
+List agents
+
+Usage: herdr agent list
+

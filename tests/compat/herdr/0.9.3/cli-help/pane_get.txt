@@ -1,0 +1,7 @@
+Show a pane
+
+Usage: herdr pane get <pane_id>
+
+Arguments:
+  <pane_id>
+

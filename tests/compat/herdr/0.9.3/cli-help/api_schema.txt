@@ -1,0 +1,10 @@
+Print or write the bundled API schema
+
+Usage: herdr api schema [OPTIONS]
+
+Options:
+      --json
+          
+
+      --output <PATH>
+

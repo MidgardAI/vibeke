@@ -1,0 +1,31 @@
+Wait for matching pane output
+
+Usage: herdr pane wait-output [OPTIONS] <--match <TEXT>|--regex <PATTERN>> <PANE_ID>
+
+Arguments:
+  <PANE_ID>
+          
+
+Options:
+      --match <TEXT>
+          Match a literal substring
+
+      --regex <PATTERN>
+          Match a Rust regular expression
+
+      --source <SOURCE>
+          Terminal snapshot source (default: recent)
+          
+          [possible values: visible, recent, recent-unwrapped]
+
+      --lines <N>
+          Restrict the searched snapshot to N lines
+
+      --timeout <MS>
+          Fail after this many milliseconds
+
+      --raw
+          Keep ANSI escape sequences while matching
+
+The selected snapshot is searched immediately, including existing output, then polled. Without --timeout, this waits indefinitely.
+

@@ -1,0 +1,22 @@
+Read agent terminal output
+
+Usage: herdr agent read <TARGET> [OPTIONS]
+
+Arguments:
+  <TARGET>
+          
+
+Options:
+      --source <SOURCE>
+          Terminal snapshot source (default: recent)
+          
+          [possible values: visible, recent, recent-unwrapped, detection]
+
+      --lines <N>
+          
+
+      --format <FORMAT>
+          [possible values: text, ansi]
+
+      --ansi
+

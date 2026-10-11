@@ -1,0 +1,7 @@
+List plugin actions
+
+Usage: herdr plugin action list [OPTIONS]
+
+Options:
+      --plugin <ID>
+

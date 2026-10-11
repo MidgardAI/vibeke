@@ -1,0 +1,11 @@
+Attach directly to an agent terminal
+
+Usage: herdr agent attach <TARGET> [OPTIONS]
+
+Arguments:
+  <TARGET>
+          
+
+Options:
+      --takeover
+

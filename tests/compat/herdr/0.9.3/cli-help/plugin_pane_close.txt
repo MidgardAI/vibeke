@@ -1,0 +1,7 @@
+Close a plugin pane
+
+Usage: herdr plugin pane close <PANE_ID>
+
+Arguments:
+  <PANE_ID>
+

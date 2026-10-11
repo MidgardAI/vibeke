@@ -1,0 +1,32 @@
+Report pane agent lifecycle state
+
+Usage: herdr pane report-agent [OPTIONS] --source <ID> --agent <LABEL> --state <STATUS> <PANE_ID> [-- [RESUME_ARG]...]
+
+Arguments:
+  <PANE_ID>
+          
+
+  [RESUME_ARG]...
+          Command that resumes this session after a Herdr restart; starts with a plain command name
+
+Options:
+      --source <ID>
+          
+
+      --agent <LABEL>
+          
+
+      --state <STATUS>
+          [possible values: idle, working, blocked, unknown]
+
+      --message <TEXT>
+          
+
+      --seq <N>
+          
+
+      --agent-session-id <ID>
+          
+
+      --agent-session-path <PATH>
+

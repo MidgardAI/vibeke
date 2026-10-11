@@ -1,0 +1,10 @@
+Show pane layout information
+
+Usage: herdr pane layout [OPTIONS]
+
+Options:
+      --pane <ID>
+          
+
+      --current
+

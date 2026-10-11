@@ -1,0 +1,7 @@
+Remove a saved SSH machine
+
+Usage: herdr machine remove <PROFILE_ID>
+
+Arguments:
+  <PROFILE_ID>
+

@@ -1,0 +1,14 @@
+Link a local plugin
+
+Usage: herdr plugin link [OPTIONS] <PATH>
+
+Arguments:
+  <PATH>
+          
+
+Options:
+      --disabled
+          
+
+      --enabled
+

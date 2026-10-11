@@ -1,0 +1,14 @@
+Rename an agent
+
+Usage: herdr agent rename <TARGET> <NAME>|--clear
+
+Arguments:
+  <TARGET>
+          
+
+  [NAME]
+          
+
+Options:
+      --clear
+

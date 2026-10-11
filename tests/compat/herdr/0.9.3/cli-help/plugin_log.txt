@@ -1,0 +1,7 @@
+Inspect plugin command logs
+
+Usage: herdr plugin log [COMMAND]
+
+Commands:
+  list  List plugin command logs
+

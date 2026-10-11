@@ -1,0 +1,7 @@
+Show local client status
+
+Usage: herdr status client [OPTIONS]
+
+Options:
+      --json
+

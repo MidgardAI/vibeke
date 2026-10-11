@@ -1,0 +1,11 @@
+Stop a session
+
+Usage: herdr session stop [OPTIONS] <NAME>
+
+Arguments:
+  <NAME>
+          
+
+Options:
+      --json
+

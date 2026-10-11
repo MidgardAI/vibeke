@@ -1,0 +1,7 @@
+Focus an agent
+
+Usage: herdr agent focus <target>
+
+Arguments:
+  <target>
+

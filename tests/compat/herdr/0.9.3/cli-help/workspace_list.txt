@@ -1,0 +1,4 @@
+List workspaces
+
+Usage: herdr workspace list
+

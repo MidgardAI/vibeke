@@ -1,0 +1,7 @@
+Disable a saved SSH machine
+
+Usage: herdr machine disable <PROFILE_ID>
+
+Arguments:
+  <PROFILE_ID>
+

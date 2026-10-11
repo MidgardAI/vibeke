@@ -1,0 +1,7 @@
+Uninstall a plugin
+
+Usage: herdr plugin uninstall <PLUGIN>
+
+Arguments:
+  <PLUGIN>
+

@@ -1,0 +1,23 @@
+Report display-only workspace metadata
+
+Usage: herdr workspace report-metadata [OPTIONS] --source <ID> <WORKSPACE_ID>
+
+Arguments:
+  <WORKSPACE_ID>
+          
+
+Options:
+      --source <ID>
+          
+
+      --token <NAME=VALUE>
+          
+
+      --clear-token <NAME>
+          
+
+      --seq <N>
+          
+
+      --ttl-ms <N>
+

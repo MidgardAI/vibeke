@@ -1,0 +1,125 @@
+herdr  --help	exit 0
+herdr completion --help	exit 0
+herdr update --help	exit 0
+herdr status --help	exit 0
+herdr status server --help	exit 0
+herdr status client --help	exit 0
+herdr config --help	exit 0
+herdr config check --help	exit 0
+herdr config reset-keys --help	exit 0
+herdr channel --help	exit 0
+herdr channel show --help	exit 0
+herdr channel set --help	exit 0
+herdr machine --help	exit 0
+herdr machine list --help	exit 0
+herdr machine status --help	exit 0
+herdr machine reconnect --help	exit 0
+herdr machine add --help	exit 0
+herdr machine rename --help	exit 0
+herdr machine remove --help	exit 0
+herdr machine enable --help	exit 0
+herdr machine disable --help	exit 0
+herdr server --help	exit 0
+herdr server stop --help	exit 0
+herdr server reload-config --help	exit 0
+herdr server agent-manifests --help	exit 0
+herdr server update-agent-manifests --help	exit 0
+herdr server reload-agent-manifests --help	exit 0
+herdr api --help	exit 0
+herdr api snapshot --help	exit 0
+herdr api schema --help	exit 0
+herdr workspace --help	exit 0
+herdr workspace list --help	exit 0
+herdr workspace create --help	exit 0
+herdr workspace get --help	exit 0
+herdr workspace focus --help	exit 0
+herdr workspace rename --help	exit 0
+herdr workspace report-metadata --help	exit 0
+herdr workspace close --help	exit 0
+herdr worktree --help	exit 0
+herdr worktree list --help	exit 0
+herdr worktree create --help	exit 0
+herdr worktree open --help	exit 0
+herdr worktree remove --help	exit 0
+herdr tab --help	exit 0
+herdr tab list --help	exit 0
+herdr tab create --help	exit 0
+herdr tab get --help	exit 0
+herdr tab focus --help	exit 0
+herdr tab rename --help	exit 0
+herdr tab close --help	exit 0
+herdr notification --help	exit 0
+herdr notification show --help	exit 0
+herdr agent --help	exit 0
+herdr agent list --help	exit 0
+herdr agent get --help	exit 0
+herdr agent read --help	exit 0
+herdr agent send-keys --help	exit 0
+herdr agent prompt --help	exit 0
+herdr agent rename --help	exit 0
+herdr agent focus --help	exit 0
+herdr agent wait --help	exit 0
+herdr agent attach --help	exit 0
+herdr agent start --help	exit 0
+herdr agent explain --help	exit 0
+herdr pane --help	exit 0
+herdr pane list --help	exit 0
+herdr pane current --help	exit 0
+herdr pane get --help	exit 0
+herdr pane layout --help	exit 0
+herdr pane process-info --help	exit 0
+herdr pane neighbor --help	exit 0
+herdr pane edges --help	exit 0
+herdr pane focus --help	exit 0
+herdr pane resize --help	exit 0
+herdr pane zoom --help	exit 0
+herdr pane read --help	exit 0
+herdr pane rename --help	exit 0
+herdr pane input --help	exit 0
+herdr pane split --help	exit 0
+herdr pane swap --help	exit 0
+herdr pane move --help	exit 0
+herdr pane close --help	exit 0
+herdr pane send-text --help	exit 0
+herdr pane send-keys --help	exit 0
+herdr pane wait-output --help	exit 0
+herdr pane run --help	exit 0
+herdr pane report-agent --help	exit 0
+herdr pane report-agent-session --help	exit 0
+herdr pane release-agent --help	exit 0
+herdr pane report-metadata --help	exit 0
+herdr terminal --help	exit 0
+herdr terminal attach --help	exit 0
+herdr terminal session --help	exit 0
+herdr terminal session control --help	exit 0
+herdr terminal session observe --help	exit 0
+herdr terminal title --help	exit 0
+herdr terminal title set --help	exit 0
+herdr terminal title clear --help	exit 0
+herdr session --help	exit 0
+herdr session list --help	exit 0
+herdr session attach --help	exit 0
+herdr session stop --help	exit 0
+herdr session delete --help	exit 0
+herdr integration --help	exit 0
+herdr integration install --help	exit 0
+herdr integration uninstall --help	exit 0
+herdr integration status --help	exit 0
+herdr plugin --help	exit 0
+herdr plugin install --help	exit 0
+herdr plugin uninstall --help	exit 0
+herdr plugin link --help	exit 0
+herdr plugin unlink --help	exit 0
+herdr plugin enable --help	exit 0
+herdr plugin disable --help	exit 0
+herdr plugin list --help	exit 0
+herdr plugin config-dir --help	exit 0
+herdr plugin action --help	exit 0
+herdr plugin action list --help	exit 0
+herdr plugin action invoke --help	exit 0
+herdr plugin log --help	exit 0
+herdr plugin log list --help	exit 0
+herdr plugin pane --help	exit 0
+herdr plugin pane open --help	exit 0
+herdr plugin pane focus --help	exit 0
+herdr plugin pane close --help	exit 0

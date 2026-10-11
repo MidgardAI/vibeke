@@ -1,0 +1,23 @@
+Toggle or set pane zoom
+
+Usage: herdr pane zoom [OPTIONS] [PANE_ID]
+
+Arguments:
+  [PANE_ID]
+          
+
+Options:
+      --pane <ID>
+          
+
+      --current
+          
+
+      --toggle
+          
+
+      --on
+          
+
+      --off
+

@@ -1,0 +1,7 @@
+List panes
+
+Usage: herdr pane list [OPTIONS]
+
+Options:
+      --workspace <WORKSPACE_ID>
+

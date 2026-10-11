@@ -1,0 +1,10 @@
+Rename a workspace
+
+Usage: herdr workspace rename <WORKSPACE_ID> <LABEL>...
+
+Arguments:
+  <WORKSPACE_ID>
+          
+
+  <LABEL>...
+

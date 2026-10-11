@@ -1,0 +1,4 @@
+Print the configured update channel
+
+Usage: herdr channel show
+

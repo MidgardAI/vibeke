@@ -1,0 +1,41 @@
+Move a pane
+
+Usage: herdr pane move [OPTIONS] <PANE_ID>
+
+Arguments:
+  <PANE_ID>
+          
+
+Options:
+      --tab <TAB_ID>
+          
+
+      --split <DIRECTION>
+          [possible values: right, down]
+
+      --target-pane <ID>
+          
+
+      --ratio <FLOAT>
+          
+
+      --new-tab
+          
+
+      --workspace <ID>
+          
+
+      --new-workspace
+          
+
+      --label <TEXT>
+          
+
+      --tab-label <TEXT>
+          
+
+      --focus
+          
+
+      --no-focus
+

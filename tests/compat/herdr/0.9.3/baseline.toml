@@ -1,7 +1,10 @@
 # Pinned Herdr baseline for the compatibility layer (spec 07 §8.0).
 # Captures marked "pending" must be made from the reference binary in an isolated HOME
-# (crates/vibeke/tests/it/compat_herdr_diff.rs) before M5 can pass; nothing here was produced by
-# running Herdr.
+# (crates/vibeke/tests/it/compat_herdr_diff.rs) before M5 can pass.
+# `api-schema.json` and `cli-help/` come from the first CI run of the plugin harness (the baseline
+# job). That job built Herdr from `tag_commit`, so the binary hashes below belong to those CI
+# builds, not to a release asset. A build is not byte-for-byte repeatable. The runner path in
+# `cli-help/herdr.txt` was replaced by `<root>`.
 
 version = "0.9.3"
 tag_commit = "7b116c05bfda646af39d2524c54e70c751f57ee8"
@@ -15,10 +18,10 @@ cli_reference = "https://github.com/herdrdev/herdr/blob/7b116c05bfda646af39d2524
 socket_api = "https://github.com/herdrdev/herdr/blob/7b116c05bfda646af39d2524c54e70c751f57ee8/docs/preview/website/src/content/docs/socket-api.mdx"
 
 [captures]
-reference_binary_sha256 = { macos-arm64 = "pending", linux-x86_64 = "pending" }
-api_schema_json = "pending"        # `herdr api schema --json` → api-schema.json
-cli_help = "pending"               # every `herdr <noun> [verb] --help` → cli-help/
-manifest_schema = "pending"        # from src/api/schema/plugins.rs at tag_commit
+reference_binary_sha256 = { macos-arm64 = "29a48a8352829a66e42e828a052fb292d9a28800d84523f718f18780ebb8ccd9", linux-x86_64 = "f3b8ef623211b02415bdc98a12ee072f572c92da92e572a2bf6968002f7ee2e0" }
+api_schema_json = "api-schema.json"  # `herdr api schema --json` (protocol 22, 102 request methods)
+cli_help = "cli-help/"               # every `herdr <noun> [verb] --help`, plus index.txt
+manifest_schema = "pending"          # not captured by the first run; derive it from src/api/schema/plugins.rs at tag_commit
 plugin_manifests = "manifests/"    # 99 real manifests, sha256-verified against manifests/index.json
 
 [differential]

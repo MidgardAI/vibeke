@@ -1,0 +1,10 @@
+Rename a tab
+
+Usage: herdr tab rename <TAB_ID> <LABEL>...
+
+Arguments:
+  <TAB_ID>
+          
+
+  <LABEL>...
+

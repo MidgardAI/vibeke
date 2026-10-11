@@ -1,0 +1,4 @@
+Reset custom keybindings
+
+Usage: herdr config reset-keys
+

@@ -1,0 +1,29 @@
+Report pane agent session identity
+
+Usage: herdr pane report-agent-session [OPTIONS] --source <ID> --agent <LABEL> <PANE_ID> [-- [RESUME_ARG]...]
+
+Arguments:
+  <PANE_ID>
+          
+
+  [RESUME_ARG]...
+          Command that resumes this session after a Herdr restart; starts with a plain command name
+
+Options:
+      --source <ID>
+          
+
+      --agent <LABEL>
+          
+
+      --seq <N>
+          
+
+      --agent-session-id <ID>
+          
+
+      --agent-session-path <PATH>
+          
+
+      --session-start-source <SOURCE>
+

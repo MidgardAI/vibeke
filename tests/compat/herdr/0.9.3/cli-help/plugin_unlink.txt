@@ -1,0 +1,7 @@
+Unlink a local plugin
+
+Usage: herdr plugin unlink <PLUGIN_ID>
+
+Arguments:
+  <PLUGIN_ID>
+

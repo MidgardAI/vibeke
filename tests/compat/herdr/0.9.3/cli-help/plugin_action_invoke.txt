@@ -1,0 +1,11 @@
+Invoke a plugin action
+
+Usage: herdr plugin action invoke [OPTIONS] <ACTION_ID>
+
+Arguments:
+  <ACTION_ID>
+          
+
+Options:
+      --plugin <ID>
+

@@ -1,0 +1,7 @@
+Authenticate a saved machine in this terminal and verify connectivity
+
+Usage: herdr machine reconnect <LABEL_OR_ID>
+
+Arguments:
+  <LABEL_OR_ID>
+

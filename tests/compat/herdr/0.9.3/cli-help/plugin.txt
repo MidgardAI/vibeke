@@ -1,0 +1,25 @@
+Install and run workflow plugins
+
+Usage: herdr plugin [COMMAND]
+
+Commands:
+  install     Install a plugin from GitHub
+  uninstall   Uninstall a plugin
+  link        Link a local plugin
+  unlink      Unlink a local plugin
+  enable      Enable a plugin
+  disable     Disable a plugin
+  list        List installed plugins
+  config-dir  Print a plugin config directory
+  action      List or invoke plugin actions
+  log         Inspect plugin command logs [aliases: logs]
+  pane        Manage plugin-owned panes
+
+Are you an AI? Use these resources ONLY IF your task specifically asks you to:
+  Help a human understand or set up Herdr for the first time:
+    https://herdr.dev/agent-guide.md
+  Debug or investigate a problem with Herdr:
+    https://herdr.dev/llms.txt
+  Control Herdr panes, agents, or workspaces:
+    SKIP if a Herdr skill is already in your context. Otherwise run: herdr --skill
+

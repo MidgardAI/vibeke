@@ -1,0 +1,4 @@
+Validate config.toml and print diagnostics
+
+Usage: herdr config check
+

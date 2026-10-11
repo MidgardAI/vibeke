@@ -1,0 +1,13 @@
+List worktree workspaces
+
+Usage: herdr worktree list [OPTIONS]
+
+Options:
+      --workspace <ID>
+          
+
+      --cwd <PATH>
+          
+
+      --trust-repository
+

@@ -1,0 +1,7 @@
+Show an agent
+
+Usage: herdr agent get <target>
+
+Arguments:
+  <target>
+

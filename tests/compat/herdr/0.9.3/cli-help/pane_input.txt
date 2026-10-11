@@ -1,0 +1,18 @@
+Set pane input routing
+
+Usage: herdr pane input [OPTIONS] --right-click <TARGET> [PANE_ID]
+
+Arguments:
+  [PANE_ID]
+          
+
+Options:
+      --pane <ID>
+          
+
+      --current
+          
+
+      --right-click <TARGET>
+          [possible values: herdr, pane]
+

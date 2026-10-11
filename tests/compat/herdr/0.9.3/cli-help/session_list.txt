@@ -1,0 +1,7 @@
+List sessions
+
+Usage: herdr session list [OPTIONS]
+
+Options:
+      --json
+

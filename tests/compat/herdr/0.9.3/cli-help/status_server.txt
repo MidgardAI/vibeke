@@ -1,0 +1,7 @@
+Show running server status
+
+Usage: herdr status server [OPTIONS]
+
+Options:
+      --json
+

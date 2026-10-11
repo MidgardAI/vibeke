@@ -1,0 +1,7 @@
+Print a plugin config directory
+
+Usage: herdr plugin config-dir <PLUGIN_ID>
+
+Arguments:
+  <PLUGIN_ID>
+

@@ -1,0 +1,18 @@
+Show a notification
+
+Usage: herdr notification show [OPTIONS] <TITLE>
+
+Arguments:
+  <TITLE>
+          
+
+Options:
+      --body <TEXT>
+          
+
+      --position <POSITION>
+          [possible values: top-left, top-right, bottom-left, bottom-right]
+
+      --sound <SOUND>
+          [possible values: none, done, request]
+

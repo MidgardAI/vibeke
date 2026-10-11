@@ -1,0 +1,47 @@
+Report display-only pane metadata
+
+Usage: herdr pane report-metadata [OPTIONS] --source <ID> <PANE_ID>
+
+Arguments:
+  <PANE_ID>
+          
+
+Options:
+      --source <ID>
+          
+
+      --agent <LABEL>
+          
+
+      --applies-to-source <ID>
+          
+
+      --title <TEXT>
+          
+
+      --clear-title
+          
+
+      --display-agent <TEXT>
+          
+
+      --clear-display-agent
+          
+
+      --state-label <STATUS=TEXT>
+          
+
+      --clear-state-labels
+          
+
+      --token <NAME=VALUE>
+          
+
+      --clear-token <NAME>
+          
+
+      --seq <N>
+          
+
+      --ttl-ms <N>
+

@@ -1,0 +1,7 @@
+Enable a saved SSH machine
+
+Usage: herdr machine enable <PROFILE_ID>
+
+Arguments:
+  <PROFILE_ID>
+

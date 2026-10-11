@@ -1,0 +1,7 @@
+Show a tab
+
+Usage: herdr tab get <tab_id>
+
+Arguments:
+  <tab_id>
+

@@ -1,0 +1,8 @@
+List or invoke plugin actions
+
+Usage: herdr plugin action [COMMAND]
+
+Commands:
+  list    List plugin actions
+  invoke  Invoke a plugin action
+

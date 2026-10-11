@@ -1,0 +1,11 @@
+Attach directly to a terminal stream
+
+Usage: herdr terminal attach [OPTIONS] <TERMINAL_ID>
+
+Arguments:
+  <TERMINAL_ID>
+          
+
+Options:
+      --takeover
+

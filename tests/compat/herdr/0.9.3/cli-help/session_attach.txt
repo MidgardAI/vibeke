@@ -1,0 +1,7 @@
+Attach to a session
+
+Usage: herdr session attach <NAME>
+
+Arguments:
+  <NAME>
+

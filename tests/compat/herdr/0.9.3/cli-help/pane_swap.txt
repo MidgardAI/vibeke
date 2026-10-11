@@ -1,0 +1,19 @@
+Swap panes
+
+Usage: herdr pane swap [OPTIONS]
+
+Options:
+      --direction <DIRECTION>
+          [possible values: left, right, up, down]
+
+      --pane <ID>
+          
+
+      --current
+          
+
+      --source-pane <ID>
+          
+
+      --target-pane <ID>
+

@@ -1,0 +1,4 @@
+Print the live session snapshot
+
+Usage: herdr api snapshot
+

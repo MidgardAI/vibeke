@@ -1,0 +1,8 @@
+Work with terminal sessions
+
+Usage: herdr terminal session [COMMAND]
+
+Commands:
+  control  Control a terminal stream
+  observe  Observe a terminal stream
+

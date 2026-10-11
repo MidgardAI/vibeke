@@ -1,0 +1,11 @@
+Check saved machines without prompting for authentication
+
+Usage: herdr machine status [OPTIONS] [LABEL_OR_ID]
+
+Arguments:
+  [LABEL_OR_ID]
+          
+
+Options:
+      --json
+

@@ -1,0 +1,14 @@
+Rename a pane
+
+Usage: herdr pane rename [OPTIONS] <PANE_ID> [LABEL]...
+
+Arguments:
+  <PANE_ID>
+          
+
+  [LABEL]...
+          
+
+Options:
+      --clear
+

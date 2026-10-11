@@ -1,0 +1,7 @@
+Disable a plugin
+
+Usage: herdr plugin disable <PLUGIN_ID>
+
+Arguments:
+  <PLUGIN_ID>
+

@@ -1,0 +1,9 @@
+Manage plugin-owned panes
+
+Usage: herdr plugin pane [COMMAND]
+
+Commands:
+  open   Open a plugin pane
+  focus  Focus a plugin pane
+  close  Close a plugin pane
+

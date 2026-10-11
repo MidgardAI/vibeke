@@ -1,0 +1,7 @@
+Enable a plugin
+
+Usage: herdr plugin enable <PLUGIN_ID>
+
+Arguments:
+  <PLUGIN_ID>
+

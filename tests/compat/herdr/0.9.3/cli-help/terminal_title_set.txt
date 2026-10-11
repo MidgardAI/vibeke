@@ -1,0 +1,7 @@
+Set the outer terminal title
+
+Usage: herdr terminal title set <TITLE>
+
+Arguments:
+  <TITLE>
+

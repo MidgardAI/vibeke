@@ -1,0 +1,34 @@
+Open a plugin pane
+
+Usage: herdr plugin pane open [OPTIONS]
+
+Options:
+      --plugin <ID>
+          
+
+      --entrypoint <ID>
+          
+
+      --placement <PLACEMENT>
+          [possible values: overlay, split, tab, zoomed]
+
+      --workspace <ID>
+          
+
+      --target-pane <PANE>
+          
+
+      --direction <DIRECTION>
+          [possible values: right, down]
+
+      --cwd <PATH>
+          
+
+      --env <KEY=VALUE>
+          Set an environment variable for the launched process
+
+      --focus
+          
+
+      --no-focus
+

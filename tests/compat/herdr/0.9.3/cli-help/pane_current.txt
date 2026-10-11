@@ -1,0 +1,10 @@
+Show the current pane
+
+Usage: herdr pane current [OPTIONS]
+
+Options:
+      --pane <ID>
+          
+
+      --current
+

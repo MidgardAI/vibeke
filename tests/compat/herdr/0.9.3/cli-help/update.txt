@@ -1,0 +1,8 @@
+Download and install the latest version
+
+Usage: herdr update [OPTIONS]
+
+Options:
+      --handoff
+          Try live handoff after installing
+

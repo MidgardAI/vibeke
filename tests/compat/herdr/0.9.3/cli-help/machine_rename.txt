@@ -1,0 +1,12 @@
+Rename a saved SSH machine
+
+Usage: herdr machine rename --label <LABEL> <PROFILE_ID>
+
+Arguments:
+  <PROFILE_ID>
+          
+
+Options:
+      --label <LABEL>
+          Set the machine label shown in the sidebar
+

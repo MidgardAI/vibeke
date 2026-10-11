@@ -1,0 +1,7 @@
+Show a workspace
+
+Usage: herdr workspace get <workspace_id>
+
+Arguments:
+  <workspace_id>
+

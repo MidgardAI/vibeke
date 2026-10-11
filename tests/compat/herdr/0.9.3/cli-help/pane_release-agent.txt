@@ -1,0 +1,17 @@
+Release pane agent lifecycle authority
+
+Usage: herdr pane release-agent [OPTIONS] --source <ID> --agent <LABEL> <PANE_ID>
+
+Arguments:
+  <PANE_ID>
+          
+
+Options:
+      --source <ID>
+          
+
+      --agent <LABEL>
+          
+
+      --seq <N>
+

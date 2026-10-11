@@ -1,0 +1,4 @@
+Clear the outer terminal title
+
+Usage: herdr terminal title clear
+

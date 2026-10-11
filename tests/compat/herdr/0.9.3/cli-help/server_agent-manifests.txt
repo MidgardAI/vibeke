@@ -1,0 +1,7 @@
+Show active agent detection manifests
+
+Usage: herdr server agent-manifests [OPTIONS]
+
+Options:
+      --json
+

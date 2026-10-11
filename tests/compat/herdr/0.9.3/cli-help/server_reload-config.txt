@@ -1,0 +1,4 @@
+Reload config in the running server
+
+Usage: herdr server reload-config
+

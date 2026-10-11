@@ -1,0 +1,8 @@
+Choose the update channel
+
+Usage: herdr channel set <CHANNEL>
+
+Arguments:
+  <CHANNEL>
+          [possible values: stable, preview]
+

@@ -1,0 +1,10 @@
+List installed plugins
+
+Usage: herdr plugin list [OPTIONS]
+
+Options:
+      --plugin <ID>
+          
+
+      --json
+

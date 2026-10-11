@@ -1,0 +1,15 @@
+Prepare the remote Herdr server and save an SSH machine
+
+Usage: herdr machine add [OPTIONS] <SSH_TARGET>
+
+Arguments:
+  <SSH_TARGET>
+          
+
+Options:
+      --label <LABEL>
+          Set the machine label shown in the sidebar (defaults to the SSH host, or host/session)
+
+      --remote-session <NAME>
+          Select a session explicitly (default without an interactive terminal)
+

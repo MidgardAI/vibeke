@@ -1,0 +1,17 @@
+Control a terminal stream
+
+Usage: herdr terminal session control [OPTIONS] <TARGET>
+
+Arguments:
+  <TARGET>
+          
+
+Options:
+      --takeover
+          
+
+      --cols <N>
+          
+
+      --rows <N>
+

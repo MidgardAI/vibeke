@@ -1,0 +1,7 @@
+Fetch and reload agent detection manifests
+
+Usage: herdr server update-agent-manifests [OPTIONS]
+
+Options:
+      --json
+

@@ -1,0 +1,8 @@
+Manage the outer terminal title
+
+Usage: herdr terminal title [COMMAND]
+
+Commands:
+  set    Set the outer terminal title
+  clear  Clear the outer terminal title
+
