@@ -1854,9 +1854,9 @@ impl<'a> Run<'a> {
     ) -> StepRes<()> {
         let mut pending: Vec<&Expectation> = step.expect.iter().collect();
         let mut calls_ok = step.expect_calls.is_empty();
-        let mut mismatches = Vec::new();
-        let mut unexpected = Vec::new();
-        let mut off = trace0;
+        let mut mismatches;
+        let mut unexpected;
+        let mut off;
         loop {
             let mut still = Vec::new();
             for e in pending {

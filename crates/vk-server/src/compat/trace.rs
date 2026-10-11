@@ -164,7 +164,7 @@ pub fn write(l: &Line) {
     let Some(s) = settings() else {
         return;
     };
-    let line = format_line(l, vk_store::now_ms(), s.params);
+    let line = format_line(l, vk_store::now_ms().max(0) as u64, s.params);
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)

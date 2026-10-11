@@ -4942,7 +4942,7 @@ export type PaneRunResult = {
 
 export type PaneScreenshotParams = {
   pane?: Target;
-  format?: "text" | "ansi" | "html" | "svg" | "png";
+  format?: "text" | "ansi" | "html" | "svg" | "png" | "grid";
   source?: "visible" | "recent";
   lines?: number;
   include_cursor?: boolean;

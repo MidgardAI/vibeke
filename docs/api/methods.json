@@ -3584,7 +3584,7 @@
       ],
       "milestone": "M1",
       "spec": "`{pane, format?: png|svg|html}` → `{blob}` — renders the pane grid (for bug reports and Phase 2) [M3]",
-      "params": "{pane?: Target, format?: text|ansi|html|svg|png = ansi, source?: visible|recent = visible, lines?: int = 200, include_cursor?: bool, inline?: bool}",
+      "params": "{pane?: Target, format?: text|ansi|html|svg|png|grid = ansi, source?: visible|recent = visible, lines?: int = 200, include_cursor?: bool, inline?: bool}",
       "result": "{blob: {hash: string, size: int, mime: string, path: string}, format: string, source: string, cols: int, rows: int, lines: int, revision: int, width?: int, height?: int, cursor?: {row: int, col: int, visible: bool}, data?: string, data_b64?: string}"
     },
     {

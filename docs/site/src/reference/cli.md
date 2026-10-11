@@ -113,7 +113,7 @@ Use `--json` to print JSON. Non-terminal output also uses JSON.
 | `pin` | `<pane>` | `pane.pin` |  |
 | `move` | `<pane>` | `pane.move` | [pane] --to-tab t \| --to-workspace w \| --new-tab-in w [--direction right] [--anchor p] [--focus] |
 | `scroll` | `<pane>` `<to>` | `pane.scroll` | [pane] bottom\|top\|line [--line n] \| --delta n |
-| `screenshot` | `<pane>` | `pane.screenshot` | [pane] [--format ansi\|text\|html\|svg\|png] [--source visible\|recent] [--include-cursor] [--out file] |
+| `screenshot` | `<pane>` | `pane.screenshot` | [pane] [--format ansi\|text\|html\|svg\|png\|grid] [--source visible\|recent] [--include-cursor] [--out file] |
 | `sync-input` | `<action>` | `pane.sync_input` | start\|stop\|status [--panes p1,p2 \| --tab t] [--include-agents] [--group g] [--all]  synchronized input (agents excluded unless --include-agents) |
 | `float` | `<pane>` | `pane.float` | [pane] float/move it \| --tab t [--command c] [--cwd d]  [--rect '{"x":15,"y":15,"w":70,"h":70}'] [--focus] |
 | `embed` | `<pane>` | `pane.embed` | [--target p] [--direction right\|down\|left\|up] |

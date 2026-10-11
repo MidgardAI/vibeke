@@ -27,7 +27,6 @@ interaction.cancel
 layout.get
 notification.read
 pane.equalize
-pane.resize
 pane.send_bytes
 plugin.registry.notify
 plugin.surface.close

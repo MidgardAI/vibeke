@@ -5327,7 +5327,7 @@ PaneRunResult = TypedDict("PaneRunResult", {
 
 PaneScreenshotParams = TypedDict("PaneScreenshotParams", {
     "pane": NotRequired["Target"],
-    "format": NotRequired[Literal["text", "ansi", "html", "svg", "png"]],
+    "format": NotRequired[Literal["text", "ansi", "html", "svg", "png", "grid"]],
     "source": NotRequired[Literal["visible", "recent"]],
     "lines": NotRequired[int],
     "include_cursor": NotRequired[bool],

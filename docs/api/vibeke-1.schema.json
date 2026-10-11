@@ -20292,7 +20292,8 @@
               "ansi",
               "html",
               "svg",
-              "png"
+              "png",
+              "grid"
             ],
             "default": "ansi"
           },
