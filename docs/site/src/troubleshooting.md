@@ -38,7 +38,7 @@ Likely causes: the integration for your agent is not installed, or you started t
    vibeke integration doctor all
    ```
 
-3. If an integration is not installed, open **Setup** in the command palette (**Ctrl+B**, then **:**). Select the integration, press **d** to inspect the changes, and press **i** to install. You can also run `vibeke integration install claude` and replace `claude` with `codex`, `pi`, `omp`, `opencode` or `gemini`.
+3. If an integration is not installed, open **Setup** in the command palette (**Ctrl+B**, then **:**). Select the integration, press **d** to inspect the changes, and press **i** to install. You can also run `vibeke integration install claude` and replace `claude` with `codex`, `pi` or `omp`.
 4. Start the agent again after the installation.
 
 Without an integration, Vibeke reads the terminal output. This shows less detail than the integration does. See [agents and interactions](concepts/agents.md).

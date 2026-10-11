@@ -75,17 +75,16 @@ Vibeke starts `vibeke acp-host` in the pane. The host runs the agent, shows a mi
 Use the harness ID `acp:<name>`:
 
 ```sh
-vibeke agent start review --harness acp:gemini
 vibeke agent start review --harness acp:my-agent --args my-agent,--acp
 ```
 
-- For a name that has a manifest with an ACP command, such as `gemini` or `opencode`, Vibeke knows the command. For another name, pass the command in `--args`.
+- For a name that has a manifest with an ACP command, Vibeke knows the command. For another name, pass the command in `--args`.
 - A permission request from the agent becomes an inbox card. Vibeke sends your answer through the protocol. You can also answer in the pane.
 - Interrupting the agent cancels the turn through the protocol.
 - The host serves file reads and writes inside the working directory of the session. It does not offer terminals to the agent.
 - The agent reports usage only when it adds it to its prompt result.
 
-Vibeke tested this support with a test agent. It has not been checked against live third-party agents. The ACP command line for Gemini CLI, OpenCode and Hermes Agent is unverified.
+Vibeke tested this support with a test agent. It has not been checked against live third-party agents.
 
 ## Update the manifest list
 

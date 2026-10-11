@@ -20,7 +20,7 @@ In host mode, an agent runs with your user permissions. Pane tokens and scopes l
 
 ## Which agents work?
 
-Vibeke has integrations for Claude Code, Codex, pi, omp, opencode and Gemini. Run `vibeke integration list` to see them. Other agents run in a pane too. For those, Vibeke reads the terminal output, which shows less detail. See [agents and interactions](concepts/agents.md).
+Vibeke has integrations for Claude Code, Codex, pi and omp. Run `vibeke integration list` to see them. Other agents run in a pane too. For those, Vibeke reads the terminal output, which shows less detail. See [agents and interactions](concepts/agents.md).
 
 ## Which platforms does it support?
 
