@@ -398,6 +398,11 @@
       "scope": "pane",
       "pane_scope": "open"
     },
+    "browser.input": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
     "browser.install": {
       "mutating": true,
       "scope": "full",
@@ -1444,6 +1449,11 @@
       "pane_scope": "forbidden"
     },
     "policy.trust": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "preview.connect": {
       "mutating": true,
       "scope": "full",
       "pane_scope": "forbidden"

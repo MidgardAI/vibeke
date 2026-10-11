@@ -9582,6 +9582,212 @@
         ]
       }
     },
+    "browser.input": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "session": {
+            "type": "string"
+          },
+          "browser_session": {
+            "type": "string"
+          },
+          "target": {
+            "type": "string"
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "const": "touch"
+                    },
+                    "phase": {
+                      "type": "string",
+                      "enum": [
+                        "start",
+                        "move",
+                        "end",
+                        "cancel"
+                      ]
+                    },
+                    "points": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "integer"
+                          },
+                          "x": {
+                            "type": "number"
+                          },
+                          "y": {
+                            "type": "number"
+                          }
+                        },
+                        "required": [
+                          "x",
+                          "y"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "phase",
+                    "points"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "const": "tap"
+                    },
+                    "x": {
+                      "type": "number"
+                    },
+                    "y": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "x",
+                    "y"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "const": "wheel"
+                    },
+                    "x": {
+                      "type": "number"
+                    },
+                    "y": {
+                      "type": "number"
+                    },
+                    "dx": {
+                      "type": "number"
+                    },
+                    "dy": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "x",
+                    "y"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "const": "text"
+                    },
+                    "text": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "text"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "const": "key"
+                    },
+                    "key": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "key"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "const": "history"
+                    },
+                    "action": {
+                      "type": "string",
+                      "enum": [
+                        "back",
+                        "forward",
+                        "reload"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "action"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "const": "resize"
+                    },
+                    "width": {
+                      "type": "integer"
+                    },
+                    "height": {
+                      "type": "integer"
+                    },
+                    "dpr": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "width",
+                    "height"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        "required": [
+          "events"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "session": {
+            "type": "string"
+          },
+          "applied": {
+            "type": "integer"
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "session",
+          "applied"
+        ]
+      }
+    },
     "browser.install": {
       "mutating": true,
       "scope": "full",
@@ -10143,6 +10349,9 @@
           },
           "dpr": {
             "type": "number"
+          },
+          "mobile": {
+            "type": "boolean"
           },
           "color_scheme": {
             "type": "string"
@@ -10801,6 +11010,10 @@
           },
           "after_seq": {
             "type": "integer"
+          },
+          "wait_ms": {
+            "type": "integer",
+            "default": 0
           }
         }
       },
@@ -11135,6 +11348,9 @@
           },
           "dpr": {
             "type": "number"
+          },
+          "mobile": {
+            "type": "boolean"
           },
           "color_scheme": {
             "type": "string"
@@ -21967,6 +22183,43 @@
           "harness_manifests",
           "allow_policy_grants",
           "policy_rules"
+        ]
+      }
+    },
+    "preview.connect": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "machine": {
+            "type": "string"
+          },
+          "host": {
+            "type": "string"
+          },
+          "port": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "host",
+          "port"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "connected": {
+            "type": "boolean"
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "connected"
         ]
       }
     },

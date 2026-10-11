@@ -8,7 +8,7 @@
     "proto": 2,
     "min": 1
   },
-  "method_count": 437,
+  "method_count": 439,
   "methods": [
     {
       "name": "adapter.control",
@@ -1103,6 +1103,20 @@
       "result": "{session: string, value: any}"
     },
     {
+      "name": "browser.input",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "agent_browser"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{session?: string, browser_session?: string, target?: string, events: [{type: touch, phase: start|move|end|cancel, points: [{id?: int, x: number, y: number}]} | {type: tap, x: number, y: number} | {type: wheel, x: number, y: number, dx?: number, dy?: number} | {type: text, text: string} | {type: key, key: string} | {type: history, action: back|forward|reload} | {type: resize, width: int, height: int, dpr?: number}]}",
+      "result": "{session: string, applied: int}"
+    },
+    {
       "name": "browser.install",
       "mutating": true,
       "scope": "full",
@@ -1169,7 +1183,7 @@
       ],
       "milestone": null,
       "spec": null,
-      "params": "{url?: string, preview?: string, machine?: string, device?: string, viewport?: string | {width?: int, height?: int, w?: int, h?: int}, dpr?: number, color_scheme?: string, dark?: bool, wait?: string, timeout_ms?: int}",
+      "params": "{url?: string, preview?: string, machine?: string, device?: string, viewport?: string | {width?: int, height?: int, w?: int, h?: int}, dpr?: number, mobile?: bool, color_scheme?: string, dark?: bool, wait?: string, timeout_ms?: int}",
       "result": "BrowserSession"
     },
     {
@@ -1295,7 +1309,7 @@
       ],
       "milestone": "M3",
       "spec": "`{session}` → `{session, delivery: \"internal+poll\", width, height}` / `{session, detached}` / `{session, after_seq?}` → `{session, seq, mime: \"image/jpeg\", width, height, received_ms, data_b64 \\| null}` — full scope only. In-process browser panes use `AgentBrowsers::attach_screencast` (latest-wins `watch` channel) and `AgentBrowsers::human_input`.",
-      "params": "{session?: string, browser_session?: string, target?: string, after_seq?: int}",
+      "params": "{session?: string, browser_session?: string, target?: string, after_seq?: int, wait_ms?: int = 0}",
       "result": "{session: string, seq: int, mime: string, width: int|null, height: int|null, received_ms: int, data_b64: string} | {session: string, seq: int|null, data_b64: null}"
     },
     {
@@ -1337,7 +1351,7 @@
       ],
       "milestone": "M3",
       "spec": "`{preview?|url?, viewport?: {w, h, dpr}, device?, color_scheme?: light|dark}` → `{browser_session}` — headless context **on the machine where the dev server runs**, owned by the caller's pane/run",
-      "params": "{url?: string, preview?: string, machine?: string, device?: string, viewport?: string | {width?: int, height?: int, w?: int, h?: int}, dpr?: number, color_scheme?: string, dark?: bool, wait?: string, timeout_ms?: int}",
+      "params": "{url?: string, preview?: string, machine?: string, device?: string, viewport?: string | {width?: int, height?: int, w?: int, h?: int}, dpr?: number, mobile?: bool, color_scheme?: string, dark?: bool, wait?: string, timeout_ms?: int}",
       "result": "BrowserSession"
     },
     {
@@ -4048,6 +4062,20 @@
       "spec": "`{path, digest?}` → `{repo, digest, setup_script}` — trust a repo-local `.vibeke/` directory at its current blake3 digest (09 §4). `digest` makes it conditional on the reviewed content (conflict if changed). Full scope only.",
       "params": "{path?: string = \".\", digest?: string, devcontainer_digest?: string, allow_policy_grants?: bool = false}",
       "result": "{repo: string, digest: string|null, setup_script: string|null, task_file: any, devcontainer: any, harness_manifests: [any], allow_policy_grants: bool, policy_rules: [PolicyRuleInfo], policy_errors?: [string]}"
+    },
+    {
+      "name": "preview.connect",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "preview"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{machine?: string, host: string, port: int}",
+      "result": "{connected: bool}"
     },
     {
       "name": "preview.declare",

@@ -8,6 +8,9 @@ import { RENDERER_METHODS } from '../src/shared/contract';
 
 const NOT_ON_DESKTOP: Record<string, string> = {
   'push.test': 'Web Push only; the desktop shows its own notifications and hides the button',
+  'browser.preview_open': 'Phone preview only; the desktop embeds the preview in a WebContentsView',
+  'browser.input': 'Phone preview only; the desktop embeds the preview in a WebContentsView',
+  'browser.session_close': 'Phone preview only; the desktop embeds the preview in a WebContentsView',
 };
 
 function sources(dir: string): string[] {

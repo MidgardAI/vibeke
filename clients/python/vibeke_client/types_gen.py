@@ -2362,6 +2362,67 @@ BrowserEvalResult = TypedDict("BrowserEvalResult", {
     "cursor": NotRequired["Cursor"],
 })
 
+BrowserInputParamsEventsItemV0PointsItem = TypedDict("BrowserInputParamsEventsItemV0PointsItem", {
+    "id": NotRequired[int],
+    "x": float,
+    "y": float,
+})
+
+BrowserInputParamsEventsItemV0 = TypedDict("BrowserInputParamsEventsItemV0", {
+    "type": Literal["touch"],
+    "phase": Literal["start", "move", "end", "cancel"],
+    "points": List["BrowserInputParamsEventsItemV0PointsItem"],
+})
+
+BrowserInputParamsEventsItemV1 = TypedDict("BrowserInputParamsEventsItemV1", {
+    "type": Literal["tap"],
+    "x": float,
+    "y": float,
+})
+
+BrowserInputParamsEventsItemV2 = TypedDict("BrowserInputParamsEventsItemV2", {
+    "type": Literal["wheel"],
+    "x": float,
+    "y": float,
+    "dx": NotRequired[float],
+    "dy": NotRequired[float],
+})
+
+BrowserInputParamsEventsItemV3 = TypedDict("BrowserInputParamsEventsItemV3", {
+    "type": Literal["text"],
+    "text": str,
+})
+
+BrowserInputParamsEventsItemV4 = TypedDict("BrowserInputParamsEventsItemV4", {
+    "type": Literal["key"],
+    "key": str,
+})
+
+BrowserInputParamsEventsItemV5 = TypedDict("BrowserInputParamsEventsItemV5", {
+    "type": Literal["history"],
+    "action": Literal["back", "forward", "reload"],
+})
+
+BrowserInputParamsEventsItemV6 = TypedDict("BrowserInputParamsEventsItemV6", {
+    "type": Literal["resize"],
+    "width": int,
+    "height": int,
+    "dpr": NotRequired[float],
+})
+
+BrowserInputParams = TypedDict("BrowserInputParams", {
+    "session": NotRequired[str],
+    "browser_session": NotRequired[str],
+    "target": NotRequired[str],
+    "events": List[Union["BrowserInputParamsEventsItemV0", "BrowserInputParamsEventsItemV1", "BrowserInputParamsEventsItemV2", "BrowserInputParamsEventsItemV3", "BrowserInputParamsEventsItemV4", "BrowserInputParamsEventsItemV5", "BrowserInputParamsEventsItemV6"]],
+})
+
+BrowserInputResult = TypedDict("BrowserInputResult", {
+    "session": str,
+    "applied": int,
+    "cursor": NotRequired["Cursor"],
+})
+
 BrowserInstallParams = TypedDict("BrowserInstallParams", {
     "confirm": NotRequired[bool],
     "flavor": NotRequired[Literal["full", "headless_shell"]],
@@ -2509,6 +2570,7 @@ BrowserOpenParams = TypedDict("BrowserOpenParams", {
     "device": NotRequired[str],
     "viewport": NotRequired[Union[str, "BrowserOpenParamsViewportV1"]],
     "dpr": NotRequired[float],
+    "mobile": NotRequired[bool],
     "color_scheme": NotRequired[str],
     "dark": NotRequired[bool],
     "wait": NotRequired[str],
@@ -2703,6 +2765,7 @@ BrowserScreencastFrameParams = TypedDict("BrowserScreencastFrameParams", {
     "browser_session": NotRequired[str],
     "target": NotRequired[str],
     "after_seq": NotRequired[int],
+    "wait_ms": NotRequired[int],
 })
 
 BrowserScreencastFrameResultXV0 = TypedDict("BrowserScreencastFrameResultXV0", {
@@ -2789,6 +2852,7 @@ BrowserSessionOpenParams = TypedDict("BrowserSessionOpenParams", {
     "device": NotRequired[str],
     "viewport": NotRequired[Union[str, "BrowserSessionOpenParamsViewportV1"]],
     "dpr": NotRequired[float],
+    "mobile": NotRequired[bool],
     "color_scheme": NotRequired[str],
     "dark": NotRequired[bool],
     "wait": NotRequired[str],
@@ -5813,6 +5877,17 @@ PolicyTrustResult = TypedDict("PolicyTrustResult", {
     "cursor": NotRequired["Cursor"],
 })
 
+PreviewConnectParams = TypedDict("PreviewConnectParams", {
+    "machine": NotRequired[str],
+    "host": str,
+    "port": int,
+})
+
+PreviewConnectResult = TypedDict("PreviewConnectResult", {
+    "connected": bool,
+    "cursor": NotRequired["Cursor"],
+})
+
 PreviewDeclareParams = TypedDict("PreviewDeclareParams", {
     "port": Union[int, str],
     "path": NotRequired[str],
@@ -8494,6 +8569,7 @@ METHODS: Dict[str, Dict[str, Any]] = {
     "browser.diff": {"mutating": True, "scope": "pane", "pane_scope": "open"},
     "browser.dom": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "browser.eval": {"mutating": True, "scope": "pane", "pane_scope": "open"},
+    "browser.input": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "browser.install": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "browser.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "browser.navigate": {"mutating": True, "scope": "pane", "pane_scope": "open"},
@@ -8704,6 +8780,7 @@ METHODS: Dict[str, Dict[str, Any]] = {
     "policy.remove": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "policy.test": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
     "policy.trust": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "preview.connect": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "preview.declare": {"mutating": True, "scope": "pane", "pane_scope": "open"},
     "preview.dismiss": {"mutating": True, "scope": "pane", "pane_scope": "open"},
     "preview.forget": {"mutating": True, "scope": "pane", "pane_scope": "open"},

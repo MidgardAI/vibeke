@@ -121,6 +121,7 @@ Clients must accept new fields and event types. The API can change before versio
 | `browser.diff` | Write | Pane |
 | `browser.dom` | Read | Pane |
 | `browser.eval` | Write | Pane |
+| `browser.input` | Write | Full |
 | `browser.install` | Write | Full |
 | `browser.list` | Read | Pane |
 | `browser.navigate` | Write | Pane |
@@ -331,6 +332,7 @@ Clients must accept new fields and event types. The API can change before versio
 | `policy.remove` | Write | Full |
 | `policy.test` | Read | Full |
 | `policy.trust` | Write | Full |
+| `preview.connect` | Write | Full |
 | `preview.declare` | Write | Pane |
 | `preview.dismiss` | Write | Pane |
 | `preview.forget` | Write | Pane |

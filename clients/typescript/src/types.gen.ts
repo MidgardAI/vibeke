@@ -2203,6 +2203,51 @@ export type BrowserEvalResult = {
   cursor?: Cursor;
 };
 
+export type BrowserInputParams = {
+  session?: string;
+  browser_session?: string;
+  target?: string;
+  events: ({
+    type: "touch";
+    phase: "start" | "move" | "end" | "cancel";
+    points: {
+      id?: number;
+      x: number;
+      y: number;
+    }[];
+  } | {
+    type: "tap";
+    x: number;
+    y: number;
+  } | {
+    type: "wheel";
+    x: number;
+    y: number;
+    dx?: number;
+    dy?: number;
+  } | {
+    type: "text";
+    text: string;
+  } | {
+    type: "key";
+    key: string;
+  } | {
+    type: "history";
+    action: "back" | "forward" | "reload";
+  } | {
+    type: "resize";
+    width: number;
+    height: number;
+    dpr?: number;
+  })[];
+};
+
+export type BrowserInputResult = {
+  session: string;
+  applied: number;
+  cursor?: Cursor;
+};
+
 export type BrowserInstallParams = {
   confirm?: boolean;
   flavor?: "full" | "headless_shell";
@@ -2328,6 +2373,7 @@ export type BrowserOpenParams = {
     h?: number;
   };
   dpr?: number;
+  mobile?: boolean;
   color_scheme?: string;
   dark?: boolean;
   wait?: string;
@@ -2502,6 +2548,7 @@ export type BrowserScreencastFrameParams = {
   browser_session?: string;
   target?: string;
   after_seq?: number;
+  wait_ms?: number;
 };
 
 export type BrowserScreencastFrameResult = {
@@ -2582,6 +2629,7 @@ export type BrowserSessionOpenParams = {
     h?: number;
   };
   dpr?: number;
+  mobile?: boolean;
   color_scheme?: string;
   dark?: boolean;
   wait?: string;
@@ -5408,6 +5456,17 @@ export type PolicyTrustResult = {
   cursor?: Cursor;
 };
 
+export type PreviewConnectParams = {
+  machine?: string;
+  host: string;
+  port: number;
+};
+
+export type PreviewConnectResult = {
+  connected: boolean;
+  cursor?: Cursor;
+};
+
 export type PreviewDeclareParams = {
   port: number | string;
   path?: string;
@@ -7875,6 +7934,7 @@ export interface Methods {
   "browser.diff": { params: BrowserDiffParams; result: BrowserDiffResult };
   "browser.dom": { params: BrowserDomParams; result: BrowserDomResult };
   "browser.eval": { params: BrowserEvalParams; result: BrowserEvalResult };
+  "browser.input": { params: BrowserInputParams; result: BrowserInputResult };
   "browser.install": { params: BrowserInstallParams; result: BrowserInstallResult };
   "browser.list": { params: BrowserListParams; result: BrowserListResult };
   "browser.navigate": { params: BrowserNavigateParams; result: BrowserNavigateResult };
@@ -8085,6 +8145,7 @@ export interface Methods {
   "policy.remove": { params: PolicyRemoveParams; result: PolicyRemoveResult };
   "policy.test": { params: PolicyTestParams; result: PolicyTestResult };
   "policy.trust": { params: PolicyTrustParams; result: PolicyTrustResult };
+  "preview.connect": { params: PreviewConnectParams; result: PreviewConnectResult };
   "preview.declare": { params: PreviewDeclareParams; result: PreviewDeclareResult };
   "preview.dismiss": { params: PreviewDismissParams; result: PreviewDismissResult };
   "preview.forget": { params: PreviewForgetParams; result: PreviewForgetResult };
@@ -8318,6 +8379,7 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "browser.diff": { mutating: true, scope: "pane", paneScope: "open" },
   "browser.dom": { mutating: false, scope: "pane", paneScope: "open" },
   "browser.eval": { mutating: true, scope: "pane", paneScope: "open" },
+  "browser.input": { mutating: true, scope: "full", paneScope: "forbidden" },
   "browser.install": { mutating: true, scope: "full", paneScope: "forbidden" },
   "browser.list": { mutating: false, scope: "pane", paneScope: "open" },
   "browser.navigate": { mutating: true, scope: "pane", paneScope: "open" },
@@ -8528,6 +8590,7 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "policy.remove": { mutating: true, scope: "full", paneScope: "forbidden" },
   "policy.test": { mutating: false, scope: "full", paneScope: "forbidden" },
   "policy.trust": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "preview.connect": { mutating: true, scope: "full", paneScope: "forbidden" },
   "preview.declare": { mutating: true, scope: "pane", paneScope: "open" },
   "preview.dismiss": { mutating: true, scope: "pane", paneScope: "open" },
   "preview.forget": { mutating: true, scope: "pane", paneScope: "open" },

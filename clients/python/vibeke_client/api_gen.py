@@ -248,6 +248,9 @@ class Api:
     async def browser_eval(self, params: "Optional[t.BrowserEvalParams]" = None) -> "t.BrowserEvalResult":
         return await self.call("browser.eval", params or {})  # type: ignore[arg-type, return-value]
 
+    async def browser_input(self, params: "t.BrowserInputParams") -> "t.BrowserInputResult":
+        return await self.call("browser.input", params)  # type: ignore[arg-type, return-value]
+
     async def browser_install(self, params: "Optional[t.BrowserInstallParams]" = None) -> "t.BrowserInstallResult":
         return await self.call("browser.install", params or {})  # type: ignore[arg-type, return-value]
 
@@ -877,6 +880,9 @@ class Api:
 
     async def policy_trust(self, params: "Optional[t.PolicyTrustParams]" = None) -> "t.PolicyTrustResult":
         return await self.call("policy.trust", params or {})  # type: ignore[arg-type, return-value]
+
+    async def preview_connect(self, params: "t.PreviewConnectParams") -> "t.PreviewConnectResult":
+        return await self.call("preview.connect", params)  # type: ignore[arg-type, return-value]
 
     async def preview_declare(self, params: "t.PreviewDeclareParams") -> "t.PreviewDeclareResult":
         return await self.call("preview.declare", params)  # type: ignore[arg-type, return-value]

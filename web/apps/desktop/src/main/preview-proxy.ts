@@ -311,7 +311,7 @@ export class PreviewProxy {
     sock.on('close', () => this.sockets.delete(sock));
     sock.on('error', () => {});
     sock.setNoDelay(true);
-    let buf = Buffer.alloc(0);
+    let buf: Buffer = Buffer.alloc(0);
     let headDone = false;
     const timer = setTimeout(() => sock.destroy(), HEAD_TIMEOUT_MS);
     const onData = (d: Buffer) => {
