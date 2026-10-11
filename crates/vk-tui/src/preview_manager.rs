@@ -12,6 +12,9 @@
 //!   unmirror (mirroring asks first: it opens an unauthenticated port), `y` copy the plain
 //!   URL, `g` go to the owning pane, `d` forget (asks), `/` filter, `i` install a browser on
 //!   the media host (asks), `esc`/`q` close. Click selects, double-click opens.
+//! - **Placement**: opening as a browser pane puts it next to the focused pane when that pane is
+//!   on the preview's machine, else next to the pane that owns the port (popup, chips and
+//!   double-click alike).
 //! - **Data**: `preview.status` from the media host — the local machine's server (it runs
 //!   browser panes, windows, the proxy and mirrors); in the plain-SSH topology (no local
 //!   machine) the current one — once on open and every 2 s while open (a deadline, spec 10
@@ -528,7 +531,7 @@ pub fn key(app: &mut App, ev: KeyEvent) {
             match ev.key {
                 Key::Named(NamedKey::Enter) => {
                     app.mode = Mode::Normal;
-                    crate::browser::open_preview(app, mi, &p, p.pane.clone());
+                    open_in_pane(app, mi, &p);
                 }
                 Key::Char('w') => crate::browser::preview_window(app, mi, &p),
                 Key::Char('p') => crate::browser::preview_proxy(app, mi, &p),
@@ -915,7 +918,7 @@ pub fn on_mouse(app: &mut App, me: &MouseEvent) -> bool {
                 app.preview_mgr.last_click = None;
                 app.mode = Mode::Normal;
                 let p = r.preview.clone();
-                crate::browser::open_preview(app, r.mi, &p, p.pane.clone());
+                open_in_pane(app, r.mi, &p);
             }
         }
     }
@@ -967,10 +970,21 @@ pub fn chip_rows(app: &App, mi: usize, p: &Preview, width: u16) -> Vec<ChipRow> 
     out
 }
 
+/// Open a preview as a browser pane (or as configured) next to the pane the user is looking at
+/// when that pane is on the preview's machine, else next to the pane that owns the port. A dev
+/// server often runs in its own small pane, and the browser belongs beside the agent in focus.
+fn open_in_pane(app: &mut App, mi: usize, p: &Preview) {
+    let focused = (app.cur == mi)
+        .then(|| app.focused_pane())
+        .flatten()
+        .filter(|f| app.machines[mi].model.panes.iter().any(|x| &x.id == f));
+    crate::browser::open_preview(app, mi, p, focused.or_else(|| p.pane.clone()));
+}
+
 /// Run a chip's action.
 pub fn run_chip(app: &mut App, mi: usize, p: &Preview, c: Chip) {
     match c {
-        Chip::Pane => crate::browser::open_preview(app, mi, p, p.pane.clone()),
+        Chip::Pane => open_in_pane(app, mi, p),
         Chip::Window => crate::browser::preview_window(app, mi, p),
         Chip::Proxy => crate::browser::preview_proxy(app, mi, p),
         Chip::Mirror | Chip::Unmirror => mirror_toggle(app, mi, p, false),
@@ -1000,7 +1014,7 @@ pub fn sidebar_click(app: &mut App, mi: usize, p: &Preview) {
     if double {
         app.preview_mgr.side_click = None;
         app.preview_mgr.expanded = None;
-        crate::browser::open_preview(app, mi, p, p.pane.clone());
+        open_in_pane(app, mi, p);
         return;
     }
     app.preview_mgr.side_click = Some((now, mi, p.id.clone()));
@@ -1053,7 +1067,7 @@ pub fn navigate_key(app: &mut App, ev: &KeyEvent, sel: usize) -> bool {
         }
         Key::Char('o') => {
             app.preview_mgr.expanded = None;
-            crate::browser::open_preview(app, mi, &p, p.pane.clone());
+            open_in_pane(app, mi, &p);
         }
         Key::Char('w') => {
             crate::browser::preview_window(app, mi, &p);

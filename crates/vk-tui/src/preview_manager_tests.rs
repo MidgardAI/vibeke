@@ -522,3 +522,25 @@ fn navigate_mode_enter_expands_and_esc_collapses() {
     let (_, p) = only(&commands(&mut rxs[0]), "preview.open");
     assert_eq!(p["preview"], "v3");
 }
+
+#[test]
+fn opening_a_pane_prefers_the_focused_pane_on_the_same_machine() {
+    let (mut app, mut rxs) = app2();
+    let p7 = app.machines[1].model.previews[1].clone();
+    // Focus is on another machine: next to the pane that owns the port.
+    app.cur = 0;
+    run_chip(&mut app, 1, &p7, Chip::Pane);
+    let (_, p) = only(&commands(&mut rxs[1]), "browser.pane.create");
+    assert_eq!(p["pane"], "p2");
+    // Focus is on a pane of the preview's machine: next to that pane.
+    app.cur = 1;
+    app.machines[1].focus.pane = Some("bp".into());
+    run_chip(&mut app, 1, &p7, Chip::Pane);
+    let (_, p) = only(&commands(&mut rxs[1]), "browser.pane.create");
+    assert_eq!(p["pane"], "bp");
+    // A focused pane the machine does not know falls back to the owner.
+    app.machines[1].focus.pane = Some("gone".into());
+    run_chip(&mut app, 1, &p7, Chip::Pane);
+    let (_, p) = only(&commands(&mut rxs[1]), "browser.pane.create");
+    assert_eq!(p["pane"], "p2");
+}
