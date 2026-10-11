@@ -786,7 +786,9 @@ command = ["sh", "-c", "exit 3"]
         &sock,
         json!({"id": "6", "method": "layout.export", "params": {"tab_id": tab}}),
     );
+    assert_eq!(v["result"]["type"], "layout_export", "{v}");
     let root = &v["result"]["layout"]["root"];
+    assert_eq!(root["direction"], "right", "{root}");
     assert_eq!(root["first"]["pane_id"], p1.as_str(), "{root}");
     assert_eq!(root["second"]["type"], "split", "{root}");
     assert_eq!(root["second"]["first"]["pane_id"], p2.as_str(), "{root}");
@@ -802,15 +804,17 @@ command = ["sh", "-c", "exit 3"]
                 "first": {"type": "pane", "pane_id": p1},
                 "second": {"type": "pane", "pane_id": p2}}}}}),
     );
+    assert_eq!(v["result"]["type"], "layout_apply", "{v}");
     let root = &v["result"]["layout"]["root"];
     assert_eq!(root["first"]["pane_id"], p3.as_str(), "{v}");
-    assert_eq!(root["direction"], "vertical");
+    assert_eq!(root["direction"], "down");
 
     // set_split_ratio addresses the nested (unfocused) split by its baseline path.
     let v = raw(
         &sock,
         json!({"id": "8", "method": "layout.set_split_ratio", "params": {"tab_id": tab, "path": [true], "ratio": 0.25}}),
     );
+    assert_eq!(v["result"]["type"], "layout_split_ratio_set", "{v}");
     let root = &v["result"]["layout"]["root"];
     assert_eq!(root["second"]["ratio"], 0.25, "{v}");
     assert_eq!(root["ratio"], 0.3, "the root split is unchanged: {v}");

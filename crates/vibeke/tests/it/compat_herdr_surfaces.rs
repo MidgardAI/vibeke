@@ -278,9 +278,13 @@ fn popup_and_overlay_from_a_trusted_plugin() {
         "--entrypoint",
         "pop",
     ]);
-    assert_eq!(opened["type"], "plugin_pane_opened", "{opened}");
+    // Like Herdr, opening a popup answers `ok`: a popup has no pane id.
+    assert_eq!(opened["type"], "ok", "{opened}");
     assert_eq!(opened["placement"], "popup");
-    assert!(opened["pane"].is_null(), "a popup has no pane id: {opened}");
+    assert!(
+        opened["plugin_pane"].is_null(),
+        "a popup has no pane id: {opened}"
+    );
     r.until("the popup in the model with the focus", |m, f| {
         m.panes
             .iter()
@@ -345,7 +349,7 @@ fn popup_and_overlay_from_a_trusted_plugin() {
         !m.panes.iter().any(|p| p.id == pop.id) && f == Some(root_id.as_str())
     });
     let e = s_.herdr_fail(&["popup", "close"]);
-    assert_eq!(e["error"]["code"], "popup_not_found", "{e}");
+    assert_eq!(e["error"]["code"], "popup_not_open", "{e}");
 
     // ---- overlay --------------------------------------------------------------------------
     let opened = s_.herdr(&[
@@ -357,7 +361,8 @@ fn popup_and_overlay_from_a_trusted_plugin() {
         "--entrypoint",
         "ov",
     ]);
-    let ov_handle = s(&opened["pane"]["pane_id"]);
+    assert_eq!(opened["type"], "plugin_pane_opened", "{opened}");
+    let ov_handle = s(&opened["plugin_pane"]["pane"]["pane_id"]);
     assert!(ov_handle.starts_with('w'), "an overlay is a pane: {opened}");
     r.until("the overlay with the focus", |m, f| {
         m.panes.iter().any(|p| {
