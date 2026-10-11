@@ -2,7 +2,20 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { build, collect, Invalid, LIMITS, md, render, validate } from "../herdr-plugins-report";
+import {
+  build,
+  collect,
+  inconsistencies,
+  Invalid,
+  LIMITS,
+  md,
+  render,
+  STATUS_NAME,
+  validate,
+  validateStatus,
+  verdict,
+  worst,
+} from "../herdr-plugins-report";
 
 function result(over: Record<string, unknown> = {}): Record<string, unknown> {
   return {
@@ -167,16 +180,22 @@ describe("build and render", () => {
   });
 
   test("failing outcomes and flags fail the run", () => {
-    for (const over of [{ outcome: "compat_failure" }, { outcome: "harness_error" }, { fails_run: true }]) {
-      expect(build([{ file: "a-linux.json", text: JSON.stringify(result(over)) }]).failing).toBe(true);
+    const withStep = (outcome: string) => result({ outcome, steps: [step({ outcome })] });
+    for (const r of [
+      withStep("compat_failure"),
+      withStep("harness_error"),
+      result({ fails_run: true, steps: [step({ unexpected_pass: true })] }),
+    ]) {
+      expect(build([{ file: "a-linux.json", text: JSON.stringify(r) }]).failing).toBe(true);
     }
-    for (const over of [{ outcome: "dependency_failure" }, { outcome: "suspected_compat_failure" }]) {
-      expect(build([{ file: "a-linux.json", text: JSON.stringify(result(over)) }]).failing).toBe(false);
+    for (const r of [withStep("dependency_failure"), withStep("suspected_compat_failure")]) {
+      expect(build([{ file: "a-linux.json", text: JSON.stringify(r) }]).failing).toBe(false);
     }
   });
 
   test("lists unexpected passes, coverage failures and partial surfaces", () => {
     const r = result({
+      outcome: "compat_failure",
       fails_run: true,
       coverage: { ok: false, missing: ["event:tab.created"], skipped: [] },
       steps: [
@@ -224,7 +243,7 @@ describe("build and render", () => {
 
   test("escapes hostile text in the rendered Markdown", () => {
     const r = result({
-      outcome: "not_exercised",
+      fails_run: true,
       coverage: { ok: false, missing: ["<script>|`x`"], skipped: [] },
     });
     const text = render(build([{ file: "p-linux.json", text: JSON.stringify(r) }]));
@@ -233,7 +252,131 @@ describe("build and render", () => {
   });
 });
 
+describe("recomputed verdict", () => {
+  test("orders outcomes as outcome.rs does", () => {
+    expect(worst([])).toBe("passed");
+    expect(worst(["not_exercised", "passed"])).toBe("not_exercised");
+    expect(worst(["compat_failure", "suspected_compat_failure", "dependency_failure"])).toBe("compat_failure");
+    expect(worst(["harness_error", "compat_failure"])).toBe("harness_error");
+  });
+
+  test("takes the worst of steps and lifecycle checks", () => {
+    const r = validate(
+      result({
+        lifecycle: [{ check: "startup_runs_once", outcome: "harness_error", reason: null }],
+        steps: [step({ outcome: "suspected_compat_failure" })],
+      }),
+    );
+    expect(verdict(r)).toEqual({ outcome: "harness_error", fails_run: false });
+  });
+
+  test("fails the run on an unexpected pass, a failed coverage check or missing coverage", () => {
+    expect(verdict(validate(result({ steps: [step({ unexpected_pass: true })] }))).fails_run).toBe(true);
+    expect(verdict(validate(result({ coverage: { ok: false, missing: [], skipped: [] } }))).fails_run).toBe(true);
+    expect(verdict(validate(result({ coverage: { ok: true, missing: ["action"], skipped: [] } }))).fails_run).toBe(true);
+    expect(verdict(validate(result())).fails_run).toBe(false);
+  });
+
+  test("rejects results whose top-level verdict hides a failure", () => {
+    const hidden = [
+      // A compat failure reported as passed.
+      result({ steps: [step({ outcome: "compat_failure", vibeke: "failed", herdr: "passed" })] }),
+      // A failed lifecycle check reported as passed.
+      result({ lifecycle: [{ check: "install", outcome: "harness_error", reason: null }] }),
+      // An unexpected pass with fails_run cleared.
+      result({ steps: [step({ unexpected_pass: true })] }),
+      // Missing coverage reported as ok.
+      result({ fails_run: true, coverage: { ok: true, missing: ["event:tab.created"], skipped: [] } }),
+    ];
+    for (const r of hidden) {
+      expect(inconsistencies(validate(r)).length).toBeGreaterThan(0);
+      const m = build([{ file: "p-linux.json", text: JSON.stringify(r) }]);
+      expect(m.rows).toEqual([]);
+      expect(m.rejected[0].reason).toMatch(/^inconsistent result: /);
+      expect(m.failing).toBe(true);
+    }
+  });
+
+  test("rejects a result that claims a worse verdict than its details too", () => {
+    const m = build([{ file: "p-linux.json", text: JSON.stringify(result({ outcome: "compat_failure" })) }]);
+    expect(m.rejected[0].reason).toContain("$.outcome is compat_failure but the worst step or lifecycle outcome is passed");
+    expect(m.failing).toBe(true);
+  });
+
+  test("the rendered matrix says that results can be forged", () => {
+    expect(render(build([]))).toContain("not a security verdict");
+  });
+});
+
+describe("test exit status", () => {
+  const ok = { file: "a/owner__herdr-projects-linux.json", text: JSON.stringify(result()) };
+  const plan = [{ plugin_id: "owner.projects", os: "linux" }];
+  const status = (over: Record<string, unknown> = {}) => ({
+    file: "s/owner__herdr-projects-linux.status.json",
+    text: JSON.stringify({
+      schema: "vibeke.herdr-plugin-status/1",
+      plugin_id: "owner.projects",
+      os: "linux",
+      exit_status: 0,
+      result_present: true,
+      ...over,
+    }),
+  });
+
+  test("a zero exit status with a result passes", () => {
+    const m = build([ok], plan, [status()]);
+    expect(m.exit_failures).toEqual([]);
+    expect(m.failing).toBe(false);
+  });
+
+  test("fails a plugin whose test exited non-zero, even with a passing result", () => {
+    const m = build([ok], plan, [status({ exit_status: 101 })]);
+    expect(m.rows[0].outcome).toBe("passed");
+    expect(m.exit_failures).toEqual([
+      { plugin_id: "owner.projects", os: "linux", reason: "the plugin test exited with status 101" },
+    ]);
+    expect(m.failing).toBe(true);
+    expect(render(m)).toContain("## Test exit status");
+  });
+
+  test("fails a plugin without a recorded status, exit status or result", () => {
+    for (const statuses of [[], [status({ exit_status: null })], [status({ result_present: false })]]) {
+      const m = build([ok], plan, statuses);
+      expect(m.exit_failures.length).toBe(1);
+      expect(m.failing).toBe(true);
+    }
+  });
+
+  test("checks every expected plugin, also when its result is missing", () => {
+    const m = build([], [...plan, { plugin_id: "x.y", os: "macos" }], [status()]);
+    expect(m.exit_failures.map((x) => x.plugin_id)).toEqual(["x.y"]);
+    expect(m.missing.length).toBe(2);
+  });
+
+  test("rejects malformed and duplicate status files", () => {
+    expect(() => validateStatus({ schema: "vibeke.herdr-plugin-status/1" })).toThrow(Invalid);
+    expect(() => validateStatus(JSON.parse(status({ exit_status: -1 }).text))).toThrow(/exit_status/);
+    expect(() => validateStatus(JSON.parse(status({ extra: 1 }).text))).toThrow(/unknown field/);
+    const m = build([ok], plan, [status(), status(), { file: "bad-linux.status.json", text: "{" }]);
+    expect(m.rejected.map((r) => r.reason)).toEqual(["duplicate status for this plugin and platform", "not valid JSON"]);
+    expect(m.failing).toBe(true);
+  });
+
+  test("skips the check when no status directory is given", () => {
+    expect(build([ok], plan, null).failing).toBe(false);
+  });
+});
+
 describe("collect", () => {
+  test("collects status files by their own name pattern", () => {
+    const dir = mkdtempSync(join(tmpdir(), "hp-status-"));
+    mkdirSync(join(dir, "herdr-plugin-status-a"));
+    writeFileSync(join(dir, "herdr-plugin-status-a", "owner__repo-linux.status.json"), "{}");
+    writeFileSync(join(dir, "herdr-plugin-status-a", "owner__repo-linux.json"), "{}");
+    expect(collect(dir, STATUS_NAME).map((i) => i.file)).toEqual(["herdr-plugin-status-a/owner__repo-linux.status.json"]);
+    expect(collect(dir).map((i) => i.file)).toEqual(["herdr-plugin-status-a/owner__repo-linux.json"]);
+  });
+
   test("reads only regular result files, one directory deep, with size limits", () => {
     const dir = mkdtempSync(join(tmpdir(), "hp-report-"));
     mkdirSync(join(dir, "artifact-a", "grids"), { recursive: true });

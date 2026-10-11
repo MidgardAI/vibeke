@@ -77,6 +77,8 @@ jobs:
           echo "count=$count" >> "$GITHUB_OUTPUT"
           echo "matrix=$(jq -c . matrix.json)" >> "$GITHUB_OUTPUT"
           echo "$count plugin jobs"
+      - name: Self-test the proxy filter and the result unpacker
+        run: python3 -I -m unittest discover -s scripts/herdr-plugins
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: herdr-plugins-plan
@@ -304,7 +306,8 @@ jobs:
           (cd "$RUNNER_TEMP/build" && shasum -a 256 -c SHA256SUMS)
           sudo install -d -o 0 -g 0 -m 0755 "$HP" "$HP/bin" "$HP/src"
           sudo install -o 0 -g 0 -m 0555 "$RUNNER_TEMP/build/cargo-nextest" "$HP/bin/cargo-nextest"
-          # The repository files the tests read (lock, scenarios, nextest config), at HEAD.
+          # The repository files the tests read (lock, scenarios, manifests, snapshots, nextest
+          # config), at HEAD. The runner reads them from VIBEKE_HERDR_PLUGINS_ROOT.
           git archive --format=tar HEAD | sudo tar -x -C "$HP/src"
           # Extract the archive as the runner user, then make it root-owned below.
           sudo install -d -o "$(id -u)" -m 0755 "$HP/ex"
@@ -427,6 +430,10 @@ jobs:
             echo "VIBEKE_HERDR_PLUGINS=1"
             echo "VIBEKE_PLUGIN_MIRROR=$HP/mirror"
             echo "VIBEKE_HERDR_PLUGIN_RESULTS=$HP/out"
+            # Read-only repository data: tests/compat/herdr/0.9.3 with the lock and manifests.
+            echo "VIBEKE_HERDR_PLUGINS_ROOT=$HP/src"
+            # The lock's toolchains, prepended to the PATH of plugin processes by the runner.
+            [ -z "$TOOL_PATH" ] || echo "VIBEKE_HERDR_PLUGINS_TOOLCHAIN_PATH=$TOOL_PATH"
             echo "RUSTUP_HOME=$HP/tools/rustup"
             [ -z "$RUST_TOOLCHAIN" ] || echo "RUSTUP_TOOLCHAIN=$RUST_TOOLCHAIN"
             echo "CARGO_TERM_COLOR=never"
@@ -439,6 +446,7 @@ jobs:
               echo "VIBEKE_HERDR_SHA256=$HERDR_SHA256"
             fi
             [ ! -f "$RUNNER_TEMP/proxy.env" ] || cat "$RUNNER_TEMP/proxy.env"
+            # run-boundary.sh adds CI=true and VIBEKE_HERDR_PLUGINS_I_AM_IN_A_BOUNDARY=1.
           } > "$envf"
           status=0
           sh scripts/herdr-plugins/run-boundary.sh --user "$BOX_USER" --root "$HP/box" --timeout 3000 \
@@ -455,26 +463,61 @@ jobs:
 
       - name: Collect the results
         if: always()
+        timeout-minutes: 10
         run: |
           set -u
           dest="$RUNNER_TEMP/results"
+          [ -d "$HP/out" ] || { mkdir -p "$dest"; exit 0; }
+          # The results directory is plugin-controlled: names can contain newlines, entries can
+          # be symbolic or hard links to root-only files, and processes could still change it.
+          # Root therefore never reads it. The boundary user packs it into a tar stream with its
+          # own rights (it cannot read root-only files such as /etc/shadow, and tar stores links
+          # as links instead of following them). The trusted runner user unpacks the stream
+          # into a fresh directory and keeps only regular files and directories with safe
+          # relative names, never following or creating links, within size and count limits.
+          status=0
+          sudo -n -u "$BOX_USER" -- /usr/bin/env -i PATH=/usr/bin:/bin COPYFILE_DISABLE=1 \
+            /bin/sh -c 'cd -- "$1" && exec tar -cf - .' sh "$HP/out" </dev/null \
+            | python3 -I "$GITHUB_WORKSPACE/scripts/herdr-plugins/unpack_results.py" "$dest" || status=$?
+          echo "Result collection exit status $status (the report validates the contents)."
           mkdir -p "$dest"
-          [ -d "$HP/out" ] || exit 0
-          # Every boundary process is dead by now. Copy regular files only (never symbolic links)
-          # with size and count limits; the report validates their contents.
-          sudo find "$HP/out" -type f -size -8192k | head -n 2000 | while IFS= read -r f; do
-            rel=${f#"$HP/out/"}
-            case $rel in *..*) continue ;; esac
-            mkdir -p "$dest/$(dirname "$rel")"
-            # shellcheck disable=SC2024 # root reads the file, the runner user writes the copy
-            sudo cat -- "$f" > "$dest/$rel"
-          done
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: herdr-plugin-results-${{ matrix.stem }}-${{ matrix.os }}
           path: ${{ runner.temp }}/results/
           if-no-files-found: ignore
+          retention-days: 14
+      - name: Record the test exit status
+        if: always()
+        env:
+          RUN_STATUS: ${{ steps.run.outputs.status }}
+        run: |
+          set -eu
+          # Written by the trusted runner user into a directory the boundary user cannot reach
+          # (the runner home is mode 700), and uploaded as its own artifact. Plugin code can
+          # forge its result file but not this exit status, so the report fails a plugin whose
+          # test exited non-zero or wrote no result, whatever the result file says.
+          mkdir -p "$RUNNER_TEMP/status"
+          result="$RUNNER_TEMP/results/$STEM-$PLUGIN_OS.json"
+          present=false
+          if [ -f "$result" ] && [ ! -L "$result" ]; then present=true; fi
+          case $RUN_STATUS in
+            '' | *[!0-9]*) exit_status=null ;;
+            *) exit_status=$RUN_STATUS ;;
+          esac
+          jq -n --arg plugin_id "$PLUGIN_ID" --arg os "$PLUGIN_OS" --argjson exit_status "$exit_status" \
+            --argjson result_present "$present" \
+            '{schema: "vibeke.herdr-plugin-status/1", plugin_id: $plugin_id, os: $os,
+              exit_status: $exit_status, result_present: $result_present}' \
+            > "$RUNNER_TEMP/status/$STEM-$PLUGIN_OS.status.json"
+          cat "$RUNNER_TEMP/status/$STEM-$PLUGIN_OS.status.json"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: herdr-plugin-status-${{ matrix.stem }}-${{ matrix.os }}
+          path: ${{ runner.temp }}/status/
+          if-no-files-found: error
           retention-days: 14
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
@@ -514,15 +557,19 @@ jobs:
           path: ${{ runner.temp }}/results
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
+          pattern: herdr-plugin-status-*
+          path: ${{ runner.temp }}/status
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
           name: herdr-plugins-plan
           path: ${{ runner.temp }}/plan
       - name: Build the matrix
         id: report
         run: |
-          mkdir -p "$RUNNER_TEMP/results"
+          mkdir -p "$RUNNER_TEMP/results" "$RUNNER_TEMP/status"
           status=0
           bun scripts/herdr-plugins-report.ts --in "$RUNNER_TEMP/results" --out "$RUNNER_TEMP/report" \
-            --expect "$RUNNER_TEMP/plan/matrix.json" || status=$?
+            --expect "$RUNNER_TEMP/plan/matrix.json" --status "$RUNNER_TEMP/status" || status=$?
           echo "status=$status" >> "$GITHUB_OUTPUT"
           [ -f "$RUNNER_TEMP/report/matrix.md" ] || exit 1
           cat "$RUNNER_TEMP/report/matrix.md" >> "$GITHUB_STEP_SUMMARY"
@@ -532,6 +579,7 @@ jobs:
           path: |
             ${{ runner.temp }}/report/
             ${{ runner.temp }}/results/
+            ${{ runner.temp }}/status/
           retention-days: 30
       - name: Update the tracking issue
         if: github.event_name == 'schedule'

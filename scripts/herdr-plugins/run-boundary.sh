@@ -9,8 +9,12 @@
 # 1. creates fresh HOME, XDG, TMPDIR and runtime directories under <root> (which must not exist),
 #    owned by the boundary user with mode 700;
 # 2. builds the environment from nothing (`env -i`): a fixed base, the given PATH, and the
-#    --env and --env-file entries. Names that look like credentials, GitHub or runner variables,
-#    SSH agents or cloud keys are refused, so a caller mistake cannot leak them;
+#    --env and --env-file entries. The base sets CI=true and
+#    VIBEKE_HERDR_PLUGINS_I_AM_IN_A_BOUNDARY=1, which the runner's safety gate requires: this
+#    script is the boundary. Caller entries must use a name from a fixed allowlist (the harness
+#    settings and the dependency proxy names that the plugin runner passes through, see
+#    proxy-env.sh). Names that look like credentials, GitHub or runner variables, SSH agents or
+#    cloud keys are refused as well, so a caller mistake cannot leak them;
 # 3. runs the command as the boundary user with stdin closed and a global timeout;
 # 4. kills every process the boundary user still has, whatever happened.
 #
@@ -55,6 +59,16 @@ valid_entry() {
       | DOCKER_* | KUBECONFIG | VAULT_*)
       die "refusing to pass $name into the boundary"
       ;;
+  esac
+  case $name in
+    VIBEKE_HERDR_PLUGINS | VIBEKE_PLUGIN_MIRROR | VIBEKE_HERDR_PLUGIN_RESULTS | VIBEKE_HERDR_PLUGINS_ROOT \
+      | VIBEKE_HERDR_PLUGINS_TOOLCHAIN_PATH | VIBEKE_HERDR_BIN | VIBEKE_HERDR_SHA256 \
+      | RUSTUP_HOME | RUSTUP_TOOLCHAIN | CARGO_TERM_COLOR | NEXTEST_HIDE_PROGRESS_BAR \
+      | GIT_CONFIG_COUNT | GIT_CONFIG_KEY_0 | GIT_CONFIG_VALUE_0 \
+      | HTTPS_PROXY | HTTP_PROXY | ALL_PROXY | NO_PROXY | https_proxy | http_proxy | all_proxy | no_proxy \
+      | SSL_CERT_FILE | NODE_EXTRA_CA_CERTS | CARGO_HTTP_CAINFO | GIT_SSL_CAINFO | REQUESTS_CA_BUNDLE \
+      | CURL_CA_BUNDLE | GOPROXY | GOFLAGS | GOSUMDB) ;;
+    *) die "$name is not on the boundary environment allowlist" ;;
   esac
 }
 
@@ -129,6 +143,8 @@ XDG_RUNTIME_DIR=$root/run
 CARGO_HOME=$home/.cargo
 GOPATH=$home/go
 GOTOOLCHAIN=local
+CI=true
+VIBEKE_HERDR_PLUGINS_I_AM_IN_A_BOUNDARY=1
 EOF
 
 command_text=$(printf '%s ' "$@" | cut -c 1-400)

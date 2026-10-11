@@ -2,6 +2,7 @@
 // Builds the real Herdr plugin matrix (spec 18 §12) from the per-plugin result files.
 //
 //   bun scripts/herdr-plugins-report.ts --in <dir> --out <dir> [--expect <matrix.json>]
+//                                       [--status <dir>]
 //
 // The result files come from jobs that ran third-party plugin code, so this script treats them
 // as hostile data (18 §5.6): it limits file sizes, accepts only regular files, validates the
@@ -9,8 +10,18 @@
 // every string it puts into Markdown, and never passes HTML through. It never runs or loads
 // anything from the inputs.
 //
+// A result file is written inside the plugin's boundary, by a test process that runs as the same
+// user as the plugin. The plugin can therefore forge it. This script never trusts its top-level
+// verdict: it recomputes the outcome and `fails_run` from the step, lifecycle and coverage
+// details, and rejects a result whose top-level fields disagree. It also reads the status files
+// (`--status`) that the trusted runner user writes outside the boundary: a plugin whose test
+// exited non-zero, or that wrote no result, fails whatever its result file says. A plugin can
+// still forge a passing result for a test that exited 0, so the matrix is a regression signal,
+// not a security verdict.
+//
 // It writes `matrix.json` and `matrix.md` to the output directory, then exits 1 when a result
-// fails the run, has the outcome `compat_failure` or `harness_error`, is rejected, or is missing.
+// fails the run, has the outcome `compat_failure` or `harness_error`, is rejected or
+// inconsistent, is missing, or its test exit status is non-zero or missing.
 
 import { lstatSync, mkdirSync, openSync, readSync, closeSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -286,6 +297,48 @@ export function md(s: string): string {
   return out.replaceAll("\\:\\/\\/", `\\:${ZWSP}\\/\\/`).replace(/www\\\./gi, (m) => `${m.slice(0, 3)}${ZWSP}${m.slice(3)}`);
 }
 
+/** The verdict recomputed from a result's details, as the runner computes it (`finish`). */
+export type Verdict = { outcome: Outcome; fails_run: boolean };
+
+/** Orders outcomes as crates/vk-conformance/src/outcome.rs does: later is worse. */
+export function worst(outcomes: Outcome[]): Outcome {
+  let w = 0;
+  for (const o of outcomes) w = Math.max(w, OUTCOMES.indexOf(o));
+  return OUTCOMES[w];
+}
+
+export function verdict(r: PluginResult): Verdict {
+  return {
+    outcome: worst([...r.lifecycle.map((c) => c.outcome), ...r.steps.map((s) => s.outcome)]),
+    fails_run: !r.coverage.ok || r.coverage.missing.length > 0 || r.steps.some((s) => s.unexpected_pass),
+  };
+}
+
+/** Where the top-level fields of `r` disagree with its details; empty when consistent. */
+export function inconsistencies(r: PluginResult, v: Verdict = verdict(r)): string[] {
+  const out: string[] = [];
+  if (r.outcome !== v.outcome) out.push(`$.outcome is ${r.outcome} but the worst step or lifecycle outcome is ${v.outcome}`);
+  if (r.fails_run !== v.fails_run) out.push(`$.fails_run is ${r.fails_run} but the details give ${v.fails_run}`);
+  if (r.coverage.ok !== (r.coverage.missing.length === 0)) out.push("$.coverage.ok disagrees with $.coverage.missing");
+  return out;
+}
+
+export const STATUS_SCHEMA = "vibeke.herdr-plugin-status/1";
+
+/** What the trusted runner recorded about one plugin job, outside the boundary. */
+export type Status = { plugin_id: string; os: string; exit_status: number | null; result_present: boolean };
+
+export function validateStatus(v: unknown): Status {
+  const o = object(v, "$", ["schema", "plugin_id", "os", "exit_status", "result_present"]);
+  if (o.schema !== STATUS_SCHEMA) throw new Invalid("$.schema", "unknown schema");
+  return {
+    plugin_id: str(o.plugin_id, "$.plugin_id", LIMITS.id, PLUGIN_ID),
+    os: oneOf(o.os, "$.os", ["linux", "macos"] as const),
+    exit_status: o.exit_status === null ? null : uint(o.exit_status, "$.exit_status", 255),
+    result_present: bool(o.result_present, "$.result_present"),
+  };
+}
+
 export type Row = {
   rank: number;
   plugin_id: string;
@@ -309,6 +362,8 @@ export type Matrix = {
   unexpected_passes: { plugin_id: string; os: string; step: string; known: Outcome | null }[];
   coverage_failures: { plugin_id: string; os: string; missing: string[] }[];
   rejected: { file: string; reason: string }[];
+  /** Plugins whose test exit status, recorded by the trusted runner, fails them. */
+  exit_failures: { plugin_id: string; os: string; reason: string }[];
   missing: { plugin_id: string; os: string }[];
   failing: boolean;
 };
@@ -321,7 +376,8 @@ function counts(outcomes: Outcome[]): Partial<Record<Outcome, number>> {
   return c;
 }
 
-export function row(r: PluginResult, file: string): Row {
+/** A matrix row. The outcome and `fails_run` are the recomputed ones, never the file's own. */
+export function row(r: PluginResult, file: string, v: Verdict = verdict(r)): Row {
   const failed = new Set<string>();
   const partial = new Set<string>();
   for (const s of r.steps) {
@@ -334,10 +390,10 @@ export function row(r: PluginResult, file: string): Row {
     plugin_id: r.plugin_id,
     repository: r.repository,
     os: r.os,
-    outcome: r.outcome,
+    outcome: v.outcome,
     reproducible: r.reproducible && r.dependency_mode === "verified",
     dependency_mode: r.dependency_mode,
-    fails_run: r.fails_run,
+    fails_run: v.fails_run,
     steps: counts(r.steps.map((s) => s.outcome)),
     lifecycle: counts(r.lifecycle.map((c) => c.outcome)),
     surfaces: [...r.surfaces].sort(),
@@ -349,13 +405,22 @@ export function row(r: PluginResult, file: string): Row {
 
 export type Input = { file: string; text: string } | { file: string; error: string };
 
-export function build(inputs: Input[], expect: { plugin_id: string; os: string }[] = []): Matrix {
+/**
+ * Builds the matrix. `statuses` are the trusted status files; `null` skips that check (local
+ * use without them). In CI every expected plugin needs a status with exit status 0 and a result.
+ */
+export function build(
+  inputs: Input[],
+  expect: { plugin_id: string; os: string }[] = [],
+  statuses: Input[] | null = null,
+): Matrix {
   const m: Matrix = {
     schema: MATRIX_SCHEMA,
     rows: [],
     unexpected_passes: [],
     coverage_failures: [],
     rejected: [],
+    exit_failures: [],
     missing: [],
     failing: false,
   };
@@ -381,7 +446,13 @@ export function build(inputs: Input[], expect: { plugin_id: string; os: string }
       continue;
     }
     seen.add(key);
-    m.rows.push(row(r, input.file));
+    const v = verdict(r);
+    const bad = inconsistencies(r, v);
+    if (bad.length > 0) {
+      m.rejected.push({ file: input.file, reason: `inconsistent result: ${bad.join("; ")}` });
+      continue;
+    }
+    m.rows.push(row(r, input.file, v));
     for (const s of r.steps) {
       if (s.unexpected_pass) m.unexpected_passes.push({ plugin_id: r.plugin_id, os: r.os, step: s.id, known: s.known });
     }
@@ -390,10 +461,48 @@ export function build(inputs: Input[], expect: { plugin_id: string; os: string }
   for (const e of expect) {
     if (!seen.has(`${e.plugin_id}\u0000${e.os}`)) m.missing.push({ plugin_id: e.plugin_id, os: e.os });
   }
+  if (statuses !== null) {
+    const recorded = new Map<string, Status>();
+    for (const input of statuses) {
+      if ("error" in input) {
+        m.rejected.push({ file: input.file, reason: input.error });
+        continue;
+      }
+      let st: Status;
+      try {
+        st = validateStatus(JSON.parse(input.text));
+      } catch (e) {
+        const reason = e instanceof Invalid ? e.message : e instanceof SyntaxError ? "not valid JSON" : "unreadable";
+        m.rejected.push({ file: input.file, reason });
+        continue;
+      }
+      const key = `${st.plugin_id}\u0000${st.os}`;
+      if (recorded.has(key)) {
+        m.rejected.push({ file: input.file, reason: "duplicate status for this plugin and platform" });
+        continue;
+      }
+      recorded.set(key, st);
+    }
+    const keys = new Map<string, { plugin_id: string; os: string }>();
+    for (const e of expect) keys.set(`${e.plugin_id}\u0000${e.os}`, e);
+    for (const r of m.rows) keys.set(`${r.plugin_id}\u0000${r.os}`, r);
+    for (const st of recorded.values()) keys.set(`${st.plugin_id}\u0000${st.os}`, st);
+    for (const [key, k] of keys) {
+      const st = recorded.get(key);
+      let reason: string | null = null;
+      if (!st) reason = "no exit status was recorded (the plugin job did not finish)";
+      else if (st.exit_status === null) reason = "the plugin test did not run to an exit status";
+      else if (st.exit_status !== 0) reason = `the plugin test exited with status ${st.exit_status}`;
+      else if (!st.result_present) reason = "the plugin test wrote no result file";
+      if (reason) m.exit_failures.push({ plugin_id: k.plugin_id, os: k.os, reason });
+    }
+    m.exit_failures.sort((a, b) => a.plugin_id.localeCompare(b.plugin_id) || a.os.localeCompare(b.os));
+  }
   m.rows.sort((a, b) => a.rank - b.rank || a.os.localeCompare(b.os) || a.plugin_id.localeCompare(b.plugin_id));
   m.failing =
     m.rejected.length > 0 ||
     m.missing.length > 0 ||
+    m.exit_failures.length > 0 ||
     m.rows.some((r) => r.fails_run || r.outcome === "compat_failure" || r.outcome === "harness_error");
   return m;
 }
@@ -412,6 +521,8 @@ export function render(m: Matrix): string {
   lines.push("# Real Herdr plugin matrix", "");
   lines.push(
     "Spec 18 regression signal for the highest-ranked eligible Herdr plugins. It is not a compatibility certificate.",
+    "",
+    "Each result file is written inside the plugin's execution boundary, so the plugin can forge it. The report recomputes every verdict from the step details and also fails a plugin whose test exit status, recorded outside the boundary, is non-zero. A forged passing result can still hide a failure, so this matrix is a regression signal, not a security verdict (spec 18 §5.6).",
     "",
   );
   lines.push(`Overall: ${m.failing ? "**failing**" : "passing"}.`, "");
@@ -435,6 +546,10 @@ export function render(m: Matrix): string {
   for (const c of m.coverage_failures) {
     lines.push(`- Coverage failure: ${md(c.plugin_id)} on ${md(c.os)}, not covered: ${fmtList(c.missing)}.`);
   }
+  if (m.exit_failures.length > 0) {
+    lines.push("", "## Test exit status", "");
+    for (const x of m.exit_failures) lines.push(`- ${md(x.plugin_id)} on ${md(x.os)}: ${md(x.reason)}.`);
+  }
   if (m.missing.length > 0) {
     lines.push("", "## Missing results", "");
     for (const x of m.missing) lines.push(`- ${md(x.plugin_id)} on ${md(x.os)}: no result file (harness error).`);
@@ -447,6 +562,7 @@ export function render(m: Matrix): string {
 }
 
 const RESULT_NAME = /^[A-Za-z0-9_.-]{1,200}-(linux|macos)\.json$/;
+export const STATUS_NAME = /^[A-Za-z0-9_.-]{1,200}-(linux|macos)\.status\.json$/;
 
 function readLimited(path: string, max: number): string {
   const fd = openSync(path, "r");
@@ -462,10 +578,10 @@ function readLimited(path: string, max: number): string {
 
 /**
  * Collects result files from `dir` and its direct subdirectories (one per downloaded artifact).
- * Only regular files whose names look like `<stem>-<os>.json` count; symbolic links and other
+ * Only regular files whose names match `names` (by default `<stem>-<os>.json`) count; symbolic links and other
  * file types are rejected without being followed.
  */
-export function collect(dir: string): Input[] {
+export function collect(dir: string, names: RegExp = RESULT_NAME): Input[] {
   const inputs: Input[] = [];
   let total = 0;
   const visit = (d: string, rel: string, depth: number) => {
@@ -477,7 +593,7 @@ export function collect(dir: string): Input[] {
         if (depth === 0) visit(full, relName, 1);
         continue;
       }
-      if (!RESULT_NAME.test(name)) continue;
+      if (!names.test(name)) continue;
       if (inputs.length >= LIMITS.files) {
         inputs.push({ file: relName, error: "too many result files" });
         continue;
@@ -517,7 +633,7 @@ if (import.meta.main) {
   const input = arg(args, "--in");
   const out = arg(args, "--out");
   if (!input || !out) {
-    console.error("usage: herdr-plugins-report.ts --in <dir> --out <dir> [--expect <matrix.json>]");
+    console.error("usage: herdr-plugins-report.ts --in <dir> --out <dir> [--expect <matrix.json>] [--status <dir>]");
     process.exit(2);
   }
   const expectFile = arg(args, "--expect");
@@ -525,12 +641,15 @@ if (import.meta.main) {
   const expect: { plugin_id: string; os: string }[] = expectFile
     ? (JSON.parse(await Bun.file(expectFile).text()).include ?? [])
     : [];
-  const m = build(collect(input), expect);
+  // Status files from the trusted runner user (outside the boundary). Without --status the
+  // exit-status check is skipped, which only local runs should do.
+  const statusDir = arg(args, "--status");
+  const m = build(collect(input), expect, statusDir ? collect(statusDir, STATUS_NAME) : null);
   mkdirSync(out, { recursive: true });
   writeFileSync(join(out, "matrix.json"), `${JSON.stringify(m, null, 2)}\n`);
   writeFileSync(join(out, "matrix.md"), render(m));
   console.log(
-    `${m.rows.length} results, ${m.rejected.length} rejected, ${m.missing.length} missing: ${m.failing ? "failing" : "passing"}`,
+    `${m.rows.length} results, ${m.rejected.length} rejected, ${m.missing.length} missing, ${m.exit_failures.length} failed test exit statuses: ${m.failing ? "failing" : "passing"}`,
   );
   process.exit(m.failing ? 1 : 0);
 }

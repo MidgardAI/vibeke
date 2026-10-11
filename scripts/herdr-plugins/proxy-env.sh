@@ -6,8 +6,13 @@
 # Prints NAME=VALUE lines for run-boundary.sh --env-file, or `export NAME='VALUE'` lines with
 # --export for `eval`. The variables send common tools through the proxy and make them trust
 # its CA: curl, git, cargo, npm, bun, node, pip/requests, Go and anything that reads
-# SSL_CERT_FILE. The CA file replaces the system trust store: everything goes through the proxy,
-# so nothing else needs to be trusted. A plugin that ignores these variables cannot reach the
+# SSL_CERT_FILE. npm and cargo read the proxy from HTTPS_PROXY and the CA from
+# NODE_EXTRA_CA_CERTS and CARGO_HTTP_CAINFO.
+#
+# The names are exactly the ones the plugin runner passes through to plugin processes
+# (crates/vibeke/tests/it/support/real_plugins.rs): the proxy variables in both cases, NO_PROXY,
+# SSL_CERT_FILE, NODE_EXTRA_CA_CERTS, CARGO_HTTP_CAINFO, GIT_SSL_CAINFO, REQUESTS_CA_BUNDLE,
+# CURL_CA_BUNDLE, GOPROXY, GOFLAGS and GOSUMDB. run-boundary.sh accepts no other proxy names. A plugin that ignores these variables cannot reach the
 # network at all, because the workflow's firewall allows the boundary user only loopback.
 set -eu
 
@@ -51,20 +56,16 @@ emit no_proxy "$no_proxy"
 
 # Trust stores.
 emit SSL_CERT_FILE "$ca"
-emit SSL_CERT_DIR /nonexistent
 emit NODE_EXTRA_CA_CERTS "$ca"
 emit CURL_CA_BUNDLE "$ca"
 emit REQUESTS_CA_BUNDLE "$ca"
-emit PIP_CERT "$ca"
 emit GIT_SSL_CAINFO "$ca"
 emit CARGO_HTTP_CAINFO "$ca"
-emit CARGO_HTTP_PROXY "$proxy"
-emit npm_config_cafile "$ca"
-emit npm_config_proxy "$proxy"
-emit npm_config_https_proxy "$proxy"
 
 # Go reads HTTPS_PROXY, and SSL_CERT_FILE on Linux (on macOS it uses the system keychain, where
 # the workflow installs the CA). Module downloads use the public module proxy and checksum
-# database over HTTPS; `direct` would fetch with git or other protocols.
+# database over HTTPS; `direct` would fetch with git or other protocols. `-modcacherw` keeps the
+# module cache removable.
 emit GOPROXY https://proxy.golang.org
 emit GOSUMDB sum.golang.org
+emit GOFLAGS -modcacherw
