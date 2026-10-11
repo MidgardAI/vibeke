@@ -9,7 +9,8 @@
 //!   result is the requested offset, not a confirmation. `pane.read` never scrolls.
 //! - `pane.screenshot` captures the pane grid as text, ANSI (SGR colors and attributes) or a
 //!   standalone HTML page into the blob store (`blob.get`), or rendered as SVG or PNG
-//!   ([`crate::pane_render`]).
+//!   ([`crate::pane_render`]). `format = "grid"` is a structured JSON cell grid of the visible
+//!   screen (18 §10.3; the shape is documented in `vk-conformance`'s `grid` module).
 
 use crate::Server;
 use crate::api::{Ctx, R, b, err, internal, invalid, not_found, resolve_pane, s, u};
@@ -20,8 +21,9 @@ use std::fmt::Write as _;
 use std::sync::{Arc, Mutex, OnceLock};
 use vk_proto::layout::{self, Direction};
 use vk_proto::model::*;
-use vk_proto::render::{Color, Row, Style, attr};
+use vk_proto::render::{Color, Cursor, Row, Span, Style, attr};
 use vk_proto::rpc::ErrorKind;
+use vk_term::PaletteChanges;
 
 pub const METHODS: &[(&str, bool)] = &[
     ("pane.move", true),
@@ -468,6 +470,110 @@ pub fn rows_html(rows: &[Row], title: &str) -> String {
     )
 }
 
+fn hex_rgb((r, g, b): (u8, u8, u8)) -> String {
+    format!("#{r:02x}{g:02x}{b:02x}")
+}
+
+/// The cells of one span: a base character with the zero-width characters after it (combining
+/// marks, joiners, variation selectors), and the cell width (1 or 2).
+fn span_cells(sp: &Span) -> Vec<(String, u16)> {
+    use unicode_width::UnicodeWidthChar;
+    let mut cells: Vec<(String, u16)> = vec![];
+    for ch in sp.text.chars() {
+        let w = ch.width().unwrap_or(0) as u16;
+        match cells.last_mut() {
+            Some(last) if w == 0 => last.0.push(ch),
+            _ => cells.push((ch.to_string(), w.clamp(1, 2))),
+        }
+    }
+    // The engine makes some cells wide that the width table calls narrow (an emoji followed by
+    // VS16). The span's column count is authoritative, so widen those cells to match it.
+    let mut extra = (sp.cols as usize).saturating_sub(cells.iter().map(|c| c.1 as usize).sum());
+    for c in cells.iter_mut() {
+        if extra == 0 {
+            break;
+        }
+        if c.1 == 1 && c.0.contains('\u{fe0f}') {
+            c.1 = 2;
+            extra -= 1;
+        }
+    }
+    cells
+}
+
+/// `pane.screenshot` `format = "grid"` (18 §10.3): exactly `nrows` lines of exactly `cols`
+/// cells, blank cells kept. A cell leaves out default fields: `t` (text, default `" "`), `fg`
+/// and `bg` (a palette index or `"#rrggbb"`, default the default colour), `a` (the
+/// [`attr`] bitmask) and `w` (2 on the lead cell of a wide character, which is followed by a
+/// `{"c":true}` continuation cell). `palette` lists only the colours the program changed.
+pub fn rows_grid(
+    rows: &[Row],
+    cols: u16,
+    nrows: u16,
+    cursor: &Cursor,
+    palette: &PaletteChanges,
+) -> Value {
+    let color = |c: Color| -> Option<Value> {
+        match c {
+            Color::Default => None,
+            Color::Indexed(n) => Some(json!(n)),
+            Color::Rgb(r, g, b) => Some(json!(hex_rgb((r, g, b)))),
+        }
+    };
+    let cols = cols as usize;
+    let mut lines: Vec<Value> = Vec::with_capacity(nrows as usize);
+    for y in 0..nrows as usize {
+        let mut line: Vec<Value> = Vec::with_capacity(cols);
+        'spans: for sp in rows.get(y).map(|r| r.spans.as_slice()).unwrap_or(&[]) {
+            for (text, w) in span_cells(sp) {
+                if line.len() >= cols {
+                    break 'spans;
+                }
+                let mut cell = serde_json::Map::new();
+                // A wide character with no room for its continuation cell becomes a blank.
+                let wide = w == 2 && line.len() + 1 < cols;
+                if text != " " && (w == 1 || wide) {
+                    cell.insert("t".into(), json!(text));
+                }
+                if let Some(fg) = color(sp.style.fg) {
+                    cell.insert("fg".into(), fg);
+                }
+                if let Some(bg) = color(sp.style.bg) {
+                    cell.insert("bg".into(), bg);
+                }
+                if sp.style.attrs != 0 {
+                    cell.insert("a".into(), json!(sp.style.attrs));
+                }
+                if wide {
+                    cell.insert("w".into(), json!(2));
+                }
+                line.push(Value::Object(cell));
+                if wide {
+                    line.push(json!({"c": true}));
+                }
+            }
+        }
+        line.resize(cols, json!({}));
+        lines.push(Value::Array(line));
+    }
+    let overrides: serde_json::Map<String, Value> = palette
+        .overrides
+        .iter()
+        .map(|(i, c)| (i.to_string(), json!(hex_rgb(*c))))
+        .collect();
+    json!({
+        "cols": cols,
+        "rows": nrows,
+        "cursor": {"row": cursor.row, "col": cursor.col, "visible": cursor.visible},
+        "palette": {
+            "overrides": overrides,
+            "fg": palette.fg.map(hex_rgb),
+            "bg": palette.bg.map(hex_rgb),
+        },
+        "lines": lines,
+    })
+}
+
 fn pane_screenshot(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     let pane = resolve_pane(server, ctx, s(p, "pane"))?;
     let format = s(p, "format").unwrap_or("ansi");
@@ -477,17 +583,24 @@ fn pane_screenshot(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         "html" => ("html", "text/html"),
         "svg" => ("svg", "image/svg+xml"),
         "png" => ("png", "image/png"),
+        "grid" => ("json", "application/json"),
         other => {
             return Err(invalid(format!(
-                "format must be text|ansi|html|svg|png, not {other}"
+                "format must be text|ansi|html|svg|png|grid, not {other}"
             )));
         }
     };
     let source = s(p, "source").unwrap_or("visible");
+    if format == "grid" && source != "visible" {
+        return Err(invalid(format!(
+            "format grid covers the visible screen only, so source must be visible, not {source}"
+        ))
+        .details(json!({"reason": "grid_visible_only"})));
+    }
     let rt = server
         .pane_rt(&pane.id)
         .ok_or_else(|| conflict("not_running", "the pane has no live terminal"))?;
-    let (rows, cols, nrows, cursor) = {
+    let (rows, cols, nrows, cursor, palette) = {
         let sc = rt.screen.lock().unwrap();
         let e = &sc.engine;
         let mut rows = vec![];
@@ -510,13 +623,18 @@ fn pane_screenshot(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
             }
         }
         rows.extend(e.visible_rows());
-        (rows, e.cols(), e.rows(), e.cursor())
+        let palette = (format == "grid").then(|| e.palette_changes());
+        (rows, e.cols(), e.rows(), e.cursor(), palette)
     };
     let title = format!("{} — {}", pane.handle, pane.display_title());
     let data: Vec<u8> = match format {
         "text" => rows_text(&rows).into_bytes(),
         "ansi" => rows_ansi(&rows).into_bytes(),
         "html" => rows_html(&rows, &title).into_bytes(),
+        "grid" => {
+            let grid = rows_grid(&rows, cols, nrows, &cursor, &palette.unwrap_or_default());
+            serde_json::to_vec(&grid).map_err(internal)?
+        }
         _ => {
             let dark = {
                 let a = server.theme.current();
@@ -641,5 +759,74 @@ mod tests {
         assert!(html.contains("<title>w1:p1 &lt;t&gt;</title>"));
         assert_eq!(palette(196), (255, 0, 0));
         assert_eq!(palette(244), (128, 128, 128));
+    }
+
+    #[test]
+    fn grid_cells() {
+        let red_bold = Style {
+            fg: Color::Indexed(1),
+            attrs: attr::BOLD,
+            ..Default::default()
+        };
+        let rgb_bg = Style {
+            bg: Color::Rgb(16, 16, 16),
+            ..Default::default()
+        };
+        let rows = vec![
+            // A short row: padded with blanks.
+            Row::new(vec![span("a", red_bold), span(" b", rgb_bg)], false),
+            // A wide character, a combining mark and an emoji widened by VS16.
+            Row::new(
+                vec![
+                    Span {
+                        style: Style::default(),
+                        text: "世e\u{301}❤\u{fe0f}".into(),
+                        cols: 5,
+                    },
+                    span("xyz", Style::default()),
+                ],
+                false,
+            ),
+        ];
+        let cursor = Cursor {
+            row: 1,
+            col: 2,
+            visible: false,
+            ..Default::default()
+        };
+        let mut pal = PaletteChanges::default();
+        pal.overrides.insert(1, (255, 0, 0));
+        pal.fg = Some((0xd0, 0xd0, 0xd0));
+        // Three rows: the missing last row is all blanks. Six columns cut "xyz" to "x".
+        let g = rows_grid(&rows, 6, 3, &cursor, &pal);
+        assert_eq!(
+            g,
+            json!({
+                "cols": 6,
+                "rows": 3,
+                "cursor": {"row": 1, "col": 2, "visible": false},
+                "palette": {"overrides": {"1": "#ff0000"}, "fg": "#d0d0d0", "bg": null},
+                "lines": [
+                    [{"t": "a", "fg": 1, "a": 1}, {"bg": "#101010"}, {"t": "b", "bg": "#101010"},
+                     {}, {}, {}],
+                    [{"t": "世", "w": 2}, {"c": true}, {"t": "e\u{301}"},
+                     {"t": "❤\u{fe0f}", "w": 2}, {"c": true}, {"t": "x"}],
+                    [{}, {}, {}, {}, {}, {}],
+                ],
+            })
+        );
+        // A wide character with no room for its continuation cell becomes a blank.
+        let g = rows_grid(
+            &[Row::new(vec![span("ab世", Style::default())], false)],
+            3,
+            1,
+            &cursor,
+            &PaletteChanges::default(),
+        );
+        assert_eq!(g["lines"], json!([[{"t": "a"}, {"t": "b"}, {}]]));
+        assert_eq!(
+            g["palette"],
+            json!({"overrides": {}, "fg": null, "bg": null})
+        );
     }
 }

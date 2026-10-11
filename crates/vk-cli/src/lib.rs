@@ -268,7 +268,7 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         "screenshot",
         "pane.screenshot",
         &["pane"],
-        "[pane] [--format ansi|text|html|svg|png] [--source visible|recent] [--include-cursor] [--out file]",
+        "[pane] [--format ansi|text|html|svg|png|grid] [--source visible|recent] [--include-cursor] [--out file]",
     ),
     (
         "pane",

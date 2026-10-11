@@ -1003,7 +1003,8 @@ pane.move :: {pane?: Target, to: {tab?: Target, workspace?: Target, new_tab_in?:
 pane.scroll :: {pane?: Target, to?: bottom|top|line, line?: int, delta?: int, client?: string}
   => {scroll: {offset: int, total: int, at_bottom: bool}}
 # svg: text spans on a cell grid; png: rasterized with an embedded 8x16 bitmap font (inline png comes as data_b64)
-pane.screenshot :: {pane?: Target, format?: text|ansi|html|svg|png = ansi, source?: visible|recent = visible, lines?: int = 200, include_cursor?: bool, inline?: bool}
+# grid: JSON cell grid of the visible screen only (cols, rows, cursor, changed palette, lines of cells); source must be visible
+pane.screenshot :: {pane?: Target, format?: text|ansi|html|svg|png|grid = ansi, source?: visible|recent = visible, lines?: int = 200, include_cursor?: bool, inline?: bool}
   => {blob: {hash: string, size: int, mime: string, path: string}, format: string, source: string, cols: int, rows: int, lines: int, revision: int, width?: int, height?: int, cursor?: {row: int, col: int, visible: bool}, data?: string, data_b64?: string}
 
 # --- task.park / resume (full scope only) ---

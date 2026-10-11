@@ -688,6 +688,12 @@ async fn plugin_pane_open(
             argv.push(format!("{k}={v}"));
         }
     }
+    // The test-only trace file (spec 18 §9), which the pane environment would drop too.
+    argv.extend(
+        super::trace::child_env(None)
+            .into_iter()
+            .map(|(k, v)| format!("{k}={v}")),
+    );
     argv.extend(launch::resolve_argv(&entry.root, &decl.command));
     let prev_focus = sn.focus.pane.clone();
     let result = match placement.as_str() {

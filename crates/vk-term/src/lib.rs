@@ -14,7 +14,7 @@ pub mod tracker;
 pub mod vt;
 
 #[cfg(not(target_arch = "wasm32"))]
-pub use engine::{Effect, Engine, LastCommand, NotifyKind};
+pub use engine::{Effect, Engine, LastCommand, NotifyKind, PaletteChanges};
 #[cfg(not(target_arch = "wasm32"))]
 pub use vt::{EngineEffect, VtEngine};
 

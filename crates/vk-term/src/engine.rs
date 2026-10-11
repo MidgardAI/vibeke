@@ -186,6 +186,15 @@ pub struct LastCommand {
     pub exit: Option<i32>,
 }
 
+/// Colours a program changed with OSC 4 (palette entries) and OSC 10/11 (default foreground
+/// and background), from [`Engine::palette_changes`]. Unchanged colours are absent or `None`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PaletteChanges {
+    pub overrides: std::collections::BTreeMap<u8, (u8, u8, u8)>,
+    pub fg: Option<(u8, u8, u8)>,
+    pub bg: Option<(u8, u8, u8)>,
+}
+
 /// Default colours; also what OSC 10/11/12/4 queries answer (unless the app overrode them).
 #[derive(Clone, Debug)]
 pub struct Palette {
@@ -1205,6 +1214,62 @@ impl Engine {
         let mut v = T::default();
         unsafe { sys::ghostty_terminal_get(self.term, data, (&raw mut v).cast()) };
         v
+    }
+
+    /// Colours the program changed: palette entries (OSC 4) and the default foreground and
+    /// background (OSC 10/11), with resets (OSC 104/110/111) undoing them (18 §10.3).
+    /// libghostty-vt keeps the effective and the default value of each colour, so a change is
+    /// an effective value that differs from its default. A program that sets an entry to its
+    /// default value is therefore not reported. The overrides live in the engine only: after a
+    /// server restart they are whatever the restored engine state carries, and may be reset.
+    pub fn palette_changes(&self) -> PaletteChanges {
+        let mut cur = [sys::GhosttyColorRgb::default(); 256];
+        let mut def = [sys::GhosttyColorRgb::default(); 256];
+        unsafe {
+            sys::ghostty_terminal_get(
+                self.term,
+                sys::GHOSTTY_TERMINAL_DATA_COLOR_PALETTE,
+                cur.as_mut_ptr().cast(),
+            );
+            sys::ghostty_terminal_get(
+                self.term,
+                sys::GHOSTTY_TERMINAL_DATA_COLOR_PALETTE_DEFAULT,
+                def.as_mut_ptr().cast(),
+            );
+        }
+        let overrides = (0..=255u8)
+            .filter(|&i| cur[i as usize] != def[i as usize])
+            .map(|i| {
+                let c = cur[i as usize];
+                (i, (c.r, c.g, c.b))
+            })
+            .collect();
+        let dynamic = |eff: sys::GhosttyTerminalData, dflt: sys::GhosttyTerminalData| {
+            let (mut e, mut d) = (
+                sys::GhosttyColorRgb::default(),
+                sys::GhosttyColorRgb::default(),
+            );
+            let has_e = unsafe {
+                sys::ghostty_terminal_get(self.term, eff, (&raw mut e).cast())
+                    == sys::GHOSTTY_SUCCESS
+            };
+            let has_d = unsafe {
+                sys::ghostty_terminal_get(self.term, dflt, (&raw mut d).cast())
+                    == sys::GHOSTTY_SUCCESS
+            };
+            (has_e && (!has_d || e != d)).then_some((e.r, e.g, e.b))
+        };
+        PaletteChanges {
+            overrides,
+            fg: dynamic(
+                sys::GHOSTTY_TERMINAL_DATA_COLOR_FOREGROUND,
+                sys::GHOSTTY_TERMINAL_DATA_COLOR_FOREGROUND_DEFAULT,
+            ),
+            bg: dynamic(
+                sys::GHOSTTY_TERMINAL_DATA_COLOR_BACKGROUND,
+                sys::GHOSTTY_TERMINAL_DATA_COLOR_BACKGROUND_DEFAULT,
+            ),
+        }
     }
 
     fn mode_on(&self, m: sys::GhosttyMode) -> bool {
@@ -2428,6 +2493,35 @@ mod tests {
         assert_eq!(e.modify_other_keys(), 1);
         fx(&mut e, b"\x1b[?2026h");
         assert!(e.in_sync_update());
+    }
+
+    #[test]
+    fn palette_changes_track_osc_4_10_11_and_resets() {
+        let mut e = Engine::new(10, 3, 100);
+        assert_eq!(e.palette_changes(), PaletteChanges::default());
+        // A sequence split across feeds, both terminators, and the `rgb:` and `#` forms.
+        fx(&mut e, b"\x1b]4;1;rgb:ff/00/");
+        fx(&mut e, b"00\x07\x1b]4;200;#102030\x1b\\");
+        fx(&mut e, b"\x1b]10;#d0d0d0\x07\x1b]11;rgb:10/10/10\x07");
+        let c = e.palette_changes();
+        assert_eq!(
+            c.overrides.into_iter().collect::<Vec<_>>(),
+            vec![(1, (0xff, 0, 0)), (200, (0x10, 0x20, 0x30))]
+        );
+        assert_eq!(c.fg, Some((0xd0, 0xd0, 0xd0)));
+        assert_eq!(c.bg, Some((0x10, 0x10, 0x10)));
+        // Resets: one entry, then the default colours.
+        fx(&mut e, b"\x1b]104;1\x07\x1b]110\x07\x1b]111\x07");
+        let c = e.palette_changes();
+        assert_eq!(
+            c.overrides.into_iter().collect::<Vec<_>>(),
+            vec![(200, (0x10, 0x20, 0x30))]
+        );
+        assert_eq!((c.fg, c.bg), (None, None));
+        // A new default palette (theme change) is not a program change.
+        e.set_palette(Palette::default());
+        fx(&mut e, b"\x1b]104\x07");
+        assert_eq!(e.palette_changes(), PaletteChanges::default());
     }
 
     #[test]

@@ -1058,7 +1058,58 @@ fn request_line(sock: &Path, id: &str, method: &str, params: Value) -> String {
     if to_broker && let Ok(t) = std::env::var("VIBEKE_HERDR_TOKEN") {
         req["vibeke_token"] = json!(t);
     }
+    if to_broker {
+        // Lets the broker's test-only trace tell launcher calls from raw socket clients
+        // (spec 18 §9); never used for authorization.
+        let (k, v) = vk_server::compat::trace::SHIM_MARK;
+        req[k] = json!(v);
+    }
     req.to_string() + "\n"
+}
+
+/// A test-only launcher trace line (spec 18 §9): written only inside a plugin
+/// (`HERDR_PLUGIN_ID`) while `VIBEKE_HERDR_TRACE` tracing is on.
+fn trace_launcher(
+    argv: &[String],
+    method: &str,
+    params: Option<&Value>,
+    code: Option<&str>,
+    parse_error: Option<&str>,
+) {
+    use vk_server::compat::trace;
+    if trace::settings().is_none() {
+        return;
+    }
+    let Ok(plugin) = std::env::var("HERDR_PLUGIN_ID") else {
+        return;
+    };
+    let invocation = std::env::var(trace::INVOCATION_ENV).ok();
+    trace::write(&trace::Line {
+        plugin: &plugin,
+        invocation: invocation.as_deref(),
+        transport: "launcher",
+        method,
+        ok: code.is_none(),
+        code,
+        params,
+        argv: Some(argv),
+        parse_error,
+    });
+}
+
+/// The method name a launcher trace line records for a registry operation.
+fn local_method(op: &Local) -> &'static str {
+    match op {
+        Local::PluginInstall { .. } => "plugin.install",
+        Local::PluginLink { .. } => "plugin.link",
+        Local::PluginUnlink { .. } => "plugin.unlink",
+        Local::PluginUninstall { .. } => "plugin.uninstall",
+        Local::PluginEnable { .. } => "plugin.enable",
+        Local::PluginDisable { .. } => "plugin.disable",
+        Local::PluginList => "plugin.list",
+        Local::PluginConfigDir { .. } => "plugin.config_dir",
+        Local::PluginUpdate { .. } => "plugin.update",
+    }
 }
 
 /// Server lifecycle methods are never forwarded by the shim (to Vibeke or anything else), except
@@ -1193,9 +1244,11 @@ fn print_herdr(line: &str) -> i32 {
 /// Selecting another session from a pane is refused; from a plugin invocation the destination
 /// re-checks the plugin's grant. An explicitly selected session is never spawned.
 pub async fn herdr_shim(g: &Global, args: &[String]) -> i32 {
+    let argv = args;
     let (selected, args) = match herdr::cli::take_session(args) {
         Ok(x) => x,
         Err(e) => {
+            trace_launcher(argv, "", None, Some("usage"), Some(e.as_str()));
             eprintln!("{e}");
             return EXIT_USAGE;
         }
@@ -1205,7 +1258,20 @@ pub async fn herdr_shim(g: &Global, args: &[String]) -> i32 {
             .ok()
             .filter(|s| herdr::valid_session_name(s))
     });
-    match herdr::cli::parse(&args) {
+    let parsed = herdr::cli::parse(&args);
+    match &parsed {
+        Parsed::Call { method, params } | Parsed::Native { method, params } => {
+            trace_launcher(argv, method, Some(params), None, None)
+        }
+        Parsed::Local(op) => trace_launcher(argv, local_method(op), None, None, None),
+        Parsed::Version => trace_launcher(argv, "version", None, None, None),
+        Parsed::Help(_) => trace_launcher(argv, "help", None, None, None),
+        Parsed::Usage(u) => trace_launcher(argv, "", None, Some("usage"), Some(u.as_str())),
+        Parsed::Refused { command, .. } => {
+            trace_launcher(argv, command, None, Some("unsupported"), None)
+        }
+    }
+    match parsed {
         Parsed::Version => {
             println!(
                 "herdr {} (Vibeke {} compatibility layer, partial)",

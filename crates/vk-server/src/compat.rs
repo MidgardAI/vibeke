@@ -37,6 +37,7 @@ pub mod capture;
 mod ext;
 mod gap;
 mod limits;
+pub mod trace;
 mod views;
 
 use crate::Server;
@@ -604,6 +605,32 @@ fn check_broker(server: &Server, caller: &Caller) -> Result<(), WireError> {
     Ok(())
 }
 
+/// Trace one broker result for a plugin caller (spec 18 §9; no-op unless tracing is on).
+fn trace_result(
+    caller: &Caller,
+    transport: &str,
+    method: &str,
+    params: Option<&Value>,
+    outcome: Result<(), &str>,
+) {
+    if trace::settings().is_none() {
+        return;
+    }
+    let Some((plugin, _)) = &caller.plugin else {
+        return;
+    };
+    trace::write(&trace::Line {
+        plugin,
+        invocation: caller.invocation.as_deref(),
+        transport,
+        method,
+        ok: outcome.is_ok(),
+        code: outcome.err(),
+        params,
+        ..Default::default()
+    });
+}
+
 async fn write_line(w: &mut (impl AsyncWriteExt + Unpin), line: &str) -> std::io::Result<()> {
     w.write_all(line.as_bytes()).await?;
     w.write_all(b"\n").await?;
@@ -620,12 +647,22 @@ pub async fn serve_wire(server: Arc<Server>, stream: UnixStream, caller: Caller)
         Ok(0) | Err(_) => return,
         Ok(_) => {}
     }
+    // Test-only trace (spec 18 §9): `cli` for the `herdr` launcher, `socket` for raw clients.
+    let transport = if trace::settings().is_some() && trace::from_shim(&buf) {
+        "cli"
+    } else {
+        "socket"
+    };
     let req = match wire::parse_request(&buf) {
         Ok(r) => r,
         Err((id, e)) => {
+            trace_result(&caller, transport, "", None, Err(e.code.as_str()));
             let _ = write_line(&mut wr, &wire::err_line(&id, &e)).await;
             return;
         }
+    };
+    let traced = |outcome: Result<(), &str>| {
+        trace_result(&caller, transport, &req.method, Some(&req.params), outcome)
     };
     // A broker serves its own invocation only: a process of it, or one holding its token.
     if caller.broker.is_some() && !caller.peer_bound {
@@ -638,17 +675,20 @@ pub async fn serve_wire(server: Arc<Server>, stream: UnixStream, caller: Caller)
                 "permission_denied",
                 "this broker belongs to another plugin invocation; the connecting process is not part of it",
             );
+            traced(Err(e.code.as_str()));
             let _ = write_line(&mut wr, &wire::err_line(&req.id, &e)).await;
             return;
         }
     }
     if let Err(e) = check_broker(&server, &caller) {
+        traced(Err(e.code.as_str()));
         let _ = write_line(&mut wr, &wire::err_line(&req.id, &e)).await;
         return;
     }
     if caller.sandboxed && !sandbox_allows(&req.method) {
         let e = sandbox_denied(&req.method);
         audit_call(&server, &caller, &req.method, Err(e.code.as_str()));
+        traced(Err(e.code.as_str()));
         let _ = write_line(&mut wr, &wire::err_line(&req.id, &e)).await;
         return;
     }
@@ -656,6 +696,7 @@ pub async fn serve_wire(server: Arc<Server>, stream: UnixStream, caller: Caller)
         let subs = match hev::parse_subscriptions(&req.params) {
             Ok(s) => s,
             Err((code, msg)) => {
+                traced(Err(code));
                 let _ = write_line(
                     &mut wr,
                     &wire::err_line(&req.id, &WireError::new(code, msg)),
@@ -666,6 +707,7 @@ pub async fn serve_wire(server: Arc<Server>, stream: UnixStream, caller: Caller)
         };
         let mut rx = server.events.subscribe();
         let mut proj = seeded_projector(&server);
+        traced(Ok(()));
         let ack = typed("subscription_started", json!({}));
         if write_line(&mut wr, &wire::ok_line(&req.id, ack))
             .await
@@ -702,6 +744,7 @@ pub async fn serve_wire(server: Arc<Server>, stream: UnixStream, caller: Caller)
         &req.method,
         r.as_ref().map(|_| ()).map_err(|e| e.code.as_str()),
     );
+    traced(r.as_ref().map(|_| ()).map_err(|e| e.code.as_str()));
     let line = match r {
         Ok(v) => wire::ok_line(&req.id, v),
         Err(e) => wire::err_line(&req.id, &e),
@@ -2788,7 +2831,11 @@ fn spawn_invocation(
             }
         }
     } else {
-        (argv, launch::runtime_env(&inv, std::env::vars()))
+        let mut env = launch::runtime_env(&inv, std::env::vars());
+        // Test-only trace (spec 18 §9): the launcher's invocation id. Restricted invocations
+        // above get none; the sandbox would block the trace file anyway.
+        env.extend(trace::child_env(Some(log_id.as_str())));
+        (argv, env)
     };
     let mut cmd = tokio::process::Command::new(&argv[0]);
     cmd.args(&argv[1..])
@@ -3196,6 +3243,14 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
                 server,
                 &caller,
                 m,
+                r.as_ref().map(|_| ()).map_err(|e| e.code.as_str()),
+            );
+            // Only the shim calls this method; traced for plugin identities (spec 18 §9).
+            trace_result(
+                &caller,
+                "cli",
+                m,
+                Some(&params),
                 r.as_ref().map(|_| ()).map_err(|e| e.code.as_str()),
             );
             Ok(match r {

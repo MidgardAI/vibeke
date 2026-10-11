@@ -1283,6 +1283,12 @@ pub fn render_markdown() -> String {
          is certified until the differential suite (07 §8.4) passes. *Source* `corpus` marks \
          entries the plugins use but the spec does not name.\n\n",
     );
+    // Spec 18 §12: a fixed link, so runtime results never change this generated file.
+    s.push_str(
+        "Real-plugin results: see the latest run of the \
+         [Herdr plugins workflow](https://github.com/MidgardAI/vibeke/actions/workflows/herdr-plugins.yml) \
+         for the current matrix. Runtime results stay out of this file.\n\n",
+    );
     let (i, p, m) = counts(None);
     s.push_str("| Area | Implemented | Partial | Missing | Total |\n|---|---|---|---|---|\n");
     for k in Kind::ALL {
