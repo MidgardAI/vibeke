@@ -1088,6 +1088,9 @@ pub(crate) const DISMISSED: &str = "dismissed";
 /// answer the agent) but must not come back as a new inbox item and push while it shows.
 #[derive(Debug, Clone)]
 struct DismissedDialog {
+    /// The dismissed interaction and its native request id (a retried hook names it again).
+    id: String,
+    native_ref: Option<String>,
     run: String,
     kind: InteractionKind,
     title: String,
@@ -1105,6 +1108,8 @@ const MAX_DISMISSED_PER_PANE: usize = 8;
 impl Agents {
     fn remember_dismissal(&self, it: &Interaction, turn_at: Option<i64>) {
         let d = DismissedDialog {
+            id: it.id.clone(),
+            native_ref: it.native_ref.clone(),
             run: it.run.clone(),
             kind: it.kind,
             title: it.title.clone(),
@@ -1122,6 +1127,17 @@ impl Agents {
         if list.len() > MAX_DISMISSED_PER_PANE {
             list.remove(0);
         }
+    }
+
+    /// The dismissed interaction of `run` with this native request id, if any.
+    fn dismissed_request(&self, pane: &str, run: &str, native_ref: Option<&str>) -> Option<String> {
+        let native_ref = native_ref?;
+        let i = self.inner.lock().unwrap();
+        i.dismissed
+            .get(pane)?
+            .iter()
+            .find(|x| x.run == run && x.native_ref.as_deref() == Some(native_ref))
+            .map(|x| x.id.clone())
     }
 
     /// Is the screen dialog `d` one the user already dismissed in this turn? Forgets the
@@ -2199,6 +2215,14 @@ async fn gate(server: &Arc<Server>, pane: &str, h: Harness, event: &str, p: &Val
     // A hook retried after a dropped connection re-attaches to the request it opened before:
     // no second `interaction.opened`, no second push.
     let mut reattached = false;
+    // The user dismissed this request and its hook retried: the harness shows its own dialog,
+    // the request stays closed (no new inbox item, no push).
+    if let Some(id) = server
+        .agents
+        .dismissed_request(pane, &run.id, it.native_ref.as_deref())
+    {
+        return Ok(json!({"decision": null, "interaction": id}));
+    }
     {
         let mut c = server.core.lock().unwrap();
         // Re-attach by native ref (a hook retried after a dropped connection, 04 §7.3 rule 4):
@@ -2255,7 +2279,7 @@ async fn gate(server: &Arc<Server>, pane: &str, h: Harness, event: &str, p: &Val
                 tx.interaction(it.clone());
             }
         }
-        if !tx.is_empty() {
+        if !tx.interactions.is_empty() {
             server.commit(&mut c, tx).map_err(internal)?;
         }
     }

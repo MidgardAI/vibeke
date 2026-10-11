@@ -98,7 +98,7 @@ struct State {
     /// pane -> last notification
     notified: HashMap<String, Instant>,
     /// (pane, limit) -> (last `security.rate_limited` event, refusals since then)
-    recorded: HashMap<(String, String), (Instant, u64)>,
+    recorded: HashMap<(String, String), (Option<Instant>, u64)>,
 }
 
 /// Which request budget of a pane a call spends.
@@ -234,11 +234,11 @@ fn refuse(server: &Server, pane: &str, method: &str, limit: &str, e: RpcError) -
         let e = st
             .recorded
             .entry((pane.to_string(), limit.to_string()))
-            .or_insert((now - EVENT_EVERY, 0));
+            .or_insert((None, 0));
         e.1 += 1;
-        if now.duration_since(e.0) >= EVENT_EVERY {
+        if e.0.is_none_or(|t| now.duration_since(t) >= EVENT_EVERY) {
             let n = e.1;
-            *e = (now, 0);
+            *e = (Some(now), 0);
             Some(n)
         } else {
             None

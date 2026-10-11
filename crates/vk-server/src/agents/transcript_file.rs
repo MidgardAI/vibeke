@@ -139,12 +139,13 @@ pub fn sanitize_payload(server: &Server, pane: &str, payload: &mut serde_json::V
         let Some(v) = obj.get(key) else {
             continue;
         };
+        let is_null = v.is_null();
         let accepted = v.as_str().and_then(|raw| accept(server, pane, raw));
         match accepted {
             Some(p) => {
                 obj.insert(key.to_string(), serde_json::Value::String(p));
             }
-            None if v.is_null() => {}
+            None if is_null => {}
             None => {
                 tracing::debug!(pane, key, "transcript path refused");
                 obj.remove(key);
