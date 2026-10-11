@@ -6,7 +6,7 @@
 // 390×844.
 
 import { execFileSync } from 'node:child_process';
-import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { expect, test, type Page } from '@playwright/test';
 import { TestHost, agentHooks, built, hasDisplay, hookEvent, launchApp, settled, shoot, vibekeBin, type LaunchedApp } from './helpers';
@@ -149,11 +149,13 @@ test('conversation: transcript turns, tool rows, footer, composer, view toggle, 
   // Live: a new turn written to the transcript shows up without a reload — the user's prompt and
   // a tool call while the agent works (turn_started / file_changed events), then the answer when
   // the turn completes. Events reach this window through main's forwarded host events.
+  // The server stores the path with symlinks resolved (`/tmp` is a link on macOS).
+  const stored = realpathSync(transcript);
   const append = (...lines: unknown[]) => appendFileSync(transcript, lines.map((l) => JSON.stringify(l)).join('\n') + '\n');
   const ts = (sec: number) => new Date(Date.UTC(2026, 9, 6, 12, 40, sec)).toISOString();
   // The CLI prints execution states as `Working` / `Idle`.
   const runState = () =>
-    (JSON.parse(host.cli(['agent', 'list'])).runs as { transcript_path: string | null; execution: { value: string } }[]).find((r) => r.transcript_path === transcript)?.execution.value.toLowerCase();
+    (JSON.parse(host.cli(['agent', 'list'])).runs as { transcript_path: string | null; execution: { value: string } }[]).find((r) => r.transcript_path === stored)?.execution.value.toLowerCase();
   append({ type: 'user', timestamp: ts(0), message: { role: 'user', content: 'Now add a dark-mode variant of the hero.' } });
   hookEvent(host, hero.pane, 'UserPromptSubmit', hero.cwd, { prompt: 'Now add a dark-mode variant' });
   await host.until(() => runState() === 'working', 15_000, 'prompt hook not processed');
