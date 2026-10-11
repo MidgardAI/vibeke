@@ -785,6 +785,7 @@ impl Agents {
                         && i.source != StateSource::Screen
                         && i.delivery != DeliveryState::Delivering
                         && !gates.contains(&i.id)
+                        && !is_sandbox_request(i)
                 })
                 .map(|i| (i.id.clone(), i.opened_at_ms))
                 .collect()
@@ -1125,6 +1126,14 @@ pub(crate) fn nothing_typed(delivery_error: Option<&str>) -> bool {
     })
 }
 
+/// A sandbox egress or boundary request: a process outside the agent's turn waits on it, and its
+/// gate is registered only after the interaction is committed, so a gate check alone can miss it.
+fn is_sandbox_request(i: &Interaction) -> bool {
+    i.native_ref
+        .as_deref()
+        .is_some_and(|r| r.starts_with("egress:") || r.starts_with("boundary:"))
+}
+
 fn held_gates(server: &Server) -> std::collections::HashSet<String> {
     server
         .agents
@@ -1137,8 +1146,8 @@ fn held_gates(server: &Server) -> std::collections::HashSet<String> {
         .collect()
 }
 
-/// Close the run's open interactions that `pick` selects. A held gate (a hook or a sandbox
-/// process still waiting on Vibeke) is never closed here: releasing it would deny without a
+/// Close the run's open interactions that `pick` selects. A held gate (a hook still waiting on
+/// Vibeke) and a sandbox request are never closed here: releasing them would deny without a
 /// decision.
 fn resolve_open(server: &Server, run: &str, reason: &str, pick: impl Fn(&Interaction) -> bool) {
     let gates = held_gates(server);
@@ -1150,6 +1159,7 @@ fn resolve_open(server: &Server, run: &str, reason: &str, pick: impl Fn(&Interac
                 i.run == run
                     && i.status == InteractionStatus::Open
                     && !gates.contains(&i.id)
+                    && !is_sandbox_request(i)
                     && pick(i)
             })
             .map(|i| i.id.clone())

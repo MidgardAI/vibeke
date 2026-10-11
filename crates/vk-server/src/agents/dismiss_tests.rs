@@ -360,3 +360,26 @@ async fn a_failure_before_typing_notifies_once() {
     assert!(!nothing_typed(Some("pane exited")));
     assert!(!nothing_typed(None));
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_new_prompt_leaves_a_sandbox_request_whose_gate_is_not_yet_held() {
+    let e = env();
+    let run = add_run(&e, "r-sbx", "p-sbx", |_| {});
+    let q = approval(&e, &run, "toolu_x");
+    {
+        let mut c = e.server.core.lock().unwrap();
+        let mut it = c.interaction(&q).cloned().unwrap();
+        it.native_ref = Some("egress:k:example.com:443".into());
+        let mut tx = Tx::new();
+        tx.interaction(it);
+        e.server.commit(&mut c, tx).unwrap();
+    }
+    on_signal(
+        &e.server,
+        "p-sbx",
+        Harness::Claude,
+        "UserPromptSubmit",
+        &json!({"session_id": "sess-r-sbx", "prompt": "next"}),
+    );
+    assert_eq!(status(&e, &q), InteractionStatus::Open);
+}
