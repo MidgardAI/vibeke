@@ -356,7 +356,7 @@ fn check_config(r: &mut Report) {
                     path.display(),
                     detail.join("; ")
                 ),
-                "fix the file (`vibeke config validate` shows every problem); the server reloads it when you save",
+                "fix the lines shown (or run `vibeke config edit`); the server reloads the file when you save it",
             );
         }
     }
