@@ -1,0 +1,287 @@
+# Plugin: eliasstravik/herdr-projects (herdr-projects 0.2.34), locked commit
+# 4e4548c3c43888e6be1c96906215998f07dc63f0.
+#
+# Covers: the `projects` popup, the `new`, `pick` and `adopt` prompt popups, the actions that
+# open them (open-popup, new, pause, resume, adopt-workspace), the actions that call Herdr
+# directly (focus, unfocus, configure, doctor), and the `[[startup]]` command. The startup
+# command starts a background ticker only when the projects root already holds a project, so
+# the setup writes one project folder before install.
+#
+# Confirms the "stateful startup restoration" category of spec 18 §8.5: the scenario pauses
+# the project, restarts the server, and checks that the project, its paused state and the
+# ticker lock are still there and that the popup shows them.
+#
+# Not covered: action `open`, which starts a coordinator agent (see the skip below). The
+# plugin has no event hooks and no link handlers. It sends some calls over the raw socket
+# (`agent.view.set`, `workspace.move`) and others through the `herdr` CLI.
+
+plugin_id = "herdr-projects"
+repository = "eliasstravik/herdr-projects"
+timeout_ms = 120000
+
+[setup]
+fake_agent = true
+
+[setup.files]
+".herdr-projects/demo-project/PROJECT.md" = """
++++
+name = "Demo Project"
+goal = "Sample goal"
++++
+
+Sample instructions.
+"""
+".herdr-projects/demo-project/.state/project.json" = """
+{"status": "active"}
+"""
+
+# --- Before the restart ---------------------------------------------------------------
+
+[[step]]
+id = "open-popup"
+kind = "action"
+action = "open-popup"
+context = "global"
+expect_calls = [{ method = "plugin.pane.open", ok = true }]
+[[step.expect]]
+kind = "invocation_final"
+[[step.expect]]
+kind = "popup"
+pane = "projects"
+[[step.expect]]
+kind = "screen_text"
+pane = "projects"
+text = "1 project · 0 need you"
+[[step.compare]]
+pane = "projects"
+size = { cols = 100, rows = 30 }
+
+[[step]]
+id = "ticker-started"
+kind = "wait"
+timeout_ms = 60000
+[[step.expect]]
+kind = "file"
+path = "{home}/.herdr-projects/.ticker.lock"
+contains = "0.2.34"
+[[step.expect]]
+kind = "file"
+path = "{home}/.herdr-projects/.ticker.log"
+contains = "started (pid"
+
+[[step]]
+id = "close-projects-popup"
+kind = "input"
+pane = "projects"
+text = "q"
+
+[[step]]
+id = "new-project"
+kind = "action"
+action = "new"
+context = "workspace"
+expect_calls = [{ method = "plugin.pane.open", ok = true }]
+[[step.expect]]
+kind = "invocation_final"
+[[step.expect]]
+kind = "popup"
+pane = "new"
+[[step.expect]]
+kind = "screen_text"
+pane = "new"
+text = "New project"
+[[step.compare]]
+pane = "new"
+size = { cols = 80, rows = 24 }
+
+[[step]]
+id = "new-project-empty-name"
+kind = "input"
+pane = "new"
+keys = ["Enter"]
+[[step.expect]]
+kind = "screen_text"
+pane = "new"
+text = "no name given"
+
+[[step]]
+id = "new-project-close"
+kind = "input"
+pane = "new"
+keys = ["Enter"]
+
+[[step]]
+id = "pause"
+kind = "action"
+action = "pause"
+context = "workspace"
+expect_calls = [{ method = "plugin.pane.open", ok = true }]
+[[step.expect]]
+kind = "invocation_final"
+[[step.expect]]
+kind = "popup"
+pane = "pick"
+[[step.expect]]
+kind = "screen_text"
+pane = "pick"
+text = "is now paused"
+[[step.expect]]
+kind = "file"
+path = "{home}/.herdr-projects/demo-project/.state/project.json"
+contains = "paused"
+
+[[step]]
+id = "pause-close"
+kind = "input"
+pane = "pick"
+keys = ["Enter"]
+
+# --- Restart: the project, its paused state and the ticker must come back -------------
+
+[[step]]
+id = "restart"
+kind = "restart"
+timeout_ms = 120000
+[[step.expect]]
+kind = "file"
+path = "{home}/.herdr-projects/demo-project/.state/project.json"
+contains = "paused"
+[[step.expect]]
+kind = "file"
+path = "{home}/.herdr-projects/.ticker.lock"
+contains = "0.2.34"
+
+[[step]]
+id = "open-popup-restored"
+kind = "action"
+action = "open-popup"
+context = "global"
+expect_calls = [{ method = "plugin.pane.open", ok = true }]
+[[step.expect]]
+kind = "invocation_final"
+[[step.expect]]
+kind = "popup"
+pane = "projects"
+[[step.expect]]
+kind = "screen_text"
+pane = "projects"
+text = "1 project · 0 need you"
+
+[[step]]
+id = "restored-project-picker"
+kind = "input"
+pane = "projects"
+text = "P"
+[[step.expect]]
+kind = "screen_text"
+pane = "projects"
+regex = 'Demo Project \(demo-project\) · paused'
+[[step.compare]]
+pane = "projects"
+size = { cols = 100, rows = 30 }
+
+[[step]]
+id = "close-picker"
+kind = "input"
+pane = "projects"
+keys = ["Escape"]
+
+[[step]]
+id = "close-restored-popup"
+kind = "input"
+pane = "projects"
+text = "q"
+
+# --- After the restart ----------------------------------------------------------------
+
+[[step]]
+id = "resume"
+kind = "action"
+action = "resume"
+context = "workspace"
+expect_calls = [{ method = "plugin.pane.open", ok = true }]
+[[step.expect]]
+kind = "invocation_final"
+[[step.expect]]
+kind = "popup"
+pane = "pick"
+[[step.expect]]
+kind = "screen_text"
+pane = "pick"
+text = "is now active"
+[[step.expect]]
+kind = "file"
+path = "{home}/.herdr-projects/demo-project/.state/project.json"
+contains = "active"
+
+[[step]]
+id = "resume-close"
+kind = "input"
+pane = "pick"
+keys = ["Enter"]
+
+# A workspace that belongs to no project: the action reports that and fails.
+[[step]]
+id = "focus-without-project"
+kind = "action"
+action = "focus"
+context = "workspace"
+[[step.expect]]
+kind = "invocation_final"
+status = "failed"
+
+[[step]]
+id = "unfocus"
+kind = "action"
+action = "unfocus"
+context = "workspace"
+expect_calls = [{ method = "agent.view.set", ok = true }]
+[[step.expect]]
+kind = "invocation_final"
+
+[[step]]
+id = "adopt-workspace"
+kind = "action"
+action = "adopt-workspace"
+context = "workspace"
+expect_calls = [{ method = "plugin.pane.open", ok = true }]
+[[step.expect]]
+kind = "invocation_final"
+[[step.expect]]
+kind = "popup"
+pane = "adopt"
+[[step.expect]]
+kind = "screen_text"
+pane = "adopt"
+text = "Continue this workspace as a project"
+
+# Cancel the prompt so no project is adopted.
+[[step]]
+id = "adopt-cancel"
+kind = "input"
+pane = "adopt"
+keys = ["C-c"]
+
+[[step]]
+id = "configure"
+kind = "action"
+action = "configure"
+context = "workspace"
+timeout_ms = 60000
+expect_calls = [{ method = "notification.show", ok = true }]
+[[step.expect]]
+kind = "invocation_final"
+
+[[step]]
+id = "doctor"
+kind = "action"
+action = "doctor"
+context = "workspace"
+timeout_ms = 60000
+expect_calls = [{ method = "notification.show", ok = true }]
+[[step.expect]]
+kind = "invocation_final"
+
+[[skip]]
+surface = "action:open"
+reason = "The action starts a coordinator in an agent CLI, which is not installed in the test environment. The pick popup that the action opens for pause and resume is covered by those steps."
