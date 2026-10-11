@@ -34,7 +34,8 @@ export function toWire(e: unknown): WireError {
   if (e instanceof NotConnectedError) return { type: 'not_connected', hostId: e.hostId };
   if (e instanceof PairingError) {
     const c = e.cause instanceof ChannelError ? e.cause : null;
-    return { type: 'pairing', code: e.code, message: e.message, channelCode: c?.code, closeCode: c?.closeCode };
+    // `reason` (e.g. `ticket_expired`) picks the pairing screen's message; it is an unauthenticated hint.
+    return { type: 'pairing', code: e.code, message: e.message, channelCode: c?.code, closeCode: c?.closeCode, ...(c?.reason ? { reason: c.reason } : {}) };
   }
   const err = e as { message?: string; code?: unknown };
   return { type: 'error', message: err?.message ?? String(e), code: typeof err?.code === 'string' ? err.code : undefined };
@@ -155,7 +156,7 @@ export class Engine {
     if (key) await this.o.platform.keystore.delete(key).catch(() => {});
   }
 
-  async pair(link: PairingLink, deviceName: string, onPending: (fp: string) => void): Promise<HostRecord> {
+  async pair(link: PairingLink, deviceName: string, onPending: (code: string) => void): Promise<HostRecord> {
     await this.start();
     if (!this.devicePrivate || !this.manager) throw new Error('engine not started');
     // Invitations get their own key: the host keeps them apart from this device's own pairing.

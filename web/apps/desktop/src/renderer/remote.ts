@@ -28,7 +28,9 @@ export function fromWire(e: WireError): Error {
     case 'not_connected':
       return new NotConnectedError(e.hostId);
     case 'pairing': {
-      const cause = e.channelCode ? new ChannelError(e.channelCode as never, e.message, { closeCode: e.closeCode }) : undefined;
+      const cause = e.channelCode
+        ? new ChannelError(e.channelCode as never, e.message, { closeCode: e.closeCode, ...(e.reason ? { remote: { reason: e.reason } } : {}) })
+        : undefined;
       return new PairingError(e.code as never, e.message, cause);
     }
     default:
