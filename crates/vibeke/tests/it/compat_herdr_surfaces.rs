@@ -72,10 +72,11 @@ impl Session {
         );
         serde_json::from_slice(&out.stdout).unwrap_or(Value::Null)
     }
+    /// A `herdr` command; Herdr prints the whole response line, so this returns its `result`.
     fn herdr(&self, args: &[&str]) -> Value {
         let mut a = vec!["compat", "herdr"];
         a.extend(args);
-        self.json(&a)
+        self.json(&a)["result"].clone()
     }
     fn herdr_fail(&self, args: &[&str]) -> Value {
         let mut a = vec!["compat", "herdr"];
@@ -322,7 +323,7 @@ fn popup_and_overlay_from_a_trusted_plugin() {
     assert!(!env.contains("HERDR_PANE_ID="), "{env}");
     assert!(env.contains("HERDR_PLUGIN_ENTRYPOINT_ID=pop"), "{env}");
     let cur: Value = serde_json::from_str(&read(&st.join("pop-current.json"))).unwrap();
-    assert_eq!(cur["pane"]["pane_id"], root.as_str(), "{cur}");
+    assert_eq!(cur["result"]["pane"]["pane_id"], root.as_str(), "{cur}");
     assert_eq!(
         s_.herdr(&["pane", "current"])["pane"]["pane_id"],
         root.as_str(),
@@ -339,12 +340,19 @@ fn popup_and_overlay_from_a_trusted_plugin() {
         "pop",
     ]);
     assert_eq!(e["error"]["code"], "popup_busy", "{e}");
-    // popup.close removes it and gives the focus back.
-    s_.herdr(&["popup", "close"]);
+    // popup.close (a socket method; Herdr's CLI has no command for it) removes it and gives
+    // the focus back.
+    let popup_close = || {
+        s_.api(
+            "compat.herdr.call",
+            json!({"method": "popup.close", "params": {}}),
+        )
+    };
+    popup_close();
     r.until("popup gone, focus restored", |m, f| {
         !m.panes.iter().any(|p| p.id == pop.id) && f == Some(root_id.as_str())
     });
-    let e = s_.herdr_fail(&["popup", "close"]);
+    let e = popup_close();
     assert_eq!(e["error"]["code"], "popup_not_found", "{e}");
 
     // ---- overlay --------------------------------------------------------------------------

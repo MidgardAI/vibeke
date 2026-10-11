@@ -11,7 +11,7 @@ params = { title = "Fixture", body = "agent finished" }
 
 [transport]
 kind = "cli"
-args = ["notification", "show", "Fixture", "agent finished"]
+args = ["notification", "show", "Fixture", "--body", "agent finished"]
 
 [expect]
 ok = true

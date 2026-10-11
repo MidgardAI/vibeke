@@ -14,5 +14,5 @@ kind = "cli"
 args = ["pane", "send-text", "{pane}", "echo fixture"]
 
 [expect]
+# Herdr's `pane send-text` prints nothing on success, so only `ok` is compared.
 ok = true
-type = "ok"

@@ -46,7 +46,7 @@ const SCENARIOS: &[Scenario] = &[
             &["workspace", "list"],
             &["workspace", "rename", "w1", "renamed"],
             &["workspace", "list"],
-            &["tab", "create", "--workspace-id", "w1", "--label", "t2"],
+            &["tab", "create", "--workspace", "w1", "--label", "t2"],
             &["tab", "list"],
             &["pane", "list"],
         ],

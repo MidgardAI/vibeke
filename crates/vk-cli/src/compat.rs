@@ -17,7 +17,7 @@ use serde_json::{Value, json};
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use vk_compat::herdr::cli::{Local, Parsed};
+use vk_compat::herdr::cli::{ApiSchema, Local, Output, Parsed, StatusScope};
 use vk_compat::herdr::registry::{self, Registry, RegistryError};
 use vk_compat::herdr::{self, launch, source};
 
@@ -51,16 +51,6 @@ fn fail(kind: &str, msg: impl std::fmt::Display, code: i32) -> i32 {
         json!({"error": {"kind": kind, "message": msg.to_string()}})
     );
     code
-}
-
-/// An error from the `herdr` shim itself, in Herdr's shape (`error.code`, exit 1), so plugins
-/// parsing Herdr output handle it like any other server error.
-fn herdr_fail(code: &str, msg: impl std::fmt::Display) -> i32 {
-    eprintln!(
-        "{}",
-        json!({"error": {"code": code, "message": msg.to_string()}})
-    );
-    1
 }
 
 fn reg_fail(e: RegistryError) -> i32 {
@@ -404,7 +394,7 @@ fn local(g: &Global, op: Local) -> i32 {
             );
             EXIT_OK
         }
-        Local::PluginLink { path, yes } => {
+        Local::PluginLink { path, yes, enabled } => {
             if yes && in_plugin() {
                 return fail(
                     "permission_denied",
@@ -416,6 +406,9 @@ fn local(g: &Global, op: Local) -> i32 {
                 let x = r.link(Path::new(&path))?;
                 if yes {
                     r.trust(&x.0.id)?;
+                }
+                if !enabled {
+                    r.set_enabled(&x.0.id, false)?;
                 }
                 Ok(x)
             }) {
@@ -953,6 +946,7 @@ async fn plugin_cmd_inner(g: &Global, args: &[String]) -> i32 {
                 Local::PluginLink {
                     path,
                     yes: flag(rest, "--yes"),
+                    enabled: true,
                 },
             ),
             Err(c) => c,
@@ -1147,109 +1141,450 @@ async fn invocation_ticket(broker: &Path) -> Result<String, String> {
         })
 }
 
-/// A session's public compat listener (Herdr layout under `$RUNTIME/herdr-compat`), if running.
-fn listener(session: &str) -> Option<PathBuf> {
-    // Honors `compat.herdr_socket_path`.
-    let p = vk_server::compat::listener_for(session);
-    p.exists().then_some(p)
+/// Herdr prints a response it parsed into a `serde_json::Value` built without `preserve_order`,
+/// so its object keys come out sorted. Vibeke keeps insertion order; sort them the same way.
+fn sorted(v: &Value) -> Value {
+    match v {
+        Value::Object(m) => {
+            let mut keys: Vec<&String> = m.keys().collect();
+            keys.sort();
+            Value::Object(
+                keys.into_iter()
+                    .map(|k| (k.clone(), sorted(&m[k])))
+                    .collect(),
+            )
+        }
+        Value::Array(a) => Value::Array(a.iter().map(sorted).collect()),
+        x => x.clone(),
+    }
 }
 
-/// A request to an explicitly selected session through its native socket (never spawns a
-/// server). From a plugin invocation, `as_plugin` carries `{session, ticket}`: the destination
-/// verifies the ticket with the issuing session and re-checks the plugin's grant (09 §6).
-async fn session_call(session: &str, method: &str, params: Value, as_plugin: Option<Value>) -> i32 {
-    let socket = vk_server::paths::Paths::new(session).socket();
-    let stream = match client::connect(&socket).await {
-        Ok(s) => s,
-        Err(e) => {
-            return fail(
-                "server_unavailable",
-                format!("session {session} is not running: {e:#}"),
-                EXIT_NO_SERVER,
-            );
-        }
+/// An error line in Herdr's `ErrorResponse` shape (`id` first, as Herdr serializes it).
+fn herdr_error(id: &str, code: &str, msg: impl std::fmt::Display) -> Value {
+    json!({"id": id, "error": {"code": code, "message": msg.to_string()}})
+}
+
+/// Herdr's `server_not_running` error for a socket nothing answers on (by default the
+/// session's Herdr-style listener path).
+fn not_running(id: &str, session: &str) -> Value {
+    not_running_at(id, &vk_server::compat::listener_for(session), session)
+}
+
+fn not_running_at(id: &str, socket: &Path, session: &str) -> Value {
+    let attach = if session == herdr::DEFAULT_SESSION {
+        "herdr".to_string()
+    } else {
+        format!("herdr session attach {session}")
     };
-    let mut c = Client::new(stream);
-    if let Err(e) = c.hello("herdr-shim").await {
-        crate::print_error(&e);
-        return crate::exit_code_for(&e);
+    herdr_error(
+        id,
+        "server_not_running",
+        format!(
+            "no herdr server is running at {}; run `{attach}` to start or attach it",
+            socket.display()
+        ),
+    )
+}
+
+/// A native call error in Herdr's shape.
+fn call_error(id: &str, e: &client::CallError) -> Value {
+    match e {
+        client::CallError::Rpc(r) => herdr_error(id, &r.data.kind, &r.message),
+        client::CallError::Io(err) => herdr_error(id, "io_error", format!("{err:#}")),
     }
+}
+
+/// Print the answer to a request the way Herdr's printer for that command does: errors as the
+/// whole response line on stderr (exit 1), success per `output`.
+fn print_answer(resp: &Value, output: Output) -> i32 {
+    use std::io::Write;
+    if resp.get("error").is_some() {
+        eprintln!("{}", sorted(resp));
+        return 1;
+    }
+    match output {
+        Output::Response => println!("{}", sorted(resp)),
+        Output::Quiet => {}
+        Output::ReadText => {
+            if let Some(t) = resp["result"]["read"]["text"].as_str() {
+                print!("{t}");
+            }
+        }
+        Output::Explain { json, verbose } => {
+            let e = &resp["result"]["explain"];
+            if json {
+                println!("{}", sorted(e));
+            } else {
+                print!("{}", herdr::cli::explain_text(e, verbose));
+            }
+        }
+    }
+    let _ = std::io::stdout().flush();
+    EXIT_OK
+}
+
+/// One request over a Herdr socket (the invocation's broker): the response line Herdr's wire
+/// returns, which echoes the request `id`.
+async fn raw(
+    sock: &Path,
+    id: &str,
+    method: &str,
+    params: Value,
+    session: &str,
+) -> Result<Value, Value> {
+    let stream = tokio::net::UnixStream::connect(sock)
+        .await
+        .map_err(|_| not_running_at(id, sock, session))?;
+    let (rd, mut wr) = stream.into_split();
+    let line = request_line(sock, id, method, params);
+    wr.write_all(line.as_bytes())
+        .await
+        .map_err(|e| herdr_error(id, "io_error", e))?;
+    let first = BufReader::new(rd)
+        .lines()
+        .next_line()
+        .await
+        .ok()
+        .flatten()
+        .ok_or_else(|| {
+            herdr_error(
+                id,
+                "io_error",
+                "the server closed the connection without a response",
+            )
+        })?;
+    serde_json::from_str(&first)
+        .map_err(|e| herdr_error(id, "invalid_response", format!("{e}: {first}")))
+}
+
+/// One request through a session's native socket (`compat.herdr.call`), answered as Herdr's
+/// response line with `id`.
+async fn over_native(
+    stream: tokio::net::UnixStream,
+    id: &str,
+    method: &str,
+    params: Value,
+    as_plugin: Option<Value>,
+) -> Result<Value, Value> {
+    let mut c = Client::new(stream);
+    c.hello("herdr-shim")
+        .await
+        .map_err(|e| call_error(id, &e))?;
     let mut p = json!({"method": method, "params": params});
     if let Some(ap) = as_plugin {
         p["as_plugin"] = ap;
     }
-    match c.call("compat.herdr.call", p).await {
-        Ok(v) => print_herdr(&v.to_string()),
-        Err(e) => {
-            crate::print_error(&e);
-            crate::exit_code_for(&e)
-        }
+    let mut v = c
+        .call("compat.herdr.call", p)
+        .await
+        .map_err(|e| call_error(id, &e))?;
+    if let Some(m) = v.as_object_mut() {
+        m.insert("id".into(), json!(id));
     }
+    Ok(v)
 }
 
-/// One raw Herdr request; prints the result (or streams events). Returns the exit code.
-async fn raw(sock: &Path, method: &str, params: Value) -> i32 {
-    let stream = match tokio::net::UnixStream::connect(sock).await {
-        Ok(s) => s,
-        Err(e) => {
-            return fail(
-                "server_unavailable",
-                format!("{}: {e}", sock.display()),
-                EXIT_NO_SERVER,
-            );
-        }
-    };
-    let (rd, mut wr) = stream.into_split();
-    let line = request_line(sock, "1", method, params);
-    if wr.write_all(line.as_bytes()).await.is_err() {
-        return fail("server_unavailable", "write failed", EXIT_NO_SERVER);
-    }
-    let mut rd = BufReader::new(rd).lines();
-    let first = match rd.next_line().await {
-        Ok(Some(l)) => l,
-        _ => return fail("server_unavailable", "no response", EXIT_API),
-    };
-    let code = print_herdr(&first);
-    if code != EXIT_OK || method != "events.subscribe" {
-        return code;
-    }
-    while let Ok(Some(l)) = rd.next_line().await {
-        println!("{l}");
-    }
-    EXIT_OK
-}
-
-/// Print a Herdr response line: `result` on stdout, `error` on stderr (exit 1).
-fn print_herdr(line: &str) -> i32 {
-    let v: Value = serde_json::from_str(line).unwrap_or(Value::Null);
-    if let Some(r) = v.get("result") {
-        println!("{r}");
-        EXIT_OK
-    } else if let Some(e) = v.get("error") {
-        eprintln!("{}", json!({"error": e}));
-        if e["code"] == "permission_denied" {
-            EXIT_PERMISSION
-        } else {
-            EXIT_API
-        }
-    } else {
-        fail("internal", format!("unexpected response: {line}"), EXIT_API)
-    }
-}
-
-/// `vibeke compat herdr <args>` / `herdr <args>`.
+/// Send one request where the shim's routing rules send it and return the response line, or
+/// an error line in Herdr's shape.
 ///
 /// Session selection (07 §8.2): Herdr's global `--session NAME`, then `HERDR_SESSION`, then
 /// the invocation's own session (its broker's, else `VIBEKE_SESSION`/`--session` of vibeke).
 /// Selecting another session from a pane is refused; from a plugin invocation the destination
-/// re-checks the plugin's grant. An explicitly selected session is never spawned.
+/// re-checks the plugin's grant. An explicitly selected session is never spawned, and neither
+/// is any session when `spawn` is false.
+async fn send(
+    g: &Global,
+    selected: Option<String>,
+    id: &str,
+    method: &str,
+    params: Value,
+    spawn: bool,
+) -> Result<Value, Value> {
+    if lifecycle(method) {
+        return Err(herdr_error(
+            id,
+            "unsupported",
+            format!(
+                "{method} is not forwarded by the Herdr compatibility shim; use `vibeke server …`"
+            ),
+        ));
+    }
+    let broker = broker();
+    // Inside a plugin invocation whose broker is gone (the action ended, the grant was
+    // revoked): never fall back to the user-level socket, which would bypass the grant.
+    if in_plugin() && broker.is_none() {
+        return Err(herdr_error(
+            id,
+            "permission_denied",
+            "this plugin invocation's broker is closed (the invocation ended or its grant was revoked)",
+        ));
+    }
+    let current = broker
+        .as_ref()
+        .map(|(_, s)| s.clone())
+        .unwrap_or_else(|| g.session.clone());
+    let target = selected.unwrap_or_else(|| current.clone());
+    if target != current {
+        // Any process inside a pane of any session (token or not) stays in its session; the
+        // destination enforces the same rule.
+        if pane_scoped()
+            || vk_server::run::inside_any_pane(
+                Some(std::process::id() as i32),
+                &vk_server::paths::runtime_root(),
+            )
+        {
+            return Err(herdr_error(
+                id,
+                "permission_denied",
+                "a pane cannot select another session",
+            ));
+        }
+        // The plugin's identity travels as a ticket from its own broker, never as an
+        // environment value.
+        let as_plugin = match &broker {
+            Some((b, session)) => match invocation_ticket(b).await {
+                Ok(t) => Some(json!({"session": session, "ticket": t})),
+                Err(e) => {
+                    return Err(herdr_error(
+                        id,
+                        "permission_denied",
+                        format!("this plugin invocation cannot prove its identity: {e}"),
+                    ));
+                }
+            },
+            None => None,
+        };
+        let socket = vk_server::paths::Paths::new(&target).socket();
+        let stream = client::connect(&socket)
+            .await
+            .map_err(|_| not_running(id, &target))?;
+        return over_native(stream, id, method, params, as_plugin).await;
+    }
+    if let Some((b, session)) = broker {
+        return raw(&b, id, method, params, &session).await;
+    }
+    let socket = client::socket_path(&g.session, g.socket.as_deref());
+    let stream = if spawn {
+        client::connect_or_spawn(&g.session, &socket, g.no_spawn).await
+    } else {
+        client::connect(&socket).await
+    };
+    let stream = stream.map_err(|_| not_running(id, &g.session))?;
+    over_native(stream, id, method, params, None).await
+}
+
+/// `herdr session list [--json]`: Vibeke's sessions in Herdr's shape. A session is a state
+/// directory with a database; `default` is always listed first.
+fn session_list(json_out: bool) -> i32 {
+    let root = vk_server::paths::state_root();
+    let mut names: Vec<String> = std::fs::read_dir(&root)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.path().join("state.db").exists())
+        .filter_map(|e| e.file_name().to_str().map(str::to_string))
+        .filter(|n| n != herdr::DEFAULT_SESSION && herdr::valid_session_name(n))
+        .collect();
+    names.sort();
+    names.insert(0, herdr::DEFAULT_SESSION.to_string());
+    let rows: Vec<Value> = names
+        .iter()
+        .map(|n| {
+            let socket = vk_server::paths::Paths::new(n).socket();
+            json!({
+                "name": n,
+                "default": n == herdr::DEFAULT_SESSION,
+                "running": std::os::unix::net::UnixStream::connect(&socket).is_ok(),
+                "socket_path": vk_server::compat::listener_for(n).display().to_string(),
+                "session_dir": root.join(n).display().to_string(),
+            })
+        })
+        .collect();
+    if json_out {
+        println!("{}", sorted(&json!({"sessions": rows})));
+        return EXIT_OK;
+    }
+    println!("{:<20} {:<8} {:<48} socket", "name", "status", "directory");
+    for r in &rows {
+        println!(
+            "{:<20} {:<8} {:<48} {}",
+            r["name"].as_str().unwrap_or(""),
+            if r["running"] == true {
+                "running"
+            } else {
+                "stopped"
+            },
+            r["session_dir"].as_str().unwrap_or(""),
+            r["socket_path"].as_str().unwrap_or("")
+        );
+    }
+    EXIT_OK
+}
+
+fn yes_no(b: Option<bool>) -> &'static str {
+    match b {
+        Some(true) => "yes",
+        Some(false) => "no",
+        None => "unknown",
+    }
+}
+
+/// `herdr status [server|client] [--json]` (Herdr's `src/cli/status.rs`). The client is the
+/// emulated Herdr 0.9.3; the server is whatever answers `ping` on the shim's route (it is never
+/// spawned for this).
+async fn status(g: &Global, selected: Option<String>, scope: StatusScope, json_out: bool) -> i32 {
+    let session = selected
+        .clone()
+        .or_else(|| broker().map(|(_, s)| s))
+        .unwrap_or_else(|| g.session.clone());
+    let socket = std::env::var_os("HERDR_SOCKET_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| vk_server::compat::listener_for(&session))
+        .display()
+        .to_string();
+    let named = (session != herdr::DEFAULT_SESSION).then(|| session.clone());
+    let version = herdr::BASELINE_VERSION;
+    let channel = herdr::cli_config::update_channel();
+    let binary = std::env::current_exe()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|e| format!("unknown ({e})"));
+    let client_json = json!({
+        "version": version,
+        "channel": channel,
+        "protocol": herdr::cli::PROTOCOL_VERSION,
+        "endpoint_protocol_generation": herdr::cli::ENDPOINT_PROTOCOL_GENERATION,
+        "endpoint_capabilities": ["surface_interest", "presentation_effects_fence", "health_check"],
+        "remote_host_bridge": true,
+        "remote_bridge_idle_timeout": true,
+        "binary": binary,
+        "session": named,
+    });
+    if scope == StatusScope::Client {
+        if json_out {
+            println!("{client_json}");
+        } else {
+            println!("version: {version}");
+            println!("channel: {channel}");
+            println!("protocol: {}", herdr::cli::PROTOCOL_VERSION);
+            println!(
+                "endpoint_protocol_generation: {}",
+                herdr::cli::ENDPOINT_PROTOCOL_GENERATION
+            );
+            println!("binary: {binary}");
+        }
+        return EXIT_OK;
+    }
+    let ping = match send(g, selected, "api-client:status", "ping", json!({}), false).await {
+        Ok(v) if v.get("error").is_none() => Some(v["result"].clone()),
+        _ => None,
+    };
+    let running = ping.is_some();
+    let ping = ping.unwrap_or(Value::Null);
+    let server_version = ping["version"].as_str().map(str::to_string);
+    let protocol = ping["protocol"].as_u64();
+    let caps = ping.get("capabilities").filter(|c| c.is_object()).cloned();
+    let generation = caps
+        .as_ref()
+        .and_then(|c| c["endpoint_protocol_generation"].as_u64());
+    let compatible = protocol.map(|p| p == u64::from(herdr::cli::PROTOCOL_VERSION));
+    let endpoint_compatible =
+        generation.map(|n| n == u64::from(herdr::cli::ENDPOINT_PROTOCOL_GENERATION));
+    let (restart_needed, stale) = if running {
+        (
+            Some(generation != Some(u64::from(herdr::cli::ENDPOINT_PROTOCOL_GENERATION))),
+            server_version.as_deref().map(|v| v != version),
+        )
+    } else {
+        (Some(false), Some(false))
+    };
+    let server_json = json!({
+        "status": if running { "running" } else { "not_running" },
+        "running": running,
+        "version": server_version,
+        "protocol": protocol,
+        "capabilities": caps.as_ref().map(|c| {
+            let b = |k: &str| c[k].as_bool().unwrap_or(false);
+            json!({
+                "live_handoff": b("live_handoff"),
+                "detached_server_daemon": b("detached_server_daemon"),
+                "endpoint_protocol_generation": generation,
+                "surface_interest": b("surface_interest"),
+                "health_check": b("health_check"),
+                "ssh_agent_registration": b("ssh_agent_registration"),
+            })
+        }),
+        "compatible": compatible,
+        "endpoint_compatible": endpoint_compatible,
+        "socket": socket,
+        "session": named,
+        "restart_needed": restart_needed,
+        "server_binary_stale": stale,
+    });
+    let server_body = |indent: &str| {
+        if running {
+            println!("{indent}status: running");
+            println!(
+                "{indent}version: {}",
+                server_version.as_deref().unwrap_or("unknown")
+            );
+            println!(
+                "{indent}endpoint_compatible: {}",
+                yes_no(endpoint_compatible)
+            );
+            println!(
+                "{indent}private_protocol: {}",
+                protocol.map_or("unknown".to_string(), |p| p.to_string())
+            );
+            println!(
+                "{indent}private_protocol_compatible: {}",
+                yes_no(compatible)
+            );
+        } else {
+            println!("{indent}status: not running");
+        }
+        println!("{indent}socket: {socket}");
+    };
+    match (scope, json_out) {
+        (StatusScope::Server, true) => println!("{server_json}"),
+        (StatusScope::Server, false) => server_body(""),
+        (_, true) => println!(
+            "{}",
+            json!({
+                "client": client_json,
+                "server": server_json,
+                "update": {"restart_needed": restart_needed, "server_binary_stale": stale},
+            })
+        ),
+        (_, false) => {
+            println!("client:");
+            println!("  version: {version}");
+            println!("  channel: {channel}");
+            println!("  protocol: {}", herdr::cli::PROTOCOL_VERSION);
+            println!(
+                "  endpoint_protocol_generation: {}",
+                herdr::cli::ENDPOINT_PROTOCOL_GENERATION
+            );
+            println!();
+            println!("server:");
+            server_body("  ");
+            println!();
+            println!("update:");
+            println!("  restart_needed: {}", yes_no(restart_needed));
+            println!("  server_binary_stale: {}", yes_no(stale));
+        }
+    }
+    EXIT_OK
+}
+
+/// `vibeke compat herdr <args>` / `herdr <args>`: Herdr 0.9.3's CLI, answered by Vibeke.
 pub async fn herdr_shim(g: &Global, args: &[String]) -> i32 {
+    use std::io::Write;
     let argv = args;
     let (selected, args) = match herdr::cli::take_session(args) {
         Ok(x) => x,
         Err(e) => {
             trace_launcher(argv, "", None, Some("usage"), Some(e.as_str()));
-            eprintln!("{e}");
+            eprintln!("error: {e}\nrun 'herdr --help' for usage");
             return EXIT_USAGE;
         }
     };
@@ -1260,16 +1595,25 @@ pub async fn herdr_shim(g: &Global, args: &[String]) -> i32 {
     });
     let parsed = herdr::cli::parse(&args);
     match &parsed {
-        Parsed::Call { method, params } | Parsed::Native { method, params } => {
+        Parsed::Call { method, params, .. } => {
             trace_launcher(argv, method, Some(params), None, None)
         }
         Parsed::Local(op) => trace_launcher(argv, local_method(op), None, None, None),
         Parsed::Version => trace_launcher(argv, "version", None, None, None),
-        Parsed::Help(_) => trace_launcher(argv, "help", None, None, None),
-        Parsed::Usage(u) => trace_launcher(argv, "", None, Some("usage"), Some(u.as_str())),
+        Parsed::Help(_) | Parsed::Usage { code: 0, .. } => {
+            trace_launcher(argv, "help", None, None, None)
+        }
+        Parsed::Usage { text, .. } => {
+            trace_launcher(argv, "", None, Some("usage"), Some(text.as_str()))
+        }
+        Parsed::Failed(m) => trace_launcher(argv, "", None, Some("usage"), Some(m.as_str())),
         Parsed::Refused { command, .. } => {
             trace_launcher(argv, command, None, Some("unsupported"), None)
         }
+        Parsed::ConfigCheck => trace_launcher(argv, "config.check", None, None, None),
+        Parsed::SessionList { .. } => trace_launcher(argv, "session.list", None, None, None),
+        Parsed::Status { .. } => trace_launcher(argv, "status", None, None, None),
+        Parsed::ApiSchema(_) => trace_launcher(argv, "api.schema", None, None, None),
     }
     match parsed {
         Parsed::Version => {
@@ -1281,31 +1625,54 @@ pub async fn herdr_shim(g: &Global, args: &[String]) -> i32 {
             EXIT_OK
         }
         Parsed::Help(h) => {
-            println!("{h}");
+            print!("{h}");
+            let _ = std::io::stdout().flush();
             EXIT_OK
         }
-        Parsed::Usage(u) => {
-            eprintln!("{u}");
-            EXIT_USAGE
+        Parsed::Usage { text, code } => {
+            eprintln!("{text}");
+            code
         }
-        Parsed::Refused { command, reason } => fail(
-            "unsupported",
-            format!("herdr {command}: {reason}"),
-            EXIT_API,
-        ),
-        Parsed::Native { method, params } => {
-            if in_plugin() {
-                return fail(
-                    "permission_denied",
-                    "native Vibeke methods are not available to a plugin invocation through the shim",
-                    EXIT_PERMISSION,
-                );
+        Parsed::Failed(m) => {
+            // What Herdr's `main` prints for the `io::Error` it returns.
+            eprintln!("Error: Custom {{ kind: Other, error: {m:?} }}");
+            1
+        }
+        Parsed::Refused { command, reason } => {
+            eprintln!(
+                "{}",
+                herdr_error(
+                    "cli:request",
+                    "unsupported",
+                    format!("herdr {command}: {reason}")
+                )
+            );
+            1
+        }
+        Parsed::ConfigCheck => {
+            // Local, like Herdr: no server, and allowed inside a plugin invocation.
+            let path = herdr::cli_config::config_path();
+            let (out, code) = herdr::cli_config::report(&herdr::cli_config::check_file(&path));
+            print!("{out}");
+            let _ = std::io::stdout().flush();
+            code
+        }
+        Parsed::SessionList { json } => session_list(json),
+        Parsed::Status { scope, json } => status(g, selected, scope, json).await,
+        Parsed::ApiSchema(s) => {
+            match s {
+                ApiSchema::Summary => print!("{}", herdr::cli::api_schema_summary()),
+                ApiSchema::Json => print!("{}", herdr::cli::API_SCHEMA_JSON),
+                ApiSchema::Output(path) => {
+                    if let Err(e) = std::fs::write(&path, herdr::cli::API_SCHEMA_JSON) {
+                        eprintln!("Error: {e:?}");
+                        return 1;
+                    }
+                    println!("wrote API schema to {path}");
+                }
             }
-            let g = Global {
-                json: Some(true),
-                ..g.clone()
-            };
-            api_call(&g, &method, params).await
+            let _ = std::io::stdout().flush();
+            EXIT_OK
         }
         Parsed::Local(op) => {
             // The Herdr CLI prints JSON; so does the shim. The registry is per user, shared by
@@ -1322,111 +1689,18 @@ pub async fn herdr_shim(g: &Global, args: &[String]) -> i32 {
             }
             code
         }
-        Parsed::Call { method, params } => {
-            if lifecycle(&method) {
-                return herdr_fail(
-                    "unsupported",
-                    format!(
-                        "{method} is not forwarded by the Herdr compatibility shim; use `vibeke server …`"
-                    ),
-                );
+        Parsed::Call {
+            id,
+            method,
+            params,
+            output,
+        } => match send(g, selected, &id, &method, params, true).await {
+            Ok(v) => print_answer(&v, output),
+            Err(e) => {
+                eprintln!("{e}");
+                1
             }
-            let broker = broker();
-            // Inside a plugin invocation whose broker is gone (the action ended, the grant was
-            // revoked): never fall back to the user-level socket, which would bypass the grant.
-            if in_plugin() && broker.is_none() {
-                return fail(
-                    "permission_denied",
-                    "this plugin invocation's broker is closed (the invocation ended or its grant was revoked)",
-                    EXIT_PERMISSION,
-                );
-            }
-            let current = broker
-                .as_ref()
-                .map(|(_, s)| s.clone())
-                .unwrap_or_else(|| g.session.clone());
-            let target = selected.unwrap_or_else(|| current.clone());
-            if target != current {
-                // Any process inside a pane of any session (token or not) stays in its session;
-                // the destination enforces the same rule.
-                if pane_scoped()
-                    || vk_server::run::inside_any_pane(
-                        Some(std::process::id() as i32),
-                        &vk_server::paths::runtime_root(),
-                    )
-                {
-                    return fail(
-                        "permission_denied",
-                        "a pane cannot select another session",
-                        EXIT_PERMISSION,
-                    );
-                }
-                if method == "events.subscribe" {
-                    return match listener(&target) {
-                        Some(l) if broker.is_none() => raw(&l, &method, params).await,
-                        _ => fail(
-                            "unsupported",
-                            format!(
-                                "events.subscribe to session {target} needs its compat listener (and is not available to plugins across sessions)"
-                            ),
-                            EXIT_API,
-                        ),
-                    };
-                }
-                // The plugin's identity travels as a ticket from its own broker, never as an
-                // environment value.
-                let as_plugin = match &broker {
-                    Some((b, session)) => match invocation_ticket(b).await {
-                        Ok(t) => Some(json!({"session": session, "ticket": t})),
-                        Err(e) => {
-                            return fail(
-                                "permission_denied",
-                                format!("this plugin invocation cannot prove its identity: {e}"),
-                                EXIT_PERMISSION,
-                            );
-                        }
-                    },
-                    None => None,
-                };
-                return session_call(&target, &method, params, as_plugin).await;
-            }
-            if let Some((b, _)) = broker {
-                return raw(&b, &method, params).await;
-            }
-            if method == "events.subscribe" {
-                return match listener(&target) {
-                    Some(l) => raw(&l, &method, params).await,
-                    None => fail(
-                        "unsupported",
-                        "events.subscribe needs the compat listener ([compat.herdr] enabled = true) or a plugin broker",
-                        EXIT_API,
-                    ),
-                };
-            }
-            let socket = client::socket_path(&g.session, g.socket.as_deref());
-            let stream = match client::connect_or_spawn(&g.session, &socket, g.no_spawn).await {
-                Ok(s) => s,
-                Err(e) => return fail("server_unavailable", format!("{e:#}"), EXIT_NO_SERVER),
-            };
-            let mut c = Client::new(stream);
-            if let Err(e) = c.hello("herdr-shim").await {
-                crate::print_error(&e);
-                return crate::exit_code_for(&e);
-            }
-            match c
-                .call(
-                    "compat.herdr.call",
-                    json!({"method": method, "params": params}),
-                )
-                .await
-            {
-                Ok(v) => print_herdr(&v.to_string()),
-                Err(e) => {
-                    crate::print_error(&e);
-                    crate::exit_code_for(&e)
-                }
-            }
-        }
+        },
     }
 }
 
@@ -1516,5 +1790,64 @@ pub async fn compat_cmd(g: &Global, args: &[String]) -> i32 {
                 EXIT_USAGE
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn response_lines_print_like_herdr() {
+        // Herdr re-serializes the response it parsed: object keys sorted at every level.
+        let line = json!({"result": {"type": "pane_info", "pane": {"pane_id": "w1:p1", "focused": true}}, "id": "cli:pane:get"});
+        assert_eq!(
+            sorted(&line).to_string(),
+            r#"{"id":"cli:pane:get","result":{"pane":{"focused":true,"pane_id":"w1:p1"},"type":"pane_info"}}"#
+        );
+        let err =
+            json!({"id": "cli:pane:get", "error": {"message": "w9:p9", "code": "pane_not_found"}});
+        assert_eq!(
+            sorted(&err).to_string(),
+            r#"{"error":{"code":"pane_not_found","message":"w9:p9"},"id":"cli:pane:get"}"#
+        );
+        assert_eq!(
+            sorted(&json!([{"b": 1, "a": 2}])).to_string(),
+            r#"[{"a":2,"b":1}]"#
+        );
+    }
+
+    #[test]
+    fn shim_errors_use_herdrs_error_response() {
+        // The shim's own errors are Herdr's `ErrorResponse` struct: `id` first.
+        assert_eq!(
+            herdr_error("cli:pane:list", "permission_denied", "no").to_string(),
+            r#"{"id":"cli:pane:list","error":{"code":"permission_denied","message":"no"}}"#
+        );
+        let v = not_running("cli:pane:get", "default");
+        assert_eq!(v["error"]["code"], "server_not_running");
+        let m = v["error"]["message"].as_str().unwrap();
+        assert!(m.starts_with("no herdr server is running at "), "{m}");
+        assert!(m.ends_with("; run `herdr` to start or attach it"), "{m}");
+        let named = not_running("cli:pane:get", "work");
+        assert!(
+            named["error"]["message"]
+                .as_str()
+                .unwrap()
+                .ends_with("run `herdr session attach work` to start or attach it")
+        );
+    }
+
+    #[test]
+    fn printers_follow_the_command() {
+        let ok = json!({"id": "cli:request", "result": {"type": "ok"}});
+        assert_eq!(print_answer(&ok, Output::Response), 0);
+        assert_eq!(print_answer(&ok, Output::Quiet), 0);
+        let err = json!({"id": "cli:request", "error": {"code": "pane_not_found", "message": "x"}});
+        // Every error exits 1, `permission_denied` included.
+        assert_eq!(print_answer(&err, Output::Quiet), 1);
+        let denied =
+            json!({"id": "cli:plugin", "error": {"code": "permission_denied", "message": "x"}});
+        assert_eq!(print_answer(&denied, Output::Response), 1);
     }
 }

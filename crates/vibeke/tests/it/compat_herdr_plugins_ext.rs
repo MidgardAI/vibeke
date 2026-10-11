@@ -327,17 +327,48 @@ fn plugins_set_and_clear_agent_views_scoped_to_their_grant() {
         r#"id = "acme.view"
 [[actions]]
 id = "set"
-command = ["sh", "-c", "herdr agent view-set \"$(cat \"$HERDR_PLUGIN_STATE_DIR/target\")\" --text building --detail 'step 2 of 5' --tone warn > \"$HERDR_PLUGIN_STATE_DIR/set.out\" 2>&1"]
+command = ["sh", "bin/set.sh"]
 [[actions]]
 id = "long"
-command = ["sh", "-c", "herdr agent view-set \"$(cat \"$HERDR_PLUGIN_STATE_DIR/target\")\" --text \"$(printf 'x%.0s' $(seq 1 300))\" > \"$HERDR_PLUGIN_STATE_DIR/long.out\" 2>&1"]
+command = ["sh", "bin/long.sh"]
 [[actions]]
 id = "badtone"
-command = ["sh", "-c", "herdr agent view-set \"$(cat \"$HERDR_PLUGIN_STATE_DIR/target\")\" --text a --tone loud > \"$HERDR_PLUGIN_STATE_DIR/bad.out\" 2>&1; true"]
+command = ["sh", "bin/badtone.sh"]
 [[actions]]
 id = "clear"
-command = ["sh", "-c", "herdr agent view-clear > \"$HERDR_PLUGIN_STATE_DIR/clear.out\" 2>&1"]
+command = ["sh", "bin/clear.sh"]
 "#,
+    );
+    // Herdr's CLI has no command for agent views: the plugin speaks the socket protocol.
+    write(
+        &src.join("bin/call.pl"),
+        r#"use strict;
+use IO::Socket::UNIX;
+my ($method, $params) = @ARGV;
+my $s = IO::Socket::UNIX->new(Peer => $ENV{HERDR_SOCKET_PATH}) or die "connect: $!";
+print $s qq({"id":"view","method":"$method","params":$params}\n);
+my $line = <$s>;
+print $line;
+"#,
+    );
+    let set = |text: &str, tone: &str, out: &str| {
+        format!(
+            "t=$(cat \"$HERDR_PLUGIN_STATE_DIR/target\")\n\
+             /usr/bin/perl bin/call.pl agent.view.set \"{{\\\"target\\\":\\\"$t\\\",\\\"text\\\":\\\"{text}\\\",\\\"detail\\\":\\\"step 2 of 5\\\",\\\"tone\\\":\\\"{tone}\\\"}}\" > \"$HERDR_PLUGIN_STATE_DIR/{out}\" 2>&1\n"
+        )
+    };
+    write(&src.join("bin/set.sh"), &set("building", "warn", "set.out"));
+    write(
+        &src.join("bin/long.sh"),
+        &set(&"x".repeat(300), "warn", "long.out"),
+    );
+    write(
+        &src.join("bin/badtone.sh"),
+        &(set("a", "loud", "bad.out") + "true\n"),
+    );
+    write(
+        &src.join("bin/clear.sh"),
+        "/usr/bin/perl bin/call.pl agent.view.clear '{}' > \"$HERDR_PLUGIN_STATE_DIR/clear.out\" 2>&1\n",
     );
     s_.json(&["plugin", "link", src.to_str().unwrap()]);
     s_.json(&["plugin", "trust", "acme.view", "--legacy"]);
@@ -360,6 +391,8 @@ command = ["sh", "-c", "herdr agent view-clear > \"$HERDR_PLUGIN_STATE_DIR/clear
                 "pane",
                 "report-agent",
                 &pane,
+                "--source",
+                "test",
                 "--agent",
                 "claude",
                 "--state",
@@ -386,9 +419,15 @@ command = ["sh", "-c", "herdr agent view-clear > \"$HERDR_PLUGIN_STATE_DIR/clear
             .cloned()
             .unwrap_or_default()
     };
-    // Only a plugin invocation may set a view: the user-level shim is refused.
+    // Herdr's CLI has no `agent view-set`: the shim prints the agent help (exit 2).
     let e = s_.herdr_fail_text(&["agent", "view-set", &target, "--text", "hi"]);
-    assert!(e.contains("permission_denied"), "{e}");
+    assert!(e.contains("herdr agent commands:"), "{e}");
+    // Only a plugin invocation may set a view: a user-level call is refused.
+    let e = s_.api(
+        "compat.herdr.call",
+        json!({"method": "agent.view.set", "params": {"target": target, "text": "hi"}}),
+    );
+    assert!(e.to_string().contains("permission_denied"), "{e}");
     assert!(views(&s_).is_empty());
 
     // A self-reported agent can lapse while an action runs (the pane has no real agent
@@ -714,14 +753,20 @@ herdr workspace list > "$out/ws.out" 2>&1; echo "list=$?" >> "$out/r"
     std::thread::sleep(Duration::from_millis(1500));
     assert!(!target.exists(), "pane.run/send_text executed on the host");
     assert!(!s_.path("state/plugins/state/acme.host/host-ran").exists());
-    let shown = s_.herdr(&["pane", "read", &pane]);
+    let shown = s_.api(
+        "compat.herdr.call",
+        json!({"method": "pane.read", "params": {"pane_id": pane, "source": "recent"}}),
+    );
     assert!(!shown.to_string().contains("pwned"), "{shown}");
     // The refusals are audited with the plugin identity.
     let calls = s_.events("plugin.api_call");
     assert!(
-        calls.iter().any(|e| e["data"]["method"] == "pane.run"
-            && e["data"]["ok"] == false
-            && e["actor"]["id"] == "acme.sbx"),
+        // Herdr's `pane run` types the command and Enter (`pane.send_input`).
+        calls
+            .iter()
+            .any(|e| e["data"]["method"] == "pane.send_input"
+                && e["data"]["ok"] == false
+                && e["actor"]["id"] == "acme.sbx"),
         "{calls:?}"
     );
 }
@@ -768,7 +813,7 @@ herdr workspace list > /dev/null 2>&1; echo "own=$?" >> "$out/r"
             "spoof",
             r#"out="$HERDR_PLUGIN_STATE_DIR"
 v=$(cat "$out/victim")
-HERDR_SOCKET_PATH="$v" VIBEKE_HERDR_BROKER="$v" herdr agent view-clear > "$out/spoof.out" 2>&1; echo "spoof=$?" >> "$out/r"
+HERDR_SOCKET_PATH="$v" VIBEKE_HERDR_BROKER="$v" herdr pane list > "$out/spoof.out" 2>&1; echo "spoof=$?" >> "$out/r"
 "#,
         )],
     );

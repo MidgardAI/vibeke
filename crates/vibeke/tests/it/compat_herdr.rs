@@ -69,7 +69,13 @@ impl Session {
         );
         serde_json::from_slice(&out.stdout).unwrap_or(Value::Null)
     }
+    /// A socket-backed `herdr` command. Herdr prints the whole response line
+    /// (`{"id":"cli:…","result":…}`); this returns its `result`.
     fn herdr(&self, args: &[&str]) -> Value {
+        self.herdr_line(args)["result"].clone()
+    }
+    /// The JSON a `herdr` command prints (the response line, or a registry command's output).
+    fn herdr_line(&self, args: &[&str]) -> Value {
         let mut a = vec!["compat", "herdr"];
         a.extend(args);
         self.json(&a)
@@ -163,6 +169,18 @@ fn herdr_cli_shim_and_wire_protocol() {
     assert_eq!(created["tab"]["workspace_id"], ws.as_str());
     assert_no_ulids(&created);
 
+    // The whole response line, keys sorted as Herdr prints them.
+    let out = s_
+        .cmd(&["compat", "herdr", "workspace", "list"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let line = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        line.starts_with(r#"{"id":"cli:workspace:list","result":{"#),
+        "{line}"
+    );
+    assert!(line.contains(r#""type":"workspace_list""#), "{line}");
     let list = s_.herdr(&["workspace", "list"]);
     assert_eq!(list["type"], "workspace_list");
     assert!(
@@ -194,17 +212,25 @@ fn herdr_cli_shim_and_wire_protocol() {
         &pane,
         "--match",
         "compat-42",
-        "--timeout-ms",
+        "--timeout",
         "15000",
     ]);
     assert_eq!(m["type"], "pane_output_matched");
-    let r = s_.herdr(&["pane", "read", &pane, "--source", "recent", "--lines", "30"]);
-    assert_eq!(r["type"], "pane_read");
-    assert!(s(&r["read"]["text"]).contains("compat-42"), "{r}");
+    // `pane read` prints the text itself, like Herdr.
+    let out = s_
+        .cmd(&[
+            "compat", "herdr", "pane", "read", &pane, "--source", "recent", "--lines", "30",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("compat-42"), "{text}");
+    assert!(!text.starts_with('{'), "text, not JSON: {text}");
 
     let renamed = s_.herdr(&["pane", "rename", &pane, "logs"]);
     assert_eq!(renamed["pane"]["label"], "logs");
-    let tab = s_.herdr(&["tab", "create", "--workspace-id", &ws, "--label", "second"]);
+    let tab = s_.herdr(&["tab", "create", "--workspace", &ws, "--label", "second"]);
     assert_eq!(tab["type"], "tab_created");
     assert_eq!(tab["tab"]["label"], "second");
 
@@ -215,18 +241,20 @@ fn herdr_cli_shim_and_wire_protocol() {
         (1, "pane_not_found".to_string()),
         "{e}"
     );
+    assert_eq!(e["id"], "cli:pane:get", "the whole response line: {e}");
     let (_, e) = s_.fail(&["compat", "herdr", "server", "stop"]);
     assert_eq!(e["error"]["code"], "unsupported", "{e}");
-    let (code, e) = s_.fail(&["compat", "herdr", "popup", "close"]);
-    assert_eq!(
-        (code, s(&e["error"]["code"])),
-        (1, "popup_not_found".to_string()),
-        "no popup open: {e}"
-    );
+    // Herdr has no `popup` command: an unknown command is a usage error (exit 2).
+    let (code, _) = s_.fail(&["compat", "herdr", "popup", "close"]);
+    assert_eq!(code, 2, "usage error");
     let (code, _) = s_.fail(&["compat", "herdr", "pane", "teleport"]);
     assert_eq!(code, 2, "usage error");
-    let (_, e) = s_.fail(&["compat", "herdr", "integration", "install", "claude"]);
-    assert_eq!(e["error"]["kind"], "unsupported");
+    let (code, e) = s_.fail(&["compat", "herdr", "integration", "install", "claude"]);
+    assert_eq!(
+        (code, s(&e["error"]["code"])),
+        (1, "unsupported".to_string()),
+        "{e}"
+    );
 
     // The public listener: Herdr wire format, one request per connection.
     let sock = s_.compat_socket();
@@ -453,8 +481,9 @@ fn herdr_plugin_install_trust_actions_hooks_and_revocation() {
     assert_eq!(log["status"], "succeeded", "{log}");
     assert_eq!(log["exit_code"], 0);
     assert!(s(&log["stdout"]).contains("done"));
-    let panes: Value =
-        serde_json::from_str(&read(&state.join("panes.json"))).unwrap_or(Value::Null);
+    let line: Value = serde_json::from_str(&read(&state.join("panes.json"))).unwrap_or(Value::Null);
+    assert_eq!(line["id"], "cli:pane:list", "{line}");
+    let panes = &line["result"];
     assert_eq!(
         panes["type"], "pane_list",
         "callback result: {panes} / {log}"
@@ -559,17 +588,17 @@ fn herdr_shim_plugin_commands_and_link() {
     let src = s_.path("src/probe");
     write_plugin(&src);
     // Herdr's CLI grammar for the registry.
-    let r = s_.herdr(&["plugin", "link", src.to_str().unwrap()]);
+    let r = s_.herdr_line(&["plugin", "link", src.to_str().unwrap()]);
     assert_eq!(r["plugin"]["status"], "untrusted");
     assert_eq!(r["plugin"]["managed"], false);
     assert!(!src.join("built.txt").exists(), "link never builds");
-    let l = s_.herdr(&["plugin", "list"]);
+    let l = s_.herdr_line(&["plugin", "list"]);
     assert_eq!(l["plugins"][0]["plugin_id"], "acme.probe");
-    s_.herdr(&["plugin", "disable", "acme.probe"]);
+    s_.herdr_line(&["plugin", "disable", "acme.probe"]);
     s_.json(&["plugin", "trust", "acme.probe", "--legacy"]);
-    let l = s_.herdr(&["plugin", "list"]);
+    let l = s_.herdr_line(&["plugin", "list"]);
     assert_eq!(l["plugins"][0]["status"], "disabled");
-    s_.herdr(&["plugin", "enable", "acme.probe"]);
+    s_.herdr_line(&["plugin", "enable", "acme.probe"]);
     let acts = s_.herdr(&["plugin", "action", "list"]);
     assert_eq!(acts["type"], "plugin_action_list");
     assert!(
@@ -583,11 +612,11 @@ fn herdr_shim_plugin_commands_and_link() {
     let _ = ws;
     let inv = s_.herdr(&["plugin", "action", "invoke", "acme.probe.probe"]);
     assert_eq!(inv["type"], "plugin_action_started", "{inv}");
-    let logs = s_.herdr(&["plugin", "log", "list", "acme.probe"]);
+    let logs = s_.herdr(&["plugin", "log", "list", "--plugin", "acme.probe"]);
     assert_eq!(logs["type"], "plugin_log_list");
-    s_.herdr(&["plugin", "unlink", "acme.probe"]);
+    s_.herdr_line(&["plugin", "unlink", "acme.probe"]);
     assert!(src.join("herdr-plugin.toml").exists(), "unlink keeps files");
-    let l = s_.herdr(&["plugin", "list"]);
+    let l = s_.herdr_line(&["plugin", "list"]);
     assert!(l["plugins"].as_array().unwrap().is_empty());
 }
 

@@ -84,10 +84,11 @@ impl Session {
         );
         serde_json::from_slice(&out.stdout).unwrap_or(Value::Null)
     }
+    /// A `herdr` command; Herdr prints the whole response line, so this returns its `result`.
     fn herdr(&self, args: &[&str]) -> Value {
         let mut a = vec!["compat", "herdr"];
         a.extend(args);
-        self.json(&a)
+        self.json(&a)["result"].clone()
     }
     fn fail(&self, args: &[&str]) -> (i32, Value) {
         let out = self.cmd(args).output().unwrap();
@@ -440,7 +441,7 @@ command = ["sh", "bin/stale.sh"]
         read(&state.join("imp.err"))
     );
     let out: Value = serde_json::from_str(&read(&state.join("imp.out"))).unwrap_or(Value::Null);
-    assert_eq!(out["type"], "workspace_created", "{out}");
+    assert_eq!(out["result"]["type"], "workspace_created", "{out}");
     let calls = s_.json(&[
         "--session",
         "work",
@@ -499,7 +500,7 @@ command = ["sh", "bin/stale.sh"]
     });
     let (o1, o2) = (read(&m1), read(&m2));
     assert!(
-        o1.contains("permission_denied") && o1.contains("rc=5"),
+        o1.contains("permission_denied") && o1.contains("rc=1"),
         "{o1}"
     );
     assert!(
