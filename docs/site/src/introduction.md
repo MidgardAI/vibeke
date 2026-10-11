@@ -10,10 +10,11 @@ Separate holder processes keep agents active after a server restart. Task worktr
 
 - The **server** runs on your laptop or devbox. It keeps workspaces, tasks, agent state, previews and screenshots.
 - The **terminal interface** and the **CLI** connect to the server through a local socket.
-- Each pane has its own **holder** process. The holder runs the agent, so the agent keeps running when the server restarts.
+- Each pane has its own **holder** process. The holder runs the agent. The agent keeps running when the server restarts.
 - Agents report their state to the server through hooks, extensions and RPC. RPC means remote procedure call.
 - The server can also reach other places. You can [connect a remote machine](remote.md) over SSH. You can run a task in a [cloud sandbox](cloud-sandboxes.md). You can [hand off](handoff.md) a running agent to another machine.
-- The desktop app, the browser app, your phone and your teammates connect through a [relay](mobile.md). The relay only sees encrypted traffic. Your host does not need open ports.
+- From other devices, the desktop app, the browser app, your phone and your teammates connect through a [relay](mobile.md). The relay only sees encrypted traffic. Your host does not need open ports.
+- On the same computer, the [desktop app](desktop.md) connects to the host directly.
 
 Use this guide to install and operate Vibeke.
 

@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 750" width="1200" height="750" role="img" aria-labelledby="title desc">
   <title id="title">Vibeke architecture</title>
-  <desc id="desc">Clients connect to the Vibeke server on your laptop or devbox. A holder process per pane runs each agent. The server reaches remote machines over SSH, cloud sandboxes and your other machines. Apps and teammates connect through an end-to-end encrypted relay.</desc>
+  <desc id="desc">Clients connect to the Vibeke server on your laptop or devbox. A holder process per pane runs each agent. The server reaches remote machines over SSH, cloud sandboxes and your other machines. From other devices, apps and teammates connect through an end-to-end encrypted relay.</desc>
   <style>
     svg { --bg:#faf8f2; --panel:#f2efe6; --raised:#ffffff; --line:#d6d0c1; --muted:#666b61; --text:#1d201c; --accent:#a8641a; --accent-soft:#f6e6d0; --green:#4c7a33; --green-soft:#e3eed8; }
     @media (prefers-color-scheme: dark) {
@@ -118,7 +118,7 @@
   <path class="wire-a" d="M700 602V658" marker-start="url(#a)" marker-end="url(#a)"/>
   <rect class="hot" x="284" y="660" width="520" height="66" rx="10"/>
   <text class="h" x="304" y="687">Relay</text>
-  <text class="s" x="304" y="710">Sees only encrypted traffic. Your host needs no open ports.</text>
+  <text class="s" x="304" y="710">For remote access. Sees only encrypted traffic. No open ports on your host.</text>
 
   <!-- Beyond this machine -->
   <text class="eyebrow mono" x="844" y="64">BEYOND THIS MACHINE</text>

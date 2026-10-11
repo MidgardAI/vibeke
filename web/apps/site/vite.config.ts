@@ -23,7 +23,8 @@ export default defineConfig({
     docsPlugin(),
     tailwindcss(),
     tanstackStart({
-      prerender: { enabled: true, crawlLinks: true, failOnError: true, filter: page => firstForOutputPath(page.path) },
+      // Docs images are emitted as build assets. The crawler would rewrite them as text, which breaks raster files.
+      prerender: { enabled: true, crawlLinks: true, failOnError: true, filter: page => !page.path.startsWith('/docs-images/') && firstForOutputPath(page.path) },
       pages: docManifest.map(doc => ({ path: `/docs/${doc.slug}` })),
     }),
     nitro({
