@@ -813,6 +813,18 @@ async fn idle_suspend(server: &Arc<Server>, b: &Arc<TaskBox>) {
     }
 }
 
+/// Is any box paused by idle suspend?
+pub fn any_paused(server: &Server) -> bool {
+    !server
+        .sandbox
+        .extras
+        .inner
+        .lock()
+        .unwrap()
+        .paused
+        .is_empty()
+}
+
 /// Is `key` paused by idle suspend?
 pub fn is_paused(server: &Server, key: &str) -> bool {
     server
@@ -826,8 +838,20 @@ pub fn is_paused(server: &Server, key: &str) -> bool {
 }
 
 /// Thaw an idle-suspended box (blocking CLI call when it is paused). `reason` goes into the
-/// `sandbox.resumed` event.
+/// `sandbox.resumed` event. Locks `core` to commit that event: callers holding it use
+/// [`wake_quiet`] instead.
 pub fn wake_blocking(server: &Server, b: &TaskBox, reason: &str) {
+    if let Some((kind, subject, data)) = wake_quiet(server, b, reason) {
+        emit(server, kind, subject, data);
+    }
+}
+
+/// An event a caller commits in its own transaction: `(kind, subject, data)`.
+pub type PendingEvent = (&'static str, Value, Value);
+
+/// [`wake_blocking`] without committing: returns the `sandbox.resumed` event for the caller's
+/// transaction, `None` when the box was not paused. Never locks `core`.
+pub fn wake_quiet(server: &Server, b: &TaskBox, reason: &str) -> Option<PendingEvent> {
     if !server
         .sandbox
         .extras
@@ -837,7 +861,7 @@ pub fn wake_blocking(server: &Server, b: &TaskBox, reason: &str) {
         .paused
         .remove(&b.key)
     {
-        return;
+        return None;
     }
     if let BoxRunner::Container(c) = &b.runner
         && let Err(e) = c.b().unpause()
@@ -855,18 +879,20 @@ pub fn wake_blocking(server: &Server, b: &TaskBox, reason: &str) {
     {
         w.idle_since = None;
     }
-    emit(
-        server,
+    Some((
         "sandbox.resumed",
         json!({"task": b.task, "sandbox": b.key}),
         json!({"reason": reason, "mode": "unpause"}),
-    );
+    ))
 }
 
-/// A new pane is about to `exec` into box `b`: a paused box must run first.
-pub fn before_spawn(server: &Server, b: &TaskBox) {
+/// A new pane is about to `exec` into box `b`: a paused box must run first. Returns the
+/// `sandbox.resumed` event for the spawning caller's transaction (it may hold `core`).
+pub fn before_spawn(server: &Server, b: &TaskBox) -> Option<PendingEvent> {
     if is_paused(server, &b.key) {
-        wake_blocking(server, b, "spawn");
+        wake_quiet(server, b, "spawn")
+    } else {
+        None
     }
 }
 

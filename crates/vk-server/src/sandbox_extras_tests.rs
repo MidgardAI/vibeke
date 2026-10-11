@@ -1083,3 +1083,106 @@ async fn warm_pool_prestarts_a_box_and_the_next_task_claims_it() {
     teardown(&e.server, ta);
     teardown(&e.server, tb);
 }
+
+/// Pause `b` through idle suspend (the box has no working run and no input).
+async fn idle_pause(e: &Env, f: &Fake, b: &Arc<TaskBox>, task: &str) {
+    let after = Some(Duration::from_millis(1));
+    for _ in 0..50 {
+        extras::observe_state(&e.server, b, BoxState::Running, after).await;
+        if extras::is_paused(&e.server, task) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert!(extras::is_paused(&e.server, task));
+    assert_eq!(f.state(&box_name(task)).as_deref(), Some("paused"));
+}
+
+/// A split or new tab in an idle-paused container task: the spawn path holds `core` and the
+/// thaw must not lock it again (`std::sync::Mutex` is not re-entrant).
+#[tokio::test(flavor = "multi_thread")]
+async fn spawning_into_a_paused_box_does_not_deadlock() {
+    let e = Env::new();
+    let f = Fake::new(&e.root);
+    let task = "ctask01JEXTRASSPLIT00001";
+    let (b, pane, w) = ctr_task(&e, &f, task, "split1").await;
+    let name = box_name(task);
+    // Give the record-only pane a tab, so it can be split.
+    {
+        let mut c = e.server.core.lock().unwrap();
+        let p = c.pane(&pane).cloned().unwrap();
+        let mut tx = Tx::new();
+        tx.tab(Tab {
+            id: p.tab.clone(),
+            handle: "w9:t1".into(),
+            workspace: p.workspace.clone(),
+            title: None,
+            number: 1,
+            layout: LayoutNode::Leaf { pane: pane.clone() },
+            focused_pane: Some(pane.clone()),
+            zoomed_pane: None,
+            order: 1.0,
+            floating: vec![],
+            floats_hidden: false,
+        });
+        e.server.commit(&mut c, tx).unwrap();
+    }
+
+    // The spawn path itself, with `core` held: the thaw's event comes back to the caller.
+    idle_pause(&e, &f, &b, task).await;
+    let srv = e.server.clone();
+    let wpath = w.to_string_lossy().into_owned();
+    let deferred = tokio::task::spawn_blocking(move || {
+        let _core = srv.core.lock().unwrap();
+        wrap_spawn_deferred(
+            &srv,
+            "ctask01JEXTRASSPLIT00001-pane2",
+            &wpath,
+            &["/bin/sh".into()],
+            vec![],
+            Some("ctask01JEXTRASSPLIT00001"),
+        )
+        .map(|(_, events)| events.into_iter().map(|(k, _, _)| k).collect::<Vec<_>>())
+    });
+    let events = tokio::time::timeout(Duration::from_secs(30), deferred)
+        .await
+        .expect("wrap_spawn_deferred deadlocked under core")
+        .unwrap()
+        .unwrap();
+    assert_eq!(events, ["sandbox.resumed"]);
+    assert_eq!(f.state(&name).as_deref(), Some("running"));
+
+    // Through `Server::split_pane`: the box is thawed before `core` is taken. The holder
+    // binary of this test server is `/bin/false`, so the spawn itself may fail; it must
+    // return either way.
+    idle_pause(&e, &f, &b, task).await;
+    let srv = e.server.clone();
+    let target = pane.clone();
+    let split = tokio::task::spawn_blocking(move || {
+        srv.split_pane(
+            &target,
+            vk_proto::layout::Direction::Right,
+            0.5,
+            None,
+            None,
+            None,
+            None,
+            "user",
+        )
+        .map(|p| p.id)
+    });
+    let _ = tokio::time::timeout(Duration::from_secs(30), split)
+        .await
+        .expect("split in a paused box deadlocked")
+        .unwrap();
+    assert!(!extras::is_paused(&e.server, task));
+    assert_eq!(f.state(&name).as_deref(), Some("running"));
+    let resumed = events_of(&e, "sandbox.resumed");
+    assert!(
+        resumed.iter().any(|v| v["data"]["reason"] == "spawn"),
+        "{resumed:?}"
+    );
+    // `core` is usable (not held, not poisoned).
+    assert!(e.server.core.try_lock().is_ok());
+    teardown(&e.server, task);
+}

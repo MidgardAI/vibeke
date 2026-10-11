@@ -168,6 +168,8 @@ pub struct Server {
     pub core: Mutex<Core>,
     pub panes: Mutex<HashMap<String, Arc<PaneRt>>>,
     pub model_rev: watch::Sender<u64>,
+    /// The model of one revision, serialized once for every attached render client.
+    pub(crate) model_frame: Mutex<Option<(u64, Arc<vk_proto::render::SharedModel>)>>,
     pub events: broadcast::Sender<Arc<Event>>,
     pub ui: broadcast::Sender<UiEvent>,
     pub screen_dirty: Notify,
@@ -185,6 +187,8 @@ pub struct Server {
     /// Rows waiting for the next FTS flush. Lock order: `archive` → `core` → `fts_buf`; the
     /// batch is drained and indexed under the archive lock, which purges also hold.
     pub fts_buf: Mutex<Vec<(String, u64, i64, String)>>,
+    /// Panes whose process ended but whose removal storage refused: `(pane, reason)`.
+    pub(crate) pending_pane_ends: Mutex<Vec<(String, String)>>,
     /// Test hook: runs in [`Server::housekeeping`] right after the FTS batch was drained.
     #[cfg(test)]
     pub(crate) after_fts_drain: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
@@ -228,6 +232,17 @@ pub struct Server {
     pub items: items::State,
     /// Shared-cwd collision tracker and claims (05 §10, 3A).
     pub collision: collision::State,
+}
+
+/// A launched holder, not yet committed ([`Server::spawn_holder`]).
+struct SpawnedHolder {
+    holder_pid: u32,
+    child_pid: u32,
+    socket: String,
+    key: Vec<u8>,
+    isolation: Isolation,
+    /// Events of the spawn (a paused box's `sandbox.resumed`) for the caller's transaction.
+    events: Vec<sandbox::extras::PendingEvent>,
 }
 
 pub fn shell_argv(opts: &ServerOpts) -> Vec<String> {
@@ -290,6 +305,7 @@ impl Server {
             core: Mutex::new(core),
             panes: Mutex::new(HashMap::new()),
             model_rev,
+            model_frame: Mutex::new(None),
             events,
             ui,
             screen_dirty: Notify::new(),
@@ -300,6 +316,7 @@ impl Server {
             started: Instant::now(),
             restart_error: Mutex::new(None),
             fts_buf: Mutex::new(Vec::new()),
+            pending_pane_ends: Mutex::new(Vec::new()),
             #[cfg(test)]
             after_fts_drain: Mutex::new(None),
             tokens: Mutex::new(tokens),
@@ -337,32 +354,7 @@ impl Server {
         f(&mut self.core.lock().unwrap())
     }
 
-    /// Commit a transaction, publish its events and bump the model revision.
-    pub fn commit(&self, core: &mut Core, tx: Tx) -> Result<Vec<Event>> {
-        match core.commit(tx) {
-            Ok(events) => {
-                if let Some(msg) = core.ephemeral_hit.take() {
-                    // The store refused the write and the transaction was a UI convenience
-                    // (focus, unread marks): applied in memory only (02 §4a).
-                    self.hardening.note_ephemeral();
-                    self.enter_degraded(core, msg);
-                    return Ok(events);
-                }
-                *self.degraded.lock().unwrap() = None;
-                core.model.degraded = None;
-                self.hardening.recovered();
-                for e in &events {
-                    let _ = self.events.send(Arc::new(e.clone()));
-                }
-                self.bump_model();
-                Ok(events)
-            }
-            Err(e) => {
-                self.enter_degraded(core, format!("storage unavailable: {e:#}"));
-                Err(e)
-            }
-        }
-    }
+    // `commit` and `commit_storage` live in `core.rs`, next to the store write they guard.
 
     /// Mark the server degraded (02 §4a): housekeeping probes storage until it recovers.
     pub fn enter_degraded(&self, core: &mut Core, msg: String) {
@@ -467,6 +459,24 @@ impl Server {
                 _ => lost.push(p.clone()),
             }
         }
+        // Holders recorded for panes that are no longer in the model (a removal that did not
+        // finish): a live one is attached and closed (it exits once its exit is acknowledged),
+        // a dead one's record goes. Nothing else ever reaches them.
+        for h in holders
+            .iter()
+            .filter(|h| !panes.iter().any(|p| p.id == h.pane))
+        {
+            if vk_hold::holder_alive(std::path::Path::new(&h.socket), h.holder_pid) {
+                tracing::info!(pane = %h.pane, "closing the holder of a removed pane");
+                let rt = self.start_pane(&h.pane, 80, 24, h.socket.clone(), h.key.clone(), false);
+                rt.send(PaneCmd::Close);
+            } else {
+                let mut c = self.core.lock().unwrap();
+                let mut tx = Tx::new();
+                tx.m.holder_delete(&h.pane);
+                let _ = self.commit_storage(&mut c, tx);
+            }
+        }
         // Reboot (or holder crash): respawn shells in the old layout positions and offer resume.
         for p in lost {
             let cwd = p
@@ -529,7 +539,7 @@ impl Server {
             // Defensive: never respawn over a live holder (its socket would refuse the new
             // one and its agent would be orphaned). Reattach instead.
             tracing::warn!(pane = %pane_id, "holder still alive; reattaching instead of respawning");
-            self.start_pane(pane_id, p.cols, p.rows, h.socket, h.key, false);
+            let _ = self.start_pane(pane_id, p.cols, p.rows, h.socket, h.key, false);
             return;
         }
         if let Some(r) = self.with_core(|c| c.run_for_pane(pane_id).cloned()) {
@@ -589,7 +599,15 @@ impl Server {
                 task_env,
             )
         });
-        let (holder_pid, child_pid, socket, key, isolation) = self.spawn_holder(
+        sandbox::wake_for_spawn(self, ws_task.as_deref(), cwd);
+        let SpawnedHolder {
+            holder_pid,
+            child_pid,
+            socket,
+            key,
+            isolation,
+            events,
+        } = self.spawn_holder(
             &old.id,
             &old.handle,
             &tabh,
@@ -609,6 +627,9 @@ impl Server {
         p.exited = false;
         p.recovered = Some("lost".into());
         let mut tx = Tx::new();
+        for (kind, subject, data) in events {
+            tx.event(kind, subject, data);
+        }
         tx.m.holder(&p.id, &socket, &key, 0, Some(holder_pid), Some(child_pid));
         // The old holder's VT snapshot describes a screen and ring offsets that no longer
         // exist; a later recovery must not restore it.
@@ -619,15 +640,17 @@ impl Server {
             json!({"method": "lost"}),
         );
         tx.pane(p.clone());
+        // Closed again if the commit fails (`Tx::spawned`): the record still names the old
+        // holder, so nothing could reattach to this one.
+        let rt = self.start_pane(&p.id, p.cols, p.rows, socket, key, true);
+        tx.spawned.push(rt);
         self.commit(&mut c, tx)?;
-        drop(c);
-        self.start_pane(&p.id, p.cols, p.rows, socket, key, true);
         Ok(())
     }
 
     // ---- spawning -------------------------------------------------------------------------
 
-    #[allow(clippy::too_many_arguments, clippy::type_complexity)]
+    #[allow(clippy::too_many_arguments)]
     fn spawn_holder(
         self: &Arc<Self>,
         pane_id: &str,
@@ -641,7 +664,7 @@ impl Server {
         ws_task: Option<&str>,
         task_env: Vec<(String, String)>,
         held: Option<&mut Core>,
-    ) -> Result<(u32, u32, String, Vec<u8>, Isolation)> {
+    ) -> Result<SpawnedHolder> {
         let socket = self
             .paths
             .holder_socket(pane_id)
@@ -665,9 +688,11 @@ impl Server {
         } else {
             None
         };
-        let (argv, env, isolation) = match run_box {
-            Some(w) => w,
-            None => sandbox::wrap_spawn(self, pane_id, &cwd, argv, env, ws_task)
+        // Never `wrap_spawn`: the caller may hold `core`, so a paused box's `sandbox.resumed`
+        // event goes into the caller's transaction instead of being committed here.
+        let ((argv, env, isolation), events) = match run_box {
+            Some(w) => (w, vec![]),
+            None => sandbox::wrap_spawn_deferred(self, pane_id, &cwd, argv, env, ws_task)
                 .context("prepare isolated spawn")?,
         };
         let spec = SpawnSpec {
@@ -692,7 +717,14 @@ impl Server {
             Some(&log),
         )
         .context("launch holder")?;
-        Ok((l.holder_pid, l.child_pid, socket, key, isolation))
+        Ok(SpawnedHolder {
+            holder_pid: l.holder_pid,
+            child_pid: l.child_pid,
+            socket,
+            key,
+            isolation,
+            events,
+        })
     }
 
     /// The env a host pane would get (sandbox launches scrub and extend it, 13 §8).
@@ -812,6 +844,19 @@ impl Server {
         env
     }
 
+    /// Thaw the idle-suspended sandbox box that a new pane in workspace `ws` (at `cwd`, else
+    /// the workspace root) would exec into. Spawn paths call it before they take `core`: the
+    /// unpause blocks on the container CLI, and its event must not be committed under a held
+    /// `core` (`Mutex` is not re-entrant).
+    pub(crate) fn wake_box_for(&self, ws: &str, cwd: Option<&str>) {
+        let Some((task, root)) =
+            self.with_core(|c| c.ws(ws).map(|w| (w.task.clone(), w.root_path.clone())))
+        else {
+            return;
+        };
+        sandbox::wake_for_spawn(self, task.as_deref(), cwd.unwrap_or(&root));
+    }
+
     fn start_pane(
         self: &Arc<Self>,
         id: &str,
@@ -820,7 +865,7 @@ impl Server {
         socket: String,
         key: Vec<u8>,
         fresh: bool,
-    ) {
+    ) -> Arc<PaneRt> {
         let (rt, rx) = PaneRt::new(id, cols, rows);
         self.panes
             .lock()
@@ -828,7 +873,7 @@ impl Server {
             .insert(id.to_string(), rt.clone());
         tokio::spawn(pane::run(
             self.clone(),
-            rt,
+            rt.clone(),
             rx,
             HolderConn {
                 socket,
@@ -837,6 +882,7 @@ impl Server {
                 fresh,
             },
         ));
+        rt
     }
 
     /// Spawn a pane process in an existing tab (layout insertion is done by the caller).
@@ -885,7 +931,14 @@ impl Server {
         let (cols, rows) = (80, 24);
         let argv = command.unwrap_or_else(|| shell_argv(&self.opts));
         let task_env = self.task_env_for(c, ws.task.as_deref());
-        let (holder_pid, child_pid, socket, key, isolation) = self.spawn_holder(
+        let SpawnedHolder {
+            holder_pid,
+            child_pid,
+            socket,
+            key,
+            isolation,
+            events,
+        } = self.spawn_holder(
             &id,
             &handle,
             tab_handle,
@@ -923,16 +976,21 @@ impl Server {
             isolation,
             browser: None,
         };
+        for (kind, subject, data) in events {
+            tx.event(kind, subject, data);
+        }
         tx.m.holder(&id, &socket, &key, 0, Some(holder_pid), Some(child_pid));
         tx.event(
             "pane.created",
             subject_pane(&pane),
             json!({"cwd": cwd, "command": argv}),
         );
-        tx.counters = true;
         self.persist_tokens(tx);
         tx.pane(pane.clone());
-        self.start_pane(&id, cols, rows, socket, key, true);
+        // Attached now (the caller may need the runtime before it commits); if `tx` is never
+        // committed the holder is closed again (`Tx::spawned`).
+        let rt = self.start_pane(&id, cols, rows, socket, key, true);
+        tx.spawned.push(rt);
         Ok(pane)
     }
 
@@ -956,6 +1014,7 @@ impl Server {
         focus_client: Option<&str>,
         task: Option<&str>,
     ) -> Result<(Workspace, Tab, Pane)> {
+        sandbox::wake_for_spawn(self, task, cwd);
         let mut c = self.core.lock().unwrap();
         let id = ulid();
         let handle = c.next_ws_handle();
@@ -1078,6 +1137,7 @@ impl Server {
         focus_client: Option<&str>,
         pane_id: Option<String>,
     ) -> Result<(Tab, Pane)> {
+        self.wake_box_for(ws_id, cwd);
         let mut c = self.core.lock().unwrap();
         let ws = c.ws(ws_id).cloned().context("workspace not found")?;
         let cwd = cwd
@@ -1144,6 +1204,9 @@ impl Server {
         let cwd_resolved = cwd
             .map(str::to_string)
             .or_else(|| self.pane_cwd(&target_id));
+        if let Some(ws) = self.with_core(|c| c.pane(&target_id).map(|p| p.workspace.clone())) {
+            self.wake_box_for(&ws, cwd_resolved.as_deref());
+        }
         let mut c = self.core.lock().unwrap();
         let tp = c.pane(&target_id).cloned().context("pane not found")?;
         let ws = c.ws(&tp.workspace).cloned().context("workspace")?;
@@ -1204,16 +1267,24 @@ impl Server {
     }
 
     /// Remove a pane whose process ended from the layout (closing empty tabs/workspaces).
+    ///
+    /// The removal is committed first and the pane's runtime state (archive segment, terminal
+    /// effects, its token) is torn down only after that: when storage refuses the write, the
+    /// pane stays in the model with its token, and housekeeping retries the removal once
+    /// storage is back ([`Self::retry_pane_ends`]).
     pub fn pane_ended(&self, pane_id: &str, reason: &str) {
-        self.panes.lock().unwrap().remove(pane_id);
-        term_effects::forget(self, pane_id);
-        let had_archive = {
-            let mut a = self.archive.lock().unwrap();
-            let _ = a.close_pane(pane_id);
-            !a.segment_infos(pane_id).is_empty()
-        };
+        // Lock order: archive → core. The pane's process is gone, so no rows arrive meanwhile.
+        let had_archive = !self
+            .archive
+            .lock()
+            .unwrap()
+            .segment_infos(pane_id)
+            .is_empty();
         let mut c = self.core.lock().unwrap();
         let Some(p) = c.pane(pane_id).cloned() else {
+            drop(c);
+            // Never committed (a spawn whose transaction failed) or already removed.
+            self.teardown_pane_runtime(pane_id, false);
             return;
         };
         if had_archive {
@@ -1277,14 +1348,80 @@ impl Server {
                 }
             }
         }
-        self.tokens.lock().unwrap().retain(|_, p| p != pane_id);
-        self.persist_tokens(&mut tx);
-        let _ = self.commit(&mut c, tx);
+        // The token map without this pane's token; the live map changes only once committed.
+        let remaining: HashMap<String, String> = self
+            .tokens
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, p)| p.as_str() != pane_id)
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        tx.m.kv(
+            "server",
+            "pane_token_hashes",
+            Some(serde_json::to_string(&remaining).unwrap_or_default()),
+        );
+        if let Err(e) = self.commit(&mut c, tx) {
+            drop(c);
+            tracing::warn!(pane = %pane_id, error = %format!("{e:#}"), "pane removal not committed; retrying when storage is back");
+            // The process is gone either way: its runtime goes, the model keeps the pane.
+            self.panes.lock().unwrap().remove(pane_id);
+            let mut pending = self.pending_pane_ends.lock().unwrap();
+            if !pending.iter().any(|(p, _)| p == pane_id) {
+                pending.push((pane_id.to_string(), reason.to_string()));
+            }
+            return;
+        }
         drop(c);
+        self.teardown_pane_runtime(pane_id, true);
         for f in orphan_floats {
             self.close_pane(&f);
         }
         self.fix_client_focus();
+    }
+
+    /// Runtime state of a pane that left the model (or never entered it). `committed`: its
+    /// removal (token and holder record included) was just committed.
+    fn teardown_pane_runtime(&self, pane_id: &str, committed: bool) {
+        self.panes.lock().unwrap().remove(pane_id);
+        term_effects::forget(self, pane_id);
+        let _ = self.archive.lock().unwrap().close_pane(pane_id);
+        let had_token = {
+            let mut t = self.tokens.lock().unwrap();
+            let before = t.len();
+            t.retain(|_, p| p != pane_id);
+            t.len() != before
+        };
+        if committed {
+            return;
+        }
+        let mut c = self.core.lock().unwrap();
+        if c.pane(pane_id).is_some() {
+            return;
+        }
+        // The removal committed these already, unless the pane never was in the model (or a
+        // holder outlived its pane): drop its token and its holder record.
+        let recorded = c
+            .store
+            .holders()
+            .is_ok_and(|hs| hs.iter().any(|h| h.pane == pane_id));
+        if had_token || recorded {
+            let mut tx = Tx::new();
+            self.persist_tokens(&mut tx);
+            if recorded {
+                tx.m.holder_delete(pane_id);
+            }
+            let _ = self.commit_storage(&mut c, tx);
+        }
+    }
+
+    /// Pane removals that storage refused ([`Self::pane_ended`]), retried by housekeeping.
+    pub fn retry_pane_ends(&self) {
+        let pending = std::mem::take(&mut *self.pending_pane_ends.lock().unwrap());
+        for (pane, reason) in pending {
+            self.pane_ended(&pane, &reason);
+        }
     }
 
     /// After panes/tabs disappear, move client focus to something that still exists.
@@ -1506,7 +1643,7 @@ impl Server {
         {
             let mut tx = Tx::new();
             tx.m.holder(pane, &h.socket, &h.key, epoch, h.holder_pid, h.child_pid);
-            let _ = c.commit(tx);
+            let _ = self.commit_storage(&mut c, tx);
         }
     }
 
@@ -1532,7 +1669,7 @@ impl Server {
             p.rows = rows;
             let mut tx = Tx::new();
             tx.pane(p);
-            let _ = c.commit(tx);
+            let _ = self.commit_storage(&mut c, tx);
         }
     }
 
@@ -1692,7 +1829,7 @@ impl Server {
         if self.degraded.lock().unwrap().is_some() {
             return false;
         }
-        let mut c = self.core.lock().unwrap();
+        // Built (and compressed) before taking `core`.
         let mut tx = Tx::new();
         tx.m.snapshot(
             pane,
@@ -1702,7 +1839,8 @@ impl Server {
             blob,
             incarnation,
         );
-        c.commit(tx).is_ok()
+        let mut c = self.core.lock().unwrap();
+        self.commit_storage(&mut c, tx).is_ok()
     }
 
     pub fn archive_rows(&self, pane: &str, rows: Vec<ArchivedRow>) {
@@ -1784,6 +1922,9 @@ impl Server {
                 self.hardening.recovered();
                 self.bump_model();
             }
+        }
+        if self.degraded.lock().unwrap().is_none() {
+            self.retry_pane_ends();
         }
     }
 

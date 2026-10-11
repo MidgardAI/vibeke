@@ -899,7 +899,8 @@ fn failed_for_spawn(server: &Server, ws_task: Option<&str>, cwd: &str) -> Option
 /// argv, env and the pane's isolation record.
 pub type WrappedSpawn = (Vec<String>, Vec<(String, String)>, Isolation);
 
-/// Wrap a pane spawn (called by the server's holder spawn path; must not lock `core`).
+/// Wrap a pane spawn and commit the events it produced (a paused box's `sandbox.resumed`).
+/// Locks `core` for that commit: callers that hold it use [`wrap_spawn_deferred`].
 /// Host panes pass through unchanged.
 pub fn wrap_spawn(
     server: &Arc<Server>,
@@ -909,6 +910,35 @@ pub fn wrap_spawn(
     env: Vec<(String, String)>,
     ws_task: Option<&str>,
 ) -> anyhow::Result<WrappedSpawn> {
+    let (wrapped, events) = wrap_spawn_deferred(server, pane_id, cwd, argv, env, ws_task)?;
+    for (kind, subject, data) in events {
+        emit(server, kind, subject, data);
+    }
+    Ok(wrapped)
+}
+
+/// Thaw the idle-suspended box a pane spawn in `ws_task`/`cwd` would exec into. Spawn paths
+/// call it before they take `core`, so the blocking unpause does not run under the lock and
+/// the `sandbox.resumed` event is committed in order. Cheap when no box is paused.
+pub fn wake_for_spawn(server: &Server, ws_task: Option<&str>, cwd: &str) {
+    if !extras::any_paused(server) {
+        return;
+    }
+    if let Some(b) = box_for_spawn(server, ws_task, cwd).filter(|b| b.task.is_some()) {
+        extras::wake_blocking(server, &b, "spawn");
+    }
+}
+
+/// [`wrap_spawn`] for the server's holder spawn path, which holds `core`: never locks it and
+/// returns the events to commit in the caller's transaction.
+pub fn wrap_spawn_deferred(
+    server: &Arc<Server>,
+    pane_id: &str,
+    cwd: &str,
+    argv: &[String],
+    env: Vec<(String, String)>,
+    ws_task: Option<&str>,
+) -> anyhow::Result<(WrappedSpawn, Vec<extras::PendingEvent>)> {
     let Some(b) = box_for_spawn(server, ws_task, cwd) else {
         // A contained task whose context could not be rebuilt never gets a host pane: a
         // split/respawn there fails closed (13 §4; review finding 6).
@@ -917,13 +947,14 @@ pub fn wrap_spawn(
                 "this task is isolated but its sandbox is unavailable ({reason}); refusing to start the pane on the host"
             );
         }
-        return Ok((argv.to_vec(), env, Isolation::default()));
+        return Ok(((argv.to_vec(), env, Isolation::default()), vec![]));
     };
     if b.task.is_none() {
-        return Ok((argv.to_vec(), env, Isolation::default()));
+        return Ok(((argv.to_vec(), env, Isolation::default()), vec![]));
     }
-    // An idle-suspended (paused) box runs again before a pane execs into it (13 §11).
-    extras::before_spawn(server, &b);
+    // An idle-suspended (paused) box runs again before a pane execs into it (13 §11). Spawn
+    // paths thaw it before taking `core` ([`wake_for_spawn`]); this catches the rest.
+    let events: Vec<extras::PendingEvent> = extras::before_spawn(server, &b).into_iter().collect();
     let prepared = b.runner.runner().prepare(SpawnRequest {
         pane_id: pane_id.to_string(),
         argv: argv.to_vec(),
@@ -949,7 +980,7 @@ pub fn wrap_spawn(
     let mut iso = b.isolation.clone();
     iso.scope = "pane".into();
     iso.visible_roots = prepared.visible_roots.clone();
-    Ok((prepared.argv, prepared.env, iso))
+    Ok(((prepared.argv, prepared.env, iso), events))
 }
 
 /// Isolation of a headless launch (`agent.start {mode: "headless", isolate, network}`, 13 §3),
