@@ -3,7 +3,7 @@
 //! machine, `taken_by = user`, a captured screenshot, a plugin surface, an armed prefix, an
 //! unfocused terminal, `ui.images.popup = false` or focus that moved before the bytes arrived.
 //! Keys and pastes reach the pane and close it (releases, repeats, modifier-only presses and the
-//! prefix do not); `prefix+alt+i` and a click open the viewer; typing leaves the image unseen;
+//! prefix do not); esc closes it without reaching the pane; untouched it hides after a while; `prefix+alt+i` and a click open the viewer; typing leaves the image unseen;
 //! three images make one card; the corner away from the cursor; the iTerm2 repaint on close.
 
 use super::*;
@@ -132,10 +132,7 @@ fn appears_for_an_agent_attached_image_in_the_focused_pane() {
         let s = screen(&app);
         assert!(s.contains("attached by claude"), "{s}");
         assert!(s.contains("s5 · s5 caption"), "{s}");
-        assert!(
-            s.contains("prefix+alt+i open · closes when you type"),
-            "{s}"
-        );
+        assert!(s.contains("prefix+alt+i open · esc close"), "{s}");
         // At most half the pane, in the bottom-right corner (the cursor is top-left).
         let p = placements(&app).unwrap();
         let r = pane_rect(&app, "p1").unwrap();
@@ -444,4 +441,42 @@ fn a_replacement_image_is_checked_again_when_its_bytes_arrive() {
     app.host_focused = false;
     reply(&mut app, 1, req, json!({"data_b64": b64(&tiny_png())}));
     assert!(app.images_ui.card.is_none());
+}
+
+#[test]
+fn esc_closes_the_card_without_reaching_the_pane() {
+    let (mut app, mut rxs) = setup(1);
+    attach(&mut app, 0, 1, "S1", "p1");
+    assert!(showing(&app).is_some());
+    inputs(&mut rxs[0]);
+    app.on_key(named(NamedKey::Escape));
+    assert!(app.images_ui.card.is_none());
+    assert!(
+        inputs(&mut rxs[0]).is_empty(),
+        "esc did not interrupt the agent"
+    );
+    assert!(crate::images::is_unseen(&app, 0, "S1"));
+    // Without a card, esc reaches the pane as usual.
+    app.on_key(named(NamedKey::Escape));
+    assert_eq!(
+        inputs(&mut rxs[0]),
+        vec![format!("key p1 {:?}", Key::Named(NamedKey::Escape))]
+    );
+}
+
+#[test]
+fn an_untouched_card_hides_itself() {
+    let (mut app, _rxs) = setup(1);
+    attach(&mut app, 0, 1, "S1", "p1");
+    let shown_at = app.images_ui.card.as_ref().unwrap().shown_at.unwrap();
+    assert_eq!(
+        app.deadlines(Instant::now()).get("card.hide"),
+        Some(shown_at + AUTO_HIDE)
+    );
+    app.draw_bytes();
+    assert!(showing(&app).is_some());
+    app.images_ui.card.as_mut().unwrap().shown_at = Some(Instant::now() - AUTO_HIDE);
+    app.draw_bytes();
+    assert!(app.images_ui.card.is_none());
+    assert!(crate::images::is_unseen(&app, 0, "S1"));
 }

@@ -6,9 +6,11 @@
 //!   focus events). The conditions are checked when the event arrives and again when the image
 //!   bytes do (a local image once the recent list knows its path, a remote one fetched at the
 //!   card's width); if they no longer hold, no card shows.
-//! - **Non-modal**: every key, paste and mouse event still goes to the pane. The first key press
-//!   or paste the pane receives closes the card ([`on_key_to_pane`], [`close`]); releases,
-//!   repeats, modifier-only presses and the prefix key do not. `open_images`
+//! - **Non-modal**: every key, paste and mouse event still goes to the pane, except `esc`: it
+//!   closes the card and stays out of the pane (an agent CLI would take it as "interrupt").
+//!   Any other first key press or paste the pane receives closes the card and reaches the pane
+//!   ([`on_key_to_pane`], [`close`]); releases, repeats, modifier-only presses and the prefix
+//!   key do not close it. Untouched, it hides itself after [`AUTO_HIDE`]. `open_images`
 //!   (`prefix+alt+i`) or a click on the card opens its image in the viewer. Closing by typing
 //!   leaves the image unseen.
 //! - Several images attached before or while it shows: one card for the newest, with a count
@@ -26,12 +28,15 @@ use crate::gallery::Reply;
 use crate::image_view::{self as iv, Placement};
 use crate::images;
 use crate::screen::{Grid, Rect};
+use crate::time::{Duration, Instant};
 use serde_json::Value;
 use unicode_width::UnicodeWidthStr;
 use vk_proto::input::{Key, KeyEvent, KeyKind, NamedKey};
 
 /// Narrowest card drawn (border included).
 const MIN_W: u16 = 12;
+/// A card nobody touched hides itself after this long (the image stays unseen).
+pub const AUTO_HIDE: Duration = Duration::from_secs(20);
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Card {
@@ -47,6 +52,8 @@ pub struct Card {
     pub key: String,
     /// False while the image bytes are on their way (nothing is drawn yet).
     pub shown: bool,
+    /// When it first showed (for [`AUTO_HIDE`]).
+    pub shown_at: Option<Instant>,
 }
 
 // ---- when it appears -----------------------------------------------------------------------------
@@ -109,7 +116,10 @@ pub fn on_captured(app: &mut App, mi: usize, v: &Value) {
         count,
         key: String::new(),
         // A new image waits for its own bytes, and the conditions are checked again then.
-        shown: prev.is_some_and(|c| c.shown && c.id == id),
+        shown: prev.as_ref().is_some_and(|c| c.shown && c.id == id),
+        shown_at: prev
+            .filter(|c| c.shown && c.id == id)
+            .and_then(|c| c.shown_at),
     });
     load(app);
 }
@@ -174,6 +184,8 @@ fn ready(app: &mut App) {
     if eligible(app, mi, &pane) {
         if let Some(c) = app.images_ui.card.as_mut() {
             c.shown = true;
+            // A newer image restarts the timer.
+            c.shown_at = Some(Instant::now());
         }
     } else {
         app.images_ui.card = None;
@@ -205,8 +217,17 @@ pub fn close(app: &mut App) {
 }
 
 /// A key on its way to the pane: a press closes the card; releases, repeats and modifier-only
-/// presses do not.
-pub fn on_key_to_pane(app: &mut App, ev: &KeyEvent) {
+/// presses do not. True when the key was for the card only (`esc` while it shows): it must not
+/// reach the pane.
+pub fn on_key_to_pane(app: &mut App, ev: &KeyEvent) -> bool {
+    if ev.kind == KeyKind::Press
+        && ev.mods.is_empty()
+        && matches!(ev.key, Key::Named(NamedKey::Escape))
+        && showing(app).is_some()
+    {
+        close(app);
+        return true;
+    }
     let modifier = matches!(
         ev.key,
         Key::Named(
@@ -223,6 +244,7 @@ pub fn on_key_to_pane(app: &mut App, ev: &KeyEvent) {
     if ev.kind == KeyKind::Press && !modifier {
         close(app);
     }
+    false
 }
 
 /// Before each frame: the card goes once the focus moved to another pane or machine, the mode
@@ -234,9 +256,17 @@ pub fn observe(app: &mut App) {
     let keep = c.machine == app.cur
         && app.focused_pane().as_deref() == Some(c.pane.as_str())
         && matches!(app.mode, Mode::Normal | Mode::Prefix(_))
-        && crate::plugins::surfaces(app).is_empty();
+        && crate::plugins::surfaces(app).is_empty()
+        && c.shown_at.is_none_or(|t| t.elapsed() < AUTO_HIDE);
     if !keep {
         close(app);
+    }
+}
+
+/// Wake when a showing card is due to hide itself.
+pub fn deadlines(app: &App, d: &mut crate::deadline::Deadlines) {
+    if let Some(t) = app.images_ui.card.as_ref().and_then(|c| c.shown_at) {
+        d.redraw("card.hide", t + AUTO_HIDE);
     }
 }
 
@@ -321,13 +351,13 @@ fn pane_rect(app: &App, pane: &str) -> Option<Rect> {
         })
 }
 
-/// `prefix+alt+i open · closes when you type`, with the bound key.
+/// `prefix+alt+i open · esc close`, with the bound key.
 fn footer(app: &App) -> String {
     let key = app
         .keymap
         .binding_for("open_images")
         .unwrap_or_else(|| "prefix+alt+i".into());
-    format!("{key} open · closes when you type")
+    format!("{key} open · esc close")
 }
 
 /// `s5 · login page`: the caption, else what the recent list says, else `attached image`.
