@@ -230,6 +230,7 @@ pub const METHODS: &[(&str, bool)] = &[
     ("image.upload", true),
     ("git.status", false),
     ("git.diff", false),
+    ("git.import_box_objects", true),
     ("git.log", false),
     ("fs.list", false),
     ("fs.read", false),
@@ -274,6 +275,8 @@ pub const METHODS: &[(&str, bool)] = &[
 /// through [`pane_scope_of`] by both [`authorize`] and the API catalog's scope column
 /// (`docs/api/methods.json`).
 pub const PANE_FORBIDDEN: &[&str] = &[
+    // Writes a sandboxed box's objects into the shared repository (for the gateway's export).
+    "git.import_box_objects",
     "interaction.answer",
     "interaction.cancel",
     "server.stop",

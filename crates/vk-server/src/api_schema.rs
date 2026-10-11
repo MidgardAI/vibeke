@@ -793,6 +793,8 @@ fs.list :: {pane?: Target, path?: string = ''} => {path: string, entries: [{name
 fs.read :: {pane?: Target, path: string, as?: image} => {path: string, text?: string, binary: bool, truncated: bool, size: int, secret: bool, mime?: string, data_b64?: string}
 git.status :: {pane?: Target, path?: string} => {repo_root: string, branch?: string|null, upstream?: string|null, ahead: int, behind: int, clean: bool, truncated: bool, files: [{path: string, orig_path?: string|null, x: string, y: string, kind: string, staged: bool, adds?: int|null, dels?: int|null, binary: bool, secret: bool}]}
 git.diff :: {pane?: Target, path?: string, file: string, staged?: bool} => {file: string, diff: string, truncated: bool, binary: bool, untracked: bool, secret?: bool}
+# import the objects a sandboxed box wrote to its private store into the repository of the pane (or path); for git outside the server, such as the gateway's handoff export; not from panes
+git.import_box_objects :: {pane?: Target, path?: string} => {}
 git.log :: {pane?: Target, path?: string, base?: string, limit?: int = 50} => {commits: [{sha: string, short: string, author: string, ts: int, subject: string}], truncated: bool}
 fs.browse :: {path?: string = '~', prefix?: string} => {path: string, parent: string|null, git_repo: bool, entries: [{name: string, git_repo: bool}], truncated: bool}
 repo.candidates :: {origin: string} => {repos: [{path: string, remote: string}]}

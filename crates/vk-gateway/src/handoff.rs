@@ -159,6 +159,13 @@ pub async fn export_bundle(
         }
     }
 
+    // A sandboxed box keeps its new commits in a private object store that only the server
+    // imports (13 §6): ask for that before this process reads the repository. An older server
+    // without the method still exports what the repository already has.
+    let _ = gw
+        .server
+        .call("git.import_box_objects", json!({"pane": pane}))
+        .await;
     let pinned = vk_handoff::pin(&cwd).await?;
     // An approved send: the repository must still be where the user approved it.
     if let Some(e) = expect {

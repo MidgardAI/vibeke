@@ -1439,6 +1439,9 @@ pub async fn import_local(
         Ok((work, m))
     })
     .await?;
+    // The worktree's repository may hold a sandboxed box's commits in the box's private
+    // object store; handoff git does not import them itself (13 §6).
+    crate::git_api::import_box_objects(worktree).await;
     let imported = match vk_handoff::import_in_place(work.path(), &m, worktree).await {
         Ok(i) => (i, true),
         // The checkout has changes or commits of its own: a new worktree instead.
