@@ -1,16 +1,18 @@
-// A dev-server preview as a workspace tab: its URL and status, opened on the host (a browser
-// pane next to the agent, `preview.open`) or in this device's browser.
+// A dev-server preview as a workspace tab. The desktop app embeds the page (`EmbeddedPreview`);
+// a phone shows the page rendered by the host's headless browser (`PhonePreview`); anything else
+// shows the preview's address. Agent browser sessions can be watched from every layout.
 
 import { useEffect, useState } from 'react';
 import { ExternalLink, Eye, Globe, MonitorPlay } from 'lucide-react';
 import type { BrowserSession, Preview } from '@vibeke/core';
 import { useApp, useHost } from '../../app/hooks';
+import { EmbeddedPreview } from '../../components/embedded-preview';
+import { PhonePreview } from '../../components/phone-preview';
 import { Screencast } from '../../components/screencast';
 import { Button, Empty, StatusDot, type Status } from '../../components/ui';
 import { t } from '../../i18n';
-import { errorMessage } from '../../lib/answer';
+import { isLoopbackUrl } from '../../lib/phone-preview';
 import { sessionsFor } from '../../lib/screencast';
-import { noteUnsupported, supported } from '../../lib/supports';
 import { previewLabel } from './tab-strip';
 
 const DOT: Record<string, Status> = { up: 'review', down: 'error', declared: 'idle', suggested: 'idle', gone: 'offline' };
@@ -18,25 +20,43 @@ const DOT: Record<string, Status> = { up: 'review', down: 'error', declared: 'id
 export function PreviewTab({ hostId, preview }: { hostId: string; preview: Preview | null }) {
   const app = useApp();
   const host = useHost(hostId);
-  const [busy, setBusy] = useState(false);
   const [watching, setWatching] = useState<BrowserSession | null>(null);
+  const [listing, setListing] = useState(false);
   if (!preview) return <Empty icon={<Globe />} title={t.tabs2.previewGone} />;
   const full = (host?.info?.scope ?? host?.record.scope) === 'full' && host?.status === 'online';
-  const canHost = full && supported(hostId, 'preview.open');
-  const openOnHost = async () => {
-    const conn = app.conn(hostId);
-    if (!conn) return;
-    setBusy(true);
-    try {
-      await conn.request('preview.open', { preview: preview.id });
-      app.toast(t.tabs2.previewOpen, 'ok');
-    } catch (e) {
-      if (!noteUnsupported(hostId, 'preview.open', e)) app.toast(errorMessage(e), 'error');
-    } finally {
-      setBusy(false);
-    }
-  };
   if (watching) return <Screencast hostId={hostId} session={watching} canControl={full} onClose={() => setWatching(null)} />;
+  if ('previewView' in app.platform && app.platform.previewView) return <EmbeddedPreview hostId={hostId} preview={preview} />;
+  const info = host?.info;
+  const rendered = full && !!info && !info.limit?.pane && !info.limit?.workspace && info.kind !== 'share' && info.features.includes('browser_preview');
+  const browserButton = !isLoopbackUrl(preview.url) && (
+    <Button size="sm" variant="outline" icon={<ExternalLink />} onClick={() => app.platform.openExternal(preview.url)}>
+      {t.tabs2.previewBrowser}
+    </Button>
+  );
+
+  if (rendered) {
+    return (
+      <div className="flex min-h-0 flex-1 flex-col">
+        <PhonePreview hostId={hostId} preview={preview} />
+        <div className="flex shrink-0 flex-wrap items-center gap-2 border-t border-border px-3 py-1.5">
+          <span className="inline-flex min-w-0 flex-1 items-center gap-1.5 text-xs text-muted">
+            <StatusDot status={DOT[preview.status] ?? 'idle'} />
+            <span className="truncate">{previewLabel(preview)}</span>
+          </span>
+          {browserButton}
+          <Button size="sm" variant="ghost" icon={<MonitorPlay />} aria-expanded={listing} onClick={() => setListing((v) => !v)}>
+            {listing ? t.phone.hideSessions : t.phone.agentSessions}
+          </Button>
+        </div>
+        {listing && (
+          <div className="vk-scroll max-h-[40%] shrink-0 overflow-y-auto px-3 pb-3">
+            <LiveSessions hostId={hostId} preview={preview} onWatch={setWatching} showEmpty />
+          </div>
+        )}
+      </div>
+    );
+  }
+
   return (
     <div className="vk-scroll flex min-h-0 flex-1 flex-col items-center justify-center gap-4 overflow-y-auto px-6 py-4">
       <div className="w-full max-w-md rounded-xl border border-border bg-surface p-4">
@@ -49,16 +69,7 @@ export function PreviewTab({ hostId, preview }: { hostId: string; preview: Previ
           </span>
         </div>
         <div className="mt-2 break-all font-mono text-xs text-muted">{preview.url}</div>
-        <div className="mt-4 flex flex-wrap gap-2">
-          {canHost && (
-            <Button size="sm" variant="primary" icon={<MonitorPlay />} busy={busy} onClick={() => void openOnHost()}>
-              {t.tabs2.previewOpen}
-            </Button>
-          )}
-          <Button size="sm" variant="outline" icon={<ExternalLink />} onClick={() => app.platform.openExternal(preview.url)}>
-            {t.tabs2.previewBrowser}
-          </Button>
-        </div>
+        {browserButton && <div className="mt-4 flex flex-wrap gap-2">{browserButton}</div>}
       </div>
       <LiveSessions hostId={hostId} preview={preview} onWatch={setWatching} />
     </div>
@@ -66,7 +77,7 @@ export function PreviewTab({ hostId, preview }: { hostId: string; preview: Previ
 }
 
 /** The agent browser sessions on the host that can be watched live (feature `browser_preview`). */
-function LiveSessions({ hostId, preview, onWatch }: { hostId: string; preview: Preview; onWatch(s: BrowserSession): void }) {
+function LiveSessions({ hostId, preview, onWatch, showEmpty }: { hostId: string; preview: Preview; onWatch(s: BrowserSession): void; showEmpty?: boolean }) {
   const app = useApp();
   const host = useHost(hostId);
   const [sessions, setSessions] = useState<BrowserSession[] | null>(null);
@@ -84,7 +95,8 @@ function LiveSessions({ hostId, preview, onWatch }: { hostId: string; preview: P
       live = false;
     };
   }, [app, hostId, eligible]);
-  if (!eligible || !sessions?.length) return null;
+  if (!eligible) return null;
+  if (!sessions?.length) return showEmpty && sessions ? <div className="text-xs text-muted">{t.live.noSessions}</div> : null;
   const list = sessionsFor(sessions, preview.url);
   return (
     <div className="w-full max-w-md rounded-xl border border-border bg-surface p-4">

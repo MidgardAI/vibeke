@@ -947,6 +947,16 @@ export interface BrowserSession {
   [k: string]: unknown;
 }
 
+/** One input event for `browser.input`; coordinates are CSS pixels of the page's viewport. */
+export type BrowserInputEvent =
+  | { type: 'touch'; phase: 'start' | 'move' | 'end' | 'cancel'; points: { id: number; x: number; y: number }[] }
+  | { type: 'tap'; x: number; y: number }
+  | { type: 'wheel'; x: number; y: number; dx: number; dy: number }
+  | { type: 'text'; text: string }
+  | { type: 'key'; key: string }
+  | { type: 'history'; action: 'back' | 'forward' | 'reload' }
+  | { type: 'resize'; width: number; height: number; dpr?: number };
+
 /** The latest screencast frame; `data_b64` is null when nothing newer than `after_seq` arrived. */
 export type BrowserFrame =
   | { session: string; seq: number; mime: string; width: number | null; height: number | null; received_ms: number; data_b64: string }
@@ -1255,11 +1265,21 @@ export interface AppApi {
     params: { session: string };
     result: { session: string; delivery: string; width: number; height: number; poll: string };
   };
-  'browser.screencast_frame': { params: { session: string; after_seq?: number }; result: BrowserFrame };
+  /** With `wait_ms` (at most 15000) the call waits until a frame newer than `after_seq` exists. */
+  'browser.screencast_frame': { params: { session: string; after_seq?: number; wait_ms?: number }; result: BrowserFrame };
   'browser.detach_screencast': { params: { session: string }; result: { session: string; detached: boolean } };
   /** Pause the agent's use of the session and drive it from this device; ends with `browser.release` or when this device stops watching. */
   'browser.take_over': { params: { session: string }; result: { session: string; human_control: boolean } };
   'browser.release': { params: { session: string }; result: { session: string; human_control: boolean } };
+  /** Phones: open a host-rendered mobile session on a preview; this device owns it and has taken it over (full scope). */
+  'browser.preview_open': {
+    params: { preview: string; machine?: string; viewport: { width: number; height: number }; dpr: number; dark?: boolean };
+    result: BrowserSession;
+  };
+  /** At most 64 events per call, applied in order; only from the device that holds the take-over. */
+  'browser.input': { params: { session: string; events: BrowserInputEvent[] }; result: { session: string; applied: number } };
+  /** Close a session this device opened with `browser.preview_open`. */
+  'browser.session_close': { params: { session: string }; result: unknown };
   /** Input needs this device's take-over (`conflict` otherwise). */
   'browser.click': {
     params: { session: string; selector?: string; text?: string; x?: number; y?: number; click_count?: number; timeout_ms?: number };
@@ -1358,6 +1378,9 @@ export const MUTATING_METHODS: ReadonlySet<string> = new Set([
   'browser.type',
   'browser.press',
   'browser.navigate',
+  'browser.preview_open',
+  'browser.input',
+  'browser.session_close',
 ]);
 
 // ---- normalization ------------------------------------------------------------------------

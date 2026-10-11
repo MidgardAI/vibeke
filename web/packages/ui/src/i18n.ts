@@ -558,6 +558,25 @@ export const en = {
     frameAlt: 'Live picture of the page',
   },
 
+  phone: {
+    opening: 'Opening the preview on the host',
+    lost: 'The preview connection was lost.',
+    openFailed: 'The host could not open this preview.',
+    retry: 'Try again',
+    frameAlt: 'The preview page, drawn by the host',
+    surface: 'Preview page. Touch it as you would a phone screen.',
+    back: 'Back',
+    forward: 'Forward',
+    reload: 'Reload',
+    address: 'Address',
+    go: 'Go',
+    keyboard: 'Keyboard',
+    typeHere: 'Type into the page',
+    toolbar: 'Preview controls',
+    agentSessions: 'Agent browser sessions',
+    hideSessions: 'Hide agent browser sessions',
+  },
+
   approve: {
     screenTitle: 'Approval requests',
     /** "Pane w1:p2 asks to send a handoff". */
@@ -1126,7 +1145,6 @@ export const en = {
     closeConfirm: 'Tap again to close the tab and its panes',
     preview: 'Preview',
     findInConversation: 'Find in conversation',
-    previewOpen: 'Open on the host',
     previewBrowser: 'Open in browser',
     previewStatus: { up: 'Running', down: 'Not responding', declared: 'Declared', suggested: 'Detected', gone: 'Gone' } as Record<string, string>,
     previewGone: 'This preview is no longer available',
