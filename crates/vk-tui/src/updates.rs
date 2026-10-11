@@ -77,6 +77,19 @@ pub fn init(app: &mut App, args: Option<Vec<String>>, inc: mpsc::UnboundedSender
             .and_then(|s| serde_json::from_str(&s).ok()),
         ..Default::default()
     };
+    apply_config(&mut app.ux.updates, app.config.update.version_check);
+}
+
+/// `[update] version_check = false` turns the release check off: no schedule and no saved result
+/// to show as a badge. The saved preference file stays as it is, and `r` in the Updates popup
+/// still checks on request.
+#[cfg(not(target_arch = "wasm32"))]
+fn apply_config(u: &mut State, version_check: bool) {
+    if !version_check {
+        u.automatic = false;
+        u.next = None;
+        u.status = Value::Null;
+    }
 }
 
 fn save(app: &App, checked: bool) {
@@ -422,6 +435,21 @@ mod tests {
         assert!(matches!(app.mode, Mode::Popup(Popup::Updates)));
         app.ux.updates.installing = false;
         assert!(!prevent_quit(&mut app));
+    }
+    #[test]
+    fn version_check_off_drops_schedule_and_saved_status() {
+        let mut u = State {
+            status: json!({"state": "available", "version": "9.9.9"}),
+            automatic: true,
+            next: Some(Instant::now()),
+            ..Default::default()
+        };
+        apply_config(&mut u, true);
+        assert!(u.automatic && u.next.is_some());
+        assert_eq!(u.status["state"], "available");
+        apply_config(&mut u, false);
+        assert!(!u.automatic && u.next.is_none());
+        assert!(u.status.is_null());
     }
     #[test]
     fn checks_never_steal_focus_or_send_pane_input() {
