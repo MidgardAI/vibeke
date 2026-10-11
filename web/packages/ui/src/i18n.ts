@@ -33,7 +33,7 @@ export const en = {
     hostOffline: 'Host offline',
     revoked: 'This device was revoked',
     unauthorized: 'Host refused this device',
-    incompatible: 'Host needs a newer app',
+    incompatible: 'Host and app versions do not match. Update Vibeke on the host and in this app.',
     expired: 'Share expired',
     ticketExpired: 'Relay ticket expired. Pair again.',
     back: 'Connected',

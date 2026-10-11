@@ -1,12 +1,13 @@
 import { describe, expect, test } from 'bun:test';
 import { NotConnectedError, OutcomeUnknownError, RpcError } from '@vibeke/core';
 import { classifyError, deliveryView, isSettled, staleInteraction } from '../src/lib/answer';
-import { BannerTracker } from '../src/lib/banner';
+import { BannerTracker, bannerText } from '../src/lib/banner';
 import { filterFiles, repoTargets, statusLetter } from '../src/lib/changes';
 import { badgeCount, hostOfTag, staleTags } from '../src/lib/notify';
 import { InboxRetainer, LEAVE_MS, SETTLED_MS } from '../src/lib/retain';
 import { buildTree, layoutOrder, neighbours } from '../src/lib/tree';
 import { formatRoute, hashFromUrl, parseRoute, type Route } from '../src/router';
+import { t } from '../src/i18n';
 import { dashboard, host, interaction, pane, run, tab } from './fixtures';
 
 describe('router', () => {
@@ -156,6 +157,16 @@ describe('connection banner', () => {
     const c = new BannerTracker();
     c.update([host('h', null, 'connecting')], 0);
     expect(c.update([host('h', null, 'online')], 2000).level).toBe('none');
+  });
+  test('the text names each cause with its hosts', () => {
+    const b = new BannerTracker();
+    const s = b.update([host('a', null, 'revoked'), host('b', null, 'incompatible'), host('c', null, 'offline'), host('d', null, 'ticket_expired')], 0);
+    expect(bannerText(s, t.conn)).toBe(`a: ${t.conn.revoked} · b: ${t.conn.incompatible} · d: ${t.conn.ticketExpired} · ${t.conn.offline('c')}`);
+  });
+  test('an incompatible host is never called revoked', () => {
+    const s = new BannerTracker().update([host('a', null, 'incompatible')], 0);
+    expect(bannerText(s, t.conn)).toBe(`a: ${t.conn.incompatible}`);
+    expect(bannerText(s, t.conn)).not.toContain(t.conn.revoked);
   });
 });
 
