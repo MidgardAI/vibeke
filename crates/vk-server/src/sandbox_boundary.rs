@@ -69,12 +69,12 @@ pub fn do_push(server: &Server, tb: &TaskBox, remote: &str) -> Result<Value, Str
     if !valid_ref_name(&branch) {
         return Err(format!("refusing to push branch {branch:?}"));
     }
-    let safety = vk_tasks::safety_args(&repo).map_err(|e| e.to_string())?;
     let refspec = format!("refs/heads/{branch}:refs/heads/{branch}");
-    let out = std::process::Command::new("git")
-        .arg("-C")
-        .arg(&repo)
-        .args(&safety)
+    let mut cmd = std::process::Command::new("git");
+    cmd.arg("-C").arg(&repo);
+    // Hardening flags plus the box's own objects (13 §6), in one place.
+    vk_tasks::harden_command(&mut cmd, &repo).map_err(|e| e.to_string())?;
+    let out = cmd
         .args([
             "-c",
             "core.hooksPath=/dev/null",
@@ -114,13 +114,17 @@ pub fn do_copy_out(tb: &TaskBox, rel: &str) -> Result<PathBuf, String> {
             .unwrap_or_else(|| tb.checkout.clone()),
         _ => tb.checkout.clone(),
     };
-    let src = root.join(relp);
-    if !vk_sandbox::fsafe::contained_no_symlink(&root, &src) {
-        return Err(format!(
-            "{rel}: not inside the checkout, or a symlink is on the way"
-        ));
-    }
-    let md = std::fs::symlink_metadata(&src).map_err(|e| format!("{rel}: {e}"))?;
+    // Open with an `openat` walk that never follows a symlink (the box can swap any component
+    // for one at any time), then check type and size on the open file: what is checked is what
+    // is read.
+    let f = vk_sandbox::fsafe::open_file_under(&root, relp).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::PermissionDenied {
+            format!("{rel}: not inside the checkout, or a symlink is on the way")
+        } else {
+            format!("{rel}: {e}")
+        }
+    })?;
+    let md = f.metadata().map_err(|e| format!("{rel}: {e}"))?;
     if !md.is_file() {
         return Err(format!("{rel}: not a regular file"));
     }
@@ -130,7 +134,15 @@ pub fn do_copy_out(tb: &TaskBox, rel: &str) -> Result<PathBuf, String> {
             COPY_MAX / (1024 * 1024)
         ));
     }
-    let bytes = std::fs::read(&src).map_err(|e| e.to_string())?;
+    let mut bytes = Vec::new();
+    std::io::Read::read_to_end(&mut std::io::Read::take(&f, COPY_MAX + 1), &mut bytes)
+        .map_err(|e| format!("{rel}: {e}"))?;
+    if bytes.len() as u64 > COPY_MAX {
+        return Err(format!(
+            "{rel}: larger than {} MB",
+            COPY_MAX / (1024 * 1024)
+        ));
+    }
     let outbox = paths::state_root().join("outbox");
     std::fs::create_dir_all(&outbox).map_err(|e| e.to_string())?;
     {
