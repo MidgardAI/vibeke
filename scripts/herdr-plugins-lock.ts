@@ -1,12 +1,12 @@
 // Select the 20 highest-ranked eligible Herdr plugins and write the lock (spec 18 §6).
 //   bun scripts/herdr-plugins-lock.ts             write top20.lock.toml from catalog.json
-//   bun scripts/herdr-plugins-lock.ts --snapshot  download the live catalog into catalog.json (a person runs this)
+//   bun scripts/herdr-plugins-lock.ts --snapshot  download the live catalog and store its reduced snapshot in catalog.json (a person runs this)
 //   bun scripts/herdr-plugins-lock.ts --check     compare the live catalog with the lock and print Markdown; never writes
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import {
-  BASELINE, CATALOG_URL, DEFAULT_SIZE, GO_VERSION, NODE_VERSION,
+  BASELINE, CATALOG_URL, DEFAULT_SIZE, reduceCatalog, GO_VERSION, NODE_VERSION,
   type Catalog, type IndexEntry, type LockData, type LockedPlugin,
   diffLocks, driftReport, lockFromToml, lockedFrom, manifestPluginId, parseToml, renderLock, resolvePin, selectCandidates, sha256Hex,
 } from './herdr-plugins/lib'
@@ -45,10 +45,12 @@ function miseVersion(tool: string): string {
 
 if (args.includes('--snapshot')) {
   const body = await get(CATALOG_URL)
-  JSON.parse(new TextDecoder().decode(body))
+  const full = JSON.parse(new TextDecoder().decode(body)) as Catalog
+  // Keep only what selection needs; excluded repositories never reach the repository.
+  const reduced = JSON.stringify(reduceCatalog(full, loadExclude(), sha256Hex(body)), null, 1) + '\n'
   mkdirSync(pluginsDir, { recursive: true })
-  writeFileSync(catalogPath, body)
-  console.log(`wrote ${catalogPath} (sha256 ${sha256Hex(body)})`)
+  writeFileSync(catalogPath, reduced)
+  console.log(`wrote ${catalogPath} from a catalog with sha256 ${sha256Hex(body)}`)
   process.exit(0)
 }
 

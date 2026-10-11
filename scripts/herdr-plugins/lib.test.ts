@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import {
   type Catalog, type CatalogPlugin, type IndexEntry, type LockData,
-  isEligible, rankCandidates, renderLock, resolvePin, selectCandidates, sha256Hex, lockedFrom, lockFromToml, diffLocks,
+  isEligible, rankCandidates, reduceCatalog, renderLock, resolvePin, selectCandidates, sha256Hex, lockedFrom, lockFromToml, diffLocks,
 } from './lib'
 
 const repo = (id: number, name: string, stars: number, createdAt: string, platforms?: string[][], head = 'a'.repeat(40)): CatalogPlugin => ({
@@ -81,5 +81,23 @@ describe('lock output', () => {
     const moved = { ...lock.plugins[0], commit: 'd'.repeat(40) }
     expect(diffLocks(lock.plugins, [moved])[0]).toContain('moved pin')
     expect(diffLocks([], lock.plugins)[0]).toContain('new entrant')
+  })
+})
+
+describe('snapshot reduction', () => {
+  test('drops excluded repositories, extra fields and everything past the kept candidates', () => {
+    const full = cat([
+      { ...repo(1, 'a/top', 50, '2026-01-01'), description: 'names another project' } as CatalogPlugin,
+      repo(2, 'b/excluded', 40, '2026-01-01'),
+      repo(3, 'c/two', 30, '2026-01-01', [['linux'], ['windows']]),
+      repo(4, 'd/late', 1, '2026-01-01'),
+    ])
+    const r = reduceCatalog(full, [{ id: 2, reason: 'r' }], 'f'.repeat(64), 2)
+    expect(r.plugins.map(p => p.fullName)).toEqual(['a/top', 'c/two'])
+    expect(r.plugins[1].manifests.map(m => m.path)).toEqual(['m0/herdr-plugin.toml'])
+    expect(JSON.stringify(r)).not.toContain('excluded')
+    expect(JSON.stringify(r)).not.toContain('another project')
+    expect(r.source.sha256).toBe('f'.repeat(64))
+    expect(selectCandidates(r, [], 2).map(c => c.repo.fullName)).toEqual(['a/top', 'c/two'])
   })
 })

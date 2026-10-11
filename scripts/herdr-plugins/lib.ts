@@ -97,6 +97,29 @@ export function rankCandidates(catalog: Catalog, exclude: Exclusion[]): Candidat
   return out.sort(compareCandidates)
 }
 
+/** How many ranked candidates the checked-in snapshot keeps: enough to backfill exclusions. */
+export const SNAPSHOT_KEEP = 40
+
+/**
+ * The checked-in snapshot (spec 18 §6): the first `keep` eligible, non-excluded manifests with
+ * only the fields selection needs, plus the source catalog's time and sha256. Excluded
+ * repositories and all other entries are left out, so the repository never names them.
+ */
+export function reduceCatalog(catalog: Catalog, exclude: Exclusion[], sourceSha256: string, keep = SNAPSHOT_KEEP): Catalog & { source: { url: string; sha256: string } } {
+  const byRepo = new Map<number, CatalogPlugin>()
+  for (const c of rankCandidates(catalog, exclude).slice(0, keep)) {
+    let r = byRepo.get(c.repo.id)
+    if (!r) {
+      r = { id: c.repo.id, fullName: c.repo.fullName, stars: c.repo.stars, createdAt: c.repo.createdAt, headCommit: c.repo.headCommit, manifests: [] }
+      byRepo.set(c.repo.id, r)
+    }
+    const m: CatalogManifest = { path: c.manifest.path, id: c.manifest.id }
+    if (c.manifest.platforms) m.platforms = c.manifest.platforms
+    r.manifests.push(m)
+  }
+  return { generatedAt: catalog.generatedAt, source: { url: CATALOG_URL, sha256: sourceSha256 }, plugins: [...byRepo.values()] }
+}
+
 export function selectCandidates(catalog: Catalog, exclude: Exclusion[], size = DEFAULT_SIZE): Candidate[] {
   return rankCandidates(catalog, exclude).slice(0, size)
 }
