@@ -516,11 +516,10 @@ pub(super) fn flush(server: &Server, cfg: &vk_config::Collision, now: i64) {
 /// `git status --porcelain=v1 -z` of `root` as `path -> (fingerprint, op)`, `None` when git
 /// fails (not a repository, a contained checkout whose `.git` was swapped).
 pub fn git_snapshot(root: &Path, ignore: &[String]) -> Option<BTreeMap<String, (String, vc::Op)>> {
-    let safety = vk_tasks::safety_args(root).ok()?;
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(&safety)
+    let mut cmd = Command::new("git");
+    cmd.arg("-C").arg(root);
+    vk_tasks::harden_command(&mut cmd, root).ok()?;
+    let out = cmd
         .args(["status", "--porcelain=v1", "-z", "--untracked-files=normal"])
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_OPTIONAL_LOCKS", "0")

@@ -206,11 +206,10 @@ fn mkdir_private(p: &Path) -> std::io::Result<()> {
 
 fn git_out(dir: &Path, args: &[&str]) -> Option<String> {
     // Hardened when the checkout is box-writable (worktree mode, restored boxes).
-    let safety = vk_tasks::safety_args(dir).ok()?;
-    let o = std::process::Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(safety)
+    let mut cmd = std::process::Command::new("git");
+    cmd.arg("-C").arg(dir);
+    vk_tasks::harden_command(&mut cmd, dir).ok()?;
+    let o = cmd
         .args(args)
         .stderr(std::process::Stdio::null())
         .output()
