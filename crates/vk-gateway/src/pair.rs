@@ -502,6 +502,47 @@ fn confirm_prompt(name: &str, platform: &str, code: &str) -> String {
     )
 }
 
+/// `vibeke gateway pair` inside a pane: follow the pairing without asking anything here. The
+/// device is confirmed in the TUI, out of the pane's reach; this only says how it goes. Stops
+/// following (and returns) when the state can't be read, for example in a sandbox.
+pub async fn wait_without_prompt(state: &StateDir, pid: &str, exp: u64) -> Result<()> {
+    let mut shown: Option<String> = None;
+    loop {
+        if now_s() > exp {
+            bail!("the pairing link expired; run `vibeke gateway pair` again");
+        }
+        match state.pairing(pid) {
+            Ok(Some(p)) => match &p.status {
+                PairingStatus::Done { .. } => {
+                    println!("Paired ✓");
+                    return Ok(());
+                }
+                PairingStatus::Claimed {
+                    claim_id,
+                    device_name,
+                    check,
+                    ..
+                } if shown.as_deref() != Some(claim_id.as_str()) => {
+                    shown = Some(claim_id.clone());
+                    println!(
+                        "\"{}\" is asking to pair. Confirm it in Vibeke only if the device shows the code {}.",
+                        sanitize_label(device_name, 64),
+                        sanitize_label(check, 32)
+                    );
+                }
+                PairingStatus::Pending => shown = None,
+                _ => {}
+            },
+            Ok(None) => bail!("the pairing was cancelled"),
+            Err(_) => {
+                println!("Vibeke asks you to confirm the device when it opens the link.");
+                return Ok(());
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+}
+
 /// Interactive side of `vibeke-gateway pair`.
 pub async fn wait_and_confirm(state: &StateDir, pid: &str, exp: u64) -> Result<()> {
     // The claim the operator was last asked about; answers are bound to it.

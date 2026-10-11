@@ -14,6 +14,12 @@ use vk_e2e::{HostKeys, b64};
 
 use crate::push::Subscription;
 
+/// The relay `vibeke gateway pair` (and `on`) use when none is set: the hosted Vibeke relay.
+/// `--relay` chooses another.
+pub const DEFAULT_RELAY: &str = "wss://relay.vibeke.dev";
+/// The app origin pairing links point to with the default relay. `--app-url` chooses another.
+pub const DEFAULT_APP_URL: &str = "https://app.vibeke.dev";
+
 pub fn now_s() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

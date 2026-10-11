@@ -171,7 +171,9 @@ fn pair_create(gw: &Arc<Gateway>, p: &Value) -> ApiResult {
         .clamp(PAIR_TTL_MIN_S, PAIR_TTL_MAX_S);
     // Both before anything is written: no orphan pairing when the link can't be made.
     let relay = gw.cfg.relay.clone().ok_or_else(|| {
-        ApiError::unavailable("no relay configured: run `vibeke gateway pair` once to set one up")
+        ApiError::unavailable(
+            "this gateway runs without a relay (local only). Run `vibeke gateway on` to use the Vibeke relay, then pair again",
+        )
     })?;
     let app = gw.cfg.app_url.clone().ok_or_else(|| {
         ApiError::unavailable(
@@ -522,7 +524,7 @@ mod tests {
         let gw = gateway(&t, None, Some("https://app.example"));
         let e = execute(&gw, "pair.create", &json!({})).await.unwrap_err();
         assert_eq!(e.kind, "unavailable");
-        assert!(e.message.contains("no relay"), "{}", e.message);
+        assert!(e.message.contains("without a relay"), "{}", e.message);
 
         let t = tempfile::tempdir().unwrap();
         let gw = gateway(&t, Some("wss://relay.example"), None);

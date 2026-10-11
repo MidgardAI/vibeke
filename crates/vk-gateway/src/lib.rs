@@ -14,6 +14,7 @@ pub mod local;
 pub mod notice;
 pub mod notify;
 pub mod pair;
+pub mod pane_ask;
 pub mod peer_client;
 pub mod peers;
 pub mod push;

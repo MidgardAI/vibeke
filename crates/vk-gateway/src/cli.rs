@@ -180,6 +180,16 @@ pub async fn run_as<I: IntoIterator<Item = String>>(prog: &'static str, args: I)
             name,
             autostart,
         } => {
+            // The app origin is trusted with device keys and the relay sees who connects: an
+            // agent in a pane must not change them.
+            if !autostart
+                && crate::pane_ask::in_pane()
+                && (relay.is_some() || app_url.is_some() || app_from_relay)
+            {
+                bail!(
+                    "the relay and app origin can't be changed from inside a Vibeke pane; run this in a terminal outside Vibeke"
+                );
+            }
             if autostart {
                 let cfg = state.config()?;
                 let want = session.clone().unwrap_or_else(|| "default".into());
@@ -266,10 +276,25 @@ pub async fn run_as<I: IntoIterator<Item = String>>(prog: &'static str, args: I)
             r
         }
         Cmd::On => {
+            // Phone access with nothing set up yet uses the hosted relay and app.
             let (before, cfg) = update_config(&state, |cfg| {
                 cfg.autostart = Some(true);
+                if cfg.relay.is_none() {
+                    cfg.relay = Some(crate::state::DEFAULT_RELAY.into());
+                    cfg.app_url
+                        .get_or_insert_with(|| crate::state::DEFAULT_APP_URL.into());
+                }
                 Ok(())
             })?;
+            if before.relay.is_none() {
+                println!(
+                    "Using the Vibeke relay ({}) and app ({}). Choose others with `vibeke gateway pair --relay … --app-url …`.",
+                    crate::state::DEFAULT_RELAY,
+                    cfg.app_url
+                        .as_deref()
+                        .unwrap_or(crate::state::DEFAULT_APP_URL)
+                );
+            }
             let restart = needs_restart(&before, &cfg, running_status(&state.dir).as_ref());
             let st = start_gateway(&cfg, &state.dir, restart).await?;
             println!("Autostart is on.");
@@ -324,8 +349,15 @@ pub async fn run_as<I: IntoIterator<Item = String>>(prog: &'static str, args: I)
             app_url: app_url_arg,
             app_from_relay,
         } => {
+            let pane = crate::pane_ask::in_pane();
             let cfg = state.config()?;
             if local {
+                if pane {
+                    bail!(
+                        "`pair --local` hands out access without a confirmation, so it does not run inside a Vibeke pane. \
+                         The desktop app runs it itself; to pair a phone here, run `vibeke gateway pair`"
+                    );
+                }
                 let probe = crate::local::socket_path(&state.dir);
                 if std::os::unix::net::UnixStream::connect(&probe).is_err() {
                     bail!(
@@ -351,59 +383,72 @@ pub async fn run_as<I: IntoIterator<Item = String>>(prog: &'static str, args: I)
                 println!("{out}");
                 return Ok(());
             }
-            // One-command setup: save the relay, switch autostart on, start the gateway.
-            let mut relay_arg = relay_arg;
-            if cfg.relay.is_none() && relay_arg.is_none() {
-                use std::io::IsTerminal;
-                if !std::io::stdin().is_terminal() {
-                    bail!(
-                        "no relay set. Pass --relay <url> (and --app-url <origin> or --app-from-relay), \
-                         or run `vibeke gateway pair` on a terminal"
-                    );
-                }
-                eprint!("Relay URL: ");
-                let mut line = String::new();
-                std::io::stdin().read_line(&mut line)?;
-                let line = line.trim();
-                if line.is_empty() {
-                    bail!("no relay given");
-                }
-                relay_arg = Some(line.to_string());
+            if pane && (relay_arg.is_some() || app_url_arg.is_some() || app_from_relay) {
+                bail!(
+                    "inside a Vibeke pane, `pair` uses the relay and app origin that are set up already. \
+                     Change them in a terminal outside Vibeke: `vibeke gateway pair --relay <url> --app-url <origin>`"
+                );
             }
-            let (before, cfg) = update_config(&state, |cfg| {
-                if let Some(r) = relay_arg {
-                    cfg.relay = Some(r);
-                }
-                if app_from_relay {
-                    let Some(r) = cfg.relay.clone() else {
-                        bail!("--app-from-relay needs a relay (--relay <url>)");
-                    };
-                    cfg.app_url = Some(relay_client::ws_base(&r).replacen("ws", "http", 1));
-                } else if app_url_arg.is_some() {
-                    cfg.app_url = app_url_arg;
-                }
-                if cfg.app_url.is_none() {
-                    bail!(
-                        "no app origin set. Pass --app-url <origin that serves the Vibeke web app> to `pair`, \
-                         or --app-from-relay if you serve the app from your own relay (it is trusted with device keys)"
-                    );
-                }
-                cfg.autostart = Some(true);
-                Ok(())
-            })?;
+            // One-command setup: the relay (the hosted one unless chosen), autostart on, then
+            // start the gateway.
+            // (Inside a pane a set-up host writes nothing here: a sandbox may not allow it.)
+            let (before, cfg) = if pane && cfg.relay.is_some() && cfg.app_url.is_some() {
+                (cfg.clone(), cfg)
+            } else {
+                setup_connection(&state, relay_arg, app_url_arg, app_from_relay)?
+            };
             // A relay that requires accounts (spec 16 §6.6): log in first, so the gateway can
             // come online and the device's link is usable.
             ensure_login(&state, &cfg).await?;
-            // New connection settings reach a running gateway only through a restart.
             let restart = needs_restart(&before, &cfg, running_status(&state.dir).as_ref());
+            let ttl_s = ttl.clamp(1, 60) * 60;
+            if pane {
+                // The pane can't start the gateway or write a pairing itself: the user approves
+                // in Vibeke, and the server starts the gateway and asks it for the link.
+                if no_confirm {
+                    eprintln!(
+                        "--no-confirm does not apply inside a Vibeke pane: you confirm the device in Vibeke."
+                    );
+                }
+                if restart && RunLock::holder(&state.dir).is_some() {
+                    eprintln!(
+                        "Note: the running gateway uses older settings. Restart it with `vibeke gateway on` in a terminal outside Vibeke."
+                    );
+                }
+                let r = crate::pane_ask::ask(
+                    "pair.create",
+                    json!({"scope": scope.as_str(), "ttl_s": ttl_s}),
+                )
+                .await?;
+                let (Some(url), Some(pid)) = (r["link"].as_str(), r["pid"].as_str()) else {
+                    bail!("the gateway returned no pairing link");
+                };
+                let exp = r["open_by"]
+                    .as_u64()
+                    .unwrap_or_else(|| crate::state::now_s() + ttl_s);
+                let screen = crate::pane_ask::AltScreen::enter();
+                print_pair_link(url, no_qr, ttl_s / 60, scope);
+                println!(
+                    "When the device opens the link, Vibeke asks you to confirm it. Confirm only if the device shows the same code."
+                );
+                let r = tokio::select! {
+                    r = pair::wait_without_prompt(&state, pid, exp) => r,
+                    _ = tokio::signal::ctrl_c() => Ok(()),
+                };
+                drop(screen);
+                return r.map(|()| println!("Done. The pairing link is no longer shown."));
+            }
+            // New connection settings reach a running gateway only through a restart.
             match start_gateway(&cfg, &state.dir, restart).await {
                 Ok(_) => wait_ready(&state.dir, cfg.relay.as_deref()).await,
                 Err(e) => eprintln!(
                     "Could not start the gateway through the server: {e:#}\nStart it yourself with `vibeke gateway run`."
                 ),
             }
-            let Some(relay) = cfg.relay.clone() else {
-                bail!("run `vibeke-gateway run --relay <url>` once first")
+            let (Some(relay), Some(app)) = (cfg.relay.clone(), cfg.app_url.clone()) else {
+                bail!(
+                    "no relay or app origin set; run `vibeke gateway pair --relay <url> --app-url <origin>`"
+                )
             };
             let host_name = cfg.host_name.clone().unwrap_or_else(|| "this host".into());
             let (p, link) = pair::create(
@@ -412,27 +457,17 @@ pub async fn run_as<I: IntoIterator<Item = String>>(prog: &'static str, args: I)
                 &host_name,
                 scope,
                 no_confirm,
-                Duration::from_secs(ttl * 60),
+                Duration::from_secs(ttl_s),
             )?;
-            let Some(app) = cfg.app_url.clone() else {
-                bail!(
-                    "no app origin set. Pass --app-url <origin that serves the Vibeke web app> to `run`, \
-                     or --app-from-relay if you serve the app from your own relay (it is trusted with device keys)"
-                );
-            };
+            state.audit(&json!({"ts": crate::state::now_s(), "event": "pairing.created", "by": "cli", "pid": p.pid, "scope": scope.as_str(), "no_confirm": no_confirm}));
+            notice_cli(&cfg, crate::notice::pairing_created(scope, ttl_s / 60)).await;
             let url = link.to_url(&app);
-            if !no_qr {
-                println!("{}", pair::render_qr(&url));
-            }
-            println!(
-                "Open on your phone (valid {ttl} min, single use, scope {}):\n{url}\n",
-                scope.as_str()
-            );
+            print_pair_link(&url, no_qr, ttl_s / 60, scope);
             if no_confirm {
                 println!("Bearer invitation: whoever opens this link first gets access.");
             } else {
                 println!(
-                    "Waiting for the device… keep this running; you'll be asked to confirm its fingerprint."
+                    "Waiting for the device… keep this running. You will be asked to compare a check code with the device."
                 );
             }
             pair::wait_and_confirm(&state, &p.pid, p.exp).await
@@ -447,13 +482,46 @@ pub async fn run_as<I: IntoIterator<Item = String>>(prog: &'static str, args: I)
             no_qr,
         } => {
             let cfg = state.config()?;
+            let ttl_s = parse_duration(&ttl)?;
+            if crate::pane_ask::in_pane() {
+                // The user approves in Vibeke; the server resolves the pane or workspace.
+                let mut p = if handoff {
+                    json!({"kind": "handoff", "ttl_s": ttl_s})
+                } else {
+                    let mut p = json!({"kind": "share", "scope": scope, "ttl_s": ttl_s});
+                    match (&workspace, &pane) {
+                        (_, Some(x)) => p["pane"] = json!(x),
+                        (Some(w), None) => p["workspace"] = json!(w),
+                        (None, None) => bail!("share --workspace W or --pane P (or --handoff)"),
+                    }
+                    p
+                };
+                if let Some(l) = &label {
+                    p["label"] = json!(l);
+                }
+                let r = crate::pane_ask::ask("share.create", p).await?;
+                let Some(url) = r["link"].as_str() else {
+                    bail!("the gateway returned no link");
+                };
+                let mut text = String::new();
+                if !no_qr {
+                    text.push_str(&pair::render_qr(url));
+                    text.push('\n');
+                }
+                text.push_str(&format!(
+                    "{}, open within 15 min, access for {ttl}:\n{url}\n\nAnyone with this link can join until it is used. Cancel it with `vibeke gateway revoke {}`.",
+                    if handoff { "Handoff invitation".to_string() } else { format!("Share ({scope})") },
+                    r["pid"].as_str().unwrap_or("<id>")
+                ));
+                crate::pane_ask::show_until_enter(&text).await;
+                return Ok(());
+            }
             let Some(relay) = cfg.relay.clone() else {
-                bail!("run `vibeke gateway run --relay <url>` once first")
+                bail!("no relay set up yet; run `vibeke gateway pair` or `vibeke gateway on` first")
             };
             let Some(app) = cfg.app_url.clone() else {
-                bail!("no app origin set (vibeke gateway run --app-url …)")
+                bail!("no app origin set; run `vibeke gateway pair --app-url <origin>` first")
             };
-            let ttl_s = parse_duration(&ttl)?;
             let limit = if handoff {
                 None
             } else {
@@ -511,7 +579,7 @@ pub async fn run_as<I: IntoIterator<Item = String>>(prog: &'static str, args: I)
                 owner: None,
                 created_by: None,
             };
-            let (_, link) = pair::create_with(
+            let (created, link) = pair::create_with(
                 &state,
                 &relay,
                 &host_name,
@@ -520,6 +588,7 @@ pub async fn run_as<I: IntoIterator<Item = String>>(prog: &'static str, args: I)
                 Duration::from_secs(15 * 60),
                 Some(spec),
             )?;
+            state.audit(&json!({"ts": crate::state::now_s(), "event": "share.created", "by": "cli", "kind": kind, "pid": created.pid}));
             let url = link.to_url(&app);
             if !no_qr {
                 println!("{}", pair::render_qr(&url));
@@ -533,6 +602,7 @@ pub async fn run_as<I: IntoIterator<Item = String>>(prog: &'static str, args: I)
             println!(
                 "Anyone with this link can join until it's used. List with `vibeke gateway invites`, cancel or revoke with `vibeke gateway revoke <id>`."
             );
+            notice_cli(&cfg, crate::notice::share_created(kind, scope, None)).await;
             Ok(())
         }
         Cmd::Devices => {
@@ -578,6 +648,22 @@ pub async fn run_as<I: IntoIterator<Item = String>>(prog: &'static str, args: I)
         Cmd::Peer { cmd } => match cmd {
             PeerCmd::Invite { ttl } => {
                 let cfg = state.config()?;
+                if crate::pane_ask::in_pane() {
+                    let r = crate::pane_ask::ask(
+                        "peer.invite",
+                        json!({"ttl_s": ttl.clamp(1, 60) * 60}),
+                    )
+                    .await?;
+                    let Some(link) = r["link"].as_str() else {
+                        bail!("the gateway returned no link");
+                    };
+                    crate::pane_ask::show_until_enter(&format!(
+                        "On your other host, within {} min:\n  vibeke gateway peer add '{link}'\n\nAnyone with this link can link a host with this one until it is used.",
+                        ttl.clamp(1, 60)
+                    ))
+                    .await;
+                    return Ok(());
+                }
                 let host_name = cfg
                     .host_name
                     .clone()
@@ -595,6 +681,7 @@ pub async fn run_as<I: IntoIterator<Item = String>>(prog: &'static str, args: I)
                     crate::peers::link_text(&link, cfg.app_url.as_deref())
                 );
                 println!("Anyone with this link can pair a host with this one until it's used.");
+                notice_cli(&cfg, crate::notice::peer_invited(None)).await;
                 Ok(())
             }
             PeerCmd::Add {
@@ -603,6 +690,21 @@ pub async fn run_as<I: IntoIterator<Item = String>>(prog: &'static str, args: I)
                 allow_other_relay,
             } => {
                 let cfg = state.config()?;
+                if crate::pane_ask::in_pane() {
+                    let r = crate::pane_ask::ask(
+                        "peer.redeem",
+                        json!({"link": link, "share_user": share_user, "allow_other_relay": allow_other_relay}),
+                    )
+                    .await?;
+                    println!(
+                        "Paired with {}. Peer id {}.",
+                        r.pointer("/peer/name")
+                            .and_then(Value::as_str)
+                            .unwrap_or("the host"),
+                        r.pointer("/peer/id").and_then(Value::as_str).unwrap_or("?")
+                    );
+                    return Ok(());
+                }
                 start_if_enabled(&state, &cfg).await;
                 let us = crate::peer_client::Identity {
                     host_name: cfg
@@ -622,6 +724,7 @@ pub async fn run_as<I: IntoIterator<Item = String>>(prog: &'static str, args: I)
                     .expires_at
                     .map(|t| format!(", expires {}", until_text(Some(t), crate::state::now_s())))
                     .unwrap_or_default();
+                notice_cli(&cfg, crate::notice::peer_redeemed(&rec.name, None)).await;
                 println!(
                     "Paired with {} ({}{until}). Peer id {}.",
                     rec.name,
@@ -725,6 +828,78 @@ fn update_config(
     f(&mut cfg)?;
     state.save_config(&cfg)?;
     Ok((before, cfg))
+}
+
+/// Save the relay and app origin `pair` uses, filling in the hosted defaults
+/// ([`crate::state::DEFAULT_RELAY`], [`crate::state::DEFAULT_APP_URL`]) for what is not set, and
+/// turn autostart on. A relay of one's own needs an app origin too (`--app-url`, or
+/// `--app-from-relay` when the relay serves the app). Returns the config before and after.
+fn setup_connection(
+    state: &StateDir,
+    relay_arg: Option<String>,
+    app_url_arg: Option<String>,
+    app_from_relay: bool,
+) -> Result<(Config, Config)> {
+    let r = update_config(state, |cfg| {
+        if let Some(r) = relay_arg {
+            cfg.relay = Some(r);
+        }
+        if cfg.relay.is_none() {
+            cfg.relay = Some(crate::state::DEFAULT_RELAY.into());
+        }
+        if app_from_relay {
+            let r = cfg.relay.clone().unwrap_or_default();
+            cfg.app_url = Some(relay_client::ws_base(&r).replacen("ws", "http", 1));
+        } else if app_url_arg.is_some() {
+            cfg.app_url = app_url_arg;
+        }
+        if cfg.app_url.is_none() {
+            if !is_default_relay(cfg.relay.as_deref()) {
+                bail!(
+                    "this relay has no app origin set. Pass --app-url <origin that serves the Vibeke web app>, \
+                     or --app-from-relay if you serve the app from your own relay (it is trusted with device keys)"
+                );
+            }
+            cfg.app_url = Some(crate::state::DEFAULT_APP_URL.into());
+        }
+        cfg.autostart = Some(true);
+        Ok(())
+    })?;
+    if r.0.relay.is_none() && is_default_relay(r.1.relay.as_deref()) {
+        println!(
+            "Using the Vibeke relay ({}) and app ({}). Choose others with --relay and --app-url.",
+            crate::state::DEFAULT_RELAY,
+            r.1.app_url
+                .as_deref()
+                .unwrap_or(crate::state::DEFAULT_APP_URL)
+        );
+    }
+    Ok(r)
+}
+
+fn is_default_relay(relay: Option<&str>) -> bool {
+    relay.is_some_and(|r| {
+        relay_client::ws_base(r).trim_end_matches('/')
+            == relay_client::ws_base(crate::state::DEFAULT_RELAY).trim_end_matches('/')
+    })
+}
+
+/// The QR code (unless `no_qr`) and the link of a pairing.
+fn print_pair_link(url: &str, no_qr: bool, minutes: u64, scope: Scope) {
+    if !no_qr {
+        println!("{}", pair::render_qr(url));
+    }
+    println!(
+        "Open on your phone (valid {minutes} min, single use, {} access: it {}):\n{url}\n",
+        scope.as_str(),
+        crate::notice::access_text(scope)
+    );
+}
+
+/// Tell the user's Vibeke about an access change made here ([`crate::notice`]), best effort.
+async fn notice_cli(cfg: &Config, n: crate::notice::Notice) {
+    let srv = server::Server::new(server::socket_path(cfg.socket.clone(), cfg.session_name()));
+    crate::notice::send(&srv, &n).await;
 }
 
 /// The settings a running gateway connects with (read once at its start).
@@ -1342,6 +1517,41 @@ mod tests {
             .is_err()
         );
         assert_eq!(state.config().unwrap().relay.as_deref(), Some("wss://r"));
+    }
+
+    #[test]
+    fn pairing_uses_the_hosted_relay_and_app_by_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = StateDir::open(dir.path().join("gw")).unwrap();
+        let (before, after) = setup_connection(&state, None, None, false).unwrap();
+        assert!(before.relay.is_none());
+        assert_eq!(after.relay.as_deref(), Some(crate::state::DEFAULT_RELAY));
+        assert_eq!(
+            after.app_url.as_deref(),
+            Some(crate::state::DEFAULT_APP_URL)
+        );
+        assert_eq!(after.autostart, Some(true));
+        // Saved choices stay; an app origin of one's own stays with the default relay.
+        let (_, after) =
+            setup_connection(&state, None, Some("https://app.example".into()), false).unwrap();
+        assert_eq!(after.app_url.as_deref(), Some("https://app.example"));
+        let (_, after) = setup_connection(&state, None, None, false).unwrap();
+        assert_eq!(after.app_url.as_deref(), Some("https://app.example"));
+
+        // A relay of one's own needs its app origin named.
+        let dir = tempfile::tempdir().unwrap();
+        let state = StateDir::open(dir.path().join("gw")).unwrap();
+        let e = setup_connection(&state, Some("wss://relay.example".into()), None, false)
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("--app-url"), "{e}");
+        assert!(state.config().unwrap().relay.is_none(), "nothing saved");
+        let (_, after) =
+            setup_connection(&state, Some("wss://relay.example".into()), None, true).unwrap();
+        assert_eq!(after.app_url.as_deref(), Some("https://relay.example"));
+        assert!(is_default_relay(Some("wss://relay.vibeke.dev/")));
+        assert!(!is_default_relay(Some("wss://relay.example")));
+        assert!(!is_default_relay(None));
     }
 
     #[test]
