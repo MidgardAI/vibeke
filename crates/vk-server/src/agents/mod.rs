@@ -1014,9 +1014,14 @@ fn resolve(server: &Server, id: &str, status: InteractionStatus, reason: &str) {
         return;
     }
     let event = if it.delivery == DeliveryState::Delivering {
-        if status != InteractionStatus::ResolvedElsewhere {
+        if !matches!(
+            status,
+            InteractionStatus::ResolvedElsewhere | InteractionStatus::Answered
+        ) {
             // A dismissal or expiry says nothing about the answer in flight: never report it
             // as delivered. The inbox keeps it as a delivery problem until it is confirmed.
+            // `Answered` comes from in-process appliers (egress proxy, boundary actions) that
+            // applied the decision themselves.
             drop(c);
             set_delivery(
                 server,
@@ -1026,7 +1031,7 @@ fn resolve(server: &Server, id: &str, status: InteractionStatus, reason: &str) {
             );
             return;
         }
-        // The harness moved on after our decision: native confirmation of delivery.
+        // The harness moved on after our decision, or the applier confirmed it: delivered.
         it.delivery = DeliveryState::Delivered;
         "interaction.delivered"
     } else {

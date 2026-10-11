@@ -473,8 +473,10 @@ fn reconcile_marks_missing_and_reports_orphans_but_deletes_nothing() {
     let wt = wt_of(&created);
     let branch = created["task"]["branch"].as_str().unwrap().to_string();
 
-    // A worktree made outside Vibeke inside the task root, and a stray directory.
-    let manual = s.root().join("worktrees/rec/manual");
+    // A worktree made outside Vibeke inside the repo's task directory (named after the repo
+    // and a hash of its path), and a stray directory.
+    let repo_dir = wt.parent().unwrap().to_path_buf();
+    let manual = repo_dir.join("manual");
     git(
         &r,
         &[
@@ -486,7 +488,7 @@ fn reconcile_marks_missing_and_reports_orphans_but_deletes_nothing() {
             manual.to_str().unwrap(),
         ],
     );
-    let stray = s.root().join("worktrees/rec/leftover");
+    let stray = repo_dir.join("leftover");
     std::fs::create_dir_all(&stray).unwrap();
     std::fs::write(stray.join("keep.txt"), "x").unwrap();
 

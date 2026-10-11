@@ -1364,25 +1364,43 @@ mod tests {
     /// deadline. A client that half-closes mid-ClientHello gets nothing forwarded either.
     #[tokio::test]
     async fn delayed_or_truncated_client_hello_closes_the_tunnel() {
-        // An origin that records everything it ever receives.
+        // An origin that records what it receives, per connection. Only connections opening
+        // with this test's own TLS record header count: when the tests run inside a Vibeke
+        // pane, the host's preview probe connects to every port the pane opens (HTTP and TLS).
         let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let o = l.local_addr().unwrap().port();
-        let seen: Arc<std::sync::Mutex<Vec<u8>>> = Arc::default();
-        let s2 = seen.clone();
+        let conns: Arc<std::sync::Mutex<Vec<Vec<u8>>>> = Arc::default();
+        let c2 = conns.clone();
         tokio::spawn(async move {
             while let Ok((mut s, _)) = l.accept().await {
-                let seen = s2.clone();
+                let conns = c2.clone();
                 tokio::spawn(async move {
+                    let i = {
+                        let mut c = conns.lock().unwrap();
+                        c.push(vec![]);
+                        c.len() - 1
+                    };
                     let mut buf = [0u8; 4096];
                     while let Ok(n) = s.read(&mut buf).await {
                         if n == 0 {
                             break;
                         }
-                        seen.lock().unwrap().extend_from_slice(&buf[..n]);
+                        conns.lock().unwrap()[i].extend_from_slice(&buf[..n]);
                     }
                 });
             }
         });
+        // The bytes of the connections opening with `record`'s header (type, version, length).
+        let seen = move |record: &[u8]| -> Vec<u8> {
+            conns
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|c| c.starts_with(&record[..5]))
+                .flatten()
+                .copied()
+                .collect()
+        };
         let mut pol = EgressPolicy::new(NetworkProfile::HarnessApis);
         pol.local_ports.insert(o);
         let events = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -1401,10 +1419,7 @@ mod tests {
         let r = tokio::time::timeout(Duration::from_secs(5), s.read_to_end(&mut out)).await;
         assert!(r.is_ok(), "the tunnel was closed");
         tokio::time::sleep(Duration::from_millis(300)).await;
-        assert!(
-            seen.lock().unwrap().is_empty(),
-            "uninspected bytes were forwarded"
-        );
+        assert!(seen(&hello).is_empty(), "uninspected bytes were forwarded");
         assert!(events.lock().unwrap().iter().any(|e| matches!(
             e,
             EgressEvent::Denied { reason, .. } if reason.contains("ClientHello")
@@ -1417,7 +1432,7 @@ mod tests {
         let _ = tokio::time::timeout(Duration::from_secs(5), s.read_to_end(&mut out)).await;
         tokio::time::sleep(Duration::from_millis(300)).await;
         assert!(
-            seen.lock().unwrap().is_empty(),
+            seen(&hello).is_empty(),
             "a truncated ClientHello was forwarded"
         );
         // A complete, allowed ClientHello still goes through.
@@ -1425,7 +1440,7 @@ mod tests {
         let ok = client_hello(Some("localhost"));
         s.write_all(&ok).await.unwrap();
         tokio::time::sleep(Duration::from_millis(300)).await;
-        assert!(seen.lock().unwrap().starts_with(&ok));
+        assert!(seen(&ok).starts_with(&ok));
     }
 
     #[tokio::test]

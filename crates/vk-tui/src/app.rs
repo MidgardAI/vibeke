@@ -3600,7 +3600,8 @@ mod pending_tests {
         while let Ok(f) = rx.try_recv() {
             if let ClientFrame::Command { req, json } = f {
                 let c: Value = serde_json::from_str(&json).unwrap();
-                // The queries every connect makes (crate::plugins, crate::elevate) aren't
+                // The queries every connect makes (crate::plugins, crate::elevate,
+                // crate::config_notice) aren't
                 // operations.
                 if !matches!(
                     c["method"].as_str(),
@@ -3610,6 +3611,7 @@ mod pending_tests {
                             | "compat.ui.state"
                             | "auth.list"
                             | "gateway.status"
+                            | "config.get"
                     )
                 ) {
                     v.push((req, c));

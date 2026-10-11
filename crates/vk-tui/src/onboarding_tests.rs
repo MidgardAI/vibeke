@@ -189,7 +189,8 @@ fn esc_dismisses_setup_for_good_and_the_palette_reopens_it() {
     assert!(!tmp.path().join("c.toml").exists());
     // The marker keeps setup from opening by itself at the next start.
     assert!(dismissed(&tmp.path().join("c.toml")));
-    assert!(!dismissed(&tmp.path().join("other.toml")));
+    let other = tempfile::tempdir().unwrap();
+    assert!(!dismissed(&other.path().join("c.toml")));
     // `tab` / shift+tab move between steps.
     open_with(&mut app, temp_dirs(tmp.path()), tmp.path().join("c.toml"));
     app.ux.onboarding.as_mut().unwrap().herdr = None;

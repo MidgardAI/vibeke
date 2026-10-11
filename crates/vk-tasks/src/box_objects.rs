@@ -118,7 +118,9 @@ pub fn register_box_objects(checkout: &Path, objects: &Path) {
 }
 
 /// Import every object of the store at `objects` (the box is going away) and forget the
-/// store. Returns how many objects were new to the repository.
+/// store. Returns how many objects were new to the repository. On failure the store stays
+/// registered, so the next host git command in the repository tries again; the caller must
+/// keep the directory.
 pub fn release_box_objects(objects: &Path) -> Result<usize, String> {
     let objects = canon(objects);
     let common = {
@@ -134,7 +136,9 @@ pub fn release_box_objects(objects: &Path) -> Result<usize, String> {
         let _g = import_lock().lock().unwrap_or_else(|e| e.into_inner());
         import(&common, &objects, &HashSet::new()).map(|(n, _)| n)
     };
-    stores().lock().unwrap().retain(|x| x.objects != objects);
+    if r.is_ok() {
+        stores().lock().unwrap().retain(|x| x.objects != objects);
+    }
     r
 }
 

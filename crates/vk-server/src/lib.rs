@@ -1274,12 +1274,11 @@ impl Server {
     /// storage is back ([`Self::retry_pane_ends`]).
     pub fn pane_ended(&self, pane_id: &str, reason: &str) {
         // Lock order: archive → core. The pane's process is gone, so no rows arrive meanwhile.
-        let had_archive = !self
-            .archive
-            .lock()
-            .unwrap()
-            .segment_infos(pane_id)
-            .is_empty();
+        // The open segment counts: it is flushed only at teardown, after the commit.
+        let had_archive = {
+            let a = self.archive.lock().unwrap();
+            a.is_open(pane_id) || !a.segment_infos(pane_id).is_empty()
+        };
         let mut c = self.core.lock().unwrap();
         let Some(p) = c.pane(pane_id).cloned() else {
             drop(c);

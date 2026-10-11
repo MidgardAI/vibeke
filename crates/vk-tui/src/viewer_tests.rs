@@ -269,8 +269,15 @@ fn the_wasm_label_is_download() {
 #[test]
 fn the_toast_names_the_key() {
     let (mut app, _rxs) = fleet();
-    let key = app.keymap.binding_for("open_images").expect("bound");
-    assert!(key.starts_with("prefix+"), "{key}");
+    assert!(
+        app.keymap
+            .binding_for("open_images")
+            .unwrap()
+            .starts_with("prefix+")
+    );
+    // The toast spells the chord the way the user types it (`ctrl+q then B`).
+    let key = app.keymap.how_to("open_images").expect("bound");
+    assert!(key.contains(" then "), "{key}");
     crate::push::on_events(&mut app, 0, vec![captured(1, "S5", "p1", "agent")], false);
     assert_eq!(
         app.toasts.last().unwrap().text,

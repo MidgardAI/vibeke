@@ -39,8 +39,11 @@ pub fn expand_socket_path(configured: &str, home: &Path) -> Option<PathBuf> {
 /// live next to it (`<dir>/sessions/<name>/herdr.sock`), the layout Herdr itself uses.
 ///
 /// `<name>` is the session's runtime directory name ([`crate::paths::runtime_dir_name`]): the
-/// session name itself up to 16 characters, else a short form with a hash, so the socket path
-/// stays under the 104-byte Unix socket limit for 64-character session names.
+/// session name itself up to 16 characters, else a short form with a hash. Under the runtime
+/// root, a path that would still pass the 104-byte Unix socket limit uses `s/<hash>` instead.
+/// `sun_path` holds 104 bytes on macOS, including the trailing NUL.
+const SUN_PATH_MAX: usize = 104;
+
 pub fn session_listener(configured: Option<&Path>, runtime_root: &Path, session: &str) -> PathBuf {
     let name = if session == herdr::DEFAULT_SESSION {
         session.to_string()
@@ -48,7 +51,21 @@ pub fn session_listener(configured: Option<&Path>, runtime_root: &Path, session:
         crate::paths::runtime_dir_name(session)
     };
     match configured {
-        None => herdr::session_socket(runtime_root, &name),
+        None => {
+            let p = herdr::session_socket(runtime_root, &name);
+            // Under a long `$TMPDIR` even a 16-character name can pass the limit: fall back
+            // to `<root>/s/<hash>/herdr.sock`. Panes learn the path from their environment,
+            // so the readable layout is only a convenience here.
+            if p.as_os_str().len() < SUN_PATH_MAX {
+                p
+            } else {
+                let hash = blake3::hash(session.as_bytes()).to_hex();
+                runtime_root
+                    .join("s")
+                    .join(&hash.as_str()[..8])
+                    .join("herdr.sock")
+            }
+        }
         Some(p) if session == herdr::DEFAULT_SESSION => p.to_path_buf(),
         Some(p) => {
             let dir = p.parent().unwrap_or_else(|| Path::new("/"));
@@ -263,16 +280,23 @@ mod tests {
         let long = "a".repeat(64);
         let p = session_listener(None, root, &long);
         assert!(p.as_os_str().len() < 104, "{}", p.display());
-        assert_eq!(
-            p,
-            root.join("sessions")
-                .join(crate::paths::runtime_dir_name(&long))
-                .join("herdr.sock")
-        );
+        assert!(p.starts_with(root.join("s")), "{}", p.display());
+        // Distinct sessions get distinct sockets.
+        let other = session_listener(None, root, &"b".repeat(64));
+        assert_ne!(p, other);
         // Short names stay readable.
         assert_eq!(
             session_listener(None, root, "work"),
             root.join("sessions/work/herdr.sock")
+        );
+        // A shorter root keeps the readable layout for long names too.
+        let short = Path::new("/tmp/vibeke-501/herdr-compat");
+        assert_eq!(
+            session_listener(None, short, &long),
+            short
+                .join("sessions")
+                .join(crate::paths::runtime_dir_name(&long))
+                .join("herdr.sock")
         );
     }
 

@@ -8,12 +8,15 @@
 //!   ([`vk_proto::model::Isolation::visible_roots`]: the checkout and the pane's private dir,
 //!   which holds the relocated harness home). A sandboxed agent then cannot point the server at
 //!   a host transcript and read it back through `agent.read` or `agent.transcript`. Host panes
-//!   can read every file of the user already, so their paths are accepted as reported: the
-//!   user's own `CLAUDE_CONFIG_DIR`, `CODEX_HOME` or `PI_CODING_AGENT_DIR` keep working.
-//! - **Reading a file** ([`open_regular`], [`read_tail`], [`read_from`]): the file is opened
-//!   with `O_NONBLOCK | O_NOFOLLOW` and must be a regular file (no FIFO, socket or device, so a
-//!   `/dev/zero` or a FIFO cannot exhaust memory or hang a worker), and only a bounded tail is
-//!   read. Callers run these on the blocking pool.
+//!   can read every file of the user already, so any absolute path is accepted: the user's
+//!   own `CLAUDE_CONFIG_DIR`, `CODEX_HOME` or `PI_CODING_AGENT_DIR` keep working.
+//!   Every accepted path is stored with its symlinks resolved.
+//! - **Reading a file** ([`open_regular`], [`read_tail`], [`read_from`]): the path is walked
+//!   one directory at a time with `O_NOFOLLOW`, so a symlink anywhere in it is refused. A
+//!   contained agent that later swaps a directory of an accepted path for a symlink to a host
+//!   directory gets nothing. The file is opened with `O_NONBLOCK` and must be a regular file
+//!   (no FIFO, socket or device, so a `/dev/zero` or a FIFO cannot exhaust memory or hang a
+//!   worker), and only a bounded tail is read. Callers run these on the blocking pool.
 
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
@@ -24,29 +27,100 @@ use crate::Server;
 /// Longest path accepted from a payload.
 const MAX_PATH: usize = 4096;
 
-/// Open `path` read-only without following a final symlink and without blocking on a FIFO;
-/// refuse anything but a regular file.
+/// Open `path` read-only without blocking on a FIFO and refuse anything but a regular file.
+/// The path is walked one component at a time: a symlink owned by root (`/tmp` and `/var` on
+/// macOS) is followed, any other symlink is refused, so an agent cannot redirect a path it
+/// reported by swapping one of its directories for a link.
 pub fn open_regular(path: &Path) -> std::io::Result<File> {
-    use std::os::unix::fs::OpenOptionsExt;
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    use std::os::unix::ffi::OsStrExt;
+    let invalid = |m: &str| std::io::Error::new(std::io::ErrorKind::InvalidInput, m.to_string());
     if !path.is_absolute() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "transcript path is not absolute",
-        ));
+        return Err(invalid("transcript path is not absolute"));
     }
-    let f = std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW | libc::O_CLOEXEC)
-        .open(path)?;
-    // fstat on the opened descriptor: no race between the check and the read.
-    let meta = f.metadata()?;
-    if !meta.file_type().is_file() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "transcript is not a regular file",
-        ));
+    let cstr = |name: &std::ffi::OsStr| {
+        std::ffi::CString::new(name.as_bytes()).map_err(|_| invalid("transcript path contains NUL"))
+    };
+    let open_at = |dir: libc::c_int, name: &std::ffi::OsStr, flags: libc::c_int| {
+        let c = cstr(name)?;
+        // SAFETY: `c` is a valid C string; `dir` is an open directory descriptor or AT_FDCWD.
+        let fd = unsafe { libc::openat(dir, c.as_ptr(), flags | libc::O_CLOEXEC) };
+        if fd < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        // SAFETY: `fd` was just opened and is owned by nobody else.
+        Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+    };
+    // The target of `name` in `dir` when it is a symlink owned by root, `None` when it is not
+    // a symlink; an error for a symlink owned by anyone else.
+    let root_link = |dir: libc::c_int,
+                     name: &std::ffi::OsStr|
+     -> std::io::Result<Option<PathBuf>> {
+        let c = cstr(name)?;
+        let mut st: libc::stat = unsafe { std::mem::zeroed() };
+        // SAFETY: valid C string, valid out pointer.
+        if unsafe { libc::fstatat(dir, c.as_ptr(), &mut st, libc::AT_SYMLINK_NOFOLLOW) } != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        if st.st_mode & libc::S_IFMT != libc::S_IFLNK {
+            return Ok(None);
+        }
+        if st.st_uid != 0 {
+            return Err(invalid("transcript path contains a symlink"));
+        }
+        let mut buf = vec![0u8; libc::PATH_MAX as usize];
+        // SAFETY: valid C string; `buf` has room for `buf.len()` bytes.
+        let n = unsafe { libc::readlinkat(dir, c.as_ptr(), buf.as_mut_ptr().cast(), buf.len()) };
+        if n < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        buf.truncate(n as usize);
+        Ok(Some(PathBuf::from(std::ffi::OsStr::from_bytes(&buf))))
+    };
+    let dir_flags = libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW;
+    let mut todo: PathBuf = path.to_path_buf();
+    'restart: for _ in 0..8 {
+        let mut parts: Vec<std::ffi::OsString> = Vec::new();
+        for c in todo.components() {
+            match c {
+                Component::RootDir | Component::CurDir => {}
+                Component::Normal(n) => parts.push(n.to_os_string()),
+                Component::ParentDir => {
+                    // Only from a root-owned link's target, resolved textually.
+                    parts.pop();
+                }
+                Component::Prefix(_) => return Err(invalid("transcript path is not normalized")),
+            }
+        }
+        let Some((file, dirs)) = parts.split_last() else {
+            return Err(invalid("transcript path names no file"));
+        };
+        let mut dir = open_at(libc::AT_FDCWD, std::ffi::OsStr::new("/"), dir_flags)?;
+        let mut here = PathBuf::from("/");
+        for (i, d) in dirs.iter().enumerate() {
+            if let Some(target) = root_link(dir.as_raw_fd(), d)? {
+                let mut next = here.join(target);
+                next.extend(&parts[i + 1..]);
+                todo = next;
+                continue 'restart;
+            }
+            dir = open_at(dir.as_raw_fd(), d, dir_flags)?;
+            here.push(d);
+        }
+        let fd = open_at(
+            dir.as_raw_fd(),
+            file,
+            libc::O_RDONLY | libc::O_NONBLOCK | libc::O_NOFOLLOW,
+        )?;
+        let f = File::from(fd);
+        // fstat on the opened descriptor: no race between the check and the read.
+        let meta = f.metadata()?;
+        if !meta.file_type().is_file() {
+            return Err(invalid("transcript is not a regular file"));
+        }
+        return Ok(f);
     }
-    Ok(f)
+    Err(invalid("transcript path has too many links"))
 }
 
 /// The last `max_bytes` of a regular file, decoded lossily. `true` when the read started in
@@ -76,8 +150,8 @@ pub fn read_from(path: &Path, offset: u64, max: u64) -> std::io::Result<(Vec<u8>
 }
 
 /// The transcript path an agent of `pane` reported, if the server may use it (see the module
-/// docs). The returned path is normalized; for a contained pane it is resolved through
-/// symlinks.
+/// docs). The returned path is normalized and resolved through symlinks, so [`open_regular`]
+/// can open it.
 pub fn accept(server: &Server, pane: &str, raw: &str) -> Option<String> {
     if raw.is_empty() || raw.len() > MAX_PATH || raw.contains('\0') {
         return None;
@@ -96,10 +170,10 @@ pub fn accept(server: &Server, pane: &str, raw: &str) -> Option<String> {
                 .map(|p| p.isolation)
         })
     })?;
-    if !isolation.is_contained() {
-        return Some(raw.to_string());
-    }
     let resolved = resolve_existing_prefix(path)?;
+    if !isolation.is_contained() {
+        return Some(resolved.to_string_lossy().into_owned());
+    }
     let inside = isolation.visible_roots.iter().any(|root| {
         std::fs::canonicalize(root)
             .ok()
@@ -110,7 +184,7 @@ pub fn accept(server: &Server, pane: &str, raw: &str) -> Option<String> {
 
 /// `path` with its longest existing prefix resolved through symlinks and the rest appended
 /// as is (a harness creates its transcript, and sometimes its directory, at the first prompt).
-fn resolve_existing_prefix(path: &Path) -> Option<PathBuf> {
+pub(crate) fn resolve_existing_prefix(path: &Path) -> Option<PathBuf> {
     let mut rest: Vec<&std::ffi::OsStr> = Vec::new();
     let mut cur = path;
     loop {
@@ -161,12 +235,14 @@ mod tests {
     #[test]
     fn open_regular_refuses_fifos_devices_symlinks_and_relative_paths() {
         let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("t.jsonl");
+        // Resolved: readers refuse symlinks anywhere in the path (`/var` on macOS).
+        let base = std::fs::canonicalize(dir.path()).unwrap();
+        let file = base.join("t.jsonl");
         std::fs::write(&file, "{\"a\":1}\n").unwrap();
         assert!(open_regular(&file).is_ok());
 
         // A FIFO with no writer must not block the open (O_NONBLOCK) and is refused.
-        let fifo = dir.path().join("fifo");
+        let fifo = base.join("fifo");
         let c = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
         // SAFETY: valid C string, creating a FIFO in our own temp dir.
         assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
@@ -174,9 +250,27 @@ mod tests {
 
         assert!(open_regular(Path::new("/dev/zero")).is_err());
 
-        let link = dir.path().join("link.jsonl");
+        let link = base.join("link.jsonl");
         std::os::unix::fs::symlink(&file, &link).unwrap();
         assert!(open_regular(&link).is_err(), "a final symlink is refused");
+
+        // A symlinked directory anywhere in the path is refused too.
+        let real = base.join("real");
+        std::fs::create_dir(&real).unwrap();
+        std::fs::write(real.join("t.jsonl"), "{}\n").unwrap();
+        let alias = base.join("alias");
+        std::os::unix::fs::symlink(&real, &alias).unwrap();
+        let canon = std::fs::canonicalize(&real).unwrap();
+        assert!(open_regular(&canon.join("t.jsonl")).is_ok());
+        assert!(
+            open_regular(
+                &std::fs::canonicalize(dir.path())
+                    .unwrap()
+                    .join("alias/t.jsonl")
+            )
+            .is_err(),
+            "a symlinked parent is refused"
+        );
 
         assert!(open_regular(Path::new("t.jsonl")).is_err());
     }
@@ -184,7 +278,9 @@ mod tests {
     #[test]
     fn read_tail_reads_only_the_tail() {
         let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("t.jsonl");
+        // Resolved: readers refuse symlinks anywhere in the path (`/var` on macOS).
+        let base = std::fs::canonicalize(dir.path()).unwrap();
+        let file = base.join("t.jsonl");
         let body: String = (0..1000).map(|i| format!("line {i}\n")).collect();
         std::fs::write(&file, &body).unwrap();
         let (tail, mid) = read_tail(&file, 64).unwrap();
@@ -200,7 +296,9 @@ mod tests {
     #[test]
     fn read_from_restarts_after_truncation() {
         let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("t.jsonl");
+        // Resolved: readers refuse symlinks anywhere in the path (`/var` on macOS).
+        let base = std::fs::canonicalize(dir.path()).unwrap();
+        let file = base.join("t.jsonl");
         std::fs::write(&file, "abcdef").unwrap();
         let (b, start) = read_from(&file, 2, 3).unwrap();
         assert_eq!((b.as_slice(), start), (&b"cde"[..], 2));
@@ -251,8 +349,12 @@ mod tests {
             srv.commit(&mut c, tx).unwrap();
         }
         let host_s = host.to_string_lossy().into_owned();
-        // Host panes: any absolute path, as reported.
-        assert_eq!(accept(&srv, "host-pane", &host_s), Some(host_s.clone()));
+        // Host panes: any absolute path, resolved through symlinks.
+        let host_canon = std::fs::canonicalize(&host)
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(accept(&srv, "host-pane", &host_s), Some(host_canon));
         assert_eq!(accept(&srv, "host-pane", "relative.jsonl"), None);
         assert_eq!(accept(&srv, "host-pane", "/a/../b.jsonl"), None);
         // Contained panes: only inside the box, also for a file that does not exist yet.

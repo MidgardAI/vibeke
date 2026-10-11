@@ -174,7 +174,9 @@ fn sidebar_token_rules_pass_through() {
     assert!(
         r.unsupported
             .iter()
-            .any(|u| u.contains("ui.sidebar.token[2]"))
+            .any(|u| u.contains("ui.sidebar.token[2]")),
+        "{:?}",
+        r.unsupported
     );
 }
 

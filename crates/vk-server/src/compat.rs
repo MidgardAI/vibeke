@@ -144,7 +144,8 @@ pub fn herdr_root(server: &Server) -> PathBuf {
 }
 
 /// The public listener of this session: `<root>/herdr.sock` for `default`, else
-/// `<root>/sessions/<name>/herdr.sock`.
+/// `<root>/sessions/<name>/herdr.sock` (`<root>/s/<hash>/herdr.sock` when that path would be
+/// too long for a Unix socket).
 pub fn listener_path(server: &Server) -> PathBuf {
     gap::session_listener(
         gap::configured_socket().as_deref(),

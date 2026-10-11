@@ -450,7 +450,7 @@ async fn keyed_calls_run_once() {
     assert_ne!(x["notification"]["id"], y["notification"]["id"]);
 }
 
-/// Params are checked against the schema at dispatch: JSON types, unknown params on strict
+/// Params are checked against the schema at dispatch: JSON types and unknown params on strict
 /// methods, and a clear `invalid_params` naming the param.
 #[test]
 fn params_are_checked_against_the_schema() {
@@ -484,9 +484,16 @@ fn params_are_checked_against_the_schema() {
     assert!(check_params("pane.read", &json!({"pane": "p1", "source": "archive"})).is_ok());
     // Non-strict methods ignore unknown params.
     assert!(check_params("pane.list", &json!({"whatever": 1})).is_ok());
-    // A command may be an argv list or a shell line.
+    // Non-strict methods leave types to the handler, which takes friendlier forms
+    // (`"a,b"` for a list, `"claude:2"` for agents).
     assert!(check_params("pane.split", &json!({"command": "make dev"})).is_ok());
-    assert!(check_params("pane.split", &json!({"command": ["make", 1]})).is_err());
+    assert!(
+        check_params(
+            "assistant.consent",
+            &json!({"classes": "screen,selected_text"})
+        )
+        .is_ok()
+    );
     assert!(check_params("pane.send_keys", &json!({"keys": "enter"})).is_err());
     assert!(check_params("pane.list", &json!([1])).is_err());
     // agent.spawn's schema lists what its handler reads.

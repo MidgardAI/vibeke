@@ -204,7 +204,9 @@ pub fn render(p: &Policy) -> String {
             .map(|b| format!("(local ip \"localhost:{b}\")"))
             .collect();
         rule(&mut o, "allow", "network-bind", &binds);
-        o.push_str("(allow network-inbound (local ip \"localhost:*\"))\n");
+        // `network-inbound` covers bind and listen as well, so it gets the same ports: a
+        // blanket `localhost:*` here would let the box listen anywhere.
+        rule(&mut o, "allow", "network-inbound", &binds);
     }
     o
 }
@@ -347,11 +349,16 @@ mod tests {
         assert_eq!(block.lines().count(), 2, "{block}");
         assert!(block.contains("(local ip \"localhost:20000\")"), "{block}");
         assert!(!sb.contains("(allow network-bind (local ip \"localhost:*\"))"));
+        assert!(!sb.contains("(local ip \"localhost:*\")"), "{sb}");
+        let start = sb.find("(allow network-inbound\n").unwrap();
+        let block = &sb[start..start + sb[start..].find("\n)\n").unwrap()];
+        assert_eq!(block.lines().count(), 2, "{block}");
         // No lease: nothing may listen.
         let mut s = spec(&root);
         s.bind_ports.clear();
         let sb = render(&Policy::from_spec(&s));
         assert!(!sb.contains("network-bind"), "{sb}");
+        assert!(!sb.contains("network-inbound"), "{sb}");
         // Without allow_bind_localhost the lease does not matter.
         let mut s = spec(&root);
         s.allow_bind_localhost = false;

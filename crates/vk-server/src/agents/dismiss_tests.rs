@@ -553,7 +553,7 @@ async fn a_hook_that_dies_before_its_ack_leaves_the_delivery_unknown() {
     // No ack arrives; the connection closes.
     cancel.cancel();
     let deadline = Instant::now() + Duration::from_secs(10);
-    while interaction(&e, &id).delivery != DeliveryState::DeliveryUnknown {
+    while interaction_any(&e, &id).delivery != DeliveryState::DeliveryUnknown {
         assert!(Instant::now() < deadline, "delivery stayed Delivering");
         tokio::task::yield_now().await;
     }

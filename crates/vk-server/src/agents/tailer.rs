@@ -123,11 +123,13 @@ pub fn transcript_of(run: &AgentRun) -> Option<PathBuf> {
         return None;
     }
     let h = Harness::from_id(&run.harness)?;
-    h.manifest()?.transcript_path(
+    let p = h.manifest()?.transcript_path(
         &crate::paths::home(),
         run.cwd.as_deref(),
         run.harness_session_id.as_deref(),
-    )
+    )?;
+    // Readers refuse symlinks in any component (`transcript_file::open_regular`).
+    super::transcript_file::resolve_existing_prefix(&p)
 }
 
 /// Start tailing `run`'s transcript (idempotent; a changed path replaces the tail).

@@ -8,6 +8,40 @@ use std::path::PathBuf;
 use std::process::{Command, Output};
 use vk_sandbox::plugin::{self, PluginBox};
 
+/// A listener on this machine's own non-loopback address (`None` without a route off
+/// loopback). Seatbelt counts the host's own addresses as `localhost`, so an open network
+/// must not reach it either.
+fn lan_listener() -> Option<(String, u16)> {
+    let u = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    // Connecting a UDP socket sends nothing; it only picks the outgoing address.
+    u.connect("192.0.2.1:9").ok()?;
+    let ip = u.local_addr().ok()?.ip();
+    if ip.is_loopback() || ip.is_unspecified() {
+        return None;
+    }
+    let l = TcpListener::bind((ip, 0)).ok()?;
+    let port = l.local_addr().ok()?.port();
+    std::thread::spawn(move || while l.accept().is_ok() {});
+    Some((ip.to_string(), port))
+}
+
+/// A real remote endpoint, when this machine reaches it unsandboxed (the control).
+const REMOTE: (&str, u16) = ("1.1.1.1", 443);
+
+fn remote_reachable() -> bool {
+    Command::new("/usr/bin/nc")
+        .args(["-z", "-G", "3", "-w", "3", REMOTE.0, &REMOTE.1.to_string()])
+        .output()
+        .is_ok_and(|o| o.status.success())
+}
+
+fn loopback_listener() -> u16 {
+    let l = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = l.local_addr().unwrap().port();
+    std::thread::spawn(move || while l.accept().is_ok() {});
+    port
+}
+
 struct Fx {
     _t: tempfile::TempDir,
     root: PathBuf,
@@ -139,17 +173,44 @@ fn network_is_off_unless_granted() {
         eprintln!("skipped: no working sandbox here (nested?)");
         return;
     }
-    let l = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = l.local_addr().unwrap().port();
-    std::thread::spawn(move || while l.accept().is_ok() {});
+    let local = loopback_listener();
+    let lan = lan_listener();
+    let remote = remote_reachable();
     let mut fx = fixture();
     // `nc -z` connects without sending anything.
-    let probe = format!("/usr/bin/nc -z -w 2 127.0.0.1 {port} >/dev/null 2>&1; echo \"nc=$?\"");
-    let off = text(&run(&fx.b, &probe));
-    assert!(!off.contains("nc=0"), "network must be off\n{off}");
+    let probe = |host: &str, port: u16, k: &str| {
+        format!("/usr/bin/nc -z -G 3 -w 3 {host} {port} >/dev/null 2>&1; echo \"{k}=$?\"\n")
+    };
+    let mut script = probe("127.0.0.1", local, "loopback");
+    if let Some((ip, port)) = &lan {
+        script += &probe(ip, *port, "lan");
+    }
+    if remote {
+        script += &probe(REMOTE.0, REMOTE.1, "remote");
+    }
+    let off = text(&run(&fx.b, &script));
+    assert!(!off.contains("=0"), "network must be off\n{off}");
     fx.b.network = true;
-    let on = text(&run(&fx.b, &probe));
-    assert!(on.contains("nc=0"), "network granted\n{on}");
+    let on = text(&run(&fx.b, &script));
+    // Granted network means the internet, never the host's own services.
+    assert!(
+        on.contains("loopback=1"),
+        "host loopback stays closed\n{on}"
+    );
+    if lan.is_some() {
+        assert!(
+            on.contains("lan=1"),
+            "the host's own addresses stay closed\n{on}"
+        );
+    }
+    if remote {
+        assert!(on.contains("remote=0"), "network granted\n{on}");
+    } else {
+        eprintln!(
+            "{}:{} unreachable here: the granted case is not checked",
+            REMOTE.0, REMOTE.1
+        );
+    }
 }
 
 /// `network = true` opens remote IP endpoints only: the Unix-socket allowlist (the invocation's
@@ -183,9 +244,7 @@ fn open_network_keeps_unix_sockets_and_the_runtime_dir_closed() {
             }
         });
     }
-    let tcp = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = tcp.local_addr().unwrap().port();
-    std::thread::spawn(move || while tcp.accept().is_ok() {});
+    let remote = remote_reachable();
     fx.b.hidden.push(fx.root.join("r"));
     fx.b.sockets = vec![own.clone()];
     fx.b.network = true;
@@ -196,12 +255,14 @@ fn open_network_keeps_unix_sockets_and_the_runtime_dir_closed() {
         /usr/bin/curl -s -m 3 --unix-socket "{other}" http://x/ >/dev/null 2>&1; echo "other=$?"
         cat "{reg}" >/dev/null 2>&1; echo "registry=$?"
         ls "{dir}" >/dev/null 2>&1; echo "listing=$?"
-        /usr/bin/nc -z -w 2 127.0.0.1 {port} >/dev/null 2>&1; echo "tcp=$?"
+        /usr/bin/nc -z -G 3 -w 3 {ip} {port} >/dev/null 2>&1; echo "tcp=$?"
         "#,
         own = own.display(),
         other = other.display(),
         reg = run_dir.join("brokers.json").display(),
         dir = run_dir.join("brokers").display(),
+        ip = REMOTE.0,
+        port = REMOTE.1,
     );
     let t = text(&run(&fx.b, &script));
     let get = |k: &str| -> String {
@@ -210,7 +271,9 @@ fn open_network_keeps_unix_sockets_and_the_runtime_dir_closed() {
             .unwrap_or("missing")
             .to_string()
     };
-    assert_eq!(get("tcp"), "0", "remote IP endpoints are open\n{t}");
+    if remote {
+        assert_eq!(get("tcp"), "0", "remote IP endpoints are open\n{t}");
+    }
     assert_eq!(get("own"), "0", "its own broker stays reachable\n{t}");
     assert_eq!(get("other"), "7", "another broker is not connectable\n{t}");
     assert_ne!(get("registry"), "0", "brokers.json is hidden\n{t}");

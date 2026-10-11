@@ -602,15 +602,26 @@ fn tiocsti_cannot_inject_into_parent() {
 fn dev_server_can_listen_on_localhost() {
     let fx = fixture();
     let mut sp = spec(&fx, NetMode::None);
-    // The task's port lease.
-    sp.bind_ports = vec![38917];
+    // Two free ports; the first is the task's port lease.
+    let free = || {
+        std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port()
+    };
+    let (lease, other) = (free(), free());
+    sp.bind_ports = vec![lease];
     // nc -l binds 127.0.0.1; the bind on a leased port must be allowed (previews, 13 §7
     // inbound), any other port is refused (the box must not stand in for a host service).
+    // `-k` keeps listening if a port probe on the host connects first.
     let out = lines(&run(
         &fx,
         &sp,
-        "nc -l 127.0.0.1 38917 & P=$!; sleep 0.3; kill $P 2>/dev/null && echo LISTEN_OK\n\
-         nc -l 127.0.0.1 38918 2>/dev/null & Q=$!; sleep 0.3; kill $Q 2>/dev/null || echo OTHER_PORT_DENIED",
+        &format!(
+            "nc -lk 127.0.0.1 {lease} >/dev/null & P=$!; sleep 0.3; kill $P 2>/dev/null && echo LISTEN_OK\n\
+             nc -lk 127.0.0.1 {other} >/dev/null 2>&1 & Q=$!; sleep 0.3; kill $Q 2>/dev/null || echo OTHER_PORT_DENIED"
+        ),
     ));
     assert!(out.contains("LISTEN_OK"), "{out}");
     assert!(out.contains("OTHER_PORT_DENIED"), "{out}");

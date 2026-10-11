@@ -86,8 +86,8 @@ fn default_keymap_fills_the_groups() {
     assert_eq!(item(&groups, "workspace", "N").label, "new workspace");
     assert_eq!(item(&groups, "workspace", "g").label, "goto anything");
     assert_eq!(item(&groups, "agents", "a").label, "next needing you");
-    assert_eq!(item(&groups, "connect", "alt+d").label, "connections");
-    assert_eq!(item(&groups, "connect", "alt+v").label, "share pane");
+    assert_eq!(item(&groups, "connect", "d").label, "connections");
+    assert_eq!(item(&groups, "connect", "Z").label, "share pane");
     assert_eq!(item(&groups, "focus", "h").label, "focus left");
     assert_eq!(item(&groups, "text", "[").label, "copy mode");
     // Items follow the group table, not the alphabet of action names.

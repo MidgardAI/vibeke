@@ -393,7 +393,11 @@ fn root_candidates(cfg: &DeskConfig) -> Vec<Candidate> {
     for (harness, dirs) in &cfg.roots {
         for d in dirs {
             let mut files = vec![];
-            walk(Path::new(&expand(d)), 6, &mut files, cfg.max_root_files);
+            // Resolved first: transcript readers refuse symlinks in any component.
+            let Ok(root) = std::fs::canonicalize(expand(d)) else {
+                continue;
+            };
+            walk(&root, 6, &mut files, cfg.max_root_files);
             out.extend(files.into_iter().map(|p| Candidate {
                 path: p.to_string_lossy().into_owned(),
                 harness: harness.clone(),

@@ -92,9 +92,14 @@ struct Mcp {
 }
 
 impl Mcp {
-    fn start(s: &Session) -> Mcp {
-        let mut child = s
-            .cmd(&["mcp"])
+    /// `vibeke mcp` as if started in a pane (`in_pane`: every tool) or outside one (read-only
+    /// tools). The connection itself has the test's user scope either way.
+    fn start(s: &Session, in_pane: bool) -> Mcp {
+        let mut cmd = s.cmd(&["mcp"]);
+        if in_pane {
+            cmd.env("VIBEKE_PANE_ID", "test-pane");
+        }
+        let mut child = cmd
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
@@ -141,7 +146,26 @@ fn mcp_against_a_real_server_and_mcp_installers() {
     let s = Session::new("");
     // Start the server.
     s.json(&["server", "status"]);
-    let mut m = Mcp::start(&s);
+    // Outside a pane only read-only tools are offered.
+    let mut m = Mcp::start(&s, false);
+    let init = m.request(
+        "initialize",
+        json!({"protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name": "test", "version": "0"}}),
+    );
+    assert_eq!(init["result"]["protocolVersion"], "2025-11-25");
+    m.notify("notifications/initialized");
+    let tools = m.request("tools/list", json!({}));
+    let names: Vec<&str> = tools["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|t| t["name"].as_str())
+        .collect();
+    assert_eq!(names, ["preview_list"], "{tools}");
+    let r = m.tool("preview_declare", json!({"port": 1, "label": "nothing"}));
+    assert_eq!(r["isError"], true, "{r}");
+    drop(m);
+    let mut m = Mcp::start(&s, true);
     let init = m.request(
         "initialize",
         json!({"protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name": "test", "version": "0"}}),
@@ -512,7 +536,7 @@ fn headless_browser_filters_destinations_with_real_chromium() {
     assert_eq!(shot["meta"]["environment"]["kind"], "remote_headless");
     assert!(shot.get("data_b64").is_none());
     // MCP screenshot returns image content.
-    let mut m = Mcp::start(&s);
+    let mut m = Mcp::start(&s, true);
     m.request("initialize", json!({"protocolVersion": "2025-06-18"}));
     let r = m.tool("browser_screenshot", json!({"session": sid}));
     assert_eq!(r["content"][0]["type"], "image", "{r}");
@@ -775,7 +799,7 @@ fn screenshots_carry_environment_code_state_and_binding_with_real_chromium() {
         b"\x89PNG\r\n\x1a\n"
     );
     // MCP browser_diff returns the diff image.
-    let mut mcp = Mcp::start(&s);
+    let mut mcp = Mcp::start(&s, true);
     mcp.request("initialize", json!({"protocolVersion": "2025-06-18"}));
     let r = mcp.tool("browser_diff", json!({"a": "s1", "b": "s1"}));
     assert_eq!(r["isError"], false, "{r}");

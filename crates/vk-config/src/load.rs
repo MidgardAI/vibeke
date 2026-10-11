@@ -72,6 +72,9 @@ pub struct Warning {
     pub key: String,
     pub pos: Option<Pos>,
     pub message: String,
+    /// The loader replaced or dropped the value (a clamped size, an ignored sidebar token):
+    /// the file loads, but the value as written does not apply.
+    pub replaced: bool,
 }
 
 impl fmt::Display for Warning {
@@ -89,6 +92,15 @@ impl Warning {
             key: key.into(),
             pos: None,
             message: message.into(),
+            replaced: false,
+        }
+    }
+
+    /// A warning for a value the loader replaced or dropped.
+    pub(crate) fn replaced(key: impl Into<String>, message: impl Into<String>) -> Self {
+        Warning {
+            replaced: true,
+            ..Warning::new(key, message)
         }
     }
 }
@@ -376,14 +388,14 @@ impl Config {
         let d = Config::default();
         if self.keys.prefix_timeout_ms == 0 {
             self.keys.prefix_timeout_ms = d.keys.prefix_timeout_ms;
-            warns.push(Warning::new(
+            warns.push(Warning::replaced(
                 "keys.prefix_timeout_ms",
                 format!("must be greater than 0; using {}", d.keys.prefix_timeout_ms),
             ));
         }
         let sb = &mut self.ui.sidebar;
         if sb.min_width > sb.max_width {
-            warns.push(Warning::new(
+            warns.push(Warning::replaced(
                 "ui.sidebar.min_width",
                 format!(
                     "greater than max_width ({}); using {}",
@@ -395,7 +407,7 @@ impl Config {
         let recent = self.ui.images.recent;
         if !(1..=20).contains(&recent) {
             let clamped = recent.clamp(1, 20);
-            warns.push(Warning::new(
+            warns.push(Warning::replaced(
                 "ui.images.recent",
                 format!("must be between 1 and 20; using {clamped}"),
             ));
@@ -403,7 +415,7 @@ impl Config {
         }
         if self.ui.max_fps == 0 {
             self.ui.max_fps = d.ui.max_fps;
-            warns.push(Warning::new(
+            warns.push(Warning::replaced(
                 "ui.max_fps",
                 format!("must be greater than 0; using {}", d.ui.max_fps),
             ));
@@ -415,7 +427,7 @@ impl Config {
         {
             let m = &t.matcher;
             if m.harness.is_none() && m.state.is_none() && m.regex.is_none() {
-                warns.push(Warning::new(
+                warns.push(Warning::replaced(
                     format!("ui.sidebar.token[{i}].match"),
                     "must set at least one of harness, state, regex; ignoring this token",
                 ));
@@ -424,7 +436,7 @@ impl Config {
             if let Some(r) = &m.regex
                 && let Err(e) = regex::Regex::new(r)
             {
-                warns.push(Warning::new(
+                warns.push(Warning::replaced(
                     format!("ui.sidebar.token[{i}].match.regex"),
                     format!("invalid regex: {e}; ignoring this token"),
                 ));
@@ -435,7 +447,7 @@ impl Config {
         self.ui.sidebar.token = kept;
         let q = &self.notifications.quiet_hours;
         if !q.is_empty() && !valid_quiet_hours(q) {
-            warns.push(Warning::new(
+            warns.push(Warning::replaced(
                 "notifications.quiet_hours",
                 "expected `HH:MM-HH:MM`; quiet hours are off",
             ));
@@ -443,7 +455,7 @@ impl Config {
         }
         if self.render.max_unacked == 0 {
             self.render.max_unacked = d.render.max_unacked;
-            warns.push(Warning::new(
+            warns.push(Warning::replaced(
                 "render.max_unacked",
                 format!("must be greater than 0; using {}", d.render.max_unacked),
             ));

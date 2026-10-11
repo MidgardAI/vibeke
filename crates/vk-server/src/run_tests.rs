@@ -313,8 +313,13 @@ async fn a_subscriber_that_stops_reading_gets_an_overflow_notice() {
         }
     };
     assert!(overflow["params"]["resume_from"].is_object(), "{overflow}");
-    drop(wr);
-    let _ = conn.await;
+    // Both halves: the client stream closes only when neither is left.
+    drop((rd, wr));
+    tokio::time::timeout(Duration::from_secs(30), conn)
+        .await
+        .expect("the connection ends when the client goes")
+        .unwrap()
+        .unwrap();
 }
 
 #[tokio::test]

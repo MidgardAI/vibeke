@@ -2200,6 +2200,17 @@ fn coerce_param(
     if raw.is_string() && shapes.iter().any(|s| takes_text(s, defs)) {
         return Ok(raw);
     }
+    // Several words for one text positional (`desk search websocket reconnect`): one phrase.
+    if !flag
+        && let Value::Array(words) = &raw
+        && words.iter().all(Value::is_string)
+    {
+        let t: Vec<&str> = words.iter().filter_map(Value::as_str).collect();
+        let phrase = Value::String(t.join(" "));
+        if fits(&phrase) {
+            return Ok(phrase);
+        }
+    }
     let why = shapes[0]
         .validate(&guessed, defs)
         .into_iter()
@@ -4223,6 +4234,8 @@ mod tests {
         let (m, pos) = lookup("desk", "search").unwrap();
         let mut p = build_params(pos, &["login".into(), "redirect".into()]).unwrap();
         adjust(m, &mut p);
+        assert_eq!(p["text"], "login redirect");
+        let p = build_params_for(Some(m), pos, &["login".into(), "redirect".into()]).unwrap();
         assert_eq!(p["text"], "login redirect");
         let (_, pos) = lookup("draft", "combine").unwrap();
         let p = build_params(pos, &["a".into(), "b".into()]).unwrap();

@@ -1019,8 +1019,8 @@ fn brief_json(v: &Value) -> String {
 }
 
 /// Check params against the method's schema before any handler runs: params must be an
-/// object, and every listed param must have the right JSON type (`invalid_params` names the
-/// param and the type it needs). Missing required params are left to the handler, which
+/// object. For [`STRICT_PARAMS`] methods every listed param must also have the right JSON
+/// type (`invalid_params` names the param and the type it needs). Missing required params are left to the handler, which
 /// names them. Unknown params are refused for [`STRICT_PARAMS`] methods and ignored (logged)
 /// elsewhere. `null` for an optional param counts as absent.
 pub fn check_params(method: &str, p: &Value) -> Result<(), RpcError> {
@@ -1080,6 +1080,13 @@ pub fn check_params(method: &str, p: &Value) -> Result<(), RpcError> {
             .iter()
             .any(|f| json_type_ok(&f.shape, v, &reg.defs))
         {
+            // Many handlers take friendlier forms than the schema lists (`"a,b"` for a
+            // list, `"claude:2"` for agents, a layout name for a layout), so only the
+            // strict methods refuse a wrong type up front; the others decide themselves.
+            if !STRICT_PARAMS.contains(&method) {
+                tracing::debug!(method, param = %k, "param type differs from the schema");
+                continue;
+            }
             let want = json_type_name(&declared[0].shape, &reg.defs);
             return Err(invalid(format!(
                 "{method}: `{k}` must be {want}, got {}",
@@ -1147,9 +1154,8 @@ fn keys_in_flight() -> &'static std::sync::Mutex<std::collections::HashSet<Strin
 async fn keyed(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value, key: String) -> R {
     let mut scoped = p.clone();
     scoped["idempotency_key"] = json!(key);
-    if let Some(r) = crate::tracking::replay(server, method, &scoped) {
-        return r;
-    }
+    // Take the key before looking for a receipt: otherwise a retry could miss the receipt,
+    // wait while the first call finishes and releases the key, then run a second time.
     if !keys_in_flight().lock().unwrap().insert(key.clone()) {
         return Err(err(
             ErrorKind::Conflict,
@@ -1164,6 +1170,9 @@ async fn keyed(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value, key: St
         }
     }
     let _release = Release(key);
+    if let Some(r) = crate::tracking::replay(server, method, &scoped) {
+        return r;
+    }
     let r = handlers(server, ctx, method, p).await;
     if let Ok(v) = &r {
         let mut c = server.core.lock().unwrap();

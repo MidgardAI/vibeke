@@ -402,7 +402,14 @@ pub trait Sink: Send {
 struct SocketSink {
     harness: String,
     tx: Option<mpsc::Sender<(String, Value)>>,
+    /// Gate connections waiting for the answer to reach the agent, by interaction: the ack
+    /// goes over the gate's own connection, because the server records an unknown delivery
+    /// when that connection closes before the ack.
+    acks: Arc<Mutex<HashMap<String, mpsc::Sender<String>>>>,
 }
+
+/// How long a gate connection waits for the agent to take the answer before it closes.
+const ACK_WAIT: Duration = Duration::from_secs(30);
 
 impl SocketSink {
     fn new(harness: &str) -> SocketSink {
@@ -420,6 +427,7 @@ impl SocketSink {
         SocketSink {
             harness: harness.to_string(),
             tx,
+            acks: Arc::default(),
         }
     }
 }
@@ -435,8 +443,10 @@ impl Sink for SocketSink {
     }
     fn gate(&mut self, payload: Value, reply: GateReply) {
         let harness = self.harness.clone();
+        let acks = self.acks.clone();
         std::thread::spawn(move || {
-            let r = Link::connect().and_then(|mut l| {
+            let mut link = Link::connect();
+            let r = link.as_mut().and_then(|l| {
                 l.call(
                     "adapter.gate",
                     json!({"harness": harness, "event": "RequestPermission", "payload": payload}),
@@ -454,10 +464,34 @@ impl Sink for SocketSink {
                     .and_then(Value::as_str)
                     .map(str::to_string)
             };
-            reply(decision, s("interaction"), s("idempotency_key"));
+            let (interaction, key) = (s("interaction"), s("idempotency_key"));
+            let wait = match (&interaction, &decision) {
+                (Some(i), Some(_)) if link.is_some() => {
+                    let (tx, rx) = mpsc::channel();
+                    acks.lock().unwrap().insert(i.clone(), tx);
+                    Some((i.clone(), rx))
+                }
+                _ => None,
+            };
+            reply(decision, interaction, key);
+            if let (Some((i, rx)), Some(l)) = (wait, link.as_mut()) {
+                if let Ok(key) = rx.recv_timeout(ACK_WAIT) {
+                    let _ = l.call(
+                        "adapter.delivery_ack",
+                        json!({"interaction": i, "idempotency_key": key, "applied": true}),
+                        Some(Duration::from_secs(5)),
+                    );
+                }
+                acks.lock().unwrap().remove(&i);
+            }
         });
     }
     fn ack(&mut self, interaction: &str, key: &str) {
+        if let Some(tx) = self.acks.lock().unwrap().remove(interaction)
+            && tx.send(key.to_string()).is_ok()
+        {
+            return;
+        }
         if let Some(tx) = &self.tx {
             let _ = tx.send((
                 "adapter.delivery_ack".into(),

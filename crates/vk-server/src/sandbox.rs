@@ -1981,24 +1981,34 @@ pub fn teardown(server: &Arc<Server>, key: &str) {
         return;
     }
     if let Some(b) = removed {
+        let root = sbx_root(key);
+        // Keep every object the box wrote before its private store is deleted. When the
+        // import fails (a full disk, say), the store may hold the only copy of commits a
+        // branch points to: the box directory stays, and the store stays registered so the
+        // next host git command in the repository imports it again.
+        let mut kept = None;
+        if let BoxRunner::Sandbox(r) = &b.runner
+            && let Some(objects) = r.objects_dir()
+            && let Err(e) = vk_tasks::release_box_objects(&objects)
+        {
+            tracing::warn!(
+                sandbox = %key,
+                dir = %root.display(),
+                "importing the box's git objects failed, keeping its directory: {e}"
+            );
+            kept = Some(json!({"objects_kept": objects.to_string_lossy(), "error": e}));
+        }
         emit(
             server,
             "sandbox.destroyed",
             json!({"task": b.task, "sandbox": key}),
-            json!({}),
+            kept.clone().unwrap_or_else(|| json!({})),
         );
-        let root = sbx_root(key);
-        if let BoxRunner::Sandbox(r) = &b.runner
-            && let Some(objects) = r.objects_dir()
-        {
-            // Keep every object the box wrote before its private store is deleted.
-            if let Err(e) = vk_tasks::release_box_objects(&objects) {
-                tracing::warn!(sandbox = %key, "importing the box's git objects: {e}");
-            }
-        }
         release_checkout(server, &b.checkout);
         drop(b);
-        let _ = std::fs::remove_dir_all(root);
+        if kept.is_none() {
+            let _ = std::fs::remove_dir_all(root);
+        }
         let mut c = server.core.lock().unwrap();
         let mut tx = Tx::new();
         tx.m.kv("sandbox", key, None);
