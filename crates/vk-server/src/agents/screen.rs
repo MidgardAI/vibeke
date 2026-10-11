@@ -272,6 +272,15 @@ fn evaluate_code(h: Harness, snap: &Snapshot) -> ScreenMatch {
     m
 }
 
+/// Whether `h`'s screen shows Vibeke its dialogs: the built-in evaluators, else a manifest with
+/// dialog rules.
+pub fn has_screen_rules(h: Harness) -> bool {
+    matches!(
+        h.base(),
+        Harness::Claude | Harness::Codex | Harness::Pi | Harness::Omp
+    ) || screen_manifest(h).is_some_and(|l| l.has_dialog_rules())
+}
+
 /// The manifest whose screen rules apply to `h` (its own, else `[screen] manifest = "<id>"`).
 pub fn screen_manifest(h: Harness) -> Option<std::sync::Arc<vk_agents::manifest::Loaded>> {
     let l = h.manifest()?;

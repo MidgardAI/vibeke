@@ -3240,7 +3240,7 @@ struct Collected {
 /// Gather attention items from the model and cached projections (no git, one lock).
 fn collect(server: &Server, now_ms: i64) -> Collected {
     let machine = server.opts.machine.clone();
-    let inflight_cutoff = now_ms - 24 * 3600 * 1000;
+    let inflight_cutoff = now_ms - 4 * 3600 * 1000;
     let (
         ints,
         runs,
@@ -3278,8 +3278,30 @@ fn collect(server: &Server, now_ms: i64) -> Collected {
             live_snap(c),
         )
     });
+    // Delivery problems clear themselves once the run moved on or the user looked at the pane.
+    let (turn_marks, read_at) = server.with_core(|c| {
+        (
+            c.store
+                .load::<crate::agents::TurnMark>(crate::agents::K_TURN_MARK)
+                .unwrap_or_default(),
+            c.store.reads_at("local").unwrap_or_default(),
+        )
+    });
+    let turn_at: HashMap<&str, i64> = turn_marks
+        .iter()
+        .map(|m| (m.run.as_str(), m.at_ms))
+        .collect();
+    let seen_at: HashMap<&str, i64> = read_at.iter().map(|(p, _, at)| (p.as_str(), *at)).collect();
     let tasks_by_id: HashMap<&str, &Task> = tasks.iter().map(|t| (t.id.as_str(), t)).collect();
     let runs_by_id: HashMap<&str, &AgentRun> = runs.iter().map(|r| (r.id.as_str(), r)).collect();
+    // Whether a delivery that went wrong at `at` still needs the user: its run is live in a pane
+    // that still exists, and neither a later turn nor a later look at the pane settled it.
+    let still_unsettled = |run: &str, pane: &str, at: i64| {
+        runs_by_id.get(run).is_some_and(|r| r.pane == pane)
+            && pane_ws.contains_key(pane)
+            && turn_at.get(run).is_none_or(|t| *t <= at)
+            && seen_at.get(pane).is_none_or(|t| *t <= at)
+    };
     let proj_by_task: HashMap<&str, &Projection> =
         projections.iter().map(|p| (p.task.as_str(), p)).collect();
     let seen: HashMap<&str, u64> = reads.iter().map(|(p, r)| (p.as_str(), *r)).collect();
@@ -3383,11 +3405,16 @@ fn collect(server: &Server, now_ms: i64) -> Collected {
     }
 
     // Decision deliveries whose outcome is unknown or failed (class 1).
+    // A failure before anything was typed is no inbox item: the user was notified instead.
     for i in closed_ints.iter().filter(|i| {
+        let at = i.answered_at_ms.unwrap_or(i.opened_at_ms);
         matches!(
             i.delivery,
             DeliveryState::DeliveryUnknown | DeliveryState::Failed
-        ) && i.answered_at_ms.unwrap_or(i.opened_at_ms) >= inflight_cutoff
+        ) && at >= inflight_cutoff
+            && !(i.delivery == DeliveryState::Failed
+                && crate::agents::nothing_typed(i.delivery_error.as_deref()))
+            && still_unsettled(&i.run, &i.pane, at)
     }) {
         let run = runs_by_id.get(i.run.as_str());
         let mut it = base(
@@ -3419,10 +3446,15 @@ fn collect(server: &Server, now_ms: i64) -> Collected {
         );
     }
     // Task messages with an unknown delivery outcome (class 1).
-    for m in messages
-        .iter()
-        .filter(|m| m.state == MessageState::DeliveryUnknown)
-    {
+    for m in messages.iter().filter(|m| {
+        m.state == MessageState::DeliveryUnknown
+            && runs_by_id.get(m.run.as_str()).is_some_and(|r| {
+                pane_ws.contains_key(&r.pane)
+                    && turn_at
+                        .get(m.run.as_str())
+                        .is_none_or(|t| *t <= m.updated_at_ms)
+            })
+    }) {
         let task = tasks_by_id.get(m.task.as_str());
         let mut it = base(
             format!("send_unknown:{}", m.id),

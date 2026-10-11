@@ -168,6 +168,35 @@ impl Env {
         tx.run(r);
         self.server.commit(&mut c, tx).unwrap();
     }
+    /// The run's pane in the model (delivery problems need a live pane).
+    fn add_pane(&self, run: &str) {
+        let p = Pane {
+            id: format!("pane-{run}"),
+            handle: format!("pane-{run}"),
+            tab: "tab".into(),
+            workspace: "ws".into(),
+            title: None,
+            auto_title: String::new(),
+            cwd: None,
+            cols: 80,
+            rows: 24,
+            child_pid: None,
+            fg_cmdline: vec![],
+            exited: false,
+            exit_code: None,
+            unread: false,
+            marked_unread: false,
+            pinned: false,
+            created_by: "user".into(),
+            recovered: None,
+            isolation: Default::default(),
+            browser: None,
+        };
+        let mut c = self.server.core.lock().unwrap();
+        let mut tx = Tx::new();
+        tx.pane(p);
+        self.server.commit(&mut c, tx).unwrap();
+    }
     fn set_exec(&self, id: &str, e: Execution) {
         let mut r = self.run(id);
         r.execution.value = e;
@@ -1134,6 +1163,7 @@ async fn attention_ranks_classes_and_five_minute_view_keeps_urgent() {
     let e = Env::new();
     let t0 = now();
     e.add_run("r1", &e.repo);
+    e.add_pane("r1");
     put_task(&e, "tA", "Fix invoice export", Some("deep"));
     put_task(&e, "tB", "Tidy logging", Some("quick"));
     put_projection(&e, projection("tA", "review_available", t0 - 600_000, 1));
@@ -1287,6 +1317,8 @@ async fn snooze_hides_until_deadline_or_material_change() {
     );
 
     // Urgent items are never hidden by a snooze.
+    e.add_run("r", &e.repo);
+    e.add_pane("r");
     let msg = tracking::TaskMessage {
         id: "m1".into(),
         task: "tA".into(),
@@ -2512,4 +2544,208 @@ async fn dismissing_an_open_interaction_cancels_it() {
         !keys(&v).contains(&("interaction".into(), "q1".into())),
         "{v}"
     );
+}
+
+// ---- delivery problems clear themselves ---------------------------------------------------------
+
+/// A closed interaction whose answer went out at `answered` and ended with `delivery`.
+fn put_delivery_problem(
+    e: &Env,
+    id: &str,
+    run: &str,
+    answered: i64,
+    delivery: DeliveryState,
+    error: &str,
+) {
+    let it = Interaction {
+        id: id.into(),
+        handle: format!("i-{id}"),
+        run: run.into(),
+        pane: format!("pane-{run}"),
+        kind: InteractionKind::Question,
+        status: InteractionStatus::Answered,
+        title: "Which database?".into(),
+        body_md: None,
+        action: None,
+        questions: vec![],
+        plan_md: None,
+        answer_channel: AnswerChannel::Keystrokes,
+        native_ref: None,
+        source: StateSource::Screen,
+        confidence: 0.9,
+        answerable: true,
+        gate: false,
+        decision_rev: 1,
+        delivery,
+        delivery_error: Some(error.into()),
+        answer: None,
+        answered_by: Some("tui:tester".into()),
+        answer_key: None,
+        opened_at_ms: answered - 1000,
+        answered_at_ms: Some(answered),
+        picker: None,
+    };
+    let mut c = e.server.core.lock().unwrap();
+    let mut tx = Tx::new();
+    tx.interaction(it);
+    e.server.commit(&mut c, tx).unwrap();
+}
+
+fn put_unknown_message(e: &Env, id: &str, run: &str, at: i64) {
+    let msg = tracking::TaskMessage {
+        id: id.into(),
+        task: "tA".into(),
+        binding: "b".into(),
+        run: run.into(),
+        native_conversation_id: "s".into(),
+        intent_revision: Some(1),
+        text: "Please add the SSO test".into(),
+        state: MessageState::DeliveryUnknown,
+        detail: None,
+        covers: vec![],
+        idempotency_key: None,
+        created_at_ms: at,
+        updated_at_ms: at,
+    };
+    let mut c = e.server.core.lock().unwrap();
+    let mut tx = Tx::new();
+    tx.m.put(tracking::K_MESSAGE, &msg.id, None, &msg);
+    e.server.commit(&mut c, tx).unwrap();
+}
+
+fn put_turn_mark(e: &Env, run: &str, at: i64) {
+    let mut c = e.server.core.lock().unwrap();
+    let mut tx = Tx::new();
+    tx.m.put(
+        crate::agents::K_TURN_MARK,
+        run,
+        None,
+        &crate::agents::TurnMark {
+            run: run.into(),
+            at_ms: at,
+        },
+    );
+    e.server.commit(&mut c, tx).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn delivery_problem_clears_when_the_pane_closes() {
+    let e = Env::new();
+    let t0 = now();
+    put_task(&e, "tA", "Fix invoice export", None);
+    e.add_run("r1", &e.repo);
+    e.add_pane("r1");
+    put_delivery_problem(
+        &e,
+        "d1",
+        "r1",
+        t0 - 1000,
+        DeliveryState::DeliveryUnknown,
+        "dialog still visible",
+    );
+    put_unknown_message(&e, "m1", "r1", t0 - 1000);
+    let k = keys(&ok(&e, "attention.list", json!({})).await);
+    assert!(k.contains(&("send_unknown".into(), "d1".into())), "{k:?}");
+    assert!(k.contains(&("send_unknown".into(), "m1".into())), "{k:?}");
+
+    // The pane closes: nothing is left to check.
+    {
+        let mut c = e.server.core.lock().unwrap();
+        c.model.panes.retain(|p| p.id != "pane-r1");
+    }
+    let k = keys(&ok(&e, "attention.list", json!({})).await);
+    assert!(!k.iter().any(|(kind, _)| kind == "send_unknown"), "{k:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn delivery_problem_clears_after_a_later_turn_or_a_look_at_the_pane() {
+    let e = Env::new();
+    let t0 = now();
+    put_task(&e, "tA", "Fix invoice export", None);
+    for r in ["r1", "r2", "r3"] {
+        e.add_run(r, &e.repo);
+        e.add_pane(r);
+    }
+    // A turn boundary before the failure keeps the item.
+    put_turn_mark(&e, "r1", t0 - 5000);
+    put_delivery_problem(
+        &e,
+        "d1",
+        "r1",
+        t0 - 1000,
+        DeliveryState::DeliveryUnknown,
+        "dialog still visible",
+    );
+    put_unknown_message(&e, "m2", "r2", t0 - 1000);
+    put_delivery_problem(
+        &e,
+        "d3",
+        "r3",
+        t0 - 1000,
+        DeliveryState::DeliveryUnknown,
+        "dialog still visible",
+    );
+    let k = keys(&ok(&e, "attention.list", json!({})).await);
+    for id in ["d1", "m2", "d3"] {
+        assert!(
+            k.contains(&("send_unknown".into(), id.into())),
+            "{id}: {k:?}"
+        );
+    }
+
+    // r1 and r2 start or finish a turn after the failure; the user focuses r3's pane.
+    put_turn_mark(&e, "r1", now() + 1);
+    put_turn_mark(&e, "r2", now() + 1);
+    {
+        let mut c = e.server.core.lock().unwrap();
+        let mut tx = Tx::new();
+        tx.m.read_mark("local", "pane-r3", 0);
+        e.server.commit(&mut c, tx).unwrap();
+    }
+    let k = keys(&ok(&e, "attention.list", json!({})).await);
+    assert!(!k.iter().any(|(kind, _)| kind == "send_unknown"), "{k:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn failure_before_typing_is_not_an_inbox_item() {
+    let e = Env::new();
+    let t0 = now();
+    e.add_run("r1", &e.repo);
+    e.add_pane("r1");
+    put_delivery_problem(
+        &e,
+        "d1",
+        "r1",
+        t0 - 1000,
+        DeliveryState::Failed,
+        "dialog_changed: the visible dialog is not this interaction",
+    );
+    put_delivery_problem(
+        &e,
+        "d2",
+        "r1",
+        t0 - 1000,
+        DeliveryState::Failed,
+        "selection_mismatch",
+    );
+    // A failure after typing started still needs a look.
+    put_delivery_problem(
+        &e,
+        "d3",
+        "r1",
+        t0 - 1000,
+        DeliveryState::Failed,
+        "pane exited",
+    );
+    // Older than the in-flight window: gone.
+    put_delivery_problem(
+        &e,
+        "d4",
+        "r1",
+        t0 - 5 * 3600 * 1000,
+        DeliveryState::DeliveryUnknown,
+        "dialog still visible",
+    );
+    let k = keys(&ok(&e, "attention.list", json!({})).await);
+    assert_eq!(k, vec![("send_unknown".into(), "d3".into())], "{k:?}");
 }

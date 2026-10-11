@@ -116,9 +116,17 @@ struct Inner {
     resume_mode: String,
     /// Per pane: the harness process behind its run's hooks (harness id, process); see `nested`.
     harness_procs: HashMap<String, (String, nested::Proc)>,
+    /// Per pane: since when the screen has shown the agent working with no dialog (see
+    /// `Agents::close_unseen_dialogs`).
+    no_dialog_since: HashMap<String, Instant>,
+    /// Panes with a re-check of `no_dialog_since` scheduled.
+    no_dialog_armed: std::collections::HashSet<String>,
 }
 
 const SCREEN_GRACE: Duration = Duration::from_secs(2);
+/// How long the screen must show the agent working with no dialog before the pane's open
+/// interactions are taken as answered in the pane.
+const NO_DIALOG_CLOSE: Duration = Duration::from_secs(30);
 /// How long an unrecognised modal must stay on screen before it opens as an unknown dialog.
 const UNKNOWN_DIALOG_SETTLE: Duration = Duration::from_millis(400);
 
@@ -447,6 +455,8 @@ impl Agents {
                 let _ = g.tx.send(GateReply::NoDecision);
             }
         }
+        i.no_dialog_since.remove(&r.pane);
+        tx.m.delete(K_TURN_MARK, &r.id);
         tx.run(r);
     }
 
@@ -560,6 +570,9 @@ impl Agents {
             .is_some_and(|t| t.elapsed() < Duration::from_secs(5))
         {
             return;
+        }
+        if !rt.is_pipe() {
+            self.close_unseen_dialogs(server, &run, h, &m);
         }
         let open_screen = server.with_core(|c| {
             c.model
@@ -730,6 +743,99 @@ impl Agents {
     }
 }
 
+impl Agents {
+    /// Open interactions whose dialog never shows (04 §2.5): when the screen has shown the agent
+    /// working, with no dialog, for [`NO_DIALOG_CLOSE`] while the run is working, the pane's
+    /// structured interactions older than that were answered or dismissed in the pane without a
+    /// report. Only for harnesses whose screen rules recognise their dialogs and working state;
+    /// held gates (the harness waits on Vibeke, so no dialog is expected) are never touched.
+    fn close_unseen_dialogs(
+        &self,
+        server: &Arc<Server>,
+        run: &AgentRun,
+        h: Harness,
+        m: &screen::ScreenMatch,
+    ) {
+        let pane = run.pane.as_str();
+        let quiet = m.dialog.is_none()
+            && matches!(m.state, Some((Execution::Working, _)))
+            && run.execution.value == Execution::Working
+            && screen::has_screen_rules(h);
+        let (since, gates) = {
+            let mut i = self.inner.lock().unwrap();
+            if !quiet {
+                i.no_dialog_since.remove(pane);
+                return;
+            }
+            let since = *i
+                .no_dialog_since
+                .entry(pane.to_string())
+                .or_insert_with(Instant::now);
+            let gates: std::collections::HashSet<String> = i.gates.keys().cloned().collect();
+            (since, gates)
+        };
+        let candidates: Vec<(String, i64)> = server.with_core(|c| {
+            c.model
+                .interactions
+                .iter()
+                .filter(|i| {
+                    i.pane == pane
+                        && i.run == run.id
+                        && i.status == InteractionStatus::Open
+                        && i.source != StateSource::Screen
+                        && i.delivery != DeliveryState::Delivering
+                        && !gates.contains(&i.id)
+                })
+                .map(|i| (i.id.clone(), i.opened_at_ms))
+                .collect()
+        });
+        if candidates.is_empty() {
+            return;
+        }
+        let quiet_for = since.elapsed();
+        let now = now_ms();
+        let mut wait: Option<Duration> = None;
+        for (id, opened) in candidates {
+            // Both the quiet stretch and the interaction itself must span the whole window: a
+            // dialog drawn a moment after its hook reported it must not be closed at once.
+            let open_for = Duration::from_millis((now - opened).max(0) as u64);
+            let age = quiet_for.min(open_for);
+            if age >= NO_DIALOG_CLOSE {
+                resolve(
+                    server,
+                    &id,
+                    InteractionStatus::ResolvedElsewhere,
+                    "no dialog on screen",
+                );
+            } else {
+                let left = NO_DIALOG_CLOSE - age;
+                wait = Some(wait.map_or(left, |w| w.min(left)));
+            }
+        }
+        // A quiet screen may not redraw again: look once more when the window has passed.
+        if let Some(w) = wait
+            && self
+                .inner
+                .lock()
+                .unwrap()
+                .no_dialog_armed
+                .insert(pane.to_string())
+        {
+            let (srv, pane2) = (server.clone(), pane.to_string());
+            tokio::spawn(async move {
+                tokio::time::sleep(w + Duration::from_millis(250)).await;
+                srv.agents
+                    .inner
+                    .lock()
+                    .unwrap()
+                    .no_dialog_armed
+                    .remove(&pane2);
+                srv.agents.on_screen(&srv, &pane2);
+            });
+        }
+    }
+}
+
 /// Update an open screen picker's pointer, checks, adjuster and (for a scrolled list) visible
 /// rows in place. Called only while the signature is unchanged, so title and body still hold.
 fn refresh_picker(server: &Server, it: &Interaction, d: &screen::Dialog) {
@@ -837,6 +943,7 @@ fn set_execution(
         {
             r.done_rev += 1;
             r.turns_completed += 1;
+            mark_turn(tx, &r.id);
         }
         r.execution = Facet {
             detail,
@@ -954,6 +1061,92 @@ pub(crate) fn close_interaction(
     reason: &str,
 ) {
     resolve(server, id, status, reason);
+}
+
+/// Reason for interactions a new user turn closed: the user moved past the dialog (Esc, then a
+/// new prompt), and harnesses report neither a tool result nor `Stop` for it.
+pub(crate) const USER_MOVED_ON: &str = "user moved on";
+
+/// Store kind of each live run's last turn boundary ([`TurnMark`]).
+pub(crate) const K_TURN_MARK: &str = "turn_mark";
+
+/// When a run last started or finished a turn. Kept beside the run rather than in `AgentRun`,
+/// which is on the positional render stream. The inbox drops delivery problems older than it.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct TurnMark {
+    pub run: String,
+    pub at_ms: i64,
+}
+
+fn mark_turn(tx: &mut Tx, run: &str) {
+    tx.m.put(
+        K_TURN_MARK,
+        run,
+        None,
+        &TurnMark {
+            run: run.to_string(),
+            at_ms: now_ms(),
+        },
+    );
+}
+
+/// A failed keystroke delivery that stopped before typing anything (the dialog had changed, or
+/// the interaction, run or pane was gone). Nothing reached the pane, so there is nothing to
+/// check in the inbox; the user is notified once instead.
+pub(crate) fn nothing_typed(delivery_error: Option<&str>) -> bool {
+    delivery_error.is_some_and(|e| {
+        [
+            "dialog_changed",
+            "interaction gone",
+            "run gone",
+            "pane gone",
+            "selection_mismatch",
+        ]
+        .iter()
+        .any(|p| e.starts_with(p))
+    })
+}
+
+/// Close the run's open interactions that `pick` selects.
+fn resolve_open(server: &Server, run: &str, reason: &str, pick: impl Fn(&Interaction) -> bool) {
+    let ids: Vec<String> = server.with_core(|c| {
+        c.model
+            .interactions
+            .iter()
+            .filter(|i| i.run == run && i.status == InteractionStatus::Open && pick(i))
+            .map(|i| i.id.clone())
+            .collect()
+    });
+    for id in ids {
+        resolve(server, &id, InteractionStatus::ResolvedElsewhere, reason);
+    }
+}
+
+/// A tool other than `tool_use` started, so the agent no longer waits on an earlier question,
+/// picker or plan review. Approvals stay open: parallel tool calls can each wait for one. Screen
+/// dialogs follow the screen, MCP elicitations belong to a running tool, and a held gate is the
+/// harness still waiting on Vibeke.
+fn closed_by_other_tool(server: &Server, run: &AgentRun, tool_use: &str) {
+    let now = now_ms();
+    let gates: std::collections::HashSet<String> = server
+        .agents
+        .inner
+        .lock()
+        .unwrap()
+        .gates
+        .keys()
+        .cloned()
+        .collect();
+    resolve_open(server, &run.id, "tool ran", |i| {
+        matches!(
+            i.kind,
+            InteractionKind::Question | InteractionKind::Picker | InteractionKind::PlanReview
+        ) && i.source != StateSource::Screen
+            && i.native_ref.as_deref() != Some(tool_use)
+            && i.opened_at_ms < now
+            && !harness::is_elicitation(i)
+            && !gates.contains(&i.id)
+    });
 }
 
 // ---- hook transport ---------------------------------------------------------------------------
@@ -1429,13 +1622,23 @@ fn on_signal(server: &Arc<Server>, pane: &str, h: Harness, event: &str, p: &Valu
             // Events carry metadata only (15 §10.3, 09): never prompt text, which may hold secrets.
             let prompt = p.get("prompt").and_then(Value::as_str).unwrap_or("");
             let meta = json!({"prompt_bytes": prompt.len(), "prompt_digest": blake3::hash(prompt.as_bytes()).to_hex()[..16].to_string()});
+            let started = now_ms();
             update_run(server, &run.id, |r, tx| {
                 tx.event(
                     "agent.turn_started",
                     json!({"run": r.id, "pane": r.pane}),
                     meta.clone(),
                 );
+                mark_turn(tx, &r.id);
             });
+            // A new turn means the user moved past any dialog still open (Esc, then a new
+            // prompt): the harness never reports a result for it. A headless run's requests
+            // belong to its protocol, which withdraws them itself.
+            if !headless::is_headless(&run) {
+                resolve_open(server, &run.id, USER_MOVED_ON, |i| {
+                    i.opened_at_ms <= started
+                });
+            }
         }
         "PreToolUse" => {
             set_execution(
@@ -1453,6 +1656,11 @@ fn on_signal(server: &Arc<Server>, pane: &str, h: Harness, event: &str, p: &Valu
                 .to_string();
             let summary = harness::tool_summary(&tool, p.get("tool_input").unwrap_or(&Value::Null));
             update_run(server, &run.id, |r, _| r.last_tool = Some(summary));
+            if let Some(t) = tool_use
+                && !headless::is_headless(&run)
+            {
+                closed_by_other_tool(server, &run, t);
+            }
         }
         "PostToolUse" | "PostToolUseFailure" | "PermissionDenied" => {
             if let Some(t) = tool_use {
@@ -1514,6 +1722,7 @@ fn on_signal(server: &Arc<Server>, pane: &str, h: Harness, event: &str, p: &Valu
                     json!({"run": r.id, "pane": r.pane}),
                     json!({"stop_reason": event}),
                 );
+                mark_turn(tx, &r.id);
             });
             set_execution(
                 server,
@@ -1870,6 +2079,7 @@ fn set_delivery(server: &Server, id: &str, state: DeliveryState, error: Option<S
         _ => "interaction.updated",
     };
     let run_id = it.run.clone();
+    let (pane, title) = (it.pane.clone(), it.title.clone());
     let mut tx = Tx::new();
     tx.event(
         ev,
@@ -1879,6 +2089,26 @@ fn set_delivery(server: &Server, id: &str, state: DeliveryState, error: Option<S
     tx.interaction(it);
     let _ = server.commit(&mut c, tx);
     drop(c);
+    // Nothing was typed: no inbox item (`review::collect`), one notice now instead.
+    if state == DeliveryState::Failed && nothing_typed(error.as_deref()) {
+        let changed = error
+            .as_deref()
+            .is_some_and(|e| e.starts_with("dialog_changed") || e.starts_with("selection"));
+        let body = if changed {
+            format!(
+                "The dialog had changed, so your answer to \"{title}\" was not sent. Check the pane."
+            )
+        } else {
+            format!("The agent or its pane was gone, so your answer to \"{title}\" was not sent.")
+        };
+        server.notify(
+            "interaction",
+            Some(&pane),
+            "Answer not sent",
+            &body,
+            "normal",
+        );
+    }
     if matches!(
         state,
         DeliveryState::Failed | DeliveryState::DeliveryUnknown
@@ -3198,6 +3428,9 @@ mod polish_tests;
 
 #[cfg(test)]
 mod models_tests;
+
+#[cfg(test)]
+mod dismiss_tests;
 
 #[cfg(test)]
 pub(crate) fn harness_tests_run() -> AgentRun {

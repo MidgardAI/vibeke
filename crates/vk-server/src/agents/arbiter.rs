@@ -263,6 +263,7 @@ pub fn resolution_known(reason: &str) -> bool {
             | "PostToolUseFailure"
             | "PermissionDenied"
             | "turn ended"
+            | "user moved on"
             | "tool ran"
             | "dialog closed"
             | "self-report moved on"

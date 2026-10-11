@@ -408,6 +408,14 @@ fn apply(
                     );
                 }
             }
+            // A user turn recorded after an interaction opened: the user moved past it without
+            // a report (hooks lost or never installed). Headless requests belong to their
+            // protocol; a turn without a timestamp cannot be ordered against the interaction.
+            Event::TurnStarted {
+                ts_ms: Some(ts), ..
+            } if !headless::is_headless(&run) => {
+                resolve_open(server, run_id, USER_MOVED_ON, |i| i.opened_at_ms < *ts);
+            }
             Event::TurnStarted { .. } => {}
         }
     }

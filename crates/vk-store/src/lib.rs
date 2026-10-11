@@ -889,6 +889,21 @@ impl Store {
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
+    /// [`Self::reads`] with the time (ms) each mark was last written: a focus or a "seen".
+    pub fn reads_at(&self, user: &str) -> Result<Vec<(String, u64, i64)>> {
+        let mut st = self
+            .conn
+            .prepare("SELECT pane_id, seen_rev, seen_at FROM pane_reads WHERE user=?1")?;
+        let rows = st.query_map([user], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, i64>(1)? as u64,
+                r.get::<_, i64>(2)?,
+            ))
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
     pub fn last_seq(&self) -> Result<i64> {
         Ok(self
             .conn
