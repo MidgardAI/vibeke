@@ -66,7 +66,10 @@ pub fn entries(app: &App) -> Vec<Entry> {
                 .iter()
                 .filter(|i| i.run == r.id && i.status == InteractionStatus::Open)
                 .min_by_key(|i| i.opened_at_ms);
-            let (glyph, state, _, _) = crate::draw::run_state(app, m, r);
+            let (glyph, mut state, _, _) = crate::draw::run_state(app, m, r);
+            if !r.bg_tasks.is_empty() {
+                state = format!("{state} · {}", crate::draw::bg_summary(r, 24));
+            }
             let name = r.label().to_string();
             let on = if multi {
                 format!("{} · ", m.label)

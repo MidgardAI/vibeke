@@ -231,7 +231,9 @@ pub fn local_data(app: &App) -> Value {
     let done = runs
         .iter()
         .filter(|r| {
-            r.execution.value == Execution::Idle && r.done_rev > *m.seen.get(&r.pane).unwrap_or(&0)
+            r.execution.value == Execution::Idle
+                && r.bg_tasks.is_empty()
+                && r.done_rev > *m.seen.get(&r.pane).unwrap_or(&0)
         })
         .count();
     let needs: HashSet<&String> = open.iter().map(|i| &i.run).collect();
@@ -250,6 +252,7 @@ pub fn local_data(app: &App) -> Value {
             "done": done,
             "needs_input": needs.len(),
             "error": runs.iter().filter(|r| matches!(r.execution.value, Execution::Error | Execution::RateLimited)).count(),
+            "background": runs.iter().map(|r| r.bg_tasks.len()).sum::<usize>(),
             "total": runs.len(),
         },
         "sync_input": {"enabled": false},
@@ -324,6 +327,7 @@ pub fn segment(app: &App, id: &str, d: &Value) -> (String, Style) {
                 ("done", "✓"),
                 ("needs_input", "⚠"),
                 ("error", "✗"),
+                ("background", "⧗"),
             ] {
                 let n = num(d, &format!("/agents_summary/{k}"));
                 if n > 0 {

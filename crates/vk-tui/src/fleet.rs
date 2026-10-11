@@ -258,6 +258,9 @@ pub fn tile_body(app: &App, v: &View, id: &RunId, h: usize) -> Vec<String> {
             if let Some(tool) = &r.last_tool {
                 out.push(format!("tool: {tool}"));
             }
+            if !r.bg_tasks.is_empty() {
+                out.push(format!("bg: {}", crate::draw::bg_summary(r, 30)));
+            }
             let ws = m
                 .model
                 .panes
