@@ -573,6 +573,107 @@ fn herdr_rest_worktree_open_and_create_take_herdrs_params() {
     assert_eq!(wts.len(), 5, "{l}");
 }
 
+/// Echo `$name` in a pane and wait for `want` (Herdr's `pane.wait_for_output`).
+fn expect_env(s_: &Session, pane: &str, name: &str, want: &str) {
+    s_.herdr(&[
+        "pane",
+        "send-text",
+        pane,
+        &format!("echo \"env-$((1+1))-${name}\"\n"),
+    ]);
+    let r = ok(
+        s_,
+        "pane.wait_for_output",
+        json!({"pane_id": pane, "source": "recent", "match": {"type": "substring", "value": format!("env-2-{want}")}, "timeout_ms": 20000}),
+    );
+    assert_eq!(r["type"], "output_matched", "{r}");
+}
+
+#[test]
+fn herdr_rest_launch_env_for_split_tab_and_workspace() {
+    let s_ = session("");
+    let w = ok(
+        &s_,
+        "workspace.create",
+        json!({"cwd": "/tmp", "env": {"HP5_WS": "ws-value"}}),
+    );
+    let ws = s(&w["workspace"]["workspace_id"]);
+    let root = s(&w["root_pane"]["pane_id"]);
+    expect_env(&s_, &root, "HP5_WS", "ws-value");
+
+    // `pane.split` with `env`; the pane's identity cannot be replaced.
+    let sp_ = ok(
+        &s_,
+        "pane.split",
+        json!({"target_pane_id": root, "direction": "right", "env": {"HP5_SPLIT": "split-value", "VIBEKE_PANE_ID": "forged", "HERDR_PANE_ID": "forged"}, "right_click": "pane"}),
+    );
+    let split = s(&sp_["pane"]["pane_id"]);
+    expect_env(&s_, &split, "HP5_SPLIT", "split-value");
+    expect_env(&s_, &split, "VIBEKE_PANE_ID", &split);
+
+    // `tab.create` with `env`.
+    let t = ok(
+        &s_,
+        "tab.create",
+        json!({"workspace_id": ws, "env": {"HP5_TAB": "tab-value"}}),
+    );
+    expect_env(&s_, &s(&t["root_pane"]["pane_id"]), "HP5_TAB", "tab-value");
+
+    // Herdr's `normalize_launch_env` errors and the `right_click` enum.
+    assert_eq!(
+        err_code(
+            &s_,
+            "pane.split",
+            json!({"target_pane_id": root, "direction": "down", "env": {"A=B": "x"}})
+        ),
+        "invalid_env"
+    );
+    assert_eq!(
+        err_code(&s_, "tab.create", json!({"env": {"": "x"}})),
+        "invalid_env"
+    );
+    assert_eq!(
+        err_code(
+            &s_,
+            "pane.split",
+            json!({"target_pane_id": root, "direction": "down", "right_click": "menu"})
+        ),
+        "invalid_request"
+    );
+    assert_eq!(
+        err_code(
+            &s_,
+            "pane.split",
+            json!({"target_pane_id": "w99:p1", "direction": "down"})
+        ),
+        "pane_not_found"
+    );
+    // `workspace_id` splits that workspace's focused pane.
+    let sp2 = ok(
+        &s_,
+        "pane.split",
+        json!({"workspace_id": ws, "direction": "down"}),
+    );
+    assert_eq!(sp2["pane"]["workspace_id"], ws.as_str(), "{sp2}");
+    // The native API takes `env` too.
+    let n = s_.api(
+        "workspace.create",
+        json!({"cwd": "/tmp", "env": {"HP5_NATIVE": "native-value"}}),
+    );
+    let np = s(&n["root_pane"]["handle"]);
+    expect_env(&s_, &np, "HP5_NATIVE", "native-value");
+    let bad = s_
+        .cmd(&[
+            "api",
+            "call",
+            "pane.split",
+            &json!({"pane": np, "env": {"K": 1}}).to_string(),
+        ])
+        .output()
+        .unwrap();
+    assert!(!bad.status.success(), "a non-string env value is refused");
+}
+
 fn write_plugin(dir: &Path) {
     write(
         &dir.join("herdr-plugin.toml"),

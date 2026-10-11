@@ -1810,8 +1810,46 @@ fn req_s<'a>(p: &'a Value, k: &str) -> Result<&'a str, WireError> {
     sp(p, k).ok_or_else(|| WireError::new("invalid_params", format!("{k} is required")))
 }
 
-/// The pane a request targets: `pane_id`, else the invocation's pane, else `@current` for
-/// pane-scoped callers, else the focused pane of the most recent client.
+/// Herdr's `normalize_launch_env` for the `env` of `pane.split`, `tab.create` and
+/// `workspace.create` (`invalid_env`).
+fn herdr_launch_env(p: &Value) -> Result<Vec<(String, String)>, WireError> {
+    launch::launch_env(p.get("env")).map_err(|(code, msg)| WireError::new(code, msg))
+}
+
+fn env_json(env: &[(String, String)]) -> Value {
+    Value::Object(
+        env.iter()
+            .map(|(k, v)| (k.clone(), Value::String(v.clone())))
+            .collect(),
+    )
+}
+
+/// A native create error as Herdr's `<thing>_create_failed` (`pane_split_failed`), keeping
+/// Herdr's not-found and permission codes.
+fn create_failed(code: &str, e: WireError) -> WireError {
+    match e.code.as_str() {
+        "pane_not_found"
+        | "workspace_not_found"
+        | "tab_not_found"
+        | "permission_denied"
+        | "invalid_params"
+        | "invalid_env" => e,
+        _ => WireError::new(code, e.message),
+    }
+}
+
+/// The directory a new pane follows in a workspace: its focused pane's current directory,
+/// else the workspace root.
+fn ws_cwd(server: &Server, sn: &Snap, w: &Workspace) -> String {
+    sn.active_tab(w)
+        .and_then(|t| sn.tab_focus(t))
+        .and_then(|x| server.pane_cwd(&x.id))
+        .unwrap_or_else(|| w.root_path.clone())
+}
+
+/// The pane a request targets: `pane_id`; else, for a pane-scoped caller, its own pane;
+/// else Herdr's focused pane (`resolve_optional_pane`): the most recent client's focus, else
+/// the pane the invocation's context named, else the active workspace's focused pane.
 fn pane_target(caller: &Caller, sn: &Snap, p: &Value) -> Result<String, WireError> {
     if let Some(id) = sp(p, "pane_id") {
         return sn
@@ -1819,18 +1857,24 @@ fn pane_target(caller: &Caller, sn: &Snap, p: &Value) -> Result<String, WireErro
             .map(|x| x.id.clone())
             .ok_or_else(|| WireError::new("pane_not_found", format!("pane {id} not found")));
     }
-    if let Some(d) = &caller.default_pane
-        && let Some(x) = sn.pane(d)
-    {
-        return Ok(x.id.clone());
-    }
     if let Some(s) = &caller.ctx.pane_scope {
         return Ok(s.clone());
     }
-    sn.focus
-        .pane
-        .clone()
-        .ok_or_else(|| WireError::new("invalid_params", "pane_id is required (no focused pane)"))
+    if let Some(x) = sn.focus.pane.as_deref().and_then(|f| sn.pane(f)) {
+        return Ok(x.id.clone());
+    }
+    if let Some(x) = caller.default_pane.as_deref().and_then(|d| sn.pane(d)) {
+        return Ok(x.id.clone());
+    }
+    focused_pane(sn).ok_or_else(|| WireError::new("pane_not_found", "pane not found"))
+}
+
+/// The active workspace's focused pane (Herdr's `resolve_optional_pane(None)`).
+fn focused_pane(sn: &Snap) -> Option<String> {
+    sn.active_ws()
+        .and_then(|w| sn.active_tab(w))
+        .and_then(|t| sn.tab_focus(t))
+        .map(|x| x.id.clone())
 }
 
 /// The pane a Herdr `PaneTarget` names: `pane_id` is required (no focus fallback).
@@ -1934,14 +1978,37 @@ pub async fn call(
             ))
         }
         "workspace.create" => {
+            let env = herdr_launch_env(p)?;
             let mut np = json!({"focus": p.get("focus").and_then(Value::as_bool).unwrap_or(false)});
-            if let Some(c) = sp(p, "cwd") {
+            // Herdr: `cwd`, else the focused pane's directory in `source_workspace_id` (else
+            // the active workspace).
+            let cwd = match sp(p, "cwd") {
+                Some(c) => Some(c.to_string()),
+                None => {
+                    let src = match sp(p, "source_workspace_id") {
+                        Some(id) => Some(sn.ws(id).ok_or_else(|| {
+                            WireError::new(
+                                "workspace_not_found",
+                                format!("workspace {id} not found"),
+                            )
+                        })?),
+                        None => sn.active_ws(),
+                    };
+                    src.map(|w| ws_cwd(server, &sn, w))
+                }
+            };
+            if let Some(c) = cwd {
                 np["cwd"] = json!(c);
             }
             if let Some(l) = sp(p, "label") {
                 np["name"] = json!(l);
             }
-            let r = native(server, caller, "workspace.create", np).await?;
+            if !env.is_empty() {
+                np["env"] = env_json(&env);
+            }
+            let r = native(server, caller, "workspace.create", np)
+                .await
+                .map_err(|e| create_failed("workspace_create_failed", e))?;
             let sn = snap(server);
             let id = |k: &str| r[k]["id"].as_str().unwrap_or_default().to_string();
             Ok(typed(
@@ -2041,12 +2108,23 @@ pub async fn call(
                     .cloned()
                     .ok_or_else(|| WireError::new("workspace_not_found", "no workspace"))?,
             };
+            let env = herdr_launch_env(p)?;
             let mut np = json!({"workspace": w.id, "focus": p.get("focus").and_then(Value::as_bool).unwrap_or(false)});
             if let Some(l) = sp(p, "label") {
                 np["title"] = json!(l);
             }
-            np["cwd"] = json!(sp(p, "cwd").unwrap_or(&w.root_path));
-            let r = native(server, caller, "tab.create", np).await?;
+            // Herdr: `cwd`, else the directory of the workspace's focused pane.
+            np["cwd"] = json!(
+                sp(p, "cwd")
+                    .map(str::to_string)
+                    .unwrap_or_else(|| ws_cwd(server, &sn, &w))
+            );
+            if !env.is_empty() {
+                np["env"] = env_json(&env);
+            }
+            let r = native(server, caller, "tab.create", np)
+                .await
+                .map_err(|e| create_failed("tab_create_failed", e))?;
             let sn = snap(server);
             let id = |k: &str| r[k]["id"].as_str().unwrap_or_default().to_string();
             Ok(typed(
@@ -2254,16 +2332,36 @@ pub async fn call(
             Ok(ok())
         }
         "pane.split" => {
-            // Baseline requests name the pane to split `target_pane_id`.
-            let id = match sp(p, "target_pane_id") {
-                Some(t) => sn.pane(t).map(|x| x.id.clone()).ok_or_else(|| {
-                    WireError::new("pane_not_found", format!("pane not found: {t}"))
-                })?,
-                None => pane_target(caller, &sn, p)?,
+            // Herdr: `target_pane_id`, else the focused pane of `workspace_id`, else of the
+            // active workspace (Vibeke also takes `pane_id` and the caller's pane).
+            let nf = || WireError::new("pane_not_found", "pane not found");
+            let id = if let Some(t) = sp(p, "target_pane_id") {
+                sn.pane(t).map(|x| x.id.clone()).ok_or_else(nf)?
+            } else if let Some(w) = sp(p, "workspace_id") {
+                let w = sn.ws(w).ok_or_else(nf)?;
+                sn.active_tab(w)
+                    .and_then(|t| sn.tab_focus(t))
+                    .map(|x| x.id.clone())
+                    .ok_or_else(nf)?
+            } else {
+                pane_target(caller, &sn, p)?
             };
+            match p.get("right_click") {
+                None | Some(Value::Null) => {}
+                Some(Value::String(r)) if r == "herdr" || r == "pane" => {}
+                Some(other) => {
+                    return Err(wire::invalid_request(format!(
+                        "unknown variant {other}, expected `herdr` or `pane`"
+                    )));
+                }
+            }
+            let env = herdr_launch_env(p)?;
             let mut np = json!({"pane": id, "direction": sp(p, "direction").unwrap_or("right"), "focus": p.get("focus").and_then(Value::as_bool).unwrap_or(false)});
             if let Some(c) = sp(p, "cwd") {
                 np["cwd"] = json!(c);
+            }
+            if !env.is_empty() {
+                np["env"] = env_json(&env);
             }
             // Herdr's `ratio` is the share of the split pane (the first side), clamped to
             // 0.1..0.9; Vibeke's is the new pane's share.
@@ -2275,7 +2373,9 @@ pub async fn call(
                 };
                 np["ratio"] = json!(1.0 - r);
             }
-            let r = native(server, caller, "pane.split", np).await?;
+            let r = native(server, caller, "pane.split", np)
+                .await
+                .map_err(|e| create_failed("pane_split_failed", e))?;
             let sn = snap(server);
             let new = r["pane"]["id"].as_str().unwrap_or_default();
             Ok(typed(
@@ -5711,7 +5811,7 @@ mod tests {
         let e = call(&srv, &user(), "pane.send_text", &json!({}))
             .await
             .unwrap_err();
-        assert_eq!(e.code, "invalid_params", "no pane and no focus");
+        assert_eq!(e.code, "pane_not_found", "no pane and no focus");
         let e = call(
             &srv,
             &user(),

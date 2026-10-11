@@ -230,7 +230,7 @@ pub const ENTRIES: &[Entry] = &[
         "workspace.create",
         Implemented,
         "spec",
-        "`workspace_created {workspace, tab, root_pane}`",
+        "`{cwd?, label?, focus?, env?, source_workspace_id?}`: without `cwd` the new workspace follows the focused pane's directory of `source_workspace_id` (else the active workspace); `env` as `pane.split`; `workspace_created {workspace, tab, root_pane}`; failures `workspace_create_failed`",
     ),
     e(Method, "workspace.rename", Implemented, "spec", ""),
     e(
@@ -242,7 +242,13 @@ pub const ENTRIES: &[Entry] = &[
     ),
     e(Method, "workspace.focus", Implemented, "spec", ""),
     e(Method, "tab.list", Implemented, "spec", ""),
-    e(Method, "tab.create", Implemented, "spec", ""),
+    e(
+        Method,
+        "tab.create",
+        Implemented,
+        "spec",
+        "`{workspace_id?, cwd?, label?, focus?, env?}`: without `cwd` the tab follows the workspace's focused pane directory; `env` as `pane.split`; `tab_created {tab, root_pane}`",
+    ),
     e(Method, "tab.rename", Implemented, "spec", ""),
     e(Method, "tab.move", Implemented, "spec", "`insert_index`"),
     e(Method, "tab.focus", Implemented, "spec", ""),
@@ -305,7 +311,7 @@ pub const ENTRIES: &[Entry] = &[
         "pane.split",
         Partial,
         "spec",
-        "splits `target_pane_id` (baseline), else `pane_id`, the invocation's pane or the focused pane; direction/cwd/focus; Herdr's `ratio` (share of the split pane, 0.1..0.9); `env`, `workspace_id` and `right_click` are not applied (Vibeke's split takes no launch environment)",
+        "splits `target_pane_id`, else the focused pane of `workspace_id`, else the focused pane (Vibeke also: `pane_id`, a pane-scoped caller's own pane); `direction`/`cwd`/`focus`; Herdr's `ratio` (share of the split pane, 0.1..0.9); `env` checked like Herdr's `normalize_launch_env` (`invalid_env`) and set in the new pane before its identity (`VIBEKE_*`, `TERM`, `HERDR_ENV`, `HERDR_*_ID` and `HERDR_SOCKET_PATH` cannot be replaced); `right_click` validated (`herdr`/`pane`) but not applied: Vibeke's clients have no per-pane right-click routing; `pane_info`; failures `pane_split_failed`. The launch environment is not kept when a lost pane is restarted",
     ),
     e(
         Method,

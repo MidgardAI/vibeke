@@ -146,6 +146,14 @@ fn protected(k: &str) -> bool {
 /// protected keys dropped as Herdr's `plugin_pane_launch_env` does. Errors are
 /// `(code, message)`.
 pub fn caller_env(env: Option<&Value>) -> Result<Vec<(String, String)>, (String, String)> {
+    let mut out = launch_env(env)?;
+    out.retain(|(k, _)| !protected(k));
+    Ok(out)
+}
+
+/// The `env` of `pane.split`, `tab.create` and `workspace.create`, checked and sorted like
+/// Herdr's `normalize_launch_env` (no keys dropped: the server keeps the pane's identity).
+pub fn launch_env(env: Option<&Value>) -> Result<Vec<(String, String)>, (String, String)> {
     let map = match env {
         None | Some(Value::Null) => return Ok(Vec::new()),
         Some(Value::Object(m)) => m,
@@ -188,7 +196,6 @@ pub fn caller_env(env: Option<&Value>) -> Result<Vec<(String, String)>, (String,
         out.push((key.clone(), value.to_string()));
     }
     out.sort_by(|a, b| a.0.cmp(&b.0));
-    out.retain(|(k, _)| !protected(k));
     Ok(out)
 }
 

@@ -34,6 +34,33 @@ pub fn invalid(msg: impl Into<String>) -> RpcError {
     err(ErrorKind::InvalidParams, msg)
 }
 
+/// The `env` parameter of `pane.split`, `tab.create` and `workspace.create`: an object of
+/// strings added to the new pane's environment (sorted by name). Keys must be non-empty
+/// without `=` or NUL; values without NUL. The pane's identity variables (`VIBEKE_*`, `TERM`,
+/// the Herdr aliases) are kept.
+pub fn launch_env(p: &Value) -> Result<Vec<(String, String)>, RpcError> {
+    let Some(v) = p.get("env").filter(|v| !v.is_null()) else {
+        return Ok(Vec::new());
+    };
+    let m = v
+        .as_object()
+        .ok_or_else(|| invalid("env must be an object of strings"))?;
+    let mut out = Vec::with_capacity(m.len());
+    for (k, v) in m {
+        let v = v
+            .as_str()
+            .ok_or_else(|| invalid(format!("env value for {k} must be a string")))?;
+        if k.is_empty() || k.contains('=') || k.contains('\0') || v.contains('\0') {
+            return Err(invalid(format!(
+                "env key `{k}` must be non-empty without '=' or NUL, its value without NUL"
+            )));
+        }
+        out.push((k.clone(), v.to_string()));
+    }
+    out.sort();
+    Ok(out)
+}
+
 pub fn internal(e: impl std::fmt::Display) -> RpcError {
     let s = e.to_string();
     if s.contains("storage") || s.contains("database") || s.contains("disk") {
@@ -874,12 +901,15 @@ pub async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) 
             let focus = b(p, "focus")
                 .unwrap_or(false)
                 .then_some(ctx.client_id.as_str());
+            let env = launch_env(p)?;
             let (ws, tab, pane) = server
-                .create_workspace(
+                .create_workspace_env(
                     &cwd,
                     s(p, "name").map(Into::into),
                     argv(p, "command"),
                     focus,
+                    None,
+                    &env,
                 )
                 .map_err(internal)?;
             Ok(
@@ -981,13 +1011,16 @@ pub async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) 
                     .ok()
                     .and_then(|x| server.pane_cwd(&x.id))
             });
+            let env = launch_env(p)?;
             let (tab, pane) = server
-                .create_tab(
+                .create_tab_env(
                     &ws.id,
                     cwd.as_deref(),
                     s(p, "title").map(Into::into),
                     argv(p, "command"),
                     focus,
+                    None,
+                    &env,
                 )
                 .map_err(internal)?;
             Ok(json!({"tab": tab, "root_pane": pane, "cursor": cursor(server, None)}))
@@ -1115,8 +1148,9 @@ pub async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) 
                 None => "user".to_string(),
             };
             let by = by_owned.as_str();
-            let pane = server
-                .split_pane(
+            let env = launch_env(p)?;
+            let (pane, _) = server
+                .split_pane_env(
                     &target.id,
                     dir,
                     ratio,
@@ -1125,6 +1159,7 @@ pub async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) 
                     s(p, "title").map(Into::into),
                     focus,
                     by,
+                    &env,
                 )
                 .map_err(internal)?;
             Ok(json!({"pane": pane, "cursor": cursor(server, None)}))
