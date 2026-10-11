@@ -1053,6 +1053,24 @@ pub(crate) fn hold_external_gate(server: &Server, id: &str, pane: &str) -> onesh
     rx
 }
 
+/// Why an open interaction cannot be dismissed: a headless harness waits for a protocol answer
+/// that a dismissal never sends, and only accepts answers while the interaction is open.
+pub(crate) fn dismiss_refusal(server: &Server, id: &str) -> Option<vk_proto::rpc::RpcError> {
+    let headless = server.with_core(|c| {
+        c.interaction(id)
+            .filter(|i| i.status == InteractionStatus::Open)
+            .and_then(|i| c.run(&i.run))
+            .is_some_and(headless::is_headless)
+    });
+    headless.then(|| {
+        err(
+            ErrorKind::Unsupported,
+            "this request belongs to a headless agent; answer or deny it",
+        )
+        .details(json!({"interaction": id}))
+    })
+}
+
 /// Close an Interaction from outside this module (confirms delivery when one is in flight).
 pub(crate) fn close_interaction(
     server: &Server,
@@ -1107,13 +1125,33 @@ pub(crate) fn nothing_typed(delivery_error: Option<&str>) -> bool {
     })
 }
 
-/// Close the run's open interactions that `pick` selects.
+fn held_gates(server: &Server) -> std::collections::HashSet<String> {
+    server
+        .agents
+        .inner
+        .lock()
+        .unwrap()
+        .gates
+        .keys()
+        .cloned()
+        .collect()
+}
+
+/// Close the run's open interactions that `pick` selects. A held gate (a hook or a sandbox
+/// process still waiting on Vibeke) is never closed here: releasing it would deny without a
+/// decision.
 fn resolve_open(server: &Server, run: &str, reason: &str, pick: impl Fn(&Interaction) -> bool) {
+    let gates = held_gates(server);
     let ids: Vec<String> = server.with_core(|c| {
         c.model
             .interactions
             .iter()
-            .filter(|i| i.run == run && i.status == InteractionStatus::Open && pick(i))
+            .filter(|i| {
+                i.run == run
+                    && i.status == InteractionStatus::Open
+                    && !gates.contains(&i.id)
+                    && pick(i)
+            })
             .map(|i| i.id.clone())
             .collect()
     });
@@ -1125,18 +1163,28 @@ fn resolve_open(server: &Server, run: &str, reason: &str, pick: impl Fn(&Interac
 /// A tool other than `tool_use` started, so the agent no longer waits on an earlier question,
 /// picker or plan review. Approvals stay open: parallel tool calls can each wait for one. Screen
 /// dialogs follow the screen, MCP elicitations belong to a running tool, and a held gate is the
-/// harness still waiting on Vibeke.
+/// harness still waiting on Vibeke. A tool can start in parallel with a question, so the
+/// screen must also show no dialog; without screen rules nothing is closed.
 fn closed_by_other_tool(server: &Server, run: &AgentRun, tool_use: &str) {
+    if screen_shows_no_dialog(server, run) {
+        close_questions_for_tool(server, run, tool_use);
+    }
+}
+
+/// `true` only when the pane's screen is readable by the harness's rules and shows no dialog.
+fn screen_shows_no_dialog(server: &Server, run: &AgentRun) -> bool {
+    let Some(h) = Harness::from_id(&run.harness).filter(|h| screen::has_screen_rules(*h)) else {
+        return false;
+    };
+    let Some(rt) = server.pane_rt(&run.pane) else {
+        return false;
+    };
+    let text = rt.screen.lock().unwrap().engine.screen_text();
+    screen::evaluate(h, &text).dialog.is_none()
+}
+
+fn close_questions_for_tool(server: &Server, run: &AgentRun, tool_use: &str) {
     let now = now_ms();
-    let gates: std::collections::HashSet<String> = server
-        .agents
-        .inner
-        .lock()
-        .unwrap()
-        .gates
-        .keys()
-        .cloned()
-        .collect();
     resolve_open(server, &run.id, "tool ran", |i| {
         matches!(
             i.kind,
@@ -1145,7 +1193,6 @@ fn closed_by_other_tool(server: &Server, run: &AgentRun, tool_use: &str) {
             && i.native_ref.as_deref() != Some(tool_use)
             && i.opened_at_ms < now
             && !harness::is_elicitation(i)
-            && !gates.contains(&i.id)
     });
 }
 
@@ -3343,6 +3390,9 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
             let id = s(p, "interaction").unwrap_or("").to_string();
             match server.with_core(|c| c.interaction(&id).map(|i| i.id.clone())) {
                 Some(id) => {
+                    if let Some(e) = dismiss_refusal(server, &id) {
+                        return Some(Err(e));
+                    }
                     resolve(server, &id, InteractionStatus::Cancelled, "dismissed");
                     Ok(json!({}))
                 }

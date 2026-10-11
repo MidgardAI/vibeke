@@ -3448,12 +3448,10 @@ fn collect(server: &Server, now_ms: i64) -> Collected {
     // Task messages with an unknown delivery outcome (class 1).
     for m in messages.iter().filter(|m| {
         m.state == MessageState::DeliveryUnknown
-            && runs_by_id.get(m.run.as_str()).is_some_and(|r| {
-                pane_ws.contains_key(&r.pane)
-                    && turn_at
-                        .get(m.run.as_str())
-                        .is_none_or(|t| *t <= m.updated_at_ms)
-            })
+            && m.updated_at_ms >= inflight_cutoff
+            && runs_by_id
+                .get(m.run.as_str())
+                .is_some_and(|r| still_unsettled(&m.run, &r.pane, m.updated_at_ms))
     }) {
         let task = tasks_by_id.get(m.task.as_str());
         let mut it = base(
@@ -3932,6 +3930,12 @@ fn attention_update(server: &Arc<Server>, _ctx: &Ctx, p: &Value) -> R {
         return Err(invalid(format!("unknown attention item kind `{kind}`")));
     }
     let obj = format!("{kind}:{id}");
+    if kind == "interaction"
+        && p.get("dismiss").and_then(Value::as_bool) == Some(true)
+        && let Some(e) = crate::agents::dismiss_refusal(server, id)
+    {
+        return Err(e);
+    }
     let now_ms = now();
     let col = collect(server, now_ms);
     let item = col.items.iter().find(|i| i.key.object_id == obj).cloned();

@@ -179,15 +179,7 @@ async fn another_tool_closes_a_question_but_not_an_approval() {
     let run = add_run(&e, "r-tool", "p-tool", |_| {});
     let q = ask(&e, &run, "toolu_q");
     let a = approval(&e, &run, "toolu_a");
-    // The question's own tool starting never closes it.
-    on_signal(
-        &e.server,
-        "p-tool",
-        Harness::Claude,
-        "PreToolUse",
-        &json!({"session_id": "sess-r-tool", "tool_name": "AskUserQuestion", "tool_use_id": "toolu_q", "tool_input": {}}),
-    );
-    assert_eq!(status(&e, &q), InteractionStatus::Open);
+    // Without a readable screen a parallel tool proves nothing: the question may still show.
     on_signal(
         &e.server,
         "p-tool",
@@ -195,6 +187,11 @@ async fn another_tool_closes_a_question_but_not_an_approval() {
         "PreToolUse",
         &json!({"session_id": "sess-r-tool", "tool_name": "Read", "tool_use_id": "toolu_b", "tool_input": {"file_path": "/tmp/x"}}),
     );
+    assert_eq!(status(&e, &q), InteractionStatus::Open);
+    // With no dialog on screen: the question's own tool starting never closes it.
+    close_questions_for_tool(&e.server, &run, "toolu_q");
+    assert_eq!(status(&e, &q), InteractionStatus::Open);
+    close_questions_for_tool(&e.server, &run, "toolu_b");
     assert_eq!(status(&e, &q), InteractionStatus::ResolvedElsewhere);
     assert_eq!(reasons(&e, &q), vec!["tool ran".to_string()]);
     // Parallel tool calls can each wait for a permission: the approval stays open.
@@ -214,14 +211,32 @@ async fn another_tool_leaves_a_question_with_a_held_gate() {
             pane: "p-gate".into(),
         },
     );
+    close_questions_for_tool(&e.server, &run, "toolu_b");
+    assert_eq!(status(&e, &q), InteractionStatus::Open);
+    // A new prompt leaves a held gate alone too (a sandbox process may still be waiting).
     on_signal(
         &e.server,
         "p-gate",
         Harness::Claude,
-        "PreToolUse",
-        &json!({"session_id": "sess-r-gate", "tool_name": "Read", "tool_use_id": "toolu_b", "tool_input": {}}),
+        "UserPromptSubmit",
+        &json!({"session_id": "sess-r-gate", "prompt": "next"}),
     );
     assert_eq!(status(&e, &q), InteractionStatus::Open);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_headless_request_cannot_be_dismissed() {
+    let e = env();
+    let run = add_run(&e, "r-hl", "p-hl", |r| {
+        r.integration = "headless:acp".into()
+    });
+    let q = ask(&e, &run, "toolu_q");
+    let refusal = dismiss_refusal(&e.server, &q).expect("refused");
+    assert_eq!(refusal.data.kind, "unsupported");
+    assert_eq!(status(&e, &q), InteractionStatus::Open);
+    let plain = add_run(&e, "r-plain", "p-plain", |_| {});
+    let q2 = ask(&e, &plain, "toolu_q2");
+    assert!(dismiss_refusal(&e.server, &q2).is_none());
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -2749,3 +2749,29 @@ async fn failure_before_typing_is_not_an_inbox_item() {
     let k = keys(&ok(&e, "attention.list", json!({})).await);
     assert_eq!(k, vec![("send_unknown".into(), "d3".into())], "{k:?}");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn message_delivery_problem_clears_after_a_look_or_the_window() {
+    let e = Env::new();
+    let t0 = now();
+    put_task(&e, "tA", "Fix invoice export", None);
+    for r in ["r1", "r2"] {
+        e.add_run(r, &e.repo);
+        e.add_pane(r);
+    }
+    put_unknown_message(&e, "m1", "r1", t0 - 1000);
+    // Older than the in-flight window: never listed.
+    put_unknown_message(&e, "m2", "r2", t0 - 5 * 3600 * 1000);
+    let k = keys(&ok(&e, "attention.list", json!({})).await);
+    assert_eq!(k, vec![("send_unknown".into(), "m1".into())], "{k:?}");
+
+    // The user focuses r1's pane after the failure.
+    {
+        let mut c = e.server.core.lock().unwrap();
+        let mut tx = Tx::new();
+        tx.m.read_mark("local", "pane-r1", 0);
+        e.server.commit(&mut c, tx).unwrap();
+    }
+    let k = keys(&ok(&e, "attention.list", json!({})).await);
+    assert!(!k.iter().any(|(kind, _)| kind == "send_unknown"), "{k:?}");
+}
