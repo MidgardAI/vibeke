@@ -586,3 +586,94 @@ async fn cancelling_an_answer_in_flight_never_reports_it_delivered() {
         DeliveryState::DeliveryUnknown
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_dismissed_dialog_does_not_reopen_while_it_shows() {
+    let e = env();
+    let run = add_run(&e, "r-dis", "p-dis", |_| {});
+    let a = open(
+        &e,
+        &run,
+        "PermissionRequest",
+        json!({"tool_name": "Bash", "tool_use_id": "toolu_d", "tool_input": {"command": "cargo test --all"}}),
+        1000,
+    );
+    // Dismiss in Vibeke: the gate is released and the harness draws its own dialog.
+    resolve(&e.server, &a, InteractionStatus::Cancelled, DISMISSED);
+    let same = screen::evaluate(
+        Harness::Claude,
+        "│ Bash command\n│   cargo test --all\n│ Do you want to proceed?\n│ ❯ 1. Yes\n│   2. No",
+    );
+    assert!(same.dialog.is_some());
+    let agents = &e.server.agents;
+    assert!(agents.dialog_dismissed(&e.server, &run, &same));
+    // Seen once, it stays dismissed by its fingerprint.
+    assert!(agents.dialog_dismissed(&e.server, &run, &same));
+    // Another dialog is a new request.
+    let other = screen::evaluate(
+        Harness::Claude,
+        "│ Bash command\n│   rm -rf build\n│ Do you want to proceed?\n│ ❯ 1. Yes\n│   2. No",
+    );
+    assert!(other.dialog.is_some());
+    assert!(!agents.dialog_dismissed(&e.server, &run, &other));
+    // A new turn forgets the dismissal: the same dialog then is a new request.
+    on_signal(
+        &e.server,
+        "p-dis",
+        Harness::Claude,
+        "UserPromptSubmit",
+        &json!({"session_id": "sess-r-dis", "prompt": "run the tests again"}),
+    );
+    // Turn marks have millisecond resolution: make sure the mark moved.
+    {
+        let mut c = e.server.core.lock().unwrap();
+        let mut tx = Tx::new();
+        tx.m.put(
+            K_TURN_MARK,
+            "r-dis",
+            None,
+            &TurnMark {
+                run: "r-dis".into(),
+                at_ms: now_ms() + 1,
+            },
+        );
+        e.server.commit(&mut c, tx).unwrap();
+    }
+    assert!(!agents.dialog_dismissed(&e.server, &run, &same));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_dismissed_screen_dialog_is_forgotten_once_the_agent_works_again() {
+    let e = env();
+    let run = add_run(&e, "r-scr", "p-scr", |_| {});
+    let shown = screen::evaluate(
+        Harness::Claude,
+        "│ Bash command\n│   make deploy\n│ Do you want to proceed?\n│ ❯ 1. Yes\n│   2. No",
+    );
+    let d = shown.dialog.clone().unwrap();
+    let id = open(
+        &e,
+        &run,
+        "PermissionRequest",
+        json!({"tool_name": "Bash", "tool_use_id": "toolu_s", "tool_input": {"command": "make deploy"}}),
+        1000,
+    );
+    {
+        let mut c = e.server.core.lock().unwrap();
+        let mut it = c.interaction(&id).cloned().unwrap();
+        it.source = StateSource::Screen;
+        it.native_ref = Some(format!("screen:{}", d.fingerprint));
+        let mut tx = Tx::new();
+        tx.interaction(it);
+        e.server.commit(&mut c, tx).unwrap();
+    }
+    resolve(&e.server, &id, InteractionStatus::Cancelled, DISMISSED);
+    let agents = &e.server.agents;
+    assert!(agents.dialog_dismissed(&e.server, &run, &shown));
+    let working = screen::ScreenMatch {
+        state: Some((Execution::Working, 0.8)),
+        dialog: None,
+    };
+    assert!(!agents.dialog_dismissed(&e.server, &run, &working));
+    assert!(!agents.dialog_dismissed(&e.server, &run, &shown));
+}

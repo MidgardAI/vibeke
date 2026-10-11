@@ -4032,7 +4032,12 @@ fn attention_update(server: &Arc<Server>, _ctx: &Ctx, p: &Value) -> R {
     pref.updated_at_ms = now_ms;
     if cancel_interaction {
         // Locks core itself, so it runs before this function takes the lock.
-        crate::agents::close_interaction(server, id, InteractionStatus::Cancelled, "dismissed");
+        crate::agents::close_interaction(
+            server,
+            id,
+            InteractionStatus::Cancelled,
+            crate::agents::DISMISSED,
+        );
     }
     // Preferences for objects that are gone and untouched for a week would pile up forever.
     let stale_prefs: Vec<String> = if col.complete {

@@ -122,6 +122,8 @@ struct Inner {
     no_dialog_since: HashMap<String, Instant>,
     /// Panes with a re-check of `no_dialog_since` scheduled.
     no_dialog_armed: std::collections::HashSet<String>,
+    /// Per pane: requests the user dismissed whose dialog may still show (see `resolve`).
+    dismissed: HashMap<String, Vec<DismissedDialog>>,
 }
 
 const SCREEN_GRACE: Duration = Duration::from_secs(2);
@@ -606,6 +608,11 @@ impl Agents {
             }
             (_, o) => o,
         };
+        // A dialog the user dismissed stays in the pane, without a new inbox item or push.
+        if open_screen.is_none() && self.dialog_dismissed(server, &run, &m) {
+            self.inner.lock().unwrap().screen_grace.remove(pane);
+            return;
+        }
         let is_picker = m.dialog.as_ref().is_some_and(|d| d.picker.is_some());
         let unknown = m
             .dialog
@@ -1034,6 +1041,20 @@ fn resolve(server: &Server, id: &str, status: InteractionStatus, reason: &str) {
         && event == "interaction.resolved_elsewhere"
         && !arbiter::resolution_known(reason);
     let run_id = it.run.clone();
+    // The user dismissed an open request: its dialog may still show (or appear once a released
+    // gate hands it back to the harness). Remember it so the screen does not reopen it.
+    let dismissed = (status == InteractionStatus::Cancelled
+        && reason == DISMISSED
+        && event == "interaction.cancelled")
+        .then(|| {
+            let turn_at = c
+                .store
+                .find::<TurnMark>(K_TURN_MARK, &it.run)
+                .ok()
+                .flatten()
+                .map(|m| m.at_ms);
+            (it.clone(), turn_at)
+        });
     let mut tx = Tx::new();
     tx.event(
         event,
@@ -1043,8 +1064,131 @@ fn resolve(server: &Server, id: &str, status: InteractionStatus, reason: &str) {
     tx.interaction(it);
     let _ = server.commit(&mut c, tx);
     drop(c);
+    if let Some((it, turn_at)) = dismissed {
+        server.agents.remember_dismissal(&it, turn_at);
+    }
     if unknown_path && let Some(r) = server.with_core(|c| c.run(&run_id).cloned()) {
         arbiter::note(server, &r, arbiter::Kind::UnknownResolution);
+    }
+}
+
+/// Reason of a user's dismissal (`interaction.cancel`, the inbox's Dismiss).
+pub(crate) const DISMISSED: &str = "dismissed";
+
+/// A request the user dismissed in Vibeke. Its dialog stays in the pane (Dismiss does not
+/// answer the agent) but must not come back as a new inbox item and push while it shows.
+#[derive(Debug, Clone)]
+struct DismissedDialog {
+    run: String,
+    kind: InteractionKind,
+    title: String,
+    command: Option<String>,
+    /// Screen fingerprint of the dialog: known for screen-sourced requests, learned for a
+    /// structured one when the harness draws its dialog after the gate was released.
+    fingerprint: Option<String>,
+    /// The run's turn boundary when it was dismissed: a new turn forgets the dismissal.
+    turn_at: Option<i64>,
+}
+
+/// Dismissals remembered per pane (a few dialogs can be stacked in one turn).
+const MAX_DISMISSED_PER_PANE: usize = 8;
+
+impl Agents {
+    fn remember_dismissal(&self, it: &Interaction, turn_at: Option<i64>) {
+        let d = DismissedDialog {
+            run: it.run.clone(),
+            kind: it.kind,
+            title: it.title.clone(),
+            command: it.action.as_ref().and_then(|a| a.command.clone()),
+            fingerprint: it
+                .native_ref
+                .as_deref()
+                .and_then(|r| r.strip_prefix("screen:"))
+                .map(str::to_string),
+            turn_at,
+        };
+        let mut i = self.inner.lock().unwrap();
+        let list = i.dismissed.entry(it.pane.clone()).or_default();
+        list.push(d);
+        if list.len() > MAX_DISMISSED_PER_PANE {
+            list.remove(0);
+        }
+    }
+
+    /// Is the screen dialog `d` one the user already dismissed in this turn? Forgets the
+    /// pane's dismissals once the run's turn moved on, and when the screen shows the agent
+    /// working with no dialog (the dialog was answered in the pane or went away).
+    fn dialog_dismissed(&self, server: &Server, run: &AgentRun, m: &screen::ScreenMatch) -> bool {
+        let pane = run.pane.as_str();
+        if !self.inner.lock().unwrap().dismissed.contains_key(pane) {
+            return false;
+        }
+        let turn_at = server.with_core(|c| {
+            c.store
+                .find::<TurnMark>(K_TURN_MARK, &run.id)
+                .ok()
+                .flatten()
+                .map(|m| m.at_ms)
+        });
+        let mut i = self.inner.lock().unwrap();
+        let Some(list) = i.dismissed.get_mut(pane) else {
+            return false;
+        };
+        list.retain(|x| x.run == run.id && x.turn_at == turn_at);
+        let moved_on = m.dialog.is_none() && matches!(m.state, Some((Execution::Working, _)));
+        if moved_on {
+            list.clear();
+        }
+        let hit = match &m.dialog {
+            Some(d) => {
+                if list
+                    .iter()
+                    .any(|x| x.fingerprint.as_deref() == Some(d.fingerprint.as_str()))
+                {
+                    true
+                } else if let Some(x) = list
+                    .iter_mut()
+                    .find(|x| x.fingerprint.is_none() && same_request(x, d))
+                {
+                    // The harness drew the dialog of the dismissed structured request.
+                    x.fingerprint = Some(d.fingerprint.clone());
+                    true
+                } else {
+                    false
+                }
+            }
+            None => false,
+        };
+        if list.is_empty() {
+            i.dismissed.remove(pane);
+        }
+        hit
+    }
+}
+
+/// Does the screen dialog `d` show the dismissed structured request `x`? Approvals compare
+/// their command (the screen may show only its first line); a question or plan review is the
+/// first dialog of a matching kind the harness draws after the dismissal in the same turn.
+fn same_request(x: &DismissedDialog, d: &screen::Dialog) -> bool {
+    let norm = |s: &str| s.lines().next().unwrap_or("").trim().to_string();
+    match x.kind {
+        InteractionKind::Approval => {
+            if d.kind != InteractionKind::Approval {
+                return false;
+            }
+            match (&x.command, &d.command) {
+                (Some(a), Some(b)) => {
+                    let (a, b) = (norm(a), norm(b));
+                    !a.is_empty() && !b.is_empty() && (a.starts_with(&b) || b.starts_with(&a))
+                }
+                _ => norm(&x.title) == norm(&d.title),
+            }
+        }
+        InteractionKind::Question | InteractionKind::PlanReview => matches!(
+            d.kind,
+            InteractionKind::Question | InteractionKind::Picker | InteractionKind::PlanReview
+        ),
+        _ => norm(&x.title) == norm(&d.title),
     }
 }
 
@@ -3556,7 +3700,7 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
                     if let Some(e) = dismiss_refusal(server, &id) {
                         return Some(Err(e));
                     }
-                    resolve(server, &id, InteractionStatus::Cancelled, "dismissed");
+                    resolve(server, &id, InteractionStatus::Cancelled, DISMISSED);
                     Ok(json!({}))
                 }
                 None => Err(not_found("interaction", &id)),
