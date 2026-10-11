@@ -563,7 +563,20 @@ fn local_commands() {
             enabled: false
         })
     );
-    assert_eq!(p("plugin list --json"), Parsed::Local(Local::PluginList));
+    assert_eq!(
+        p("plugin list --json"),
+        Parsed::Local(Local::PluginList {
+            plugin: None,
+            json: true
+        })
+    );
+    assert_eq!(
+        p("plugin list --plugin acme.x"),
+        Parsed::Local(Local::PluginList {
+            plugin: Some("acme.x".into()),
+            json: false
+        })
+    );
     assert_eq!(
         p("plugin config-dir acme.x"),
         Parsed::Local(Local::PluginConfigDir {
