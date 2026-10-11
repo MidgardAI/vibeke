@@ -29,23 +29,35 @@ export function orderPreviews<T extends Pick<Preview, 'status' | 'port'>>(list: 
 
 type RowLike = Pick<WorkspaceRow, 'panes' | 'task'>;
 
-function belongsTo(row: RowLike, panes: ReadonlySet<string>, v: Preview): boolean {
-  return (!!v.pane && panes.has(v.pane)) || (!!v.task && row.task?.id === v.task);
+/**
+ * One owner per preview: the workspace of its live pane; without a live pane, the workspace of
+ * its task. (A moved pane keeps its preview's task, so the task alone would claim it twice.)
+ * `hostPanes` are the live panes of all the host's workspaces.
+ */
+function belongsTo(row: RowLike, panes: ReadonlySet<string>, hostPanes: ReadonlySet<string>, v: Preview): boolean {
+  if (v.pane && hostPanes.has(v.pane)) return panes.has(v.pane);
+  return !!v.task && row.task?.id === v.task;
 }
+
+const paneIds = (row: RowLike): Set<string> => new Set(row.panes.map((p) => p.pane.id));
 
 /**
  * Previews of the workspace, without gone ones, in the panel's order: those of its panes, and
- * those of its task (sandbox ports and agent runs carry the task, not a pane).
+ * those of its task that have no live pane (sandbox ports and agent runs carry the task).
+ * Without `hostRows`, only this workspace's panes count as live.
  */
-export function workspacePreviews(row: RowLike, previews: readonly Preview[] | undefined): Preview[] {
-  const panes = new Set(row.panes.map((p) => p.pane.id));
-  return orderPreviews((previews ?? []).filter((v) => v.status !== 'gone' && belongsTo(row, panes, v)));
+export function workspacePreviews(row: RowLike, previews: readonly Preview[] | undefined, hostRows: readonly RowLike[] = [row]): Preview[] {
+  const panes = paneIds(row);
+  const hostPanes = new Set(hostRows.flatMap((r) => [...paneIds(r)]));
+  for (const p of panes) hostPanes.add(p);
+  return orderPreviews((previews ?? []).filter((v) => v.status !== 'gone' && belongsTo(row, panes, hostPanes, v)));
 }
 
 /** The host's previews that belong to none of its workspaces (declared outside Vibeke, for example). */
 export function hostPreviews(rows: readonly RowLike[], previews: readonly Preview[] | undefined): Preview[] {
-  const sets = rows.map((r) => ({ r, panes: new Set(r.panes.map((p) => p.pane.id)) }));
-  return orderPreviews((previews ?? []).filter((v) => v.status !== 'gone' && !sets.some(({ r, panes }) => belongsTo(r, panes, v))));
+  const sets = rows.map((r) => ({ r, panes: paneIds(r) }));
+  const hostPanes = new Set(sets.flatMap(({ panes }) => [...panes]));
+  return orderPreviews((previews ?? []).filter((v) => v.status !== 'gone' && !sets.some(({ r, panes }) => belongsTo(r, panes, hostPanes, v))));
 }
 
 /**
@@ -58,7 +70,7 @@ export function panelPreviews(
   previews: readonly Preview[] | undefined,
   limited: boolean,
 ): { own: Preview[]; other: Preview[]; all: Preview[] } {
-  const own = row ? workspacePreviews(row, previews) : [];
+  const own = row ? workspacePreviews(row, previews, hostRows) : [];
   const other = limited ? [] : hostPreviews(hostRows, previews);
   return { own, other, all: [...own, ...other] };
 }

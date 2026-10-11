@@ -48,6 +48,13 @@ describe('previews list', () => {
     const list = [pv('t', 'up', 1, { pane: null, task: 'k1' }), pv('u', 'up', 2, { pane: null, task: 'k2' })];
     expect(workspacePreviews(withTask('k1', 'p9'), list).map((v) => v.id)).toEqual(['t']);
   });
+  test('a moved pane takes its preview along; the task does not claim it twice', () => {
+    const list = [pv('m', 'up', 1, { pane: 'p2', task: 'k1' })];
+    const a = withTask('k1', 'p1');
+    const b = rowOf('p2');
+    expect(workspacePreviews(a, list, [a, b])).toEqual([]);
+    expect(workspacePreviews(b, list, [a, b]).map((v) => v.id)).toEqual(['m']);
+  });
   test("the host's other previews are those no workspace claims; limited devices get none", () => {
     const list = [pv('a', 'up', 1), pv('t', 'up', 2, { pane: null, task: 'k1' }), pv('o', 'declared', 3, { pane: null }), pv('g', 'gone', 4, { pane: null }), pv('x', 'up', 5, { pane: 'closed' })];
     const rows = [rowOf('p1'), withTask('k1', 'p2')];
