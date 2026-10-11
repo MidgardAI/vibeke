@@ -398,6 +398,18 @@ pub const PANE_FORBIDDEN: &[&str] = &[
     "compat.invocation.verify",
     "plugin.surface.close",
     "plugin.registry.notify",
+    // The user's client and display: appearance reports, theme mode, gateway device reports
+    // and out-of-band confirmations. (Unlisted methods are forbidden anyway; these are named
+    // so the decision is visible.)
+    "client.appearance",
+    "client.activity",
+    "client.confirm",
+    "client.confirm_answer",
+    "client.devices",
+    "theme.set_mode",
+    // A plugin action runs with the plugin's capabilities, not the agent's.
+    "plugin.action.run",
+    "plugin.link.open",
 ];
 
 /// Method prefixes whose every method is forbidden for pane scope (14 §9: pane/adapter tokens
@@ -414,6 +426,253 @@ pub const PANE_FORBIDDEN_PREFIXES: &[&str] = &["assistant.", "cloud."];
 // focus/close method, `screenshot.*` / `task.*` / `draft.*` reads outside the caller's
 // workspace, `screenshot.delete` of an image the caller's pane did not attach, and
 // `task.operation.get` receipts.
+
+/// Methods a pane-scoped caller may call against any target (handlers may still refuse
+/// particular params). Every method that is neither here nor in [`PANE_OWN_TARGET`] is
+/// **forbidden** for panes: a new method stays the user's until someone classifies it here.
+pub const PANE_OPEN: &[&str] = &[
+    // Adapter transport: an agent reports its own state and gates (handlers bind the pane).
+    "adapter.control",
+    "adapter.delivery_ack",
+    "adapter.gate",
+    "adapter.report_self",
+    "adapter.signal",
+    // Agent reads and launches (`agent.spawn` only in the caller's workspace, see `authorize`).
+    "agent.commands",
+    "agent.drift",
+    "agent.get",
+    "agent.harnesses",
+    "agent.limits",
+    "agent.list",
+    "agent.manifests",
+    "agent.manifests_reload",
+    "agent.models",
+    "agent.read",
+    "agent.resumable",
+    "agent.spawn",
+    "agent.transcript",
+    "agent.turn_usage",
+    "agent.wait",
+    "api.methods",
+    "api.schema",
+    "attention.batch",
+    "attention.list",
+    // Asking the user: elevation and approvals are decided by the user, not the caller.
+    "auth.approve",
+    "auth.approve.withdraw",
+    "auth.elevate",
+    "blob.abort",
+    "blob.append",
+    "blob.begin",
+    "blob.commit",
+    "blob.get",
+    "blob.put",
+    "blob.stat",
+    // The agent's own browser sessions (handlers check ownership, loopback and scripts).
+    "browser.click",
+    "browser.close",
+    "browser.console",
+    "browser.diff",
+    "browser.dom",
+    "browser.eval",
+    "browser.list",
+    "browser.navigate",
+    "browser.network",
+    "browser.open",
+    "browser.pane.create",
+    "browser.pane.list",
+    "browser.pane.status",
+    "browser.press",
+    "browser.screenshot",
+    "browser.session_close",
+    "browser.session_open",
+    "browser.snapshot",
+    "browser.status",
+    "browser.type",
+    "browser.wait",
+    "client.hello",
+    "client.list",
+    "collision.claim",
+    "collision.claim_release",
+    "collision.claims",
+    "collision.get",
+    "collision.list",
+    "compat.herdr.call",
+    "compat.status",
+    "compat.ui.state",
+    "config.get",
+    "config.validate",
+    "desk.context",
+    "desk.search",
+    "desk.sessions",
+    "draft.check",
+    "draft.combine",
+    "draft.create",
+    "draft.delete",
+    "draft.get",
+    "draft.list",
+    "draft.reorder",
+    "draft.update",
+    "events.read",
+    "events.subscribe",
+    "events.unsubscribe",
+    "events.wait",
+    "family.get",
+    "family.list",
+    "fs.list",
+    "fs.read",
+    "gateway.status",
+    "git.diff",
+    "git.log",
+    "git.status",
+    "goal.briefing",
+    "goal.get",
+    "goal.list",
+    "group.list",
+    "handoff.jobs",
+    "handoff.peers",
+    "image.upload",
+    "interaction.get",
+    "interaction.list",
+    // Only in the caller's own workspace (see `authorize`).
+    "layout.apply",
+    "layout.export",
+    "layout.get",
+    "layout.list",
+    "machine.get",
+    "machine.list",
+    "merge.predict",
+    "merge.queue.list",
+    "notes.get",
+    "notes.set",
+    "notification.config",
+    "notification.list",
+    // Its own notifications only: `{all: true}` is refused (see `authorize`).
+    "notification.read",
+    "notification.send",
+    "pane.can_see_paths",
+    "pane.current",
+    "pane.get",
+    "pane.list",
+    "pane.read",
+    "pane.wait_idle",
+    "pane.wait_output",
+    "plugin.action.list",
+    "plugin.link_handler.list",
+    "plugin.list",
+    "plugin.log.list",
+    "preview.declare",
+    // Lane E1 checks the preview's workspace in the handler; refusing here would break an
+    // agent cleaning up the previews it declared.
+    "preview.dismiss",
+    "preview.forget",
+    "preview.get",
+    "preview.list",
+    "preview.open",
+    "preview.profile",
+    "preview.profile.list",
+    "preview.promote",
+    "preview.status",
+    "preview.url",
+    "quota.route",
+    "quota.status",
+    "sandbox.list",
+    "sandbox.request",
+    "sandbox.status",
+    "screenshot.add",
+    "screenshot.delete",
+    "screenshot.get",
+    "screenshot.list",
+    "screenshot.open",
+    "search.query",
+    "server.status",
+    "session.info",
+    "session.list",
+    "session.snapshot",
+    "status.segments",
+    // Only in the caller's own workspace (see `authorize`).
+    "tab.create",
+    "tab.floats",
+    "tab.list",
+    "task.check.get",
+    "task.check.list",
+    "task.claim",
+    "task.claim.list",
+    "task.claim.remove",
+    "task.compare",
+    "task.create",
+    "task.dependency.list",
+    "task.detail",
+    "task.effort.estimate",
+    "task.get",
+    "task.intent.get",
+    "task.link.status",
+    "task.list",
+    "task.message.get",
+    "task.operation.get",
+    "task.ports",
+    "task.pr",
+    "task.pr.claim",
+    "task.pr.list",
+    "task.reconcile",
+    "task.review.candidates",
+    "task.review.diff",
+    "task.review.get",
+    "task.review.interval_status",
+    "task.review.intervals",
+    "task.review.notes",
+    "task.setup_log",
+    "task.sources",
+    "theme.get",
+    "ui.contributions",
+    "vm.list",
+    "vm.status",
+    "vm.template.list",
+    "vm.transport",
+    "workspace.create",
+    "workspace.get",
+    "workspace.list",
+    "worktree.create",
+    "worktree.list",
+    "worktree.open",
+    "worktree.repo_root",
+];
+
+/// Methods a pane-scoped caller may call only against its own pane (or a pane it created), or
+/// its own run: the `pane` param of the `pane.*` ones, the `target` of the run-targeted
+/// `agent.*` ones, the `pane` of `agent.start`/`agent.resume`, and the `pane_id`/`pane` of
+/// `agent.report`.
+pub const PANE_OWN_TARGET: &[&str] = &[
+    "pane.close",
+    "pane.embed",
+    "pane.equalize",
+    "pane.float",
+    "pane.mark_seen",
+    "pane.mark_unread",
+    "pane.move",
+    "pane.pin",
+    "pane.rename",
+    "pane.report_agent",
+    "pane.report_agent_session",
+    "pane.resize",
+    "pane.run",
+    "pane.screenshot",
+    "pane.scroll",
+    "pane.send_bytes",
+    "pane.send_keys",
+    "pane.send_text",
+    "pane.split",
+    "pane.zoom",
+    "agent.interrupt",
+    "agent.prompt",
+    "agent.release",
+    "agent.rename",
+    "agent.send_keys",
+    "agent.set_model",
+    "agent.start",
+    "agent.resume",
+    "agent.report",
+];
 
 /// How a pane-scoped caller may use a method (09 §5.2). The single source for both
 /// [`authorize`] (dispatch) and the generated API catalog (`docs/api/methods.json`).
@@ -437,7 +696,8 @@ impl PaneScope {
     }
 }
 
-/// The pane scope of `method` (see [`PaneScope`]).
+/// The pane scope of `method` (see [`PaneScope`]). Default deny: a method that is not listed
+/// in [`PANE_OPEN`] or [`PANE_OWN_TARGET`] is forbidden for panes.
 pub fn pane_scope_of(method: &str) -> PaneScope {
     if PANE_FORBIDDEN.contains(&method)
         || crate::security::PANE_FORBIDDEN.contains(&method)
@@ -462,29 +722,18 @@ pub fn pane_scope_of(method: &str) -> PaneScope {
             .any(|p| method.starts_with(p))
     {
         PaneScope::Forbidden
-    } else if is_pane_targeted(method)
-        || is_run_targeted(method)
-        || matches!(method, "agent.start" | "agent.resume")
-    {
+    } else if PANE_OWN_TARGET.contains(&method) {
         PaneScope::OwnTarget
-    } else {
+    } else if PANE_OPEN.contains(&method) {
         PaneScope::Open
+    } else {
+        PaneScope::Forbidden
     }
 }
 
 /// `pane.*` methods that act on a pane (a pane-scoped caller may only target its own panes).
 pub fn is_pane_targeted(method: &str) -> bool {
-    method.starts_with("pane.")
-        && !matches!(
-            method,
-            "pane.list"
-                | "pane.get"
-                | "pane.current"
-                | "pane.read"
-                | "pane.wait_output"
-                | "pane.wait_idle"
-                | "pane.can_see_paths"
-        )
+    method.starts_with("pane.") && PANE_OWN_TARGET.contains(&method)
 }
 
 /// `agent.*` methods whose `target` must be the caller's own run or a pane it created.
@@ -500,11 +749,64 @@ pub fn is_run_targeted(method: &str) -> bool {
     )
 }
 
+/// Is this caller the user at this machine? Panes (agents), native plugins, elevated agent
+/// tokens and gateway devices are not: the checks that need the user's own decision (host
+/// yolo confirmation, choosing a cloud box) refuse them.
+pub fn is_user(ctx: &Ctx) -> bool {
+    ctx.pane_scope.is_none()
+        && !ctx.remote
+        && !crate::plugin_native::is_plugin_kind(&ctx.kind)
+        && !ctx.kind.starts_with(crate::auth::ELEVATED_KIND)
+        && !matches!(ctx.kind.as_str(), "gateway" | "gateway-tui")
+}
+
+/// Who a non-user caller is, for refusal messages.
+fn caller_noun(ctx: &Ctx) -> &'static str {
+    if ctx.pane_scope.is_some() || ctx.kind.starts_with(crate::auth::ELEVATED_KIND) {
+        "an agent in a pane"
+    } else if crate::plugin_native::is_plugin_kind(&ctx.kind) {
+        "a plugin"
+    } else {
+        "a remote device"
+    }
+}
+
+/// The decisions only the user at this machine makes (13 §3, spec 17), whoever else calls.
+fn authorize_user_only(ctx: &Ctx, method: &str, p: &Value) -> Result<(), RpcError> {
+    if is_user(ctx) {
+        return Ok(());
+    }
+    let who = caller_noun(ctx);
+    // 13 §3: the one-time host-yolo confirmation is the user's; an agent, plugin or phone must
+    // not grant it (`task.create`, `agent.start`/`agent.run`, best-of-N all read this param).
+    if p.get("confirm_host_yolo").and_then(Value::as_bool) == Some(true) {
+        return Err(err(
+            ErrorKind::PermissionDenied,
+            format!(
+                "confirm_host_yolo: {who} cannot confirm yolo on the host; run the command in your terminal with --confirm-host-yolo"
+            ),
+        )
+        .details(json!({"scope": "user", "param": "confirm_host_yolo"})));
+    }
+    // Spec 17: choosing an existing cloud box (`task.create {isolate: cloud, box}`) is the
+    // user's. Only `IsoRequest` reads `box` outside `cloud.*`, whose own `box` param names the
+    // box being managed (refused to panes and plugins by scope).
+    if !method.starts_with("cloud.") && p.get("box").is_some_and(|v| !v.is_null()) {
+        return Err(err(
+            ErrorKind::PermissionDenied,
+            format!("box: {who} cannot choose a cloud box; pick one in Vibeke on this machine"),
+        )
+        .details(json!({"scope": "user", "param": "box"})));
+    }
+    Ok(())
+}
+
 /// Capability check for pane-scoped callers (09 §5.2): reads are open; writes are limited to
 /// the caller's own pane and panes it created; authorizing actions (answering interactions),
 /// server control and other workspaces' layout are forbidden.
 pub fn authorize(server: &Server, ctx: &Ctx, method: &str, p: &Value) -> Result<(), RpcError> {
     crate::plugin_native::authorize(server, ctx, method, p)?;
+    authorize_user_only(ctx, method, p)?;
     let Some(scope) = &ctx.pane_scope else {
         return Ok(());
     };
@@ -525,36 +827,54 @@ pub fn authorize(server: &Server, ctx: &Ctx, method: &str, p: &Value) -> Result<
         }
         return deny("forbidden for pane scope");
     }
-    // 13 §3: the one-time host-yolo confirmation is the user's; an agent must not grant it to
-    // itself (`task.create`, `agent.start`/`agent.run`, best-of-N all read this param).
-    if p.get("confirm_host_yolo").and_then(Value::as_bool) == Some(true) {
-        return Err(err(
-            ErrorKind::PermissionDenied,
-            "confirm_host_yolo: a pane cannot confirm yolo on the host; the user confirms with --confirm-host-yolo",
-        )
-        .details(json!({"scope": "pane"})));
-    }
-    // Spec 17: choosing an existing cloud box (`task.create {isolate: cloud, box}`) is the
-    // user's; an agent must not point a task at a box (only `IsoRequest` reads `box` outside
-    // the pane-forbidden `cloud.*` methods).
-    if p.get("box").is_some_and(|v| !v.is_null()) {
-        return Err(err(
-            ErrorKind::PermissionDenied,
-            "box: a pane cannot choose a cloud box; the user picks one",
-        )
-        .details(json!({"scope": "pane"})));
-    }
     crate::preview::authorize_pane_machine(server, ctx, method, p)?;
     let owns = |pane: &Pane| &pane.id == scope || pane.created_by == format!("agent:{scope}");
+    // Agents never move the user's focus to a pane they act on or to a new agent or
+    // workspace (the user may be working elsewhere).
+    if p.get("focus").and_then(Value::as_bool) == Some(true)
+        && (is_pane_targeted(method)
+            || matches!(method, "agent.spawn" | "workspace.create" | "layout.apply"))
+    {
+        return deny("agents can't move the user's focus; leave out `focus`");
+    }
+    // Workspace-level changes stay in the caller's own workspace.
+    let own_ws = || -> Result<String, RpcError> {
+        Ok(resolve_pane(server, ctx, Some(scope.as_str()))?.workspace)
+    };
+    match method {
+        "agent.spawn" => {
+            let base = resolve_pane(server, ctx, s(p, "split_of").or(s(p, "pane")))?;
+            if base.workspace != own_ws()? {
+                return deny("agents can start agents only in their own workspace");
+            }
+        }
+        "layout.apply" | "tab.create" => {
+            if let Some(w) = s(p, "workspace") {
+                let ws = resolve_ws(server, ctx, Some(w))?;
+                if ws.id != own_ws()? {
+                    return deny("agents can change only their own workspace");
+                }
+            }
+        }
+        "tab.floats" | "pane.equalize" => {
+            if let Some(t) = s(p, "tab") {
+                let tab = resolve_tab(server, ctx, Some(t))?;
+                if tab.workspace != own_ws()? {
+                    return deny("agents can change only their own workspace");
+                }
+            }
+        }
+        "notification.read" if b(p, "all") == Some(true) => {
+            return deny("agents can mark only one notification read; pass `notification`");
+        }
+        _ => {}
+    }
     let pane_targeted = is_pane_targeted(method);
     if pane_targeted {
         let target = s(p, "pane").unwrap_or("@current");
         let pane = resolve_pane(server, ctx, Some(target))?;
         if !owns(&pane) {
             return deny("target pane is not yours");
-        }
-        if p.get("focus").and_then(Value::as_bool) == Some(true) {
-            return deny("agents can't move the user's focus");
         }
         // 09 §5.1 rule 4: no pane-scoped input into a pane with an open interaction.
         let writes_input = matches!(
@@ -591,6 +911,18 @@ pub fn authorize(server: &Server, ctx: &Ctx, method: &str, p: &Value) -> Result<
         let pane = resolve_pane(server, ctx, s(p, "pane").or(Some("@current")))?;
         if !owns(&pane) {
             return deny("target pane is not yours");
+        }
+    }
+    // Self-report (04 §4.1): only for the caller's own pane (the handler resolves the same
+    // `pane_id`/`pane` param).
+    if method == "agent.report" {
+        let pane = resolve_pane(
+            server,
+            ctx,
+            s(p, "pane_id").or(s(p, "pane")).or(Some("@current")),
+        )?;
+        if !owns(&pane) {
+            return deny("agents report only for their own pane");
         }
     }
     Ok(())
