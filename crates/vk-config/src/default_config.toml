@@ -163,7 +163,7 @@ editor_include_ansi = false           # edit_scrollback's editor file keeps colo
 
 # Custom commands (type = shell | pane | popup | float. Other fields: cwd, env, title, when):
 # [[keys.command]]
-# key     = "prefix+shift+g"
+# key     = "prefix+0"
 # type    = "popup"
 # command = "lazygit"
 # width   = "80%"
