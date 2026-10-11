@@ -39,8 +39,8 @@ export function ProductTour() {
           <source src="/video/vibeke-tour.mp4" type="video/mp4" />
           <track kind="captions" src="/video/vibeke-tour.vtt" srcLang="en" label="English" />
         </video>
-        {!started && <button type="button" onClick={() => play()} className="group absolute inset-0 flex items-center justify-center bg-base/30 transition-colors hover:bg-base/10" aria-label="Play the product tour">
-          <span className="flex items-center gap-3 border border-accent/50 bg-base/90 px-6 py-4 font-mono text-xs text-cream shadow-2xl transition group-hover:border-accent group-hover:text-accent"><Play size={18} className="fill-current text-accent" /> Play the tour</span>
+        {!started && <button type="button" onClick={() => play()} className="group absolute inset-0 flex items-center justify-center bg-base/30 transition-colors hover:bg-base/10 focus-visible:outline-none" aria-label="Play the product tour">
+          <span className="flex items-center gap-3 border border-accent/50 bg-base/90 px-6 py-4 font-mono text-xs text-cream shadow-2xl transition group-hover:border-accent group-hover:text-accent group-focus-visible:border-accent group-focus-visible:text-accent group-focus-visible:outline group-focus-visible:outline-2 group-focus-visible:outline-offset-4 group-focus-visible:outline-accent"><Play size={18} className="fill-current text-accent" /> Play the tour</span>
         </button>}
       </div>
       <div className="mt-4 flex flex-wrap gap-x-5 gap-y-2 font-mono text-[11px] text-muted" aria-label="Chapters">
