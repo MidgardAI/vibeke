@@ -130,3 +130,29 @@ describe("trusted scenario cross-check", () => {
     expect(m.rejected[0].reason).toContain("not a locked");
   });
 });
+
+describe("known outcomes come from the trusted scenario", () => {
+  const scenario = SCENARIO.replace(
+    'id = "close-projects"\nkind = "action"',
+    'id = "close-projects"\nkind = "action"\nknown = { outcome = "not_exercised", reason = "no clipboard", platforms = ["linux"] }',
+  );
+  const t = () => trustedFrom(parseLock(LOCK), new Map([["owner__herdr-projects", scenario]]));
+  const runWith = (r: Record<string, unknown>) =>
+    build([{ file: "owner__herdr-projects-linux.json", text: JSON.stringify(r) }], [], null, [], t());
+
+  test("a pass that drops the known outcome is rejected", () => {
+    const m = runWith(result());
+    expect(m.failing).toBe(true);
+    expect(m.rejected[0].reason).toContain("step close-projects: known null is not the scenario's not_exercised");
+  });
+
+  test("a pass that keeps the known outcome must be an unexpected pass", () => {
+    const close = { ...stepOf("close-projects"), known: "not_exercised" };
+    const m = runWith(result({ steps: [stepOf("open-projects"), close] }));
+    expect(m.rejected[0].reason).toContain("unexpected_pass disagrees");
+  });
+
+  test("the known outcome on another platform does not apply", () => {
+    expect(t().get("owner.projects\u0000macos")!.known.size).toBe(0);
+  });
+});

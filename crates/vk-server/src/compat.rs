@@ -765,6 +765,11 @@ pub async fn serve_wire(server: Arc<Server>, stream: UnixStream, caller: Caller)
         }
         // Herdr's output watchers: the pane must exist and the regex compile before the
         // subscription starts.
+        if let Err(e) = authorize_output_subs(&server, &caller, &subs) {
+            traced(Err(e.code.as_str()));
+            let _ = write_line(&mut wr, &wire::err_line(&req.id, &e)).await;
+            return;
+        }
         let mut watchers = match output_watchers(&server, &subs) {
             Ok(w) => w,
             Err(e) => {
@@ -3004,6 +3009,34 @@ struct OutputWatcher {
     matching: bool,
 }
 
+/// `pane.output_matched` events carry pane text: a subscriber must be allowed to read every
+/// pane it names (`search::authorize_read`, the native `pane.read` check), whether it brings
+/// its own matcher or relays other callers' `pane.wait_for_output` matches.
+fn authorize_output_subs(
+    server: &Server,
+    caller: &Caller,
+    subs: &[hev::Subscription],
+) -> Result<(), WireError> {
+    let sn = snap(server);
+    for sub in subs.iter().filter(|x| x.kind == "pane.output_matched") {
+        let Some(id) = &sub.pane_id else {
+            if caller.ctx.pane_scope.is_some() {
+                return Err(WireError::new(
+                    "permission_denied",
+                    "pane.output_matched needs a pane_id from a pane",
+                ));
+            }
+            continue;
+        };
+        let x = sn
+            .pane(id)
+            .ok_or_else(|| WireError::new("pane_not_found", format!("pane {id} not found")))?;
+        crate::search::authorize_read(server, &caller.ctx, "pane.read", &json!({"pane": x.id}))
+            .map_err(native_err)?;
+    }
+    Ok(())
+}
+
 /// The output watchers of `subs`; `pane_not_found` or `invalid_regex` refuse the subscription.
 fn output_watchers(
     server: &Server,
@@ -4123,6 +4156,7 @@ async fn events_wait(server: &Arc<Server>, caller: &Caller, p: &Value) -> Result
     if caller.sandboxed && subs.iter().any(|x| x.kind == "pane.output_matched") {
         return Err(sandbox_denied("pane.output_matched"));
     }
+    authorize_output_subs(server, caller, &subs)?;
     let timeout = Duration::from_millis(
         p.get("timeout_ms")
             .and_then(Value::as_u64)

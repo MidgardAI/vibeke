@@ -345,6 +345,8 @@ export type Expected = {
   commit: string;
   steps: string[];
   skips: string[];
+  /** The scenario's known outcome per step on this platform (absent: none). */
+  known: Map<string, Outcome>;
 };
 
 /** Expected results by `<plugin_id>`, a NUL character, then `<os>`. */
@@ -368,7 +370,7 @@ export function trustedFrom(lock: Lock, scenarios: Map<string, string>): Trusted
     if (text === undefined) throw new Error(`no scenario file for ${p.plugin_id} (${name}.toml)`);
     const sc = Bun.TOML.parse(text) as {
       repository?: string;
-      step?: { id: string; platforms?: string[] }[];
+      step?: { id: string; platforms?: string[]; known?: { outcome: Outcome; platforms?: string[] } }[];
       skip?: { surface: string; platforms?: string[] }[];
     };
     if (sc.repository !== p.repository) throw new Error(`scenario ${name}.toml is for ${sc.repository}, not ${p.repository}`);
@@ -381,6 +383,11 @@ export function trustedFrom(lock: Lock, scenarios: Map<string, string>): Trusted
         os,
         commit: p.commit,
         steps: (sc.step ?? []).filter((s) => onPlatform(s.platforms, os)).map((s) => s.id),
+        known: new Map(
+          (sc.step ?? [])
+            .filter((s) => onPlatform(s.platforms, os) && s.known && onPlatform(s.known.platforms, os))
+            .map((s) => [s.id, s.known!.outcome] as const),
+        ),
         skips: (sc.skip ?? []).filter((s) => onPlatform(s.platforms, os)).map((s) => s.surface),
       });
     }
@@ -417,6 +424,15 @@ export function crossCheck(r: PluginResult, e: Expected): string[] {
   if (missing.length > 0) out.push(`missing scenario steps: ${missing.join(", ")}`);
   const extra = [...new Set(ids.filter((id) => !want.has(id)))];
   if (extra.length > 0) out.push(`steps that are not in the scenario: ${extra.join(", ")}`);
+  // Known outcomes come from the trusted scenario; an unexpected pass is recomputed from them
+  // (`reconcile` in vk-conformance), not taken from the file.
+  for (const st of r.steps) {
+    const k = e.known.get(st.id) ?? null;
+    if (st.known !== k) out.push(`step ${st.id}: known ${st.known} is not the scenario's ${k}`);
+    if (st.unexpected_pass !== (k !== null && st.outcome === "passed")) {
+      out.push(`step ${st.id}: unexpected_pass disagrees with the scenario's known outcome`);
+    }
+  }
   const names = r.lifecycle.map((c) => c.check);
   for (const c of ALWAYS_LIFECYCLE) {
     const n = names.filter((x) => x === c).length;
