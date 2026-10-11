@@ -1698,99 +1698,7 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         &["text"],
         "<text|-> [--workspace w]",
     ),
-    (
-        "assist",
-        "status",
-        "assistant.status",
-        &[],
-        "enabled/configured state, coordinator, profile, budgets, consents (no secrets)",
-    ),
-    (
-        "assist",
-        "providers",
-        "assistant.providers",
-        &[],
-        "configured connections and profiles (no secrets)",
-    ),
-    (
-        "assist",
-        "consent",
-        "assistant.consent",
-        &["workspace"],
-        "[workspace] [--connection c] [--classes selected_text,structured_state,review_package,screen] [--operations op,...] [--auto-send op,...]",
-    ),
-    (
-        "assist",
-        "revoke",
-        "assistant.revoke",
-        &["workspace"],
-        "[workspace] [--connection c] — also cancels unfinished requests there",
-    ),
-    (
-        "assist",
-        "generate",
-        "assistant.generate",
-        &["operation"],
-        "suggest_task_details|review_summary|pane_title|briefing|handoff|effort_estimate|navigate|decision_card|task_title|reply_suggestions [--run r] [--turns 3,4] [--pane p] [--task t] [--workspace w] [--query text] [--interaction i] [--stream] [--priority background] [--include-screen] — Show the exact payload. Do not send it.",
-    ),
-    (
-        "assist",
-        "confirm",
-        "assistant.confirm",
-        &["request", "preview_digest"],
-        "<request> <preview-digest> — send the previewed payload",
-    ),
-    (
-        "assist",
-        "show",
-        "assistant.get",
-        &["request"],
-        "<request> — lifecycle, usage, cost, sources and the generated draft",
-    ),
-    (
-        "assist",
-        "list",
-        "assistant.list",
-        &[],
-        "[--workspace w] [--state done] [--limit 50]",
-    ),
-    (
-        "assist",
-        "cancel",
-        "assistant.cancel",
-        &["request"],
-        "<request>",
-    ),
-    (
-        "assist",
-        "purge",
-        "assistant.purge",
-        &["request"],
-        "<request> | --workspace w | --all — forget generated outputs",
-    ),
-    (
-        "assist",
-        "models",
-        "assistant.models",
-        &["connection"],
-        "[connection] [--profile p] [--refresh] — live|cached|bundled model list with capability records; --refresh asks the provider",
-    ),
-    (
-        "assist",
-        "test",
-        "assistant.test",
-        &[],
-        "[--profile p] [--probe streaming,json_schema] — an explicit small generation, counted as usage; probes record what works",
-    ),
-    (
-        "assist",
-        "background",
-        "assistant.background",
-        &["action"],
-        "[status|tick] — the opt-in background sweeper (summaries, stall notices)",
-    ),
-    // `assistant` is the spec's name for the `assist` noun (14 §9): same methods, plus `brief`
-    // and `get`.
+    // AI assistance (14 §9). `vibeke assist ...` is an alias of this noun (and `show` of `get`).
     (
         "assistant",
         "status",
@@ -1810,7 +1718,7 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         "models",
         "assistant.models",
         &["connection"],
-        "--connection <id> [--refresh] — model list with live|cached|bundled provenance and capability records",
+        "[connection] [--profile p] [--refresh] — model list with live|cached|bundled provenance and capability records; --refresh asks the provider",
     ),
     (
         "assistant",
@@ -1831,7 +1739,7 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         "generate",
         "assistant.generate",
         &["operation"],
-        "<operation> [flags] — show the exact payload; nothing is sent",
+        "suggest_task_details|review_summary|pane_title|briefing|handoff|effort_estimate|navigate|decision_card|task_title|reply_suggestions [--run r] [--turns 3,4] [--pane p] [--task t] [--workspace w] [--query text] [--interaction i] [--stream] [--priority background] [--include-screen] — show the exact payload; nothing is sent",
     ),
     (
         "assistant",
@@ -1866,14 +1774,14 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         "consent",
         "assistant.consent",
         &["workspace"],
-        "[workspace] [--remote-workspace machine:/path] [--connection c] [--classes ...] [--operations ...] [--auto-send ...]",
+        "[workspace] [--remote-workspace machine:/path] [--connection c] [--classes selected_text,structured_state,review_package,screen] [--operations op,...] [--auto-send op,...]",
     ),
     (
         "assistant",
         "revoke",
         "assistant.revoke",
         &["workspace"],
-        "[workspace] [--remote-workspace machine:/path] [--connection c]",
+        "[workspace] [--remote-workspace machine:/path] [--connection c] — also cancels unfinished requests there",
     ),
     (
         "assistant",
@@ -1887,7 +1795,7 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         "background",
         "assistant.background",
         &["action"],
-        "[status|tick]",
+        "[status|tick] — the opt-in background sweeper (summaries, stall notices)",
     ),
     ("api", "methods", "api.methods", &[], "list API methods"),
     ("client", "list", "client.list", &[], ""),
@@ -2125,6 +2033,22 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
     ),
 ];
 
+/// Noun aliases: `assist` is the short spelling of `assistant`.
+pub fn canonical_noun(noun: &str) -> &str {
+    match noun {
+        "assist" => "assistant",
+        n => n,
+    }
+}
+
+/// Verb aliases of a (canonical) noun: `assistant show` is `assistant get`.
+fn canonical_verb<'a>(noun: &str, verb: &'a str) -> &'a str {
+    match (noun, verb) {
+        ("assistant", "show") => "get",
+        (_, v) => v,
+    }
+}
+
 pub fn nouns() -> Vec<&'static str> {
     let mut v: Vec<&str> = COMMANDS.iter().map(|c| c.0).collect();
     let mut seen = std::collections::HashSet::new();
@@ -2146,6 +2070,7 @@ pub fn command_help(method: &str, help: &str) -> String {
 }
 
 pub fn noun_help(noun: &str) -> String {
+    let noun = canonical_noun(noun);
     let mut s = format!("vibeke {noun} <verb>\n\n");
     for (n, verb, method, pos, help) in COMMANDS {
         if *n == noun {
@@ -3778,7 +3703,7 @@ where
 
 /// Parameters a verb implies (`assistant brief` is `assistant.generate {operation: briefing}`).
 pub fn preset(noun: &str, verb: &str, params: &mut Value) {
-    if noun == "assistant"
+    if canonical_noun(noun) == "assistant"
         && verb == "brief"
         && let Some(o) = params.as_object_mut()
     {
@@ -3803,6 +3728,8 @@ pub fn runs_on_viewing_machine(method: &str) -> bool {
 }
 
 pub fn lookup(noun: &str, verb: &str) -> Option<(&'static str, &'static [&'static str])> {
+    let noun = canonical_noun(noun);
+    let verb = canonical_verb(noun, verb);
     COMMANDS
         .iter()
         .find(|c| c.0 == noun && c.1 == verb)
@@ -3812,6 +3739,25 @@ pub fn lookup(noun: &str, verb: &str) -> Option<(&'static str, &'static [&'stati
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn assist_is_an_alias_of_assistant() {
+        assert!(!nouns().contains(&"assist"));
+        for (a, b) in [
+            ("status", "status"),
+            ("show", "get"),
+            ("brief", "brief"),
+            ("generate", "generate"),
+        ] {
+            assert_eq!(lookup("assist", a), lookup("assistant", b), "{a}");
+            assert!(lookup("assist", a).is_some(), "{a}");
+        }
+        assert_eq!(lookup("assistant", "show").unwrap().0, "assistant.get");
+        assert_eq!(noun_help("assist"), noun_help("assistant"));
+        let mut p = json!({});
+        preset("assist", "brief", &mut p);
+        assert_eq!(p["operation"], "briefing");
+    }
 
     #[test]
     fn experimental_commands_say_so_in_help() {

@@ -558,6 +558,7 @@ async fn dispatch(g: Global, args: Vec<String>) -> i32 {
             }
         }
         Some(noun) => {
+            let noun = vk_cli::canonical_noun(noun);
             let Some(verb) = args.get(1) else {
                 if vk_cli::nouns().contains(&noun) {
                     print!("{}", vk_cli::noun_help(noun));
