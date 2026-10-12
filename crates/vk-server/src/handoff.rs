@@ -751,7 +751,7 @@ async fn add(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         .unwrap_or(0);
     check_quota(&records, &from, offered, quota())?;
 
-    let id = ulid::Ulid::new().to_string().to_lowercase();
+    let id = ulid::Ulid::generate().to_string().to_lowercase();
     let dir = in_dir(server).map_err(internal)?;
     let dest = dir.join(format!("{id}.tar.zst"));
     busy(&id, true);

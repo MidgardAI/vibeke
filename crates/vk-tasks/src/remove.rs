@@ -151,7 +151,7 @@ pub fn start_remove(path: &Path, opts: RemoveOptions) -> RemovalJob {
         }
     });
     RemovalJob {
-        id: Ulid::new(),
+        id: Ulid::generate(),
         path: path.to_path_buf(),
         events: rx,
         state,
@@ -207,7 +207,7 @@ fn run(path: &Path, opts: &RemoveOptions, emit: &dyn Fn(RemovalEvent)) -> Result
         .or_else(|| canon.parent().map(|p| p.join(".trash")))
         .ok_or_else(|| Error::Config("cannot determine trash dir".into()))?;
     fs::create_dir_all(&trash_root)?;
-    let trash = trash_root.join(format!("{name}-{}", Ulid::new()));
+    let trash = trash_root.join(format!("{name}-{}", Ulid::generate()));
 
     let mut leftover = None;
     match fs::rename(&canon, &trash) {

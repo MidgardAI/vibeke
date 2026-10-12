@@ -138,7 +138,7 @@ impl PeerClient {
         let ticket_exp = done.get("ticket_exp").and_then(|t| t.as_u64());
         c.close().await;
         Ok(PeerRecord {
-            id: ulid::Ulid::new().to_string().to_lowercase(),
+            id: ulid::Ulid::generate().to_string().to_lowercase(),
             name,
             relay: link.relay.clone(),
             host: link.host.clone(),
@@ -589,7 +589,7 @@ impl Conn {
     pub async fn call(&mut self, method: &str, mut params: Value) -> Result<Value, ApiError> {
         if let Some(m) = params.as_object_mut() {
             m.entry("op_id")
-                .or_insert_with(|| ulid::Ulid::new().to_string().into());
+                .or_insert_with(|| ulid::Ulid::generate().to_string().into());
         }
         self.request(method, params).await
     }
@@ -604,7 +604,7 @@ impl Conn {
     ) -> Result<Value, ApiError> {
         if let Some(m) = params.as_object_mut() {
             m.entry("op_id")
-                .or_insert_with(|| ulid::Ulid::new().to_string().into());
+                .or_insert_with(|| ulid::Ulid::generate().to_string().into());
         }
         self.request_with(method, params, Some(data)).await
     }

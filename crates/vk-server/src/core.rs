@@ -441,5 +441,5 @@ pub fn subject_pane(p: &Pane) -> Value {
 }
 
 pub fn ulid() -> String {
-    ulid::Ulid::new().to_string()
+    ulid::Ulid::generate().to_string()
 }

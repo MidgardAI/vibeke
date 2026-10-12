@@ -1,7 +1,7 @@
 //! Key material (spec 16 §3).
 
 use ed25519_dalek::{Signer, SigningKey, Verifier, VerifyingKey};
-use rand::RngCore;
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 
 use crate::b64;

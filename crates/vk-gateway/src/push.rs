@@ -10,7 +10,8 @@ use aes_gcm::{Aes128Gcm, Nonce};
 use hkdf::Hkdf;
 use p256::ecdsa::signature::Signer;
 use p256::ecdsa::{Signature, SigningKey};
-use p256::elliptic_curve::sec1::ToEncodedPoint;
+use p256::elliptic_curve::Generate;
+use p256::elliptic_curve::sec1::ToSec1Point;
 use p256::{PublicKey, SecretKey};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
@@ -44,7 +45,7 @@ pub fn encrypt(
         "push payload too large"
     );
     let ua = PublicKey::from_sec1_bytes(ua_public).map_err(|_| anyhow::anyhow!("bad p256dh"))?;
-    let as_public = as_secret.public_key().to_encoded_point(false);
+    let as_public = as_secret.public_key().to_sec1_point(false);
     let as_public = as_public.as_bytes();
     let ecdh = p256::ecdh::diffie_hellman(as_secret.to_nonzero_scalar(), ua.as_affine());
 
@@ -70,7 +71,7 @@ pub fn encrypt(
     let ct = Aes128Gcm::new_from_slice(&cek)
         .expect("16-byte key")
         .encrypt(
-            Nonce::from_slice(&nonce),
+            &Nonce::from(nonce),
             Payload {
                 msg: &padded,
                 aad: b"",
@@ -96,7 +97,7 @@ pub fn vapid_authorization(
 ) -> anyhow::Result<String> {
     let key =
         SigningKey::from_slice(vapid_private).map_err(|_| anyhow::anyhow!("bad VAPID key"))?;
-    let public = key.verifying_key().to_encoded_point(false);
+    let public = key.verifying_key().to_sec1_point(false);
     let aud = endpoint.origin().ascii_serialization();
     let header = b64::encode(br#"{"typ":"JWT","alg":"ES256"}"#);
     let claims = b64::encode(serde_json::to_vec(
@@ -116,7 +117,7 @@ pub fn vapid_public(vapid_private: &[u8]) -> anyhow::Result<String> {
     let key =
         SigningKey::from_slice(vapid_private).map_err(|_| anyhow::anyhow!("bad VAPID key"))?;
     Ok(b64::encode(
-        key.verifying_key().to_encoded_point(false).as_bytes(),
+        key.verifying_key().to_sec1_point(false).as_bytes(),
     ))
 }
 
@@ -249,7 +250,7 @@ impl Sender {
             .ok_or_else(|| anyhow::anyhow!("endpoint not allowed"))?;
         let ua = b64::decode(&sub.keys.p256dh)?;
         let auth = b64::decode(&sub.keys.auth)?;
-        let as_secret = SecretKey::random(&mut p256::elliptic_curve::rand_core::OsRng);
+        let as_secret = SecretKey::generate();
         let salt: [u8; 16] = vk_e2e::keys::random_bytes();
         let body = encrypt(&ua, &auth, msg.payload, &as_secret, &salt)?;
         let now = std::time::SystemTime::now()
@@ -344,7 +345,7 @@ mod tests {
 
     #[test]
     fn vapid_signs_and_verifies() {
-        let key = SecretKey::random(&mut p256::elliptic_curve::rand_core::OsRng);
+        let key = SecretKey::generate();
         let url = reqwest::Url::parse("https://web.push.apple.com/abc").unwrap();
         let h = vapid_authorization(&key.to_bytes(), &url, "mailto:x@example.com", 1).unwrap();
         assert!(verify_vapid(&h));

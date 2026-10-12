@@ -56,7 +56,7 @@
 
 use crate::socks::{BoxFuture, Stream};
 use bytes::Bytes;
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use http_body_util::{BodyExt, Full, combinators::BoxBody};
 use hyper::body::Incoming;
 use hyper::client::conn::http1::SendRequest;
@@ -683,7 +683,7 @@ impl Proxy {
     /// The MAC binding a session cookie value to the route (host) and the scheme it was
     /// issued over.
     fn session_mac(&self, secure: bool, host: &str, value: &str) -> Digest32 {
-        let mut m = <Hmac<Sha256> as Mac>::new_from_slice(&self.key).expect("any key length");
+        let mut m = <Hmac<Sha256> as KeyInit>::new_from_slice(&self.key).expect("any key length");
         m.update(if secure { b"https\0" } else { b"http\0\0" });
         m.update(host.as_bytes());
         m.update(b"\0");

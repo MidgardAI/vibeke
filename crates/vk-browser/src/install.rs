@@ -356,7 +356,14 @@ pub fn curl_fetch(url: &str, dest: &Path) -> Result<()> {
 pub fn sha256_file(p: &Path) -> Result<String> {
     let mut f = std::fs::File::open(p)?;
     let mut h = Sha256::new();
-    std::io::copy(&mut f, &mut h)?;
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let n = std::io::Read::read(&mut f, &mut buf)?;
+        if n == 0 {
+            break;
+        }
+        h.update(&buf[..n]);
+    }
     Ok(h.finalize().iter().map(|b| format!("{b:02x}")).collect())
 }
 

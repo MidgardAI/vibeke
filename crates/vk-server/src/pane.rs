@@ -196,7 +196,7 @@ impl PaneRt {
 
 /// HMAC over the holder nonce (07 §4).
 fn acquire_hmac(key: &[u8], nonce: &[u8], epoch: u64) -> Vec<u8> {
-    use hmac::{Hmac, Mac};
+    use hmac::{Hmac, KeyInit, Mac};
     let mut mac = Hmac::<sha2::Sha256>::new_from_slice(key).expect("hmac key");
     mac.update(&acquire_message(nonce, epoch));
     mac.finalize().into_bytes().to_vec()

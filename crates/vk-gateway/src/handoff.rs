@@ -191,7 +191,7 @@ pub async fn export_bundle(
         source_job: source_job.map(str::to_string),
         full,
     };
-    let id = ulid::Ulid::new().to_string().to_lowercase();
+    let id = ulid::Ulid::generate().to_string().to_lowercase();
     let out_path = dir(gw)?.join(format!("{id}.out.tar.zst"));
     let packed = vk_handoff::export(&input, &out_path).await?;
     Ok(Exported {

@@ -124,7 +124,10 @@ fn fetch_blocking(home: &Path, version: &str, target: &str) -> Result<PathBuf, R
 
     let data = download::fetch(&asset_url(&base, &name), token.as_ref(), &api)
         .map_err(|e| unavailable(&name, e))?;
-    let actual = format!("{:x}", Sha256::digest(&data));
+    let actual = Sha256::digest(&data)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
     if !actual.eq_ignore_ascii_case(&entry.sha256) {
         return Err(untrusted(format!(
             "checksum mismatch for {name}: the signed manifest says {}, the download is {actual}",

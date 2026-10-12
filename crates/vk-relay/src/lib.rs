@@ -22,7 +22,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use futures::future::BoxFuture;
-use rand::RngCore;
+use rand::Rng;
 use serde_json::json;
 use tokio::sync::{Mutex, broadcast, mpsc, oneshot};
 use vk_e2e::relay::{
