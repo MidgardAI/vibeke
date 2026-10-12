@@ -5,7 +5,7 @@
 // is never auto-sent).
 
 import { useEffect, useMemo, useRef, useState, type ClipboardEvent, type DragEvent, type Dispatch, type ReactNode, type SetStateAction } from 'react';
-import { ArrowUp, Camera, Loader2, Mic, MoreHorizontal, Paperclip, Plus, RotateCcw, ShieldCheck, ShieldOff, Square, X } from 'lucide-react';
+import { ArrowUp, Camera, Loader2, Mic, MoreHorizontal, Paperclip, Plus, RotateCcw, ShieldCheck, Square, X } from 'lucide-react';
 import type { AgentCommand, AgentRun } from '@vibeke/core';
 import { useApp, usePrefs } from '../../app/hooks';
 import { Button, IconButton, Notice, Sheet, cx } from '../../components/ui';
@@ -306,8 +306,9 @@ export function Composer({
 
   const why = armed ? destructiveReason(armed) : null;
 
-  const modeLabel = run?.permission_mode ? permissionLabel(run.permission_mode) : run?.yolo ? permissionLabel('bypassPermissions') : null;
-  const open = run?.yolo || run?.permission_mode === 'bypassPermissions';
+  // Full-access (yolo) runs get no label: the composer shows only restricting modes.
+  const fullAccess = run?.yolo || run?.permission_mode === 'bypassPermissions' || run?.permission_mode === 'full-access';
+  const modeLabel = run?.permission_mode && !fullAccess ? permissionLabel(run.permission_mode) : null;
   const canStop = composerShowsStop(run, interactions, text);
   const voiceLive = voice === 'listening' || voice === 'recording';
   // With an empty draft the microphone takes the Send slot; Stop (agent working) keeps it.
@@ -451,8 +452,8 @@ export function Composer({
             />
             {run && <ModelSwitcher hostId={hostId} run={run} actions={actions} disabled={locked || !isAgent || !!run.ended_at_ms} />}
             {modeLabel && (
-              <span className={cx('hidden h-7 shrink-0 items-center gap-1 rounded-md px-1.5 text-xs sm:inline-flex', open ? 'text-need' : 'text-muted')} title={t.composer2.mode}>
-                {open ? <ShieldOff className="size-3.5" /> : <ShieldCheck className="size-3.5" />}
+              <span className="hidden h-7 shrink-0 items-center gap-1 rounded-md px-1.5 text-xs text-muted sm:inline-flex" title={t.composer2.mode}>
+                <ShieldCheck className="size-3.5" />
                 {modeLabel}
               </span>
             )}

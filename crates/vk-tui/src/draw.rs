@@ -379,13 +379,6 @@ fn agent_row(app: &App, mi: usize, r: &AgentRun, indent: &str) -> SideRow {
     if let Some(gl) = isolation_glyph(app, &iso) {
         segs.push((format!("{gl} "), t.s(t.accent)));
     }
-    if r.yolo {
-        if iso.is_contained() {
-            segs.push(("YOLO ".into(), app.theme.bold(t.yellow)));
-        } else {
-            segs.push(("YOLO·HOST ".into(), app.theme.bold(t.red)));
-        }
-    }
     let glyph = if inferred
         && app.config.ui.sidebar.show_state_source != vk_config::ShowStateSource::Never
     {

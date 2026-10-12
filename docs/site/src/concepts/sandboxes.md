@@ -6,8 +6,6 @@ Each task uses an execution level: `host`, `sandbox`, `container`, or `vm`. Prov
 
 Host mode uses your user permissions. API tokens and scopes limit accidental misuse through Vibeke. They do not stop a process that bypasses the API.
 
-Agents with unrestricted permissions show a `YOLO·HOST` indicator in host mode.
-
 ## Isolated execution
 
 Supported sandbox, container, and VM providers limit access to host resources. The process cannot access privileged Vibeke sockets or state files.

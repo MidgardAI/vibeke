@@ -3637,21 +3637,21 @@ mod isolation_tests {
     }
 
     #[test]
-    fn yolo_badge_and_isolation_glyph() {
+    fn yolo_has_no_badge_and_isolation_glyph_shows() {
         let (mut app, _rxs) = test_app(1);
         let mut r = test_run("r1", "p1", "claude");
         r.yolo = true;
         app.machines[0].model.runs.push(r);
         app.machines[0].model.panes.push(pane("p1", json!({})));
         let row = crate::draw::agent_row_text(&app, 0, "r1");
-        assert!(row.contains("YOLO·HOST"), "{row}");
+        assert!(!row.contains("YOLO"), "{row}");
         app.machines[0].model.panes[0] = pane(
             "p1",
             json!({"level": "sandbox", "provider": "seatbelt", "network": "none", "yolo": true, "scope": "pane", "visible_roots": []}),
         );
         let row = crate::draw::agent_row_text(&app, 0, "r1");
         assert!(row.contains("sb·none "), "{row}");
-        assert!(row.contains("YOLO ") && !row.contains("YOLO·HOST"), "{row}");
+        assert!(!row.contains("YOLO"), "{row}");
     }
 
     #[test]
