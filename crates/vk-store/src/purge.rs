@@ -154,7 +154,7 @@ impl Store {
         let staging = if chosen.is_empty() {
             None
         } else {
-            let purge_id = ulid::Ulid::new().to_string();
+            let purge_id = ulid::Ulid::generate().to_string();
             tx.execute(
                 "INSERT INTO kv (scope, key, value) VALUES (?1, ?2, ?3)",
                 params![PURGE_JOURNAL, purge_id, now_ms().to_string()],

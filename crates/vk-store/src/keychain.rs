@@ -275,7 +275,7 @@ fn write_file(p: &Path, m: &BTreeMap<String, String>) -> R<()> {
     if let Some(d) = p.parent() {
         std::fs::create_dir_all(d).map_err(fail)?;
     }
-    let tmp = p.with_extension(format!("tmp-{}", ulid::Ulid::new()));
+    let tmp = p.with_extension(format!("tmp-{}", ulid::Ulid::generate()));
     let mut f = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)

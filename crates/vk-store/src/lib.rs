@@ -544,7 +544,7 @@ impl Store {
             session_uuid: String::new(),
             log_epoch: String::new(),
         };
-        s.session_uuid = s.meta_or_init("session_uuid", || ulid::Ulid::new().to_string())?;
+        s.session_uuid = s.meta_or_init("session_uuid", || ulid::Ulid::generate().to_string())?;
         s.log_epoch = s.meta_or_init("log_epoch", || format!("{:016x}", rand::random::<u64>()))?;
         s.machine_uuid = machine_uuid(dir)?;
         Ok(s)
@@ -1281,7 +1281,7 @@ pub fn glob_match(glob: &str, s: &str) -> bool {
 /// session directories.
 fn machine_uuid(dir: Option<&Path>) -> Result<String> {
     let Some(dir) = dir.and_then(|d| d.parent()) else {
-        return Ok(ulid::Ulid::new().to_string());
+        return Ok(ulid::Ulid::generate().to_string());
     };
     let p = dir.join("machine-uuid");
     if let Ok(s) = std::fs::read_to_string(&p) {
@@ -1290,7 +1290,7 @@ fn machine_uuid(dir: Option<&Path>) -> Result<String> {
             return Ok(s);
         }
     }
-    let id = ulid::Ulid::new().to_string();
+    let id = ulid::Ulid::generate().to_string();
     std::fs::create_dir_all(dir)?;
     std::fs::write(&p, &id)?;
     Ok(id)

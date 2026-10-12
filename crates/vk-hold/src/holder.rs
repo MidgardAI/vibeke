@@ -4,7 +4,7 @@ use crate::ring::{Item, Ring};
 use crate::scan::{Scanner, Seq, params};
 use crate::{procinfo, pty};
 use anyhow::{Context, Result};
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use polling::{Event, Events, PollMode, Poller};
 use rustix::fd::AsFd;
 // Only `getpeereid` (macOS/BSD) takes a raw fd; Linux reads SO_PEERCRED through rustix.

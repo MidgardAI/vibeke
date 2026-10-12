@@ -80,7 +80,10 @@ pub struct Artifact {
 
 pub fn sha256_file(path: &std::path::Path) -> Result<String> {
     let data = std::fs::read(path).with_context(|| format!("read {}", path.display()))?;
-    Ok(format!("{:x}", Sha256::digest(&data)))
+    Ok(Sha256::digest(&data)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>())
 }
 
 /// Verify an artifact against its recorded checksum.

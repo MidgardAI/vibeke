@@ -143,7 +143,7 @@ pub fn now_ms() -> i64 {
 
 /// A fresh ULID string.
 pub(crate) fn new_id() -> String {
-    ulid::Ulid::new().to_string()
+    ulid::Ulid::generate().to_string()
 }
 
 /// Length-prefixed field hasher used for every content-addressed digest in this crate, so that

@@ -362,7 +362,10 @@ pub fn update_with(url: &str, root: &Path, keys: &[String]) -> Result<Report, Ch
             continue;
         }
         let bytes = fetch(&join_url(url, &e.url))?;
-        let got = format!("{:x}", sha2::Sha256::digest(&bytes));
+        let got = sha2::Sha256::digest(&bytes)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>();
         if !got.eq_ignore_ascii_case(&e.sha256) {
             let _ = std::fs::remove_dir_all(&staging);
             return Err(ChannelError::Checksum { id: e.id.clone() });
@@ -569,7 +572,10 @@ mod tests {
 
     fn publish(dir: &Path, serial: u64, body: &str, tamper: bool) -> String {
         std::fs::write(dir.join("gemini.toml"), body).unwrap();
-        let sha = format!("{:x}", sha2::Sha256::digest(body.as_bytes()));
+        let sha = sha2::Sha256::digest(body.as_bytes())
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>();
         let sha = if tamper { "0".repeat(64) } else { sha };
         let index = serde_json::json!({"serial": serial, "created_at": "2026-10-06", "manifests": [
             {"id": "gemini", "version": "2", "sha256": sha, "url": "gemini.toml"},

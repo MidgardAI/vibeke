@@ -290,7 +290,7 @@ fn offer(gw: &Gateway, dev: &Device, p: &Value) -> ApiResult {
         if mine >= PER_DEVICE || u.live.len() >= TOTAL {
             return Err(err("rate_limited", "too many handoffs in progress"));
         }
-        let id = ulid::Ulid::new().to_string().to_lowercase();
+        let id = ulid::Ulid::generate().to_string().to_lowercase();
         let path = folder.join(format!("{id}.peer.tar.zst"));
         std::fs::File::create(&path).map_err(|e| err("internal", e.to_string()))?;
         u.live.insert(

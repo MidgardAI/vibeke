@@ -82,14 +82,14 @@ fn hex(b: &[u8]) -> String {
 impl StateCipher {
     pub fn new(key: &[u8; 32]) -> Self {
         StateCipher {
-            aead: Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key)),
+            aead: Aes256Gcm::new(&Key::<Aes256Gcm>::from(*key)),
             id: key_id(key),
         }
     }
 
     /// A fresh random key, returned with its hex form for the keychain.
     pub fn generate() -> (Self, String) {
-        use rand::RngCore;
+        use rand::Rng;
         let mut key = [0u8; 32];
         rand::rng().fill_bytes(&mut key);
         let h = hex(&key);
@@ -123,7 +123,7 @@ impl StateCipher {
 
     /// Seal `plain` into one record.
     pub fn seal(&self, plain: &[u8]) -> Vec<u8> {
-        use rand::RngCore;
+        use rand::Rng;
         let mut nonce = [0u8; 12];
         rand::rng().fill_bytes(&mut nonce);
         let mut out = Vec::with_capacity(plain.len() + OVERHEAD);
@@ -132,7 +132,7 @@ impl StateCipher {
         let ct = self
             .aead
             .encrypt(
-                Nonce::from_slice(&nonce),
+                &Nonce::from(nonce),
                 Payload {
                     msg: plain,
                     aad: &out[..AAD_LEN],
@@ -147,7 +147,7 @@ impl StateCipher {
 
     fn open_record(&self, aad: &[u8], nonce: &[u8], ct: &[u8]) -> Option<Vec<u8>> {
         self.aead
-            .decrypt(Nonce::from_slice(nonce), Payload { msg: ct, aad })
+            .decrypt(&Nonce::try_from(nonce).ok()?, Payload { msg: ct, aad })
             .ok()
     }
 
@@ -157,7 +157,7 @@ impl StateCipher {
         plain: &[u8],
         w: &mut W,
     ) -> std::io::Result<()> {
-        use rand::RngCore;
+        use rand::Rng;
         let mut nonce = [0u8; 12];
         rand::rng().fill_bytes(&mut nonce);
         let header = chunked_header(&self.id, &nonce, CHUNK as u32, plain.len() as u64);
@@ -172,7 +172,7 @@ impl StateCipher {
             let ct = self
                 .aead
                 .encrypt(
-                    Nonce::from_slice(&chunk_nonce(&nonce, i)),
+                    &Nonce::from(chunk_nonce(&nonce, i)),
                     Payload {
                         msg: &plain[start..end],
                         aad: &aad,

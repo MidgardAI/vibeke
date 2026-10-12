@@ -269,7 +269,7 @@ pub async fn claim(
     // Consume atomically: the pairing must still be ours, unexpired, then the device is persisted.
     let (kind, peer) = device_kind_for(current.share.as_ref(), sender);
     let device = Device {
-        id: ulid::Ulid::new().to_string().to_lowercase(),
+        id: ulid::Ulid::generate().to_string().to_lowercase(),
         name: name.clone(),
         platform,
         public: device_public,
