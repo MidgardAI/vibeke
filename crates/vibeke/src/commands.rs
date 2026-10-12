@@ -45,6 +45,7 @@ pub async fn attach(g: &Global, args: &[String]) -> i32 {
     // watcher changes nothing, not even that.
     if !readonly {
         crate::update::restart_if_outdated(g).await;
+        crate::integration::refresh_and_prompt();
     }
     let mut specs = vec![local_spec_with(&g.session, socket.clone(), readonly)];
     if !readonly {

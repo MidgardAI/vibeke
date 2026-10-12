@@ -16,7 +16,7 @@ use vk_agents::manifest::{self, Loaded, Sources};
 use vk_agents::{Dirs, Harness, InstallState};
 use vk_cli::{EXIT_API, EXIT_OK, EXIT_USAGE, Global};
 
-const USAGE: &str = "vibeke integration list|status|install|uninstall|doctor|capabilities <claude|codex|pi|omp|opencode|gemini|all> [--dry-run] [--yes]\n       vibeke integration pending [--json]   (harnesses used here whose hooks or skill are missing or outdated)\n       vibeke integration list --sources         (where each manifest came from: built-in, remote channel, user, repo)\n       vibeke integration update [--url URL]   (signed manifest channel; refuses unsigned indexes)\n       vibeke integration pin <id> [<version>|current]   (freeze a cached remote manifest)\n       vibeke integration unpin <id>";
+const USAGE: &str = "vibeke integration list|status|install|uninstall|doctor|capabilities <claude|codex|pi|omp|opencode|gemini|all> [--dry-run] [--yes]\n       vibeke integration pending [--json]   (harnesses used here without the integration, or with stale hooks)\n       vibeke integration refresh   (rewrite an outdated Vibeke skill and extensions of installed integrations)\n       vibeke integration list --sources         (where each manifest came from: built-in, remote channel, user, repo)\n       vibeke integration update [--url URL]   (signed manifest channel; refuses unsigned indexes)\n       vibeke integration pin <id> [<version>|current]   (freeze a cached remote manifest)\n       vibeke integration unpin <id>";
 
 fn harnesses(arg: Option<&str>) -> Option<Vec<Harness>> {
     match arg {
@@ -107,6 +107,7 @@ pub async fn run(g: &Global, args: &[String]) -> i32 {
         "list" if args.iter().any(|a| a == "--sources") => return sources(g),
         "pin" | "unpin" => return pin(g, verb == "unpin", args),
         "pending" => return pending(g),
+        "refresh" => return refresh(),
         _ => {}
     }
     let Some(hs) = harnesses(target) else {
@@ -119,7 +120,7 @@ pub async fn run(g: &Global, args: &[String]) -> i32 {
         .any(|k| std::env::var_os(k).is_some());
     let mcp = args.iter().any(|a| a == "--mcp");
     if mcp {
-        return run_mcp(verb, hs, &dirs, yes || redirected, dry);
+        return run_mcp(verb, hs, &dirs, yes, redirected, dry);
     }
     match verb {
         "list" | "status" => {
@@ -216,15 +217,8 @@ pub async fn run(g: &Global, args: &[String]) -> i32 {
                 for n in &plan.notes {
                     println!("note: {n}");
                 }
-                // A redirect counts as consent only when every write stays inside it: the
-                // shared skill dir (`~/.agents`) is not redirected by `CODEX_HOME`.
-                let contained = redirected && {
-                    let roots = Dirs::redirect_roots();
-                    plan.files
-                        .iter()
-                        .filter(|f| f.changed())
-                        .all(|f| roots.iter().any(|r| f.path.starts_with(r)))
-                };
+                // A redirect counts as consent only when every write stays inside it.
+                let contained = redirected && redirect_contains(&plan);
                 if dry || (!yes && !contained) {
                     let files: Vec<String> = plan
                         .files
@@ -289,21 +283,29 @@ fn in_use(row: &vk_tui::onboarding::HarnessRow, dirs: &Dirs) -> bool {
     row.binary.is_some() || home.is_dir()
 }
 
-/// `vibeke integration pending`: harnesses used here whose install would change files (hooks,
-/// extension or skill missing or outdated). `vibeke ssh` runs it on the remote to offer the
-/// install there.
-fn pending(g: &Global) -> i32 {
-    let dirs = Dirs::from_env();
-    let rows: Vec<Value> = vk_tui::onboarding::detect_harnesses(&dirs, &stable_bin())
+/// What a harness used here needs: `missing` (never installed) or `stale` (installed, but hook
+/// events or the skill are missing, or the hooks call a removed binary), with the detail.
+pub fn needs(dirs: &Dirs) -> Vec<(Harness, &'static str, String)> {
+    vk_tui::onboarding::detect_harnesses(dirs, &stable_bin())
         .into_iter()
-        .filter(|r| !r.files.is_empty() && in_use(r, &dirs))
-        .map(|r| {
-            json!({
-                "harness": r.harness.id(),
-                "state": r.state_text(),
-                "files": r.files,
-            })
+        .filter(|r| !r.files.is_empty() && in_use(r, dirs))
+        .filter_map(|r| {
+            if r.state == InstallState::NotInstalled {
+                Some((r.harness, "missing", "not installed".to_string()))
+            } else {
+                vk_agents::stale_hooks(r.harness, dirs).map(|d| (r.harness, "stale", d))
+            }
         })
+        .collect()
+}
+
+/// `vibeke integration pending`: harnesses used here that need an install or a hook update.
+/// Outdated managed files (skill, extensions) are not listed: `refresh` rewrites them.
+/// `vibeke ssh` runs both on the remote.
+fn pending(g: &Global) -> i32 {
+    let rows: Vec<Value> = needs(&Dirs::from_env())
+        .into_iter()
+        .map(|(h, reason, detail)| json!({"harness": h.id(), "reason": reason, "detail": detail}))
         .collect();
     if is_json(g) {
         println!("{}", json!({ "pending": rows }));
@@ -312,20 +314,125 @@ fn pending(g: &Global) -> i32 {
     } else {
         for r in &rows {
             println!(
-                "{:<9} {:<14} {}",
+                "{:<9} {:<8} {}",
                 r["harness"].as_str().unwrap_or(""),
-                r["state"].as_str().unwrap_or(""),
-                r["files"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter_map(Value::as_str)
-                    .collect::<Vec<_>>()
-                    .join(", ")
+                r["reason"].as_str().unwrap_or(""),
+                r["detail"].as_str().unwrap_or("")
             );
         }
     }
     EXIT_OK
+}
+
+/// Rewrite outdated managed files (skill, extensions) and re-record their fingerprints.
+fn refresh_managed(dirs: &Dirs) -> Vec<std::path::PathBuf> {
+    let mut all = vec![];
+    for (h, written) in vk_agents::refresh_managed(dirs) {
+        record_integrity("install", h, dirs);
+        all.extend(written);
+    }
+    all
+}
+
+/// `vibeke integration refresh`: see [`refresh_managed`].
+fn refresh() -> i32 {
+    for p in refresh_managed(&Dirs::from_env()) {
+        println!("wrote {}", p.display());
+    }
+    EXIT_OK
+}
+
+fn version_marker() -> std::path::PathBuf {
+    vk_server::paths::state_root().join("integrations-version.json")
+}
+
+/// Before the TUI opens: once per Vibeke version, refresh the managed files of installed
+/// integrations without asking, then ask before updating stale hooks (the user's config files).
+/// A "no" holds until the next version.
+///
+/// Skipped when `VIBEKE_STATE_DIR` redirects the state (tests, scratch sessions) so those never
+/// touch the real agent configs; `VIBEKE_INTEGRATION_CHECK=1` forces it.
+pub fn refresh_and_prompt() {
+    use std::io::IsTerminal;
+    if std::env::var_os("VIBEKE_STATE_DIR").is_some()
+        && std::env::var("VIBEKE_INTEGRATION_CHECK").as_deref() != Ok("1")
+    {
+        return;
+    }
+    let path = version_marker();
+    let mut marker = std::fs::read(&path)
+        .ok()
+        .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+        .filter(Value::is_object)
+        .unwrap_or_else(|| json!({}));
+    let dirs = Dirs::from_env();
+    let current = marker["refreshed"] == vk_agents::install::VERSION;
+    if !current {
+        let written = refresh_managed(&dirs);
+        if !written.is_empty() {
+            eprintln!(
+                "vibeke: updated the Vibeke skill and extensions for {}",
+                vk_agents::install::VERSION
+            );
+        }
+        marker["refreshed"] = json!(vk_agents::install::VERSION);
+    }
+    let declined: Vec<String> = if marker["declined_version"] == vk_agents::install::VERSION {
+        serde_json::from_value(marker["declined"].clone()).unwrap_or_default()
+    } else {
+        vec![]
+    };
+    let stale: Vec<(Harness, String)> = Harness::ALL
+        .into_iter()
+        .filter(|h| !declined.iter().any(|d| d == h.id()))
+        .filter_map(|h| vk_agents::stale_hooks(h, &dirs).map(|d| (h, d)))
+        .collect();
+    if !stale.is_empty() && std::io::stdin().is_terminal() && std::io::stderr().is_terminal() {
+        let list: Vec<String> = stale
+            .iter()
+            .map(|(h, d)| format!("{} ({d})", h.id()))
+            .collect();
+        if crate::remote::ask(&format!(
+            "vibeke: these agent integrations are out of date: {}. Update them now?",
+            list.join(", ")
+        )) {
+            for (h, _) in &stale {
+                install_quiet(*h, &dirs);
+            }
+        } else {
+            let mut ids = declined;
+            ids.extend(stale.iter().map(|(h, _)| h.id().to_string()));
+            marker["declined_version"] = json!(vk_agents::install::VERSION);
+            marker["declined"] = json!(ids);
+            eprintln!(
+                "vibeke: not asking again until the next update; `vibeke integration install <agent> --yes` updates one"
+            );
+        }
+    }
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(&path, format!("{marker:#}\n"));
+}
+
+/// Install `h` after the user said yes: print what was written and the notes.
+fn install_quiet(h: Harness, dirs: &Dirs) {
+    let plan = match vk_agents::plan_install(h, dirs, &stable_bin()) {
+        Ok(p) => p,
+        Err(e) => return eprintln!("vibeke: {}: {e:#}", h.id()),
+    };
+    match vk_agents::apply(&plan) {
+        Ok(paths) => {
+            for p in paths {
+                eprintln!("vibeke: wrote {}", p.display());
+            }
+            for n in &plan.notes {
+                eprintln!("vibeke: {}: {n}", h.id());
+            }
+            record_integrity("install", h, dirs);
+        }
+        Err(e) => eprintln!("vibeke: {}: {e:#}", h.id()),
+    }
 }
 
 fn doctor(g: &Global, verb: &str, target: Option<&str>) -> i32 {
@@ -576,7 +683,14 @@ fn update(g: &Global, args: &[String]) -> i32 {
 }
 
 /// `--mcp`: the MCP server entry for harnesses with an MCP client config (Claude, Codex).
-fn run_mcp(verb: &str, hs: Vec<Harness>, dirs: &Dirs, write: bool, dry: bool) -> i32 {
+fn run_mcp(
+    verb: &str,
+    hs: Vec<Harness>,
+    dirs: &Dirs,
+    yes: bool,
+    redirected: bool,
+    dry: bool,
+) -> i32 {
     let hs: Vec<Harness> = hs
         .into_iter()
         .filter(|h| matches!(h, Harness::Claude | Harness::Codex))
@@ -632,7 +746,7 @@ fn run_mcp(verb: &str, hs: Vec<Harness>, dirs: &Dirs, write: bool, dry: bool) ->
                 for n in &plan.notes {
                     println!("note: {n}");
                 }
-                if dry || !write {
+                if dry || !(yes || (redirected && redirect_contains(&plan))) {
                     println!("{}: dry run — rerun with --yes to write", h.id());
                     continue;
                 }
@@ -655,6 +769,16 @@ fn run_mcp(verb: &str, hs: Vec<Harness>, dirs: &Dirs, write: bool, dry: bool) ->
         }
     }
     code
+}
+
+/// Every file `plan` changes lies under a redirect variable's directory: the shared skill dir
+/// (`~/.agents`) is not redirected by `CODEX_HOME`, nor `~/.claude.json` by `VIBEKE_AGENTS_HOME`.
+fn redirect_contains(plan: &vk_agents::Plan) -> bool {
+    let roots = Dirs::redirect_roots();
+    plan.files
+        .iter()
+        .filter(|f| f.changed())
+        .all(|f| roots.iter().any(|r| f.path.starts_with(r)))
 }
 
 fn hs_contains_codex(target: Option<&str>) -> bool {

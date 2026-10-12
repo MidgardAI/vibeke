@@ -42,6 +42,15 @@ An integration has two parts. The hooks or the extension report the agent state 
 
 Setup changes only the computer where it runs. For a remote host, see [Work on a remote machine](../remote.md#agent-integrations-on-the-host).
 
+### Updates
+
+After you update Vibeke, the next `vibeke` command that opens the terminal interface checks the installed integrations once:
+
+- Vibeke replaces an old copy of the skill or of an extension without a question. Vibeke manages these files completely.
+- If the hooks need a change, Vibeke asks first. Hooks need a change when a new release adds an event, when the skill is missing, or when the hooks call a `vibeke` program that no longer exists. The hooks live in the configuration files of your agents. Press Enter or `y` to update them. If you answer `n`, Vibeke asks again after the next update.
+
+Restart a running agent to load the new hooks. After a Codex hook update, run `/hooks` in Codex once to trust the new hooks.
+
 Then run your usual `claude`, `codex`, `pi`, or `omp` command in a shell pane.
 For scripts and troubleshooting, use `vibeke integration install|status|uninstall|doctor`.
 

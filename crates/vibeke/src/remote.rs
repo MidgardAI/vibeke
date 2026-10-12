@@ -359,62 +359,128 @@ fn record_declined(label: &str, harnesses: &[String]) {
     let _ = std::fs::write(&path, format!("{all:#}\n"));
 }
 
-/// The harness ids in a `vibeke integration pending --json` answer.
-fn pending_harnesses(out: &str) -> Vec<String> {
+/// One row of a `vibeke integration pending --json` answer.
+#[derive(Debug, PartialEq)]
+struct Need {
+    harness: String,
+    /// `missing` or `stale`.
+    reason: String,
+    detail: String,
+}
+
+impl Need {
+    /// The key a decline is remembered under: forever for a missing integration, until the
+    /// next version for stale hooks.
+    fn decline_key(&self) -> String {
+        if self.reason == "stale" {
+            format!("{}@{}", self.harness, vk_proto::VERSION)
+        } else {
+            self.harness.clone()
+        }
+    }
+}
+
+fn pending_needs(out: &str) -> Vec<Need> {
     serde_json::from_str::<Value>(out.trim())
         .ok()
         .and_then(|v| v.get("pending").cloned())
         .and_then(|p| p.as_array().cloned())
         .unwrap_or_default()
         .iter()
-        .filter_map(|r| r["harness"].as_str().map(str::to_string))
+        .filter_map(|r| {
+            Some(Need {
+                harness: r["harness"].as_str()?.to_string(),
+                reason: r["reason"].as_str().unwrap_or("missing").to_string(),
+                detail: r["detail"].as_str().unwrap_or("").to_string(),
+            })
+        })
         .collect()
 }
 
+/// The question for the remote's needs, e.g. "devbox runs claude without the Vibeke hooks and
+/// skill, and codex has outdated Vibeke hooks (missing: skill)".
+fn needs_text(label: &str, needs: &[Need]) -> String {
+    let missing: Vec<&str> = needs
+        .iter()
+        .filter(|n| n.reason != "stale")
+        .map(|n| n.harness.as_str())
+        .collect();
+    let stale: Vec<String> = needs
+        .iter()
+        .filter(|n| n.reason == "stale")
+        .map(|n| format!("{} ({})", n.harness, n.detail))
+        .collect();
+    let mut parts = vec![];
+    if !missing.is_empty() {
+        parts.push(format!(
+            "{label} runs {} without the Vibeke hooks and skill",
+            missing.join(", ")
+        ));
+    }
+    if !stale.is_empty() {
+        parts.push(format!(
+            "{} out-of-date Vibeke integration on {label}: {}",
+            if parts.is_empty() {
+                "there is an"
+            } else {
+                "and there is an"
+            },
+            stale.join(", ")
+        ));
+    }
+    parts.join(", ")
+}
+
 /// After the bootstrap: the remote's agents need the Vibeke hooks and skill there, not on this
-/// computer. Ask once per machine and harness (`--integrations` installs without asking,
-/// `--no-integrations` skips the check). A remote too old for `integration pending` is skipped.
+/// computer. First refresh the managed files there (skill, extensions; no question), then ask
+/// about missing integrations and stale hooks. A "no" holds per machine: for good for a
+/// missing integration, until the next version for stale hooks. `--integrations` installs
+/// without asking, `--no-integrations` skips all of it. A remote too old for these verbs is
+/// skipped.
 async fn offer_integrations(target: &Target, args: &[String]) {
     if flag(args, "--no-integrations") {
         return;
     }
     let bin = vk_remote::ssh::sh_quote(bootstrap::REMOTE_BIN);
+    let timeout = std::time::Duration::from_secs(20);
+    let refresh = format!("{bin} integration refresh");
+    let _ = tokio::time::timeout(timeout, target.run(&refresh, None)).await;
     let cmd = format!("{bin} integration pending --json");
-    let probe = target.run(&cmd, None);
-    let Ok(Ok(out)) = tokio::time::timeout(std::time::Duration::from_secs(20), probe).await else {
+    let Ok(Ok(out)) = tokio::time::timeout(timeout, target.run(&cmd, None)).await else {
         return;
     };
-    let pending = pending_harnesses(&out);
     let label = &target.label;
     let force = flag(args, "--integrations");
     let skip = if force { vec![] } else { declined(label) };
-    let offer: Vec<String> = pending.into_iter().filter(|h| !skip.contains(h)).collect();
+    let offer: Vec<Need> = pending_needs(&out)
+        .into_iter()
+        .filter(|n| !skip.contains(&n.decline_key()))
+        .collect();
     if offer.is_empty() {
         return;
     }
-    let list = offer.join(", ");
+    let text = needs_text(label, &offer);
     // `ask` needs both streams; without them, say how instead of recording a decline.
     if !force && !(std::io::stdin().is_terminal() && std::io::stderr().is_terminal()) {
-        eprintln!(
-            "vibeke: {label} runs {list} without the Vibeke hooks and skill; `vibeke ssh {label} --integrations` installs them there"
-        );
+        eprintln!("vibeke: {text}; `vibeke ssh {label} --integrations` installs them there");
         return;
     }
     if !force
         && !ask(&format!(
-            "{label} runs {list} without the Vibeke hooks and skill, so Vibeke cannot see their state or answer approvals there. Install them on {label}?"
+            "{text}. Without them Vibeke cannot see those agents' state or answer their approvals. Install on {label}?"
         ))
     {
-        record_declined(label, &offer);
+        let keys: Vec<String> = offer.iter().map(Need::decline_key).collect();
+        record_declined(label, &keys);
         eprintln!(
-            "vibeke: not asking again for {list} on {label}; `vibeke ssh {label} --integrations` installs them"
+            "vibeke: not asking again on {label}; `vibeke ssh {label} --integrations` installs them"
         );
         return;
     }
-    for h in &offer {
+    for n in &offer {
         let cmd = format!(
             "{bin} integration install {} --yes",
-            vk_remote::ssh::sh_quote(h)
+            vk_remote::ssh::sh_quote(&n.harness)
         );
         match target.run(&cmd, None).await {
             Ok(out) => {
@@ -424,14 +490,14 @@ async fn offer_integrations(target: &Target, args: &[String]) {
                     eprintln!("vibeke: {label}: {l}");
                 }
             }
-            Err(e) => eprintln!("vibeke: {label}: {h}: {e:#}"),
+            Err(e) => eprintln!("vibeke: {label}: {}: {e:#}", n.harness),
         }
     }
 }
 
 /// Ask a yes/no question on the terminal (default yes). False without a terminal, so
 /// scripts keep the explicit `--upgrade`.
-fn ask(question: &str) -> bool {
+pub(crate) fn ask(question: &str) -> bool {
     use std::io::{BufRead, IsTerminal, Write};
     if !std::io::stdin().is_terminal() || !std::io::stderr().is_terminal() {
         return false;
@@ -1299,12 +1365,23 @@ mod tests {
     use vk_remote::link::valid_session_name;
 
     #[test]
-    fn pending_harnesses_reads_the_remote_answer() {
-        let out = r#"{"pending":[{"harness":"claude","state":"partial","files":["/h/.claude/skills/vibeke/SKILL.md"]},{"harness":"codex","state":"not installed","files":[]}]}
+    fn pending_needs_reads_the_remote_answer() {
+        let out = r#"{"pending":[{"harness":"claude","reason":"missing","detail":"not installed"},{"harness":"codex","reason":"stale","detail":"missing: skill"}]}
 "#;
-        assert_eq!(pending_harnesses(out), vec!["claude", "codex"]);
-        assert!(pending_harnesses("vibeke: unknown verb").is_empty());
-        assert!(pending_harnesses(r#"{"pending":[]}"#).is_empty());
+        let n = pending_needs(out);
+        assert_eq!(n.len(), 2);
+        assert_eq!(n[0].decline_key(), "claude");
+        assert_eq!(n[1].decline_key(), format!("codex@{}", vk_proto::VERSION));
+        assert_eq!(
+            needs_text("devbox", &n),
+            "devbox runs claude without the Vibeke hooks and skill, and there is an out-of-date Vibeke integration on devbox: codex (missing: skill)"
+        );
+        assert_eq!(
+            needs_text("devbox", &n[1..]),
+            "there is an out-of-date Vibeke integration on devbox: codex (missing: skill)"
+        );
+        assert!(pending_needs("vibeke: unknown verb").is_empty());
+        assert!(pending_needs(r#"{"pending":[]}"#).is_empty());
     }
 
     #[test]

@@ -55,15 +55,19 @@ Agent commands run on the remote host and use its installed integrations and cre
 ### Agent integrations on the host
 
 An agent on the host needs the Vibeke hooks and skill on the host. The integrations on your computer do not reach it.
-After the connection, `vibeke ssh` looks for agents on the host without the Vibeke hooks and skill.
+After the connection, `vibeke ssh` checks the agents on the host.
 It finds an agent by its program on `PATH` or by its configuration folder, such as `~/.claude`.
-If it finds one, it asks if it should install them.
-Press Enter or `y` to install them on the host. Agents that already run there need a restart to load the hooks.
-If you answer `n`, Vibeke does not ask again for these agents on this host.
+
+- Vibeke replaces an old copy of the skill or of an extension on the host without a question.
+- If an agent has no Vibeke hooks and skill, `vibeke ssh` asks if it should install them.
+- If the hooks of an agent need a change, `vibeke ssh` asks if it should update them.
+
+Press Enter or `y` to install or update them on the host. Agents that already run there need a restart to load the hooks.
+If you answer `n`, Vibeke does not ask again about a missing integration on this host. It asks again about out-of-date hooks after the next update.
 
 - `vibeke ssh devbox --integrations` installs them without a question. Use it in scripts, or after you answered `n`.
 - `vibeke ssh devbox --no-integrations` skips the check.
-- In a pane on the host, `vibeke integration pending` lists the agents that need the integration. `vibeke integration install claude --yes` installs one.
+- In a pane on the host, `vibeke integration pending` lists the agents that need an install or a hook update. `vibeke integration install claude --yes` installs or updates one.
 
 Previews and forwarded ports use loopback addresses. See [previews and browsers](concepts/previews.md).
 Use `vibeke machine list` and `vibeke machine status devbox` to inspect saved machines.

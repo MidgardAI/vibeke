@@ -942,8 +942,61 @@ pub fn status(h: Harness, dirs: &Dirs) -> Status {
     st
 }
 
+/// After an update: rewrite the files Vibeke owns outright (a managed extension, our skill)
+/// when they are from another version. Only for integrations the user installed, never a
+/// missing or foreign file, never hook config (that is the user's file; `stale_hooks` asks).
+/// Returns what was written, per harness.
+pub fn refresh_managed(dirs: &Dirs) -> Vec<(Harness, Vec<PathBuf>)> {
+    let mut out = vec![];
+    for h in Harness::ALL {
+        if !hooks_present(h, dirs) {
+            continue;
+        }
+        let mut notes = vec![];
+        let mut files = vec![];
+        if h.is_extension()
+            && let Ok(p) = plan_extension(h, dirs, true)
+        {
+            // The extension file only: a missing skill is a new file, so it is asked for.
+            files.extend(p.files.into_iter().take(1));
+        }
+        if let Ok(Some(f)) = crate::skill::plan_skill(h, dirs, true, &mut notes)
+            && f.before.is_some()
+        {
+            files.push(f);
+        }
+        let plan = Plan {
+            harness: h,
+            kind: PlanKind::Install,
+            files,
+            notes,
+        };
+        if plan.changed()
+            && let Ok(written) = apply(&plan)
+        {
+            out.push((h, written));
+        }
+    }
+    out
+}
+
+/// Why the installed integration of `h` needs the user's go-ahead to update: hook events or
+/// the skill missing, or hooks calling a build output or a removed binary. `None` when it is
+/// not installed or current. A new version marker alone does not count.
+pub fn stale_hooks(h: Harness, dirs: &Dirs) -> Option<String> {
+    if !hooks_present(h, dirs) {
+        return None;
+    }
+    let st = status(h, dirs);
+    if stale_command(&st) {
+        return Some("hooks call a missing binary or a build output".to_string());
+    }
+    (st.state == InstallState::Partial)
+        .then(|| format!("missing: {}", st.missing_events.join(", ")))
+}
+
 /// The hooks (or extension) of `h` are at least partly installed.
-pub(crate) fn hooks_present(h: Harness, dirs: &Dirs) -> bool {
+pub fn hooks_present(h: Harness, dirs: &Dirs) -> bool {
     !hook_status(h, dirs).hooks.is_empty()
 }
 
@@ -2397,6 +2450,63 @@ mod tests {
         );
         let p = plan_install(Harness::Gemini, &d, Path::new(BIN)).unwrap();
         assert!(p.files.iter().any(|f| f.path == skill && f.changed()));
+    }
+
+    #[test]
+    fn refresh_rewrites_only_outdated_managed_files_of_installed_integrations() {
+        let t = tempfile::tempdir().unwrap();
+        let d = dirs(&t);
+        // Nothing installed: nothing to refresh, nothing stale.
+        assert!(refresh_managed(&d).is_empty());
+        assert_eq!(stale_hooks(Harness::Claude, &d), None);
+        // Hooks must call an existing binary, or they are stale for that reason.
+        let bin = t.path().join("bin/vibeke");
+        fs::create_dir_all(bin.parent().unwrap()).unwrap();
+        fs::write(&bin, "").unwrap();
+        apply(&plan_install(Harness::Omp, &d, &bin).unwrap()).unwrap();
+        apply(&plan_install(Harness::Claude, &d, &bin).unwrap()).unwrap();
+        assert_eq!(stale_hooks(Harness::Claude, &d), None);
+        assert!(refresh_managed(&d).is_empty(), "current files stay");
+        // An older release wrote the extension and both skills.
+        let ext = d.config_file(Harness::Omp);
+        let old_ext =
+            "// managed by vibeke (vibeke-integration=omp@0.0.1); reinstall overwrites\nold();\n";
+        fs::write(&ext, old_ext).unwrap();
+        let old_skill = crate::skill::skill_content().replace(VERSION, "0.0.1");
+        let shared = d.agents.join("skills/vibeke/SKILL.md");
+        let claude_skill = d.claude.join("skills/vibeke/SKILL.md");
+        fs::write(&shared, &old_skill).unwrap();
+        fs::write(&claude_skill, &old_skill).unwrap();
+        let settings = fs::read_to_string(d.config_file(Harness::Claude)).unwrap();
+        let done = refresh_managed(&d);
+        let hs: Vec<Harness> = done.iter().map(|(h, _)| *h).collect();
+        assert_eq!(hs, vec![Harness::Claude, Harness::Omp]);
+        assert_eq!(
+            fs::read_to_string(&ext).unwrap(),
+            extension_content(Harness::Omp)
+        );
+        assert_eq!(
+            fs::read_to_string(&shared).unwrap(),
+            crate::skill::skill_content()
+        );
+        assert_eq!(
+            fs::read_to_string(&claude_skill).unwrap(),
+            crate::skill::skill_content()
+        );
+        // Hook config is never refreshed.
+        assert_eq!(
+            fs::read_to_string(d.config_file(Harness::Claude)).unwrap(),
+            settings
+        );
+        // A missing skill is not created by a refresh: it is a stale integration to ask about.
+        fs::remove_file(&claude_skill).unwrap();
+        assert!(refresh_managed(&d).is_empty());
+        assert!(!claude_skill.exists());
+        assert_eq!(
+            stale_hooks(Harness::Claude, &d).as_deref(),
+            Some("missing: skill")
+        );
+        assert_eq!(stale_hooks(Harness::Omp, &d), None);
     }
 
     #[test]
