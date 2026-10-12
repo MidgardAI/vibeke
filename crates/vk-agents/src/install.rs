@@ -1626,8 +1626,11 @@ const CODEX_SHIM: &str = r##"#!/bin/sh
 # app-server so hooks carry VIBEKE_PANE_ID / VIBEKE_PANE_TOKEN.
 # Opt out per invocation with CODEX_VIBEKE_SHIM=0.
 
-# Extra arguments injected before the user's arguments (placeholder: the exact
-# flag/config key is being verified against Codex 0.157).
+# Extra arguments injected before the user's arguments. Disabling auto-start
+# alone is not enough: Codex still attaches to a shared daemon that is already
+# running, and that daemon runs hooks without this pane's environment. Codex
+# releases that know `--no-daemon` get it for the interactive TUI, `resume` and
+# `fork` (`exec` and `review` reject it).
 VIBEKE_CODEX_EXTRA="--disable daemon_auto_start"
 
 self_dir=$(cd "$(dirname "$0")" 2>/dev/null && pwd -P)
@@ -1655,6 +1658,25 @@ if [ "${CODEX_VIBEKE_SHIM:-1}" = "0" ]; then
     exec "$real" "$@"
 fi
 
+# Whether this Codex knows `--no-daemon`, cached per binary (size and mtime).
+no_daemon_extra() {
+    cache="$self_dir/.codex-no-daemon"
+    sig=$(ls -lnL "$real" 2>/dev/null | awk '{print $5, $6, $7, $8}')
+    sig="$real $sig"
+    if [ -f "$cache" ] && [ "$(sed -n 1p "$cache" 2>/dev/null)" = "$sig" ]; then
+        known=$(sed -n 2p "$cache")
+    else
+        if "$real" --no-daemon --version >/dev/null 2>&1; then known=yes; else known=no; fi
+        tmp="$cache.$$"
+        printf '%s\n%s\n' "$sig" "$known" > "$tmp" 2>/dev/null && mv -f "$tmp" "$cache" 2>/dev/null
+    fi
+    if [ "$known" = "yes" ]; then
+        echo "--no-daemon"
+    else
+        echo "$VIBEKE_CODEX_EXTRA"
+    fi
+}
+
 # Leave daemon-related invocations alone: the user already chose a mode, or is
 # talking to the daemon / app-server directly.
 for a in "$@"; do
@@ -1666,7 +1688,12 @@ done
 set -f
 case "${1:-}" in
     # Subcommands that take the extra flags after the subcommand name.
-    exec|resume|fork|review)
+    resume|fork)
+        sub=$1
+        shift
+        exec "$real" "$sub" $(no_daemon_extra) "$@"
+        ;;
+    exec|review)
         sub=$1
         shift
         exec "$real" "$sub" $VIBEKE_CODEX_EXTRA "$@"
@@ -1676,7 +1703,7 @@ case "${1:-}" in
         exec "$real" "$@"
         ;;
     *)
-        exec "$real" $VIBEKE_CODEX_EXTRA "$@"
+        exec "$real" $(no_daemon_extra) "$@"
         ;;
 esac
 "##;
@@ -2321,12 +2348,18 @@ mod tests {
     // ----- Shim -----
 
     fn fake_codex(dir: &Path, label: &str, out: &Path) {
+        fake_codex_with(dir, label, out, false);
+    }
+
+    /// A fake `codex` that records its argv; `no_daemon` says whether it knows `--no-daemon`.
+    fn fake_codex_with(dir: &Path, label: &str, out: &Path, no_daemon: bool) {
         fs::create_dir_all(dir).unwrap();
         let p = dir.join("codex");
+        let probe = if no_daemon { 0 } else { 2 };
         fs::write(
             &p,
             format!(
-                "#!/bin/sh\necho {label} > '{o}'\nfor a in \"$@\"; do printf '%s\\n' \"$a\" >> '{o}'; done\n",
+                "#!/bin/sh\nif [ \"$1\" = --no-daemon ] && [ \"$2\" = --version ]; then exit {probe}; fi\necho {label} > '{o}'\nfor a in \"$@\"; do printf '%s\\n' \"$a\" >> '{o}'; done\n",
                 o = out.display()
             ),
         )
@@ -2455,6 +2488,31 @@ mod tests {
         assert_eq!(argv(&out), ["real", "app-server", "--listen", "x"]);
         run_shim(&shims, &p, &[], &["login"]);
         assert_eq!(argv(&out), ["real", "login"]);
+    }
+
+    #[test]
+    fn shim_prefers_no_daemon_when_codex_knows_it() {
+        let t = tempfile::tempdir().unwrap();
+        let shims = t.path().join("shims");
+        let real = t.path().join("real");
+        let out = t.path().join("out");
+        write_codex_shim(&shims).unwrap();
+        fake_codex_with(&real, "real", &out, true);
+        let p: Vec<&Path> = vec![&shims, &real, Path::new("/usr/bin"), Path::new("/bin")];
+        run_shim(&shims, &p, &[], &["fix it"]);
+        assert_eq!(argv(&out), ["real", "--no-daemon", "fix it"]);
+        // The probe result is cached next to the shim.
+        assert!(shims.join(".codex-no-daemon").exists());
+        run_shim(&shims, &p, &[], &["resume", "--last"]);
+        assert_eq!(argv(&out), ["real", "resume", "--no-daemon", "--last"]);
+        run_shim(&shims, &p, &[], &["exec", "do it"]);
+        assert_eq!(
+            argv(&out),
+            ["real", "exec", "--disable", "daemon_auto_start", "do it"]
+        );
+        // A user's own `--no-daemon` is left alone.
+        run_shim(&shims, &p, &[], &["--no-daemon", "x"]);
+        assert_eq!(argv(&out), ["real", "--no-daemon", "x"]);
     }
 
     #[test]
