@@ -6,11 +6,13 @@
 //! - Messages and deliveries are store entities, not part of the render model. Bodies are
 //!   redacted before they are stored; events carry ids and states, never bodies (§3).
 //! - [`delivery`]: the engine that types a one-line envelope into an idle recipient (§4.1–4.2).
+//! - [`scrub`]: envelope lines in pane reads and transcripts lose their preview and nonce.
 //! - [`hooks`]: what the Claude and Codex hooks add to the `adapter.signal` reply (§4.3–4.5).
 
 pub mod delivery;
 pub mod hooks;
 pub mod names;
+pub mod scrub;
 
 pub use delivery::start;
 

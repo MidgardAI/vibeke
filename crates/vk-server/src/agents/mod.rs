@@ -3473,6 +3473,8 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
                             )
                         })
                         .unwrap_or_default();
+                    // Envelopes lose their preview and nonce (spec 19 §4.1).
+                    let text = crate::mentions::scrub::scrub(&text).into_owned();
                     return Some(Ok(json!({"text": text, "source": "transcript"})));
                 }
                 Ok(
@@ -3483,9 +3485,15 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
         },
         "agent.transcript" => match resolve_run(server, ctx, s(p, "target")) {
             Ok(r) => match r.transcript_path {
-                Some(t) => Ok(
-                    json!({"turns": harness::transcript_turns(std::path::Path::new(&t), u(p, "limit").unwrap_or(20) as usize)}),
-                ),
+                Some(t) => {
+                    let mut turns = json!(harness::transcript_turns(
+                        std::path::Path::new(&t),
+                        u(p, "limit").unwrap_or(20) as usize
+                    ));
+                    // Envelopes lose their preview and nonce (spec 19 §4.1).
+                    crate::mentions::scrub::scrub_value(&mut turns);
+                    Ok(json!({ "turns": turns }))
+                }
                 None => Err(err(ErrorKind::Unsupported, "no transcript for this run")
                     .details(json!({"fallback": "agent.read"}))),
             },

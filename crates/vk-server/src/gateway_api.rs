@@ -523,6 +523,9 @@ fn transcript(server: &Server, ctx: &Ctx, p: &Value) -> R {
         .first()
         .and_then(|t| t["n"].as_u64())
         .filter(|n| *n > 1);
+    let mut page = Value::Array(page);
+    // Envelopes lose their preview and nonce (spec 19 §4.1).
+    crate::mentions::scrub::scrub_value(&mut page);
     Ok(json!({"run": run.id, "turns": page, "next_before": next_before}))
 }
 

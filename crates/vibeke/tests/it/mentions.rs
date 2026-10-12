@@ -1,6 +1,7 @@
 //! Mentions (spec 19) end to end through the real server, panes and `vibeke hook` shim. The
 //! agents are fake: each pane runs a shell loop that shows a `> ` input line and reads lines,
-//! so a typed envelope shows on its screen and an empty input box looks like Claude's. The test
+//! so an empty input box looks like Claude's. The loop logs every line it reads: pane reads
+//! show an envelope without its nonce, so the test takes the nonce from that log. The test
 //! reports Claude hooks for the pane with the pane's own token. Every successful call and every
 //! event is checked against the API schema registry.
 
@@ -100,13 +101,17 @@ fn kind(e: &Value) -> (String, String) {
 struct Agent {
     pane: String,
     token: String,
+    /// Every line the pane read, one per line.
+    typed: std::path::PathBuf,
 }
 
 fn agent_pane(s: &Session, tag: &str, split_of: Option<&str>) -> Agent {
     let tok = s.dir.path().join(format!("{tag}.tok"));
+    let typed = s.dir.path().join(format!("{tag}.typed"));
     let cmd = format!(
-        "printf %s \"$VIBEKE_PANE_TOKEN\" > {}; printf '> '; while IFS= read -r l; do printf '> '; done",
-        tok.display()
+        "printf %s \"$VIBEKE_PANE_TOKEN\" > {}; printf '> '; while IFS= read -r l; do printf '%s\\n' \"$l\" >> {}; printf '> '; done",
+        tok.display(),
+        typed.display()
     );
     let pane = match split_of {
         Some(f) => s.split(f, &cmd),
@@ -115,7 +120,7 @@ fn agent_pane(s: &Session, tag: &str, split_of: Option<&str>) -> Agent {
     let token = until(&format!("the token of {tag}"), 20, || {
         std::fs::read_to_string(&tok).ok().filter(|t| t.len() == 64)
     });
-    Agent { pane, token }
+    Agent { pane, token, typed }
 }
 
 /// Run the real hook shim for `agent` (`vibeke hook claude <event>`); its stdout as JSON.
@@ -171,23 +176,30 @@ fn context(out: &Value) -> String {
         .to_string()
 }
 
-/// Wait for the envelope of `message` on the agent's screen; its nonce.
+/// Wait for the envelope of `message` to be typed into the agent; its nonce. Pane reads show
+/// the envelope without preview and nonce.
 fn envelope_nonce(user: &mut Api, a: &Agent, message: &str) -> String {
-    // The line wraps in a narrow pane: match it with all whitespace removed.
     let re = regex::Regex::new(&format!(
-        r"vibekemessage{}from[^\[]*\[([A-Z2-7]{{12}})\]",
+        r"vibeke message {} from [^\[]*\[([A-Z2-7]{{12}})\]",
         regex::escape(message)
     ))
     .unwrap();
-    until(&format!("the envelope of {message}"), 20, || {
-        let text: String = user.ok("pane.read", json!({"pane": a.pane, "lines": 200}))["text"]
-            .as_str()
-            .unwrap_or("")
-            .chars()
-            .filter(|c| !c.is_whitespace())
-            .collect();
-        re.captures(&text).map(|c| c[1].to_string())
-    })
+    let nonce = until(&format!("the envelope of {message}"), 20, || {
+        let typed = std::fs::read_to_string(&a.typed).unwrap_or_default();
+        re.captures(&typed).map(|c| c[1].to_string())
+    });
+    // Other readers of the pane see the envelope without its nonce.
+    let text: String = user.ok("pane.read", json!({"pane": a.pane, "lines": 200}))["text"]
+        .as_str()
+        .unwrap_or("")
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
+    assert!(
+        !text.contains(&nonce),
+        "the nonce shows in pane.read: {text}"
+    );
+    nonce
 }
 
 /// Report the typed envelope through the hook, as the harness would; the hook output.
@@ -543,6 +555,9 @@ fn delivery_waits_for_an_empty_input_box_and_envelopes_work_once() {
     assert!(!ctx.contains("cache keys"), "{out}");
     // Events and the item stream never carry the nonce.
     let evs = user.ok("events.read", json!({"after": 0, "limit": 500}));
-    assert!(!evs.to_string().contains(&nonce), "the nonce leaked into events");
+    assert!(
+        !evs.to_string().contains(&nonce),
+        "the nonce leaked into events"
+    );
     user.check_events();
 }

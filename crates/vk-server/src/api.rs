@@ -1659,6 +1659,7 @@ fn read_last_command(server: &Server, pane: &str, lines: usize) -> R {
             out.push('\n');
         }
     }
+    let out = crate::mentions::scrub::scrub(&out);
     let all: Vec<&str> = out.lines().collect();
     let text = all[all.len().saturating_sub(lines)..].join("\n");
     Ok(json!({
@@ -1682,7 +1683,12 @@ pub fn read_text(server: &Server, pane: &str, source: &str, lines: usize) -> Str
         "visible" | "detection" => rows = e.visible_rows(),
         _ => {
             let h = e.history_len();
-            let want_hist = lines.saturating_sub(e.rows() as usize).min(h);
+            // Two rows more than asked: an envelope that starts above the window is still
+            // recognised (and scrubbed) when its nonce wraps into it.
+            let want_hist = lines
+                .saturating_add(2)
+                .saturating_sub(e.rows() as usize)
+                .min(h);
             for i in h - want_hist..h {
                 if let Some(r) = e.history_row(i) {
                     rows.push(r);
@@ -1708,6 +1714,8 @@ pub fn read_text(server: &Server, pane: &str, source: &str, lines: usize) -> Str
             out.push('\n');
         }
     }
+    // Typed vibeke message envelopes lose their preview and nonce (spec 19 §4.1).
+    let out = crate::mentions::scrub::scrub(&out);
     let all: Vec<&str> = out.lines().collect();
     all[all.len().saturating_sub(lines)..].join("\n")
 }

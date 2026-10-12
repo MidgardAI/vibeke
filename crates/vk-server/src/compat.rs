@@ -3271,7 +3271,12 @@ async fn herdr_read(
     )
     .await?;
     let plain = r["text"].as_str().unwrap_or("");
-    let ansi = format == "ansi" && source != "detection" && !caller.ctx.remote;
+    // The native read scrubs vibeke message envelopes (spec 19 §4.1); styled rows cannot be
+    // scrubbed in place, so a screen that shows one is returned as plain text.
+    let ansi = format == "ansi"
+        && source != "detection"
+        && !caller.ctx.remote
+        && !plain.contains("vibeke message");
     let (text, truncated) = if screen {
         let full = if ansi {
             ansi_rows(server, &x.id, source, 0)
