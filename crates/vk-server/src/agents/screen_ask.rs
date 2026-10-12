@@ -438,9 +438,24 @@ pub fn matches(a: &AskScreen, it: &Interaction) -> bool {
         }
     }
     match a.view {
-        AskView::Question => question_index(a, it).is_some(),
+        // The visible options must be the question's, in order: a replacement dialog that
+        // asks the same thing with other options is not this interaction.
+        AskView::Question => {
+            question_index(a, it).is_some_and(|i| options_match(a, &it.questions[i]))
+        }
         AskView::Review => one_view || it.questions.len() > 1,
     }
+}
+
+fn options_match(a: &AskScreen, q: &vk_proto::model::Question) -> bool {
+    let shown: Vec<&AskRow> = a.options().collect();
+    shown.len() == q.options.len()
+        && shown.iter().zip(&q.options).all(|(r, o)| {
+            // A narrow pane may cut a label short (`…`).
+            let s = key(r.label.trim_end_matches('…'));
+            let w = key(&o.label);
+            !s.is_empty() && (s == w || (r.label.ends_with('…') && w.starts_with(&s)))
+        })
 }
 
 // ---- answering ------------------------------------------------------------------------------------

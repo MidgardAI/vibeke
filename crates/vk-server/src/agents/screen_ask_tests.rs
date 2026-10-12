@@ -310,6 +310,13 @@ fn the_dialog_matches_any_of_its_questions_and_the_review() {
     let mut renamed = live();
     renamed.questions[0].header = Some("Sharing".into());
     assert!(!dialog_matches(&d, &renamed));
+    // The same question with other options is a replacement dialog.
+    let mut reworded = live();
+    reworded.questions[0].options[1].label = "Podcasts only".into();
+    assert!(!dialog_matches(&d, &reworded));
+    let mut fewer = live();
+    fewer.questions[0].options.pop();
+    assert!(!dialog_matches(&d, &fewer));
 }
 
 #[test]
