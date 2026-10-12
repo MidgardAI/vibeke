@@ -265,6 +265,228 @@
         "idle"
       ]
     },
+    "AnnotationDraft": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "workspace": {
+          "type": "string"
+        },
+        "target": {
+          "$ref": "#/$defs/AnnotationTarget"
+        },
+        "agent_pane": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "url": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "viewport": {
+          "type": "object",
+          "properties": {
+            "w": {
+              "type": "integer"
+            },
+            "h": {
+              "type": "integer"
+            },
+            "dpr": {
+              "type": "number"
+            },
+            "device": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "w",
+            "h"
+          ]
+        },
+        "notes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/AnnotationNote"
+          }
+        },
+        "page_note": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "open",
+            "queued",
+            "delivered"
+          ]
+        },
+        "via": {
+          "type": "string",
+          "enum": [
+            "feedback",
+            "typed",
+            "prompt"
+          ]
+        },
+        "detail": {
+          "type": "string"
+        },
+        "updated_at_ms": {
+          "type": "integer"
+        },
+        "delivered_at_ms": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "target",
+        "url",
+        "notes",
+        "state",
+        "updated_at_ms"
+      ]
+    },
+    "AnnotationNote": {
+      "type": "object",
+      "properties": {
+        "n": {
+          "type": "integer"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "element",
+            "region",
+            "page"
+          ]
+        },
+        "selector": {
+          "type": "string"
+        },
+        "role": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "html": {
+          "type": "string"
+        },
+        "rect": {
+          "$ref": "#/$defs/AnnotationRect"
+        },
+        "covers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "selector": {
+                "type": "string"
+              },
+              "text": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "selector"
+            ]
+          }
+        },
+        "image": {
+          "type": "string"
+        },
+        "note": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "n",
+        "kind",
+        "note"
+      ]
+    },
+    "AnnotationRect": {
+      "type": "object",
+      "properties": {
+        "x": {
+          "type": "number"
+        },
+        "y": {
+          "type": "number"
+        },
+        "w": {
+          "type": "number"
+        },
+        "h": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "x",
+        "y",
+        "w",
+        "h"
+      ]
+    },
+    "AnnotationTarget": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "pane": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "pane"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "session": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "session"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "preview": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "preview"
+          ]
+        }
+      ]
+    },
     "Answer": {
       "type": "object",
       "properties": {
@@ -9099,6 +9321,401 @@
         ]
       }
     },
+    "browser.annotate": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "pane": {
+            "$ref": "#/$defs/Target"
+          },
+          "session": {
+            "type": "string"
+          },
+          "on": {
+            "type": "boolean",
+            "default": true
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "on": {
+            "type": "boolean"
+          },
+          "draft": {
+            "type": "string"
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "on"
+        ]
+      }
+    },
+    "browser.annotation_add": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "target": {
+            "$ref": "#/$defs/AnnotationTarget"
+          },
+          "url": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "viewport": {
+            "type": "object"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "element",
+              "region",
+              "page"
+            ]
+          },
+          "selector": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          },
+          "html": {
+            "type": "string"
+          },
+          "rect": {
+            "$ref": "#/$defs/AnnotationRect"
+          },
+          "covers": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "selector": {
+                  "type": "string"
+                },
+                "text": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "selector"
+              ]
+            }
+          },
+          "image_b64": {
+            "type": "string"
+          },
+          "note": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "target",
+          "url",
+          "kind"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "draft": {
+            "$ref": "#/$defs/AnnotationDraft"
+          },
+          "note": {
+            "$ref": "#/$defs/AnnotationNote"
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "draft",
+          "note"
+        ]
+      }
+    },
+    "browser.annotation_pick": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "pane": {
+            "$ref": "#/$defs/Target"
+          },
+          "session": {
+            "type": "string"
+          },
+          "x": {
+            "type": "number"
+          },
+          "y": {
+            "type": "number"
+          },
+          "w": {
+            "type": "number"
+          },
+          "h": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "x",
+          "y"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "draft": {
+            "$ref": "#/$defs/AnnotationDraft"
+          },
+          "note": {
+            "$ref": "#/$defs/AnnotationNote"
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "draft",
+          "note"
+        ]
+      }
+    },
+    "browser.annotation_remove": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "draft": {
+            "type": "string"
+          },
+          "n": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "draft",
+          "n"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "draft": {
+            "$ref": "#/$defs/AnnotationDraft"
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "draft"
+        ]
+      }
+    },
+    "browser.annotation_update": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "draft": {
+            "type": "string"
+          },
+          "n": {
+            "type": "integer"
+          },
+          "note": {
+            "type": "string"
+          },
+          "page_note": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "draft"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "draft": {
+            "$ref": "#/$defs/AnnotationDraft"
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "draft"
+        ]
+      }
+    },
+    "browser.annotations": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "params": {
+        "type": "object",
+        "properties": {
+          "pane": {
+            "$ref": "#/$defs/Target"
+          },
+          "session": {
+            "type": "string"
+          },
+          "preview": {
+            "type": "string"
+          },
+          "draft": {
+            "type": "string"
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "draft": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/AnnotationDraft"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "draft"
+        ]
+      }
+    },
+    "browser.annotations_clear": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "draft": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "draft"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "cleared": {
+            "type": "boolean"
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "cleared"
+        ]
+      }
+    },
+    "browser.annotations_send": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "draft": {
+            "type": "string"
+          },
+          "agent": {
+            "$ref": "#/$defs/Target"
+          },
+          "copy_only": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "draft"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "state": {
+            "type": "string",
+            "enum": [
+              "delivered",
+              "queued",
+              "open"
+            ]
+          },
+          "via": {
+            "anyOf": [
+              {
+                "const": "feedback"
+              },
+              {
+                "const": "typed"
+              },
+              {
+                "const": "prompt"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "agent_pane": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "text": {
+            "type": "string"
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "state",
+          "text"
+        ]
+      }
+    },
     "browser.attach_screencast": {
       "mutating": true,
       "scope": "full",
@@ -9945,6 +10562,50 @@
         ]
       }
     },
+    "browser.feedback": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "params": {
+        "type": "object",
+        "properties": {
+          "pane": {
+            "$ref": "#/$defs/Target"
+          },
+          "wait_ms": {
+            "type": "integer",
+            "default": 0
+          },
+          "wait": {
+            "type": "integer"
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "draft": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/AnnotationDraft"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "text": {
+            "type": "string"
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "draft"
+        ]
+      }
+    },
     "browser.input": {
       "mutating": true,
       "scope": "full",
@@ -10732,6 +11393,43 @@
       },
       "result": {
         "$ref": "#/$defs/BrowserSession"
+      }
+    },
+    "browser.pane.annotations": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "pane": {
+            "$ref": "#/$defs/Target"
+          },
+          "open": {
+            "type": "boolean"
+          },
+          "focus": {
+            "type": "boolean",
+            "default": true
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "open": {
+            "type": "boolean"
+          },
+          "split": {
+            "type": "string"
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "open"
+        ]
       }
     },
     "browser.pane.console": {
@@ -26734,6 +27432,9 @@
                   "failed"
                 ]
               },
+              "annotations": {
+                "type": "integer"
+              },
               "assistant": {
                 "type": "object",
                 "properties": {
@@ -34123,6 +34824,79 @@
         "required": [
           "tokens_removed",
           "elevations_removed"
+        ]
+      }
+    },
+    "browser.annotations_changed": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "draft": {
+            "type": "string"
+          },
+          "pane": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "draft"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "notes": {
+            "type": "integer"
+          },
+          "state": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "notes",
+          "state"
+        ]
+      }
+    },
+    "browser.annotations_sent": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "draft": {
+            "type": "string"
+          },
+          "pane": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "draft"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "via": {
+            "type": "string"
+          },
+          "agent_pane": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "notes": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "via",
+          "agent_pane",
+          "notes"
         ]
       }
     },

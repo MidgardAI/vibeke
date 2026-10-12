@@ -2,7 +2,7 @@
   "api": "vibeke/1",
   "status": "draft until 1.0",
   "rule": "frozen methods may not be removed and their mutating/scope/pane_scope flags may not change; additions are allowed",
-  "render_protocol": 8,
+  "render_protocol": 9,
   "holder_protocol": {
     "proto": 2,
     "min": 1
@@ -353,6 +353,46 @@
       "scope": "full",
       "pane_scope": "forbidden"
     },
+    "browser.annotate": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "browser.annotation_add": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "browser.annotation_pick": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "browser.annotation_remove": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "browser.annotation_update": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "browser.annotations": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "browser.annotations_clear": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "browser.annotations_send": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
     "browser.attach_screencast": {
       "mutating": true,
       "scope": "full",
@@ -398,6 +438,11 @@
       "scope": "pane",
       "pane_scope": "open"
     },
+    "browser.feedback": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
     "browser.input": {
       "mutating": true,
       "scope": "full",
@@ -427,6 +472,11 @@
       "mutating": true,
       "scope": "pane",
       "pane_scope": "open"
+    },
+    "browser.pane.annotations": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
     },
     "browser.pane.console": {
       "mutating": true,

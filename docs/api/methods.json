@@ -8,7 +8,7 @@
     "proto": 2,
     "min": 1
   },
-  "method_count": 451,
+  "method_count": 461,
   "methods": [
     {
       "name": "adapter.control",
@@ -977,6 +977,118 @@
       "result": "{count: int, bytes: int, by_source: object, path: string}"
     },
     {
+      "name": "browser.annotate",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "browser_pane::annotate"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{pane?: Target, session?: string, on?: bool = true}",
+      "result": "{on: bool, draft?: string}"
+    },
+    {
+      "name": "browser.annotation_add",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "browser_pane::annotate"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{target: AnnotationTarget, url: string, title?: string, viewport?: object, kind: element|region|page, selector?: string, role?: string, name?: string, text?: string, html?: string, rect?: AnnotationRect, covers?: [{selector: string, text?: string}], image_b64?: string, note?: string}",
+      "result": "{draft: AnnotationDraft, note: AnnotationNote}"
+    },
+    {
+      "name": "browser.annotation_pick",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "browser_pane::annotate"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{pane?: Target, session?: string, x: number, y: number, w?: number, h?: number}",
+      "result": "{draft: AnnotationDraft, note: AnnotationNote}"
+    },
+    {
+      "name": "browser.annotation_remove",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "browser_pane::annotate"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{draft: string, n: int}",
+      "result": "{draft: AnnotationDraft}"
+    },
+    {
+      "name": "browser.annotation_update",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "browser_pane::annotate"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{draft: string, n?: int, note?: string, page_note?: string}",
+      "result": "{draft: AnnotationDraft}"
+    },
+    {
+      "name": "browser.annotations",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "browser_pane::annotate"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{pane?: Target, session?: string, preview?: string, draft?: string}",
+      "result": "{draft: AnnotationDraft|null}"
+    },
+    {
+      "name": "browser.annotations_clear",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "browser_pane::annotate"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{draft: string}",
+      "result": "{cleared: bool}"
+    },
+    {
+      "name": "browser.annotations_send",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "browser_pane::annotate"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{draft: string, agent?: Target, copy_only?: bool}",
+      "result": "{state: delivered|queued|open, via?: feedback|typed|prompt|null, agent_pane?: string|null, text: string}"
+    },
+    {
       "name": "browser.attach_screencast",
       "mutating": true,
       "scope": "full",
@@ -1103,6 +1215,20 @@
       "result": "{session: string, value: any}"
     },
     {
+      "name": "browser.feedback",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "browser_pane::annotate"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{pane?: Target, wait_ms?: int = 0, wait?: int}",
+      "result": "{draft: AnnotationDraft|null, text?: string}"
+    },
+    {
       "name": "browser.input",
       "mutating": true,
       "scope": "full",
@@ -1185,6 +1311,20 @@
       "spec": null,
       "params": "{url?: string, preview?: string, machine?: string, device?: string, viewport?: string | {width?: int, height?: int, w?: int, h?: int}, dpr?: number, mobile?: bool, color_scheme?: string, dark?: bool, wait?: string, timeout_ms?: int}",
       "result": "BrowserSession"
+    },
+    {
+      "name": "browser.pane.annotations",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "browser_pane::annotate"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{pane?: Target, open?: bool, focus?: bool = true}",
+      "result": "{open: bool, split?: string}"
     },
     {
       "name": "browser.pane.console",
@@ -5013,7 +5153,7 @@
       "milestone": null,
       "spec": null,
       "params": "{pane?: Target, workspace?: Target, before?: string|int, all?: bool, dry_run?: bool = false, plan?: string, scrollback_only?: bool = false}",
-      "result": "{scope: any, pane_ids: [string]|null, plan: any, dry_run: bool, panes?: int, segments_deleted?: int, bytes_deleted?: int, fts_rows_deleted?: int, archive_panes_dropped?: int, assistant_purged?: int, scrollback_only?: bool, review?: ReviewPurge, also?: {items: int, collisions?: int, blobs: {screenshots: int, files: int}, uploads: {removed: int, kept_shared: int}, drafts: {drafts: int, notes: int, failed: int}, assistant: {purged: int|null, by: string}, desk: {calls: int, rows: int|null, errors?: [string]}, snapshots: int, events_tombstoned: int}, not_covered?: [string]}"
+      "result": "{scope: any, pane_ids: [string]|null, plan: any, dry_run: bool, panes?: int, segments_deleted?: int, bytes_deleted?: int, fts_rows_deleted?: int, archive_panes_dropped?: int, assistant_purged?: int, scrollback_only?: bool, review?: ReviewPurge, also?: {items: int, collisions?: int, blobs: {screenshots: int, files: int}, uploads: {removed: int, kept_shared: int}, drafts: {drafts: int, notes: int, failed: int}, annotations?: int, assistant: {purged: int|null, by: string}, desk: {calls: int, rows: int|null, errors?: [string]}, snapshots: int, events_tombstoned: int}, not_covered?: [string]}"
     },
     {
       "name": "status.segments",

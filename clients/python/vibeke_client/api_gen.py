@@ -221,6 +221,30 @@ class Api:
     async def blob_stats(self, params: "Optional[t.BlobStatsParams]" = None) -> "t.BlobStatsResult":
         return await self.call("blob.stats", params or {})  # type: ignore[arg-type, return-value]
 
+    async def browser_annotate(self, params: "Optional[t.BrowserAnnotateParams]" = None) -> "t.BrowserAnnotateResult":
+        return await self.call("browser.annotate", params or {})  # type: ignore[arg-type, return-value]
+
+    async def browser_annotation_add(self, params: "t.BrowserAnnotationAddParams") -> "t.BrowserAnnotationAddResult":
+        return await self.call("browser.annotation_add", params)  # type: ignore[arg-type, return-value]
+
+    async def browser_annotation_pick(self, params: "t.BrowserAnnotationPickParams") -> "t.BrowserAnnotationPickResult":
+        return await self.call("browser.annotation_pick", params)  # type: ignore[arg-type, return-value]
+
+    async def browser_annotation_remove(self, params: "t.BrowserAnnotationRemoveParams") -> "t.BrowserAnnotationRemoveResult":
+        return await self.call("browser.annotation_remove", params)  # type: ignore[arg-type, return-value]
+
+    async def browser_annotation_update(self, params: "t.BrowserAnnotationUpdateParams") -> "t.BrowserAnnotationUpdateResult":
+        return await self.call("browser.annotation_update", params)  # type: ignore[arg-type, return-value]
+
+    async def browser_annotations(self, params: "Optional[t.BrowserAnnotationsParams]" = None) -> "t.BrowserAnnotationsResult":
+        return await self.call("browser.annotations", params or {})  # type: ignore[arg-type, return-value]
+
+    async def browser_annotations_clear(self, params: "t.BrowserAnnotationsClearParams") -> "t.BrowserAnnotationsClearResult":
+        return await self.call("browser.annotations_clear", params)  # type: ignore[arg-type, return-value]
+
+    async def browser_annotations_send(self, params: "t.BrowserAnnotationsSendParams") -> "t.BrowserAnnotationsSendResult":
+        return await self.call("browser.annotations_send", params)  # type: ignore[arg-type, return-value]
+
     async def browser_attach_screencast(self, params: "Optional[t.BrowserAttachScreencastParams]" = None) -> "t.BrowserAttachScreencastResult":
         return await self.call("browser.attach_screencast", params or {})  # type: ignore[arg-type, return-value]
 
@@ -248,6 +272,9 @@ class Api:
     async def browser_eval(self, params: "Optional[t.BrowserEvalParams]" = None) -> "t.BrowserEvalResult":
         return await self.call("browser.eval", params or {})  # type: ignore[arg-type, return-value]
 
+    async def browser_feedback(self, params: "Optional[t.BrowserFeedbackParams]" = None) -> "t.BrowserFeedbackResult":
+        return await self.call("browser.feedback", params or {})  # type: ignore[arg-type, return-value]
+
     async def browser_input(self, params: "t.BrowserInputParams") -> "t.BrowserInputResult":
         return await self.call("browser.input", params)  # type: ignore[arg-type, return-value]
 
@@ -265,6 +292,9 @@ class Api:
 
     async def browser_open(self, params: "Optional[t.BrowserOpenParams]" = None) -> "t.BrowserOpenResult":
         return await self.call("browser.open", params or {})  # type: ignore[arg-type, return-value]
+
+    async def browser_pane_annotations(self, params: "Optional[t.BrowserPaneAnnotationsParams]" = None) -> "t.BrowserPaneAnnotationsResult":
+        return await self.call("browser.pane.annotations", params or {})  # type: ignore[arg-type, return-value]
 
     async def browser_pane_console(self, params: "Optional[t.BrowserPaneConsoleParams]" = None) -> "t.BrowserPaneConsoleResult":
         return await self.call("browser.pane.console", params or {})  # type: ignore[arg-type, return-value]

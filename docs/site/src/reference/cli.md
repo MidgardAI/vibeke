@@ -470,6 +470,10 @@ Use `--json` to print JSON. Non-terminal output also uses JSON.
 | `dom` | `<session>` | `browser.dom` | alias of snapshot |
 | `console` | `<session>` | `browser.console` | <session> [--level error\|warn\|all] [--since 5m] \| --pane <browser pane> [--follow] [--console\|--network] [--errors] (follow keys: c n e a q) |
 | `console-split` | `<pane>` | `browser.pane.console` | <browser pane> toggle the console/network split under it (prefix+alt+c) |
+| `annotate` | `<pane>` | `browser.annotate` | <browser pane> [--on\|--no-on] — annotate mode: click an element or shift-drag a region to add a note (prefix+alt+n) |
+| `annotations` | `<pane>` | `browser.annotations` | <browser pane> \| --session s \| --preview v \| --draft d — the page notes waiting to be sent |
+| `annotations-split` | `<pane>` | `browser.pane.annotations` | <browser pane> [--open\|--no-open] — toggle the notes panel under it |
+| `feedback` | - | `browser.feedback` | [--pane p] [--wait-ms N \| --wait SECONDS] — take the user's page notes addressed to this pane (waits for them) |
 | `viewport` | `<pane>` `<viewport>` | `browser.pane.update` | <browser pane> <WxH \| fit> \| --device iphone-15\|pixel-8\|ipad\|desktop-1280\|desktop-1440\|desktop-1920 — pin the page size (letterboxed) |
 | `network` | `<session>` | `browser.network` | <session> [--failed] [--since 5m] |
 | `close` | `<session>` | `browser.close` |  |

@@ -69,6 +69,70 @@ AgentSummary = TypedDict("AgentSummary", {
     "idle": int,
 })
 
+AnnotationDraftViewport = TypedDict("AnnotationDraftViewport", {
+    "w": int,
+    "h": int,
+    "dpr": NotRequired[float],
+    "device": NotRequired[str],
+})
+
+AnnotationDraft = TypedDict("AnnotationDraft", {
+    "id": str,
+    "workspace": NotRequired[str],
+    "target": "AnnotationTarget",
+    "agent_pane": NotRequired[Optional[str]],
+    "url": str,
+    "title": NotRequired[str],
+    "viewport": NotRequired["AnnotationDraftViewport"],
+    "notes": List["AnnotationNote"],
+    "page_note": NotRequired[Optional[str]],
+    "state": Literal["open", "queued", "delivered"],
+    "via": NotRequired[Literal["feedback", "typed", "prompt"]],
+    "detail": NotRequired[str],
+    "updated_at_ms": int,
+    "delivered_at_ms": NotRequired[int],
+})
+
+AnnotationNoteCoversItem = TypedDict("AnnotationNoteCoversItem", {
+    "selector": str,
+    "text": NotRequired[str],
+})
+
+AnnotationNote = TypedDict("AnnotationNote", {
+    "n": int,
+    "kind": Literal["element", "region", "page"],
+    "selector": NotRequired[str],
+    "role": NotRequired[str],
+    "name": NotRequired[str],
+    "text": NotRequired[str],
+    "html": NotRequired[str],
+    "rect": NotRequired["AnnotationRect"],
+    "covers": NotRequired[List["AnnotationNoteCoversItem"]],
+    "image": NotRequired[str],
+    "note": str,
+})
+
+AnnotationRect = TypedDict("AnnotationRect", {
+    "x": float,
+    "y": float,
+    "w": float,
+    "h": float,
+})
+
+AnnotationTargetXV0 = TypedDict("AnnotationTargetXV0", {
+    "pane": str,
+})
+
+AnnotationTargetXV1 = TypedDict("AnnotationTargetXV1", {
+    "session": str,
+})
+
+AnnotationTargetXV2 = TypedDict("AnnotationTargetXV2", {
+    "preview": str,
+})
+
+AnnotationTarget: TypeAlias = Union["AnnotationTargetXV0", "AnnotationTargetXV1", "AnnotationTargetXV2"]
+
 Answer = TypedDict("Answer", {
     "decision": Optional[Union[Literal["allow"], Literal["allow_always"], Literal["deny"], Literal["cancel"], str]],
     "choices": NotRequired[List[Any]],
@@ -2191,6 +2255,117 @@ BlobStatsResult = TypedDict("BlobStatsResult", {
     "path": str,
 })
 
+BrowserAnnotateParams = TypedDict("BrowserAnnotateParams", {
+    "pane": NotRequired["Target"],
+    "session": NotRequired[str],
+    "on": NotRequired[bool],
+})
+
+BrowserAnnotateResult = TypedDict("BrowserAnnotateResult", {
+    "on": bool,
+    "draft": NotRequired[str],
+    "cursor": NotRequired["Cursor"],
+})
+
+BrowserAnnotationAddParamsCoversItem = TypedDict("BrowserAnnotationAddParamsCoversItem", {
+    "selector": str,
+    "text": NotRequired[str],
+})
+
+BrowserAnnotationAddParams = TypedDict("BrowserAnnotationAddParams", {
+    "target": "AnnotationTarget",
+    "url": str,
+    "title": NotRequired[str],
+    "viewport": NotRequired[Dict[str, Any]],
+    "kind": Literal["element", "region", "page"],
+    "selector": NotRequired[str],
+    "role": NotRequired[str],
+    "name": NotRequired[str],
+    "text": NotRequired[str],
+    "html": NotRequired[str],
+    "rect": NotRequired["AnnotationRect"],
+    "covers": NotRequired[List["BrowserAnnotationAddParamsCoversItem"]],
+    "image_b64": NotRequired[str],
+    "note": NotRequired[str],
+})
+
+BrowserAnnotationAddResult = TypedDict("BrowserAnnotationAddResult", {
+    "draft": "AnnotationDraft",
+    "note": "AnnotationNote",
+    "cursor": NotRequired["Cursor"],
+})
+
+BrowserAnnotationPickParams = TypedDict("BrowserAnnotationPickParams", {
+    "pane": NotRequired["Target"],
+    "session": NotRequired[str],
+    "x": float,
+    "y": float,
+    "w": NotRequired[float],
+    "h": NotRequired[float],
+})
+
+BrowserAnnotationPickResult = TypedDict("BrowserAnnotationPickResult", {
+    "draft": "AnnotationDraft",
+    "note": "AnnotationNote",
+    "cursor": NotRequired["Cursor"],
+})
+
+BrowserAnnotationRemoveParams = TypedDict("BrowserAnnotationRemoveParams", {
+    "draft": str,
+    "n": int,
+})
+
+BrowserAnnotationRemoveResult = TypedDict("BrowserAnnotationRemoveResult", {
+    "draft": "AnnotationDraft",
+    "cursor": NotRequired["Cursor"],
+})
+
+BrowserAnnotationUpdateParams = TypedDict("BrowserAnnotationUpdateParams", {
+    "draft": str,
+    "n": NotRequired[int],
+    "note": NotRequired[str],
+    "page_note": NotRequired[str],
+})
+
+BrowserAnnotationUpdateResult = TypedDict("BrowserAnnotationUpdateResult", {
+    "draft": "AnnotationDraft",
+    "cursor": NotRequired["Cursor"],
+})
+
+BrowserAnnotationsParams = TypedDict("BrowserAnnotationsParams", {
+    "pane": NotRequired["Target"],
+    "session": NotRequired[str],
+    "preview": NotRequired[str],
+    "draft": NotRequired[str],
+})
+
+BrowserAnnotationsResult = TypedDict("BrowserAnnotationsResult", {
+    "draft": Optional["AnnotationDraft"],
+})
+
+BrowserAnnotationsClearParams = TypedDict("BrowserAnnotationsClearParams", {
+    "draft": str,
+})
+
+BrowserAnnotationsClearResult = TypedDict("BrowserAnnotationsClearResult", {
+    "cleared": bool,
+    "cursor": NotRequired["Cursor"],
+})
+
+BrowserAnnotationsSendParams = TypedDict("BrowserAnnotationsSendParams", {
+    "draft": str,
+    "agent": NotRequired["Target"],
+    "copy_only": NotRequired[bool],
+})
+
+BrowserAnnotationsSendResult = TypedDict("BrowserAnnotationsSendResult", {
+    "state": Literal["delivered", "queued", "open"],
+    "via": NotRequired[Optional[Union[Literal["feedback"], Literal["typed"], Literal["prompt"]]]],
+    "agent_pane": NotRequired[Optional[str]],
+    "text": str,
+    "cursor": NotRequired["Cursor"],
+})
+
 BrowserAttachScreencastParams = TypedDict("BrowserAttachScreencastParams", {
     "session": NotRequired[str],
     "browser_session": NotRequired[str],
@@ -2436,6 +2611,18 @@ BrowserEvalResult = TypedDict("BrowserEvalResult", {
     "cursor": NotRequired["Cursor"],
 })
 
+BrowserFeedbackParams = TypedDict("BrowserFeedbackParams", {
+    "pane": NotRequired["Target"],
+    "wait_ms": NotRequired[int],
+    "wait": NotRequired[int],
+})
+
+BrowserFeedbackResult = TypedDict("BrowserFeedbackResult", {
+    "draft": Optional["AnnotationDraft"],
+    "text": NotRequired[str],
+    "cursor": NotRequired["Cursor"],
+})
+
 BrowserInputParamsEventsItemV0PointsItem = TypedDict("BrowserInputParamsEventsItemV0PointsItem", {
     "id": NotRequired[int],
     "x": float,
@@ -2652,6 +2839,18 @@ BrowserOpenParams = TypedDict("BrowserOpenParams", {
 })
 
 BrowserOpenResult: TypeAlias = "BrowserSession"
+
+BrowserPaneAnnotationsParams = TypedDict("BrowserPaneAnnotationsParams", {
+    "pane": NotRequired["Target"],
+    "open": NotRequired[bool],
+    "focus": NotRequired[bool],
+})
+
+BrowserPaneAnnotationsResult = TypedDict("BrowserPaneAnnotationsResult", {
+    "open": bool,
+    "split": NotRequired[str],
+    "cursor": NotRequired["Cursor"],
+})
 
 BrowserPaneConsoleParams = TypedDict("BrowserPaneConsoleParams", {
     "pane": NotRequired["Target"],
@@ -7083,6 +7282,7 @@ StateForgetResultAlso = TypedDict("StateForgetResultAlso", {
     "blobs": "StateForgetResultAlsoBlobs",
     "uploads": "StateForgetResultAlsoUploads",
     "drafts": "StateForgetResultAlsoDrafts",
+    "annotations": NotRequired[int],
     "assistant": "StateForgetResultAlsoAssistant",
     "desk": "StateForgetResultAlsoDesk",
     "snapshots": int,
@@ -8756,6 +8956,14 @@ METHODS: Dict[str, Dict[str, Any]] = {
     "blob.put": {"mutating": True, "scope": "pane", "pane_scope": "open"},
     "blob.stat": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "blob.stats": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
+    "browser.annotate": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "browser.annotation_add": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "browser.annotation_pick": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "browser.annotation_remove": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "browser.annotation_update": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "browser.annotations": {"mutating": False, "scope": "pane", "pane_scope": "open"},
+    "browser.annotations_clear": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "browser.annotations_send": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "browser.attach_screencast": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "browser.click": {"mutating": True, "scope": "pane", "pane_scope": "open"},
     "browser.close": {"mutating": True, "scope": "pane", "pane_scope": "open"},
@@ -8765,12 +8973,14 @@ METHODS: Dict[str, Dict[str, Any]] = {
     "browser.diff": {"mutating": True, "scope": "pane", "pane_scope": "open"},
     "browser.dom": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "browser.eval": {"mutating": True, "scope": "pane", "pane_scope": "open"},
+    "browser.feedback": {"mutating": True, "scope": "pane", "pane_scope": "open"},
     "browser.input": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "browser.install": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "browser.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "browser.navigate": {"mutating": True, "scope": "pane", "pane_scope": "open"},
     "browser.network": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "browser.open": {"mutating": True, "scope": "pane", "pane_scope": "open"},
+    "browser.pane.annotations": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "browser.pane.console": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "browser.pane.console_push": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "browser.pane.create": {"mutating": True, "scope": "pane", "pane_scope": "open"},
@@ -9586,6 +9796,27 @@ AuthTokenRevokedSubject = TypedDict("AuthTokenRevokedSubject", {
 AuthTokenRevokedData = TypedDict("AuthTokenRevokedData", {
     "tokens_removed": int,
     "elevations_removed": int,
+})
+
+BrowserAnnotationsChangedSubject = TypedDict("BrowserAnnotationsChangedSubject", {
+    "draft": str,
+    "pane": NotRequired[str],
+})
+
+BrowserAnnotationsChangedData = TypedDict("BrowserAnnotationsChangedData", {
+    "notes": int,
+    "state": str,
+})
+
+BrowserAnnotationsSentSubject = TypedDict("BrowserAnnotationsSentSubject", {
+    "draft": str,
+    "pane": NotRequired[str],
+})
+
+BrowserAnnotationsSentData = TypedDict("BrowserAnnotationsSentData", {
+    "via": str,
+    "agent_pane": Optional[str],
+    "notes": int,
 })
 
 BrowserNavigatedSubject = TypedDict("BrowserNavigatedSubject", {
@@ -12028,6 +12259,8 @@ EVENT_TYPES = (
     "auth.elevate_granted",
     "auth.elevate_requested",
     "auth.token_revoked",
+    "browser.annotations_changed",
+    "browser.annotations_sent",
     "browser.navigated",
     "browser.viewport_changed",
     "check.authorized",

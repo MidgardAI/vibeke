@@ -68,6 +68,60 @@ export type AgentSummary = {
   idle: number;
 };
 
+export type AnnotationDraft = {
+  id: string;
+  workspace?: string;
+  target: AnnotationTarget;
+  agent_pane?: string | null;
+  url: string;
+  title?: string;
+  viewport?: {
+    w: number;
+    h: number;
+    dpr?: number;
+    device?: string;
+  };
+  notes: AnnotationNote[];
+  page_note?: string | null;
+  state: "open" | "queued" | "delivered";
+  via?: "feedback" | "typed" | "prompt";
+  detail?: string;
+  updated_at_ms: number;
+  delivered_at_ms?: number;
+};
+
+export type AnnotationNote = {
+  n: number;
+  kind: "element" | "region" | "page";
+  selector?: string;
+  role?: string;
+  name?: string;
+  text?: string;
+  html?: string;
+  rect?: AnnotationRect;
+  covers?: {
+    selector: string;
+    text?: string;
+  }[];
+  image?: string;
+  note: string;
+};
+
+export type AnnotationRect = {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+};
+
+export type AnnotationTarget = {
+  pane: string;
+} | {
+  session: string;
+} | {
+  preview: string;
+};
+
 export type Answer = {
   decision: "allow" | "allow_always" | "deny" | "cancel" | string | null;
   choices?: unknown[];
@@ -2060,6 +2114,115 @@ export type BlobStatsResult = {
   path: string;
 };
 
+export type BrowserAnnotateParams = {
+  pane?: Target;
+  session?: string;
+  on?: boolean;
+};
+
+export type BrowserAnnotateResult = {
+  on: boolean;
+  draft?: string;
+  cursor?: Cursor;
+};
+
+export type BrowserAnnotationAddParams = {
+  target: AnnotationTarget;
+  url: string;
+  title?: string;
+  viewport?: Record<string, unknown>;
+  kind: "element" | "region" | "page";
+  selector?: string;
+  role?: string;
+  name?: string;
+  text?: string;
+  html?: string;
+  rect?: AnnotationRect;
+  covers?: {
+    selector: string;
+    text?: string;
+  }[];
+  image_b64?: string;
+  note?: string;
+};
+
+export type BrowserAnnotationAddResult = {
+  draft: AnnotationDraft;
+  note: AnnotationNote;
+  cursor?: Cursor;
+};
+
+export type BrowserAnnotationPickParams = {
+  pane?: Target;
+  session?: string;
+  x: number;
+  y: number;
+  w?: number;
+  h?: number;
+};
+
+export type BrowserAnnotationPickResult = {
+  draft: AnnotationDraft;
+  note: AnnotationNote;
+  cursor?: Cursor;
+};
+
+export type BrowserAnnotationRemoveParams = {
+  draft: string;
+  n: number;
+};
+
+export type BrowserAnnotationRemoveResult = {
+  draft: AnnotationDraft;
+  cursor?: Cursor;
+};
+
+export type BrowserAnnotationUpdateParams = {
+  draft: string;
+  n?: number;
+  note?: string;
+  page_note?: string;
+};
+
+export type BrowserAnnotationUpdateResult = {
+  draft: AnnotationDraft;
+  cursor?: Cursor;
+};
+
+export type BrowserAnnotationsParams = {
+  pane?: Target;
+  session?: string;
+  preview?: string;
+  draft?: string;
+};
+
+export type BrowserAnnotationsResult = {
+  draft: AnnotationDraft | null;
+};
+
+export type BrowserAnnotationsClearParams = {
+  draft: string;
+};
+
+export type BrowserAnnotationsClearResult = {
+  cleared: boolean;
+  cursor?: Cursor;
+};
+
+export type BrowserAnnotationsSendParams = {
+  draft: string;
+  agent?: Target;
+  copy_only?: boolean;
+};
+
+export type BrowserAnnotationsSendResult = {
+  state: "delivered" | "queued" | "open";
+  via?: "feedback" | "typed" | "prompt" | null;
+  agent_pane?: string | null;
+  text: string;
+  cursor?: Cursor;
+};
+
 export type BrowserAttachScreencastParams = {
   session?: string;
   browser_session?: string;
@@ -2277,6 +2440,18 @@ export type BrowserEvalResult = {
   cursor?: Cursor;
 };
 
+export type BrowserFeedbackParams = {
+  pane?: Target;
+  wait_ms?: number;
+  wait?: number;
+};
+
+export type BrowserFeedbackResult = {
+  draft: AnnotationDraft | null;
+  text?: string;
+  cursor?: Cursor;
+};
+
 export type BrowserInputParams = {
   session?: string;
   browser_session?: string;
@@ -2455,6 +2630,18 @@ export type BrowserOpenParams = {
 };
 
 export type BrowserOpenResult = BrowserSession;
+
+export type BrowserPaneAnnotationsParams = {
+  pane?: Target;
+  open?: boolean;
+  focus?: boolean;
+};
+
+export type BrowserPaneAnnotationsResult = {
+  open: boolean;
+  split?: string;
+  cursor?: Cursor;
+};
 
 export type BrowserPaneConsoleParams = {
   pane?: Target;
@@ -6574,6 +6761,7 @@ export type StateForgetResult = {
       notes: number;
       failed: number;
     };
+    annotations?: number;
     assistant: {
       purged: number | null;
       by: string;
@@ -8119,6 +8307,14 @@ export interface Methods {
   "blob.put": { params: BlobPutParams; result: BlobPutResult };
   "blob.stat": { params: BlobStatParams; result: BlobStatResult };
   "blob.stats": { params: BlobStatsParams; result: BlobStatsResult };
+  "browser.annotate": { params: BrowserAnnotateParams; result: BrowserAnnotateResult };
+  "browser.annotation_add": { params: BrowserAnnotationAddParams; result: BrowserAnnotationAddResult };
+  "browser.annotation_pick": { params: BrowserAnnotationPickParams; result: BrowserAnnotationPickResult };
+  "browser.annotation_remove": { params: BrowserAnnotationRemoveParams; result: BrowserAnnotationRemoveResult };
+  "browser.annotation_update": { params: BrowserAnnotationUpdateParams; result: BrowserAnnotationUpdateResult };
+  "browser.annotations": { params: BrowserAnnotationsParams; result: BrowserAnnotationsResult };
+  "browser.annotations_clear": { params: BrowserAnnotationsClearParams; result: BrowserAnnotationsClearResult };
+  "browser.annotations_send": { params: BrowserAnnotationsSendParams; result: BrowserAnnotationsSendResult };
   "browser.attach_screencast": { params: BrowserAttachScreencastParams; result: BrowserAttachScreencastResult };
   "browser.click": { params: BrowserClickParams; result: BrowserClickResult };
   "browser.close": { params: BrowserCloseParams; result: BrowserCloseResult };
@@ -8128,12 +8324,14 @@ export interface Methods {
   "browser.diff": { params: BrowserDiffParams; result: BrowserDiffResult };
   "browser.dom": { params: BrowserDomParams; result: BrowserDomResult };
   "browser.eval": { params: BrowserEvalParams; result: BrowserEvalResult };
+  "browser.feedback": { params: BrowserFeedbackParams; result: BrowserFeedbackResult };
   "browser.input": { params: BrowserInputParams; result: BrowserInputResult };
   "browser.install": { params: BrowserInstallParams; result: BrowserInstallResult };
   "browser.list": { params: BrowserListParams; result: BrowserListResult };
   "browser.navigate": { params: BrowserNavigateParams; result: BrowserNavigateResult };
   "browser.network": { params: BrowserNetworkParams; result: BrowserNetworkResult };
   "browser.open": { params: BrowserOpenParams; result: BrowserOpenResult };
+  "browser.pane.annotations": { params: BrowserPaneAnnotationsParams; result: BrowserPaneAnnotationsResult };
   "browser.pane.console": { params: BrowserPaneConsoleParams; result: BrowserPaneConsoleResult };
   "browser.pane.console_push": { params: BrowserPaneConsolePushParams; result: BrowserPaneConsolePushResult };
   "browser.pane.create": { params: BrowserPaneCreateParams; result: BrowserPaneCreateResult };
@@ -8576,6 +8774,14 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "blob.put": { mutating: true, scope: "pane", paneScope: "open" },
   "blob.stat": { mutating: false, scope: "pane", paneScope: "open" },
   "blob.stats": { mutating: false, scope: "full", paneScope: "forbidden" },
+  "browser.annotate": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "browser.annotation_add": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "browser.annotation_pick": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "browser.annotation_remove": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "browser.annotation_update": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "browser.annotations": { mutating: false, scope: "pane", paneScope: "open" },
+  "browser.annotations_clear": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "browser.annotations_send": { mutating: true, scope: "full", paneScope: "forbidden" },
   "browser.attach_screencast": { mutating: true, scope: "full", paneScope: "forbidden" },
   "browser.click": { mutating: true, scope: "pane", paneScope: "open" },
   "browser.close": { mutating: true, scope: "pane", paneScope: "open" },
@@ -8585,12 +8791,14 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "browser.diff": { mutating: true, scope: "pane", paneScope: "open" },
   "browser.dom": { mutating: false, scope: "pane", paneScope: "open" },
   "browser.eval": { mutating: true, scope: "pane", paneScope: "open" },
+  "browser.feedback": { mutating: true, scope: "pane", paneScope: "open" },
   "browser.input": { mutating: true, scope: "full", paneScope: "forbidden" },
   "browser.install": { mutating: true, scope: "full", paneScope: "forbidden" },
   "browser.list": { mutating: false, scope: "pane", paneScope: "open" },
   "browser.navigate": { mutating: true, scope: "pane", paneScope: "open" },
   "browser.network": { mutating: false, scope: "pane", paneScope: "open" },
   "browser.open": { mutating: true, scope: "pane", paneScope: "open" },
+  "browser.pane.annotations": { mutating: true, scope: "full", paneScope: "forbidden" },
   "browser.pane.console": { mutating: true, scope: "full", paneScope: "forbidden" },
   "browser.pane.console_push": { mutating: true, scope: "full", paneScope: "forbidden" },
   "browser.pane.create": { mutating: true, scope: "pane", paneScope: "open" },
@@ -9404,6 +9612,27 @@ export type AuthTokenRevokedSubject = {
 export type AuthTokenRevokedData = {
   tokens_removed: number;
   elevations_removed: number;
+};
+
+export type BrowserAnnotationsChangedSubject = {
+  draft: string;
+  pane?: string;
+};
+
+export type BrowserAnnotationsChangedData = {
+  notes: number;
+  state: string;
+};
+
+export type BrowserAnnotationsSentSubject = {
+  draft: string;
+  pane?: string;
+};
+
+export type BrowserAnnotationsSentData = {
+  via: string;
+  agent_pane: string | null;
+  notes: number;
 };
 
 export type BrowserNavigatedSubject = {
@@ -11828,6 +12057,8 @@ export interface EventMap {
   "auth.elevate_granted": { subject: AuthElevateGrantedSubject; data: AuthElevateGrantedData };
   "auth.elevate_requested": { subject: AuthElevateRequestedSubject; data: AuthElevateRequestedData };
   "auth.token_revoked": { subject: AuthTokenRevokedSubject; data: AuthTokenRevokedData };
+  "browser.annotations_changed": { subject: BrowserAnnotationsChangedSubject; data: BrowserAnnotationsChangedData };
+  "browser.annotations_sent": { subject: BrowserAnnotationsSentSubject; data: BrowserAnnotationsSentData };
   "browser.navigated": { subject: BrowserNavigatedSubject; data: BrowserNavigatedData };
   "browser.viewport_changed": { subject: BrowserViewportChangedSubject; data: BrowserViewportChangedData };
   "check.authorized": { subject: CheckAuthorizedSubject; data: CheckAuthorizedData };
