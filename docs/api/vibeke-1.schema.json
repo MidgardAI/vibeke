@@ -335,7 +335,9 @@
           "enum": [
             "open",
             "queued",
-            "delivered"
+            "sending",
+            "delivered",
+            "unconfirmed"
           ]
         },
         "via": {
@@ -9673,6 +9675,8 @@
             "type": "string",
             "enum": [
               "delivered",
+              "sending",
+              "unconfirmed",
               "queued",
               "open"
             ]

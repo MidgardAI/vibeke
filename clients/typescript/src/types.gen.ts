@@ -83,7 +83,7 @@ export type AnnotationDraft = {
   };
   notes: AnnotationNote[];
   page_note?: string | null;
-  state: "open" | "queued" | "delivered";
+  state: "open" | "queued" | "sending" | "delivered" | "unconfirmed";
   via?: "feedback" | "typed" | "prompt";
   detail?: string;
   updated_at_ms: number;
@@ -2216,7 +2216,7 @@ export type BrowserAnnotationsSendParams = {
 };
 
 export type BrowserAnnotationsSendResult = {
-  state: "delivered" | "queued" | "open";
+  state: "delivered" | "sending" | "unconfirmed" | "queued" | "open";
   via?: "feedback" | "typed" | "prompt" | null;
   agent_pane?: string | null;
   text: string;

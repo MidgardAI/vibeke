@@ -86,7 +86,7 @@ AnnotationDraft = TypedDict("AnnotationDraft", {
     "viewport": NotRequired["AnnotationDraftViewport"],
     "notes": List["AnnotationNote"],
     "page_note": NotRequired[Optional[str]],
-    "state": Literal["open", "queued", "delivered"],
+    "state": Literal["open", "queued", "sending", "delivered", "unconfirmed"],
     "via": NotRequired[Literal["feedback", "typed", "prompt"]],
     "detail": NotRequired[str],
     "updated_at_ms": int,
@@ -2359,7 +2359,7 @@ BrowserAnnotationsSendParams = TypedDict("BrowserAnnotationsSendParams", {
 })
 
 BrowserAnnotationsSendResult = TypedDict("BrowserAnnotationsSendResult", {
-    "state": Literal["delivered", "queued", "open"],
+    "state": Literal["delivered", "sending", "unconfirmed", "queued", "open"],
     "via": NotRequired[Optional[Union[Literal["feedback"], Literal["typed"], Literal["prompt"]]]],
     "agent_pane": NotRequired[Optional[str]],
     "text": str,

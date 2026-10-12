@@ -1086,7 +1086,7 @@
       "milestone": null,
       "spec": null,
       "params": "{draft: string, agent?: Target, copy_only?: bool}",
-      "result": "{state: delivered|queued|open, via?: feedback|typed|prompt|null, agent_pane?: string|null, text: string}"
+      "result": "{state: delivered|sending|unconfirmed|queued|open, via?: feedback|typed|prompt|null, agent_pane?: string|null, text: string}"
     },
     {
       "name": "browser.attach_screencast",
