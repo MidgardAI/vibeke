@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <a href="https://vibeke.dev">vibeke.dev</a> · <a href="#install">install</a> · <a href="https://vibeke.dev/docs/quickstart">quickstart</a> · <a href="https://vibeke.dev/docs">docs</a> · <a href="spec/">design specs</a>
+  <a href="https://vibeke.dev">vibeke.dev</a> · <a href="#install">install</a> · <a href="https://vibeke.dev/docs/quickstart">quickstart</a> · <a href="https://vibeke.dev/docs">docs</a>
 </p>
 
 <p align="center">
