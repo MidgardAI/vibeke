@@ -266,12 +266,23 @@ Clients must accept new fields and event types. The API can change before versio
 | `machine.list` | Read | Pane |
 | `machine.remove` | Write | Full |
 | `machine.upsert` | Write | Full |
+| `mention.clear` | Write | Own panes |
+| `mention.list` | Read | Pane |
+| `mention.set` | Write | Own panes |
+| `mention.suggest` | Read | Pane |
 | `merge.predict` | Read | Pane |
 | `merge.queue.add` | Write | Full |
 | `merge.queue.cancel` | Write | Full |
 | `merge.queue.list` | Read | Pane |
 | `merge.queue.requeue` | Write | Full |
 | `merge.queue.run` | Write | Full |
+| `message.cancel` | Write | Pane |
+| `message.complete` | Write | Pane |
+| `message.get` | Read | Pane |
+| `message.list` | Read | Own panes |
+| `message.reply` | Write | Pane |
+| `message.retry` | Write | Full |
+| `message.send` | Write | Pane |
 | `notes.get` | Read | Pane |
 | `notes.set` | Write | Pane |
 | `notification.config` | Read | Pane |

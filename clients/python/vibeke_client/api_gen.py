@@ -683,6 +683,18 @@ class Api:
     async def machine_upsert(self, params: "t.MachineUpsertParams") -> "t.MachineUpsertResult":
         return await self.call("machine.upsert", params)  # type: ignore[arg-type, return-value]
 
+    async def mention_clear(self, params: "Optional[t.MentionClearParams]" = None) -> "t.MentionClearResult":
+        return await self.call("mention.clear", params or {})  # type: ignore[arg-type, return-value]
+
+    async def mention_list(self, params: "Optional[t.MentionListParams]" = None) -> "t.MentionListResult":
+        return await self.call("mention.list", params or {})  # type: ignore[arg-type, return-value]
+
+    async def mention_set(self, params: "Optional[t.MentionSetParams]" = None) -> "t.MentionSetResult":
+        return await self.call("mention.set", params or {})  # type: ignore[arg-type, return-value]
+
+    async def mention_suggest(self, params: "Optional[t.MentionSuggestParams]" = None) -> "t.MentionSuggestResult":
+        return await self.call("mention.suggest", params or {})  # type: ignore[arg-type, return-value]
+
     async def merge_predict(self, params: "Optional[t.MergePredictParams]" = None) -> "t.MergePredictResult":
         return await self.call("merge.predict", params or {})  # type: ignore[arg-type, return-value]
 
@@ -700,6 +712,27 @@ class Api:
 
     async def merge_queue_run(self, params: "Optional[t.MergeQueueRunParams]" = None) -> "t.MergeQueueRunResult":
         return await self.call("merge.queue.run", params or {})  # type: ignore[arg-type, return-value]
+
+    async def message_cancel(self, params: "t.MessageCancelParams") -> "t.MessageCancelResult":
+        return await self.call("message.cancel", params)  # type: ignore[arg-type, return-value]
+
+    async def message_complete(self, params: "t.MessageCompleteParams") -> "t.MessageCompleteResult":
+        return await self.call("message.complete", params)  # type: ignore[arg-type, return-value]
+
+    async def message_get(self, params: "t.MessageGetParams") -> "t.MessageGetResult":
+        return await self.call("message.get", params)  # type: ignore[arg-type, return-value]
+
+    async def message_list(self, params: "Optional[t.MessageListParams]" = None) -> "t.MessageListResult":
+        return await self.call("message.list", params or {})  # type: ignore[arg-type, return-value]
+
+    async def message_reply(self, params: "t.MessageReplyParams") -> "t.MessageReplyResult":
+        return await self.call("message.reply", params)  # type: ignore[arg-type, return-value]
+
+    async def message_retry(self, params: "t.MessageRetryParams") -> "t.MessageRetryResult":
+        return await self.call("message.retry", params)  # type: ignore[arg-type, return-value]
+
+    async def message_send(self, params: "t.MessageSendParams") -> "t.MessageSendResult":
+        return await self.call("message.send", params)  # type: ignore[arg-type, return-value]
 
     async def notes_get(self, params: "Optional[t.NotesGetParams]" = None) -> "t.NotesGetResult":
         return await self.call("notes.get", params or {})  # type: ignore[arg-type, return-value]

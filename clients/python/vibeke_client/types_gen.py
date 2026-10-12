@@ -581,6 +581,63 @@ MaterializedFile = TypedDict("MaterializedFile", {
     "error": NotRequired[Optional[str]],
 })
 
+MentionAuthor = TypedDict("MentionAuthor", {
+    "kind": Literal["human", "agent"],
+    "pane": Optional[str],
+    "name": NotRequired[Optional[str]],
+})
+
+MentionDelivery = TypedDict("MentionDelivery", {
+    "id": str,
+    "message": str,
+    "name": str,
+    "pane": str,
+    "state": Literal["queued", "submitted", "delivered", "replied", "completed", "held", "failed", "cancelled"],
+    "reason": Optional[str],
+    "expects_reply": bool,
+    "reply": Optional[str],
+    "updated_at_ms": int,
+})
+
+MentionEntry = TypedDict("MentionEntry", {
+    "name": str,
+    "workspace": str,
+    "pane": str,
+    "kind": Literal["agent", "terminal"],
+    "delivery": bool,
+    "created_at_ms": int,
+    "pane_handle": Optional[str],
+    "label": str,
+    "harness": Optional[str],
+    "state": Literal["idle", "busy", "needs_input", "exited", "shell"],
+})
+
+MentionMessage = TypedDict("MentionMessage", {
+    "id": str,
+    "thread": str,
+    "workspace": str,
+    "from": "MentionAuthor",
+    "to": List[str],
+    "body": str,
+    "in_reply_to": Optional[str],
+    "hop": int,
+    "sent_at_ms": int,
+})
+
+MentionName = TypedDict("MentionName", {
+    "name": str,
+    "workspace": str,
+    "pane": str,
+    "kind": Literal["agent", "terminal"],
+    "delivery": bool,
+    "created_at_ms": int,
+})
+
+MentionThreadItem = TypedDict("MentionThreadItem", {
+    "message": "MentionMessage",
+    "deliveries": List["MentionDelivery"],
+})
+
 Notification = TypedDict("Notification", {
     "id": str,
     "kind": str,
@@ -4925,6 +4982,52 @@ MachineUpsertResult = TypedDict("MachineUpsertResult", {
     "cursor": "Cursor",
 })
 
+MentionClearParams = TypedDict("MentionClearParams", {
+    "pane": NotRequired["Target"],
+})
+
+MentionClearResult = TypedDict("MentionClearResult", {
+    "cursor": NotRequired["Cursor"],
+})
+
+MentionListParams = TypedDict("MentionListParams", {
+    "workspace": NotRequired["Target"],
+    "unnamed": NotRequired[bool],
+})
+
+MentionListResultUnnamedItem = TypedDict("MentionListResultUnnamedItem", {
+    "pane": str,
+    "pane_handle": str,
+    "workspace": str,
+    "suggested": str,
+    "label": str,
+    "harness": Optional[str],
+    "state": Literal["idle", "busy", "needs_input", "exited", "shell"],
+})
+
+MentionListResult = TypedDict("MentionListResult", {
+    "mentions": List["MentionEntry"],
+    "unnamed": NotRequired[List["MentionListResultUnnamedItem"]],
+})
+
+MentionSetParams = TypedDict("MentionSetParams", {
+    "pane": NotRequired["Target"],
+    "name": NotRequired[str],
+    "kind": NotRequired[Literal["agent", "terminal"]],
+    "delivery": NotRequired[bool],
+})
+
+MentionSetResult: TypeAlias = "MentionName"
+
+MentionSuggestParams = TypedDict("MentionSuggestParams", {
+    "pane": NotRequired["Target"],
+})
+
+MentionSuggestResult = TypedDict("MentionSuggestResult", {
+    "name": str,
+    "named": bool,
+})
+
 MergePredictParams = TypedDict("MergePredictParams", {
     "repo": NotRequired[str],
     "tasks": NotRequired[List[str]],
@@ -5005,6 +5108,65 @@ MergeQueueRunResult = TypedDict("MergeQueueRunResult", {
     "results": List["MergeQueueRunResultResultsItem"],
     "cursor": NotRequired["Cursor"],
 })
+
+MessageCancelParams = TypedDict("MessageCancelParams", {
+    "delivery": str,
+})
+
+MessageCancelResult = TypedDict("MessageCancelResult", {
+    "cursor": NotRequired["Cursor"],
+})
+
+MessageCompleteParams = TypedDict("MessageCompleteParams", {
+    "message": str,
+    "pane": NotRequired["Target"],
+})
+
+MessageCompleteResult = TypedDict("MessageCompleteResult", {
+    "cursor": NotRequired["Cursor"],
+})
+
+MessageGetParams = TypedDict("MessageGetParams", {
+    "id": str,
+})
+
+MessageGetResult: TypeAlias = "MentionThreadItem"
+
+MessageListParams = TypedDict("MessageListParams", {
+    "pane": NotRequired["Target"],
+    "direction": NotRequired[Literal["in", "out", "all"]],
+    "open_only": NotRequired[bool],
+    "limit": NotRequired[int],
+})
+
+MessageListResult = TypedDict("MessageListResult", {
+    "items": List["MentionThreadItem"],
+})
+
+MessageReplyParams = TypedDict("MessageReplyParams", {
+    "message": str,
+    "body": str,
+    "pane": NotRequired["Target"],
+})
+
+MessageReplyResult: TypeAlias = "MentionThreadItem"
+
+MessageRetryParams = TypedDict("MessageRetryParams", {
+    "delivery": str,
+})
+
+MessageRetryResult = TypedDict("MessageRetryResult", {
+    "cursor": NotRequired["Cursor"],
+})
+
+MessageSendParams = TypedDict("MessageSendParams", {
+    "to": List[str],
+    "body": str,
+    "expects_reply": NotRequired[bool],
+    "workspace": NotRequired["Target"],
+})
+
+MessageSendResult: TypeAlias = "MentionThreadItem"
 
 NotesGetParams = TypedDict("NotesGetParams", {
     "workspace": NotRequired["Target"],
@@ -8746,12 +8908,23 @@ METHODS: Dict[str, Dict[str, Any]] = {
     "machine.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "machine.remove": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "machine.upsert": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "mention.clear": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
+    "mention.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
+    "mention.set": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
+    "mention.suggest": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "merge.predict": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "merge.queue.add": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "merge.queue.cancel": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "merge.queue.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "merge.queue.requeue": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "merge.queue.run": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "message.cancel": {"mutating": True, "scope": "pane", "pane_scope": "open"},
+    "message.complete": {"mutating": True, "scope": "pane", "pane_scope": "open"},
+    "message.get": {"mutating": False, "scope": "pane", "pane_scope": "open"},
+    "message.list": {"mutating": False, "scope": "pane", "pane_scope": "own_target"},
+    "message.reply": {"mutating": True, "scope": "pane", "pane_scope": "open"},
+    "message.retry": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "message.send": {"mutating": True, "scope": "pane", "pane_scope": "open"},
     "notes.get": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "notes.set": {"mutating": True, "scope": "pane", "pane_scope": "open"},
     "notification.config": {"mutating": False, "scope": "pane", "pane_scope": "open"},
@@ -10000,6 +10173,29 @@ MachineRemovedData = TypedDict("MachineRemovedData", {
     "label": str,
 })
 
+MentionClearedSubject = TypedDict("MentionClearedSubject", {
+    "pane": str,
+    "workspace": str,
+})
+
+MentionClearedData = TypedDict("MentionClearedData", {
+    "name": str,
+    "reason": Literal["cleared", "pane_closed", "pane_moved"],
+})
+
+MentionSetSubject = TypedDict("MentionSetSubject", {
+    "pane": str,
+    "workspace": str,
+})
+
+MentionSetData = TypedDict("MentionSetData", {
+    "name": str,
+    "kind": Literal["agent", "terminal"],
+    "delivery": bool,
+    "previous": Optional[str],
+    "via": str,
+})
+
 MergeBlockedSubject = TypedDict("MergeBlockedSubject", {
     "entry": str,
     "task": str,
@@ -10097,6 +10293,41 @@ MergeRequeuedSubject = TypedDict("MergeRequeuedSubject", {
 
 MergeRequeuedData = TypedDict("MergeRequeuedData", {
     "handle": Optional[str],
+})
+
+MessageDeliverySubject = TypedDict("MessageDeliverySubject", {
+    "delivery": str,
+    "message": str,
+    "pane": str,
+    "workspace": str,
+})
+
+MessageDeliveryData = TypedDict("MessageDeliveryData", {
+    "delivery": str,
+    "message": str,
+    "name": str,
+    "state": Literal["queued", "submitted", "delivered", "replied", "completed", "held", "failed", "cancelled"],
+    "reason": Optional[str],
+})
+
+MessageSentSubject = TypedDict("MessageSentSubject", {
+    "message": str,
+    "thread": str,
+    "workspace": str,
+})
+
+MessageSentDataFrom = TypedDict("MessageSentDataFrom", {
+    "kind": Literal["human", "agent"],
+    "pane": Optional[str],
+})
+
+MessageSentData = TypedDict("MessageSentData", {
+    "from": "MessageSentDataFrom",
+    "to": List[str],
+    "hop": int,
+    "in_reply_to": Optional[str],
+    "bytes": int,
+    "deliveries": List[str],
 })
 
 NotesUpdatedSubject = TypedDict("NotesUpdatedSubject", {
@@ -11855,6 +12086,8 @@ EVENT_TYPES = (
     "machine.degraded",
     "machine.disconnected",
     "machine.removed",
+    "mention.cleared",
+    "mention.set",
     "merge.blocked",
     "merge.cancelled",
     "merge.check_failed",
@@ -11864,6 +12097,8 @@ EVENT_TYPES = (
     "merge.merged",
     "merge.queued",
     "merge.requeued",
+    "message.delivery",
+    "message.sent",
     "notes.updated",
     "notification.created",
     "pane.closed",

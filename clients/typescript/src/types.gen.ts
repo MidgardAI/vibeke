@@ -548,6 +548,63 @@ export type MaterializedFile = {
   error?: string | null;
 };
 
+export type MentionAuthor = {
+  kind: "human" | "agent";
+  pane: string | null;
+  name?: string | null;
+};
+
+export type MentionDelivery = {
+  id: string;
+  message: string;
+  name: string;
+  pane: string;
+  state: "queued" | "submitted" | "delivered" | "replied" | "completed" | "held" | "failed" | "cancelled";
+  reason: string | null;
+  expects_reply: boolean;
+  reply: string | null;
+  updated_at_ms: number;
+};
+
+export type MentionEntry = {
+  name: string;
+  workspace: string;
+  pane: string;
+  kind: "agent" | "terminal";
+  delivery: boolean;
+  created_at_ms: number;
+  pane_handle: string | null;
+  label: string;
+  harness: string | null;
+  state: "idle" | "busy" | "needs_input" | "exited" | "shell";
+};
+
+export type MentionMessage = {
+  id: string;
+  thread: string;
+  workspace: string;
+  from: MentionAuthor;
+  to: string[];
+  body: string;
+  in_reply_to: string | null;
+  hop: number;
+  sent_at_ms: number;
+};
+
+export type MentionName = {
+  name: string;
+  workspace: string;
+  pane: string;
+  kind: "agent" | "terminal";
+  delivery: boolean;
+  created_at_ms: number;
+};
+
+export type MentionThreadItem = {
+  message: MentionMessage;
+  deliveries: MentionDelivery[];
+};
+
 export type Notification = {
   id: string;
   kind: string;
@@ -4554,6 +4611,50 @@ export type MachineUpsertResult = {
   cursor: Cursor;
 };
 
+export type MentionClearParams = {
+  pane?: Target;
+};
+
+export type MentionClearResult = {
+  cursor?: Cursor;
+};
+
+export type MentionListParams = {
+  workspace?: Target;
+  unnamed?: boolean;
+};
+
+export type MentionListResult = {
+  mentions: MentionEntry[];
+  unnamed?: {
+    pane: string;
+    pane_handle: string;
+    workspace: string;
+    suggested: string;
+    label: string;
+    harness: string | null;
+    state: "idle" | "busy" | "needs_input" | "exited" | "shell";
+  }[];
+};
+
+export type MentionSetParams = {
+  pane?: Target;
+  name?: string;
+  kind?: "agent" | "terminal";
+  delivery?: boolean;
+};
+
+export type MentionSetResult = MentionName;
+
+export type MentionSuggestParams = {
+  pane?: Target;
+};
+
+export type MentionSuggestResult = {
+  name: string;
+  named: boolean;
+};
+
 export type MergePredictParams = {
   repo?: string;
   tasks?: string[];
@@ -4630,6 +4731,65 @@ export type MergeQueueRunResult = {
   }[];
   cursor?: Cursor;
 };
+
+export type MessageCancelParams = {
+  delivery: string;
+};
+
+export type MessageCancelResult = {
+  cursor?: Cursor;
+};
+
+export type MessageCompleteParams = {
+  message: string;
+  pane?: Target;
+};
+
+export type MessageCompleteResult = {
+  cursor?: Cursor;
+};
+
+export type MessageGetParams = {
+  id: string;
+};
+
+export type MessageGetResult = MentionThreadItem;
+
+export type MessageListParams = {
+  pane?: Target;
+  direction?: "in" | "out" | "all";
+  open_only?: boolean;
+  limit?: number;
+};
+
+export type MessageListResult = {
+  items: MentionThreadItem[];
+};
+
+export type MessageReplyParams = {
+  message: string;
+  body: string;
+  pane?: Target;
+};
+
+export type MessageReplyResult = MentionThreadItem;
+
+export type MessageRetryParams = {
+  delivery: string;
+};
+
+export type MessageRetryResult = {
+  cursor?: Cursor;
+};
+
+export type MessageSendParams = {
+  to: string[];
+  body: string;
+  expects_reply?: boolean;
+  workspace?: Target;
+};
+
+export type MessageSendResult = MentionThreadItem;
 
 export type NotesGetParams = {
   workspace?: Target;
@@ -8111,12 +8271,23 @@ export interface Methods {
   "machine.list": { params: MachineListParams; result: MachineListResult };
   "machine.remove": { params: MachineRemoveParams; result: MachineRemoveResult };
   "machine.upsert": { params: MachineUpsertParams; result: MachineUpsertResult };
+  "mention.clear": { params: MentionClearParams; result: MentionClearResult };
+  "mention.list": { params: MentionListParams; result: MentionListResult };
+  "mention.set": { params: MentionSetParams; result: MentionSetResult };
+  "mention.suggest": { params: MentionSuggestParams; result: MentionSuggestResult };
   "merge.predict": { params: MergePredictParams; result: MergePredictResult };
   "merge.queue.add": { params: MergeQueueAddParams; result: MergeQueueAddResult };
   "merge.queue.cancel": { params: MergeQueueCancelParams; result: MergeQueueCancelResult };
   "merge.queue.list": { params: MergeQueueListParams; result: MergeQueueListResult };
   "merge.queue.requeue": { params: MergeQueueRequeueParams; result: MergeQueueRequeueResult };
   "merge.queue.run": { params: MergeQueueRunParams; result: MergeQueueRunResult };
+  "message.cancel": { params: MessageCancelParams; result: MessageCancelResult };
+  "message.complete": { params: MessageCompleteParams; result: MessageCompleteResult };
+  "message.get": { params: MessageGetParams; result: MessageGetResult };
+  "message.list": { params: MessageListParams; result: MessageListResult };
+  "message.reply": { params: MessageReplyParams; result: MessageReplyResult };
+  "message.retry": { params: MessageRetryParams; result: MessageRetryResult };
+  "message.send": { params: MessageSendParams; result: MessageSendResult };
   "notes.get": { params: NotesGetParams; result: NotesGetResult };
   "notes.set": { params: NotesSetParams; result: NotesSetResult };
   "notification.config": { params: NotificationConfigParams; result: NotificationConfigResult };
@@ -8557,12 +8728,23 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "machine.list": { mutating: false, scope: "pane", paneScope: "open" },
   "machine.remove": { mutating: true, scope: "full", paneScope: "forbidden" },
   "machine.upsert": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "mention.clear": { mutating: true, scope: "pane", paneScope: "own_target" },
+  "mention.list": { mutating: false, scope: "pane", paneScope: "open" },
+  "mention.set": { mutating: true, scope: "pane", paneScope: "own_target" },
+  "mention.suggest": { mutating: false, scope: "pane", paneScope: "open" },
   "merge.predict": { mutating: false, scope: "pane", paneScope: "open" },
   "merge.queue.add": { mutating: true, scope: "full", paneScope: "forbidden" },
   "merge.queue.cancel": { mutating: true, scope: "full", paneScope: "forbidden" },
   "merge.queue.list": { mutating: false, scope: "pane", paneScope: "open" },
   "merge.queue.requeue": { mutating: true, scope: "full", paneScope: "forbidden" },
   "merge.queue.run": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "message.cancel": { mutating: true, scope: "pane", paneScope: "open" },
+  "message.complete": { mutating: true, scope: "pane", paneScope: "open" },
+  "message.get": { mutating: false, scope: "pane", paneScope: "open" },
+  "message.list": { mutating: false, scope: "pane", paneScope: "own_target" },
+  "message.reply": { mutating: true, scope: "pane", paneScope: "open" },
+  "message.retry": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "message.send": { mutating: true, scope: "pane", paneScope: "open" },
   "notes.get": { mutating: false, scope: "pane", paneScope: "open" },
   "notes.set": { mutating: true, scope: "pane", paneScope: "open" },
   "notification.config": { mutating: false, scope: "pane", paneScope: "open" },
@@ -9801,6 +9983,29 @@ export type MachineRemovedData = {
   label: string;
 };
 
+export type MentionClearedSubject = {
+  pane: string;
+  workspace: string;
+};
+
+export type MentionClearedData = {
+  name: string;
+  reason: "cleared" | "pane_closed" | "pane_moved";
+};
+
+export type MentionSetSubject = {
+  pane: string;
+  workspace: string;
+};
+
+export type MentionSetData = {
+  name: string;
+  kind: "agent" | "terminal";
+  delivery: boolean;
+  previous: string | null;
+  via: string;
+};
+
 export type MergeBlockedSubject = {
   entry: string;
   task: string;
@@ -9898,6 +10103,39 @@ export type MergeRequeuedSubject = {
 
 export type MergeRequeuedData = {
   handle: string | null;
+};
+
+export type MessageDeliverySubject = {
+  delivery: string;
+  message: string;
+  pane: string;
+  workspace: string;
+};
+
+export type MessageDeliveryData = {
+  delivery: string;
+  message: string;
+  name: string;
+  state: "queued" | "submitted" | "delivered" | "replied" | "completed" | "held" | "failed" | "cancelled";
+  reason: string | null;
+};
+
+export type MessageSentSubject = {
+  message: string;
+  thread: string;
+  workspace: string;
+};
+
+export type MessageSentData = {
+  from: {
+    kind: "human" | "agent";
+    pane: string | null;
+  };
+  to: string[];
+  hop: number;
+  in_reply_to: string | null;
+  bytes: number;
+  deliveries: string[];
 };
 
 export type NotesUpdatedSubject = {
@@ -11648,6 +11886,8 @@ export interface EventMap {
   "machine.degraded": { subject: MachineDegradedSubject; data: MachineDegradedData };
   "machine.disconnected": { subject: MachineDisconnectedSubject; data: MachineDisconnectedData };
   "machine.removed": { subject: MachineRemovedSubject; data: MachineRemovedData };
+  "mention.cleared": { subject: MentionClearedSubject; data: MentionClearedData };
+  "mention.set": { subject: MentionSetSubject; data: MentionSetData };
   "merge.blocked": { subject: MergeBlockedSubject; data: MergeBlockedData };
   "merge.cancelled": { subject: MergeCancelledSubject; data: MergeCancelledData };
   "merge.check_failed": { subject: MergeCheckFailedSubject; data: MergeCheckFailedData };
@@ -11657,6 +11897,8 @@ export interface EventMap {
   "merge.merged": { subject: MergeMergedSubject; data: MergeMergedData };
   "merge.queued": { subject: MergeQueuedSubject; data: MergeQueuedData };
   "merge.requeued": { subject: MergeRequeuedSubject; data: MergeRequeuedData };
+  "message.delivery": { subject: MessageDeliverySubject; data: MessageDeliveryData };
+  "message.sent": { subject: MessageSentSubject; data: MessageSentData };
   "notes.updated": { subject: NotesUpdatedSubject; data: NotesUpdatedData };
   "notification.created": { subject: NotificationCreatedSubject; data: NotificationCreatedData };
   "pane.closed": { subject: PaneClosedSubject; data: PaneClosedData };

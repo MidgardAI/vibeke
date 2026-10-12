@@ -3,12 +3,12 @@
   "generated_from": "vk-server METHODS tables; signatures from spec/07 §2; params/result shapes from the schema registry (crates/vk-server/src/api_schema.rs)",
   "schema": "vibeke-1.schema.json",
   "shape_language": "{field, field?: type = default, ...}; [T]; A|B (bare lowercase words are string literals); {*: T} maps; CamelCase names are shared definitions in the schema's $defs",
-  "render_protocol": 9,
+  "render_protocol": 10,
   "holder_protocol": {
     "proto": 2,
     "min": 1
   },
-  "method_count": 440,
+  "method_count": 451,
   "methods": [
     {
       "name": "adapter.control",
@@ -3139,6 +3139,62 @@
       "result": "{machine: Machine, created: bool, cursor: Cursor}"
     },
     {
+      "name": "mention.clear",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "own_target",
+      "gateway": "actor_required",
+      "tables": [
+        "mentions"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{pane?: Target}",
+      "result": "{}"
+    },
+    {
+      "name": "mention.list",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "mentions"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{workspace?: Target, unnamed?: bool = false}",
+      "result": "{mentions: [MentionEntry], unnamed?: [{pane: string, pane_handle: string, workspace: string, suggested: string, label: string, harness: string|null, state: idle|busy|needs_input|exited|shell}]}"
+    },
+    {
+      "name": "mention.set",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "own_target",
+      "gateway": "actor_required",
+      "tables": [
+        "mentions"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{pane?: Target, name?: string, kind?: agent|terminal, delivery?: bool}",
+      "result": "MentionName"
+    },
+    {
+      "name": "mention.suggest",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "mentions"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{pane?: Target}",
+      "result": "{name: string, named: bool}"
+    },
+    {
       "name": "merge.predict",
       "mutating": false,
       "scope": "pane",
@@ -3221,6 +3277,104 @@
       "spec": null,
       "params": "{entry?: string, count?: int = 1, all?: bool = false}",
       "result": "{ran: int, results: [{entry: object, event: string, detail: object}]}"
+    },
+    {
+      "name": "message.cancel",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "mentions"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{delivery: string}",
+      "result": "{}"
+    },
+    {
+      "name": "message.complete",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "mentions"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{message: string, pane?: Target}",
+      "result": "{}"
+    },
+    {
+      "name": "message.get",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "mentions"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{id: string}",
+      "result": "MentionThreadItem"
+    },
+    {
+      "name": "message.list",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "own_target",
+      "gateway": "open",
+      "tables": [
+        "mentions"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{pane?: Target, direction?: in|out|all = all, open_only?: bool = false, limit?: int = 50}",
+      "result": "{items: [MentionThreadItem]}"
+    },
+    {
+      "name": "message.reply",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "mentions"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{message: string, body: string, pane?: Target}",
+      "result": "MentionThreadItem"
+    },
+    {
+      "name": "message.retry",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "mentions"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{delivery: string}",
+      "result": "{}"
+    },
+    {
+      "name": "message.send",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "mentions"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{to: [string], body: string, expects_reply?: bool = true, workspace?: Target}",
+      "result": "MentionThreadItem"
     },
     {
       "name": "notes.get",

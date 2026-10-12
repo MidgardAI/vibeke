@@ -2635,6 +2635,287 @@
         "outcome"
       ]
     },
+    "MentionAuthor": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "human",
+            "agent"
+          ]
+        },
+        "pane": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "pane"
+      ]
+    },
+    "MentionDelivery": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "pane": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "queued",
+            "submitted",
+            "delivered",
+            "replied",
+            "completed",
+            "held",
+            "failed",
+            "cancelled"
+          ]
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "expects_reply": {
+          "type": "boolean"
+        },
+        "reply": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "updated_at_ms": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "message",
+        "name",
+        "pane",
+        "state",
+        "reason",
+        "expects_reply",
+        "reply",
+        "updated_at_ms"
+      ]
+    },
+    "MentionEntry": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "workspace": {
+          "type": "string"
+        },
+        "pane": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "agent",
+            "terminal"
+          ]
+        },
+        "delivery": {
+          "type": "boolean"
+        },
+        "created_at_ms": {
+          "type": "integer"
+        },
+        "pane_handle": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "label": {
+          "type": "string"
+        },
+        "harness": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "idle",
+            "busy",
+            "needs_input",
+            "exited",
+            "shell"
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "workspace",
+        "pane",
+        "kind",
+        "delivery",
+        "created_at_ms",
+        "pane_handle",
+        "label",
+        "harness",
+        "state"
+      ]
+    },
+    "MentionMessage": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "thread": {
+          "type": "string"
+        },
+        "workspace": {
+          "type": "string"
+        },
+        "from": {
+          "$ref": "#/$defs/MentionAuthor"
+        },
+        "to": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "body": {
+          "type": "string"
+        },
+        "in_reply_to": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "hop": {
+          "type": "integer"
+        },
+        "sent_at_ms": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "thread",
+        "workspace",
+        "from",
+        "to",
+        "body",
+        "in_reply_to",
+        "hop",
+        "sent_at_ms"
+      ]
+    },
+    "MentionName": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "workspace": {
+          "type": "string"
+        },
+        "pane": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "agent",
+            "terminal"
+          ]
+        },
+        "delivery": {
+          "type": "boolean"
+        },
+        "created_at_ms": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "name",
+        "workspace",
+        "pane",
+        "kind",
+        "delivery",
+        "created_at_ms"
+      ]
+    },
+    "MentionThreadItem": {
+      "type": "object",
+      "properties": {
+        "message": {
+          "$ref": "#/$defs/MentionMessage"
+        },
+        "deliveries": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/MentionDelivery"
+          }
+        }
+      },
+      "required": [
+        "message",
+        "deliveries"
+      ]
+    },
     "Notification": {
       "type": "object",
       "properties": {
@@ -18901,6 +19182,167 @@
         ]
       }
     },
+    "mention.clear": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "own_target",
+      "params": {
+        "type": "object",
+        "properties": {
+          "pane": {
+            "$ref": "#/$defs/Target"
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        }
+      }
+    },
+    "mention.list": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "params": {
+        "type": "object",
+        "properties": {
+          "workspace": {
+            "$ref": "#/$defs/Target"
+          },
+          "unnamed": {
+            "type": "boolean",
+            "default": false
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "mentions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/MentionEntry"
+            }
+          },
+          "unnamed": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "pane": {
+                  "type": "string"
+                },
+                "pane_handle": {
+                  "type": "string"
+                },
+                "workspace": {
+                  "type": "string"
+                },
+                "suggested": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "harness": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "state": {
+                  "type": "string",
+                  "enum": [
+                    "idle",
+                    "busy",
+                    "needs_input",
+                    "exited",
+                    "shell"
+                  ]
+                }
+              },
+              "required": [
+                "pane",
+                "pane_handle",
+                "workspace",
+                "suggested",
+                "label",
+                "harness",
+                "state"
+              ]
+            }
+          }
+        },
+        "required": [
+          "mentions"
+        ]
+      }
+    },
+    "mention.set": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "own_target",
+      "params": {
+        "type": "object",
+        "properties": {
+          "pane": {
+            "$ref": "#/$defs/Target"
+          },
+          "name": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "agent",
+              "terminal"
+            ]
+          },
+          "delivery": {
+            "type": "boolean"
+          }
+        }
+      },
+      "result": {
+        "$ref": "#/$defs/MentionName"
+      }
+    },
+    "mention.suggest": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "params": {
+        "type": "object",
+        "properties": {
+          "pane": {
+            "$ref": "#/$defs/Target"
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "named": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "named"
+        ]
+      }
+    },
     "merge.predict": {
       "mutating": false,
       "scope": "pane",
@@ -19213,6 +19655,203 @@
           "ran",
           "results"
         ]
+      }
+    },
+    "message.cancel": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "params": {
+        "type": "object",
+        "properties": {
+          "delivery": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "delivery"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        }
+      }
+    },
+    "message.complete": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "params": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "string"
+          },
+          "pane": {
+            "$ref": "#/$defs/Target"
+          }
+        },
+        "required": [
+          "message"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        }
+      }
+    },
+    "message.get": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "params": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "result": {
+        "$ref": "#/$defs/MentionThreadItem"
+      }
+    },
+    "message.list": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "own_target",
+      "params": {
+        "type": "object",
+        "properties": {
+          "pane": {
+            "$ref": "#/$defs/Target"
+          },
+          "direction": {
+            "type": "string",
+            "enum": [
+              "in",
+              "out",
+              "all"
+            ],
+            "default": "all"
+          },
+          "open_only": {
+            "type": "boolean",
+            "default": false
+          },
+          "limit": {
+            "type": "integer",
+            "default": 50
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/MentionThreadItem"
+            }
+          }
+        },
+        "required": [
+          "items"
+        ]
+      }
+    },
+    "message.reply": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "params": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "string"
+          },
+          "body": {
+            "type": "string"
+          },
+          "pane": {
+            "$ref": "#/$defs/Target"
+          }
+        },
+        "required": [
+          "message",
+          "body"
+        ]
+      },
+      "result": {
+        "$ref": "#/$defs/MentionThreadItem"
+      }
+    },
+    "message.retry": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "delivery": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "delivery"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        }
+      }
+    },
+    "message.send": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "params": {
+        "type": "object",
+        "properties": {
+          "to": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "body": {
+            "type": "string"
+          },
+          "expects_reply": {
+            "type": "boolean",
+            "default": true
+          },
+          "workspace": {
+            "$ref": "#/$defs/Target"
+          }
+        },
+        "required": [
+          "to",
+          "body"
+        ]
+      },
+      "result": {
+        "$ref": "#/$defs/MentionThreadItem"
       }
     },
     "notes.get": {
@@ -35391,6 +36030,98 @@
         ]
       }
     },
+    "mention.cleared": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "pane": {
+            "type": "string"
+          },
+          "workspace": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "pane",
+          "workspace"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string",
+            "enum": [
+              "cleared",
+              "pane_closed",
+              "pane_moved"
+            ]
+          }
+        },
+        "required": [
+          "name",
+          "reason"
+        ]
+      }
+    },
+    "mention.set": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "pane": {
+            "type": "string"
+          },
+          "workspace": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "pane",
+          "workspace"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "agent",
+              "terminal"
+            ]
+          },
+          "delivery": {
+            "type": "boolean"
+          },
+          "previous": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "via": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "kind",
+          "delivery",
+          "previous",
+          "via"
+        ]
+      }
+    },
     "merge.blocked": {
       "subject": {
         "type": "object",
@@ -35747,6 +36478,163 @@
         },
         "required": [
           "handle"
+        ]
+      }
+    },
+    "message.delivery": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "delivery": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "pane": {
+            "type": "string"
+          },
+          "workspace": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "delivery",
+          "message",
+          "pane",
+          "workspace"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "delivery": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "queued",
+              "submitted",
+              "delivered",
+              "replied",
+              "completed",
+              "held",
+              "failed",
+              "cancelled"
+            ]
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "delivery",
+          "message",
+          "name",
+          "state",
+          "reason"
+        ]
+      }
+    },
+    "message.sent": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "string"
+          },
+          "thread": {
+            "type": "string"
+          },
+          "workspace": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "message",
+          "thread",
+          "workspace"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "human",
+                  "agent"
+                ]
+              },
+              "pane": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "kind",
+              "pane"
+            ]
+          },
+          "to": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "hop": {
+            "type": "integer"
+          },
+          "in_reply_to": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "bytes": {
+            "type": "integer"
+          },
+          "deliveries": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "from",
+          "to",
+          "hop",
+          "in_reply_to",
+          "bytes",
+          "deliveries"
         ]
       }
     },

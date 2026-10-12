@@ -145,6 +145,7 @@ Vibeke reloads the file after a change. If parsing fails, it keeps the previous 
 # setup                    = ""               # onboarding: terminal check, integrations, notifications, theme
 # trust_repo               = ""               # review and trust this repo's .vibeke/ (repo-local config)
 # agent_list               = "prefix+alt+a"   # every agent on every machine, by attention; enter jumps
+# mention_picker           = "prefix+@"       # name panes and insert @name into the focused pane
 # elevation_requests       = "prefix+shift+e" # review a pane's `vibeke auth elevate` request (y/n)
 # tab_renumber             = ""               # renumber this workspace's tabs 1..n in order
 # task_recreate            = ""               # recreate the checkout of a task marked missing
