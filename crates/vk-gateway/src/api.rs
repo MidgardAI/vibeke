@@ -155,6 +155,10 @@ pub fn required_scope(method: &str) -> Option<Scope> {
         // changes what the agent runs, like a prompt.
         "agent.commands" | "agent.models" => View,
         "agent.set_model" => Full,
+        // Mention names (spec 19): the composer lists and suggests names; naming a pane lets
+        // other agents of its workspace message it.
+        "mention.list" | "mention.suggest" => View,
+        "mention.set" | "mention.clear" => Full,
         "agent.interrupt"
         | "interaction.answer"
         | "interaction.answer_batch"
@@ -1728,6 +1732,19 @@ impl Call<'_> {
             "repo.candidates" => {
                 req(&p, "origin")?;
                 self.server(method, pick(&p, &["origin"])).await
+            }
+            "mention.list" => {
+                self.server(method, pick(&p, &["workspace", "unnamed"]))
+                    .await
+            }
+            "mention.suggest" | "mention.clear" => {
+                req(&p, "pane")?;
+                self.server(method, pick(&p, &["pane"])).await
+            }
+            "mention.set" => {
+                req(&p, "pane")?;
+                self.server(method, pick(&p, &["pane", "name", "kind", "delivery"]))
+                    .await
             }
             "tab.rename" => {
                 req(&p, "tab")?;
