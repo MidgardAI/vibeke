@@ -763,6 +763,14 @@ fn elicitation_json(it: &Interaction, a: &Answer) -> Value {
     json!({"hookSpecificOutput": {"hookEventName": "Elicitation", "action": "accept", "content": content}})
 }
 
+/// Claude's `PermissionRequest` for `AskUserQuestion`: the question was already opened by the
+/// tool's `PreToolUse` (04 §6.1.2), so this hook only echoes it and must stay transparent.
+pub fn question_permission_echo(h: Harness, event: &str, p: &Value) -> bool {
+    h.family() == Family::Claude
+        && event == "PermissionRequest"
+        && p.get("tool_name").and_then(Value::as_str) == Some("AskUserQuestion")
+}
+
 pub fn interaction_from_hook(h: Harness, event: &str, p: &Value) -> Option<Interaction> {
     if h.is_pi_family() && event == "Dialog" {
         return Some(dialog_interaction(p));
@@ -1475,6 +1483,23 @@ mod tests {
         let q = json!({"tool_name": "AskUserQuestion", "tool_input": {"questions": [{"question": "Which?", "options": [{"label": "A"}, {"label": "B"}], "multiSelect": false}]}});
         let it = interaction_from_hook(Harness::Claude, "PreToolUse", &q).unwrap();
         assert_eq!(it.questions[0].options.len(), 2);
+        // Its `PermissionRequest` only echoes the question the `PreToolUse` opened.
+        assert!(question_permission_echo(
+            Harness::Claude,
+            "PermissionRequest",
+            &q
+        ));
+        assert!(!question_permission_echo(Harness::Claude, "PreToolUse", &q));
+        assert!(!question_permission_echo(
+            Harness::Claude,
+            "PermissionRequest",
+            &plan
+        ));
+        assert!(!question_permission_echo(
+            Harness::Codex,
+            "PermissionRequest",
+            &q
+        ));
         assert_eq!(risk("Bash", Some("pnpm test"), &[]).0, Risk::Low);
         assert_eq!(risk("Bash", Some("pnpm add zod"), &[]).0, Risk::Medium);
     }

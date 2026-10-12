@@ -16,6 +16,8 @@ use vk_proto::model::*;
 const STEP_TIMEOUT: Duration = Duration::from_millis(1500);
 /// How long the picker may take to close after the commit key.
 const COMMIT_TIMEOUT: Duration = Duration::from_secs(2);
+/// How long the question dialog must stay off screen to count as closed.
+const GONE_SETTLE: Duration = Duration::from_millis(250);
 
 /// A pointer-marked screen question as a picker view, so it is walked like one. Option ids
 /// stay the question's (`"1"`, `"2"`, …) — they are ids, never keys to press.
@@ -277,4 +279,161 @@ async fn walk_locked(
         }
     }
     failed("the walk did not converge".into())
+}
+
+/// Claude's `AskUserQuestion` dialog on the pane, if it shows one.
+fn read_ask(h: Harness, rt: &PaneRt) -> Option<super::screen_ask::AskScreen> {
+    let text = rt.screen.lock().unwrap().engine.screen_text();
+    screen::evaluate(h, &text).dialog.and_then(|d| d.ask)
+}
+
+/// Answer Claude's `AskUserQuestion` dialog: for each question, check the visible question is
+/// one of the interaction's, walk the pointer to the chosen option and select it, waiting for
+/// the dialog to move on; with several questions, finish on the review's **Submit answers**.
+/// Every key is planned from a fresh read and every step confirmed on screen; a surprise stops
+/// the walk with a reason instead of selecting into another dialog.
+pub async fn walk_ask(
+    server: &Arc<Server>,
+    h: Harness,
+    rt: &PaneRt,
+    it: &Interaction,
+    answer: &Answer,
+) -> (DeliveryState, Option<String>) {
+    server.agents.lock_input(&it.pane);
+    let out = walk_ask_locked(server, h, rt, it, answer).await;
+    server.agents.unlock_input(&it.pane);
+    out
+}
+
+async fn walk_ask_locked(
+    server: &Arc<Server>,
+    h: Harness,
+    rt: &PaneRt,
+    it: &Interaction,
+    answer: &Answer,
+) -> (DeliveryState, Option<String>) {
+    use super::screen_ask::{AskStep, needs_submit, next_step, wanted};
+    let want = wanted(it, answer);
+    let mut done = vec![false; want.len()];
+    // Once a key was sent the pane may hold part of the answer: report "unknown", not "failed".
+    let mut typed = false;
+    let stop = |typed: bool, r: String| {
+        if typed {
+            (
+                DeliveryState::DeliveryUnknown,
+                Some(format!(
+                    "{r}; the dialog may be partly answered, check the pane"
+                )),
+            )
+        } else {
+            (DeliveryState::Failed, Some(r))
+        }
+    };
+    // Bounded: per question a walk over its rows, a tab switch and the selection, plus the review.
+    let max_steps = 12 * (want.len() + 1) + 12;
+    for _ in 0..max_steps {
+        let Some(a) = read_ask(h, rt) else {
+            return stop(
+                typed,
+                "dialog_changed: the question dialog is no longer on screen".into(),
+            );
+        };
+        if !super::screen_ask::matches(&a, it) {
+            return stop(
+                typed,
+                "dialog_changed: the visible dialog is not this interaction".into(),
+            );
+        }
+        let submit = needs_submit(&a, it);
+        let step = next_step(&a, it, &want, &done);
+        let (key, selects) = match step {
+            AskStep::Fail(r) => return stop(typed, r),
+            AskStep::Key(k) => (k, None),
+            AskStep::Select { key, question } => (key, Some(question)),
+        };
+        let before = a.state();
+        if !send_key(server, rt, &it.pane, &key).await {
+            return (DeliveryState::Failed, Some("pane exited".into()));
+        }
+        typed = true;
+        let timeout = if selects.is_some() {
+            COMMIT_TIMEOUT
+        } else {
+            STEP_TIMEOUT
+        };
+        let deadline = Instant::now() + timeout;
+        let mut now = None;
+        let mut changed = false;
+        // The dialog counts as closed once no dialog has been read for a while (a redraw can
+        // briefly show a partial frame).
+        let mut gone_since: Option<Instant> = None;
+        while Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(60)).await;
+            now = read_ask(h, rt);
+            match &now {
+                None => {
+                    let since = *gone_since.get_or_insert_with(Instant::now);
+                    if since.elapsed() >= GONE_SETTLE {
+                        changed = true;
+                        break;
+                    }
+                }
+                Some(n) => {
+                    gone_since = None;
+                    // A selection must move to another question or the review, not just the
+                    // pointer.
+                    if n.state() != before
+                        && (selects.is_none() || n.view != a.view || n.title != a.title)
+                    {
+                        changed = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if !changed && gone_since.is_some() {
+            changed = true;
+        }
+        if !changed {
+            return stop(
+                typed,
+                format!("the question dialog did not respond to {key}"),
+            );
+        }
+        let Some(question) = selects else {
+            continue;
+        };
+        match question {
+            Some(k) => done[k] = true,
+            // Submit answers: the dialog must close.
+            None => {
+                return if now.is_none() {
+                    (DeliveryState::Delivered, None)
+                } else {
+                    (
+                        DeliveryState::DeliveryUnknown,
+                        Some("the question dialog is still open after Submit answers".into()),
+                    )
+                };
+            }
+        }
+        if done.iter().all(|d| *d) && !submit {
+            // A single question: Claude submits on the selection (the dialog closes). A view
+            // of a larger dialog (screen-sourced): it moved on to the next question.
+            return (DeliveryState::Delivered, None);
+        }
+        if now.is_none() {
+            return (
+                DeliveryState::DeliveryUnknown,
+                Some(
+                    "the question dialog closed before every answer was entered; check the pane"
+                        .into(),
+                ),
+            );
+        }
+    }
+    stop(
+        typed,
+        "the walk through the question dialog did not converge".into(),
+    )
 }

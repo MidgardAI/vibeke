@@ -565,6 +565,8 @@ Each subsection lists: manifest highlights, the event-to-state mapping, how inte
 #### 6.1.2 Questions (`AskUserQuestion`) and plan review (`ExitPlanMode`)
 
 - `PreToolUse` with `tool_name = "AskUserQuestion"` opens a `question` Interaction from `tool_input.questions[]` (`question`, `header`, `options[{label, description}]`, `multiSelect`).
+  - Claude then also sends `PermissionRequest` for the same call, without a `tool_use_id`. The server returns no decision for it (Claude shows its dialog as before) and opens nothing. As a fallback, a question or plan reported again without a matching native ref reuses the open interaction of the same run with the same prompts (or plan text).
+  - Keystroke answers (§8) walk Claude's tabbed dialog (`agents/screen_ask.rs`): one tab per question, then the **Submit answers** review. Every question needs a choice before anything is typed (`interaction.answer` refuses a partial answer). Multi-select questions and free-text answers are left to the pane (`answerable: false`, or an `unsupported` refusal).
 - **Native answer** **[verify M0]**: return `permissionDecision: "allow"` with `updatedInput` containing the `answers` map in the shape the Agent SDK's `canUseTool` uses for AskUserQuestion. Until the golden corpus proves this for a version range, `answer_native: question` is **absent** from that range's capabilities and answers use best-effort keystrokes (§8) with the `claude` screen manifest's question-dialog geometry.
 - `ExitPlanMode` arrives through `PermissionRequest` (or `PreToolUse`). It opens a `plan_review` Interaction with `plan_md = tool_input.plan`.
   - Approve → `behavior: allow`.
