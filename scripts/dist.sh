@@ -26,7 +26,8 @@ build() {
   if [ "$builder" = zigbuild ]; then
     cargo zigbuild --release --locked -p vibeke --target "$target"
   else
-    cargo build --release --locked -p vibeke --target "$target"
+    # Match libghostty-vt's minimum macOS version.
+    MACOSX_DEPLOYMENT_TARGET=13.0 cargo build --release --locked -p vibeke --target "$target"
   fi
   cp "target/$target/release/vibeke" "$OUT/$name"
   chmod 755 "$OUT/$name"
@@ -34,6 +35,7 @@ build() {
 }
 
 build vibeke-macos-aarch64 aarch64-apple-darwin cargo
+build vibeke-macos-x86_64  x86_64-apple-darwin cargo
 build vibeke-linux-x86_64  x86_64-unknown-linux-musl zigbuild
 build vibeke-linux-aarch64 aarch64-unknown-linux-musl zigbuild
 

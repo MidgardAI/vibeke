@@ -115,7 +115,7 @@ Wait for all required packaging jobs and inspect the actual draft asset list. Cu
 
 | Product | Platforms and asset names |
 | --- | --- |
-| Host CLI | `vibeke-macos-aarch64`, `vibeke-linux-x86_64`, `vibeke-linux-aarch64`, plus their `.sha256` files |
+| Host CLI | `vibeke-macos-aarch64`, `vibeke-macos-x86_64`, `vibeke-linux-x86_64`, `vibeke-linux-aarch64`, plus their `.sha256` files |
 | macOS desktop | `Vibeke-<version>-mac-arm64.dmg`, `.zip`, and `Vibeke-<version>-mac-x64.dmg`, `.zip` |
 | Linux desktop | `Vibeke-<version>-linux-x86_64.AppImage`, `Vibeke-<version>-linux-amd64.deb` |
 | Windows desktop | `Vibeke-<version>-win-x64.exe` |
@@ -199,6 +199,8 @@ Replace the workflow's unsigned-draft placeholder before publishing. State the r
 After verification, publish the draft with `gh release edit v<version> --repo vibeke-ai/vibeke --draft=false`. Confirm whether it is the intended latest stable release; prereleases must not silently become the default installer target.
 
 Update the version shown on the home page: set `version` and `url` in `web/apps/site/src/lib/release.ts` to the published stable release. The site test (`bun run test`) fails when it does not match the newest `docs/release-notes/v<version>.md`. Do not change it for a prerelease or before the release is published.
+
+When publishing the first release with `vibeke-macos-x86_64`, add Intel Macs to the host CLI platforms in `README.md` and `docs/site/src/install.md`. State that both macOS host binaries require macOS 13 or later. Remove Intel Macs from the installation guide's remote-host-only guidance. Keep the installation guide aligned with published assets.
 
 The website's `/install.sh` route is a 302 redirect, configured in `web/apps/site/vite.config.ts`, to `https://github.com/vibeke-ai/vibeke/releases/latest/download/install.sh`. It uses `Cache-Control: no-store`. Keep this endpoint stable; the published release supplies the version-pinned installer. Do not maintain a stale second copy of the script in website public assets.
 

@@ -50,6 +50,7 @@ mkdir -p "$DIST"
 echo linux-x86 >"$DIST/vibeke-linux-x86_64"
 echo linux-arm >"$DIST/vibeke-linux-aarch64"
 echo mac >"$DIST/vibeke-macos-aarch64"
+echo mac-intel >"$DIST/vibeke-macos-x86_64"
 echo desktop >"$DIST/Vibeke-0.9.0-mac-arm64.dmg"
 echo metadata >"$DIST/latest-mac.yml"
 echo blockmap >"$DIST/Vibeke-0.9.0-mac-arm64.zip.blockmap"
@@ -73,7 +74,8 @@ for f in SHA256SUMS SHA256SUMS.minisig manifest.json manifest.json.minisig; do
 done
 grep -q "^$(shasum -a 256 "$DIST/vibeke-linux-x86_64" | cut -d' ' -f1)  vibeke-linux-x86_64\$" "$DIST/SHA256SUMS" || fail "SHA256SUMS content"
 grep -q "vibeke-macos-aarch64.sha256" "$DIST/SHA256SUMS" && fail "sidecar listed in SHA256SUMS"
-[ "$(wc -l <"$DIST/SHA256SUMS" | tr -d ' ')" = 6 ] || fail "SHA256SUMS should list binaries, desktop installer, channel and blockmap"
+[ "$(wc -l <"$DIST/SHA256SUMS" | tr -d ' ')" = 7 ] || fail "SHA256SUMS should list binaries, desktop installer, channel and blockmap"
+grep -q "^$(shasum -a 256 "$DIST/vibeke-macos-x86_64" | cut -d' ' -f1)  vibeke-macos-x86_64\$" "$DIST/SHA256SUMS" || fail "Intel Mac missing from signed sums"
 grep -q 'Vibeke-0.9.0-mac-arm64.dmg' "$DIST/SHA256SUMS" || fail "desktop installer missing from signed sums"
 grep -q 'latest-mac.yml' "$DIST/SHA256SUMS" || fail "channel missing from signed sums"
 grep -q 'zip.blockmap' "$DIST/SHA256SUMS" || fail "blockmap missing from signed sums"
@@ -81,9 +83,12 @@ grep -q 'Vibeke-' "$DIST/manifest.json" && fail "desktop installer listed as a r
 grep -q '"version":"0.9.0"' "$DIST/manifest.json" || fail "manifest version"
 grep -q '"target":"linux-x86_64"' "$DIST/manifest.json" || fail "manifest target"
 grep -q 'releases/download/v0.9.0/vibeke-linux-x86_64' "$DIST/manifest.json" || fail "manifest url"
+grep -q '"target":"macos-x86_64"' "$DIST/manifest.json" || fail "Intel Mac missing from manifest"
+grep -q 'releases/download/v0.9.0/vibeke-macos-x86_64' "$DIST/manifest.json" || fail "Intel Mac manifest url"
 grep -q "trusted comment: vibeke v0.9.0\$" "$DIST/SHA256SUMS.minisig" || fail "SHA256SUMS trusted comment"
 grep -q "trusted comment: vibeke v0.9.0 version:0.9.0\$" "$DIST/manifest.json.minisig" || fail "manifest trusted comment"
 minisign -V -P "$PUB_A" -m "$DIST/SHA256SUMS" -x "$DIST/SHA256SUMS.minisig" >/dev/null || fail "SHA256SUMS does not verify"
+minisign -V -P "$PUB_A" -m "$DIST/manifest.json" -x "$DIST/manifest.json.minisig" >/dev/null || fail "manifest does not verify"
 if minisign -V -P "$PUB_B" -m "$DIST/SHA256SUMS" -x "$DIST/SHA256SUMS.minisig" >/dev/null 2>&1; then fail "verifies with the wrong key"; fi
 echo tampered >>"$DIST/SHA256SUMS"
 if minisign -V -P "$PUB_A" -m "$DIST/SHA256SUMS" -x "$DIST/SHA256SUMS.minisig" >/dev/null 2>&1; then fail "tampered sums verify"; fi
@@ -99,6 +104,7 @@ mkrelease() { # <signing key name> [binary version] [trusted-comment version] [u
   rm -rf "$REL"; mkdir -p "$REL"
   case "$(uname -s)-$(uname -m)" in
     Darwin-arm64) NAME=vibeke-macos-aarch64 ;;
+    Darwin-x86_64) NAME=vibeke-macos-x86_64 ;;
     Linux-x86_64) NAME=vibeke-linux-x86_64 ;;
     Linux-aarch64|Linux-arm64) NAME=vibeke-linux-aarch64 ;;
     *) echo "release-sign-test: installer tests need a supported platform, skipping them"; exit 0 ;;
@@ -122,6 +128,56 @@ install_again() { # the same, into the existing HOME (an upgrade or downgrade at
 installed() { basename "$(readlink "$WORK/ihome/.local/share/vibeke/current")"; }
 
 mkinstaller "$PUB_A" "$PUB_B"
+# Exercise Intel Mac selection on every test host with a signed shell-script fixture.
+mkdir -p "$WORK/intel-bin"
+cat >"$WORK/intel-bin/uname" <<'STUB'
+#!/bin/sh
+case "$1" in
+  -s) echo Darwin ;;
+  -m) echo "${TEST_UNAME_ARCH:-x86_64}" ;;
+  *) exit 1 ;;
+esac
+STUB
+cat >"$WORK/intel-bin/sysctl" <<'STUB'
+#!/bin/sh
+[ "$*" = "-n sysctl.proc_translated" ] || exit 1
+echo "${TEST_PROC_TRANSLATED:-0}"
+STUB
+cat >"$WORK/intel-bin/sw_vers" <<'STUB'
+#!/bin/sh
+[ "$1" = -productVersion ] || exit 1
+echo "${TEST_MACOS_VERSION:-13.0}"
+STUB
+chmod +x "$WORK/intel-bin"/*
+(
+  export PATH="$WORK/intel-bin:$PATH"
+  mkrelease a
+  install_run || fail "Intel Mac installer: $(cat "$WORK/iout")"
+  grep -q "vibeke-macos-x86_64 0.9.0" "$WORK/iout" || fail "Intel Mac artifact not selected"
+  [ "$(installed)" = 0.9.0 ] || fail "Intel Mac version not installed"
+  cmp "$REL/$NAME" "$WORK/ihome/.local/bin/vibeke" || fail "Intel Mac binary not installed"
+  ok "Intel Mac installer selects and verifies its signed artifact"
+  echo tampered >>"$REL/$NAME"
+  if install_run; then fail "Intel Mac installer accepted a tampered binary"; fi
+  [ ! -e "$WORK/ihome/.local/bin/vibeke" ] || fail "Intel Mac binary installed despite a bad checksum"
+  ok "Intel Mac installer refuses a tampered binary"
+  (
+    export TEST_MACOS_VERSION=12.7
+    if install_run; then fail "Intel Mac installer accepted macOS 12"; fi
+    grep -q "macOS 13 or later is required" "$WORK/iout" || fail "missing macOS requirement"
+    [ ! -e "$WORK/ihome/.local/bin/vibeke" ] || fail "binary installed on unsupported macOS"
+    ok "Intel Mac installer explains its minimum macOS version"
+  )
+  (
+    export TEST_UNAME_ARCH=arm64
+    mkrelease a
+  )
+  export TEST_PROC_TRANSLATED=1
+  install_run || fail "Rosetta installer: $(cat "$WORK/iout")"
+  grep -q "vibeke-macos-aarch64 0.9.0" "$WORK/iout" || fail "Rosetta did not select native ARM64"
+  cmp "$REL/vibeke-macos-aarch64" "$WORK/ihome/.local/bin/vibeke" || fail "Rosetta did not install native ARM64"
+  ok "Rosetta installer selects and verifies the native Apple silicon artifact"
+)
 mkrelease a
 install_run || fail "installer with a signed release: $(cat "$WORK/iout")"
 grep -q "signature verified" "$WORK/iout" || fail "no verification message"

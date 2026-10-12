@@ -4,7 +4,7 @@
 #   scripts/release-sign.sh [--key current|next] <dist-dir>
 #
 # <dist-dir> holds the artifacts built by `scripts/release-build.sh` or downloaded from the draft
-# release (vibeke-macos-aarch64, vibeke-linux-x86_64, vibeke-linux-aarch64, ...). The script:
+# release (vibeke-macos-aarch64, vibeke-macos-x86_64, vibeke-linux-x86_64, ...). The script:
 #   1. writes SHA256SUMS over the artifacts and manifest.json (version, per-target sha256 and URL),
 #   2. signs both with minisign (SHA256SUMS.minisig, manifest.json.minisig); minisign asks for
 #      the key password on the terminal, this script never reads or handles the secret key,

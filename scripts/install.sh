@@ -185,9 +185,22 @@ main() {
     x86_64|amd64) ARCH=x86_64 ;;
     *) die "unsupported architecture $(uname -m)" ;;
   esac
+  if [ "$OS" = macos ]; then
+    # Rosetta reports x86_64 on Apple silicon; install the native binary.
+    if [ "$(sysctl -n sysctl.proc_translated 2>/dev/null ||
+      /usr/sbin/sysctl -n sysctl.proc_translated 2>/dev/null || true)" = 1 ]; then
+      ARCH=aarch64
+    fi
+    MACOS_VERSION=$(sw_vers -productVersion) || die "cannot determine the macOS version"
+    MACOS_MAJOR=${MACOS_VERSION%%.*}
+    case "$MACOS_MAJOR" in
+      ""|*[!0-9]*) die "invalid macOS version '$MACOS_VERSION'" ;;
+    esac
+    [ "$MACOS_MAJOR" -ge 13 ] || die "macOS 13 or later is required (found $MACOS_VERSION)"
+  fi
   NAME="vibeke-$OS-$ARCH"
   case "$NAME" in
-    vibeke-macos-aarch64|vibeke-linux-aarch64|vibeke-linux-x86_64) ;;
+    vibeke-macos-aarch64|vibeke-macos-x86_64|vibeke-linux-aarch64|vibeke-linux-x86_64) ;;
     *) die "no release build for $OS/$ARCH" ;;
   esac
 

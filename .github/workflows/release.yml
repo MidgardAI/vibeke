@@ -52,8 +52,19 @@ jobs:
             [ "$GITHUB_REF_NAME" = "v$cargo_version" ] || { echo "tag $GITHUB_REF_NAME != Cargo.toml version $cargo_version"; exit 1; }
           fi
           echo "VERSION=$cargo_version" >> "$GITHUB_ENV"
+      - name: Install macOS Rust targets
+        if: runner.os == 'macOS'
+        run: mise exec -- rustup target add aarch64-apple-darwin x86_64-apple-darwin
       - name: Build
         run: mise exec -- sh scripts/release-build.sh "$VERSION" --only ${{ matrix.only }}
+      - name: Verify macOS binaries
+        if: runner.os == 'macOS'
+        run: |
+          lipo -verify_arch arm64 "dist/$VERSION/vibeke-macos-aarch64"
+          lipo -verify_arch x86_64 "dist/$VERSION/vibeke-macos-x86_64"
+          for target in macos-aarch64 macos-x86_64; do
+            vtool -show-build "dist/$VERSION/vibeke-$target" | grep -Eq '^[[:space:]]*minos 13\.0$'
+          done
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: dist-${{ matrix.only }}
@@ -172,7 +183,7 @@ jobs:
         run: |
           printf '%s\n' "$GITHUB_REF_NAME" | grep -Eq '^v[0-9A-Za-z.+-]+$' || { echo "invalid tag name" >&2; exit 1; }
           version="${GITHUB_REF_NAME#v}"
-          for target in macos-aarch64 linux-x86_64 linux-aarch64; do
+          for target in macos-aarch64 macos-x86_64 linux-x86_64 linux-aarch64; do
             test -s "dist/vibeke-$target"
             (cd dist && sha256sum -c "vibeke-$target.sha256")
           done

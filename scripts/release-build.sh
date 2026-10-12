@@ -4,8 +4,9 @@
 #
 #   scripts/release-build.sh <version> [--repro-check] [--only macos|linux]
 #
-# Targets (a target whose toolchain is missing is skipped with a notice):
-#   vibeke-macos-aarch64   aarch64-apple-darwin, natively on an Apple-silicon Mac
+# Targets (macOS needs a Mac with both Rust targets; Linux needs cargo-zigbuild and Zig):
+#   vibeke-macos-aarch64   aarch64-apple-darwin, native or cross-built on a Mac
+#   vibeke-macos-x86_64    x86_64-apple-darwin, native or cross-built on a Mac
 #   vibeke-linux-x86_64    x86_64-unknown-linux-musl   via cargo-zigbuild + zig
 #   vibeke-linux-aarch64   aarch64-unknown-linux-musl  via cargo-zigbuild + zig
 #
@@ -76,7 +77,8 @@ build() {
   if [ "$builder" = zigbuild ]; then
     cargo zigbuild --release --locked -p vibeke --target "$target"
   else
-    cargo build --release --locked -p vibeke --target "$target"
+    # Match libghostty-vt's minimum macOS version.
+    MACOSX_DEPLOYMENT_TARGET=13.0 cargo build --release --locked -p vibeke --target "$target"
   fi
   cp "target/$target/release/vibeke" "$OUT/$name"
   chmod 755 "$OUT/$name"
@@ -86,10 +88,11 @@ build() {
 
 if [ "$ONLY" = linux ]; then
   :
-elif [ "$(uname -s)-$(uname -m)" = "Darwin-arm64" ]; then
+elif [ "$(uname -s)" = Darwin ]; then
   build vibeke-macos-aarch64 aarch64-apple-darwin cargo
+  build vibeke-macos-x86_64 x86_64-apple-darwin cargo
 else
-  echo "release-build: skipping vibeke-macos-aarch64 (needs an Apple-silicon Mac)"
+  echo "release-build: skipping the macOS targets (needs a Mac)"
 fi
 if [ "$ONLY" = macos ]; then
   :

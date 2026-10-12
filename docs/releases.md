@@ -74,11 +74,21 @@ Public releases need no token. `VIBEKE_GITHUB_API_URL` overrides the API base (t
 
 | Artifact | Target triple | Built by |
 | --- | --- | --- |
-| `vibeke-macos-aarch64` | `aarch64-apple-darwin` | `cargo build --release`, on an Apple-silicon Mac |
+| `vibeke-macos-aarch64` | `aarch64-apple-darwin` | `cargo build --release`, on a Mac |
+| `vibeke-macos-x86_64` | `x86_64-apple-darwin` | `cargo build --release`, on a Mac |
 | `vibeke-linux-x86_64` | `x86_64-unknown-linux-musl` | `cargo zigbuild --release` |
 | `vibeke-linux-aarch64` | `aarch64-unknown-linux-musl` | `cargo zigbuild --release` |
 
-A target whose toolchain is missing is skipped with a notice. Use `mise exec -- sh scripts/release-build.sh <version>` so Zig and cargo-zigbuild are on `PATH`. `--repro-check` first runs `scripts/repro-check.sh` for both Linux targets. `--only macos|linux` builds one family.
+The macOS builds require a Mac with the Xcode command line tools. Install both Rust targets first:
+
+```sh
+mise exec -- rustup target add aarch64-apple-darwin x86_64-apple-darwin
+```
+
+Both macOS architectures build on either an Apple silicon or Intel Mac. The release workflow installs both targets. It checks the architecture of each macOS binary.
+Both binaries require macOS 13 or later. The macOS builds set `MACOSX_DEPLOYMENT_TARGET=13.0` to match libghostty-vt. The installer refuses older macOS versions. On Apple silicon, it selects the ARM64 binary even when the terminal runs under Rosetta.
+
+The script skips macOS builds on other operating systems. It skips Linux builds when Zig or cargo-zigbuild is missing. Use `mise exec -- sh scripts/release-build.sh <version>` so Zig and cargo-zigbuild are on `PATH`. `--repro-check` first runs `scripts/repro-check.sh` for both Linux targets. `--only macos|linux` builds one family.
 
 Linux binaries use static musl linking. Zig 0.16 provides the C toolchain for libghostty-vt and linking. `mise.toml` selects the Zig version.
 
@@ -99,7 +109,7 @@ Minisign release signing happens locally. CI never holds the minisign secret key
 1. Update the workspace version in `Cargo.toml`, commit it, and push it to `main`.
 2. Wait for the `ci` workflow to pass on that commit. It runs the same checks as `mise run ci`. The [hardening guide](hardening.md) describes the separate fuzz, performance and reproducibility checks.
 3. Tag and push: `git tag v<version> && git push origin v<version>`.
-4. The `release` workflow (`.github/workflows/release.yml`) builds the macOS and Linux artifacts, verifies that all three binaries match their `.sha256` files, and creates a **draft** release `v<version>` with those files and an `install.sh` pinned to the tag's version. It needs no secret beyond the repository's own `GITHUB_TOKEN`.
+4. The `release` workflow (`.github/workflows/release.yml`) builds the macOS and Linux artifacts. It requires all four host binaries to match their `.sha256` files before creating a **draft** release `v<version>`. The draft includes those files and an `install.sh` pinned to the tag's version. It needs no secret beyond the repository's own `GITHUB_TOKEN`.
 5. Download the draft's files into one directory, for example with `gh release download v<version> --dir dist/<version>` (a private repository needs `gh auth login`). Alternatively build locally with `scripts/release-build.sh <version>` and use `dist/<version>/`. If you built both, compare the sha256 of the files first: they should be identical.
 6. Sign: `scripts/release-sign.sh dist/<version>`. The script writes `SHA256SUMS` and `manifest.json`, then runs minisign twice (`minisign -S -s ~/.vibeke-release-keys/vibeke-2026.key -m <file> -t "vibeke v<version>"`). Enter the key password when minisign asks. The script finishes by verifying both signatures with the public key embedded in the binary, and fails if they do not verify.
 7. Upload the four signing outputs to the draft: `gh release upload v<version> dist/<version>/SHA256SUMS dist/<version>/SHA256SUMS.minisig dist/<version>/manifest.json dist/<version>/manifest.json.minisig`. The workflow already includes the version-pinned installer.
