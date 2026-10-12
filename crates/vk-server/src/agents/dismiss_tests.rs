@@ -408,3 +408,206 @@ async fn a_gated_question_whose_gate_is_not_yet_registered_stays_open() {
     );
     assert_eq!(status(&e, &q), InteractionStatus::Open);
 }
+
+fn open_of_kind(e: &Env, run: &str, kind: InteractionKind) -> Vec<Interaction> {
+    e.server.with_core(|c| {
+        c.model
+            .interactions
+            .iter()
+            .filter(|i| i.run == run && i.kind == kind && i.status == InteractionStatus::Open)
+            .cloned()
+            .collect()
+    })
+}
+
+fn reported_again(e: &Env) -> usize {
+    e.server.with_core(|c| {
+        c.store
+            .events_after(0, 10_000, &["interaction.updated".to_string()])
+            .unwrap()
+            .into_iter()
+            .map(|ev| serde_json::to_value(ev).unwrap())
+            .filter(|v| v["data"]["reason"] == "reported_again")
+            .count()
+    })
+}
+
+fn four_questions() -> Value {
+    json!({"questions": [
+        {"question": "Which resources should be shareable?", "header": "Scope", "multiSelect": false,
+         "options": [{"label": "Playable materials"}, {"label": "Podcasts only"}]},
+        {"question": "Who may publish a question?", "header": "Publisher", "multiSelect": false,
+         "options": [{"label": "Creator and owner"}, {"label": "Creator only"}]},
+        {"question": "What happens to existing questions?", "header": "Existing Qs", "multiSelect": false,
+         "options": [{"label": "Keep them public"}, {"label": "Make them private"}]},
+        {"question": "Who may ask on a public link?", "header": "Who asks", "multiSelect": false,
+         "options": [{"label": "Any logged-in user"}, {"label": "Hub members only"}]}
+    ]})
+}
+
+/// Live bug: Claude reports one `AskUserQuestion` call through `PreToolUse` (with a
+/// `tool_use_id`) and then `PermissionRequest` (without one); the inbox showed it twice.
+#[tokio::test(flavor = "multi_thread")]
+async fn one_ask_user_question_call_opens_one_question() {
+    let e = env();
+    let run = add_run(&e, "r-dup", "p-dup", |_| {});
+    let pre = json!({"session_id": "sess-r-dup", "tool_name": "AskUserQuestion", "tool_use_id": "toolu_dup", "tool_input": four_questions()});
+    let perm = json!({"session_id": "sess-r-dup", "tool_name": "AskUserQuestion", "tool_input": four_questions()});
+    let a = gate(&e.server, "p-dup", Harness::Claude, "PreToolUse", &pre)
+        .await
+        .unwrap();
+    assert!(a["decision"].is_null(), "keystroke-answered question: {a}");
+    let b = gate(
+        &e.server,
+        "p-dup",
+        Harness::Claude,
+        "PermissionRequest",
+        &perm,
+    )
+    .await
+    .unwrap();
+    // Transparent: no decision, so Claude's own dialog shows as before.
+    assert!(b["decision"].is_null(), "{b}");
+    let open = open_of_kind(&e, &run.id, InteractionKind::Question);
+    assert_eq!(open.len(), 1, "{open:?}");
+    assert_eq!(open[0].native_ref.as_deref(), Some("toolu_dup"));
+    assert_eq!(open[0].questions.len(), 4);
+}
+
+/// A question reported again without a matching native ref (a retried hook, a transport that
+/// carries no id) reuses the open interaction instead of opening a second one.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_question_reported_again_without_its_id_reuses_the_open_one() {
+    let e = env();
+    let run = add_run(&e, "r-again", "p-again", |_| {});
+    let with_id = json!({"tool_name": "AskUserQuestion", "tool_use_id": "toolu_1", "tool_input": four_questions()});
+    let without = json!({"tool_name": "AskUserQuestion", "tool_input": four_questions()});
+    gate(
+        &e.server,
+        "p-again",
+        Harness::Claude,
+        "PreToolUse",
+        &without,
+    )
+    .await
+    .unwrap();
+    gate(
+        &e.server,
+        "p-again",
+        Harness::Claude,
+        "PreToolUse",
+        &with_id,
+    )
+    .await
+    .unwrap();
+    let open = open_of_kind(&e, &run.id, InteractionKind::Question);
+    assert_eq!(open.len(), 1, "{open:?}");
+    assert_eq!(open[0].native_ref.as_deref(), Some("toolu_1"));
+    // Another call asking something else is its own question.
+    let other = json!({"tool_name": "AskUserQuestion", "tool_use_id": "toolu_2", "tool_input": {"questions": [
+        {"question": "Ship it?", "options": [{"label": "Yes"}, {"label": "No"}], "multiSelect": false}]}});
+    gate(&e.server, "p-again", Harness::Claude, "PreToolUse", &other)
+        .await
+        .unwrap();
+    assert_eq!(
+        open_of_kind(&e, &run.id, InteractionKind::Question).len(),
+        2
+    );
+    // The same prompts under a different native ref are a different call too.
+    let twin = json!({"tool_name": "AskUserQuestion", "tool_use_id": "toolu_3", "tool_input": four_questions()});
+    gate(&e.server, "p-again", Harness::Claude, "PreToolUse", &twin)
+        .await
+        .unwrap();
+    assert_eq!(
+        open_of_kind(&e, &run.id, InteractionKind::Question).len(),
+        3
+    );
+}
+
+/// `ExitPlanMode` arrives through `PermissionRequest`, which carries no `tool_use_id`: the same
+/// plan reported twice is one plan review.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_same_plan_reported_twice_is_one_plan_review() {
+    let e = env();
+    let run = add_run(&e, "r-plan", "p-plan", |_| {});
+    let plan = json!({"tool_name": "ExitPlanMode", "tool_input": {"plan": "1. Add the share link\n2. Test it"}});
+    // Plan reviews are gated (held until answered): run both hooks in the background.
+    let mut held = Vec::new();
+    for _ in 0..2 {
+        let (srv, p) = (e.server.clone(), plan.clone());
+        held.push(tokio::spawn(async move {
+            gate(&srv, "p-plan", Harness::Claude, "PermissionRequest", &p).await
+        }));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while open_of_kind(&e, &run.id, InteractionKind::PlanReview).is_empty()
+            && Instant::now() < deadline
+        {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+    // The second report is recorded as the first one reported again.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while reported_again(&e) == 0 && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(reported_again(&e), 1);
+    let open = open_of_kind(&e, &run.id, InteractionKind::PlanReview);
+    assert_eq!(open.len(), 1, "{open:?}");
+    // A revised plan is a new review.
+    let revised = json!({"tool_name": "ExitPlanMode", "tool_input": {"plan": "1. Add the share link\n2. Test it\n3. Document it"}});
+    let srv = e.server.clone();
+    held.push(tokio::spawn(async move {
+        gate(
+            &srv,
+            "p-plan",
+            Harness::Claude,
+            "PermissionRequest",
+            &revised,
+        )
+        .await
+    }));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while open_of_kind(&e, &run.id, InteractionKind::PlanReview).len() < 2
+        && Instant::now() < deadline
+    {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(
+        open_of_kind(&e, &run.id, InteractionKind::PlanReview).len(),
+        2
+    );
+    for h in held {
+        h.abort();
+    }
+}
+
+/// A multi-question answer must name a choice for every question before it is recorded:
+/// a partial answer would leave Claude's dialog half answered.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_partial_multi_question_answer_is_refused() {
+    let e = env();
+    let run = add_run(&e, "r-part", "p-part", |_| {});
+    let pre = json!({"tool_name": "AskUserQuestion", "tool_use_id": "toolu_p", "tool_input": four_questions()});
+    gate(&e.server, "p-part", Harness::Claude, "PreToolUse", &pre)
+        .await
+        .unwrap();
+    let it = open_of_kind(&e, &run.id, InteractionKind::Question).remove(0);
+    let first = it.questions[0].id.clone();
+    let partial = Answer {
+        decision: None,
+        choices: vec![(first, vec!["Playable materials".into()])],
+        text: None,
+    };
+    let why = incomplete_answer(&it, &partial).expect("refused");
+    assert!(why.contains("1 of 4"), "{why}");
+    let full = Answer {
+        decision: None,
+        choices: it
+            .questions
+            .iter()
+            .map(|q| (q.id.clone(), vec![q.options[0].id.clone()]))
+            .collect(),
+        text: None,
+    };
+    assert_eq!(incomplete_answer(&it, &full), None);
+}

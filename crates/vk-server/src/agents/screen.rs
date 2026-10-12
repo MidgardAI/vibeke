@@ -3,6 +3,7 @@
 //! structured transport (§2.5 rule 3).
 
 use super::Harness;
+pub use super::screen_ask::AskScreen;
 pub use super::screen_picker::Picker;
 use super::screen_picker::{self, Row};
 use regex::Regex;
@@ -25,6 +26,8 @@ pub struct Dialog {
     pub rule: String,
     /// Set when `kind` is [`InteractionKind::Picker`].
     pub picker: Option<Picker>,
+    /// Claude's `AskUserQuestion` dialog (tabs, the visible question or the review).
+    pub ask: Option<AskScreen>,
 }
 
 impl Dialog {
@@ -47,6 +50,32 @@ impl Dialog {
             },
             rule: format!("picker:{}", p.name),
             picker: Some(p),
+            ask: None,
+        }
+    }
+
+    /// Claude's `AskUserQuestion` dialog as a screen question: its answer rows are the options
+    /// (the free-text field and `Chat about this` are not), the visible view is the fingerprint.
+    pub fn of_ask(a: AskScreen) -> Dialog {
+        let options: Vec<(u8, String, Option<char>)> =
+            a.options().map(|r| (r.n, r.label.clone(), None)).collect();
+        let pointer = a
+            .pointer
+            .and_then(|p| a.rows.get(p))
+            .filter(|r| !r.is_free_text() && !r.is_chat())
+            .map(|r| r.n);
+        Dialog {
+            kind: InteractionKind::Question,
+            title: a.title.clone(),
+            tool: None,
+            command: None,
+            options,
+            pointer,
+            fingerprint: a.fingerprint(),
+            confidence: 0.9,
+            rule: super::screen_ask::RULE_ID.to_string(),
+            picker: None,
+            ask: Some(a),
         }
     }
 
@@ -115,8 +144,22 @@ pub fn evaluate_snapshot(
     ) {
         return evaluate_manifest(base, snap, now_ms, hold);
     }
-    let mut m = evaluate_code(base, snap);
     let lines: Vec<&str> = snap.lines.iter().map(String::as_str).collect();
+    // Claude's `AskUserQuestion` dialog: its own grammar (tab row, question, footer) is more
+    // specific than the approval reading, which a question such as "Do you want to create…?"
+    // with Yes/No options would otherwise match.
+    if base == Harness::Claude
+        && let Some(a) = super::screen_ask::detect(&lines)
+    {
+        return (
+            ScreenMatch {
+                state: None,
+                dialog: Some(Dialog::of_ask(a)),
+            },
+            None,
+        );
+    }
+    let mut m = evaluate_code(base, snap);
     let quiet = |m: &ScreenMatch| {
         m.dialog.is_none() && m.state.as_ref().is_none_or(|s| s.0 == Execution::Idle)
     };
@@ -255,6 +298,7 @@ fn evaluate_code(h: Harness, snap: &Snapshot) -> ScreenMatch {
                 confidence: 0.9,
                 rule: String::new(),
                 picker: None,
+                ask: None,
             });
         }
     }
@@ -380,6 +424,7 @@ fn dialog_of(d: vk_agents::manifest::DialogMatch) -> Dialog {
         confidence: d.confidence,
         rule: d.rule_id,
         picker: None,
+        ask: None,
     }
 }
 

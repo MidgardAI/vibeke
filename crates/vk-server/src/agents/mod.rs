@@ -21,6 +21,9 @@ mod opencode;
 mod polish;
 mod route;
 pub mod screen;
+pub mod screen_ask;
+#[cfg(test)]
+mod screen_ask_tests;
 pub mod screen_picker;
 #[cfg(test)]
 mod screen_picker_tests;
@@ -1151,6 +1154,7 @@ pub(crate) fn nothing_typed(delivery_error: Option<&str>) -> bool {
             "run gone",
             "pane gone",
             "selection_mismatch",
+            "answer_in_pane",
         ]
         .iter()
         .any(|p| e.starts_with(p))
@@ -1947,6 +1951,12 @@ fn last_assistant_message(p: &Value) -> Option<String> {
 /// decides (gate mode), or return at once so the native dialog shows (observe mode).
 async fn gate(server: &Arc<Server>, pane: &str, h: Harness, event: &str, p: &Value) -> R {
     let run = bound_run(server, pane, h);
+    // Claude asks `PermissionRequest` for `AskUserQuestion` right after its `PreToolUse`, which
+    // already opened the question (04 §6.1.2), and without a `tool_use_id` to tie the two
+    // together. No decision keeps the permission flow unchanged: Claude shows its own dialog.
+    if harness::question_permission_echo(h, event, p) {
+        return Ok(json!({"decision": null}));
+    }
     let Some(mut it) = harness::interaction_from_hook(h, event, p) else {
         return Ok(json!({"decision": null}));
     };
@@ -1971,7 +1981,17 @@ async fn gate(server: &Arc<Server>, pane: &str, h: Harness, event: &str, p: &Val
         AnswerChannel::Keystrokes
     };
     it.answerable = native || h.keystroke_answers(it.kind);
+    // Claude's multi-select questions are not answered by keystrokes (screen_ask): the inbox
+    // says to answer them in the pane instead of failing after the user picked.
+    if !native
+        && h.family() == harness::Family::Claude
+        && it.kind == InteractionKind::Question
+        && it.questions.iter().any(|q| q.multi)
+    {
+        it.answerable = false;
+    }
     let (tx_reply, rx_reply) = oneshot::channel::<GateReply>();
+    let mut reused = false;
     {
         let mut c = server.core.lock().unwrap();
         it.handle = c.next_interaction_handle();
@@ -1995,14 +2015,38 @@ async fn gate(server: &Arc<Server>, pane: &str, h: Harness, event: &str, p: &Val
             }
             it.id = existing.id.clone();
             it.handle = existing.handle.clone();
+        } else if let Some(existing) = c
+            .model
+            .interactions
+            .iter()
+            .find(|x| same_open_request(x, &it, &run.id))
+            .cloned()
+        {
+            // The same question or plan reported again without a matching native ref (another
+            // hook for the same call, or a retry of one that carries no id): one interaction.
+            reused = true;
+            it.id = existing.id.clone();
+            it.handle = existing.handle.clone();
+            it.opened_at_ms = existing.opened_at_ms;
+            if it.native_ref.is_none() {
+                it.native_ref = existing.native_ref.clone();
+            }
         }
         let mut tx = Tx::new();
-        tx.counters = true;
-        tx.event(
-            "interaction.opened",
-            json!({"interaction": it.id, "pane": pane, "run": run.id}),
-            json!({"kind": it.kind.as_str(), "source": "structured", "confidence": 1.0, "gate": gate_mode, "native_ref": it.native_ref, "risk": it.action.as_ref().map(|a| format!("{:?}", a.risk).to_lowercase())}),
-        );
+        if reused {
+            tx.event(
+                "interaction.updated",
+                json!({"interaction": it.id, "pane": pane, "run": run.id}),
+                json!({"reason": "reported_again", "event": event, "gate": gate_mode}),
+            );
+        } else {
+            tx.counters = true;
+            tx.event(
+                "interaction.opened",
+                json!({"interaction": it.id, "pane": pane, "run": run.id}),
+                json!({"kind": it.kind.as_str(), "source": "structured", "confidence": 1.0, "gate": gate_mode, "native_ref": it.native_ref, "risk": it.action.as_ref().map(|a| format!("{:?}", a.risk).to_lowercase())}),
+            );
+        }
         tx.interaction(it.clone());
         server.commit(&mut c, tx).map_err(internal)?;
     }
@@ -2029,7 +2073,9 @@ async fn gate(server: &Arc<Server>, pane: &str, h: Harness, event: &str, p: &Val
         p,
         gate_mode.then_some(GATE_TIMEOUT),
     );
-    notify_interaction(server, &it, &run);
+    if !reused {
+        notify_interaction(server, &it, &run);
+    }
     if !gate_mode {
         return Ok(json!({"decision": null, "interaction": it.id, "mode": "observe"}));
     }
@@ -2065,6 +2111,34 @@ async fn gate(server: &Arc<Server>, pane: &str, h: Harness, event: &str, p: &Val
             }
             Ok(json!({"decision": null, "interaction": it.id}))
         }
+    }
+}
+
+/// Is `x` an open interaction of run `run` asking what `it` asks? Questions compare their
+/// prompts, plan reviews their plan text; approvals never match (two calls may ask alike).
+/// Used when `it` has no native ref, or one no interaction carries.
+fn same_open_request(x: &Interaction, it: &Interaction, run: &str) -> bool {
+    if x.run != run || x.status != InteractionStatus::Open || x.kind != it.kind {
+        return false;
+    }
+    // Two different native refs are two different calls.
+    if let (Some(a), Some(b)) = (&x.native_ref, &it.native_ref)
+        && a != b
+    {
+        return false;
+    }
+    match it.kind {
+        InteractionKind::Question => {
+            let prompts = |i: &Interaction| -> Vec<String> {
+                i.questions.iter().map(|q| norm_ws(&q.prompt)).collect()
+            };
+            !it.questions.is_empty() && prompts(x) == prompts(it)
+        }
+        InteractionKind::PlanReview => match (&x.plan_md, &it.plan_md) {
+            (Some(a), Some(b)) => norm_ws(a) == norm_ws(b) && !b.trim().is_empty(),
+            _ => false,
+        },
+        _ => false,
     }
 }
 
@@ -2187,7 +2261,12 @@ fn set_delivery(server: &Server, id: &str, state: DeliveryState, error: Option<S
         let changed = error
             .as_deref()
             .is_some_and(|e| e.starts_with("dialog_changed") || e.starts_with("selection"));
-        let body = if changed {
+        let in_pane = error
+            .as_deref()
+            .and_then(|e| e.strip_prefix("answer_in_pane: "));
+        let body = if let Some(why) = in_pane {
+            format!("Vibeke could not type your answer to \"{title}\": {why}.")
+        } else if changed {
             format!(
                 "The dialog had changed, so your answer to \"{title}\" was not sent. Check the pane."
             )
@@ -2264,6 +2343,16 @@ async fn answer(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         choices,
         text: s(p, "text").map(str::to_string),
     };
+    if let Some(why) = untypeable_answer(server, &it, &answer) {
+        return Err(err(ErrorKind::Unsupported, why).details(
+            json!({"reason": "answer_in_pane", "fallback": "focus the pane", "interaction": it.id}),
+        ));
+    }
+    if let Some(why) = incomplete_answer(&it, &answer) {
+        return Err(
+            invalid(why).details(json!({"reason": "answer_incomplete", "interaction": it.id}))
+        );
+    }
     let by = format!("{}:{}", ctx.kind, ctx.client_id);
     let idem = s(p, "idempotency_key");
     // A display label for the answerer (e.g. "gateway:Alice's phone"); full-scope clients only.
@@ -2334,6 +2423,69 @@ async fn answer(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     }
     let it = server.with_core(|c| c.interaction(id).cloned());
     Ok(json!({"interaction": it, "delivery": {"channel": channel}}))
+}
+
+/// Why a question answer typed into the pane would be incomplete: a dialog with several
+/// questions is walked question by question, so every question needs a choice before anything
+/// is typed. `None` when the answer is complete or is not delivered by keystrokes.
+fn incomplete_answer(it: &Interaction, answer: &Answer) -> Option<String> {
+    if it.kind != InteractionKind::Question
+        || it.questions.len() < 2
+        || it.answer_channel != AnswerChannel::Keystrokes
+    {
+        return None;
+    }
+    let answered = it
+        .questions
+        .iter()
+        .filter(|q| {
+            answer
+                .choices
+                .iter()
+                .any(|(id, picked)| id == &q.id && picked.iter().any(|x| !x.trim().is_empty()))
+        })
+        .count();
+    (answered < it.questions.len()).then(|| {
+        format!(
+            "answer every question: {answered} of {} have a choice",
+            it.questions.len()
+        )
+    })
+}
+
+/// Why a Claude question answer cannot be typed into its dialog: free text (an answer that
+/// names no option, or text without a choice). Claude's dialog takes free text in a field that
+/// Vibeke does not fill; such answers belong in the pane. `None` when it can be typed.
+fn untypeable_answer(server: &Server, it: &Interaction, answer: &Answer) -> Option<String> {
+    if it.kind != InteractionKind::Question
+        || it.answer_channel != AnswerChannel::Keystrokes
+        || it.source == StateSource::Screen
+    {
+        return None;
+    }
+    let claude = server
+        .with_core(|c| c.run(&it.run).and_then(|r| Harness::from_id(&r.harness)))
+        .is_some_and(|h| h.family() == harness::Family::Claude);
+    if !claude {
+        return None;
+    }
+    if answer.choices.is_empty() && answer.text.is_some() {
+        return Some("free-text answers must be typed in the pane".into());
+    }
+    for (qid, picked) in &answer.choices {
+        let Some(q) = it.questions.iter().find(|q| &q.id == qid) else {
+            continue;
+        };
+        if let Some(x) = picked
+            .iter()
+            .find(|x| !q.options.iter().any(|o| &o.id == *x || &o.label == *x))
+        {
+            return Some(format!(
+                "\"{x}\" is not an option; free-text answers must be typed in the pane"
+            ));
+        }
+    }
+    None
 }
 
 /// The `conflict` error for a picker the screen no longer shows as the interaction describes.
@@ -2453,6 +2605,10 @@ fn dialog_matches(d: &screen::Dialog, it: &Interaction) -> bool {
     {
         return false;
     }
+    // Claude's question dialog: any of the interaction's questions, or their review.
+    if let Some(a) = &d.ask {
+        return screen_ask::matches(a, it);
+    }
     match (
         it.action.as_ref().and_then(|a| a.command.as_deref()),
         d.command.as_deref(),
@@ -2514,6 +2670,10 @@ async fn deliver_keystrokes(
             DeliveryState::Failed,
             Some("dialog_changed: the visible dialog is not this interaction".into()),
         );
+    }
+    // Claude's question dialog: every question in turn, then its review (verified steps).
+    if dialog.ask.is_some() {
+        return screen_walk::walk_ask(server, h, &rt, &it, answer).await;
     }
     // Pickers and pointer-marked questions: walk, verify, commit (no digits).
     if screen_walk::walks(h, &dialog, &it) {
