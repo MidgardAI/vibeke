@@ -216,7 +216,16 @@ pub async fn run(g: &Global, args: &[String]) -> i32 {
                 for n in &plan.notes {
                     println!("note: {n}");
                 }
-                if dry || (!yes && !redirected) {
+                // A redirect counts as consent only when every write stays inside it: the
+                // shared skill dir (`~/.agents`) is not redirected by `CODEX_HOME`.
+                let contained = redirected && {
+                    let roots = Dirs::redirect_roots();
+                    plan.files
+                        .iter()
+                        .filter(|f| f.changed())
+                        .all(|f| roots.iter().any(|r| f.path.starts_with(r)))
+                };
+                if dry || (!yes && !contained) {
                     let files: Vec<String> = plan
                         .files
                         .iter()

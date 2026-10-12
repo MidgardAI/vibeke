@@ -147,6 +147,16 @@ impl Dirs {
         }
     }
 
+    /// The directories the set redirect variables point at.
+    pub fn redirect_roots() -> Vec<PathBuf> {
+        Self::REDIRECT_VARS
+            .iter()
+            .filter_map(std::env::var_os)
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+            .collect()
+    }
+
     /// Env vars that redirect installs away from the user's real harness configs.
     pub const REDIRECT_VARS: &[&str] = &[
         "CLAUDE_CONFIG_DIR",
@@ -937,7 +947,8 @@ pub(crate) fn hooks_present(h: Harness, dirs: &Dirs) -> bool {
     !hook_status(h, dirs).hooks.is_empty()
 }
 
-fn hook_status(h: Harness, dirs: &Dirs) -> Status {
+/// The hooks (or extension) alone, without the skill: what the integrity record fingerprints.
+pub fn hook_status(h: Harness, dirs: &Dirs) -> Status {
     if h.is_extension() {
         return status_extension(h, dirs);
     }

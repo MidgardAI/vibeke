@@ -15,7 +15,7 @@ pub mod transcript;
 pub use fingerprint::{Subject, fingerprint, fingerprint_subject};
 pub use install::{
     Dirs, FileChange, Harness, HookStatus, InstallState, Plan, PlanKind, Status, Trust, apply,
-    hook_bin, is_build_output, plan_install, plan_uninstall, stale_command, status,
+    hook_bin, hook_status, is_build_output, plan_install, plan_uninstall, stale_command, status,
     write_codex_shim,
 };
 pub use mcp::{McpStatus, mcp_config_file, mcp_status, plan_mcp_install, plan_mcp_uninstall};

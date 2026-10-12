@@ -55,7 +55,8 @@ pub fn fingerprint(h: Harness, dirs: &Dirs) -> Option<String> {
         let bytes = std::fs::read(dirs.config_file(h)).ok()?;
         return Some(blake3::hash(&bytes).to_hex().to_string());
     }
-    let st = vk_agents::status(h, dirs);
+    // Hooks only: a missing or updated skill is not tampering with the hooks.
+    let st = vk_agents::hook_status(h, dirs);
     if st.state == InstallState::NotInstalled {
         return None;
     }

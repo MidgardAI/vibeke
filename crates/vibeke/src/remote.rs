@@ -379,7 +379,8 @@ async fn offer_integrations(target: &Target, args: &[String]) {
         return;
     }
     let bin = vk_remote::ssh::sh_quote(bootstrap::REMOTE_BIN);
-    let probe = target.run(&format!("{bin} integration pending --json"), None);
+    let cmd = format!("{bin} integration pending --json");
+    let probe = target.run(&cmd, None);
     let Ok(Ok(out)) = tokio::time::timeout(std::time::Duration::from_secs(20), probe).await else {
         return;
     };
@@ -392,7 +393,8 @@ async fn offer_integrations(target: &Target, args: &[String]) {
         return;
     }
     let list = offer.join(", ");
-    if !force && !std::io::stdin().is_terminal() {
+    // `ask` needs both streams; without them, say how instead of recording a decline.
+    if !force && !(std::io::stdin().is_terminal() && std::io::stderr().is_terminal()) {
         eprintln!(
             "vibeke: {label} runs {list} without the Vibeke hooks and skill; `vibeke ssh {label} --integrations` installs them there"
         );
