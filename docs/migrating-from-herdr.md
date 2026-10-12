@@ -126,7 +126,9 @@ A plugin pane closes when its command exits. Use `prefix+x` to close it manually
 
 Startup-hook background processes retain callback access across server restarts. Background processes from an action lose access when that action ends. Plugin logs redact recognized credentials.
 
-Unsupported features are `agent.view.set/clear`, key bindings from plugin manifests, and Git installation. Put key bindings in your configuration instead.
+Vibeke accepts and stores an agent-list view from `agent.view.set`. The sidebar does not apply its filter and sort yet.
+
+Unsupported features are key bindings from plugin manifests and Git installation. Put key bindings in your configuration instead. Copy mode calls, such as `pane.copy_motion` and `pane.edit_scrollback`, are not supported either.
 
 ### Known differences
 
