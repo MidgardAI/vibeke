@@ -62,7 +62,9 @@ export function linkJson(l: PairingLink): string {
 
 export function linkToUrl(l: PairingLink, appBase: string): string {
   const d = b64.encode(new TextEncoder().encode(linkJson(l)));
-  return `${appBase.replace(/\/+$/, '')}/#/pair?d=${d}`;
+  let end = appBase.length;
+  while (end > 0 && appBase[end - 1] === '/') end--;
+  return `${appBase.slice(0, end)}/#/pair?d=${d}`;
 }
 
 /** Accept a full URL or the bare `d` value. */

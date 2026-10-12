@@ -78,6 +78,21 @@ pub fn server_origin(server: &str) -> Result<String> {
     vk_e2e::relay::canonical_origin(&s).map_err(|e| Error::Protocol(e.to_string()))
 }
 
+/// Bearer tokens only travel over https, or over plain http to this machine.
+fn secure_origin(origin: &str) -> bool {
+    let Some(authority) = origin.strip_prefix("http://") else {
+        return true;
+    };
+    let host = match authority.rsplit_once(':') {
+        Some((h, p)) if p.bytes().all(|b| b.is_ascii_digit()) => h,
+        _ => authority,
+    };
+    matches!(host, "localhost" | "[::1]")
+        || host
+            .parse::<std::net::Ipv4Addr>()
+            .is_ok_and(|ip| ip.is_loopback())
+}
+
 /// `/v1/device/code` answer.
 #[derive(Debug, Clone, Deserialize)]
 pub struct DeviceCode {
@@ -208,8 +223,14 @@ impl Client {
             .user_agent(concat!("vibeke/", env!("CARGO_PKG_VERSION")))
             .build()
             .map_err(|e| Error::Http(e.to_string()))?;
+        let base = server_origin(server)?;
+        if !secure_origin(&base) {
+            return Err(Error::Protocol(format!(
+                "{base}: the account server needs https (plain http only for a loopback host)"
+            )));
+        }
         Ok(Client {
-            base: server_origin(server)?,
+            base,
             http,
             poll_unit: Duration::from_secs(1),
         })

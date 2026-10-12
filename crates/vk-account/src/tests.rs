@@ -22,6 +22,25 @@ fn cred(server: &str, refresh: &str, access: Option<(&str, u64)>) -> Credential 
 }
 
 #[test]
+fn plain_http_is_refused_except_for_loopback() {
+    for ok in [
+        "https://cloud.example",
+        "http://127.0.0.1:8787",
+        "http://localhost:8787",
+        "http://[::1]:8787",
+    ] {
+        assert!(Client::new(ok).is_ok(), "{ok}");
+    }
+    for bad in [
+        "http://cloud.example",
+        "ws://relay.example:8787",
+        "http://10.0.0.2",
+    ] {
+        assert!(Client::new(bad).is_err(), "{bad}");
+    }
+}
+
+#[test]
 fn origins_and_keychain_accounts() {
     assert_eq!(
         server_origin("relay.vibeke.dev").unwrap(),
