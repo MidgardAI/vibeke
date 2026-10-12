@@ -1137,19 +1137,20 @@ pub fn goto_entries(app: &App) -> Vec<GotoEntry> {
             });
             for t in m.model.tabs.iter().filter(|t| t.workspace == w.id) {
                 let panes = t.layout.panes();
-                let title = t.title.clone().unwrap_or_else(|| {
-                    t.focused_pane
-                        .as_ref()
-                        .or(panes.first())
-                        .and_then(|p| m.model.panes.iter().find(|x| &x.id == p))
-                        .map(|p| p.display_title().to_string())
-                        .unwrap_or_default()
-                });
+                // The same title the tab bar shows; the old terminal title stays searchable.
+                let title = crate::draw::tab_title(m, t);
+                let old_title = t
+                    .focused_pane
+                    .as_ref()
+                    .or(panes.first())
+                    .and_then(|p| m.model.panes.iter().find(|x| &x.id == p))
+                    .map(|p| p.display_title().to_string())
+                    .unwrap_or_default();
                 out.push(GotoEntry {
                     mi,
                     target: GotoTarget::Tab(t.id.clone()),
                     label: format!("{mp}{} :{} {title}", w.display_name(), t.number),
-                    extra: format!("{} {}", t.handle, ws_extra(w)),
+                    extra: format!("{} {old_title} {}", t.handle, ws_extra(w)),
                     urgency: 0,
                     kind: ':',
                     running: None,
@@ -1164,6 +1165,7 @@ pub fn goto_entries(app: &App) -> Vec<GotoEntry> {
                         .interactions
                         .iter()
                         .any(|i| i.pane == pid && i.status == InteractionStatus::Open);
+                    let title = crate::draw::pane_title(m, &pid);
                     let (agent, urgency, running, extra) = match run {
                         Some(r) => (
                             format!(
@@ -1174,7 +1176,9 @@ pub fn goto_entries(app: &App) -> Vec<GotoEntry> {
                             crate::draw::urgency(app, m, r),
                             Some(r.execution.value.as_str().to_string()),
                             format!(
-                                "{} {} {} {} {}",
+                                "{} {} {} {} {} {} {}",
+                                r.name.clone().unwrap_or_default(),
+                                r.title.clone().unwrap_or_default(),
                                 r.harness,
                                 r.harness_session_id.clone().unwrap_or_default(),
                                 r.cwd.clone().unwrap_or_default(),
@@ -1187,14 +1191,10 @@ pub fn goto_entries(app: &App) -> Vec<GotoEntry> {
                     out.push(GotoEntry {
                         mi,
                         target: GotoTarget::Pane(pid.clone()),
-                        label: format!(
-                            "{mp}{} :{} {}{agent}",
-                            w.display_name(),
-                            t.number,
-                            p.display_title()
-                        ),
+                        label: format!("{mp}{} :{} {title}{agent}", w.display_name(), t.number),
                         extra: format!(
-                            "{extra} {} {} {}",
+                            "{extra} {} {} {} {}",
+                            p.display_title(),
                             p.cwd.clone().unwrap_or_default(),
                             p.handle,
                             ws_extra(w)
@@ -2049,16 +2049,7 @@ pub fn title(app: &App) -> Option<String> {
         .unwrap_or_default();
     let pane = app
         .focused_pane()
-        .and_then(|p| {
-            let run = m.model.runs.iter().find(|r| r.pane == p);
-            run.map(|r| r.label().to_string()).or_else(|| {
-                m.model
-                    .panes
-                    .iter()
-                    .find(|x| x.id == p)
-                    .map(|x| x.display_title().to_string())
-            })
-        })
+        .map(|p| crate::draw::pane_title(m, &p))
         .unwrap_or_default();
     let s = app
         .config

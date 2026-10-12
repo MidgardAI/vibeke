@@ -168,3 +168,24 @@ fn tab_renumber_asks_the_server_for_the_focused_workspace() {
     );
     assert!(commands(&mut rxs[0]).is_empty());
 }
+
+#[test]
+fn long_titles_shrink_evenly_before_the_bar_scrolls() {
+    let (mut app, _rx) = fleet();
+    app.size = (120, 30);
+    many_tabs(&mut app, 2);
+    for (i, t) in app.machines[0].model.tabs.iter_mut().enumerate().skip(1) {
+        t.title = Some(format!("tab-{}-{}", i + 1, "x".repeat(32)));
+    }
+    let laid = crate::draw::tab_layout(&app);
+    assert!(laid.left.is_none() && laid.right.is_none(), "{laid:?}");
+    assert_eq!(laid.entries.len(), 3);
+    for (_, label, _, _) in &laid.entries[1..] {
+        assert!(label.contains('…'), "{label:?}");
+        assert!(label.chars().count() < 40, "{label:?}");
+    }
+    // Wide enough: nothing is cut.
+    app.size = (400, 30);
+    let laid = crate::draw::tab_layout(&app);
+    assert!(laid.entries[1].1.contains(&"x".repeat(32)));
+}

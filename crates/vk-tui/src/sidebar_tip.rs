@@ -1,5 +1,6 @@
-//! The full text of a cut-off sidebar row (08 §2). A row wider than the sidebar ends in a dim
-//! `…`. Resting the pointer on it for [`DELAY`], or selecting it in navigate mode, shows the
+//! The full text of a shortened sidebar row (08 §2). A row wider than the sidebar first shrinks
+//! its name (`SideRow::shrink`) and, if that is not enough, ends in a dim `…`. Resting the
+//! pointer on it for [`DELAY`], or selecting it in navigate mode, shows the
 //! whole text in a tooltip beside the sidebar, level with the row. A collision line's tooltip
 //! also says how to open it. The tooltip never takes focus: a key, a click, a scroll or leaving
 //! the row hides it, and it never shows over a popup, a prompt or another mode.
@@ -15,7 +16,7 @@ use unicode_width::UnicodeWidthStr;
 /// How long the pointer rests on a row before its tooltip shows.
 pub const DELAY: Duration = Duration::from_millis(400);
 /// Widest tooltip text, in columns.
-const MAX_W: usize = 64;
+const MAX_W: usize = 80;
 /// Most tooltip text lines; a longer text ends in `…`.
 const MAX_LINES: usize = 8;
 
@@ -31,9 +32,14 @@ fn cols(s: &str) -> usize {
     UnicodeWidthStr::width(s)
 }
 
-/// The row is wider than a sidebar `w` columns wide. Preview chip lines are laid out to fit.
-pub fn is_cut(r: &SideRow, w: u16) -> bool {
-    r.chips.is_empty() && r.segs.iter().map(|(s, _)| cols(s)).sum::<usize>() > w as usize
+/// The sidebar `w` columns wide shortens the row: its name shrank, or it still ends in `…`.
+/// Preview chip lines are laid out to fit.
+pub fn needs_tip(r: &SideRow, w: u16) -> bool {
+    if !r.chips.is_empty() {
+        return false;
+    }
+    let (segs, shrunk) = r.fitted(w);
+    shrunk || segs.iter().map(|(s, _)| cols(s)).sum::<usize>() > w as usize
 }
 
 fn eligible(app: &App) -> bool {
@@ -49,7 +55,7 @@ pub fn on_mouse(app: &mut App, me: &MouseEvent) {
             (me.row as usize).checked_sub(1).filter(|i| {
                 crate::draw::sidebar_rows(app)
                     .get(*i)
-                    .is_some_and(|r| is_cut(r, app.sidebar_w))
+                    .is_some_and(|r| needs_tip(r, app.sidebar_w))
             })
         }
         _ => None,
@@ -102,12 +108,12 @@ fn current(app: &App, rows: &[SideRow]) -> Option<(usize, bool)> {
             .enumerate()
             .filter(|(_, r)| r.selectable())
             .nth(sel)
-        && is_cut(&rows[i], w)
+        && needs_tip(&rows[i], w)
     {
         return Some((i, true));
     }
     let (i, since) = app.ux.tip.hover?;
-    (Instant::now().duration_since(since) >= DELAY && rows.get(i).is_some_and(|r| is_cut(r, w)))
+    (Instant::now().duration_since(since) >= DELAY && rows.get(i).is_some_and(|r| needs_tip(r, w)))
         .then_some((i, false))
 }
 
@@ -169,12 +175,25 @@ pub fn draw(app: &App, g: &mut Grid) -> Option<SRect> {
     let r = &rows[i];
     let t = app.theme;
     let (mx, mw) = crate::chrome::main_x(app);
-    let text_w = MAX_W.min((mw as usize).saturating_sub(4));
+    let text_w = MAX_W.min((app.size.0 as usize).saturating_sub(app.sidebar_w as usize + 6));
     if text_w < 8 {
         return None;
     }
-    let full = r.text();
-    let lines = wrap_capped(full.trim_start(), text_w, MAX_LINES);
+    // A row with a full name shows it wrapped, then its status (`● working · 2m`) on a dim
+    // line of its own.
+    let (lines, status) = match (&r.tip, r.shrink) {
+        (Some(tip), Some(i)) => {
+            let status: String = r.segs.iter().skip(i + 1).map(|(s, _)| s.as_str()).collect();
+            let status = status.trim().to_string();
+            let keep = MAX_LINES - usize::from(!status.is_empty());
+            (wrap_capped(tip.trim(), text_w, keep), status)
+        }
+        _ => (
+            wrap_capped(r.text().trim_start(), text_w, MAX_LINES),
+            String::new(),
+        ),
+    };
+    let status = crate::draw::truncate_cols(&status, text_w);
     let hint = r.collision.as_ref().map(|_| {
         if nav {
             "enter: details · d: dismiss"
@@ -186,18 +205,20 @@ pub fn draw(app: &App, g: &mut Grid) -> Option<SRect> {
         .iter()
         .map(|l| cols(l))
         .chain(hint.map(cols))
+        .chain((!status.is_empty()).then(|| cols(&status)))
         .max()
         .unwrap_or(0)
         .min(text_w) as u16;
     let (bw, bh) = (
         inner + 4,
-        lines.len() as u16 + 2 + u16::from(hint.is_some()),
+        lines.len() as u16 + 2 + u16::from(hint.is_some()) + u16::from(!status.is_empty()),
     );
     let x = if crate::chrome::sidebar_right(app) {
         (mx + mw).saturating_sub(bw)
     } else {
         mx
     };
+    let x = x.min(app.size.0.saturating_sub(bw));
     // The first text line sits level with the row.
     let y = (i as u16).min(app.size.1.saturating_sub(bh));
     let o = SRect {
@@ -232,6 +253,10 @@ pub fn draw(app: &App, g: &mut Grid) -> Option<SRect> {
             break;
         }
         g.put_str(o.x + 2, ly, l, st, inner);
+        ly += 1;
+    }
+    if !status.is_empty() && ly < y1 {
+        g.put_str(o.x + 2, ly, &status, t.dim(), inner);
         ly += 1;
     }
     if let Some(h) = hint

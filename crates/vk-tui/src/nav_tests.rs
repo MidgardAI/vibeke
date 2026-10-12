@@ -632,6 +632,74 @@ fn palette_and_goto_draw_with_highlights() {
     assert!(text.contains("workspace"));
 }
 
+#[test]
+fn goto_labels_use_the_run_title_the_sidebar_shows() {
+    let (mut app, _rxs) = fleet();
+    {
+        let m = &mut app.machines[0];
+        m.model.runs[0].name = None;
+        m.model.runs[0].title = Some("Vibeke ssh login prompts".into());
+        m.model.panes[0].title = None;
+        m.model.panes[0].auto_title = "claude".into();
+    }
+    let entries = goto_entries(&app);
+    let tab = entries
+        .iter()
+        .find(|e| e.target == GotoTarget::Tab("T1".into()))
+        .unwrap();
+    assert_eq!(tab.label, "api :1 Vibeke ssh login prompts");
+    let pane = entries
+        .iter()
+        .find(|e| e.target == GotoTarget::Pane("p1".into()))
+        .unwrap();
+    assert!(
+        pane.label
+            .starts_with("api :1 Vibeke ssh login prompts @claude "),
+        "{}",
+        pane.label
+    );
+    let finds = |q: &str, t: GotoTarget| goto_ranked(&app, q).iter().any(|(e, _)| e.target == t);
+    assert!(finds(":1", GotoTarget::Tab("T1".into())));
+    assert!(finds("ssh login", GotoTarget::Tab("T1".into())));
+    assert!(finds("ssh login", GotoTarget::Pane("p1".into())));
+    assert!(finds("claude", GotoTarget::Pane("p1".into())));
+    assert!(finds("!idle", GotoTarget::Pane("p1".into())));
+    assert!(finds("@ssh", GotoTarget::Pane("p1".into())));
+    // The old terminal title and the run name stay searchable.
+    app.machines[0].model.panes[0].auto_title = "zsh-old-title".into();
+    app.machines[0].model.runs[0].name = Some("reviewer".into());
+    let entries = goto_entries(&app);
+    assert!(entries.iter().all(|e| !e.label.contains("zsh-old-title")));
+    assert!(
+        goto_ranked(&app, "zsh-old-title")
+            .iter()
+            .any(|(e, _)| e.target == GotoTarget::Pane("p1".into()))
+    );
+    assert!(
+        goto_ranked(&app, "ssh login")
+            .iter()
+            .any(|(e, _)| e.target == GotoTarget::Pane("p1".into()))
+    );
+}
+
+#[test]
+fn goto_labels_carry_the_machine_prefix_with_the_run_title() {
+    let (mut app, _rxs) = crate::drafts::tests::fleet_n(2);
+    app.machines[1].model.runs[0].title = Some("Vibeke ssh login prompts".into());
+    let prefix = format!("{}/api :1 Vibeke ssh login prompts", app.machines[1].label);
+    let entries = goto_entries(&app);
+    let tab = entries
+        .iter()
+        .find(|e| e.mi == 1 && e.target == GotoTarget::Tab("T1".into()))
+        .unwrap();
+    assert_eq!(tab.label, prefix);
+    let pane = entries
+        .iter()
+        .find(|e| e.mi == 1 && e.target == GotoTarget::Pane("p1".into()))
+        .unwrap();
+    assert!(pane.label.starts_with(&prefix), "{}", pane.label);
+}
+
 // ---- goto secondary action (ctrl+enter / alt+enter) -------------------------------
 
 fn goto_with(app: &mut App, q: &str) {

@@ -381,16 +381,8 @@ pub fn on_model(app: &mut App) {
 }
 
 fn title_of(app: &App, pane: &str) -> String {
-    let m = app.m();
-    if let Some(r) = m.model.runs.iter().find(|r| r.pane == pane) {
-        return r.label().to_string();
-    }
-    m.model
-        .panes
-        .iter()
-        .find(|p| p.id == pane)
-        .map(|p| p.display_title().to_string())
-        .unwrap_or_else(|| "float".into())
+    let t = crate::draw::pane_title(app.m(), pane);
+    if t.is_empty() { "float".into() } else { t }
 }
 
 /// Clear the float's rect (tiled cells and image placeholders under it are overwritten) and

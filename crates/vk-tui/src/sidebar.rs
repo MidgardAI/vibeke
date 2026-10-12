@@ -119,7 +119,7 @@ pub fn styled_name(app: &App, mi: usize, r: &AgentRun, label: &str) -> (String, 
     let m = &app.machines[mi];
     // Rules match the name or harness as before; the session title is only for display.
     let name = r.name.clone().unwrap_or_else(|| r.harness.clone());
-    let shown = crate::draw::truncate(r.label(), crate::draw::RUN_LABEL_MAX);
+    let shown = r.label().to_string();
     match token_for(app, m, r, &format!("{name} {label}")) {
         Some(tok) => (
             tok.label.clone().unwrap_or(shown),
@@ -214,13 +214,7 @@ pub fn desired_width(app: &App, rows: &[SideRow]) -> u16 {
     }
     let widest = rows
         .iter()
-        .map(|r| {
-            r.segs
-                .iter()
-                .map(|(s, _)| unicode_width::UnicodeWidthStr::width(s.as_str()) as u16)
-                .sum::<u16>()
-                + 1
-        })
+        .map(|r| r.auto_width() as u16 + 1)
         .max()
         .unwrap_or(0);
     widest.max(base).clamp(lo, hi)
