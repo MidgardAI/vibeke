@@ -381,7 +381,7 @@ pub fn on_model(app: &mut App) {
 }
 
 fn title_of(app: &App, pane: &str) -> String {
-    let t = crate::draw::pane_title(app.m(), pane);
+    let t = crate::draw::pane_title_named(app.m(), pane);
     if t.is_empty() { "float".into() } else { t }
 }
 

@@ -153,6 +153,7 @@ pub fn key(app: &mut App, ev: KeyEvent, p: Popup) {
             crate::parity::popup_key(app, ev, p)
         }
         Popup::Goto { filter, sel } => crate::nav::goto_key(app, ev, filter, sel),
+        Popup::MentionPicker(p) => crate::mention::key(app, ev, p),
         Popup::Palette { filter, sel } => crate::nav::palette_key(app, ev, filter, sel),
         Popup::Hints(h) => crate::nav::hints_key(app, ev, h),
         Popup::PluginLink(c) => crate::plugins::link_key(app, ev, c),
@@ -520,6 +521,10 @@ pub fn draw(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
             }
             Popup::Goto { filter, sel } => {
                 let (x, y) = crate::nav::draw_goto(app, g, filter, *sel);
+                return Some((x, y, CursorShape::Bar));
+            }
+            Popup::MentionPicker(p) => {
+                let (x, y) = crate::mention::draw(app, g, p);
                 return Some((x, y, CursorShape::Bar));
             }
             Popup::Palette { filter, sel } => {

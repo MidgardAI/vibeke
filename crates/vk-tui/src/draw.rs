@@ -141,6 +141,16 @@ pub fn pane_title(m: &crate::app::Machine, pane: &str) -> String {
         .unwrap_or_default()
 }
 
+/// [`pane_title`] behind the pane's mention name: `@reviewer · label` (tab bar, floating frames).
+pub fn pane_title_named(m: &crate::app::Machine, pane: &str) -> String {
+    let title = pane_title(m, pane);
+    match crate::mention::name_of(m, pane) {
+        Some(n) if title.is_empty() => format!("@{n}"),
+        Some(n) => format!("@{n} · {title}"),
+        None => title,
+    }
+}
+
 /// A tab's title: its own, else its focused (or first) pane's [`pane_title`], else `shell`.
 pub fn tab_title(m: &crate::app::Machine, t: &Tab) -> String {
     if let Some(title) = &t.title {
@@ -150,7 +160,7 @@ pub fn tab_title(m: &crate::app::Machine, t: &Tab) -> String {
         .focused_pane
         .clone()
         .or_else(|| t.layout.panes().first().cloned());
-    fp.map(|p| pane_title(m, &p))
+    fp.map(|p| pane_title_named(m, &p))
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "shell".into())
 }
@@ -368,6 +378,10 @@ fn agent_row(app: &App, mi: usize, r: &AgentRun, indent: &str) -> SideRow {
         (format!("{indent}{} ", harness_icon(&r.harness)), t.s(color)),
         (format!("{name} "), name_style),
     ];
+    // The pane's mention name (spec 19), after the name segment that shrinks first.
+    if let Some(n) = crate::mention::name_of(m, &r.pane) {
+        segs.push((format!("@{n} "), t.s(t.accent)));
+    }
     // A run is as contained as its pane (13 §2.2): enforced inside sandbox/container/vm.
     let iso = m
         .model
@@ -729,6 +743,9 @@ fn workspace_rows_at(app: &App, mi: usize, w: &Workspace, depth: usize, rows: &m
         {
             let focused = mi == app.cur && m.focus.pane.as_deref() == Some(&p.id);
             let mut segs = vec![(format!("{pad}    {}", p.display_title()), t.dim())];
+            if let Some(n) = crate::mention::name_of(m, &p.id) {
+                segs.push((format!(" @{n}"), t.s(t.accent)));
+            }
             if let Some(gl) = isolation_glyph(app, &p.isolation) {
                 segs.push((format!(" {gl}"), t.s(t.accent)));
             }

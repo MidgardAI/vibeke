@@ -75,6 +75,7 @@ pub const DEFAULT_KEYMAP: &[(&str, &str)] = &[
     ("trust_repo", ""),
     // v1 TUI (08 §2.1, §3, §6.5; 09 §3.2).
     ("agent_list", "prefix+alt+a"),
+    ("mention_picker", "prefix+@"),
     ("elevation_requests", "prefix+shift+e"),
     ("tab_renumber", ""),
     ("task_recreate", ""),

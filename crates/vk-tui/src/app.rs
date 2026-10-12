@@ -124,6 +124,8 @@ pub enum Pending {
     Ux(crate::ux::Reply),
     /// A path picker's folder listing (`fs.browse` on a remote machine).
     Path(crate::path_picker::Reply),
+    /// Naming a pane for mentions (spec 19).
+    Mention(crate::mention::Reply),
 }
 
 /// A JSON-RPC error from a machine (07 canonical errors).
@@ -212,6 +214,8 @@ pub enum PromptKind {
     RenameTab,
     RenameWorkspace,
     RenamePane,
+    /// The mention name of the focused pane (spec 19).
+    MentionName,
     NewWorkspace,
     Command,
     AgentReply {
@@ -259,6 +263,8 @@ pub enum Popup {
         filter: String,
         sel: usize,
     },
+    /// Mention picker (`prefix+@`, spec 19 §5): names and `@name` insertion.
+    MentionPicker(Box<crate::mention::Picker>),
     /// Searchable command palette (`prefix+:`, 08 §6.3).
     Palette {
         filter: String,
@@ -1290,6 +1296,16 @@ impl App {
         self.dirty = true;
     }
 
+    /// Paste `text` into `pane` of machine `mi` as typed input (the picker's `@name `).
+    pub(crate) fn paste_to(&mut self, mi: usize, pane: &str, text: String) {
+        let id = self.input_id();
+        self.machines[mi].send(ClientFrame::Paste {
+            input_id: id,
+            pane: pane.to_string(),
+            text,
+        });
+    }
+
     fn input_id(&mut self) -> u64 {
         let id = self.next_input;
         self.next_input += 1;
@@ -1622,6 +1638,7 @@ impl App {
             Pending::Remote(r) => crate::remote_view::on_reply(self, i, r, res),
             Pending::Ux(r) => crate::ux::on_reply(self, i, r, res),
             Pending::Path(r) => crate::path_picker::on_reply(self, i, r, res),
+            Pending::Mention(r) => crate::mention::on_reply(self, i, r, res),
         }
     }
 
@@ -2494,6 +2511,9 @@ impl App {
                 ws.map(|w| w.display_name().to_string()).unwrap_or_default(),
             ),
             "rename_pane" => self.prompt(PromptKind::RenamePane, "pane title", String::new()),
+            "mention_picker" => crate::mention::open(self),
+            "name_pane" => crate::mention::open_name_prompt(self),
+            "unname_pane" => crate::mention::clear_name(self),
             "new_workspace" => {
                 crate::path_picker::open(self, PromptKind::NewWorkspace, "new workspace dir", "~/")
             }
@@ -2996,6 +3016,7 @@ impl App {
                     );
                 }
             }
+            PromptKind::MentionName => crate::mention::submit_name(self, &v),
             PromptKind::NewWorkspace => {
                 // A `~` left in the path is the machine's home folder: its server expands it
                 // (this process's `$HOME` belongs to another machine when the server is remote).

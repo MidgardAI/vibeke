@@ -460,6 +460,9 @@ pub const ACTION_INFO: &[(&str, &str)] = &[
     ),
     ("workspace_picker", "Navigate the sidebar"),
     ("goto", "Goto anything (workspaces, tabs, agents, tasks)"),
+    ("mention_picker", "Mention a pane"),
+    ("name_pane", "Name this pane"),
+    ("unname_pane", "Remove this pane's name"),
     ("new_workspace", "New workspace"),
     ("new_worktree", "New git worktree"),
     ("open_worktree", "Open a git worktree"),
@@ -674,6 +677,8 @@ pub const ACTION_INFO: &[(&str, &str)] = &[
 
 /// Actions only reachable from the palette (no keymap entry).
 const EXTRA_ACTIONS: &[&str] = &[
+    "name_pane",
+    "unname_pane",
     "update",
     "check_updates",
     "sync_input_off",
@@ -845,6 +850,10 @@ pub fn palette_entries(app: &App) -> Vec<PaletteEntry> {
         }
     }
     out.retain(|e| app.m().capabilities().action(&e.id));
+    // Removing a name only makes sense for a named pane.
+    if !crate::mention::focused_named(app) {
+        out.retain(|e| e.id != "unname_pane");
+    }
     // A right-clicked pane: only its menu.
     if app.ux.handoff.target.is_some() {
         out.retain(|e| crate::handoff::PANE_MENU.contains(&e.id.as_str()));

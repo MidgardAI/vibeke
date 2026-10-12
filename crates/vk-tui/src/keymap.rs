@@ -335,6 +335,15 @@ pub fn key_matches(binding: &KeyEvent, ev: &KeyEvent) -> bool {
     let (bk, bm) = norm(binding);
     let (ek, em) = norm(ev);
     if bk != ek {
+        // A shifted symbol reported as shift + its base key (`@` as shift+2 on kitty hosts).
+        if let Key::Char(b) = bk
+            && !b.is_alphanumeric()
+            && !bm.shift()
+            && em.shift()
+            && ev.shifted == Some(b)
+        {
+            return bm == em.without(Mods::SHIFT);
+        }
         // Base-layout key (kitty) lets bindings work on non-US layouts.
         if let (Key::Char(b), Some(base)) = (bk, ev.base_layout_key) {
             return b == base.to_ascii_lowercase() && bm == em;
@@ -587,6 +596,14 @@ mod tests {
             km.prefixed(&KeyEvent::ch('[')).unwrap().action,
             "enter_copy_mode"
         );
+        // `@` arrives as `@` or as shift+2 with the shifted symbol.
+        assert_eq!(
+            km.prefixed(&KeyEvent::ch('@')).unwrap().action,
+            "mention_picker"
+        );
+        let mut shifted = KeyEvent::new(Key::Char('2'), Mods::SHIFT);
+        shifted.shifted = Some('@');
+        assert_eq!(km.prefixed(&shifted).unwrap().action, "mention_picker");
     }
 }
 
