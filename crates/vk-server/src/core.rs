@@ -6,8 +6,12 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashMap;
+use vk_proto::mention::MentionName;
 use vk_proto::model::*;
 use vk_store::{Event, Mutation, Store, now_ms};
+
+/// Store kind of mention names (spec 19 §2), keyed by pane id: a pane has at most one name.
+pub const K_MENTION: &str = "mention_name";
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Counters {
@@ -45,6 +49,7 @@ pub struct Tx {
     pub interactions: Vec<Interaction>,
     pub tasks: Vec<Task>,
     pub groups: Vec<Group>,
+    pub mentions: Vec<MentionName>,
     pub removed: Vec<(&'static str, String)>,
     pub counters: bool,
     /// A UI convenience (focus, unread marks): if storage is unavailable it is applied in
@@ -114,6 +119,17 @@ impl Tx {
         self.removed.push(("group", g.id.clone()));
         self
     }
+    /// Give a pane its mention name (spec 19 §2), replacing the one it had.
+    pub fn mention(&mut self, m: MentionName) -> &mut Self {
+        self.m.put(K_MENTION, &m.pane, Some(&m.name), &m);
+        self.mentions.push(m);
+        self
+    }
+    pub fn clear_mention(&mut self, m: &MentionName) -> &mut Self {
+        self.m.delete(K_MENTION, &m.pane);
+        self.removed.push(("mention", m.pane.clone()));
+        self
+    }
     pub fn close_ws(&mut self, w: &Workspace) -> &mut Self {
         self.m.close("workspace", &w.id, Some(&w.handle), w);
         self.removed.push(("workspace", w.id.clone()));
@@ -162,6 +178,15 @@ impl Core {
         model.interactions = store.load("interaction")?;
         model.tasks = store.load("task")?;
         model.groups = store.load("group")?;
+        model.mentions = store.load(K_MENTION)?;
+        let panes: std::collections::HashMap<&str, &str> = model
+            .panes
+            .iter()
+            .map(|p| (p.id.as_str(), p.workspace.as_str()))
+            .collect();
+        model
+            .mentions
+            .retain(|m| panes.get(m.pane.as_str()) == Some(&m.workspace.as_str()));
         model.groups.sort_by(|a, b| a.order.total_cmp(&b.order));
         model.workspaces.sort_by(|a, b| a.order.total_cmp(&b.order));
         model.tabs.sort_by(|a, b| a.order.total_cmp(&b.order));
@@ -180,6 +205,7 @@ impl Core {
 
     /// Persist then apply. Returns the committed events.
     pub fn commit(&mut self, mut tx: Tx) -> Result<Vec<Event>> {
+        self.drop_stale_mentions(&mut tx);
         if tx.counters {
             tx.m.kv(
                 "server",
@@ -234,12 +260,19 @@ impl Core {
         for g in tx.groups {
             upsert(&mut self.model.groups, g, |a, b| a.id == b.id);
         }
+        for m in tx.mentions {
+            upsert(&mut self.model.mentions, m, |a, b| a.pane == b.pane);
+        }
         for (kind, id) in tx.removed {
             match kind {
                 "group" => self.model.groups.retain(|x| x.id != id),
                 "workspace" => self.model.workspaces.retain(|x| x.id != id),
                 "tab" => self.model.tabs.retain(|x| x.id != id),
-                "pane" => self.model.panes.retain(|x| x.id != id),
+                "pane" => {
+                    self.model.panes.retain(|x| x.id != id);
+                    self.model.mentions.retain(|x| x.pane != id);
+                }
+                "mention" => self.model.mentions.retain(|x| x.pane != id),
                 _ => {}
             }
         }
@@ -251,6 +284,38 @@ impl Core {
             .groups
             .sort_by(|a, b| a.order.total_cmp(&b.order));
         Ok(events)
+    }
+
+    /// A mention name goes away with its pane, and when the pane moves to another workspace
+    /// (spec 19 §2.1): names are unique per workspace and consent is given per workspace.
+    fn drop_stale_mentions(&self, tx: &mut Tx) {
+        let mut gone: Vec<(&MentionName, &'static str)> = Vec::new();
+        for (kind, id) in &tx.removed {
+            if *kind == "pane"
+                && let Some(m) = self.model.mention_of(id)
+            {
+                gone.push((m, "pane_closed"));
+            }
+        }
+        for p in &tx.panes {
+            if let Some(m) = self.model.mention_of(&p.id)
+                && m.workspace != p.workspace
+            {
+                gone.push((m, "pane_moved"));
+            }
+        }
+        for (m, reason) in gone {
+            if tx.mentions.iter().any(|x| x.pane == m.pane) {
+                continue;
+            }
+            tx.m.delete(K_MENTION, &m.pane);
+            tx.m.event(
+                "mention.cleared",
+                json!({"pane": m.pane, "workspace": m.workspace}),
+                json!({"name": m.name, "reason": reason}),
+            );
+            tx.removed.push(("mention", m.pane.clone()));
+        }
     }
 
     // ---- lookups ------------------------------------------------------------------------

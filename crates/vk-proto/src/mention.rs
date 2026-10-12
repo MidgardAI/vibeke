@@ -227,8 +227,9 @@ pub struct Delivery {
     pub state: DeliveryState,
     /// Why the delivery is held or failed.
     pub reason: Option<String>,
-    /// Secret that the envelope typed into the pane carries; the hook checks it.
-    #[serde(skip_serializing)]
+    /// Secret that the envelope typed into the pane carries; the hook checks it. Never sent, so
+    /// a `Delivery` read back from the API has it empty.
+    #[serde(skip_serializing, default)]
     pub nonce: String,
     /// Whether the sender waits for a reply.
     pub expects_reply: bool,

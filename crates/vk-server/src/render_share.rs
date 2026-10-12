@@ -104,6 +104,12 @@ impl Share {
                     .filter(|p| has(&p.pane))
                     .cloned()
                     .collect(),
+                mentions: source
+                    .mentions
+                    .iter()
+                    .filter(|m| has(&m.pane))
+                    .cloned()
+                    .collect(),
                 panes,
                 ..Default::default()
             },
