@@ -12,6 +12,7 @@ Install the plugin to see OpenCode state in the sidebar and to answer its permis
 | Allow always | **Allow always** on a card uses the "Allow always" choice of OpenCode. OpenCode then allows the same pattern for the rest of the session. |
 | File changes | The plugin reports the files that OpenCode edits. |
 | Usage | The plugin reports tokens and cost for each answer. |
+| Messages from other panes | The plugin hands queued messages to OpenCode at the start of a turn, after a tool call and when OpenCode goes idle. Nothing is typed into the input box. |
 | Resume | Vibeke can resume a session with `opencode --session <id>`. |
 
 ## Install

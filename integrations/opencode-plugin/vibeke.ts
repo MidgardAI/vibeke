@@ -11,6 +11,11 @@
 // `{"status": "allow" | "always" | "deny"}` answers the request through OpenCode's server API;
 // no reply leaves the dialog to the user. A reply in OpenCode (`permission.replied`) stops the
 // pending shim. Older versions call the `permission.ask` hook instead, answered the same way.
+//
+// Ride-along messages: `vibeke message take` hands over the messages other panes queued for this
+// pane. The plugin calls it at turn start (`chat.message`), after a tool call
+// (`tool.execute.after`) and when the session goes idle (`session.idle`), so the agent reads
+// them without anything typed into its input box. Any failure returns nothing.
 // Verified against OpenCode 1.19.0.
 import { spawn } from "node:child_process";
 
@@ -77,6 +82,47 @@ function send(event: string, payload: unknown, wait = false, id?: string): Promi
   });
 }
 
+// `vibeke message take --json`: the queued messages of this pane as one text, or null. One call
+// at a time; an error or a timeout (3 s) gives null and never throws.
+let taking: Promise<string | null> | null = null;
+function take(): Promise<string | null> {
+  if (!ON) return Promise.resolve(null);
+  if (taking) return taking;
+  taking = new Promise<string | null>((resolve) => {
+    let out = "";
+    let done = false;
+    let child: any;
+    const finish = (v: string | null) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      try {
+        child?.kill?.();
+      } catch {}
+      resolve(v);
+    };
+    const timer = setTimeout(() => finish(null), 3000);
+    try {
+      child = spawn(BIN, ["message", "take", "--json"], { stdio: ["ignore", "pipe", "ignore"] });
+    } catch {
+      return finish(null);
+    }
+    child.on("error", () => finish(null));
+    child.stdout.on("data", (d: any) => (out += d));
+    child.on("close", () => {
+      try {
+        const c = JSON.parse(out.trim())?.context;
+        finish(typeof c === "string" && c.trim() ? c : null);
+      } catch {
+        finish(null);
+      }
+    });
+  }).finally(() => {
+    taking = null;
+  });
+  return taking;
+}
+
 const RESPONSE: Record<string, string> = { allow: "once", always: "always", deny: "reject" };
 
 export const VibekePlugin = async ({ client, directory }: { client?: any; directory?: string }) => {
@@ -134,24 +180,60 @@ export const VibekePlugin = async ({ client, directory }: { client?: any; direct
         await send(type, { ...props, text });
         return;
       }
-      await send(type, { ...props, directory });
+      // Forwarded first and not delayed by the take below.
+      const forwarded = send(type, { ...props, directory });
+      if (type === "session.idle") {
+        const sessionID = props.sessionID;
+        const context = sessionID ? await take() : null;
+        if (context) {
+          try {
+            // A new turn: the agent reads the messages without typing into the input box.
+            await client?.session?.promptAsync?.({
+              path: { id: sessionID },
+              body: { parts: [{ type: "text", text: context }] },
+            });
+          } catch {}
+        }
+      }
+      await forwarded;
     },
     "chat.message": async (input: any, output: any) => {
       const text = (output?.parts ?? [])
         .filter((p: any) => p?.type === "text")
         .map((p: any) => p.text)
         .join("\n");
-      await send("chat.message", { sessionID: input?.sessionID, text });
+      const sent = send("chat.message", { sessionID: input?.sessionID, text });
+      try {
+        const context = await take();
+        if (context && Array.isArray(output?.parts) && output?.message?.id) {
+          output.parts.push({
+            id: `prt_vibeke_${Date.now().toString(36)}`,
+            sessionID: input?.sessionID,
+            messageID: output.message.id,
+            type: "text",
+            text: context,
+            synthetic: true,
+          });
+        }
+      } catch {}
+      await sent;
     },
     "tool.execute.before": async (input: any, output: any) => {
       await send("tool.execute.before", { ...input, args: output?.args });
     },
     "tool.execute.after": async (input: any, output: any) => {
-      await send("tool.execute.after", {
+      const sent = send("tool.execute.after", {
         ...input,
         title: output?.title,
         metadata: output?.metadata,
       });
+      try {
+        const context = await take();
+        if (context && output && typeof output.output === "string") {
+          output.output += `\n\n[Vibeke: a message arrived from another pane]\n${context}`;
+        }
+      } catch {}
+      await sent;
     },
     // Versions before the `permission.asked` event.
     "permission.ask": async (input: any, output: any) => {
