@@ -163,6 +163,12 @@ compares the nonce.
   local prompt with the reason `Sent to @reviewer (m_…). The reply will show up here.`
   When the prompt came through `agent.prompt` (the web composer, a TUI reply), that call returns
   `mention_sent: <message id>` instead of failing with `agent_prompt_stalled`.
+- Claude Code and Codex put a blocked prompt back into the input box. That draft would keep
+  every later delivery to the pane queued (§4.2), the reply included. So after the handoff,
+  Vibeke watches the input box for 3 s. When the box shows exactly the routed prompt
+  (whitespace aside), it takes the pane's input hold and clears the box with the line-kill key
+  (ctrl+u; a backspace when a key changed nothing, for a line break), at most 20 keys, reading
+  the box again after each. Any other text is the person's and stays.
 - When any leading name is unknown, nothing is sent. The prompt goes through with a short note
   that lists the known names.
 

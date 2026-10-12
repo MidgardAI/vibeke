@@ -9,11 +9,13 @@
 //! - [`input_box`]: whether the recipient's input box is empty, read from the styled screen.
 //! - [`scrub`]: envelope lines in pane reads and transcripts lose their preview and nonce.
 //! - [`hooks`]: what the Claude and Codex hooks add to the `adapter.signal` reply (§4.3–4.5).
+//! - [`restore`]: clears a blocked leading-mention prompt that the harness put back.
 
 pub mod delivery;
 pub mod hooks;
 pub mod input_box;
 pub mod names;
+pub mod restore;
 pub mod scrub;
 
 pub use delivery::start;

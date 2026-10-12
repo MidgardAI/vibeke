@@ -39,7 +39,7 @@ pub fn before_signal(
         return None;
     }
     match event {
-        "UserPromptSubmit" => leading_send(server, pane, p),
+        "UserPromptSubmit" => leading_send(server, pane, h, p),
         "Stop" => stop_reminder(server, pane),
         _ => None,
     }
@@ -143,7 +143,7 @@ fn undeliverable(c: &Core, ws: &str, pane: &str, name: &str) -> Option<String> {
 
 /// A person's prompt that starts with known names (§4.3): the rest goes to them as a message
 /// from this pane, and the local prompt is blocked.
-fn leading_send(server: &Arc<Server>, pane: &str, p: &Value) -> Option<Value> {
+fn leading_send(server: &Arc<Server>, pane: &str, h: Harness, p: &Value) -> Option<Value> {
     let prompt = p.get("prompt").and_then(Value::as_str)?;
     if parse_envelope(prompt).is_some() {
         return None;
@@ -181,6 +181,8 @@ fn leading_send(server: &Arc<Server>, pane: &str, p: &Value) -> Option<Value> {
     .ok()?;
     let id = sent["message"]["id"].as_str()?.to_string();
     server.mentions.mark_consumed(pane, &id);
+    // The harness puts the blocked prompt back into its input box: clear it there.
+    super::restore::spawn(server, pane, h, prompt);
     let names: Vec<String> = found.leading.iter().map(|n| format!("@{n}")).collect();
     Some(block(format!(
         "Sent to {} ({id}). The reply will show up here.",
