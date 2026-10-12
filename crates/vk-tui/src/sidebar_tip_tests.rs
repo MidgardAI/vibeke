@@ -127,3 +127,41 @@ fn the_delay_wakes_the_client_once_and_repaints() {
         "armed once, not a busy loop"
     );
 }
+
+#[test]
+fn a_shrunk_agent_name_shows_whole_with_its_status_on_its_own_line() {
+    const TITLE: &str = "Fix the flaky login redirect in staging";
+    let (mut app, _rxs) = fleet();
+    app.size = (120, 30);
+    app.sidebar_w = 28;
+    app.machines[0].model.runs[0].title = Some(TITLE.into());
+    let rows = crate::draw::sidebar_rows(&app);
+    let i = rows
+        .iter()
+        .position(|r| r.target.is_some() && r.text().contains("Fix the flaky"))
+        .expect("agent row");
+    let status: String = rows[i].segs[2..].iter().map(|(s, _)| s.as_str()).collect();
+    let status = status.trim().to_string();
+    let y = i as u16 + 1;
+    let row_line = screen(&app).lines().nth(y as usize).unwrap().to_string();
+    let side: String = row_line.chars().take(28).collect();
+    assert!(side.contains('…'), "{side:?}");
+    moved(&mut app, 3, y);
+    rested(&mut app);
+    let s = screen(&app);
+    let lines: Vec<String> = s
+        .lines()
+        .map(|l| l.chars().skip(29).collect::<String>())
+        .collect();
+    let at = lines
+        .iter()
+        .position(|l| l.contains(TITLE))
+        .unwrap_or_else(|| panic!("{s}"));
+    assert!(
+        lines[at + 1].contains(&status),
+        "{:?} {status:?}",
+        lines[at + 1]
+    );
+    // The box stays on the screen.
+    assert!(s.lines().all(|l| l.chars().count() <= 120));
+}

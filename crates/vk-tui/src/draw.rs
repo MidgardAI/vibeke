@@ -26,7 +26,16 @@ pub struct SideRow {
     pub image_more: Option<usize>,
     /// A workspace's collision line (machine, collision id): opens the collision popup (05 §10).
     pub collision: Option<(usize, String)>,
+    /// The full, untruncated name of the row (an agent's label, a pane's title). The hover
+    /// tooltip shows it when the sidebar had to shorten it.
+    pub tip: Option<String>,
+    /// Index into `segs` of the name segment. When the row is wider than the sidebar, only
+    /// this segment shrinks, so the state after the name stays visible.
+    pub shrink: Option<usize>,
 }
+
+/// The narrowest a shrinking name gets, in columns, before the row is clipped instead.
+const SHRINK_FLOOR: usize = 6;
 
 impl SideRow {
     /// Navigate mode can select it (a pane target, a group, a preview, an image or a collision
@@ -57,6 +66,93 @@ impl SideRow {
     pub fn text(&self) -> String {
         self.segs.iter().map(|(s, _)| s.as_str()).collect()
     }
+
+    /// The segments as drawn in a sidebar `w` columns wide, and whether the name shrank. A row
+    /// wider than `w` first shortens its `shrink` segment (down to a floor); what still does
+    /// not fit is clipped by the caller.
+    pub fn fitted(&self, w: u16) -> (Vec<(String, Style)>, bool) {
+        let mut segs = self.segs.clone();
+        let width = |v: &[(String, Style)]| -> usize {
+            v.iter()
+                .map(|(s, _)| unicode_width::UnicodeWidthStr::width(s.as_str()))
+                .sum()
+        };
+        let total = width(&segs);
+        let Some(i) = self.shrink.filter(|i| *i < segs.len()) else {
+            return (segs, false);
+        };
+        if !self.chips.is_empty() || total <= w as usize {
+            return (segs, false);
+        }
+        let (lead, body, trail) = split_pad(&segs[i].0);
+        let cur = unicode_width::UnicodeWidthStr::width(body);
+        let target = cur
+            .saturating_sub(total - w as usize)
+            .max(SHRINK_FLOOR.min(cur));
+        if target >= cur {
+            return (segs, false);
+        }
+        segs[i].0 = format!("{lead}{}{trail}", truncate_cols(body, target));
+        (segs, true)
+    }
+
+    /// Width the row takes in an auto-width sidebar: the name counts at most
+    /// [`RUN_LABEL_MAX`] columns.
+    pub fn auto_width(&self) -> usize {
+        self.segs
+            .iter()
+            .enumerate()
+            .map(|(i, (s, _))| {
+                let w = unicode_width::UnicodeWidthStr::width(s.as_str());
+                if self.shrink == Some(i) {
+                    let (lead, body, trail) = split_pad(s);
+                    let b = unicode_width::UnicodeWidthStr::width(body);
+                    lead.len() + b.min(RUN_LABEL_MAX) + trail.len()
+                } else {
+                    w
+                }
+            })
+            .sum()
+    }
+}
+
+/// `s` split into its leading spaces, its body and its trailing spaces.
+fn split_pad(s: &str) -> (&str, &str, &str) {
+    let body = s.trim_matches(' ');
+    if body.is_empty() {
+        return (s, "", "");
+    }
+    let start = s.len() - s.trim_start_matches(' ').len();
+    let end = s.trim_end_matches(' ').len();
+    (&s[..start], body, &s[end..])
+}
+
+/// What a pane is called in the sidebar, the tab bar, the goto palette and window titles: its
+/// agent run's label (name, else session title, else harness), else its terminal title.
+pub fn pane_title(m: &crate::app::Machine, pane: &str) -> String {
+    if let Some(r) = m.model.runs.iter().find(|r| r.pane == pane) {
+        return r.label().to_string();
+    }
+    m.model
+        .panes
+        .iter()
+        .find(|p| p.id == pane)
+        .map(|p| p.display_title().to_string())
+        .unwrap_or_default()
+}
+
+/// A tab's title: its own, else its focused (or first) pane's [`pane_title`], else `shell`.
+pub fn tab_title(m: &crate::app::Machine, t: &Tab) -> String {
+    if let Some(title) = &t.title {
+        return title.clone();
+    }
+    let fp = t
+        .focused_pane
+        .clone()
+        .or_else(|| t.layout.panes().first().cloned());
+    fp.map(|p| pane_title(m, &p))
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "shell".into())
 }
 
 pub fn harness_icon(h: &str) -> &'static str {
@@ -350,6 +446,8 @@ fn agent_row(app: &App, mi: usize, r: &AgentRun, indent: &str) -> SideRow {
         segs,
         target: Some((mi, r.pane.clone())),
         focused,
+        tip: Some(name),
+        shrink: Some(1),
         ..Default::default()
     }
 }
@@ -466,6 +564,8 @@ pub fn sidebar_rows(app: &App) -> Vec<SideRow> {
                 segs: vec![(format!("  {}", p.display_title()), t.text())],
                 target: Some((mi, p.id.clone())),
                 focused: false,
+                tip: Some(p.display_title().to_string()),
+                shrink: Some(0),
                 ..Default::default()
             });
         }
@@ -647,6 +747,8 @@ fn workspace_rows_at(app: &App, mi: usize, w: &Workspace, depth: usize, rows: &m
                 segs,
                 target: Some((mi, p.id.clone())),
                 focused,
+                tip: Some(p.display_title().to_string()),
+                shrink: Some(0),
                 ..Default::default()
             });
         }
@@ -682,6 +784,9 @@ fn tab_entries(app: &App) -> Vec<(Tab, String, u16, u16)> {
     tab_layout(app).entries
 }
 
+/// Narrowest a tab title gets when the tab bar shortens titles to fit.
+const MIN_TAB_TITLE: usize = 12;
+
 /// The tab bar laid out for the main area: visible entries and overflow arrows (08 §3).
 pub fn tab_layout(app: &App) -> crate::tabbar::Laid {
     let m = app.m();
@@ -689,61 +794,69 @@ pub fn tab_layout(app: &App) -> crate::tabbar::Laid {
         return Default::default();
     };
     let (mx, mw) = crate::chrome::main_x(app);
-    let mut raw = Vec::new();
-    for t in m.model.tabs.iter().filter(|t| &t.workspace == ws) {
-        let title = t.title.clone().unwrap_or_else(|| {
-            let fp = t
-                .focused_pane
-                .clone()
-                .or_else(|| t.layout.panes().first().cloned());
-            let run = fp
-                .as_ref()
-                .and_then(|p| m.model.runs.iter().find(|r| &r.pane == p));
-            match run {
-                Some(r) => truncate(r.label(), RUN_LABEL_MAX),
-                None => fp
-                    .and_then(|p| m.model.panes.iter().find(|x| x.id == p))
-                    .map(|p| p.display_title().to_string())
-                    .unwrap_or_else(|| "shell".into()),
-            }
-        });
-        let glyph = {
-            let panes = t.layout.panes();
-            let urg = m
-                .model
-                .runs
-                .iter()
-                .filter(|r| panes.contains(&r.pane))
-                .map(|r| urgency(app, m, r))
-                .max()
-                .unwrap_or(0);
-            match urg {
-                8 => "⚑",
-                7 => "?",
-                4 => "✓",
-                _ => "",
-            }
-        };
-        let zoom = if t.zoomed_pane.is_some() { " Z" } else { "" };
-        // OSC 9;4 progress of the tab's panes (03 §8).
-        let ids = t.layout.panes();
-        let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
-        let prog = crate::osc::progress_in(app, app.cur, &ids)
-            .map(|p| format!(" {}", crate::osc::progress_bar(app, p).0))
-            .unwrap_or_default();
-        let sync = crate::sync_input::tab_badge(app, &t.id);
-        let label = if app.config.ui.tabs.show_numbers {
-            format!(" {}{} {}{zoom}{prog}{sync} ", glyph, t.number, title)
-        } else {
-            let g = if glyph.is_empty() {
-                String::new()
-            } else {
-                format!("{glyph} ")
+    // Full titles first; when the tabs do not fit, every title shrinks evenly (each keeps at
+    // least `MIN_TAB_TITLE` columns) before the bar falls back to its scroll arrows.
+    let tabs: Vec<&Tab> = m.model.tabs.iter().filter(|t| &t.workspace == ws).collect();
+    let titles: Vec<String> = tabs.iter().map(|t| tab_title(m, t)).collect();
+    let build = |cap: Option<usize>| {
+        let mut raw = Vec::new();
+        for (t, title) in tabs.iter().zip(&titles) {
+            let title = match cap {
+                Some(c) => truncate_cols(title, c),
+                None => title.clone(),
             };
-            format!(" {g}{title}{zoom}{prog}{sync} ")
-        };
-        let w = unicode_width::UnicodeWidthStr::width(label.as_str()) as u16;
-        raw.push((t.clone(), label, w));
+            let glyph = {
+                let panes = t.layout.panes();
+                let urg = m
+                    .model
+                    .runs
+                    .iter()
+                    .filter(|r| panes.contains(&r.pane))
+                    .map(|r| urgency(app, m, r))
+                    .max()
+                    .unwrap_or(0);
+                match urg {
+                    8 => "⚑",
+                    7 => "?",
+                    4 => "✓",
+                    _ => "",
+                }
+            };
+            let zoom = if t.zoomed_pane.is_some() { " Z" } else { "" };
+            // OSC 9;4 progress of the tab's panes (03 §8).
+            let ids = t.layout.panes();
+            let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
+            let prog = crate::osc::progress_in(app, app.cur, &ids)
+                .map(|p| format!(" {}", crate::osc::progress_bar(app, p).0))
+                .unwrap_or_default();
+            let sync = crate::sync_input::tab_badge(app, &t.id);
+            let label = if app.config.ui.tabs.show_numbers {
+                format!(" {}{} {}{zoom}{prog}{sync} ", glyph, t.number, title)
+            } else {
+                let g = if glyph.is_empty() {
+                    String::new()
+                } else {
+                    format!("{glyph} ")
+                };
+                format!(" {g}{title}{zoom}{prog}{sync} ")
+            };
+            let w = unicode_width::UnicodeWidthStr::width(label.as_str()) as u16;
+            raw.push(((*t).clone(), label, w));
+        }
+        raw
+    };
+    let mut raw = build(None);
+    let avail = (mw as usize).saturating_sub(1);
+    let need: usize = raw.iter().map(|(_, _, w)| *w as usize + 1).sum();
+    if need > avail && !raw.is_empty() {
+        // Columns the labels take besides their titles.
+        let title_cols: usize = titles
+            .iter()
+            .map(|t| unicode_width::UnicodeWidthStr::width(t.as_str()))
+            .sum();
+        let fixed = need.saturating_sub(title_cols);
+        let cap = (avail.saturating_sub(fixed) / raw.len()).max(MIN_TAB_TITLE);
+        raw = build(Some(cap));
     }
     crate::tabbar::layout(app, raw, mx + 1, mx + mw)
 }
@@ -822,10 +935,16 @@ pub fn compose(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
             };
             // A row wider than the sidebar ends in `…`; hovering or selecting it shows the
             // whole text (`crate::sidebar_tip`).
-            let cut = crate::sidebar_tip::is_cut(r, w);
+            let (segs, _) = r.fitted(w);
+            let cut = segs
+                .iter()
+                .map(|(s, _)| unicode_width::UnicodeWidthStr::width(s.as_str()))
+                .sum::<usize>()
+                > w as usize
+                && r.chips.is_empty();
             let room = if cut { w.saturating_sub(1) } else { w };
             let mut x = 0;
-            for (s, st) in &r.segs {
+            for (s, st) in &segs {
                 x += g.put_str(sx + x, y, s, hl(*st), room.saturating_sub(x));
             }
             if cut {
@@ -1285,13 +1404,32 @@ pub fn degraded_label(d: &str) -> String {
 /// Widest a run's label gets in the sidebar and tab bar (session titles run to 80 characters).
 pub const RUN_LABEL_MAX: usize = 28;
 
+/// `s` cut to at most `n` display columns, ending in `…` when it was cut. Counts columns, not
+/// characters, so wide (CJK, emoji) text and combining marks fit the room they get.
 pub fn truncate(s: &str, n: usize) -> String {
-    if s.chars().count() <= n {
+    truncate_cols(s, n)
+}
+
+/// [`truncate`]: whole graphemes only, and one column is kept for the `…`.
+pub fn truncate_cols(s: &str, cols: usize) -> String {
+    use unicode_segmentation::UnicodeSegmentation;
+    use unicode_width::UnicodeWidthStr;
+    if s.width() <= cols {
         return s.to_string();
     }
-    let mut t: String = s.chars().take(n.saturating_sub(1)).collect();
-    t.push('…');
-    t
+    let room = cols.saturating_sub(1);
+    let mut out = String::new();
+    let mut used = 0;
+    for g in s.graphemes(true) {
+        let gw = g.width();
+        if used + gw > room {
+            break;
+        }
+        used += gw;
+        out.push_str(g);
+    }
+    out.push('…');
+    out
 }
 
 #[cfg(test)]

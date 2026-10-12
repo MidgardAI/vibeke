@@ -242,3 +242,74 @@ fn status_segment_counts_background_tasks_and_not_done() {
     let (text, _) = crate::statusbar::segment(&app, "agents_summary", &d);
     assert!(text.contains("⧗2"), "{text}");
 }
+
+const LONG_TITLE: &str = "Fix the flaky login redirect in staging";
+
+#[test]
+fn a_long_agent_name_shrinks_before_its_state_is_clipped() {
+    let (mut app, _rx) = fleet();
+    app.sidebar_w = 28;
+    app.machines[0].model.runs[0].title = Some(LONG_TITLE.into());
+    let rows = crate::draw::sidebar_rows(&app);
+    let r = rows
+        .iter()
+        .find(|r| r.target.is_some() && r.text().contains("Fix the flaky"))
+        .expect("agent row");
+    // The row keeps the whole title; only the drawn copy shrinks.
+    assert!(r.text().contains(LONG_TITLE));
+    assert_eq!(r.tip.as_deref(), Some(LONG_TITLE));
+    let (segs, shrunk) = r.fitted(28);
+    assert!(shrunk);
+    let drawn: String = segs.iter().map(|(s, _)| s.as_str()).collect();
+    assert!(
+        unicode_width::UnicodeWidthStr::width(drawn.as_str()) <= 28,
+        "{drawn:?}"
+    );
+    assert!(
+        drawn.contains('…') && !drawn.contains(LONG_TITLE),
+        "{drawn:?}"
+    );
+    // What follows the name (YOLO, state, age) is untouched.
+    let status: String = r.segs[2..].iter().map(|(s, _)| s.as_str()).collect();
+    assert!(drawn.ends_with(&status), "{drawn:?} vs {status:?}");
+    // A wide sidebar shows the row as it is.
+    let (segs, shrunk) = r.fitted(120);
+    assert!(!shrunk);
+    assert_eq!(
+        segs.iter().map(|(s, _)| s.as_str()).collect::<String>(),
+        r.text()
+    );
+}
+
+#[test]
+fn auto_width_counts_a_long_name_at_the_label_cap() {
+    let (mut app, _rx) = fleet();
+    app.machines[0].model.runs[0].title = Some("n".repeat(80));
+    let rows = crate::draw::sidebar_rows(&app);
+    let r = rows
+        .iter()
+        .find(|r| r.target.is_some() && r.text().contains("nnnn"))
+        .expect("agent row");
+    let capped = r.auto_width();
+    let full = unicode_width::UnicodeWidthStr::width(r.text().as_str());
+    assert_eq!(full - capped, 80 - crate::draw::RUN_LABEL_MAX);
+}
+
+#[test]
+fn truncate_cols_counts_display_columns() {
+    use crate::draw::truncate_cols;
+    use unicode_width::UnicodeWidthStr;
+    assert_eq!(truncate_cols("abcdef", 4), "abc…");
+    assert_eq!(truncate_cols("abc", 3), "abc");
+    assert_eq!(truncate_cols("", 0), "");
+    // CJK characters are two columns wide.
+    let cjk = truncate_cols("日本語テキスト", 6);
+    assert_eq!(cjk, "日本…");
+    assert!(cjk.width() <= 6);
+    // An emoji is not split and the result fits.
+    let e = truncate_cols("👍👍👍", 4);
+    assert_eq!(e, "👍…");
+    assert!(e.width() <= 4);
+    // A base letter and its combining mark stay together.
+    assert_eq!(truncate_cols("e\u{301}e\u{301}e\u{301}", 2), "e\u{301}…");
+}
