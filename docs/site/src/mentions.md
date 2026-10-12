@@ -25,7 +25,7 @@ Start a prompt in an agent pane with a name. Vibeke sends the rest of the prompt
 @reviewer please check the changes in src/auth.rs
 ```
 
-You can use several names at the start: `@reviewer @tester run the new tests`. If any name is unknown, Vibeke sends nothing and shows the known names.
+You can use several names at the start: `@reviewer @tester run the new tests`. If any name is unknown, Vibeke sends no message. Your prompt goes to the agent as usual, with a note that lists the known names.
 
 From a script or a shell, use the CLI:
 
