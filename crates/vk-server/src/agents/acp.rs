@@ -397,6 +397,11 @@ pub trait Sink: Send {
     /// Open the interaction and wait (on another thread) for a decision.
     fn gate(&mut self, payload: Value, reply: GateReply);
     fn ack(&mut self, interaction: &str, key: &str);
+    /// Queued mentions for this pane as one text (`message.take`), or `None`. Blocks for at
+    /// most a short timeout.
+    fn take(&mut self) -> Option<String> {
+        None
+    }
 }
 
 struct SocketSink {
@@ -456,6 +461,21 @@ impl Sink for SocketSink {
             };
             reply(decision, s("interaction"), s("idempotency_key"));
         });
+    }
+    fn take(&mut self) -> Option<String> {
+        // Own short-lived connection (same socket and pane token as `gate`) on a helper
+        // thread, so a stuck server costs at most the timeout.
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let r = Link::connect()
+                .and_then(|mut l| l.call("message.take", json!({}), Some(Duration::from_secs(2))));
+            let _ = tx.send(r);
+        });
+        let r = rx.recv_timeout(Duration::from_millis(2500)).ok()??;
+        r.get("context")
+            .and_then(Value::as_str)
+            .filter(|c| !c.trim().is_empty())
+            .map(str::to_string)
     }
     fn ack(&mut self, interaction: &str, key: &str) {
         if let Some(tx) = &self.tx {
@@ -564,7 +584,13 @@ impl<W: Write> Host<W> {
     }
 
     fn submit(&mut self, text: String) {
-        if text.trim().is_empty() {
+        self.submit_with(text, None);
+    }
+
+    /// Start a turn. `ride` is a context already taken from the server (turn-end delivery);
+    /// otherwise the queued mentions are taken now and ride along with the user's text.
+    fn submit_with(&mut self, text: String, ride: Option<String>) {
+        if ride.is_none() && text.trim().is_empty() {
             self.prompt_line();
             return;
         }
@@ -579,14 +605,23 @@ impl<W: Write> Host<W> {
         }
         self.turn_active = true;
         self.turn_text.clear();
+        let context = match ride {
+            Some(c) => Some(c),
+            None => self.sink.take(),
+        };
+        let shown = if text.trim().is_empty() {
+            "(vibeke message)".to_string()
+        } else {
+            text.clone()
+        };
         self.sink.signal(
             "UserPromptSubmit",
-            json!({"prompt": text, "session_id": session}),
+            json!({"prompt": shown, "session_id": session}),
         );
         self.print("\n… working (esc to interrupt)\n");
         self.request(
             "session/prompt",
-            json!({"sessionId": session, "prompt": [{"type": "text", "text": text}]}),
+            json!({"sessionId": session, "prompt": prompt_blocks(&text, context.as_deref())}),
             Pending::Prompt,
         );
     }
@@ -970,7 +1005,13 @@ impl<W: Write> Host<W> {
                 }
                 self.print(&format!("\n[{stop}]"));
                 if self.queued.is_empty() {
-                    self.prompt_line();
+                    // Turn end: hand waiting mentions to the agent as the next prompt.
+                    if let Some(ctx) = self.sink.take() {
+                        self.print("\n› (vibeke message)");
+                        self.submit_with(String::new(), Some(ctx));
+                    } else {
+                        self.prompt_line();
+                    }
                 } else {
                     let next = self.queued.remove(0);
                     self.submit(next);
@@ -1134,6 +1175,19 @@ impl<W: Write> Host<W> {
             } => self.on_gate(req, decision, interaction, key),
         }
     }
+}
+
+/// Prompt content blocks: the queued-mention context (if any) first, then the user's text
+/// (omitted when empty).
+fn prompt_blocks(text: &str, context: Option<&str>) -> Value {
+    let mut blocks = vec![];
+    if let Some(c) = context.filter(|c| !c.trim().is_empty()) {
+        blocks.push(json!({"type": "text", "text": c}));
+    }
+    if !text.trim().is_empty() || blocks.is_empty() {
+        blocks.push(json!({"type": "text", "text": text}));
+    }
+    Value::Array(blocks)
 }
 
 fn tool_name(kind: &str, title: &str) -> String {
@@ -1479,6 +1533,22 @@ mod tests {
         h.on_agent(json!({"id": 51, "method": "terminal/create", "params": {}}));
         let r = sent(&agent).into_iter().find(|v| v["id"] == 51).unwrap();
         assert_eq!(r["error"]["code"], -32601);
+    }
+
+    #[test]
+    fn prompt_blocks_put_context_before_the_user_text() {
+        assert_eq!(
+            prompt_blocks("hi", None),
+            json!([{"type": "text", "text": "hi"}])
+        );
+        assert_eq!(
+            prompt_blocks("hi", Some("ctx")),
+            json!([{"type": "text", "text": "ctx"}, {"type": "text", "text": "hi"}])
+        );
+        assert_eq!(
+            prompt_blocks("", Some("ctx")),
+            json!([{"type": "text", "text": "ctx"}])
+        );
     }
 
     #[test]
