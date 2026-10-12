@@ -557,7 +557,7 @@ fn reply(server: &Server, ctx: &Ctx, p: &Value) -> R {
             ),
         ));
     }
-    rate_limit(server, Some(&pane.id))?;
+    rate_limit(server, Some(pane.id.as_str()))?;
     let my_name = c.model.mention_of(&pane.id).map(|m| m.name.clone());
     // The reply goes to the original author (§4.5): an agent or a person's pane gets an
     // envelope, a person without a pane a notification.
