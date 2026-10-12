@@ -418,24 +418,34 @@ struct SocketSink {
 
 impl SocketSink {
     fn new(harness: &str) -> SocketSink {
-        // One persistent connection for fire-and-forget signals, on its own thread so the
-        // protocol loop never blocks on the server. Calls run in order: a `message.take` sent
-        // after `Stop` reaches the server after it, so the messages belong to the next turn.
-        let tx = Link::connect().map(|mut link| {
-            let (tx, rx) = mpsc::channel::<SignalCall>();
-            std::thread::spawn(move || {
-                for (method, params, reply) in rx {
-                    let r = link.call(&method, params, Some(Duration::from_secs(5)));
-                    if let Some(reply) = reply {
-                        let _ = reply.send(r);
-                    }
+        // One connection for fire-and-forget signals, on its own thread so the protocol loop
+        // never blocks on the server. Calls run in order: a `message.take` sent after `Stop`
+        // reaches the server after it, so the messages belong to the next turn. A failed call
+        // drops the connection and the next call connects again (a restarted server).
+        let (tx, rx) = mpsc::channel::<SignalCall>();
+        std::thread::spawn(move || {
+            let mut link = Link::connect();
+            for (method, params, reply) in rx {
+                if link.is_none() {
+                    link = Link::connect();
                 }
-            });
-            tx
+                // A take may commit on the server before its answer arrives: wait long enough
+                // for the answer to reach the caller, late or not. It is never sent again.
+                let timeout = Duration::from_secs(if reply.is_some() { 120 } else { 5 });
+                let r = link
+                    .as_mut()
+                    .and_then(|l| l.call(&method, params, Some(timeout)));
+                if r.is_none() {
+                    link = None;
+                }
+                if let Some(reply) = reply {
+                    let _ = reply.send(r);
+                }
+            }
         });
         SocketSink {
             harness: harness.to_string(),
-            tx,
+            tx: Some(tx),
             late: None,
         }
     }
