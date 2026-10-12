@@ -85,3 +85,28 @@ touch icon, a web manifest, and a 1200 × 630 link preview.
 
 The browser app is deployed independently to Vercel project `your-team/vibeke-app` at `https://app.vibeke.dev`.
 The public relay remains at `https://relay.vibeke.dev`. See [PWA deployment](../pwa/README.md).
+
+## Product previews and measurement
+
+The home page preview shows two approval examples from the full tour.
+It plays only after a click. The mobile version crops the same footage for a small screen.
+Rebuild the clips and posters with `sh scripts/build-quick-look.sh` (requires ffmpeg).
+Update `public/video/quick-look.vtt` when changing the edit.
+The captions and adjacent transcript describe both examples.
+
+Run `bun scripts/build-social.ts` to render `public/brand/workflow-social.png` from the committed product screenshots.
+It is separate from the shared app icon exports. Playwright uses Chrome on macOS.
+
+Share `/#demo` for the short preview, `/?t=115.5#tour` for phone approvals,
+or `/?t=32#tour` for remote previews. Tour links select a time without autoplay.
+`/#agent-review` and `/#page-feedback` link to documented examples.
+
+`src/lib/analytics.ts` defines the explicit PostHog events. `github_outbound`
+measures repository interest. `install_intent` and `install_copy` measure intent,
+not successful installation. `connection_intent` identifies the desktop and
+paired-browser paths. `demo_start` and `demo_progress` describe playback.
+Progress marks positions reached, including after seeking; it is not verified viewing time.
+Compare unique visitors by placement and traffic source. A GitHub click does not
+prove that a visitor starred the repository. Website events do not measure CLI activation.
+The existing Google Ads page tag remains. These changes add no Ads conversion events.
+Automated browser checks skip both analytics providers.

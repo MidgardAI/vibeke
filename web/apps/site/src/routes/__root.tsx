@@ -26,10 +26,10 @@ export const Route = createRootRoute({
       { property: 'og:image:type', content: 'image/png' },
       { property: 'og:image:width', content: '1200' },
       { property: 'og:image:height', content: '630' },
-      { property: 'og:image:alt', content: 'Vibeke. Run your agents. Keep control. A Muscovy duck in a terminal window.' },
+      { property: 'og:image:alt', content: 'Vibeke. Run agents in your terminal. Answer from your phone. Terminal and phone screenshots.' },
       { name: 'twitter:card', content: 'summary_large_image' },
       { name: 'twitter:image', content: socialImage },
-      { name: 'twitter:image:alt', content: 'Vibeke. Run your agents. Keep control. A Muscovy duck in a terminal window.' },
+      { name: 'twitter:image:alt', content: 'Vibeke. Run agents in your terminal. Answer from your phone. Terminal and phone screenshots.' },
     ],
     links: [
       { rel: 'stylesheet', href: stylesheet },
@@ -41,8 +41,7 @@ export const Route = createRootRoute({
       { rel: 'manifest', href: '/site.webmanifest' },
     ],
     scripts: [
-      { src: `https://www.googletagmanager.com/gtag/js?id=${googleAdsId}`, async: true },
-      { children: `window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments);}gtag('js',new Date());gtag('config','${googleAdsId}');` },
+      { children: `if(!navigator.webdriver){var ads=document.createElement('script');ads.async=true;ads.src='https://www.googletagmanager.com/gtag/js?id=${googleAdsId}';document.head.appendChild(ads);window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments);}gtag('js',new Date());gtag('config','${googleAdsId}');}` },
     ],
   }),
   component: Root,
@@ -50,6 +49,6 @@ export const Route = createRootRoute({
 })
 
 function Root() {
-  useEffect(() => { posthog.init(posthogKey, { api_host: 'https://eu.i.posthog.com', defaults: '2026-05-30' }) }, [])
+  useEffect(() => { if (navigator.webdriver) return; posthog.init(posthogKey, { api_host: 'https://eu.i.posthog.com', defaults: '2026-05-30' }) }, [])
   return <html lang="en"><head><HeadContent /></head><body><a href="#main" className="skip-link">Skip to content</a><Header /><Outlet /><Footer /><Scripts /></body></html>
 }

@@ -1,7 +1,7 @@
 export const siteOrigin = 'https://vibeke.dev'
-export const siteTitle = 'Vibeke — Terminal workspaces for coding agents'
-export const siteDescription = 'Run coding agents in a terminal workspace. Answer requests from the inbox. Use separate worktrees and remote hosts.'
-export const socialImage = `${siteOrigin}/brand/social.png`
+export const siteTitle = 'Vibeke — Run agents in your terminal. Answer from your phone.'
+export const siteDescription = 'Run Claude Code, Codex, and other agent CLIs on your laptop or an SSH host. Pair your phone to answer supported requests.'
+export const socialImage = `${siteOrigin}/brand/workflow-social.png`
 
 export function canonicalUrl(path: string) {
   const pathname = path.split(/[?#]/)[0]!.replace(/\/+$/, '')

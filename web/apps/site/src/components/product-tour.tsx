@@ -1,6 +1,7 @@
 import { Play } from 'lucide-react'
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Eyebrow } from './ui'
+import { trackSiteEvent } from '../lib/analytics'
 
 const chapters = [
   ['0:07', 'Terminal'],
@@ -19,12 +20,37 @@ export function ProductTour() {
   const video = useRef<HTMLVideoElement>(null)
   const [started, setStarted] = useState(false)
 
-  function play(at?: string) {
+  const [error, setError] = useState(false)
+  const [startAt, setStartAt] = useState(0)
+  const milestones = useRef(new Set<number>())
+
+  useEffect(() => {
+    const value = new URLSearchParams(window.location.search).get('t')
+    const at = value === null ? 0 : Number(value)
+    if (!Number.isFinite(at) || at < 0 || at >= 161) return
+    setStartAt(at)
+    const v = video.current
+    if (!v || !at) return
+    const seek = () => { v.currentTime = Math.min(at, Math.max(0, v.duration - 0.1)) }
+    if (v.readyState >= 1) seek()
+    else {
+      v.addEventListener('loadedmetadata', seek, { once: true })
+      v.preload = 'metadata'
+      v.load()
+      return () => v.removeEventListener('loadedmetadata', seek)
+    }
+  }, [])
+
+  async function play(at?: string) {
     const v = video.current
     if (!v) return
-    if (at) v.currentTime = seconds(at)
-    setStarted(true)
-    void v.play()
+    setError(false)
+    if (at) {
+      v.currentTime = seconds(at)
+      setStartAt(seconds(at))
+      milestones.current.clear()
+    }
+    try { await v.play() } catch { setError(true) }
   }
 
   return <section id="tour" aria-labelledby="tour-title" className="border-b border-line">
@@ -35,14 +61,28 @@ export function ProductTour() {
       </div>
       <div className="relative mt-10 overflow-hidden border border-line bg-base">
         <video ref={video} className="block aspect-video w-full" controls={started} preload="none" playsInline poster="/video/vibeke-tour-poster.jpg"
-          onPlay={() => setStarted(true)} aria-label="Vibeke product tour">
+          onPlay={() => {
+            setStarted(true)
+            if (!milestones.current.has(0)) { milestones.current.add(0); trackSiteEvent('demo_start', { placement: 'tour', target: 'full-tour', chapter: String(startAt) }) }
+          }} onError={() => setError(true)}
+          onTimeUpdate={event => {
+            const v = event.currentTarget
+            if (v.seeking || !Number.isFinite(v.duration)) return
+            const quartile = Math.floor(v.currentTime / v.duration * 4) * 25
+            if (quartile > 0 && quartile < 100 && !milestones.current.has(quartile)) {
+              milestones.current.add(quartile)
+              trackSiteEvent('demo_progress', { placement: 'tour', target: 'full-tour', chapter: String(startAt), quartile })
+            }
+          }}
+          onEnded={() => { trackSiteEvent('demo_progress', { placement: 'tour', target: 'full-tour', chapter: String(startAt), quartile: 100 }); milestones.current.clear() }} aria-label="Vibeke product tour">
           <source src="/video/vibeke-tour.mp4" type="video/mp4" />
           <track kind="captions" src="/video/vibeke-tour.vtt" srcLang="en" label="English" />
         </video>
         {!started && <button type="button" onClick={() => play()} className="group absolute inset-0 flex items-center justify-center bg-base/30 transition-colors hover:bg-base/10 focus-visible:outline-none" aria-label="Play the product tour">
-          <span className="flex items-center gap-3 border border-accent/50 bg-base/90 px-6 py-4 font-mono text-xs text-cream shadow-2xl transition group-hover:border-accent group-hover:text-accent group-focus-visible:border-accent group-focus-visible:text-accent group-focus-visible:outline group-focus-visible:outline-2 group-focus-visible:outline-offset-4 group-focus-visible:outline-accent"><Play size={18} className="fill-current text-accent" /> Play the tour</span>
+          <span className="flex items-center gap-3 border border-accent/50 bg-base/90 px-6 py-4 font-mono text-xs text-cream shadow-2xl transition group-hover:border-accent group-hover:text-accent group-focus-visible:border-accent group-focus-visible:text-accent group-focus-visible:outline group-focus-visible:outline-2 group-focus-visible:outline-offset-4 group-focus-visible:outline-accent"><Play size={18} className="fill-current text-accent" /> {startAt ? `Play from ${Math.floor(startAt / 60)}:${String(Math.floor(startAt % 60)).padStart(2, '0')}` : 'Play the tour'}</span>
         </button>}
       </div>
+      {error && <p role="status" className="mt-3 text-sm text-muted">The tour could not play. <a href="/video/vibeke-tour.mp4" className="text-accent underline">Open the video</a>.</p>}
       <div className="mt-4 flex flex-wrap gap-x-5 gap-y-2 font-mono text-[11px] text-muted" aria-label="Chapters">
         {chapters.map(([at, title]) => <button key={at} type="button" onClick={() => play(at)} className="inline-flex min-h-8 items-center gap-2 hover:text-cream"><span className="text-accent">{at}</span>{title}</button>)}
       </div>

@@ -5,7 +5,7 @@ test('app screenshots rotate, enlarge, and support keyboard navigation', async (
   const errors: string[] = []
   page.on('pageerror', error => errors.push(error.message))
   await page.goto('/')
-  await expect(page.getByRole('heading', { level: 1 })).toContainText('Run your agents')
+  await expect(page.getByRole('heading', { level: 1 })).toContainText('Run agents in your terminal')
   await page.evaluate(() => document.fonts.ready)
   const showcase = page.getByRole('region', { name: 'Vibeke screenshots' })
   const orbit = showcase.locator('.client-orbit')
@@ -226,4 +226,47 @@ test('pages carry the baseline security headers', async ({ request }) => {
   expect(headers['content-security-policy']).toContain("frame-ancestors 'none'")
   expect(headers['x-content-type-options']).toBe('nosniff')
   expect(headers['referrer-policy']).toBe('strict-origin-when-cross-origin')
+})
+
+
+test('first use, preview, and GitHub links work without sending test analytics', async ({ page }, info) => {
+  const analyticsRequests: string[] = []
+  page.on('request', request => {
+    if (/posthog|i\.posthog\.com|googletagmanager\.com/.test(request.url())) analyticsRequests.push(request.url())
+  })
+  await page.context().grantPermissions(['clipboard-read', 'clipboard-write'])
+  await page.goto('/')
+  const preview = page.getByRole('figure', { name: 'Terminal and phone approval preview' })
+  if (info.project.name === 'mobile') {
+    expect((await preview.boundingBox())!.y).toBeLessThan(page.viewportSize()!.height)
+    await page.getByRole('button', { name: 'Open navigation' }).click()
+    await expect(page.getByRole('navigation', { name: 'Mobile navigation' }).getByRole('link', { name: 'Star on GitHub' })).toHaveAttribute('href', 'https://github.com/vibeke-ai/vibeke')
+    await page.getByRole('button', { name: 'Close navigation' }).click()
+  }
+  const video = preview.locator('video')
+  expect(await video.evaluate(element => element.paused)).toBe(true)
+  await preview.getByRole('button', { name: 'Play 20-second preview' }).click()
+  await expect.poll(() => video.evaluate(element => element.currentTime)).toBeGreaterThan(0)
+  await expect(preview.getByRole('button', { name: 'Pause preview' })).toBeVisible()
+  await preview.getByRole('button', { name: 'Pause preview' }).click()
+  expect(await video.evaluate(element => element.paused)).toBe(true)
+  if (info.project.name === 'mobile') expect(await video.evaluate(element => element.currentSrc)).toContain('quick-look-mobile.mp4')
+  const install = page.locator('#install')
+  await install.getByRole('button', { name: 'Copy command' }).first().click()
+  await expect(install.getByRole('button', { name: 'Copied' })).toBeVisible()
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe('curl -fsSL https://vibeke.dev/install.sh | sh')
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+  expect(analyticsRequests).toEqual([])
+})
+
+test('shared tour links select a chapter without autoplay', async ({ page }) => {
+  await page.goto('/?t=32#tour')
+  const video = page.getByLabel('Vibeke product tour', { exact: true })
+  await expect.poll(() => video.evaluate(element => (element as HTMLVideoElement).currentTime)).toBeCloseTo(32, 0)
+  expect(await video.evaluate(element => (element as HTMLVideoElement).paused)).toBe(true)
+  await expect(page.getByRole('button', { name: 'Play the product tour' })).toContainText('Play from 0:32')
+  await page.getByRole('button', { name: 'Play the product tour' }).click()
+  await expect.poll(() => video.evaluate(element => (element as HTMLVideoElement).currentTime)).toBeGreaterThan(32)
+  await page.goto('/?t=invalid#tour')
+  await expect(page.getByRole('button', { name: 'Play the product tour' })).toContainText('Play the tour')
 })
