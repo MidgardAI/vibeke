@@ -51,6 +51,8 @@ describe('note list', () => {
     expect(isEditable(null)).toBe(false);
     expect(isEditable(draft([], 'delivered'))).toBe(false);
     expect(isEditable(draft([], 'queued'))).toBe(true);
+    expect(isEditable(draft([], 'sending'))).toBe(false);
+    expect(isEditable(draft([], 'unconfirmed'))).toBe(true);
     expect(isEditable(draft([]))).toBe(true);
   });
 
@@ -58,5 +60,8 @@ describe('note list', () => {
     expect(sendOutcome('delivered')).toBe('delivered');
     expect(sendOutcome('queued')).toBe('queued');
     expect(sendOutcome(undefined)).toBe('queued');
+    expect(sendOutcome('sending')).toBe('sending');
+    expect(sendOutcome('unconfirmed')).toBe('unconfirmed');
+    expect(sendOutcome('open')).toBe('queued');
   });
 });

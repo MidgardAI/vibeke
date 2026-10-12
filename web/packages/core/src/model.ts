@@ -1025,6 +1025,9 @@ export interface AnnotationPick {
   covers?: { selector: string; text?: string }[];
 }
 
+/** `sending`: a prompt or paste is in flight. `unconfirmed`: it may have reached the agent; it is never sent again without the user. */
+export type AnnotationState = 'open' | 'queued' | 'sending' | 'delivered' | 'unconfirmed';
+
 export interface AnnotationDraft {
   id: string;
   workspace?: string;
@@ -1035,7 +1038,10 @@ export interface AnnotationDraft {
   viewport?: { w: number; h: number; dpr?: number; device?: string };
   notes: AnnotationNote[];
   page_note?: string | null;
-  state: 'open' | 'queued' | 'delivered';
+  state: AnnotationState;
+  via?: 'feedback' | 'typed' | 'prompt';
+  /** Why the last delivery did not go through, or why it is unconfirmed. */
+  detail?: string;
   updated_at_ms: number;
   delivered_at_ms?: number;
 }
@@ -1412,7 +1418,7 @@ export interface AppApi {
   /** Types the notes into the agent's pane when that is safe, else queues them; `copy_only` just returns the text. */
   'browser.annotations_send': {
     params: { draft: string; agent?: string; copy_only?: boolean };
-    result: { state?: 'delivered' | 'queued'; via?: 'feedback' | 'typed' | 'prompt'; agent_pane?: string | null; text: string };
+    result: { state?: AnnotationState; via?: 'feedback' | 'typed' | 'prompt'; agent_pane?: string | null; text: string };
   };
   /** Input needs this device's take-over (`conflict` otherwise). */
   'browser.click': {

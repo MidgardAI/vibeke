@@ -460,6 +460,7 @@ impl Server {
     pub fn recover(self: &Arc<Self>) -> Result<usize> {
         tracking::recover(self);
         review::recover(self);
+        browser_pane::annotate::recover(self);
         let holders = self.with_core(|c| c.store.holders())?;
         let panes: Vec<Pane> = self.with_core(|c| c.model.panes.clone());
         let mut recovered = 0;

@@ -114,7 +114,7 @@ fn annotate_pick_edit_send_and_feedback() {
     let fb: Value = serde_json::from_slice(&out.stdout).unwrap();
     let text = fb["text"].as_str().unwrap_or_default();
     assert!(
-        text.starts_with(&format!("Browser feedback on {url}")),
+        text.starts_with(&format!("Browser feedback on \"{url}\"")),
         "{fb}"
     );
     assert!(text.contains("#save"), "{text}");

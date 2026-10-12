@@ -594,8 +594,13 @@ export const en = {
     copy: 'Copy',
     copied: 'Copied the notes',
     clear: 'Clear all',
-    state: { open: 'Not sent', queued: 'Waiting for the agent', delivered: 'Sent' },
-    sent: { delivered: 'Sent to the agent', queued: 'The agent is busy. The notes wait for it.' },
+    state: { open: 'Not sent', queued: 'Waiting for the agent', sending: 'Sending', delivered: 'Sent', unconfirmed: 'Not confirmed' },
+    sent: {
+      delivered: 'Sent to the agent',
+      sending: 'Sending to the agent',
+      unconfirmed: 'The agent did not confirm the notes. Check the agent, and send again if they did not arrive.',
+      queued: 'The agent is busy. The notes wait for it.',
+    },
     screenshot: 'Screenshot of the element',
   },
   live: {

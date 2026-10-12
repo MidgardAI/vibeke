@@ -3,7 +3,7 @@
 // The draft lives on the host; this device only reads it and sends edits.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { AnnotationDraft, AnnotationNote, AnnotationPick } from '@vibeke/core';
+import type { AnnotationDraft, AnnotationNote, AnnotationPick, AnnotationState } from '@vibeke/core';
 import { useApp } from '../app/hooks';
 import { t } from '../i18n';
 import { errorMessage } from './answer';
@@ -53,12 +53,14 @@ export function keepThumbs(thumbs: ReadonlyMap<number, string>, draft: Annotatio
 }
 
 /** The result of sending: what to tell the user. */
-export function sendOutcome(state: 'delivered' | 'queued' | undefined): 'delivered' | 'queued' {
-  return state === 'delivered' ? 'delivered' : 'queued';
+export function sendOutcome(state: AnnotationState | undefined): 'delivered' | 'sending' | 'unconfirmed' | 'queued' {
+  if (state === 'delivered' || state === 'sending' || state === 'unconfirmed') return state;
+  return 'queued';
 }
 
 /** Drafts the notes panel can act on: the host keeps sent drafts around, but they are read-only history. */
-export const isEditable = (d: AnnotationDraft | null): d is AnnotationDraft => !!d && d.state !== 'delivered';
+export const isEditable = (d: AnnotationDraft | null): d is AnnotationDraft =>
+  !!d && d.state !== 'delivered' && d.state !== 'sending';
 
 export interface Annotations {
   draft: AnnotationDraft | null;

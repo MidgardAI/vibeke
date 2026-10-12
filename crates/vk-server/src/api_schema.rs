@@ -511,7 +511,7 @@ TaskPorts = {task: string, handle: string, lease: {start: int, end: int, count: 
 AnnotationTarget = {pane: string} | {session: string} | {preview: string}
 AnnotationRect = {x: number, y: number, w: number, h: number}
 AnnotationNote = {n: int, kind: element|region|page, selector?: string, role?: string, name?: string, text?: string, html?: string, rect?: AnnotationRect, covers?: [{selector: string, text?: string}], image?: string, note: string}
-AnnotationDraft = {id: string, workspace?: string, target: AnnotationTarget, agent_pane?: string|null, url: string, title?: string, viewport?: {w: int, h: int, dpr?: number, device?: string}, notes: [AnnotationNote], page_note?: string|null, state: open|queued|delivered, via?: feedback|typed|prompt, detail?: string, updated_at_ms: int, delivered_at_ms?: int}
+AnnotationDraft = {id: string, workspace?: string, target: AnnotationTarget, agent_pane?: string|null, url: string, title?: string, viewport?: {w: int, h: int, dpr?: number, device?: string}, notes: [AnnotationNote], page_note?: string|null, state: open|queued|sending|delivered|unconfirmed, via?: feedback|typed|prompt, detail?: string, updated_at_ms: int, delivered_at_ms?: int}
 "##;
 
 /// `method :: params => result`. Methods whose spec 07 §2 row exists follow it; the rest follow
@@ -832,7 +832,7 @@ browser.annotation_remove :: {draft: string, n: int} => {draft: AnnotationDraft}
 browser.annotations_clear :: {draft: string} => {cleared: bool}
 browser.annotations :: {pane?: Target, session?: string, preview?: string, draft?: string} => {draft: AnnotationDraft|null}
 # copy_only returns the prompt and changes nothing (state is then the draft's own)
-browser.annotations_send :: {draft: string, agent?: Target, copy_only?: bool} => {state: delivered|queued|open, via?: feedback|typed|prompt|null, agent_pane?: string|null, text: string}
+browser.annotations_send :: {draft: string, agent?: Target, copy_only?: bool} => {state: delivered|sending|unconfirmed|queued|open, via?: feedback|typed|prompt|null, agent_pane?: string|null, text: string}
 # the agent side: the oldest queued draft for the caller's pane (or a pane it created); wait is seconds
 browser.feedback :: {pane?: Target, wait_ms?: int = 0, wait?: int} => {draft: AnnotationDraft|null, text?: string}
 browser.pane.annotations :: {pane?: Target, open?: bool, focus?: bool = true} => {open: bool, split?: string}

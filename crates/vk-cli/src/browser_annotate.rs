@@ -613,6 +613,13 @@ pub fn describe_send(v: &Value) -> String {
             None => format!("sent ({})", clean(via)),
         },
         (Some("delivered"), None) => "sent".into(),
+        (Some("sending"), _) => match agent {
+            Some(a) => format!("sending to {a}"),
+            None => "sending".into(),
+        },
+        (Some("unconfirmed"), _) => {
+            "not confirmed: check the agent and send again if it did not arrive".into()
+        }
         (Some("queued"), _) => "queued: the agent gets it when it is ready".into(),
         _ => "sent".into(),
     }
@@ -1029,5 +1036,10 @@ mod tests {
             "sent to p3 (typed)"
         );
         assert!(describe_send(&json!({"state": "queued"})).starts_with("queued"));
+        assert_eq!(
+            describe_send(&json!({"state": "sending", "via": "typed", "agent_pane": "p3"})),
+            "sending to p3"
+        );
+        assert!(describe_send(&json!({"state": "unconfirmed"})).starts_with("not confirmed"));
     }
 }
