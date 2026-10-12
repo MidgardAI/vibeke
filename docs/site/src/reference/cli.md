@@ -145,6 +145,27 @@ Use `--json` to print JSON. Non-terminal output also uses JSON.
 | `limits` | - | `agent.limits` | latest rate-limit observation per harness |
 | `drift` | - | `agent.drift` | disagreement/answer-failure counters per harness version |
 
+## `vibeke mention`
+
+| Verb | Positionals | Method | Description |
+|---|---|---|---|
+| `list` | - | `mention.list` | [--workspace w] named panes with label, harness and state (spec 19) |
+| `suggest` | `<pane>` | `mention.suggest` | <pane> a free name for the pane |
+| `set` | `<pane>` `<name>` | `mention.set` | <pane> [name] [--kind agent\|terminal] [--no-delivery] (no name: the suggested one) |
+| `clear` | `<pane>` | `mention.clear` | <pane> |
+
+## `vibeke message`
+
+| Verb | Positionals | Method | Description |
+|---|---|---|---|
+| `send` | `<body>` | `message.send` | <body> --to name [--to name…] [--no-expects-reply] [--workspace w] |
+| `reply` | `<message>` `<body>` | `message.reply` | <message> <body> answer a message this pane received |
+| `complete` | `<message>` | `message.complete` | <message> done without an answer |
+| `get` | `<id>` | `message.get` | <message> |
+| `list` | - | `message.list` | [--pane p] [--direction in\|out\|all] [--open-only] [--limit n] |
+| `cancel` | `<delivery>` | `message.cancel` | <delivery> |
+| `retry` | `<delivery>` | `message.retry` | <delivery> deliver a held message again |
+
 ## `vibeke interaction`
 
 | Verb | Positionals | Method | Description |
