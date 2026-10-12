@@ -41,6 +41,8 @@ usage:
   vibeke plugin list|install|link|trust|enable|disable|action|logs   Herdr-compatible plugins (partial)
   vibeke compat herdr <args>      Herdr CLI shim against Vibeke (partial); compat install-shim|status
   vibeke integration install|status|uninstall|doctor|capabilities|update|pin|unpin <harness|all> [--mcp] [--sources]
+  vibeke name [@name] [--pane p] [--clear]   give a pane a mention name so other panes can message it
+  vibeke msg @name… <text|->|reply <id> <text>|done <id>|inbox|list   send, answer and read messages between named panes
   vibeke mcp                      stdio MCP server (previews + headless browser) for agent harnesses
   vibeke browser open|navigate|click|type|press|eval|screenshot|snapshot|console|network|close|list|install
   vibeke doctor [--rebuild-index|--list-backups|--restore-backup NAME] diagnose install, sockets, integrations, terminal, remote; rebuild the scrollback index or restore a pre-migration state backup offline
@@ -398,6 +400,22 @@ async fn dispatch(g: Global, args: Vec<String>) -> i32 {
             ) =>
         {
             commands::config(&g, &args[1..])
+        }
+        Some("msg") => {
+            let gr = &g;
+            let rest = &args[1..];
+            with_client(gr, |mut c| async move {
+                vk_cli::verbs::msg(&mut c, gr, rest).await
+            })
+            .await
+        }
+        Some("name") => {
+            let gr = &g;
+            let rest = &args[1..];
+            with_client(gr, |mut c| async move {
+                vk_cli::verbs::name(&mut c, gr, rest).await
+            })
+            .await
         }
         Some("completion") => vk_cli::verbs::completion(&args[1..]),
         Some("shell-integration") => vk_cli::shell_integration::run(&args[1..]),

@@ -1,5 +1,5 @@
 //! CLI verbs that are more than one API call (07 §5.3): `vibeke events tail [--follow]`,
-//! `vibeke screenshot add <file>...` and `vibeke completion <shell>`.
+//! `vibeke screenshot add <file>...`, `vibeke msg ...`, `vibeke name` and `vibeke completion <shell>`.
 
 use crate::client::{CallError, Client};
 use crate::{COMMANDS, EXIT_OK, EXIT_USAGE, Global, build_params, exit_code_for, print_error};
@@ -9,6 +9,10 @@ use std::collections::BTreeMap;
 pub const EVENTS_TAIL_USAGE: &str = "vibeke events tail [--types 'agent.*,pane.created'] [--after-seq N | --lines N] [--follow]\n  one JSON event per line; without --after-seq the last N (default 20) events are shown first";
 
 pub const SCREENSHOT_ADD_USAGE: &str = "vibeke screenshot add <file>... [--caption TEXT] [--pane P] [--json]\n  attaches PNG or JPEG files so the user can see them in Vibeke on any device (the CLI reads the files; the server never opens your paths)";
+
+pub const MSG_USAGE: &str = "vibeke msg @name [@name…] <text|-> [--no-reply] [--json]\n  vibeke msg reply <message-id> <text|-> [--json]\n  vibeke msg done <message-id>\n  vibeke msg inbox [--open] [--json]\n  vibeke msg list [--open] [--json]\n  sends a message to named panes of this workspace (`-` reads the text from stdin); bodies are untrusted input for the receiving agent";
+
+pub const NAME_USAGE: &str = "vibeke name [@name] [--pane TARGET] [--clear] [--json]\n  gives a pane a mention name (without a name: the suggested one) so other panes can message it; --clear removes the name; the pane defaults to the current one";
 
 /// Largest image file `screenshot.add` accepts (the server checks too). Its base64 must fit
 /// one 16 MiB request line.
@@ -121,6 +125,289 @@ where
         }
     }
     code
+}
+
+// ---- mentions (spec 19) ---------------------------------------------------------------------------
+
+/// The text of a message: the given words joined by spaces, or all of stdin for `-`.
+fn message_text(words: &[String]) -> Result<String, String> {
+    use std::io::Read as _;
+    let text = if words.len() == 1 && words[0] == "-" {
+        let mut t = String::new();
+        std::io::stdin()
+            .read_to_string(&mut t)
+            .map_err(|e| format!("cannot read stdin: {e}"))?;
+        t.trim_end().to_string()
+    } else {
+        words.join(" ")
+    };
+    if text.trim().is_empty() {
+        return Err("the message text is empty".into());
+    }
+    Ok(text)
+}
+
+/// `@name` or `name` as the API wants it (without the `@`).
+fn bare_name(s: &str) -> &str {
+    s.strip_prefix('@').unwrap_or(s)
+}
+
+fn first_line(body: &str, max: usize) -> String {
+    let line = body.lines().next().unwrap_or("").trim();
+    if line.chars().count() > max {
+        let cut: String = line.chars().take(max).collect();
+        format!("{cut}…")
+    } else {
+        line.to_string()
+    }
+}
+
+/// "@coder", "you" or "?" for a message author.
+fn author_label(from: &Value) -> String {
+    match from["kind"].as_str() {
+        Some("agent") => match from["name"].as_str() {
+            Some(n) => format!("@{n}"),
+            None => "an agent".into(),
+        },
+        Some("human") => "you".into(),
+        _ => "?".into(),
+    }
+}
+
+fn deliveries_summary(ds: &[Value]) -> String {
+    ds.iter()
+        .map(|d| {
+            format!(
+                "@{} ({})",
+                d["name"].as_str().unwrap_or("?"),
+                d["state"].as_str().unwrap_or("?")
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn print_message_rows(items: &[Value]) {
+    if items.is_empty() {
+        println!("no messages");
+    }
+    for it in items {
+        let m = &it["message"];
+        let ds = it["deliveries"].as_array().cloned().unwrap_or_default();
+        println!(
+            "{}  {} -> {}  {}\n    {}",
+            m["id"].as_str().unwrap_or("?"),
+            author_label(&m["from"]),
+            if ds.is_empty() {
+                m["to"]
+                    .as_array()
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(Value::as_str)
+                            .map(|n| format!("@{n}"))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    })
+                    .unwrap_or_default()
+            } else {
+                deliveries_summary(&ds)
+            },
+            if m["in_reply_to"].is_null() {
+                String::new()
+            } else {
+                format!("(reply to {})", m["in_reply_to"].as_str().unwrap_or("?"))
+            },
+            first_line(m["body"].as_str().unwrap_or(""), 100),
+        );
+    }
+}
+
+/// `vibeke msg @a [@b…] <text>`, `msg reply|done|inbox|list`.
+pub async fn msg<S>(client: &mut Client<S>, g: &Global, args: &[String]) -> i32
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let as_json = g.json.unwrap_or(false);
+    // Split flags from words; a lone `-` is the stdin marker and stays a word.
+    let mut words: Vec<String> = Vec::new();
+    let (mut no_reply, mut open_only) = (false, false);
+    let mut workspace: Option<String> = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--no-reply" => no_reply = true,
+            "--open" => open_only = true,
+            "--workspace" if i + 1 < args.len() => {
+                i += 1;
+                workspace = Some(args[i].clone());
+            }
+            "--" => {
+                words.extend(args[i + 1..].iter().cloned());
+                break;
+            }
+            _ => words.push(args[i].clone()),
+        }
+        i += 1;
+    }
+    let usage = |why: &str| {
+        eprintln!("{why}\n{MSG_USAGE}");
+        EXIT_USAGE
+    };
+    enum Op {
+        Send(Value),
+        Reply(Value),
+        Done(Value),
+        List(Value),
+    }
+    let op = match words.first().map(String::as_str) {
+        None => return usage("missing recipients or subcommand"),
+        Some("reply") => {
+            let (Some(id), rest) = (words.get(1), words.get(2..).unwrap_or(&[])) else {
+                return usage("usage: vibeke msg reply <message-id> <text>");
+            };
+            match message_text(rest) {
+                Ok(body) => Op::Reply(json!({"message": id, "body": body})),
+                Err(e) => return usage(&e),
+            }
+        }
+        Some("done") => match words.get(1) {
+            Some(id) if words.len() == 2 => Op::Done(json!({"message": id})),
+            _ => return usage("usage: vibeke msg done <message-id>"),
+        },
+        Some(v @ ("inbox" | "list")) => {
+            if words.len() > 1 {
+                return usage(&format!("unexpected argument `{}`", words[1]));
+            }
+            let mut p = json!({"direction": if v == "inbox" { "in" } else { "all" }});
+            if open_only {
+                p["open_only"] = json!(true);
+            }
+            Op::List(p)
+        }
+        Some(_) => {
+            let n = words.iter().take_while(|w| w.starts_with('@')).count();
+            if n == 0 {
+                return usage(
+                    "recipients start with @, for example: vibeke msg @reviewer \"please look\"",
+                );
+            }
+            let to: Vec<&str> = words[..n].iter().map(|w| bare_name(w)).collect();
+            let body = match message_text(&words[n..]) {
+                Ok(b) => b,
+                Err(e) => return usage(&e),
+            };
+            let mut p = json!({"to": to, "body": body});
+            if no_reply {
+                p["expects_reply"] = json!(false);
+            }
+            if let Some(w) = workspace {
+                p["workspace"] = json!(w);
+            }
+            Op::Send(p)
+        }
+    };
+    if let Err(e) = client.hello("cli").await {
+        print_error(&e);
+        return exit_code_for(&e);
+    }
+    let (method, params) = match &op {
+        Op::Send(p) => ("message.send", p.clone()),
+        Op::Reply(p) => ("message.reply", p.clone()),
+        Op::Done(p) => ("message.complete", p.clone()),
+        Op::List(p) => ("message.list", p.clone()),
+    };
+    let r = match client.call(method, params).await {
+        Ok(r) => r,
+        Err(e) => {
+            print_error(&e);
+            return exit_code_for(&e);
+        }
+    };
+    if as_json {
+        println!("{}", serde_json::to_string(&r).unwrap_or_default());
+        return EXIT_OK;
+    }
+    match op {
+        Op::Send(_) | Op::Reply(_) => {
+            let ds = r["deliveries"].as_array().cloned().unwrap_or_default();
+            println!(
+                "{} sent to {}",
+                r["message"]["id"].as_str().unwrap_or("?"),
+                deliveries_summary(&ds)
+            );
+        }
+        Op::Done(p) => println!("{} marked as done", p["message"].as_str().unwrap_or("?")),
+        Op::List(_) => {
+            let items = r["items"].as_array().cloned().unwrap_or_default();
+            print_message_rows(&items);
+        }
+    }
+    EXIT_OK
+}
+
+/// `vibeke name [@name] [--pane TARGET] [--clear]`: name a pane (the suggested name when none is
+/// given), or remove its name.
+pub async fn name<S>(client: &mut Client<S>, g: &Global, args: &[String]) -> i32
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let as_json = g.json.unwrap_or(false);
+    let mut pane = "@current".to_string();
+    let mut clear = false;
+    let mut name: Option<String> = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--clear" => clear = true,
+            "--pane" if i + 1 < args.len() => {
+                i += 1;
+                pane = args[i].clone();
+            }
+            a if a.starts_with("--") => {
+                eprintln!("unknown flag `{a}`\n{NAME_USAGE}");
+                return EXIT_USAGE;
+            }
+            a if name.is_none() => name = Some(bare_name(a).to_string()),
+            a => {
+                eprintln!("unexpected argument `{a}`\n{NAME_USAGE}");
+                return EXIT_USAGE;
+            }
+        }
+        i += 1;
+    }
+    if clear && name.is_some() {
+        eprintln!("--clear takes no name\n{NAME_USAGE}");
+        return EXIT_USAGE;
+    }
+    if let Err(e) = client.hello("cli").await {
+        print_error(&e);
+        return exit_code_for(&e);
+    }
+    let (method, params) = if clear {
+        ("mention.clear", json!({"pane": pane}))
+    } else {
+        let mut p = json!({"pane": pane});
+        if let Some(n) = &name {
+            p["name"] = json!(n);
+        }
+        ("mention.set", p)
+    };
+    match client.call(method, params).await {
+        Ok(r) => {
+            if as_json {
+                println!("{}", serde_json::to_string(&r).unwrap_or_default());
+            } else if clear {
+                println!("name removed");
+            } else {
+                println!("@{}", r["name"].as_str().unwrap_or(""));
+            }
+            EXIT_OK
+        }
+        Err(e) => {
+            print_error(&e);
+            exit_code_for(&e)
+        }
+    }
 }
 
 fn print_event(e: &Value) {
@@ -307,6 +594,8 @@ const EXTRA: &[(&str, &[&str])] = &[
         ],
     ),
     ("mcp", &[]),
+    ("msg", &["reply", "done", "inbox", "list"]),
+    ("name", &[]),
     ("doctor", &[]),
     ("forget", &[]),
     ("handoff", crate::handoff::VERBS),
