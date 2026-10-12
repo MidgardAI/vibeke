@@ -6,7 +6,7 @@
 
 import { useEffect, useMemo, useRef, useState, type ClipboardEvent, type DragEvent, type Dispatch, type ReactNode, type SetStateAction } from 'react';
 import { ArrowUp, Camera, Loader2, Mic, MoreHorizontal, Paperclip, Plus, RotateCcw, ShieldCheck, Square, X } from 'lucide-react';
-import type { AgentCommand, AgentRun } from '@vibeke/core';
+import type { AgentCommand, AgentRun, MentionEntry } from '@vibeke/core';
 import { useApp, usePrefs } from '../../app/hooks';
 import { Button, IconButton, Notice, Sheet, cx } from '../../components/ui';
 import { MenuButton } from '../workspace/menu';
@@ -17,6 +17,7 @@ import { base64Std } from '../../lib/format';
 import { composerShowsStop, destructiveReason } from '../../lib/guards';
 import { useReloadGuard } from '../../lib/reload-guard';
 import { insertAtCaret } from '../../lib/voice-insert';
+import { atQuery, filterMentions, insertMention, mentionRows, type MentionablePane, type MentionRow } from '../../lib/mentions';
 import { CommandCache, commandTap, fallbackCommands, filterCommands, slashQuery } from '../../lib/pickers';
 import type { PaneActions } from './actions';
 import { ModelSwitcher } from './model-switcher';
@@ -60,6 +61,9 @@ export function Composer({
   onSent,
   placeholder,
   locked = false,
+  paneId,
+  workspaceId,
+  mentionPanes,
 }: {
   hostId: string;
   actions: PaneActions;
@@ -71,6 +75,10 @@ export function Composer({
   run?: AgentRun | null;
   /** The host's interactions (an open one on the run means it waits on the user, not working). */
   interactions?: readonly { run: string; status: string }[] | null;
+  /** The pane this composer types into, its workspace, and the workspace's panes for `@` completion. */
+  paneId?: string;
+  workspaceId?: string;
+  mentionPanes?: readonly MentionablePane[];
   /** Content of the ⋯ popover (keys, quick replies, slash commands). */
   more?: ReactNode;
   onSent?: () => void;
@@ -162,6 +170,51 @@ export function Composer({
       taRef.current?.focus();
     } else if (r.do === 'arm') setSlashArmed(c.name);
     else void send(r.text);
+  };
+
+  // ---- @ mentions (spec 19) ----
+  // `named` is null until `mention.list` answered; a host without mentions leaves it null.
+  const [named, setNamed] = useState<MentionEntry[] | null>(null);
+  const [atDismissed, setAtDismissed] = useState<string | null>(null);
+  const at = isAgent && !locked && !!paneId && !!workspaceId ? atQuery(text) : null;
+  const wantsAt = at !== null;
+  useEffect(() => {
+    if (!wantsAt || !workspaceId) return;
+    let live = true;
+    const conn = app.conn(hostId);
+    if (!conn) return;
+    conn
+      .request('mention.list', { workspace: workspaceId })
+      .then((r) => live && setNamed(Array.isArray(r?.mentions) ? r.mentions : []))
+      .catch(() => live && setNamed(null));
+    return () => {
+      live = false;
+    };
+  }, [wantsAt, hostId, workspaceId]);
+  const atMatches = useMemo(
+    () => (at && named && paneId && atDismissed !== text ? filterMentions(mentionRows(named, mentionPanes ?? [], paneId), at.query) : []),
+    [at?.query, named, mentionPanes, paneId, text, atDismissed],
+  );
+
+  const pickMention = async (r: MentionRow) => {
+    let name = r.name;
+    if (!r.named) {
+      // An unnamed pane gets its name first: naming it is what lets it receive messages.
+      try {
+        const conn = app.conn(hostId);
+        if (!conn) throw new Error(t.conn.hostOffline);
+        name = (await conn.request('mention.set', { pane: r.pane, name: r.name })).name;
+      } catch (e) {
+        app.toast(errorMessage(e), 'error');
+        return;
+      }
+    }
+    app.haptic('tap');
+    setText((cur) => {
+      const a = atQuery(cur);
+      return a ? insertMention(cur, a.start, name) : cur;
+    });
+    taRef.current?.focus();
   };
 
   const send = async (override?: string) => {
@@ -348,6 +401,26 @@ export function Composer({
             ))}
           </div>
         )}
+        {atMatches.length > 0 && (
+          <div id="mention-list" role="listbox" aria-label={t.mention.label} className="mb-1.5 max-h-56 overflow-y-auto rounded-xl border border-border bg-surface py-1">
+            {atMatches.map((r, i) => (
+              <button
+                key={r.pane}
+                id={`mention-${i}`}
+                type="button"
+                role="option"
+                aria-selected={i === active}
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => void pickMention(r)}
+                className={cx('flex w-full items-center gap-2 px-3 py-1.5 text-left pointer-coarse:py-2.5', i === active ? 'bg-surface-2' : 'active:bg-surface-2')}
+              >
+                <span className={cx('font-mono text-sm', r.named ? 'text-accent' : 'text-faint')}>{r.named ? '' : '→ '}@{r.name}</span>
+                <span className="min-w-0 flex-1 truncate text-xs text-muted">{r.label}</span>
+                <span className="shrink-0 text-2xs text-faint">{t.mention.state[r.state] ?? r.state}</span>
+              </button>
+            ))}
+          </div>
+        )}
         {why && <Notice tone="danger" className="mb-1.5">{t.composer.reallySend(why)} — {t.composer.tapAgain}</Notice>}
         {moreOpen && more && (
           <div className="mb-1.5 overflow-hidden rounded-xl border border-border bg-surface" role="region" aria-label={t.composer2.more}>
@@ -403,10 +476,12 @@ export function Composer({
             value={text}
             rows={1}
             disabled={locked}
-            role={matches.length > 0 ? 'combobox' : undefined}
-            aria-expanded={matches.length > 0 ? true : undefined}
-            aria-controls={matches.length > 0 ? 'slash-list' : undefined}
-            aria-activedescendant={matches.length > 0 ? `slash-${Math.min(active, matches.length - 1)}` : undefined}
+            role={matches.length > 0 || atMatches.length > 0 ? 'combobox' : undefined}
+            aria-expanded={matches.length > 0 || atMatches.length > 0 ? true : undefined}
+            aria-controls={matches.length > 0 ? 'slash-list' : atMatches.length > 0 ? 'mention-list' : undefined}
+            aria-activedescendant={
+              matches.length > 0 ? `slash-${Math.min(active, matches.length - 1)}` : atMatches.length > 0 ? `mention-${Math.min(active, atMatches.length - 1)}` : undefined
+            }
             aria-label={placeholder ?? (isAgent ? t.composer2.placeholder : t.composer2.placeholderShell)}
             onChange={(e) => setText(e.target.value)}
             onPaste={onPaste}
@@ -425,6 +500,23 @@ export function Composer({
                 if (e.key === 'Escape') {
                   e.preventDefault();
                   setDismissed(text);
+                  return;
+                }
+              }
+              if (atMatches.length > 0) {
+                if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                  e.preventDefault();
+                  setActive((a) => (a + (e.key === 'ArrowDown' ? 1 : -1) + atMatches.length) % atMatches.length);
+                  return;
+                }
+                if ((e.key === 'Enter' && !e.metaKey && !e.ctrlKey && !e.shiftKey) || e.key === 'Tab') {
+                  e.preventDefault();
+                  void pickMention(atMatches[Math.min(active, atMatches.length - 1)]!);
+                  return;
+                }
+                if (e.key === 'Escape') {
+                  e.preventDefault();
+                  setAtDismissed(text);
                   return;
                 }
               }

@@ -1245,6 +1245,13 @@ export const en = {
     noArg: 'Takes an argument',
   },
 
+  mention: {
+    label: 'Mention a pane',
+    unnamed: 'Gets this name when you pick it',
+    named: (name: string) => `Named @${name}`,
+    state: { idle: 'idle', busy: 'busy', needs_input: 'needs input', exited: 'exited', shell: 'shell' } as Record<string, string>,
+  },
+
   modelSwitch: {
     title: 'Model',
     button: 'Switch model',

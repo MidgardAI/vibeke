@@ -35,6 +35,7 @@ import { keyLabel } from '../../lib/shortcuts';
 import { noteUnsupported, supported } from '../../lib/supports';
 import type { PaneRow } from '../../lib/tree';
 import { runKey } from '../../lib/tree';
+import { mentionablePanes } from '../../lib/mentions';
 import type { WorkspaceRow } from '../../lib/workspaces';
 import { navigate, type PanelKind, type WorkspaceRoute } from '../../router';
 import { HandoffSheet } from '../handoff';
@@ -480,6 +481,8 @@ function PaneBody({
   const host = useHost(hostId);
   const inbox = useInboxItems();
   const run = row.run;
+  const dash = host?.dashboard;
+  const mentionPanes = useMemo(() => (dash ? mentionablePanes(dash, row.pane.workspace) : []), [dash, row.pane.workspace]);
   const scope = host?.info?.scope ?? host?.record.scope ?? 'view';
   const online = host?.status === 'online';
   const canType = scope === 'full' && online;
@@ -642,6 +645,9 @@ function PaneBody({
               interactions={host?.dashboard?.interactions}
               more={term ? undefined : beltEl}
               locked={dialogs.length > 0}
+              paneId={row.pane.id}
+              workspaceId={row.pane.workspace}
+              mentionPanes={mentionPanes}
             />
           </div>
         )}

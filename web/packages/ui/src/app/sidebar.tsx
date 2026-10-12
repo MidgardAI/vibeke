@@ -208,7 +208,10 @@ export function Sidebar({ route, mode }: { route: Route; mode: 'inline' | 'drawe
                 </>
               }
             >
-              <span className="truncate text-[13px] text-fg/80">{paneLabel(p)}</span>
+              <span className="truncate text-[13px] text-fg/80">
+                {paneLabel(p)}
+                {p.mention && <span className="ml-1.5 font-mono text-xs text-faint">@{p.mention}</span>}
+              </span>
             </PressRow>
           );
         })}

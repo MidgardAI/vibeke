@@ -334,6 +334,24 @@ export interface Preview {
   last_seen_ms?: number;
 }
 
+/** A mention name bound to a pane (spec 19), without the `@`. */
+export interface MentionName {
+  name: string;
+  workspace: string;
+  pane: string;
+  kind: 'agent' | 'terminal';
+  delivery: boolean;
+  created_at_ms: number;
+}
+
+/** A `mention.list` row: the name plus what the picker shows. */
+export interface MentionEntry extends MentionName {
+  label: string;
+  harness?: string | null;
+  /** `idle`, `busy`, `needs_input`, `exited` or `shell`. */
+  state: string;
+}
+
 export interface Dashboard {
   /** Snapshot barrier: subscribe with `after = at`. */
   at: number;
@@ -348,6 +366,8 @@ export interface Dashboard {
   /** Full-scope devices only (shares never see previews in the snapshot). */
   previews?: Preview[];
   notifications_unread: number;
+  /** Mention names (spec 19), one per named pane. Absent on hosts without mentions. */
+  mentions?: MentionName[];
 }
 
 export interface GitFile {
@@ -1029,6 +1049,10 @@ export interface AppApi {
   'pane.focus': { params: { pane: string }; result: unknown };
   /** `turn_started` is false for slash commands that open a picker or act locally; `interaction` is the picker they opened. */
   'agent.prompt': { params: { target: string; text: string }; result: { turn_started?: boolean; interaction?: string } };
+  'mention.list': { params: { workspace?: string }; result: { mentions: MentionEntry[] } };
+  'mention.suggest': { params: { pane: string }; result: { name: string } };
+  'mention.set': { params: { pane: string; name?: string; kind?: 'agent' | 'terminal'; delivery?: boolean }; result: MentionName };
+  'mention.clear': { params: { pane: string }; result: Record<string, never> };
   'agent.commands': { params: { target: string }; result: AgentCommands };
   'agent.models': { params: { target: string }; result: AgentModels };
   'agent.set_model': { params: { target: string; model: string; scope?: 'session' | 'default' }; result: { run: AgentRun } };
@@ -1403,6 +1427,8 @@ export const MUTATING_METHODS: ReadonlySet<string> = new Set([
   'agent.set_model',
   'agent.interrupt',
   'agent.start',
+  'mention.set',
+  'mention.clear',
   'tab.create',
   'tab.rename',
   'tab.close',

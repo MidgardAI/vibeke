@@ -27,6 +27,8 @@ export interface PaneRow {
   attention: Attention;
   needsYou: boolean;
   pinned: boolean;
+  /** The pane's mention name without `@` (spec 19), when the host sends mentions and it has one. */
+  mention?: string | null;
 }
 
 export interface TabGroup {
@@ -88,6 +90,7 @@ export function paneRows(h: HostState, o: TreeOptions): PaneRow[] {
   const open = d.interactions.filter((i) => i.status === 'open');
   const tabs = new Map(d.tabs.map((t) => [t.id, t]));
   const wss = new Map(d.workspaces.map((w) => [w.id, w]));
+  const mentions = new Map((d.mentions ?? []).map((m) => [m.pane, m.name]));
   return d.panes.map((pane) => {
     const run = runForPane(d, pane.id);
     const mine = open.filter((i) => i.pane === pane.id);
@@ -107,6 +110,7 @@ export function paneRows(h: HostState, o: TreeOptions): PaneRow[] {
       attention,
       needsYou: attention === 'interaction' || attention === 'needs_input',
       pinned: o.pins.has(key),
+      mention: mentions.get(pane.id) ?? null,
     };
   });
 }
