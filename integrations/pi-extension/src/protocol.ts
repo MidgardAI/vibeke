@@ -74,6 +74,8 @@ export class VibekeClient {
   /** Control requests carried out (diagnostics/tests). */
   controlHandled = 0;
   private controlStarted = false;
+  /** `message.take` requests awaiting the server's response, by JSON-RPC id. */
+  private takes = new Map<number, (context: string | null) => void>();
   private controlSock: net.Socket | null = null;
 
   private readonly cap: number;
@@ -165,7 +167,14 @@ export class VibekeClient {
         // success or a definitive refusal, ends the retry).
         try {
           const m = JSON.parse(line);
-          if (typeof m?.id === "number") this.acks.delete(m.id);
+          if (typeof m?.id === "number") {
+            this.acks.delete(m.id);
+            const done = this.takes.get(m.id);
+            if (done) {
+              const c = m.result?.context;
+              done(!m.error && typeof c === "string" && c ? c : null);
+            }
+          }
         } catch {
           /* ignore */
         }
@@ -225,6 +234,7 @@ export class VibekeClient {
     });
     s.on("close", () => {
       if (this.sock === s) this.sock = null;
+      for (const done of [...this.takes.values()]) done(null);
       const wasReady = this.ready;
       this.ready = false;
       this.blocked = false;
@@ -291,6 +301,34 @@ export class VibekeClient {
     } catch {
       /* never affect the host */
     }
+  }
+
+  /**
+   * `message.take` on the main (pane-token) connection: the queued messages other panes sent to
+   * this pane, as one ready-to-show text. Resolves to null when nothing is queued, on any error,
+   * on timeout, or when the connection is not ready. Never rejects, never throws.
+   */
+  take(timeoutMs = 2000): Promise<string | null> {
+    return new Promise((resolve) => {
+      try {
+        const s = this.sock;
+        if (this.closed || !this.ready || !s) return resolve(null);
+        const id = ++this.rpcId;
+        const line = JSON.stringify({ jsonrpc: "2.0", id, method: "message.take", params: {} }) + "\n";
+        let timer: ReturnType<typeof setTimeout> | null = null;
+        const done = (v: string | null) => {
+          if (timer) clearTimeout(timer);
+          this.takes.delete(id);
+          resolve(v);
+        };
+        timer = setTimeout(() => done(null), timeoutMs);
+        timer.unref?.();
+        this.takes.set(id, done);
+        s.write(line);
+      } catch {
+        resolve(null);
+      }
+    });
   }
 
   /** Delivery acks still awaiting a server response (tests/diagnostics). */

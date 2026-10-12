@@ -760,3 +760,73 @@ describe("show_image tool", () => {
     await expect(tool.execute("c3", {})).rejects.toThrow("path is required");
   });
 });
+
+describe("ride-along messages", () => {
+  const ready = async (host: "pi" | "omp" = "pi") => {
+    const s = setup(server, host);
+    await waitFor(() => s.h.client.connected);
+    return { ...s, c: makeCtx() };
+  };
+
+  test("take: context string, null when empty, null on error, null when not connected", async () => {
+    const { h } = await ready();
+    expect(await h.client.take()).toBeNull();
+    server.takeContext = "hello from another pane";
+    expect(await h.client.take()).toBe("hello from another pane");
+    expect(server.calls("message.take")[0].msg.params).toEqual({});
+    server.takeContext = "x";
+    server.takeError = true;
+    expect(await h.client.take()).toBeNull();
+    h.client.close();
+    expect(await h.client.take()).toBeNull();
+  });
+
+  test("take: times out to null when the server never answers", async () => {
+    const { h } = await ready();
+    server.noReply.add("message.take");
+    expect(await h.client.take(50)).toBeNull();
+  });
+
+  test("before_agent_start returns the message; nothing queued returns undefined", async () => {
+    const { pi, c } = await ready();
+    expect(await pi.emit("before_agent_start", { prompt: "x" }, c)).toBeUndefined();
+    server.takeContext = "ctx";
+    expect(await pi.emit("before_agent_start", { prompt: "x" }, c)).toEqual({
+      message: { customType: "vibeke-message", content: "ctx", display: true },
+    });
+  });
+
+  test("tool end steers the running turn", async () => {
+    const { pi, c } = await ready();
+    server.takeContext = "ctx";
+    await pi.emit("tool_execution_end", { toolCallId: "t1", toolName: "bash" }, c);
+    await waitFor(() => pi.sent.length === 1);
+    expect(pi.sent[0]).toEqual({
+      message: { customType: "vibeke-message", content: "ctx", display: true },
+      options: { deliverAs: "steer" },
+    });
+  });
+
+  test("turn end starts a follow-up turn, once, without an input event", async () => {
+    const { pi, c } = await ready("omp");
+    server.takeContext = "ctx";
+    await pi.emit("agent_start", {}, c);
+    await pi.emit("agent_end", { messages: [] }, c);
+    await pi.emit("agent_settled", {}, c);
+    await waitFor(() => pi.sent.length === 1);
+    await sleep(50);
+    expect(pi.sent).toHaveLength(1);
+    expect(pi.sent[0].options).toEqual({ deliverAs: "followUp", triggerTurn: true });
+    expect(server.events().filter((e) => e === "TurnStarted")).toHaveLength(1);
+  });
+
+  test("a host without sendMessage, or one that throws, is not disturbed", async () => {
+    const { pi, c } = await ready();
+    pi.sendMessage = () => {
+      throw new Error("host refused");
+    };
+    server.takeContext = "ctx";
+    await pi.emit("tool_execution_end", { toolCallId: "t1", toolName: "bash" }, c);
+    await sleep(50);
+  });
+});

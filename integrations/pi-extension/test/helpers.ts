@@ -31,6 +31,9 @@ export class FakeServer {
   noReply = new Set<string>();
   /** `adapter.control`: null = answer `{}` (a server without the channel); else queued requests. */
   control: any[] | null = null;
+  /** `message.take`: the context handed out once (then null); `takeError` answers an error. */
+  takeContext: string | null = null;
+  takeError = false;
   private parkedControl: ((req: any) => void) | null = null;
   private server: net.Server | null = null;
 
@@ -56,6 +59,14 @@ export class FakeServer {
             const next = this.control.shift();
             if (next) answer(next);
             else this.parkedControl = answer;
+          }
+          else if (msg.method === "message.take" && !this.noReply.has(msg.method)) {
+            const context = this.takeContext;
+            this.takeContext = null;
+            const body = this.takeError
+              ? { error: { code: -32000, message: "boom" } }
+              : { result: { context, messages: context ? [context] : [] } };
+            sock.write(JSON.stringify({ jsonrpc: "2.0", id: msg.id, ...body }) + "\n");
           }
           else if (!this.noReply.has(msg.method))
             sock.write(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: {} }) + "\n");
@@ -119,6 +130,10 @@ export class FakeHost {
   handlers = new Map<string, ((e: any, c: any) => any)[]>();
   version = "9.9.9";
   tools: any[] = [];
+  sent: { message: any; options: any }[] = [];
+  sendMessage(message: any, options: any) {
+    this.sent.push({ message, options });
+  }
   registerTool(t: any) {
     this.tools.push(t);
   }

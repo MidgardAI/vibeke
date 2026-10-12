@@ -55,6 +55,18 @@ The server parks the request until a decision exists. Reply: `{decision: {value:
 - The native dialog answering first: the extension closes the gate connection (the server must treat that as "resolved elsewhere") and sends `DialogResolved`.
 - Server unreachable: native dialog only (fail-open).
 
+## Ride-along messages
+
+Other panes can send messages to this pane. The extension hands them to the agent where the agent reads input anyway. It calls `message.take {}` on the **main** connection (pane token) and waits at most 2 seconds. The reply is `{context: string|null, messages: [string]}`. The `context` text is ready to show: it is framed as untrusted input from another pane and says how to reply. `null` means nothing is queued. Any error, timeout or missing connection counts as `null`. At most one call is in flight at a time.
+
+| Point | Host event | What the extension does with a non-null `context` |
+| --- | --- | --- |
+| Turn start | `before_agent_start` | Returns `{message: {customType: "vibeke-message", content, display: true}}`. |
+| After a tool call | `tool_execution_end` | `pi.sendMessage(msg, {deliverAs: "steer"})`. |
+| Turn end | `agent_end`, `agent_settled` | `pi.sendMessage(msg, {deliverAs: "followUp", triggerTurn: true})`. The new turn starts through `agent_start`, with no `input` event. |
+
+With `VIBEKE_HEADLESS_OWNER=1` the extension never calls `message.take`. The server delivers messages to headless runs itself.
+
 ## Control channel (TUI mode only)
 
 Model listing and switching for `agent.models` / `agent.set_model`, and the session's own commands for `agent.commands`. Started on the first event whose context has `mode: "tui"` (never with `VIBEKE_HEADLESS_OWNER=1`, where the server speaks pi's RPC directly).

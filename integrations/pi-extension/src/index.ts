@@ -1,4 +1,4 @@
-// @vibeke/pi-extension: observe-only Vibeke integration for pi and omp.
+// @vibeke/pi-extension: Vibeke integration for pi and omp.
 // See DESIGN.md (normative) and PROTOCOL.md (wire contract).
 // Runtime imports: node:* only. Host types are declared locally (types.ts).
 import { execFile } from "node:child_process";
@@ -232,6 +232,36 @@ export function createExtension(pi: HostApi, opts: Options = {}): Handle | undef
     });
   }
 
+  // ---- ride-along delivery (PROTOCOL.md "Ride-along messages") ----
+  // Hand queued messages from other panes to the agent where it reads input anyway. One
+  // message.take is in flight at a time; every failure means "nothing to deliver".
+  const RIDE_TYPE = "vibeke-message";
+  let taking: Promise<string | null> | null = null;
+  function take(): Promise<string | null> {
+    if (headlessOwner) return Promise.resolve(null); // the server delivers headless runs itself
+    if (taking) return taking;
+    const p = client.take().catch(() => null);
+    taking = p;
+    const clear = () => {
+      if (taking === p) taking = null;
+    };
+    p.then(clear, clear);
+    return p;
+  }
+
+  function rideMessage(content: string): { customType: string; content: string; display: boolean } {
+    return { customType: RIDE_TYPE, content, display: true };
+  }
+
+  /** Send a taken message to the session. Never throws. */
+  function ride(content: string, options: { deliverAs: "steer" | "followUp"; triggerTurn?: boolean }): void {
+    try {
+      if (typeof pi.sendMessage === "function") (pi.sendMessage as (m: unknown, o: unknown) => void)(rideMessage(content), options);
+    } catch {
+      /* never affect the host */
+    }
+  }
+
   // ---- helpers ----
   function sweep(): void {
     const now = Date.now();
@@ -359,7 +389,7 @@ export function createExtension(pi: HostApi, opts: Options = {}): Handle | undef
   }
 
   // ---- event handlers ----
-  const on = (name: string, fn: (event: any, ctx: HostContext) => void | Promise<void>): void => {
+  const on = (name: string, fn: (event: any, ctx: HostContext) => unknown): void => {
     try {
       pi.on(name, (event: any, ctx: HostContext) => {
         try {
@@ -397,6 +427,12 @@ export function createExtension(pi: HostApi, opts: Options = {}): Handle | undef
       prompt_preview: preview(raw, 200),
       ...(prompt !== undefined ? { prompt, prompt_truncated: truncated } : {}),
     });
+  });
+
+  // Turn start: the host adds the returned message to the context of this turn.
+  on("before_agent_start", async () => {
+    const context = await take();
+    return context ? { message: rideMessage(context) } : undefined;
   });
 
   on("agent_start", () => {
@@ -500,6 +536,10 @@ export function createExtension(pi: HostApi, opts: Options = {}): Handle | undef
     const ok = !e.isError;
     const fp = ok && cached ? fileChangePath(tool, cached.input, ctx?.cwd ?? lastCtx?.cwd) : undefined;
     emit("ToolEnded", { call_id: id, tool, ok, ...(fp ? { file_path: fp } : {}) });
+    // Mid-turn: steer the running turn; the host shows it to the model before its next call.
+    void take().then((context) => {
+      if (context) ride(context, { deliverAs: "steer" });
+    });
   });
 
   on("tool_approval_requested", (e) => {
@@ -517,6 +557,17 @@ export function createExtension(pi: HostApi, opts: Options = {}): Handle | undef
     emit("ApprovalResolved", { call_id: id, approved: !!e.approved });
   });
 
+  /**
+   * Turn end: start a new turn that reads the queued messages, with nothing typed into the input
+   * box. The new turn opens through agent_start (no `input` event), so TurnStarted bookkeeping is
+   * unchanged. agent_end and agent_settled both call this; the second finds nothing queued.
+   */
+  function rideTurnEnd(): void {
+    void take().then((context) => {
+      if (context) ride(context, { deliverAs: "followUp", triggerTurn: true });
+    });
+  }
+
   on("agent_end", (e) => {
     lastEnd = lastAssistant(e);
     cancelEnd();
@@ -525,10 +576,12 @@ export function createExtension(pi: HostApi, opts: Options = {}): Handle | undef
       endTurn();
     }, debounceMs);
     endTimer.unref?.();
+    rideTurnEnd();
   });
 
   on("agent_settled", () => {
     endTurn();
+    rideTurnEnd();
   });
 
   on("session_stop", () => {
