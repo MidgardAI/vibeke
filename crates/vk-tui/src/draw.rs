@@ -35,7 +35,7 @@ pub struct SideRow {
 }
 
 /// The narrowest a shrinking name gets, in columns, before the row is clipped instead.
-const SHRINK_FLOOR: usize = 6;
+const SHRINK_FLOOR: usize = 12;
 
 impl SideRow {
     /// Navigate mode can select it (a pane target, a group, a preview, an image or a collision

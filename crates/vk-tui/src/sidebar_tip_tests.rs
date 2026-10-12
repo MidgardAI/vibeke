@@ -155,7 +155,8 @@ fn a_shrunk_agent_name_shows_whole_with_its_status_on_its_own_line() {
         .collect();
     let at = lines
         .iter()
-        .position(|l| l.contains(TITLE))
+        // The tab bar also shows the title; the tooltip's line sits inside the box.
+        .position(|l| l.contains(TITLE) && l.contains('│'))
         .unwrap_or_else(|| panic!("{s}"));
     assert!(
         lines[at + 1].contains(&status),

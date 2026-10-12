@@ -145,6 +145,8 @@ fn keys_within_the_arm_delay_and_modified_keys_never_decide() {
 #[test]
 fn y_approves_through_auth_elevate_decide_and_n_denies() {
     let (mut app, mut rx) = fleet();
+    // Decide as an unscoped client even when the tests run inside a Vibeke pane.
+    app.ux.elevate.scoped_override = Some(false);
     requested(&mut app, 0, "el-1", "p1", "a");
     requested(&mut app, 0, "el-2", "p2", "b");
     open_armed(&mut app);
