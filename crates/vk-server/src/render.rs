@@ -911,11 +911,17 @@ impl Session {
             // Typing into an idle-suspended (paused) box wakes it (13 §11).
             crate::sandbox::extras::touch_pane(&self.server, pane);
             let (tx, rx) = tokio::sync::oneshot::channel();
-            rt.send(crate::pane::PaneCmd::Input {
-                id,
-                bytes,
-                ack: Some(tx),
-            });
+            // While Vibeke types a prompt into the pane, a person's input waits until the
+            // Enter is written (spec 19 §4.2); the ack follows once it is written.
+            self.server.input_hold.send(
+                pane,
+                &rt,
+                crate::pane::PaneCmd::Input {
+                    id,
+                    bytes,
+                    ack: Some(tx),
+                },
+            );
             let acks = self.acks.clone();
             tokio::spawn(async move {
                 let st = rx.await.ok();

@@ -32,6 +32,7 @@ pub mod handoff;
 pub mod handoff_out;
 pub mod hardening;
 pub mod inbox;
+pub mod input_hold;
 pub mod items;
 pub mod layouts;
 pub mod limits;
@@ -231,6 +232,8 @@ pub struct Server {
     pub collision: collision::State,
     /// Mention names and message delivery (spec 19).
     pub mentions: mentions::State,
+    /// People's input held back while Vibeke types a prompt into a pane (spec 19 §4.2).
+    pub input_hold: input_hold::Holds,
 }
 
 pub fn shell_argv(opts: &ServerOpts) -> Vec<String> {
@@ -347,6 +350,7 @@ impl Server {
             items: Default::default(),
             collision: Default::default(),
             mentions: Default::default(),
+            input_hold: Default::default(),
         });
         // Unlock the state key before anything is archived (09 §9.1).
         privacy::init(&server);

@@ -2976,6 +2976,9 @@ async fn prompt(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     };
     let was_working = run.execution.value == Execution::Working;
     let rev0 = run.turns_completed;
+    // Keys and pastes a person sends to the pane between the paste and the Enter would be
+    // submitted with the prompt: they wait until the Enter is written (spec 19 §4.2).
+    let hold = server.input_hold.hold(&run.pane);
     crate::render::write_and_ack(
         server,
         &run.pane,
@@ -2991,6 +2994,7 @@ async fn prompt(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         b"\r".to_vec(),
     )
     .await;
+    drop(hold);
     // Stall detection (07 §1.4): no lifecycle change within 5 s. A slash command may open a
     // picker or just print output instead of starting a turn: never a stall.
     let mut started = was_working;
