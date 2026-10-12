@@ -28,7 +28,7 @@ function expandMarkdown(file: string, stack: string[] = []): string {
       const [path, hash] = href.split('#')
       const target = resolve(dirname(file), path!)
       if (target.startsWith(imagesRoot + sep) && imageType(target)) return `](/docs-images/${relative(imagesRoot, target).split(sep).join('/')}${title})`
-      const route = (apiFiles.includes(path!.split('/').at(-1)!) ? '/api-reference/' + path!.split('/').at(-1) : undefined) ?? sourceRoutes.get(target) ?? `https://github.com/MidgardAI/vibeke/blob/main/${relative(repoRoot, target).split(sep).join('/')}`
+      const route = (apiFiles.includes(path!.split('/').at(-1)!) ? '/api-reference/' + path!.split('/').at(-1) : undefined) ?? sourceRoutes.get(target) ?? `https://github.com/vibeke-ai/vibeke/blob/main/${relative(repoRoot, target).split(sep).join('/')}`
       return `](${route}${hash ? '#' + hash : ''}${title})`
     })
   return body.replace(/\{\{#include\s+([^}]+)\}\}/g, (_, include: string) =>

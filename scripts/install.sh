@@ -6,7 +6,7 @@
 #
 #   VIBEKE_VERSION        version to install (default: the version this script was released with)
 #   VIBEKE_RELEASE_URL    base URL holding vibeke-<os>-<arch>, SHA256SUMS and SHA256SUMS.minisig
-#                         (default: https://github.com/MidgardAI/vibeke/releases/download/v<version>)
+#                         (default: https://github.com/vibeke-ai/vibeke/releases/download/v<version>)
 #   VIBEKE_INSTALL_FROM   local directory with the same files, for offline installs
 #   GITHUB_TOKEN / VIBEKE_GITHUB_TOKEN
 #                         only for a private release repo: downloads then go through the GitHub
@@ -33,7 +33,7 @@ KEY_CURRENT="RWQ0X1WPxwluX2gFO4vO586PSTdpSfJqrb+xsQnZ2ctND/VDw7VCWx5z"   # 5F6E0
 KEY_NEXT="RWR8LE7QI2pTaSsb4srEFbF1j78fXZzbORy4KGRzHErddJwSJLxwqH3x"      # 69536A23D04E2C7C
 
 VERSION="${VIBEKE_VERSION:-0.14.1}"
-BASE_URL="${VIBEKE_RELEASE_URL:-https://github.com/MidgardAI/vibeke/releases/download/v$VERSION}"
+BASE_URL="${VIBEKE_RELEASE_URL:-https://github.com/vibeke-ai/vibeke/releases/download/v$VERSION}"
 API_URL="${VIBEKE_GITHUB_API_URL:-https://api.github.com}"
 TOKEN="${VIBEKE_GITHUB_TOKEN:-${GITHUB_TOKEN:-}}"
 

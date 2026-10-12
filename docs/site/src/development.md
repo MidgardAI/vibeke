@@ -7,7 +7,7 @@ Build from source when contributing or testing unreleased changes.
 Install [mise](https://mise.jdx.dev/), then clone the public repository:
 
 ```sh
-git clone https://github.com/MidgardAI/vibeke.git
+git clone https://github.com/vibeke-ai/vibeke.git
 cd vibeke
 mise install
 mise run build

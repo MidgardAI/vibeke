@@ -46,7 +46,7 @@ Continue with [your first workspace](quickstart.md).
 
 {{#include ../../desktop-downloads.md}}
 
-See [all release files and notes](https://github.com/MidgardAI/vibeke/releases/latest).
+See [all release files and notes](https://github.com/vibeke-ai/vibeke/releases/latest).
 
 On macOS, open the DMG and drag Vibeke into Applications. On Windows, run the EXE installer.
 On Linux, choose the DEB for Debian-based systems or the AppImage for other distributions.

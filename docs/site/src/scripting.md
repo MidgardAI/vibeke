@@ -58,7 +58,7 @@ The Python client uses only the standard library and needs Python 3.11 or later.
 The package is called `vibeke-client`. It is not on a package index yet. Use it from a checkout of the repository:
 
 ```sh
-git clone https://github.com/MidgardAI/vibeke
+git clone https://github.com/vibeke-ai/vibeke
 pip install ./vibeke/clients/python
 ```
 

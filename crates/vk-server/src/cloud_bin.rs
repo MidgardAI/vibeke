@@ -179,7 +179,7 @@ mod tests {
         let base = format!("{}/releases/download/v{}", download::RELEASE_REPO, "0.9.0");
         assert_eq!(
             asset_url(&base, &asset_name("linux-aarch64")),
-            "https://github.com/MidgardAI/vibeke/releases/download/v0.9.0/vibeke-linux-aarch64"
+            "https://github.com/vibeke-ai/vibeke/releases/download/v0.9.0/vibeke-linux-aarch64"
         );
         assert_eq!(
             asset_url("http://127.0.0.1:9/rel/", "manifest.json"),

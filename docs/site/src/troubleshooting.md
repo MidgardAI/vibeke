@@ -123,7 +123,7 @@ The command prints the path, each file in the bundle, and what it leaves out. It
 - `--include-pane <pane>` adds the visible screen of a pane. Repeat it for more panes. This needs a running server.
 - `--include-scrollback` adds saved scrollback.
 
-Add the Vibeke version from `vibeke --version`, your operating system and the steps that cause the problem. Report bugs at [github.com/MidgardAI/vibeke/issues](https://github.com/MidgardAI/vibeke/issues).
+Add the Vibeke version from `vibeke --version`, your operating system and the steps that cause the problem. Report bugs at [github.com/vibeke-ai/vibeke/issues](https://github.com/vibeke-ai/vibeke/issues).
 
 ## Next steps
 

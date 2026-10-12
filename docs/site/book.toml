@@ -9,4 +9,4 @@ build-dir = "book"
 create-missing = false
 
 [output.html]
-git-repository-url = "https://github.com/MidgardAI/vibeke"
+git-repository-url = "https://github.com/vibeke-ai/vibeke"

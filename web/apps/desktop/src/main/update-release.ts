@@ -5,9 +5,9 @@ import { blake2b } from '@noble/hashes/blake2.js';
 
 export class UnsupportedUpdatePlatform extends Error {}
 
-export const RELEASE_REPO = 'https://github.com/MidgardAI/vibeke';
+export const RELEASE_REPO = 'https://github.com/vibeke-ai/vibeke';
 export const UPDATE_FEED = `${RELEASE_REPO}/releases/latest/download`;
-export const RELEASE_API = 'https://api.github.com/repos/MidgardAI/vibeke/releases/latest';
+export const RELEASE_API = 'https://api.github.com/repos/vibeke-ai/vibeke/releases/latest';
 export type FetchBytes = (url: string, limit?: number) => Promise<Buffer>;
 export interface DesktopRelease {
   version: string;

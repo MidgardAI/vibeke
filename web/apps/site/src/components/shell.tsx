@@ -19,7 +19,7 @@ export function Header() {
         <Link to="/docs" activeProps={{ className: 'text-cream' }} className="nav-link">Documentation</Link>
         <Link to="/compare" activeProps={{ className: 'text-cream' }} className="nav-link">Compare</Link>
       </nav>
-      <div className="ml-auto flex items-center gap-3"><SearchDialog /><a href="https://github.com/MidgardAI/vibeke" aria-label="Vibeke on GitHub" className="hidden p-2 text-muted hover:text-cream sm:block"><Github size={18} /></a><Link to="/docs/$slug" params={{ slug: 'install' }} className="button-primary hidden min-h-9 px-4 text-xs lg:inline-flex">Install Vibeke <ArrowUpRight size={14} /></Link><button type="button" className="p-2 md:hidden" aria-label={open ? 'Close navigation' : 'Open navigation'} aria-expanded={open} aria-controls="mobile-navigation" onClick={() => setOpen(!open)}>{open ? <X size={21} /> : <Menu size={21} />}</button></div>
+      <div className="ml-auto flex items-center gap-3"><SearchDialog /><a href="https://github.com/vibeke-ai/vibeke" aria-label="Vibeke on GitHub" className="hidden p-2 text-muted hover:text-cream sm:block"><Github size={18} /></a><Link to="/docs/$slug" params={{ slug: 'install' }} className="button-primary hidden min-h-9 px-4 text-xs lg:inline-flex">Install Vibeke <ArrowUpRight size={14} /></Link><button type="button" className="p-2 md:hidden" aria-label={open ? 'Close navigation' : 'Open navigation'} aria-expanded={open} aria-controls="mobile-navigation" onClick={() => setOpen(!open)}>{open ? <X size={21} /> : <Menu size={21} />}</button></div>
     </div>
     {open && <nav id="mobile-navigation" aria-label="Mobile navigation" className="page-width flex flex-col gap-1 border-t border-line py-4 text-sm md:hidden"><Link className="py-3" to="/">Overview</Link><Link className="py-3" to="/docs">Documentation</Link><Link className="py-3" to="/compare">Compare</Link><Link className="py-3 text-accent" to="/docs/$slug" params={{ slug: 'install' }}>Install Vibeke →</Link></nav>}
   </header>
@@ -29,7 +29,7 @@ export function Footer() {
   return <footer className="border-t border-line">
     <div className="page-width flex flex-col justify-between gap-8 py-10 sm:flex-row sm:items-center">
       <div><Brand /><p className="mt-3 font-mono text-[10px] text-muted">Terminal workspaces for coding agents.</p></div>
-      <div className="flex flex-wrap gap-x-7 gap-y-4 text-xs text-muted"><Link to="/docs" className="hover:text-cream">Documentation</Link><Link to="/compare" className="hover:text-cream">Compare</Link><Link to="/docs/$slug" params={{ slug: 'security' }} className="hover:text-cream">Security</Link><a href="https://github.com/MidgardAI/vibeke" className="flex items-center gap-1 hover:text-cream">GitHub <ArrowUpRight size={12} /></a></div>
+      <div className="flex flex-wrap gap-x-7 gap-y-4 text-xs text-muted"><Link to="/docs" className="hover:text-cream">Documentation</Link><Link to="/compare" className="hover:text-cream">Compare</Link><Link to="/docs/$slug" params={{ slug: 'security' }} className="hover:text-cream">Security</Link><a href="https://github.com/vibeke-ai/vibeke" className="flex items-center gap-1 hover:text-cream">GitHub <ArrowUpRight size={12} /></a></div>
     </div>
     <div className="page-width flex flex-wrap justify-between gap-3 border-t border-line py-5 font-mono text-[10px] text-muted"><span>Rust · macOS · Linux</span><span>Apache-2.0</span></div>
   </footer>

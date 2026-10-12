@@ -14,7 +14,7 @@ const notarize = !!(env.APPLE_API_KEY || env.APPLE_ID || env.APPLE_KEYCHAIN_PROF
 // and applying Electron fuses invalidates Electron's own linker signature.
 const realIdentity = !!(env.CSC_LINK || env.CSC_NAME || env.VIBEKE_MAC_SIGN);
 // The update feed is baked into the bundle (resources/app-update.yml); the app trusts nothing else.
-const feed = 'https://github.com/MidgardAI/vibeke/releases/latest/download';
+const feed = 'https://github.com/vibeke-ai/vibeke/releases/latest/download';
 
 /** @type {import('electron-builder').Configuration} */
 module.exports = {

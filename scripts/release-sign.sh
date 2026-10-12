@@ -68,7 +68,7 @@ if [ -z "$VERSION" ]; then
   esac
 fi
 [ -n "$VERSION" ] || die "cannot determine the version"
-BASE_URL="${VIBEKE_RELEASE_URL:-https://github.com/MidgardAI/vibeke/releases/download/v$VERSION}"
+BASE_URL="${VIBEKE_RELEASE_URL:-https://github.com/vibeke-ai/vibeke/releases/download/v$VERSION}"
 
 sha256() {
   if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1

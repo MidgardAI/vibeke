@@ -1,6 +1,6 @@
 # Reporting a vulnerability
 
-Please report suspected vulnerabilities privately through [GitHub security advisories](https://github.com/MidgardAI/vibeke/security/advisories/new).
+Please report suspected vulnerabilities privately through [GitHub security advisories](https://github.com/vibeke-ai/vibeke/security/advisories/new).
 
 Include the affected version, reproduction steps, and the security impact. Remove credentials and personal data from examples and logs.
 

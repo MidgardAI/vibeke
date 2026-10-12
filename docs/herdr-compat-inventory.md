@@ -4,7 +4,7 @@ Baseline: **Herdr v0.9.3** at commit `7b116c05bfda646af39d2524c54e70c751f57ee8` 
 
 **Status: partial.** This inventory lists every surface the spec's §7.7/§8 text and tables name, plus surfaces the 99 real plugins in `tests/compat/herdr/0.9.3/manifests/` use. It is not yet the exhaustive inventory §8.0 requires, which must be derived from the pinned binary's `herdr api schema --json`, CLI help and manifest schema. No Herdr binary was run to build it. *Implemented* means mapped and tested against Vibeke using the spec's shapes; no entry is certified until the differential suite (07 §8.4) passes. *Source* `corpus` marks entries the plugins use but the spec does not name.
 
-Real-plugin results: see the latest run of the [Herdr plugins workflow](https://github.com/MidgardAI/vibeke/actions/workflows/herdr-plugins.yml) for the current matrix. Runtime results stay out of this file.
+Real-plugin results: see the latest run of the [Herdr plugins workflow](https://github.com/vibeke-ai/vibeke/actions/workflows/herdr-plugins.yml) for the current matrix. Runtime results stay out of this file.
 
 | Area | Implemented | Partial | Missing | Total |
 |---|---|---|---|---|

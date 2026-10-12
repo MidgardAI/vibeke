@@ -38,7 +38,7 @@ export default defineConfig({
           },
         },
         '/install.sh': {
-          redirect: { to: 'https://github.com/MidgardAI/vibeke/releases/latest/download/install.sh', status: 302 },
+          redirect: { to: 'https://github.com/vibeke-ai/vibeke/releases/latest/download/install.sh', status: 302 },
           headers: { 'cache-control': 'no-store' },
         },
       },

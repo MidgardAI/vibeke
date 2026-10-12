@@ -56,7 +56,7 @@ Checksums alone detect corruption. They do not prove who built the file: an atta
 
 ## Release repository and tokens
 
-The default release URL is `https://github.com/MidgardAI/vibeke/releases/download/v<version>`. Set `VIBEKE_RELEASE_URL` for a mirror, or `VIBEKE_INSTALL_FROM=<dir>` for offline installation.
+The default release URL is `https://github.com/vibeke-ai/vibeke/releases/download/v<version>`. Set `VIBEKE_RELEASE_URL` for a mirror, or `VIBEKE_INSTALL_FROM=<dir>` for offline installation.
 
 The public Vibeke repository needs no token. For private forks, the installer and `remote-download` support `VIBEKE_GITHUB_TOKEN`, else `GITHUB_TOKEN`:
 

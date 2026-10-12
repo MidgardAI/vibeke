@@ -213,7 +213,7 @@ test('API methods filter, expand, and copy without breaking the table', async ({
 test('public install endpoint redirects to the release installer', async ({ request }) => {
   const response = await request.get('/install.sh', { maxRedirects: 0 })
   expect(response.status()).toBe(302)
-  expect(response.headers().location).toBe('https://github.com/MidgardAI/vibeke/releases/latest/download/install.sh')
+  expect(response.headers().location).toBe('https://github.com/vibeke-ai/vibeke/releases/latest/download/install.sh')
 })
 
 // Prerendered pages are static files: `vite preview` serves them without Nitro's route-rule

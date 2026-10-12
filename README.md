@@ -52,7 +52,7 @@ curl -fsSL https://vibeke.dev/install.sh | sh
 
 Install `minisign` first (`brew install minisign` on macOS, or your Linux package manager). The installer verifies the release signature and checksums. See [installation](https://vibeke.dev/docs/install).
 
-[Download the desktop app](https://github.com/MidgardAI/vibeke/releases/latest) for macOS, Linux, or Windows, or open the [browser app](https://app.vibeke.dev). The desktop app connects to a host; local use also requires the CLI.
+[Download the desktop app](https://github.com/vibeke-ai/vibeke/releases/latest) for macOS, Linux, or Windows, or open the [browser app](https://app.vibeke.dev). The desktop app connects to a host; local use also requires the CLI.
 
 Then start it in your project:
 
@@ -74,7 +74,7 @@ The design specs live in [`spec/`](spec/), starting with [vision and scope](spec
 [mise](https://mise.jdx.dev/) pins every toolchain (Rust, Zig for the vendored VT engine, bun for the web apps and the pi extension).
 
 ```sh
-git clone https://github.com/MidgardAI/vibeke
+git clone https://github.com/vibeke-ai/vibeke
 cd vibeke
 mise install
 

@@ -74,7 +74,7 @@ Public docs, site copy and release notes follow the Simple English Wikipedia gui
 
 ## Public entry points
 
-- Repository and releases: `https://github.com/MidgardAI/vibeke`.
+- Repository and releases: `https://github.com/vibeke-ai/vibeke`.
 - Product site and docs: `https://vibeke.dev` (Vercel project `vibeke-dev`).
 - CLI installer: `https://vibeke.dev/install.sh`.
 - Browser app: `https://app.vibeke.dev` (separate Vercel project `vibeke-app`).
@@ -127,7 +127,7 @@ Do not advertise unsupported architectures or assets that were not produced. Des
 Download all draft assets into a fresh `dist/<version>/` directory:
 
 ```sh
-gh release download v<version> --repo MidgardAI/vibeke --dir dist/<version>
+gh release download v<version> --repo vibeke-ai/vibeke --dir dist/<version>
 ```
 
 Local alternative: `mise exec -- sh scripts/release-build.sh <version>`. This builds CLI artifacts only and skips unavailable toolchains. It recreates `dist/<version>/`; do not run it over downloaded or signed release files. Assemble and verify all desktop and CLI artifacts before signing.
@@ -156,7 +156,7 @@ Use `--key next` only as part of the documented key-rotation sequence. Do not re
 Upload the four verified outputs to the draft:
 
 ```sh
-gh release upload v<version> --repo MidgardAI/vibeke \
+gh release upload v<version> --repo vibeke-ai/vibeke \
   dist/<version>/SHA256SUMS dist/<version>/SHA256SUMS.minisig \
   dist/<version>/manifest.json dist/<version>/manifest.json.minisig
 ```
@@ -188,7 +188,7 @@ Update `docs/desktop-downloads.md` with the release version and exact asset URLs
 Set the release body with a file to preserve Markdown and shell examples:
 
 ```sh
-gh release edit v<version> --repo MidgardAI/vibeke \
+gh release edit v<version> --repo vibeke-ai/vibeke \
   --notes-file docs/release-notes/v<version>.md
 ```
 
@@ -196,11 +196,11 @@ Replace the workflow's unsigned-draft placeholder before publishing. State the r
 
 ### 5. Publish and deploy
 
-After verification, publish the draft with `gh release edit v<version> --repo MidgardAI/vibeke --draft=false`. Confirm whether it is the intended latest stable release; prereleases must not silently become the default installer target.
+After verification, publish the draft with `gh release edit v<version> --repo vibeke-ai/vibeke --draft=false`. Confirm whether it is the intended latest stable release; prereleases must not silently become the default installer target.
 
 Update the version shown on the home page: set `version` and `url` in `web/apps/site/src/lib/release.ts` to the published stable release. The site test (`bun run test`) fails when it does not match the newest `docs/release-notes/v<version>.md`. Do not change it for a prerelease or before the release is published.
 
-The website's `/install.sh` route is a 302 redirect, configured in `web/apps/site/vite.config.ts`, to `https://github.com/MidgardAI/vibeke/releases/latest/download/install.sh`. It uses `Cache-Control: no-store`. Keep this endpoint stable; the published release supplies the version-pinned installer. Do not maintain a stale second copy of the script in website public assets.
+The website's `/install.sh` route is a 302 redirect, configured in `web/apps/site/vite.config.ts`, to `https://github.com/vibeke-ai/vibeke/releases/latest/download/install.sh`. It uses `Cache-Control: no-store`. Keep this endpoint stable; the published release supplies the version-pinned installer. Do not maintain a stale second copy of the script in website public assets.
 
 Commit the documentation and download-table changes, push the authorized branch, and deploy the website from that committed state. From `web/apps/site/`:
 

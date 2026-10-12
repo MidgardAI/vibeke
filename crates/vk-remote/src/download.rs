@@ -15,9 +15,9 @@ use std::io::Write;
 use std::process::{Command, Stdio};
 
 /// Release repository, used for the default release URL.
-pub const RELEASE_REPO: &str = "https://github.com/MidgardAI/vibeke";
+pub const RELEASE_REPO: &str = "https://github.com/vibeke-ai/vibeke";
 
-/// `https://github.com/MidgardAI/vibeke/releases/download/v<version>`, or `VIBEKE_RELEASE_URL`.
+/// `https://github.com/vibeke-ai/vibeke/releases/download/v<version>`, or `VIBEKE_RELEASE_URL`.
 pub fn release_base_url(version: &str) -> String {
     match std::env::var("VIBEKE_RELEASE_URL") {
         Ok(u) if !u.trim().is_empty() => u.trim().trim_end_matches('/').to_string(),
@@ -326,10 +326,10 @@ mod tests {
     #[test]
     fn parses_release_urls() {
         let a = parse_github_release_url(
-            "https://github.com/MidgardAI/vibeke/releases/download/v0.1.0/vibeke-linux-x86_64",
+            "https://github.com/vibeke-ai/vibeke/releases/download/v0.1.0/vibeke-linux-x86_64",
         )
         .unwrap();
-        assert_eq!(a.owner, "MidgardAI");
+        assert_eq!(a.owner, "vibeke-ai");
         assert_eq!(a.tag, "v0.1.0");
         assert_eq!(a.name, "vibeke-linux-x86_64");
         assert!(
@@ -343,7 +343,7 @@ mod tests {
         if std::env::var_os("VIBEKE_RELEASE_URL").is_none() {
             assert_eq!(
                 release_base_url("0.1.0"),
-                "https://github.com/MidgardAI/vibeke/releases/download/v0.1.0"
+                "https://github.com/vibeke-ai/vibeke/releases/download/v0.1.0"
             );
         }
     }

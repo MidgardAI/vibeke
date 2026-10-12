@@ -16,8 +16,8 @@ use vk_cli::{
 };
 use vk_remote::bootstrap;
 
-const REPO: &str = "https://github.com/MidgardAI/vibeke";
-const API: &str = "https://api.github.com/repos/MidgardAI/vibeke/releases";
+const REPO: &str = "https://github.com/vibeke-ai/vibeke";
+const API: &str = "https://api.github.com/repos/vibeke-ai/vibeke/releases";
 const META_LIMIT: u64 = 2 * 1024 * 1024;
 const BINARY_LIMIT: u64 = 512 * 1024 * 1024;
 
