@@ -314,6 +314,29 @@ fn ctrl_e_edits_the_name_and_checks_it() {
 }
 
 #[test]
+fn ctrl_e_allows_a_name_that_another_workspace_uses() {
+    let (mut app, _rx) = setup();
+    let mut other = mention("web", "p7");
+    other.workspace = "W2".into();
+    app.machines[0].model.mentions.push(other);
+    open_picker(&mut app);
+    app.on_key(kev(Key::Named(NamedKey::Down)));
+    app.on_key(ctrl_e());
+    for _ in 0.."claude".len() {
+        app.on_key(kev(Key::Named(NamedKey::Backspace)));
+    }
+    for c in "web".chars() {
+        app.on_key(ch(c));
+    }
+    app.on_key(enter());
+    assert!(picker(&app).edit.is_none(), "{:?}", picker(&app).error);
+    assert_eq!(
+        picker(&app).overrides,
+        [("p3".to_string(), "web".to_string())]
+    );
+}
+
+#[test]
 fn esc_cancels_an_edit_and_then_closes() {
     let (mut app, _rx) = setup();
     open_picker(&mut app);

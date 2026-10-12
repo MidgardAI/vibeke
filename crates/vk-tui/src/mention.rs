@@ -391,12 +391,19 @@ fn edit_key(app: &mut App, ev: KeyEvent, mut p: Box<Picker>) {
 }
 
 /// Another pane of the workspace has `name` (as its mention or as an edit in this picker).
+/// Names are unique per workspace only: a pane of another workspace may have the same one.
 fn taken_by_other(app: &App, pane: &str, name: &str, overrides: &[(String, String)]) -> bool {
     let m = app.m();
+    let ws = m
+        .model
+        .panes
+        .iter()
+        .find(|p| p.id == pane)
+        .map(|p| p.workspace.as_str());
     m.model
         .mentions
         .iter()
-        .any(|x| x.name == name && x.pane != pane)
+        .any(|x| x.name == name && x.pane != pane && Some(x.workspace.as_str()) == ws)
         || overrides.iter().any(|(id, n)| id != pane && n == name)
 }
 
