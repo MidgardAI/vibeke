@@ -5,6 +5,9 @@
 //! notes split runs (`browser.pane.annotations`). Without `--edit` the verb stays the plain
 //! `browser.annotations` call.
 //!
+//! The panel turns on bracketed paste: a paste is text for the note being edited (one line),
+//! and is ignored outside the editor, so pasted letters never act as shortcuts.
+//!
 //! The panel state ([`Panel`]) and the key parser ([`KeyParser`]) are pure; [`run`] owns the
 //! terminal and the API calls. Everything the page supplied (selectors, text, names) is escaped
 //! before it is drawn ([`vk_proto::text::escape_controls`]).
@@ -29,6 +32,10 @@ const THUMB_COLS: u16 = 12;
 const THUMB_MAX: u64 = 2 << 20;
 /// Rows each note takes in the list.
 const NOTE_ROWS: usize = 3;
+/// Most bytes of one bracketed paste kept (the rest is dropped).
+const PASTE_MAX: usize = 64 << 10;
+const PASTE_START: &[u8] = b"\x1b[200~";
+const PASTE_END: &[u8] = b"\x1b[201~";
 
 /// One note of a draft (only the fields the panel shows).
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -99,18 +106,36 @@ pub enum Key {
     Backspace,
     Ctrl(char),
     Char(char),
+    /// A bracketed paste (`ESC [200~ … ESC [201~`): text, never commands.
+    Paste(String),
     Other,
 }
 
-/// Turns terminal bytes into keys: arrows (`ESC [ A`), UTF-8 characters, control keys.
+/// Turns terminal bytes into keys: arrows (`ESC [ A`), UTF-8 characters, control keys, and
+/// bracketed pastes as one [`Key::Paste`].
 #[derive(Default)]
 pub struct KeyParser {
     esc: Vec<u8>,
     utf8: Vec<u8>,
+    /// Inside a bracketed paste: the bytes so far (at most [`PASTE_MAX`] plus the end marker).
+    paste: Option<Vec<u8>>,
 }
 
 impl KeyParser {
     pub fn feed(&mut self, b: u8) -> Option<Key> {
+        if let Some(buf) = &mut self.paste {
+            buf.push(b);
+            if buf.ends_with(PASTE_END) {
+                let mut buf = self.paste.take().unwrap_or_default();
+                buf.truncate((buf.len() - PASTE_END.len()).min(PASTE_MAX));
+                return Some(Key::Paste(String::from_utf8_lossy(&buf).into_owned()));
+            }
+            // Keep the first `PASTE_MAX` bytes, and the last few to find the end marker.
+            if buf.len() > PASTE_MAX + PASTE_END.len() {
+                buf.remove(PASTE_MAX);
+            }
+            return None;
+        }
         if !self.esc.is_empty() {
             self.esc.push(b);
             if self.esc.len() == 2 {
@@ -121,6 +146,11 @@ impl KeyParser {
                 return Some(Key::Other);
             }
             if (0x40..=0x7e).contains(&b) {
+                if self.esc == PASTE_START {
+                    self.esc.clear();
+                    self.paste = Some(Vec::new());
+                    return None;
+                }
                 self.esc.clear();
                 return Some(match b {
                     b'A' => Key::Up,
@@ -169,8 +199,12 @@ impl KeyParser {
         })
     }
 
-    /// No more bytes are coming: a pending lone ESC is the Esc key.
+    /// No more bytes are coming for now: a pending lone ESC is the Esc key. A paste in progress
+    /// waits for its end marker.
     pub fn flush(&mut self) -> Option<Key> {
+        if self.paste.is_some() {
+            return None;
+        }
         if self.esc.len() == 1 {
             self.esc.clear();
             return Some(Key::Esc);
@@ -280,6 +314,10 @@ impl Panel {
                     buf.push(c);
                     Action::None
                 }
+                Key::Paste(t) => {
+                    buf.push_str(&paste_text(&t));
+                    Action::None
+                }
                 _ => Action::None,
             },
             Mode::ConfirmClear => {
@@ -295,6 +333,10 @@ impl Panel {
     fn list_key(&mut self, k: Key) -> Action {
         let len = self.notes().len();
         match k {
+            // Pasted text is never a command.
+            Key::Paste(_) => {
+                self.status = "paste ignored: press enter to edit a note first".into();
+            }
             Key::Up | Key::Char('k') => self.sel = self.sel.saturating_sub(1),
             Key::Down | Key::Char('j') => self.sel = (self.sel + 1).min(len.saturating_sub(1)),
             Key::Enter | Key::Char('e') => {
@@ -459,6 +501,19 @@ impl Panel {
     }
 }
 
+/// Pasted text for the one-line editor: line breaks and tabs become spaces, other control
+/// characters are dropped.
+fn paste_text(t: &str) -> String {
+    let t = t.replace("\r\n", "\n");
+    t.chars()
+        .filter_map(|c| match c {
+            '\n' | '\r' | '\t' => Some(' '),
+            c if c.is_control() => None,
+            c => Some(c),
+        })
+        .collect()
+}
+
 /// Page-supplied text made safe for the terminal: control characters escaped, newlines flattened.
 fn clean(t: &str) -> String {
     escape_controls(t).into_owned()
@@ -523,7 +578,8 @@ struct Screen;
 
 impl Screen {
     fn enter() -> Screen {
-        print!("\x1b[?1049h\x1b[?25l");
+        // Bracketed paste: pasted text arrives marked, so it is never read as commands.
+        print!("\x1b[?1049h\x1b[?25l\x1b[?2004h");
         let _ = std::io::stdout().flush();
         Screen
     }
@@ -531,7 +587,7 @@ impl Screen {
 
 impl Drop for Screen {
     fn drop(&mut self) {
-        print!("\x1b_Ga=d,q=2\x1b\\\x1b[?25h\x1b[?1049l");
+        print!("\x1b_Ga=d,q=2\x1b\\\x1b[?2004l\x1b[?25h\x1b[?1049l");
         let _ = std::io::stdout().flush();
     }
 }
@@ -842,6 +898,74 @@ mod tests {
             got.extend(kp.feed(*b));
         }
         assert_eq!(got, vec![Key::Other, Key::Char('x')]);
+    }
+
+    #[test]
+    fn parser_reads_a_bracketed_paste_as_one_key() {
+        let mut kp = KeyParser::default();
+        let mut got = Vec::new();
+        for b in b"a\x1b[200~sxq\r\n\x1b[Ad\x1b[201~b" {
+            got.extend(kp.feed(*b));
+        }
+        assert_eq!(
+            got,
+            vec![
+                Key::Char('a'),
+                Key::Paste("sxq\r\n\x1b[Ad".into()),
+                Key::Char('b')
+            ]
+        );
+        // A pause in the middle of a paste does not end it.
+        let mut got = Vec::new();
+        for b in b"\x1b[200~he" {
+            got.extend(kp.feed(*b));
+        }
+        assert_eq!(kp.flush(), None);
+        for b in "llo æ\x1b[201~".as_bytes() {
+            got.extend(kp.feed(*b));
+        }
+        assert_eq!(got, vec![Key::Paste("hello æ".into())]);
+        // A huge paste is cut, and its end is still found.
+        let mut got = Vec::new();
+        for b in PASTE_START {
+            got.extend(kp.feed(*b));
+        }
+        for _ in 0..PASTE_MAX + 100 {
+            got.extend(kp.feed(b'x'));
+        }
+        for b in PASTE_END.iter().chain(b"q") {
+            got.extend(kp.feed(*b));
+        }
+        match &got[..] {
+            [Key::Paste(t), Key::Char('q')] => assert_eq!(t.len(), PASTE_MAX),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_paste_is_editor_text_and_never_a_command() {
+        let mut p = panel();
+        // Outside the editor: ignored, whatever letters it holds.
+        assert_eq!(p.key(Key::Paste("sxyq".into())), Action::None);
+        assert!(p.status.contains("paste ignored"), "{}", p.status);
+        assert!(!p.editing());
+        p.key(Key::Char('x'));
+        assert_eq!(p.key(Key::Paste("y".into())), Action::None, "no clear");
+        // In the editor: one line of text; Enter in the paste does not save.
+        p.key(Key::Char('e'));
+        p.key(Key::Ctrl('u'));
+        assert_eq!(
+            p.key(Key::Paste("make it\r\nbigger\tand \x1b[2Jblue\n".into())),
+            Action::None
+        );
+        assert!(p.editing());
+        assert_eq!(
+            p.key(Key::Enter),
+            Action::SaveNote {
+                n: 1,
+                note: "make it bigger and [2Jblue ".into()
+            }
+        );
     }
 
     #[test]
