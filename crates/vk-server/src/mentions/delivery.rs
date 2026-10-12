@@ -245,11 +245,11 @@ pub(crate) fn pump(server: &Arc<Server>) {
             .filter(|r| r.delivery.state == DeliveryState::Submitted)
             .map(|r| r.delivery.pane.clone())
             .collect();
-        busy.extend(open.iter().filter_map(|r| {
-            typing
-                .contains(&r.delivery.id)
-                .then(|| r.delivery.pane.clone())
-        }));
+        busy.extend(
+            open.iter()
+                .filter(|r| typing.contains(&r.delivery.id))
+                .map(|r| r.delivery.pane.clone()),
+        );
         for mut rec in open {
             let before = (rec.delivery.state, rec.delivery.reason.clone());
             let decision = decide(&c, &mut rec, &busy, &typing, &unsafe_input, now);

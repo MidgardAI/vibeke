@@ -808,7 +808,7 @@ fn list(server: &Server, ctx: &Ctx, p: &Value) -> R {
     if open_only {
         items.retain(|(_, ds)| ds.iter().any(|r| r.delivery.state.is_open()));
     }
-    items.sort_by(|a, b| b.0.sent_at_ms.cmp(&a.0.sent_at_ms));
+    items.sort_by_key(|a| std::cmp::Reverse(a.0.sent_at_ms));
     items.truncate(limit);
     Ok(json!({"items": items.iter().map(|(m, ds)| item(m, ds)).collect::<Vec<_>>()}))
 }
