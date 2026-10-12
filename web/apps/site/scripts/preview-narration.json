@@ -1,0 +1,31 @@
+{
+  "voice": "gemini-3.8-flash-tts, voice Kore. Clear, warm, calm, professional English. The product name is not spoken.",
+  "segments": [
+    {
+      "id": "01-terminal",
+      "gap": 0.5,
+      "text": "Run Claude, Codex, or any agent in the terminal you already use."
+    },
+    {
+      "id": "02-needs-you",
+      "gap": 0.3,
+      "text": "When a supported agent needs permission, the request waits in one inbox."
+    },
+    {
+      "id": "03-phone",
+      "gap": 0.45,
+      "text": "Away from your desk? Approve it from your phone."
+    },
+    {
+      "id": "04-continues",
+      "gap": 0.55,
+      "text": "The agent continues in your terminal."
+    },
+    {
+      "id": "05-close",
+      "gap": 0.6,
+      "text": "Your agents keep working, wherever you are."
+    }
+  ],
+  "tail": 1.14
+}

@@ -88,11 +88,17 @@ The public relay remains at `https://relay.vibeke.dev`. See [PWA deployment](../
 
 ## Product previews and measurement
 
-The home page preview shows two approval examples from the full tour.
-It plays only after a click. The mobile version crops the same footage for a small screen.
-Rebuild the clips and posters with `sh scripts/build-quick-look.sh` (requires ffmpeg).
-Update `public/video/quick-look.vtt` when changing the edit.
-The captions and adjacent transcript describe both examples.
+The home page preview is a 22-second narrated story: an agent runs in the terminal, asks for permission, and continues after a paired phone allows the request.
+It plays only after a click, with sound. English captions are available in the player. The transcript sits below it. Desktop and mobile get separate compositions (1920 × 1080 and 1080 × 1080).
+The footage comes from a live TUI and the real PWA against an isolated sample session. Chrome emulates the phone.
+The agent output is scripted sample text. The permission request and the phone approval are real.
+The edit shortens the wait for delivery after the tap. It does not measure response time.
+
+1. Capture: `bun scripts/capture-preview.ts` (needs `target/debug/vibeke`, the built PWA, tmux and Chrome; set `VIBEKE_BIN` or `VIBEKE_PWA_DIST` to use other builds). It writes to `/tmp/vibeke-preview-capture`.
+2. Narration: use Gemini `gemini-3.8-flash-tts` with the Kore voice to generate one WAV per segment of `scripts/preview-narration.json`. Use the style in its `voice` field. Put the clips in `/tmp/vibeke-narration/`, named `<id>.wav`. Keep the API key outside the repository.
+3. Render: `bun scripts/render-preview.ts` (requires ffmpeg). It writes `public/video/preview-v2*` and the captions in `preview-v2.vtt`, timed from the clip lengths. `--frames=3.5,12.6` writes single frames for review.
+
+Change the version in the file names when the cut changes, and update the transcript in `src/components/demo-video.tsx` with the narration.
 
 Run `bun scripts/build-social.ts` to render `public/brand/workflow-social.png` from the committed product screenshots.
 It is separate from the shared app icon exports. Playwright uses Chrome on macOS.

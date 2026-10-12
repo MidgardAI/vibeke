@@ -13,7 +13,7 @@ Keep using your usual agent commands.
 
 [Install](#install) · [Watch the full tour](https://vibeke.dev/?utm_source=github&utm_medium=readme#tour) · [Documentation](https://vibeke.dev/docs) · [Website](https://vibeke.dev/?utm_source=github&utm_medium=readme)
 
-[![Watch the 20-second preview: answer agent requests from the terminal or a paired phone](web/apps/site/public/brand/workflow-social.png)](https://vibeke.dev/?utm_source=github&utm_medium=readme#demo)
+[![Watch the 22-second narrated preview: answer agent requests from the terminal or a paired phone](web/apps/site/public/brand/workflow-social.png)](https://vibeke.dev/?utm_source=github&utm_medium=readme#demo)
 
 - **Know which agent needs you.** Keep questions and permission requests in one inbox. Answer through the supported agent integration.
 - **Reconnect to work in progress.** Agents keep running after a client disconnect or server restart. A host restart stops the processes.
