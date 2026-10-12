@@ -1920,6 +1920,7 @@ impl Server {
             "tasks": c.model.tasks,
             "previews": c.model.previews,
             "groups": c.model.groups,
+            "mentions": c.model.mentions,
             "appearance": c.model.appearance,
         })
     }
