@@ -384,8 +384,12 @@ fn a_task_runs_in_a_box_and_moves_between_host_and_box() {
     let s = h.run(&pane, "echo shell-$KEEP", "M3");
     assert!(s.contains("shell-kept"), "{s}");
 
-    // The destroy guard sees the work that is only in the box.
-    let b = h.only_box();
+    // The destroy guard sees the work that is only in the box. Right after the restart the
+    // box's sessions are still being reattached, so wait for the probe to report the work.
+    let b = h.wait(30, "unsynced work in the box", || {
+        let b = h.only_box();
+        (b["unsynced"]["commits"] == 1 && b["unsynced"]["dirty"] == 1).then_some(b)
+    });
     assert_eq!(b["unsynced"]["commits"], 1, "{b}");
     assert_eq!(b["unsynced"]["dirty"], 1, "{b}");
     let e = h

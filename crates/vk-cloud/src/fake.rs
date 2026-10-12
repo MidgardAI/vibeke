@@ -75,9 +75,9 @@ impl Fake {
     }
 
     fn box_dir(&self, id: &str) -> Result<PathBuf> {
+        // A leading dot is a box being destroyed (`destroy`), never a box id.
         let ok = !id.is_empty()
-            && id != "."
-            && id != ".."
+            && !id.starts_with('.')
             && id
                 .bytes()
                 .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'));
@@ -708,6 +708,10 @@ impl Provider for Fake {
                 .flatten()
                 .filter_map(|e| {
                     let id = e.file_name().to_str()?.to_string();
+                    // `.destroyed-*`: a box that `destroy` is still deleting.
+                    if id.starts_with('.') {
+                        return None;
+                    }
                     let m = read_meta(&e.path()).ok()?;
                     Some(to_box(&id, m))
                 })
@@ -730,11 +734,25 @@ impl Provider for Fake {
                     kill_session(&e.path());
                 }
             }
-            match std::fs::remove_dir_all(&bdir) {
-                Ok(()) => Ok(()),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-                Err(e) => Err(io_err(e)),
+            // Take the box out of the listing in one step, then delete it. A session daemon
+            // that is still exiting removes its own files at the same time, so a plain
+            // `remove_dir_all` could stop at a vanished file and leave `meta.json` behind.
+            let grave = self
+                .dir
+                .join("boxes")
+                .join(format!(".destroyed-{id}-{}", new_id()));
+            match std::fs::rename(&bdir, &grave) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+                Err(e) => return Err(io_err(e)),
             }
+            for _ in 0..50 {
+                if std::fs::remove_dir_all(&grave).is_ok() || !grave.exists() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            Ok(())
         })
     }
 
@@ -1241,6 +1259,41 @@ mod tests {
                 other => panic!("unexpected {other:?}"),
             }
         }
+    }
+
+    #[tokio::test]
+    async fn destroyed_boxes_leave_the_listing_at_once() {
+        let (d, f) = fake();
+        let tok = Secret::new(TOKEN);
+        let b = f.create(&tok, &spec()).await.unwrap();
+        assert_eq!(f.list(&tok).await.unwrap().len(), 1);
+        f.destroy(&tok, &b.id).await.unwrap();
+        assert!(f.list(&tok).await.unwrap().is_empty());
+        assert!(!d.path().join("boxes").join(&b.id).exists());
+        // A tombstone that could not be deleted yet is neither listed nor addressable.
+        let grave = d
+            .path()
+            .join("boxes")
+            .join(format!(".destroyed-{}-x", b.id));
+        std::fs::create_dir_all(&grave).unwrap();
+        let b2 = f.create(&tok, &spec()).await.unwrap();
+        std::fs::copy(
+            d.path().join("boxes").join(&b2.id).join("meta.json"),
+            grave.join("meta.json"),
+        )
+        .unwrap();
+        let ids: Vec<String> = f
+            .list(&tok)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|b| b.id)
+            .collect();
+        assert_eq!(ids, [b2.id.as_str()]);
+        assert!(f.get(&tok, ".destroyed-x").await.is_err());
+        // Destroying twice is fine.
+        f.destroy(&tok, &b2.id).await.unwrap();
+        f.destroy(&tok, &b2.id).await.unwrap();
     }
 
     #[tokio::test]
