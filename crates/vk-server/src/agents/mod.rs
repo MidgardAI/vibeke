@@ -2129,10 +2129,33 @@ fn same_open_request(x: &Interaction, it: &Interaction, run: &str) -> bool {
     }
     match it.kind {
         InteractionKind::Question => {
-            let prompts = |i: &Interaction| -> Vec<String> {
-                i.questions.iter().map(|q| norm_ws(&q.prompt)).collect()
+            // The whole question must agree (header, mode, options), not just the prompt: a
+            // draft answer picks options by position.
+            type Shape = (
+                String,
+                Option<String>,
+                bool,
+                bool,
+                Vec<(String, Option<String>)>,
+            );
+            let shape = |i: &Interaction| -> Vec<Shape> {
+                i.questions
+                    .iter()
+                    .map(|q| {
+                        (
+                            norm_ws(&q.prompt),
+                            q.header.clone(),
+                            q.multi,
+                            q.allow_free_text,
+                            q.options
+                                .iter()
+                                .map(|o| (o.label.clone(), o.description.clone()))
+                                .collect(),
+                        )
+                    })
+                    .collect()
             };
-            !it.questions.is_empty() && prompts(x) == prompts(it)
+            !it.questions.is_empty() && shape(x) == shape(it)
         }
         InteractionKind::PlanReview => match (&x.plan_md, &it.plan_md) {
             (Some(a), Some(b)) => norm_ws(a) == norm_ws(b) && !b.trim().is_empty(),

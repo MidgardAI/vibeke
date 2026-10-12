@@ -395,8 +395,9 @@ function QuestionBody({ it, disabled, locked, onSubmit }: { it: Interaction; dis
   const [text, setText] = useState('');
   const free = it.questions.some((q) => q.allow_free_text) || it.questions.length === 0;
   const anyChoice = Object.values(sel).some((v) => v.length > 0);
-  // Several questions are answered together: the agent's dialog needs a choice for each.
-  const several = it.questions.length > 1;
+  // Several questions typed into the agent's dialog are answered together: it needs a choice
+  // for each. Native forms may hold free-text questions without options and keep the old rule.
+  const several = it.questions.length > 1 && it.answer_channel === 'keystrokes';
   const allChosen = it.questions.every((q) => (sel[q.id] ?? []).length > 0);
   const toggle = (qid: string, oid: string, multi: boolean) => {
     setSel((s) => {

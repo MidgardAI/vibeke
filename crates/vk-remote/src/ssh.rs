@@ -180,7 +180,14 @@ impl Target {
             }
             Ok(())
         } else {
-            let out = child.wait_with_output().await?;
+            // BatchMode stops prompts, not a stalled handshake: bound it (the child is killed
+            // on drop).
+            let out =
+                tokio::time::timeout(std::time::Duration::from_secs(30), child.wait_with_output())
+                    .await
+                    .with_context(|| {
+                        format!("ssh to {} timed out while connecting", self.address)
+                    })??;
             if !out.status.success() {
                 bail!(
                     "ssh to {} needs authentication: {}\nRun `ssh {}` once in a terminal to log in, then try again.",

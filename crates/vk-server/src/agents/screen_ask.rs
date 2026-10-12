@@ -416,7 +416,11 @@ pub fn matches(a: &AskScreen, it: &Interaction) -> bool {
         return false;
     }
     // A screen-sourced interaction describes one view of the dialog (one question).
-    let one_view = it.questions.len() == 1 && question_index(a, it).is_some();
+    // Only screen-sourced ones: a hook-reported question names its whole dialog, so a stale
+    // one must never match the same prompt in another dialog's tabs.
+    let one_view = it.source == vk_proto::model::StateSource::Screen
+        && it.questions.len() == 1
+        && question_index(a, it).is_some();
     if !one_view {
         if a.tabs.len() != it.questions.len() {
             return false;
