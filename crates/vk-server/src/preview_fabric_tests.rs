@@ -998,6 +998,15 @@ async fn retired_local_previews_lose_their_origin() {
 /// next request. The old cookie never reaches the replacement service.
 #[tokio::test]
 async fn remote_forget_and_retirement_revoke_the_route() {
+    // The server's own scheme/title probe may reach a port after it changed hands; only
+    // proxied browser requests count as leaks.
+    fn proxied(seen: &std::sync::Mutex<Vec<String>>) -> Vec<String> {
+        let seen = seen.lock().unwrap();
+        seen.iter()
+            .filter(|r| !r.contains("User-Agent: vibeke-preview-probe"))
+            .cloned()
+            .collect()
+    }
     let e = Env::new();
     let (real, seen) = app("remote-app").await;
     let (other, other_seen) = app("replacement").await;
@@ -1040,7 +1049,7 @@ async fn remote_forget_and_retirement_revoke_the_route() {
     let n = seen.lock().unwrap().len();
     assert_eq!(http(pport, &auth, "/app", Some(&ck)).await.0, 421);
     assert_eq!(seen.lock().unwrap().len(), n);
-    assert!(other_seen.lock().unwrap().is_empty());
+    assert!(proxied(&other_seen).is_empty());
 
     // 2. Retired on the remote (e.g. its task finished there): refused on the next request.
     let r = open("fakebox/v9").await;
@@ -1051,7 +1060,7 @@ async fn remote_forget_and_retirement_revoke_the_route() {
     tokio::time::sleep(REMOTE_CHECK_TTL + Duration::from_millis(100)).await;
     assert_eq!(http(pport, &auth, "/app", Some(&ck)).await.0, 410);
     assert_eq!(http(pport, &auth, "/app", Some(&ck)).await.0, 421);
-    assert!(other_seen.lock().unwrap().is_empty());
+    assert!(proxied(&other_seen).is_empty());
 
     // 3. Moved on the remote (same handle, new port): the old route is revoked too.
     previews
