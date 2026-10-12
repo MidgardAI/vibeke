@@ -764,6 +764,9 @@ class Api:
     async def message_send(self, params: "t.MessageSendParams") -> "t.MessageSendResult":
         return await self.call("message.send", params)  # type: ignore[arg-type, return-value]
 
+    async def message_take(self, params: "Optional[t.MessageTakeParams]" = None) -> "t.MessageTakeResult":
+        return await self.call("message.take", params or {})  # type: ignore[arg-type, return-value]
+
     async def notes_get(self, params: "Optional[t.NotesGetParams]" = None) -> "t.NotesGetResult":
         return await self.call("notes.get", params or {})  # type: ignore[arg-type, return-value]
 

@@ -2,7 +2,7 @@
   "api": "vibeke/1",
   "status": "draft until 1.0",
   "rule": "frozen methods may not be removed and their mutating/scope/pane_scope flags may not change; additions are allowed",
-  "render_protocol": 9,
+  "render_protocol": 10,
   "holder_protocol": {
     "proto": 2,
     "min": 1
@@ -1173,6 +1173,26 @@
       "scope": "full",
       "pane_scope": "forbidden"
     },
+    "mention.clear": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "own_target"
+    },
+    "mention.list": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "mention.set": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "own_target"
+    },
+    "mention.suggest": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
     "merge.predict": {
       "mutating": false,
       "scope": "pane",
@@ -1202,6 +1222,46 @@
       "mutating": true,
       "scope": "full",
       "pane_scope": "forbidden"
+    },
+    "message.cancel": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "message.complete": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "message.get": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "message.list": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "own_target"
+    },
+    "message.reply": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "message.retry": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "message.send": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "message.take": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "own_target"
     },
     "notes.get": {
       "mutating": false,

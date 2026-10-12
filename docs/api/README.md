@@ -293,6 +293,7 @@ Clients must accept new fields and event types. The API can change before versio
 | `message.reply` | Write | Pane |
 | `message.retry` | Write | Full |
 | `message.send` | Write | Pane |
+| `message.take` | Write | Own panes |
 | `notes.get` | Read | Pane |
 | `notes.set` | Write | Pane |
 | `notification.config` | Read | Pane |

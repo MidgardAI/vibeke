@@ -8,7 +8,7 @@
     "proto": 2,
     "min": 1
   },
-  "method_count": 461,
+  "method_count": 462,
   "methods": [
     {
       "name": "adapter.control",
@@ -3515,6 +3515,20 @@
       "spec": null,
       "params": "{to: [string], body: string, expects_reply?: bool = true, workspace?: Target}",
       "result": "MentionThreadItem"
+    },
+    {
+      "name": "message.take",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "own_target",
+      "gateway": "actor_required",
+      "tables": [
+        "mentions"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{pane?: Target}",
+      "result": "{context: string|null, messages: [string]}"
     },
     {
       "name": "notes.get",

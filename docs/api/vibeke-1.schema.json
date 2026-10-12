@@ -20559,6 +20559,47 @@
         "$ref": "#/$defs/MentionThreadItem"
       }
     },
+    "message.take": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "own_target",
+      "params": {
+        "type": "object",
+        "properties": {
+          "pane": {
+            "$ref": "#/$defs/Target"
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "context": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "messages": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "context",
+          "messages"
+        ]
+      }
+    },
     "notes.get": {
       "mutating": false,
       "scope": "pane",

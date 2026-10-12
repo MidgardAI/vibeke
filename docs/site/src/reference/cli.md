@@ -165,6 +165,7 @@ Use `--json` to print JSON. Non-terminal output also uses JSON.
 | `list` | - | `message.list` | [--pane p] [--direction in\|out\|all] [--open-only] [--limit n] |
 | `cancel` | `<delivery>` | `message.cancel` | <delivery> |
 | `retry` | `<delivery>` | `message.retry` | <delivery> deliver a held message again |
+| `take` | - | `message.take` | hand this pane's queued messages to its agent now (for integrations) |
 
 ## `vibeke interaction`
 

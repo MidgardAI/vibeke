@@ -4979,6 +4979,16 @@ export type MessageSendParams = {
 
 export type MessageSendResult = MentionThreadItem;
 
+export type MessageTakeParams = {
+  pane?: Target;
+};
+
+export type MessageTakeResult = {
+  context: string | null;
+  messages: string[];
+  cursor?: Cursor;
+};
+
 export type NotesGetParams = {
   workspace?: Target;
 };
@@ -8488,6 +8498,7 @@ export interface Methods {
   "message.reply": { params: MessageReplyParams; result: MessageReplyResult };
   "message.retry": { params: MessageRetryParams; result: MessageRetryResult };
   "message.send": { params: MessageSendParams; result: MessageSendResult };
+  "message.take": { params: MessageTakeParams; result: MessageTakeResult };
   "notes.get": { params: NotesGetParams; result: NotesGetResult };
   "notes.set": { params: NotesSetParams; result: NotesSetResult };
   "notification.config": { params: NotificationConfigParams; result: NotificationConfigResult };
@@ -8955,6 +8966,7 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "message.reply": { mutating: true, scope: "pane", paneScope: "open" },
   "message.retry": { mutating: true, scope: "full", paneScope: "forbidden" },
   "message.send": { mutating: true, scope: "pane", paneScope: "open" },
+  "message.take": { mutating: true, scope: "pane", paneScope: "own_target" },
   "notes.get": { mutating: false, scope: "pane", paneScope: "open" },
   "notes.set": { mutating: true, scope: "pane", paneScope: "open" },
   "notification.config": { mutating: false, scope: "pane", paneScope: "open" },

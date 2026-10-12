@@ -5368,6 +5368,16 @@ MessageSendParams = TypedDict("MessageSendParams", {
 
 MessageSendResult: TypeAlias = "MentionThreadItem"
 
+MessageTakeParams = TypedDict("MessageTakeParams", {
+    "pane": NotRequired["Target"],
+})
+
+MessageTakeResult = TypedDict("MessageTakeResult", {
+    "context": Optional[str],
+    "messages": List[str],
+    "cursor": NotRequired["Cursor"],
+})
+
 NotesGetParams = TypedDict("NotesGetParams", {
     "workspace": NotRequired["Target"],
 })
@@ -9137,6 +9147,7 @@ METHODS: Dict[str, Dict[str, Any]] = {
     "message.reply": {"mutating": True, "scope": "pane", "pane_scope": "open"},
     "message.retry": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "message.send": {"mutating": True, "scope": "pane", "pane_scope": "open"},
+    "message.take": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
     "notes.get": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "notes.set": {"mutating": True, "scope": "pane", "pane_scope": "open"},
     "notification.config": {"mutating": False, "scope": "pane", "pane_scope": "open"},
