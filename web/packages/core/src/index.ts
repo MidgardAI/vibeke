@@ -19,3 +19,4 @@ export * from './redact';
 export * from './transport';
 
 export * from './tui';
+export * from './annotate-js';

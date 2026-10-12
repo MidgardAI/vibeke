@@ -987,6 +987,59 @@ export interface BrowserSession {
   [k: string]: unknown;
 }
 
+/** Where a page review lives: a TUI browser pane, an agent-browser session or a desktop preview. */
+export type AnnotationTarget = { pane: string } | { session: string } | { preview: string };
+
+/** A rectangle in CSS pixels of the page's viewport. */
+export interface AnnotationRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/** One numbered note on a picked element, a region or the whole page. `image` is a path on the host. */
+export interface AnnotationNote {
+  n: number;
+  kind: 'element' | 'region' | 'page';
+  selector?: string;
+  role?: string;
+  name?: string;
+  text?: string;
+  html?: string;
+  rect?: AnnotationRect;
+  covers?: { selector: string; text?: string }[];
+  image?: string;
+  note: string;
+}
+
+/** What a pick sends to `browser.annotation_add` (the note text comes later). */
+export interface AnnotationPick {
+  kind: 'element' | 'region';
+  selector?: string;
+  role?: string;
+  name?: string;
+  text?: string;
+  html?: string;
+  rect?: AnnotationRect;
+  covers?: { selector: string; text?: string }[];
+}
+
+export interface AnnotationDraft {
+  id: string;
+  workspace?: string;
+  target: AnnotationTarget;
+  agent_pane?: string | null;
+  url: string;
+  title?: string;
+  viewport?: { w: number; h: number; dpr?: number; device?: string };
+  notes: AnnotationNote[];
+  page_note?: string | null;
+  state: 'open' | 'queued' | 'delivered';
+  updated_at_ms: number;
+  delivered_at_ms?: number;
+}
+
 /** One input event for `browser.input`; coordinates are CSS pixels of the page's viewport. */
 export type BrowserInputEvent =
   | { type: 'touch'; phase: 'start' | 'move' | 'end' | 'cancel'; points: { id: number; x: number; y: number }[] }
@@ -1330,6 +1383,37 @@ export interface AppApi {
   'browser.input': { params: { session: string; events: BrowserInputEvent[] }; result: { session: string; applied: number } };
   /** Close a session this device opened with `browser.preview_open`. */
   'browser.session_close': { params: { session: string }; result: unknown };
+  /** Page review (annotations): the draft lives on the host that owns the target; picks and edits are full scope. */
+  'browser.annotate': { params: { pane?: string; session?: string; on: boolean }; result: { on: boolean; draft?: string } };
+  /** Pick the element at a CSS point, or the region when `w` and `h` are given, without clicking. */
+  'browser.annotation_pick': {
+    params: { pane?: string; session?: string; x: number; y: number; w?: number; h?: number };
+    result: { draft: AnnotationDraft; note: AnnotationNote };
+  };
+  /** A pick the app captured itself (desktop previews); `image_b64` is PNG or JPEG. */
+  'browser.annotation_add': {
+    params: AnnotationPick & {
+      target: AnnotationTarget;
+      url: string;
+      title?: string;
+      viewport?: { w: number; h: number; dpr?: number; device?: string };
+      image_b64?: string;
+      note?: string;
+    };
+    result: { draft: AnnotationDraft; note: AnnotationNote };
+  };
+  'browser.annotation_update': { params: { draft: string; n?: number; note?: string; page_note?: string }; result: { draft: AnnotationDraft } };
+  'browser.annotation_remove': { params: { draft: string; n: number }; result: { draft: AnnotationDraft } };
+  'browser.annotations_clear': { params: { draft: string }; result: { cleared: boolean } };
+  'browser.annotations': {
+    params: { pane?: string; session?: string; preview?: string; draft?: string };
+    result: { draft: AnnotationDraft | null };
+  };
+  /** Types the notes into the agent's pane when that is safe, else queues them; `copy_only` just returns the text. */
+  'browser.annotations_send': {
+    params: { draft: string; agent?: string; copy_only?: boolean };
+    result: { state?: 'delivered' | 'queued'; via?: 'feedback' | 'typed' | 'prompt'; agent_pane?: string | null; text: string };
+  };
   /** Input needs this device's take-over (`conflict` otherwise). */
   'browser.click': {
     params: { session: string; selector?: string; text?: string; x?: number; y?: number; click_count?: number; timeout_ms?: number };
@@ -1485,6 +1569,13 @@ export const MUTATING_METHODS: ReadonlySet<string> = new Set([
   'browser.preview_open',
   'browser.input',
   'browser.session_close',
+  'browser.annotate',
+  'browser.annotation_pick',
+  'browser.annotation_add',
+  'browser.annotation_update',
+  'browser.annotation_remove',
+  'browser.annotations_clear',
+  'browser.annotations_send',
 ]);
 
 // ---- normalization ------------------------------------------------------------------------
