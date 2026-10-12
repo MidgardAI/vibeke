@@ -31,6 +31,7 @@ mod handoff_pickers;
 mod harnesses;
 mod headless;
 mod idle_timers;
+mod mentions;
 mod mouse_select;
 mod onboarding;
 mod orchestrate;
