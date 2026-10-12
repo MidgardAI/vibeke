@@ -564,7 +564,8 @@ fn leases_cross_process_exclusion() {
 fn dead_owner_lease_expires() {
     let tmp = tempfile::tempdir().unwrap();
     let small = PortPool::parse("41000-41009", 10).unwrap();
-    let pl = PortLeases::new(tmp.path(), small);
+    // Owner expiry, not port probing: a busy CI runner may hold a port in this fixed range.
+    let pl = PortLeases::new(tmp.path(), small).with_probe(false);
 
     let mut child = Command::new("sh").args(["-c", "exit 0"]).spawn().unwrap();
     let dead_pid = child.id();
