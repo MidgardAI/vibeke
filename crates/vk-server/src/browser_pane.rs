@@ -59,6 +59,10 @@ pub mod watch;
 #[path = "browser_page.rs"]
 pub mod page_io;
 
+/// Page annotations: picks, the draft, the prompt and its delivery (06 B11).
+#[path = "browser_annotate.rs"]
+pub mod annotate;
+
 /// Tiles are `TILE_COLS × TILE_ROWS` host cells (64×64 device px for 16×32 cells).
 pub const TILE_COLS: u16 = 4;
 pub const TILE_ROWS: u16 = 2;
@@ -662,6 +666,8 @@ pub struct Host {
     /// Console/network entries relayed by the media host for browser panes in this layout
     /// rendered elsewhere (`browser.pane.console_push`).
     pub relayed: Mutex<HashMap<String, vk_browser::capture::Capture>>,
+    /// Annotate mode, feedback waiters and delivery state (06 B11).
+    pub annotate: annotate::State,
 }
 
 impl Default for Host {
@@ -679,6 +685,7 @@ impl Default for Host {
             tiles_sent: AtomicU64::new(0),
             media_bytes: AtomicU64::new(0),
             relayed: Mutex::default(),
+            annotate: annotate::State::default(),
         }
     }
 }
@@ -1699,11 +1706,15 @@ pub fn command(server: &Arc<Server>, pane: &str, cmd: BrowserCmd, key_releases: 
                     return;
                 };
                 st.io.last_mouse = Some(pt);
-                if kind == MouseKind::Press {
-                    page_io::note_input(&mut st);
-                }
                 pt
             };
+            // Annotate mode (06 B11): pointer input hovers and picks; nothing reaches the page.
+            if annotate::on_mouse(server, &t, kind, button, x, y, mods) {
+                return;
+            }
+            if kind == MouseKind::Press {
+                page_io::note_input(&mut t.st.lock().unwrap());
+            }
             let ty = match kind {
                 MouseKind::Press => "mousePressed",
                 MouseKind::Release => "mouseReleased",
@@ -2099,6 +2110,7 @@ fn start_gc(server: &Arc<Server>) {
             gc(&server);
             page_io::relay(&server);
             page_io::gc_splits(&server);
+            annotate::gc(&server);
         }
     });
 }
@@ -2873,6 +2885,9 @@ pub async fn open_pane(
 }
 
 pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Option<R> {
+    if let Some(r) = Box::pin(annotate::api(server, ctx, method, p)).await {
+        return Some(r);
+    }
     Some(match method {
         "browser.pane.create" => create_pane(server, ctx, p),
         "browser.watch" => watch::create(server, ctx, p),

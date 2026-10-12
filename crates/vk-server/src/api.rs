@@ -406,6 +406,16 @@ pub const PANE_FORBIDDEN: &[&str] = &[
     "browser.command",
     "browser.pane.console",
     "browser.pane.console_push",
+    // 06 B11: picking, editing and sending page annotations are the user's (the notes split
+    // of a browser pane may edit and send that pane's draft: `api::authorize`).
+    "browser.annotate",
+    "browser.annotation_pick",
+    "browser.annotation_add",
+    "browser.annotation_update",
+    "browser.annotation_remove",
+    "browser.annotations_clear",
+    "browser.annotations_send",
+    "browser.pane.annotations",
     "group.create",
     "group.rename",
     "group.move",
@@ -550,6 +560,10 @@ pub fn authorize(server: &Server, ctx: &Ctx, method: &str, p: &Value) -> Result<
         )
         .details(json!({"scope": "pane"})))
     };
+    // 06 B11: the notes split under a browser pane edits and sends that pane's draft only.
+    if crate::browser_pane::annotate::split_allows(server, scope, method, p) {
+        return Ok(());
+    }
     if pane_scope_of(method) == PaneScope::Forbidden {
         if method == "interaction.answer" {
             return Err(err(

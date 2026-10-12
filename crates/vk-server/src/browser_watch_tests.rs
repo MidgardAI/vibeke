@@ -594,3 +594,163 @@ async fn watch_errors() {
         .unwrap_err();
     assert_eq!(r.data.kind, "invalid_params");
 }
+
+#[test]
+fn decide_with_annotate_mode_turns_mouse_into_picks() {
+    let click = BrowserCmd::Mouse {
+        kind: MouseKind::Press,
+        button: MouseButton::Left,
+        x: 50.0,
+        y: 25.0,
+        mods: Mods::SHIFT,
+        clicks: 1,
+    };
+    // Read-only or not: the gesture never reaches the page, so no take-over is needed.
+    for here in [false, true] {
+        assert_eq!(
+            decide_with(&click, here, false, 0.5, 2.0, true),
+            Decision::Annotate {
+                kind: MouseKind::Press,
+                button: MouseButton::Left,
+                x: 50.0,
+                y: 25.0,
+                shift: true,
+            }
+        );
+    }
+    // Keys and the wheel are unchanged; annotate off is plain `decide`.
+    assert_eq!(
+        decide_with(&key('a'), false, false, 1.0, 2.0, true),
+        Decision::ReadOnly
+    );
+    let wheel = BrowserCmd::Wheel {
+        x: 1.0,
+        y: 1.0,
+        dx: 0.0,
+        dy: 10.0,
+        mods: Mods::empty(),
+    };
+    assert_eq!(
+        decide_with(&wheel, false, false, 1.0, 2.0, true),
+        Decision::ReadOnly
+    );
+    assert_eq!(
+        decide_with(&click, false, false, 1.0, 2.0, false),
+        Decision::ReadOnly
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn watch_pane_annotations_pick_on_the_agent_session() {
+    let e = Env::new();
+    e.call(&agent(), "browser.open", json!({}))
+        .await
+        .expect("agent opens a session");
+    let r = e
+        .call(&user(), "browser.watch", json!({"session": "b1"}))
+        .await
+        .unwrap();
+    let wp = r["pane"].as_str().unwrap().to_string();
+    let spec = e.spec(&wp);
+    let sess = e.cdp_session("b1");
+    let mut ms = MediaSession::new(&e.server, false);
+    ms.on_view(&e.server, vec![mp(&wp, spec.clone())], false, false);
+    let f = e.fake();
+    until("screencast", || {
+        !f.calls_of("Page.startScreencast").is_empty()
+    })
+    .await;
+    f.emitter.emit(
+        "Page.screencastFrame",
+        json!({"sessionId": 1, "data": png(400, 300, [200, 10, 10, 255]),
+               "metadata": {"deviceWidth": 400, "deviceHeight": 300}}),
+        Some(&sess),
+    );
+    next_frame(&e.server, &mut ms, |f| matches!(f, ServerFrame::Media(_))).await;
+    // Annotate on the watch pane (an agent may not).
+    let denied = e
+        .call(
+            &agent(),
+            "browser.annotate",
+            json!({"pane": wp, "on": true}),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(denied.data.kind, "permission_denied");
+    let on = e
+        .call(&user(), "browser.annotate", json!({"pane": wp, "on": true}))
+        .await
+        .unwrap();
+    assert_eq!(on["on"], true);
+    until("DOM enabled on the session", || {
+        f.calls_of("DOM.enable")
+            .iter()
+            .any(|c| c.2.as_deref() == Some(sess.as_str()))
+    })
+    .await;
+    // A click in the read-only pane: a pick on the agent's page, no input.
+    for kind in [MouseKind::Press, MouseKind::Release] {
+        ms.on_cmd(
+            &e.server,
+            &wp,
+            BrowserCmd::Mouse {
+                kind,
+                button: MouseButton::Left,
+                x: 20.0,
+                y: 10.0,
+                mods: Mods::empty(),
+                clicks: 1,
+            },
+        );
+    }
+    let t = Instant::now();
+    let d = loop {
+        let r = e
+            .call(&user(), "browser.annotations", json!({"pane": wp}))
+            .await
+            .unwrap();
+        if r["draft"]["notes"]
+            .as_array()
+            .is_some_and(|a| !a.is_empty())
+        {
+            break r["draft"].clone();
+        }
+        assert!(t.elapsed() < Duration::from_secs(8), "no pick: {r}");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    let id = e.server.agent_browser.watch_info("b1").unwrap().id;
+    assert_eq!(d["target"], json!({"session": id}));
+    assert_eq!(d["notes"][0]["selector"], "#save");
+    assert!(f.calls_of("Input.dispatchMouseEvent").is_empty());
+    assert!(
+        f.calls_of("Runtime.callFunctionOn")
+            .iter()
+            .all(|c| c.2.as_deref() == Some(sess.as_str()))
+    );
+    // A phone tap or drag picks through the API on the session itself: same draft.
+    let r = e
+        .call(
+            &user(),
+            "browser.annotation_pick",
+            json!({"session": "b1", "x": 10, "y": 10, "w": 120, "h": 60}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(r["draft"]["id"], d["id"]);
+    assert_eq!(r["note"]["kind"], "region");
+    assert_eq!(r["note"]["covers"].as_array().unwrap().len(), 2);
+    // Off: highlights hidden.
+    e.call(
+        &user(),
+        "browser.annotate",
+        json!({"pane": wp, "on": false}),
+    )
+    .await
+    .unwrap();
+    assert!(!e.server.browser.annotate.is_on(&wp));
+    until("inspect mode off", || {
+        !f.calls_of("Overlay.setInspectMode").is_empty()
+    })
+    .await;
+    ms.close(&e.server);
+}

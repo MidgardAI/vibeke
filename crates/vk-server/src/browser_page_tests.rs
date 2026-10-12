@@ -1503,3 +1503,136 @@ async fn device_and_viewport_are_persisted_on_the_pane() {
         .await;
     assert!(r.get("error").is_some());
 }
+
+/// Annotate mode (06 B11): pointer input of the pane hovers and picks on the page (through the
+/// letterbox mapping of a pinned device) and no mouse event reaches the page; off again, clicks
+/// do.
+#[tokio::test(flavor = "multi_thread")]
+async fn annotate_mode_picks_instead_of_clicking_even_letterboxed() {
+    let e = Env::new();
+    let phone = BrowserPane {
+        device: Some("iphone-15".into()),
+        ..spec()
+    };
+    let fake = host(&e, phone.clone());
+    let mut ms = MediaSession::new(&e.server, false);
+    let mut wide = mp(phone.clone());
+    wide.cols = 40;
+    wide.rows = 10;
+    ms.on_view(&e.server, vec![wide], false, true);
+    until(
+        &e,
+        &mut ms,
+        10,
+        |f| matches!(f, ServerFrame::Media(m) if m.reset && m.width == 640),
+    )
+    .await;
+    let st = fake.launched.lock().unwrap()[0].1.clone();
+    let user = ctx(None);
+    // Not from a pane.
+    let r = e
+        .call(
+            &ctx(Some("pane-a")),
+            "browser.annotate",
+            json!({"pane": "BP1", "on": true}),
+        )
+        .await;
+    assert!(r["error"].to_string().contains("permission_denied"), "{r}");
+    let r = e
+        .call(
+            &user,
+            "browser.annotate",
+            json!({"pane": "BP1", "on": true}),
+        )
+        .await;
+    assert_eq!(r["result"]["on"], true, "{r}");
+    assert!(e.server.browser.annotate.is_on("BP1"));
+    let at = |kind: MouseKind, x: f32, y: f32| BrowserCmd::Mouse {
+        kind,
+        button: if kind == MouseKind::Move {
+            MouseButton::None
+        } else {
+            MouseButton::Left
+        },
+        x,
+        y,
+        mods: vk_proto::input::Mods::empty(),
+        clicks: 1,
+    };
+    ms.on_cmd(&e.server, "BP1", at(MouseKind::Move, 150.0, 70.0));
+    wait_for("hover highlight", || {
+        st.lock().unwrap().count("Overlay.highlightNode") >= 1
+    })
+    .await;
+    // The pane centre (device 320,160) is the phone's centre (CSS ~196,426).
+    ms.on_cmd(&e.server, "BP1", at(MouseKind::Press, 160.0, 80.0));
+    ms.on_cmd(&e.server, "BP1", at(MouseKind::Release, 160.0, 80.0));
+    let t = Instant::now();
+    let d = loop {
+        let r = e
+            .call(&user, "browser.annotations", json!({"pane": "BP1"}))
+            .await;
+        if r["result"]["draft"]["notes"]
+            .as_array()
+            .is_some_and(|a| !a.is_empty())
+        {
+            break r["result"]["draft"].clone();
+        }
+        assert!(t.elapsed() < Duration::from_secs(10), "no pick: {r}");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    assert_eq!(d["target"], json!({"pane": "BP1"}));
+    assert_eq!(d["notes"][0]["selector"], "#save");
+    assert_eq!(d["viewport"]["w"], 393);
+    assert_eq!(d["viewport"]["device"], "iphone-15");
+    assert!(
+        d["notes"][0]["image"]
+            .as_str()
+            .is_some_and(|p| Path::new(p).is_file()),
+        "{d}"
+    );
+    {
+        let s = st.lock().unwrap();
+        assert_eq!(
+            s.count("Input.dispatchMouseEvent"),
+            0,
+            "nothing reached the page"
+        );
+        let (p, _) = s
+            .calls("DOM.getNodeForLocation")
+            .into_iter()
+            .last()
+            .unwrap();
+        let (x, y) = (p["x"].as_f64().unwrap(), p["y"].as_f64().unwrap());
+        assert!(
+            (x - 196.5).abs() < 3.0 && (y - 426.0).abs() < 3.0,
+            "{x},{y}"
+        );
+        assert!(s.count("Page.createIsolatedWorld") >= 1);
+    }
+    // A point pick through the API (phone taps), in page CSS px.
+    let r = e
+        .call(
+            &user,
+            "browser.annotation_pick",
+            json!({"pane": "BP1", "x": 30, "y": 40}),
+        )
+        .await;
+    assert_eq!(r["result"]["note"]["n"], 2, "{r}");
+    // Off: the click reaches the page again.
+    let r = e
+        .call(
+            &user,
+            "browser.annotate",
+            json!({"pane": "BP1", "on": false}),
+        )
+        .await;
+    assert_eq!(r["result"]["on"], false, "{r}");
+    ms.on_cmd(&e.server, "BP1", at(MouseKind::Press, 160.0, 80.0));
+    wait_for("mouse event", || {
+        st.lock().unwrap().count("Input.dispatchMouseEvent") >= 1
+    })
+    .await;
+    assert!(st.lock().unwrap().count("Overlay.setInspectMode") >= 1);
+    ms.close(&e.server);
+}

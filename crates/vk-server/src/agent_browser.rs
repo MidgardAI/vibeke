@@ -2945,6 +2945,23 @@ impl AgentBrowsers {
         })
     }
 
+    /// The annotation pick engine on a session's page (06 B11), with the session's id.
+    pub async fn picker(
+        &self,
+        target: &str,
+    ) -> Result<(vk_browser::annotate::Picker, String), RpcError> {
+        let sess = self
+            .session(target)
+            .filter(|x| !x.closed.load(Ordering::SeqCst))
+            .ok_or_else(|| not_found("browser_session", target))?;
+        let cdp = self.cdp().await?;
+        sess.touch();
+        Ok((
+            vk_browser::annotate::Picker::new(cdp, sess.cdp_session.clone()),
+            sess.id.clone(),
+        ))
+    }
+
     /// The newest open session owned by `pane` (the agent's peek "watch" action).
     pub fn session_of_pane(&self, pane: &str) -> Option<String> {
         self.sessions()

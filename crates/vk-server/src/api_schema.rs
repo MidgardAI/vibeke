@@ -33,6 +33,7 @@ pub fn method_tables() -> Vec<(&'static str, &'static [(&'static str, bool)])> {
         ("sandbox", sandbox::METHODS),
         ("agent_browser", agent_browser::METHODS),
         ("browser_pane", browser_pane::METHODS),
+        ("browser_pane::annotate", browser_pane::annotate::METHODS),
         ("parity", parity::METHODS),
         ("screenshots", screenshots::METHODS),
         ("desk", desk::METHODS),
@@ -507,6 +508,10 @@ AuditEntry = {seq: int, ts: int, type: string, actor: object, subject: any, data
 SyncGroup = {id: string, panes: [string], members: [{pane: string, handle: string|null, agent: bool}], tab: string|null, agents: [string], created_at_ms: int}
 ConfigLayer = {source: default|user|repo|runtime|cli, path?: string|null, exists?: bool, trusted?: bool, applied?: bool, keys?: [string]}
 TaskPorts = {task: string, handle: string, lease: {start: int, end: int, count: int}|null, env: object}
+AnnotationTarget = {pane: string} | {session: string} | {preview: string}
+AnnotationRect = {x: number, y: number, w: number, h: number}
+AnnotationNote = {n: int, kind: element|region|page, selector?: string, role?: string, name?: string, text?: string, html?: string, rect?: AnnotationRect, covers?: [{selector: string, text?: string}], image?: string, note: string}
+AnnotationDraft = {id: string, workspace?: string, target: AnnotationTarget, agent_pane?: string|null, url: string, title?: string, viewport?: {w: int, h: int, dpr?: number, device?: string}, notes: [AnnotationNote], page_note?: string|null, state: open|queued|delivered, via?: feedback|typed|prompt, detail?: string, updated_at_ms: int, delivered_at_ms?: int}
 "##;
 
 /// `method :: params => result`. Methods whose spec 07 §2 row exists follow it; the rest follow
@@ -539,7 +544,7 @@ pub const METHOD_SHAPES: &[&str] = &[
 pub const PRIVACY_SHAPES: &str = r##"
 # vibeke forget: scrollback.forget's scope, plan and counts, then everything else stored for the scope (full scope only)
 state.forget :: {pane?: Target, workspace?: Target, before?: string|int, all?: bool, dry_run?: bool = false, plan?: string, scrollback_only?: bool = false}
-  => {scope: any, pane_ids: [string]|null, plan: any, dry_run: bool, panes?: int, segments_deleted?: int, bytes_deleted?: int, fts_rows_deleted?: int, archive_panes_dropped?: int, assistant_purged?: int, scrollback_only?: bool, review?: ReviewPurge, also?: {items: int, collisions?: int, blobs: {screenshots: int, files: int}, uploads: {removed: int, kept_shared: int}, drafts: {drafts: int, notes: int, failed: int}, assistant: {purged: int|null, by: string}, desk: {calls: int, rows: int|null, errors?: [string]}, snapshots: int, events_tombstoned: int}, not_covered?: [string]}
+  => {scope: any, pane_ids: [string]|null, plan: any, dry_run: bool, panes?: int, segments_deleted?: int, bytes_deleted?: int, fts_rows_deleted?: int, archive_panes_dropped?: int, assistant_purged?: int, scrollback_only?: bool, review?: ReviewPurge, also?: {items: int, collisions?: int, blobs: {screenshots: int, files: int}, uploads: {removed: int, kept_shared: int}, drafts: {drafts: int, notes: int, failed: int}, annotations?: int, assistant: {purged: int|null, by: string}, desk: {calls: int, rows: int|null, errors?: [string]}, snapshots: int, events_tombstoned: int}, not_covered?: [string]}
 # security.encrypt_state (09 §9.1): what is sealed, with which key, and how many files are in each mode (full scope only)
 security.encryption.status :: {}
   => {encrypt_state: bool, active: bool, key_id: string|null, keychain: string|null, readable: bool, error: string|null, files: {sealed: int, plain: int}, covers: [string], not_covered: [string], redact_scrollback_index: bool, note: string}
@@ -815,6 +820,22 @@ browser.pane.list :: {} => {panes: [{pane: string, handle: string, tab: string, 
 browser.pane.update :: {pane: Target, url?: string, title?: string, history?: [string], history_index?: int, device?: string, viewport?: string|{width: int, height: int}, fit?: bool} => {pane: string}
 browser.pane.console :: {pane?: Target, toggle?: bool = true, focus?: bool = false} => {closed: string, pane_handle: string, browser_pane: string} | {pane: string, pane_handle: string, browser_pane: string, existing?: bool}
 browser.pane.console_push :: {pane: Target, entries: [object]} => {pane: string, stored: int}
+# --- page annotations (06 B11) ---
+# on the media host (the pane's renderer): pointer input of the pane picks instead of reaching the page while on
+browser.annotate :: {pane?: Target, session?: string, on?: bool = true} => {on: bool, draft?: string}
+# pick at a page CSS point, or a region with w and h, without a pointer
+browser.annotation_pick :: {pane?: Target, session?: string, x: number, y: number, w?: number, h?: number} => {draft: AnnotationDraft, note: AnnotationNote}
+# on the target's owner; media hosts and the desktop app add picks with it
+browser.annotation_add :: {target: AnnotationTarget, url: string, title?: string, viewport?: object, kind: element|region|page, selector?: string, role?: string, name?: string, text?: string, html?: string, rect?: AnnotationRect, covers?: [{selector: string, text?: string}], image_b64?: string, note?: string} => {draft: AnnotationDraft, note: AnnotationNote}
+browser.annotation_update :: {draft: string, n?: int, note?: string, page_note?: string} => {draft: AnnotationDraft}
+browser.annotation_remove :: {draft: string, n: int} => {draft: AnnotationDraft}
+browser.annotations_clear :: {draft: string} => {cleared: bool}
+browser.annotations :: {pane?: Target, session?: string, preview?: string, draft?: string} => {draft: AnnotationDraft|null}
+# copy_only returns the prompt and changes nothing (state is then the draft's own)
+browser.annotations_send :: {draft: string, agent?: Target, copy_only?: bool} => {state: delivered|queued|open, via?: feedback|typed|prompt|null, agent_pane?: string|null, text: string}
+# the agent side: the oldest queued draft for the caller's pane (or a pane it created); wait is seconds
+browser.feedback :: {pane?: Target, wait_ms?: int = 0, wait?: int} => {draft: AnnotationDraft|null, text?: string}
+browser.pane.annotations :: {pane?: Target, open?: bool, focus?: bool = true} => {open: bool, split?: string}
 
 # --- plugins ---
 plugin.list :: {} => {plugins: [{id?: string, plugin_id?: string, version?: string|null, enabled: bool, native?: bool, kind?: actions|process|string, capabilities?: any, status?: any}]}
@@ -1236,6 +1257,8 @@ preview.unmirrored :: {machine: string, preview: string, preview_handle: string}
 preview.console_error :: {preview: string, preview_id: string, pane: string|null, task: string|null, machine: string} => {count: int, source: string, text: string, url: string|null, line: int|null, session: string|null}
 browser.navigated :: {pane: string, tab?: string, workspace?: string} => {url: string}
 browser.viewport_changed :: {pane: string, tab?: string, workspace?: string} => {device: string|null, viewport: any}
+browser.annotations_changed :: {draft: string, pane?: string} => {notes: int, state: string}
+browser.annotations_sent :: {draft: string, pane?: string} => {via: string, agent_pane: string|null, notes: int}
 notification.created :: {pane: string|null} => {id: string, kind: string, title: string, body: string, urgency: string}
 notes.updated :: {workspace: string} => {rev: int, bytes: int}
 draft.created :: {draft?: string} => any

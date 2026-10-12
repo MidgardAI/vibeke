@@ -25,6 +25,7 @@ fn tables() -> Vec<&'static [(&'static str, bool)]> {
         crate::sandbox::METHODS,
         crate::agent_browser::METHODS,
         crate::browser_pane::METHODS,
+        crate::browser_pane::annotate::METHODS,
         crate::parity::METHODS,
         crate::screenshots::METHODS,
         crate::desk::METHODS,

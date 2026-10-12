@@ -3,7 +3,7 @@
 //!
 //! Order: the scrollback archive first (`scrollback.forget`, which resolves the scope, checks a
 //! confirmed `plan` and refuses before anything is deleted), then screenshots and other session
-//! blobs, pane inbox uploads, drafts and workspace notes, the session desk
+//! blobs, pane inbox uploads, drafts and workspace notes, page annotation drafts, the session desk
 //! index, VT snapshots of panes that are no longer live, and last the event log (events in scope
 //! become tombstones so `seq` stays gapless). Spec-15 derived objects (lane 2C,
 //! `review::purge`) and assistant records (lane 2D, `assist::forget_scope`) are purged inside
@@ -131,6 +131,15 @@ pub async fn forget(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     also.insert(
         "drafts".into(),
         json!(forget_drafts(server, &user, &scope, dry).await),
+    );
+    // Page annotation drafts (06 B11) and their screenshots.
+    also.insert(
+        "annotations".into(),
+        json!(crate::browser_pane::annotate::forget(
+            server,
+            |pane, ws, at| scope.covers(pane, ws, Some(at)),
+            dry
+        )),
     );
     also.insert("assistant".into(), assistant_report(&out, dry));
     also.insert("desk".into(), forget_desk(server, &user, &scope, dry).await);

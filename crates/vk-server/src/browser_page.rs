@@ -730,10 +730,13 @@ fn may_read(server: &Server, ctx: &Ctx, id: &str) -> bool {
     })
 }
 
-/// The browser pane a console split belongs to (`created_by = "browser-console:<id>"`, set only
-/// by the server).
+/// The browser pane a console split (or annotation notes split) belongs to (`created_by =
+/// "browser-console:<id>"` / `"browser-annotations:<id>"`, set only by the server). Both show
+/// page content: they are not archived, and their output is read under the console rule.
 pub fn split_of(p: &Pane) -> Option<&str> {
-    p.created_by.strip_prefix("browser-console:")
+    p.created_by
+        .strip_prefix("browser-console:")
+        .or_else(|| p.created_by.strip_prefix(super::annotate::SPLIT_MARKER))
 }
 
 /// A console split's output is neither archived nor indexed (it is the page's in-memory

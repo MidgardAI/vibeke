@@ -365,6 +365,15 @@ pub enum Decision {
     Unsupported,
     /// Nothing to do (e.g. a key release on a host that synthesizes them).
     Nothing,
+    /// Annotate mode (06 B11): a pointer event for the pick gesture, in agent CSS px. It never
+    /// reaches the page, so it needs no take-over.
+    Annotate {
+        kind: MouseKind,
+        button: MouseButton,
+        x: f64,
+        y: f64,
+        shift: bool,
+    },
 }
 
 /// Decide what `cmd` does for a watch pane. `here` = this pane holds human control;
@@ -376,10 +385,42 @@ pub fn decide(
     to_page: f64,
     dpr: f32,
 ) -> Decision {
+    decide_with(cmd, here, key_releases, to_page, dpr, false)
+}
+
+/// [`decide`] with annotate mode: while `annotating`, mouse events become
+/// [`Decision::Annotate`] (wheel, keys and the rest are unchanged).
+pub fn decide_with(
+    cmd: &BrowserCmd,
+    here: bool,
+    key_releases: bool,
+    to_page: f64,
+    dpr: f32,
+    annotating: bool,
+) -> Decision {
     let page = |x: f32, y: f32| -> (f64, f64) {
         let k = to_page * dpr as f64;
         (x as f64 * k, y as f64 * k)
     };
+    if annotating
+        && let BrowserCmd::Mouse {
+            kind,
+            button,
+            x,
+            y,
+            mods,
+            ..
+        } = cmd
+    {
+        let (x, y) = page(*x, *y);
+        return Decision::Annotate {
+            kind: *kind,
+            button: *button,
+            x,
+            y,
+            shift: mods.shift(),
+        };
+    }
     match cmd {
         BrowserCmd::TakeOver(on) => Decision::Control(*on),
         BrowserCmd::Key(_)
@@ -475,7 +516,15 @@ pub fn command(server: &Arc<Server>, t: &Arc<Target>, cmd: BrowserCmd, key_relea
             st.want.map(|g| g.dpr).unwrap_or(1.0),
         )
     };
-    match decide(&cmd, here, key_releases, to_page, dpr) {
+    let annotating = server.browser.annotate.is_on(&t.pane);
+    match decide_with(&cmd, here, key_releases, to_page, dpr, annotating) {
+        Decision::Annotate {
+            kind,
+            button,
+            x,
+            y,
+            shift,
+        } => super::annotate::on_watch_mouse(server, t, kind, button, x, y, shift),
         Decision::Control(on) => {
             let by = on.then(|| holder(t));
             match agent_browser::set_human_control(server, &session, by) {
