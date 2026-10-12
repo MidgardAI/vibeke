@@ -964,7 +964,7 @@ fn default_agent(server: &Server, d: &Draft) -> Option<String> {
             AnnotationTarget::Preview(id) => preview_home(c, id).and_then(|h| h.pane),
         }
         .filter(|p| c.pane(p).is_some());
-        if let Some(p) = cand.as_deref().filter(|p| live(*p)) {
+        if let Some(p) = cand.as_deref().filter(|p| live(p)) {
             return Some(p.to_string());
         }
         let first = c
