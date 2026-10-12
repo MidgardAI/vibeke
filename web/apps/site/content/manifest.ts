@@ -10,6 +10,7 @@ export const docManifest = [
   { slug: 'remote', title: 'Work on a remote machine', group: 'Guides', file: 'remote.md', description: 'Install on a host through SSH. Connect from the terminal, desktop, or phone.' },
   { slug: 'desktop', title: 'Desktop app', group: 'Guides', file: 'desktop.md', description: 'Download the app and connect to a local or remote host.' },
   { slug: 'mobile', title: 'Phone & browser', group: 'Guides', file: 'mobile.md', description: 'Pair a device through a relay. Control agents from another device.' },
+  { slug: 'mentions', title: 'Mention other agents', group: 'Guides', file: 'mentions.md', description: 'Name a pane. Send messages between agents and get replies.' },
   { slug: 'handoff', title: 'Move work to another host', group: 'Guides', file: 'handoff.md', description: 'Transfer work between your own paired hosts.' },
   { slug: 'sharing', title: 'Work with a teammate', group: 'Guides', file: 'sharing.md', description: 'Transfer work to a teammate. Share access to a pane or workspace.' },
   { slug: 'cloud-sandboxes', title: 'Cloud sandboxes', group: 'Guides', file: 'cloud-sandboxes.md', description: 'Run agents on a cloud machine. Send work there and bring it back.' },

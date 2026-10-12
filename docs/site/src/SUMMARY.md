@@ -17,6 +17,7 @@
 - [Work on a remote machine](remote.md)
 - [Desktop app](desktop.md)
 - [Phone and browser access](mobile.md)
+- [Mention other agents](mentions.md)
 - [Move work to another host](handoff.md)
 - [Work with a teammate](sharing.md)
 - [Cloud sandboxes](cloud-sandboxes.md)
