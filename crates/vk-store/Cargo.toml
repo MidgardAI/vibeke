@@ -16,7 +16,7 @@ zstd.workspace = true
 libc.workspace = true
 blake3.workspace = true
 # At-rest encryption (09 §9.1); already in Cargo.lock through vk-gateway.
-aes-gcm = "0.10"
+aes-gcm = "0.11"
 
 [dev-dependencies]
 tempfile.workspace = true
