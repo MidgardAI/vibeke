@@ -1,11 +1,18 @@
 {
   "platforms": {
     "darwin-arm64": {
-      "attach": 0.002021,
-      "cold_start": 0.164335,
-      "reboot_restore_30_panes": 3.290787,
-      "restart_30_panes": 0.21333,
-      "vt_throughput_mb_s": 21703.265
+      "attach": 0.005572,
+      "cold_start": 0.380736,
+      "reboot_restore_30_panes": 3.23489,
+      "restart_30_panes": 0.405597,
+      "vt_throughput_mb_s": 7636.23
+    },
+    "linux-x86_64": {
+      "attach": 0.02947,
+      "cold_start": 2.05492,
+      "reboot_restore_30_panes": 41.2236,
+      "restart_30_panes": 3.10317,
+      "vt_throughput_mb_s": 5630.36
     }
   },
   "tolerance": 1.0

@@ -8,7 +8,11 @@
 # no entry for this platform.
 #
 #   sh scripts/perf-gate.sh                    # gate against tests/perf/baseline.json
-#   PERF_UPDATE=1 sh scripts/perf-gate.sh      # re-record this platform's baseline (quiet machine)
+#   PERF_UPDATE=1 sh scripts/perf-gate.sh      # re-record this platform's baseline
+#
+# Record baselines on the CI runners, not on a local machine: the calibration does not cover
+# the gap between a local Mac and a virtualized runner. Take the median of several perf-<os>
+# candidate.json artifacts from CI runs and write it to tests/perf/baseline.json.
 #
 # Environment: PERF_SAMPLES (5), PERF_TOLERANCE (1.0), PERF_OUT (target/perf-gate),
 # PERF_BASELINE (tests/perf/baseline.json). A candidate baseline for this platform is always

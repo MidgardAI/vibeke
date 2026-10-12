@@ -4,7 +4,8 @@ name: perf
 # samples are reduced to a median, and the run only fails when that median is worse than the
 # stored baseline ratio by more than 100 percent (and not when the samples disagree by more
 # than 3x). Platforms without an entry in tests/perf/baseline.json are reported only; the run
-# always uploads a candidate baseline to adopt (PERF_UPDATE=1 sh scripts/perf-gate.sh).
+# always uploads a candidate baseline. Baselines come from these runner candidates (the median
+# of several runs), never from a local machine.
 on:
   pull_request:
     paths:
