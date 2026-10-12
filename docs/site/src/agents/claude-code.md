@@ -35,8 +35,9 @@ vibeke integration install claude --yes
 - Vibeke adds one hook entry for each event it watches. Each entry runs `vibeke hook claude <Event>`. A `_vibeke` key marks the entries as its own.
 - The installer keeps your other hooks and your other settings.
 - Before the first change, it saves a copy named `settings.json.vibeke-bak-<timestamp>` next to the file.
+- `~/.claude/skills/vibeke/SKILL.md` holds the Vibeke skill. A skill is a file of instructions that Claude reads when a task needs it. This skill teaches Claude the `vibeke` commands for panes, agents, tasks, previews, the agent browser and images. A line after the header of the skill marks it as managed by Vibeke. A reinstall overwrites it. The installer does not replace a `vibeke` skill without that line.
 
-Add `--mcp` to register the `vibeke mcp` server in `~/.claude.json` instead of the hooks.
+The `--mcp` flag registers the `vibeke mcp` server in `~/.claude.json`. It writes only that entry. The server offers previews, the agent browser and images as MCP tools.
 
 ## Check
 

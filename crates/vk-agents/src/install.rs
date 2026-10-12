@@ -98,6 +98,8 @@ pub struct Dirs {
     pub opencode: PathBuf,
     /// Gemini CLI home (`~/.gemini`).
     pub gemini: PathBuf,
+    /// The shared Agent Skills root (`~/.agents`), read by Codex, pi, omp, OpenCode and Gemini.
+    pub agents: PathBuf,
 }
 
 impl Dirs {
@@ -140,6 +142,8 @@ impl Dirs {
                 },
             },
             gemini: pick("VIBEKE_GEMINI_HOME", ".gemini"),
+            // VIBEKE_AGENTS_HOME redirects the shared skills root (tests).
+            agents: pick("VIBEKE_AGENTS_HOME", ".agents"),
         }
     }
 
@@ -152,6 +156,7 @@ impl Dirs {
         "VIBEKE_OMP_HOME",
         "VIBEKE_OPENCODE_HOME",
         "VIBEKE_GEMINI_HOME",
+        "VIBEKE_AGENTS_HOME",
     ];
     pub fn config_file(&self, h: Harness) -> PathBuf {
         match h {
@@ -626,6 +631,19 @@ fn plan(h: Harness, dirs: &Dirs, bin: Option<&Path>) -> Result<Plan> {
             );
         }
     }
+    let mut files = vec![FileChange {
+        path,
+        before: existing.map(|(t, _)| t),
+        after,
+        stamp,
+        remove: false,
+    }];
+    files.extend(crate::skill::plan_skill(
+        h,
+        dirs,
+        bin.is_some(),
+        &mut notes,
+    )?);
     Ok(Plan {
         harness: h,
         kind: if bin.is_some() {
@@ -633,13 +651,7 @@ fn plan(h: Harness, dirs: &Dirs, bin: Option<&Path>) -> Result<Plan> {
         } else {
             PlanKind::Uninstall
         },
-        files: vec![FileChange {
-            path,
-            before: existing.map(|(t, _)| t),
-            after,
-            stamp,
-            remove: false,
-        }],
+        files,
         notes,
     })
 }
@@ -892,7 +904,40 @@ pub struct Status {
     pub todo: Vec<String>,
 }
 
+/// Hooks (or extension) and skill. A missing skill next to installed hooks makes the
+/// integration `Partial`, so setup offers to complete it.
 pub fn status(h: Harness, dirs: &Dirs) -> Status {
+    use crate::skill::SkillState;
+    let mut st = hook_status(h, dirs);
+    if st.state == InstallState::NotInstalled {
+        return st;
+    }
+    let (path, skill) = crate::skill::skill_state(h, dirs);
+    match skill {
+        SkillState::Current => {}
+        SkillState::Missing => {
+            st.missing_events.push("skill".to_string());
+            st.state = InstallState::Partial;
+        }
+        SkillState::Outdated(v) => st.todo.push(format!(
+            "skill_outdated: {} is from {v}, this build bundles {VERSION}; reinstall",
+            path.display()
+        )),
+        SkillState::Foreign => st.problems.push(format!(
+            "{} is not managed by Vibeke (install leaves it alone)",
+            path.display()
+        )),
+        SkillState::Unreadable(e) => st.problems.push(e),
+    }
+    st
+}
+
+/// The hooks (or extension) of `h` are at least partly installed.
+pub(crate) fn hooks_present(h: Harness, dirs: &Dirs) -> bool {
+    !hook_status(h, dirs).hooks.is_empty()
+}
+
+fn hook_status(h: Harness, dirs: &Dirs) -> Status {
     if h.is_extension() {
         return status_extension(h, dirs);
     }
@@ -1167,6 +1212,14 @@ fn plan_extension(h: Harness, dirs: &Dirs, install: bool) -> Result<Plan> {
                 .to_string(),
         );
     }
+    let mut files = vec![FileChange {
+        path,
+        before,
+        after,
+        stamp,
+        remove,
+    }];
+    files.extend(crate::skill::plan_skill(h, dirs, install, &mut notes)?);
     Ok(Plan {
         harness: h,
         kind: if install {
@@ -1174,13 +1227,7 @@ fn plan_extension(h: Harness, dirs: &Dirs, install: bool) -> Result<Plan> {
         } else {
             PlanKind::Uninstall
         },
-        files: vec![FileChange {
-            path,
-            before,
-            after,
-            stamp,
-            remove,
-        }],
+        files,
         notes,
     })
 }
@@ -1357,6 +1404,7 @@ mod tests {
             omp: t.path().join("omp"),
             opencode: t.path().join("opencode"),
             gemini: t.path().join("gemini"),
+            agents: t.path().join("agents"),
         };
         fs::create_dir_all(&d.claude).unwrap();
         fs::create_dir_all(&d.codex).unwrap();
@@ -1569,7 +1617,7 @@ mod tests {
         fs::write(&f, USER_CLAUDE).unwrap();
         let p1 = plan_install(Harness::Claude, &d, Path::new(BIN)).unwrap();
         let w1 = apply(&p1).unwrap();
-        assert_eq!(w1.len(), 2, "backup + file");
+        assert_eq!(w1.len(), 3, "backup + file + skill");
         let b = backups(&d.claude);
         assert_eq!(b.len(), 1);
         assert_eq!(fs::read_to_string(&b[0]).unwrap(), USER_CLAUDE);
@@ -1953,7 +2001,7 @@ mod tests {
         fs::write(&cfg, "[features]\nhooks = false\n").unwrap();
         let p = plan_install(Harness::Codex, &d, Path::new(BIN)).unwrap();
         assert!(p.notes.iter().any(|n| n.contains("features.hooks = false")));
-        assert_eq!(p.files.len(), 1);
+        assert!(p.files.iter().all(|f| f.path != cfg), "{:?}", p.files);
         apply(&p).unwrap();
         assert_eq!(
             fs::read_to_string(&cfg).unwrap(),
@@ -2179,9 +2227,12 @@ mod tests {
         )
         .unwrap();
         let st = status(Harness::Omp, &d);
-        assert_eq!(st.state, InstallState::Installed);
+        // No skill yet: partial.
+        assert_eq!(st.state, InstallState::Partial);
+        assert_eq!(st.missing_events, vec!["skill".to_string()]);
         assert!(st.todo[0].contains("integration_outdated"));
         install(Harness::Omp, &d);
+        assert_eq!(status(Harness::Omp, &d).state, InstallState::Installed);
         assert!(
             fs::read_to_string(&path)
                 .unwrap()
@@ -2241,6 +2292,100 @@ mod tests {
         // uninstalling when absent is a no-op
         assert!(!plan_uninstall(Harness::Pi, &d).unwrap().changed());
         assert_eq!(status(Harness::Pi, &d).state, InstallState::NotInstalled);
+    }
+
+    #[test]
+    fn install_writes_the_skill_and_status_wants_it() {
+        let t = tempfile::tempdir().unwrap();
+        let d = dirs(&t);
+        let p = plan_install(Harness::Claude, &d, Path::new(BIN)).unwrap();
+        let skill = d.claude.join("skills/vibeke/SKILL.md");
+        assert!(p.files.iter().any(|f| f.path == skill && f.changed()));
+        apply(&p).unwrap();
+        assert_eq!(
+            fs::read_to_string(&skill).unwrap(),
+            crate::skill::skill_content()
+        );
+        assert_eq!(status(Harness::Claude, &d).state, InstallState::Installed);
+        assert!(
+            !plan_install(Harness::Claude, &d, Path::new(BIN))
+                .unwrap()
+                .changed()
+        );
+        // Hooks without the skill: partial, so setup offers to complete it.
+        fs::remove_file(&skill).unwrap();
+        let st = status(Harness::Claude, &d);
+        assert_eq!(st.state, InstallState::Partial);
+        assert_eq!(st.missing_events, vec!["skill".to_string()]);
+        // Uninstall removes the skill and its directory.
+        apply(&plan_install(Harness::Claude, &d, Path::new(BIN)).unwrap()).unwrap();
+        apply(&plan_uninstall(Harness::Claude, &d).unwrap()).unwrap();
+        assert!(!skill.exists() && !skill.parent().unwrap().exists());
+    }
+
+    #[test]
+    fn a_foreign_skill_is_left_alone() {
+        let t = tempfile::tempdir().unwrap();
+        let d = dirs(&t);
+        let skill = d.agents.join("skills/vibeke/SKILL.md");
+        fs::create_dir_all(skill.parent().unwrap()).unwrap();
+        fs::write(&skill, "---\nname: vibeke\ndescription: mine\n---\n").unwrap();
+        let p = plan_install(Harness::Codex, &d, Path::new(BIN)).unwrap();
+        assert!(p.files.iter().all(|f| f.path != skill));
+        assert!(p.notes.iter().any(|n| n.contains("not managed by Vibeke")));
+        apply(&p).unwrap();
+        assert_eq!(
+            fs::read_to_string(&skill).unwrap(),
+            "---\nname: vibeke\ndescription: mine\n---\n"
+        );
+        let st = status(Harness::Codex, &d);
+        assert!(st.problems.iter().any(|p| p.contains("not managed")));
+        assert!(
+            plan_uninstall(Harness::Codex, &d)
+                .unwrap()
+                .files
+                .iter()
+                .all(|f| f.path != skill)
+        );
+    }
+
+    #[test]
+    fn the_shared_skill_stays_while_another_harness_uses_it() {
+        let t = tempfile::tempdir().unwrap();
+        let d = dirs(&t);
+        let skill = d.agents.join("skills/vibeke/SKILL.md");
+        apply(&plan_install(Harness::Codex, &d, Path::new(BIN)).unwrap()).unwrap();
+        apply(&plan_install(Harness::Pi, &d, Path::new(BIN)).unwrap()).unwrap();
+        assert!(skill.is_file());
+        let p = plan_uninstall(Harness::Codex, &d).unwrap();
+        assert!(
+            p.notes.iter().any(|n| n.contains("pi also read")),
+            "{:?}",
+            p.notes
+        );
+        apply(&p).unwrap();
+        assert!(skill.is_file());
+        apply(&plan_uninstall(Harness::Pi, &d).unwrap()).unwrap();
+        assert!(!skill.exists());
+    }
+
+    #[test]
+    fn an_outdated_skill_is_rewritten_and_reported() {
+        let t = tempfile::tempdir().unwrap();
+        let d = dirs(&t);
+        apply(&plan_install(Harness::Gemini, &d, Path::new(BIN)).unwrap()).unwrap();
+        let skill = d.agents.join("skills/vibeke/SKILL.md");
+        let old = crate::skill::skill_content().replace(VERSION, "0.0.1");
+        fs::write(&skill, &old).unwrap();
+        let st = status(Harness::Gemini, &d);
+        assert_eq!(st.state, InstallState::Installed);
+        assert!(
+            st.todo.iter().any(|t| t.starts_with("skill_outdated")),
+            "{:?}",
+            st.todo
+        );
+        let p = plan_install(Harness::Gemini, &d, Path::new(BIN)).unwrap();
+        assert!(p.files.iter().any(|f| f.path == skill && f.changed()));
     }
 
     #[test]

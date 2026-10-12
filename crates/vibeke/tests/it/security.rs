@@ -26,6 +26,7 @@ fn cmd(s: &Session, args: &[&str]) -> Command {
         ("VIBEKE_OMP_HOME", "h/omp"),
         ("VIBEKE_OPENCODE_HOME", "h/opencode"),
         ("VIBEKE_GEMINI_HOME", "h/gemini"),
+        ("VIBEKE_AGENTS_HOME", "h/agents"),
     ] {
         c.env(k, d.join(sub));
     }

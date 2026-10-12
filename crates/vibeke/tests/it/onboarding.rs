@@ -48,6 +48,7 @@ impl Env {
             .env("VIBEKE_OMP_HOME", d.join("h/omp"))
             .env("VIBEKE_OPENCODE_HOME", d.join("h/opencode"))
             .env("VIBEKE_GEMINI_HOME", d.join("h/gemini"))
+            .env("VIBEKE_AGENTS_HOME", d.join("h/agents"))
             .env("PS1", "$ ");
         for k in [
             "VIBEKE",

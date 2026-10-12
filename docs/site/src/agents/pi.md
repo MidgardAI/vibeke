@@ -44,8 +44,11 @@ vibeke integration install omp --yes
 |---|---|
 | pi | `~/.pi/agent/extensions/vibeke/index.js` |
 | omp | `~/.omp/agent/extensions/vibeke.js` |
+| pi and omp | `~/.agents/skills/vibeke/SKILL.md` |
 
-The first line of the file marks it as managed by Vibeke. A reinstall overwrites it. If a file exists at that path without the mark, the installer refuses to replace it.
+The first line of the extension marks it as managed by Vibeke. A reinstall overwrites it. If a file exists at that path without the mark, the installer refuses to replace it.
+
+The skill teaches the agent the `vibeke` commands for panes, agents, tasks, previews, the agent browser and images. Codex, OpenCode and Gemini CLI read the same skill file. A line after the header of the skill marks it as managed by Vibeke. A reinstall overwrites it. The installer does not replace a `vibeke` skill without that line.
 
 The extension stays inactive outside a Vibeke pane.
 

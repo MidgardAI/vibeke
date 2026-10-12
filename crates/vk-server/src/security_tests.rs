@@ -755,6 +755,7 @@ fn harness_dirs(root: &Path) -> vk_agents::Dirs {
         omp: root.join("omp"),
         opencode: root.join("opencode"),
         gemini: root.join("gemini"),
+        agents: root.join("agents"),
     }
 }
 

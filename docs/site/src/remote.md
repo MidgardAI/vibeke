@@ -52,6 +52,19 @@ See [release verification](reference/releases.md) for offline installation and d
 The terminal connection passes through SSH. Use the sidebar to navigate the remote workspaces.
 Agent commands run on the remote host and use its installed integrations and credentials.
 
+### Agent integrations on the host
+
+An agent on the host needs the Vibeke hooks and skill on the host. The integrations on your computer do not reach it.
+After the connection, `vibeke ssh` looks for agents on the host without the Vibeke hooks and skill.
+It finds an agent by its program on `PATH` or by its configuration folder, such as `~/.claude`.
+If it finds one, it asks if it should install them.
+Press Enter or `y` to install them on the host. Agents that already run there need a restart to load the hooks.
+If you answer `n`, Vibeke does not ask again for these agents on this host.
+
+- `vibeke ssh devbox --integrations` installs them without a question. Use it in scripts, or after you answered `n`.
+- `vibeke ssh devbox --no-integrations` skips the check.
+- In a pane on the host, `vibeke integration pending` lists the agents that need the integration. `vibeke integration install claude --yes` installs one.
+
 Previews and forwarded ports use loopback addresses. See [previews and browsers](concepts/previews.md).
 Use `vibeke machine list` and `vibeke machine status devbox` to inspect saved machines.
 

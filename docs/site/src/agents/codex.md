@@ -32,10 +32,11 @@ vibeke integration install codex --yes
 - `~/.codex/hooks.json`, or `hooks.json` in the directory named by `CODEX_HOME`. Each Vibeke entry runs `vibeke hook codex <Event>`. Vibeke finds its own entries by that command and keeps your other hooks.
 - Before the first change, it saves a copy named `hooks.json.vibeke-bak-<timestamp>`.
 - A small `codex` script in the `shims` folder of the Vibeke data directory. Panes put this folder first in `PATH` while `agents.shims` is `true`. The script runs your real `codex` with `--disable daemon_auto_start`. Set `CODEX_VIBEKE_SHIM=0` to skip the script for one command.
+- `~/.agents/skills/vibeke/SKILL.md` holds the Vibeke skill. It teaches Codex the `vibeke` commands for panes, agents, tasks, previews, the agent browser and images. pi, oh-my-pi, OpenCode and Gemini CLI read the same file. A line after the header of the skill marks it as managed by Vibeke. A reinstall overwrites it. The installer does not replace a `vibeke` skill without that line.
 
 The installer prints the shim path when it writes the script.
 
-Add `--mcp` to register the `vibeke mcp` server in `~/.codex/config.toml` instead of the hooks.
+The `--mcp` flag registers the `vibeke mcp` server in `~/.codex/config.toml`. It writes only that entry.
 
 ## Check
 

@@ -1,6 +1,6 @@
 ---
 name: vibeke
-description: Coordinate panes, agents, tasks and notifications in the Vibeke terminal runtime. Use only when the user mentions Vibeke or asks you to coordinate other panes/agents/tasks, and only when VIBEKE=1.
+description: Coordinate panes, agents, tasks and notifications in the Vibeke terminal runtime, declare app previews, drive a headless browser to check a web UI, and show images to the user. Use when the user mentions Vibeke, asks you to coordinate other panes/agents/tasks, or wants you to preview, check or screenshot a web app, and only when VIBEKE=1.
 ---
 
 # Vibeke
@@ -28,6 +28,12 @@ You can *see* other agents' open questions/approvals (`vibeke ask list`), but yo
 
 ## Ordinary commands
 `vibeke pane split --current --direction right --no-focus`, then `vibeke pane run <pane> "pnpm test" --wait`, then `vibeke pane read <pane> --source recent_unwrapped`.
+
+## Previews, browser and images
+- After you start a dev server, declare it so the user sees it as a preview (also on their phone): `vibeke preview declare 5173 --label web`. List with `vibeke preview list`.
+- Check a page yourself: `vibeke browser open <preview|url> [--device iphone-15]` returns a session; then `vibeke browser navigate|click|type|press|wait <session> …`, `vibeke browser snapshot <session>` (accessibility tree; read this before clicking), `vibeke browser console <session> --level error`, `vibeke browser network <session> --failed`, `vibeke browser screenshot <session> --out shot.png`, and `vibeke browser close <session>` when done.
+- Show the user an image (a screenshot, a test result): `vibeke screenshot add shot.png --caption "Login after the fix"`. PNG or JPEG.
+- `human_control` errors mean the user took over that browser session: stop and wait.
 
 ## Search and notify
 - `vibeke search query "migration failed"` searches scrollback across panes.

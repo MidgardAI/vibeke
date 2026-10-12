@@ -38,6 +38,10 @@ Claude Code and the Codex app server report their background tasks to Vibeke. Fo
 
 Open **Setup** in the command palette to select integrations, inspect changes, and confirm installation. The installer preserves existing hooks.
 
+An integration has two parts. The hooks or the extension report the agent state to Vibeke and let Vibeke answer approvals. The Vibeke skill teaches the agent the `vibeke` commands, for example to declare a preview, check a page in the agent browser or show you an image.
+
+Setup changes only the computer where it runs. For a remote host, see [Work on a remote machine](../remote.md#agent-integrations-on-the-host).
+
 Then run your usual `claude`, `codex`, `pi`, or `omp` command in a shell pane.
 For scripts and troubleshooting, use `vibeke integration install|status|uninstall|doctor`.
 

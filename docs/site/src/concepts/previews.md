@@ -95,6 +95,8 @@ vibeke screenshot add test-results/login.png --caption "Login page after the fix
 
 The caption is optional. The command accepts PNG and JPEG files.
 
+The Vibeke skill teaches agents this command, the preview commands and the agent browser commands. Setup installs the skill with the other parts of the integration.
+
 An agent can also use the `show_image` tool of `vibeke mcp`. To add this tool to Claude Code, run this command:
 
 ```sh

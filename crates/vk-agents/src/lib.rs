@@ -9,6 +9,7 @@ pub mod mcp;
 pub mod pricing;
 pub mod risk;
 pub(crate) mod shell;
+pub mod skill;
 pub mod transcript;
 
 pub use fingerprint::{Subject, fingerprint, fingerprint_subject};
@@ -19,3 +20,4 @@ pub use install::{
 };
 pub use mcp::{McpStatus, mcp_config_file, mcp_status, plan_mcp_install, plan_mcp_uninstall};
 pub use risk::{Risk, assess};
+pub use skill::{SKILL, SkillState, skill_file, skill_state};

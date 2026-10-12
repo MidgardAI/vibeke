@@ -329,6 +329,8 @@ pub struct Flow {
     pub notice: Option<String>,
     /// The written config, once done.
     pub written: Option<PathBuf>,
+    /// Connected remote machines: the integrations step installs on this computer only.
+    pub remotes: Vec<String>,
 }
 
 impl Flow {
@@ -353,6 +355,12 @@ impl Flow {
             config_path,
             notice: None,
             written: None,
+            remotes: app
+                .machines
+                .iter()
+                .filter(|m| !m.local)
+                .map(|m| m.label.clone())
+                .collect(),
         }
     }
 
@@ -694,7 +702,7 @@ pub fn draw(app: &App, g: &mut Grid) {
         }
         Step::Integrations => {
             a.line(
-                "Agent integrations (hooks/extensions that report state and answer approvals):",
+                "Agent integrations on this computer (hooks or extensions that report state and answer approvals, plus the Vibeke skill):",
                 t.bold(t.fg),
             );
             for (i, r) in f.harnesses.iter().enumerate() {
@@ -721,6 +729,14 @@ pub fn draw(app: &App, g: &mut Grid) {
                 }
             }
             a.line("", t.text());
+            for label in &f.remotes {
+                a.line(
+                    &format!(
+                        "{label}: not covered here. `vibeke ssh {label}` offers its integrations, or run `vibeke setup` in a {label} pane."
+                    ),
+                    t.dim(),
+                );
+            }
             if let Some(off) = f.diff {
                 let r = &f.harnesses[f.sel.min(f.harnesses.len().saturating_sub(1))];
                 a.line(&format!("── {} changes ──", r.harness.id()), t.bold(t.fg));

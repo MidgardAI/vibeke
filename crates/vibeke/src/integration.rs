@@ -2,7 +2,7 @@
 //!
 //! Writing the user's real harness configs needs explicit consent: without `--yes` the command
 //! shows the planned diff only. `CLAUDE_CONFIG_DIR` / `CODEX_HOME` / `VIBEKE_PI_HOME` /
-//! `VIBEKE_OMP_HOME` / `VIBEKE_OPENCODE_HOME` / `VIBEKE_GEMINI_HOME` redirect it (e.g. to
+//! `VIBEKE_OMP_HOME` / `VIBEKE_OPENCODE_HOME` / `VIBEKE_GEMINI_HOME` / `VIBEKE_AGENTS_HOME` redirect it (e.g. to
 //! temporary copies).
 //!
 //! `doctor` and `capabilities` read the harness manifests (built-ins, the verified remote cache
@@ -16,7 +16,7 @@ use vk_agents::manifest::{self, Loaded, Sources};
 use vk_agents::{Dirs, Harness, InstallState};
 use vk_cli::{EXIT_API, EXIT_OK, EXIT_USAGE, Global};
 
-const USAGE: &str = "vibeke integration list|status|install|uninstall|doctor|capabilities <claude|codex|pi|omp|opencode|gemini|all> [--dry-run] [--yes]\n       vibeke integration list --sources         (where each manifest came from: built-in, remote channel, user, repo)\n       vibeke integration update [--url URL]   (signed manifest channel; refuses unsigned indexes)\n       vibeke integration pin <id> [<version>|current]   (freeze a cached remote manifest)\n       vibeke integration unpin <id>";
+const USAGE: &str = "vibeke integration list|status|install|uninstall|doctor|capabilities <claude|codex|pi|omp|opencode|gemini|all> [--dry-run] [--yes]\n       vibeke integration pending [--json]   (harnesses used here whose hooks or skill are missing or outdated)\n       vibeke integration list --sources         (where each manifest came from: built-in, remote channel, user, repo)\n       vibeke integration update [--url URL]   (signed manifest channel; refuses unsigned indexes)\n       vibeke integration pin <id> [<version>|current]   (freeze a cached remote manifest)\n       vibeke integration unpin <id>";
 
 fn harnesses(arg: Option<&str>) -> Option<Vec<Harness>> {
     match arg {
@@ -106,6 +106,7 @@ pub async fn run(g: &Global, args: &[String]) -> i32 {
         "update" => return update(g, args),
         "list" if args.iter().any(|a| a == "--sources") => return sources(g),
         "pin" | "unpin" => return pin(g, verb == "unpin", args),
+        "pending" => return pending(g),
         _ => {}
     }
     let Some(hs) = harnesses(target) else {
@@ -216,10 +217,16 @@ pub async fn run(g: &Global, args: &[String]) -> i32 {
                     println!("note: {n}");
                 }
                 if dry || (!yes && !redirected) {
+                    let files: Vec<String> = plan
+                        .files
+                        .iter()
+                        .filter(|f| f.changed())
+                        .map(|f| f.path.display().to_string())
+                        .collect();
                     println!(
                         "{}: dry run — rerun with --yes to write {}",
                         h.id(),
-                        dirs.config_file(h).display()
+                        files.join(", ")
                     );
                     continue;
                 }
@@ -257,6 +264,59 @@ pub async fn run(g: &Global, args: &[String]) -> i32 {
             EXIT_USAGE
         }
     }
+}
+
+/// A harness counts as used on this machine when its binary is on `PATH` or its config dir
+/// exists. The dir matters over `ssh host cmd`, whose `PATH` often lacks `~/.local/bin`.
+fn in_use(row: &vk_tui::onboarding::HarnessRow, dirs: &Dirs) -> bool {
+    let home = match row.harness {
+        Harness::Claude => &dirs.claude,
+        Harness::Codex => &dirs.codex,
+        Harness::Pi => &dirs.pi,
+        Harness::Omp => &dirs.omp,
+        Harness::OpenCode => &dirs.opencode,
+        Harness::Gemini => &dirs.gemini,
+    };
+    row.binary.is_some() || home.is_dir()
+}
+
+/// `vibeke integration pending`: harnesses used here whose install would change files (hooks,
+/// extension or skill missing or outdated). `vibeke ssh` runs it on the remote to offer the
+/// install there.
+fn pending(g: &Global) -> i32 {
+    let dirs = Dirs::from_env();
+    let rows: Vec<Value> = vk_tui::onboarding::detect_harnesses(&dirs, &stable_bin())
+        .into_iter()
+        .filter(|r| !r.files.is_empty() && in_use(r, &dirs))
+        .map(|r| {
+            json!({
+                "harness": r.harness.id(),
+                "state": r.state_text(),
+                "files": r.files,
+            })
+        })
+        .collect();
+    if is_json(g) {
+        println!("{}", json!({ "pending": rows }));
+    } else if rows.is_empty() {
+        println!("nothing pending");
+    } else {
+        for r in &rows {
+            println!(
+                "{:<9} {:<14} {}",
+                r["harness"].as_str().unwrap_or(""),
+                r["state"].as_str().unwrap_or(""),
+                r["files"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
+    }
+    EXIT_OK
 }
 
 fn doctor(g: &Global, verb: &str, target: Option<&str>) -> i32 {

@@ -6,8 +6,6 @@ use vk_cli::client::{self, Client};
 use vk_cli::{EXIT_API, EXIT_OK, EXIT_USAGE, Global};
 use vk_server::paths::Paths;
 
-pub const SKILL: &str = include_str!("../skill/SKILL.md");
-
 pub fn load_config() -> vk_config::Config {
     match vk_config::Config::load(vk_config::config_path()) {
         Ok((c, _)) => c,

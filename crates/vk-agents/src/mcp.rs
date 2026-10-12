@@ -376,6 +376,7 @@ mod tests {
             omp: t.path().join("omp"),
             opencode: t.path().join("opencode"),
             gemini: t.path().join("gemini"),
+            agents: t.path().join("agents"),
         };
         fs::create_dir_all(&d.claude).unwrap();
         fs::create_dir_all(&d.codex).unwrap();

@@ -323,7 +323,7 @@ async fn dispatch(g: Global, args: Vec<String>) -> i32 {
             EXIT_OK
         }
         Some("--skill") => {
-            print!("{}", commands::SKILL);
+            print!("{}", vk_agents::SKILL);
             EXIT_OK
         }
         Some("--default-config") => {

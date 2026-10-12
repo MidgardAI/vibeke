@@ -190,7 +190,9 @@ pub fn specs(cfg: &vk_config::Config, g: &Global) -> Vec<vk_tui::app::MachineSpe
 /// `--allow-downgrade`.
 pub async fn ssh(g: &Global, args: &[String]) -> i32 {
     let Some(host) = args.iter().find(|a| !a.starts_with("--")) else {
-        eprintln!("vibeke ssh <host|label> [--upgrade] [--allow-downgrade] [--no-local]");
+        eprintln!(
+            "vibeke ssh <host|label> [--upgrade] [--allow-downgrade] [--no-local] [--integrations | --no-integrations]"
+        );
         return EXIT_USAGE;
     };
     if let Err(e) = check_session(&g.session) {
@@ -292,6 +294,7 @@ pub async fn ssh(g: &Global, args: &[String]) -> i32 {
             return EXIT_API;
         }
     }
+    offer_integrations(&target, args).await;
     let link = Link::new(target.clone(), &g.session);
     if let Err(e) = link.open().await {
         eprintln!("vibeke: bridge to {}: {e:#}", target.label);
@@ -320,6 +323,106 @@ pub async fn ssh(g: &Global, args: &[String]) -> i32 {
         Err(e) => {
             eprintln!("vibeke: {e:#}");
             EXIT_API
+        }
+    }
+}
+
+/// Harnesses the user declined to integrate per machine label (`vibeke ssh` asks once).
+fn declined_path() -> PathBuf {
+    vk_server::paths::state_root().join("remote-integrations-declined.json")
+}
+
+fn declined(label: &str) -> Vec<String> {
+    std::fs::read(declined_path())
+        .ok()
+        .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+        .and_then(|v| v.get(label).cloned())
+        .and_then(|v| serde_json::from_value(v).ok())
+        .unwrap_or_default()
+}
+
+fn record_declined(label: &str, harnesses: &[String]) {
+    let path = declined_path();
+    let mut all = std::fs::read(&path)
+        .ok()
+        .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+        .filter(Value::is_object)
+        .unwrap_or_else(|| json!({}));
+    let mut list = declined(label);
+    list.extend(harnesses.iter().cloned());
+    list.sort();
+    list.dedup();
+    all[label] = json!(list);
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(&path, format!("{all:#}\n"));
+}
+
+/// The harness ids in a `vibeke integration pending --json` answer.
+fn pending_harnesses(out: &str) -> Vec<String> {
+    serde_json::from_str::<Value>(out.trim())
+        .ok()
+        .and_then(|v| v.get("pending").cloned())
+        .and_then(|p| p.as_array().cloned())
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|r| r["harness"].as_str().map(str::to_string))
+        .collect()
+}
+
+/// After the bootstrap: the remote's agents need the Vibeke hooks and skill there, not on this
+/// computer. Ask once per machine and harness (`--integrations` installs without asking,
+/// `--no-integrations` skips the check). A remote too old for `integration pending` is skipped.
+async fn offer_integrations(target: &Target, args: &[String]) {
+    if flag(args, "--no-integrations") {
+        return;
+    }
+    let bin = vk_remote::ssh::sh_quote(bootstrap::REMOTE_BIN);
+    let probe = target.run(&format!("{bin} integration pending --json"), None);
+    let Ok(Ok(out)) = tokio::time::timeout(std::time::Duration::from_secs(20), probe).await else {
+        return;
+    };
+    let pending = pending_harnesses(&out);
+    let label = &target.label;
+    let force = flag(args, "--integrations");
+    let skip = if force { vec![] } else { declined(label) };
+    let offer: Vec<String> = pending.into_iter().filter(|h| !skip.contains(h)).collect();
+    if offer.is_empty() {
+        return;
+    }
+    let list = offer.join(", ");
+    if !force && !std::io::stdin().is_terminal() {
+        eprintln!(
+            "vibeke: {label} runs {list} without the Vibeke hooks and skill; `vibeke ssh {label} --integrations` installs them there"
+        );
+        return;
+    }
+    if !force
+        && !ask(&format!(
+            "{label} runs {list} without the Vibeke hooks and skill, so Vibeke cannot see their state or answer approvals there. Install them on {label}?"
+        ))
+    {
+        record_declined(label, &offer);
+        eprintln!(
+            "vibeke: not asking again for {list} on {label}; `vibeke ssh {label} --integrations` installs them"
+        );
+        return;
+    }
+    for h in &offer {
+        let cmd = format!(
+            "{bin} integration install {} --yes",
+            vk_remote::ssh::sh_quote(h)
+        );
+        match target.run(&cmd, None).await {
+            Ok(out) => {
+                for l in out.lines().filter(|l| {
+                    l.starts_with("wrote ") || l.starts_with("note: ") || l.contains("PATH shim")
+                }) {
+                    eprintln!("vibeke: {label}: {l}");
+                }
+            }
+            Err(e) => eprintln!("vibeke: {label}: {h}: {e:#}"),
         }
     }
 }
@@ -1192,6 +1295,15 @@ pub fn machine_cmd(g: &Global, args: &[String]) -> i32 {
 mod tests {
     use super::*;
     use vk_remote::link::valid_session_name;
+
+    #[test]
+    fn pending_harnesses_reads_the_remote_answer() {
+        let out = r#"{"pending":[{"harness":"claude","state":"partial","files":["/h/.claude/skills/vibeke/SKILL.md"]},{"harness":"codex","state":"not installed","files":[]}]}
+"#;
+        assert_eq!(pending_harnesses(out), vec!["claude", "codex"]);
+        assert!(pending_harnesses("vibeke: unknown verb").is_empty());
+        assert!(pending_harnesses(r#"{"pending":[]}"#).is_empty());
+    }
 
     #[test]
     fn session_names_are_validated() {
