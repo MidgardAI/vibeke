@@ -237,8 +237,8 @@ fn prompt_lists_notes_with_screenshots_and_quotes_page_text() {
         detail: None,
         next_n: 4,
         rev: 0,
-        created_at_ms: 0,
-        updated_at_ms: 0,
+        created_at_ms: now(),
+        updated_at_ms: now(),
         delivered_at_ms: None,
     };
     assert_eq!(
@@ -273,8 +273,8 @@ fn bare_draft(id: &str, target: AnnotationTarget, notes: Vec<Note>) -> Draft {
         detail: None,
         next_n: 1,
         rev: 0,
-        created_at_ms: 0,
-        updated_at_ms: 0,
+        created_at_ms: now(),
+        updated_at_ms: now(),
         delivered_at_ms: None,
     }
 }

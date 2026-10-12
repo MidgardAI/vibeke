@@ -331,7 +331,7 @@ pub fn quad_rect(q: &Value) -> Option<Rect> {
         ys.iter().copied().fold(f64::INFINITY, f64::min),
         ys.iter().copied().fold(f64::NEG_INFINITY, f64::max),
     );
-    (x0.is_finite() && y0.is_finite() && x1.is_finite() && y1.is_finite()).then(|| Rect {
+    (x0.is_finite() && y0.is_finite() && x1.is_finite() && y1.is_finite()).then_some(Rect {
         x: x0,
         y: y0,
         w: x1 - x0,

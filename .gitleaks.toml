@@ -10,7 +10,7 @@ useDefault = true
 description = "Reviewed public value or synthetic redaction fixture"
 condition = "AND"
 targetRules = ["aws-access-token"]
-paths = ["(^|/)crates/vibeke/tests/(it/)?compat_herdr_slice2\\.rs$", "(^|/)web/packages/core/test/redact\\.test\\.ts$"]
+paths = ["(^|/)crates/vibeke/tests/(it/)?compat_herdr_slice2\\.rs$", "(^|/)web/packages/core/test/redact\\.test\\.ts$", "(^|/)crates/vk\\-server/src/browser_annotate_tests\\.rs$"]
 regexes = ["^\\QAKIAABCDEFGHIJKLMNOP\\E$"]
 
 [[allowlists]]
