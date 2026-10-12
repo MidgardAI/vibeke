@@ -237,6 +237,8 @@ export function createExtension(pi: HostApi, opts: Options = {}): Handle | undef
   // message.take is in flight at a time, and a caller during it gets nothing: the call in flight
   // hands the messages over once. Every failure means "nothing to deliver".
   const RIDE_TYPE = "vibeke-message";
+  /** Between agent_start and agent_end: a steer still reaches this turn. */
+  let agentRunning = false;
   let taking: Promise<string | null> | null = null;
   function take(): Promise<string | null> {
     if (headlessOwner) return Promise.resolve(null); // the server delivers headless runs itself
@@ -437,6 +439,7 @@ export function createExtension(pi: HostApi, opts: Options = {}): Handle | undef
   });
 
   on("agent_start", () => {
+    agentRunning = true;
     cancelEnd();
     streaming = true;
     if (!turnOpen) {
@@ -541,7 +544,10 @@ export function createExtension(pi: HostApi, opts: Options = {}): Handle | undef
     // Taking marks the messages delivered: only take when the host can send them on.
     if (typeof pi.sendMessage === "function") {
       void take().then((context) => {
-        if (context) ride(context, { deliverAs: "steer" });
+        if (!context) return;
+        // The turn may have ended while the take was out (the turn-end take then got nothing):
+        // start a new turn instead of a steer that no turn would read.
+        ride(context, agentRunning ? { deliverAs: "steer" } : { deliverAs: "followUp", triggerTurn: true });
       });
     }
   });
@@ -574,6 +580,7 @@ export function createExtension(pi: HostApi, opts: Options = {}): Handle | undef
   }
 
   on("agent_end", (e) => {
+    agentRunning = false;
     lastEnd = lastAssistant(e);
     cancelEnd();
     endTimer = setTimeout(() => {

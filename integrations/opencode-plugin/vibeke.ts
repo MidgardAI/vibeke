@@ -126,6 +126,11 @@ function take(): Promise<string | null> {
 
 const RESPONSE: Record<string, string> = { allow: "once", always: "always", deny: "reject" };
 
+// Subagent sessions (`parentID` set): their prompts, tool calls and idle events never take the
+// pane's messages, which belong to the main session.
+const children = new Set<string>();
+const isChild = (sessionID: unknown) => typeof sessionID === "string" && children.has(sessionID);
+
 export const VibekePlugin = async ({ client, directory }: { client?: any; directory?: string }) => {
   if (!ON) return {};
 
@@ -166,6 +171,10 @@ export const VibekePlugin = async ({ client, directory }: { client?: any; direct
         }
         return;
       }
+      if (type === "session.created" || type === "session.updated") {
+        const info = props.info ?? {};
+        if (info.id && info.parentID) children.add(info.id);
+      }
       if (!type || !FORWARD.has(type)) return;
       if (type === "permission.replied") {
         const id = props.requestID ?? props.permissionID;
@@ -186,7 +195,8 @@ export const VibekePlugin = async ({ client, directory }: { client?: any; direct
       if (type === "session.idle") {
         const sessionID = props.sessionID;
         // Taking marks the messages delivered: only take when they can be handed over.
-        const context = sessionID && client?.session?.promptAsync ? await take() : null;
+        const context =
+          sessionID && !isChild(sessionID) && client?.session?.promptAsync ? await take() : null;
         if (context) {
           try {
             // A new turn: the agent reads the messages without typing into the input box.
@@ -206,7 +216,10 @@ export const VibekePlugin = async ({ client, directory }: { client?: any; direct
         .join("\n");
       const sent = send("chat.message", { sessionID: input?.sessionID, text });
       try {
-        const context = Array.isArray(output?.parts) && output?.message?.id ? await take() : null;
+        const context =
+          !isChild(input?.sessionID) && Array.isArray(output?.parts) && output?.message?.id
+            ? await take()
+            : null;
         if (context) {
           output.parts.push({
             id: `prt_vibeke_${Date.now().toString(36)}`,
@@ -230,7 +243,8 @@ export const VibekePlugin = async ({ client, directory }: { client?: any; direct
         metadata: output?.metadata,
       });
       try {
-        const context = typeof output?.output === "string" ? await take() : null;
+        const context =
+          !isChild(input?.sessionID) && typeof output?.output === "string" ? await take() : null;
         if (context) {
           output.output += `\n\n[Vibeke: a message arrived from another pane]\n${context}`;
         }

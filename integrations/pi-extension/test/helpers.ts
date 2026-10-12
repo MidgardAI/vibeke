@@ -34,6 +34,8 @@ export class FakeServer {
   /** `message.take`: the context handed out once (then null); `takeError` answers an error. */
   takeContext: string | null = null;
   takeError = false;
+  /** `message.take`: answer after this many ms (a slow server). */
+  takeDelayMs = 0;
   private parkedControl: ((req: any) => void) | null = null;
   private server: net.Server | null = null;
 
@@ -66,7 +68,9 @@ export class FakeServer {
             const body = this.takeError
               ? { error: { code: -32000, message: "boom" } }
               : { result: { context, messages: context ? [context] : [] } };
-            sock.write(JSON.stringify({ jsonrpc: "2.0", id: msg.id, ...body }) + "\n");
+            const line = JSON.stringify({ jsonrpc: "2.0", id: msg.id, ...body }) + "\n";
+            if (this.takeDelayMs > 0) setTimeout(() => sock.write(line), this.takeDelayMs);
+            else sock.write(line);
           }
           else if (!this.noReply.has(msg.method))
             sock.write(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: {} }) + "\n");

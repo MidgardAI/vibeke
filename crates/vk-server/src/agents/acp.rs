@@ -404,20 +404,31 @@ pub trait Sink: Send {
     }
 }
 
+/// A server call on the signal connection: method, params, and where to send the result when
+/// the caller waits for it.
+type SignalCall = (String, Value, Option<mpsc::Sender<Option<Value>>>);
+
 struct SocketSink {
     harness: String,
-    tx: Option<mpsc::Sender<(String, Value)>>,
+    tx: Option<mpsc::Sender<SignalCall>>,
+    /// A `message.take` whose answer came after `take` stopped waiting. The messages in it are
+    /// already delivered on the server, so the next `take` hands them over first.
+    late: Option<mpsc::Receiver<Option<Value>>>,
 }
 
 impl SocketSink {
     fn new(harness: &str) -> SocketSink {
         // One persistent connection for fire-and-forget signals, on its own thread so the
-        // protocol loop never blocks on the server.
+        // protocol loop never blocks on the server. Calls run in order: a `message.take` sent
+        // after `Stop` reaches the server after it, so the messages belong to the next turn.
         let tx = Link::connect().map(|mut link| {
-            let (tx, rx) = mpsc::channel::<(String, Value)>();
+            let (tx, rx) = mpsc::channel::<SignalCall>();
             std::thread::spawn(move || {
-                for (method, params) in rx {
-                    let _ = link.call(&method, params, Some(Duration::from_secs(5)));
+                for (method, params, reply) in rx {
+                    let r = link.call(&method, params, Some(Duration::from_secs(5)));
+                    if let Some(reply) = reply {
+                        let _ = reply.send(r);
+                    }
                 }
             });
             tx
@@ -425,8 +436,17 @@ impl SocketSink {
         SocketSink {
             harness: harness.to_string(),
             tx,
+            late: None,
         }
     }
+}
+
+/// The text of a `message.take` answer, if it handed over any messages.
+fn take_context(r: Option<Value>) -> Option<String> {
+    r?.get("context")
+        .and_then(Value::as_str)
+        .filter(|c| !c.trim().is_empty())
+        .map(str::to_string)
 }
 
 impl Sink for SocketSink {
@@ -435,6 +455,7 @@ impl Sink for SocketSink {
             let _ = tx.send((
                 "adapter.signal".into(),
                 json!({"harness": self.harness, "event": event, "payload": payload}),
+                None,
             ));
         }
     }
@@ -463,25 +484,37 @@ impl Sink for SocketSink {
         });
     }
     fn take(&mut self) -> Option<String> {
-        // Own short-lived connection (same socket and pane token as `gate`) on a helper
-        // thread, so a stuck server costs at most the timeout.
-        let (tx, rx) = mpsc::channel();
-        std::thread::spawn(move || {
-            let r = Link::connect()
-                .and_then(|mut l| l.call("message.take", json!({}), Some(Duration::from_secs(2))));
-            let _ = tx.send(r);
-        });
-        let r = rx.recv_timeout(Duration::from_millis(2500)).ok()??;
-        r.get("context")
-            .and_then(Value::as_str)
-            .filter(|c| !c.trim().is_empty())
-            .map(str::to_string)
+        // An earlier take that answered late goes first; while it is still out, no second one
+        // is sent, so its messages cannot be overtaken.
+        if let Some(rx) = self.late.take() {
+            match rx.try_recv() {
+                Ok(r) => return take_context(r),
+                Err(mpsc::TryRecvError::Empty) => {
+                    self.late = Some(rx);
+                    return None;
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {}
+            }
+        }
+        let tx = self.tx.as_ref()?;
+        let (reply, rx) = mpsc::channel();
+        tx.send(("message.take".into(), json!({}), Some(reply)))
+            .ok()?;
+        match rx.recv_timeout(Duration::from_millis(2500)) {
+            Ok(r) => take_context(r),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                self.late = Some(rx);
+                None
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => None,
+        }
     }
     fn ack(&mut self, interaction: &str, key: &str) {
         if let Some(tx) = &self.tx {
             let _ = tx.send((
                 "adapter.delivery_ack".into(),
                 json!({"interaction": interaction, "idempotency_key": key, "applied": true}),
+                None,
             ));
         }
     }

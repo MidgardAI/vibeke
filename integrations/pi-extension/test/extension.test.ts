@@ -798,6 +798,7 @@ describe("ride-along messages", () => {
 
   test("tool end steers the running turn", async () => {
     const { pi, c } = await ready();
+    await pi.emit("agent_start", {}, c);
     server.takeContext = "ctx";
     await pi.emit("tool_execution_end", { toolCallId: "t1", toolName: "bash" }, c);
     await waitFor(() => pi.sent.length === 1);
@@ -805,6 +806,18 @@ describe("ride-along messages", () => {
       message: { customType: "vibeke-message", content: "ctx", display: true },
       options: { deliverAs: "steer" },
     });
+  });
+
+  test("a tool take that answers after the turn ended starts a new turn", async () => {
+    const { pi, c } = await ready();
+    await pi.emit("agent_start", {}, c);
+    server.takeContext = "late";
+    server.takeDelayMs = 150;
+    await pi.emit("tool_execution_end", { toolCallId: "t1", toolName: "bash" }, c);
+    // The turn ends while the take is out: the turn-end take gets nothing.
+    await pi.emit("agent_end", { messages: [] }, c);
+    await waitFor(() => pi.sent.length === 1);
+    expect(pi.sent[0].options).toEqual({ deliverAs: "followUp", triggerTurn: true });
   });
 
   test("turn end starts a follow-up turn, once, without an input event", async () => {

@@ -753,6 +753,7 @@ function createExtension(pi, opts = {}) {
     });
   }
   const RIDE_TYPE = "vibeke-message";
+  let agentRunning = false;
   let taking = null;
   function take() {
     if (headlessOwner)
@@ -938,6 +939,7 @@ function createExtension(pi, opts = {}) {
     return context ? { message: rideMessage(context) } : undefined;
   });
   on("agent_start", () => {
+    agentRunning = true;
     cancelEnd();
     streaming = true;
     if (!turnOpen) {
@@ -1036,8 +1038,9 @@ function createExtension(pi, opts = {}) {
     emit("ToolEnded", { call_id: id, tool, ok, ...fp ? { file_path: fp } : {} });
     if (typeof pi.sendMessage === "function") {
       take().then((context) => {
-        if (context)
-          ride(context, { deliverAs: "steer" });
+        if (!context)
+          return;
+        ride(context, agentRunning ? { deliverAs: "steer" } : { deliverAs: "followUp", triggerTurn: true });
       });
     }
   });
@@ -1065,6 +1068,7 @@ function createExtension(pi, opts = {}) {
     });
   }
   on("agent_end", (e) => {
+    agentRunning = false;
     lastEnd = lastAssistant(e);
     cancelEnd();
     endTimer = setTimeout(() => {
