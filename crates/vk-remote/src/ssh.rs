@@ -148,9 +148,8 @@ impl Target {
 
     /// Make sure the shared ControlMaster is up. If it is not, run `ssh … true` once so that
     /// login steps (Tailscale check banner, host-key question, password, 2FA) happen first.
-    /// Interactive: ssh inherits the terminal so the user sees and answers prompts, and a note
-    /// appears after a few seconds. Not interactive: `BatchMode=yes`, and a failure explains how
-    /// to authenticate by hand. The master stays up for `ControlPersist` seconds afterwards.
+    /// Interactive: ssh inherits the terminal so the user sees and answers prompts. Not
+    /// interactive: `BatchMode=yes`, and a failure explains how to authenticate by hand. The master stays up for `ControlPersist` seconds afterwards.
     pub async fn authenticate(&self, interactive: bool) -> Result<()> {
         self.check_address()?;
         if self.control("check").await.is_ok() {
@@ -166,19 +165,16 @@ impl Target {
                 .stdout(Stdio::null())
                 .stderr(Stdio::piped());
         }
+        if interactive {
+            // Said up front, not after a delay: a later note would land inside a password prompt.
+            eprintln!(
+                "vibeke: connecting to {} (ssh may ask you to log in; Ctrl-C to cancel)",
+                self.label_or_address()
+            );
+        }
         let mut child = c.spawn().context("spawn ssh")?;
         if interactive {
-            let status =
-                match tokio::time::timeout(std::time::Duration::from_secs(5), child.wait()).await {
-                    Ok(r) => r?,
-                    Err(_) => {
-                        eprintln!(
-                            "vibeke: waiting for ssh authentication on {} (Ctrl-C to cancel)",
-                            self.label_or_address()
-                        );
-                        child.wait().await?
-                    }
-                };
+            let status = child.wait().await?;
             if !status.success() {
                 bail!("ssh authentication to {} failed ({status})", self.address);
             }
