@@ -395,6 +395,9 @@ function QuestionBody({ it, disabled, locked, onSubmit }: { it: Interaction; dis
   const [text, setText] = useState('');
   const free = it.questions.some((q) => q.allow_free_text) || it.questions.length === 0;
   const anyChoice = Object.values(sel).some((v) => v.length > 0);
+  // Several questions are answered together: the agent's dialog needs a choice for each.
+  const several = it.questions.length > 1;
+  const allChosen = it.questions.every((q) => (sel[q.id] ?? []).length > 0);
   const toggle = (qid: string, oid: string, multi: boolean) => {
     setSel((s) => {
       const cur = s[qid] ?? [];
@@ -446,7 +449,7 @@ function QuestionBody({ it, disabled, locked, onSubmit }: { it: Interaction; dis
       {!locked && <Button
         variant="primary"
         block
-        disabled={disabled || (!anyChoice && !text.trim())}
+        disabled={disabled || (several ? !allChosen : !anyChoice && !text.trim())}
         onClick={() => onSubmit(anyChoice ? sel : null, text.trim() || null)}
       >
         {t.inbox.submit}

@@ -322,11 +322,49 @@ pub fn key(app: &mut App, ev: KeyEvent, p: Popup) {
                         input: String::new(),
                     });
                 }
+                // Several questions: pick per question, move between them, send when complete.
+                (
+                    InteractionKind::Question,
+                    Key::Named(NamedKey::Tab | NamedKey::Left | NamedKey::Right),
+                ) if multi_question(&it) => {
+                    let back = matches!(ev.key, Key::Named(NamedKey::Left))
+                        || (matches!(ev.key, Key::Named(NamedKey::Tab)) && ev.mods.shift());
+                    sel = draft_move(app, &it, if back { -1 } else { 1 });
+                    app.mode = Mode::Popup(Popup::Card { interaction, sel });
+                }
+                (InteractionKind::Question, Key::Named(NamedKey::Enter) | Key::Char(' '))
+                    if open && multi_question(&it) =>
+                {
+                    match draft_pick(app, &it, sel) {
+                        Some(a) => app.answer(mi, &it.id, a),
+                        None => {
+                            sel = draft_move(app, &it, 0);
+                            app.mode = Mode::Popup(Popup::Card { interaction, sel });
+                        }
+                    }
+                }
+                (InteractionKind::Question, Key::Char(c))
+                    if open && multi_question(&it) && c.is_ascii_digit() =>
+                {
+                    let idx = c.to_digit(10).unwrap_or(1).saturating_sub(1) as usize;
+                    match draft_pick(app, &it, idx) {
+                        Some(a) => app.answer(mi, &it.id, a),
+                        None => {
+                            sel = draft_move(app, &it, 0);
+                            app.mode = Mode::Popup(Popup::Card { interaction, sel });
+                        }
+                    }
+                }
                 (
                     InteractionKind::Question | InteractionKind::Picker,
                     Key::Char('j') | Key::Named(NamedKey::Down),
                 ) => {
-                    let n = it.questions.first().map(|q| q.options.len()).unwrap_or(0);
+                    let cur = if multi_question(&it) {
+                        draft(app, &it).cur
+                    } else {
+                        0
+                    };
+                    let n = it.questions.get(cur).map(|q| q.options.len()).unwrap_or(0);
                     sel = (sel + 1).min(n.saturating_sub(1));
                     app.mode = Mode::Popup(Popup::Card { interaction, sel });
                 }
@@ -701,6 +739,7 @@ pub fn draw(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
                     match it.kind {
                         InteractionKind::Approval => "[y] allow once  [s] allow for session  [n] deny  [e] deny with message  [A] batch  [x] dismiss  [o] open  [esc] later".into(),
                         InteractionKind::PlanReview => "[y] approve  [e] request changes  [n] reject  [x] dismiss  [o] open  [esc] later".into(),
+                        InteractionKind::Question if multi_question(&it) => "[j/k] choose  [enter/1-9] pick  [tab/←/→] question  [x] dismiss  [o] open  [esc] later".into(),
                         InteractionKind::Question => "[j/k] choose  [enter] answer  [1-9] pick  [x] dismiss  [o] open  [esc] later".into(),
                         InteractionKind::Notice => "[o] open  [esc] close".into(),
                         InteractionKind::Picker if it.questions.iter().all(|q| q.options.is_empty()) => "[c] cancel the dialog  [o] open  [esc] later".into(),
@@ -793,7 +832,8 @@ pub fn card_lines(
                 b.line(l, t.s(c));
             }
         }
-    } else {
+    } else if !title_is_first_prompt(it) {
+        // A question's title is usually its first prompt, which follows below.
         b.line(&it.title, t.bold(t.fg));
     }
     if let Some(plan) = &it.plan_md {
@@ -801,7 +841,10 @@ pub fn card_lines(
             b.line(l, t.text());
         }
     }
-    for q in &it.questions {
+    if multi_question(it) {
+        question_steps(app, it, sel, &mut b);
+    }
+    for q in it.questions.iter().filter(|_| !multi_question(it)) {
         b.line(&q.prompt, t.bold(t.fg));
         for (i, o) in q.options.iter().enumerate() {
             let st = if i == sel { t.sel(t.accent) } else { t.text() };
@@ -846,18 +889,185 @@ pub fn card_lines(
             b.line("delivering…", t.s(t.yellow))
         }
         DeliveryState::Delivered => b.line("✓ delivered", t.s(t.green)),
-        DeliveryState::DeliveryUnknown => {
-            b.line("couldn't confirm delivery — check the pane", t.s(t.red))
-        }
+        DeliveryState::DeliveryUnknown => b.line(
+            &match it.delivery_error.as_deref() {
+                Some(e) if !e.is_empty() => {
+                    format!("couldn't confirm delivery ({e}) — check the pane")
+                }
+                _ => "couldn't confirm delivery — check the pane".to_string(),
+            },
+            t.s(t.red),
+        ),
         DeliveryState::Failed => b.line(
-            &format!(
-                "✗ delivery failed: {}",
-                it.delivery_error.clone().unwrap_or_default()
-            ),
+            &delivery_failed_text(it.delivery_error.as_deref().unwrap_or_default()),
             t.s(t.red),
         ),
         _ => {}
     }
+}
+
+/// A failed delivery in words: a reason Vibeke recognises says what to do in the pane.
+pub fn delivery_failed_text(error: &str) -> String {
+    if let Some(why) = error.strip_prefix("answer_in_pane: ") {
+        format!("✗ not sent: {why} — answer it in the pane ([o] open pane)")
+    } else if error.starts_with("dialog_changed") || error.starts_with("selection_mismatch") {
+        "✗ not sent: the pane shows a different dialog — answer it in the pane ([o] open pane)"
+            .to_string()
+    } else {
+        format!("✗ delivery failed: {error}")
+    }
+}
+
+fn norm(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// The interaction's title is its first question's text (Claude's `AskUserQuestion`).
+pub fn title_is_first_prompt(it: &Interaction) -> bool {
+    it.questions
+        .first()
+        .is_some_and(|q| !q.prompt.trim().is_empty() && norm(&q.prompt) == norm(&it.title))
+}
+
+/// A question card with several questions (Claude's tabbed `AskUserQuestion`): answered one
+/// question at a time, sent once every question has an answer.
+pub fn multi_question(it: &Interaction) -> bool {
+    it.kind == InteractionKind::Question && it.questions.len() > 1
+}
+
+/// The answers being put together for a multi-question interaction (kept per interaction while
+/// the TUI runs, shared by the inbox detail and the card).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct QuestionDraft {
+    /// The question being answered (index into `questions`).
+    pub cur: usize,
+    /// The picked option per question.
+    pub picks: Vec<Option<usize>>,
+}
+
+impl QuestionDraft {
+    pub fn complete(&self) -> bool {
+        self.picks.iter().all(Option::is_some)
+    }
+
+    pub fn answered(&self) -> usize {
+        self.picks.iter().filter(|p| p.is_some()).count()
+    }
+}
+
+/// The draft for `it` (a fresh one when none matches its questions).
+pub fn draft(app: &App, it: &Interaction) -> QuestionDraft {
+    app.inbox
+        .drafts
+        .get(&it.id)
+        .filter(|d| d.picks.len() == it.questions.len())
+        .cloned()
+        .unwrap_or_else(|| QuestionDraft {
+            cur: 0,
+            picks: vec![None; it.questions.len()],
+        })
+}
+
+/// Move to the question `delta` steps away (clamped); returns the cursor row to show there
+/// (its picked option, else the first).
+pub fn draft_move(app: &mut App, it: &Interaction, delta: i32) -> usize {
+    let mut d = draft(app, it);
+    let last = it.questions.len().saturating_sub(1) as i32;
+    d.cur = (d.cur as i32 + delta).clamp(0, last) as usize;
+    let row = d.picks.get(d.cur).copied().flatten().unwrap_or(0);
+    app.inbox.drafts.insert(it.id.clone(), d);
+    row
+}
+
+/// Pick option `idx` for the current question, then move to the next question without an
+/// answer. Returns the `interaction.answer` params once every question has one.
+pub fn draft_pick(app: &mut App, it: &Interaction, idx: usize) -> Option<serde_json::Value> {
+    let mut d = draft(app, it);
+    it.questions.get(d.cur)?.options.get(idx)?;
+    d.picks[d.cur] = Some(idx);
+    let n = d.picks.len();
+    if let Some(next) = (1..=n)
+        .map(|k| (d.cur + k) % n)
+        .find(|&i| d.picks[i].is_none())
+    {
+        d.cur = next;
+    }
+    let params = d.complete().then(|| {
+        let mut choices = serde_json::Map::new();
+        for (q, p) in it.questions.iter().zip(&d.picks) {
+            if let Some(o) = p.and_then(|i| q.options.get(i)) {
+                choices.insert(q.id.clone(), json!([o.id]));
+            }
+        }
+        json!({ "choices": choices })
+    });
+    app.inbox.drafts.insert(it.id.clone(), d);
+    params
+}
+
+/// The short label of question `i`: its header, else `Q<n>`.
+fn question_label(q: &Question, i: usize) -> String {
+    q.header
+        .clone()
+        .filter(|h| !h.trim().is_empty())
+        .unwrap_or_else(|| format!("Q{}", i + 1))
+}
+
+/// The multi-question body: a tab strip, the current question with its options (`sel`: the
+/// card's cursor row), and the answers picked so far.
+fn question_steps(app: &App, it: &Interaction, sel: usize, b: &mut Lines<'_>) {
+    let t = app.theme;
+    let d = draft(app, it);
+    let n = it.questions.len();
+    let tabs: Vec<String> = it
+        .questions
+        .iter()
+        .enumerate()
+        .map(|(i, q)| {
+            let mark = if d.picks[i].is_some() { "☒" } else { "☐" };
+            let label = question_label(q, i);
+            if i == d.cur {
+                format!("[{mark} {label}]")
+            } else {
+                format!(" {mark} {label} ")
+            }
+        })
+        .collect();
+    b.line(&tabs.join(" "), t.dim());
+    let Some(q) = it.questions.get(d.cur) else {
+        return;
+    };
+    b.line(
+        &format!("Question {}/{n} · {}", d.cur + 1, question_label(q, d.cur)),
+        t.bold(t.accent),
+    );
+    b.line(&q.prompt, t.bold(t.fg));
+    for (i, o) in q.options.iter().enumerate() {
+        let st = if i == sel { t.sel(t.accent) } else { t.text() };
+        let mark = if d.picks[d.cur] == Some(i) {
+            "✓ "
+        } else {
+            ""
+        };
+        let desc = o
+            .description
+            .as_ref()
+            .map(|x| format!(" — {x}"))
+            .unwrap_or_default();
+        b.line(&format!("{}. {mark}{}{desc}", i + 1, o.label), st);
+    }
+    for (i, (q, p)) in it.questions.iter().zip(&d.picks).enumerate() {
+        if let Some(o) = p.and_then(|x| q.options.get(x)) {
+            b.line(&format!("  {}: {}", question_label(q, i), o.label), t.dim());
+        }
+    }
+    b.line(
+        &format!(
+            "{} of {n} answered · the answer is sent when every question has one",
+            d.answered()
+        ),
+        t.dim(),
+    );
 }
 
 struct Lines<'a>(&'a mut Vec<(String, Style)>);

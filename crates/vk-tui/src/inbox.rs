@@ -10,7 +10,7 @@ use crate::draw::{harness_icon, truncate};
 use crate::screen::{Grid, Rect as SRect};
 use crate::time::{Duration, Instant};
 use serde_json::{Value, json};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use vk_proto::input::{Key, KeyEvent, NamedKey};
 use vk_proto::model::*;
 use vk_proto::render::Style;
@@ -139,6 +139,9 @@ pub struct InboxState {
     pub confirm: Option<Confirm>,
     /// The last item dismissed, for `u`.
     pub last_dismissed: Option<Dismissed>,
+    /// Answers being put together for questions asked several at a time, by interaction id
+    /// (shared with the card popup).
+    pub drafts: HashMap<String, crate::popups::QuestionDraft>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -176,6 +179,7 @@ impl Default for InboxState {
             notice: None,
             confirm: None,
             last_dismissed: None,
+            drafts: HashMap::new(),
         }
     }
 }
@@ -1364,6 +1368,25 @@ pub fn key(app: &mut App, ev: KeyEvent) {
                 app.return_to.pop();
             }
         }
+        // Several questions in one interaction: move between them.
+        Key::Named(NamedKey::Tab | NamedKey::Left | NamedKey::Right) => {
+            let it = sel.unwrap();
+            let Some(x) = it.interaction.as_ref().and_then(|int| {
+                app.machines[it.key.machine]
+                    .model
+                    .interactions
+                    .iter()
+                    .find(|x| &x.id == int)
+                    .cloned()
+            }) else {
+                return;
+            };
+            if crate::popups::multi_question(&x) {
+                let back = matches!(ev.key, Key::Named(NamedKey::Left))
+                    || (matches!(ev.key, Key::Named(NamedKey::Tab)) && ev.mods.shift());
+                crate::popups::draft_move(app, &x, if back { -1 } else { 1 });
+            }
+        }
         // Quick answers for the selected interaction reuse the card's delivery path.
         Key::Char('y' | 'n') | Key::Char('1'..='9') => {
             let it = sel.unwrap();
@@ -1393,6 +1416,16 @@ pub fn key(app: &mut App, ev: KeyEvent) {
                 }
                 (InteractionKind::Approval | InteractionKind::PlanReview, Key::Char('n')) => {
                     app.answer(mi, &x.id, json!({"decision": "deny"}))
+                }
+                // Several questions: the digit answers the current one; the answer is sent
+                // once every question has one.
+                (InteractionKind::Question, Key::Char(c))
+                    if c.is_ascii_digit() && crate::popups::multi_question(&x) =>
+                {
+                    let idx = c.to_digit(10).unwrap_or(1).saturating_sub(1) as usize;
+                    if let Some(a) = crate::popups::draft_pick(app, &x, idx) {
+                        app.answer(mi, &x.id, a);
+                    }
                 }
                 (InteractionKind::Question | InteractionKind::Picker, Key::Char(c))
                     if c.is_ascii_digit() =>
@@ -1682,6 +1715,21 @@ pub fn draw(app: &App, g: &mut Grid) {
         .map(|it| app.machines[it.key.machine].capabilities());
     if caps.is_some_and(|c| c.approve) {
         keys.push_str(" · y/n/1-9 answer · A batch");
+        let multi = v
+            .items
+            .get(app.inbox.sel_idx)
+            .and_then(|it| {
+                let int = it.interaction.as_ref()?;
+                app.machines[it.key.machine]
+                    .model
+                    .interactions
+                    .iter()
+                    .find(|x| &x.id == int)
+            })
+            .is_some_and(crate::popups::multi_question);
+        if multi {
+            keys.push_str(" · tab/←/→ question");
+        }
     }
     keys.push_str(" · o open pane");
     if caps.is_some_and(|c| c.host) {
@@ -1740,7 +1788,20 @@ pub fn blocks_suffix(it: &Item) -> String {
 fn detail_lines(app: &App, it: &Item, out: &mut Vec<(String, Style)>) {
     let t = app.theme;
     let mi = it.key.machine;
-    out.push((it.title.clone(), t.bold(t.fg)));
+    // An interaction's card repeats its title (or its first question): show it once.
+    let card_has_title = it.interaction.as_ref().is_some_and(|int| {
+        app.machines[mi]
+            .model
+            .interactions
+            .iter()
+            .find(|x| &x.id == int)
+            .is_some_and(|x| {
+                x.action.is_none() && it.title.split_whitespace().eq(x.title.split_whitespace())
+            })
+    });
+    if !card_has_title {
+        out.push((it.title.clone(), t.bold(t.fg)));
+    }
     if !it.subtitle.is_empty() {
         out.push((it.subtitle.clone(), t.dim()));
     }
@@ -1807,7 +1868,13 @@ fn detail_lines(app: &App, it: &Item, out: &mut Vec<(String, Style)>) {
     if let Some(int) = &it.interaction
         && let Some(x) = m.model.interactions.iter().find(|x| &x.id == int)
     {
-        crate::popups::card_lines(app, mi, x, 0, out);
+        // Several questions: no cursor row here; the picked options carry a check mark.
+        let cursor = if crate::popups::multi_question(x) {
+            usize::MAX
+        } else {
+            0
+        };
+        crate::popups::card_lines(app, mi, x, cursor, out);
         let keys = if x.status != InteractionStatus::Open {
             "resolved — no longer answerable".to_string()
         } else if !x.answerable {
@@ -1820,6 +1887,14 @@ fn detail_lines(app: &App, it: &Item, out: &mut Vec<(String, Style)>) {
                 }
                 InteractionKind::PlanReview => {
                     "[y] approve  [n] reject  [enter] full card  [o] open pane".into()
+                }
+                InteractionKind::Question if crate::popups::multi_question(x) => {
+                    let d = crate::popups::draft(app, x);
+                    format!(
+                        "[1-9] answer question {}/{}  [tab/←/→] other question  [enter] full card  [o] open pane",
+                        d.cur + 1,
+                        x.questions.len()
+                    )
                 }
                 InteractionKind::Question => "[1-9] pick  [enter] full card  [o] open pane".into(),
                 InteractionKind::Notice => "[o] open pane".into(),
@@ -2526,6 +2601,207 @@ mod tests {
         assert_eq!(w.len(), 1);
         assert_eq!(w[0].run, "r1");
         assert!(working_line(&app, &w[0]).contains("working"));
+    }
+
+    /// Claude's `AskUserQuestion` with several questions (headers, the title is question 1).
+    fn multi_question(id: &str) -> Interaction {
+        let q = |text: &str, header: &str, opts: &[&str]| {
+            json!({"id": text, "prompt": text, "header": header, "multi": false, "allow_free_text": true,
+                   "options": opts.iter().map(|l| json!({"id": l, "label": l, "description": null})).collect::<Vec<_>>()})
+        };
+        serde_json::from_value(json!({
+            "id": id, "handle": "i7", "run": "r1", "pane": "p2", "kind": "Question", "status": "Open",
+            "title": "Which resources should be shareable?", "body_md": null, "action": null,
+            "questions": [
+                q("Which resources should be shareable?", "Scope", &["Playable materials", "Podcasts only"]),
+                q("Who may publish a question?", "Publisher", &["Creator and owner", "Creator only", "All editors"]),
+                q("What happens to existing questions?", "Existing Qs", &["Keep them public", "Make them private"]),
+            ],
+            "plan_md": null, "answer_channel": "Keystrokes", "native_ref": "toolu_1", "source": "Structured",
+            "confidence": 1.0, "answerable": true, "gate": false, "decision_rev": 0, "delivery": "None",
+            "delivery_error": null, "answer": null, "answered_by": null,
+            "opened_at_ms": now_ms() - 60_000, "answered_at_ms": null
+        }))
+        .unwrap()
+    }
+
+    fn open_with_question(
+        app: &mut App,
+        rxs: &mut [tokio::sync::mpsc::UnboundedReceiver<ClientFrame>],
+        it: Interaction,
+    ) {
+        let id = it.id.clone();
+        let title = it.title.clone();
+        app.machines[0].model.interactions.push(it);
+        open(app);
+        let c = commands(&mut rxs[0]);
+        let mut int = item("interaction", &id, json!(3), 60_000, false);
+        int["interaction"] = json!(id);
+        int["title"] = json!(title);
+        reply(
+            app,
+            0,
+            c[0].0,
+            json!({"items": [int], "coverage": {"complete": true, "notes": []}}),
+        );
+    }
+
+    fn detail_text(app: &App) -> Vec<String> {
+        let v = view(app);
+        let mut out = Vec::new();
+        detail_lines(app, &v.items[0], &mut out);
+        out.into_iter().map(|(s, _)| s).collect()
+    }
+
+    fn answers(rx: &mut tokio::sync::mpsc::UnboundedReceiver<ClientFrame>) -> Vec<Value> {
+        commands(rx)
+            .into_iter()
+            .filter(|(_, v)| v["method"] == "interaction.answer")
+            .map(|(_, v)| v["params"].clone())
+            .collect()
+    }
+
+    /// Live bug: the inbox answered only the first of four questions. Now each digit answers
+    /// the current question and moves on; the answer goes out once every question has one.
+    #[test]
+    fn multi_question_answers_every_question_before_sending() {
+        let (mut app, mut rxs) = test_app(1);
+        open_with_question(&mut app, &mut rxs, multi_question("i7"));
+        let text = detail_text(&app);
+        assert!(
+            text.iter().any(|l| l == "Question 1/3 · Scope"),
+            "{text:#?}"
+        );
+        assert!(
+            text.iter().any(|l| l.contains("[1-9] answer question 1/3")),
+            "{text:#?}"
+        );
+        app.on_key(key(Key::Char('2')));
+        assert!(answers(&mut rxs[0]).is_empty(), "nothing sent yet");
+        let text = detail_text(&app);
+        assert!(
+            text.iter().any(|l| l == "Question 2/3 · Publisher"),
+            "{text:#?}"
+        );
+        assert!(
+            text.iter().any(|l| l == "  Scope: Podcasts only"),
+            "{text:#?}"
+        );
+        // Skip to question 3, answer it, then go back to question 2.
+        app.on_key(key(Key::Named(NamedKey::Tab)));
+        assert!(
+            detail_text(&app)
+                .iter()
+                .any(|l| l == "Question 3/3 · Existing Qs")
+        );
+        app.on_key(key(Key::Char('1')));
+        assert!(answers(&mut rxs[0]).is_empty());
+        // The next question without an answer is question 2.
+        assert!(
+            detail_text(&app)
+                .iter()
+                .any(|l| l == "Question 2/3 · Publisher")
+        );
+        app.on_key(key(Key::Char('3')));
+        let sent = answers(&mut rxs[0]);
+        assert_eq!(sent.len(), 1, "{sent:?}");
+        let ch = &sent[0]["choices"];
+        assert_eq!(
+            ch["Which resources should be shareable?"],
+            json!(["Podcasts only"])
+        );
+        assert_eq!(ch["Who may publish a question?"], json!(["All editors"]));
+        assert_eq!(
+            ch["What happens to existing questions?"],
+            json!(["Keep them public"])
+        );
+        // Left goes back a question; it never moves past the first.
+        app.on_key(key(Key::Named(NamedKey::Left)));
+        app.on_key(key(Key::Named(NamedKey::Left)));
+        app.on_key(key(Key::Named(NamedKey::Left)));
+        assert!(
+            detail_text(&app)
+                .iter()
+                .any(|l| l == "Question 1/3 · Scope")
+        );
+    }
+
+    #[test]
+    fn multi_question_card_picks_with_enter_and_moves_with_tab() {
+        let (mut app, mut rxs) = test_app(1);
+        open_with_question(&mut app, &mut rxs, multi_question("i8"));
+        app.on_key(key(Key::Named(NamedKey::Enter)));
+        assert!(matches!(app.mode, Mode::Popup(Popup::Card { .. })));
+        // j then enter picks the second option of question 1 and stays in the card.
+        app.on_key(key(Key::Char('j')));
+        app.on_key(key(Key::Named(NamedKey::Enter)));
+        assert!(matches!(app.mode, Mode::Popup(Popup::Card { sel: 0, .. })));
+        assert!(answers(&mut rxs[0]).is_empty());
+        // Shift+Tab returns to question 1 with its pick under the cursor.
+        app.on_key(KeyEvent::new(Key::Named(NamedKey::Tab), Mods::SHIFT));
+        assert!(matches!(app.mode, Mode::Popup(Popup::Card { sel: 1, .. })));
+        app.on_key(key(Key::Named(NamedKey::Tab)));
+        app.on_key(key(Key::Char('2')));
+        app.on_key(key(Key::Char('2')));
+        let sent = answers(&mut rxs[0]);
+        assert_eq!(sent.len(), 1, "{sent:?}");
+        assert_eq!(
+            sent[0]["choices"]["Which resources should be shareable?"],
+            json!(["Podcasts only"])
+        );
+        assert_eq!(
+            sent[0]["choices"]["What happens to existing questions?"],
+            json!(["Make them private"])
+        );
+    }
+
+    /// The question text appeared three times (item title, card title, prompt): now once.
+    #[test]
+    fn a_question_shows_its_text_once() {
+        let (mut app, mut rxs) = test_app(1);
+        let mut it = multi_question("i9");
+        it.questions.truncate(1);
+        open_with_question(&mut app, &mut rxs, it);
+        let text = detail_text(&app);
+        let n = text
+            .iter()
+            .filter(|l| l.contains("Which resources should be shareable?"))
+            .count();
+        assert_eq!(n, 1, "{text:#?}");
+        // Several questions: the title (question 1) shows once too, with each header.
+        let (mut app, mut rxs) = test_app(1);
+        open_with_question(&mut app, &mut rxs, multi_question("i10"));
+        let text = detail_text(&app);
+        let n = text
+            .iter()
+            .filter(|l| l.contains("Which resources should be shareable?"))
+            .count();
+        assert_eq!(n, 1, "{text:#?}");
+        assert!(
+            text.iter()
+                .any(|l| l.contains("[☐ Scope]") && l.contains("☐ Publisher"))
+        );
+    }
+
+    #[test]
+    fn a_failed_delivery_says_to_answer_in_the_pane() {
+        assert!(
+            crate::popups::delivery_failed_text(
+                "dialog_changed: the visible dialog is not this interaction"
+            )
+            .contains("answer it in the pane")
+        );
+        let t = crate::popups::delivery_failed_text(
+            "answer_in_pane: Vibeke cannot answer a multi-select question; answer it in the pane",
+        );
+        assert!(
+            t.starts_with("✗ not sent: Vibeke cannot answer a multi-select"),
+            "{t}"
+        );
+        assert_eq!(
+            crate::popups::delivery_failed_text("pane exited"),
+            "✗ delivery failed: pane exited"
+        );
     }
 }
 
