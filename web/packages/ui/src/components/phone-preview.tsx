@@ -4,15 +4,17 @@
 // when this view goes away or the app stays hidden for a while.
 
 import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
-import { ArrowLeft, ArrowRight, Keyboard, Maximize2, Minimize2, RotateCw } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Keyboard, Maximize2, MessageSquarePlus, Minimize2, RotateCw } from 'lucide-react';
 import { RpcError, type BrowserSession } from '@vibeke/core';
 import { useApp } from '../app/hooks';
 import { t } from '../i18n';
+import { LONG_PRESS_MS, dragged, pickParams, regionStyle, useAnnotations, type Pt } from '../lib/annotations';
 import { errorMessage } from '../lib/answer';
 import { InputBatcher, inputToEvent, namedKey, sizeChanged, toViewport, usableSize } from '../lib/phone-preview';
 import { FRAME_FPS, frameDelayMs, frameSrc, needsReattach, nextSeq, normalizeUrl, type Size } from '../lib/screencast';
 import { useStore } from '../lib/store';
-import { Button, IconButton, Notice, Spinner, cx } from './ui';
+import { AnnotationNotes } from './annotation-notes';
+import { Button, IconButton, Notice, Sheet, Spinner, cx } from './ui';
 
 const WAIT_MS = 10000;
 const FAILS_BEFORE_ERROR = 3;
@@ -52,6 +54,13 @@ export function PhonePreview({
   const [address, setAddress] = useState('');
 
   const session = useRef<string | null>(null);
+  // The open session as state, for the notes of the page review (the ref is for the input paths).
+  const [sid, setSid] = useState<string | null>(null);
+  const [annotating, setAnnotating] = useState(false);
+  const [notesOpen, setNotesOpen] = useState(false);
+  const [drag, setDrag] = useState<{ a: Pt; b: Pt } | null>(null);
+  const gesture = useRef<{ id: number; start: Pt; region: boolean; cancelled: boolean; timer: ReturnType<typeof setTimeout> | null } | null>(null);
+  const notes = useAnnotations(hostId, 'session', sid, annotating);
   const viewport = useRef<Size>({ width: 0, height: 0 });
   const sizeRef = useRef<Size>({ width: 0, height: 0 });
   const batcher = useRef(new InputBatcher());
@@ -144,6 +153,7 @@ export function PhonePreview({
         return;
       }
       session.current = s.session;
+      setSid(s.session);
       viewport.current = s.viewport?.width > 0 ? s.viewport : sizeRef.current;
       setUrl(s.url);
       seq = 0;
@@ -176,6 +186,7 @@ export function PhonePreview({
           if (e instanceof RpcError && needsReattach(e.kind)) {
             // The host dropped our session: open a new one.
             session.current = null;
+            setSid(null);
             try {
               await open();
               fails = 0;
@@ -207,6 +218,7 @@ export function PhonePreview({
   const close = useCallback(() => {
     const id = session.current;
     session.current = null;
+    setSid(null);
     batcher.current.clear();
     if (id) void app.conn(hostId)?.request('browser.session_close', { session: id }).catch(() => {});
   }, [app, hostId]);
@@ -280,6 +292,63 @@ export function PhonePreview({
     }
     batcher.current.up(e.pointerId, cancel);
     schedule();
+  };
+  // ---- annotating: a tap picks the element under it; a long press (or a mouse drag) picks an area ----
+  const vp = () => (viewport.current.width > 0 ? viewport.current : sizeRef.current);
+  const endGesture = () => {
+    const g = gesture.current;
+    if (g?.timer) clearTimeout(g.timer);
+    gesture.current = null;
+    setDrag(null);
+  };
+  useEffect(() => {
+    if (!annotating) endGesture();
+  }, [annotating]);
+  const onADown = (e: ReactPointerEvent<HTMLElement>) => {
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {
+      // not capturable (synthetic event): keep going
+    }
+    endGesture();
+    const start = point(e);
+    const g = { id: e.pointerId, start, region: false, cancelled: false, timer: null as ReturnType<typeof setTimeout> | null };
+    if (e.pointerType !== 'mouse') {
+      g.timer = setTimeout(() => {
+        g.region = true;
+        g.timer = null;
+        setDrag({ a: start, b: start });
+      }, LONG_PRESS_MS);
+    }
+    gesture.current = g;
+  };
+  const onAMove = (e: ReactPointerEvent<HTMLElement>) => {
+    const g = gesture.current;
+    if (!g || g.id !== e.pointerId) return;
+    const p = point(e);
+    if (!g.region && dragged(g.start, p)) {
+      if (e.pointerType === 'mouse') g.region = true;
+      else {
+        // Moved before the long press: this is a scroll attempt, not a pick.
+        g.cancelled = true;
+        if (g.timer) clearTimeout(g.timer);
+        g.timer = null;
+      }
+    }
+    if (g.region) setDrag({ a: g.start, b: p });
+  };
+  const onAUp = (e: ReactPointerEvent<HTMLElement>, cancel = false) => {
+    const g = gesture.current;
+    if (!g || g.id !== e.pointerId) return;
+    const end = point(e);
+    endGesture();
+    const id = session.current;
+    if (cancel || g.cancelled || !id) return;
+    const { x, y, w, h } = pickParams(id, g.start, end, g.region);
+    void notes.pick({ x, y, ...(w !== undefined ? { w, h } : {}) }).then((n) => {
+      if (n) setNotesOpen(true);
+    });
   };
   // A wheel (mouse or trackpad in a desktop browser) scrolls the page.
   useEffect(() => {
@@ -386,6 +455,14 @@ export function PhonePreview({
         <IconButton label={t.phone.keyboard} disabled={!ready} onClick={() => hidden.current?.focus()}>
           <Keyboard />
         </IconButton>
+        <IconButton label={annotating ? t.phone.stopAnnotate : t.phone.annotate} aria-pressed={annotating} active={annotating} disabled={!ready} onClick={() => setAnnotating((v) => !v)}>
+          <MessageSquarePlus />
+        </IconButton>
+        {annotating && (
+          <Button size="sm" variant="outline" onClick={() => setNotesOpen(true)}>
+            {t.annotate.open(notes.count)}
+          </Button>
+        )}
         {onExpand && (
           <IconButton label={expanded ? t.embeddedPreview.collapse : t.embeddedPreview.expand} onClick={onExpand}>
             {expanded ? <Minimize2 /> : <Maximize2 />}
@@ -405,14 +482,20 @@ export function PhonePreview({
           aria-label={t.phone.surface}
           className={cx('absolute inset-x-0 top-0 select-none', ready && 'touch-none')}
           style={{ height: size.height > 0 ? size.height : '100%', touchAction: 'none' }}
-          onPointerDown={ready ? onDown : undefined}
-          onPointerMove={ready ? onMove : undefined}
-          onPointerUp={ready ? (e) => onUp(e) : undefined}
-          onPointerCancel={ready ? (e) => onUp(e, true) : undefined}
+          onPointerDown={ready ? (annotating ? onADown : onDown) : undefined}
+          onPointerMove={ready ? (annotating ? onAMove : onMove) : undefined}
+          onPointerUp={ready ? (e) => (annotating ? onAUp(e) : onUp(e)) : undefined}
+          onPointerCancel={ready ? (e) => (annotating ? onAUp(e, true) : onUp(e, true)) : undefined}
           onContextMenu={(e) => e.preventDefault()}
         >
           {src && <img src={src} alt={t.phone.frameAlt} draggable={false} className="pointer-events-none h-full w-full select-none object-fill" />}
+          {drag && <div aria-hidden className="pointer-events-none absolute border-2 border-accent bg-accent/15" style={regionStyle(drag, vp())} />}
         </div>
+        {annotating && ready && (
+          <div role="status" className="pointer-events-none absolute inset-x-3 bottom-3 rounded-md bg-surface/90 px-2 py-1 text-center text-xs text-muted">
+            {t.annotate.tapHint}
+          </div>
+        )}
         <input
           ref={hidden}
           aria-label={t.phone.typeHere}
@@ -445,6 +528,18 @@ export function PhonePreview({
           </div>
         )}
       </div>
+      <Sheet open={notesOpen} onClose={() => setNotesOpen(false)} title={t.annotate.title}>
+        <AnnotationNotes
+          draft={notes.draft}
+          busy={notes.busy}
+          onEdit={(n, text) => void notes.edit(n, text)}
+          onPageNote={(text) => void notes.setPageNote(text)}
+          onRemove={(n) => void notes.remove(n)}
+          onSend={() => void notes.send().then(() => setNotesOpen(false))}
+          onCopy={() => void notes.copy()}
+          onClear={() => void notes.clear()}
+        />
+      </Sheet>
     </div>
   );
 }

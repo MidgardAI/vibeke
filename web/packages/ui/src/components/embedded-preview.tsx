@@ -6,15 +6,17 @@
 // the page loaded.
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type FormEvent } from 'react';
-import { ArrowLeft, ArrowRight, Bug, ExternalLink, Globe, Maximize2, Minimize2, RefreshCw, X } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Bug, ExternalLink, Globe, Maximize2, MessageSquarePlus, Minimize2, RefreshCw, X } from 'lucide-react';
 import type { Preview } from '@vibeke/core';
 import { useApp, useHost } from '../app/hooks';
 import { t } from '../i18n';
+import { keepThumbs, useAnnotations } from '../lib/annotations';
 import { errorMessage } from '../lib/answer';
 import { useOverlayOpen } from '../lib/overlays';
 import { registryFor } from '../lib/preview-view-registry';
 import { previewKey } from '../lib/previews';
 import type { PreviewViewApi } from '../platform';
+import { AnnotationNotes } from './annotation-notes';
 import { Button, IconButton, Notice } from './ui';
 
 const TUNNEL_FEATURE = 'tunnel';
@@ -112,6 +114,11 @@ function PreviewSurface({
   const overlay = useOverlayOpen();
   const box = useRef<HTMLDivElement>(null);
   const initialUrl = useRef(preview.url);
+  const [annotating, setAnnotating] = useState(false);
+  const [thumbs, setThumbs] = useState<ReadonlyMap<number, string>>(new Map());
+  const notes = useAnnotations(hostId, 'preview', preview.id, annotating);
+  const stateRef = useRef(state);
+  stateRef.current = state;
 
   // Claim the preview's view while this placeholder is mounted. A layout effect, so a placeholder
   // that replaces another in the same render (Expand, Collapse) takes the view over before the
@@ -150,6 +157,34 @@ function PreviewSurface({
       live = false;
     };
   }, [api, overlay, view]);
+
+  // Pick mode lives in the shell's view: turn it on with the button, off when this placeholder goes.
+  useEffect(() => {
+    if (!annotating || !view || !api.annotate) return;
+    let live = true;
+    api.annotate(view, true).catch((e) => {
+      if (!live) return;
+      setAnnotating(false);
+      app.toast(errorMessage(e), 'error');
+    });
+    const off = api.onPick?.((p) => {
+      if (p.view !== view) return;
+      const st = stateRef.current;
+      void notes
+        .add({ ...p.pick, url: st?.url || preview.url, ...(st?.title ? { title: st.title } : {}), ...(p.viewport ? { viewport: p.viewport } : {}), ...(p.image_b64 ? { image_b64: p.image_b64 } : {}) })
+        .then((note) => {
+          if (note && p.image_b64) setThumbs((m) => new Map(m).set(note.n, `data:image/png;base64,${p.image_b64}`));
+        });
+    });
+    return () => {
+      live = false;
+      off?.();
+      void api.annotate?.(view, false).catch(() => {});
+    };
+    // `notes.add` changes with every render; the latest one is read through the draft ref on use.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [api, app, view, annotating, preview.url]);
+  useEffect(() => setThumbs((m) => keepThumbs(m, notes.draft)), [notes.draft]);
 
   const hostOffline = state?.error === 'host_offline';
   const crashed = state?.error === 'crashed';
@@ -245,6 +280,11 @@ function PreviewSurface({
         <span className="hidden shrink-0 truncate px-1 text-xs text-muted sm:inline" title={s.environment(machine)}>
           → {machine}
         </span>
+        {api.annotate && (
+          <IconButton label={annotating ? s.annotating : s.annotate} aria-pressed={annotating} active={annotating} disabled={!view} onClick={() => setAnnotating((v) => !v)}>
+            <MessageSquarePlus />
+          </IconButton>
+        )}
         <IconButton label={s.devtools} disabled={!view} onClick={() => view && api.devtools(view)}>
           <Bug />
         </IconButton>
@@ -259,15 +299,34 @@ function PreviewSurface({
           </IconButton>
         )}
       </div>
-      <div ref={box} aria-label={state?.title || s.page} className="relative min-h-0 flex-1 bg-white">
-        {covered && shot && <img src={shot} alt="" className="pointer-events-none absolute inset-0 size-full object-cover object-left-top" />}
-        {(openError || hostOffline || crashed) && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-surface p-6">
-            <Globe className="size-6 text-muted" />
-            <Notice tone={openError ? 'danger' : 'warn'} className="max-w-md">
-              {openError ? `${s.openFailed} ${openError}` : hostOffline ? s.hostOffline : s.crashed}
-            </Notice>
-          </div>
+      <div className="flex min-h-0 flex-1">
+        <div ref={box} aria-label={state?.title || s.page} className="relative min-h-0 min-w-0 flex-1 bg-white">
+          {covered && shot && <img src={shot} alt="" className="pointer-events-none absolute inset-0 size-full object-cover object-left-top" />}
+          {(openError || hostOffline || crashed) && (
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-surface p-6">
+              <Globe className="size-6 text-muted" />
+              <Notice tone={openError ? 'danger' : 'warn'} className="max-w-md">
+                {openError ? `${s.openFailed} ${openError}` : hostOffline ? s.hostOffline : s.crashed}
+              </Notice>
+            </div>
+          )}
+        </div>
+        {annotating && (
+          <aside className="flex w-72 shrink-0 flex-col gap-2 border-l border-border bg-surface p-3">
+            <p className="text-xs text-muted">{s.annotateHint}</p>
+            <AnnotationNotes
+              className="flex-1"
+              draft={notes.draft}
+              thumbs={thumbs}
+              busy={notes.busy}
+              onEdit={(n, text) => void notes.edit(n, text)}
+              onPageNote={(text) => void notes.setPageNote(text)}
+              onRemove={(n) => void notes.remove(n)}
+              onSend={() => void notes.send()}
+              onCopy={() => void notes.copy()}
+              onClear={() => void notes.clear().then(() => setThumbs(new Map()))}
+            />
+          </aside>
         )}
       </div>
     </div>

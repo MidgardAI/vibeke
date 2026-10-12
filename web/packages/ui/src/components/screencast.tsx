@@ -5,14 +5,16 @@
 // goes away or the app is hidden; the host gives control back to the agent.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Hand, Square } from 'lucide-react';
+import { Hand, MessageSquarePlus, Square } from 'lucide-react';
 import { RpcError, type BrowserSession } from '@vibeke/core';
 import { useApp } from '../app/hooks';
 import { t } from '../i18n';
+import { useAnnotations } from '../lib/annotations';
 import { errorMessage } from '../lib/answer';
 import { FRAME_FPS, PRESS_KEYS, controllerOf, fitFrame, frameDelayMs, frameSrc, needsReattach, nextSeq, normalizeUrl, tapToPage, type Size } from '../lib/screencast';
 import { useStore } from '../lib/store';
-import { Button, Notice, Spinner, TextField, cx } from './ui';
+import { AnnotationNotes } from './annotation-notes';
+import { Button, Notice, Sheet, Spinner, TextField, cx } from './ui';
 
 const LIST_EVERY_MS = 5000;
 const FAILS_BEFORE_ERROR = 3;
@@ -28,6 +30,9 @@ export function Screencast({ hostId, session: initial, canControl, onClose }: { 
   const [lost, setLost] = useState(false);
   const [attempt, setAttempt] = useState(0);
   const [busy, setBusy] = useState(false);
+  const [annotating, setAnnotating] = useState(false);
+  const [notesOpen, setNotesOpen] = useState(false);
+  const notes = useAnnotations(hostId, 'session', id, annotating);
   const mineRef = useRef(false);
   const setControl = (v: boolean) => {
     mineRef.current = v;
@@ -153,8 +158,19 @@ export function Screencast({ hostId, session: initial, canControl, onClose }: { 
         </span>
       </div>
 
-      <Frame src={src} viewport={viewport} lost={lost} onRetry={() => (setLost(false), setAttempt((n) => n + 1))} onTap={mine ? (p) => void call(() => conn()!.request('browser.click', { session: id, x: p.x, y: p.y })) : undefined} />
-      {mine && <div className="text-center text-xs text-muted">{t.live.tapHint}</div>}
+      <Frame src={src} viewport={viewport} lost={lost} onRetry={() => (setLost(false), setAttempt((n) => n + 1))} onTap={
+          annotating
+            ? (p) =>
+                void notes.pick({ x: p.x, y: p.y }).then((n) => {
+                  if (n) setNotesOpen(true);
+                })
+            : mine
+              ? (p) => void call(() => conn()!.request('browser.click', { session: id, x: p.x, y: p.y }))
+              : undefined
+        }
+        picking={annotating}
+      />
+      {annotating ? <div className="text-center text-xs text-muted">{t.annotate.pickHint}</div> : mine && <div className="text-center text-xs text-muted">{t.live.tapHint}</div>}
 
       <div className="flex flex-wrap gap-2">
         {mine ? (
@@ -168,18 +184,41 @@ export function Screencast({ hostId, session: initial, canControl, onClose }: { 
         ) : (
           <Notice className="flex-1">{t.live.needsFull}</Notice>
         )}
+        {canControl && (
+          <Button size="lg" variant={annotating ? 'primary' : 'outline'} icon={<MessageSquarePlus />} aria-pressed={annotating} disabled={lost || !src} onClick={() => setAnnotating((v) => !v)}>
+            {annotating ? t.phone.stopAnnotate : t.phone.annotate}
+          </Button>
+        )}
+        {annotating && (
+          <Button size="lg" variant="outline" onClick={() => setNotesOpen(true)}>
+            {t.annotate.open(notes.count)}
+          </Button>
+        )}
         <Button size="lg" variant="ghost" icon={<Square />} onClick={onClose}>
           {t.live.stop}
         </Button>
       </div>
 
       {mine && <Controls session={id} hostId={hostId} busy={busy} call={call} />}
+
+      <Sheet open={notesOpen} onClose={() => setNotesOpen(false)} title={t.annotate.title}>
+        <AnnotationNotes
+          draft={notes.draft}
+          busy={notes.busy}
+          onEdit={(n, text) => void notes.edit(n, text)}
+          onPageNote={(text) => void notes.setPageNote(text)}
+          onRemove={(n) => void notes.remove(n)}
+          onSend={() => void notes.send().then(() => setNotesOpen(false))}
+          onCopy={() => void notes.copy()}
+          onClear={() => void notes.clear()}
+        />
+      </Sheet>
     </div>
   );
 }
 
 /** The picture, scaled to fit its box; taps map to page coordinates through `tapToPage`. */
-function Frame({ src, viewport, lost, onRetry, onTap }: { src: string | null; viewport: Size; lost: boolean; onRetry(): void; onTap?: (p: { x: number; y: number }) => void }) {
+function Frame({ src, viewport, lost, onRetry, onTap, picking }: { src: string | null; viewport: Size; lost: boolean; onRetry(): void; onTap?: (p: { x: number; y: number }) => void; picking?: boolean }) {
   const box = useRef<HTMLDivElement>(null);
   const [avail, setAvail] = useState<Size>({ width: 0, height: 0 });
   useEffect(() => {
@@ -208,7 +247,7 @@ function Frame({ src, viewport, lost, onRetry, onTap }: { src: string | null; vi
           width={size.width || undefined}
           height={size.height || undefined}
           style={size.width ? { width: size.width, height: size.height } : { maxWidth: '100%', maxHeight: '100%' }}
-          className={cx('select-none touch-manipulation', onTap && 'cursor-pointer ring-2 ring-ok/60')}
+          className={cx('select-none touch-manipulation', onTap && 'cursor-pointer ring-2', onTap && (picking ? 'ring-accent/70' : 'ring-ok/60'))}
           onClick={
             onTap
               ? (e) => {
