@@ -117,3 +117,10 @@ condition = "AND"
 targetRules = ["generic-api-key"]
 paths = ["(^|/)tests/compat/herdr/0\\.9\\.3/plugins/scenarios/ZingerLittleBee__Heeler\\.toml$", "(^|/)crates/vibeke/tests/it/compat_herdr_real_plugins\\.rs$"]
 regexes = ["^\\Q0123456789abcdef\\E$", "^\\QAAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8\\E$"]
+
+[[allowlists]]
+description = "PostHog public project key, shipped to browsers by the site"
+condition = "AND"
+targetRules = ["generic-api-key"]
+paths = ["(^|/)web/apps/site/src/routes/__root\\.tsx$"]
+regexes = ["^\\Qphc_yJDq6yUfcago7PRT9RRFWFatZzoGNvKPjpzX2Rz5wgc2\\E$"]
