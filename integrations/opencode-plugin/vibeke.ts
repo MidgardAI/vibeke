@@ -184,11 +184,12 @@ export const VibekePlugin = async ({ client, directory }: { client?: any; direct
       const forwarded = send(type, { ...props, directory });
       if (type === "session.idle") {
         const sessionID = props.sessionID;
-        const context = sessionID ? await take() : null;
+        // Taking marks the messages delivered: only take when they can be handed over.
+        const context = sessionID && client?.session?.promptAsync ? await take() : null;
         if (context) {
           try {
             // A new turn: the agent reads the messages without typing into the input box.
-            await client?.session?.promptAsync?.({
+            await client.session.promptAsync({
               path: { id: sessionID },
               body: { parts: [{ type: "text", text: context }] },
             });
@@ -204,8 +205,8 @@ export const VibekePlugin = async ({ client, directory }: { client?: any; direct
         .join("\n");
       const sent = send("chat.message", { sessionID: input?.sessionID, text });
       try {
-        const context = await take();
-        if (context && Array.isArray(output?.parts) && output?.message?.id) {
+        const context = Array.isArray(output?.parts) && output?.message?.id ? await take() : null;
+        if (context) {
           output.parts.push({
             id: `prt_vibeke_${Date.now().toString(36)}`,
             sessionID: input?.sessionID,
@@ -228,8 +229,8 @@ export const VibekePlugin = async ({ client, directory }: { client?: any; direct
         metadata: output?.metadata,
       });
       try {
-        const context = await take();
-        if (context && output && typeof output.output === "string") {
+        const context = typeof output?.output === "string" ? await take() : null;
+        if (context) {
           output.output += `\n\n[Vibeke: a message arrived from another pane]\n${context}`;
         }
       } catch {}
