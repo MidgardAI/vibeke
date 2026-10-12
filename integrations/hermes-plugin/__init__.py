@@ -9,6 +9,11 @@ JSON on stdin, the same shim the Claude, Codex and OpenCode integrations use. A 
 thread sends them in order, so a slow server never blocks the agent loop. The server maps the
 hooks in crates/vk-server/src/agents/hermes.rs. Hermes approvals are observe-only for plugins, so
 Vibeke answers them with keystrokes in the pane.
+
+Messages from other panes ride along at the start of a turn: `pre_llm_call` runs
+`$VIBEKE_BIN message take` and returns the text as context, which Hermes adds to the user message.
+There is no mid-turn delivery: `transform_tool_result` also reaches programmatic tool callers that
+parse the result, so the plugin does not use it. An idle pane gets its messages typed by the server.
 """
 
 from __future__ import annotations
@@ -63,6 +68,26 @@ def _run() -> None:
             pass
         finally:
             _queue.task_done()
+
+
+def _take() -> str | None:
+    """Ask the server for this pane's queued messages, ready to show. Never raises."""
+    try:
+        r = subprocess.run(
+            [_BIN, "message", "take"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=3,
+            check=False,
+        )
+        if r.returncode != 0:
+            return None
+        context = json.loads(r.stdout.decode("utf-8", "replace")).get("context")
+        if isinstance(context, str) and context.strip():
+            return context
+    except Exception:
+        pass
+    return None
 
 
 def _flush() -> None:
@@ -139,11 +164,14 @@ def _session(hook: str):
     return cb
 
 
-def _pre_llm_call(**kwargs) -> None:
-    if _ours(kwargs):
-        p = _pick(kwargs, "session_id", "model", "platform", "is_first_turn")
-        p["prompt"] = _text(kwargs.get("user_message"))
-        _send("pre_llm_call", p)
+def _pre_llm_call(**kwargs):
+    if not _ours(kwargs):
+        return None
+    p = _pick(kwargs, "session_id", "model", "platform", "is_first_turn")
+    p["prompt"] = _text(kwargs.get("user_message"))
+    _send("pre_llm_call", p)
+    context = _take()
+    return {"context": context} if context else None
 
 
 def _post_llm_call(**kwargs) -> None:

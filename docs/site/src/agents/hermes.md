@@ -11,6 +11,7 @@ Install the plugin to see Hermes Agent state in the sidebar and to answer its ap
 | Allow always | **Allow always** on a card selects "Allow for this session" in Hermes. |
 | Questions | A clarify question or a sudo password prompt becomes an inbox card. Answer it in the pane. Vibeke closes the card when Hermes has the answer. |
 | Usage | The plugin reports tokens for each model call. Hermes does not report a cost. |
+| Messages | When another pane sends a message, the plugin hands it to Hermes at the start of the next turn. If Hermes is idle, Vibeke types the message into the prompt. |
 | Resume | Vibeke can resume a session with `hermes --resume <id>`. |
 
 The plugin only observes. Hermes does not let a plugin answer an approval. This is why Vibeke answers approvals with keystrokes.
@@ -67,6 +68,7 @@ This deletes the plugin folder and the skill, and removes `vibeke` from `plugins
 
 - Vibeke checked the plugin against Hermes Agent 0.21.
 - Vibeke answers approvals in the classic interface of Hermes. In the TUI (`hermes --tui`), answer approvals in the pane.
+- Hermes has no hook for the end of a turn. A message that arrives during a turn waits for the next turn, or for the prompt to become idle.
 - With `approvals.mode: smart`, a model decides most approvals without a prompt. Vibeke then shows no card for them.
 - The plugin reports only sessions that run in the terminal. It ignores the messaging gateway and ACP sessions.
 
