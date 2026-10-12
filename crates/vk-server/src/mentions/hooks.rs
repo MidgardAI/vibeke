@@ -235,7 +235,7 @@ fn stop_reminder(server: &Arc<Server>, pane: &str) -> Option<Value> {
     let ids: Vec<String> = waiting.iter().map(|r| r.delivery.message.clone()).collect();
     let first = &ids[0];
     Some(block(format!(
-        "Vibeke: {} from another pane {} an answer. Reply with the message_reply tool (or `vibeke msg reply {first} <text>`). If no answer is needed, call message_complete (or `vibeke msg done {first}`).",
+        "Vibeke: {} from another pane {} an answer. Reply with the message_reply tool (or run `vibeke msg reply {first} \"<your answer>\"`). If no answer is needed, call message_complete (or run `vibeke msg done {first}`).",
         if ids.len() == 1 {
             format!("message {first}")
         } else {
@@ -343,6 +343,9 @@ pub fn sanitize_payload(event: &str, p: &Value) -> Option<Value> {
     Some(out)
 }
 
+/// The most of an answered message that a reply's context quotes, in characters.
+const QUOTE_MAX: usize = 1000;
+
 /// An envelope line without its nonce and preview: `↪ vibeke message <id> from @x · … […]`.
 pub(crate) fn sanitize_envelope(prompt: &str) -> Option<String> {
     parse_envelope(prompt)?;
@@ -361,7 +364,19 @@ pub(crate) fn message_context(c: &Core, pane: &str, m: &Message, rec: &DeliveryR
         m.id, m.thread
     );
     if let Some(prev) = &m.in_reply_to {
-        s.push_str(&format!("It answers message {prev}.\n"));
+        // Quote the question, so the answer makes sense on its own (spec 19 §4.5).
+        match super::load_message(c, prev) {
+            Some(q) => {
+                let mut body: String = q.body.chars().take(QUOTE_MAX).collect();
+                if body.len() < q.body.len() {
+                    body.push('…');
+                }
+                s.push_str(&format!(
+                    "It answers message {prev}, which asked:\n<vibeke-quote id=\"{prev}\">\n{body}\n</vibeke-quote>\n"
+                ));
+            }
+            None => s.push_str(&format!("It answers message {prev}.\n")),
+        }
     }
     s.push_str(&format!(
         "<vibeke-message id=\"{}\" from=\"{from}\">\n{}\n</vibeke-message>\n",
@@ -369,7 +384,7 @@ pub(crate) fn message_context(c: &Core, pane: &str, m: &Message, rec: &DeliveryR
     ));
     if rec.delivery.expects_reply {
         s.push_str(&format!(
-            "The sender waits for an answer. Reply with the message_reply tool (message: {id}) or run `vibeke msg reply {id} <text>`. If no answer is needed, call message_complete (or `vibeke msg done {id}`).\n",
+            "The sender waits for an answer. Reply with the message_reply tool (message: {id}), or run exactly `vibeke msg reply {id} \"<your answer>\"` (use `-` instead of the answer to read it from stdin). If no answer is needed, call message_complete or run `vibeke msg done {id}`.\n",
             id = m.id
         ));
     } else {
@@ -430,7 +445,7 @@ fn prompt_context(server: &Arc<Server>, pane: &str, p: &Value) -> Option<String>
             .any(|n| undeliverable(c, &ws, pane, n).is_none());
         if names_known {
             out.push(
-                "The prompt names other panes of this workspace. You can delegate to them with the message_send tool (or `vibeke msg @name <text>`).".to_string(),
+                "The prompt names other panes of this workspace. You can delegate to them with the message_send tool (or run `vibeke msg @name \"<text>\"`). Replies arrive in this pane as new messages after your turn ends: end your turn instead of polling or waiting for them.".to_string(),
             );
             if let Some(r) = roster_block(c, &ws, pane) {
                 out.push(r);
@@ -456,7 +471,7 @@ fn session_roster(server: &Arc<Server>, pane: &str) -> Option<String> {
             })
             .unwrap_or_default();
         Some(format!(
-            "Vibeke: {me}Send a message with the message_send tool (or `vibeke msg @name <text>`).\n{roster}"
+            "Vibeke: {me}Send a message with the message_send tool (or run `vibeke msg @name \"<text>\"`). Replies arrive in this pane as new messages after your turn ends, so do not poll for them.\n{roster}"
         ))
     })
 }

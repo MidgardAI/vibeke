@@ -335,6 +335,13 @@ where
                 r["message"]["id"].as_str().unwrap_or("?"),
                 deliveries_summary(&ds)
             );
+            // Agents read this: a reply comes back on its own (spec 19 §4.5).
+            let expects_reply = ds.iter().any(|d| d["expects_reply"] == true);
+            if matches!(op, Op::Send(_)) && expects_reply {
+                println!(
+                    "The reply arrives in this pane as a new message after your turn ends; do not poll for it."
+                );
+            }
         }
         Op::Done(p) => println!("{} marked as done", p["message"].as_str().unwrap_or("?")),
         Op::List(_) => {

@@ -320,6 +320,8 @@ fn send_envelope_hook_reply_and_reply_delivery() {
     let ctx = context(&out);
     assert!(ctx.contains("one nit in the error path"), "{out}");
     assert!(ctx.contains(&format!("It answers message {mid}")), "{ctx}");
+    // The question is quoted, so the answer makes sense on its own.
+    assert!(ctx.contains("The tests are in parser_tests.rs."), "{ctx}");
     assert!(ctx.contains("No answer is expected"), "{ctx}");
     assert_eq!(user.delivery_state(&rid), "delivered");
     // The turn ends: a read reply that expects no answer is done.

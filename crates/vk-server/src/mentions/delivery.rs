@@ -173,7 +173,7 @@ pub(crate) fn framed_body(from: &str, m: &Message, d: &Delivery) -> String {
     );
     if d.expects_reply {
         s.push_str(&format!(
-            "[Answer with `vibeke msg reply {id} <text>`, or `vibeke msg done {id}` when no answer is needed.]",
+            "[Answer with `vibeke msg reply {id} \"<your answer>\"`, or `vibeke msg done {id}` when no answer is needed.]",
             id = m.id
         ));
     } else {
