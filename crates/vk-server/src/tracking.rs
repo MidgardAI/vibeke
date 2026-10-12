@@ -1676,12 +1676,14 @@ pub(crate) fn prompt_input_safety(
     {
         return Err("an attached client is focused on that pane (the user may be typing)".into());
     }
-    let rt = server.pane_rt(&run.pane).ok_or("the pane is gone")?;
-    let screen = rt.screen.lock().unwrap().engine.screen_text();
-    match input_text(&screen) {
-        Some(t) if t.is_empty() => Ok(()),
-        Some(_) => Err("the agent's input box has a draft in it".into()),
-        None => Err("can't establish that the agent's input is empty".into()),
+    // Claude and Codex draw a faint placeholder in an empty box: read with styles (spec 19
+    // §4.2), so the placeholder does not count as a draft.
+    use crate::mentions::input_box::{self, InputBox};
+    let harness = crate::agents::harness::Harness::from_id(&run.harness);
+    match input_box::of_pane(server, &run.pane, harness).ok_or("the pane is gone")? {
+        InputBox::Empty => Ok(()),
+        InputBox::Draft(_) => Err("the agent's input box has a draft in it".into()),
+        InputBox::Unknown => Err("can't establish that the agent's input is empty".into()),
     }
 }
 
