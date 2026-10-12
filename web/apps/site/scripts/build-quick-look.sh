@@ -10,5 +10,5 @@ ffmpeg -hide_banner -loglevel error -ss 8.5 -i public/video/quick-look-mobile.mp
 
 # VP9/Opus alternatives also play in browsers without H.264 support.
 for clip in quick-look quick-look-mobile vibeke-tour; do
-  ffmpeg -hide_banner -loglevel error -i "public/video/$clip.mp4" -c:v libvpx-vp9 -b:v 0 -crf 35 -row-mt 1 -threads 4 -cpu-used 4 -c:a libopus -b:a 64k "public/video/$clip.webm" -y
+  ffmpeg -hide_banner -loglevel error -i "public/video/$clip.mp4" -c:v libvpx-vp9 -b:v 0 -crf 35 -row-mt 1 -threads 4 -cpu-used 6 -g 60 -cluster_time_limit 2000 -cues_to_front 1 -c:a libopus -b:a 64k "public/video/$clip.webm" -y
 done

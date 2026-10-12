@@ -84,8 +84,8 @@ export function ProductTour() {
             }
           }}
           onEnded={() => { trackSiteEvent('demo_progress', { placement: 'tour', target: 'full-tour', chapter: String(chapter.current), quartile: 100 }); milestones.current.clear() }} aria-label="Vibeke product tour">
-          <source src="/video/vibeke-tour.webm" type="video/webm" />
           <source src="/video/vibeke-tour.mp4" type="video/mp4" />
+          <source src="/video/vibeke-tour.webm" type="video/webm" />
           <track kind="captions" src="/video/vibeke-tour.vtt" srcLang="en" label="English" />
         </video>
         {!started && <button type="button" onClick={() => play()} className="group absolute inset-0 flex items-center justify-center bg-base/30 transition-colors hover:bg-base/10 focus-visible:outline-none" aria-label={startAt ? `Play the product tour from ${Math.floor(startAt / 60)}:${String(Math.floor(startAt % 60)).padStart(2, '0')}` : 'Play the product tour'}>

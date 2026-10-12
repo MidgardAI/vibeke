@@ -41,10 +41,10 @@ export function DemoVideo() {
             sent.current.add(quartile); trackSiteEvent('demo_progress', { placement: 'hero', target: 'quick-look', quartile })
           }
         }}>
-        <source src="/video/quick-look-mobile.webm" type="video/webm" media="(max-width: 639px)" />
         <source src="/video/quick-look-mobile.mp4" type="video/mp4" media="(max-width: 639px)" />
-        <source src="/video/quick-look.webm" type="video/webm" />
+        <source src="/video/quick-look-mobile.webm" type="video/webm" media="(max-width: 639px)" />
         <source src="/video/quick-look.mp4" type="video/mp4" />
+        <source src="/video/quick-look.webm" type="video/webm" />
         <track kind="captions" src="/video/quick-look.vtt" srcLang="en" label="English" default />
       </video>
       {!started && <picture className="pointer-events-none absolute inset-0">
