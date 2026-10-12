@@ -2,6 +2,9 @@ import { createRootRoute, HeadContent, Outlet, Scripts } from '@tanstack/react-r
 import { Footer, Header, NotFound } from '../components/shell'
 import stylesheet from '../styles.css?url'
 
+// Google Ads tag for conversion tracking.
+const googleAdsId = 'AW-18508808683'
+
 export const Route = createRootRoute({
   head: () => ({
     meta: [
@@ -28,6 +31,10 @@ export const Route = createRootRoute({
       { rel: 'icon', type: 'image/png', sizes: '48x48', href: '/brand/favicon-48.png' },
       { rel: 'apple-touch-icon', sizes: '180x180', href: '/apple-touch-icon.png' },
       { rel: 'manifest', href: '/site.webmanifest' },
+    ],
+    scripts: [
+      { src: `https://www.googletagmanager.com/gtag/js?id=${googleAdsId}`, async: true },
+      { children: `window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments);}gtag('js',new Date());gtag('config','${googleAdsId}');` },
     ],
   }),
   component: Root,
