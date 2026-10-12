@@ -732,6 +732,68 @@ async fn check_integrations(r: &mut Report) {
     }
 }
 
+/// Mention names whose agent cannot receive messages cleanly (spec 19 §4.3): warn when the
+/// harness behind a named pane has no hooks or no MCP server entry. Silent when the server is
+/// not running, does not know `mention.list`, or no pane has a name.
+async fn check_mentions(r: &mut Report, g: &Global) {
+    let socket = client::socket_path(&g.session, g.socket.as_deref());
+    if !socket.exists() {
+        return;
+    }
+    let Ok(Ok(s)) = tokio::time::timeout(Duration::from_secs(1), client::connect(&socket)).await
+    else {
+        return;
+    };
+    let mut c = Client::new(s);
+    let res = tokio::time::timeout(Duration::from_secs(3), async {
+        c.hello("cli").await?;
+        c.call("mention.list", json!({})).await
+    })
+    .await;
+    let Ok(Ok(list)) = res else {
+        return;
+    };
+    let mentions = list["mentions"].as_array().cloned().unwrap_or_default();
+    if mentions.is_empty() {
+        return;
+    }
+    let dirs = Dirs::from_env();
+    for h in [Harness::Claude, Harness::Codex] {
+        let id = h.id();
+        let names: Vec<String> = mentions
+            .iter()
+            .filter(|m| m["harness"].as_str() == Some(id))
+            .filter_map(|m| m["name"].as_str().map(|n| format!("@{n}")))
+            .collect();
+        if names.is_empty() {
+            continue;
+        }
+        let who = names.join(", ");
+        let hooks = vk_agents::status(h, &dirs);
+        if hooks.state != InstallState::Installed {
+            r.add_hint(
+                INTEG,
+                Level::Warn,
+                format!("{who} ({id}) cannot read messages: {id} hooks are not fully installed"),
+                format!("vibeke integration install {id}"),
+            );
+        }
+        let mcp_installed = vk_agents::mcp_status(h, &dirs)
+            .map(|m| m.installed)
+            .unwrap_or(false);
+        if !mcp_installed {
+            r.add_hint(
+                INTEG,
+                Level::Warn,
+                format!(
+                    "{who} ({id}) cannot send or reply to messages: the MCP server is not installed"
+                ),
+                format!("vibeke integration install {id} --mcp"),
+            );
+        }
+    }
+}
+
 pub(crate) fn probe_terminal() -> Option<vk_tui::caps::ProbeResult> {
     use std::io::Write;
     use vk_tui::caps::{EnvHints, parse_replies, probe_queries};
@@ -1558,6 +1620,7 @@ pub async fn run(g: &Global, args: &[String]) -> i32 {
     check_install(&mut r);
     check_sockets(&mut r, g).await;
     check_integrations(&mut r).await;
+    check_mentions(&mut r, g).await;
     check_terminal(&mut r);
     if no_remote {
         r.add(REMOTE, Level::Info, "skipped (--no-remote)");
