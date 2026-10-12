@@ -1,9 +1,14 @@
 import { createRootRoute, HeadContent, Outlet, Scripts } from '@tanstack/react-router'
+import posthog from 'posthog-js'
+import { useEffect } from 'react'
 import { Footer, Header, NotFound } from '../components/shell'
 import stylesheet from '../styles.css?url'
 
 // Google Ads tag for conversion tracking.
 const googleAdsId = 'AW-18508808683'
+
+// PostHog product analytics, started in the browser only.
+const posthogKey = 'phc_yJDq6yUfcago7PRT9RRFWFatZzoGNvKPjpzX2Rz5wgc2'
 
 export const Route = createRootRoute({
   head: () => ({
@@ -42,5 +47,6 @@ export const Route = createRootRoute({
 })
 
 function Root() {
+  useEffect(() => { posthog.init(posthogKey, { api_host: 'https://eu.i.posthog.com', defaults: '2026-05-30' }) }, [])
   return <html lang="en"><head><HeadContent /></head><body><a href="#main" className="skip-link">Skip to content</a><Header /><Outlet /><Footer /><Scripts /></body></html>
 }
