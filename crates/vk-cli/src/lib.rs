@@ -389,6 +389,71 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         "disagreement/answer-failure counters per harness version",
     ),
     (
+        "mention",
+        "list",
+        "mention.list",
+        &[],
+        "[--workspace w] named panes with label, harness and state (spec 19)",
+    ),
+    (
+        "mention",
+        "suggest",
+        "mention.suggest",
+        &["pane"],
+        "<pane> a free name for the pane",
+    ),
+    (
+        "mention",
+        "set",
+        "mention.set",
+        &["pane", "name"],
+        "<pane> [name] [--kind agent|terminal] [--no-delivery] (no name: the suggested one)",
+    ),
+    ("mention", "clear", "mention.clear", &["pane"], "<pane>"),
+    (
+        "message",
+        "send",
+        "message.send",
+        &["body"],
+        "<body> --to name [--to name…] [--no-expects-reply] [--workspace w]",
+    ),
+    (
+        "message",
+        "reply",
+        "message.reply",
+        &["message", "body"],
+        "<message> <body> answer a message this pane received",
+    ),
+    (
+        "message",
+        "complete",
+        "message.complete",
+        &["message"],
+        "<message> done without an answer",
+    ),
+    ("message", "get", "message.get", &["id"], "<message>"),
+    (
+        "message",
+        "list",
+        "message.list",
+        &[],
+        "[--pane p] [--direction in|out|all] [--open-only] [--limit n]",
+    ),
+    (
+        "message",
+        "cancel",
+        "message.cancel",
+        &["delivery"],
+        "<delivery>",
+    ),
+    (
+        "message",
+        "retry",
+        "message.retry",
+        &["delivery"],
+        "<delivery> deliver a held message again",
+    ),
+    (
         "interaction",
         "list",
         "interaction.list",
@@ -2263,6 +2328,7 @@ fn adjust(method: &str, p: &mut Value) {
         "mode",
         "layout",
         "draft",
+        "body",
     ] {
         if let Some(v) = o.get_mut(k)
             && (v.is_number() || v.is_boolean())
@@ -4047,6 +4113,48 @@ mod tests {
         let mut p = json!({"pane": "p1", "to": {"kind": "local"}});
         adjust(m, &mut p);
         assert_eq!(p, json!({"pane": "p1", "to": {"kind": "local"}}));
+    }
+
+    #[test]
+    fn mention_and_message_nouns_map_to_their_methods() {
+        for (verb, method) in [
+            ("list", "mention.list"),
+            ("suggest", "mention.suggest"),
+            ("set", "mention.set"),
+            ("clear", "mention.clear"),
+        ] {
+            assert_eq!(lookup("mention", verb).map(|l| l.0), Some(method));
+        }
+        for (verb, method) in [
+            ("send", "message.send"),
+            ("reply", "message.reply"),
+            ("complete", "message.complete"),
+            ("get", "message.get"),
+            ("list", "message.list"),
+            ("cancel", "message.cancel"),
+            ("retry", "message.retry"),
+        ] {
+            assert_eq!(lookup("message", verb).map(|l| l.0), Some(method));
+        }
+        assert!(nouns().contains(&"mention") && nouns().contains(&"message"));
+        let args: Vec<String> = [
+            "42",
+            "--to",
+            "reviewer",
+            "--to",
+            "@coder",
+            "--no-expects-reply",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let (m, pos) = lookup("message", "send").unwrap();
+        let mut p = build_params(pos, &args).unwrap();
+        adjust(m, &mut p);
+        assert_eq!(
+            p,
+            json!({"body": "42", "to": ["reviewer", "@coder"], "expects_reply": false})
+        );
     }
 
     #[test]

@@ -270,6 +270,10 @@ When a reply reaches a `Human` author without a pane, a toast appears.
 - `vibeke msg inbox`
 - `vibeke msg list`
 - `vibeke name [@name] [--pane <target>] [--clear]`
+- The API mapping (`vibeke <noun> <verb>`) has the nouns `mention` (`list`, `suggest`, `set`,
+  `clear`) and `message` (`send`, `reply`, `complete`, `get`, `list`, `cancel`, `retry`), with
+  the params of §3.1 as flags. `vibeke message send <body> --to <name>` repeats `--to` for
+  several recipients.
 
 The skill (`crates/vibeke/skill/SKILL.md`) gets a short Mentions section. The hook context
 explains each delivery, so the skill stays small.
