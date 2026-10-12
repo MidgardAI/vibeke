@@ -134,7 +134,7 @@ A delivery is ready when all of these hold:
 - No other delivery to that pane is `submitted`.
 - The name has `delivery: true`.
 
-Otherwise it stays `queued`. The input check runs again right before typing. From that check
+Otherwise it stays `queued`, unless a hook takes it first (ride-along, §4.3). The input check runs again right before typing. From that check
 until the Enter is written, keys, pastes and mouse input that people send to the pane wait in a
 buffer, and reach the pane right after the Enter, in order. The hold lasts at most 2 s.
 `agent.prompt` holds input the same way between its paste and its Enter. The engine re-checks when run state, interactions or names change,
@@ -186,13 +186,35 @@ reminder that the agent can delegate with the `message_send` tool.
 **`SessionStart`** adds the roster when the workspace has named panes, plus the pane's own name
 when it has one.
 
+**Ride-along.** An agent that is working, or that the person is typing to, is rarely idle with an
+empty input box, so a typed envelope (§4.2) can wait a long time. Hooks the agent runs anyway
+hand over its queued deliveries instead:
+- `UserPromptSubmit` (a person's prompt or an envelope) adds them to the context.
+- `PostToolUse` adds them to the context after a tool call.
+- `Stop` blocks the stop with them as the reason, so the turn goes on and the agent reads them
+  before it goes idle.
+
+A delivery rides along when the engine could deliver it apart from the idle and input checks:
+the name has `delivery: true` (or the delivery is a reply route), the agent runs and is not
+headless, and nobody moved workspace. A delivery whose envelope is being typed, or is
+`submitted`, stays with the engine. Each delivery that rides along becomes `delivered` with the
+reason `ride_along`, in the current turn (its hop and reply rules are those of an expanded
+envelope), and gets the same framed context.
+
+A headless run with a native steer (every headless adapter except ACP) does not wait for idle
+either: the engine sends it the framed message with `agent.prompt` `mode: steer`, which joins
+the running turn or starts one. It still waits while an interaction is open.
+
+pi, OpenCode, Hermes, Gemini and ACP panes do not take ride-along messages yet: their plugins
+ignore the server's reply. They keep the typed envelope and the full-body fallback.
+
 **`Stop`** for a pane with a `delivered` delivery that expects a reply and has none:
 - The first time, the hook blocks the stop with one reminder to reply or complete
   (`{"decision": "block", "reason": …}`).
 - The second time, the delivery becomes `completed` without a reply.
 
-**Headless runs** have no hooks. They get the framed full body as their prompt right away, and
-the delivery becomes `delivered`.
+**Headless runs** have no hooks. They get the framed full body as their prompt right away (a
+steer while a turn runs, see ride-along), and the delivery becomes `delivered`.
 
 **No hook.** A `submitted` delivery that no hook took within 30 s:
 - For harnesses without mention hooks, the engine falls back once to typing the framed full

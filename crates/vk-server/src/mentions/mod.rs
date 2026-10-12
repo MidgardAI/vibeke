@@ -151,6 +151,9 @@ pub(crate) fn moved_workspace(c: &Core, rec: &DeliveryRec, m: &Message) -> bool 
 
 pub(crate) const MOVED: &str = "moved_workspace";
 
+/// The reason of a delivery handed over on a hook instead of a typed envelope (§4.3).
+pub(crate) const RIDE_ALONG: &str = "ride_along";
+
 /// The turn mark of `pane`'s current run (see [`DeliveryRec::delivered_turn`]).
 pub(crate) fn turn_mark(c: &Core, pane: &str) -> Option<(String, u64)> {
     c.run_for_pane(pane).map(|r| (r.id.clone(), r.done_rev))

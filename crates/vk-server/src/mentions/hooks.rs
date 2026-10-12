@@ -40,7 +40,11 @@ pub fn before_signal(
     }
     match event {
         "UserPromptSubmit" => leading_send(server, pane, h, p),
-        "Stop" => stop_reminder(server, pane),
+        // Messages that arrived during the turn keep it going, so the agent reads them before
+        // it goes idle; otherwise the reminder for an unanswered one.
+        "Stop" => ride_along(server, pane)
+            .map(block)
+            .or_else(|| stop_reminder(server, pane)),
         _ => None,
     }
 }
@@ -56,11 +60,21 @@ pub fn after_signal(
     if !supported(h) {
         return None;
     }
-    let text = match event {
+    let own = match event {
         "SessionStart" => session_roster(server, pane),
         "UserPromptSubmit" => prompt_context(server, pane, p),
         _ => None,
-    }?;
+    };
+    // Queued messages ride along on the prompt or the tool result (§4.3).
+    let queued = match event {
+        "UserPromptSubmit" => ride_along(server, pane),
+        "PostToolUse" => ride_along(server, pane),
+        _ => None,
+    };
+    let text = match (own, queued) {
+        (Some(a), Some(b)) => format!("{a}\n\n{b}"),
+        (a, b) => a.or(b)?,
+    };
     Some(context(event, text))
 }
 
@@ -247,6 +261,76 @@ fn stop_reminder(server: &Arc<Server>, pane: &str) -> Option<Value> {
             "wait for"
         },
     )))
+}
+
+/// Whether `rec` may ride along on a hook of its own pane now: the checks of the delivery
+/// engine for a queued delivery (§4.2), without the idle and input-box ones. The agent runs the
+/// hook, so it is there and reads the context; nothing is typed into its input box.
+fn may_ride(c: &Core, rec: &DeliveryRec) -> bool {
+    let pane = &rec.delivery.pane;
+    if !rec.reply_route {
+        match c.model.mention_of(pane) {
+            Some(m) if m.kind != MentionKind::Terminal && m.delivery => {}
+            _ => return false,
+        }
+    }
+    let Some(p) = c.pane(pane) else {
+        return false;
+    };
+    let live = c.run_for_pane(pane).is_some_and(|r| {
+        r.execution.value != vk_proto::model::Execution::Exited
+            && !crate::agents::headless::is_headless(r)
+    });
+    !p.exited
+        && live
+        && load_message(c, &rec.delivery.message).is_some_and(|m| !moved_workspace(c, rec, &m))
+}
+
+/// Ride-along delivery (§4.3): the queued messages for `pane` handed to its agent on a hook it
+/// runs anyway (a prompt, a tool result, a stop), so they need not wait until the agent is idle
+/// with an empty input box. Each becomes `delivered` in the current turn, like an expanded
+/// envelope. A delivery whose envelope is being typed is left to the engine. Returns the
+/// messages as one context text, oldest first, or `None` when nothing was queued.
+pub(crate) fn ride_along(server: &Arc<Server>, pane: &str) -> Option<String> {
+    let typing = server.mentions.typing.lock().unwrap().clone();
+    let mut c = server.core.lock().unwrap();
+    let mut recs: Vec<DeliveryRec> = deliveries_to(&c, pane)
+        .into_iter()
+        .filter(|r| r.delivery.state == DeliveryState::Queued)
+        .filter(|r| !typing.contains(&r.delivery.id))
+        .filter(|r| may_ride(&c, r))
+        .collect();
+    if recs.is_empty() {
+        return None;
+    }
+    recs.sort_by_key(|r| r.queued_at_ms);
+    let mark = turn_mark(&c, pane);
+    let now = now();
+    let mut tx = Tx::new();
+    let mut taken: Vec<(Message, DeliveryRec)> = Vec::new();
+    for mut rec in recs {
+        let Some(m) = load_message(&c, &rec.delivery.message) else {
+            continue;
+        };
+        rec.delivery.state = DeliveryState::Delivered;
+        rec.delivery.reason = Some(RIDE_ALONG.into());
+        rec.delivered_turn = mark.clone();
+        rec.delivery.updated_at_ms = now;
+        put_delivery(&mut tx, &rec);
+        delivery_event(&mut tx, &rec);
+        taken.push((m, rec));
+    }
+    if taken.is_empty() || server.commit(&mut c, tx).is_err() {
+        return None;
+    }
+    let text = taken
+        .iter()
+        .map(|(m, rec)| message_context(&c, pane, m, rec))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    drop(c);
+    server.mentions.poke();
+    Some(text)
 }
 
 /// Constant-time comparison of two nonces.
@@ -445,7 +529,7 @@ fn prompt_context(server: &Arc<Server>, pane: &str, p: &Value) -> Option<String>
             .any(|n| undeliverable(c, &ws, pane, n).is_none());
         if names_known {
             out.push(
-                "The prompt names other panes of this workspace. You can delegate to them with the message_send tool (or run `vibeke msg @name \"<text>\"`). Replies arrive in this pane as new messages after your turn ends: end your turn instead of polling or waiting for them.".to_string(),
+                "The prompt names other panes of this workspace. You can delegate to them with the message_send tool (or run `vibeke msg @name \"<text>\"`). Replies reach this pane on their own: with a later prompt or tool result, or as a new message once your turn ends. Do not poll or wait for them.".to_string(),
             );
             if let Some(r) = roster_block(c, &ws, pane) {
                 out.push(r);
@@ -471,7 +555,7 @@ fn session_roster(server: &Arc<Server>, pane: &str) -> Option<String> {
             })
             .unwrap_or_default();
         Some(format!(
-            "Vibeke: {me}Send a message with the message_send tool (or run `vibeke msg @name \"<text>\"`). Replies arrive in this pane as new messages after your turn ends, so do not poll for them.\n{roster}"
+            "Vibeke: {me}Send a message with the message_send tool (or run `vibeke msg @name \"<text>\"`). Replies reach this pane on their own: with a later prompt or tool result, or as a new message once your turn ends. Do not poll for them.\n{roster}"
         ))
     })
 }

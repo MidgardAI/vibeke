@@ -339,7 +339,7 @@ where
             let expects_reply = ds.iter().any(|d| d["expects_reply"] == true);
             if matches!(op, Op::Send(_)) && expects_reply {
                 println!(
-                    "The reply arrives in this pane as a new message after your turn ends; do not poll for it."
+                    "The reply reaches this pane on its own, during or after your turn. Do not poll for it."
                 );
             }
         }

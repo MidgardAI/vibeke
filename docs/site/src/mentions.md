@@ -39,7 +39,11 @@ The text `-` reads the message from standard input. Add `--no-reply` when you do
 
 ## How a message arrives
 
-Vibeke waits until the receiving agent is idle. Then it types one short line into the prompt of that pane. The line has the message id, the sender and the first words of the message. The integration hook of the agent replaces this line with the full message. The agent sees who wrote it, how to reply, and the list of named panes.
+A busy agent gets the message at the next chance. The integration hook of the agent adds the message when you send the agent a prompt, or when its turn ends. Claude Code and Codex also get it after a tool call. The agent does not have to stop first. Vibeke never types into the prompt while you write in it.
+
+An idle agent gets the message right away. Vibeke types one short line into the prompt of that pane. The line has the message id, the sender and the first words of the message. The integration hook of the agent replaces this line with the full message.
+
+In both cases, the agent sees who wrote the message, how to reply, and the list of named panes.
 
 The receiving agent can answer with a reply. The reply goes to the pane that sent the message. The sender sees it as a new message. If the agent stops without a reply, it gets one reminder.
 

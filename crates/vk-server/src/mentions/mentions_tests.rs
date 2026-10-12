@@ -968,3 +968,152 @@ fn observed_envelopes_lose_nonce_and_preview() {
     assert!(sanitize_payload("UserPromptSubmit", &json!({"prompt": "hello"})).is_none());
     assert!(sanitize_payload("Stop", &json!({"prompt": line})).is_none());
 }
+
+/// `@coder` (a) and `@reviewer` (b) in `wa`, both working; a queued message from a to b.
+/// (message id, delivery id)
+async fn queued_to_busy(e: &Env) -> (String, String) {
+    let u = user();
+    e.put_run("a", "claude", Execution::Working);
+    e.put_run("b", "claude", Execution::Working);
+    e.ok(&u, "mention.set", json!({"pane": "a", "name": "coder"}))
+        .await;
+    e.ok(&u, "mention.set", json!({"pane": "b", "name": "reviewer"}))
+        .await;
+    let sent = e
+        .ok(
+            &pane_ctx("a"),
+            "message.send",
+            json!({"to": ["reviewer"], "body": "the secret plan"}),
+        )
+        .await;
+    let mid = sent["message"]["id"].as_str().unwrap().to_string();
+    let did = sent["deliveries"][0]["id"].as_str().unwrap().to_string();
+    super::delivery::pump(&e.server);
+    assert_eq!(e.delivery(&did).delivery.state, DeliveryState::Queued);
+    (mid, did)
+}
+
+fn hook_after(e: &Env, pane: &str, h: Harness, event: &str, p: Value) -> String {
+    super::hooks::after_signal(&e.server, pane, h, event, &p).unwrap_or_default()
+        ["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap_or("")
+        .to_string()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_queued_message_rides_along_on_the_next_prompt_once() {
+    let e = Env::new();
+    let (mid, did) = queued_to_busy(&e).await;
+    // Another pane's prompt takes nothing.
+    assert_eq!(hook_context(&e, "a", "hello"), "");
+    let ctx = hook_context(&e, "b", "please also fix the lint");
+    assert!(ctx.contains("the secret plan"), "{ctx}");
+    assert!(ctx.contains(&mid), "{ctx}");
+    assert!(ctx.contains("untrusted"), "{ctx}");
+    let d = e.delivery(&did);
+    assert_eq!(d.delivery.state, DeliveryState::Delivered);
+    assert_eq!(d.delivery.reason.as_deref(), Some(RIDE_ALONG));
+    assert_eq!(d.delivered_turn, Some(("run-b".into(), 0)));
+    // Delivered once: the next prompt carries nothing.
+    assert_eq!(hook_context(&e, "b", "and then the docs"), "");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_queued_message_rides_along_on_a_tool_result() {
+    let post = json!({"tool_name": "Bash", "tool_input": {"command": "ls"}});
+    for h in ["claude", "codex"] {
+        let e = Env::new();
+        let (_mid, did) = queued_to_busy(&e).await;
+        let h = Harness::from_id(h).unwrap();
+        assert_eq!(hook_after(&e, "b", h, "PreToolUse", post.clone()), "");
+        assert_eq!(e.delivery(&did).delivery.state, DeliveryState::Queued);
+        let ctx = hook_after(&e, "b", h, "PostToolUse", post.clone());
+        assert!(ctx.contains("the secret plan"), "{ctx}");
+        assert_eq!(e.delivery(&did).delivery.state, DeliveryState::Delivered);
+    }
+    // Harnesses without mention hooks take nothing from a hook.
+    let e = Env::new();
+    let (_mid, did) = queued_to_busy(&e).await;
+    let gemini = Harness::from_id("gemini").unwrap();
+    assert_eq!(hook_after(&e, "b", gemini, "PostToolUse", post), "");
+    assert_eq!(e.delivery(&did).delivery.state, DeliveryState::Queued);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_busy_headless_recipient_is_steered_unless_it_is_acp() {
+    for (integration, steered) in [("headless:claude", true), ("headless:acp", false)] {
+        let e = Env::new();
+        e.put_run("b", "claude", Execution::Working);
+        {
+            let mut c = e.server.core.lock().unwrap();
+            let mut r = c.run_for_pane("b").cloned().unwrap();
+            r.integration = integration.into();
+            let mut tx = Tx::new();
+            tx.run(r);
+            e.server.commit(&mut c, tx).unwrap();
+        }
+        e.ok(
+            &user(),
+            "mention.set",
+            json!({"pane": "b", "name": "reviewer"}),
+        )
+        .await;
+        let did = e.to_reviewer(false).await;
+        e.pump();
+        let state = e.delivery(&did).delivery.state;
+        assert_eq!(
+            state != DeliveryState::Queued,
+            steered,
+            "{integration}: {state:?}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_queued_message_keeps_the_turn_going_at_stop() {
+    let e = Env::new();
+    let (mid, did) = queued_to_busy(&e).await;
+    let stop = |e: &Env| super::hooks::before_signal(&e.server, "b", claude(), "Stop", &json!({}));
+    let out = stop(&e).expect("a blocked stop");
+    assert_eq!(out["decision"], "block");
+    let reason = out["reason"].as_str().unwrap();
+    assert!(reason.contains("the secret plan"), "{reason}");
+    assert_eq!(e.delivery(&did).delivery.state, DeliveryState::Delivered);
+    // The next stop reminds once about the answer, then lets the turn end.
+    let out = stop(&e).expect("the reminder");
+    assert!(out["reason"].as_str().unwrap().contains(&mid), "{out}");
+    assert!(stop(&e).is_none());
+    assert_eq!(e.delivery(&did).delivery.state, DeliveryState::Completed);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn ride_along_skips_deliveries_the_engine_would_not_deliver() {
+    let e = Env::new();
+    let u = user();
+    let (_mid, did) = queued_to_busy(&e).await;
+    // Delivery switched off for the name.
+    e.ok(&u, "mention.set", json!({"pane": "b", "delivery": false}))
+        .await;
+    assert_eq!(hook_context(&e, "b", "go on"), "");
+    e.ok(&u, "mention.set", json!({"pane": "b", "delivery": true}))
+        .await;
+    // An envelope being typed stays with the engine.
+    e.server.mentions.typing.lock().unwrap().insert(did.clone());
+    assert_eq!(hook_context(&e, "b", "go on"), "");
+    e.server.mentions.typing.lock().unwrap().remove(&did);
+    // A submitted envelope too.
+    update(&e.server, &did, |r| {
+        r.delivery.state = DeliveryState::Submitted;
+        true
+    });
+    assert_eq!(hook_context(&e, "b", "go on"), "");
+    update(&e.server, &did, |r| {
+        r.delivery.state = DeliveryState::Queued;
+        true
+    });
+    // A recipient that moved to another workspace.
+    e.put_pane("b", "wb");
+    assert_eq!(hook_context(&e, "b", "go on"), "");
+    assert_eq!(e.delivery(&did).delivery.state, DeliveryState::Queued);
+}
