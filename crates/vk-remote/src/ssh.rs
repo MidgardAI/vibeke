@@ -146,6 +146,65 @@ impl Target {
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     }
 
+    /// Make sure the shared ControlMaster is up. If it is not, run `ssh … true` once so that
+    /// login steps (Tailscale check banner, host-key question, password, 2FA) happen first.
+    /// Interactive: ssh inherits the terminal so the user sees and answers prompts, and a note
+    /// appears after a few seconds. Not interactive: `BatchMode=yes`, and a failure explains how
+    /// to authenticate by hand. The master stays up for `ControlPersist` seconds afterwards.
+    pub async fn authenticate(&self, interactive: bool) -> Result<()> {
+        self.check_address()?;
+        if self.control("check").await.is_ok() {
+            return Ok(());
+        }
+        let mut c = self.command("true", !interactive);
+        if interactive {
+            c.stdin(Stdio::inherit())
+                .stdout(Stdio::inherit())
+                .stderr(Stdio::inherit());
+        } else {
+            c.stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped());
+        }
+        let mut child = c.spawn().context("spawn ssh")?;
+        if interactive {
+            let status =
+                match tokio::time::timeout(std::time::Duration::from_secs(5), child.wait()).await {
+                    Ok(r) => r?,
+                    Err(_) => {
+                        eprintln!(
+                            "vibeke: waiting for ssh authentication on {} (Ctrl-C to cancel)",
+                            self.label_or_address()
+                        );
+                        child.wait().await?
+                    }
+                };
+            if !status.success() {
+                bail!("ssh authentication to {} failed ({status})", self.address);
+            }
+            Ok(())
+        } else {
+            let out = child.wait_with_output().await?;
+            if !out.status.success() {
+                bail!(
+                    "ssh to {} needs authentication: {}\nRun `ssh {}` once in a terminal to log in, then try again.",
+                    self.address,
+                    String::from_utf8_lossy(&out.stderr).trim(),
+                    self.address
+                );
+            }
+            Ok(())
+        }
+    }
+
+    fn label_or_address(&self) -> &str {
+        if self.label.is_empty() {
+            &self.address
+        } else {
+            &self.label
+        }
+    }
+
     /// Start `<remote_bin> bridge` and a client mux over its stdio.
     pub async fn bridge(&self, remote_bin: &str, session: &str) -> Result<(Mux, Child)> {
         let cmd = format!(

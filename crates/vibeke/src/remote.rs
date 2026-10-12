@@ -2,6 +2,7 @@
 //! saved machines (`vibeke machine …`), and `--machine` forwarding (never falls back to local).
 
 use serde_json::{Value, json};
+use std::io::IsTerminal;
 use std::path::PathBuf;
 use vk_cli::{EXIT_API, EXIT_OK, EXIT_USAGE, Global};
 use vk_remote::bootstrap::{self, Artifact};
@@ -212,6 +213,10 @@ pub async fn ssh(g: &Global, args: &[String]) -> i32 {
         .iter()
         .find(|m| m.label == target.label)
         .is_some_and(|m| m.bootstrap == vk_config::Bootstrap::RemoteDownload);
+    if let Err(e) = target.authenticate(std::io::stdin().is_terminal()).await {
+        eprintln!("vibeke: {e:#}");
+        return EXIT_API;
+    }
     eprintln!("vibeke: probing {} …", target.address);
     let probe = match bootstrap::probe(&target).await {
         Ok(p) => p,
@@ -572,6 +577,9 @@ async fn machine_connect(g: &Global, args: &[String]) -> i32 {
     };
     let cfg = crate::commands::load_config();
     let target = target_for(&cfg, label);
+    if let Err(e) = target.authenticate(std::io::stdin().is_terminal()).await {
+        return unavailable(&target.label, format!("{e:#}"));
+    }
     let (link, r) = connect_link(g, target.clone()).await;
     let ls = link.status();
     let code = match r {
@@ -696,6 +704,9 @@ async fn machine_upgrade(g: &Global, args: &[String]) -> i32 {
     }
     let cfg = crate::commands::load_config();
     let target = target_for(&cfg, label);
+    if let Err(e) = target.authenticate(std::io::stdin().is_terminal()).await {
+        return unavailable(&target.label, format!("{e:#}"));
+    }
     let probe = match bootstrap::probe(&target).await {
         Ok(p) => p,
         Err(e) => return unavailable(&target.label, format!("{e:#}")),

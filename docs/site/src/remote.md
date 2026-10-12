@@ -25,6 +25,8 @@ Then connect:
 vibeke ssh devbox
 ```
 
+On the first connection, Vibeke shows the login prompts of `ssh`, such as a host key question, a password or a Tailscale sign-in link.
+
 Vibeke downloads and verifies the signed release manifest on your computer.
 The remote host downloads the matching binary and checks its checksum before installation.
 The host needs `curl` and outbound access to GitHub release downloads.
