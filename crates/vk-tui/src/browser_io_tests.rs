@@ -587,3 +587,192 @@ fn pinned_device_reaches_the_media_host_and_shows_in_the_chrome() {
         .collect();
     assert!(row.contains("▯ iphone-15"), "{row}");
 }
+
+// ---- annotate mode ----------------------------------------------------------------------------
+
+fn browser_mouse_cmds(rx: &mut Rx) -> Vec<BrowserCmd> {
+    drain(rx)
+        .into_iter()
+        .filter_map(|f| match f {
+            ClientFrame::Browser {
+                cmd: cmd @ BrowserCmd::Mouse { .. },
+                ..
+            } => Some(cmd),
+            _ => None,
+        })
+        .collect()
+}
+
+fn pane_mouse(app: &App, kind: crate::event::MouseEventKind) -> crate::event::MouseEvent {
+    let r = app
+        .pane_rects()
+        .into_iter()
+        .find(|(p, _)| p == "bp")
+        .unwrap()
+        .1;
+    crate::event::MouseEvent {
+        kind,
+        column: r.x + 3,
+        row: r.y + 3,
+        modifiers: crate::event::KeyModifiers::NONE,
+    }
+}
+
+#[test]
+fn prefix_alt_n_toggles_annotate_on_the_media_host_and_opens_the_notes_split() {
+    let (mut app, mut rxs) = setup(2);
+    prefix(
+        &mut app,
+        KeyEvent::new(Key::Char('n'), vk_proto::input::Mods::ALT),
+    );
+    let host = commands(&mut rxs[0]);
+    assert!(
+        host.iter().any(|c| c["method"] == "browser.annotate"
+            && c["params"]["pane"] == "bp"
+            && c["params"]["on"] == true),
+        "the media host intercepts the mouse: {host:?}"
+    );
+    assert!(commands(&mut rxs[1]).is_empty(), "the owner hears later");
+    assert!(!crate::browser::is_annotating(&app, "bp"));
+    // The reply sets the flag and opens the split on the owner.
+    crate::browser::on_reply(
+        &mut app,
+        0,
+        Reply::Annotate {
+            pane: "bp".into(),
+            on: true,
+        },
+        Ok(json!({"on": true, "draft": "d1"})),
+    );
+    assert!(crate::browser::is_annotating(&app, "bp"));
+    let owner = commands(&mut rxs[1]);
+    assert!(
+        owner
+            .iter()
+            .any(|c| c["method"] == "browser.pane.annotations"
+                && c["params"]["pane"] == "bp"
+                && c["params"]["open"] == true),
+        "{owner:?}"
+    );
+    // The palette action toggles it off.
+    assert!(crate::browser::action_name(&mut app, "browser_annotate"));
+    let host = commands(&mut rxs[0]);
+    assert!(
+        host.iter()
+            .any(|c| c["method"] == "browser.annotate" && c["params"]["on"] == false),
+        "{host:?}"
+    );
+}
+
+#[test]
+fn esc_leaves_annotate_mode_instead_of_reaching_the_page() {
+    let (mut app, mut rxs) = setup(2);
+    crate::browser::on_reply(
+        &mut app,
+        0,
+        Reply::Annotate {
+            pane: "bp".into(),
+            on: true,
+        },
+        Ok(json!({"on": true})),
+    );
+    drain(&mut rxs[0]);
+    drain(&mut rxs[1]);
+    app.on_key(KeyEvent::named(NamedKey::Escape));
+    let frames = drain(&mut rxs[0]);
+    assert!(
+        !frames.iter().any(|f| matches!(
+            f,
+            ClientFrame::Browser {
+                cmd: BrowserCmd::Key(_),
+                ..
+            }
+        )),
+        "esc stays out of the page"
+    );
+    let cmds: Vec<serde_json::Value> = frames
+        .into_iter()
+        .filter_map(|f| match f {
+            ClientFrame::Command { json, .. } => serde_json::from_str(&json).ok(),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        cmds.iter()
+            .any(|c| c["method"] == "browser.annotate" && c["params"]["on"] == false),
+        "{cmds:?}"
+    );
+    crate::browser::on_reply(
+        &mut app,
+        0,
+        Reply::Annotate {
+            pane: "bp".into(),
+            on: false,
+        },
+        Ok(json!({"on": false})),
+    );
+    assert!(!crate::browser::is_annotating(&app, "bp"));
+}
+
+#[test]
+fn a_watch_pane_forwards_mouse_only_while_annotating() {
+    use crate::event::MouseEventKind;
+    let (mut app, mut rxs) = setup(1);
+    app.machines[0].model.panes[1]
+        .browser
+        .as_mut()
+        .unwrap()
+        .watch = Some("b1".into());
+    // Read-only: a press is dropped.
+    let down = pane_mouse(&app, MouseEventKind::Down(crate::event::MouseButton::Left));
+    crate::browser::on_mouse(&mut app, &down, None);
+    assert!(browser_mouse_cmds(&mut rxs[0]).is_empty());
+    // Annotate on: moves and presses go to the server, which picks instead of clicking.
+    crate::browser::on_reply(
+        &mut app,
+        0,
+        Reply::Annotate {
+            pane: "bp".into(),
+            on: true,
+        },
+        Ok(json!({"on": true})),
+    );
+    drain(&mut rxs[0]);
+    let mv = pane_mouse(&app, MouseEventKind::Moved);
+    crate::browser::on_mouse(&mut app, &mv, None);
+    crate::browser::on_mouse(&mut app, &down, None);
+    let cmds = browser_mouse_cmds(&mut rxs[0]);
+    assert_eq!(cmds.len(), 2, "{cmds:?}");
+    // Wheel events stay read-only.
+    let wheel = pane_mouse(&app, MouseEventKind::ScrollDown);
+    crate::browser::on_mouse(&mut app, &wheel, None);
+    assert!(browser_mouse_cmds(&mut rxs[0]).is_empty());
+}
+
+#[test]
+fn the_chrome_shows_an_annotating_badge() {
+    let (mut app, _rxs) = setup(1);
+    crate::browser::on_reply(
+        &mut app,
+        0,
+        Reply::Annotate {
+            pane: "bp".into(),
+            on: true,
+        },
+        Ok(json!({"on": true})),
+    );
+    let r = app
+        .pane_rects()
+        .into_iter()
+        .find(|(p, _)| p == "bp")
+        .unwrap()
+        .1;
+    let mut g = Grid::new(81, 25);
+    crate::browser::draw_pane(&app, &mut g, "bp", r);
+    let row: String = g
+        .row(r.y)
+        .iter()
+        .map(|c| c.text.as_str().to_string())
+        .collect();
+    assert!(row.contains("annotating"), "{row}");
+}

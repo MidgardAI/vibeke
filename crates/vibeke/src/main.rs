@@ -508,6 +508,28 @@ async fn dispatch(g: Global, args: Vec<String>) -> i32 {
             })
             .await
         }
+        // `browser annotations --pane <browser pane> --edit`: the interactive notes panel the
+        // notes split runs; without `--edit` it is the plain `browser.annotations` call.
+        Some("browser")
+            if args.get(1).map(String::as_str) == Some("annotations")
+                && args[2..].iter().any(|a| a == "--edit")
+                && args[2..]
+                    .iter()
+                    .any(|a| a == "--pane" || a.starts_with("--pane=")) =>
+        {
+            let params = match vk_cli::build_params(&[], &args[2..]) {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("{e}\n{}", vk_cli::noun_help("browser"));
+                    return EXIT_USAGE;
+                }
+            };
+            let gr = &g;
+            with_client(gr, |mut c| async move {
+                vk_cli::browser_annotate::run(&mut c, gr, params).await
+            })
+            .await
+        }
         // `vibeke preview trust-ca [--install]`: local only (no server): prints how to trust the
         // preview CA; `--install` (macOS) asks for a typed confirmation first.
         Some("preview") if args.get(1).map(String::as_str) == Some("trust-ca") => {

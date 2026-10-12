@@ -596,6 +596,7 @@ pub const ACTION_INFO: &[(&str, &str)] = &[
         "Browser: open in a window ⇄ back to the pane",
     ),
     ("browser_console", "Browser: console/network split"),
+    ("browser_annotate", "Annotate page"),
     (
         "browser_paste_image",
         "Browser: paste the clipboard image into the page",

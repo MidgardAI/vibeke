@@ -26,7 +26,7 @@ use std::collections::HashMap;
 use unicode_width::UnicodeWidthStr;
 use vk_browser::frame::Rgba;
 use vk_browser::kitty::{self, DIACRITICS, Header, PLACEHOLDER, PixelFormat};
-use vk_proto::input::{KeyEvent, Mods, MouseButton, MouseKind};
+use vk_proto::input::{Key, KeyEvent, Mods, MouseButton, MouseKind, NamedKey};
 use vk_proto::layout::Rect;
 use vk_proto::model::{BrowserPane, Preview, PreviewStatus};
 use vk_proto::render::{
@@ -40,6 +40,9 @@ const INLINE_INTERVAL: Duration = Duration::from_millis(200);
 /// Image ids per pane (tiles); bases start at 1 so ids stay below 2^24 (no MSB diacritic).
 const IDS_PER_PANE: u32 = 0x4000;
 
+/// The chrome row badge while a pane is in annotate mode (it replaces the environment label).
+const ANNOTATING_BADGE: &str = "✎ annotating";
+
 /// Browser prefix table (active while a browser pane is focused). Keys override global
 /// bindings that mean nothing in a browser pane (copy mode, scrollback editing, sync input).
 pub const DEFAULT_BROWSER_KEYS: &[(&str, &str)] = &[
@@ -51,6 +54,8 @@ pub const DEFAULT_BROWSER_KEYS: &[(&str, &str)] = &[
     ("browser_screenshot", "prefix+shift+s"),
     ("browser_window", "prefix+o"),
     ("browser_console", "prefix+alt+c"),
+    // `prefix+a` is `next_attention`; annotating takes `prefix+alt+n` ("note").
+    ("browser_annotate", "prefix+alt+n"),
     ("browser_take_over", "prefix+t"),
     ("browser_paste_image", "prefix+shift+v"),
 ];
@@ -91,6 +96,9 @@ pub struct PaneMedia {
     pub last_inline: Option<Instant>,
     pub frames: u64,
     pub tiles: u64,
+    /// Annotate mode (`browser.annotate`): the server turns the pane's mouse events into
+    /// element and region picks, so they are forwarded even on a read-only watch pane.
+    pub annotating: bool,
 }
 
 #[derive(Default)]
@@ -162,6 +170,13 @@ pub enum Reply {
     Mirrors,
     /// `browser.pane.console`: the console split opened or closed.
     ConsoleSplit,
+    /// `browser.annotate` on the media host: `on` is what was asked for.
+    Annotate {
+        pane: String,
+        on: bool,
+    },
+    /// `browser.pane.annotations`: the notes split opened or closed.
+    AnnotationsSplit,
     /// `preview.status` for the preview manager (mirrors, proxy routes, browsers).
     Status,
     /// `browser.install` from the preview manager.
@@ -199,7 +214,7 @@ pub fn os_open(url: &str) -> std::io::Result<()> {
 }
 
 impl BrowserUi {
-    fn alloc_base(&mut self) -> u32 {
+    pub(crate) fn alloc_base(&mut self) -> u32 {
         let b = 1 + (self.next_base % 1000) * IDS_PER_PANE;
         self.next_base += 1;
         b
@@ -355,6 +370,11 @@ pub fn watch_of(app: &App, pane: &str) -> Option<(String, bool, bool)> {
         st.is_some_and(|s| s.controlled_here),
         st.is_some_and(|s| s.human_control),
     ))
+}
+
+/// Is `pane` in annotate mode (as last confirmed by its media host)?
+pub fn is_annotating(app: &App, pane: &str) -> bool {
+    app.browser.panes.get(pane).is_some_and(|p| p.annotating)
 }
 
 /// Input to a read-only watch pane is dropped here (the server ignores it too) with a hint.
@@ -953,7 +973,15 @@ pub fn draw_pane(app: &App, g: &mut Grid, pane: &str, r: Rect) {
         draw_watch_chrome(app, g, pane, r, &w, url, chrome_style);
     } else {
         let pin = spec.and_then(|s| s.device.clone().or_else(|| s.viewport.clone()));
-        draw_nav_chrome(g, r, url, st, pin.as_deref(), chrome_style);
+        draw_nav_chrome(
+            g,
+            r,
+            url,
+            st,
+            pin.as_deref(),
+            chrome_style,
+            is_annotating(app, pane),
+        );
     }
     draw_content(app, g, r, url, st, pm);
 }
@@ -970,6 +998,7 @@ fn draw_watch_chrome(
     chrome_style: Style,
 ) {
     let t = &app.theme;
+    let annotating = is_annotating(app, pane);
     let st = app.browser.panes.get(pane).map(|p| &p.status);
     let here = st.is_some_and(|s| s.controlled_here);
     let human = st.is_some_and(|s| s.human_control);
@@ -1002,7 +1031,10 @@ fn draw_watch_chrome(
     let shown = url
         .trim_start_matches("http://")
         .trim_start_matches("https://");
-    let env = st.map(|s| s.env.clone()).unwrap_or_default();
+    let mut env = st.map(|s| s.env.clone()).unwrap_or_default();
+    if annotating {
+        env = ANNOTATING_BADGE.to_string();
+    }
     let env_w = UnicodeWidthStr::width(env.as_str()) as u16;
     let rest = r.w.saturating_sub(used + 1);
     let env_fits = env_w + 2 < rest.saturating_sub(12);
@@ -1020,7 +1052,7 @@ fn draw_watch_chrome(
             r.y,
             &env,
             Style {
-                attrs: chrome_style.attrs | attr::DIM,
+                attrs: chrome_style.attrs | if annotating { attr::BOLD } else { attr::DIM },
                 ..chrome_style
             },
             env_w,
@@ -1036,6 +1068,7 @@ fn draw_nav_chrome(
     st: Option<&BrowserStatus>,
     pin: Option<&str>,
     chrome_style: Style,
+    annotating: bool,
 ) {
     let on = |b: bool| {
         if b {
@@ -1073,6 +1106,9 @@ fn draw_nav_chrome(
             format!("▯ {p}")
         };
     }
+    if annotating {
+        env = ANNOTATING_BADGE.to_string();
+    }
     let env_w = UnicodeWidthStr::width(env.as_str()) as u16;
     let shown = url
         .trim_start_matches("http://")
@@ -1095,7 +1131,7 @@ fn draw_nav_chrome(
             r.y,
             &env,
             Style {
-                attrs: chrome_style.attrs | attr::DIM,
+                attrs: chrome_style.attrs | if annotating { attr::BOLD } else { attr::DIM },
                 ..chrome_style
             },
             env_w,
@@ -1238,6 +1274,13 @@ pub fn send_key(app: &mut App, ev: KeyEvent) -> bool {
     let Some(pane) = focused_browser(app) else {
         return false;
     };
+    // One Esc leaves annotate mode (nothing reaches the page).
+    if is_annotating(app, &pane) && matches!(ev.key, Key::Named(NamedKey::Escape)) {
+        if ev.kind != vk_proto::input::KeyKind::Release {
+            crate::browser_io::annotate_off(app, &pane);
+        }
+        return true;
+    }
     if ev.kind != vk_proto::input::KeyKind::Release && read_only(app, &pane) {
         return true;
     }
@@ -1396,8 +1439,18 @@ pub fn on_mouse(app: &mut App, me: &CtMouse, px: Option<(u32, u32)>) -> bool {
         }
         return true;
     }
+    let annotating = is_annotating(app, &pane);
     if let Some((_, here, _)) = watching
         && !here
+        // Annotate mode lets pointer events through: the server picks instead of clicking.
+        && !(annotating
+            && matches!(
+                me.kind,
+                MouseEventKind::Down(_)
+                    | MouseEventKind::Up(_)
+                    | MouseEventKind::Drag(_)
+                    | MouseEventKind::Moved
+            ))
     {
         if down
             || matches!(
@@ -1800,6 +1853,8 @@ pub fn on_reply(
             }
         }
         Reply::ConsoleSplit => crate::browser_io::on_console_reply(app, &v),
+        Reply::Annotate { pane, on } => crate::browser_io::on_annotate_reply(app, &pane, on, &v),
+        Reply::AnnotationsSplit => {}
         Reply::Status => crate::preview_manager::on_status(app, mi, v),
         Reply::Install => {}
         Reply::Window { handle, .. } => app.toast(format!("opened {handle} in a window")),
@@ -1986,6 +2041,7 @@ pub fn action_name(app: &mut App, action: &str) -> bool {
                 crate::browser_io::console_split(app, &p);
             }
         }
+        ("browser_annotate", Some(p)) => crate::browser_io::annotate(app, &p),
         ("browser_paste_image", Some(p)) => {
             if read_only(app, &p) {
                 return true;

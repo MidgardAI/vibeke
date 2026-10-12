@@ -4,6 +4,9 @@
 //! - **Console split** (`browser_console`, `prefix+alt+c`): `browser.pane.console` on the
 //!   pane's machine opens (or closes) a split under the browser pane running
 //!   `vibeke browser console --pane <id> --follow`.
+//! - **Annotate mode** (`browser_annotate`, `prefix+alt+n`): `browser.annotate {pane, on}` on the
+//!   pane's media host (it turns the pane's mouse events into picks); the reply sets
+//!   `PaneMedia.annotating` and opens the notes split (`browser.pane.annotations`) on the owner.
 //! - **Page clipboard**: only the machine that renders the page (the pane's media host) may send
 //!   `ServerFrame::Clipboard` for a browser pane; a frame naming a browser pane from any other
 //!   machine is dropped. It is judged as a write from a remote machine when the sender or the
@@ -122,6 +125,83 @@ pub fn on_console_reply(app: &mut App, v: &serde_json::Value) {
         app.toast(
             "console split: c console · n network · e errors only · a all · q quit (in the split)",
         );
+    }
+}
+
+// ---- annotate mode ----------------------------------------------------------------------------
+
+/// The machine whose server renders `pane` and so intercepts its mouse events in annotate mode.
+fn annotate_host(app: &App, pane: &str) -> usize {
+    app.browser
+        .panes
+        .get(pane)
+        .map(|p| p.host)
+        .unwrap_or_else(|| {
+            if crate::browser::watch_of(app, pane).is_some() {
+                app.cur
+            } else {
+                crate::browser::media_host(app, app.cur)
+            }
+        })
+}
+
+/// `browser_annotate`: toggle annotate mode on the pane's media host. The reply sets
+/// `PaneMedia.annotating` and opens the notes split on the pane's owner.
+pub fn annotate(app: &mut App, pane: &str) {
+    let on = !crate::browser::is_annotating(app, pane);
+    send_annotate(app, pane, on);
+}
+
+/// Leave annotate mode (Esc in an annotating pane).
+pub fn annotate_off(app: &mut App, pane: &str) {
+    send_annotate(app, pane, false);
+}
+
+fn send_annotate(app: &mut App, pane: &str, on: bool) {
+    let host = annotate_host(app, pane);
+    app.command_on(
+        host,
+        "browser.annotate",
+        json!({"pane": pane, "on": on}),
+        Pending::Preview(crate::browser::Reply::Annotate {
+            pane: pane.to_string(),
+            on,
+        }),
+    );
+}
+
+/// Reply to `browser.annotate`. The server's `on` wins over what was asked for. Turning it on
+/// opens the notes split on the pane's owner (a split already open stays: the server's
+/// `browser.pane.annotations {open: true}` is idempotent).
+pub fn on_annotate_reply(app: &mut App, pane: &str, asked: bool, v: &serde_json::Value) {
+    let on = v.get("on").and_then(|o| o.as_bool()).unwrap_or(asked);
+    if let Some(pm) = app.browser.panes.get_mut(pane) {
+        pm.annotating = on;
+    } else if on {
+        // No frame yet (a watch pane before its first media frame): remember the mode.
+        let host = annotate_host(app, pane);
+        let base = app.browser.alloc_base();
+        app.browser.panes.insert(
+            pane.to_string(),
+            crate::browser::PaneMedia {
+                host,
+                base,
+                annotating: true,
+                ..Default::default()
+            },
+        );
+    }
+    if on {
+        let owner = app.cur;
+        app.command_on(
+            owner,
+            "browser.pane.annotations",
+            json!({"pane": pane, "open": true}),
+            Pending::Preview(crate::browser::Reply::AnnotationsSplit),
+        );
+        app.toast("annotating: hover, click an element, shift-drag a region · esc leaves");
+    } else {
+        app.toast("annotate off");
     }
 }
 

@@ -246,6 +246,7 @@ const LABELS: &[(&str, &str)] = &[
     ("browser_screenshot", "screenshot"),
     ("browser_window", "open in your browser"),
     ("browser_console", "console"),
+    ("browser_annotate", "annotate"),
     ("browser_take_over", "take control"),
     ("browser_paste_image", "paste image"),
 ];

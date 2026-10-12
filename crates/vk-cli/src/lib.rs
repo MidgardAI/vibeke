@@ -3,6 +3,7 @@
 //! every verb a method; `--flag value` pairs become params (dashes → underscores), with a few
 //! positional arguments per verb. `vibeke <noun>` alone prints help and never executes.
 
+pub mod browser_annotate;
 pub mod browser_console;
 pub mod client;
 pub mod compat;
