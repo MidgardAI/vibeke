@@ -108,6 +108,14 @@ Reads of the pane and the agent do the same for every caller: `pane.read`, `agen
 match allows soft wraps anywhere in the line, so a nonce that wraps onto the next row is
 replaced too. Styled reads (ANSI) of a screen that shows an envelope fall back to plain text.
 
+Titles derived from the line are scrubbed as well. A harness may name its session after the
+envelope (Codex named a thread `Answer 2+2 [EQ4B36KPSJ6A]`). So the run title
+(`AgentRun.title`, from transcripts and Codex thread names) and the pane's terminal title in
+the render stream and the compat API go through `scrub::scrub_title`: an envelope becomes
+`Message from @coder`, and a nonce bracket is removed anywhere. The preview a harness reworded
+stays; the nonce does not. `AgentRun.last_message` is scrubbed like a pane read. Vibeke cannot
+change what the harness draws in its own status bar.
+
 ### 4.2 When to deliver
 
 A delivery is ready when all of these hold:

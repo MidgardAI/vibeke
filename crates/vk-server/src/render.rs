@@ -1082,7 +1082,8 @@ impl Session {
                     sc.engine.visible_rows(),
                     sc.engine.cursor(),
                     sc.engine.modes(),
-                    sc.engine.title(),
+                    // A harness may title the terminal after an envelope (spec 19 §4.1).
+                    crate::mentions::scrub::scrub_terminal_title(sc.engine.title()),
                     sc.engine.cols(),
                     sc.engine.rows(),
                     sc.engine.scrolled_total(),

@@ -1188,7 +1188,7 @@ impl Snap {
         let (terminal_title, scroll) = match &rt {
             Some(rt) => {
                 let sc = rt.screen.lock().unwrap();
-                let title = sc.engine.title();
+                let title = crate::mentions::scrub::scrub_terminal_title(sc.engine.title());
                 // The offset is the client's view; the server's own scrollback may be
                 // shorter (a client keeps more), so the maximum is at least the offset.
                 let offset = u64::from(self.meta.scroll.get(&p.id).copied().unwrap_or(0));

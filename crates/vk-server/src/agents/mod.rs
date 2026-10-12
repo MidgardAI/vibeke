@@ -1832,6 +1832,8 @@ fn on_signal(server: &Arc<Server>, pane: &str, h: Harness, event: &str, p: &Valu
                 .or_else(|| last_assistant_message(p));
             update_run(server, &run.id, |r, tx| {
                 if let Some(m) = &msg {
+                    // An answer that quotes an envelope keeps none of its nonce or preview.
+                    let m = crate::mentions::scrub::scrub(m);
                     r.last_message = Some(m.chars().take(2000).collect());
                 }
                 tx.event(

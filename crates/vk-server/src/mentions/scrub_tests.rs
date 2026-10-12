@@ -80,3 +80,52 @@ fn json_strings_are_scrubbed_everywhere() {
     assert_eq!(t, format!("↪ vibeke message {ID} from @a · … […]"));
     assert_eq!(v["n"], 3);
 }
+
+#[test]
+fn titles_lose_envelopes_and_nonces() {
+    // A harness named its thread after the envelope's preview and kept the nonce.
+    assert_eq!(
+        scrub_title("Answer 2+2 [EQ4B36KPSJ6A]").as_deref(),
+        Some("Answer 2+2")
+    );
+    // The first prompt as the title: the envelope itself.
+    assert_eq!(
+        scrub_title(&format!(
+            "↪ vibeke message {ID} from @coder · Answer 2+2 [EQ4B36KPSJ6A]"
+        ))
+        .as_deref(),
+        Some("Message from @coder")
+    );
+    // Cut at 80 characters, before the nonce.
+    assert_eq!(
+        scrub_title(&format!(
+            "↪ vibeke message {ID} from the user (in @lead) · review the migr…"
+        ))
+        .as_deref(),
+        Some("Message from the user (in @lead)")
+    );
+    // A nonce cut short at the end.
+    assert_eq!(
+        scrub_title("Answer 2+2 [EQ4B…").as_deref(),
+        Some("Answer 2+2")
+    );
+    // Ordinary titles stay.
+    for t in [
+        "Fix the login bug",
+        "Review [WIP] branch",
+        "Answer [abcdefghjkmn]",
+    ] {
+        assert_eq!(scrub_title(t).as_deref(), Some(t), "{t}");
+    }
+    assert_eq!(scrub_title("[EQ4B36KPSJ6A]"), None);
+}
+
+#[test]
+fn terminal_titles_lose_nonces() {
+    assert_eq!(
+        scrub_terminal_title("codex · Answer 2+2 [EQ4B36KPSJ6A]".to_string()),
+        "codex · Answer 2+2"
+    );
+    assert_eq!(scrub_terminal_title("~/code".to_string()), "~/code");
+    assert_eq!(scrub_terminal_title(String::new()), "");
+}

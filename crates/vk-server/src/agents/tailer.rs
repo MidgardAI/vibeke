@@ -453,7 +453,7 @@ fn apply(
 }
 
 /// The run's title: a Codex thread name from `session_index.jsonl`, else what the transcript
-/// says ([`Parser::title`]). Written only when it changed.
+/// says ([`Parser::title`]), without envelope parts. Written only when it changed.
 fn set_title(server: &Server, run_id: &str, harness: &str, from_transcript: Option<String>) {
     let Some((current, session)) = server.with_core(|c| {
         c.run(run_id)
@@ -470,7 +470,11 @@ fn set_title(server: &Server, run_id: &str, harness: &str, from_transcript: Opti
         },
         None => None,
     };
-    let title = thread.or(from_transcript);
+    // A typed envelope (or a thread name a harness made from one) must not leak its nonce or
+    // preview into the run's title (spec 19 §4.1).
+    let title = thread
+        .or(from_transcript)
+        .and_then(|t| crate::mentions::scrub::scrub_title(&t));
     // A cleared title (pi `/name` with an empty name) clears the run's too.
     if title == current {
         return;

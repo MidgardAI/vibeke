@@ -52,6 +52,43 @@ pub fn scrub(text: &str) -> Cow<'_, str> {
     })
 }
 
+/// A one-line envelope in a title, maybe cut short (titles are at most 80 characters, so the
+/// nonce is often gone): `↪ vibeke message <id> from <sender> · <preview…>`.
+static TITLE_ENVELOPE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?:↪\s*)?vibeke\s+message\s+m_[0-9a-z]+…?(?:\s+from\s+(?P<from>[^·\[\]]{1,80}?))?\s*(?:·.*)?$")
+        .expect("valid title envelope pattern")
+});
+
+/// A nonce bracket on its own (`[EQ4B36KPSJ6A]`), as a harness keeps it when it names a
+/// thread after the envelope's preview, or one cut short at the end of a title.
+static TITLE_NONCE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\s*\[[A-Z2-7]{12}\]|\s*\[[A-Z2-7]{0,11}…$").expect("valid nonce pattern")
+});
+
+/// A run title (or another one-line summary) that came from a transcript, a harness's thread
+/// name or a hook, without envelope parts: an envelope becomes `Message from <sender>`, and a
+/// nonce bracket anywhere is removed. The preview a harness turned into its own wording stays.
+/// `None` when nothing is left.
+pub fn scrub_title(title: &str) -> Option<String> {
+    let s = scrub(title);
+    let s = TITLE_ENVELOPE.replace(&s, |c: &Captures| match c.name("from") {
+        Some(f) => format!("Message from {}", f.as_str().trim()),
+        None => "Message".to_string(),
+    });
+    let s = TITLE_NONCE.replace_all(&s, "");
+    let s = s.trim();
+    (!s.is_empty()).then(|| s.to_string())
+}
+
+/// A pane's terminal title (OSC 0/2), which a harness may set from its thread name:
+/// [`scrub_title`], but without the regex work for the usual title.
+pub fn scrub_terminal_title(title: String) -> String {
+    if !title.contains('[') && !title.contains("vibeke") {
+        return title;
+    }
+    scrub_title(&title).unwrap_or_default()
+}
+
 /// [`scrub`] applied to every string in a JSON value (transcript turns and items).
 pub fn scrub_value(v: &mut Value) {
     match v {
