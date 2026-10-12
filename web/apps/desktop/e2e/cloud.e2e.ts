@@ -127,7 +127,7 @@ test('sign in, send a pane to the cloud, bring it back, sign in again on needs_a
   await expect(send).toBeVisible();
   await expect(send.getByRole('button', { name: /Fly\.io Sprites/ })).toBeVisible({ timeout: 20_000 });
   await shoot(app, page, 'cloud-send-provider');
-  await send.getByRole('button', { name: new RegExp(FAKE.replace(/[()]/g, '\\$&')) }).click();
+  await send.getByRole('button', { name: new RegExp(FAKE.replace(/[\\^$.*+?()[\]{}|]/g, '\\$&')) }).click();
   await send.getByRole('button', { name: /A new sandbox/ }).click();
   await send.getByRole('button', { name: `Send to ${FAKE}` }).click();
   await expect(send.getByText('Done.', { exact: true })).toBeVisible({ timeout: 120_000 });
@@ -185,7 +185,7 @@ test('sign in, send a pane to the cloud, bring it back, sign in again on needs_a
   await page.evaluate((h) => (location.hash = h), hostPaneHash);
   await palette(page, 'Send to cloud', 'Send to cloud…');
   await expect(send).toBeVisible();
-  await send.getByRole('button', { name: new RegExp(FAKE.replace(/[()]/g, '\\$&')) }).click();
+  await send.getByRole('button', { name: new RegExp(FAKE.replace(/[\\^$.*+?()[\]{}|]/g, '\\$&')) }).click();
   await send.getByRole('button', { name: /A new sandbox/ }).click();
   api('cloud.auth.clear', { provider: 'fake' });
   await send.getByRole('button', { name: `Send to ${FAKE}` }).click();

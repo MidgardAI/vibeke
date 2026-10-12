@@ -24,7 +24,9 @@ export function encode(bytes: Uint8Array): string {
 }
 
 export function decode(s: string): Uint8Array {
-  s = s.replace(/=+$/, '');
+  let end = s.length;
+  while (end > 0 && s.charCodeAt(end - 1) === 61 /* = */) end--;
+  s = s.slice(0, end);
   if (s.length % 4 === 1) throw new Error('base64: invalid length');
   const out = new Uint8Array(Math.floor((s.length * 3) / 4));
   let buf = 0;
