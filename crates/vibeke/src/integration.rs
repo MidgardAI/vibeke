@@ -279,6 +279,7 @@ fn in_use(row: &vk_tui::onboarding::HarnessRow, dirs: &Dirs) -> bool {
         Harness::Omp => &dirs.omp,
         Harness::OpenCode => &dirs.opencode,
         Harness::Gemini => &dirs.gemini,
+        Harness::Hermes => &dirs.hermes,
     };
     row.binary.is_some() || home.is_dir()
 }
