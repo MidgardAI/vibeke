@@ -308,7 +308,10 @@ fn pending(g: &Global) -> i32 {
         .map(|(h, reason, detail)| json!({"harness": h.id(), "reason": reason, "detail": detail}))
         .collect();
     if is_json(g) {
-        println!("{}", json!({ "pending": rows }));
+        println!(
+            "{}",
+            json!({ "pending": rows, "version": vk_agents::install::VERSION })
+        );
     } else if rows.is_empty() {
         println!("nothing pending");
     } else {
@@ -328,7 +331,15 @@ fn pending(g: &Global) -> i32 {
 fn refresh_managed(dirs: &Dirs) -> Vec<std::path::PathBuf> {
     let mut all = vec![];
     for (h, written) in vk_agents::refresh_managed(dirs) {
-        record_integrity("install", h, dirs);
+        // The fingerprint covers the extension file, not the skill: re-record it only when the
+        // extension was rewritten, so a skill refresh never blesses edited hooks.
+        let ext = std::fs::canonicalize(dirs.config_file(h)).ok();
+        if written
+            .iter()
+            .any(|p| std::fs::canonicalize(p).ok() == ext && ext.is_some())
+        {
+            record_integrity("install", h, dirs);
+        }
         all.extend(written);
     }
     all

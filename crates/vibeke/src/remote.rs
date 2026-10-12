@@ -366,6 +366,8 @@ struct Need {
     /// `missing` or `stale`.
     reason: String,
     detail: String,
+    /// The remote's Vibeke version: a stale-hooks decline lasts until the remote updates.
+    version: String,
 }
 
 impl Need {
@@ -373,7 +375,7 @@ impl Need {
     /// next version for stale hooks.
     fn decline_key(&self) -> String {
         if self.reason == "stale" {
-            format!("{}@{}", self.harness, vk_proto::VERSION)
+            format!("{}@{}", self.harness, self.version)
         } else {
             self.harness.clone()
         }
@@ -381,24 +383,25 @@ impl Need {
 }
 
 fn pending_needs(out: &str) -> Vec<Need> {
-    serde_json::from_str::<Value>(out.trim())
-        .ok()
-        .and_then(|v| v.get("pending").cloned())
-        .and_then(|p| p.as_array().cloned())
-        .unwrap_or_default()
-        .iter()
+    let v = serde_json::from_str::<Value>(out.trim()).unwrap_or_default();
+    let version = v["version"].as_str().unwrap_or("").to_string();
+    v["pending"]
+        .as_array()
+        .into_iter()
+        .flatten()
         .filter_map(|r| {
             Some(Need {
                 harness: r["harness"].as_str()?.to_string(),
                 reason: r["reason"].as_str().unwrap_or("missing").to_string(),
                 detail: r["detail"].as_str().unwrap_or("").to_string(),
+                version: version.clone(),
             })
         })
         .collect()
 }
 
 /// The question for the remote's needs, e.g. "devbox runs claude without the Vibeke hooks and
-/// skill, and codex has outdated Vibeke hooks (missing: skill)".
+/// skill, and there is an out-of-date Vibeke integration on devbox: codex (missing: skill)".
 fn needs_text(label: &str, needs: &[Need]) -> String {
     let missing: Vec<&str> = needs
         .iter()
@@ -1366,12 +1369,12 @@ mod tests {
 
     #[test]
     fn pending_needs_reads_the_remote_answer() {
-        let out = r#"{"pending":[{"harness":"claude","reason":"missing","detail":"not installed"},{"harness":"codex","reason":"stale","detail":"missing: skill"}]}
+        let out = r#"{"pending":[{"harness":"claude","reason":"missing","detail":"not installed"},{"harness":"codex","reason":"stale","detail":"missing: skill"}],"version":"9.1.0"}
 "#;
         let n = pending_needs(out);
         assert_eq!(n.len(), 2);
         assert_eq!(n[0].decline_key(), "claude");
-        assert_eq!(n[1].decline_key(), format!("codex@{}", vk_proto::VERSION));
+        assert_eq!(n[1].decline_key(), "codex@9.1.0");
         assert_eq!(
             needs_text("devbox", &n),
             "devbox runs claude without the Vibeke hooks and skill, and there is an out-of-date Vibeke integration on devbox: codex (missing: skill)"
