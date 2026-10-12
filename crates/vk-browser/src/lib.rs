@@ -21,7 +21,10 @@
 //! - [`diff`]: visual diff of two screenshots (Stage 4, 06 B6).
 //! - [`devices`]: device presets, pinned viewports and letterboxing (06 B3.2, B5 `--device`).
 //! - [`capture`]: console/network rings from CDP events (06 B5 capture, the pane's console split).
+//! - [`annotate`]: the page annotation pick engine (06 B11): hover, element and region picks.
 
+/// Page annotations (06 B11): pick engine, gestures and the page JS.
+pub mod annotate;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod capture;
 #[cfg(not(target_arch = "wasm32"))]

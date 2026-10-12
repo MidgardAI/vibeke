@@ -118,6 +118,9 @@ static NEXT: AtomicU64 = AtomicU64::new(1);
 fn default_answer(method: &str, params: &Value, last_url: &mut String) -> Value {
     use base64::Engine as _;
     let n = NEXT.fetch_add(1, Ordering::Relaxed);
+    if let Some(v) = crate::annotate::fake_reply(method, params) {
+        return v;
+    }
     match method {
         "Browser.getVersion" => {
             json!({"product": "HeadlessChrome/0.0-fake", "protocolVersion": "1.3"})

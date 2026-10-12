@@ -620,6 +620,11 @@ impl Page {
         self.cdp.call(Some(&self.session), method, params)
     }
 
+    /// The connection this page's session runs on.
+    pub fn cdp(&self) -> &Arc<Cdp> {
+        &self.cdp
+    }
+
     pub fn send(&self, method: &str, params: Value) -> Result<u64> {
         self.cdp.send(Some(&self.session), method, params)
     }

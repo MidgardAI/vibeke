@@ -431,6 +431,10 @@ fn handle<W: Write>(
         session.map(str::to_owned),
     ));
     let sess = session.unwrap_or("").to_string();
+    // The annotation pick engine's calls (DOM, Overlay, isolated worlds).
+    if let Some(v) = crate::annotate::fake_reply(method, params) {
+        return v;
+    }
     match method {
         "Browser.getVersion" => {
             json!({"product": "FakeChromium/1.0", "protocolVersion": "1.3", "userAgent": DEFAULT_UA})
