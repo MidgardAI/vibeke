@@ -40,7 +40,7 @@ test.describe('crawler responses', () => {
       for (const [attribute, name, content] of [
         ['property', 'og:title', title], ['property', 'og:description', description],
         ['property', 'og:url', `https://vibeke.dev${path}`],
-        ['property', 'og:image', 'https://vibeke.dev/brand/social.png'],
+        ['property', 'og:image', 'https://vibeke.dev/brand/workflow-social.png'],
         ['name', 'twitter:card', 'summary_large_image'],
         ['name', 'twitter:title', title], ['name', 'twitter:description', description],
       ]) {
@@ -61,7 +61,7 @@ test.describe('crawler responses', () => {
   })
 
   test('social image is a public 1200 by 630 PNG', async ({ request }) => {
-    const response = await request.get('/brand/social.png')
+    const response = await request.get('/brand/workflow-social.png')
     expect(response.status()).toBe(200)
     expect(response.headers()['content-type']).toContain('image/png')
     const image = await response.body()
@@ -91,7 +91,7 @@ test.describe('crawler responses', () => {
 
 test('client navigation updates the canonical URL and social metadata', async ({ page }) => {
   await page.goto('/')
-  await page.getByRole('link', { name: 'Install CLI', exact: true }).click()
+  await page.getByRole('link', { name: 'Installation requirements and verification' }).click()
   await expect(page).toHaveURL('/docs/install')
   await expect(page.locator('link[rel="canonical"]')).toHaveCount(1)
   await expect(page.locator('link[rel="canonical"]')).toHaveAttribute('href', 'https://vibeke.dev/docs/install')

@@ -66,7 +66,7 @@ See [phone and browser access](https://vibeke.dev/docs/mobile).
 Run your app on an SSH host.
 Open its preview beside the agent in your local terminal.
 Browser panes need Chromium and a terminal that supports graphics.
-[Watch the example](https://vibeke.dev/?t=32#tour) · [Previews guide](https://vibeke.dev/docs/previews)
+[Watch the example](https://vibeke.dev/?utm_source=github&utm_medium=readme&t=32#tour) · [Previews guide](https://vibeke.dev/docs/previews)
 
 ### Ask another agent for a review
 

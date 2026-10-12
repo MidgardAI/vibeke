@@ -22,6 +22,7 @@ export function ProductTour() {
 
   const [error, setError] = useState(false)
   const [startAt, setStartAt] = useState(0)
+  const chapter = useRef(0)
   const milestones = useRef(new Set<number>())
 
   useEffect(() => {
@@ -29,6 +30,7 @@ export function ProductTour() {
     const at = value === null ? 0 : Number(value)
     if (!Number.isFinite(at) || at < 0 || at >= 161) return
     setStartAt(at)
+    chapter.current = at
     const v = video.current
     if (!v || !at) return
     const seek = () => { v.currentTime = Math.min(at, Math.max(0, v.duration - 0.1)) }
@@ -41,6 +43,8 @@ export function ProductTour() {
     }
   }, [])
 
+  useEffect(() => { if (started) video.current?.focus() }, [started])
+
   async function play(at?: string) {
     const v = video.current
     if (!v) return
@@ -48,7 +52,12 @@ export function ProductTour() {
     if (at) {
       v.currentTime = seconds(at)
       setStartAt(seconds(at))
+      chapter.current = seconds(at)
       milestones.current.clear()
+      if (!v.paused) {
+        milestones.current.add(0)
+        trackSiteEvent('demo_start', { placement: 'tour', target: 'full-tour', chapter: String(chapter.current) })
+      }
     }
     try { await v.play() } catch { setError(true) }
   }
@@ -60,25 +69,26 @@ export function ProductTour() {
         <p className="max-w-md self-end text-sm leading-7 text-muted md:ml-auto">Watch agents work in the terminal on two machines. Preview a dev server. Hand work to another computer. Answer requests from the desktop app and a phone. The video uses sample data.</p>
       </div>
       <div className="relative mt-10 overflow-hidden border border-line bg-base">
-        <video ref={video} className="block aspect-video w-full" controls={started} preload="none" playsInline poster="/video/vibeke-tour-poster.jpg"
+        <video ref={video} tabIndex={started ? 0 : -1} className="block aspect-video w-full" controls={started} preload="none" playsInline poster="/video/vibeke-tour-poster.jpg"
           onPlay={() => {
             setStarted(true)
-            if (!milestones.current.has(0)) { milestones.current.add(0); trackSiteEvent('demo_start', { placement: 'tour', target: 'full-tour', chapter: String(startAt) }) }
+            if (!milestones.current.has(0)) { milestones.current.add(0); trackSiteEvent('demo_start', { placement: 'tour', target: 'full-tour', chapter: String(chapter.current) }) }
           }} onError={() => setError(true)}
           onTimeUpdate={event => {
             const v = event.currentTarget
-            if (v.seeking || !Number.isFinite(v.duration)) return
+            if (v.paused || v.seeking || !milestones.current.has(0) || !Number.isFinite(v.duration)) return
             const quartile = Math.floor(v.currentTime / v.duration * 4) * 25
             if (quartile > 0 && quartile < 100 && !milestones.current.has(quartile)) {
               milestones.current.add(quartile)
-              trackSiteEvent('demo_progress', { placement: 'tour', target: 'full-tour', chapter: String(startAt), quartile })
+              trackSiteEvent('demo_progress', { placement: 'tour', target: 'full-tour', chapter: String(chapter.current), quartile })
             }
           }}
-          onEnded={() => { trackSiteEvent('demo_progress', { placement: 'tour', target: 'full-tour', chapter: String(startAt), quartile: 100 }); milestones.current.clear() }} aria-label="Vibeke product tour">
+          onEnded={() => { trackSiteEvent('demo_progress', { placement: 'tour', target: 'full-tour', chapter: String(chapter.current), quartile: 100 }); milestones.current.clear() }} aria-label="Vibeke product tour">
+          <source src="/video/vibeke-tour.webm" type="video/webm" />
           <source src="/video/vibeke-tour.mp4" type="video/mp4" />
           <track kind="captions" src="/video/vibeke-tour.vtt" srcLang="en" label="English" />
         </video>
-        {!started && <button type="button" onClick={() => play()} className="group absolute inset-0 flex items-center justify-center bg-base/30 transition-colors hover:bg-base/10 focus-visible:outline-none" aria-label="Play the product tour">
+        {!started && <button type="button" onClick={() => play()} className="group absolute inset-0 flex items-center justify-center bg-base/30 transition-colors hover:bg-base/10 focus-visible:outline-none" aria-label={startAt ? `Play the product tour from ${Math.floor(startAt / 60)}:${String(Math.floor(startAt % 60)).padStart(2, '0')}` : 'Play the product tour'}>
           <span className="flex items-center gap-3 border border-accent/50 bg-base/90 px-6 py-4 font-mono text-xs text-cream shadow-2xl transition group-hover:border-accent group-hover:text-accent group-focus-visible:border-accent group-focus-visible:text-accent group-focus-visible:outline group-focus-visible:outline-2 group-focus-visible:outline-offset-4 group-focus-visible:outline-accent"><Play size={18} className="fill-current text-accent" /> {startAt ? `Play from ${Math.floor(startAt / 60)}:${String(Math.floor(startAt % 60)).padStart(2, '0')}` : 'Play the tour'}</span>
         </button>}
       </div>

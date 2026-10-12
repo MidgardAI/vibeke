@@ -8,9 +8,12 @@ export function DemoVideo() {
   const [started, setStarted] = useState(false)
   const [error, setError] = useState(false)
   const [playing, setPlaying] = useState(false)
+  const [ready, setReady] = useState(false)
   useEffect(() => {
-    if (video.current && window.matchMedia('(max-width: 639px)').matches) video.current.poster = '/video/quick-look-mobile-poster.jpg'
+    setReady(true)
   }, [])
+
+  useEffect(() => { if (started) video.current?.focus() }, [started])
 
   async function play() {
     const element = video.current
@@ -22,7 +25,7 @@ export function DemoVideo() {
   return <figure id="demo" className="min-w-0 scroll-mt-24" aria-label="Terminal and phone approval preview">
     <div className="relative overflow-hidden rounded-sm border border-line bg-base">
       <video ref={video} className="block aspect-square w-full sm:aspect-video" controls={started} preload="none" playsInline muted
-        poster="/video/quick-look-poster.jpg" aria-label="20-second approval preview"
+        tabIndex={started ? 0 : -1} aria-label="20-second approval preview"
         onError={() => setError(true)}
         onPlay={() => {
           setStarted(true); setPlaying(true)
@@ -32,17 +35,23 @@ export function DemoVideo() {
         onEnded={() => { setPlaying(false); trackSiteEvent('demo_progress', { placement: 'hero', target: 'quick-look', quartile: 100 }); sent.current.clear() }}
         onTimeUpdate={event => {
           const element = event.currentTarget
-          if (element.seeking || !Number.isFinite(element.duration)) return
+          if (element.paused || element.seeking || !sent.current.has(0) || !Number.isFinite(element.duration)) return
           const quartile = Math.floor(element.currentTime / element.duration * 4) * 25
           if (quartile > 0 && quartile < 100 && !sent.current.has(quartile)) {
             sent.current.add(quartile); trackSiteEvent('demo_progress', { placement: 'hero', target: 'quick-look', quartile })
           }
         }}>
+        <source src="/video/quick-look-mobile.webm" type="video/webm" media="(max-width: 639px)" />
         <source src="/video/quick-look-mobile.mp4" type="video/mp4" media="(max-width: 639px)" />
+        <source src="/video/quick-look.webm" type="video/webm" />
         <source src="/video/quick-look.mp4" type="video/mp4" />
         <track kind="captions" src="/video/quick-look.vtt" srcLang="en" label="English" default />
       </video>
-      {!started && <button type="button" onClick={() => void play()} className="group absolute inset-0 flex items-center justify-center bg-linear-to-t from-black/70 via-transparent to-transparent sm:items-end sm:pb-6" aria-label="Play 20-second preview">
+      {!started && <picture className="pointer-events-none absolute inset-0">
+        <source media="(max-width: 639px)" srcSet="/video/quick-look-mobile-poster.jpg" />
+        <img src="/video/quick-look-poster.jpg" alt="An agent permission request on a paired phone" width={1280} height={720} fetchPriority="high" className="h-full w-full object-contain" />
+      </picture>}
+      {!started && <button type="button" disabled={!ready} onClick={() => void play()} className="group absolute inset-0 flex items-center justify-center bg-linear-to-t from-black/70 via-transparent to-transparent sm:items-end sm:pb-6" aria-label="Play 20-second preview">
         <span className="inline-flex items-center gap-3 border border-accent/60 bg-base/95 px-5 py-3 font-mono text-xs text-cream group-hover:text-accent"><Play size={16} /> Watch it work · 20 sec</span>
       </button>}
     </div>
