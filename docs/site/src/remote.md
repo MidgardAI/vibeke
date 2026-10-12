@@ -6,7 +6,10 @@ The agents run on the remote host. You see and control them from your computer.
 ## Connect from the terminal
 
 Install the [CLI](install.md) on your computer. Make sure your usual SSH connection to the host works.
-The host must run a supported platform: Apple silicon macOS, or x86_64/aarch64 Linux.
+The host must run a supported platform:
+
+- macOS 13 or later with Apple silicon or Intel processors.
+- Linux with x86_64 or aarch64 processors.
 
 ### Install from signed releases
 

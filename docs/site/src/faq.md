@@ -48,7 +48,10 @@ Vibeke has integrations for Claude Code, Codex, pi and omp. Run `vibeke integrat
 
 ## Which platforms does it support?
 
-The host CLI runs on macOS with Apple silicon and on Linux with x86_64 or aarch64 processors. The desktop app runs on macOS, Linux and Windows, and connects to a host. The [browser app](mobile.md) works on a phone or a computer. See [installation](install.md).
+The host CLI runs on macOS 13 or later with Apple silicon or Intel processors.
+It also runs on Linux with x86_64 or aarch64 processors.
+The desktop app runs on macOS, Linux and Windows. It connects to a Vibeke host.
+The [browser app](mobile.md) works on a phone or a computer. See [installation](install.md).
 
 ## Does it cost anything or need an account?
 

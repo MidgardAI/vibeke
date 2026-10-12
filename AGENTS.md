@@ -200,7 +200,7 @@ After verification, publish the draft with `gh release edit v<version> --repo vi
 
 Update the version shown on the home page: set `version` and `url` in `web/apps/site/src/lib/release.ts` to the published stable release. The site test (`bun run test`) fails when it does not match the newest `docs/release-notes/v<version>.md`. Do not change it for a prerelease or before the release is published.
 
-When publishing the first release with `vibeke-macos-x86_64`, add Intel Macs to the host CLI platforms in `README.md` and `docs/site/src/install.md`. State that both macOS host binaries require macOS 13 or later. Remove Intel Macs from the installation guide's remote-host-only guidance. Keep the installation guide aligned with published assets.
+Keep the host CLI platform lists in `README.md`, the installation, FAQ, remote and troubleshooting guides, and the home page aligned with the release's artifacts and minimum OS versions.
 
 The website's `/install.sh` route is a 302 redirect, configured in `web/apps/site/vite.config.ts`, to `https://github.com/vibeke-ai/vibeke/releases/latest/download/install.sh`. It uses `Cache-Control: no-store`. Keep this endpoint stable; the published release supplies the version-pinned installer. Do not maintain a stale second copy of the script in website public assets.
 

@@ -107,7 +107,7 @@ The desktop app does not include the host CLI. It looks for `vibeke` in the `VIB
 3. Start `vibeke` in your project and keep it running. Select **Start gateway** in the app if it asks.
 4. On Linux, check that a Secret Service or keyring backend is available.
 
-Windows and Intel Macs have no host CLI. Connect them to a remote host. See the [desktop guide](desktop.md).
+Windows has no host CLI. Connect to a remote host. See the [desktop guide](desktop.md).
 
 ## Collect a debug bundle to report a bug
 

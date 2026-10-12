@@ -4,7 +4,8 @@ Install the terminal CLI, download the desktop app, or open the [browser app](ht
 
 ## Terminal CLI
 
-The host CLI runs on macOS with Apple silicon and Linux with x86_64 or aarch64 processors.
+The host CLI runs on macOS 13 or later with Apple silicon or Intel processors.
+It also runs on Linux with x86_64 or aarch64 processors.
 Linux binaries use static musl linking.
 
 Install `minisign` first. It verifies the release signature. On macOS:
@@ -54,7 +55,7 @@ The Linux desktop app requires an available Secret Service/keyring backend.
 
 The desktop app connects to a Vibeke host. It does not bundle the host CLI.
 For local use on a supported Mac or Linux computer, install the CLI too.
-Windows and Intel Macs can connect to a supported remote host. This release has no host CLI for those platforms.
+On Windows, connect to a remote host.
 
 The macOS app is signed with an Apple Developer ID and notarized by Apple. The Windows installer is not publisher-signed.
 Windows can ask you to approve it.

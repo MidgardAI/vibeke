@@ -44,7 +44,8 @@
 
 ## Install
 
-Vibeke runs on macOS (Apple silicon) and Linux (x86_64, aarch64).
+Vibeke runs on macOS 13 or later with Apple silicon or Intel processors.
+It also runs on Linux with x86_64 or aarch64 processors.
 
 ```sh
 curl -fsSL https://vibeke.dev/install.sh | sh
