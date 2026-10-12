@@ -27,7 +27,8 @@ use serde::{Deserialize, Serialize};
 /// - 7: `AgentRun.title` (the harness session's title).
 /// - 8: `IsolationLevel::Cloud` (spec 17), carried in `SessionModel` frames.
 /// - 9: `AgentRun.bg_tasks` and `AgentRun.bg_level_ms` (background work after a turn).
-pub const PROTOCOL: u32 = 9;
+/// - 10: `SessionModel.mentions` (mention names, spec 19).
+pub const PROTOCOL: u32 = 10;
 
 /// `render.attach` error kind when client and server speak different render protocols.
 pub const VERSION_MISMATCH: &str = "version_mismatch";

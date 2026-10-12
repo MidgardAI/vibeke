@@ -836,11 +836,18 @@ pub struct SessionModel {
     /// with something to show are listed. Appended (render protocol 4).
     #[serde(default)]
     pub pane_live: Vec<PaneLive>,
+    /// Mention names (spec 19), one per named pane. Appended (render protocol 10).
+    #[serde(default)]
+    pub mentions: Vec<crate::mention::MentionName>,
 }
 
 impl SessionModel {
     pub fn live(&self, pane: &str) -> Option<&PaneLive> {
         self.pane_live.iter().find(|l| l.pane == pane)
+    }
+    /// The mention name of a pane (spec 19), if it has one.
+    pub fn mention_of(&self, pane: &str) -> Option<&crate::mention::MentionName> {
+        self.mentions.iter().find(|m| m.pane == pane)
     }
 }
 

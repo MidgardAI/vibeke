@@ -199,6 +199,7 @@ fn current_model(browser_on_p2: bool) -> SessionModel {
         groups: v1.groups.clone(),
         appearance: v1.appearance.clone(),
         pane_live: vec![],
+        mentions: vec![],
     }
 }
 

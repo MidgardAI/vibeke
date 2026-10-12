@@ -12,6 +12,7 @@ pub mod holder;
 pub mod input;
 pub mod layout;
 pub mod layout_spec;
+pub mod mention;
 pub mod model;
 pub mod render;
 pub mod rpc;

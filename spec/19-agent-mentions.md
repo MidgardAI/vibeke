@@ -1,0 +1,260 @@
+# 19 — Mentions: names and messages between agents
+
+Status: phase 1 in progress.
+
+## 1. Goal
+
+You give a pane a short name, such as `@reviewer`. Then you, or an agent in another pane, can
+send that pane a message by its name. The reply comes back to the pane that asked. Messages
+stay inside one workspace on one machine.
+
+Phase 1 covers names, the `prefix+@` picker, direct messages and replies for Claude Code and
+Codex, MCP tools, CLI verbs and web composer completion. Groups, terminal targets, a Messages
+view, tracked coordination and pinned context come later (§9). Personas are left out.
+
+## 2. Names
+
+### 2.1 Rules
+
+- A mention name matches `[a-z][a-z0-9_-]{0,31}` and is not one of
+  `vk_proto::mention::RESERVED` (`current`, `focused`, `all`…). `vk_proto::mention::valid`
+  is the one check.
+- A name belongs to one pane (`MentionName.pane`) and is unique in its workspace. It stays
+  when the agent in the pane exits or restarts. It goes away with the pane.
+- A pane has at most one name. `SessionModel.mentions` lists all names (render protocol 10),
+  so every client can draw them.
+- `kind` is `agent` or `terminal`. Phase 1 delivers only to `agent` panes.
+- `delivery: false` keeps the name but holds new deliveries.
+- A name is frozen once given. It does not follow later label changes.
+
+### 2.2 Suggested names
+
+A pane without a name gets a proposal from `vk_proto::mention::suggest(label, fallback,
+taken)`. `label` is the sidebar label (`AgentRun::label()` for an agent pane, otherwise
+`Pane::display_title()`). `fallback` is the harness for an agent pane, otherwise the base name
+of the pane's cwd. Taken names get `-2`, `-3`….
+
+### 2.3 Consent
+
+Only named panes receive messages. A person names a pane in the TUI picker (§5), the palette,
+the CLI or the web app. An agent may name only its own pane. Naming a pane is the consent for
+it to receive messages from other panes of the workspace.
+
+## 3. Data and API
+
+All writes go through `Core::commit`. Names live in `SessionModel.mentions` and the store.
+Messages and deliveries are store entities, not part of the render model. Events carry ids and
+states, never bodies.
+
+### 3.1 Methods
+
+All methods are additive to `vibeke/1`. "Pane caller" means a caller with a pane token.
+
+| Method | Params | Result | Pane scope |
+|---|---|---|---|
+| `mention.list` | `workspace?` (default: the caller's workspace, else all) | `{mentions: [MentionName + label, harness?, state]}`, where `state` is `idle`, `busy`, `needs_input`, `exited` or `shell` | open |
+| `mention.suggest` | `pane` | `{name}` | open |
+| `mention.set` | `pane`, `name?` (omitted: suggested), `kind?`, `delivery?` | `MentionName` | own pane only |
+| `mention.clear` | `pane` | `{}` | own pane only |
+| `message.send` | `to: [name]`, `body`, `expects_reply?` (default true), `workspace?` | `{message, deliveries: [{id, name, state}]}` | open, own workspace only |
+| `message.reply` | `message` (the one being answered), `body` | `{message, deliveries}` | the recipient pane of that message |
+| `message.complete` | `message` | `{}`: the caller's delivery becomes `completed` | the recipient pane |
+| `message.get` | `id` | `{message, deliveries}` | sender or recipient pane |
+| `message.list` | `pane?`, `direction?` (`in`, `out`, `all`), `open_only?`, `limit?` | `{items: [{message, deliveries}]}` | own pane only |
+| `message.cancel` | `delivery` | `{}` | the sender; people always |
+| `message.retry` | `delivery` | `{}` | people only (`PANE_FORBIDDEN`) |
+
+Errors:
+- `invalid_params`: a bad name, an empty body, or a body over 64 KiB.
+- `conflict` with `name_taken`.
+- `not_found`: an unknown recipient. The error data lists the unknown names and the known
+  names.
+- `permission_denied`: another workspace, or a recipient with `kind: terminal` in phase 1.
+- `conflict` with `hop_limit`: `hop` would pass `MAX_HOPS`.
+- `rate_limited`: more than 20 messages a minute from one pane.
+
+Sending to yourself is `invalid_params`.
+
+Events: `mention.set`, `mention.cleared`, `message.sent`, `message.delivery` (with `delivery`,
+`message`, `name`, `state`, `reason?`).
+
+### 3.2 Targets
+
+`@name` is a target (07 §1.2). It resolves to the named pane in the caller's workspace. Outside
+a pane it resolves across workspaces only when the name is unique, otherwise
+`ambiguous_target`. `@current` and `@focused` keep their meaning, which is why those words are
+reserved. `agent.spawn`/`agent.start` with a `name` also set the pane's mention name when it is
+valid and free.
+
+## 4. Delivery
+
+### 4.1 Envelope
+
+The server never types a message body into a pane. When the recipient is ready (§4.2), it types
+one line with `agent.prompt` semantics (dialog guard, stall detection):
+
+```
+↪ vibeke message <message-id> from @coder · <first line of the body, at most 60 chars> [<nonce>]
+```
+
+The nonce is 12 random base32 characters, stored on the delivery and never returned by the API.
+The delivery becomes `submitted`.
+
+### 4.2 When to deliver
+
+A delivery is ready when all of these hold:
+- The recipient pane has an agent run in `idle` with no open interaction.
+- No other delivery to that pane is `submitted`.
+- The name has `delivery: true`.
+
+Otherwise it stays `queued`. The engine re-checks when run state, interactions or names change,
+and once per second while anything is queued.
+
+A delivery is `held` with a reason in these cases:
+- The pane has no agent.
+- The agent exited.
+- The prompt was refused twice.
+- The delivery stayed `queued` for 24 hours.
+
+### 4.3 Hooks
+
+The `vibeke hook` shim already prints a `hook_output` from the `adapter.signal` reply. The
+mention handler adds to that reply for Claude and Codex. It merges `additionalContext` with the
+collision tracker's output.
+
+**`UserPromptSubmit` with an envelope.** The handler finds the delivery by message id and
+compares the nonce.
+- On a match, the delivery becomes `delivered`. The handler adds the full message as
+  `additionalContext`:
+  - framed as a message from another agent, untrusted, granting no permissions;
+  - with the sender's name, the message id and the thread;
+  - with how to answer (§6) when `expects_reply`;
+  - with the roster (§4.4).
+- When the nonce does not match, the context says the line is not an authentic vibeke message.
+
+**`UserPromptSubmit` from a person** whose prompt starts with mentions
+(`vk_proto::mention::parse(prompt).leading`):
+- When every leading name is known in the workspace and deliverable, the server sends the rest of
+  the prompt as a `Human` message from this pane, with `expects_reply: true`. The hook blocks the
+  local prompt with the reason `Sent to @reviewer (m_…). The reply will show up here.`
+- When any leading name is unknown, nothing is sent. The prompt goes through with a short note
+  that lists the known names.
+
+**`UserPromptSubmit` with embedded mentions** of known names adds the roster and a one-line
+reminder that the agent can delegate with the `message_send` tool.
+
+**`SessionStart`** adds the roster when the workspace has named panes, plus the pane's own name
+when it has one.
+
+**`Stop`** for a pane with a `delivered` delivery that expects a reply and has none:
+- The first time, the hook blocks the stop with one reminder to reply or complete
+  (`{"decision": "block", "reason": …}`).
+- The second time, the delivery becomes `completed` without a reply.
+
+**No hook.** A `submitted` delivery that no hook took within 30 s:
+- For harnesses without mention hooks, the engine falls back once to typing the framed full
+  body.
+- Otherwise the delivery becomes `held` with the reason `hooks_missing`. `vibeke doctor` explains
+  how to install the integration.
+
+### 4.4 Roster
+
+The roster is one line per named pane of the workspace:
+`@name · agent|terminal · harness · idle|busy|needs input|exited`. The caller's own name is
+marked `(you)`. It never includes message bodies.
+
+### 4.5 Replies
+
+`message.reply` creates a message with `in_reply_to` and `hop + 1`. It goes to the original
+author:
+- **An agent author** gets it through §4.1 with `expects_reply: false`.
+- **A `Human` author with a pane** (a leading mention) also gets it through §4.1 into that pane.
+  The person sees the answer where they asked.
+- **A `Human` author without a pane** (TUI, web) gets a notification. The reply stays in
+  `message.list`.
+
+The answered delivery becomes `replied`. Several recipients reply one by one in phase 1.
+
+### 4.6 Safety
+
+- Messages stay within a workspace.
+- Bodies are redacted with `vk-redact` before they are stored.
+- Bodies are labelled as untrusted in every context the server writes.
+- The hop limit, the rate limit and the 64 KiB body cap apply.
+- `message.retry` and naming other panes are for people only.
+
+## 5. TUI
+
+**`prefix+@` (action `mention_picker`)** opens the Mention picker next to the focused pane's
+cursor. It lists the other panes of the workspace (no browser panes or plugin surfaces). Each
+row shows:
+- the name, or the suggested name in grey with `→`;
+- the sidebar label;
+- the state (`idle`, `busy`, `shell`).
+
+The search is fuzzy over name, label and harness. The keys are:
+- **Enter** inserts `@name ` into the focused pane as a paste and closes the picker. For an
+  unnamed pane it first calls `mention.set` with the shown name.
+- **Tab** inserts the name and keeps the picker open.
+- **Ctrl-E** edits the shown name in place.
+- **Esc** closes the picker.
+
+Named panes show `@name` in the pane border and the sidebar. The palette offers **Mention a
+pane** (the picker), **Name this pane** and **Remove this pane's name**.
+
+When a reply reaches a `Human` author without a pane, a toast appears.
+
+## 6. Agent tools
+
+**MCP.** `vibeke mcp` adds these tools for agents in a pane:
+- `mentions_roster`
+- `message_send {to, body, expects_reply?}`
+- `message_reply {message, body}`
+- `message_complete {message}`
+- `message_inbox {open_only?}`
+
+**CLI** (`vk-cli/src/verbs.rs`):
+- `vibeke msg @a [@b…] <text>`, also from stdin with `-`
+- `vibeke msg reply <id> <text>`
+- `vibeke msg done <id>`
+- `vibeke msg inbox`
+- `vibeke msg list`
+- `vibeke name [@name] [--pane <target>] [--clear]`
+
+The skill (`crates/vibeke/skill/SKILL.md`) gets a short Mentions section. The hook context
+explains each delivery, so the skill stays small.
+
+## 7. Web
+
+The pane composer completes `@` against `mention.list`, like slash commands, and inserts the
+name. Choosing an unnamed pane names it first. Named panes show `@name` where the pane label is
+shown.
+
+## 8. Tests
+
+- `vk-proto` unit tests cover `valid`, `suggest` and `parse`.
+- Integration tests (`crates/vibeke/tests/it/mentions.rs`) drive real hook calls through
+  `vibeke hook claude …` with a fake agent run. They cover:
+  - naming rules and conflicts;
+  - a send, the envelope, the hook expanding it, a reply and the reply delivery;
+  - a busy recipient that stays queued;
+  - a spoofed envelope;
+  - a leading mention that blocks the local prompt;
+  - refusal across workspaces;
+  - the hop limit;
+  - the Stop reminder followed by completion.
+- TUI unit tests cover the picker (entries, suggestion, insert) with both drawing paths left
+  unchanged.
+
+## 9. Later phases
+
+- Phase 2:
+  - groups (`@review-team`) with one combined result for the sender;
+  - terminal targets that run a command in an idle shell and return output and exit status;
+  - a Messages view in the TUI and the web app;
+  - doctor checks for held deliveries.
+- Phase 3:
+  - tracked coordination (begin, assignments, one stall nudge, resolve with a report);
+  - pinned git context with fresh, stale or unknown;
+  - optional status summaries (spec 14);
+  - pi, OpenCode and Gemini.
