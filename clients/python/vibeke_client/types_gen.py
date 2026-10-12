@@ -4739,7 +4739,7 @@ ImageUploadResult = TypedDict("ImageUploadResult", {
 })
 
 IntegrationDoctorParams = TypedDict("IntegrationDoctorParams", {
-    "harness": NotRequired[Literal["claude", "codex", "pi", "omp", "opencode", "gemini"]],
+    "harness": NotRequired[Literal["claude", "codex", "pi", "omp", "opencode", "gemini", "hermes"]],
 })
 
 IntegrationDoctorResultChecksItem = TypedDict("IntegrationDoctorResultChecksItem", {

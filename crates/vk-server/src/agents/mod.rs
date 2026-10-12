@@ -11,6 +11,7 @@ mod gemini;
 mod golden;
 pub mod harness;
 pub mod headless;
+mod hermes;
 pub mod hook;
 pub mod manifests;
 mod models;
@@ -329,12 +330,26 @@ impl Agents {
     /// Release-on-focus (04 §7.2): a held gate for this pane returns "no decision" so the
     /// harness's own dialog appears in the focused pane.
     pub fn on_focus(&self, server: &Server, pane: &str) {
+        // Gates whose harness keeps showing its dialog while held (OpenCode) stay held.
+        let keep: std::collections::HashSet<String> = server.with_core(|c| {
+            c.model
+                .interactions
+                .iter()
+                .filter(|i| {
+                    i.pane == pane
+                        && c.run(&i.run)
+                            .and_then(|r| Harness::from_id(&r.harness))
+                            .is_some_and(|h| h.dialog_visible_while_gated())
+                })
+                .map(|i| i.id.clone())
+                .collect()
+        });
         let released: Vec<(String, Gate)> = {
             let mut i = self.inner.lock().unwrap();
             let ids: Vec<String> = i
                 .gates
                 .iter()
-                .filter(|(_, g)| g.pane == pane)
+                .filter(|(k, g)| g.pane == pane && !keep.contains(*k))
                 .map(|(k, _)| k.clone())
                 .collect();
             ids.into_iter()
@@ -726,7 +741,12 @@ impl Agents {
                                 || p.keys.confirm.is_some()
                                 || p.keys.session.is_some()
                         }
-                        None => !d.options.is_empty() && !d.is_unknown(),
+                        None => {
+                            !d.options.is_empty()
+                                && !d.is_unknown()
+                                && Harness::from_id(&run.harness)
+                                    .is_none_or(|h| screen::keys_plannable(h, &d.rule))
+                        }
                     },
                     gate: false,
                     decision_rev: 0,
@@ -1284,7 +1304,10 @@ fn check_version(server: &Arc<Server>, run_id: &str, h: Harness) {
             if !ok {
                 r.health = AdapterHealth::UnvalidatedVersion;
                 r.execution.confidence = r.execution.confidence.min(0.8);
-                r.capabilities = vec!["observe".into(), "answer_keystroke".into()];
+                r.capabilities = vec!["observe".into()];
+                if h.keyed_dialogs() {
+                    r.capabilities.push("answer_keystroke".into());
+                }
                 tx.event(
                     "agent.harness_version_unvalidated",
                     json!({"run": r.id, "pane": r.pane}),
@@ -1972,7 +1995,7 @@ async fn gate(server: &Arc<Server>, pane: &str, h: Harness, event: &str, p: &Val
     } else {
         None
     };
-    let focused = server.pane_focused_by_any(pane);
+    let focused = server.pane_focused_by_any(pane) && !h.dialog_visible_while_gated();
     let gate_mode = native && (policy.is_some() || !focused);
     it.gate = gate_mode;
     it.answer_channel = if native {

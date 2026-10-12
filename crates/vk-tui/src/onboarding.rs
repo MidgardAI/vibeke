@@ -148,6 +148,7 @@ pub fn harness_bin(h: Harness) -> &'static str {
         Harness::Omp => "omp",
         Harness::OpenCode => "opencode",
         Harness::Gemini => "gemini",
+        Harness::Hermes => "hermes",
     }
 }
 

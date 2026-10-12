@@ -1,7 +1,7 @@
 # Built-in manifest: OpenCode (spec 04 §6.4). Manifest-driven (no code-backed detection).
-# Everything below is from upstream docs and has NOT been exercised against a live binary
-# ([verify M2]): no validated range, so every version runs observe + keystrokes until the golden
-# corpus covers it. The `verified = false` row documents the ✓? capabilities of 04 §2.3.
+# Verified against OpenCode 1.19.0 (tests/harness-golden/opencode/1.19.0): the plugin reports
+# turns, tools and session identity, and answers permission requests through OpenCode's server
+# API. Other versions run observe + screen until the corpus covers them.
 schema = 1
 id = "opencode"
 name = "OpenCode"
@@ -17,30 +17,31 @@ script_regex = '(opencode-ai|/opencode/bin/opencode|/opencode$)'
 
 [version]
 command = ["opencode", "--version"]
+validated = ">=1.19.0, <1.20.0"
 
 [launch]
 argv = ["opencode"]
 session_id_format = "none"
 prompt_arg = "flag:--prompt"
-acp_argv = ["opencode", "acp"]          # [verify M2]
+acp_argv = ["opencode", "acp"]
 
 [resume]
-argv = ["opencode", "--session", "{resume_id}"]   # [verify M2]
+argv = ["opencode", "--session", "{resume_id}"]
 continue_argv = ["opencode", "--continue"]
 
 [integration]
 transports = ["extension", "screen"]
-install = "builtin:opencode"            # ~/.config/opencode/plugin/vibeke.ts
+install = "builtin:opencode"            # ~/.config/opencode/plugins/vibeke.ts
 headless = "acp"
 
+# Granted only while the run's version is in the validated range (unvalidated versions fall
+# back to observe + keystrokes).
 [[capabilities]]
 versions = "*"
 mode = "tui"
-verified = false
 observe = true
 gate = true
 answer_native = ["approval"]
-answer_keystroke = true
 reconcile = true
 resume = true
 survive_disconnect = true
@@ -53,27 +54,38 @@ survive_disconnect = true
 "session.idle" = "Stop"
 "session.error" = "StopFailure"
 "session.compacted" = "PostCompact"
-"permission.ask" = "open:approval"
+"permission.asked" = "open:approval"
 
 [screen]
 rows = 30
+# The options sit in one row and only the background colour marks the selected one; the row
+# wraps around. Keystrokes cannot pick an option reliably, so the dialog is answered through
+# the plugin, or in the pane.
 [[screen.rules]]
 id = "permission"
 opens = "approval"
-any = ['(?i)permission required', '(?i)allow once']
-all = ['(?i)reject']
+all = ['△ Permission required', '(?i)allow once', '(?i)reject']
 confidence = 0.85
-title_regex = '(?i)(permission required[^\n]*)'
+title_regex = '(?m)^[\s┃│]*#\s+(.+?)\s*$'
 command_regex = '(?m)^[\s┃│]*\$\s+(.+?)\s*$'
 [screen.rules.dialog]
-accelerators = "digits"
-map = { allow = 1, allow_always = 2, deny = 3 }
+layout = "row"
+options_regex = '(?P<label>Allow once|Allow always|Reject)'
+accelerators = "none"
 
 [[screen.rules]]
 id = "working"
 state = "working"
-any = ['(?i)esc (to )?interrupt', 'Working…', 'working\.\.\.']
+any = ['(?i)esc (again )?to interrupt', '(?i)esc interrupt', '(■|⬝){4,}']
 confidence = 0.75
+
+# The prompt box without an interrupt hint (a resumed session reports nothing until a turn). The
+# footer can wrap at 80 columns, so the box's bottom edge counts too.
+[[screen.rules]]
+id = "prompt"
+state = "idle"
+any = ['(?i)ctrl\+p commands', '╹▀{20,}']
+confidence = 0.7
 
 [ui]
 interrupt_keys = ["esc"]

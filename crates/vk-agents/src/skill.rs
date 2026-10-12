@@ -8,6 +8,8 @@
 //!   same name twice, so a second copy in a harness's own directory would show up as a duplicate.
 //!   (omp and OpenCode also read `~/.claude/skills`; both keep the first skill of a name.)
 //!
+//! * **Hermes Agent** reads `<HERMES_HOME>/skills/<name>/SKILL.md` (not `~/.agents`).
+//!
 //! A line after the front matter marks the file as ours (`<!-- managed by vibeke
 //! (vibeke-skill@<ver>) … -->`). A `vibeke` skill without it belongs to the user and is left
 //! alone. Uninstalling one harness keeps the shared file while another harness that reads it
@@ -26,6 +28,7 @@ const MARKER_PREFIX: &str = "<!-- managed by vibeke (vibeke-skill@";
 pub fn skill_file(h: Harness, dirs: &Dirs) -> PathBuf {
     match h {
         Harness::Claude => dirs.claude.join("skills/vibeke/SKILL.md"),
+        Harness::Hermes => dirs.hermes.join("skills/vibeke/SKILL.md"),
         _ => dirs.agents.join("skills/vibeke/SKILL.md"),
     }
 }
@@ -82,11 +85,16 @@ pub fn skill_state(h: Harness, dirs: &Dirs) -> (PathBuf, SkillState) {
     (path, state)
 }
 
+/// `h` reads the shared `~/.agents/skills` (Claude Code and Hermes have their own).
+fn shared(h: Harness) -> bool {
+    !matches!(h, Harness::Claude | Harness::Hermes)
+}
+
 /// Other harnesses that read the same skill file as `h`.
 fn sharing(h: Harness) -> impl Iterator<Item = Harness> {
     Harness::ALL
         .into_iter()
-        .filter(move |&o| o != h && o != Harness::Claude && h != Harness::Claude)
+        .filter(move |&o| o != h && shared(o) && shared(h))
 }
 
 /// The skill's part of an install or uninstall plan for `h`. `None` when there is nothing to
@@ -164,12 +172,18 @@ mod tests {
             opencode: "/oc".into(),
             gemini: "/g".into(),
             agents: "/a".into(),
+            hermes: "/h".into(),
         };
         assert_eq!(
             skill_file(Harness::Claude, &d),
             PathBuf::from("/c/skills/vibeke/SKILL.md")
         );
-        for h in Harness::ALL.into_iter().filter(|&h| h != Harness::Claude) {
+        assert_eq!(
+            skill_file(Harness::Hermes, &d),
+            PathBuf::from("/h/skills/vibeke/SKILL.md")
+        );
+        assert_eq!(sharing(Harness::Hermes).count(), 0);
+        for h in Harness::ALL.into_iter().filter(|&h| shared(h)) {
             assert_eq!(
                 skill_file(h, &d),
                 PathBuf::from("/a/skills/vibeke/SKILL.md")

@@ -1,0 +1,22 @@
+
+     + Thought: 710ms
+
+  ┃
+  ┃  $ sleep 8; echo slow-done
+  ┃
+  ┃  slow-done
+  ┃
+
+     + Thought: 391ms
+
+     slow-done
+
+     ▣  Build · Nemotron 3.5 Lightning Free · 13.2s
+
+  ┃
+  ┃
+  ┃
+  ┃  Build · Nemotron 3.5 Lightning Free OpenCode
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+   /home/user/projects/app/            12.2K (5%ctrl+p
+   work/app         commands

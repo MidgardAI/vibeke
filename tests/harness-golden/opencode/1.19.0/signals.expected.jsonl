@@ -1,0 +1,15 @@
+{"events": ["SessionStart"], "fields": {"0/session_id": "ses_ecec6791bffeXmL8m325JGE9DO", "0/cwd": "/work/app"}}
+{"events": ["UserPromptSubmit"], "fields": {"0/prompt": "Use the bash tool to run: sleep 8; echo slow-done. Then reply with one short sentence."}}
+{"events": ["Working"]}
+{"events": ["Working"]}
+{"events": ["PreToolUse"], "fields": {"0/tool_name": "Bash", "0/tool_use_id": "call-d8db044e-199d-4f7c-9e77-b5ea99976ee7", "0/tool_input/command": "sleep 8; echo slow-done"}}
+{"events": []}
+{"events": ["PermissionResolved"], "fields": {"0/tool_use_id": "per_1313992790015XWnnE2dozc7Bc"}}
+{"events": ["PostToolUse"], "fields": {"0/tool_use_id": "call-d8db044e-199d-4f7c-9e77-b5ea99976ee7", "0/exit_code": 0}}
+{"events": ["Usage"], "fields": {"0/text": "slow-done"}}
+{"events": ["Working"]}
+{"events": ["Working"]}
+{"events": ["Usage"], "fields": {"0/text": "slow-done"}}
+{"events": ["Working"]}
+{"events": ["Stop"]}
+{"events": []}

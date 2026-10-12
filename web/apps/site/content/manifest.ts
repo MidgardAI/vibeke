@@ -18,6 +18,8 @@ export const docManifest = [
   { slug: 'claude-code', title: 'Claude Code', group: 'Agents', file: 'agents/claude-code.md', description: 'Install the Claude Code integration. See what it reports and answers.' },
   { slug: 'codex', title: 'Codex CLI', group: 'Agents', file: 'agents/codex.md', description: 'Install the Codex integration. See what it reports and answers.' },
   { slug: 'pi', title: 'pi & oh-my-pi', group: 'Agents', file: 'agents/pi.md', description: 'Install the pi and oh-my-pi extensions. See what they report and answer.' },
+  { slug: 'opencode', title: 'OpenCode', group: 'Agents', file: 'agents/opencode.md', description: 'Install the OpenCode plugin. See what it reports and answers.' },
+  { slug: 'hermes', title: 'Hermes Agent', group: 'Agents', file: 'agents/hermes.md', description: 'Install the Hermes Agent plugin. See what it reports and answers.' },
   { slug: 'other-agents', title: 'Other agents', group: 'Agents', file: 'agents/other.md', description: 'Use any terminal agent, custom manifests, or ACP agents.' },
   { slug: 'layout', title: 'Workspaces & panes', group: 'Core concepts', file: 'concepts/layout.md', description: 'Understand sessions, workspaces, tabs, and panes.' },
   { slug: 'agents', title: 'Agents & interactions', group: 'Core concepts', file: 'concepts/agents.md', description: 'Read agent state. Answer requests through an integration.' },

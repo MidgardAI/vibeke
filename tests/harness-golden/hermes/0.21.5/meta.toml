@@ -1,0 +1,8 @@
+# Recorded from Hermes Agent 0.21.5 (git install, classic CLI) in a Vibeke pane (80 columns) with
+# the Vibeke plugin: one turn with a dangerous-command approval answered from Vibeke, one with a
+# clarify question. Plugin-load warnings from the test home are removed from the screens, and the
+# tool result is shortened.
+synthetic = false
+harness = "hermes"
+recorded_version = "0.21.5"
+source = "live recording, Hermes Agent v0.21.5+8828.gcb6ffe6"

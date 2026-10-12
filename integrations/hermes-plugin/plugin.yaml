@@ -1,0 +1,3 @@
+name: vibeke
+version: "1.0"
+description: Report Hermes Agent sessions, turns, tool calls and approvals to Vibeke panes

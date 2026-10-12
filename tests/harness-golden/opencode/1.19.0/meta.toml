@@ -1,0 +1,8 @@
+# Recorded from OpenCode 1.19.0 in a Vibeke pane (80x24) with the Vibeke plugin, one turn that ran
+# a bash command after a permission request answered from Vibeke. Paths are replaced with
+# /work/app. `message.updated` carries the `text` field the plugin adds from the message's text
+# part (the recording probe saw only the bus event).
+synthetic = false
+harness = "opencode"
+recorded_version = "1.19.0"
+source = "live recording, opencode-ai 1.19.0 from npm"

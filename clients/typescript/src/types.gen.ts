@@ -4386,7 +4386,7 @@ export type ImageUploadResult = {
 };
 
 export type IntegrationDoctorParams = {
-  harness?: "claude" | "codex" | "pi" | "omp" | "opencode" | "gemini";
+  harness?: "claude" | "codex" | "pi" | "omp" | "opencode" | "gemini" | "hermes";
 };
 
 export type IntegrationDoctorResult = {

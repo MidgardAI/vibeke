@@ -458,6 +458,25 @@ pub(super) fn from_gemini(server: &Server, run: &AgentRun, p: &Value) {
     store(server, &run.id, Some(add(run, d)), None);
 }
 
+/// Hermes `post_api_request` payload: `usage {input_tokens, output_tokens, cache_read_tokens,
+/// cache_write_tokens}` per provider call. Its `output_tokens` already include reasoning.
+pub(super) fn from_hermes(server: &Server, run: &AgentRun, p: &Value) {
+    let Some(u) = p.get("usage").filter(|u| u.is_object()) else {
+        return;
+    };
+    let d = RunUsage {
+        input_tokens: u64_of(u, &["/input_tokens"]),
+        output_tokens: u64_of(u, &["/output_tokens"]),
+        cache_read_tokens: u64_of(u, &["/cache_read_tokens"]),
+        cache_write_tokens: u64_of(u, &["/cache_write_tokens"]),
+        cost_usd: None,
+        model: p.get("model").and_then(Value::as_str).map(str::to_string),
+        source: "extension".into(),
+        updated_at_ms: 0,
+    };
+    store(server, &run.id, Some(add(run, d)), None);
+}
+
 /// Headless adapters (04 §10): a per-turn delta (Claude `result.usage`, pi `turn_end`, ACP) or
 /// the session total (Codex `thread/tokenUsage/updated`).
 pub(super) fn from_headless(server: &Server, run: &AgentRun, u: RunUsage, total: bool) {

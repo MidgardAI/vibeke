@@ -326,6 +326,13 @@ pub fn has_screen_rules(h: Harness) -> bool {
 }
 
 /// The manifest whose screen rules apply to `h` (its own, else `[screen] manifest = "<id>"`).
+/// Whether keystrokes can answer a dialog matched by `rule` (`accelerators = "none"`: no).
+pub fn keys_plannable(h: Harness, rule: &str) -> bool {
+    screen_manifest(h)
+        .and_then(|l| l.dialog_spec(rule).cloned())
+        .is_none_or(|s| s.accelerators != "none")
+}
+
 pub fn screen_manifest(h: Harness) -> Option<std::sync::Arc<vk_agents::manifest::Loaded>> {
     let l = h.manifest()?;
     if l.has_screen_rules() || l.m.screen.manifest.is_empty() {

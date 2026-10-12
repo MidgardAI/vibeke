@@ -2,13 +2,13 @@
 
 Use this page to track an agent that has no dedicated integration. You can rely on terminal detection, describe your own agent in a manifest, or run an agent through the Agent Client Protocol (ACP).
 
-For the agents with an integration, see [Claude Code](claude-code.md), [Codex CLI](codex.md), and [pi and oh-my-pi](pi.md).
+For the agents with an integration, see [Claude Code](claude-code.md), [Codex CLI](codex.md), [pi and oh-my-pi](pi.md), [OpenCode](opencode.md) and [Hermes Agent](hermes.md).
 
 ## Terminal detection
 
 Vibeke ships a manifest for these agents without an integration:
 
-Aider, Amp, Antigravity, Cursor Agent, Devin CLI, Factory Droid, GitHub Copilot CLI, Grok CLI, Hermes Agent, Kilo Code CLI, Kimi CLI, Letta Code, Mastra Code, Muse, Qoder CLI and Qwen Code.
+Aider, Amp, Antigravity, Cursor Agent, Devin CLI, Factory Droid, GitHub Copilot CLI, Grok CLI, Kilo Code CLI, Kimi CLI, Letta Code, Mastra Code, Muse, Qoder CLI and Qwen Code.
 
 Run the agent in a pane. Vibeke finds the process, reads the screen and shows a state in the sidebar. Where the manifest has a rule for the approval prompt, Vibeke also shows the prompt in the inbox and answers it with keystrokes.
 

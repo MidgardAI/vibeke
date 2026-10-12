@@ -161,7 +161,7 @@ pub(super) fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> R
                 let msg = s(p, "message").unwrap_or("agent is blocked");
                 let answerable =
                     super::screen::screen_manifest(Harness::from_id(&run.harness).unwrap_or(h))
-                        .is_some_and(|l| l.has_dialog_rules())
+                        .is_some_and(|l| l.has_keyed_dialog_rules())
                         || matches!(
                             Harness::from_id(&run.harness).map(|x| x.base()),
                             Some(Harness::Claude | Harness::Codex | Harness::Pi | Harness::Omp)

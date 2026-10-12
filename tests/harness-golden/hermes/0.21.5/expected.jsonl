@@ -1,0 +1,4 @@
+{"screen": "approval.txt", "dialog": {"kind": "approval", "options": 4, "pointer": 1, "command": "rm -rf build", "title_contains": "Dangerous Command"}, "keys": {"allow": ["enter"], "allow_always": ["down", "enter"], "deny": ["down", "down", "down", "enter"]}}
+{"screen": "working.txt", "state": "working"}
+{"screen": "idle.txt", "state": "idle"}
+{"screen": "clarify.txt", "dialog": {"kind": "question", "options": 3, "pointer": 1}}

@@ -1,0 +1,8 @@
+Welcome to Hermes Agent! Type your message or /help for commands.
+✦ Tip: Context files support 10+ prompt injection patterns — invisible Unicode,
+'ignore instructions', exfil attempts.
+
+ ☤ gpt-6.1-sol │ ctx -- │ [░░░░░░░░░░] -- │ 2s │ ⏲ 0s
+────────────────────────────────────────────────────────────────────────────────
+❯ Type / to browse commands, or Ctrl+P for the palette
+────────────────────────────────────────────────────────────────────────────────

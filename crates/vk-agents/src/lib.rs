@@ -3,6 +3,7 @@
 //! See `spec/04-harness-adapters.md` (§6, §7.6, §7.7, §11).
 
 pub mod fingerprint;
+mod hermes_config;
 pub mod install;
 pub mod manifest;
 pub mod mcp;

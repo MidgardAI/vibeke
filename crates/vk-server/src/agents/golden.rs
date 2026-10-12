@@ -215,6 +215,7 @@ fn golden_signals_replay_through_the_mappings() {
             super::opencode::translate as fn(&str, &str, &Value) -> Vec<(&'static str, Value)>,
         ),
         ("gemini", super::gemini::translate),
+        ("hermes", super::hermes::translate),
     ] {
         let dirs = version_dirs(id);
         assert!(!dirs.is_empty(), "{id}: no corpus");

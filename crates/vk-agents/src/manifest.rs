@@ -467,8 +467,12 @@ pub const DEFAULT_OPTIONS_REGEX: &str =
 pub struct DialogSpec {
     pub options_regex: String,
     pub pointer: String,
-    /// `digits` | `letters` | `arrows`.
+    /// `digits` | `letters` | `arrows` | `none` (the dialog is shown, but keystrokes cannot
+    /// answer it reliably: answer it in the pane).
     pub accelerators: String,
+    /// `column` (one option per line, the default) | `row` (every `options_regex` match on one
+    /// line is an option, numbered from 1 in order).
+    pub layout: String,
     /// Key sent after an accelerator (`enter`), empty when the accelerator commits.
     pub confirm: String,
     /// decision (`allow`, `allow_always`, `deny`) → option number.
@@ -483,6 +487,7 @@ impl Default for DialogSpec {
             options_regex: DEFAULT_OPTIONS_REGEX.into(),
             pointer: "❯".into(),
             accelerators: "digits".into(),
+            layout: String::new(),
             confirm: String::new(),
             map: BTreeMap::new(),
             multi_toggle: String::new(),
@@ -703,6 +708,17 @@ impl Loaded {
         self.screen.iter().any(|r| !r.rule.opens.is_empty())
     }
 
+    /// Dialog rules that keystrokes can answer (not `accelerators = "none"`).
+    pub fn has_keyed_dialog_rules(&self) -> bool {
+        self.screen.iter().any(|r| {
+            !r.rule.opens.is_empty()
+                && r.rule
+                    .dialog
+                    .as_ref()
+                    .is_none_or(|d| d.accelerators != "none")
+        })
+    }
+
     pub fn is_acp(&self) -> bool {
         self.m.launch.transport == "acp" || self.family == "acp"
     }
@@ -793,7 +809,7 @@ impl Loaded {
             }
         }
         let mut v = vec!["observe".to_string()];
-        if self.has_dialog_rules() {
+        if self.has_keyed_dialog_rules() {
             v.push("answer_keystroke".into());
         }
         v
@@ -1603,6 +1619,29 @@ fn option_block(opt_re: &Regex, pointer_glyph: &str, region: &[&str]) -> OptionB
     (options, pointer)
 }
 
+/// The last line with at least two option matches, for a `row` dialog. The highlighted option
+/// is not visible in text, so the pointer is unknown.
+fn option_row(opt_re: &Regex, region: &[&str]) -> OptionBlock {
+    for l in region.iter().rev() {
+        let options: Vec<(u8, String, Option<char>)> = opt_re
+            .captures_iter(l)
+            .enumerate()
+            .map(|(i, c)| {
+                let label = c
+                    .name("label")
+                    .or_else(|| c.get(0))
+                    .map(|m| m.as_str().trim().to_string())
+                    .unwrap_or_default();
+                (u8::try_from(i + 1).unwrap_or(u8::MAX), label, None)
+            })
+            .collect();
+        if options.len() >= 2 {
+            return (options, None);
+        }
+    }
+    (vec![], None)
+}
+
 /// 04 §9.2 unknown-dialog heuristic: a boxed region with numbered options and a pointer glyph
 /// that matches no rule is a provisional `question` (confidence 0.5).
 pub fn unknown_dialog_in(region: &[&str]) -> Option<DialogMatch> {
@@ -1693,7 +1732,11 @@ fn evaluate_rules(
         let text = region.join("\n");
         let spec = r.rule.dialog.clone().unwrap_or_default();
         let opt_re = r.options.as_ref().unwrap_or(&DEFAULT_OPTIONS_RE);
-        let (options, pointer) = option_block(opt_re, &spec.pointer, region);
+        let (options, pointer) = if spec.layout == "row" {
+            option_row(opt_re, region)
+        } else {
+            option_block(opt_re, &spec.pointer, region)
+        };
         if options.len() < 2 {
             continue;
         }
@@ -1746,6 +1789,9 @@ pub enum KeyIntent {
 
 /// Keys that select the option for `intent` in `d` (04 §8 step 3: accelerators preferred).
 pub fn plan_keys(d: &DialogMatch, spec: &DialogSpec, intent: &KeyIntent) -> Option<Vec<String>> {
+    if spec.accelerators == "none" {
+        return None;
+    }
     let lower = |s: &str| s.to_lowercase();
     let by_label =
         |pred: &dyn Fn(&str) -> bool| d.options.iter().find(|(_, l, _)| pred(&lower(l))).cloned();
@@ -2239,17 +2285,19 @@ mod tests {
         {
             assert!(set.get(id).is_some(), "missing builtin {id}");
         }
-        // New harnesses have no validated range: everything they document is ✓? (unverified).
+        // A harness without a validated range: what it documents is ✓? (unverified).
+        let g = set.get("gemini").unwrap();
+        assert!(!g.validated("1.0.0"));
+        assert!(!g.unverified_capabilities().is_empty());
+        // OpenCode and Hermes are validated for the recorded versions only.
         let oc = set.get("opencode").unwrap();
-        assert!(!oc.validated("1.0.0"));
-        assert_eq!(
-            oc.capabilities(Some("1.0.0"), "tui"),
-            vec!["observe", "answer_keystroke"]
-        );
+        assert!(oc.validated("1.19.0") && !oc.validated("1.20.0"));
         assert!(
-            oc.unverified_capabilities()
+            oc.capabilities(Some("1.19.0"), "tui")
                 .contains(&"answer_native:approval".to_string())
         );
+        let hermes = set.get("hermes").unwrap();
+        assert!(hermes.validated("0.21.5+8828.gcb6ffe6") && !hermes.validated("0.22.0"));
         let claude = set.get("claude").unwrap();
         assert!(claude.validated("2.1.290"));
         assert!(!claude.validated("2.2.0"));
@@ -2293,6 +2341,42 @@ mod tests {
             None,
         )];
         assert_eq!(set.detect(&procs, None, &none).unwrap().0.id(), "hermes");
+        // The installer's inline launcher; its helper calls are not the agent.
+        let code = "import os, re, sys\nsys.path.insert(0, '/Users/u/.hermes/hermes-agent')\nfrom hermes_cli.main import main\nsys.argv[0] = re.sub(r'(-script\\.pyw|\\.exe)?$', '', sys.argv[0])\nsys.exit(main())\n";
+        let launcher = |extra: &[&str]| {
+            let mut v = a(&[
+                "/Users/u/.hermes/tools/python-3.14.7/bin/python3",
+                "-I",
+                "-c",
+                code,
+            ]);
+            v.extend(extra.iter().map(|s| s.to_string()));
+            vec![(v, None)]
+        };
+        for extra in [
+            &[][..],
+            &["--resume", "s1"],
+            &["--provider", "x"],
+            &["chat"],
+        ] {
+            assert_eq!(
+                set.detect(&launcher(extra), None, &none)
+                    .map(|d| d.0.id().to_string()),
+                Some("hermes".to_string()),
+                "{extra:?}"
+            );
+        }
+        for extra in [
+            &["--print-runtime-command"][..],
+            &["--run-module", "m"],
+            &["gateway", "run"],
+            &["setup"],
+        ] {
+            assert!(
+                set.detect(&launcher(extra), None, &none).is_none(),
+                "{extra:?}"
+            );
+        }
         assert!(
             set.detect(&[(a(&["-zsh"]), Some("/bin/zsh".into()))], None, &none)
                 .is_none()
@@ -2449,26 +2533,37 @@ mod tests {
     #[test]
     fn screen_rules_and_key_plans() {
         let set = load(&Sources::default());
+        // OpenCode: one row of options, the selection shown only by colour: no keystroke plan.
         let oc = set.get("opencode").unwrap();
-        let screen = "  △ Permission required\n  $ rm -rf dist\n\n  1. Allow once\n  2. Allow always\n  3. Reject\n";
-        let r = oc.evaluate(screen);
-        let d = r.dialog.expect("dialog");
+        let screen = "  ┃  △ Permission required\n  ┃    # Shell command\n  ┃\n  ┃  $ rm -rf dist\n  ┃\n  ┃   Allow once   Allow always   Reject  ctrl+f fullscreen  ⇆ select\n";
+        let d = oc.evaluate(screen).dialog.expect("dialog");
         assert_eq!(d.kind, "approval");
-        assert_eq!(d.options.len(), 3);
+        assert_eq!(d.title, "Shell command");
+        assert_eq!(d.command.as_deref(), Some("rm -rf dist"));
+        let labels: Vec<&str> = d.options.iter().map(|(_, l, _)| l.as_str()).collect();
+        assert_eq!(labels, ["Allow once", "Allow always", "Reject"]);
         let spec = oc.dialog_spec(&d.rule_id).cloned().unwrap_or_default();
-        assert_eq!(plan_keys(&d, &spec, &KeyIntent::Deny), Some(a(&["3"])));
+        assert_eq!(plan_keys(&d, &spec, &KeyIntent::Allow), None);
+        // Hermes: a numbered list walked with arrows from the pointer.
+        let hermes = set.get("hermes").unwrap();
+        let screen = "╭──────────────────────────╮\n│ ⚠️  Dangerous Command     │\n│                          │\n│ rm -rf dist              │\n│                          │\n│ ❯ 1. Allow once          │\n│   2. Allow for this session │\n│   3. Add to permanent allowlist │\n│   4. Deny                │\n╰──────────────────────────╯\n  ↑/↓ to select, Enter to confirm  (299s)\n";
+        let d = hermes.evaluate(screen).dialog.expect("dialog");
+        assert_eq!(d.title, "Dangerous Command");
+        assert_eq!(d.command.as_deref(), Some("rm -rf dist"));
+        assert_eq!((d.options.len(), d.pointer), (4, Some(1)));
+        let spec = hermes.dialog_spec(&d.rule_id).cloned().unwrap_or_default();
+        assert_eq!(
+            plan_keys(&d, &spec, &KeyIntent::Deny),
+            Some(a(&["down", "down", "down", "enter"]))
+        );
         assert_eq!(
             plan_keys(&d, &spec, &KeyIntent::AllowAlways),
-            Some(a(&["2"]))
+            Some(a(&["down", "enter"]))
         );
-        let arrows = DialogSpec {
-            accelerators: "arrows".into(),
-            ..Default::default()
-        };
         let mut d2 = d.clone();
         d2.pointer = Some(3);
         assert_eq!(
-            plan_keys(&d2, &arrows, &KeyIntent::Allow),
+            plan_keys(&d2, &spec, &KeyIntent::Allow),
             Some(a(&["up", "up", "enter"]))
         );
         let g = set.get("gemini").unwrap();

@@ -1,5 +1,7 @@
-# Built-in manifest: Hermes Agent (spec 04 §5.3). Screen + self-report only: Vibeke's Hermes
-# plugin (full lifecycle over `adapter.signal`) is not built yet, so this is observe-only.
+# Built-in manifest: Hermes Agent (spec 04 §5.3). Verified against Hermes Agent 0.21.5
+# (tests/harness-golden/hermes/0.21.5): the Vibeke plugin (`vibeke integration install hermes`)
+# reports sessions, turns, tools, approvals and usage. Plugin approval hooks only observe, so
+# approvals are answered with keystrokes in the classic CLI dialog.
 schema = 1
 id = "hermes"
 name = "Hermes Agent"
@@ -11,22 +13,82 @@ interpreter = ["python", "python3"]
 script_regex = '(/hermes(_agent|-agent)?/|/bin/hermes$)'
 [[detect.process]]
 exe_basename = ["hermes"]
+# The installer's launcher runs Hermes from inline code (`python3 -I -c '<bootstrap>'`). Only a
+# chat counts (no subcommand, `chat`, or flags): not `gateway`, `setup`, or the launcher's
+# `--print-runtime-command` and `--run-module` helper calls.
+[[detect.process]]
+interpreter = ["python", "python3"]
+argv_regex = '(?s)\nfrom hermes_cli\.main import main\n.*\)\s*($| chat( |$)| (?:-[^-]|--(?:[^pr]|r[^u]|p[^r]|pr[^i])))'
 
 [version]
 command = ["hermes", "--version"]
+validated = ">=0.21.0, <0.22.0"
 
 [launch]
 argv = ["hermes"]
 session_id_format = "none"
 prompt_arg = "none"
-acp_argv = ["hermes", "acp"]                   # [verify M2]
+acp_argv = ["hermes", "acp"]
 
 [resume]
-argv = ["hermes", "--resume", "{resume_id}"]   # [verify M2]
+argv = ["hermes", "--resume", "{resume_id}"]
+continue_argv = ["hermes", "--continue"]
 
 [integration]
-transports = ["self_report", "screen"]
+transports = ["extension", "screen"]
+install = "builtin:hermes"                     # <HERMES_HOME>/plugins/vibeke/, plugins.enabled
 headless = "acp"
 
+[[capabilities]]
+versions = "*"
+mode = "tui"
+observe = true
+answer_keystroke = true
+resume = true
+survive_disconnect = true
+
+[states]
+"on_session_start" = "SessionStart"
+"pre_llm_call" = "UserPromptSubmit"
+"pre_tool_call" = "PreToolUse"
+"post_tool_call" = "PostToolUse"
+"on_session_end" = "Stop"
+"pre_approval_request" = "open:approval"
+
+[yolo]
+flags = ["--yolo"]
+
 [screen]
-manifest = "generic-repl"
+rows = 30
+# The classic CLI's approval box: `❯ 1. Allow once`, `2. Allow for this session`,
+# `3. Add to permanent allowlist`, `4. Deny`; arrows move the pointer, Enter confirms.
+[[screen.rules]]
+id = "approval"
+opens = "approval"
+all = ['(?i)↑/↓ to select, enter to confirm']
+any = ['(?i)dangerous command', '(?i)\d\. allow once']
+confidence = 0.9
+title_regex = '(?m)^[│\s]*⚠️?\s+(\S[^│\n]*?)\s*│'
+# The first command line: the box row after the title and a blank row.
+command_regex = '(?m)^│ *⚠[^\n]*\n│ *│[^\n]*\n│ +(\S[^│\n]*?) *│'
+[screen.rules.dialog]
+accelerators = "arrows"
+map = { allow = 1, allow_always = 2, deny = 4 }
+
+[[screen.rules]]
+id = "working"
+state = "working"
+any = ['(?i)msg=interrupt', '(?i)ctrl\+c cancel']
+confidence = 0.8
+
+[[screen.rules]]
+id = "prompt"
+state = "idle"
+any = ['(?mi)^❯ (ask anything|type / to browse)']
+confidence = 0.7
+
+[ui]
+interrupt_keys = ["ctrl+c"]
+
+[identity]
+sources = ["plugin"]

@@ -31,7 +31,7 @@
 - **Remote work that feels local.** Connect SSH machines, forward dev servers, and open previews, screenshots and a real browser pane from the devbox in your local terminal. [Remote and previews →](https://vibeke.dev/docs/previews)
 - **Isolation when you want it.** Run a task on the host, in an OS sandbox, a container or a VM. If the provider you picked isn't available, the task doesn't start. [Execution and isolation →](https://vibeke.dev/docs/sandboxes)
 - **Your phone in the loop.** Pair the web or desktop app with a QR code. Traffic goes through an end-to-end encrypted relay, so the dev host needs no open ports. [Phone and browser →](https://vibeke.dev/docs/mobile)
-- **Bring your own harness.** Claude Code, Codex, pi, omp, OpenCode, Gemini CLI, any ACP agent, or your own wrapper described in a TOML manifest.
+- **Bring your own harness.** Claude Code, Codex, pi, omp, OpenCode, Hermes Agent, Gemini CLI, any ACP agent, or your own wrapper described in a TOML manifest.
 - **Built to be scripted.** A versioned JSON-RPC API (`vibeke/1`), a CLI on top of it, and an MCP server for agents. [Control API →](https://vibeke.dev/docs/api)
 - **Plugins.** Native plugins with declared capabilities. Coming from Herdr? Import your config and layouts and keep your plugins. [Moving from Herdr →](https://vibeke.dev/docs/migrating-from-herdr)
 - **One Rust binary.** Ghostty's VT engine inside, and it runs in the terminal you already use.

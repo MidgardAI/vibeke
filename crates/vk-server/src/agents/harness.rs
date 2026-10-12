@@ -35,6 +35,8 @@ pub enum Family {
     Omp,
     OpenCode,
     Gemini,
+    /// Hermes Agent: the Vibeke plugin forwards its hooks (`agents/hermes.rs`).
+    Hermes,
     Acp,
     Generic,
 }
@@ -114,6 +116,7 @@ impl Harness {
                     "omp" => Family::Omp,
                     "opencode" => Family::OpenCode,
                     "gemini" => Family::Gemini,
+                    "hermes" => Family::Hermes,
                     _ => Family::Generic,
                 },
                 None => Family::Generic,
@@ -129,8 +132,14 @@ impl Harness {
             Family::Omp => Harness::Omp,
             Family::OpenCode => Harness::OpenCode,
             Family::Gemini => Harness::Gemini,
-            Family::Acp | Family::Generic => *self,
+            Family::Hermes | Family::Acp | Family::Generic => *self,
         }
+    }
+    /// The harness keeps its own dialog on screen while Vibeke holds the gate: the OpenCode
+    /// plugin answers through OpenCode's server API, and a reply in the TUI ends the gate. Such
+    /// gates are held even while the pane is focused (no release-on-focus, 04 §7.2).
+    pub fn dialog_visible_while_gated(&self) -> bool {
+        self.family() == Family::OpenCode
     }
     pub fn is_pi_family(&self) -> bool {
         matches!(self.family(), Family::Pi | Family::Omp)
@@ -139,7 +148,7 @@ impl Harness {
     pub fn transport(&self) -> &'static str {
         match self.family() {
             Family::Claude | Family::Codex | Family::Gemini => "hooks",
-            Family::Pi | Family::Omp | Family::OpenCode => "extension",
+            Family::Pi | Family::Omp | Family::OpenCode | Family::Hermes => "extension",
             Family::Acp => "acp",
             Family::Generic => "self_report",
         }
@@ -188,7 +197,7 @@ impl Harness {
             ],
             // Manifest-driven: verified rows only (OpenCode/Gemini have none yet → observe +
             // keystrokes; a user manifest may assert more, shown as user-asserted).
-            Family::OpenCode | Family::Gemini | Family::Acp | Family::Generic => {
+            Family::OpenCode | Family::Gemini | Family::Hermes | Family::Acp | Family::Generic => {
                 return self
                     .manifest()
                     .map(|l| l.capabilities(None, "tui"))
@@ -207,7 +216,10 @@ impl Harness {
             (Family::Claude, InteractionKind::Question) => caps::CLAUDE_QUESTION_NATIVE,
             // pi/omp: dialogs raised through the extension bridge are answered natively.
             (Family::Pi | Family::Omp, InteractionKind::Question) => true,
-            (Family::OpenCode | Family::Gemini | Family::Acp | Family::Generic, k) => self
+            (
+                Family::OpenCode | Family::Gemini | Family::Hermes | Family::Acp | Family::Generic,
+                k,
+            ) => self
                 .capabilities()
                 .iter()
                 .any(|c| c == &format!("answer_native:{}", k.as_str())),
@@ -218,7 +230,15 @@ impl Harness {
         matches!(
             kind,
             InteractionKind::Approval | InteractionKind::Question | InteractionKind::PlanReview
-        )
+        ) && self.keyed_dialogs()
+    }
+    /// Keystrokes can answer this harness's dialogs: the built-in evaluators, or a manifest whose
+    /// dialog rules plan keys (OpenCode's dialog shows its selection only by colour).
+    pub fn keyed_dialogs(&self) -> bool {
+        matches!(
+            self.family(),
+            Family::Claude | Family::Codex | Family::Pi | Family::Omp
+        ) || super::screen::screen_manifest(*self).is_none_or(|l| l.has_keyed_dialog_rules())
     }
     pub fn preassign_session_id(&self) -> Option<String> {
         match self {
@@ -779,7 +799,7 @@ pub fn interaction_from_hook(h: Harness, event: &str, p: &Value) -> Option<Inter
         return Some(elicitation_interaction(p));
     }
     match h.family() {
-        Family::OpenCode if event == "permission.ask" => {
+        Family::OpenCode if matches!(event, "permission.asked" | "permission.ask") => {
             return Some(super::opencode::permission_interaction(p));
         }
         Family::Acp if event == "RequestPermission" => {
@@ -1081,10 +1101,15 @@ pub fn decision_json(h: Harness, it: &Interaction, a: &Answer) -> Value {
 
 pub fn decision_json_with(h: Harness, it: &Interaction, a: &Answer, persist: &Persist) -> Value {
     match h.family() {
-        // `permission.ask` hook output (04 §6.4): allow-always has no hook equivalent.
+        // Read by the OpenCode plugin (04 §6.4): `always` answers the request with OpenCode's own
+        // "always allow" (this pattern, this session).
         Family::OpenCode => {
-            let allow = matches!(a.decision, Some(Decision::Allow | Decision::AllowAlways));
-            return json!({"status": if allow { "allow" } else { "deny" }});
+            let status = match a.decision {
+                Some(Decision::Allow) => "allow",
+                Some(Decision::AllowAlways) => "always",
+                _ => "deny",
+            };
+            return json!({"status": status});
         }
         Family::Acp => return super::acp::decision_json(it, a),
         _ => {}
@@ -1665,12 +1690,21 @@ mod m2_tests {
 
     #[test]
     fn new_harnesses_are_observe_only_until_validated() {
-        for h in [Harness::OpenCode, Harness::Gemini] {
-            assert_eq!(h.capabilities(), vec!["observe", "answer_keystroke"]);
-            assert!(!h.answer_native(InteractionKind::Approval));
-            assert!(!validated(h, "1.2.3"));
-            assert!(h.keystroke_answers(InteractionKind::Approval));
-        }
+        let h = Harness::Gemini;
+        assert_eq!(h.capabilities(), vec!["observe", "answer_keystroke"]);
+        assert!(!h.answer_native(InteractionKind::Approval));
+        assert!(!validated(h, "1.2.3"));
+        assert!(h.keystroke_answers(InteractionKind::Approval));
+        // OpenCode answers approvals through its plugin, for the validated versions only.
+        let oc = Harness::OpenCode;
+        assert!(oc.answer_native(InteractionKind::Approval));
+        assert!(!oc.keystroke_answers(InteractionKind::Approval));
+        assert!(validated(oc, "1.19.0") && !validated(oc, "1.2.3"));
+        assert!(oc.dialog_visible_while_gated());
+        let hermes = Harness::from_id("hermes").unwrap();
+        assert_eq!(hermes.family(), Family::Hermes);
+        assert!(!hermes.answer_native(InteractionKind::Approval));
+        assert!(validated(hermes, "0.21.5+8828.gcb6ffe6"));
         assert!(yolo(
             Harness::Gemini,
             &a(&["gemini", "--approval-mode=yolo"])
@@ -1743,30 +1777,40 @@ mod m2_tests {
 
     #[test]
     fn manifest_screen_rules_drive_keystrokes() {
-        let screen = "  △ Permission required\n  $ rm -rf dist\n\n  1. Allow once\n  2. Allow always\n  3. Reject\n";
+        let deny = Answer {
+            decision: Some(Decision::Deny),
+            ..Default::default()
+        };
+        // OpenCode's row of options shows the selection only by colour: no keystroke plan.
+        let screen = "  ┃  △ Permission required\n  ┃    # Shell command\n  ┃\n  ┃  $ rm -rf dist\n  ┃\n  ┃   Allow once   Allow always   Reject  ⇆ select\n";
         let m = super::super::screen::evaluate(Harness::OpenCode, screen);
         let d = m.dialog.expect("dialog");
         assert_eq!(d.command.as_deref(), Some("rm -rf dist"));
+        assert!(!super::super::screen::keys_plannable(
+            Harness::OpenCode,
+            &d.rule
+        ));
         let it = interaction_from_hook(
             Harness::Claude,
             "PermissionRequest",
             &json!({"tool_name": "Bash", "tool_input": {"command": "rm -rf dist"}}),
         )
         .unwrap();
-        let keys = super::super::screen::keys_for(
-            Harness::OpenCode,
-            &d,
-            &it,
-            &Answer {
-                decision: Some(Decision::Deny),
-                ..Default::default()
-            },
+        assert_eq!(
+            super::super::screen::keys_for(Harness::OpenCode, &d, &it, &deny),
+            None
         );
-        assert_eq!(keys, Some(a(&["3"])));
-        // Hermes has no rules of its own: it uses generic-repl's.
+        // Hermes walks its numbered list with arrows.
         let h = Harness::from_id("hermes").unwrap();
-        let m = super::super::screen::evaluate(h, "Run this command?\n  1. Yes\n  2. No\n");
-        assert!(m.dialog.is_some());
+        let screen = "│ ⚠️  Dangerous Command     │\n│                          │\n│ rm -rf dist              │\n│                          │\n│ ❯ 1. Allow once          │\n│   2. Allow for this session │\n│   3. Add to permanent allowlist │\n│   4. Deny                │\n  ↑/↓ to select, Enter to confirm  (299s)\n";
+        let d = super::super::screen::evaluate(h, screen)
+            .dialog
+            .expect("dialog");
+        assert_eq!(d.command.as_deref(), Some("rm -rf dist"));
+        assert_eq!(
+            super::super::screen::keys_for(h, &d, &it, &deny),
+            Some(a(&["down", "down", "down", "enter"]))
+        );
     }
 
     fn always(text: Option<&str>) -> Answer {

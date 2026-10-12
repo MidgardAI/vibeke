@@ -1,0 +1,23 @@
+
+  ┃
+  ┃  Use the bash tool to run: sleep 8; echo slow-done. Then reply with one
+  ┃  short sentence.
+  ┃
+
+     + Thought: 710ms
+
+  ┃
+  ┃  ⠙ sleep 8; echo slow-done
+  ┃
+
+     ▣  Build · Nemotron 3.5 Lightning Free
+
+
+
+
+  ┃
+  ┃
+  ┃
+  ┃  Build · Nemotron 3.5 Lightning Free OpenCode
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+   ⬝⬝⬝⬝⬝⬝⬝⬝  esc interrupt                         tab agents  ctrl+p commands

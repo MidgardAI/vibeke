@@ -521,8 +521,9 @@ fn integration_doctor_reports_version_against_validated_range() {
     let oc = row("opencode");
     assert_eq!(oc["version"], "0.99.0");
     assert_eq!(oc["status"], "unvalidated");
-    assert_eq!(oc["capabilities"], json!(["observe", "answer_keystroke"]));
-    assert!(oc["validated_range"].is_null());
+    // Keystrokes cannot answer OpenCode's dialog: an unvalidated version only observes.
+    assert_eq!(oc["capabilities"], json!(["observe"]));
+    assert_eq!(oc["validated_range"], ">=1.19.0, <1.20.0");
     let cl = row("claude");
     assert_eq!(cl["status"], "validated");
     assert_eq!(cl["validated_range"], ">=2.1.0, <2.2.0");

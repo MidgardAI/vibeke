@@ -1,5 +1,5 @@
 //! Signal routing for every harness family (04 §3.1 AdapterHost): hooks (Claude, Codex,
-//! Gemini), extensions (pi/omp, OpenCode), the ACP host and self-report all end up in the same
+//! Gemini), extensions (pi/omp, OpenCode, Hermes), the ACP host and self-report all end up in the same
 //! hook vocabulary (`on_signal`) so state, interactions and tracking (15 T1) work identically.
 //! Also the API entry point for methods added in M2 (ACP launch, Herdr self-report, manifests).
 
@@ -30,6 +30,7 @@ pub(super) fn signal(server: &Arc<Server>, pane: &str, h: Harness, event: &str, 
         Family::Pi | Family::Omp => on_extension_signal(server, pane, h, event, p),
         Family::OpenCode => super::opencode::on_event(server, pane, h, event, p),
         Family::Gemini => super::gemini::on_hook(server, pane, h, event, p),
+        Family::Hermes => super::hermes::on_hook(server, pane, h, event, p),
         Family::Acp => super::acp::on_signal(server, pane, h, event, p),
         Family::Claude | Family::Codex | Family::Generic => on_signal(server, pane, h, event, p),
     }

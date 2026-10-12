@@ -1,0 +1,23 @@
+
+  ┃
+  ┃  Use the bash tool to run: echo hello-vibeke. Then reply done.
+  ┃
+
+     + Thought: 448ms
+
+     $ echo hello-vibeke
+
+     ▣  Build · Nemotron 3.5 Lightning Free
+
+
+
+
+  ┃
+  ┃  △ Permission required
+  ┃    # Shell command
+  ┃
+  ┃  $ echo hello-vibeke
+  ┃
+  ┃
+  ┃   Allow once   Allow always   Reject  ctrl+f fullscreen  ⇆ select  enter con
+  ┃

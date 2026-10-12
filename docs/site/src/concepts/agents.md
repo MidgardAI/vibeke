@@ -59,6 +59,8 @@ Each agent has its own page:
 - [Claude Code](../agents/claude-code.md)
 - [Codex CLI](../agents/codex.md)
 - [pi and oh-my-pi](../agents/pi.md)
+- [OpenCode](../agents/opencode.md)
+- [Hermes Agent](../agents/hermes.md)
 - [Other agents](../agents/other.md): terminal detection, custom manifests and ACP agents
 
 Use `vibeke agent start|prompt|wait|read|send-keys|get|list` to control agent runs. See the [CLI reference](../reference/cli.md) for command arguments.

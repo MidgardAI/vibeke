@@ -19,6 +19,7 @@ fn temp_dirs(d: &Path) -> Dirs {
         opencode: d.join("opencode"),
         gemini: d.join("gemini"),
         agents: d.join("agents"),
+        hermes: d.join("hermes"),
     }
 }
 

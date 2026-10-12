@@ -4,7 +4,7 @@
 //! Failure policy (04 §2.7):
 //! - observation (state signals, `observe`-mode interactions): fail open, print nothing;
 //! - gate-capable interactions (`PermissionRequest`, `AskUserQuestion`, `Elicitation`,
-//!   OpenCode `permission.ask`): print nothing on failure, so the harness's own dialog appears.
+//!   OpenCode `permission.asked`): print nothing on failure, so the harness's own dialog appears.
 //!   Permission enforcement itself is left to the harness.
 //!
 //! A gate request whose connection fails or drops is retried on a fresh connection with short
@@ -32,8 +32,9 @@ fn gate_capable(harness: &str, event: &str, payload: &Value) -> bool {
         ("claude", "PermissionRequest") | ("codex", "PermissionRequest") => true,
         // Claude MCP elicitation (a server asks the user for input): answered through the hook.
         ("claude", "Elicitation") => true,
-        // OpenCode plugin `permission.ask` waits for the decision (04 §6.4).
-        ("opencode", "permission.ask") => true,
+        // The OpenCode plugin waits for the decision on `permission.asked` (04 §6.4); earlier
+        // plugin builds sent `permission.ask`.
+        ("opencode", "permission.asked" | "permission.ask") => true,
         ("claude", "PreToolUse") => {
             let tool = payload
                 .get("tool_name")

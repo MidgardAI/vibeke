@@ -1091,7 +1091,7 @@ audit.search :: {query?: string, types?: [string]|string, since_ms?: int, limit?
 # verifies the rotated segments and the active log as one chain
 audit.verify :: {} => {ok: bool, exists: bool, entries: int, last_seq: int, last_hash: string, problems: [string], discontinuities: [int], head_seq: int|null, path: string, segments: [string]}
 # --- integration.* (09 §5.3); full scope only ---
-integration.doctor :: {harness?: claude|codex|pi|omp|opencode|gemini}
+integration.doctor :: {harness?: claude|codex|pi|omp|opencode|gemini|hermes}
   => {checks: [{name: string, harness: string, ok: bool, status: ok|changed|removed|unrecorded|not_installed, detail: string, file: string, fingerprint: string|null, recorded: string|null}]}
 "##;
 

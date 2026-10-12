@@ -1,4 +1,5 @@
-//! Hook installers for Claude Code and Codex, plus the Codex PATH shim.
+//! Hook installers for Claude Code and Codex, extension installers for pi, omp, OpenCode and
+//! Hermes Agent, plus the Codex PATH shim.
 //! Normative rules: spec 04 §11 (idempotent, merge-only, backup before first
 //! modification, atomic write with change detection, stable command paths).
 //!
@@ -48,6 +49,9 @@ pub enum Harness {
     /// Gemini CLI: hooks merged into `<gemini>/settings.json`. Like Codex, Vibeke entries are
     /// recognised by their command (no marker key: the settings schema is unverified).
     Gemini,
+    /// Hermes Agent: a managed plugin directory (`<hermes>/plugins/vibeke/`) enabled in
+    /// `<hermes>/config.yaml`, see [`HERMES_PLUGIN`].
+    Hermes,
 }
 
 impl Harness {
@@ -59,6 +63,7 @@ impl Harness {
             Harness::Omp => "omp",
             Harness::OpenCode => "opencode",
             Harness::Gemini => "gemini",
+            Harness::Hermes => "hermes",
         }
     }
 
@@ -66,13 +71,14 @@ impl Harness {
         Harness::ALL.into_iter().find(|h| h.id() == id)
     }
 
-    pub const ALL: [Harness; 6] = [
+    pub const ALL: [Harness; 7] = [
         Harness::Claude,
         Harness::Codex,
         Harness::Pi,
         Harness::Omp,
         Harness::OpenCode,
         Harness::Gemini,
+        Harness::Hermes,
     ];
 
     /// Installed as a single extension file rather than merged into a JSON config.
@@ -100,6 +106,8 @@ pub struct Dirs {
     pub gemini: PathBuf,
     /// The shared Agent Skills root (`~/.agents`), read by Codex, pi, omp, OpenCode and Gemini.
     pub agents: PathBuf,
+    /// Hermes Agent home (`HERMES_HOME`, default `~/.hermes`).
+    pub hermes: PathBuf,
 }
 
 impl Dirs {
@@ -144,6 +152,10 @@ impl Dirs {
             gemini: pick("VIBEKE_GEMINI_HOME", ".gemini"),
             // VIBEKE_AGENTS_HOME redirects the shared skills root (tests).
             agents: pick("VIBEKE_AGENTS_HOME", ".agents"),
+            hermes: match std::env::var_os("VIBEKE_HERMES_HOME") {
+                Some(v) if !v.is_empty() => PathBuf::from(v),
+                _ => pick("HERMES_HOME", ".hermes"),
+            },
         }
     }
 
@@ -167,6 +179,8 @@ impl Dirs {
         "VIBEKE_OPENCODE_HOME",
         "VIBEKE_GEMINI_HOME",
         "VIBEKE_AGENTS_HOME",
+        "HERMES_HOME",
+        "VIBEKE_HERMES_HOME",
     ];
     pub fn config_file(&self, h: Harness) -> PathBuf {
         match h {
@@ -174,9 +188,10 @@ impl Dirs {
             Harness::Codex => self.codex.join("hooks.json"),
             Harness::Pi => self.pi.join("agent/extensions/vibeke/index.js"),
             Harness::Omp => self.omp.join("agent/extensions/vibeke.js"),
-            // [verify M2] upstream docs name `plugin/` (some versions also read `plugins/`).
-            Harness::OpenCode => self.opencode.join("plugin/vibeke.ts"),
+            // OpenCode 1.x reads both `plugins/` (documented) and the older `plugin/`.
+            Harness::OpenCode => self.opencode.join("plugins/vibeke.ts"),
             Harness::Gemini => self.gemini.join("settings.json"),
+            Harness::Hermes => self.hermes.join("plugins/vibeke/__init__.py"),
         }
     }
 }
@@ -258,7 +273,7 @@ fn events(h: Harness) -> &'static [EventSpec] {
         Harness::Claude => CLAUDE_EVENTS,
         Harness::Codex => CODEX_EVENTS,
         Harness::Gemini => GEMINI_EVENTS,
-        Harness::Pi | Harness::Omp | Harness::OpenCode => &[],
+        Harness::Pi | Harness::Omp | Harness::OpenCode | Harness::Hermes => &[],
     }
 }
 
@@ -399,7 +414,7 @@ fn is_ours_group(h: Harness, group: &Value) -> bool {
             let mut it = hook_commands(group).peekable();
             it.peek().is_some() && it.all(|c| is_ours_command(h, c))
         }
-        Harness::Pi | Harness::Omp | Harness::OpenCode => false,
+        Harness::Pi | Harness::Omp | Harness::OpenCode | Harness::Hermes => false,
     }
 }
 
@@ -602,6 +617,9 @@ pub fn plan_uninstall(h: Harness, dirs: &Dirs) -> Result<Plan> {
 }
 
 fn plan(h: Harness, dirs: &Dirs, bin: Option<&Path>) -> Result<Plan> {
+    if h == Harness::Hermes {
+        return plan_hermes(dirs, bin.is_some());
+    }
     if h.is_extension() {
         return plan_extension(h, dirs, bin.is_some());
     }
@@ -795,7 +813,9 @@ pub fn apply(plan: &Plan) -> Result<Vec<PathBuf>> {
             if let Some(parent) = f.path.parent()
                 && parent.file_name().is_some_and(|n| n == "vibeke")
             {
-                let _ = fs::remove_dir(parent); // pi: only if empty
+                // Hermes: Python's bytecode cache sits next to the plugin.
+                let _ = fs::remove_dir_all(parent.join("__pycache__"));
+                let _ = fs::remove_dir(parent); // pi, Hermes: only if empty
             }
             written.push(f.path.clone());
             continue;
@@ -804,7 +824,13 @@ pub fn apply(plan: &Plan) -> Result<Vec<PathBuf>> {
         if let Some(parent) = f.path.parent() {
             fs::create_dir_all(parent)?;
         }
-        if let Some(before) = &f.before
+        // A file Vibeke manages whole is rewritten from this build: no backup (one would sit in
+        // the harness's plugin directory).
+        let managed = f.before.as_deref().is_some_and(|b| {
+            b.starts_with(EXTENSION_MARKER_PREFIX) || b.starts_with(HASH_MARKER_PREFIX)
+        });
+        if !managed
+            && let Some(before) = &f.before
             && let Some(b) = ensure_backup(&f.path, before)?
         {
             written.push(b);
@@ -960,6 +986,12 @@ pub fn refresh_managed(dirs: &Dirs) -> Vec<(Harness, Vec<PathBuf>)> {
             // The extension file only: a missing skill is a new file, so it is asked for.
             files.extend(p.files.into_iter().take(1));
         }
+        if h == Harness::Hermes
+            && let Ok(p) = plan_hermes(dirs, true)
+        {
+            // The two plugin files; enabling it in config.yaml is the user's file.
+            files.extend(p.files.into_iter().take(2).filter(|f| f.before.is_some()));
+        }
         if let Ok(Some(f)) = crate::skill::plan_skill(h, dirs, true, &mut notes)
             && f.before.is_some()
         {
@@ -1002,6 +1034,9 @@ pub fn hooks_present(h: Harness, dirs: &Dirs) -> bool {
 
 /// The hooks (or extension) alone, without the skill: what the integrity record fingerprints.
 pub fn hook_status(h: Harness, dirs: &Dirs) -> Status {
+    if h == Harness::Hermes {
+        return status_hermes(dirs);
+    }
     if h.is_extension() {
         return status_extension(h, dirs);
     }
@@ -1060,7 +1095,7 @@ pub fn hook_status(h: Harness, dirs: &Dirs) -> Status {
                 let ours = match h {
                     Harness::Claude => group_ours,
                     Harness::Codex | Harness::Gemini => is_ours_command(h, cmd),
-                    Harness::Pi | Harness::Omp | Harness::OpenCode => false,
+                    Harness::Pi | Harness::Omp | Harness::OpenCode | Harness::Hermes => false,
                 };
                 if ours {
                     found = true;
@@ -1257,6 +1292,28 @@ fn plan_extension(h: Harness, dirs: &Dirs, install: bool) -> Result<Plan> {
     } else {
         (None, ours)
     };
+    let mut files = vec![FileChange {
+        path,
+        before,
+        after,
+        stamp,
+        remove,
+    }];
+    // Earlier builds installed the OpenCode plugin to `plugin/`: a second copy would load twice.
+    if h == Harness::OpenCode {
+        let legacy = dirs.opencode.join("plugin/vibeke.ts");
+        if let Some((t, s)) = read_file(&legacy)?
+            && extension_marker_version(h, &t).is_some()
+        {
+            files.push(FileChange {
+                path: legacy,
+                before: Some(t),
+                after: None,
+                stamp: Some(s),
+                remove: true,
+            });
+        }
+    }
     let mut notes = vec![];
     if install && h == Harness::Pi {
         notes.push(
@@ -1266,7 +1323,7 @@ fn plan_extension(h: Harness, dirs: &Dirs, install: bool) -> Result<Plan> {
     }
     if install && h == Harness::OpenCode {
         notes.push(
-            "OpenCode loads plugins from ~/.config/opencode/plugin/ (restart opencode) [verify M2]"
+            "OpenCode loads plugins from ~/.config/opencode/plugins/ (restart opencode)"
                 .to_string(),
         );
     }
@@ -1276,13 +1333,6 @@ fn plan_extension(h: Harness, dirs: &Dirs, install: bool) -> Result<Plan> {
                 .to_string(),
         );
     }
-    let mut files = vec![FileChange {
-        path,
-        before,
-        after,
-        stamp,
-        remove,
-    }];
     files.extend(crate::skill::plan_skill(h, dirs, install, &mut notes)?);
     Ok(Plan {
         harness: h,
@@ -1346,7 +1396,7 @@ fn status_extension(h: Harness, dirs: &Dirs) -> Status {
     // Everything else in the extensions dir is foreign (Herdr's herdr-omp-agent-state.ts, user extensions).
     let ext_dir = match h {
         Harness::Pi => dirs.pi.join("agent/extensions"),
-        Harness::OpenCode => dirs.opencode.join("plugin"),
+        Harness::OpenCode => dirs.opencode.join("plugins"),
         _ => dirs.omp.join("agent/extensions"),
     };
     let own = match h {
@@ -1366,6 +1416,191 @@ fn status_extension(h: Harness, dirs: &Dirs) -> Status {
             .map(|n| format!("extension: {n}"))
             .collect();
     }
+    st
+}
+
+// ---------------------------------------------------------------------------
+// Hermes Agent plugin
+// ---------------------------------------------------------------------------
+
+/// The Hermes plugin (`integrations/hermes-plugin/`): forwards plugin hooks to
+/// `vibeke hook hermes <hook>`.
+pub const HERMES_PLUGIN: &str = include_str!("../../../integrations/hermes-plugin/__init__.py");
+const HERMES_MANIFEST: &str = include_str!("../../../integrations/hermes-plugin/plugin.yaml");
+/// The plugin's name in `plugins.enabled` and its directory under `<hermes>/plugins/`.
+const HERMES_PLUGIN_NAME: &str = "vibeke";
+const HASH_MARKER_PREFIX: &str = "# managed by vibeke (vibeke-integration=";
+
+/// `(path, managed content)` of each plugin file.
+fn hermes_files(dirs: &Dirs) -> [(PathBuf, String); 2] {
+    let dir = dirs.hermes.join("plugins").join(HERMES_PLUGIN_NAME);
+    let header = format!("{HASH_MARKER_PREFIX}hermes@{VERSION}); reinstall overwrites\n");
+    [
+        (
+            dir.join("plugin.yaml"),
+            format!("{header}{HERMES_MANIFEST}"),
+        ),
+        (dir.join("__init__.py"), format!("{header}{HERMES_PLUGIN}")),
+    ]
+}
+
+/// `Some(version)` when `text` starts with Vibeke's managed `#` header for Hermes.
+fn hermes_marker_version(text: &str) -> Option<String> {
+    let rest = text
+        .lines()
+        .next()?
+        .strip_prefix(HASH_MARKER_PREFIX)?
+        .strip_prefix("hermes@")?;
+    let (v, tail) = rest.split_once(')')?;
+    tail.starts_with(';').then(|| v.to_string())
+}
+
+fn plan_hermes(dirs: &Dirs, install: bool) -> Result<Plan> {
+    let mut files = vec![];
+    for (path, content) in hermes_files(dirs) {
+        let path = resolve_symlink(&path);
+        let (before, stamp) = match read_file(&path)? {
+            Some((t, s)) => (Some(t), Some(s)),
+            None => (None, None),
+        };
+        let ours = before
+            .as_deref()
+            .is_some_and(|t| hermes_marker_version(t).is_some());
+        if before.is_some() && !ours {
+            bail!(
+                "{} exists and is not managed by Vibeke; refusing to {} it",
+                path.display(),
+                if install { "overwrite" } else { "remove" }
+            );
+        }
+        files.push(FileChange {
+            path,
+            before,
+            after: install.then_some(content),
+            stamp,
+            remove: !install && ours,
+        });
+    }
+    let config = resolve_symlink(&dirs.hermes.join("config.yaml"));
+    let (before, stamp) = match read_file(&config)? {
+        Some((t, s)) => (Some(t), Some(s)),
+        None => (None, None),
+    };
+    let after = match &before {
+        Some(t) => Some(crate::hermes_config::set_enabled(
+            t,
+            HERMES_PLUGIN_NAME,
+            install,
+        )),
+        None if install => Some(crate::hermes_config::set_enabled(
+            "",
+            HERMES_PLUGIN_NAME,
+            true,
+        )),
+        None => None,
+    };
+    files.push(FileChange {
+        path: config,
+        before,
+        after,
+        stamp,
+        remove: false,
+    });
+    let mut notes = if install {
+        vec!["Hermes loads plugins at startup (restart hermes)".to_string()]
+    } else {
+        vec![]
+    };
+    files.extend(crate::skill::plan_skill(
+        Harness::Hermes,
+        dirs,
+        install,
+        &mut notes,
+    )?);
+    Ok(Plan {
+        harness: Harness::Hermes,
+        kind: if install {
+            PlanKind::Install
+        } else {
+            PlanKind::Uninstall
+        },
+        files,
+        notes,
+    })
+}
+
+fn status_hermes(dirs: &Dirs) -> Status {
+    let file = dirs.config_file(Harness::Hermes);
+    let mut st = Status {
+        harness: Harness::Hermes,
+        file: file.clone(),
+        file_exists: false,
+        state: InstallState::NotInstalled,
+        hooks: vec![],
+        missing_events: vec![],
+        foreign: vec![],
+        problems: vec![],
+        todo: vec![],
+    };
+    for (i, (path, content)) in hermes_files(dirs).into_iter().enumerate() {
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        match read_file(&path) {
+            Ok(None) => st.missing_events.push(name),
+            Ok(Some((text, _))) => {
+                st.file_exists |= path == file;
+                match hermes_marker_version(&text) {
+                    Some(version) => {
+                        if version != VERSION {
+                            st.todo.push(format!(
+                                "integration_outdated: installed {version}, this build bundles {VERSION}; reinstall"
+                            ));
+                        } else if text != content {
+                            st.todo
+                                .push(format!("{name} differs from this build; reinstall"));
+                        }
+                        st.hooks.push(HookStatus {
+                            event: name,
+                            group: 0,
+                            index: i,
+                            command: path.to_string_lossy().to_string(),
+                            version: Some(version),
+                            trust: None,
+                        });
+                    }
+                    None => st.problems.push(format!(
+                        "{} exists but is not managed by Vibeke (install will refuse to overwrite it)",
+                        path.display()
+                    )),
+                }
+            }
+            Err(e) => st.problems.push(format!("{e:#}")),
+        }
+    }
+    let config = dirs.hermes.join("config.yaml");
+    match read_file(&config) {
+        Ok(Some((text, _))) if crate::hermes_config::is_enabled(&text, HERMES_PLUGIN_NAME) => {}
+        Ok(_) => st.missing_events.push("plugins.enabled".to_string()),
+        Err(e) => st.problems.push(format!("{e:#}")),
+    }
+    if let Ok(rd) = fs::read_dir(dirs.hermes.join("plugins")) {
+        let mut names: Vec<String> = rd
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|n| n.starts_with("herdr"))
+            .collect();
+        names.sort();
+        st.foreign = names.into_iter().map(|n| format!("plugin: {n}")).collect();
+    }
+    st.state = if st.hooks.is_empty() {
+        InstallState::NotInstalled
+    } else if st.missing_events.is_empty() {
+        InstallState::Installed
+    } else {
+        InstallState::Partial
+    };
     st
 }
 
@@ -1469,6 +1704,7 @@ mod tests {
             opencode: t.path().join("opencode"),
             gemini: t.path().join("gemini"),
             agents: t.path().join("agents"),
+            hermes: t.path().join("hermes"),
         };
         fs::create_dir_all(&d.claude).unwrap();
         fs::create_dir_all(&d.codex).unwrap();
@@ -2565,14 +2801,14 @@ mod tests {
     fn opencode_plugin_is_a_managed_file() {
         let t = tempfile::tempdir().unwrap();
         let d = dirs(&t);
-        let other = d.opencode.join("plugin/mine.ts");
+        let other = d.opencode.join("plugins/mine.ts");
         fs::create_dir_all(other.parent().unwrap()).unwrap();
         fs::write(&other, "export const Mine = async () => ({})").unwrap();
         install(Harness::OpenCode, &d);
         let path = d.config_file(Harness::OpenCode);
         let text = fs::read_to_string(&path).unwrap();
         assert!(text.starts_with("// managed by vibeke (vibeke-integration=opencode@"));
-        assert!(text.contains("\"permission.ask\""));
+        assert!(text.contains("\"permission.asked\""));
         assert!(text.contains("[\"hook\", \"opencode\", event]"));
         let st = status(Harness::OpenCode, &d);
         assert_eq!(st.state, InstallState::Installed);
@@ -2587,6 +2823,64 @@ mod tests {
         // An unmanaged file at our path is never overwritten.
         fs::write(&path, "user plugin").unwrap();
         assert!(plan_install(Harness::OpenCode, &d, Path::new(BIN)).is_err());
+        // A managed copy from earlier builds in `plugin/` is removed, a user file there kept.
+        fs::remove_file(&path).unwrap();
+        let legacy = d.opencode.join("plugin/vibeke.ts");
+        fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+        fs::write(&legacy, extension_content(Harness::OpenCode)).unwrap();
+        install(Harness::OpenCode, &d);
+        assert!(path.exists() && !legacy.exists());
+    }
+
+    #[test]
+    fn hermes_plugin_is_managed_and_enabled_in_config() {
+        let t = tempfile::tempdir().unwrap();
+        let d = dirs(&t);
+        let config = d.hermes.join("config.yaml");
+        fs::create_dir_all(&d.hermes).unwrap();
+        let original =
+            "model: x # mine\nplugins:\n  enabled:\n    - herdr-agent-state\n  disabled: []\n";
+        fs::write(&config, original).unwrap();
+        install(Harness::Hermes, &d);
+        let init = d.config_file(Harness::Hermes);
+        let text = fs::read_to_string(&init).unwrap();
+        assert!(text.starts_with("# managed by vibeke (vibeke-integration=hermes@"));
+        assert!(text.contains("\"hook\", \"hermes\""));
+        let manifest = fs::read_to_string(init.with_file_name("plugin.yaml")).unwrap();
+        assert!(manifest.contains("name: vibeke"));
+        assert_eq!(
+            fs::read_to_string(&config).unwrap(),
+            "model: x # mine\nplugins:\n  enabled:\n    - herdr-agent-state\n    - vibeke\n  disabled: []\n"
+        );
+        let st = status(Harness::Hermes, &d);
+        assert_eq!(st.state, InstallState::Installed, "{st:?}");
+        assert!(
+            !plan_install(Harness::Hermes, &d, Path::new(BIN))
+                .unwrap()
+                .changed()
+        );
+        // An update rewrites the managed files without leaving backups beside the plugin.
+        fs::write(
+            &init,
+            "# managed by vibeke (vibeke-integration=hermes@0.0.1); reinstall overwrites\n",
+        )
+        .unwrap();
+        assert!(!status(Harness::Hermes, &d).todo.is_empty());
+        install(Harness::Hermes, &d);
+        assert!(backups(init.parent().unwrap()).is_empty());
+        // Python's bytecode cache does not keep the plugin directory alive.
+        fs::create_dir_all(init.with_file_name("__pycache__")).unwrap();
+        apply(&plan_uninstall(Harness::Hermes, &d).unwrap()).unwrap();
+        assert!(!init.parent().unwrap().exists());
+        assert_eq!(fs::read_to_string(&config).unwrap(), original);
+        assert_eq!(
+            status(Harness::Hermes, &d).state,
+            InstallState::NotInstalled
+        );
+        // An unmanaged plugin at our path is never overwritten.
+        fs::create_dir_all(init.parent().unwrap()).unwrap();
+        fs::write(&init, "def register(ctx): pass\n").unwrap();
+        assert!(plan_install(Harness::Hermes, &d, Path::new(BIN)).is_err());
     }
 
     #[test]
@@ -2594,7 +2888,7 @@ mod tests {
         for h in Harness::ALL {
             assert_eq!(Harness::from_id(h.id()), Some(h));
         }
-        assert_eq!(Harness::from_id("hermes"), None);
+        assert_eq!(Harness::from_id("aider"), None);
     }
 }
 

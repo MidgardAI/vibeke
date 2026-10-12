@@ -2,9 +2,9 @@
 //! (`integrations/opencode-plugin/vibeke.ts`) forwards raw OpenCode events through
 //! `vibeke hook opencode <event>`; this module owns the mapping so it is testable in Rust.
 //!
-//! [verify M2] Event names and payload shapes follow the upstream plugin docs and have not been
-//! exercised against a live OpenCode. Subagents: child sessions (`parentID`) keep
-//! the parent `working` until every child is idle.
+//! Event names and payload shapes are verified against OpenCode 1.19.0 (recorded in
+//! `tests/harness-golden/opencode/1.19.0`). Subagents: child sessions (`parentID`) keep the parent
+//! `working` until every child is idle.
 
 use super::harness::Harness;
 use super::*;
@@ -18,6 +18,8 @@ struct PaneState {
     children: HashSet<String>,
     /// The main session went idle while children were still busy.
     idle_pending: bool,
+    /// The turn already ended: OpenCode reports `session.status` idle and `session.idle`.
+    stopped: bool,
     last_text: Option<String>,
 }
 
@@ -93,6 +95,7 @@ pub(super) fn translate(pane: &str, event: &str, p: &Value) -> Vec<(&'static str
         }
         "chat.message" if !is_child => {
             s.idle_pending = false;
+            s.stopped = false;
             out.push((
                 "UserPromptSubmit",
                 json!({"prompt": p.get("text"), "session_id": session}),
@@ -109,7 +112,10 @@ pub(super) fn translate(pane: &str, event: &str, p: &Value) -> Vec<(&'static str
                         s.busy_children.insert(id);
                     }
                 }
-                ("busy", false) => out.push(("Working", json!({}))),
+                ("busy", false) => {
+                    s.stopped = false;
+                    out.push(("Working", json!({})));
+                }
                 ("retry", _) => {
                     let msg = p
                         .pointer("/status/message")
@@ -158,7 +164,8 @@ pub(super) fn translate(pane: &str, event: &str, p: &Value) -> Vec<(&'static str
         }
         "permission.replied" => {
             if let Some(id) = p
-                .get("permissionID")
+                .get("requestID")
+                .or_else(|| p.get("permissionID"))
                 .or_else(|| p.get("id"))
                 .and_then(Value::as_str)
             {
@@ -171,8 +178,12 @@ pub(super) fn translate(pane: &str, event: &str, p: &Value) -> Vec<(&'static str
             }
         }
         "message.updated" => {
-            let info = p.get("info").cloned().unwrap_or(Value::Null);
+            let mut info = p.get("info").cloned().unwrap_or(Value::Null);
             if info.get("role").and_then(Value::as_str) == Some("assistant") {
+                // The plugin adds the message's last text part.
+                if let (Some(o), Some(t)) = (info.as_object_mut(), p.get("text")) {
+                    o.insert("text".into(), t.clone());
+                }
                 out.push(("Usage", info));
             }
         }
@@ -188,6 +199,7 @@ fn idle(s: &mut PaneState, session: Option<String>, is_child: bool) -> Vec<(&'st
         }
         if s.idle_pending && s.busy_children.is_empty() {
             s.idle_pending = false;
+            s.stopped = true;
             return vec![(
                 "Stop",
                 json!({"last_assistant_message": s.last_text.clone(), "session_id": s.main}),
@@ -201,6 +213,9 @@ fn idle(s: &mut PaneState, session: Option<String>, is_child: bool) -> Vec<(&'st
         return vec![];
     }
     s.idle_pending = false;
+    if std::mem::replace(&mut s.stopped, true) {
+        return vec![];
+    }
     vec![(
         "Stop",
         json!({"last_assistant_message": s.last_text.clone(), "session_id": session}),
@@ -276,13 +291,14 @@ pub(super) fn on_event(server: &Arc<Server>, pane: &str, h: Harness, event: &str
 }
 
 fn text_of(info: &Value) -> Option<String> {
-    info.get("summary")
-        .and_then(|s| s.get("body"))
+    info.get("text")
+        .or_else(|| info.pointer("/summary/body"))
         .and_then(Value::as_str)
+        .filter(|t| !t.trim().is_empty())
         .map(str::to_string)
 }
 
-/// `permission.ask` → approval Interaction (native ref = permission id).
+/// `permission.asked` → approval Interaction (native ref = permission request id).
 pub fn permission_interaction(p: &Value) -> Interaction {
     let kind = p
         .get("type")
@@ -374,7 +390,7 @@ mod tests {
         assert_eq!(
             t(
                 "permission.replied",
-                json!({"sessionID": "s1", "permissionID": "per_1", "response": "once"})
+                json!({"sessionID": "s1", "requestID": "per_1", "reply": "once"})
             ),
             vec!["PermissionResolved"]
         );
@@ -401,6 +417,6 @@ mod tests {
                 ..Default::default()
             },
         );
-        assert_eq!(d, json!({"status": "allow"}));
+        assert_eq!(d, json!({"status": "always"}));
     }
 }

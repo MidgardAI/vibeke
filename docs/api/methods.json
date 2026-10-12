@@ -2963,7 +2963,7 @@
       ],
       "milestone": "M1",
       "spec": "`{harness?}` → `{checks: [{name, ok, detail}]}`",
-      "params": "{harness?: claude|codex|pi|omp|opencode|gemini}",
+      "params": "{harness?: claude|codex|pi|omp|opencode|gemini|hermes}",
       "result": "{checks: [{name: string, harness: string, ok: bool, status: ok|changed|removed|unrecorded|not_installed, detail: string, file: string, fingerprint: string|null, recorded: string|null}]}"
     },
     {

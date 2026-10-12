@@ -1,0 +1,19 @@
+╭────────────────────────────────────────────────╮
+│ ⚠️  Dangerous Command                          │
+│                                                │
+│ rm -rf build                                   │
+│                                                │
+│ ❯ 1. Allow once                                │
+│   2. Allow for this session                    │
+│   3. Add to permanent allowlist                │
+│   4. Deny                                      │
+│                                                │
+│ recursive delete                               │
+╰────────────────────────────────────────────────╯
+
+  💻 rm -rf build  (  8.9s · ↓ 21 tok)
+  ↑/↓ to select, Enter to confirm  (294s)
+ ☤ gpt-6.1-sol │ 19.1K/1.1M pinned │ [░░░░░░░░░░] 2%.. ─ Remove build directory
+────────────────────────────────────────────────────────────────────────────────
+⚠ ❯
+────────────────────────────────────────────────────────────────────────────────

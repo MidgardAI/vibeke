@@ -16,7 +16,7 @@ use vk_agents::manifest::{self, Loaded, Sources};
 use vk_agents::{Dirs, Harness, InstallState};
 use vk_cli::{EXIT_API, EXIT_OK, EXIT_USAGE, Global};
 
-const USAGE: &str = "vibeke integration list|status|install|uninstall|doctor|capabilities <claude|codex|pi|omp|opencode|gemini|all> [--dry-run] [--yes]\n       vibeke integration pending [--json]   (harnesses used here without the integration, or with stale hooks)\n       vibeke integration refresh   (rewrite an outdated Vibeke skill and extensions of installed integrations)\n       vibeke integration list --sources         (where each manifest came from: built-in, remote channel, user, repo)\n       vibeke integration update [--url URL]   (signed manifest channel; refuses unsigned indexes)\n       vibeke integration pin <id> [<version>|current]   (freeze a cached remote manifest)\n       vibeke integration unpin <id>";
+const USAGE: &str = "vibeke integration list|status|install|uninstall|doctor|capabilities <claude|codex|pi|omp|opencode|gemini|hermes|all> [--dry-run] [--yes]\n       vibeke integration pending [--json]   (harnesses used here without the integration, or with stale hooks)\n       vibeke integration refresh   (rewrite an outdated Vibeke skill and extensions of installed integrations)\n       vibeke integration list --sources         (where each manifest came from: built-in, remote channel, user, repo)\n       vibeke integration update [--url URL]   (signed manifest channel; refuses unsigned indexes)\n       vibeke integration pin <id> [<version>|current]   (freeze a cached remote manifest)\n       vibeke integration unpin <id>";
 
 fn harnesses(arg: Option<&str>) -> Option<Vec<Harness>> {
     match arg {
@@ -68,7 +68,7 @@ fn doctor_row(l: &Loaded) -> Value {
         Some((_, v)) if l.validated(v) => ("validated", l.capabilities(Some(v), "tui")),
         Some(_) => {
             let mut c = vec!["observe".to_string()];
-            if l.has_dialog_rules() {
+            if l.has_keyed_dialog_rules() {
                 c.push("answer_keystroke".into());
             }
             ("unvalidated", c)

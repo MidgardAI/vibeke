@@ -1,0 +1,3 @@
+{"screen": "permission.txt", "dialog": {"kind": "approval", "options": 3, "command": "echo hello-vibeke", "title_contains": "Shell command"}}
+{"screen": "working.txt", "state": "working"}
+{"screen": "idle.txt", "state": "idle"}

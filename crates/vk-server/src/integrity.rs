@@ -41,7 +41,10 @@ struct Inner {
 }
 
 fn is_extension(h: Harness) -> bool {
-    matches!(h, Harness::Pi | Harness::Omp | Harness::OpenCode)
+    matches!(
+        h,
+        Harness::Pi | Harness::Omp | Harness::OpenCode | Harness::Hermes
+    )
 }
 
 /// The record file: `<state root>/integrations.json`.
