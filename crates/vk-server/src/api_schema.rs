@@ -68,6 +68,7 @@ pub fn method_tables() -> Vec<(&'static str, &'static [(&'static str, bool)])> {
         ("privacy", privacy::METHODS),
         ("handoff", handoff::METHODS),
         ("cloud_api", cloud_api::METHODS),
+        ("mentions", mentions::METHODS),
     ]
 }
 
@@ -137,6 +138,7 @@ fn build() -> Result<Registry, Vec<String>> {
         .chain(crate::cloud_api::DEFS.lines())
         .chain(crate::approve::DEFS.lines())
         .chain(crate::gateway_supervisor::DEFS.lines())
+        .chain(crate::mentions::DEFS.lines())
     {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
@@ -203,6 +205,7 @@ fn build() -> Result<Registry, Vec<String>> {
             crate::gateway_supervisor::EVENTS,
             crate::approve::EVENTS,
             crate::cloud_api::EVENTS,
+            crate::mentions::EVENTS,
         ],
         "event",
         &mut errs,
@@ -529,6 +532,7 @@ pub const METHOD_SHAPES: &[&str] = &[
     crate::handoff::SHAPES,
     crate::approve::SHAPES,
     crate::cloud_api::SHAPES,
+    crate::mentions::SHAPES,
 ];
 
 /// Lane 3E (09 §9.1–9.3): `state.forget` and state encryption.

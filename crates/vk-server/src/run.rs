@@ -116,6 +116,7 @@ pub async fn serve(server: Arc<Server>, listener: UnixListener) -> Result<()> {
     });
     crate::items::start(&server);
     crate::collision::start(&server);
+    crate::mentions::start(&server);
     crate::assist::start(&server);
     crate::gateway_supervisor::start(&server);
     let sd = server.clone();

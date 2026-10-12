@@ -46,6 +46,7 @@ fn tables() -> Vec<&'static [(&'static str, bool)]> {
         crate::cloud_move::METHODS,
         crate::gateway_bridge::METHODS,
         crate::gateway_supervisor::METHODS,
+        crate::mentions::METHODS,
     ]
 }
 

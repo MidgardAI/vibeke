@@ -2899,6 +2899,10 @@ pub async fn start_in_pane_opts(
         server.commit(&mut c, tx).map_err(internal)?;
         run
     };
+    // Spec 19 §3.2: the agent's name also names its pane when it is a free mention name.
+    if let Some(n) = name {
+        crate::mentions::names::adopt(server, pane, n);
+    }
     let line = format!("{}\r", launch.line);
     crate::render::write_and_ack(
         server,
@@ -3681,10 +3685,21 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
                 }));
             }
             if method == "adapter.signal" {
+                // Spec 19 §4.3: a person's leading mention is sent instead of starting a turn,
+                // and the reminder for an unanswered message keeps the turn going. Neither is
+                // routed as a state change.
+                if let Some(out) =
+                    crate::mentions::hooks::before_signal(server, &pane, h, &event, &payload)
+                {
+                    nested::record(server, &pane, h, pid, &event);
+                    return Some(Ok(json!({"hook_output": out})));
+                }
                 route::signal(server, &pane, h, &event, &payload);
                 nested::record(server, &pane, h, pid, &event);
-                Ok(crate::collision::signal_reply(
-                    server, &pane, h, &event, &payload,
+                let reply = crate::collision::signal_reply(server, &pane, h, &event, &payload);
+                Ok(crate::mentions::hooks::merge_reply(
+                    reply,
+                    crate::mentions::hooks::after_signal(server, &pane, h, &event, &payload),
                 ))
             } else {
                 nested::record(server, &pane, h, pid, &event);

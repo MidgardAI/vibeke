@@ -36,6 +36,7 @@ pub mod items;
 pub mod layouts;
 pub mod limits;
 pub mod machines;
+pub mod mentions;
 pub mod notify;
 pub mod orch;
 pub mod orch_family;
@@ -228,6 +229,8 @@ pub struct Server {
     pub items: items::State,
     /// Shared-cwd collision tracker and claims (05 §10, 3A).
     pub collision: collision::State,
+    /// Mention names and message delivery (spec 19).
+    pub mentions: mentions::State,
 }
 
 pub fn shell_argv(opts: &ServerOpts) -> Vec<String> {
@@ -343,6 +346,7 @@ impl Server {
             hardening: Default::default(),
             items: Default::default(),
             collision: Default::default(),
+            mentions: Default::default(),
         });
         // Unlock the state key before anything is archived (09 §9.1).
         privacy::init(&server);

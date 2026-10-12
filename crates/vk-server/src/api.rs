@@ -121,7 +121,13 @@ pub fn resolve_pane(server: &Server, ctx: &Ctx, target: Option<&str>) -> Result<
             .pane
             .or_else(|| server.focused_pane())
             .ok_or_else(|| not_found("pane", "@focused"))?,
-        other => other.to_string(),
+        // Spec 19 §3.2: a mention name, in the caller's workspace.
+        other => match other.strip_prefix('@') {
+            Some(name) if vk_proto::mention::valid(name) => {
+                crate::mentions::names::resolve_target(server, ctx, name)?
+            }
+            _ => other.to_string(),
+        },
     };
     server.with_core(|c| {
         c.pane(&id)
@@ -484,6 +490,7 @@ pub fn pane_scope_of(method: &str) -> PaneScope {
         || crate::collision::PANE_FORBIDDEN.contains(&method)
         || crate::review::ext::PANE_FORBIDDEN.contains(&method)
         || crate::handoff::PANE_FORBIDDEN.contains(&method)
+        || crate::mentions::PANE_FORBIDDEN.contains(&method)
         || PANE_FORBIDDEN_PREFIXES
             .iter()
             .any(|p| method.starts_with(p))
@@ -492,6 +499,7 @@ pub fn pane_scope_of(method: &str) -> PaneScope {
     } else if is_pane_targeted(method)
         || is_run_targeted(method)
         || matches!(method, "agent.start" | "agent.resume")
+        || crate::mentions::OWN_PANE.contains(&method)
     {
         PaneScope::OwnTarget
     } else {
@@ -752,6 +760,10 @@ pub async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) 
         return r;
     }
     if let Some(r) = crate::drafts::api(server, ctx, method, p).await {
+        return r;
+    }
+    // Mention names and messages between panes (spec 19).
+    if let Some(r) = crate::mentions::api(server, ctx, method, p).await {
         return r;
     }
     // Native plugins (lane 3B): its own methods and the merged shared `plugin.*` views.

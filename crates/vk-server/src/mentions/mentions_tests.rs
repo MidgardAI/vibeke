@@ -1,0 +1,535 @@
+//! In-process tests for mention names, messages, the envelope and the hook output merge
+//! (spec 19). No harness runs: runs are put into the model directly.
+
+use super::delivery::{envelope, parse_envelope, summary};
+use super::hooks::{merge_outputs, merge_reply, strip_leading};
+use super::*;
+use crate::ServerOpts;
+use crate::paths::Paths;
+use std::sync::Once;
+use vk_proto::model::{Execution, Workspace};
+
+fn init_env() {
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        let base = std::env::temp_dir().join(format!("vk-mention-tests-{}", std::process::id()));
+        std::fs::create_dir_all(&base).unwrap();
+        // SAFETY: set once, before any server in this test binary reads them.
+        unsafe {
+            if std::env::var_os("VIBEKE_RUNTIME_DIR").is_none() {
+                std::env::set_var("VIBEKE_RUNTIME_DIR", base.join("run"));
+            }
+            if std::env::var_os("VIBEKE_STATE_DIR").is_none() {
+                std::env::set_var("VIBEKE_STATE_DIR", base.join("state"));
+            }
+            if std::env::var_os("VIBEKE_CONFIG").is_none() {
+                std::env::set_var("VIBEKE_CONFIG", base.join("config.toml"));
+            }
+        }
+    });
+}
+
+struct Env {
+    _dir: tempfile::TempDir,
+    server: Arc<Server>,
+}
+
+impl Env {
+    /// Panes `a` and `b` in workspace `wa`, pane `c` in workspace `wb`.
+    fn new() -> Env {
+        init_env();
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let paths = Paths {
+            session: "t".into(),
+            runtime: root.join("run"),
+            state: root.join("state"),
+        };
+        let opts = ServerOpts {
+            session: "t".into(),
+            machine: "testbox".into(),
+            bin: "/bin/false".into(),
+            hold_args: vec![],
+            default_shell: None,
+            env: vec![],
+            shims: false,
+            gateway: None,
+        };
+        let server = Server::new(paths, opts).unwrap();
+        let e = Env { _dir: dir, server };
+        e.put_ws("wa");
+        e.put_ws("wb");
+        e.put_pane("a", "wa");
+        e.put_pane("b", "wa");
+        e.put_pane("c", "wb");
+        e
+    }
+    fn put_ws(&self, id: &str) {
+        let w = Workspace {
+            id: id.into(),
+            handle: id.into(),
+            name: Some(id.into()),
+            auto_name: id.into(),
+            root_path: "/tmp".into(),
+            task: None,
+            order: 1.0,
+            branch: None,
+        };
+        let mut c = self.server.core.lock().unwrap();
+        let mut tx = Tx::new();
+        tx.ws(w);
+        self.server.commit(&mut c, tx).unwrap();
+    }
+    fn put_pane(&self, id: &str, ws: &str) {
+        let p = Pane {
+            id: id.into(),
+            handle: id.into(),
+            tab: format!("tab-{ws}"),
+            workspace: ws.into(),
+            title: Some(format!("{id} pane")),
+            auto_title: String::new(),
+            cwd: Some("/tmp/project".into()),
+            cols: 80,
+            rows: 24,
+            child_pid: None,
+            fg_cmdline: vec![],
+            exited: false,
+            exit_code: None,
+            unread: false,
+            marked_unread: false,
+            pinned: false,
+            created_by: "user".into(),
+            isolation: Default::default(),
+            recovered: None,
+            browser: None,
+        };
+        let mut c = self.server.core.lock().unwrap();
+        let mut tx = Tx::new();
+        tx.pane(p);
+        self.server.commit(&mut c, tx).unwrap();
+    }
+    fn put_run(&self, pane: &str, harness: &str, state: Execution) {
+        let mut r = crate::agents::harness_tests_run();
+        r.id = format!("run-{pane}");
+        r.handle = format!("a-{pane}");
+        r.pane = pane.into();
+        r.harness = harness.into();
+        r.execution.value = state;
+        let mut c = self.server.core.lock().unwrap();
+        let mut tx = Tx::new();
+        tx.run(r);
+        self.server.commit(&mut c, tx).unwrap();
+    }
+    async fn call(&self, ctx: &Ctx, method: &str, p: Value) -> R {
+        crate::api::authorize(&self.server, ctx, method, &p)?;
+        api(&self.server, ctx, method, &p)
+            .await
+            .expect("a mention method")
+    }
+    async fn ok(&self, ctx: &Ctx, method: &str, p: Value) -> Value {
+        match self.call(ctx, method, p.clone()).await {
+            Ok(v) => v,
+            Err(e) => panic!("{method} {p}: {e:?}"),
+        }
+    }
+    fn delivery(&self, id: &str) -> DeliveryRec {
+        self.server
+            .with_core(|c| c.store.get::<DeliveryRec>(K_DELIVERY, id).unwrap())
+            .unwrap()
+    }
+}
+
+fn user() -> Ctx {
+    Ctx {
+        client_id: "tester".into(),
+        kind: "tui".into(),
+        pane_scope: None,
+        remote: false,
+    }
+}
+
+fn pane_ctx(p: &str) -> Ctx {
+    Ctx {
+        client_id: format!("agent-{p}"),
+        kind: "cli".into(),
+        pane_scope: Some(p.into()),
+        remote: false,
+    }
+}
+
+fn kind(r: R) -> (String, String) {
+    let e = r.expect_err("expected an error");
+    let reason = e
+        .data
+        .details
+        .get("reason")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    (e.data.kind, reason)
+}
+
+#[test]
+fn leading_mentions_are_stripped_with_their_commas() {
+    let names = vec!["a".to_string(), "b-2".to_string()];
+    assert_eq!(strip_leading("  @a, @b-2 fix this", &names), "fix this");
+    assert_eq!(strip_leading("@a: fix", &names), ": fix");
+    assert_eq!(strip_leading("@zed fix", &names), "@zed fix");
+    assert_eq!(strip_leading("fix @a", &names), "fix @a");
+}
+
+#[test]
+fn hook_outputs_merge_contexts_and_a_block_wins() {
+    let ctx = |t: &str| json!({"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": t}});
+    let both = merge_outputs(ctx("collision"), ctx("mention"));
+    assert_eq!(
+        both["hookSpecificOutput"]["additionalContext"],
+        "collision\n\nmention"
+    );
+    let block = json!({"decision": "block", "reason": "sent"});
+    assert_eq!(merge_outputs(ctx("x"), block.clone()), block);
+    let deny = json!({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny"}});
+    assert_eq!(merge_outputs(deny.clone(), ctx("y")), deny);
+    // The reply wrapper: nothing to add keeps `{}`; one side only passes through.
+    assert_eq!(merge_reply(json!({}), None), json!({}));
+    assert_eq!(
+        merge_reply(json!({}), Some(ctx("m"))),
+        json!({"hook_output": ctx("m")})
+    );
+    assert_eq!(
+        merge_reply(json!({"hook_output": ctx("c")}), Some(ctx("m")))["hook_output"]["hookSpecificOutput"]
+            ["additionalContext"],
+        "c\n\nm"
+    );
+}
+
+#[test]
+fn envelope_round_trips_and_keeps_one_line() {
+    let m = Message {
+        id: "m_01abc".into(),
+        thread: "m_01abc".into(),
+        workspace: "wa".into(),
+        from: Author::Agent {
+            pane: "a".into(),
+            name: Some("coder".into()),
+        },
+        to: vec!["reviewer".into()],
+        body: "\n  Review the [auth] change\nsecond line".into(),
+        in_reply_to: None,
+        hop: 0,
+        sent_at_ms: 0,
+    };
+    let nonce = new_nonce();
+    assert_eq!(nonce.len(), 12);
+    assert!(
+        nonce
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || ('2'..='7').contains(&c))
+    );
+    let line = envelope("@coder", &m, &nonce);
+    assert!(!line.contains('\n'), "{line}");
+    assert!(line.starts_with("↪ vibeke message m_01abc from @coder · Review the  auth  change"));
+    assert_eq!(
+        parse_envelope(&line),
+        Some(("m_01abc".to_string(), Some(nonce)))
+    );
+    // Looks like one, carries no nonce.
+    assert_eq!(
+        parse_envelope("↪ vibeke message m_x from @coder · hi"),
+        Some(("m_x".to_string(), None))
+    );
+    assert_eq!(parse_envelope("please review"), None);
+    let long = "x".repeat(100);
+    assert_eq!(summary(&long).chars().count(), 61);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn naming_rules_conflicts_and_pane_scope() {
+    let e = Env::new();
+    let u = user();
+    let m = e
+        .ok(&u, "mention.set", json!({"pane": "b", "name": "reviewer"}))
+        .await;
+    assert_eq!(m["name"], "reviewer");
+    assert_eq!(m["kind"], "agent");
+    assert_eq!(m["delivery"], true);
+    // Invalid and reserved names.
+    for bad in ["Reviewer", "all", "current", "9lives", ""] {
+        let r = e
+            .call(&u, "mention.set", json!({"pane": "a", "name": bad}))
+            .await;
+        assert_eq!(kind(r).0, "invalid_params", "{bad}");
+    }
+    // Unique per workspace, free in another.
+    let r = e
+        .call(&u, "mention.set", json!({"pane": "a", "name": "reviewer"}))
+        .await;
+    assert_eq!(kind(r), ("conflict".into(), "name_taken".into()));
+    e.ok(&u, "mention.set", json!({"pane": "c", "name": "reviewer"}))
+        .await;
+    // An agent names only its own pane.
+    let r = e
+        .call(
+            &pane_ctx("a"),
+            "mention.set",
+            json!({"pane": "b", "name": "x"}),
+        )
+        .await;
+    assert_eq!(kind(r).0, "permission_denied");
+    let mine = e
+        .ok(&pane_ctx("a"), "mention.set", json!({"name": "coder"}))
+        .await;
+    assert_eq!(mine["pane"], "a");
+    // The model carries the names; `@name` resolves in the caller's workspace.
+    assert_eq!(e.server.with_core(|c| c.model.mentions.len()), 3);
+    let p = crate::api::resolve_pane(&e.server, &pane_ctx("a"), Some("@reviewer")).unwrap();
+    assert_eq!(p.id, "b");
+    let amb = crate::api::resolve_pane(&e.server, &u, Some("@reviewer")).unwrap_err();
+    assert!(amb.kind_is(ErrorKind::AmbiguousTarget), "{amb:?}");
+    // A suggestion avoids taken names.
+    e.put_pane("d", "wa");
+    let s = e.ok(&u, "mention.suggest", json!({"pane": "d"})).await;
+    assert_eq!(s["named"], false);
+    assert_eq!(s["name"], "d-pane");
+    // Clearing, and closing a pane, remove the name.
+    e.ok(&pane_ctx("a"), "mention.clear", json!({})).await;
+    assert!(e.server.with_core(|c| c.model.mention_of("a").is_none()));
+    {
+        let mut c = e.server.core.lock().unwrap();
+        let pane = c.pane("b").cloned().unwrap();
+        let mut tx = Tx::new();
+        tx.close_pane(&pane);
+        e.server.commit(&mut c, tx).unwrap();
+        assert!(c.model.mention_of("b").is_none());
+        let stored: Option<vm::MentionName> = c.store.get(crate::core::K_MENTION, "b").unwrap();
+        assert!(stored.is_none());
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn send_reply_complete_and_refusals() {
+    let e = Env::new();
+    let u = user();
+    e.put_run("a", "claude", Execution::Idle);
+    e.put_run("b", "codex", Execution::Idle);
+    e.ok(&u, "mention.set", json!({"pane": "a", "name": "coder"}))
+        .await;
+    e.ok(&u, "mention.set", json!({"pane": "b", "name": "reviewer"}))
+        .await;
+    e.ok(&u, "mention.set", json!({"pane": "c", "name": "other"}))
+        .await;
+    let a = pane_ctx("a");
+    // Unknown names list the known ones; another workspace is refused; so is yourself.
+    let r = e
+        .call(&a, "message.send", json!({"to": ["@nobody"], "body": "hi"}))
+        .await;
+    let err = r.unwrap_err();
+    assert!(err.kind_is(ErrorKind::NotFound));
+    assert_eq!(err.data.details["unknown"], json!(["@nobody"]));
+    let r = e
+        .call(
+            &a,
+            "message.send",
+            json!({"to": ["other"], "body": "hi", "workspace": "wb"}),
+        )
+        .await;
+    assert_eq!(kind(r).0, "permission_denied");
+    let r = e
+        .call(&a, "message.send", json!({"to": ["coder"], "body": "hi"}))
+        .await;
+    assert_eq!(kind(r).0, "invalid_params");
+    let r = e
+        .call(
+            &a,
+            "message.send",
+            json!({"to": ["reviewer"], "body": "  "}),
+        )
+        .await;
+    assert_eq!(kind(r).0, "invalid_params");
+    let big = "x".repeat(MAX_BODY + 1);
+    let r = e
+        .call(&a, "message.send", json!({"to": ["reviewer"], "body": big}))
+        .await;
+    assert_eq!(kind(r).0, "invalid_params");
+    // A send: one queued delivery, a redacted body, the nonce never in the result.
+    let secret = "token ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+    let sent = e
+        .ok(
+            &a,
+            "message.send",
+            json!({"to": ["@reviewer"], "body": format!("please review\n{secret}")}),
+        )
+        .await;
+    let mid = sent["message"]["id"].as_str().unwrap().to_string();
+    assert!(mid.starts_with("m_"));
+    assert_eq!(sent["message"]["from"]["kind"], "agent");
+    assert_eq!(sent["message"]["from"]["name"], "coder");
+    assert!(
+        !sent["message"]["body"]
+            .as_str()
+            .unwrap()
+            .contains("ghp_abcdefghijklmnopqrstuvwxyz0123456789"),
+        "{sent}"
+    );
+    let d = &sent["deliveries"][0];
+    assert_eq!(d["state"], "queued");
+    assert!(d.get("nonce").is_none());
+    let did = d["id"].as_str().unwrap().to_string();
+    // Another pane cannot read it; the recipient can.
+    let r = e
+        .call(&pane_ctx("c"), "message.get", json!({"id": mid}))
+        .await;
+    assert_eq!(kind(r).0, "permission_denied");
+    let got = e
+        .ok(&pane_ctx("b"), "message.get", json!({"id": mid}))
+        .await;
+    assert_eq!(got["deliveries"][0]["id"], did.as_str());
+    let inbox = e
+        .ok(
+            &pane_ctx("b"),
+            "message.list",
+            json!({"direction": "in", "open_only": true}),
+        )
+        .await;
+    assert_eq!(inbox["items"].as_array().unwrap().len(), 1);
+    // Only the recipient replies; the reply goes back to the author's pane.
+    let r = e
+        .call(
+            &pane_ctx("c"),
+            "message.reply",
+            json!({"message": mid, "body": "x"}),
+        )
+        .await;
+    assert_eq!(kind(r).0, "permission_denied");
+    let reply = e
+        .ok(
+            &pane_ctx("b"),
+            "message.reply",
+            json!({"message": mid, "body": "looks good"}),
+        )
+        .await;
+    assert_eq!(reply["message"]["in_reply_to"], mid.as_str());
+    assert_eq!(reply["message"]["hop"], 1);
+    assert_eq!(reply["deliveries"][0]["pane"], "a");
+    assert_eq!(reply["deliveries"][0]["expects_reply"], false);
+    let answered = e.delivery(&did);
+    assert_eq!(answered.delivery.state, DeliveryState::Replied);
+    // Complete, cancel and retry.
+    let rid = reply["deliveries"][0]["id"].as_str().unwrap().to_string();
+    let rmid = reply["message"]["id"].as_str().unwrap().to_string();
+    e.ok(&a, "message.complete", json!({"message": rmid})).await;
+    assert_eq!(e.delivery(&rid).delivery.state, DeliveryState::Completed);
+    let again = e
+        .ok(
+            &a,
+            "message.send",
+            json!({"to": ["reviewer"], "body": "one more"}),
+        )
+        .await;
+    let d2 = again["deliveries"][0]["id"].as_str().unwrap().to_string();
+    let r = e
+        .call(&pane_ctx("b"), "message.cancel", json!({"delivery": d2}))
+        .await;
+    assert_eq!(kind(r).0, "permission_denied");
+    let r = e.call(&a, "message.retry", json!({"delivery": d2})).await;
+    assert_eq!(kind(r).0, "permission_denied");
+    e.ok(&a, "message.cancel", json!({"delivery": d2})).await;
+    assert_eq!(e.delivery(&d2).delivery.state, DeliveryState::Cancelled);
+    let r = e.call(&u, "message.retry", json!({"delivery": d2})).await;
+    assert_eq!(kind(r), ("conflict".into(), "not_held".into()));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn hop_and_rate_limits() {
+    let e = Env::new();
+    let u = user();
+    e.ok(&u, "mention.set", json!({"pane": "a", "name": "coder"}))
+        .await;
+    e.ok(&u, "mention.set", json!({"pane": "b", "name": "reviewer"}))
+        .await;
+    let sent = e
+        .ok(
+            &pane_ctx("a"),
+            "message.send",
+            json!({"to": ["reviewer"], "body": "ping"}),
+        )
+        .await;
+    let mut last = sent["message"]["id"].as_str().unwrap().to_string();
+    // Replies alternate between the two panes until the chain is MAX_HOPS deep.
+    for hop in 1..=vm::MAX_HOPS {
+        let who = if hop % 2 == 1 { "b" } else { "a" };
+        let r = e
+            .ok(
+                &pane_ctx(who),
+                "message.reply",
+                json!({"message": last, "body": format!("hop {hop}")}),
+            )
+            .await;
+        assert_eq!(r["message"]["hop"], hop);
+        last = r["message"]["id"].as_str().unwrap().to_string();
+    }
+    let who = if (vm::MAX_HOPS + 1) % 2 == 1 {
+        "b"
+    } else {
+        "a"
+    };
+    let r = e
+        .call(
+            &pane_ctx(who),
+            "message.reply",
+            json!({"message": last, "body": "too deep"}),
+        )
+        .await;
+    assert_eq!(kind(r), ("conflict".into(), "hop_limit".into()));
+    // 20 a minute from one pane (5 sends from `a` above).
+    let mut limited = false;
+    for i in 0..RATE_PER_MIN {
+        let r = e
+            .call(
+                &pane_ctx("a"),
+                "message.send",
+                json!({"to": ["reviewer"], "body": format!("n{i}")}),
+            )
+            .await;
+        if let Err(err) = r {
+            assert!(err.kind_is(ErrorKind::RateLimited), "{err:?}");
+            limited = true;
+            break;
+        }
+    }
+    assert!(limited);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn engine_holds_without_an_agent_and_waits_for_a_busy_one() {
+    let e = Env::new();
+    let u = user();
+    e.ok(&u, "mention.set", json!({"pane": "a", "name": "coder"}))
+        .await;
+    e.ok(&u, "mention.set", json!({"pane": "b", "name": "reviewer"}))
+        .await;
+    let sent = e
+        .ok(
+            &u,
+            "message.send",
+            json!({"to": ["reviewer"], "body": "hi", "workspace": "wa"}),
+        )
+        .await;
+    assert_eq!(sent["message"]["from"]["kind"], "human");
+    let did = sent["deliveries"][0]["id"].as_str().unwrap().to_string();
+    super::delivery::pump(&e.server);
+    let d = e.delivery(&did);
+    assert_eq!(d.delivery.state, DeliveryState::Held);
+    assert_eq!(d.delivery.reason.as_deref(), Some("no_agent"));
+    // A busy agent: retried, it stays queued.
+    e.put_run("b", "claude", Execution::Working);
+    e.ok(&u, "message.retry", json!({"delivery": did})).await;
+    super::delivery::pump(&e.server);
+    assert_eq!(e.delivery(&did).delivery.state, DeliveryState::Queued);
+    // Delivery off keeps it queued even when the agent is idle.
+    e.ok(&u, "mention.set", json!({"pane": "b", "delivery": false}))
+        .await;
+    e.put_run("b", "claude", Execution::Idle);
+    super::delivery::pump(&e.server);
+    assert_eq!(e.delivery(&did).delivery.state, DeliveryState::Queued);
+}
