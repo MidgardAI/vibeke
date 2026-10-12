@@ -724,9 +724,233 @@ async fn a_headless_recipient_gets_the_framed_message() {
     let did = sent["deliveries"][0]["id"].as_str().unwrap().to_string();
     super::delivery::pump(&e.server);
     let d = e.delivery(&did);
-    assert!(d.fallback, "{d:?}");
+    // `fallback` means typed: it is set only together with `delivered`.
+    assert!(
+        !d.fallback || d.delivery.state == DeliveryState::Delivered,
+        "{d:?}"
+    );
     assert_ne!(d.delivery.state, DeliveryState::Queued);
     assert_ne!(d.delivery.reason.as_deref(), Some("hooks_missing"));
+}
+
+impl Env {
+    /// The run of `pane` finished a turn (`done_rev` moves on).
+    fn end_turn(&self, pane: &str) {
+        let mut c = self.server.core.lock().unwrap();
+        let mut r = c.run_for_pane(pane).cloned().unwrap();
+        r.done_rev += 1;
+        let mut tx = Tx::new();
+        tx.run(r);
+        self.server.commit(&mut c, tx).unwrap();
+    }
+    fn make_headless(&self, pane: &str) {
+        let mut c = self.server.core.lock().unwrap();
+        let mut r = c.run_for_pane(pane).cloned().unwrap();
+        r.integration = "headless:claude".into();
+        let mut tx = Tx::new();
+        tx.run(r);
+        self.server.commit(&mut c, tx).unwrap();
+    }
+    /// A person's message to `@reviewer` (pane b); its delivery id.
+    async fn to_reviewer(&self, expects_reply: bool) -> String {
+        let sent = self
+            .ok(
+                &user(),
+                "message.send",
+                json!({"to": ["reviewer"], "body": "hi", "workspace": "wa", "expects_reply": expects_reply}),
+            )
+            .await;
+        sent["deliveries"][0]["id"].as_str().unwrap().to_string()
+    }
+    /// Mark delivery `id` as typed into pane `pane` in the run's current turn.
+    fn mark_delivered(&self, id: &str, pane: &str, fallback: bool) {
+        let mark = self.server.with_core(|c| turn_mark(c, pane));
+        assert!(mark.is_some());
+        update(&self.server, id, |r| {
+            r.delivery.state = DeliveryState::Delivered;
+            r.fallback = fallback;
+            r.delivered_turn = mark;
+            true
+        });
+    }
+    fn pump(&self) {
+        self.server.mentions.poke();
+        super::delivery::pump(&self.server);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pending_fallback_is_not_held_as_hooks_missing() {
+    let e = Env::new();
+    // pi has no mention hooks: a stale envelope falls back to typing the framed body.
+    e.put_run("b", "pi", Execution::Idle);
+    e.ok(
+        &user(),
+        "mention.set",
+        json!({"pane": "b", "name": "reviewer"}),
+    )
+    .await;
+    let did = e.to_reviewer(true).await;
+    // The envelope went in long ago and no hook took it; the fallback is not typed yet.
+    update(&e.server, &did, |r| {
+        r.delivery.state = DeliveryState::Submitted;
+        r.submitted_at_ms = Some(now_ms() - super::delivery::HOOK_ACK_MS - 1_000);
+        true
+    });
+    // The pane's input box cannot be read here (no screen): the fallback waits.
+    for _ in 0..3 {
+        e.pump();
+    }
+    let d = e.delivery(&did);
+    assert_eq!(d.delivery.state, DeliveryState::Submitted, "{d:?}");
+    assert_eq!(d.delivery.reason, None);
+    assert!(!d.fallback, "nothing was typed: {d:?}");
+    // A fallback that was typed and still has no turn end is a missing hook.
+    update(&e.server, &did, |r| {
+        r.fallback = true;
+        true
+    });
+    e.pump();
+    let d = e.delivery(&did);
+    assert_eq!(d.delivery.state, DeliveryState::Held);
+    assert_eq!(d.delivery.reason.as_deref(), Some("hooks_missing"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn deliveries_without_a_stop_hook_complete_when_the_turn_ends() {
+    let e = Env::new();
+    e.put_run("b", "claude", Execution::Idle);
+    e.make_headless("b");
+    e.ok(
+        &user(),
+        "mention.set",
+        json!({"pane": "b", "name": "reviewer"}),
+    )
+    .await;
+    // Headless, no answer expected: completed without a reason.
+    let quiet = e.to_reviewer(false).await;
+    e.mark_delivered(&quiet, "b", true);
+    // Headless, an answer expected but none sent: completed as `no_reply`.
+    let asked = e.to_reviewer(true).await;
+    e.mark_delivered(&asked, "b", true);
+    e.pump();
+    assert_eq!(e.delivery(&quiet).delivery.state, DeliveryState::Delivered);
+    assert_eq!(e.delivery(&asked).delivery.state, DeliveryState::Delivered);
+    e.end_turn("b");
+    e.pump();
+    let d = e.delivery(&quiet);
+    assert_eq!(d.delivery.state, DeliveryState::Completed);
+    assert_eq!(d.delivery.reason, None);
+    let d = e.delivery(&asked);
+    assert_eq!(d.delivery.state, DeliveryState::Completed);
+    assert_eq!(d.delivery.reason.as_deref(), Some("no_reply"));
+    // A harness without mention hooks (the framed body was typed) completes the same way.
+    e.put_run("b", "pi", Execution::Idle);
+    let typed = e.to_reviewer(false).await;
+    e.mark_delivered(&typed, "b", true);
+    e.end_turn("b");
+    e.pump();
+    assert_eq!(e.delivery(&typed).delivery.state, DeliveryState::Completed);
+    // Claude with hooks: its Stop hook completes deliveries, not the turn counter.
+    e.put_run("b", "claude", Execution::Idle);
+    let hooked = e.to_reviewer(false).await;
+    e.mark_delivered(&hooked, "b", false);
+    e.end_turn("b");
+    e.pump();
+    assert_eq!(e.delivery(&hooked).delivery.state, DeliveryState::Delivered);
+}
+
+#[test]
+fn a_replaced_or_gone_run_ends_the_turn_of_a_delivery() {
+    let m = Message {
+        id: "m_1".into(),
+        thread: "m_1".into(),
+        workspace: "wa".into(),
+        from: Author::Human { pane: None },
+        to: vec!["reviewer".into()],
+        body: "hi".into(),
+        in_reply_to: None,
+        hop: 0,
+        sent_at_ms: 0,
+    };
+    let fresh = || {
+        let mut r = new_delivery(&m, "reviewer", "b", false, false);
+        r.delivery.state = DeliveryState::Delivered;
+        r.delivered_turn = Some(("run-b".into(), 4));
+        r
+    };
+    let mut run = crate::agents::harness_tests_run();
+    run.id = "run-b".into();
+    run.done_rev = 4;
+    // Same Claude run, same turn: nothing to do. A later turn: the Stop hook decides.
+    let mut r = fresh();
+    super::delivery::finish_turn(&mut r, Some(&run));
+    assert_eq!(r.delivery.state, DeliveryState::Delivered);
+    run.done_rev = 5;
+    super::delivery::finish_turn(&mut r, Some(&run));
+    assert_eq!(r.delivery.state, DeliveryState::Delivered);
+    // Another run in the pane, or none: the turn is over.
+    run.id = "run-b2".into();
+    super::delivery::finish_turn(&mut r, Some(&run));
+    assert_eq!(r.delivery.state, DeliveryState::Completed);
+    let mut r = fresh();
+    super::delivery::finish_turn(&mut r, None);
+    assert_eq!(r.delivery.state, DeliveryState::Completed);
+    // Without a mark (delivered before marks existed) it is left to the Stop hook.
+    let mut r = fresh();
+    r.delivered_turn = None;
+    super::delivery::finish_turn(&mut r, None);
+    assert_eq!(r.delivery.state, DeliveryState::Delivered);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn hop_passes_on_only_within_the_turn_that_got_the_message() {
+    let e = Env::new();
+    let u = user();
+    e.put_run("a", "claude", Execution::Idle);
+    e.put_run("b", "claude", Execution::Idle);
+    e.ok(&u, "mention.set", json!({"pane": "a", "name": "coder"}))
+        .await;
+    e.ok(&u, "mention.set", json!({"pane": "b", "name": "reviewer"}))
+        .await;
+    let sent = e
+        .ok(
+            &pane_ctx("a"),
+            "message.send",
+            json!({"to": ["reviewer"], "body": "please delegate"}),
+        )
+        .await;
+    assert_eq!(sent["message"]["hop"], 0);
+    let did = sent["deliveries"][0]["id"].as_str().unwrap().to_string();
+    e.mark_delivered(&did, "b", false);
+    // Working on the message, b delegates: the hop goes on.
+    let fwd = e
+        .ok(
+            &pane_ctx("b"),
+            "message.send",
+            json!({"to": ["coder"], "body": "sub task"}),
+        )
+        .await;
+    assert_eq!(fwd["message"]["hop"], 1);
+    // A later turn of b is unrelated work, though the delivery is still open.
+    e.end_turn("b");
+    assert_eq!(e.delivery(&did).delivery.state, DeliveryState::Delivered);
+    let later = e
+        .ok(
+            &pane_ctx("b"),
+            "message.send",
+            json!({"to": ["coder"], "body": "something else"}),
+        )
+        .await;
+    assert_eq!(later["message"]["hop"], 0);
+    // An open delivery without a turn mark (recorded before marks existed) lends nothing.
+    let to_a = fwd["deliveries"][0]["id"].as_str().unwrap().to_string();
+    update(&e.server, &to_a, |r| {
+        r.delivery.state = DeliveryState::Delivered;
+        r.delivered_turn = None;
+        true
+    });
+    assert_eq!(e.server.with_core(|c| hop_of_sender(c, Some("a"))), 0);
 }
 
 #[test]

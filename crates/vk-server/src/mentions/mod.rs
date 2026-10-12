@@ -117,9 +117,14 @@ pub(crate) struct DeliveryRec {
     /// The Stop hook already reminded the recipient to answer.
     #[serde(default)]
     pub reminded: bool,
-    /// The framed body was typed because the harness has no mention hooks.
+    /// The framed body was typed (the harness has no mention hooks, or the run is headless).
+    /// Set only once typing succeeded: a fallback that is still pending leaves it false.
     #[serde(default)]
     pub fallback: bool,
+    /// The recipient's run and its `done_rev` when the delivery became `delivered`: the turn
+    /// that works on the message. A later turn of the run (a higher `done_rev`) is a new one.
+    #[serde(default)]
+    pub delivered_turn: Option<(String, u64)>,
     /// The recipient is the author of the message this one answers: it needs no name.
     #[serde(default)]
     pub reply_route: bool,
@@ -143,6 +148,11 @@ pub(crate) fn moved_workspace(c: &Core, rec: &DeliveryRec, m: &Message) -> bool 
 }
 
 pub(crate) const MOVED: &str = "moved_workspace";
+
+/// The turn mark of `pane`'s current run (see [`DeliveryRec::delivered_turn`]).
+pub(crate) fn turn_mark(c: &Core, pane: &str) -> Option<(String, u64)> {
+    c.run_for_pane(pane).map(|r| (r.id.clone(), r.done_rev))
+}
 
 fn now() -> i64 {
     now_ms()
@@ -287,12 +297,18 @@ fn caller_pane(server: &Server, ctx: &Ctx, p: &Value, method: &str) -> Result<Pa
 }
 
 /// How deep the sender's current work is in a chain of messages: a pane working on a delivered
-/// message passes its hop on to what it sends (loop guard, §4.6).
-fn hop_of_sender(c: &Core, pane: Option<&str>) -> u32 {
+/// message passes its hop on to what it sends (loop guard, §4.6). Only messages delivered in
+/// the sender's current turn count: an older delivery still open (its turn ended without a
+/// `Stop`) does not lend its hop to unrelated work.
+pub(crate) fn hop_of_sender(c: &Core, pane: Option<&str>) -> u32 {
     let Some(pane) = pane else { return 0 };
+    let Some(current) = turn_mark(c, pane) else {
+        return 0;
+    };
     deliveries_to(c, pane)
         .iter()
         .filter(|r| r.delivery.state == DeliveryState::Delivered)
+        .filter(|r| r.delivered_turn.as_ref() == Some(&current))
         .filter_map(|r| load_message(c, &r.delivery.message))
         .map(|m| m.hop + 1)
         .max()
@@ -438,6 +454,7 @@ fn new_delivery(
         refusals: 0,
         reminded: false,
         fallback: false,
+        delivered_turn: None,
         reply_route,
     }
 }
@@ -869,6 +886,7 @@ pub(crate) fn reset_for_retry(r: &mut DeliveryRec, now: i64) {
     r.submitted_at_ms = None;
     r.refusals = 0;
     r.fallback = false;
+    r.delivered_turn = None;
     r.nonce = new_nonce();
     r.delivery.nonce = r.nonce.clone();
 }

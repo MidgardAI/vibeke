@@ -12,8 +12,10 @@
 //! once a second while anything is open.
 //!
 //! A headless run (no hooks, `VIBEKE_HEADLESS_OWNER`) gets the framed full message as its
-//! prompt, like a harness without mention hooks.
+//! prompt, like a harness without mention hooks. Without a `Stop` hook, such a delivery
+//! completes when the turn it was delivered in ends ([`finish_turn`]).
 
+use super::input_box::InputBox;
 use super::*;
 use crate::agents::harness::{Family, Harness};
 use std::time::Duration;
@@ -31,9 +33,15 @@ pub const QUIET_INPUT: Duration = Duration::from_secs(5);
 
 /// Why typing into `pane` now could mix with the user's input, if it could: the input box is
 /// not provably empty, or a TUI client focuses the pane and input reached it recently.
-/// `strict`: an unreadable input box counts as unsafe (Claude and Codex, whose box Vibeke
-/// knows); other harnesses only refuse a box that visibly holds text.
-pub(crate) fn input_unsafe(server: &Server, pane: &str, strict: bool) -> Option<&'static str> {
+/// For Claude and Codex, whose box Vibeke knows, an unreadable input box counts as unsafe and a
+/// placeholder as empty ([`super::input_box`]); other harnesses only refuse a box that visibly
+/// holds text.
+pub(crate) fn input_unsafe(
+    server: &Server,
+    pane: &str,
+    harness: Option<Harness>,
+) -> Option<&'static str> {
+    let strict = has_mention_hooks(harness);
     let Some(rt) = server.pane_rt(pane) else {
         return Some("pane_gone");
     };
@@ -52,12 +60,12 @@ pub(crate) fn input_unsafe(server: &Server, pane: &str, strict: bool) -> Option<
     {
         return Some("recent_input");
     }
-    let screen = rt.screen.lock().unwrap().engine.screen_text();
-    match crate::tracking::input_text(&screen) {
-        Some(t) if t.is_empty() => None,
-        Some(_) => Some("draft_in_input"),
-        None if strict => Some("input_unknown"),
-        None => None,
+    match super::input_box::of_pane(server, pane, harness) {
+        None => Some("pane_gone"),
+        Some(InputBox::Empty) => None,
+        Some(InputBox::Draft(_)) => Some("draft_in_input"),
+        Some(InputBox::Unknown) if strict => Some("input_unknown"),
+        Some(InputBox::Unknown) => None,
     }
 }
 
@@ -196,25 +204,29 @@ pub(crate) fn pump(server: &Arc<Server>) {
     let now = now();
     let typing: std::collections::HashSet<String> = server.mentions.typing.lock().unwrap().clone();
     // The input check reads screens and clients, so it runs before the core lock is taken.
-    let candidates: Vec<(String, bool)> = server.with_core(|c| {
-        let mut v: Vec<(String, bool)> = open_deliveries(c)
+    let candidates: Vec<(String, Option<Harness>)> = server.with_core(|c| {
+        let mut v: Vec<(String, Option<Harness>)> = open_deliveries(c)
             .iter()
-            .filter(|r| r.delivery.state == DeliveryState::Queued)
+            .filter(|r| {
+                // Queued, or a pending fallback that may be typed in this pass.
+                r.delivery.state == DeliveryState::Queued
+                    || (r.delivery.state == DeliveryState::Submitted
+                        && !r.fallback
+                        && now - r.submitted_at_ms.unwrap_or(r.queued_at_ms) >= HOOK_ACK_MS)
+            })
             .filter_map(|r| {
                 let run = c.run_for_pane(&r.delivery.pane)?;
-                (!crate::agents::headless::is_headless(run)).then(|| {
-                    let strict = has_mention_hooks(Harness::from_id(&run.harness));
-                    (r.delivery.pane.clone(), strict)
-                })
+                (!crate::agents::headless::is_headless(run))
+                    .then(|| (r.delivery.pane.clone(), Harness::from_id(&run.harness)))
             })
             .collect();
-        v.sort();
-        v.dedup();
+        v.sort_by(|a, b| a.0.cmp(&b.0));
+        v.dedup_by(|a, b| a.0 == b.0);
         v
     });
     let unsafe_input: std::collections::HashSet<String> = candidates
         .into_iter()
-        .filter(|(pane, strict)| input_unsafe(server, pane, *strict).is_some())
+        .filter(|(pane, harness)| input_unsafe(server, pane, *harness).is_some())
         .map(|(pane, _)| pane)
         .collect();
     let mut steps: Vec<Step> = Vec::new();
@@ -255,7 +267,8 @@ pub(crate) fn pump(server: &Arc<Server>) {
                         }
                     }
                     Decision::Fallback => {
-                        rec.fallback = true;
+                        // `fallback` is set once the body was typed: until then the fallback
+                        // is pending and may be tried again.
                         rec.delivery.state = DeliveryState::Submitted;
                         rec.submitted_at_ms.get_or_insert(now);
                         if let Some(m) = load_message(&c, &rec.delivery.message) {
@@ -396,12 +409,18 @@ fn decide(
                 return None;
             }
             let h = run.and_then(|r| Harness::from_id(&r.harness));
-            if has_mention_hooks(h) || rec.fallback {
+            let headless = run.is_some_and(crate::agents::headless::is_headless);
+            // The envelope was typed and no hook took it: the harness should have hooks. A
+            // fallback that was typed is waiting for its turn to end, not for a hook.
+            if rec.fallback || (has_mention_hooks(h) && !headless) {
                 hold(rec, "hooks_missing");
                 return None;
             }
+            // A pending fallback: typed once the agent is idle and the input box is safe.
             match run {
-                Some(run) if idle_now(run) => Some(Decision::Fallback),
+                Some(run) if idle_now(run) && !unsafe_input.contains(&pane_id) => {
+                    Some(Decision::Fallback)
+                }
                 Some(_) => None,
                 None => {
                     hold(rec, "agent_exited");
@@ -409,8 +428,37 @@ fn decide(
                 }
             }
         }
+        DeliveryState::Delivered => {
+            finish_turn(rec, run);
+            None
+        }
         _ => None,
     }
+}
+
+/// A delivered message whose turn ended, for runs without a `Stop` hook to complete it (§4.3):
+/// headless runs and harnesses without mention hooks. The turn ended when the run's `done_rev`
+/// moved past the mark taken at delivery, or the run is gone or was replaced. A message that
+/// waited for an answer and got none completes with the reason `no_reply`.
+pub(crate) fn finish_turn(rec: &mut DeliveryRec, run: Option<&AgentRun>) {
+    let Some((run_id, rev)) = rec.delivered_turn.clone() else {
+        return;
+    };
+    let ended = match run {
+        None => true,
+        Some(run) if run.id != run_id => true,
+        Some(run) => {
+            let hookless = crate::agents::headless::is_headless(run)
+                || !has_mention_hooks(Harness::from_id(&run.harness));
+            hookless && run.done_rev > rev
+        }
+    };
+    if !ended {
+        return;
+    }
+    rec.delivery.state = DeliveryState::Completed;
+    rec.delivery.reason = (rec.delivery.expects_reply && rec.delivery.reply.is_none())
+        .then(|| "no_reply".to_string());
 }
 
 /// Type `text` into the recipient's agent with `agent.prompt` semantics. A refusal (a dialog,
@@ -420,22 +468,27 @@ fn spawn_typing(server: Arc<Server>, rec: DeliveryRec, text: String, fallback: b
     let id = rec.delivery.id.clone();
     server.mentions.typing.lock().unwrap().insert(id.clone());
     tokio::spawn(async move {
+        let pane = rec.delivery.pane.clone();
         let run = server.with_core(|c| {
-            c.run_for_pane(&rec.delivery.pane).map(|r| {
-                let strict = has_mention_hooks(Harness::from_id(&r.harness));
+            c.run_for_pane(&pane).map(|r| {
                 (
                     r.id.clone(),
                     crate::agents::headless::is_headless(r),
-                    strict,
+                    Harness::from_id(&r.harness),
                 )
             })
         });
+        // People's input to the pane waits from the last input check until the Enter is
+        // written (`agent.prompt` ends the hold then), so no draft slips in between.
+        let hold = matches!(&run, Some((_, false, _))).then(|| server.input_hold.hold(&pane));
         // Check the input box once more right before typing: the user may have started a draft
         // since the pass that chose this delivery. Unsafe: back to the queue, not a refusal.
-        if let Some((_, false, strict)) = &run
-            && input_unsafe(&server, &rec.delivery.pane, *strict).is_some()
+        if let Some((_, false, harness)) = &run
+            && input_unsafe(&server, &pane, *harness).is_some()
         {
-            // A fallback stays `submitted`: the next pass after the deadline tries again.
+            drop(hold);
+            // A pending fallback stays `submitted` (nothing was typed, `fallback` stays false):
+            // the next pass tries again once the input box is safe.
             update(&server, &id, |r| {
                 if fallback || r.delivery.state != DeliveryState::Submitted {
                     return false;
@@ -449,15 +502,18 @@ fn spawn_typing(server: Arc<Server>, rec: DeliveryRec, text: String, fallback: b
             server.mentions.poke();
             return;
         }
-        let run = run.map(|(id, _, _)| id);
+        // The turn that will work on the message: taken before typing, so a fast turn that
+        // ends before the result is recorded still moves the run past it.
+        let mark = server.with_core(|c| turn_mark(c, &pane));
         let result = match run {
-            Some(run) => {
+            Some((run, _, _)) => {
                 let ctx = crate::drafts::user_ctx();
                 let params = json!({"target": run, "text": text});
                 Box::pin(crate::agents::api(&server, &ctx, "agent.prompt", &params)).await
             }
             None => None,
         };
+        drop(hold);
         server.mentions.typing.lock().unwrap().remove(&id);
         let typed = match &result {
             Some(Ok(_)) => true,
@@ -470,6 +526,8 @@ fn spawn_typing(server: Arc<Server>, rec: DeliveryRec, text: String, fallback: b
                     return false;
                 }
                 if typed {
+                    r.fallback = true;
+                    r.delivered_turn = mark;
                     r.delivery.state = DeliveryState::Delivered;
                     r.delivery.reason = Some("typed_without_hooks".into());
                 } else {

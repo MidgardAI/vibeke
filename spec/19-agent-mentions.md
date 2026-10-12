@@ -103,18 +103,33 @@ The delivery becomes `submitted`. The nonce works once: the hook that expands it
 delivery to `delivered` in the same step, and `message.retry` gives the delivery a new nonce.
 Everything except the mention handler observes the typed line without its nonce and preview
 (`↪ vibeke message <id> from @coder · … […]`), so items, turns and events never carry them.
+Reads of the pane and the agent do the same for every caller: `pane.read`, `agent.read`,
+`agent.transcript` and the gateway transcript replace the preview and nonce with `… […]`. The
+match allows soft wraps anywhere in the line, so a nonce that wraps onto the next row is
+replaced too. Styled reads (ANSI) of a screen that shows an envelope fall back to plain text.
 
 ### 4.2 When to deliver
 
 A delivery is ready when all of these hold:
 - The recipient pane has an agent run in `idle` with no open interaction.
-- The agent's input box is provably empty, so no draft of the person's is sent along. For
-  harnesses other than Claude and Codex, an input box Vibeke cannot read counts as empty.
+- The agent's input box is provably empty, so no draft of the person's is sent along. Vibeke
+  reads the box from the styled screen. For Claude it is the `❯` (or `>`) line below a
+  horizontal rule (or inside a rounded box), up to the next rule. For Codex it is the lowest
+  `›` (or `>`) line and the lines below it, up to the first blank line. The box is empty when
+  every visible character after the prompt marker is drawn like a placeholder: faint, or in a
+  gray color, on the first line only (the cursor may sit on its first character). Typed text,
+  any text on a later line, and pasted-text chips (`[Pasted text …]`) are a draft. When this
+  layout is not found, the plain-text reader decides: the box is empty only when nothing
+  follows the prompt marker. For harnesses other than Claude and Codex, an input box Vibeke
+  cannot read counts as empty.
 - When a TUI client focuses the pane, no input reached the pane in the last 5 s.
 - No other delivery to that pane is `submitted`.
 - The name has `delivery: true`.
 
-Otherwise it stays `queued`. The input check runs again right before typing. The engine re-checks when run state, interactions or names change,
+Otherwise it stays `queued`. The input check runs again right before typing. From that check
+until the Enter is written, keys, pastes and mouse input that people send to the pane wait in a
+buffer, and reach the pane right after the Enter, in order. The hold lasts at most 2 s.
+`agent.prompt` holds input the same way between its paste and its Enter. The engine re-checks when run state, interactions or names change,
 and once per second while anything is queued.
 
 A delivery is `held` with a reason in these cases:
@@ -167,9 +182,15 @@ the delivery becomes `delivered`.
 
 **No hook.** A `submitted` delivery that no hook took within 30 s:
 - For harnesses without mention hooks, the engine falls back once to typing the framed full
-  body.
+  body. The fallback waits, still `submitted`, until the agent is idle and its input box is
+  safe (§4.2). Only a fallback that was typed counts as tried.
 - Otherwise the delivery becomes `held` with the reason `hooks_missing`. `vibeke doctor` explains
   how to install the integration.
+
+**Turn end without a `Stop` hook.** A delivered message records the recipient's run and its
+turn counter (`done_rev`). For headless runs and harnesses without mention hooks, the delivery
+becomes `completed` when that turn ends (the counter moves on), or when the run is gone or
+replaced. A message that expected an answer and got none completes with the reason `no_reply`.
 
 ### 4.4 Roster
 
@@ -194,7 +215,8 @@ The answered delivery becomes `replied`. Several recipients reply one by one in 
 - Messages stay within a workspace.
 - Bodies are redacted with `vk-redact` before they are stored.
 - Bodies are labelled as untrusted in every context the server writes.
-- The hop limit, the rate limit and the 64 KiB body cap apply.
+- The hop limit, the rate limit and the 64 KiB body cap apply. A pane passes on the hop of a
+  message only while it works on it: in the turn the message was delivered in.
 - `message.retry` and naming other panes are for people only.
 
 ## 5. TUI

@@ -306,6 +306,7 @@ fn envelope_context(server: &Arc<Server>, pane: &str, id: &str, nonce: Option<&s
     } else {
         rec.delivery.state = DeliveryState::Delivered;
         rec.delivery.reason = None;
+        rec.delivered_turn = turn_mark(&c, pane);
     }
     rec.delivery.updated_at_ms = now();
     let mut tx = Tx::new();
