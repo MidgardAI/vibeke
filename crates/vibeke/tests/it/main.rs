@@ -12,6 +12,7 @@ mod assist;
 mod assist_2d;
 mod auth;
 mod browser;
+mod browser_annotate;
 mod browser_pane;
 mod cloud;
 mod cloud_move;

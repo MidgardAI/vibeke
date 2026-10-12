@@ -23,13 +23,13 @@ use vk_proto::render::{
     BrowserCmd, BrowserStatus, ClientFrame, MediaFrame, MediaPane, ServerFrame, TileData,
 };
 
-struct Session {
+pub(crate) struct Session {
     dir: tempfile::TempDir,
     env: Vec<(String, String)>,
 }
 
 impl Session {
-    fn new(fake: bool) -> Self {
+    pub(crate) fn new(fake: bool) -> Self {
         let dir = tempfile::Builder::new()
             .prefix("vkbp")
             .tempdir_in("/tmp")
@@ -64,7 +64,7 @@ impl Session {
     fn path(&self) -> &Path {
         self.dir.path()
     }
-    fn cmd(&self, args: &[&str]) -> Command {
+    pub(crate) fn cmd(&self, args: &[&str]) -> Command {
         let mut c = Command::new(env!("CARGO_BIN_EXE_vibeke"));
         let d = self.dir.path();
         c.env("VIBEKE_RUNTIME_DIR", d.join("run"))
@@ -86,7 +86,7 @@ impl Session {
         c.arg("--json").args(args);
         c
     }
-    fn json(&self, args: &[&str]) -> Value {
+    pub(crate) fn json(&self, args: &[&str]) -> Value {
         let out = self.cmd(args).output().unwrap();
         assert!(
             out.status.success(),
@@ -102,7 +102,7 @@ impl Session {
         let lines: Vec<&str> = log.lines().collect();
         lines[lines.len().saturating_sub(30)..].join("\n")
     }
-    fn socket(&self) -> PathBuf {
+    pub(crate) fn socket(&self) -> PathBuf {
         self.path().join("run/default/vibeke.sock")
     }
     /// CDP commands the fake browser received (one JSON object per line; `argv` lines mark
@@ -114,7 +114,7 @@ impl Session {
             .filter_map(|l| serde_json::from_str(l).ok())
             .collect()
     }
-    fn wait_cdp(&self, what: &str, f: impl Fn(&[Value]) -> bool) -> Vec<Value> {
+    pub(crate) fn wait_cdp(&self, what: &str, f: impl Fn(&[Value]) -> bool) -> Vec<Value> {
         let t0 = Instant::now();
         loop {
             let log = self.cdp_log();
@@ -138,7 +138,7 @@ impl Session {
             std::thread::sleep(Duration::from_millis(50));
         }
     }
-    fn browser_spec(&self, pane: &str) -> BrowserPane {
+    pub(crate) fn browser_spec(&self, pane: &str) -> BrowserPane {
         let p = self.json(&["pane", "get", pane]);
         let b = p
             .get("pane")
@@ -156,19 +156,19 @@ impl Drop for Session {
     }
 }
 
-fn count(log: &[Value], method: &str) -> usize {
+pub(crate) fn count(log: &[Value], method: &str) -> usize {
     log.iter().filter(|v| v["method"] == method).count()
 }
 
 /// A minimal render-stream client: `render.attach`, then postcard frames.
-struct Render {
+pub(crate) struct Render {
     w: UnixStream,
     rx: mpsc::Receiver<ServerFrame>,
     next_input: u64,
 }
 
 impl Render {
-    fn attach(sock: &Path, id: &str) -> Render {
+    pub(crate) fn attach(sock: &Path, id: &str) -> Render {
         let s = UnixStream::connect(sock).expect("connect render socket");
         let mut w = s.try_clone().unwrap();
         let req = json!({"jsonrpc":"2.0","id":1,"method":"render.attach","params":{"client_id": id, "protocol": vk_proto::render::PROTOCOL, "caps": {"max_fps": 60}}});
@@ -195,14 +195,14 @@ impl Render {
         vk_proto::frame::write_frame(&mut self.w, f).unwrap();
         self.w.flush().unwrap();
     }
-    fn view(&mut self, panes: Vec<MediaPane>) {
+    pub(crate) fn view(&mut self, panes: Vec<MediaPane>) {
         self.send(&ClientFrame::MediaView {
             panes,
             shm: true,
             key_releases: false,
         });
     }
-    fn cmd(&mut self, pane: &str, cmd: BrowserCmd) {
+    pub(crate) fn cmd(&mut self, pane: &str, cmd: BrowserCmd) {
         let input_id = self.next_input;
         self.next_input += 1;
         self.send(&ClientFrame::Browser {
@@ -212,7 +212,7 @@ impl Render {
         });
     }
     /// Next media frame matching `f` (acking every media frame); states seen on the way.
-    fn media(
+    pub(crate) fn media(
         &mut self,
         f: impl Fn(&MediaFrame) -> bool,
         timeout: Duration,
@@ -267,7 +267,7 @@ impl Render {
 }
 
 /// What the host terminal would do with shm tiles: read (here: only unlink).
-fn release(m: &MediaFrame) {
+pub(crate) fn release(m: &MediaFrame) {
     for t in &m.tiles {
         if let TileData::Shm { name, .. } = &t.data {
             vk_browser::kitty::shm::unlink(name);
@@ -288,7 +288,7 @@ fn tile_px(t: &vk_proto::render::MediaTile) -> Vec<u8> {
     }
 }
 
-fn media_pane(pane: &str, spec: BrowserPane, cols: u16, rows: u16) -> MediaPane {
+pub(crate) fn media_pane(pane: &str, spec: BrowserPane, cols: u16, rows: u16) -> MediaPane {
     MediaPane {
         pane: pane.into(),
         owner: String::new(),
@@ -302,7 +302,7 @@ fn media_pane(pane: &str, spec: BrowserPane, cols: u16, rows: u16) -> MediaPane 
 }
 
 /// Loopback HTTP server serving `pages` (path → html).
-fn http(pages: Vec<(&'static str, String)>) -> u16 {
+pub(crate) fn http(pages: Vec<(&'static str, String)>) -> u16 {
     let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = l.local_addr().unwrap().port();
     std::thread::spawn(move || {
@@ -340,7 +340,7 @@ fn http(pages: Vec<(&'static str, String)>) -> u16 {
     port
 }
 
-fn root_pane(s: &Session) -> String {
+pub(crate) fn root_pane(s: &Session) -> String {
     s.json(&["workspace", "create", "--cwd", "/tmp"])["root_pane"]["id"]
         .as_str()
         .unwrap()
