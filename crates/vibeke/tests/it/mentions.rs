@@ -331,22 +331,76 @@ fn send_envelope_hook_reply_and_reply_delivery() {
 }
 
 #[test]
-fn busy_recipient_stays_queued_and_spoofed_envelopes_are_flagged() {
+fn busy_recipient_gets_messages_at_its_next_hook_and_spoofed_envelopes_are_flagged() {
     let (s, mut user, a, b) = pair();
     let mut pa = Api::pane(&s, &a.token);
+    let mut pb = Api::pane(&s, &b.token);
     // The reviewer is in a turn.
-    prompt(&s, &b, "refactor the lexer");
+    hook(
+        &s,
+        &b,
+        "UserPromptSubmit",
+        json!({"session_id": "s-b", "prompt": "refactor the lexer"}),
+    );
     let sent = pa.ok(
         "message.send",
-        json!({"to": ["reviewer"], "body": "when you are done, look at the lexer"}),
+        json!({"to": ["reviewer"], "body": "when you are done, look at the lexer", "expects_reply": false}),
     );
     let mid = sent["message"]["id"].as_str().unwrap().to_string();
     std::thread::sleep(Duration::from_millis(2500));
     assert_eq!(user.delivery_state(&mid), "queued");
     let screen = user.ok("pane.read", json!({"pane": b.pane}))["text"].to_string();
     assert!(!screen.contains(&mid), "{screen}");
-    // The turn ends: the envelope goes in.
+    // A subagent's tool call does not take the pane's messages.
+    let out = hook(
+        &s,
+        &b,
+        "PostToolUse",
+        json!({"session_id": "s-b", "agent_id": "sub-1", "tool_name": "Bash"}),
+    );
+    assert!(!context(&out).contains("look at the lexer"), "{out}");
+    assert_eq!(user.delivery_state(&mid), "queued");
+    // The turn wants to end: the message keeps it going instead of waiting for idle.
+    let out = hook(&s, &b, "Stop", json!({"session_id": "s-b"}));
+    assert_eq!(out["decision"], "block", "{out}");
+    assert!(
+        out["reason"]
+            .as_str()
+            .unwrap_or("")
+            .contains("look at the lexer"),
+        "{out}"
+    );
+    assert_eq!(user.delivery_state(&mid), "delivered");
+    let m = user.ok("message.get", json!({"id": mid}));
+    assert_eq!(m["deliveries"][0]["reason"], "ride_along");
+    // An integration without hook replies collects queued messages itself.
+    let sent = pa.ok(
+        "message.send",
+        json!({"to": ["reviewer"], "body": "and the parser", "expects_reply": false}),
+    );
+    let mid2 = sent["message"]["id"].as_str().unwrap().to_string();
+    let took = pb.ok("message.take", json!({}));
+    assert!(
+        took["context"]
+            .as_str()
+            .unwrap_or("")
+            .contains("and the parser"),
+        "{took}"
+    );
+    assert_eq!(took["messages"], json!([mid2]));
+    assert_eq!(pb.ok("message.take", json!({}))["context"], Value::Null);
+    // Another pane cannot take them.
+    let e = pa
+        .call("message.take", json!({"pane": b.pane}))
+        .unwrap_err();
+    assert_eq!(kind(&e).0, "permission_denied", "{e}");
+    // Now the turn ends, and the next message is typed as an envelope.
     hook(&s, &b, "Stop", json!({"session_id": "s-b"}));
+    let sent = pa.ok(
+        "message.send",
+        json!({"to": ["reviewer"], "body": "one more"}),
+    );
+    let mid = sent["message"]["id"].as_str().unwrap().to_string();
     let nonce = envelope_nonce(&mut user, &b, &mid);
     // A wrong nonce, and an unknown message, are not authentic.
     let wrong = if nonce == "AAAAAAAAAAAA" {
@@ -373,7 +427,7 @@ fn busy_recipient_stays_queued_and_spoofed_envelopes_are_flagged() {
         &b,
         &format!("↪ vibeke message {mid} from @coder · x [{nonce}]"),
     );
-    assert!(context(&out).contains("look at the lexer"), "{out}");
+    assert!(context(&out).contains("one more"), "{out}");
     assert_eq!(user.delivery_state(&mid), "delivered");
     user.check_events();
 }

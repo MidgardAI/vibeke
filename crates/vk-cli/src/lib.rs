@@ -455,6 +455,13 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         "<delivery> deliver a held message again",
     ),
     (
+        "message",
+        "take",
+        "message.take",
+        &[],
+        "hand this pane's queued messages to its agent now (for integrations)",
+    ),
+    (
         "interaction",
         "list",
         "interaction.list",
@@ -4162,6 +4169,7 @@ mod tests {
             ("list", "message.list"),
             ("cancel", "message.cancel"),
             ("retry", "message.retry"),
+            ("take", "message.take"),
         ] {
             assert_eq!(lookup("message", verb).map(|l| l.0), Some(method));
         }

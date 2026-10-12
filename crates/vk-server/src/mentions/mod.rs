@@ -49,6 +49,7 @@ pub const METHODS: &[(&str, bool)] = &[
     ("message.list", false),
     ("message.cancel", true),
     ("message.retry", true),
+    ("message.take", true),
 ];
 
 /// Retrying a held delivery is the person's decision (§4.6).
@@ -56,7 +57,12 @@ pub const PANE_FORBIDDEN: &[&str] = &["message.retry"];
 
 /// Methods a pane-scoped caller may use on its own pane only (`api::pane_scope_of`): an agent
 /// names only its own pane (§2.3) and reads only its own messages.
-pub const OWN_PANE: &[&str] = &["mention.set", "mention.clear", "message.list"];
+pub const OWN_PANE: &[&str] = &[
+    "mention.set",
+    "mention.clear",
+    "message.list",
+    "message.take",
+];
 
 /// Largest message body, before redaction (§4.6).
 pub const MAX_BODY: usize = 64 * 1024;
@@ -505,6 +511,7 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
         "message.list" => list(server, ctx, p),
         "message.cancel" => cancel(server, ctx, p),
         "message.retry" => retry(server, ctx, p),
+        "message.take" => take(server, ctx, p),
         _ => return None,
     })
 }
@@ -729,6 +736,17 @@ fn complete(server: &Server, ctx: &Ctx, p: &Value) -> R {
     Ok(json!({}))
 }
 
+/// `message.take` (ride-along, §4.3): an integration without hook replies (pi, OpenCode,
+/// Hermes, the ACP host) collects the queued messages of its own pane at a point where it can
+/// show them to its agent. They become `delivered` in the current turn.
+fn take(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
+    let pane = caller_pane(server, ctx, p, "message.take")?;
+    Ok(match hooks::take(server, &pane.id) {
+        Some((context, ids)) => json!({"context": context, "messages": ids}),
+        None => json!({"context": null, "messages": []}),
+    })
+}
+
 /// Whether a pane-scoped caller may read a message: its sender or one of its recipients.
 fn may_read(ctx: &Ctx, m: &Message, ds: &[DeliveryRec]) -> bool {
     match &ctx.pane_scope {
@@ -926,6 +944,8 @@ message.list :: {pane?: Target, direction?: in|out|all = all, open_only?: bool =
 message.cancel :: {delivery: string} => {}
 # full scope only: a held, failed or queued delivery goes back to the queue
 message.retry :: {delivery: string} => {}
+# by the pane's own integration (pi, OpenCode, Hermes, ACP): its queued messages, handed to its agent now (ride-along); each becomes delivered in the current turn
+message.take :: {pane?: Target} => {context: string|null, messages: [string]}
 "##;
 
 pub const EVENTS: &str = r##"

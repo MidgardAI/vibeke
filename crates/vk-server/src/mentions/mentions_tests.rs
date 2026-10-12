@@ -1041,36 +1041,6 @@ async fn a_queued_message_rides_along_on_a_tool_result() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_busy_headless_recipient_is_steered_unless_it_is_acp() {
-    for (integration, steered) in [("headless:claude", true), ("headless:acp", false)] {
-        let e = Env::new();
-        e.put_run("b", "claude", Execution::Working);
-        {
-            let mut c = e.server.core.lock().unwrap();
-            let mut r = c.run_for_pane("b").cloned().unwrap();
-            r.integration = integration.into();
-            let mut tx = Tx::new();
-            tx.run(r);
-            e.server.commit(&mut c, tx).unwrap();
-        }
-        e.ok(
-            &user(),
-            "mention.set",
-            json!({"pane": "b", "name": "reviewer"}),
-        )
-        .await;
-        let did = e.to_reviewer(false).await;
-        e.pump();
-        let state = e.delivery(&did).delivery.state;
-        assert_eq!(
-            state != DeliveryState::Queued,
-            steered,
-            "{integration}: {state:?}"
-        );
-    }
-}
-
-#[tokio::test(flavor = "multi_thread")]
 async fn a_queued_message_keeps_the_turn_going_at_stop() {
     let e = Env::new();
     let (mid, did) = queued_to_busy(&e).await;
@@ -1116,4 +1086,39 @@ async fn ride_along_skips_deliveries_the_engine_would_not_deliver() {
     e.put_pane("b", "wb");
     assert_eq!(hook_context(&e, "b", "go on"), "");
     assert_eq!(e.delivery(&did).delivery.state, DeliveryState::Queued);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn subagents_and_other_sessions_do_not_take_the_panes_messages() {
+    let e = Env::new();
+    let (_mid, did) = queued_to_busy(&e).await;
+    {
+        let mut c = e.server.core.lock().unwrap();
+        let mut r = c.run_for_pane("b").cloned().unwrap();
+        r.harness_session_id = Some("s-main".into());
+        let mut tx = Tx::new();
+        tx.run(r);
+        e.server.commit(&mut c, tx).unwrap();
+    }
+    let post = |extra: Value| {
+        let mut p = json!({"tool_name": "Bash", "session_id": "s-main"});
+        p.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        p
+    };
+    // A subagent's tool call.
+    let sub = post(json!({"agent_id": "a1", "agent_type": "Explore"}));
+    assert_eq!(hook_after(&e, "b", claude(), "PostToolUse", sub), "");
+    // Another session of the same harness in the pane (`claude -p` run by the agent).
+    let other = post(json!({"session_id": "s-other"}));
+    assert_eq!(
+        hook_after(&e, "b", claude(), "PostToolUse", other.clone()),
+        ""
+    );
+    assert!(super::hooks::before_signal(&e.server, "b", claude(), "Stop", &other).is_none());
+    assert_eq!(e.delivery(&did).delivery.state, DeliveryState::Queued);
+    // The pane's own agent.
+    let ctx = hook_after(&e, "b", claude(), "PostToolUse", post(json!({})));
+    assert!(ctx.contains("the secret plan"), "{ctx}");
 }

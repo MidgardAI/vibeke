@@ -42,7 +42,9 @@ pub fn before_signal(
         "UserPromptSubmit" => leading_send(server, pane, h, p),
         // Messages that arrived during the turn keep it going, so the agent reads them before
         // it goes idle; otherwise the reminder for an unanswered one.
-        "Stop" => ride_along(server, pane)
+        "Stop" => own_agent(server, pane, p)
+            .then(|| ride_along(server, pane))
+            .flatten()
             .map(block)
             .or_else(|| stop_reminder(server, pane)),
         _ => None,
@@ -67,8 +69,9 @@ pub fn after_signal(
     };
     // Queued messages ride along on the prompt or the tool result (§4.3).
     let queued = match event {
-        "UserPromptSubmit" => ride_along(server, pane),
-        "PostToolUse" => ride_along(server, pane),
+        "UserPromptSubmit" | "PostToolUse" if own_agent(server, pane, p) => {
+            ride_along(server, pane)
+        }
         _ => None,
     };
     let text = match (own, queued) {
@@ -263,6 +266,24 @@ fn stop_reminder(server: &Arc<Server>, pane: &str) -> Option<Value> {
     )))
 }
 
+/// Whether a hook comes from the pane's own agent, which may take its messages: not from a
+/// subagent (Claude marks those hooks with `agent_id`), and not from another session of the
+/// same harness started inside the pane (its `session_id` differs from the run's).
+fn own_agent(server: &Arc<Server>, pane: &str, p: &Value) -> bool {
+    let set = |k: &str| p.get(k).and_then(Value::as_str).filter(|v| !v.is_empty());
+    if set("agent_id").is_some() {
+        return false;
+    }
+    let run_session = server.with_core(|c| {
+        c.run_for_pane(pane)
+            .and_then(|r| r.harness_session_id.clone())
+    });
+    match (set("session_id"), run_session) {
+        (Some(hook), Some(run)) => hook == run,
+        _ => true,
+    }
+}
+
 /// Whether `rec` may ride along on a hook of its own pane now: the checks of the delivery
 /// engine for a queued delivery (§4.2), without the idle and input-box ones. The agent runs the
 /// hook, so it is there and reads the context; nothing is typed into its input box.
@@ -292,6 +313,11 @@ fn may_ride(c: &Core, rec: &DeliveryRec) -> bool {
 /// envelope. A delivery whose envelope is being typed is left to the engine. Returns the
 /// messages as one context text, oldest first, or `None` when nothing was queued.
 pub(crate) fn ride_along(server: &Arc<Server>, pane: &str) -> Option<String> {
+    take(server, pane).map(|(text, _)| text)
+}
+
+/// [`ride_along`], with the ids of the messages handed over.
+pub(crate) fn take(server: &Arc<Server>, pane: &str) -> Option<(String, Vec<String>)> {
     let typing = server.mentions.typing.lock().unwrap().clone();
     let mut c = server.core.lock().unwrap();
     let mut recs: Vec<DeliveryRec> = deliveries_to(&c, pane)
@@ -328,9 +354,10 @@ pub(crate) fn ride_along(server: &Arc<Server>, pane: &str) -> Option<String> {
         .map(|(m, rec)| message_context(&c, pane, m, rec))
         .collect::<Vec<_>>()
         .join("\n\n");
+    let ids = taken.into_iter().map(|(m, _)| m.id).collect();
     drop(c);
     server.mentions.poke();
-    Some(text)
+    Some((text, ids))
 }
 
 /// Constant-time comparison of two nonces.

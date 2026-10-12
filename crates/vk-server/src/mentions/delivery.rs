@@ -331,14 +331,14 @@ fn decide(
         return None;
     };
     let run = c.run_for_pane(&pane_id);
-    let open_interaction = |_: &AgentRun| {
-        c.model
-            .interactions
-            .iter()
-            .any(|i| i.pane == pane_id && i.status == InteractionStatus::Open)
+    let idle_now = |run: &AgentRun| {
+        run.execution.value == Execution::Idle
+            && !c
+                .model
+                .interactions
+                .iter()
+                .any(|i| i.pane == pane_id && i.status == InteractionStatus::Open)
     };
-    let idle_now =
-        |run: &AgentRun| run.execution.value == Execution::Idle && !open_interaction(run);
     // Messages stay inside one workspace (§4.6): a recipient or sender that moved since the
     // message was sent ends the delivery's way into the pane.
     if matches!(
@@ -387,15 +387,7 @@ fn decide(
                 hold(rec, "agent_exited");
                 return None;
             }
-            // A headless run that can steer takes the message mid-turn (ride-along, §4.3);
-            // everything else waits until the agent is idle.
-            let steers = steers(run);
-            let ready = if steers {
-                !open_interaction(run)
-            } else {
-                idle_now(run)
-            };
-            if busy.contains(&pane_id) || typing.contains(&rec.delivery.id) || !ready {
+            if busy.contains(&pane_id) || typing.contains(&rec.delivery.id) || !idle_now(run) {
                 return None;
             }
             // A headless run has no hooks to expand an envelope: it gets the framed message.
@@ -444,12 +436,6 @@ fn decide(
     }
 }
 
-/// Whether `run` is headless with a native steer (every headless adapter except ACP): a framed
-/// message sent with `mode: steer` joins the running turn, or starts one when idle.
-pub(crate) fn steers(run: &AgentRun) -> bool {
-    crate::agents::headless::is_headless(run) && run.integration != "headless:acp"
-}
-
 /// A delivered message whose turn ended, for runs without a `Stop` hook to complete it (§4.3):
 /// headless runs and harnesses without mention hooks. The turn ended when the run's `done_rev`
 /// moved past the mark taken at delivery, or the run is gone or was replaced. A message that
@@ -492,7 +478,6 @@ fn spawn_typing(server: Arc<Server>, rec: DeliveryRec, text: String, fallback: b
                 )
             })
         });
-        let steer = server.with_core(|c| c.run_for_pane(&pane).is_some_and(steers));
         // People's input to the pane waits from the last input check until the Enter is
         // written (`agent.prompt` ends the hold then), so no draft slips in between.
         let hold = matches!(&run, Some((_, false, _))).then(|| server.input_hold.hold(&pane));
@@ -523,10 +508,7 @@ fn spawn_typing(server: Arc<Server>, rec: DeliveryRec, text: String, fallback: b
         let result = match run {
             Some((run, _, _)) => {
                 let ctx = crate::drafts::user_ctx();
-                let mut params = json!({"target": run, "text": text});
-                if steer {
-                    params["mode"] = json!("steer");
-                }
+                let params = json!({"target": run, "text": text});
                 Box::pin(crate::agents::api(&server, &ctx, "agent.prompt", &params)).await
             }
             None => None,

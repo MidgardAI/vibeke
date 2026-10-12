@@ -201,10 +201,6 @@ headless, and nobody moved workspace. A delivery whose envelope is being typed, 
 reason `ride_along`, in the current turn (its hop and reply rules are those of an expanded
 envelope), and gets the same framed context.
 
-A headless run with a native steer (every headless adapter except ACP) does not wait for idle
-either: the engine sends it the framed message with `agent.prompt` `mode: steer`, which joins
-the running turn or starts one. It still waits while an interaction is open.
-
 pi, OpenCode, Hermes, Gemini and ACP panes do not take ride-along messages yet: their plugins
 ignore the server's reply. They keep the typed envelope and the full-body fallback.
 
@@ -213,8 +209,8 @@ ignore the server's reply. They keep the typed envelope and the full-body fallba
   (`{"decision": "block", "reason": …}`).
 - The second time, the delivery becomes `completed` without a reply.
 
-**Headless runs** have no hooks. They get the framed full body as their prompt right away (a
-steer while a turn runs, see ride-along), and the delivery becomes `delivered`.
+**Headless runs** have no hooks. They get the framed full body as their prompt right away, and
+the delivery becomes `delivered`.
 
 **No hook.** A `submitted` delivery that no hook took within 30 s:
 - For harnesses without mention hooks, the engine falls back once to typing the framed full
