@@ -343,7 +343,20 @@ fn refresh_managed(dirs: &Dirs) -> Vec<std::path::PathBuf> {
         }
         all.extend(written);
     }
+    all.extend(refresh_codex_shim(&vk_server::paths::Paths::shims()));
     all
+}
+
+/// Rewrite the Codex PATH shim when Vibeke installed it and it is outdated (an older shim
+/// still attached Codex to its shared daemon, so hooks lost the pane). Never creates one.
+fn refresh_codex_shim(shims: &std::path::Path) -> Option<std::path::PathBuf> {
+    let path = shims.join("codex");
+    let old = std::fs::read_to_string(&path).ok()?;
+    if !(old.contains("vibeke-shim=codex") || old.contains("managed by vibeke")) {
+        return None;
+    }
+    let p = vk_agents::write_codex_shim(shims).ok()?;
+    (std::fs::read_to_string(&p).ok()? != old).then_some(p)
 }
 
 /// `vibeke integration refresh`: see [`refresh_managed`].
@@ -809,5 +822,40 @@ fn record_integrity(verb: &str, h: Harness, dirs: &Dirs) {
             "{}: could not record the integration fingerprint: {e}",
             h.id()
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::refresh_codex_shim;
+
+    #[test]
+    fn only_a_managed_outdated_codex_shim_is_rewritten() {
+        let t = tempfile::tempdir().unwrap();
+        let shims = t.path();
+        // No shim: nothing is created.
+        assert_eq!(refresh_codex_shim(shims), None);
+        assert!(!shims.join("codex").exists());
+        // Someone else's `codex` stays as it is.
+        std::fs::write(shims.join("codex"), "#!/bin/sh\nexec real-codex \"$@\"\n").unwrap();
+        assert_eq!(refresh_codex_shim(shims), None);
+        assert!(
+            std::fs::read_to_string(shims.join("codex"))
+                .unwrap()
+                .contains("real-codex")
+        );
+        // An older Vibeke shim is replaced by the current one, once.
+        std::fs::write(
+            shims.join("codex"),
+            "#!/bin/sh\n# managed by vibeke: old\nexec codex --disable daemon_auto_start \"$@\"\n",
+        )
+        .unwrap();
+        assert_eq!(refresh_codex_shim(shims), Some(shims.join("codex")));
+        assert!(
+            std::fs::read_to_string(shims.join("codex"))
+                .unwrap()
+                .contains("--no-daemon")
+        );
+        assert_eq!(refresh_codex_shim(shims), None);
     }
 }
