@@ -18,7 +18,7 @@
 
 import { createHash, randomBytes } from 'node:crypto';
 import { BrowserWindow, WebContentsView, session as electronSession, shell, type Session, type WebContents } from 'electron';
-import { PICK_ELEMENT_FN, TUNNEL_FEATURE, elementPick, pickClip, type ElementPick, type RpcLink } from '@vibeke/core';
+import { PICK_ELEMENT_FN, TUNNEL_FEATURE, elementPick, pickClip, type AnnotationRect, type ElementPick, type RpcLink } from '@vibeke/core';
 import { EVENT, type PreviewAction, type PreviewBounds, type PreviewOpen, type PreviewPick, type PreviewState } from '../shared/contract';
 import { PreviewProxy, isLoopbackName, isLoopbackUrl, isOurProxyChallenge, type PreviewRoute } from './preview-proxy';
 import { tunnelMux } from './preview-tunnel';
@@ -64,6 +64,16 @@ export function previewPartition(hostId: string, machine: string): string {
   const key = safe === m ? safe : `${safe}-${createHash('sha256').update(m).digest('hex').slice(0, 10)}`;
   return `persist:vk-preview-${hostId}-${key}`;
 }
+
+/** The bounding rectangle of a CDP quad (`[x1, y1, … x4, y4]`, as `DOM.getBoxModel` returns). */
+const quadRect = (q: number[] | undefined): AnnotationRect | null => {
+  if (!q || q.length !== 8 || !q.every((n) => typeof n === 'number' && Number.isFinite(n))) return null;
+  const xs = q.filter((_, i) => i % 2 === 0);
+  const ys = q.filter((_, i) => i % 2 === 1);
+  const x = Math.min(...xs);
+  const y = Math.min(...ys);
+  return { x, y, w: Math.max(...xs) - x, h: Math.max(...ys) - y };
+};
 
 const safeWebUrl = (url: string): string | null => {
   try {
@@ -326,9 +336,21 @@ export class PreviewViews {
         const m = await send<{ cssVisualViewport?: { pageX: number; pageY: number; clientWidth: number; clientHeight: number } }>('Page.getLayoutMetrics');
         const vp = m.cssVisualViewport;
         if (vp) out.viewport = { w: Math.round(vp.clientWidth), h: Math.round(vp.clientHeight) };
-        // `clip` is in page coordinates, the pick rect in viewport coordinates.
-        const clip = pickClip(picked.rect);
-        const shot = await send<{ data: string }>('Page.captureScreenshot', { format: 'png', clip: { ...clip, x: clip.x + (vp?.pageX ?? 0), y: clip.y + (vp?.pageY ?? 0) } });
+        // The page script's rect is relative to the element's own frame (an iframe's viewport),
+        // but the screenshot is of the top-level page. `DOM.getBoxModel` places the node in the
+        // top-level viewport for any frame. Without it there is no image rather than a wrong one.
+        const box = await send<{ model?: { border?: number[] } }>('DOM.getBoxModel', { backendNodeId });
+        const top = quadRect(box.model?.border);
+        if (!top || !vp) throw new Error('no top-level box for the pick');
+        out.pick = { ...out.pick, rect: top };
+        // `clip` is in page coordinates, the box in top-level viewport coordinates; the part
+        // outside the viewport is cut off.
+        const c = pickClip(top);
+        const width = Math.min(c.x + c.width, vp.clientWidth) - c.x;
+        const height = Math.min(c.y + c.height, vp.clientHeight) - c.y;
+        if (!(width >= 1 && height >= 1)) throw new Error('the pick is outside the viewport');
+        const clip = { ...c, x: c.x + vp.pageX, y: c.y + vp.pageY, width, height };
+        const shot = await send<{ data: string }>('Page.captureScreenshot', { format: 'png', clip });
         if (shot.data && shot.data.length <= 8 * 1024 * 1024) out.image_b64 = shot.data;
       } catch {
         /* the note still works without a screenshot */
