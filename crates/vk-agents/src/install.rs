@@ -1486,6 +1486,14 @@ fn plan_hermes(dirs: &Dirs, install: bool) -> Result<Plan> {
         Some((t, s)) => (Some(t), Some(s)),
         None => (None, None),
     };
+    if let Some(t) = &before
+        && !crate::hermes_config::supported(t)
+    {
+        bail!(
+            "{}: `plugins` is not in a layout Vibeke can edit; edit `plugins.enabled` by hand",
+            config.display()
+        );
+    }
     let after = match &before {
         Some(t) => Some(crate::hermes_config::set_enabled(
             t,

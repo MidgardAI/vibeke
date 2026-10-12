@@ -18,17 +18,23 @@ import json
 import os
 import queue
 import subprocess
+import sys
 import threading
 
 _BIN = os.environ.get("VIBEKE_BIN") or "vibeke"
+# Commands that serve other clients: a messaging gateway serves other people's chats, and ACP
+# sessions report through Vibeke's ACP host.
+_SERVICES = {"gateway", "acp", "cron", "kanban", "proxy", "webhook", "peer", "send", "mcp"}
 _ON = (
     os.environ.get("VIBEKE") == "1"
     and bool(os.environ.get("VIBEKE_SOCKET"))
     and bool(os.environ.get("VIBEKE_PANE_TOKEN"))
+    and not _SERVICES.intersection(sys.argv[1:3])
 )
-# The terminal interfaces a pane runs. ACP sessions report through Vibeke's ACP host, and a
-# messaging gateway started in a pane serves other people's chats.
+# The terminal interfaces a pane runs.
 _PLATFORMS = {"cli", "tui"}
+# Approval surfaces shown in the pane: the classic CLI, and the TUI (which reports "gateway").
+_SURFACES = {"cli", "gateway"}
 _MAX_TEXT = 4000
 
 _queue: "queue.Queue[tuple[str, dict] | None]" = queue.Queue()
@@ -171,8 +177,9 @@ def _tool(hook: str):
 
 def _approval(hook: str):
     def cb(**kwargs) -> None:
-        # Smart approvals are decided by a model, without a prompt in the pane.
-        if kwargs.get("surface") == "smart":
+        # Smart approvals are decided by a model, without a prompt in the pane; MCP and payment
+        # consent prompts are not commands.
+        if kwargs.get("surface") not in _SURFACES or not _ours(kwargs):
             return
         _send(
             hook,

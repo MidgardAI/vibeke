@@ -172,6 +172,11 @@ pub(super) fn translate(pane: &str, event: &str, p: &Value) -> Vec<(&'static str
                 out.push(("PermissionResolved", json!({"tool_use_id": id})));
             }
         }
+        "permission.reply_failed" => {
+            if let Some(id) = p.get("id").and_then(Value::as_str) {
+                out.push(("ReplyFailed", json!({"native_ref": id})));
+            }
+        }
         "file.edited" => {
             if let Some(f) = p.get("file").and_then(Value::as_str) {
                 out.push(("FileChanged", json!({"path": f})));
@@ -256,6 +261,27 @@ pub(super) fn on_event(server: &Arc<Server>, pane: &str, h: Harness, event: &str
                 }
             }
             "PermissionResolved" => on_signal(server, pane, h, "PermissionDenied", &payload),
+            "ReplyFailed" => {
+                let run = bound_run(server, pane, h);
+                let id = server.with_core(|c| {
+                    c.model
+                        .interactions
+                        .iter()
+                        .find(|i| {
+                            i.run == run.id
+                                && i.native_ref.as_deref() == payload["native_ref"].as_str()
+                        })
+                        .map(|i| i.id.clone())
+                });
+                if let Some(id) = id {
+                    set_delivery(
+                        server,
+                        &id,
+                        DeliveryState::Failed,
+                        Some("OpenCode did not accept the answer; answer in the pane".into()),
+                    );
+                }
+            }
             "FileChanged" => {
                 let run = bound_run(server, pane, h);
                 if let Some(path) = payload["path"].as_str() {

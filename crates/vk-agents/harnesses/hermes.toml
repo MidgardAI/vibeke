@@ -61,7 +61,8 @@ flags = ["--yolo"]
 [screen]
 rows = 30
 # The classic CLI's approval box: `❯ 1. Allow once`, `2. Allow for this session`,
-# `3. Add to permanent allowlist`, `4. Deny`; arrows move the pointer, Enter confirms.
+# `3. Add to permanent allowlist`, `4. Deny`; arrows move the pointer, Enter confirms. Some
+# prompts offer fewer choices, so options are picked by label, never by number.
 [[screen.rules]]
 id = "approval"
 opens = "approval"
@@ -73,7 +74,6 @@ title_regex = '(?m)^[│\s]*⚠️?\s+(\S[^│\n]*?)\s*│'
 command_regex = '(?m)^│ *⚠[^\n]*\n│ *│[^\n]*\n│ +(\S[^│\n]*?) *│'
 [screen.rules.dialog]
 accelerators = "arrows"
-map = { allow = 1, allow_always = 2, deny = 4 }
 
 [[screen.rules]]
 id = "working"

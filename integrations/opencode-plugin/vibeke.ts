@@ -88,12 +88,16 @@ export const VibekePlugin = async ({ client, directory }: { client?: any; direct
     const r = await send("permission.asked", p, true, p.id);
     const response = RESPONSE[r?.status];
     if (!response || !p.sessionID) return;
+    let ok = false;
     try {
-      await client?.postSessionIdPermissionsPermissionId?.({
+      const res = await client?.postSessionIdPermissionsPermissionId?.({
         path: { id: p.sessionID, permissionID: p.id },
         body: { response },
       });
+      ok = !!res && !res.error;
     } catch {}
+    // The shim already confirmed delivery: report that OpenCode refused the answer.
+    if (!ok) await send("permission.reply_failed", { id: p.id, sessionID: p.sessionID });
   }
 
   return {

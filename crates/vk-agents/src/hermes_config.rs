@@ -3,6 +3,33 @@
 //! (`plugins:` / `  enabled:` / `    - name`) and an inline flow list (`  enabled: [a, b]`).
 //! A plugin listed in `plugins.disabled` is taken out of that list on enable.
 
+/// Whether [`set_enabled`] can edit `content`: `plugins` is missing or a block mapping, and its
+/// `enabled`/`disabled` values are block lists, flow lists or empty. Anything else (a flow
+/// mapping such as `plugins: {}`, a scalar) is left for the user to edit.
+pub fn supported(content: &str) -> bool {
+    let lines: Vec<String> = content.lines().map(str::to_string).collect();
+    let Some(plugins) = lines.iter().position(|l| top_key(l) == Some("plugins")) else {
+        return true;
+    };
+    if !value_of(&lines[plugins]).is_empty() {
+        return false;
+    }
+    let end = section_end(&lines, plugins);
+    (plugins + 1..end).all(|i| match sub_key(&lines[i]) {
+        Some("enabled" | "disabled") => {
+            value_of(&lines[i]).is_empty() || flow_items(&lines[i]).is_some()
+        }
+        _ => true,
+    })
+}
+
+/// The inline value of a `key: value` line, without a comment.
+fn value_of(line: &str) -> &str {
+    strip_comment(line)
+        .split_once(':')
+        .map_or("", |(_, v)| v.trim())
+}
+
 /// `content` with `name` added to (or removed from) `plugins.enabled`.
 pub fn set_enabled(content: &str, name: &str, enabled: bool) -> String {
     let newline = content.ends_with('\n') || content.is_empty();
@@ -239,5 +266,15 @@ mod tests {
             "plugins:\n  disabled:\n    - vibeke\n",
             "vibeke"
         ));
+    }
+
+    #[test]
+    fn refuses_layouts_it_cannot_edit() {
+        assert!(supported(BLOCK));
+        assert!(supported("model: x\n"));
+        assert!(supported("plugins:\n  enabled: [a]\n"));
+        assert!(!supported("plugins: {}\n"));
+        assert!(!supported("plugins: {enabled: [a]}\n"));
+        assert!(!supported("plugins:\n  enabled: a\n"));
     }
 }

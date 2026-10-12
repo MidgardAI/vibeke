@@ -41,10 +41,21 @@ struct Inner {
 }
 
 fn is_extension(h: Harness) -> bool {
-    matches!(
-        h,
-        Harness::Pi | Harness::Omp | Harness::OpenCode | Harness::Hermes
-    )
+    matches!(h, Harness::Pi | Harness::Omp | Harness::OpenCode)
+}
+
+/// Files whose change can alter what an integration does: Hermes loads its plugin only while
+/// `plugin.yaml` exists and `config.yaml` enables it.
+fn watched_files(h: Harness, dirs: &Dirs) -> Vec<PathBuf> {
+    let file = dirs.config_file(h);
+    match h {
+        Harness::Hermes => vec![
+            file.with_file_name("plugin.yaml"),
+            file,
+            dirs.hermes.join("config.yaml"),
+        ],
+        _ => vec![file],
+    }
 }
 
 /// The record file: `<state root>/integrations.json`.
@@ -62,6 +73,15 @@ pub fn fingerprint(h: Harness, dirs: &Dirs) -> Option<String> {
     let st = vk_agents::hook_status(h, dirs);
     if st.state == InstallState::NotInstalled {
         return None;
+    }
+    if h == Harness::Hermes {
+        // Both plugin files, and whether `config.yaml` still enables the plugin.
+        let mut hasher = blake3::Hasher::new();
+        for f in &watched_files(h, dirs)[..2] {
+            hasher.update(&std::fs::read(f).unwrap_or_default());
+        }
+        hasher.update(st.missing_events.join(",").as_bytes());
+        return Some(hasher.finalize().to_hex().to_string());
     }
     let hooks: Vec<Value> = st
         .hooks
@@ -228,6 +248,18 @@ fn file_stat(p: &std::path::Path) -> Option<(SystemTime, u64)> {
     Some((m.modified().ok()?, m.len()))
 }
 
+/// The newest modification time and the total size of the watched files.
+fn watch_stat(h: Harness, dirs: &Dirs) -> Option<(SystemTime, u64)> {
+    let stats: Vec<_> = watched_files(h, dirs)
+        .iter()
+        .map(|f| file_stat(f))
+        .collect();
+    let mtime = stats.iter().flatten().map(|s| s.0).max()?;
+    // A missing file changes the total, so its removal is noticed.
+    let len = stats.iter().map(|s| s.map_or(u64::MAX / 4, |s| s.1)).sum();
+    Some((mtime, len))
+}
+
 /// An agent of harness `h` started (run `run`): check against the record (09 §5.3) and take
 /// the live baseline.
 pub fn on_agent_start(server: &Server, h: Harness, run: &str, dirs: &Dirs) {
@@ -243,7 +275,7 @@ pub fn on_agent_start(server: &Server, h: Harness, run: &str, dirs: &Dirs) {
     }
     let mut g = server.security.integrity.inner.lock().unwrap();
     g.live.insert(h.id().into(), c.fingerprint.clone());
-    g.stat.insert(h.id().into(), file_stat(&c.file));
+    g.stat.insert(h.id().into(), watch_stat(h, dirs));
 }
 
 /// Re-check harnesses with live runs; report a change once.
@@ -262,7 +294,7 @@ pub fn poll(server: &Server, dirs: &Dirs) {
     });
     for (h, run) in live {
         let file = dirs.config_file(h);
-        let st = file_stat(&file);
+        let st = watch_stat(h, dirs);
         let (base, known) = {
             let g = server.security.integrity.inner.lock().unwrap();
             (g.live.get(h.id()).cloned(), g.stat.get(h.id()).cloned())
