@@ -234,12 +234,13 @@ export function createExtension(pi: HostApi, opts: Options = {}): Handle | undef
 
   // ---- ride-along delivery (PROTOCOL.md "Ride-along messages") ----
   // Hand queued messages from other panes to the agent where it reads input anyway. One
-  // message.take is in flight at a time; every failure means "nothing to deliver".
+  // message.take is in flight at a time, and a caller during it gets nothing: the call in flight
+  // hands the messages over once. Every failure means "nothing to deliver".
   const RIDE_TYPE = "vibeke-message";
   let taking: Promise<string | null> | null = null;
   function take(): Promise<string | null> {
     if (headlessOwner) return Promise.resolve(null); // the server delivers headless runs itself
-    if (taking) return taking;
+    if (taking) return Promise.resolve(null);
     const p = client.take().catch(() => null);
     taking = p;
     const clear = () => {

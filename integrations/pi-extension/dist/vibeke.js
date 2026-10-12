@@ -108,6 +108,7 @@ class VibekeClient {
   gateReconnects = 0;
   controlHandled = 0;
   controlStarted = false;
+  takes = new Map;
   controlSock = null;
   cap;
   minMs;
@@ -185,8 +186,14 @@ class VibekeClient {
     s.on("data", lineReader((line) => {
       try {
         const m = JSON.parse(line);
-        if (typeof m?.id === "number")
+        if (typeof m?.id === "number") {
           this.acks.delete(m.id);
+          const done = this.takes.get(m.id);
+          if (done) {
+            const c = m.result?.context;
+            done(!m.error && typeof c === "string" && c ? c : null);
+          }
+        }
       } catch {}
     }));
     s.on("connect", () => {
@@ -235,6 +242,8 @@ class VibekeClient {
     s.on("close", () => {
       if (this.sock === s)
         this.sock = null;
+      for (const done of [...this.takes.values()])
+        done(null);
       const wasReady = this.ready;
       this.ready = false;
       this.blocked = false;
@@ -298,6 +307,31 @@ class VibekeClient {
       else
         this.ensureConnecting();
     } catch {}
+  }
+  take(timeoutMs = 2000) {
+    return new Promise((resolve2) => {
+      try {
+        const s = this.sock;
+        if (this.closed || !this.ready || !s)
+          return resolve2(null);
+        const id = ++this.rpcId;
+        const line = JSON.stringify({ jsonrpc: "2.0", id, method: "message.take", params: {} }) + `
+`;
+        let timer = null;
+        const done = (v) => {
+          if (timer)
+            clearTimeout(timer);
+          this.takes.delete(id);
+          resolve2(v);
+        };
+        timer = setTimeout(() => done(null), timeoutMs);
+        timer.unref?.();
+        this.takes.set(id, done);
+        s.write(line);
+      } catch {
+        resolve2(null);
+      }
+    });
   }
   get pendingAcks() {
     return this.acks.size;
@@ -718,6 +752,31 @@ function createExtension(pi, opts = {}) {
       return w.v;
     });
   }
+  const RIDE_TYPE = "vibeke-message";
+  let taking = null;
+  function take() {
+    if (headlessOwner)
+      return Promise.resolve(null);
+    if (taking)
+      return Promise.resolve(null);
+    const p = client.take().catch(() => null);
+    taking = p;
+    const clear = () => {
+      if (taking === p)
+        taking = null;
+    };
+    p.then(clear, clear);
+    return p;
+  }
+  function rideMessage(content) {
+    return { customType: RIDE_TYPE, content, display: true };
+  }
+  function ride(content, options) {
+    try {
+      if (typeof pi.sendMessage === "function")
+        pi.sendMessage(rideMessage(content), options);
+    } catch {}
+  }
   function sweep() {
     const now = Date.now();
     for (const [k, c] of calls)
@@ -874,6 +933,10 @@ function createExtension(pi, opts = {}) {
       ...prompt !== undefined ? { prompt, prompt_truncated: truncated } : {}
     });
   });
+  on("before_agent_start", async () => {
+    const context = await take();
+    return context ? { message: rideMessage(context) } : undefined;
+  });
   on("agent_start", () => {
     cancelEnd();
     streaming = true;
@@ -971,6 +1034,12 @@ function createExtension(pi, opts = {}) {
     const ok = !e.isError;
     const fp = ok && cached ? fileChangePath(tool, cached.input, ctx?.cwd ?? lastCtx?.cwd) : undefined;
     emit("ToolEnded", { call_id: id, tool, ok, ...fp ? { file_path: fp } : {} });
+    if (typeof pi.sendMessage === "function") {
+      take().then((context) => {
+        if (context)
+          ride(context, { deliverAs: "steer" });
+      });
+    }
   });
   on("tool_approval_requested", (e) => {
     host = "omp";
@@ -987,6 +1056,14 @@ function createExtension(pi, opts = {}) {
     approvals.delete(id);
     emit("ApprovalResolved", { call_id: id, approved: !!e.approved });
   });
+  function rideTurnEnd() {
+    if (typeof pi.sendMessage !== "function")
+      return;
+    take().then((context) => {
+      if (context)
+        ride(context, { deliverAs: "followUp", triggerTurn: true });
+    });
+  }
   on("agent_end", (e) => {
     lastEnd = lastAssistant(e);
     cancelEnd();
@@ -995,9 +1072,11 @@ function createExtension(pi, opts = {}) {
       endTurn();
     }, debounceMs);
     endTimer.unref?.();
+    rideTurnEnd();
   });
   on("agent_settled", () => {
     endTurn();
+    rideTurnEnd();
   });
   on("session_stop", () => {
     emit("Settling", {});

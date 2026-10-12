@@ -83,11 +83,12 @@ function send(event: string, payload: unknown, wait = false, id?: string): Promi
 }
 
 // `vibeke message take --json`: the queued messages of this pane as one text, or null. One call
-// at a time; an error or a timeout (3 s) gives null and never throws.
+// at a time: a caller during it gets null, because the call in flight hands the messages over
+// once. An error or a timeout (3 s) gives null and never throws.
 let taking: Promise<string | null> | null = null;
 function take(): Promise<string | null> {
   if (!ON) return Promise.resolve(null);
-  if (taking) return taking;
+  if (taking) return Promise.resolve(null);
   taking = new Promise<string | null>((resolve) => {
     let out = "";
     let done = false;
