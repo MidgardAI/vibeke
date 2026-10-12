@@ -110,6 +110,7 @@ const SERVER_READ_ONLY: &[&str] = &[
     "browser.list",
     "browser.status",
     "browser.screencast_frame",
+    "browser.annotations",
 ];
 
 /// Assistant operations apps may start (`assistant.generate`): catch-up summaries, decision
@@ -231,7 +232,9 @@ pub fn required_scope(method: &str) -> Option<Scope> {
         | "browser.status"
         | "browser.attach_screencast"
         | "browser.screencast_frame"
-        | "browser.detach_screencast" => View,
+        | "browser.detach_screencast"
+        // Reading the notes of a page review (a draft on the owner host).
+        | "browser.annotations" => View,
         // New agents in a new folder or worktree. The assistant costs money and sends content
         // to a model provider. Taking over a browser session
         // drives it instead of the agent.
@@ -239,7 +242,12 @@ pub fn required_scope(method: &str) -> Option<Scope> {
         | "assistant.cancel" | "browser.take_over" | "browser.release" | "browser.click"
         | "browser.type" | "browser.press" | "browser.navigate" | "browser.input"
         // A host-rendered preview for a phone (06 B3.6): opened, driven and closed by the device.
-        | "browser.preview_open" | "browser.session_close" => Full,
+        | "browser.preview_open" | "browser.session_close"
+        // Page annotations: picks, notes and sending them to the agent. `browser.feedback` is the
+        // agent's own pull and is not exposed.
+        | "browser.annotate" | "browser.annotation_pick" | "browser.annotation_add"
+        | "browser.annotation_update" | "browser.annotation_remove"
+        | "browser.annotations_clear" | "browser.annotations_send" => Full,
         _ => return None,
     })
 }
@@ -1637,6 +1645,67 @@ impl Call<'_> {
                     pick(&p, &["session", "after_seq", "wait_ms"]),
                 )
                 .await
+            }
+            "browser.annotations" => {
+                self.server(method, pick(&p, &["pane", "session", "preview", "draft"]))
+                    .await
+            }
+            "browser.annotate" => {
+                self.server(method, pick(&p, &["pane", "session", "on"]))
+                    .await
+            }
+            "browser.annotation_pick" => {
+                self.server(method, pick(&p, &["pane", "session", "x", "y", "w", "h"]))
+                    .await
+            }
+            "browser.annotation_add" => {
+                if s(&p, "image_b64").is_some_and(|d| d.len() > 11 * 1024 * 1024) {
+                    return Err(ApiError::new(
+                        "too_large",
+                        "pick images are limited to 8 MiB",
+                    ));
+                }
+                self.server(
+                    method,
+                    pick(
+                        &p,
+                        &[
+                            "target",
+                            "url",
+                            "title",
+                            "viewport",
+                            "kind",
+                            "selector",
+                            "role",
+                            "name",
+                            "text",
+                            "html",
+                            "rect",
+                            "covers",
+                            "image_b64",
+                            "note",
+                        ],
+                    ),
+                )
+                .await
+            }
+            "browser.annotation_update" => {
+                req(&p, "draft")?;
+                self.server(method, pick(&p, &["draft", "n", "note", "page_note"]))
+                    .await
+            }
+            "browser.annotation_remove" => {
+                req(&p, "draft")?;
+                self.server(method, pick(&p, &["draft", "n"])).await
+            }
+            "browser.annotations_clear" => {
+                req(&p, "draft")?;
+                self.server(method, pick(&p, &["draft"])).await
+            }
+            "browser.annotations_send" => {
+                req(&p, "draft")?;
+                self.server(method, pick(&p, &["draft", "agent", "copy_only"]))
+                    .await
             }
             "browser.take_over" | "browser.release" => {
                 let session = req(&p, "session")?;
@@ -3277,6 +3346,7 @@ mod workspace_tests {
         "browser.list",
         "browser.status",
         "browser.screencast_frame",
+        "browser.annotations",
     ];
     const FULL_ACTIONS: &[&str] = &[
         "worktree.create",
@@ -3293,6 +3363,13 @@ mod workspace_tests {
         "browser.input",
         "browser.preview_open",
         "browser.session_close",
+        "browser.annotate",
+        "browser.annotation_pick",
+        "browser.annotation_add",
+        "browser.annotation_update",
+        "browser.annotation_remove",
+        "browser.annotations_clear",
+        "browser.annotations_send",
     ];
 
     #[test]
@@ -3334,6 +3411,7 @@ mod workspace_tests {
             "browser.eval",
             "browser.open",
             "browser.screencast",
+            "browser.feedback",
             "sandbox.request",
             "sandbox.push",
             "sandbox.copy_out",
