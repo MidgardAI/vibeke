@@ -537,9 +537,12 @@ export function createExtension(pi: HostApi, opts: Options = {}): Handle | undef
     const fp = ok && cached ? fileChangePath(tool, cached.input, ctx?.cwd ?? lastCtx?.cwd) : undefined;
     emit("ToolEnded", { call_id: id, tool, ok, ...(fp ? { file_path: fp } : {}) });
     // Mid-turn: steer the running turn; the host shows it to the model before its next call.
-    void take().then((context) => {
-      if (context) ride(context, { deliverAs: "steer" });
-    });
+    // Taking marks the messages delivered: only take when the host can send them on.
+    if (typeof pi.sendMessage === "function") {
+      void take().then((context) => {
+        if (context) ride(context, { deliverAs: "steer" });
+      });
+    }
   });
 
   on("tool_approval_requested", (e) => {
@@ -563,6 +566,7 @@ export function createExtension(pi: HostApi, opts: Options = {}): Handle | undef
    * unchanged. agent_end and agent_settled both call this; the second finds nothing queued.
    */
   function rideTurnEnd(): void {
+    if (typeof pi.sendMessage !== "function") return;
     void take().then((context) => {
       if (context) ride(context, { deliverAs: "followUp", triggerTurn: true });
     });
