@@ -39,7 +39,17 @@ The text `-` reads the message from standard input. Add `--no-reply` when you do
 
 ## How a message arrives
 
-A busy agent gets the message at the next chance. The integration hook of the agent adds the message when you send the agent a prompt, or when its turn ends. Claude Code and Codex also get it after a tool call. The agent does not have to stop first. Vibeke never types into the prompt while you write in it.
+A busy agent gets the message at the next chance. The integration of the agent adds the message when you send the agent a prompt. Most integrations also add it after a tool call, or when the turn ends. The agent does not have to stop first. Vibeke never types into the prompt while you write in it.
+
+| Agent | When a busy agent gets the message |
+| --- | --- |
+| Claude Code, Codex | With your next prompt, after a tool call, or when the turn ends |
+| pi, omp | With your next prompt, after a tool call, or in a new turn when the turn ends |
+| OpenCode | With your next prompt, after a tool call, or in a new turn when the session is idle |
+| Hermes | With your next prompt |
+| ACP agents | With your next prompt, or in a new turn when the turn ends |
+
+Other agents get the message when they are idle.
 
 An idle agent gets the message right away. Vibeke types one short line into the prompt of that pane. The line has the message id, the sender and the first words of the message. The integration hook of the agent replaces this line with the full message.
 

@@ -201,8 +201,22 @@ headless, and nobody moved workspace. A delivery whose envelope is being typed, 
 reason `ride_along`, in the current turn (its hop and reply rules are those of an expanded
 envelope), and gets the same framed context.
 
-pi, OpenCode, Hermes, Gemini and ACP panes do not take ride-along messages yet: their plugins
-ignore the server's reply. They keep the typed envelope and the full-body fallback.
+Integrations that ignore hook replies collect their pane's queued deliveries with
+`message.take` (pane scope, own pane only). It returns the same framed text and marks the
+deliveries `delivered` with the reason `ride_along`:
+- pi and omp (extension): at turn start (`before_agent_start` returns the message), after a tool
+  call (`sendMessage` with `deliverAs: "steer"`), and at turn end (`sendMessage` with
+  `deliverAs: "followUp", triggerTurn: true`, a new turn without typing).
+- OpenCode (plugin): at turn start (a synthetic text part in `chat.message`), after a tool call
+  (appended to the tool output), and when the session goes idle (`session.promptAsync`).
+- Hermes (plugin): at turn start (`pre_llm_call` returns it as context). Hermes has no safe
+  mid-turn or turn-end hook.
+- ACP (`vibeke acp-host`): with the next prompt (an extra content block), and at turn end as a new
+  prompt.
+
+An integration takes only when it can hand the text over at once, and one take is in flight at a
+time. Gemini panes, headless runs and harnesses without an integration keep the typed envelope
+and the full-body fallback.
 
 **`Stop`** for a pane with a `delivered` delivery that expects a reply and has none:
 - The first time, the hook blocks the stop with one reminder to reply or complete
