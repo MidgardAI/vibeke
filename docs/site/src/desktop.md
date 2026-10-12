@@ -52,6 +52,8 @@ Select a preview to show the page in the panel. The agent stays visible beside i
 Select **Expand** to show the page in the main area. Select **Collapse** to move it back to the panel. The page does not reload.
 The page runs through the host connection, so it also works for a remote host.
 
+Select **Annotate page** above the page to leave notes for the agent. Click an element to pick it. Drag to pick an area. Write a note for each pick, then select **Send to agent**. See [annotate a page for an agent](concepts/previews.md#annotate-a-page-for-an-agent).
+
 ## Notifications and updates
 
 Configure alerts in the app settings. Allow notifications when your operating system asks.

@@ -205,6 +205,8 @@ Tap a preview to show the page. The host draws the page in its own browser and s
 Touch the page as you would any page on your phone. Use **Keyboard** to type into it.
 This needs full access to the host.
 
+Choose **Annotate** to leave notes for the agent. Tap the page to pick an element. Press and drag to pick an area. Write a note for each pick. Choose **Notes** to review them, then **Send to agent**. See [annotate a page for an agent](concepts/previews.md#annotate-a-page-for-an-agent).
+
 ### Watch an agent's browser
 
 Choose **Watch live** to see the pages that agent browsers have open on the host.

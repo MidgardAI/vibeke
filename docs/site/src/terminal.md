@@ -42,6 +42,7 @@ These are the default keys. Press **Ctrl+B** before each key:
 | `a` | Find the next agent that needs attention. |
 | `s` | Open setup and settings. |
 | `q` | Detach this client. |
+| `@` | Name panes and mention them. See [Mention other agents](mentions.md). |
 | `?` | Show the key menu. |
 
 Your configuration can change these keys. Run `vibeke keys` to see active bindings. See [customize keys and appearance](customize.md).
