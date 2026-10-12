@@ -317,6 +317,28 @@ impl Pick {
     }
 }
 
+/// The bounding rectangle of a CDP quad (`[x1, y1, … x4, y4]`, as `DOM.getBoxModel` returns).
+pub fn quad_rect(q: &Value) -> Option<Rect> {
+    let a = q.as_array().filter(|a| a.len() == 8)?;
+    let n: Vec<f64> = a.iter().map(Value::as_f64).collect::<Option<_>>()?;
+    let xs = [n[0], n[2], n[4], n[6]];
+    let ys = [n[1], n[3], n[5], n[7]];
+    let (x0, x1) = (
+        xs.iter().copied().fold(f64::INFINITY, f64::min),
+        xs.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+    );
+    let (y0, y1) = (
+        ys.iter().copied().fold(f64::INFINITY, f64::min),
+        ys.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+    );
+    (x0.is_finite() && y0.is_finite() && x1.is_finite() && y1.is_finite()).then(|| Rect {
+        x: x0,
+        y: y0,
+        w: x1 - x0,
+        h: y1 - y0,
+    })
+}
+
 /// The `Page.captureScreenshot` clip for `r` (viewport CSS px): the rectangle plus
 /// [`SHOT_MARGIN`], cut to the viewport, in document coordinates, scaled so no side exceeds
 /// [`SHOT_MAX`] device px. `None` when nothing of it is visible.
@@ -511,14 +533,20 @@ impl Picker {
         Ok(())
     }
 
+    fn main_frame(&self) -> Result<String> {
+        Ok(
+            self.call("Page.getFrameTree", json!({}))?["frameTree"]["frame"]["id"]
+                .as_str()
+                .ok_or_else(|| anyhow!("Page.getFrameTree: no main frame"))?
+                .to_string(),
+        )
+    }
+
     /// A fresh isolated world in `frame` (the main frame when `None`); returns its context id.
     fn world(&self, frame: Option<&str>) -> Result<i64> {
         let frame = match frame {
             Some(f) => f.to_string(),
-            None => self.call("Page.getFrameTree", json!({}))?["frameTree"]["frame"]["id"]
-                .as_str()
-                .ok_or_else(|| anyhow!("Page.getFrameTree: no main frame"))?
-                .to_string(),
+            None => self.main_frame()?,
         };
         self.call(
             "Page.createIsolatedWorld",
@@ -562,14 +590,56 @@ impl Picker {
             return Ok(None);
         }
         let mut pick = Pick::from_js("element", &v);
+        let mut view = View::from_json(&v);
+        // In a child frame the description is frame-local, but the screenshot is of the
+        // top-level page: take the rectangle and the view from the top level instead.
+        let main = self.main_frame().ok();
+        if frame.is_some() && frame != main {
+            match self.top_level(node, view.dpr) {
+                Ok((r, top)) => {
+                    pick.rect = Some(r);
+                    view = top;
+                }
+                Err(_) => pick.rect = None,
+            }
+        }
         if let Some(r) = pick.rect {
-            pick.image = self.capture(&r, &View::from_json(&v)).ok().flatten();
+            pick.image = self.capture(&r, &view).ok().flatten();
         }
         let _ = self.call(
             "Overlay.highlightNode",
             json!({"highlightConfig": highlight_config(), "backendNodeId": node}),
         );
         Ok(Some(pick))
+    }
+
+    /// A node's border box in top-level viewport CSS px (`DOM.getBoxModel` answers in the
+    /// main frame's viewport for nodes in any frame), and the top-level view from
+    /// `Page.getLayoutMetrics`. `dpr` is the frame's, which is the page's.
+    fn top_level(&self, node: i64, dpr: f64) -> Result<(Rect, View)> {
+        let bm = self.call("DOM.getBoxModel", json!({"backendNodeId": node}))?;
+        let r = quad_rect(&bm["model"]["border"])
+            .ok_or_else(|| anyhow!("DOM.getBoxModel: no border quad"))?;
+        let m = self.call("Page.getLayoutMetrics", json!({}))?;
+        let vv = m
+            .get("cssVisualViewport")
+            .filter(|v| v.is_object())
+            .unwrap_or(&m["visualViewport"]);
+        let n = |k: &str| {
+            vv[k]
+                .as_f64()
+                .ok_or_else(|| anyhow!("Page.getLayoutMetrics: no {k}"))
+        };
+        Ok((
+            r,
+            View {
+                sx: n("pageX")?,
+                sy: n("pageY")?,
+                vw: n("clientWidth")?,
+                vh: n("clientHeight")?,
+                dpr,
+            },
+        ))
     }
 
     /// Pick a region (viewport CSS px).
@@ -624,9 +694,17 @@ pub fn fake_reply(method: &str, params: &Value) -> Option<Value> {
         "DOM.getNodeForLocation" => {
             let x = params["x"].as_i64().unwrap_or(0);
             let y = params["y"].as_i64().unwrap_or(0);
-            json!({"backendNodeId": 1000 + x * 7 + y, "frameId": "F"})
+            // x = 777: an element inside a child frame (`DOM.getBoxModel` places it).
+            let frame = if x == 777 { "child" } else { "F" };
+            json!({"backendNodeId": 1000 + x * 7 + y, "frameId": frame})
         }
         "Page.getFrameTree" => json!({"frameTree": {"frame": {"id": "F", "url": "about:blank"}}}),
+        // An element of a child frame: its top-level box is offset by the iframe's position.
+        // (`Page.getLayoutMetrics` is answered by each fake: `fake_chromium` scrolls 50 px.)
+        "DOM.getBoxModel" => {
+            let q = json!([110, 220, 190, 220, 190, 244, 110, 244]);
+            json!({"model": {"content": q, "padding": q, "border": q, "margin": q, "width": 80, "height": 24}})
+        }
         "Page.createIsolatedWorld" => json!({"executionContextId": 900}),
         "DOM.resolveNode" => {
             json!({"object": {"type": "object", "subtype": "node",
@@ -780,6 +858,25 @@ mod tests {
     }
 
     #[test]
+    fn quad_rect_bounds_any_quad() {
+        let r = quad_rect(&json!([10, 20, 30, 20, 30, 50, 10, 50])).unwrap();
+        assert_eq!(
+            r,
+            Rect {
+                x: 10.0,
+                y: 20.0,
+                w: 20.0,
+                h: 30.0
+            }
+        );
+        // A rotated quad: its bounding box.
+        let r = quad_rect(&json!([5, 0, 10, 5, 5, 10, 0, 5])).unwrap();
+        assert_eq!((r.x, r.y, r.w, r.h), (0.0, 0.0, 10.0, 10.0));
+        assert!(quad_rect(&json!([1, 2, 3])).is_none());
+        assert!(quad_rect(&json!(null)).is_none());
+    }
+
+    #[test]
     fn pick_fields_round_trip_the_js_result() {
         let v = json!({"selector": "#a", "role": "button", "name": "", "text": "Go",
                        "covers": [{"selector": "#b", "text": ""}],
@@ -850,6 +947,28 @@ mod tests {
         assert_eq!(shots[0].0["clip"]["x"], 2.0);
         assert_eq!(shots[0].0["clip"]["width"], 96.0);
         assert_eq!(st.count("Input.dispatchMouseEvent"), 0);
+        // The main frame needs no translation.
+        assert_eq!(st.count("DOM.getBoxModel"), 0);
+        drop(st);
+        // In a child frame: the rectangle and the clip come from the top level (the box model
+        // and the layout viewport), not the frame-local description.
+        let child = p.pick_point(777.0, 30.0).unwrap().unwrap();
+        assert_eq!(
+            child.rect,
+            Some(Rect {
+                x: 110.0,
+                y: 220.0,
+                w: 80.0,
+                h: 24.0
+            })
+        );
+        let st = state.lock().unwrap();
+        let shots = st.calls("Page.captureScreenshot");
+        let clip = &shots.last().unwrap().0["clip"];
+        assert_eq!(clip["x"], 102.0);
+        assert_eq!(clip["y"], 262.0);
+        assert_eq!(clip["width"], 96.0);
+        assert_eq!(clip["height"], 40.0);
         assert!(st.count("Overlay.highlightNode") >= 1);
         assert_eq!(st.count("Overlay.setInspectMode"), 1);
     }

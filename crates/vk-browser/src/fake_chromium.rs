@@ -551,6 +551,12 @@ fn handle<W: Write>(
             }
             json!({})
         }
+        // The top-level view of an annotation pick in a child frame (`annotate::Picker`): the
+        // page is scrolled 50 px. No content size, so full-page captures behave as before.
+        "Page.getLayoutMetrics" => json!({
+            "cssVisualViewport": {"pageX": 0, "pageY": 50, "clientWidth": 800, "clientHeight": 600},
+            "cssLayoutViewport": {"pageX": 0, "pageY": 50, "clientWidth": 800, "clientHeight": 600}
+        }),
         "Page.addScriptToEvaluateOnNewDocument" => {
             if let Some(p) = st.pages.get_mut(&sess)
                 && let Some(src) = params["source"].as_str()
