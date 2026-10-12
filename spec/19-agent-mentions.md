@@ -16,9 +16,10 @@ view, tracked coordination and pinned context come later (§9). Personas are lef
 
 ### 2.1 Rules
 
-- A mention name matches `[a-z][a-z0-9_-]{0,31}` and is not one of
-  `vk_proto::mention::RESERVED` (`current`, `focused`, `all`…). `vk_proto::mention::valid`
-  is the one check.
+- A mention name matches `[a-z][a-z0-9_-]{0,31}`, does not end with `-` or `_`, and is not one
+  of `vk_proto::mention::RESERVED` (`current`, `focused`, `all`…). `vk_proto::mention::valid`
+  is the one check. A `-` or `_` right after `@name` is punctuation, so `@reviewer_` means
+  `@reviewer`.
 - A name belongs to one pane (`MentionName.pane`) and is unique in its workspace. It stays
   when the agent in the pane exits or restarts. It goes away with the pane.
 - A pane has at most one name. `SessionModel.mentions` lists all names (render protocol 10),

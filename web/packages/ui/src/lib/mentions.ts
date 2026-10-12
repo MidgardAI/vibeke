@@ -14,8 +14,11 @@ export const RESERVED: readonly string[] = ['current', 'focused', 'all', 'everyo
 /** Filler words left out of a name built from a label. */
 const FILLER: readonly string[] = ['a', 'an', 'the', 'and', 'or', 'of', 'to', 'in', 'on', 'for', 'with', 'at', 'by', 'is'];
 
-/** Whether `name` (without `@`) is a valid mention name: `[a-z][a-z0-9_-]{0,31}`, not reserved. */
-export const validMention = (name: string): boolean => /^[a-z][a-z0-9_-]{0,31}$/.test(name) && !RESERVED.includes(name);
+/**
+ * Whether `name` (without `@`) is a valid mention name: `[a-z][a-z0-9_-]{0,31}` that does not end
+ * with `-` or `_`, and not reserved. A trailing `-` or `_` after `@name` is punctuation.
+ */
+export const validMention = (name: string): boolean => /^[a-z](?:[a-z0-9_-]{0,30}[a-z0-9])?$/.test(name) && !RESERVED.includes(name);
 
 /** `label` as a valid name, or null when nothing usable is left. */
 function slug(label: string): string | null {

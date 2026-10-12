@@ -157,7 +157,7 @@ fn target_pane(server: &Server, ctx: &Ctx, p: &Value, method: &str) -> Result<Pa
 fn check(c: &Core, pane: &Pane, name: &str) -> Result<(), RpcError> {
     if !vm::valid(name) {
         return Err(invalid(format!(
-            "`{name}`: a mention name matches [a-z][a-z0-9_-]{{0,31}} and is not one of {}",
+            "`{name}`: a mention name matches [a-z][a-z0-9_-]{{0,31}}, does not end with - or _, and is not one of {}",
             vm::RESERVED.join(", ")
         )));
     }

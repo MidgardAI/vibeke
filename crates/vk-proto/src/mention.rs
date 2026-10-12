@@ -43,10 +43,16 @@ pub enum MentionKind {
     Terminal,
 }
 
-/// Whether `name` (without `@`) is a valid mention name: `[a-z][a-z0-9_-]{0,31}`, not reserved.
+/// Whether `name` (without `@`) is a valid mention name: `[a-z][a-z0-9_-]{0,31}` that does not
+/// end with `-` or `_`, and not reserved. A trailing `-` or `_` after `@name` is punctuation
+/// ([`parse`]), so a name cannot end with one.
 pub fn valid(name: &str) -> bool {
     name.len() <= MAX_LEN
         && name.chars().next().is_some_and(|c| c.is_ascii_lowercase())
+        && name
+            .chars()
+            .last()
+            .is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
         && name
             .chars()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')

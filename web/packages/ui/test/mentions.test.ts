@@ -32,6 +32,8 @@ describe('validMention', () => {
     expect(validMention('current')).toBe(false);
     expect(validMention('focused')).toBe(false);
     expect(validMention('vibeke')).toBe(false);
+    expect(validMention('reviewer_')).toBe(false);
+    expect(validMention('reviewer-')).toBe(false);
   });
 });
 

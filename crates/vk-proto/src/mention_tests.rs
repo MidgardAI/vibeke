@@ -12,6 +12,23 @@ fn names_follow_the_rule() {
     assert!(!valid("Reviewer"));
     assert!(!valid("current"));
     assert!(!valid(&"a".repeat(33)));
+    assert!(valid("a"));
+    // A trailing `-` or `_` is punctuation after a mention, so no name ends with one.
+    assert!(!valid("reviewer_"));
+    assert!(!valid("reviewer-"));
+}
+
+#[test]
+fn trailing_punctuation_is_not_part_of_the_name() {
+    let m = parse("@reviewer_ look");
+    assert_eq!(m.leading, ["reviewer"]);
+    let m = parse("ask @tester-- now");
+    assert_eq!(m.embedded, ["tester"]);
+    // Every suggestion is a valid name, also after cutting and suffixing.
+    let s = suggest("abcdefghijklmnopqrstuvwxyzabcde_", "x", none);
+    assert!(valid(&s), "{s}");
+    let s = suggest("x", "x", |n| n == "x");
+    assert_eq!(s, "x-2");
 }
 
 #[test]

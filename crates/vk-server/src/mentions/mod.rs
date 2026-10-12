@@ -278,7 +278,7 @@ pub(crate) fn send(server: &Server, o: Outgoing) -> R {
         let n = n.trim().trim_start_matches('@').to_string();
         if !vm::valid(&n) {
             return Err(invalid(format!(
-                "`{n}` is not a mention name ([a-z][a-z0-9_-]{{0,31}}, not reserved)"
+                "`{n}` is not a mention name ([a-z][a-z0-9_-]{{0,31}}, not ending with - or _, not reserved)"
             )));
         }
         if !to.contains(&n) {
