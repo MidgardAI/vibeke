@@ -60,8 +60,8 @@ jobs:
       - name: Verify macOS binaries
         if: runner.os == 'macOS'
         run: |
-          lipo -verify_arch arm64 "dist/$VERSION/vibeke-macos-aarch64"
-          lipo -verify_arch x86_64 "dist/$VERSION/vibeke-macos-x86_64"
+          lipo "dist/$VERSION/vibeke-macos-aarch64" -verify_arch arm64
+          lipo "dist/$VERSION/vibeke-macos-x86_64" -verify_arch x86_64
           for target in macos-aarch64 macos-x86_64; do
             vtool -show-build "dist/$VERSION/vibeke-$target" | grep -Eq '^[[:space:]]*minos 13\.0$'
           done
