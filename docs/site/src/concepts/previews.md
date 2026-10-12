@@ -207,6 +207,29 @@ While you control the page, agent browser commands return `human_control`. This 
 
 See the [browser commands](../reference/cli.md#vibeke-browser) and [control API](../reference/api.md) for arguments.
 
+## Annotate a page for an agent
+
+You can point at parts of a page and write a note on each part. Vibeke then sends all notes to the agent as one message.
+
+1. Focus a browser pane and press `prefix+alt+n`. You can also choose **Annotate page** in the command palette.
+2. Click an element to pick it. Hold Shift and drag to pick a region.
+3. Write a note for each pick in the notes panel under the browser pane.
+4. Send the notes.
+
+While you annotate, your clicks do not reach the page. Press `prefix+alt+n` again to use the page normally.
+
+Each note contains the element's selector, its text and a screenshot of the picked part. Vibeke removes secrets that it recognizes from the page text.
+
+Vibeke types the notes into the agent's pane only when the agent is idle and no question is open. Otherwise the notes wait. Vibeke tries again when the agent becomes idle.
+
+An agent can also ask you for a review and wait for your notes:
+
+```sh
+vibeke browser feedback --wait 600
+```
+
+The command returns your notes when you send them. Agents that use the Vibeke MCP server have the `browser_feedback` tool for the same purpose.
+
 ## Next steps
 
 - [Using the terminal interface](../terminal.md): learn the default keys, including the image gallery.
