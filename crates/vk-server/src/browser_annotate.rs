@@ -20,9 +20,13 @@
 //!   it typed (paste and Enter) only when `tracking::prompt_input_safety` passes. Otherwise the
 //!   draft is `queued`, and is retried when the run becomes idle (`agent.state_changed`, and at
 //!   startup) or picked up by `vibeke browser feedback`. A prompt or paste is reserved as
-//!   `sending` first (compare and set, [`transition`]); a send whose outcome is unknown (a
+//!   `sending` first ([`reserve`]: compare and set on state, revision and recipient, returning
+//!   the draft it reserved, from which the prompt is built); a send whose outcome is unknown (a
 //!   timeout, no matching turn, a restart meanwhile) ends `unconfirmed` and is never sent again
-//!   without the user. Prompts name screenshots by the path the recipient pane sees.
+//!   without the user. Typed deliveries to one agent pane run one at a time (`State::typing`).
+//!   Prompts name screenshots by the path the recipient pane sees.
+//! - A session a phone opened on a preview (`browser.preview_open`) has no owner pane: its
+//!   drafts belong to the preview's pane and workspace ([`session_home`]).
 //! - The notes panel is a split under the browser pane (`browser.pane.annotations`, marker
 //!   `browser-annotations:<pane>`). It runs inside a pane, so it may edit and send the draft of
 //!   its own browser pane ([`split_allows`]); other panes may not.
@@ -92,6 +96,9 @@ pub struct State {
     waiters: Mutex<HashMap<String, Vec<oneshot::Sender<String>>>>,
     /// Drafts being delivered now.
     inflight: Mutex<HashSet<String>>,
+    /// One typed delivery per agent pane at a time, held from the safety check through the
+    /// paste to the confirmation (two drafts must never paste into one input box).
+    typing: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     /// Draft changes are read-modify-write: one at a time.
     write: Mutex<()>,
     retry_started: AtomicBool,
@@ -108,6 +115,16 @@ struct PaneMode {
 impl State {
     pub fn is_on(&self, pane: &str) -> bool {
         self.panes.lock().unwrap().contains_key(pane)
+    }
+
+    /// The typed-delivery lock of an agent pane.
+    fn typing_lock(&self, pane: &str) -> Arc<tokio::sync::Mutex<()>> {
+        self.typing
+            .lock()
+            .unwrap()
+            .entry(pane.to_string())
+            .or_default()
+            .clone()
     }
 }
 
@@ -200,6 +217,10 @@ pub struct Draft {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
     pub next_n: u32,
+    /// Bumped by every change of the content or the recipient (not by state changes): a
+    /// delivery reserves the revision it read, so it never sends a stale prompt.
+    #[serde(default)]
+    pub rev: u64,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -416,17 +437,8 @@ fn may_see(server: &Server, ctx: &Ctx, d: &Draft) -> bool {
     }
     let owner = match &d.target {
         AnnotationTarget::Pane(p) => Some(p.clone()),
-        AnnotationTarget::Session(s) => server
-            .agent_browser
-            .watch_info(s)
-            .and_then(|i| i.owner_pane),
-        AnnotationTarget::Preview(id) => server.with_core(|c| {
-            c.model
-                .previews
-                .iter()
-                .find(|x| x.id == *id)
-                .and_then(|x| x.pane.clone())
-        }),
+        AnnotationTarget::Session(s) => session_pane(server, s),
+        AnnotationTarget::Preview(id) => server.with_core(|c| preview_home(c, id)?.pane),
     };
     owner.is_some_and(|o| {
         o == *me
@@ -435,6 +447,74 @@ fn may_see(server: &Server, ctx: &Ctx, d: &Draft) -> bool {
                     .is_some_and(|p| p.created_by == format!("agent:{me}"))
             })
     })
+}
+
+/// Where a preview lives: its id, its pane, and its workspace (the pane's, else its task's).
+struct PreviewHome {
+    id: String,
+    pane: Option<String>,
+    workspace: Option<String>,
+}
+
+/// The preview with this id or handle.
+fn preview_home(c: &crate::core::Core, raw: &str) -> Option<PreviewHome> {
+    let x = c
+        .model
+        .previews
+        .iter()
+        .find(|x| x.id == raw || x.handle == raw)?;
+    let pane = x.pane.clone().filter(|p| c.pane(p).is_some());
+    let workspace = pane
+        .as_deref()
+        .and_then(|p| c.pane(p).map(|y| y.workspace.clone()))
+        .or_else(|| {
+            x.task
+                .as_deref()
+                .and_then(|t| c.task(t).and_then(|t| t.workspace.clone()))
+        });
+    Some(PreviewHome {
+        id: x.id.clone(),
+        pane,
+        workspace,
+    })
+}
+
+/// The pane and workspace an agent browser session belongs to: its owner pane, else (a session
+/// a phone opened on a preview with `browser.preview_open` has no owner) the preview's pane and
+/// workspace.
+fn session_home(
+    server: &Server,
+    info: &crate::agent_browser::WatchInfo,
+) -> (Option<String>, Option<String>) {
+    server.with_core(|c| {
+        if let Some(o) = &info.owner_pane
+            && let Some(p) = c.pane(o)
+        {
+            return (Some(o.clone()), Some(p.workspace.clone()));
+        }
+        match info.preview.as_deref().and_then(|pv| preview_home(c, pv)) {
+            Some(h) => (h.pane, h.workspace),
+            None => (None, None),
+        }
+    })
+}
+
+/// The pane a session target belongs to ([`session_home`]).
+fn session_pane(server: &Server, session: &str) -> Option<String> {
+    let info = server.agent_browser.watch_info(session)?;
+    session_home(server, &info).0
+}
+
+/// The workspace of a draft target.
+fn target_workspace(server: &Server, t: &AnnotationTarget) -> Option<String> {
+    match t {
+        AnnotationTarget::Pane(p) => server.with_core(|c| c.pane(p).map(|x| x.workspace.clone())),
+        AnnotationTarget::Session(s) => server
+            .agent_browser
+            .watch_info(s)
+            .and_then(|i| session_home(server, &i).1),
+        AnnotationTarget::Preview(id) => server.with_core(|c| preview_home(c, id)?.workspace),
+    }
 }
 
 /// Resolve `{pane}` / `{session}` / `{preview}` to a target and its workspace.
@@ -459,33 +539,14 @@ fn target_of(
             .agent_browser
             .watch_info(raw)
             .ok_or_else(|| not_found("browser_session", raw))?;
-        let ws = info
-            .owner_pane
-            .and_then(|o| server.with_core(|c| c.pane(&o).map(|x| x.workspace.clone())));
+        let (_, ws) = session_home(server, &info);
         return Ok((AnnotationTarget::Session(info.id), ws));
     }
     if let Some(raw) = s(p, "preview") {
-        let (id, ws) = server
-            .with_core(|c| {
-                c.model
-                    .previews
-                    .iter()
-                    .find(|x| x.id == raw || x.handle == raw)
-                    .map(|x| {
-                        let ws = x
-                            .pane
-                            .as_deref()
-                            .and_then(|p| c.pane(p).map(|y| y.workspace.clone()))
-                            .or_else(|| {
-                                x.task
-                                    .as_deref()
-                                    .and_then(|t| c.task(t).and_then(|t| t.workspace.clone()))
-                            });
-                        (x.id.clone(), ws)
-                    })
-            })
+        let h = server
+            .with_core(|c| preview_home(c, raw))
             .ok_or_else(|| not_found("preview", raw))?;
-        return Ok((AnnotationTarget::Preview(id), ws));
+        return Ok((AnnotationTarget::Preview(h.id), h.workspace));
     }
     Err(invalid("needs `pane`, `session` or `preview`"))
 }
@@ -629,6 +690,7 @@ pub fn add(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         via: None,
         detail: None,
         next_n: 1,
+        rev: 0,
         created_at_ms: now(),
         updated_at_ms: now(),
         delivered_at_ms: None,
@@ -682,6 +744,7 @@ pub fn add(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     if d.workspace.is_none() {
         d.workspace = workspace;
     }
+    d.rev += 1;
     d.updated_at_ms = now();
     put(server, &d, changed(&d))?;
     Ok(json!({"draft": d, "note": note}))
@@ -716,6 +779,7 @@ fn update(server: &Server, p: &Value) -> R {
     if let Some(pn) = p.get("page_note") {
         d.page_note = pn.as_str().map(user_str).filter(|x| !x.is_empty());
     }
+    d.rev += 1;
     d.updated_at_ms = now();
     put(server, &d, changed(&d))?;
     Ok(json!({"draft": d}))
@@ -735,6 +799,7 @@ fn remove(server: &Server, p: &Value) -> R {
     if let Some(img) = &gone.image {
         remove_image(img);
     }
+    d.rev += 1;
     d.updated_at_ms = now();
     put(server, &d, changed(&d))?;
     Ok(json!({"draft": d}))
@@ -882,10 +947,7 @@ pub fn prompt(d: &Draft) -> String {
 /// running an agent wins; else the first agent; else the candidate itself (for `browser feedback`).
 fn default_agent(server: &Server, d: &Draft) -> Option<String> {
     let session_owner = match &d.target {
-        AnnotationTarget::Session(s) => server
-            .agent_browser
-            .watch_info(s)
-            .and_then(|i| i.owner_pane),
+        AnnotationTarget::Session(s) => session_pane(server, s),
         _ => None,
     };
     server.with_core(|c| {
@@ -899,12 +961,7 @@ fn default_agent(server: &Server, d: &Draft) -> Option<String> {
                 .and_then(|p| p.browser.as_ref())
                 .and_then(|b| b.source_pane.clone()),
             AnnotationTarget::Session(_) => session_owner,
-            AnnotationTarget::Preview(id) => c
-                .model
-                .previews
-                .iter()
-                .find(|x| x.id == *id)
-                .and_then(|x| x.pane.clone()),
+            AnnotationTarget::Preview(id) => preview_home(c, id).and_then(|h| h.pane),
         }
         .filter(|p| c.pane(p).is_some());
         if let Some(p) = cand.as_deref().filter(|p| live(*p)) {
@@ -934,9 +991,7 @@ pub struct Outcome {
 }
 
 /// Move a draft from one of the states `from` to `to` (compare and set under the write lock).
-/// False when it is gone or in another state: someone else took it. Every reservation of a
-/// draft for delivery (a waiter, `browser.feedback`, a prompt, typing) goes through here, so
-/// exactly one of them wins.
+/// False when it is gone or in another state: someone else took it.
 fn transition(
     server: &Server,
     id: &str,
@@ -945,10 +1000,42 @@ fn transition(
     via: Option<&str>,
     detail: Option<String>,
 ) -> bool {
+    transition_if(server, id, from, to, via, detail, None).is_some()
+}
+
+/// Reserve a queued draft for delivery (`to`: `sending`, or `delivered` for a feedback hand-off)
+/// only if it still has the revision and recipient of the snapshot `seen` the caller decided on.
+/// Returns the draft as reserved: its content cannot change any more (edits of a `sending` or
+/// `delivered` draft are refused), so the prompt is built from it. Every reservation (a waiter,
+/// `browser.feedback`, a prompt, typing) goes through here, so exactly one of them wins.
+fn reserve(server: &Server, seen: &Draft, to: &str, via: &str) -> Option<Draft> {
+    transition_if(
+        server,
+        &seen.id,
+        &["queued"],
+        to,
+        Some(via),
+        None,
+        Some((seen.rev, seen.agent_pane.as_deref())),
+    )
+}
+
+/// [`transition`], also requiring the revision and recipient in `expect` when given. Returns
+/// the draft as stored after the move.
+fn transition_if(
+    server: &Server,
+    id: &str,
+    from: &[&str],
+    to: &str,
+    via: Option<&str>,
+    detail: Option<String>,
+    expect: Option<(u64, Option<&str>)>,
+) -> Option<Draft> {
     let _w = server.browser.annotate.write.lock().unwrap();
-    let Some(mut d) = get(server, id).filter(|d| from.contains(&d.state.as_str())) else {
-        return false;
-    };
+    let mut d = get(server, id).filter(|d| {
+        from.contains(&d.state.as_str())
+            && expect.is_none_or(|(rev, agent)| d.rev == rev && d.agent_pane.as_deref() == agent)
+    })?;
     d.state = to.into();
     d.via = via.map(str::to_string);
     d.detail = detail;
@@ -965,12 +1052,8 @@ fn transition(
             json!({"notes": d.notes.len(), "state": d.state}),
         )
     };
-    put(server, &d, Some(event)).is_ok()
-}
-
-/// Mark a queued draft delivered. False when it is no longer queued (someone else took it).
-fn mark_delivered(server: &Server, id: &str, via: &str) -> bool {
-    transition(server, id, &["queued"], "delivered", Some(via), None)
+    put(server, &d, Some(event)).ok()?;
+    Some(d)
 }
 
 fn set_detail(server: &Server, id: &str, detail: String) {
@@ -1006,8 +1089,9 @@ fn hand_to_waiter(server: &Server, d: &Draft) -> bool {
                 None => return false,
             }
         };
-        if !mark_delivered(server, &d.id, "feedback") {
-            // Taken meanwhile (another waiter or delivery): it is on its way.
+        if reserve(server, d, "delivered", "feedback").is_none() {
+            // Taken meanwhile (another waiter or delivery: it is on its way), or edited or
+            // readdressed since `d` was read (the next delivery reads it again).
             return true;
         }
         if tx.send(d.id.clone()).is_ok() {
@@ -1076,13 +1160,14 @@ async fn deliver_inner(server: &Arc<Server>, id: &str) -> Outcome {
         );
         return queued(agent);
     };
-    // Screenshot paths as the recipient sees them (a container pane: `/vibeke/inbox`).
-    let text = crate::sandbox::paste_text(server, &pane, prompt(&d));
     if crate::agents::headless::is_headless(&run) {
-        // Reserved first, so a `browser.feedback` or another delivery cannot take it meanwhile.
-        if !transition(server, id, &["queued"], "sending", Some("prompt"), None) {
+        // Reserved first, so a `browser.feedback` or another delivery cannot take it meanwhile,
+        // and the prompt is built from the reserved draft (never from an older read).
+        let Some(d) = reserve(server, &d, "sending", "prompt") else {
             return outcome_of(server, id);
-        }
+        };
+        // Screenshot paths as the recipient sees them (a container pane: `/vibeke/inbox`).
+        let text = crate::sandbox::paste_text(server, &pane, prompt(&d));
         let ctx = crate::drafts::user_ctx();
         let p = json!({"target": run.id, "text": text, "mode": "follow_up"});
         match Box::pin(crate::agents::api(server, &ctx, "agent.prompt", &p)).await {
@@ -1120,18 +1205,44 @@ async fn deliver_inner(server: &Arc<Server>, id: &str) -> Outcome {
         return outcome_of(server, id);
     }
     let conv = run.harness_session_id.clone().unwrap_or_default();
+    let typing = server.browser.annotate.typing_lock(&pane);
+    if typing.try_lock().is_err() {
+        set_detail(
+            server,
+            id,
+            "waiting: another delivery to that agent is in progress".into(),
+        );
+        return queued(agent);
+    }
     if let Err(why) = crate::tracking::prompt_input_safety(server, &run.id, &conv) {
         set_detail(server, id, format!("waiting: {why}"));
         return queued(agent);
     }
     // `sending` before the paste: no retry or `browser.feedback` takes it meanwhile, and a
     // restart before the outcome is known leaves it `unconfirmed` (`recover`), never typed twice.
-    if !transition(server, id, &["queued"], "sending", Some("typed"), None) {
+    // The reserved draft cannot be edited any more: the text is built from it.
+    let Some(d) = reserve(server, &d, "sending", "typed") else {
         return outcome_of(server, id);
-    }
+    };
+    let text = crate::sandbox::paste_text(server, &pane, prompt(&d));
     let (server2, id2, run_id) = (server.clone(), id.to_string(), run.id.clone());
     tokio::spawn(async move {
         use crate::tracking::MessageState;
+        // One typed delivery per agent pane, held through the confirmation, and the input is
+        // checked again under it (another draft may have just been typed into it).
+        let _typing = typing.lock().await;
+        if let Err(why) = crate::tracking::prompt_input_safety(&server2, &run_id, &conv) {
+            transition(
+                &server2,
+                &id2,
+                &["sending"],
+                "queued",
+                None,
+                Some(format!("waiting: {why}")),
+            );
+            ensure_retry(&server2);
+            return;
+        }
         let (state, detail) = crate::tracking::deliver_text(&server2, &run_id, &conv, &text).await;
         match state {
             MessageState::Delivered => {
@@ -1217,6 +1328,13 @@ async fn send(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         return Err(invalid("nothing to send: the draft has no notes"));
     }
     check_sendable(&d)?;
+    let mut d = d;
+    // A draft made before its target had a known home (a phone's preview session) gets one now.
+    let ws = d
+        .workspace
+        .clone()
+        .or_else(|| target_workspace(server, &d.target));
+    d.workspace = ws.clone();
     let agent = match s(p, "agent") {
         Some(a) => Some(resolve_pane(server, ctx, Some(a))?.id),
         None => d.agent_pane.clone().or_else(|| default_agent(server, &d)),
@@ -1225,7 +1343,11 @@ async fn send(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         let _w = server.browser.annotate.write.lock().unwrap();
         let mut d = get(server, id).ok_or_else(|| not_found("annotation draft", id))?;
         check_sendable(&d)?;
+        if d.workspace.is_none() {
+            d.workspace = ws;
+        }
         d.agent_pane = agent;
+        d.rev += 1;
         d.state = "queued".into();
         d.via = None;
         d.detail = None;
@@ -1323,9 +1445,9 @@ fn claim(server: &Server, ctx: &Ctx, caller: Option<&str>) -> Option<Draft> {
         })
         .collect();
     v.sort_by_key(|d| d.updated_at_ms);
+    // Reserved only as read: a draft readdressed or edited meanwhile is left for the next try.
     v.into_iter()
-        .find(|d| mark_delivered(server, &d.id, "feedback"))
-        .and_then(|d| get(server, &d.id))
+        .find_map(|d| reserve(server, &d, "delivered", "feedback"))
 }
 
 /// `browser.feedback {pane?, wait_ms?}`: the agent side. Returns the oldest queued draft for the

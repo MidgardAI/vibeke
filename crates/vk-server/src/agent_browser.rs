@@ -2922,6 +2922,8 @@ pub struct WatchInfo {
     pub handle: String,
     pub id: String,
     pub owner_pane: Option<String>,
+    /// The preview (handle) the session was opened on, if any.
+    pub preview: Option<String>,
     pub url: String,
     pub viewport: (u32, u32),
     /// Who holds human control (`None` = the agent drives).
@@ -2939,6 +2941,7 @@ impl AgentBrowsers {
             handle: sess.handle.clone(),
             id: sess.id.clone(),
             owner_pane: sess.owner_pane.clone(),
+            preview: sess.preview.clone(),
             url: sess.url.lock().unwrap().clone(),
             viewport: sess.viewport(),
             human: sess.human_control(),

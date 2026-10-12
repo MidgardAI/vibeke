@@ -236,6 +236,7 @@ fn prompt_lists_notes_with_screenshots_and_quotes_page_text() {
         via: None,
         detail: None,
         next_n: 4,
+        rev: 0,
         created_at_ms: 0,
         updated_at_ms: 0,
         delivered_at_ms: None,
@@ -271,6 +272,7 @@ fn bare_draft(id: &str, target: AnnotationTarget, notes: Vec<Note>) -> Draft {
         via: None,
         detail: None,
         next_n: 1,
+        rev: 0,
         created_at_ms: 0,
         updated_at_ms: 0,
         delivered_at_ms: None,
@@ -829,4 +831,79 @@ async fn feedback_names_screenshots_by_the_path_a_container_pane_sees() {
     let text = fb["text"].as_str().unwrap();
     assert!(!text.contains(&host), "{text}");
     assert!(text.contains("Screenshot: /vibeke/inbox/"), "{text}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reservation_refuses_a_draft_edited_or_readdressed_since_it_was_read() {
+    let e = Env::new();
+    browser_pane(&e, "BP1");
+    let mut d1 = bare_draft("d1", AnnotationTarget::Pane("BP1".into()), page_note("a"));
+    d1.agent_pane = Some("pane-a".into());
+    put(&e.server, &d1, None).unwrap();
+    let seen = get(&e.server, "d1").unwrap();
+    // Edited after the delivery read it: the stale read reserves nothing.
+    update(&e.server, &json!({"draft": "d1", "page_note": "b"})).unwrap();
+    assert!(reserve(&e.server, &seen, "sending", "typed").is_none());
+    assert_eq!(get(&e.server, "d1").unwrap().state, "queued");
+    // Readdressed (same revision, another recipient): refused too.
+    let mut other = get(&e.server, "d1").unwrap();
+    other.agent_pane = Some("pane-b".into());
+    assert!(reserve(&e.server, &other, "sending", "typed").is_none());
+    // A fresh read reserves it and returns the content it reserved.
+    let fresh = get(&e.server, "d1").unwrap();
+    let got = reserve(&e.server, &fresh, "sending", "typed").expect("reserved");
+    assert_eq!(got.state, "sending");
+    assert_eq!(got.page_note.as_deref(), Some("b"));
+    // A reserved draft cannot be edited any more.
+    assert!(update(&e.server, &json!({"draft": "d1", "page_note": "c"})).is_err());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_phone_preview_session_belongs_to_the_previews_pane_and_workspace() {
+    use vk_proto::model::{Preview, PreviewSource, PreviewStatus};
+    let e = Env::new();
+    e.put_pane("pane-a", "ws-a", None);
+    e.server.with_core(|c| {
+        c.model.previews.push(Preview {
+            id: "pv-1".into(),
+            handle: "v1".into(),
+            machine: "devbox".into(),
+            pane: Some("pane-a".into()),
+            task: None,
+            port: 5173,
+            path: "/".into(),
+            label: None,
+            url: "http://localhost:5173/".into(),
+            scheme: "http".into(),
+            status: PreviewStatus::Up,
+            source: PreviewSource::Declared,
+            pid: None,
+            first_seen_ms: 0,
+            last_seen_ms: 0,
+        })
+    });
+    // `browser.preview_open` from a phone: no owner pane, only the preview handle.
+    let info = crate::agent_browser::WatchInfo {
+        handle: "b1".into(),
+        id: "sess-1".into(),
+        owner_pane: None,
+        preview: Some("v1".into()),
+        url: "http://localhost:5173/".into(),
+        viewport: (390, 844),
+        human: None,
+    };
+    assert_eq!(
+        session_home(&e.server, &info),
+        (Some("pane-a".into()), Some("ws-a".into()))
+    );
+    // An owner pane still wins.
+    e.put_pane("pane-o", "ws-o", None);
+    let owned = crate::agent_browser::WatchInfo {
+        owner_pane: Some("pane-o".into()),
+        ..info
+    };
+    assert_eq!(
+        session_home(&e.server, &owned),
+        (Some("pane-o".into()), Some("ws-o".into()))
+    );
 }
