@@ -1,15 +1,13 @@
 import { createFileRoute, Link } from '@tanstack/react-router'
 import { ArrowRight } from 'lucide-react'
 import { useState } from 'react'
+import { pageHead } from '../lib/seo'
 import { ComparisonTable } from '../components/comparison-table'
 import { Eyebrow } from '../components/ui'
 import { comparisonCount, comparisonDate, comparisonGroups, comparisonSections, products } from '../lib/comparisons'
 
 export const Route = createFileRoute('/compare')({
-  head: () => ({ meta: [
-    { title: 'Compare Vibeke and other agent tools' },
-    { name: 'description', content: 'Compare agent control, file transfers, browser tools, task review, and process recovery across ten products.' },
-  ] }),
+  head: () => pageHead({ path: '/compare', title: 'Compare Vibeke and other agent tools', description: 'Compare agent control, file transfers, browser tools, task review, and process recovery across ten products.' }),
   component: Compare,
 })
 

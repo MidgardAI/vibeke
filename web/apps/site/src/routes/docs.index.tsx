@@ -1,11 +1,12 @@
 import { createFileRoute, Link } from '@tanstack/react-router'
 import { ArrowRight, ArrowUpRight, BookOpen, Code2, GitBranch, LifeBuoy, Terminal } from 'lucide-react'
 import { docs } from 'virtual:vibeke-docs'
+import { pageHead } from '../lib/seo'
 import { DocsLayout } from '../components/docs'
 import { CodeBlock, Eyebrow } from '../components/ui'
 
 export const Route = createFileRoute('/docs/')({
-  head: () => ({ meta: [{ title: 'Documentation — Vibeke' }, { name: 'description', content: 'Install Vibeke. Configure agents, tasks, and remote previews. Read the CLI and API references.' }] }),
+  head: () => pageHead({ path: '/docs', title: 'Documentation — Vibeke', description: 'Install Vibeke. Configure agents, tasks, and remote previews. Read the CLI and API references.' }),
   component: DocsIndex,
 })
 

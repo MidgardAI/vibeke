@@ -6,8 +6,12 @@ import { ClientShowcase } from '../components/client-showcase'
 import { ProductTour } from '../components/product-tour'
 import { comparisonCount } from '../lib/comparisons'
 import { latestRelease } from '../lib/release'
+import { pageHead, siteTitle, siteDescription } from '../lib/seo'
 
-export const Route = createFileRoute('/')({ component: Home })
+export const Route = createFileRoute('/')({
+  head: () => pageHead({ path: '/', title: siteTitle, description: siteDescription }),
+  component: Home,
+})
 
 const capabilities = [
   { icon: Radio, number: '01', title: 'Answer agent requests.', body: 'Read permission requests and questions in the inbox. Send your answer through the agent integration.', link: 'How interactions work', slug: 'agents', tag: 'Claude hooks · Codex RPC · pi extension' },

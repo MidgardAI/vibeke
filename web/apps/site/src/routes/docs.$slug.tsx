@@ -1,5 +1,6 @@
 import { createFileRoute, notFound } from '@tanstack/react-router'
 import { docs } from 'virtual:vibeke-docs'
+import { notFoundHead, pageHead } from '../lib/seo'
 import { DocArticle } from '../components/docs'
 
 export const Route = createFileRoute('/docs/$slug')({
@@ -8,6 +9,8 @@ export const Route = createFileRoute('/docs/$slug')({
     if (!doc) throw notFound()
     return doc
   },
-  head: ({ loaderData }) => ({ meta: [{ title: loaderData ? `${loaderData.title} — Vibeke Docs` : 'Page not found — Vibeke' }, { name: 'description', content: loaderData?.description ?? 'This documentation page could not be found.' }] }),
+  head: ({ loaderData }) => loaderData
+    ? pageHead({ path: `/docs/${loaderData.slug}`, title: `${loaderData.title} — Vibeke Docs`, description: loaderData.description, doc: true })
+    : notFoundHead(),
   component: () => <DocArticle doc={Route.useLoaderData()} />,
 })

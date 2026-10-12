@@ -3,6 +3,7 @@ import posthog from 'posthog-js'
 import { useEffect } from 'react'
 import { Footer, Header, NotFound } from '../components/shell'
 import stylesheet from '../styles.css?url'
+import { notFoundHead, socialImage } from '../lib/seo'
 
 // Google Ads tag for conversion tracking.
 const googleAdsId = 'AW-18508808683'
@@ -15,17 +16,19 @@ export const Route = createRootRoute({
     meta: [
       { charSet: 'utf-8' },
       { name: 'viewport', content: 'width=device-width, initial-scale=1' },
-      { title: 'Vibeke — Terminal workspaces for coding agents' },
-      { name: 'description', content: 'Run coding agents in a terminal workspace. Answer requests from the inbox. Use separate worktrees and remote hosts.' },
+      // Known pages override these defaults through pageHead; unmatched routes stay noindex.
+      ...notFoundHead().meta,
       { name: 'theme-color', content: '#111311' },
       { property: 'og:type', content: 'website' },
       { property: 'og:site_name', content: 'Vibeke' },
-      { property: 'og:image', content: 'https://vibeke.dev/brand/social.png' },
+      { property: 'og:locale', content: 'en_US' },
+      { property: 'og:image', content: socialImage },
+      { property: 'og:image:type', content: 'image/png' },
       { property: 'og:image:width', content: '1200' },
       { property: 'og:image:height', content: '630' },
       { property: 'og:image:alt', content: 'Vibeke. Run your agents. Keep control. A Muscovy duck in a terminal window.' },
       { name: 'twitter:card', content: 'summary_large_image' },
-      { name: 'twitter:image', content: 'https://vibeke.dev/brand/social.png' },
+      { name: 'twitter:image', content: socialImage },
       { name: 'twitter:image:alt', content: 'Vibeke. Run your agents. Keep control. A Muscovy duck in a terminal window.' },
     ],
     links: [

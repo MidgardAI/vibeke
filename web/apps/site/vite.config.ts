@@ -5,6 +5,7 @@ import { nitro } from 'nitro/vite'
 import react from '@vitejs/plugin-react'
 import { docsPlugin } from './content/docs-plugin.ts'
 import { docManifest } from './content/manifest.ts'
+import { seoPlugin } from './content/seo-plugin.ts'
 
 // The crawler treats `/docs/cli#vibeke-task`, `/docs/cli` and `/docs` vs `/docs/` as separate
 // pages, but they all write the same output file. Prerendered concurrently, one task can fetch
@@ -21,6 +22,7 @@ function firstForOutputPath(path: string) {
 export default defineConfig({
   plugins: [
     docsPlugin(),
+    seoPlugin(),
     tailwindcss(),
     tanstackStart({
       // Docs images are emitted as build assets. The crawler would rewrite them as text, which breaks raster files.
