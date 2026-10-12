@@ -3014,6 +3014,12 @@ async fn prompt(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
                 opened = Some(id);
                 break;
             }
+            // Spec 19 §4.3: the hook sent a prompt that starts with `@name` as a message
+            // and blocked it locally. That is a successful send, not a stall.
+            if let Some(id) = server.mentions.consumed_since(&run.pane, t0) {
+                let r = server.with_core(|c| c.run(&run.id).map(|r| run_json(c, r)));
+                return Ok(json!({"run": r, "turn_started": false, "mention_sent": id}));
+            }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
         if !started && !slash && opened.is_none() && run.integration == "hooks" {
@@ -3694,9 +3700,13 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
                     nested::record(server, &pane, h, pid, &event);
                     return Some(Ok(json!({"hook_output": out})));
                 }
-                route::signal(server, &pane, h, &event, &payload);
+                // A typed envelope is observed (items, turns, events) without its nonce and
+                // preview; only the mention handler sees the line as typed.
+                let observed = crate::mentions::hooks::sanitize_payload(&event, &payload);
+                let observed = observed.as_ref().unwrap_or(&payload);
+                route::signal(server, &pane, h, &event, observed);
                 nested::record(server, &pane, h, pid, &event);
-                let reply = crate::collision::signal_reply(server, &pane, h, &event, &payload);
+                let reply = crate::collision::signal_reply(server, &pane, h, &event, observed);
                 Ok(crate::mentions::hooks::merge_reply(
                     reply,
                     crate::mentions::hooks::after_signal(server, &pane, h, &event, &payload),

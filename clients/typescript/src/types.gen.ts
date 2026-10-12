@@ -1244,6 +1244,7 @@ export type AgentPromptResult = {
   turn?: unknown;
   turn_started?: boolean;
   interaction?: string;
+  mention_sent?: string;
   cursor?: Cursor;
 };
 
@@ -6514,6 +6515,7 @@ export type SessionSnapshotResult = {
   interactions?: Interaction[];
   tasks?: Task[];
   previews?: Preview[];
+  mentions?: MentionName[];
   layouts?: unknown[];
   focused?: { [key: string]: {
     workspace: string | null;

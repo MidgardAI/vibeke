@@ -1309,6 +1309,7 @@ AgentPromptResult = TypedDict("AgentPromptResult", {
     "turn": NotRequired[Any],
     "turn_started": NotRequired[bool],
     "interaction": NotRequired[str],
+    "mention_sent": NotRequired[str],
     "cursor": NotRequired["Cursor"],
 })
 
@@ -7023,6 +7024,7 @@ SessionSnapshotResult = TypedDict("SessionSnapshotResult", {
     "interactions": NotRequired[List["Interaction"]],
     "tasks": NotRequired[List["Task"]],
     "previews": NotRequired[List["Preview"]],
+    "mentions": NotRequired[List["MentionName"]],
     "layouts": NotRequired[List[Any]],
     "focused": NotRequired[Dict[str, "SessionSnapshotResultFocusedValue"]],
 })

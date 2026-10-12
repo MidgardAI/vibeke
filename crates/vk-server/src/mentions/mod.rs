@@ -65,6 +65,9 @@ pub struct State {
     typing: Mutex<std::collections::HashSet<String>>,
     /// Whether the store may hold open deliveries: the engine skips its pass otherwise.
     open: AtomicBool,
+    /// Per pane: the last prompt a leading mention took over (time, message id), so
+    /// `agent.prompt` reports it as sent instead of as a stall (§4.3).
+    consumed: Mutex<HashMap<String, (i64, String)>>,
     /// Wakes the delivery engine (a new delivery, a name change, a retry).
     pub wake: Notify,
 }
@@ -73,6 +76,24 @@ impl State {
     pub(crate) fn poke(&self) {
         self.open.store(true, Ordering::Relaxed);
         self.wake.notify_one();
+    }
+
+    /// The prompt submitted in `pane` was sent as message `message` (a leading mention).
+    pub(crate) fn mark_consumed(&self, pane: &str, message: &str) {
+        self.consumed
+            .lock()
+            .unwrap()
+            .insert(pane.to_string(), (now(), message.to_string()));
+    }
+
+    /// The message a leading mention in `pane` sent at or after `since_ms`, if any.
+    pub fn consumed_since(&self, pane: &str, since_ms: i64) -> Option<String> {
+        self.consumed
+            .lock()
+            .unwrap()
+            .get(pane)
+            .filter(|(at, _)| *at >= since_ms)
+            .map(|(_, id)| id.clone())
     }
 }
 
@@ -107,6 +128,18 @@ pub(crate) fn author_pane(a: &Author) -> Option<&str> {
     }
 }
 
+/// Messages stay inside one workspace (§4.6): whether the recipient pane of `rec` or the
+/// sender's pane has moved to another workspace since `m` was sent. Panes that are gone do not
+/// count here (the engine handles a closed recipient).
+pub(crate) fn moved_workspace(c: &Core, rec: &DeliveryRec, m: &Message) -> bool {
+    let elsewhere = |pane: &str| c.pane(pane).is_some_and(|p| p.workspace != m.workspace);
+    rec.workspace != m.workspace
+        || elsewhere(&rec.delivery.pane)
+        || author_pane(&m.from).is_some_and(elsewhere)
+}
+
+pub(crate) const MOVED: &str = "moved_workspace";
+
 fn now() -> i64 {
     now_ms()
 }
@@ -116,7 +149,7 @@ fn new_id(prefix: &str) -> String {
 }
 
 /// 12 random base32 characters (§4.1).
-fn new_nonce() -> String {
+pub(crate) fn new_nonce() -> String {
     const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
     (0..12)
         .map(|_| ALPHABET[(rand::random::<u8>() & 31) as usize] as char)
@@ -538,6 +571,18 @@ fn reply(server: &Server, ctx: &Ctx, p: &Value) -> R {
     let pane = caller_pane(server, ctx, p, "message.reply")?;
     let mut c = server.core.lock().unwrap();
     let orig = load_message(&c, mid).ok_or_else(|| not_found("message", mid))?;
+    // Messages stay inside one workspace (§4.6): neither side may have moved since.
+    let moved = |pane: &str| c.pane(pane).is_some_and(|p| p.workspace != orig.workspace);
+    if moved(&pane.id) || author_pane(&orig.from).is_some_and(moved) {
+        return Err(err(
+            ErrorKind::PermissionDenied,
+            format!(
+                "message.reply: a pane of {} moved to another workspace; messages stay inside one workspace",
+                orig.id
+            ),
+        )
+        .details(json!({"reason": MOVED})));
+    }
     let Some(mut answered) = deliveries_of(&c, &orig.id)
         .into_iter()
         .find(|r| r.delivery.pane == pane.id)
@@ -778,29 +823,50 @@ fn cancel(server: &Server, ctx: &Ctx, p: &Value) -> R {
 
 fn retry(server: &Server, _ctx: &Ctx, p: &Value) -> R {
     let id = req(p, "delivery")?;
-    let rec: DeliveryRec = server
-        .with_core(|c| c.store.get(K_DELIVERY, id).ok().flatten())
-        .ok_or_else(|| not_found("delivery", id))?;
-    if !matches!(
-        rec.delivery.state,
-        DeliveryState::Held | DeliveryState::Failed | DeliveryState::Queued
-    ) {
-        return Err(conflict(
-            "not_held",
-            "only a held, failed or queued delivery can be retried",
-        ));
+    // The check and the reset happen under one lock, in one commit.
+    {
+        let mut c = server.core.lock().unwrap();
+        let mut rec: DeliveryRec = c
+            .store
+            .get(K_DELIVERY, id)
+            .ok()
+            .flatten()
+            .ok_or_else(|| not_found("delivery", id))?;
+        if !retryable(rec.delivery.state) {
+            return Err(conflict(
+                "not_held",
+                "only a held, failed or queued delivery can be retried",
+            ));
+        }
+        reset_for_retry(&mut rec, now());
+        let mut tx = Tx::new();
+        put_delivery(&mut tx, &rec);
+        delivery_event(&mut tx, &rec);
+        server.commit(&mut c, tx).map_err(internal)?;
     }
-    update(server, id, |r| {
-        r.delivery.state = DeliveryState::Queued;
-        r.delivery.reason = None;
-        r.queued_at_ms = now();
-        r.submitted_at_ms = None;
-        r.refusals = 0;
-        r.fallback = false;
-        true
-    });
     server.mentions.poke();
     Ok(json!({}))
+}
+
+pub(crate) fn retryable(state: DeliveryState) -> bool {
+    matches!(
+        state,
+        DeliveryState::Held | DeliveryState::Failed | DeliveryState::Queued
+    )
+}
+
+/// A retried delivery goes back to the queue with a new nonce: an envelope typed earlier (and
+/// perhaps still on the screen or in a transcript) is no longer authentic.
+pub(crate) fn reset_for_retry(r: &mut DeliveryRec, now: i64) {
+    r.delivery.state = DeliveryState::Queued;
+    r.delivery.reason = None;
+    r.delivery.updated_at_ms = now;
+    r.queued_at_ms = now;
+    r.submitted_at_ms = None;
+    r.refusals = 0;
+    r.fallback = false;
+    r.nonce = new_nonce();
+    r.delivery.nonce = r.nonce.clone();
 }
 
 /// Shapes for the API schema registry (`api_schema`).

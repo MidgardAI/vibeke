@@ -5735,6 +5735,9 @@
           "interaction": {
             "type": "string"
           },
+          "mention_sent": {
+            "type": "string"
+          },
           "cursor": {
             "$ref": "#/$defs/Cursor"
           }
@@ -26490,6 +26493,12 @@
             "type": "array",
             "items": {
               "$ref": "#/$defs/Preview"
+            }
+          },
+          "mentions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/MentionName"
             }
           },
           "layouts": {

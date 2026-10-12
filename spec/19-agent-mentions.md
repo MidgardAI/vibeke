@@ -99,19 +99,27 @@ one line with `agent.prompt` semantics (dialog guard, stall detection):
 ```
 
 The nonce is 12 random base32 characters, stored on the delivery and never returned by the API.
-The delivery becomes `submitted`.
+The delivery becomes `submitted`. The nonce works once: the hook that expands it moves the
+delivery to `delivered` in the same step, and `message.retry` gives the delivery a new nonce.
+Everything except the mention handler observes the typed line without its nonce and preview
+(`↪ vibeke message <id> from @coder · … […]`), so items, turns and events never carry them.
 
 ### 4.2 When to deliver
 
 A delivery is ready when all of these hold:
 - The recipient pane has an agent run in `idle` with no open interaction.
+- The agent's input box is provably empty, so no draft of the person's is sent along. For
+  harnesses other than Claude and Codex, an input box Vibeke cannot read counts as empty.
+- When a TUI client focuses the pane, no input reached the pane in the last 5 s.
 - No other delivery to that pane is `submitted`.
 - The name has `delivery: true`.
 
-Otherwise it stays `queued`. The engine re-checks when run state, interactions or names change,
+Otherwise it stays `queued`. The input check runs again right before typing. The engine re-checks when run state, interactions or names change,
 and once per second while anything is queued.
 
 A delivery is `held` with a reason in these cases:
+- The sender or the recipient moved to another workspace (`moved_workspace`). This is also
+  checked when the hook expands an envelope, and `message.reply` refuses it.
 - The pane has no agent.
 - The agent exited.
 - The prompt was refused twice.
@@ -138,6 +146,8 @@ compares the nonce.
 - When every leading name is known in the workspace and deliverable, the server sends the rest of
   the prompt as a `Human` message from this pane, with `expects_reply: true`. The hook blocks the
   local prompt with the reason `Sent to @reviewer (m_…). The reply will show up here.`
+  When the prompt came through `agent.prompt` (the web composer, a TUI reply), that call returns
+  `mention_sent: <message id>` instead of failing with `agent_prompt_stalled`.
 - When any leading name is unknown, nothing is sent. The prompt goes through with a short note
   that lists the known names.
 
@@ -151,6 +161,9 @@ when it has one.
 - The first time, the hook blocks the stop with one reminder to reply or complete
   (`{"decision": "block", "reason": …}`).
 - The second time, the delivery becomes `completed` without a reply.
+
+**Headless runs** have no hooks. They get the framed full body as their prompt right away, and
+the delivery becomes `delivered`.
 
 **No hook.** A `submitted` delivery that no hook took within 30 s:
 - For harnesses without mention hooks, the engine falls back once to typing the framed full

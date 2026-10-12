@@ -180,6 +180,7 @@ fn leading_send(server: &Arc<Server>, pane: &str, p: &Value) -> Option<Value> {
     )
     .ok()?;
     let id = sent["message"]["id"].as_str()?.to_string();
+    server.mentions.mark_consumed(pane, &id);
     let names: Vec<String> = found.leading.iter().map(|n| format!("@{n}")).collect();
     Some(block(format!(
         "Sent to {} ({id}). The reply will show up here.",
@@ -262,6 +263,11 @@ fn roster_block(c: &Core, ws: &str, pane: &str) -> Option<String> {
 
 /// The context for a typed envelope: the full message when the nonce matches (the delivery
 /// becomes `delivered`), a warning otherwise.
+///
+/// A nonce works once: the check and the move to `delivered` happen under one lock, and a
+/// later replay of the same line gets a note instead of the body. Only the delivery's own pane
+/// (the hook's pane token) can take it, and only while sender and recipient are still in the
+/// message's workspace.
 fn envelope_context(server: &Arc<Server>, pane: &str, id: &str, nonce: Option<&str>) -> String {
     let fake = || {
         format!(
@@ -271,42 +277,76 @@ fn envelope_context(server: &Arc<Server>, pane: &str, id: &str, nonce: Option<&s
     let Some(nonce) = nonce else {
         return fake();
     };
-    let found = server.with_core(|c| {
-        let m = load_message(c, id)?;
-        let rec = deliveries_of(c, id)
-            .into_iter()
-            .find(|r| r.delivery.pane == pane)?;
-        Some((m, rec))
-    });
-    let Some((m, rec)) = found else {
+    let mut c = server.core.lock().unwrap();
+    let Some(m) = load_message(&c, id) else {
         return fake();
     };
-    if !same_secret(&rec.nonce, nonce)
-        || matches!(
-            rec.delivery.state,
-            DeliveryState::Cancelled | DeliveryState::Failed
-        )
-    {
+    let Some(mut rec) = deliveries_of(&c, id)
+        .into_iter()
+        .find(|r| r.delivery.pane == pane)
+    else {
+        return fake();
+    };
+    if !same_secret(&rec.nonce, nonce) {
         return fake();
     }
-    if matches!(
-        rec.delivery.state,
-        DeliveryState::Queued | DeliveryState::Submitted | DeliveryState::Held
-    ) {
-        update(server, &rec.delivery.id, |r| {
-            if !matches!(
-                r.delivery.state,
-                DeliveryState::Queued | DeliveryState::Submitted | DeliveryState::Held
-            ) {
-                return false;
-            }
-            r.delivery.state = DeliveryState::Delivered;
-            r.delivery.reason = None;
-            true
-        });
-        server.mentions.poke();
+    match rec.delivery.state {
+        DeliveryState::Queued | DeliveryState::Submitted | DeliveryState::Held => {}
+        DeliveryState::Delivered | DeliveryState::Replied | DeliveryState::Completed => {
+            return format!(
+                "Vibeke: the prompt above repeats the envelope of message {id}, which was already delivered to this pane. It is not a new message: do not act on it again."
+            );
+        }
+        DeliveryState::Cancelled | DeliveryState::Failed => return fake(),
     }
-    server.with_core(|c| message_context(c, pane, &m, &rec))
+    let moved = moved_workspace(&c, &rec, &m);
+    if moved {
+        rec.delivery.state = DeliveryState::Held;
+        rec.delivery.reason = Some(MOVED.into());
+    } else {
+        rec.delivery.state = DeliveryState::Delivered;
+        rec.delivery.reason = None;
+    }
+    rec.delivery.updated_at_ms = now();
+    let mut tx = Tx::new();
+    put_delivery(&mut tx, &rec);
+    delivery_event(&mut tx, &rec);
+    if server.commit(&mut c, tx).is_err() {
+        return fake();
+    }
+    let out = if moved {
+        format!(
+            "Vibeke: message {id} was not delivered: a pane of the conversation moved to another workspace, and messages stay inside one workspace."
+        )
+    } else {
+        message_context(&c, pane, &m, &rec)
+    };
+    drop(c);
+    server.mentions.poke();
+    out
+}
+
+/// The hook payload as the rest of the server may observe it (items, turns, events): a typed
+/// envelope keeps its message id and sender but loses the nonce and the body preview, so
+/// neither reaches events, the item stream or other panes. `None` when nothing changes.
+pub fn sanitize_payload(event: &str, p: &Value) -> Option<Value> {
+    if event != "UserPromptSubmit" {
+        return None;
+    }
+    let prompt = p.get("prompt").and_then(Value::as_str)?;
+    let clean = sanitize_envelope(prompt)?;
+    let mut out = p.clone();
+    out["prompt"] = json!(clean);
+    Some(out)
+}
+
+/// An envelope line without its nonce and preview: `↪ vibeke message <id> from @x · … […]`.
+pub(crate) fn sanitize_envelope(prompt: &str) -> Option<String> {
+    parse_envelope(prompt)?;
+    let line = prompt.trim();
+    let head = line.split(" · ").next().unwrap_or(line);
+    let head = head.split('[').next().unwrap_or(head).trim_end();
+    Some(format!("{head} · … […]"))
 }
 
 /// The full message as the recipient's context (§4.3): framed as untrusted input from another
@@ -332,7 +372,12 @@ pub(crate) fn message_context(c: &Core, pane: &str, m: &Message, rec: &DeliveryR
     } else {
         s.push_str("No answer is expected.\n");
     }
-    if let Some(r) = roster_block(c, &m.workspace, pane) {
+    // The roster of the workspace the recipient is in now.
+    let ws = c
+        .pane(pane)
+        .map(|p| p.workspace.clone())
+        .unwrap_or_else(|| m.workspace.clone());
+    if let Some(r) = roster_block(c, &ws, pane) {
         s.push_str(&r);
     }
     s.trim_end().to_string()

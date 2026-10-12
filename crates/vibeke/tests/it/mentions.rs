@@ -1,5 +1,6 @@
 //! Mentions (spec 19) end to end through the real server, panes and `vibeke hook` shim. The
-//! agents are fake: each pane runs `cat`, so a typed envelope shows on its screen, and the test
+//! agents are fake: each pane runs a shell loop that shows a `> ` input line and reads lines,
+//! so a typed envelope shows on its screen and an empty input box looks like Claude's. The test
 //! reports Claude hooks for the pane with the pane's own token. Every successful call and every
 //! event is checked against the API schema registry.
 
@@ -95,7 +96,7 @@ fn kind(e: &Value) -> (String, String) {
     )
 }
 
-/// A pane running `cat` with its token, as a fake agent pane.
+/// A pane with a `> ` input line and its token, as a fake agent pane.
 struct Agent {
     pane: String,
     token: String,
@@ -104,7 +105,7 @@ struct Agent {
 fn agent_pane(s: &Session, tag: &str, split_of: Option<&str>) -> Agent {
     let tok = s.dir.path().join(format!("{tag}.tok"));
     let cmd = format!(
-        "printf %s \"$VIBEKE_PANE_TOKEN\" > {}; exec cat",
+        "printf %s \"$VIBEKE_PANE_TOKEN\" > {}; printf '> '; while IFS= read -r l; do printf '> '; done",
         tok.display()
     );
     let pane = match split_of {
@@ -491,5 +492,57 @@ fn stop_reminds_once_then_completes() {
     let mut pb = Api::pane(&s, &b.token);
     pb.ok("message.complete", json!({"message": mid2}));
     assert_eq!(user.delivery_state(&mid2), "completed");
+    user.check_events();
+}
+
+fn screen(user: &mut Api, a: &Agent) -> String {
+    user.ok("pane.read", json!({"pane": a.pane, "lines": 200}))["text"]
+        .as_str()
+        .unwrap_or("")
+        .to_string()
+}
+
+#[test]
+fn delivery_waits_for_an_empty_input_box_and_envelopes_work_once() {
+    let (s, mut user, a, b) = pair();
+    let mut pa = Api::pane(&s, &a.token);
+    // The person has a draft in the reviewer's input box.
+    let draft = "half a thought";
+    user.ok(
+        "pane.send_text",
+        json!({"pane": b.pane, "text": draft, "paste": "raw"}),
+    );
+    until("the draft on the screen", 10, || {
+        screen(&mut user, &b)
+            .contains(&format!("> {draft}"))
+            .then_some(())
+    });
+    let sent = pa.ok(
+        "message.send",
+        json!({"to": ["reviewer"], "body": "Please look at the cache keys."}),
+    );
+    let mid = sent["message"]["id"].as_str().unwrap().to_string();
+    std::thread::sleep(Duration::from_millis(2500));
+    assert_eq!(user.delivery_state(&mid), "queued");
+    let text = screen(&mut user, &b);
+    assert!(!text.contains(&mid), "{text}");
+    // The draft is deleted: the envelope goes in on its own.
+    user.ok(
+        "pane.send_text",
+        json!({"pane": b.pane, "text": "\u{7f}".repeat(draft.len()), "paste": "raw"}),
+    );
+    let nonce = envelope_nonce(&mut user, &b, &mid);
+    let line = format!("↪ vibeke message {mid} from @coder · x [{nonce}]");
+    let out = prompt(&s, &b, &line);
+    assert!(context(&out).contains("cache keys"), "{out}");
+    assert_eq!(user.delivery_state(&mid), "delivered");
+    // The same line again (a replay from the screen or a transcript) carries no body.
+    let out = prompt(&s, &b, &line);
+    let ctx = context(&out);
+    assert!(ctx.contains("already delivered"), "{out}");
+    assert!(!ctx.contains("cache keys"), "{out}");
+    // Events and the item stream never carry the nonce.
+    let evs = user.ok("events.read", json!({"after": 0, "limit": 500}));
+    assert!(!evs.to_string().contains(&nonce), "the nonce leaked into events");
     user.check_events();
 }

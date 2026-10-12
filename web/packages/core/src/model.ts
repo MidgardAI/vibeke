@@ -1048,7 +1048,7 @@ export interface AppApi {
   'pane.close': { params: { pane: string }; result: unknown };
   'pane.focus': { params: { pane: string }; result: unknown };
   /** `turn_started` is false for slash commands that open a picker or act locally; `interaction` is the picker they opened. */
-  'agent.prompt': { params: { target: string; text: string }; result: { turn_started?: boolean; interaction?: string } };
+  'agent.prompt': { params: { target: string; text: string }; result: { turn_started?: boolean; interaction?: string; /** A prompt starting with `@name` was sent as this message (spec 19). */ mention_sent?: string } };
   'mention.list': { params: { workspace?: string }; result: { mentions: MentionEntry[] } };
   'mention.suggest': { params: { pane: string }; result: { name: string } };
   'mention.set': { params: { pane: string; name?: string; kind?: 'agent' | 'terminal'; delivery?: boolean }; result: MentionName };

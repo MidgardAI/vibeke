@@ -4,9 +4,15 @@
 //! ([`super::hooks`]).
 //!
 //! A queued delivery is ready when the recipient pane has an agent run in `idle` with no open
-//! interaction, no other delivery to that pane is `submitted`, and its name has
-//! `delivery: true`. The engine re-checks on every committed state change (the model revision)
-//! and once a second while anything is open.
+//! interaction, its input box is provably empty (no draft of the user's would be sent along),
+//! no other delivery to that pane is `submitted`, and its name has `delivery: true`. While a
+//! TUI client focuses the pane, the last keystroke must also be [`QUIET_INPUT`] old. The input
+//! check runs again right before typing. Sender and recipient must still be in the message's
+//! workspace. The engine re-checks on every committed state change (the model revision) and
+//! once a second while anything is open.
+//!
+//! A headless run (no hooks, `VIBEKE_HEADLESS_OWNER`) gets the framed full message as its
+//! prompt, like a harness without mention hooks.
 
 use super::*;
 use crate::agents::harness::{Family, Harness};
@@ -19,6 +25,41 @@ pub const HOOK_ACK_MS: i64 = 30_000;
 pub const QUEUED_MAX_MS: i64 = 24 * 3600 * 1000;
 /// Refused prompts before a delivery is held (§4.2).
 const MAX_REFUSALS: u32 = 2;
+/// While a TUI client focuses the recipient pane, no keystroke may have reached the pane for
+/// this long before an envelope is typed: the user may be about to type.
+pub const QUIET_INPUT: Duration = Duration::from_secs(5);
+
+/// Why typing into `pane` now could mix with the user's input, if it could: the input box is
+/// not provably empty, or a TUI client focuses the pane and input reached it recently.
+/// `strict`: an unreadable input box counts as unsafe (Claude and Codex, whose box Vibeke
+/// knows); other harnesses only refuse a box that visibly holds text.
+pub(crate) fn input_unsafe(server: &Server, pane: &str, strict: bool) -> Option<&'static str> {
+    let Some(rt) = server.pane_rt(pane) else {
+        return Some("pane_gone");
+    };
+    let focused = server
+        .clients
+        .lock()
+        .unwrap()
+        .values()
+        .any(|cl| cl.kind == "tui" && cl.focus.pane.as_deref() == Some(pane));
+    if focused
+        && rt
+            .last_input
+            .lock()
+            .unwrap()
+            .is_some_and(|t| t.elapsed() < QUIET_INPUT)
+    {
+        return Some("recent_input");
+    }
+    let screen = rt.screen.lock().unwrap().engine.screen_text();
+    match crate::tracking::input_text(&screen) {
+        Some(t) if t.is_empty() => None,
+        Some(_) => Some("draft_in_input"),
+        None if strict => Some("input_unknown"),
+        None => None,
+    }
+}
 
 /// Start the engine (server start). Deliveries a previous server left `submitted` keep their
 /// hook-ack deadline.
@@ -154,6 +195,28 @@ pub(crate) fn pump(server: &Arc<Server>) {
     }
     let now = now();
     let typing: std::collections::HashSet<String> = server.mentions.typing.lock().unwrap().clone();
+    // The input check reads screens and clients, so it runs before the core lock is taken.
+    let candidates: Vec<(String, bool)> = server.with_core(|c| {
+        let mut v: Vec<(String, bool)> = open_deliveries(c)
+            .iter()
+            .filter(|r| r.delivery.state == DeliveryState::Queued)
+            .filter_map(|r| {
+                let run = c.run_for_pane(&r.delivery.pane)?;
+                (!crate::agents::headless::is_headless(run)).then(|| {
+                    let strict = has_mention_hooks(Harness::from_id(&run.harness));
+                    (r.delivery.pane.clone(), strict)
+                })
+            })
+            .collect();
+        v.sort();
+        v.dedup();
+        v
+    });
+    let unsafe_input: std::collections::HashSet<String> = candidates
+        .into_iter()
+        .filter(|(pane, strict)| input_unsafe(server, pane, *strict).is_some())
+        .map(|(pane, _)| pane)
+        .collect();
     let mut steps: Vec<Step> = Vec::new();
     {
         let mut c = server.core.lock().unwrap();
@@ -177,7 +240,7 @@ pub(crate) fn pump(server: &Arc<Server>) {
         }));
         for mut rec in open {
             let before = (rec.delivery.state, rec.delivery.reason.clone());
-            let decision = decide(&c, &mut rec, &busy, &typing, now);
+            let decision = decide(&c, &mut rec, &busy, &typing, &unsafe_input, now);
             let mut dirty = false;
             if let Some(step) = decision {
                 dirty = true;
@@ -193,6 +256,8 @@ pub(crate) fn pump(server: &Arc<Server>) {
                     }
                     Decision::Fallback => {
                         rec.fallback = true;
+                        rec.delivery.state = DeliveryState::Submitted;
+                        rec.submitted_at_ms.get_or_insert(now);
                         if let Some(m) = load_message(&c, &rec.delivery.message) {
                             let from = sender_label(&c, &m);
                             steps.push(Step::Fallback(Box::new(rec.clone()), m, from));
@@ -239,6 +304,7 @@ fn decide(
     rec: &mut DeliveryRec,
     busy: &std::collections::HashSet<String>,
     typing: &std::collections::HashSet<String>,
+    unsafe_input: &std::collections::HashSet<String>,
     now: i64,
 ) -> Option<Decision> {
     let pane_id = rec.delivery.pane.clone();
@@ -260,6 +326,17 @@ fn decide(
                 .iter()
                 .any(|i| i.pane == pane_id && i.status == InteractionStatus::Open)
     };
+    // Messages stay inside one workspace (§4.6): a recipient or sender that moved since the
+    // message was sent ends the delivery's way into the pane.
+    if matches!(
+        rec.delivery.state,
+        DeliveryState::Queued | DeliveryState::Submitted
+    ) && !typing.contains(&rec.delivery.id)
+        && load_message(c, &rec.delivery.message).is_some_and(|m| moved_workspace(c, rec, &m))
+    {
+        hold(rec, MOVED);
+        return None;
+    }
     match rec.delivery.state {
         DeliveryState::Queued => {
             if now - rec.queued_at_ms > QUEUED_MAX_MS {
@@ -300,6 +377,14 @@ fn decide(
             if busy.contains(&pane_id) || typing.contains(&rec.delivery.id) || !idle_now(run) {
                 return None;
             }
+            // A headless run has no hooks to expand an envelope: it gets the framed message.
+            if crate::agents::headless::is_headless(run) {
+                return Some(Decision::Fallback);
+            }
+            // The user's draft would be submitted along with the envelope: stay queued.
+            if unsafe_input.contains(&pane_id) {
+                return None;
+            }
             Some(Decision::Type)
         }
         DeliveryState::Submitted => {
@@ -335,7 +420,36 @@ fn spawn_typing(server: Arc<Server>, rec: DeliveryRec, text: String, fallback: b
     let id = rec.delivery.id.clone();
     server.mentions.typing.lock().unwrap().insert(id.clone());
     tokio::spawn(async move {
-        let run = server.with_core(|c| c.run_for_pane(&rec.delivery.pane).map(|r| r.id.clone()));
+        let run = server.with_core(|c| {
+            c.run_for_pane(&rec.delivery.pane).map(|r| {
+                let strict = has_mention_hooks(Harness::from_id(&r.harness));
+                (
+                    r.id.clone(),
+                    crate::agents::headless::is_headless(r),
+                    strict,
+                )
+            })
+        });
+        // Check the input box once more right before typing: the user may have started a draft
+        // since the pass that chose this delivery. Unsafe: back to the queue, not a refusal.
+        if let Some((_, false, strict)) = &run
+            && input_unsafe(&server, &rec.delivery.pane, *strict).is_some()
+        {
+            // A fallback stays `submitted`: the next pass after the deadline tries again.
+            update(&server, &id, |r| {
+                if fallback || r.delivery.state != DeliveryState::Submitted {
+                    return false;
+                }
+                r.delivery.state = DeliveryState::Queued;
+                r.submitted_at_ms = None;
+                r.fallback = false;
+                true
+            });
+            server.mentions.typing.lock().unwrap().remove(&id);
+            server.mentions.poke();
+            return;
+        }
+        let run = run.map(|(id, _, _)| id);
         let result = match run {
             Some(run) => {
                 let ctx = crate::drafts::user_ctx();

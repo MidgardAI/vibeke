@@ -274,7 +274,7 @@
       "milestone": "M1",
       "spec": "`{target, text, images?: [blob|path], mode?: send|steer|follow_up = send, wait?: bool, until?: [AgentState], timeout_ms?}` → `{run, turn?}` — submits text + Enter atomically via the best channel (RPC `prompt`/`steer` for headless and extension-capable harnesses, bracketed paste + Enter otherwise). If the run is not working and no lifecycle change occurs within 5 s → `stalled`",
       "params": "{target: Target, text: string, images?: [string], mode?: send|steer|follow_up = send, wait?: bool, until?: [string], timeout_ms?: int}",
-      "result": "{run: AgentRun, turn?: any, turn_started?: bool, interaction?: string}"
+      "result": "{run: AgentRun, turn?: any, turn_started?: bool, interaction?: string, mention_sent?: string}"
     },
     {
       "name": "agent.read",
@@ -4985,7 +4985,7 @@
       "milestone": "M1",
       "spec": "`{include?: [workspaces, tabs, panes, runs, interactions, tasks, previews, layouts, machines]}` → `{at_seq, workspaces[], groups[], tabs[], panes[], runs[], interactions[], tasks[], previews[], layouts[], focused: {client_id → {workspace, tab, pane}}}`",
       "params": "{include?: [workspaces|tabs|panes|runs|interactions|tasks|previews|layouts|machines|groups|string]}",
-      "result": "{at_seq: int, workspaces?: [Workspace], groups?: [Group], tabs?: [Tab], panes?: [Pane], runs?: [AgentRun], interactions?: [Interaction], tasks?: [Task], previews?: [Preview], layouts?: [any], focused?: {*: {workspace: string|null, tab: string|null, pane: string|null}}}"
+      "result": "{at_seq: int, workspaces?: [Workspace], groups?: [Group], tabs?: [Tab], panes?: [Pane], runs?: [AgentRun], interactions?: [Interaction], tasks?: [Task], previews?: [Preview], mentions?: [MentionName], layouts?: [any], focused?: {*: {workspace: string|null, tab: string|null, pane: string|null}}}"
     },
     {
       "name": "session.stop",

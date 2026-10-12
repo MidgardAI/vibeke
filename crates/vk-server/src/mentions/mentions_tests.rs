@@ -2,9 +2,12 @@
 //! (spec 19). No harness runs: runs are put into the model directly.
 
 use super::delivery::{envelope, parse_envelope, summary};
-use super::hooks::{merge_outputs, merge_reply, strip_leading};
+use super::hooks::{
+    merge_outputs, merge_reply, sanitize_envelope, sanitize_payload, strip_leading,
+};
 use super::*;
 use crate::ServerOpts;
+use crate::agents::harness::Harness;
 use crate::paths::Paths;
 use std::sync::Once;
 use vk_proto::model::{Execution, Workspace};
@@ -532,4 +535,212 @@ async fn engine_holds_without_an_agent_and_waits_for_a_busy_one() {
     e.put_run("b", "claude", Execution::Idle);
     super::delivery::pump(&e.server);
     assert_eq!(e.delivery(&did).delivery.state, DeliveryState::Queued);
+}
+
+fn claude() -> Harness {
+    Harness::from_id("claude").unwrap()
+}
+
+/// What the recipient's `UserPromptSubmit` hook adds for `prompt`.
+fn hook_context(e: &Env, pane: &str, prompt: &str) -> String {
+    let out = super::hooks::after_signal(
+        &e.server,
+        pane,
+        claude(),
+        "UserPromptSubmit",
+        &json!({"prompt": prompt}),
+    )
+    .unwrap_or_default();
+    out["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap_or("")
+        .to_string()
+}
+
+/// `@coder` (a) and `@reviewer` (b) in `wa`, both idle; a message from a to b, its delivery
+/// marked `submitted` as the engine does before typing. (message id, delivery id, envelope)
+async fn submitted(e: &Env) -> (String, String, String) {
+    let u = user();
+    e.put_run("a", "claude", Execution::Idle);
+    e.put_run("b", "claude", Execution::Idle);
+    e.ok(&u, "mention.set", json!({"pane": "a", "name": "coder"}))
+        .await;
+    e.ok(&u, "mention.set", json!({"pane": "b", "name": "reviewer"}))
+        .await;
+    let sent = e
+        .ok(
+            &pane_ctx("a"),
+            "message.send",
+            json!({"to": ["reviewer"], "body": "the secret plan"}),
+        )
+        .await;
+    let mid = sent["message"]["id"].as_str().unwrap().to_string();
+    let did = sent["deliveries"][0]["id"].as_str().unwrap().to_string();
+    update(&e.server, &did, |r| {
+        r.delivery.state = DeliveryState::Submitted;
+        true
+    });
+    let rec = e.delivery(&did);
+    let m = e.server.with_core(|c| load_message(c, &mid)).unwrap();
+    (mid, did, envelope("@coder", &m, &rec.nonce))
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_envelope_expands_once_and_only_in_its_own_pane() {
+    let e = Env::new();
+    let (_mid, did, env) = submitted(&e).await;
+    // Another pane typing the same line gets no body.
+    let ctx = hook_context(&e, "a", &env);
+    assert!(ctx.contains("not an authentic"), "{ctx}");
+    assert!(!ctx.contains("the secret plan"), "{ctx}");
+    // The recipient gets it once.
+    let ctx = hook_context(&e, "b", &env);
+    assert!(ctx.contains("the secret plan"), "{ctx}");
+    assert_eq!(e.delivery(&did).delivery.state, DeliveryState::Delivered);
+    // A replay (from the screen, a transcript or an event) gets a note, not the body.
+    let ctx = hook_context(&e, "b", &env);
+    assert!(ctx.contains("already delivered"), "{ctx}");
+    assert!(!ctx.contains("the secret plan"), "{ctx}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn retry_rotates_the_nonce_in_one_step() {
+    let e = Env::new();
+    let (_mid, did, env) = submitted(&e).await;
+    update(&e.server, &did, |r| {
+        r.delivery.state = DeliveryState::Held;
+        r.delivery.reason = Some("hooks_missing".into());
+        true
+    });
+    let before = e.delivery(&did).nonce;
+    e.ok(&user(), "message.retry", json!({"delivery": did}))
+        .await;
+    let after = e.delivery(&did);
+    assert_eq!(after.delivery.state, DeliveryState::Queued);
+    assert_ne!(after.nonce, before);
+    // The envelope typed before the retry is no longer authentic.
+    let ctx = hook_context(&e, "b", &env);
+    assert!(ctx.contains("not an authentic"), "{ctx}");
+    // A delivered message cannot be retried (and so cannot be replayed with a fresh nonce).
+    update(&e.server, &did, |r| {
+        r.delivery.state = DeliveryState::Delivered;
+        true
+    });
+    let r = e
+        .call(&user(), "message.retry", json!({"delivery": did}))
+        .await;
+    assert_eq!(kind(r), ("conflict".into(), "not_held".into()));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn panes_that_moved_workspace_end_the_conversation() {
+    let e = Env::new();
+    let (mid, did, env) = submitted(&e).await;
+    // The sender moves to another workspace: the envelope no longer expands.
+    e.put_pane("a", "wb");
+    let ctx = hook_context(&e, "b", &env);
+    assert!(ctx.contains("moved to another workspace"), "{ctx}");
+    assert!(!ctx.contains("the secret plan"), "{ctx}");
+    let d = e.delivery(&did);
+    assert_eq!(d.delivery.state, DeliveryState::Held);
+    assert_eq!(d.delivery.reason.as_deref(), Some(MOVED));
+    // Nor can the recipient answer across workspaces.
+    let r = e
+        .call(
+            &pane_ctx("b"),
+            "message.reply",
+            json!({"message": mid, "body": "x"}),
+        )
+        .await;
+    assert_eq!(kind(r), ("permission_denied".into(), MOVED.into()));
+    // The engine holds a queued delivery whose recipient moved.
+    e.put_pane("a", "wa");
+    e.ok(
+        &user(),
+        "mention.set",
+        json!({"pane": "b", "name": "reviewer"}),
+    )
+    .await;
+    let sent = e
+        .ok(
+            &pane_ctx("a"),
+            "message.send",
+            json!({"to": ["reviewer"], "body": "again"}),
+        )
+        .await;
+    let d2 = sent["deliveries"][0]["id"].as_str().unwrap().to_string();
+    e.put_pane("b", "wb");
+    super::delivery::pump(&e.server);
+    let d = e.delivery(&d2);
+    assert_eq!(d.delivery.state, DeliveryState::Held);
+    assert_eq!(d.delivery.reason.as_deref(), Some(MOVED));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_leading_mention_marks_the_prompt_as_sent() {
+    let e = Env::new();
+    let u = user();
+    e.put_run("a", "claude", Execution::Idle);
+    e.ok(&u, "mention.set", json!({"pane": "b", "name": "reviewer"}))
+        .await;
+    let t0 = now_ms();
+    let out = super::hooks::before_signal(
+        &e.server,
+        "a",
+        claude(),
+        "UserPromptSubmit",
+        &json!({"prompt": "@reviewer check the tests"}),
+    )
+    .expect("a blocking reply");
+    assert_eq!(out["decision"], "block");
+    let id = e.server.mentions.consumed_since("a", t0).expect("marked");
+    assert!(out["reason"].as_str().unwrap().contains(&id), "{out}");
+    assert_eq!(e.server.mentions.consumed_since("a", now_ms() + 1), None);
+    assert_eq!(e.server.mentions.consumed_since("b", t0), None);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_headless_recipient_gets_the_framed_message() {
+    let e = Env::new();
+    let u = user();
+    e.put_run("b", "claude", Execution::Idle);
+    {
+        let mut c = e.server.core.lock().unwrap();
+        let mut r = c.run_for_pane("b").cloned().unwrap();
+        r.integration = "headless:claude".into();
+        let mut tx = Tx::new();
+        tx.run(r);
+        e.server.commit(&mut c, tx).unwrap();
+    }
+    e.ok(&u, "mention.set", json!({"pane": "b", "name": "reviewer"}))
+        .await;
+    let sent = e
+        .ok(
+            &u,
+            "message.send",
+            json!({"to": ["reviewer"], "body": "hi", "workspace": "wa"}),
+        )
+        .await;
+    let did = sent["deliveries"][0]["id"].as_str().unwrap().to_string();
+    super::delivery::pump(&e.server);
+    let d = e.delivery(&did);
+    assert!(d.fallback, "{d:?}");
+    assert_ne!(d.delivery.state, DeliveryState::Queued);
+    assert_ne!(d.delivery.reason.as_deref(), Some("hooks_missing"));
+}
+
+#[test]
+fn observed_envelopes_lose_nonce_and_preview() {
+    let line = "↪ vibeke message m_01abc from @coder · the secret plan [ABCDEFGHJKMN]";
+    let clean = sanitize_envelope(line).unwrap();
+    assert_eq!(clean, "↪ vibeke message m_01abc from @coder · … […]");
+    let p = sanitize_payload(
+        "UserPromptSubmit",
+        &json!({"prompt": line, "session_id": "s"}),
+    )
+    .unwrap();
+    assert_eq!(p["prompt"], clean.as_str());
+    assert_eq!(p["session_id"], "s");
+    assert!(sanitize_payload("UserPromptSubmit", &json!({"prompt": "hello"})).is_none());
+    assert!(sanitize_payload("Stop", &json!({"prompt": line})).is_none());
 }

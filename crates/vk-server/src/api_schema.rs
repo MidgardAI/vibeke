@@ -571,7 +571,7 @@ server.reload_config :: {} => {changed: [string], errors: [ConfigDiagnostic], wa
 # with kill_panes false the holders keep running and the next server reattaches; full scope only
 server.stop :: {kill_panes?: bool = false} => {}
 session.snapshot :: {include?: [workspaces|tabs|panes|runs|interactions|tasks|previews|layouts|machines|groups|string]}
-  => {at_seq: int, workspaces?: [Workspace], groups?: [Group], tabs?: [Tab], panes?: [Pane], runs?: [AgentRun], interactions?: [Interaction], tasks?: [Task], previews?: [Preview], layouts?: [any], focused?: {*: {workspace: string|null, tab: string|null, pane: string|null}}}
+  => {at_seq: int, workspaces?: [Workspace], groups?: [Group], tabs?: [Tab], panes?: [Pane], runs?: [AgentRun], interactions?: [Interaction], tasks?: [Task], previews?: [Preview], mentions?: [MentionName], layouts?: [any], focused?: {*: {workspace: string|null, tab: string|null, pane: string|null}}}
 
 # --- events ---
 events.subscribe :: {after?: Cursor|int, types?: [string] | string, subjects?: {workspace?: Target, tab?: Target, pane?: Target, run?: Target, task?: Target}, include_snapshot?: bool = false, machine?: string}
@@ -638,8 +638,9 @@ agent.harnesses :: {} => {harnesses: [{id: string, display?: string, version_det
 agent.start :: {pane?: Target, harness: string, name?: string, mode?: tui|headless = tui, args?: [string], env?: {*: string}, model?: string, task?: Target, ready_timeout_ms?: int = 30000} => {run: AgentRun}
 agent.spawn :: {harness: string, name?: string, where?: object, prompt?: string, args?: [string], focus?: bool = false} => {pane: Pane, run: AgentRun}
 # refused with conflict, details {reason: dialog_open, interaction} while a picker or unreadable dialog is open; a slash command never fails agent_prompt_stalled,
-# and with wait it returns at once when it opened a picker (interaction) or started no turn (turn_started: false)
-agent.prompt :: {target: Target, text: string, images?: [string], mode?: send|steer|follow_up = send, wait?: bool, until?: [string], timeout_ms?: int} => {run: AgentRun, turn?: any, turn_started?: bool, interaction?: string}
+# and with wait it returns at once when it opened a picker (interaction) or started no turn (turn_started: false);
+# a prompt that starts with @name mentions and was sent as a message (spec 19) returns mention_sent: <message id>
+agent.prompt :: {target: Target, text: string, images?: [string], mode?: send|steer|follow_up = send, wait?: bool, until?: [string], timeout_ms?: int} => {run: AgentRun, turn?: any, turn_started?: bool, interaction?: string, mention_sent?: string}
 agent.read :: {target: Target, source?: visible|recent|transcript = visible, lines?: int, format?: text|ansi|cells} => {text?: string, turns?: [any], rows?: int, revision?: int, truncated?: bool}
 agent.wait :: {target: Target, until?: [string], timeout_ms?: int} => {run: AgentRun, state: string, interaction?: Interaction}
 agent.interrupt :: {target: Target} => {run: AgentRun}

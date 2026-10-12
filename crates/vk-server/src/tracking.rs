@@ -1599,7 +1599,7 @@ fn message_prepare(server: &Server, p: &Value) -> R {
 /// The text in the agent's input box: `Some("")` only when the prompt line *and* every
 /// continuation line inside the box are empty. Placeholder hints count as text: refusing is
 /// the safe failure (the user gets "Open pane to send").
-fn input_text(screen: &str) -> Option<String> {
+pub(crate) fn input_text(screen: &str) -> Option<String> {
     let lines: Vec<&str> = screen.lines().collect();
     let start = lines.len().saturating_sub(30);
     let strip = |l: &str| {
