@@ -26,6 +26,7 @@ export type {
   UiCommand,
   PreviewViewApi,
   PreviewViewState,
+  PreviewViewPick,
 } from './platform';
 export { parseRoute, formatRoute, hashFromUrl, navigate, type Route } from './router';
 export { hostOfTag, staleTags, badgeCount, openCounts } from './lib/notify';

@@ -221,6 +221,15 @@ export function registerIpc(d: IpcDeps): void {
       return ok(null);
     }
   });
+  handle(INVOKE.previewAnnotate, async (e, p) => {
+    const a = v.previewAnnotate(p);
+    try {
+      await d.previews.annotate(e.sender, a.view, a.on);
+      return ok(null);
+    } catch (x) {
+      return err(x);
+    }
+  });
   handle(INVOKE.previewClose, (e, view) => {
     d.previews.close(e.sender, v.previewView(view));
     return ok(null);

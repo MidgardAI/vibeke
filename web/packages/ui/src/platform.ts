@@ -2,7 +2,7 @@
 // OS-specific sits behind this interface; screens only use these capabilities.
 
 import type { ComponentType } from 'react';
-import type { HostManagerApi, HostRecord, HostStore, PairingLink, Platform } from '@vibeke/core';
+import type { AnnotationPick, HostManagerApi, HostRecord, HostStore, PairingLink, Platform } from '@vibeke/core';
 import type { Segment } from './lib/ansi';
 import type { CachedDashboard } from './lib/offline-cache';
 import type { KV } from './lib/prefs';
@@ -178,6 +178,15 @@ export interface PreviewViewState {
   error?: string;
 }
 
+/** An element the user picked in an annotating preview view (desktop picks elements only). */
+export interface PreviewViewPick {
+  view: string;
+  pick: AnnotationPick;
+  /** PNG clip of the element; absent when the capture failed. */
+  image_b64?: string;
+  viewport?: { w: number; h: number; dpr?: number };
+}
+
 /**
  * Embedded preview views (spec 06 B3.5). A view is a native layer above the page: the UI keeps a
  * placeholder element and reports its rectangle (CSS pixels of this window).
@@ -191,6 +200,9 @@ export interface PreviewViewApi {
   snapshot(view: string): Promise<string | null>;
   close(view: string): void;
   onState(cb: (s: PreviewViewState) => void): () => void;
+  /** Turn element picking on or off (annotations); a pick arrives through `onPick`. */
+  annotate?(view: string, on: boolean): Promise<void>;
+  onPick?(cb: (p: PreviewViewPick) => void): () => void;
 }
 
 /**

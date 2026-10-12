@@ -2,7 +2,7 @@
 // Kept small and explicit: every channel here has a validator in main/validate.ts.
 
 import type { UpdateState } from '@vibeke/ui';
-import type { AppMethod, HostRecord, HostState } from '@vibeke/core';
+import type { AnnotationPick, AppMethod, HostRecord, HostState } from '@vibeke/core';
 
 /** Renderer → main (ipcRenderer.invoke / ipcMain.handle). */
 export const INVOKE = {
@@ -48,6 +48,8 @@ export const INVOKE = {
   previewDevtools: 'vk:preview.view.devtools',
   previewSnapshot: 'vk:preview.view.snapshot',
   previewClose: 'vk:preview.view.close',
+  /** Turn element picking on a preview view on or off (`PreviewAnnotate`). */
+  previewAnnotate: 'vk:preview.view.annotate',
 } as const;
 
 /** Main → renderer (webContents.send). */
@@ -63,6 +65,8 @@ export const EVENT = {
   hostEvent: 'vk:host-event',
   /** An embedded preview view's navigation state (`PreviewViewState`), to the window that owns it. */
   previewState: 'vk:preview.view.state',
+  /** An element the user picked in an annotating preview view (`PreviewPick`). */
+  previewPick: 'vk:preview.view.pick',
 } as const;
 
 /**
@@ -172,6 +176,13 @@ export const RENDERER_METHODS = [
   'browser.type',
   'browser.press',
   'browser.navigate',
+  'browser.annotation_pick',
+  'browser.annotation_add',
+  'browser.annotation_update',
+  'browser.annotation_remove',
+  'browser.annotations_clear',
+  'browser.annotations',
+  'browser.annotations_send',
 ] as const satisfies readonly AppMethod[];
 
 export type RendererMethod = (typeof RENDERER_METHODS)[number];
@@ -289,6 +300,24 @@ export type PreviewAction = 'back' | 'forward' | 'reload' | 'stop';
 
 /** `vk:preview.view.go`: either a new URL or a history/loading action. */
 export type PreviewGo = { view: string; url: string } | { view: string; action: PreviewAction };
+
+/** `vk:preview.view.annotate`: pick mode for one view. */
+export interface PreviewAnnotate {
+  view: string;
+  on: boolean;
+}
+
+/**
+ * `vk:preview.view.pick` (main → renderer): the element the user clicked while annotating. The
+ * screenshot is a PNG clip of the element; it is absent when the capture failed. Desktop views
+ * pick elements only (no region drag).
+ */
+export interface PreviewPick {
+  view: string;
+  pick: AnnotationPick;
+  image_b64?: string;
+  viewport?: { w: number; h: number; dpr?: number };
+}
 
 /** `vk:preview.view.state` (main → renderer). */
 export interface PreviewState {

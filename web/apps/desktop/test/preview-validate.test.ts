@@ -6,8 +6,8 @@ const VIEW = 'pv0123456789abcdef01234567';
 
 describe('preview view IPC validators', () => {
   test('channels exist in the bridge allow-lists', () => {
-    expect(Object.values(INVOKE)).toEqual(expect.arrayContaining(['vk:preview.view.open', 'vk:preview.view.bounds', 'vk:preview.view.go', 'vk:preview.view.devtools', 'vk:preview.view.snapshot', 'vk:preview.view.close']));
-    expect(Object.values(EVENT)).toContain('vk:preview.view.state');
+    expect(Object.values(INVOKE)).toEqual(expect.arrayContaining(['vk:preview.view.open', 'vk:preview.view.bounds', 'vk:preview.view.go', 'vk:preview.view.devtools', 'vk:preview.view.snapshot', 'vk:preview.view.close', 'vk:preview.view.annotate']));
+    expect(Object.values(EVENT)).toEqual(expect.arrayContaining(['vk:preview.view.state', 'vk:preview.view.pick']));
   });
 
   test('open: host id, machine and an http(s) URL only', () => {
@@ -59,6 +59,14 @@ describe('preview view IPC validators', () => {
       { view: VIEW, url: 'http://localhost/', action: 'reload' },
     ]) {
       expect(() => v.previewGo(bad)).toThrow(v.IpcValidationError);
+    }
+  });
+
+  test('annotate: a view id and an on/off flag', () => {
+    expect(v.previewAnnotate({ view: VIEW, on: true })).toEqual({ view: VIEW, on: true });
+    expect(v.previewAnnotate({ view: VIEW, on: false })).toEqual({ view: VIEW, on: false });
+    for (const bad of [null, [], { view: VIEW }, { view: VIEW, on: 1 }, { view: 'nope', on: true }, { view: VIEW, on: true, extra: 1 }]) {
+      expect(() => v.previewAnnotate(bad)).toThrow(v.IpcValidationError);
     }
   });
 });

@@ -10,13 +10,16 @@
 // - certificate errors accepted only for loopback hosts (the tunnel is authenticated end to end
 //   and dev servers use self-signed certificates);
 // - the proxy credential is answered only for this view's webContents and the proxy's own port;
+// - annotating (element picking) attaches the CDP debugger to a preview view only, from a validated
+//   IPC call by the window that owns the view, and detaches when it is turned off or the view closes.
+//   The pick script runs in an isolated world; the page cannot see it or read the result;
 // - `window.open` loads in the same view, `_blank` links to non-loopback sites open in the system
 //   browser, and nothing navigates to `app://`, `file://` or any other non-web scheme.
 
 import { createHash, randomBytes } from 'node:crypto';
 import { BrowserWindow, WebContentsView, session as electronSession, shell, type Session, type WebContents } from 'electron';
-import { TUNNEL_FEATURE, type RpcLink } from '@vibeke/core';
-import { EVENT, type PreviewAction, type PreviewBounds, type PreviewOpen, type PreviewState } from '../shared/contract';
+import { PICK_ELEMENT_FN, TUNNEL_FEATURE, elementPick, pickClip, type ElementPick, type RpcLink } from '@vibeke/core';
+import { EVENT, type PreviewAction, type PreviewBounds, type PreviewOpen, type PreviewPick, type PreviewState } from '../shared/contract';
 import { PreviewProxy, isLoopbackName, isLoopbackUrl, isOurProxyChallenge, type PreviewRoute } from './preview-proxy';
 import { tunnelMux } from './preview-tunnel';
 
@@ -46,6 +49,8 @@ interface Entry {
   wantVisible: boolean;
   lastUrl: string;
   error?: string;
+  /** Element picking is on: the debugger is attached and inspect mode is armed. */
+  annotating?: { off: () => void; world?: number; busy: boolean };
 }
 
 /** Views per owning window. */
@@ -201,6 +206,139 @@ export class PreviewViews {
       return `data:image/jpeg;base64,${img.toJPEG(80).toString('base64')}`;
     } catch {
       return null;
+    }
+  }
+
+  /**
+   * Element picking for annotations. Inspect mode (`Overlay.setInspectMode`) highlights the node
+   * under the pointer and reports a click as `Overlay.inspectNodeRequested`, so the page gets no
+   * click. The node is described in an isolated world and its clip is captured as a PNG, then
+   * sent to the renderer as `EVENT.previewPick`. Region picks (drag) are not available here.
+   */
+  async annotate(owner: WebContents, view: string, on: boolean): Promise<void> {
+    const e = this.entry(owner, view);
+    if (!on) return this.annotateOff(e);
+    if (e.annotating) return;
+    if (e.hostDown) throw Object.assign(new Error('The host is offline.'), { code: 'host_offline' });
+    const wc = e.view.webContents;
+    const dbg = wc.debugger;
+    if (!dbg.isAttached()) dbg.attach('1.3');
+    const state: NonNullable<Entry['annotating']> = { busy: false, off: () => {} };
+    const onMessage = (_ev: Electron.Event, method: string, params: Record<string, unknown>) => {
+      if (method === 'Overlay.inspectNodeRequested' && typeof params.backendNodeId === 'number') {
+        void this.pickNode(e, state, params.backendNodeId);
+      } else if (method === 'Page.frameNavigated' && !(params.frame as { parentId?: string } | undefined)?.parentId) {
+        // A new document: the old isolated world is gone and inspect mode starts over.
+        state.world = undefined;
+        void this.armInspect(e);
+      }
+    };
+    const onDetach = () => {
+      if (e.annotating === state) state.off();
+    };
+    dbg.on('message', onMessage);
+    dbg.on('detach', onDetach);
+    state.off = () => {
+      dbg.removeListener('message', onMessage);
+      dbg.removeListener('detach', onDetach);
+      if (e.annotating === state) e.annotating = undefined;
+    };
+    e.annotating = state;
+    try {
+      await dbg.sendCommand('DOM.enable');
+      await dbg.sendCommand('Overlay.enable');
+      await dbg.sendCommand('Page.enable');
+      await this.armInspect(e);
+    } catch (x) {
+      this.annotateOff(e);
+      throw x;
+    }
+  }
+
+  private annotateOff(e: Entry): void {
+    const state = e.annotating;
+    if (!state) return;
+    state.off();
+    const wc = e.view.webContents;
+    if (wc.isDestroyed() || !wc.debugger.isAttached()) return;
+    const dbg = wc.debugger;
+    void dbg
+      .sendCommand('Overlay.setInspectMode', { mode: 'none', highlightConfig: {} })
+      .catch(() => {})
+      .then(() => dbg.sendCommand('Overlay.hideHighlight').catch(() => {}))
+      .then(() => {
+        // DevTools may still use the debugger: detach only when we are the last user.
+        if (!e.annotating && !wc.isDestroyed() && dbg.isAttached()) {
+          try {
+            dbg.detach();
+          } catch {
+            /* already detached */
+          }
+        }
+      });
+  }
+
+  private async armInspect(e: Entry): Promise<void> {
+    const wc = e.view.webContents;
+    if (!e.annotating || wc.isDestroyed() || !wc.debugger.isAttached()) return;
+    const colour = (a: number) => ({ r: 61, g: 133, b: 255, a });
+    await wc.debugger
+      .sendCommand('Overlay.setInspectMode', {
+        mode: 'searchForNode',
+        highlightConfig: { showInfo: true, contentColor: colour(0.25), paddingColor: colour(0.15), borderColor: colour(0.9), marginColor: colour(0.08) },
+      })
+      .catch(() => {});
+  }
+
+  private async pickNode(e: Entry, state: NonNullable<Entry['annotating']>, backendNodeId: number): Promise<void> {
+    const wc = e.view.webContents;
+    if (state.busy || e.annotating !== state || wc.isDestroyed()) return;
+    state.busy = true;
+    const send = <T = Record<string, unknown>>(m: string, p?: Record<string, unknown>) => wc.debugger.sendCommand(m, p) as Promise<T>;
+    try {
+      const isolated = async () => {
+        if (state.world !== undefined) return state.world;
+        const tree = await send<{ frameTree: { frame: { id: string } } }>('Page.getFrameTree');
+        const w = await send<{ executionContextId: number }>('Page.createIsolatedWorld', { frameId: tree.frameTree.frame.id, worldName: 'vibeke-annotate' });
+        return (state.world = w.executionContextId);
+      };
+      const describe = async (): Promise<ElementPick | null> => {
+        const { object } = await send<{ object: { objectId?: string } }>('DOM.resolveNode', { backendNodeId, executionContextId: await isolated() });
+        if (!object.objectId) return null;
+        try {
+          const r = await send<{ result?: { value?: ElementPick | null } }>('Runtime.callFunctionOn', { objectId: object.objectId, functionDeclaration: PICK_ELEMENT_FN, returnByValue: true });
+          return r.result?.value ?? null;
+        } finally {
+          void send('Runtime.releaseObject', { objectId: object.objectId }).catch(() => {});
+        }
+      };
+      let picked: ElementPick | null;
+      try {
+        picked = await describe();
+      } catch {
+        state.world = undefined; // the world may be stale after a navigation: once more
+        picked = await describe();
+      }
+      if (!picked) return;
+      const out: PreviewPick = { view: e.id, pick: elementPick(picked) };
+      try {
+        await send('Overlay.hideHighlight').catch(() => {});
+        const m = await send<{ cssVisualViewport?: { pageX: number; pageY: number; clientWidth: number; clientHeight: number } }>('Page.getLayoutMetrics');
+        const vp = m.cssVisualViewport;
+        if (vp) out.viewport = { w: Math.round(vp.clientWidth), h: Math.round(vp.clientHeight) };
+        // `clip` is in page coordinates, the pick rect in viewport coordinates.
+        const clip = pickClip(picked.rect);
+        const shot = await send<{ data: string }>('Page.captureScreenshot', { format: 'png', clip: { ...clip, x: clip.x + (vp?.pageX ?? 0), y: clip.y + (vp?.pageY ?? 0) } });
+        if (shot.data && shot.data.length <= 8 * 1024 * 1024) out.image_b64 = shot.data;
+      } catch {
+        /* the note still works without a screenshot */
+      }
+      if (!e.owner.isDestroyed()) e.owner.send(EVENT.previewPick, out);
+    } catch (x) {
+      this.d.log(`preview: annotate pick failed: ${x instanceof Error ? x.message : 'error'}`);
+    } finally {
+      state.busy = false;
+      void this.armInspect(e);
     }
   }
 
@@ -363,6 +501,7 @@ export class PreviewViews {
 
   private destroy(e: Entry): void {
     this.forget(e);
+    this.annotateOff(e);
     try {
       if (!e.win.isDestroyed()) e.win.contentView.removeChildView(e.view);
     } catch {

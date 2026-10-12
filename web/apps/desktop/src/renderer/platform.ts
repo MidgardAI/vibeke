@@ -4,7 +4,7 @@
 
 import { linkToUrl, systemClock, type HostRecord, type KeyStore, type Lifecycle, type Socket } from '@vibeke/core';
 import type { CachedDashboard, CachedMirror, DashboardCache, HostEngine, KV, MirrorCache, PreviewViewApi, PreviewViewState, UiCommand, UiPlatform, UpdateState, UpdatesCapability } from '@vibeke/ui';
-import { EVENT, INVOKE, type BootInfo, type Bridge, type EngineHello } from '../shared/contract';
+import { EVENT, INVOKE, type BootInfo, type Bridge, type EngineHello, type PreviewPick } from '../shared/contract';
 import { RemoteManager, call } from './remote';
 import { extensions } from './extensions';
 
@@ -186,6 +186,12 @@ function previewView(bridge: Bridge): PreviewViewApi {
     devtools: (view) => fire(INVOKE.previewDevtools, view),
     snapshot: (view) => call<string | null>(bridge, INVOKE.previewSnapshot, view).catch(() => null),
     close: (view) => fire(INVOKE.previewClose, view),
+    annotate: (view, on) => call<void>(bridge, INVOKE.previewAnnotate, { view, on }),
+    onPick: (cb) =>
+      bridge.on(EVENT.previewPick, (p) => {
+        const s = p as PreviewPick;
+        if (s && typeof s.view === 'string' && s.pick && typeof s.pick === 'object') cb(s);
+      }),
     onState: (cb) =>
       bridge.on(EVENT.previewState, (p) => {
         const s = p as PreviewViewState;

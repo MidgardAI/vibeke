@@ -2,7 +2,7 @@
 // tested; ipc.ts applies them before any handler logic runs.
 
 import { isAbsolute } from 'node:path';
-import { RENDERER_METHODS, type DesktopSettings, type PreviewBounds, type PreviewGo, type PreviewOpen, type RendererMethod, type RendererSettingsPatch, type Theme, type WindowOp } from '../shared/contract';
+import { RENDERER_METHODS, type DesktopSettings, type PreviewAnnotate, type PreviewBounds, type PreviewGo, type PreviewOpen, type RendererMethod, type RendererSettingsPatch, type Theme, type WindowOp } from '../shared/contract';
 
 export class IpcValidationError extends Error {
   constructor(message: string) {
@@ -276,4 +276,10 @@ export function previewGo(v: unknown): PreviewGo {
   if (v.url !== undefined) return { view, url: previewUrl(v.url) };
   if (v.action === 'back' || v.action === 'forward' || v.action === 'reload' || v.action === 'stop') return { view, action: v.action };
   return fail('preview go.action');
+}
+
+export function previewAnnotate(v: unknown): PreviewAnnotate {
+  if (!isPlain(v)) return fail('preview annotate');
+  only(v, ['view', 'on'], 'preview annotate');
+  return { view: previewView(v.view), on: flag(v.on, 'preview annotate.on') };
 }
