@@ -475,7 +475,8 @@ impl Decoder {
     }
 
     /// During a host query, an ESC may be the start of a fragmented reply. Keep the
-    /// ordinary short key waits everywhere else. The reader also caps this at the query deadline.
+    /// ordinary short key waits everywhere else. A prefix that started in the query window
+    /// keeps this longer wait until it completes, even when the query itself expires.
     #[cfg(any(not(target_arch = "wasm32"), test))]
     fn query_wait(&self, querying: bool) -> Option<Duration> {
         match (querying, self.buf.as_slice()) {
@@ -1044,6 +1045,7 @@ fn read_loop(tx: tokio::sync::mpsc::UnboundedSender<Input>, stop_r: libc::c_int,
     // keeps arriving into an unfinished sequence does not hold it open forever.
     let mut since = Instant::now();
     let mut seen = dec.consumed();
+    let mut query_prefix = false;
     loop {
         let now = Instant::now();
         if let Some(det) = probe.finish_due(now)
@@ -1064,7 +1066,9 @@ fn read_loop(tx: tokio::sync::mpsc::UnboundedSender<Input>, stop_r: libc::c_int,
                 revents: 0,
             },
         ];
-        let input_deadline = dec.query_wait(probe.deadline.is_some()).map(|w| since + w);
+        let input_deadline = dec
+            .query_wait(probe.deadline.is_some() || query_prefix)
+            .map(|w| since + w);
         let deadline = input_deadline.into_iter().chain(probe.deadline).min();
         let timeout = deadline.map_or(-1, |d| {
             // Round up to avoid spinning in the final sub-millisecond of a deadline.
@@ -1096,7 +1100,8 @@ fn read_loop(tx: tokio::sync::mpsc::UnboundedSender<Input>, stop_r: libc::c_int,
                     .and_then(|()| stdout.flush());
             }
         }
-        let ins = if n == 0 && input_deadline.is_some_and(|d| Instant::now() >= d) {
+        let flushed = n == 0 && input_deadline.is_some_and(|d| Instant::now() >= d);
+        let ins = if flushed {
             dec.flush()
         } else if fds[0].revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0 {
             let mut b = [0u8; 4096];
@@ -1114,10 +1119,14 @@ fn read_loop(tx: tokio::sync::mpsc::UnboundedSender<Input>, stop_r: libc::c_int,
         } else {
             vec![]
         };
-        if dec.consumed() != seen || n == 0 || !was_waiting {
+        if dec.consumed() != seen || flushed || !was_waiting {
             seen = dec.consumed();
             since = Instant::now();
+            query_prefix = false;
         }
+        // The query's own timeout must neither restart the sequence timer nor turn an
+        // already buffered reply ESC into a key under the ordinary short timeout.
+        query_prefix = (query_prefix || probe.deadline.is_some()) && dec.wait().is_some();
         for i in ins {
             let i = match i {
                 Input::Appearance(det) => match probe.report(det, Instant::now()) {
