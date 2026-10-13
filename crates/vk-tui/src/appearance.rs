@@ -4,11 +4,9 @@
 //!
 //! Detection: the startup probe (before the event reader starts) asks for the background colour
 //! (OSC 11) and the colour-scheme report (`CSI ? 996 n` → `CSI ? 997 ; 1|2 n`, 1 = dark); the
-//! 997 report wins when both arrive. Mode 2031 (unsolicited 997 reports on change) is *not*
-//! enabled: crossterm's input parser doesn't know `CSI ? … n` and would swallow keystrokes
-//! after one. Instead the host is re-queried after it regains focus (at most every 3 s, only
-//! with `theme.mode = "auto"`) and from the palette (`theme_detect`), with the event reader
-//! stopped so the replies are read raw.
+//! 997 report wins when both arrive. Focus changes re-query the host at most every 3 s.
+//! The normal input decoder handles these replies, so typing continues during detection.
+//! Startup detection stays in the raw probe before the input reader starts.
 //!
 //! Panes' OSC 10/11 colour queries are answered by the server's VT engine (it owns the PTYs),
 //! from the palette that follows `SessionModel.appearance`; the TUI never answers them, so
@@ -157,59 +155,48 @@ pub fn startup() -> Option<Detected> {
     *STARTUP.lock().unwrap()
 }
 
-/// Re-query the host with nobody else reading the terminal: write the queries and read raw
-/// replies until the DA1 sentinel (≤ 150 ms). Bytes that aren't replies (keys typed in that
-/// window) are dropped.
-#[cfg(not(target_arch = "wasm32"))]
-pub fn reprobe() -> Option<Detected> {
-    use std::io::{Read, Write};
-    // Let a reader that was just stopped finish its last read first.
-    std::thread::sleep(Duration::from_millis(15));
-    let mut out = std::io::stdout();
-    if out.write_all(QUERIES).is_err() || out.flush().is_err() {
-        return None;
-    }
-    let deadline = Instant::now() + Duration::from_millis(150);
-    let mut buf = Vec::new();
-    let mut stdin = std::io::stdin();
-    loop {
-        let left = deadline.saturating_duration_since(Instant::now());
-        if left.is_zero() {
-            break;
-        }
-        let mut pfd = libc::pollfd {
-            fd: 0,
-            events: libc::POLLIN,
-            revents: 0,
-        };
-        // SAFETY: polling stdin with a valid pollfd.
-        let n = unsafe { libc::poll(&mut pfd, 1, left.as_millis() as i32) };
-        if n <= 0 {
-            break;
-        }
-        let mut chunk = [0u8; 512];
-        match stdin.read(&mut chunk) {
-            Ok(0) | Err(_) => break,
-            Ok(k) => buf.extend_from_slice(&chunk[..k]),
-        }
-        if has_da1(&buf) {
-            break;
-        }
-    }
-    parse_reports(&buf)
+/// A query has no nonce. Accept OSC 11 only during its response window; a complete 997
+/// report is authoritative even when it arrives late. A new query starts a fresh window.
+#[cfg(any(not(target_arch = "wasm32"), test))]
+#[derive(Default)]
+pub(crate) struct Probe {
+    pub deadline: Option<Instant>,
+    background: Option<Detected>,
+    scheme_seen: bool,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-fn has_da1(b: &[u8]) -> bool {
-    b.windows(3).enumerate().any(|(i, w)| {
-        w == b"\x1b[?" && {
-            let rest = &b[i + 3..];
-            let e = rest
-                .iter()
-                .position(|c| !(c.is_ascii_digit() || *c == b';'));
-            e.is_some_and(|e| rest[e] == b'c')
+#[cfg(any(not(target_arch = "wasm32"), test))]
+impl Probe {
+    pub fn begin(&mut self, now: Instant) {
+        self.deadline = Some(now + crate::input::SEQ_WAIT);
+        self.background = None;
+        self.scheme_seen = false;
+    }
+
+    pub fn report(&mut self, det: Detected, now: Instant) -> Option<Detected> {
+        match det.source {
+            Source::Csi996 => {
+                self.scheme_seen = true;
+                self.background = None;
+                Some(det)
+            }
+            Source::Osc11 => {
+                if self.deadline.is_some_and(|d| now < d) && !self.scheme_seen {
+                    self.background = Some(det);
+                }
+                None
+            }
         }
-    })
+    }
+
+    pub fn finish_due(&mut self, now: Instant) -> Option<Detected> {
+        if self.deadline.is_some_and(|d| now >= d) {
+            self.deadline = None;
+            self.background.take()
+        } else {
+            None
+        }
+    }
 }
 
 /// The run loop asks before each wait; true once per requested re-probe.
@@ -317,7 +304,49 @@ pub fn action(app: &mut App, action: &str) -> bool {
     true
 }
 
-#[cfg(target_arch = "wasm32")]
-pub fn reprobe() -> Option<Detected> {
-    None
+#[cfg(test)]
+mod probe_tests {
+    use super::*;
+
+    #[test]
+    fn scheme_wins_and_late_background_does_not_override_it() {
+        let now = Instant::now();
+        let osc = Detected {
+            dark: false,
+            source: Source::Osc11,
+        };
+        let csi = Detected {
+            dark: true,
+            source: Source::Csi996,
+        };
+        let mut probe = Probe::default();
+        probe.begin(now);
+        assert_eq!(probe.report(osc, now), None);
+        assert_eq!(probe.report(csi, now), Some(csi));
+        assert_eq!(probe.report(osc, now), None);
+        assert_eq!(probe.finish_due(now + Duration::from_secs(1)), None);
+        assert_eq!(probe.report(osc, now + Duration::from_secs(1)), None);
+        assert_eq!(probe.report(csi, now + Duration::from_secs(1)), Some(csi));
+    }
+
+    #[test]
+    fn missing_sentinel_and_missing_reply_finish_without_blocking_input() {
+        let now = Instant::now();
+        let osc = Detected {
+            dark: false,
+            source: Source::Osc11,
+        };
+        let mut probe = Probe::default();
+        probe.begin(now);
+        probe.report(osc, now);
+        assert_eq!(probe.finish_due(now + Duration::from_millis(200)), None);
+        assert_eq!(
+            probe.finish_due(now + Duration::from_millis(500)),
+            Some(osc)
+        );
+        assert!(probe.deadline.is_none());
+        probe.begin(now);
+        assert_eq!(probe.finish_due(now + Duration::from_secs(1)), None);
+        assert!(probe.deadline.is_none());
+    }
 }

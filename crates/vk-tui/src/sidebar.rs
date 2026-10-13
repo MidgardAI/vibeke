@@ -222,15 +222,22 @@ pub fn desired_width(app: &App, rows: &[SideRow]) -> u16 {
 
 /// Recompute `sidebar_w` (once per frame, before drawing).
 pub fn fit(app: &mut App) {
+    let _ = fit_rows(app);
+}
+
+/// Rows live for this frame only: labels include ages and preview chip layout depends on width.
+pub(crate) fn fit_rows(app: &mut App) -> Vec<SideRow> {
     if !app.sidebar {
-        return;
+        return Vec::new();
     }
-    let rows = crate::draw::sidebar_rows(app);
+    let mut rows = crate::draw::sidebar_rows(app);
     let w = desired_width(app, &rows);
     if w != app.sidebar_w {
         app.sidebar_w = w;
         app.prev = Grid::new(0, 0);
+        rows = crate::draw::sidebar_rows(app);
     }
+    rows
 }
 
 #[cfg(not(target_arch = "wasm32"))]

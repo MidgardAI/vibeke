@@ -30,6 +30,8 @@ use vk_proto::input::{Key, KeyEvent, KeyKind, Mods, NamedKey};
 pub enum Input {
     Event(Event),
     Key(KeyEvent),
+    /// Host reply; never forwarded as pane input.
+    Appearance(crate::appearance::Detected),
 }
 
 /// Bytes kept while waiting for the rest of a sequence (a longer one is dropped).
@@ -109,6 +111,7 @@ pub struct Decoder {
     held: bool,
     /// Bytes consumed so far; the reader restarts its timer when this moves.
     consumed: u64,
+    capture_appearance: bool,
 }
 
 enum Step {
@@ -471,6 +474,16 @@ impl Decoder {
         })
     }
 
+    /// During a host query, an ESC may be the start of a fragmented reply. Keep the
+    /// ordinary short key waits everywhere else. The reader also caps this at the query deadline.
+    #[cfg(any(not(target_arch = "wasm32"), test))]
+    fn query_wait(&self, querying: bool) -> Option<Duration> {
+        match (querying, self.buf.as_slice()) {
+            (true, [ESC] | [ESC, b'[' | b']']) if self.paste.is_none() => Some(SEQ_WAIT),
+            _ => self.wait(),
+        }
+    }
+
     /// Bytes consumed so far (moves whenever a sequence completes or is given up on).
     pub fn consumed(&self) -> u64 {
         self.consumed
@@ -527,6 +540,12 @@ impl Decoder {
             }
             match parse(&self.buf[i..], self.policy) {
                 Step::Done(n, ins) => {
+                    if self.capture_appearance
+                        && ins.is_empty()
+                        && let Some(det) = crate::appearance::parse_reports(&self.buf[i..i + n])
+                    {
+                        out.push(Input::Appearance(det));
+                    }
                     out.extend(ins);
                     i += n.max(1);
                 }
@@ -940,7 +959,7 @@ fn find(h: &[u8], n: &[u8]) -> Option<usize> {
 
 /// Reads the host's input on a thread (stdin, `poll` with a stop pipe: no timer wake-ups while
 /// idle), decodes it, and resizes from `SIGWINCH`. Dropping it stops reading (the external
-/// editor and the appearance re-probe need stdin).
+/// editor needs stdin).
 #[cfg(not(target_arch = "wasm32"))]
 pub struct Reader {
     rx: tokio::sync::mpsc::UnboundedReceiver<Input>,
@@ -966,6 +985,14 @@ impl Reader {
             stop_w,
             thread: Some(thread),
             winch,
+        }
+    }
+
+    /// Ask the input thread to arm reply parsing before it writes the queries.
+    pub fn query_appearance(&self) {
+        if self.stop_w >= 0 {
+            // SAFETY: one command byte to the reader's pipe.
+            unsafe { libc::write(self.stop_w, [1u8].as_ptr().cast(), 1) };
         }
     }
 
@@ -998,7 +1025,7 @@ impl Drop for Reader {
         if self.stop_w >= 0 {
             // SAFETY: writing one byte to our pipe, then closing it.
             unsafe {
-                libc::write(self.stop_w, [1u8].as_ptr().cast(), 1);
+                libc::write(self.stop_w, [0u8].as_ptr().cast(), 1);
                 libc::close(self.stop_w);
             }
         }
@@ -1011,11 +1038,19 @@ impl Drop for Reader {
 #[cfg(not(target_arch = "wasm32"))]
 fn read_loop(tx: tokio::sync::mpsc::UnboundedSender<Input>, stop_r: libc::c_int, policy: Policy) {
     let mut dec = Decoder::with_policy(policy);
+    dec.capture_appearance = true;
+    let mut probe = crate::appearance::Probe::default();
     // When what is pending now started waiting: the wait is counted from there, so input that
     // keeps arriving into an unfinished sequence does not hold it open forever.
     let mut since = Instant::now();
     let mut seen = dec.consumed();
     loop {
+        let now = Instant::now();
+        if let Some(det) = probe.finish_due(now)
+            && tx.send(Input::Appearance(det)).is_err()
+        {
+            break;
+        }
         let was_waiting = dec.wait().is_some();
         let mut fds = [
             libc::pollfd {
@@ -1029,10 +1064,14 @@ fn read_loop(tx: tokio::sync::mpsc::UnboundedSender<Input>, stop_r: libc::c_int,
                 revents: 0,
             },
         ];
-        let timeout = match dec.wait() {
-            Some(w) => w.saturating_sub(since.elapsed()).as_millis() as i32,
-            None => -1,
-        };
+        let input_deadline = dec.query_wait(probe.deadline.is_some()).map(|w| since + w);
+        let deadline = input_deadline.into_iter().chain(probe.deadline).min();
+        let timeout = deadline.map_or(-1, |d| {
+            // Round up to avoid spinning in the final sub-millisecond of a deadline.
+            d.saturating_duration_since(now)
+                .as_millis()
+                .saturating_add(1) as i32
+        });
         // SAFETY: two valid pollfds.
         let n = unsafe { libc::poll(fds.as_mut_ptr(), 2, timeout) };
         if n < 0 {
@@ -1042,9 +1081,22 @@ fn read_loop(tx: tokio::sync::mpsc::UnboundedSender<Input>, stop_r: libc::c_int,
             break;
         }
         if fds[1].revents != 0 {
-            break;
+            let mut commands = [0u8; 32];
+            // SAFETY: our pipe and a buffer of the given length.
+            let count = unsafe { libc::read(stop_r, commands.as_mut_ptr().cast(), commands.len()) };
+            if count <= 0 || commands[..count as usize].contains(&0) {
+                break;
+            }
+            if commands[..count as usize].contains(&1) {
+                use std::io::Write;
+                probe.begin(Instant::now());
+                let mut stdout = std::io::stdout().lock();
+                let _ = stdout
+                    .write_all(crate::appearance::QUERIES)
+                    .and_then(|()| stdout.flush());
+            }
         }
-        let ins = if n == 0 {
+        let ins = if n == 0 && input_deadline.is_some_and(|d| Instant::now() >= d) {
             dec.flush()
         } else if fds[0].revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0 {
             let mut b = [0u8; 4096];
@@ -1067,6 +1119,13 @@ fn read_loop(tx: tokio::sync::mpsc::UnboundedSender<Input>, stop_r: libc::c_int,
             since = Instant::now();
         }
         for i in ins {
+            let i = match i {
+                Input::Appearance(det) => match probe.report(det, Instant::now()) {
+                    Some(det) => Input::Appearance(det),
+                    None => continue,
+                },
+                i => i,
+            };
             if tx.send(i).is_err() {
                 return;
             }
@@ -1584,4 +1643,58 @@ mod tests {
 #[cfg(target_arch = "wasm32")]
 fn host_erase() -> Option<u8> {
     None
+}
+
+#[cfg(test)]
+mod appearance_tests {
+    use super::*;
+
+    #[test]
+    fn query_replies_split_at_every_boundary_preserve_keys_and_paste() {
+        for reply in [&b"\x1b]11;rgb:0000/0000/0000\x1b\\"[..], b"\x1b[?997;1n"] {
+            for split in 1..reply.len() {
+                let mut dec = Decoder::new();
+                dec.capture_appearance = true;
+                let mut got = dec.feed(b"a");
+                got.extend(dec.feed(&reply[..split]));
+                // A reply split immediately after ESC or its introducer must not turn
+                // into Escape/Alt+] at the old 30/50 ms keyboard deadline.
+                assert_eq!(dec.query_wait(true), Some(SEQ_WAIT), "split {split}");
+                assert!(dec.query_wait(true).unwrap() > Duration::from_millis(80));
+                got.extend(dec.feed(&reply[split..]));
+                got.extend(dec.feed(b"b\x1b[200~paste\x1b[201~c"));
+                let keys: Vec<_> = got
+                    .iter()
+                    .filter_map(|i| match i {
+                        Input::Key(k) => Some(k.key),
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(keys, [Key::Char('a'), Key::Char('b'), Key::Char('c')]);
+                assert_eq!(
+                    got.iter()
+                        .filter(|i| matches!(i, Input::Appearance(_)))
+                        .count(),
+                    1
+                );
+                assert!(got.contains(&Input::Event(Event::Paste("paste".into()))));
+            }
+        }
+    }
+
+    #[test]
+    fn query_does_not_parse_pasted_reply_text_as_appearance() {
+        let mut dec = Decoder::new();
+        dec.capture_appearance = true;
+        assert_eq!(
+            dec.feed(b"\x1b[200~\x1b[?997;1n\x1b[201~"),
+            [Input::Event(Event::Paste("\x1b[?997;1n".into()))]
+        );
+        dec.feed(b"\x1b");
+        assert_eq!(dec.query_wait(false), Some(ESC_WAIT));
+        assert_eq!(dec.query_wait(true), Some(SEQ_WAIT));
+        assert!(
+            matches!(dec.flush().as_slice(), [Input::Key(k)] if k.key == Key::Named(NamedKey::Escape))
+        );
+    }
 }

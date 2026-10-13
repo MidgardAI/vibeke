@@ -104,6 +104,57 @@ pub struct Grid {
     pub cells: Vec<Cell>,
 }
 
+/// A pane's projected rows. Compare the source row itself, not a revision: callers may
+/// replace an engine, reconnect, or repaint at another width without a newer revision.
+#[derive(Default)]
+pub struct RowCache {
+    width: u16,
+    rows: Vec<(Row, Vec<Cell>)>,
+}
+
+impl RowCache {
+    pub fn scroll_up(&mut self, n: usize) {
+        let n = n.min(self.rows.len());
+        self.rows.drain(..n);
+    }
+
+    pub fn paint(&mut self, grid: &mut Grid, source: &[Row], rect: Rect) {
+        let width = rect.w.min(grid.cols.saturating_sub(rect.x));
+        let height = source
+            .len()
+            .min(rect.h as usize)
+            .min(grid.rows.saturating_sub(rect.y) as usize);
+        if width != self.width {
+            self.width = width;
+            self.rows.clear();
+        }
+        self.rows.truncate(height);
+        for (y, row) in source.iter().take(height).enumerate() {
+            if self.rows.get(y).is_none_or(|(cached, _)| cached != row) {
+                let mut projected = Grid::new(width, 1);
+                let used = projected.put_row(0, 0, row, width);
+                projected.cells.truncate(used as usize);
+                let entry = (row.clone(), projected.cells);
+                if y == self.rows.len() {
+                    self.rows.push(entry);
+                } else {
+                    self.rows[y] = entry;
+                }
+            }
+            let cells = &self.rows[y].1;
+            if cells.is_empty() {
+                continue;
+            }
+            let gy = rect.y + y as u16;
+            // Repair wide cells at both boundaries, as put_row does for overlapping floats.
+            grid.break_wide_at(rect.x, gy);
+            grid.break_wide_at(rect.x + cells.len() as u16 - 1, gy);
+            let start = grid.idx(rect.x, gy);
+            grid.cells[start..start + cells.len()].clone_from_slice(cells);
+        }
+    }
+}
+
 /// Display width of one grapheme cluster (0 = not drawable: control or lone combining mark).
 fn grapheme_width(g: &str) -> usize {
     let Some(first) = g.chars().next() else {
@@ -648,6 +699,63 @@ pub fn diff(prev: &Grid, next: &Grid, caps: &HostCaps, out: &mut Vec<u8>) {
     } else if caps.sync_update {
         out.extend_from_slice(b"\x1b[?2026l");
     }
+}
+
+/// Scroll a verified full-width region before diffing its exposed rows. No operation is
+/// emitted unless the previous composed rows exactly match the retained new rows. This
+/// also rejects badges, selection changes, resize and invalidated image rectangles.
+pub(crate) fn scroll_diff(
+    prev: &mut Grid,
+    next: &Grid,
+    caps: &HostCaps,
+    rect: Rect,
+    n: u16,
+    out: &mut Vec<u8>,
+) -> bool {
+    if !caps.sync_update
+        || rect.x != 0
+        || rect.w != next.cols
+        || n == 0
+        || n >= rect.h
+        || prev.cols != next.cols
+        || prev.rows != next.rows
+        || rect.y.saturating_add(rect.h) > next.rows
+    {
+        return false;
+    }
+    let end = rect.y + rect.h;
+    if !(rect.y..end - n).all(|y| prev.row(y + n) == next.row(y)) {
+        return false;
+    }
+    // A blank/repeating screen does not benefit from a host scroll.
+    if (rect.y..end).all(|y| prev.row(y) == next.row(y)) {
+        return false;
+    }
+    out.extend_from_slice(b"\x1b[?2026h\x1b[0m");
+    let _ = write!(
+        StrSink(out),
+        "\x1b[{};{}r\x1b[{};1H\x1b[{}S\x1b[r",
+        rect.y + 1,
+        end,
+        rect.y + 1,
+        n
+    );
+    let start = rect.y as usize * prev.cols as usize;
+    let stop = end as usize * prev.cols as usize;
+    let shift = n as usize * prev.cols as usize;
+    prev.cells[start..stop].rotate_left(shift);
+    prev.cells[stop - shift..stop].fill(Cell::blank(Style::default()));
+    diff(
+        prev,
+        next,
+        &HostCaps {
+            sync_update: false,
+            ..*caps
+        },
+        out,
+    );
+    out.extend_from_slice(b"\x1b[?2026l");
+    true
 }
 
 /// Position and show/hide the host cursor with the requested shape (steady DECSCUSR).
@@ -1296,5 +1404,168 @@ mod tests {
             diff(&Grid::new(1, 1), &a, &ALL, &mut out);
         }
         println!("full redraw 300x80: {:?}/frame", t.elapsed() / 100);
+    }
+}
+
+#[cfg(test)]
+mod cache_scroll_tests {
+    use super::*;
+    use vk_proto::render::{Link, Span};
+
+    fn row(text: &str, style: Style) -> Row {
+        Row {
+            spans: vec![Span {
+                style,
+                text: text.into(),
+                cols: 20,
+            }],
+            ..Row::default()
+        }
+    }
+
+    #[test]
+    fn cached_rows_match_direct_projection_after_content_link_and_width_changes() {
+        let mut cache = RowCache::default();
+        let mut linked = row(
+            "宽a🙂e\u{301} more",
+            Style {
+                fg: Color::Indexed(2),
+                ..Style::default()
+            },
+        );
+        linked.links.push(Link {
+            col: 1,
+            cols: 6,
+            uri: "https://example.com/first".into(),
+        });
+        let mut rows = vec![linked, row("short", Style::default())];
+        for revision in 0..3 {
+            if revision == 1 {
+                rows[0].links[0].uri = "https://example.com/second".into();
+            }
+            if revision == 2 {
+                rows.reverse();
+            }
+            for width in [12, 12, 1, 2, 5, 8] {
+                for x in 0..4 {
+                    let mut cached = Grid::new(16, 4);
+                    cached.put_str(0, 1, "宽宽宽宽宽宽宽宽", Style::default(), 16);
+                    let mut direct = cached.clone();
+                    let rect = Rect {
+                        x,
+                        y: 1,
+                        w: width,
+                        h: 2,
+                    };
+                    cache.paint(&mut cached, &rows, rect);
+                    for (y, row) in rows.iter().enumerate() {
+                        direct.put_row(x, 1 + y as u16, row, width);
+                    }
+                    assert_eq!(cached, direct, "revision={revision} width={width} x={x}");
+                    let ptr = cache.rows[0].1.as_ptr();
+                    cache.paint(&mut cached, &rows, rect);
+                    assert_eq!(
+                        ptr,
+                        cache.rows[0].1.as_ptr(),
+                        "unchanged row keeps its projection"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn verified_host_scroll_matches_full_diff_and_preserves_chrome() {
+        let caps = HostCaps {
+            sync_update: true,
+            truecolor: true,
+            osc8: true,
+            ..HostCaps::default()
+        };
+        let mut prev = Grid::new(24, 8);
+        for y in 0..8 {
+            let style = Style {
+                bg: Color::Indexed(y as u8),
+                ..Style::default()
+            };
+            prev.put_str(0, y, &format!("row {y} 宽 data"), style, 24);
+        }
+        let mut next = prev.clone();
+        for y in 1..6 {
+            next.cells[y * 24..(y + 1) * 24].clone_from_slice(prev.row(y as u16 + 1));
+        }
+        next.cells[6 * 24..7 * 24].fill(Cell::blank(Style::default()));
+        next.put_str(0, 6, "exposed row", Style::default(), 24);
+        let mut optimized = Vec::new();
+        let mut shifted = prev.clone();
+        assert!(scroll_diff(
+            &mut shifted,
+            &next,
+            &caps,
+            Rect {
+                x: 0,
+                y: 1,
+                w: 24,
+                h: 6
+            },
+            1,
+            &mut optimized
+        ));
+        let mut normal = Vec::new();
+        diff(&prev, &next, &caps, &mut normal);
+        assert!(optimized.len() < normal.len());
+        let mut initial = Vec::new();
+        diff(&Grid::new(0, 0), &prev, &caps, &mut initial);
+        let mut optimized_host = vk_term::Engine::new(24, 8, 0);
+        let mut normal_host = vk_term::Engine::new(24, 8, 0);
+        optimized_host.feed(&initial, &mut Vec::new());
+        normal_host.feed(&initial, &mut Vec::new());
+        optimized_host.feed(&optimized, &mut Vec::new());
+        normal_host.feed(&normal, &mut Vec::new());
+        assert_eq!(optimized_host.visible_rows(), normal_host.visible_rows());
+    }
+
+    #[test]
+    fn host_scroll_falls_back_for_resize_partial_width_or_changed_retained_rows() {
+        let caps = HostCaps {
+            sync_update: true,
+            ..HostCaps::default()
+        };
+        let mut prev = Grid::new(12, 5);
+        let mut next = prev.clone();
+        next.put_str(0, 1, "changed", Style::default(), 12);
+        let rect = Rect {
+            x: 0,
+            y: 0,
+            w: 12,
+            h: 5,
+        };
+        let mut out = Vec::new();
+        assert!(!scroll_diff(&mut prev, &next, &caps, rect, 1, &mut out));
+        assert!(!scroll_diff(
+            &mut prev,
+            &next,
+            &caps,
+            Rect { w: 11, ..rect },
+            1,
+            &mut out
+        ));
+        assert!(!scroll_diff(
+            &mut Grid::new(0, 0),
+            &next,
+            &caps,
+            rect,
+            1,
+            &mut out
+        ));
+        assert!(!scroll_diff(
+            &mut prev,
+            &next,
+            &HostCaps::default(),
+            rect,
+            1,
+            &mut out
+        ));
+        assert!(out.is_empty());
     }
 }

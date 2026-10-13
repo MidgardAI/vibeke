@@ -42,6 +42,8 @@ pub struct PaneBuf {
     pub cols: u16,
     pub rows: u16,
     pub lines: Vec<Row>,
+    pub cell_cache: std::cell::RefCell<crate::screen::RowCache>,
+    pub pending_scroll: u16,
     pub cursor: Cursor,
     pub modes: PaneModes,
     pub title: String,
@@ -55,6 +57,8 @@ impl PaneBuf {
             cols: 0,
             rows: 0,
             lines: Vec::new(),
+            cell_cache: Default::default(),
+            pending_scroll: 0,
             cursor: Cursor::default(),
             modes: PaneModes::default(),
             title: String::new(),
@@ -513,6 +517,9 @@ pub struct App {
     pub next_input: u64,
     pub client_id: String,
     pub prev: Grid,
+    scratch: Grid,
+    host_scroll: bool,
+    last_cursor: Option<Option<(u16, u16, vk_proto::render::CursorShape)>>,
     pub dirty: bool,
     pub quit: Option<String>,
     pub host_focused: bool,
@@ -759,6 +766,14 @@ async fn run_inner(
         matches!(probe.osc52, crate::caps::Osc52::Allowed),
         probe.kitty_keyboard,
     );
+    // VT-family primary attributes plus synchronized updates establish the small native
+    // scroll contract. Unknown hosts and WASM retain cell diffs.
+    app.host_scroll = probe.sync_update
+        && probe
+            .da1
+            .as_ref()
+            .and_then(|a| a.first())
+            .is_some_and(|id| matches!(id, 1 | 6 | 62..=65));
     app.cur = opts.initial_machine.min(specs.len().saturating_sub(1));
     app.pending_ops =
         crate::pending::PendingStore::open(crate::pending::default_dir(&opts.session), &client_id);
@@ -815,8 +830,7 @@ async fn run_inner(
     loop {
         if app.dirty {
             let wait = Duration::from_millis(1000 / 120).saturating_sub(last_draw.elapsed());
-            if wait.is_zero() {
-                app.draw()?;
+            if wait.is_zero() && app.draw()? {
                 last_draw = Instant::now();
             }
         }
@@ -840,13 +854,9 @@ async fn run_inner(
                 app.toast(e);
             }
         }
-        // Re-query the host's light/dark appearance (after a focus change): the event reader
-        // is stopped while the replies are read raw.
+        // The existing reader handles query replies alongside ordinary keys and paste.
         if crate::appearance::take_reprobe(&mut app) {
-            drop(events);
-            let det = crate::appearance::reprobe();
-            events = crate::input::Reader::new();
-            crate::appearance::on_detect(&mut app, det);
+            events.query_appearance();
         }
         let redraw_in = if app.dirty {
             Duration::from_millis(1000 / 120).saturating_sub(last_draw.elapsed())
@@ -957,6 +967,9 @@ impl App {
             next_input: 1,
             client_id,
             prev: Grid::new(0, 0),
+            scratch: Grid::new(0, 0),
+            host_scroll: false,
+            last_cursor: None,
             dirty: true,
             quit: None,
             host_focused: true,
@@ -1444,6 +1457,8 @@ impl App {
                         cols,
                         rows,
                         lines,
+                        cell_cache: Default::default(),
+                        pending_scroll: 0,
                         cursor,
                         modes,
                         title,
@@ -1467,7 +1482,9 @@ impl App {
                             match op {
                                 DiffOp::ScrollUp { n } => {
                                     let n = (n as usize).min(b.lines.len());
+                                    b.pending_scroll = b.pending_scroll.saturating_add(n as u16);
                                     b.lines.drain(..n);
+                                    b.cell_cache.get_mut().scroll_up(n);
                                     b.lines.extend(std::iter::repeat_n(Row::default(), n));
                                 }
                                 DiffOp::Rows(rows) => {
@@ -1951,6 +1968,7 @@ impl App {
     pub(crate) fn on_input(&mut self, i: crate::input::Input) {
         match i {
             crate::input::Input::Event(ev) => self.on_event(ev),
+            crate::input::Input::Appearance(det) => crate::appearance::on_detect(self, Some(det)),
             crate::input::Input::Key(k) => {
                 self.dirty = true;
                 crate::gateway::on_input(self);
@@ -3123,16 +3141,26 @@ impl App {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    fn draw(&mut self) -> Result<()> {
-        let out = self.draw_bytes();
+    fn draw(&mut self) -> Result<bool> {
+        let out = self.draw_frame(true);
+        if out.is_empty() {
+            return Ok(false);
+        }
         let mut stdout = std::io::stdout();
         stdout.write_all(&out)?;
         stdout.flush()?;
-        Ok(())
+        Ok(true)
     }
 
     /// Compose one frame without choosing the host output device.
+    #[cfg(any(target_arch = "wasm32", test))]
     pub(crate) fn draw_bytes(&mut self) -> Vec<u8> {
+        self.draw_frame(false)
+    }
+
+    /// Native frames preserve the paint budget when observers find no visual change.
+    /// WASM retains its existing output/pacing contract.
+    fn draw_frame(&mut self, skip_unchanged: bool) -> Vec<u8> {
         self.dirty = false;
         self.send_view_hints(false);
         crate::browser::update_views(self);
@@ -3140,15 +3168,20 @@ impl App {
         crate::pane_images::before_draw(self);
         crate::nav::observe(self);
         crate::plugins::observe(self);
-        crate::sidebar::fit(self);
+        let sidebar_rows = crate::sidebar::fit_rows(self);
         crate::card::observe(self);
         // After the layout is final: placements (and the size a remote image is fetched at)
         // depend on the sidebar width.
         crate::viewer::ensure_image(self);
         crate::image_view::before_draw(self);
         let (cols, rows) = self.size;
-        let mut grid = Grid::new(cols, rows);
-        let cursor = draw::compose(self, &mut grid);
+        let mut grid = std::mem::replace(&mut self.scratch, Grid::new(0, 0));
+        if grid.cols != cols || grid.rows != rows {
+            grid = Grid::new(cols, rows);
+        } else {
+            grid.clear();
+        }
+        let cursor = draw::compose_with_sidebar(self, &mut grid, &sidebar_rows);
         crate::image_view::after_compose(self, &grid);
         // Browser tile images first; their placeholder cells follow in the grid diff.
         let mut out = crate::browser::take_output(self);
@@ -3157,18 +3190,72 @@ impl App {
             out.extend_from_slice(&title);
         }
         out.reserve(16 * 1024);
-        if !self.caps.sync_update {
-            out.extend_from_slice(b"\x1b[?25l");
+        let scroll = skip_unchanged.then(|| self.scroll_candidate()).flatten();
+        let scrolled = scroll.is_some_and(|(rect, n)| {
+            crate::screen::scroll_diff(&mut self.prev, &grid, &self.caps, rect, n, &mut out)
+        });
+        if !scrolled {
+            crate::screen::diff(&self.prev, &grid, &self.caps, &mut out);
         }
-        crate::screen::diff(&self.prev, &grid, &self.caps, &mut out);
+        for machine in &mut self.machines {
+            for pane in machine.panes.values_mut() {
+                pane.pending_scroll = 0;
+            }
+        }
+        self.scratch = std::mem::replace(&mut self.prev, grid);
+        // These observers also produce one-shot media output and must run on no-op frames.
+        crate::browser::after_write(self, &mut out);
+        crate::image_view::after_write(self, &mut out);
+        if skip_unchanged && out.is_empty() && self.last_cursor == Some(cursor) {
+            return out;
+        }
+        if !self.caps.sync_update {
+            out.splice(..0, b"\x1b[?25l".iter().copied());
+        }
+        // Media may move the host cursor. Restore it after all one-shot output.
         match cursor {
             Some((x, y, shape)) => crate::screen::cursor(&mut out, x, y, true, shape),
             None => out.extend_from_slice(b"\x1b[?25l"),
         }
-        self.prev = grid;
-        crate::browser::after_write(self, &mut out);
-        crate::image_view::after_write(self, &mut out);
+        self.last_cursor = Some(cursor);
         out
+    }
+
+    /// DECSTBM affects whole host rows. Keep the common sidebar/split/media paths on
+    /// cell diffs; the screen helper also verifies every row retained by the scroll.
+    fn scroll_candidate(&self) -> Option<(crate::screen::Rect, u16)> {
+        if !self.host_scroll
+            || !self.caps.sync_update
+            || self.sidebar
+            || crate::sidebar::rail_w(self) != 0
+            || !matches!(self.mode, Mode::Normal)
+            || self.gateway.modal()
+            || crate::card::showing(self).is_some()
+            || !crate::floats::visible(self).is_empty()
+            || !crate::plugins::surfaces(self).is_empty()
+            || !self.browser.panes.is_empty()
+            || self.images.has_host_images()
+            || self.imgview.has_placements()
+        {
+            return None;
+        }
+        let panes = self.tiled_rects();
+        let [(pane, r)] = panes.as_slice() else {
+            return None;
+        };
+        if r.x != 0 || r.w != self.size.0 || r.h < 3 {
+            return None;
+        }
+        let n = self.m().panes.get(pane)?.pending_scroll;
+        (n > 0 && n < r.h).then_some((
+            crate::screen::Rect {
+                x: r.x,
+                y: r.y,
+                w: r.w,
+                h: r.h,
+            },
+            n,
+        ))
     }
 
     /// Make the next grid diff rewrite the cells of `r` (spec 18 §3.3): an iTerm2 inline image
@@ -3735,3 +3822,7 @@ mod isolation_tests {
         assert!(matches!(app.mode, Mode::Popup(Popup::PasteAsk { .. })));
     }
 }
+
+#[cfg(test)]
+#[path = "paint_tests.rs"]
+mod paint_tests;

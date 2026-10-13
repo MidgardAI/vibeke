@@ -888,6 +888,19 @@ pub fn tabbar_hit(app: &App, x: u16) -> Option<String> {
 
 /// Compose the whole frame; returns the host cursor position if a pane cursor should show.
 pub fn compose(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
+    let rows = if app.sidebar {
+        sidebar_rows(app)
+    } else {
+        Vec::new()
+    };
+    compose_with_sidebar(app, g, &rows)
+}
+
+pub(crate) fn compose_with_sidebar(
+    app: &App,
+    g: &mut Grid,
+    sidebar: &[SideRow],
+) -> Option<(u16, u16, CursorShape)> {
     let t = app.theme;
     let rows = app.size.1;
     // Sidebar, left or right (08 §2.4).
@@ -921,7 +934,7 @@ pub fn compose(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
             None
         };
         let mut target_i = 0;
-        for (i, r) in sidebar_rows(app).iter().enumerate() {
+        for (i, r) in sidebar.iter().enumerate() {
             let y = i as u16 + 1;
             if y >= rows.saturating_sub(u16::from(crate::updates::badge(app).is_some())) {
                 break;
@@ -1075,7 +1088,7 @@ pub fn compose(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
         cursor = None;
     }
     // The full text of a cut-off sidebar row, beside the sidebar (08 §2).
-    if let Some(o) = crate::sidebar_tip::draw(app, g)
+    if let Some(o) = crate::sidebar_tip::draw_rows(app, g, sidebar)
         && cursor.is_some_and(|(x, y, _)| x >= o.x && x < o.x + o.w && y >= o.y && y < o.y + o.h)
     {
         cursor = None;
@@ -1325,13 +1338,16 @@ fn draw_pane_at(
 }
 
 fn draw_pane(g: &mut Grid, buf: &PaneBuf, r: Rect) {
-    for (y, row) in buf.lines.iter().enumerate() {
-        let y = y as u16;
-        if y >= r.h {
-            break;
-        }
-        g.put_row(r.x, r.y + y, row, r.w);
-    }
+    buf.cell_cache.borrow_mut().paint(
+        g,
+        &buf.lines,
+        SRect {
+            x: r.x,
+            y: r.y,
+            w: r.w,
+            h: r.h,
+        },
+    );
     // Another client controls the PTY size (01 §1.4): show a hint when we letterbox.
     if buf.cols < r.w.saturating_sub(1) || buf.rows < r.h.saturating_sub(1) {
         let hint = format!(" ⇲ {}×{} (other client) ", buf.cols, buf.rows);

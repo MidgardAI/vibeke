@@ -68,6 +68,12 @@ pub struct State {
     pub out: Vec<u8>,
 }
 
+impl State {
+    pub(crate) fn has_host_images(&self) -> bool {
+        !self.host.is_empty() || !self.out.is_empty()
+    }
+}
+
 /// The host takes zlib (`o=z`) payloads. Vibeke's own engine (libghostty-vt) rejects
 /// dynamic-Huffman streams, so nested Vibeke and `VIBEKE_KITTY_ZLIB=0` get raw RGBA (as browser
 /// tiles do).

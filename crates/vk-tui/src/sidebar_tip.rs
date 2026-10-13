@@ -169,9 +169,23 @@ pub fn wrap_capped(s: &str, width: usize, max: usize) -> Vec<String> {
 /// Draw the tooltip over the main area, beside the sidebar. Returns its rectangle, so the
 /// pane cursor under it can be hidden.
 pub fn draw(app: &App, g: &mut Grid) -> Option<SRect> {
-    crate::chrome::sidebar_x(app)?;
+    if !possible(app) {
+        return None;
+    }
     let rows = crate::draw::sidebar_rows(app);
-    let (i, nav) = current(app, &rows)?;
+    draw_rows(app, g, &rows)
+}
+
+fn possible(app: &App) -> bool {
+    eligible(app) && (matches!(app.mode, Mode::Navigate { .. }) || app.ux.tip.hover.is_some())
+}
+
+pub(crate) fn draw_rows(app: &App, g: &mut Grid, rows: &[SideRow]) -> Option<SRect> {
+    if !possible(app) {
+        return None;
+    }
+    crate::chrome::sidebar_x(app)?;
+    let (i, nav) = current(app, rows)?;
     let r = &rows[i];
     let t = app.theme;
     let (mx, mw) = crate::chrome::main_x(app);

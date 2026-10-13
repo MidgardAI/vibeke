@@ -89,6 +89,10 @@ pub struct State {
 }
 
 impl State {
+    pub(crate) fn has_placements(&self) -> bool {
+        !self.kitty.is_empty() || !self.iterm.is_empty() || !self.queued.is_empty()
+    }
+
     pub fn new() -> State {
         State {
             tmux: std::env::var_os("TMUX").is_some_and(|v| !v.is_empty()),
