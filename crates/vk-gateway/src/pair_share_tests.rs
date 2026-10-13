@@ -37,6 +37,7 @@ fn spec(github: bool, review: bool) -> ShareSpec {
             login: "alice".into(),
         }],
         github_any: false,
+        teams: Vec::new(),
         review: review.then(|| Review {
             preview: "pv1".into(),
             sid: "abcdefghijklmnop".into(),
@@ -336,7 +337,105 @@ fn claims(gw: &Gateway, pid: &str, remote: &[u8; 32], gh_id: u64) -> AttestClaim
         nonce: attest::nonce(pid, remote),
         iat: now,
         exp: now + 300,
+        teams: Vec::new(),
     }
+}
+
+const ACME: &str = "0b5c3f7e-1d2a-4c8b-9e6f-3a1b2c3d4e5f";
+const OTHER_TEAM: &str = "11111111-2222-4333-8444-555555555555";
+
+/// A team link (spec 20 §2.5): a member of one of the share's teams may open it, whatever their
+/// GitHub id; someone in no team, or only in other teams, is refused with the people and teams
+/// the link is for. Team names never authorize.
+#[test]
+fn claims_allowed_by_team_membership() {
+    let t = tempfile::tempdir().unwrap();
+    let gw = gateway(&t, None);
+    let host = gw.keys.host_id();
+    let sp = ShareSpec {
+        teams: vec![crate::state::TeamRef {
+            id: ACME.into(),
+            name: "Acme".into(),
+        }],
+        ..spec(true, false)
+    };
+    // Not alice (42), but in Acme.
+    let member = AttestClaims {
+        teams: vec![OTHER_TEAM.into(), ACME.into()],
+        ..claims(&gw, "pid1", &[1; 32], 7)
+    };
+    assert_eq!(
+        check_claims(&member, &host, "pid1", &[1; 32], &sp)
+            .unwrap()
+            .id,
+        7
+    );
+    // Not a member (any more): no teams, or only another team.
+    for teams in [
+        vec![],
+        vec![OTHER_TEAM.to_string()],
+        vec!["Acme".to_string()],
+    ] {
+        let c = AttestClaims {
+            teams,
+            ..claims(&gw, "pid1", &[1; 32], 7)
+        };
+        let e = check_claims(&c, &host, "pid1", &[1; 32], &sp).unwrap_err();
+        assert_eq!(e.kind, "github_not_allowed");
+        assert_eq!(e.details, json!({"allowed": ["alice"], "teams": ["Acme"]}));
+    }
+    // Team membership never skips the host, link and device checks.
+    assert_eq!(
+        kind(check_claims(&member, &host, "pid1", &[2; 32], &sp)),
+        "attest_invalid"
+    );
+    // A share for a team only: alice by id is refused, the member is let in.
+    let team_only = ShareSpec {
+        github: vec![],
+        ..sp.clone()
+    };
+    assert!(check_claims(&member, &host, "pid1", &[1; 32], &team_only).is_ok());
+    assert_eq!(
+        kind(check_claims(
+            &claims(&gw, "pid1", &[1; 32], 42),
+            &host,
+            "pid1",
+            &[1; 32],
+            &team_only
+        )),
+        "github_not_allowed"
+    );
+    // A share without teams ignores the attestation's teams.
+    assert_eq!(
+        kind(check_claims(
+            &member,
+            &host,
+            "pid1",
+            &[1; 32],
+            &spec(true, false)
+        )),
+        "github_not_allowed"
+    );
+}
+
+/// Shares and pairings written before teams existed still load, and a team share keeps its
+/// teams across a save.
+#[test]
+fn shares_without_teams_still_load() {
+    let old = json!({"kind": "share", "ttl_s": 60, "access": "github",
+                     "github": [{"id": 2, "login": "alice"}]});
+    let sp: ShareSpec = serde_json::from_value(old).unwrap();
+    assert!(sp.teams.is_empty());
+    assert!(serde_json::to_value(&sp).unwrap().get("teams").is_none());
+    let with = ShareSpec {
+        teams: vec![crate::state::TeamRef {
+            id: ACME.into(),
+            name: "Acme".into(),
+        }],
+        ..sp
+    };
+    let back: ShareSpec = serde_json::from_value(serde_json::to_value(&with).unwrap()).unwrap();
+    assert_eq!(back.teams, with.teams);
 }
 
 #[test]
@@ -368,7 +467,7 @@ fn claims_must_match_host_link_device_and_list() {
     let other = claims(&gw, "pid1", &[1; 32], 7);
     let e = check_claims(&other, &host, "pid1", &[1; 32], &sp).unwrap_err();
     assert_eq!(e.kind, "github_not_allowed");
-    assert_eq!(e.details, json!({"allowed": ["alice"]}));
+    assert_eq!(e.details, json!({"allowed": ["alice"], "teams": []}));
     // A login is matched by id only: a renamed account keeps its access, a new owner of the
     // old login gets none.
     let renamed = AttestClaims {
@@ -508,6 +607,58 @@ async fn attestations_from_the_account_server() {
     .await
     .unwrap_err();
     assert_eq!(e.kind, "github_not_allowed");
+    // A signed team list counts only for a share made for that team.
+    let in_acme = AttestClaims {
+        teams: vec![ACME.into()],
+        ..claims(&gw, &p.pid, &remote, 7)
+    };
+    assert_eq!(
+        kind(check(Some(attest::sign(&ATTEST_SEED, &in_acme))).await),
+        "github_not_allowed"
+    );
+    let team_share = ShareSpec {
+        teams: vec![crate::state::TeamRef {
+            id: ACME.into(),
+            name: "Acme".into(),
+        }],
+        ..sp.clone()
+    };
+    let (tp, link) = create_invitation(
+        &gw.state,
+        "ws://relay.test",
+        "devbox",
+        Scope::View,
+        true,
+        Duration::from_secs(3600),
+        Some(team_share.clone()),
+        5,
+    )
+    .unwrap();
+    let names: Vec<_> = link
+        .share_info()
+        .unwrap()
+        .teams
+        .into_iter()
+        .map(|t| (t.id, t.name))
+        .collect();
+    assert_eq!(names, [(ACME.to_string(), "Acme".to_string())]);
+    let member = AttestClaims {
+        nonce: attest::nonce(&tp.pid, &remote),
+        ..in_acme.clone()
+    };
+    assert_eq!(
+        check_attest(
+            &gw,
+            &tp,
+            &team_share,
+            &remote,
+            Some(&attest::sign(&ATTEST_SEED, &member))
+        )
+        .await
+        .unwrap()
+        .id,
+        7
+    );
     // Unknown kid: at most one extra key fetch, then refused.
     let before = fake.with(|s| s.keys_calls);
     let rotated = AttestClaims {

@@ -15,7 +15,7 @@ import {
   takePendingAttest,
   type SmallStorage,
 } from '../src/attest';
-import { isReviewLink, linkJson, linkRoute, linkToUrl, needsAttestation, parseContinueLink, parseLink, type PairingLink } from '../src/link';
+import { isReviewLink, linkJson, linkRoute, linkToUrl, needsAttestation, parseContinueLink, parseLink, shareTeamNames, type PairingLink } from '../src/link';
 
 const base: PairingLink = {
   v: 1,
@@ -72,8 +72,23 @@ describe('review links', () => {
       { ...share, preview: { id: 5 } },
       { ...share, preview: undefined },
       { ...share, account: 'javascript:alert(1)' },
+      { ...share, teams: 'Acme' },
+      { ...share, teams: [{ name: 'Acme' }] },
+      { ...share, teams: [{ id: '' }] },
+      { ...share, teams: [{ id: 't1', name: 5 }] },
+      { ...share, teams: Array.from({ length: 51 }, (_, i) => ({ id: `t${i}` })) },
     ];
     for (const s of bad) expect(() => parseLink(enc({ ...base, share: s }))).toThrow();
+  });
+
+  test('team links name their teams (spec 20 §2.5)', () => {
+    const teams = [{ id: '0b5c3f7e-1d2a-4c8b-9e6f-3a1b2c3d4e5f', name: 'Acme' }, { id: '11111111-2222-4333-8444-555555555555' }];
+    const l = { ...base, share: { kind: 'share' as const, scope: 'view', until: 5, access: 'github' as const, uses: 20, teams } };
+    const p = parseLink(linkToUrl(l, 'https://app.example'));
+    expect(p.share?.teams).toEqual(teams);
+    expect(shareTeamNames(p.share)).toEqual(['Acme', '11111111-2222-4333-8444-555555555555']);
+    expect(linkJson(p)).toBe(linkJson(l));
+    expect(shareTeamNames(undefined)).toEqual([]);
   });
 
   test('older links without the new fields still parse', () => {

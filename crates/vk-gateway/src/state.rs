@@ -143,6 +143,9 @@ pub struct GithubId {
     pub login: String,
 }
 
+/// A team a share is for (spec 20 §2.5): `id` is what counts, `name` is for display.
+pub use vk_account::TeamRef;
+
 /// What a review share opens (spec 20 §3.2): one preview, its content origin label and how its
 /// notes reach the agent.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -284,6 +287,10 @@ pub struct ShareSpec {
     /// `access: github` with `["*"]`: any GitHub account.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub github_any: bool,
+    /// `access: github`: the teams whose members may open it, checked against the team ids in
+    /// the opener's attestation (spec 20 §2.5). Absent in shares from older gateways.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub teams: Vec<TeamRef>,
     /// Review invitations (spec 20 §3.5).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub review: Option<Review>,
@@ -1138,6 +1145,7 @@ mod tests {
             access: None,
             github: Vec::new(),
             github_any: false,
+            teams: Vec::new(),
             review: None,
         };
         assert_eq!(sp.device_expiry(), None);

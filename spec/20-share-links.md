@@ -41,8 +41,8 @@ All links keep their secrets in the URL fragment, so no web server sees them.
 | Design review (new) | `<app>/#/review?d=<b64 PairingLink>` | psk + ticket | review screen (§3.6) |
 | Continue (new) | `<app>/#/continue?d=<b64 ContinueLink>` | blob key `k` | choose one of your hosts |
 
-`PairingLink.share` gains `access`, `uses`, `notes` and, for review links, `preview {id, label}`
-and `sid` (§3.6).
+`PairingLink.share` gains `access`, `uses`, `notes`, for team links `teams: [{id, name}]` (§2.5,
+for display only) and, for review links, `preview {id, label}` and `sid` (§3.6).
 
 **Old clients.** A client that does not know `access: github` sends `pair.claim` without an
 attestation; the gateway refuses it with `upgrade_required` ("This link needs a newer Vibeke
@@ -57,7 +57,7 @@ A share and a continue link carry `access`:
 - `link`: whoever opens the link first gets the access. Single use, 15 minutes to open. This is
   today's behaviour.
 - `github`: the opener signs in with GitHub through the account server. Only the listed GitHub
-  accounts, or with `["*"]` any GitHub account, may open it. The link can be used up to `uses`
+  accounts, members of the listed teams (§2.5), or with `["*"]` any GitHub account, may open it. The link can be used up to `uses`
   times (default 20, max 100) until the share expires. Each opener becomes a separate device
   with its own login shown in **People**.
 
@@ -74,10 +74,15 @@ through the account server (`GET /v1/github/users/{login}` → `{id, login}`) on
 is created. The share stores `[{id, login}]`; `login` is for display. Attestations and blob
 downloads are checked by id.
 
+`share.create` and `handoff.link.create` also take `teams: [team id | team name]` (§2.5), alone or
+with `github`. `["*"]` stands alone: it may not be combined with `teams`.
+
 The default list is the account's **sharing list**, kept on the account server and managed on
-the account page (`<account server>/account`, §6.4) or through `/v1/sharing`. A request for
-`access: github` without `github` uses it; an empty list is refused (fail closed). The CLI and the
-TUI send a machine's `[sharing] github` config list instead when it has one:
+the account page (`<account server>/account`, §6.4) or through `/v1/sharing`: its people and the
+teams ticked "share with by default". A request for `access: github` without `github` and without
+`teams` uses both; when both are empty it is refused with `invalid_params` (fail closed). The CLI
+and the TUI send a machine's `[sharing] github` config list instead when it has one (people only;
+the account's teams are then not added):
 
 ```toml
 [sharing]
@@ -101,14 +106,19 @@ nothing else.
    `--dev`). Review origins (§3.6) are never return targets.
 3. The attestation is `v1.<b64url json>.<b64url ed25519 sig>`, signed over
    `"vibeke-cloud/1 attest\0" ‖ json`. The JSON is
-   `{v:1, kid, gh_id, login, aud, nonce, iat, exp}` with `exp = iat + 300`. `kid` names the
-   signing key (§6.1).
+   `{v:1, kid, gh_id, login, aud, nonce, iat, exp, teams?}` with `exp = iat + 300`. `kid` names
+   the signing key (§6.1). `teams` lists the ids of the teams the signer belongs to when the
+   account server signs (at most 50); it is left out when empty. A verifier refuses a token with
+   more than 50 as malformed.
 4. `pair.claim` carries `attest`. The gateway fetches the account server's keys
    (`GET <account>/v1/keys`, cached for 1 h, refetched at most once a minute when `kid` is
    unknown) and checks: the signature with the key `kid`; `aud` = its own relay host id;
    `nonce` = the value computed from the pid and the claiming device's static key; `exp` not
-   past and `iat` not in the future (60 s skew); `gh_id` in the share's list, or the list is
-   `["*"]`. On success the device gets `github: {id, login}`.
+   past and `iat` not in the future (60 s skew); `gh_id` in the share's list, or one of the
+   attestation's `teams` in the share's teams (§2.5), or the list is `["*"]`. On success the
+   device gets `github: {id, login}`. A refusal is `github_not_allowed` with
+   `details: {allowed: [login], teams: [team name]}`, so the app can say "This link is for:
+   @alice and everyone in Acme".
 
 The nonce binds the attestation to one invitation and one device key, so a captured attestation
 is useless to another device. It travels inside the Noise channel.
@@ -147,6 +157,40 @@ retry after a lost response is the same device.
 Devices gain `invitation: Option<pid>`. **People** groups devices under their invitation.
 `share.revoke {id: <pid>}` revokes the invitation and every device that came from it;
 `share.revoke {id: <device>}` revokes one opener.
+
+### 2.5 Teams
+
+A team is a group of GitHub accounts on the account server. Everyone in a team may open the
+GitHub links that a teammate makes for the team. A team has an id (a lowercase, hyphenated UUID)
+and a name. Names are for display only; nothing is authorized by name. Members are `owner` or
+`member`; the creator is the first owner, and a team keeps at least one owner. Owners invite
+people by GitHub login or with a one-time invite link, and remove members; a member may leave.
+
+**Membership counts when a link is opened, not when it is made.** A person who joins later can
+open links made before; a person who leaves or is removed cannot open them any more. For pairing
+links the account server puts the opener's team ids in the attestation (§2.3), signed when the
+opener signs in, so the gateway learns current membership without asking the account server. For
+continue links the account server checks membership when the blob is fetched (§6.3).
+
+Gateway side:
+
+- `ShareSpec.teams: [{id, name}]` (absent in shares from older gateways; such shares behave as
+  before). The claim check compares ids only.
+- `share.create` and `handoff.link.create` resolve `teams` through `GET /v1/teams` of the host's
+  account: an entry shaped like a team id matches that id; anything else matches a team name
+  without case. A team the host's account is not in is `unknown_team` with `details.team`; a name
+  several of its teams share is `invalid_params` (name the team by id). At most 50 teams per link.
+  `teams` with `access: link` is `invalid_params`.
+- The result of `share.create`, the `share.list` invitations and the link's `share` object gain
+  `teams: [{id, name}]`. Continue links send the ids as the blob's `teams` (§6.3).
+- `account.teams {}` → `{teams: [{id, name, role, members}]}` is a server-bridge method
+  (`gateway.call`) for the TUI: owner only, refused to panes like the login methods.
+
+Fail closed: a team link never becomes a bearer link. A client that asked for `teams` and gets a
+result without `teams` (an older gateway that ignored the parameter) cancels the link
+(`share.revoke`) and reports that the gateway needs an update. An account server without the team
+routes answers 404; `GET /v1/teams` then counts as no teams, so naming a team fails with
+`unknown_team`.
 
 ## 3. Design review
 
@@ -364,8 +408,9 @@ to the server. Test vectors live in `vk-handoff`.
 
 The blob carries `access` like a share (§2.2). The download uses the recipient host's account
 token (`vibeke login`). With `access: github` the account server checks the account's GitHub id
-against the blob's list. With `access: link` any signed-in account may fetch it; the key in the
-link is the secret. Without an account server, continue links are unavailable.
+against the blob's list, or that the account is a current member of one of the blob's teams
+(§2.5). With `access: link` any signed-in account may fetch it; the key in the link is the
+secret. Without an account server, continue links are unavailable.
 
 Blobs live 7 days by default (`ttl_s`, max 30 days). The sender can delete one
 (`handoff.link.revoke`). Quota per account: 2 GiB in total, 256 MiB per blob.
@@ -374,7 +419,7 @@ Blobs live 7 days by default (`ttl_s`, max 30 days). The sender can delete one
 
 | Method | Params → result |
 |---|---|
-| `handoff.link.create` | `{pane, access, github?, ttl_s?, interrupt?}` → `{job}` |
+| `handoff.link.create` | `{pane, access, github?, teams?, ttl_s?, interrupt?}` → `{job}` |
 | `handoff.link.status` | `{job}` → `{state: exporting\|uploading\|done\|failed, progress?, error?, link?, markdown?, blob?, expires_at?}` |
 | `handoff.link.list` | `{}` → `{links:[{blob, job, pane, brief, created_at, expires_at, size}]}` |
 | `handoff.link.revoke` | `{blob}` → `{}` |
@@ -416,15 +461,16 @@ New verbs in `vk-cli/src/verbs.rs`, over `gateway.call`:
 
 | Command | Calls |
 |---|---|
-| `vibeke share watch [--pane P \| --workspace W] [--scope view\|approve] [--github a,b \| --any-github \| --link] [--uses N] [--ttl 24h] [--label L] [--json]` | `share.create {kind:"share"}` |
-| `vibeke share review <preview> [--github … \| --any-github \| --link] [--notes direct\|held] [--uses N] [--ttl …] [--label L] [--json]` | `share.create {kind:"review"}` |
+| `vibeke share watch [--pane P \| --workspace W] [--scope view\|approve] [--github a,b] [--team T] [--any-github \| --link] [--uses N] [--ttl 24h] [--label L] [--json]` | `share.create {kind:"share"}` |
+| `vibeke share review <preview> [--github …] [--team T] [--any-github \| --link] [--notes direct\|held] [--uses N] [--ttl …] [--label L] [--json]` | `share.create {kind:"review"}` |
 | `vibeke share list [--json]` | `share.list` |
 | `vibeke share revoke <id>` | `share.revoke` |
-| `vibeke handoff link [--pane P] [--github … \| --any-github \| --link] [--ttl 7d] [--pr] [--json]` | `handoff.link.create`, then `handoff.link.status` until done |
+| `vibeke handoff link [--pane P] [--github …] [--team T] [--any-github \| --link] [--ttl 7d] [--pr] [--json]` | `handoff.link.create`, then `handoff.link.status` until done |
 | `vibeke handoff open <link> [--json]` | `handoff.link.redeem`, then status |
 
-Without `--github`, `--any-github` or `--link`, the verbs send `access: github` with the
-`[sharing] github` list. Without `--json` the command prints the link alone, so a script can post
+Without `--github`, `--team`, `--any-github` or `--link`, the verbs send `access: github` with the
+`[sharing] github` list. `--team` (repeatable or a comma list, a name or an id) sends `teams`
+and combines with `--github`; without `--github` it sends no `github` list. Without `--json` the command prints the link alone, so a script can post
 it. Errors name the fix: `vibeke gateway on`, `vibeke login`, or "set `[sharing] github` or pass
 `--github`".
 
@@ -480,7 +526,7 @@ redirects to `<return>#/attest?error=<code>`. Rate limits as for the device flow
 
 | Route | Auth | Does |
 |---|---|---|
-| `POST /v1/blobs` | Bearer | `{size, ttl_s?, access, github?: [id]}` → `{id, expires_at}`; checks quota |
+| `POST /v1/blobs` | Bearer | `{size, ttl_s?, access, github?: [id], teams?: [team id]}` → `{id, expires_at}`; checks quota; 403 `not_a_member` for a team the creator is not in |
 | `PUT /v1/blobs/{id}` | Bearer, owner | streams the ciphertext; refuses more than the declared size; once only |
 | `GET /v1/blobs/{id}/meta` | Bearer | `{size, created_at, expires_at, from: {id, login}}` if allowed |
 | `GET /v1/blobs/{id}` | Bearer | streams the ciphertext if allowed and uploaded |
@@ -492,7 +538,8 @@ blobs and unfinished uploads older than 1 h, hourly. Table `blobs (id, account_i
 access, github jsonb, created_at, expires_at, uploaded_at)`. The blob routes have their own body
 limit (256 MiB + 4 KiB); the 16 KiB limit stays for the rest.
 
-`access: github` allows accounts whose `github_id` is in the list; `["*"]` stored as `null` with
+`access: github` allows accounts whose `github_id` is in the list, and current members of the
+listed teams (at least one of the two lists is not empty); `["*"]` stored as `null` with
 `access: any` allows any account. The owner may always fetch.
 
 ### 6.4 Sharing list and account page
@@ -505,14 +552,27 @@ checked for a same-origin `Origin`.
 
 | Route | Auth | Does |
 |---|---|---|
-| `GET /v1/sharing` | Bearer | `{people: [{id, login}]}` |
+| `GET /v1/sharing` | Bearer | `{people: [{id, login}], teams: [{id, name}]}`; `teams` are the caller's teams ticked "share with by default" (ticked when the user joins) |
 | `PUT /v1/sharing` | Bearer | `{people: [login]}` replaces the list (logins resolved to ids) |
 | `POST /v1/sharing/people` | Bearer | `{login}` → `{person: {id, login}}` |
 | `DELETE /v1/sharing/people/{id}` | Bearer | removes one person |
 
 At most 200 people per account. The gateway reads the list when it makes a GitHub link without a
-`github` list (`vk_account::Account::sharing_people`). An account server without the route
-answers 404, which counts as an empty list.
+`github` list and without `teams` (`vk_account::Account::sharing`). An account server without
+the route answers 404, which counts as an empty list; one that sends only `people` counts as no
+teams.
+
+The page also shows **Teams**: create a team, see its members and pending invitations, invite by
+GitHub login or make a one-time invite link (owners), remove members (owners), leave, and tick
+or untick "share with by default". Team routes (Bearer):
+
+| Route | Does |
+|---|---|
+| `GET /v1/teams` | `{teams: [{id, name, role, members}]}`: the caller's teams; `members` is a count |
+| `POST /v1/teams` | `{name}` → `{team: {id, name, role: "owner", members: 1}}` |
+| `GET /v1/teams/{id}` | members only: `{team, members: [{id, login, role, joined_at}], invites: [{id, login?, link, expires_at}]}` |
+| `POST /v1/teams/{id}/invites` | owners: `{login}` → `{invite: {id, login, expires_at}}`, or `{link: true}` → `{invite: {id, url, expires_at}}` (the URL is shown once) |
+| `DELETE /v1/teams/{id}/members/{github_id}` | owners, or the member themself (leave) |
 
 ## 7. Clients
 
@@ -520,7 +580,9 @@ answers 404, which counts as an empty list.
 
 - **People** form (`prefix+alt+v`): a new first field **Kind**: *Watch* (today's share) or
   *Design review* (lists the workspace's previews). A new **Who** field: *Anyone with the link*
-  (default for Watch, as today), *GitHub: <default list>*, *Any GitHub account*. Design review
+  (default for Watch, as today), *GitHub: <default list>*, *Team: <name>* for each of the
+  account's teams (`gateway.call account.teams`, asked when the form opens; none on older
+  gateways), *Any GitHub account*. A team choice sends the team's id. Design review
   adds **Notes**: *Straight to the agent* or *Hold for me*. The created invitation shows uses
   left.
 - **People** lists the GitHub login of each device and groups devices under their invitation.
@@ -534,7 +596,8 @@ answers 404, which counts as an empty list.
 ### 7.2 Browser app (PWA and WASM view)
 
 - `#/pair` with `access: github` first sends the user to the account server (§2.3), then pairs.
-  A refused login shows "This link is for: @alice, @bob" and lets them sign in again.
+  A refused login shows "This link is for: @alice, @bob and everyone in Acme" (from the
+  refusal's `allowed` and `teams`) and lets them sign in again.
 - `#/attest` receives `t` or `error` and resumes the pending pairing from session storage.
 - `#/review` pairs like `#/pair`, then shows the review screen: the preview in the content-origin
   iframe (§3.6) or the screencast (§3.7), a slim toolbar (Annotate, Reload, Notes, Use host
@@ -563,7 +626,8 @@ implementation.
   (§3.6). The controller accepts only a fixed set of validated messages from it.
 - `access: link` stays the default only for person-made watch shares, as today. CLI verbs default
   to GitHub and fail closed (§2.2).
-- GitHub accounts are matched by id, never by login.
+- GitHub accounts are matched by id, never by login. Teams are matched by id, never by name, and
+  only through the account server's signature (attestation) or its own check (blobs).
 - The account server learns which GitHub account opened a link to which host id, and blob sizes.
   It never learns pairing secrets, blob keys, briefs or bundle contents.
 - Continue bundles use today's redaction and exclusions (secret-looking files, untracked files
@@ -576,7 +640,8 @@ implementation.
   rewriting, `tunnel.open` with host/port refused, `tui.*` refused); multi-use pairing (count,
   expiry, idempotent retry, concurrent claims, reconcile after a crash between writes,
   invitation-wide revoke); attestation checks (bad signature, unknown kid, wrong aud, wrong
-  nonce, expired, future iat, id not listed, `*`, `upgrade_required` without attestation);
+  nonce, expired, future iat, id not listed, `*`, `upgrade_required` without attestation, team
+  member allowed, non-member and other-team refused);
   continue link jobs with a fake account server (create, status, redeem, sha mismatch,
   truncated file, revoke).
 - vk-server: confined session policy refuses other previews and loopback ports; URL navigation

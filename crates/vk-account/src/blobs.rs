@@ -3,7 +3,9 @@
 //! The server only ever sees ciphertext; it checks who may fetch (`access`) and keeps a blob for
 //! its `ttl_s`.
 //!
-//! - `POST /v1/blobs {size, ttl_s?, access: "github"|"any", github?: [id]}` → `{id, expires_at}`
+//! - `POST /v1/blobs {size, ttl_s?, access: "github"|"any", github?: [id], teams?: [team id]}` →
+//!   `{id, expires_at}`. With `github` access the creator, the listed GitHub ids and the current
+//!   members of the listed teams may fetch the blob (spec 20 §2.5).
 //! - `PUT /v1/blobs/{id}` (body: exactly `size` bytes)
 //! - `GET /v1/blobs/{id}/meta` → `{size, created_at, expires_at, from: {id, login}}`
 //! - `GET /v1/blobs/{id}`
@@ -33,17 +35,36 @@ pub type Progress = Arc<dyn Fn(u64) + Send + Sync>;
 /// Who may fetch a blob.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BlobAccess {
-    /// These GitHub user ids.
-    Github(Vec<u64>),
+    /// These GitHub user ids, and the current members of these teams (ids). At least one of the
+    /// two lists is not empty.
+    Github { ids: Vec<u64>, teams: Vec<String> },
     /// Any signed-in account (the key in the link is the secret).
     Any,
 }
 
 impl BlobAccess {
-    /// `{access: "github", github: [ids]}` or `{access: "any"}`.
+    /// GitHub ids only.
+    pub fn github(ids: Vec<u64>) -> BlobAccess {
+        BlobAccess::Github {
+            ids,
+            teams: Vec::new(),
+        }
+    }
+
+    /// `{access: "github", github?: [ids], teams?: [team ids]}` (empty lists left out) or
+    /// `{access: "any"}`.
     pub fn to_json(&self) -> Value {
         match self {
-            BlobAccess::Github(ids) => json!({"access": "github", "github": ids}),
+            BlobAccess::Github { ids, teams } => {
+                let mut v = json!({"access": "github"});
+                if !ids.is_empty() {
+                    v["github"] = json!(ids);
+                }
+                if !teams.is_empty() {
+                    v["teams"] = json!(teams);
+                }
+                v
+            }
             BlobAccess::Any => json!({"access": "any"}),
         }
     }
@@ -298,7 +319,7 @@ impl Client {
 impl Account {
     /// Run `f` with an access token; a refused token is refreshed once, refused again →
     /// [`Error::LoginRequired`].
-    async fn with_access<T, F, Fut>(&self, f: F) -> Result<T>
+    pub(crate) async fn with_access<T, F, Fut>(&self, f: F) -> Result<T>
     where
         F: Fn(String) -> Fut,
         Fut: std::future::Future<Output = Result<T>>,
@@ -406,6 +427,8 @@ pub mod fake {
         pub expires_at: u64,
         /// `None`: any signed-in account.
         pub access: Option<Vec<u64>>,
+        /// Team ids whose current members may fetch it (`crate::fake::FakeState::teams`).
+        pub teams: Vec<String>,
         pub data: Option<Vec<u8>>,
     }
 
@@ -488,14 +511,25 @@ pub mod fake {
         let Some(size) = b["size"].as_u64() else {
             return err(StatusCode::BAD_REQUEST, "invalid_request");
         };
-        let access = match b["access"].as_str() {
-            Some("any") => None,
-            Some("github") => match b["github"].as_array() {
-                Some(ids) if !ids.is_empty() => {
-                    Some(ids.iter().filter_map(Value::as_u64).collect())
+        let list = |k: &str| b[k].as_array().cloned().unwrap_or_default();
+        let (access, teams) = match b["access"].as_str() {
+            Some("any") => (None, Vec::new()),
+            Some("github") => {
+                let ids: Vec<u64> = list("github").iter().filter_map(Value::as_u64).collect();
+                let teams: Vec<String> = list("teams")
+                    .iter()
+                    .filter_map(|t| t.as_str().map(str::to_string))
+                    .collect();
+                if ids.is_empty() && teams.is_empty() {
+                    return err(StatusCode::BAD_REQUEST, "invalid_request");
                 }
-                _ => return err(StatusCode::BAD_REQUEST, "invalid_request"),
-            },
+                // A blob may only name the creator's own teams.
+                let mine = st.0.lock().unwrap().teams.clone();
+                if !teams.iter().all(|t| mine.iter().any(|m| &m.id == t)) {
+                    return err(StatusCode::FORBIDDEN, "not_a_member");
+                }
+                (Some(ids), teams)
+            }
             _ => return err(StatusCode::BAD_REQUEST, "invalid_request"),
         };
         let mut s = st.1.0.lock().unwrap();
@@ -517,6 +551,7 @@ pub mod fake {
                 created_at: now,
                 expires_at: now + ttl,
                 access,
+                teams,
                 data: None,
             },
         );
@@ -529,16 +564,29 @@ pub mod fake {
         let Some(who) = caller(st, h) else {
             return Err(err(StatusCode::UNAUTHORIZED, "invalid_token"));
         };
-        let s = st.1.0.lock().unwrap();
-        let Some(blob) = s.blobs.get(id).filter(|b| b.expires_at > now_s()) else {
-            return Err(err(StatusCode::NOT_FOUND, "not_found"));
+        let blob = {
+            let s = st.1.0.lock().unwrap();
+            let Some(blob) = s.blobs.get(id).filter(|b| b.expires_at > now_s()) else {
+                return Err(err(StatusCode::NOT_FOUND, "not_found"));
+            };
+            blob.clone()
         };
+        // The creator, a listed id, or a current member of a listed team.
         if let Some(ids) = &blob.access
+            && blob.owner.0 != who.0
             && !ids.contains(&who.0)
         {
-            return Err(err(StatusCode::FORBIDDEN, "forbidden"));
+            let teams = st.0.lock().unwrap().teams.clone();
+            let member = blob.teams.iter().any(|t| {
+                teams
+                    .iter()
+                    .any(|m| &m.id == t && m.members.contains(&who.0))
+            });
+            if !member {
+                return Err(err(StatusCode::FORBIDDEN, "forbidden"));
+            }
         }
-        Ok(blob.clone())
+        Ok(blob)
     }
 
     async fn upload(

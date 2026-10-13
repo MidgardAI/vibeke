@@ -46,6 +46,7 @@ pub fn invite(
         access: None,
         github: Vec::new(),
         github_any: false,
+        teams: Vec::new(),
         review: None,
     };
     let (p, mut link) = crate::pair::create_with(
@@ -180,6 +181,8 @@ pub fn invitation_json(p: &Pairing) -> Value {
         // Spec 20 §2.4: who may open it, how often, and for a review which preview.
         "access": sh.filter(|s| s.redeemable()).map(|s| s.access.clone().unwrap_or_else(|| "link".into())),
         "github": sh.filter(|s| s.github_access()).map(|s| if s.github_any { json!("*") } else { json!(s.github) }),
+        // Spec 20 §2.5: the teams whose members may open it (names for display).
+        "teams": sh.filter(|s| s.github_access()).map(|s| json!(s.teams)),
         "uses": p.uses,
         "redeemed": p.redemptions.len(),
         "review": sh.and_then(|s| s.review.as_ref()).map(|r| json!({"preview": r.preview, "handle": r.handle, "label": r.label, "sid": r.sid, "notes": r.notes})),
@@ -409,6 +412,7 @@ mod tests {
             access: None,
             github: Vec::new(),
             github_any: false,
+            teams: Vec::new(),
             review: None,
         }
     }

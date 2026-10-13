@@ -70,7 +70,24 @@ describe('pair() with share links', () => {
     expect(e.code).toBe('refused');
     expect(e.refusal).toBe('github_not_allowed');
     expect(e.allowed).toEqual(['alice', 'bob']);
+    expect(e.allowedTeams).toEqual([]);
     expect(isDefinitiveRefusal(e)).toBe(true);
+  });
+
+  test('a refusal names the teams the link is for (spec 20 §2.5)', async () => {
+    const platform = testPlatform((sock) =>
+      serveGateway(sock, {
+        hostPrivate: HOST,
+        psks: { 'pid-1': PSK },
+        handle() {
+          throw { code: -32003, message: 'not allowed', data: { kind: 'github_not_allowed', details: { allowed: [], teams: ['Acme', '', 3] } } };
+        },
+      }),
+    );
+    const e = await pair({ link: link(review), platform, devicePrivate: DEV, deviceName: 'p', attest: 'v1.a.b' }).catch((x) => x);
+    expect(e.refusal).toBe('github_not_allowed');
+    expect(e.allowed).toEqual([]);
+    expect(e.allowedTeams).toEqual(['Acme']);
   });
 
   test('only definitive refusals drop the invitation key', () => {

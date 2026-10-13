@@ -46,7 +46,7 @@ function attestationFor(app: ReturnType<typeof useApp>, pid: string): AttestResu
 
 type Join =
   | { k: 'loading' }
-  | { k: 'form'; error?: string; allowed?: string[] }
+  | { k: 'form'; error?: string; allowed?: string[]; teams?: string[] }
   | { k: 'busy'; what: 'signin' | 'pair' }
   | { k: 'ready'; record: ReviewRecord };
 
@@ -74,7 +74,12 @@ export function ReviewScreen({ d }: { d: string | null }) {
         app.haptic('error');
         const refusal = e instanceof PairingError ? e.refusal : undefined;
         const message = (refusal && t.pair.refusals[refusal]) || pairingErrorMessage(e);
-        setJoin({ k: 'form', error: message, allowed: e instanceof PairingError ? e.allowed : undefined });
+        setJoin({
+          k: 'form',
+          error: message,
+          allowed: e instanceof PairingError ? e.allowed : undefined,
+          teams: e instanceof PairingError ? e.allowedTeams : undefined,
+        });
       }
     },
     [app],
@@ -142,7 +147,9 @@ export function ReviewScreen({ d }: { d: string | null }) {
         </div>
         {expired && <Notice tone="danger">{t.pair.errors.expired}</Notice>}
         {join.k === 'form' && join.error && <Notice tone="danger">{join.error}</Notice>}
-        {join.k === 'form' && join.allowed && join.allowed.length > 0 && <Notice>{t.pair.github.linkFor(join.allowed)}</Notice>}
+        {join.k === 'form' && ((join.allowed?.length ?? 0) > 0 || (join.teams?.length ?? 0) > 0) && (
+          <Notice>{t.pair.github.linkFor(join.allowed ?? [], join.teams ?? [])}</Notice>
+        )}
         {join.k === 'busy' ? (
           <div className="flex items-center gap-3 text-sm">
             <Spinner />

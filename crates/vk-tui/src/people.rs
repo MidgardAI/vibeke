@@ -250,6 +250,35 @@ pub enum Who {
     Github,
     /// Any GitHub account.
     Any,
+    /// Everyone in one of the account's teams (spec 20 §2.5): an index into [`Form::teams`].
+    Team(usize),
+}
+
+/// A team of the host's account, from `account.teams`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TeamChoice {
+    pub id: String,
+    pub name: String,
+}
+
+/// The teams of an `account.teams` answer, cleaned for display. Entries without an id are
+/// skipped.
+pub fn teams_of(v: &Value) -> Vec<TeamChoice> {
+    v["teams"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|t| {
+            let id = t["id"]
+                .as_str()
+                .filter(|i| !i.is_empty() && i.len() <= 64)?;
+            Some(TeamChoice {
+                id: id.to_string(),
+                name: crate::plugins::sanitize(t["name"].as_str().unwrap_or(id), 40),
+            })
+        })
+        .take(50)
+        .collect()
 }
 
 /// Where a design review's notes go.
@@ -267,7 +296,7 @@ impl Who {
     fn default_notes(self) -> Notes {
         match self {
             Who::Link => Notes::Held,
-            Who::Github | Who::Any => Notes::Direct,
+            Who::Github | Who::Any | Who::Team(_) => Notes::Direct,
         }
     }
 }
@@ -350,6 +379,8 @@ pub struct Form {
     pub notes_set: bool,
     /// The config's `[sharing] github` list when the form opened.
     pub github: Vec<String>,
+    /// The account's teams (`account.teams`, asked when the form opens): one **Who** choice each.
+    pub teams: Vec<TeamChoice>,
     /// A design review's candidates, and the one picked.
     pub previews: Vec<PreviewChoice>,
     pub preview: usize,
@@ -387,6 +418,7 @@ impl Form {
             notes: Who::Link.default_notes(),
             notes_set: false,
             github: crate::links::github_default(app),
+            teams: Vec::new(),
             previews,
             preview: 0,
         }
@@ -417,9 +449,30 @@ impl Form {
     }
 
     /// The **Who** choices this form offers. GitHub means the config list, or without one the
-    /// account's sharing list.
-    fn who_options(&self) -> Vec<Who> {
-        vec![Who::Link, Who::Github, Who::Any]
+    /// account's sharing list (people and ticked teams); then one choice per team.
+    pub fn who_options(&self) -> Vec<Who> {
+        let mut v = vec![Who::Link, Who::Github];
+        v.extend((0..self.teams.len()).map(Who::Team));
+        v.push(Who::Any);
+        v
+    }
+
+    /// The team a **Team** choice names.
+    pub fn team(&self) -> Option<&TeamChoice> {
+        match self.who {
+            Who::Team(i) => self.teams.get(i),
+            _ => None,
+        }
+    }
+
+    /// The account's teams arrived: keep a picked team picked (by id) if it is still there.
+    pub fn set_teams(&mut self, teams: Vec<TeamChoice>) {
+        let picked = self.team().map(|t| t.id.clone());
+        self.teams = teams;
+        if let Who::Team(_) = self.who {
+            let at = picked.and_then(|id| self.teams.iter().position(|t| t.id == id));
+            self.who = at.map_or(Who::Github, Who::Team);
+        }
     }
 
     fn set_who(&mut self, who: Who) {
@@ -472,6 +525,14 @@ impl Form {
             Who::Any => {
                 p["access"] = json!("github");
                 p["github"] = json!(["*"]);
+            }
+            // By id: names are for display, and two teams may share one.
+            Who::Team(_) => {
+                let t = self
+                    .team()
+                    .ok_or_else(|| "pick who may open the link".to_string())?;
+                p["access"] = json!("github");
+                p["teams"] = json!([t.id]);
             }
         }
         p["ttl_s"] = json!(TTLS[self.ttl].0);
@@ -555,6 +616,8 @@ pub struct Created {
     pub access: Who,
     /// For GitHub access: the logins it names.
     pub logins: Vec<String>,
+    /// For GitHub access: the names of the teams it is for.
+    pub teams: Vec<String>,
     /// How many times it can be opened (`share.create` says).
     pub uses: Option<u64>,
     /// A review's notes route.
@@ -629,10 +692,14 @@ pub enum Reply {
         kind: Kind,
         access: Who,
         logins: Vec<String>,
+        /// The team names asked for.
+        teams: Vec<String>,
         notes: Option<Notes>,
     },
     /// `share.revoke` of a link made for an abandoned attempt: nothing to show.
     Cancel,
+    /// `account.teams`: the **Who** form's team choices.
+    Teams,
     /// `gateway.status`: is the gateway online?
     GatewayInfo,
 }
@@ -940,6 +1007,8 @@ fn new_share(app: &mut App) {
         v.notice = None;
         v.stage = Stage::Form(f);
     }
+    // The account's teams become Who choices when they arrive (an older gateway: none).
+    gw(app, mi, "account.teams", json!({}), Reply::Teams);
 }
 
 /// Enter in the form: checked here first; Control asks before anything is sent.
@@ -1013,6 +1082,7 @@ fn create(app: &mut App) {
             } else {
                 Vec::new()
             },
+            teams: f.team().map(|t| vec![t.name.clone()]).unwrap_or_default(),
             notes: (f.kind == Kind::Review).then_some(f.notes),
         },
     );
@@ -1164,6 +1234,12 @@ fn created_logins(x: &Value, asked: Vec<String>) -> Vec<String> {
     if got.is_empty() { asked } else { got }
 }
 
+/// The team names the gateway answered (`teams: [{id, name}]`), else the ones asked for.
+fn created_teams(x: &Value, asked: Vec<String>) -> Vec<String> {
+    let got: Vec<String> = teams_of(x).into_iter().map(|t| t.name).collect();
+    if got.is_empty() { asked } else { got }
+}
+
 /// `share.create` failed: in the form when it is still open (an older gateway refusing a share
 /// says so there), else the notice.
 fn create_failed(v: &mut View, msg: String) {
@@ -1191,12 +1267,13 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
         }
         return;
     }
-    // An older gateway ignores `access` and hands back a plain link: never show it as a GitHub
-    // link. Cancel it instead.
+    // An older gateway ignores `access` (or `teams`) and hands back a plain link, or one for
+    // other people: never show it. Cancel it instead.
     if let Reply::Create { access, .. } = &r
         && !matches!(access, Who::Link)
         && let Ok(x) = &res
-        && x["access"].as_str() != Some("github")
+        && (x["access"].as_str() != Some("github")
+            || (matches!(access, Who::Team(_)) && !x["teams"].is_array()))
     {
         if let Some(pid) = s_of(x, "pid") {
             gw(app, mi, "share.revoke", json!({"id": pid}), Reply::Cancel);
@@ -1260,6 +1337,7 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
             kind,
             access,
             logins,
+            teams,
             notes,
             ..
         } => {
@@ -1281,6 +1359,7 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
                             kind,
                             access,
                             logins: created_logins(&x, logins),
+                            teams: created_teams(&x, teams),
                             uses: x["uses"].as_u64(),
                             notes,
                         });
@@ -1299,6 +1378,12 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
             }
         }
         Reply::Cancel => {}
+        Reply::Teams => {
+            // Older gateways and hosts that are not signed in: no team choices.
+            if let (Ok(x), Stage::Form(f)) = (res, &mut v.stage) {
+                f.set_teams(teams_of(&x));
+            }
+        }
         Reply::GatewayInfo => {
             // An older server doesn't know the method: behave as before.
             if let Ok(x) = res {
@@ -1484,20 +1569,28 @@ fn draw_form(app: &App, a: &mut crate::drafts::Area<'_>, v: &View, f: &Form) -> 
         },
         t.dim(),
     );
-    // Who: GitHub is the config list, or the account's sharing list.
+    // Who: GitHub is the config list, or the account's sharing list; then the account's teams.
     let github = if f.github.is_empty() {
         "GitHub (your list)"
     } else {
         "GitHub"
     };
-    a.line(
-        &format!(
-            "{} Who      {} {} {}",
-            mark(Field::Who),
-            pick(f.who == Who::Link, "Anyone with the link"),
-            pick(f.who == Who::Github, github),
-            pick(f.who == Who::Any, "Any GitHub account")
-        ),
+    let choices: Vec<String> = f
+        .who_options()
+        .into_iter()
+        .map(|w| {
+            let label = match w {
+                Who::Link => "Anyone with the link".to_string(),
+                Who::Github => github.to_string(),
+                Who::Team(i) => format!("Team: {}", f.teams.get(i).map_or("?", |t| &t.name)),
+                Who::Any => "Any GitHub account".to_string(),
+            };
+            pick(f.who == w, &label)
+        })
+        .collect();
+    wrap_lines(
+        a,
+        &format!("{} Who      {}", mark(Field::Who), choices.join(" ")),
         st(Field::Who),
     );
     let (who_text, who_st) = match f.who {
@@ -1506,7 +1599,14 @@ fn draw_form(app: &App, a: &mut crate::drafts::Area<'_>, v: &View, f: &Form) -> 
             t.dim(),
         ),
         Who::Github if f.github.is_empty() => (
-            "only the people on your sharing list, signed in with GitHub".to_string(),
+            "only the people and teams on your sharing list, signed in with GitHub".to_string(),
+            t.dim(),
+        ),
+        Who::Team(_) => (
+            format!(
+                "everyone in {}, signed in with GitHub; people who join the team later can open it too",
+                f.team().map_or("the team", |t| t.name.as_str())
+            ),
             t.dim(),
         ),
         Who::Github => (
@@ -1686,8 +1786,12 @@ fn until_text(until: i64, now: i64) -> String {
 fn subject(c: &Created) -> String {
     match c.access {
         Who::Link => "Anyone with this link".into(),
-        Who::Github if c.logins.is_empty() => "Only the GitHub accounts you named".into(),
-        Who::Github => format!("Only {}", crate::links::logins_text(&c.logins)),
+        Who::Github | Who::Team(_) if c.logins.is_empty() && c.teams.is_empty() => {
+            "Only the GitHub accounts you named".into()
+        }
+        Who::Github | Who::Team(_) => {
+            format!("Only {}", crate::links::audience_text(&c.logins, &c.teams))
+        }
         Who::Any => "Anyone signed in with GitHub".into(),
     }
 }

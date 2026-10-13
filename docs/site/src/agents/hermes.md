@@ -70,9 +70,9 @@ The skill tells Hermes to follow these rules:
 
 - Post links, never terminal output.
 - Ask the requester before it uses `--any-github` or `--link`, which let more people in.
-- Tell the requester which GitHub accounts can open each link.
+- Tell the requester which GitHub accounts and teams can open each link.
 
-The links are for the people on your sharing list. Add your teammates on your [account page](../sharing.md#your-sharing-list) before Hermes posts links.
+The links are for the people and teams on your sharing list. Before Hermes posts links, add your teammates on your [account page](../sharing.md#your-sharing-list). You can also create a [team](../sharing.md#teams) there and invite them. Everyone in the team can then open each link that Hermes makes for the team.
 
 ## Check
 

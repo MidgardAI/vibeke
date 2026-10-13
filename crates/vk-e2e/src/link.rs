@@ -68,6 +68,18 @@ pub struct LinkShare {
     /// Review links: the content origin's label (`<sid>.p.<app domain>`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sid: Option<String>,
+    /// GitHub links: the teams whose members may open it (spec 20 §2.5). For display only; the
+    /// host checks the claim against its own copy of the share.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub teams: Vec<LinkTeam>,
+}
+
+/// A team a GitHub link is for.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LinkTeam {
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
 }
 
 impl LinkShare {
@@ -201,5 +213,30 @@ mod tests {
         let url = review.to_review_url("https://app.example/");
         assert!(url.starts_with("https://app.example/#/review?d="));
         assert_eq!(PairingLink::parse(&url).unwrap(), review);
+        assert!(info.teams.is_empty());
+        // A team link names its teams; an entry without a name still parses.
+        let team = PairingLink {
+            share: Some(
+                serde_json::json!({"kind": "share", "scope": "view", "until": 5,
+                "access": "github", "uses": 20,
+                "teams": [{"id": "0b5c3f7e-1d2a-4c8b-9e6f-3a1b2c3d4e5f", "name": "Acme"},
+                          {"id": "11111111-2222-4333-8444-555555555555"}]}),
+            ),
+            ..review
+        };
+        let info = team.share_info().unwrap();
+        assert_eq!(
+            info.teams,
+            [
+                LinkTeam {
+                    id: "0b5c3f7e-1d2a-4c8b-9e6f-3a1b2c3d4e5f".into(),
+                    name: "Acme".into()
+                },
+                LinkTeam {
+                    id: "11111111-2222-4333-8444-555555555555".into(),
+                    name: String::new()
+                }
+            ]
+        );
     }
 }

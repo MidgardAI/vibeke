@@ -4,20 +4,21 @@
 //!
 //! Without `--github`, `--any-github` or `--link` the verbs send `access: github`: with the
 //! `[sharing] github` list from the config when it has one, else without a list, and the gateway
-//! uses the account's list from the account page (`<account server>/account`). Without `--json`
-//! they print the link alone.
+//! uses the people and teams from the account page (`<account server>/account`). `--team` names
+//! teams (by name or id) whose members may open the link; it combines with `--github`. Without
+//! `--json` they print the link alone.
 
 use crate::client::{CallError, Client};
 use crate::{EXIT_API, EXIT_OK, EXIT_USAGE, Global, exit_code_for, print_error};
 use serde_json::{Value, json};
 use std::time::Duration;
 
-pub const USAGE: &str = "vibeke share watch [--pane P | --workspace W] [--scope view|approve] [--github a,b | --any-github | --link] [--uses N] [--ttl 24h] [--label L] [--json]\n\
-vibeke share review <preview> [--github a,b | --any-github | --link] [--notes direct|held] [--uses N] [--ttl 24h] [--label L] [--json]\n\
+pub const USAGE: &str = "vibeke share watch [--pane P | --workspace W] [--scope view|approve] [--github a,b] [--team T] [--any-github | --link] [--uses N] [--ttl 24h] [--label L] [--json]\n\
+vibeke share review <preview> [--github a,b] [--team T] [--any-github | --link] [--notes direct|held] [--uses N] [--ttl 24h] [--label L] [--json]\n\
 vibeke share list [--json]\n\
 vibeke share revoke <id>";
 
-pub const HANDOFF_USAGE: &str = "vibeke handoff link [--pane P] [--github a,b | --any-github | --link] [--ttl 7d] [--interrupt] [--pr] [--json]\n\
+pub const HANDOFF_USAGE: &str = "vibeke handoff link [--pane P] [--github a,b] [--team T] [--any-github | --link] [--ttl 7d] [--interrupt] [--pr] [--json]\n\
 vibeke handoff open <link> [--json]";
 
 /// How long one status poll waits before it asks again.
@@ -27,6 +28,8 @@ const POLL: Duration = Duration::from_secs(1);
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct AccessFlags {
     pub github: Option<Vec<String>>,
+    /// `--team` (repeatable, or a comma list): team names or ids (spec 20 §2.5).
+    pub teams: Vec<String>,
     pub any_github: bool,
     pub link: bool,
 }
@@ -77,6 +80,7 @@ const VALUED: &[&str] = &[
     "workspace",
     "scope",
     "github",
+    "team",
     "uses",
     "ttl",
     "label",
@@ -159,6 +163,14 @@ pub fn parse_logins(s: &str) -> Vec<String> {
         .collect()
 }
 
+/// `Acme, Design team` as team names or ids (names may hold spaces).
+pub fn parse_teams(s: &str) -> Vec<String> {
+    s.split(',')
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+        .collect()
+}
+
 /// Take the options shared by all link verbs; `other` handles a verb's own flags.
 fn common(
     a: &Args,
@@ -173,6 +185,17 @@ fn common(
                     return Err("--github needs at least one login".into());
                 }
                 c.access.github = Some(logins);
+            }
+            ("team", Some(v)) => {
+                let teams = parse_teams(v);
+                if teams.is_empty() {
+                    return Err("--team needs a team name or id".into());
+                }
+                for t in teams {
+                    if !c.access.teams.iter().any(|x| x.eq_ignore_ascii_case(&t)) {
+                        c.access.teams.push(t);
+                    }
+                }
             }
             ("any-github", None) => c.access.any_github = true,
             ("link", None) => c.access.link = true,
@@ -197,12 +220,14 @@ fn common(
         }
     }
     let chosen = [
-        c.access.github.is_some(),
+        c.access.github.is_some() || !c.access.teams.is_empty(),
         c.access.any_github,
         c.access.link,
     ];
     if chosen.iter().filter(|b| **b).count() > 1 {
-        return Err("give only one of --github, --any-github and --link".into());
+        return Err(
+            "give --github and --team, or --any-github, or --link (not several of these)".into(),
+        );
     }
     Ok(c)
 }
@@ -321,7 +346,7 @@ pub fn parse_handoff(args: &[String]) -> Result<Cmd, String> {
                 })
             })?;
             if c.workspace.is_some() || c.uses.is_some() || c.label.is_some() {
-                return Err("handoff link takes --pane, --github, --any-github, --link, --ttl, --interrupt, --pr and --json".into());
+                return Err("handoff link takes --pane, --github, --team, --any-github, --link, --ttl, --interrupt, --pr and --json".into());
             }
             Ok(Cmd::HandoffLink {
                 common: c,
@@ -351,7 +376,8 @@ pub fn parse_handoff(args: &[String]) -> Result<Cmd, String> {
 }
 
 /// `access` and `github` params for the flags. `default_github` is the `[sharing] github` list;
-/// when it is empty no list is sent and the gateway uses the account's list.
+/// when it is empty no list is sent and the gateway uses the account's list. With `--team` and
+/// without `--github`, no `github` list is sent: the link is for the teams only.
 pub fn access_params(
     f: &AccessFlags,
     default_github: &[String],
@@ -365,7 +391,7 @@ pub fn access_params(
     if let Some(g) = &f.github {
         return Ok(("github", Some(g.clone())));
     }
-    if default_github.is_empty() {
+    if !f.teams.is_empty() || default_github.is_empty() {
         return Ok(("github", None));
     }
     Ok(("github", Some(default_github.to_vec())))
@@ -376,6 +402,9 @@ fn put_access(p: &mut Value, f: &AccessFlags, default_github: &[String]) -> Resu
     p["access"] = json!(access);
     if let Some(g) = github {
         p["github"] = json!(g);
+    }
+    if !f.teams.is_empty() {
+        p["teams"] = json!(f.teams);
     }
     Ok(())
 }
@@ -461,12 +490,20 @@ pub fn hint(e: &CallError) -> Option<String> {
             "this host is not signed in to an account: sign in with `vibeke login`".into(),
         );
     }
-    if kind == "unknown_user" {
+    // The bridge passes the gateway's own kinds on as `details.gateway_kind`.
+    let gw_kind = r.data.details["gateway_kind"].as_str().unwrap_or(kind);
+    if kind == "unknown_user" || gw_kind == "unknown_user" {
         return Some("GitHub does not know one of those logins: check the spelling".into());
+    }
+    if kind == "unknown_team" || gw_kind == "unknown_team" {
+        return Some(
+            "you are not in a team with that name: create or join teams on your account page (vibeke.dev account)"
+                .into(),
+        );
     }
     if kind == "invalid_params" && (msg.contains("github") || msg.contains("sharing list")) {
         return Some(
-            "add people to your sharing list on your account page (vibeke.dev account), or pass --github"
+            "your sharing list is empty: add people or tick a team on your account page (vibeke.dev account), or pass --github or --team"
                 .into(),
         );
     }
@@ -613,9 +650,11 @@ where
     };
     match &cmd {
         Cmd::Watch { .. } | Cmd::Review { .. } => {
-            // An older gateway ignores `access` and returns a plain link: never print that for
-            // a GitHub request. Cancel it instead.
-            if params["access"] == "github" && first["access"] != "github" {
+            // An older gateway ignores `access` (or `teams`) and returns a plain link, or one for
+            // other people: never print that. Cancel it instead.
+            let downgraded = first["access"] != "github"
+                || (params.get("teams").is_some() && !first["teams"].is_array());
+            if params["access"] == "github" && downgraded {
                 if let Some(pid) = first["pid"].as_str() {
                     let _ = gateway_call(client, "share.revoke", json!({"id": pid})).await;
                 }
@@ -840,6 +879,48 @@ mod tests {
         assert!(parse_share(&v(&["watch", "--github", "a", "--link"])).is_err());
     }
 
+    /// `--team` (spec 20 §2.5): repeatable or a comma list, combinable with `--github`, never
+    /// with `--any-github` or `--link`. Without `--github` the config list is not added.
+    #[test]
+    fn team_flags() {
+        let (_, p) = call(
+            &["watch", "--team", "Acme", "--team=Design team, acme"],
+            &["x"],
+        )
+        .unwrap();
+        assert_eq!(
+            p,
+            json!({"kind": "share", "access": "github", "teams": ["Acme", "Design team"]})
+        );
+        let (_, p) = call(
+            &["review", "v4", "--github", "alice", "--team", "Acme"],
+            &[],
+        )
+        .unwrap();
+        assert_eq!(
+            p,
+            json!({"kind": "review", "preview": "v4", "access": "github",
+                   "github": ["alice"], "teams": ["Acme"]})
+        );
+        assert!(parse_share(&v(&["watch", "--team", "Acme", "--link"])).is_err());
+        assert!(parse_share(&v(&["watch", "--team", "Acme", "--any-github"])).is_err());
+        assert!(parse_share(&v(&["watch", "--team", " , "])).is_err());
+        assert!(parse_share(&v(&["watch", "--team"])).is_err());
+        let cmd = parse_handoff(&v(&[
+            "link",
+            "--team",
+            "0b5c3f7e-1d2a-4c8b-9e6f-3a1b2c3d4e5f",
+        ]))
+        .unwrap();
+        let (m, p) = build_call(&cmd, &["x".to_string()]).unwrap();
+        assert_eq!(m, "handoff.link.create");
+        assert_eq!(
+            p,
+            json!({"pane": "@current", "access": "github",
+                   "teams": ["0b5c3f7e-1d2a-4c8b-9e6f-3a1b2c3d4e5f"]})
+        );
+    }
+
     #[test]
     fn watch_options() {
         let (_, p) = call(
@@ -989,6 +1070,17 @@ mod tests {
                 .contains("sharing list")
         );
         assert!(hint(&rpc("invalid_params", "uses too big")).is_none());
+        assert!(hint(&rpc("unknown_team", "x")).unwrap().contains("team"));
+        let bridged = CallError::Rpc(RpcError {
+            code: -32000,
+            message: "you are not in a team called Gamma".into(),
+            data: ErrorData {
+                kind: "internal".into(),
+                details: json!({"gateway_kind": "unknown_team", "details": {"team": "Gamma"}}),
+                retryable: false,
+            },
+        });
+        assert!(hint(&bridged).unwrap().contains("account page"));
         assert!(hint(&rpc("not_found", "x")).is_none());
     }
 }

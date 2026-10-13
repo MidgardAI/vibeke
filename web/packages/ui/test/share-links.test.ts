@@ -3,6 +3,7 @@ import type { AnnotationDraft } from '@vibeke/core';
 import { formatRoute, parseRoute } from '../src/router';
 import { heldDrafts } from '../src/components/held-drafts';
 import { incomingId } from '../src/screens/continue';
+import { en } from '../src/i18n';
 
 describe('spec 20 routes', () => {
   test('review, continue and attest', () => {
@@ -28,5 +29,13 @@ describe('continue jobs', () => {
     expect(incomingId({ job: 'j', state: 'done', incoming: 'in1' })).toBe('in1');
     expect(incomingId({ job: 'j', state: 'done', incoming: { id: 'in2' } })).toBe('in2');
     expect(incomingId({ job: 'j', state: 'done' })).toBeNull();
+  });
+});
+
+describe('who a refused link is for', () => {
+  test('people and teams (spec 20 §2.5)', () => {
+    expect(en.pair.github.linkFor(['alice', 'bob'])).toBe('This link is for: @alice, @bob');
+    expect(en.pair.github.linkFor(['alice'], ['Acme'])).toBe('This link is for: @alice and everyone in Acme');
+    expect(en.pair.github.linkFor([], ['Acme', 'Design'])).toBe('This link is for: everyone in Acme, Design');
   });
 });

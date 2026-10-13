@@ -46,6 +46,11 @@ pub struct FakeState {
     pub github_users: Vec<(u64, String)>,
     /// `GET /v1/sharing`: the account's people (ids and logins).
     pub sharing: Vec<(u64, String)>,
+    /// The signed-in account's teams (`GET /v1/teams`), with their members' GitHub ids. Blob
+    /// downloads check membership here (spec 20 §2.5).
+    pub teams: Vec<FakeTeam>,
+    /// `GET /v1/sharing`: the ids of the teams ticked "share with by default".
+    pub sharing_teams: Vec<String>,
     pub github_calls: u32,
 }
 
@@ -72,7 +77,31 @@ impl Default for FakeState {
             keys_calls: 0,
             github_users: vec![(583231, "octocat".into()), (2, "alice".into())],
             sharing: Vec::new(),
+            teams: Vec::new(),
+            sharing_teams: Vec::new(),
             github_calls: 0,
+        }
+    }
+}
+
+/// A team on the fake server.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FakeTeam {
+    pub id: String,
+    pub name: String,
+    /// The signed-in account's role: `owner` or `member`.
+    pub role: String,
+    /// GitHub ids of the members.
+    pub members: Vec<u64>,
+}
+
+impl FakeTeam {
+    pub fn new(id: &str, name: &str, members: &[u64]) -> FakeTeam {
+        FakeTeam {
+            id: id.into(),
+            name: name.into(),
+            role: "owner".into(),
+            members: members.to_vec(),
         }
     }
 }
@@ -114,6 +143,7 @@ impl FakeServer {
             .route("/v1/keys", get(keys))
             .route("/v1/github/users/{login}", get(github_user))
             .route("/v1/sharing", get(sharing))
+            .route("/v1/teams", get(teams))
             .with_state(state.clone())
             .merge(crate::blobs::fake::router(state.clone(), blobs.clone()));
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
@@ -303,5 +333,24 @@ async fn sharing(State(st): State<Shared>, headers: HeaderMap) -> Response {
         .iter()
         .map(|(id, l)| json!({"id": id, "login": l}))
         .collect();
-    axum::Json(json!({"people": people})).into_response()
+    let teams: Vec<Value> = st
+        .teams
+        .iter()
+        .filter(|t| st.sharing_teams.contains(&t.id))
+        .map(|t| json!({"id": t.id, "name": t.name}))
+        .collect();
+    axum::Json(json!({"people": people, "teams": teams})).into_response()
+}
+
+async fn teams(State(st): State<Shared>, headers: HeaderMap) -> Response {
+    let st = st.lock().unwrap();
+    if bearer(&headers).is_none() || bearer(&headers) != st.access {
+        return err(StatusCode::UNAUTHORIZED, "invalid_token");
+    }
+    let teams: Vec<Value> = st
+        .teams
+        .iter()
+        .map(|t| json!({"id": t.id, "name": t.name, "role": t.role, "members": t.members.len()}))
+        .collect();
+    axum::Json(json!({"teams": teams})).into_response()
 }

@@ -23,7 +23,7 @@ type Phase =
   | { k: 'done'; host: string; id: string; terminal: boolean; kind: 'device' | 'share' }
   /** A handoff invitation redeemed by one of the user's hosts (`on`) for the teammate's `to`. */
   | { k: 'redeemed'; on: string; to: string }
-  | { k: 'error'; message: string; allowed?: string[] }
+  | { k: 'error'; message: string; allowed?: string[]; teams?: string[] }
   /** Leaving for the GitHub sign-in (spec 20 §2.3). */
   | { k: 'signin' };
 
@@ -155,7 +155,12 @@ export function PairScreen({ d }: { d: string | null }) {
 
     } catch (e) {
       app.haptic('error');
-      setPhase({ k: 'error', message: pairingErrorMessage(e), allowed: e instanceof PairingError ? e.allowed : undefined });
+      setPhase({
+        k: 'error',
+        message: pairingErrorMessage(e),
+        allowed: e instanceof PairingError ? e.allowed : undefined,
+        teams: e instanceof PairingError ? e.allowedTeams : undefined,
+      });
     }
   };
 
@@ -248,7 +253,9 @@ export function PairScreen({ d }: { d: string | null }) {
                 <TextField label={t.pair.deviceName} value={name} onChange={(e) => setName(e.target.value)} maxLength={64} />
                 {github && phase.k === 'form' && <Notice>{t.pair.github.needed}</Notice>}
                 {phase.k === 'error' && <Notice tone="danger">{phase.message}</Notice>}
-                {phase.k === 'error' && phase.allowed && phase.allowed.length > 0 && <Notice>{t.pair.github.linkFor(phase.allowed)}</Notice>}
+                {phase.k === 'error' && ((phase.allowed?.length ?? 0) > 0 || (phase.teams?.length ?? 0) > 0) && (
+                  <Notice>{t.pair.github.linkFor(phase.allowed ?? [], phase.teams ?? [])}</Notice>
+                )}
                 {github ? (
                   <Button variant="primary" size="lg" block disabled={expired || unreachable || replacesOwn} icon={<LogIn className="size-5" />} onClick={() => void signIn()}>
                     {phase.k === 'error' ? t.pair.github.signInAgain : t.pair.github.signIn}

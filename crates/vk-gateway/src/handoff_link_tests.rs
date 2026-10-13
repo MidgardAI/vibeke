@@ -430,12 +430,105 @@ async fn a_link_for_other_github_accounts_is_forbidden() {
     let e = env(true, true).await;
     let v = e.create(json!({"pane": "p1", "access": "link"})).await;
     let link = ContinueLink::parse(v["link"].as_str().unwrap()).unwrap();
-    e.acct
-        .blobs
-        .with(|s| s.blobs.get_mut(&link.blob).unwrap().access = Some(vec![1]));
+    // Another signed-in account (the creator itself may always read its blob).
+    e.acct.blobs.with(|s| {
+        s.blobs.get_mut(&link.blob).unwrap().access = Some(vec![1]);
+        s.github = (5, "eve".into());
+    });
     let r = e.redeem(v["link"].as_str().unwrap()).await;
     assert_eq!(r["state"], "failed");
     assert_eq!(r["error_kind"], "forbidden", "{r:#}");
+}
+
+const ACME: &str = "0b5c3f7e-1d2a-4c8b-9e6f-3a1b2c3d4e5f";
+const BETA: &str = "11111111-2222-4333-8444-555555555555";
+
+/// Continue links for teams (spec 20 §2.5): `teams` by name or id go to the account server as
+/// team ids; without `github` and `teams` the account page's people and ticked teams are used.
+#[tokio::test(flavor = "multi_thread")]
+async fn continue_links_for_teams() {
+    use vk_account::fake::FakeTeam;
+    let e = env(true, true).await;
+    e.acct.with(|s| {
+        s.teams = vec![
+            FakeTeam::new(ACME, "Acme", &[4242, 5]),
+            FakeTeam::new(BETA, "Beta", &[4242]),
+        ]
+    });
+    let blob_of = |v: &Value| v["blob"].as_str().unwrap().to_string();
+    let teams_of = |b: &str| e.acct.blobs.with(|s| s.blobs[b].teams.clone());
+    let v = e
+        .create(json!({"pane": "p1", "access": "github", "teams": ["acme", BETA.to_uppercase()]}))
+        .await;
+    let b = blob_of(&v);
+    assert_eq!(teams_of(&b), [ACME, BETA]);
+    assert_eq!(
+        e.acct.blobs.with(|s| s.blobs[&b].access.clone()),
+        Some(vec![])
+    );
+    // With people too.
+    let v = e
+        .create(json!({"pane": "p1", "access": "github", "github": ["alice"], "teams": ["Beta"]}))
+        .await;
+    let b = blob_of(&v);
+    assert_eq!(teams_of(&b), [BETA]);
+    assert_eq!(
+        e.acct.blobs.with(|s| s.blobs[&b].access.clone()),
+        Some(vec![2])
+    );
+    // A member of Acme (eve, 5) can fetch an Acme link; she is not in Beta.
+    let acme = e
+        .create(json!({"pane": "p1", "access": "github", "teams": [ACME]}))
+        .await;
+    let beta = e
+        .create(json!({"pane": "p1", "access": "github", "teams": [BETA]}))
+        .await;
+    e.acct.blobs.with(|s| s.github = (5, "eve".into()));
+    let r = e.redeem(acme["link"].as_str().unwrap()).await;
+    assert_ne!(r["error_kind"], "forbidden", "{r:#}");
+    let r = e.redeem(beta["link"].as_str().unwrap()).await;
+    assert_eq!(r["error_kind"], "forbidden", "{r:#}");
+    e.acct.blobs.with(|s| s.github = (4242, "octo".into()));
+    // Default: the account page's people and ticked teams.
+    e.acct.with(|s| {
+        s.sharing = vec![(2, "alice".into())];
+        s.sharing_teams = vec![ACME.into()];
+    });
+    let v = e.create(json!({"pane": "p1", "access": "github"})).await;
+    let b = blob_of(&v);
+    assert_eq!(teams_of(&b), [ACME]);
+    assert_eq!(
+        e.acct.blobs.with(|s| s.blobs[&b].access.clone()),
+        Some(vec![2])
+    );
+    // Teams only on the account page is enough.
+    e.acct.with(|s| s.sharing = vec![]);
+    let v = e.create(json!({"pane": "p1", "access": "github"})).await;
+    assert_eq!(teams_of(&blob_of(&v)), [ACME]);
+    // Refusals before any job starts.
+    let x = e
+        .dispatch(
+            "handoff.link.create",
+            json!({"pane": "p1", "access": "github", "teams": ["Gamma"]}),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(
+        (x.kind.as_str(), &x.details),
+        ("unknown_team", &json!({"team": "Gamma"}))
+    );
+    for p in [
+        json!({"pane": "p1", "access": "link", "teams": ["Acme"]}),
+        json!({"pane": "p1", "access": "github", "teams": []}),
+        json!({"pane": "p1", "access": "github", "teams": "Acme"}),
+        json!({"pane": "p1", "access": "github", "github": ["*"], "teams": ["Acme"]}),
+    ] {
+        let x = e
+            .dispatch("handoff.link.create", p.clone())
+            .await
+            .unwrap_err();
+        assert_eq!(x.kind, "invalid_params", "{p}");
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]

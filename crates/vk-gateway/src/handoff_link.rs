@@ -358,6 +358,11 @@ fn account_err(e: vk_account::Error) -> ApiError {
         ),
         Some("too_large") => err("too_large", "the bundle is larger than 256 MiB"),
         Some("unknown_user") => err("unknown_user", e.to_string()),
+        // The host's account left a team between the lookup and the upload (spec 20 §2.5).
+        Some("not_a_member") => err(
+            "unknown_team",
+            "this account is no longer in one of those teams",
+        ),
         Some(c @ ("not_uploaded" | "already_uploaded" | "size_mismatch")) => {
             err("conflict", format!("account server: {c}"))
         }
@@ -517,6 +522,10 @@ async fn create(gw: &Arc<Gateway>, dev: &Device, p: &Value) -> ApiResult {
         Some("github") => true,
         _ => return Err(ApiError::invalid("access is link or github")),
     };
+    let teams = crate::api::teams_param(p)?;
+    if !github && teams.is_some() {
+        return Err(ApiError::invalid("teams is for access github"));
+    }
     let acct = host_account(gw)?;
     let access = if github {
         let logins: Vec<String> = p
@@ -527,21 +536,31 @@ async fn create(gw: &Arc<Gateway>, dev: &Device, p: &Value) -> ApiResult {
             .filter_map(|v| v.as_str().map(str::to_string))
             .filter(|l| !l.is_empty())
             .collect();
-        if logins.is_empty() {
-            // No list: the people on the account's sharing list (the account page).
-            let people = acct.sharing_people().await.map_err(account_err)?;
-            if people.is_empty() {
-                return Err(ApiError::invalid(format!(
-                    "nobody is on your sharing list yet: add people at {}/account, or name them with --github",
-                    acct.server().trim_end_matches('/')
-                )));
+        if logins.iter().any(|l| l == "*") {
+            if teams.is_some() {
+                return Err(ApiError::invalid(
+                    "\"*\" (any GitHub account) already includes every team",
+                ));
             }
-            BlobAccess::Github(people.into_iter().map(|u| u.id).take(100).collect())
-        } else if logins.iter().any(|l| l == "*") {
             // Every account on the account server is a GitHub account.
             BlobAccess::Any
         } else {
             let mut ids = Vec::new();
+            let mut team_ids = Vec::new();
+            if logins.is_empty() && teams.is_none() {
+                // No list: the people and teams on the account page.
+                let sharing = acct.sharing().await.map_err(account_err)?;
+                if sharing.people.is_empty() && sharing.teams.is_empty() {
+                    return Err(crate::api::nobody_to_share_with(acct.server()));
+                }
+                ids = sharing.people.into_iter().map(|u| u.id).take(100).collect();
+                team_ids = sharing
+                    .teams
+                    .into_iter()
+                    .map(|t| t.id)
+                    .take(crate::api::MAX_TEAMS)
+                    .collect();
+            }
             for login in &logins {
                 let u = acct.github_user(login).await.map_err(|e| {
                     if error_code(&e) == Some("unknown_user") {
@@ -552,7 +571,17 @@ async fn create(gw: &Arc<Gateway>, dev: &Device, p: &Value) -> ApiResult {
                 })?;
                 ids.push(u.id);
             }
-            BlobAccess::Github(ids)
+            if let Some(names) = &teams {
+                let mine = acct.teams().await.map_err(account_err)?;
+                team_ids = crate::api::pick_teams(names, &mine)?
+                    .into_iter()
+                    .map(|t| t.id)
+                    .collect();
+            }
+            BlobAccess::Github {
+                ids,
+                teams: team_ids,
+            }
         }
     } else {
         BlobAccess::Any

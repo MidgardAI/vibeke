@@ -38,6 +38,12 @@ export class PairingError extends Error {
     const d = this.cause instanceof RpcError ? (this.cause.data?.details as { allowed?: unknown } | undefined) : undefined;
     return Array.isArray(d?.allowed) ? d.allowed.filter((x): x is string => typeof x === 'string').slice(0, 50) : [];
   }
+
+  /** Team names the link is for, from a `github_not_allowed` refusal (spec 20 §2.5). */
+  get allowedTeams(): string[] {
+    const d = this.cause instanceof RpcError ? (this.cause.data?.details as { teams?: unknown } | undefined) : undefined;
+    return Array.isArray(d?.teams) ? d.teams.filter((x): x is string => typeof x === 'string' && x.length > 0).slice(0, 50) : [];
+  }
 }
 
 /**

@@ -403,6 +403,8 @@ fn esc_on_the_list_closes_the_view() {
 fn control_sends_full_only_after_y() {
     let (mut app, mut rxs) = opened();
     app.on_key(ch('n'));
+    // Opening the form asks for the account's teams.
+    gw_of(&commands(&mut rxs[0]), "account.teams");
     app.on_key(ch('j'));
     // Left from View wraps around to Control.
     app.on_key(named(NamedKey::Left));
@@ -631,6 +633,7 @@ fn a_review_without_a_preview_says_what_to_do() {
     let (mut app, mut rxs) = opened();
     app.size = (140, 40);
     kind_form(&mut app);
+    gw_of(&commands(&mut rxs[0]), "account.teams");
     app.on_key(named(NamedKey::Right));
     assert!(screen(&app).contains("no preview in this workspace"));
     app.on_key(named(NamedKey::Enter));
@@ -874,5 +877,140 @@ fn group_rows_keeps_the_order_of_a_list_without_invitations_for_its_devices() {
     assert_eq!(
         out.iter().map(|r| r.child).collect::<Vec<_>>(),
         [false, false, false, true, true]
+    );
+}
+
+const ACME: &str = "0b5c3f7e-1d2a-4c8b-9e6f-3a1b2c3d4e5f";
+const BETA: &str = "11111111-2222-4333-8444-555555555555";
+
+/// The form opened, its `account.teams` answered with Acme and Beta, focus on Who.
+fn team_form(app: &mut App, rxs: &mut [UnboundedReceiver<ClientFrame>]) {
+    app.size = (160, 40);
+    app.on_key(ch('n'));
+    let (req, p) = gw_of(&commands(&mut rxs[0]), "account.teams");
+    assert_eq!(p, json!({"method": "account.teams", "params": {}}));
+    reply(
+        app,
+        0,
+        req,
+        json!({"teams": [{"id": ACME, "name": "Acme", "role": "owner", "members": 3},
+                         {"id": BETA, "name": "Beta\u{1b}[31m", "role": "member", "members": 2},
+                         {"name": "no id"}]}),
+    );
+    app.on_key(named(NamedKey::Up));
+    assert_eq!(form(app).focus, Field::Who);
+}
+
+/// Spec 20 §2.5: each of the account's teams is a Who choice; picking one sends the team's id.
+#[test]
+fn a_team_is_a_who_choice_and_is_sent_by_id() {
+    let (mut app, mut rxs) = opened();
+    team_form(&mut app, &mut rxs);
+    let f = form(&app);
+    assert_eq!(
+        f.who_options(),
+        [Who::Link, Who::Github, Who::Team(0), Who::Team(1), Who::Any]
+    );
+    assert_eq!(f.teams[1].name, "Beta[31m", "names are cleaned");
+    let s = screen(&app);
+    assert!(s.contains("Team: Acme"), "{s}");
+    app.on_key(named(NamedKey::Right));
+    app.on_key(named(NamedKey::Right));
+    assert_eq!(form(&app).who, Who::Team(0));
+    let s = screen(&app);
+    assert!(s.contains("[Team: Acme]"), "{s}");
+    assert!(s.contains("everyone in Acme, signed in with GitHub"), "{s}");
+    app.on_key(named(NamedKey::Enter));
+    let (req, p) = gw_of(&commands(&mut rxs[0]), "share.create");
+    assert_eq!(
+        p["params"],
+        json!({"kind": "share", "scope": "view", "pane": "p1", "ttl_s": 7200,
+               "access": "github", "teams": [ACME]})
+    );
+    reply(
+        &mut app,
+        0,
+        req,
+        json!({"link": LINK, "pid": "pidT", "open_by": now_s() + 890,
+               "expires_at": now_s() + 7200, "access": "github", "uses": 20,
+               "github": [], "teams": [{"id": ACME, "name": "Acme"}]}),
+    );
+    let s = screen(&app);
+    assert!(s.contains("Only everyone in Acme can view"), "{s}");
+}
+
+/// A design review for a team gets notes straight to the agent, like other GitHub links.
+#[test]
+fn a_review_for_a_team() {
+    let (mut app, mut rxs) = opened();
+    with_previews(&mut app);
+    team_form(&mut app, &mut rxs);
+    app.on_key(named(NamedKey::Up));
+    app.on_key(named(NamedKey::Right));
+    assert_eq!(form(&app).kind, Kind::Review);
+    app.on_key(named(NamedKey::Down));
+    app.on_key(named(NamedKey::Right));
+    assert_eq!(form(&app).who, Who::Team(0));
+    app.on_key(named(NamedKey::Right));
+    assert_eq!(form(&app).who, Who::Team(1));
+    app.on_key(named(NamedKey::Enter));
+    let (_, p) = gw_of(&commands(&mut rxs[0]), "share.create");
+    assert_eq!(
+        p["params"],
+        json!({"kind": "review", "preview": "v4", "notes": "direct", "access": "github",
+               "teams": [BETA], "ttl_s": 7200})
+    );
+}
+
+/// A gateway that ignores `teams` makes a link for other people: it is cancelled, never shown.
+#[test]
+fn a_team_link_from_an_older_gateway_is_cancelled() {
+    let (mut app, mut rxs) = opened();
+    team_form(&mut app, &mut rxs);
+    app.on_key(named(NamedKey::Right));
+    app.on_key(named(NamedKey::Right));
+    app.on_key(named(NamedKey::Enter));
+    let (req, _) = gw_of(&commands(&mut rxs[0]), "share.create");
+    reply(
+        &mut app,
+        0,
+        req,
+        json!({"link": LINK, "pid": "pidOld", "open_by": now_s() + 890,
+               "expires_at": now_s() + 7200, "access": "github", "uses": 20, "github": []}),
+    );
+    let (_, p) = gw_of(&commands(&mut rxs[0]), "share.revoke");
+    assert_eq!(p["params"], json!({"id": "pidOld"}));
+    assert!(
+        form(&app)
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("update vibeke")
+    );
+}
+
+/// Without teams (an older gateway, or not signed in) the choices stay as they were; a refused
+/// team reads as a sentence.
+#[test]
+fn no_teams_keeps_the_old_choices_and_unknown_teams_read_well() {
+    let (mut app, mut rxs) = opened();
+    app.size = (160, 40);
+    app.on_key(ch('n'));
+    let (req, _) = gw_of(&commands(&mut rxs[0]), "account.teams");
+    reply_msg(&mut app, 0, req, "internal", "account.teams is not carried");
+    assert_eq!(form(&app).who_options(), [Who::Link, Who::Github, Who::Any]);
+    assert!(!screen(&app).contains("Team:"));
+    let e = RpcErr {
+        kind: "internal".into(),
+        message: "x".into(),
+        details: json!({"gateway_kind": "unknown_team", "details": {"team": "Gamma"}}),
+    };
+    assert_eq!(
+        crate::links::share_error(&e),
+        "you are not in Gamma: create or join teams on your account page"
+    );
+    assert_eq!(
+        crate::links::audience_text(&["alice".into()], &["Acme".into()]),
+        "@alice and everyone in Acme"
     );
 }

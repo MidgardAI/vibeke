@@ -30,8 +30,24 @@ fn signed_in(f: &FakeServer) -> Account {
 #[test]
 fn access_on_the_wire() {
     assert_eq!(
-        BlobAccess::Github(vec![1, 2]).to_json(),
+        BlobAccess::github(vec![1, 2]).to_json(),
         json!({"access": "github", "github": [1, 2]})
+    );
+    assert_eq!(
+        BlobAccess::Github {
+            ids: vec![],
+            teams: vec![T1.into()]
+        }
+        .to_json(),
+        json!({"access": "github", "teams": [T1]})
+    );
+    assert_eq!(
+        BlobAccess::Github {
+            ids: vec![7],
+            teams: vec![T1.into()]
+        }
+        .to_json(),
+        json!({"access": "github", "github": [7], "teams": [T1]})
     );
     assert_eq!(BlobAccess::Any.to_json(), json!({"access": "any"}));
     assert_eq!(
@@ -98,6 +114,53 @@ async fn create_upload_meta_download_delete() {
     assert_eq!(error_code(&e), Some("not_found"));
 }
 
+const T1: &str = "0b5c3f7e-1d2a-4c8b-9e6f-3a1b2c3d4e5f";
+
+/// A team blob (spec 20 §2.5): only the creator's own teams may be named, and whoever is a
+/// member of a named team when the blob is fetched may read it.
+#[tokio::test]
+async fn team_blobs_follow_current_membership() {
+    let f = FakeServer::start().await;
+    let acct = signed_in(&f);
+    let t = tempfile::tempdir().unwrap();
+    let src = t.path().join("blob.bin");
+    std::fs::write(&src, b"01234").unwrap();
+    let team = |members: &[u64]| crate::fake::FakeTeam::new(T1, "Acme", members);
+    // Not the creator's team.
+    let e = acct
+        .blob_create(
+            5,
+            None,
+            BlobAccess::Github {
+                ids: vec![],
+                teams: vec![T1.into()],
+            },
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error_code(&e), Some("not_a_member"));
+    f.with(|s| s.teams = vec![team(&[4242])]);
+    let c = acct
+        .blob_create(
+            5,
+            None,
+            BlobAccess::Github {
+                ids: vec![],
+                teams: vec![T1.into()],
+            },
+        )
+        .await
+        .unwrap();
+    acct.blob_upload(&c.id, &src).await.unwrap();
+    // Eve joins the team: she can read it. She leaves: she cannot.
+    f.blobs.with(|s| s.github = (5, "eve".into()));
+    f.with(|s| s.teams = vec![team(&[4242, 5])]);
+    assert!(acct.blob_meta(&c.id).await.is_ok());
+    f.with(|s| s.teams = vec![team(&[4242])]);
+    let e = acct.blob_meta(&c.id).await.unwrap_err();
+    assert_eq!(error_code(&e), Some("forbidden"));
+}
+
 #[tokio::test]
 async fn refusals() {
     let f = FakeServer::start().await;
@@ -117,14 +180,17 @@ async fn refusals() {
         .unwrap_err();
     assert_eq!(error_code(&e), Some("not_uploaded"));
 
-    // Someone else's GitHub id only.
+    // Someone else's GitHub id only: the creator may read it, another account may not.
     let c = acct
-        .blob_create(10, None, BlobAccess::Github(vec![1]))
+        .blob_create(10, None, BlobAccess::github(vec![1]))
         .await
         .unwrap();
     acct.blob_upload(&c.id, &src).await.unwrap();
+    assert!(acct.blob_meta(&c.id).await.is_ok());
+    f.blobs.with(|s| s.github = (5, "eve".into()));
     let e = acct.blob_meta(&c.id).await.unwrap_err();
     assert_eq!(error_code(&e), Some("forbidden"));
+    f.blobs.with(|s| s.github = (4242, "octo".into()));
 
     // Too large for the server.
     f.blobs.with(|s| s.max_size = 4);

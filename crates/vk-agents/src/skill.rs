@@ -260,7 +260,13 @@ mod tests {
         assert!(c.starts_with("---\nname: vibeke-remote\n"), "{c}");
         assert_eq!(marker_version(&c).as_deref(), Some(crate::install::VERSION));
         assert!(!REMOTE_SKILL.contains("VIBEKE:-"));
-        for flag in ["--any-github", "--link", "share review", "handoff link"] {
+        for flag in [
+            "--any-github",
+            "--link",
+            "--team",
+            "share review",
+            "handoff link",
+        ] {
             assert!(REMOTE_SKILL.contains(flag), "{flag}");
         }
         let d = Dirs {

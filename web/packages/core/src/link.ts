@@ -53,7 +53,25 @@ export interface ShareInvite {
   sid?: string;
   /** Optional account server for the attestation (default: the app's configured one). */
   account?: string;
+  /**
+   * GitHub links: the teams whose members may open it (spec 20 §2.5). For display only; the host
+   * checks membership with the signed attestation.
+   */
+  teams?: ShareTeam[];
 }
+
+/** A team a GitHub link is for: the id counts, the name is for display. */
+export interface ShareTeam {
+  id: string;
+  name?: string;
+}
+
+/** Most teams one link names. */
+const MAX_TEAMS = 50;
+
+/** The names of a link's teams, for "This link is for: … everyone in Acme". */
+export const shareTeamNames = (s: ShareInvite | undefined): string[] =>
+  (s?.teams ?? []).map((t) => t.name || t.id).filter((n) => n.length > 0);
 
 /** 16 base32 characters: the label of a review link's content origin. */
 const SID = /^[A-Za-z2-7]{16}$/;
@@ -75,6 +93,14 @@ function parseShare(v: unknown): ShareInvite | undefined {
   if (o.preview !== undefined && o.preview !== null) {
     const p = o.preview as Record<string, unknown>;
     if (typeof p !== 'object' || typeof p.id !== 'string' || !p.id || p.id.length > 200 || !optString(p.label)) throw new Error('link: bad share preview');
+  }
+  if (o.teams !== undefined) {
+    if (!Array.isArray(o.teams) || o.teams.length > MAX_TEAMS) throw new Error('link: bad share teams');
+    for (const t of o.teams as unknown[]) {
+      const x = t as Record<string, unknown>;
+      if (typeof x !== 'object' || x === null || typeof x.id !== 'string' || !x.id || x.id.length > 64) throw new Error('link: bad share teams');
+      if (x.name !== undefined && (typeof x.name !== 'string' || x.name.length > 200)) throw new Error('link: bad share teams');
+    }
   }
   if (o.kind === 'review' && (typeof o.sid !== 'string' || !o.preview)) throw new Error('link: review link without preview');
   return v as ShareInvite;

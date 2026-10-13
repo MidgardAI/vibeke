@@ -30,6 +30,9 @@
 //!   is saved and the relay client retries at once) | `{status: expired}` (also unknown ids) |
 //!   `{status: denied}` | `{status: error, message}`.
 //! - `account.login.cancel {id}` => `{}`; `account.logout {}` => `{logged_out}`.
+//! - `account.teams {}` => `{teams: [{id, name, role, members}]}`: the host account's teams on
+//!   its account server (spec 20 §2.5), for the People form's **Who** choices.
+//!   `account_required` when the host is not signed in; `unavailable` without an account server.
 
 use std::sync::Arc;
 
@@ -57,6 +60,7 @@ pub const ALLOWED: &[&str] = &[
     "account.login.status",
     "account.login.cancel",
     "account.logout",
+    "account.teams",
     "handoff.link.create",
     "handoff.link.status",
     "handoff.link.list",
@@ -157,6 +161,7 @@ pub async fn execute(gw: &Arc<Gateway>, method: &str, p: &Value) -> ApiResult {
         "account.login.status" => login_status(gw, p),
         "account.login.cancel" => login_cancel(gw, p),
         "account.logout" => logout(gw).await,
+        "account.teams" => account_teams(gw).await,
         // Continue links (spec 20 §4.5): the app API's code, as the owner.
         m if m.starts_with("handoff.link.") => crate::handoff_link::dispatch(gw, &owner, m, p)
             .await
@@ -266,6 +271,37 @@ async fn account_status(gw: &Arc<Gateway>) -> ApiResult {
         "login": need.login,
         "relay": gw.cfg.relay,
     }))
+}
+
+/// `account.teams`: the teams of the account this host is signed in to (spec 20 §2.5).
+async fn account_teams(gw: &Arc<Gateway>) -> ApiResult {
+    let acct = gateway_account(gw)?;
+    let a2 = acct.clone();
+    let cred = tokio::task::spawn_blocking(move || a2.credential())
+        .await
+        .map_err(|_| ApiError::unavailable("reading the account credential failed"))?
+        .map_err(|e| ApiError::unavailable(e.to_string()))?;
+    let required = || {
+        ApiError::new(
+            "account_required",
+            "this host is not signed in to its account server (run: vibeke login)",
+        )
+    };
+    if cred.is_none() {
+        return Err(required());
+    }
+    let teams = acct.teams().await.map_err(|e| match e {
+        vk_account::Error::LoginRequired | vk_account::Error::Unauthorized => required(),
+        e => ApiError::unavailable(format!("account server: {e}")),
+    })?;
+    let teams: Vec<Value> = teams
+        .into_iter()
+        .map(|t| {
+            json!({"id": t.id, "name": crate::pair::sanitize_label(&t.name, 64),
+                   "role": t.role, "members": t.members})
+        })
+        .collect();
+    Ok(json!({"teams": teams}))
 }
 
 /// The account this gateway logs in to.
@@ -396,6 +432,7 @@ mod tests {
                 "account.login.status",
                 "account.login.cancel",
                 "account.logout",
+                "account.teams",
                 "handoff.link.create",
                 "handoff.link.status",
                 "handoff.link.list",
@@ -688,6 +725,53 @@ mod tests {
         execute(gw, "account.login.status", &json!({"id": id}))
             .await
             .unwrap()
+    }
+
+    /// `account.teams` lists the host account's teams for the TUI's Who choices; a host that is
+    /// not signed in is told so.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn account_teams_for_the_tui() {
+        let fake = vk_account::fake::FakeServer::start().await;
+        let t = tempfile::tempdir().unwrap();
+        let gw = account_gateway(&t, "ws://relay.test", &fake.url);
+        let e = execute(&gw, "account.teams", &json!({}))
+            .await
+            .unwrap_err();
+        assert_eq!(e.kind, "account_required");
+        let a = crate::account::account(&fake.url, &gw.state.dir).unwrap();
+        a.save(&vk_account::Credential {
+            server: a.server().to_string(),
+            login: "octo".into(),
+            refresh_token: "r1".into(),
+            access_token: Some("a1".into()),
+            access_exp: Some(now_s() + 3600),
+            saved_at: now_s(),
+        })
+        .unwrap();
+        fake.with(|s| {
+            s.access = Some("a1".into());
+            s.refresh = Some("r1".into());
+            s.teams = vec![vk_account::fake::FakeTeam::new(
+                "0b5c3f7e-1d2a-4c8b-9e6f-3a1b2c3d4e5f",
+                "Acme",
+                &[1, 2, 3],
+            )];
+        });
+        let r = execute(&gw, "account.teams", &json!({})).await.unwrap();
+        assert_eq!(
+            r,
+            json!({"teams": [{"id": "0b5c3f7e-1d2a-4c8b-9e6f-3a1b2c3d4e5f", "name": "Acme",
+                              "role": "owner", "members": 3}]})
+        );
+        // The account server refuses the token and the refresh: sign in again.
+        fake.with(|s| {
+            s.access = Some("other".into());
+            s.refresh = None;
+        });
+        let e = execute(&gw, "account.teams", &json!({}))
+            .await
+            .unwrap_err();
+        assert_eq!(e.kind, "account_required");
     }
 
     #[tokio::test(flavor = "multi_thread")]

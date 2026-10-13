@@ -226,6 +226,7 @@ fn methods_outside_the_allow_list_are_refused() {
         "account.login.status",
         "account.login.cancel",
         "account.logout",
+        "account.teams",
     ] {
         let e = api(&s, "gateway.call", json!({"method": method, "params": {}})).unwrap_err();
         assert_eq!(kind(&e), "remote_unavailable", "{method}: {e}");

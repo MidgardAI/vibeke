@@ -605,7 +605,8 @@ pub fn deadlines(app: &App, now: crate::time::Instant, d: &mut crate::deadline::
 }
 
 /// `l` in the handoffs list: make a continue link for the machine's focused pane, for the GitHub
-/// logins of `[sharing] github`, or without one the account's sharing list.
+/// logins of `[sharing] github`, or without one the account's sharing list (its people and the
+/// teams ticked on the account page, spec 20 §2.5).
 fn make_link(app: &mut App) {
     let mi = app.ux.connections.mi;
     if !app.machines.get(mi).is_some_and(|m| m.connected()) {
@@ -626,7 +627,7 @@ fn make_link(app: &mut App) {
     };
     let github = crate::links::github_default(app);
     app.ux.handoff.link = Some(l);
-    // Without a config list, the gateway uses the account's sharing list (the account page).
+    // Without a config list, the gateway uses the account's sharing list (people and teams).
     let mut params = json!({"pane": pane, "access": "github"});
     if !github.is_empty() {
         params["github"] = json!(github);

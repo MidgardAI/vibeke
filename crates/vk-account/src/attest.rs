@@ -5,7 +5,8 @@
 //!
 //! Token: `"v1." ‖ b64url(json) ‖ "." ‖ b64url(sig)`, where `sig` is Ed25519 over
 //! `"vibeke-cloud/1 attest\0" ‖ json` (the exact decoded payload bytes) and the JSON is
-//! `{v: 1, kid, gh_id, login, aud, nonce, iat, exp}`.
+//! `{v: 1, kid, gh_id, login, aud, nonce, iat, exp, teams?}`. `teams` lists the ids of the
+//! Vibeke teams the signer belongs to at signing time; the server leaves it out when empty.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -43,7 +44,14 @@ pub struct AttestClaims {
     pub nonce: String,
     pub iat: u64,
     pub exp: u64,
+    /// Ids of the teams the signer belongs to when the account server signed (spec 20 §2.5).
+    /// Absent in tokens from older servers and for people in no team.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub teams: Vec<String>,
 }
+
+/// Most team ids an attestation may carry (the account server sends at most 50).
+pub const MAX_TEAMS: usize = 50;
 
 /// A GitHub account as the account server resolved it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -114,6 +122,9 @@ pub fn peek(token: &str) -> Result<(AttestClaims, Vec<u8>, [u8; 64]), AttestErro
     let json = b64::decode(payload).map_err(|_| AttestError::Malformed)?;
     let sig = b64::decode_array::<64>(sig).map_err(|_| AttestError::Malformed)?;
     let claims: AttestClaims = serde_json::from_slice(&json).map_err(|_| AttestError::Malformed)?;
+    if claims.teams.len() > MAX_TEAMS {
+        return Err(AttestError::Malformed);
+    }
     Ok((claims, json, sig))
 }
 
@@ -227,48 +238,9 @@ impl Client {
             (s, v) => Err(Self::unexpected(s, &v)),
         }
     }
-
-    /// `GET /v1/sharing`: the people who may open this account's GitHub links, as the account
-    /// page (`<server>/account`) keeps them (spec 20 §2.2).
-    pub async fn sharing_people(&self, access_token: &str) -> Result<Vec<GithubUser>> {
-        match self
-            .send(
-                reqwest::Method::GET,
-                "/v1/sharing",
-                Some(access_token),
-                None,
-            )
-            .await?
-        {
-            (200, v) => serde_json::from_value(v.get("people").cloned().unwrap_or_default())
-                .map_err(|e| Error::Http(format!("bad sharing list: {e}"))),
-            (401, _) => Err(Error::Unauthorized),
-            // An account server without the list yet: nobody.
-            (404, _) => Ok(Vec::new()),
-            (s, v) => Err(Self::unexpected(s, &v)),
-        }
-    }
 }
 
 impl Account {
-    /// [`Client::sharing_people`] with this account's token (refreshed once when refused).
-    pub async fn sharing_people(&self) -> Result<Vec<GithubUser>> {
-        let access = self.access_token(false).await?;
-        match self.client.sharing_people(&access).await {
-            Err(Error::Unauthorized) => {
-                let access = self.access_token(true).await?;
-                self.client
-                    .sharing_people(&access)
-                    .await
-                    .map_err(|e| match e {
-                        Error::Unauthorized => Error::LoginRequired,
-                        e => e,
-                    })
-            }
-            r => r,
-        }
-    }
-
     /// [`Client::github_user`] with this account's token (refreshed once when refused).
     pub async fn github_user(&self, login: &str) -> Result<GithubUser> {
         let access = self.access_token(false).await?;
@@ -314,6 +286,7 @@ mod tests {
             nonce: NONCE.into(),
             iat: 1_700_000_000,
             exp: 1_700_000_300,
+            teams: Vec::new(),
         }
     }
 
@@ -347,6 +320,56 @@ mod tests {
         let c = verify(CLOUD_TOKEN, &keys, 1_700_000_100).unwrap();
         assert_eq!((c.gh_id, c.login.as_str()), (583231, "octocat"));
         assert_eq!(c.aud, "qnlbvwzzr7mh7dt63azrx7zpzm");
+    }
+
+    /// Team ids ride along in the signed JSON; a token without them (older servers, people in no
+    /// team) is unchanged, and a token with too many is refused.
+    #[test]
+    fn attestations_with_teams() {
+        let team = "0b5c3f7e-1d2a-4c8b-9e6f-3a1b2c3d4e5f".to_string();
+        let with = AttestClaims {
+            teams: vec![team.clone()],
+            ..claims()
+        };
+        let token = sign(&SEED, &with);
+        assert_ne!(token, TOKEN);
+        let got = verify(&token, &keys(), 1_700_000_100).unwrap();
+        assert_eq!(got.teams, std::slice::from_ref(&team));
+        // The signature covers the list: a token whose teams were swapped is refused.
+        let (_, _, sig) = peek(&token).unwrap();
+        let swapped = AttestClaims {
+            teams: vec!["11111111-2222-4333-8444-555555555555".into()],
+            ..claims()
+        };
+        let t = format!(
+            "v1.{}.{}",
+            b64::encode(serde_json::to_vec(&swapped).unwrap()),
+            b64::encode(sig)
+        );
+        assert_eq!(
+            verify(&t, &keys(), 1_700_000_100),
+            Err(AttestError::BadSignature)
+        );
+        // Without teams the field is left out: the fixed vector is unchanged.
+        assert!(
+            !String::from_utf8(peek(TOKEN).unwrap().1)
+                .unwrap()
+                .contains("teams")
+        );
+        assert!(
+            verify(TOKEN, &keys(), 1_700_000_100)
+                .unwrap()
+                .teams
+                .is_empty()
+        );
+        let many = AttestClaims {
+            teams: vec![team; MAX_TEAMS + 1],
+            ..claims()
+        };
+        assert_eq!(
+            verify(&sign(&SEED, &many), &keys(), 1_700_000_100),
+            Err(AttestError::Malformed)
+        );
     }
 
     #[test]

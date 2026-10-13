@@ -2135,19 +2135,109 @@ fn account_error(e: vk_account::Error, login: Option<&str>) -> ApiError {
     }
 }
 
-/// The GitHub side of a share: what it parsed from `github` and who created it.
+/// The GitHub side of a share: what it parsed from `github` and `teams`, and who created it.
 struct GithubAllow {
     ids: Vec<crate::state::GithubId>,
     any: bool,
+    teams: Vec<crate::state::TeamRef>,
     owner: Option<String>,
 }
 
+/// Most teams one link may name (spec 20 §2.5).
+pub const MAX_TEAMS: usize = 50;
+
+/// The `teams: [id | name]` parameter: `None` when absent. An empty list, or one with
+/// something other than non-empty strings, is refused.
+pub(crate) fn teams_param(p: &Value) -> Result<Option<Vec<String>>, ApiError> {
+    const MSG: &str = "teams is a list of team names or ids";
+    match p.get("teams") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Array(a)) => {
+            let list = a
+                .iter()
+                .map(|v| v.as_str().map(str::trim).filter(|t| !t.is_empty()))
+                .collect::<Option<Vec<&str>>>()
+                .ok_or_else(|| ApiError::invalid(MSG))?;
+            if list.is_empty() {
+                return Err(ApiError::invalid(
+                    "the teams list is empty: name at least one team",
+                ));
+            }
+            if list.len() > MAX_TEAMS {
+                return Err(ApiError::invalid(format!(
+                    "at most {MAX_TEAMS} teams per link"
+                )));
+            }
+            Ok(Some(list.into_iter().map(str::to_string).collect()))
+        }
+        Some(_) => Err(ApiError::invalid(MSG)),
+    }
+}
+
+/// Match team names or ids against the host account's own teams (spec 20 §2.5): an id matches
+/// exactly (any case), a name without case. A team the account is not in is `unknown_team`
+/// (with `details.team`); a name several of its teams share is `invalid_params`. The result
+/// names each team once, by id, with its current name for display.
+pub(crate) fn pick_teams(
+    given: &[String],
+    mine: &[vk_account::Team],
+) -> Result<Vec<crate::state::TeamRef>, ApiError> {
+    let mut out: Vec<crate::state::TeamRef> = Vec::new();
+    for g in given {
+        let lower = g.to_ascii_lowercase();
+        let hits: Vec<&vk_account::Team> = if vk_account::teams::valid_team_id(&lower) {
+            mine.iter().filter(|t| t.id == lower).collect()
+        } else {
+            mine.iter()
+                .filter(|t| t.name.trim().eq_ignore_ascii_case(g))
+                .collect()
+        };
+        let team = match hits.as_slice() {
+            [t] => *t,
+            [] => {
+                let mut e = ApiError::new(
+                    "unknown_team",
+                    format!(
+                        "you are not in a team called {}: create or join it on your account page",
+                        crate::pair::sanitize_label(g, 64)
+                    ),
+                );
+                e.details = json!({"team": crate::pair::sanitize_label(g, 64)});
+                return Err(e);
+            }
+            _ => {
+                return Err(ApiError::invalid(format!(
+                    "several of your teams are called {}: name the one you mean by its id",
+                    crate::pair::sanitize_label(g, 64)
+                )));
+            }
+        };
+        if !out.iter().any(|t| t.id == team.id) {
+            out.push(crate::state::TeamRef {
+                id: team.id.clone(),
+                name: crate::pair::sanitize_label(&team.name, 64),
+            });
+        }
+    }
+    Ok(out)
+}
+
+/// The refusal when a GitHub link names nobody and the account page lists nobody either.
+pub(crate) fn nobody_to_share_with(server: &str) -> ApiError {
+    ApiError::invalid(format!(
+        "nobody is on your sharing list yet: add people or tick a team at {}/account, or name them with --github or --team",
+        server.trim_end_matches('/')
+    ))
+}
+
 impl Call<'_> {
-    /// `github: [login] | ["*"]` resolved to ids through the account server (spec 20 §2.2).
-    /// Without `github`, the account's own list from the account page (`<server>/account`).
-    /// Fails closed: an empty list, no account server, a host that is not signed in or an
-    /// unknown login is an error, never a `link` share.
+    /// `github: [login] | ["*"]` resolved to ids through the account server (spec 20 §2.2), and
+    /// `teams: [id | name]` resolved against the host account's teams (§2.5). Without either,
+    /// the people and teams of the account page (`<server>/account`). Fails closed: an empty
+    /// list, no account server, a host that is not signed in, an unknown login or team is an
+    /// error, never a `link` share.
     async fn resolve_github(&self, p: &Value) -> Result<GithubAllow, ApiError> {
+        let teams = teams_param(p)?;
         let given: Option<Vec<&str>> = match p.get("github") {
             None | Some(Value::Null) => None,
             Some(Value::Array(a)) => Some(
@@ -2172,6 +2262,11 @@ impl Call<'_> {
             }
         }
         let any = given.as_deref() == Some(&["*"][..]);
+        if any && teams.is_some() {
+            return Err(ApiError::invalid(
+                "\"*\" (any GitHub account) already includes every team",
+            ));
+        }
         let server = crate::account::account_server(&self.gw.cfg);
         let acct = crate::account::account(&server, &self.gw.state.dir)
             .map_err(|e| ApiError::unavailable(format!("account server: {e:#}")))?;
@@ -2189,9 +2284,10 @@ impl Call<'_> {
                 ids.push(crate::state::GithubId { id, login });
             }
         };
-        match given {
-            Some(_) if any => {}
-            Some(logins) => {
+        let mut picked: Vec<crate::state::TeamRef> = Vec::new();
+        match (given, &teams) {
+            (Some(_), _) if any => {}
+            (Some(logins), _) => {
                 for login in logins {
                     let u = acct
                         .github_user(login)
@@ -2200,25 +2296,34 @@ impl Call<'_> {
                     add(u.id, u.login);
                 }
             }
-            None => {
-                let people = acct
-                    .sharing_people()
-                    .await
-                    .map_err(|e| account_error(e, None))?;
-                if people.is_empty() {
-                    return Err(ApiError::invalid(format!(
-                        "nobody is on your sharing list yet: add people at {}/account, or name them with --github",
-                        server.trim_end_matches('/')
-                    )));
+            (None, Some(_)) => {}
+            (None, None) => {
+                let sharing = acct.sharing().await.map_err(|e| account_error(e, None))?;
+                if sharing.people.is_empty() && sharing.teams.is_empty() {
+                    return Err(nobody_to_share_with(&server));
                 }
-                for u in people.into_iter().take(100) {
+                for u in sharing.people.into_iter().take(100) {
                     add(u.id, u.login);
                 }
+                picked = sharing
+                    .teams
+                    .into_iter()
+                    .take(MAX_TEAMS)
+                    .map(|t| crate::state::TeamRef {
+                        name: crate::pair::sanitize_label(&t.name, 64),
+                        id: t.id,
+                    })
+                    .collect();
             }
+        }
+        if let Some(names) = &teams {
+            let mine = acct.teams().await.map_err(|e| account_error(e, None))?;
+            picked = pick_teams(names, &mine)?;
         }
         Ok(GithubAllow {
             ids,
             any,
+            teams: picked,
             owner: Some(cred.login),
         })
     }
@@ -2331,6 +2436,9 @@ impl Call<'_> {
                     .ok_or_else(|| ApiError::invalid("uses is 1 to 100"))? as u32
             }
         };
+        if !github_access && !matches!(p.get("teams"), None | Some(Value::Null)) {
+            return Err(ApiError::invalid("teams is for access github"));
+        }
         if !github_access && uses != 1 {
             return Err(ApiError::invalid(
                 "a link share opens once; use access github for more uses",
@@ -2420,6 +2528,7 @@ impl Call<'_> {
             access: github_access.then(|| "github".to_string()),
             github: allow.as_ref().map(|a| a.ids.clone()).unwrap_or_default(),
             github_any: allow.as_ref().is_some_and(|a| a.any),
+            teams: allow.as_ref().map(|a| a.teams.clone()).unwrap_or_default(),
             review: review.clone(),
         };
         // A GitHub link stays open as long as the share; a plain link for 15 minutes.
@@ -2455,6 +2564,7 @@ impl Call<'_> {
                              "expires_after_s": ttl_s, "access": access, "uses": uses});
         if let Some(a) = &allow {
             out["github"] = if a.any { json!("*") } else { json!(a.ids) };
+            out["teams"] = json!(a.teams);
         }
         if let Some(r) = &review {
             out["preview"] =

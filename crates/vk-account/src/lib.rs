@@ -778,6 +778,8 @@ impl Account {
 pub mod attest;
 pub use attest::GithubUser;
 pub mod blobs;
+pub mod teams;
+pub use teams::{Sharing, Team, TeamRef};
 
 #[cfg(any(test, feature = "fake-server"))]
 pub mod fake;

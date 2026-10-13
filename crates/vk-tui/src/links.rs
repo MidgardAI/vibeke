@@ -73,6 +73,16 @@ pub fn logins_text(list: &[String]) -> String {
         .join(", ")
 }
 
+/// "@alice, @bob and everyone in Acme": who a GitHub link is for, people first.
+pub fn audience_text(logins: &[String], teams: &[String]) -> String {
+    let people = logins_text(logins);
+    match (people.is_empty(), teams.is_empty()) {
+        (_, true) => people,
+        (true, false) => format!("everyone in {}", teams.join(", ")),
+        (false, false) => format!("{people} and everyone in {}", teams.join(", ")),
+    }
+}
+
 /// The login in a `github` value: `{id, login}` or a bare string.
 pub fn login_of(v: &Value) -> Option<String> {
     let s = match v {
@@ -94,14 +104,27 @@ pub fn logins_of(v: &Value) -> Vec<String> {
 
 /// What a failed `share.create` or `handoff.link.*` call says, for the codes spec 20 adds.
 pub fn share_error(e: &RpcErr) -> String {
-    match e.kind.as_str() {
+    // The server bridge passes the gateway's own kinds on as `details.gateway_kind`, with the
+    // gateway's details under `details.details`.
+    let (kind, details) = match e.details.get("gateway_kind").and_then(Value::as_str) {
+        Some(k) => (k, e.details.get("details").unwrap_or(&Value::Null)),
+        None => (e.kind.as_str(), &e.details),
+    };
+    match kind {
         "account_required" => {
             "this host is not signed in: run `vibeke login`, then try again".into()
         }
         "unavailable" => "the account server cannot be reached: try again in a moment".into(),
+        "unknown_team" => {
+            let team = details
+                .get("team")
+                .and_then(Value::as_str)
+                .map(|t| crate::plugins::sanitize(t, 40))
+                .unwrap_or_else(|| "that team".into());
+            format!("you are not in {team}: create or join teams on your account page")
+        }
         "unknown_user" => {
-            let who = e
-                .details
+            let who = details
                 .get("login")
                 .and_then(Value::as_str)
                 .and_then(clean_login)

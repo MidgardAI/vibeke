@@ -400,7 +400,11 @@ export const en = {
       signIn: 'Sign in with GitHub',
       signInAgain: 'Sign in with another account',
       signingIn: 'Opening GitHub sign-in…',
-      linkFor: (logins: string[]) => `This link is for: ${logins.map((l) => `@${l}`).join(', ')}`,
+      linkFor: (logins: string[], teams: string[] = []) => {
+        const people = logins.map((l) => `@${l}`).join(', ');
+        const team = teams.length > 0 ? `everyone in ${teams.join(', ')}` : '';
+        return `This link is for: ${[people, team].filter(Boolean).join(' and ')}`;
+      },
       anyAccount: 'Any GitHub account can open this link.',
       failed: (code: string) => `The GitHub sign-in did not work (${code}). Try again.`,
       desktop: 'The desktop app cannot sign in with GitHub for a link. Open the link in your web browser instead.',
@@ -411,7 +415,7 @@ export const en = {
       expired: 'This link has expired.',
       revoked: 'The owner revoked this link.',
       forbidden: 'The host does not allow this.',
-      github_not_allowed: 'Your GitHub account is not on the list for this link.',
+      github_not_allowed: 'Your GitHub account is not on the list for this link, and you are not in a team it is for.',
       attest_invalid: 'The GitHub sign-in could not be checked. Sign in again.',
       upgrade_required: 'This link needs a newer Vibeke app. Reload the page.',
     } as Record<string, string>,

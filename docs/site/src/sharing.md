@@ -78,7 +78,7 @@ A link made in the app or the People form works for the first person who opens i
 
 A **GitHub link** opens only for the GitHub accounts you name. The person who opens it signs in with GitHub first. Vibeke checks the account id, not the name, so a renamed account keeps its access.
 
-- You can name accounts, or allow any GitHub account.
+- You can name accounts, name a [team](#teams), or allow any GitHub account.
 - One link works for several people. It opens up to 20 times by default (at most 100) until it expires. Each person becomes a separate device with their own GitHub login.
 - Your host must be signed in to an account (`vibeke login`). Without it, Vibeke refuses to make the link. It never falls back to a link that anyone can open.
 - Opening the link in an old app shows "This link needs a newer Vibeke app".
@@ -86,13 +86,14 @@ A **GitHub link** opens only for the GitHub accounts you name. The person who op
 
 ### Your sharing list
 
-By default, GitHub links are for the people on your **sharing list**. Manage the list on your account page at [cloud.vibeke.dev/account](https://cloud.vibeke.dev/account):
+By default, GitHub links are for the people and teams on your **sharing list**. Manage the list on your account page at [cloud.vibeke.dev/account](https://cloud.vibeke.dev/account):
 
 1. Sign in with GitHub.
 2. Under **People who can open your links**, type a GitHub username and select **Add**.
 3. Select **Remove** next to a person to take them off the list.
+4. Under **Teams**, tick each team that your links are for. A new team is ticked when you join it.
 
-The list belongs to your account, so every host that is signed in to it uses the same list. A change applies to links you make after it. A link you already made keeps the people it was made for.
+The list belongs to your account, so every host that is signed in to it uses the same list. A change applies to links you make after it. A link you already made keeps the people and teams it was made for.
 
 To use a different list on one machine, add the GitHub logins to that machine's config. The config list then replaces your account's list on that machine:
 
@@ -100,6 +101,18 @@ To use a different list on one machine, add the GitHub logins to that machine's 
 [sharing]
 github = ["alice", "bob"]
 ```
+
+### Teams
+
+A **team** is a group of people on the account server. Everyone in a team can open the GitHub links that a teammate makes for the team. You do not need to add each teammate to your sharing list.
+
+1. On your [account page](https://cloud.vibeke.dev/account), create a team and give it a name. You become its owner.
+2. Invite people. Type a GitHub username, or make an invite link and send it to them. An invite link works once.
+3. Each person accepts the invitation on their own account page.
+
+Vibeke checks who is in the team when someone opens a link, not when you make it. A person who joins the team later can open links you made before. A person who leaves the team, or whom an owner removes, cannot open them any more.
+
+To make a link for a team, pick the team in the **Who** field of the **People** form, or pass `--team`. You can name a team by its name or by its id. You can only name teams that you are in.
 
 ## Share a running app for design review
 
@@ -137,18 +150,20 @@ Choose who may open the link:
 
 | Option | Who can open it |
 | --- | --- |
-| none | The people on your sharing list (or in `[sharing] github` when the config has a list) |
+| none | The people and teams on your sharing list (or the people in `[sharing] github` when the config has a list) |
 | `--github alice,bob` | Those GitHub accounts |
+| `--team Acme` | Everyone in that team. Repeat the option or use commas for more teams. |
+| `--github alice --team Acme` | Those GitHub accounts and everyone in that team |
 | `--any-github` | Any GitHub account |
 | `--link` | The first person who opens it, like a link made in the app |
 
 Other options: `--uses N` (how many people may open it), `--ttl 30m|24h|7d` (how long it works), `--label` (a name shown in **People**), `--scope view|approve` (for `watch`) and `--notes direct|held` (for `review`). `--pane @current` and `--workspace @current` mean the pane you run the command in.
 
-The commands print only the link. Add `--json` to see the full result. If your sharing list is empty and you pass no option, the command stops and asks you to add people on your account page or pass `--github`. Use `--any-github` and `--link` with care: they let more people in.
+The commands print only the link. Add `--json` to see the full result. If your sharing list is empty and you pass no option, the command stops. It asks you to add people or tick a team on your account page, or to pass `--github` or `--team`. If you name a team that you are not in, the command stops too. Use `--any-github` and `--link` with care: they let more people in.
 
 ## See who has access
 
-**People** (`prefix+alt+d`, then `tab`) lists each device with its GitHub login, and groups the devices under the link they came from. `x` revokes the selected entry. Revoking a link revokes every device it made. The **People** form (`prefix+alt+v`) has a **Kind** field (**Watch** or **Design review**) and a **Who** field (**Anyone with the link**, **GitHub** with your default accounts, or **Any GitHub account**). For a review it also has **Notes**. A created link shows how many uses are left.
+**People** (`prefix+alt+d`, then `tab`) lists each device with its GitHub login, and groups the devices under the link they came from. `x` revokes the selected entry. Revoking a link revokes every device it made. The **People** form (`prefix+alt+v`) has a **Kind** field (**Watch** or **Design review**) and a **Who** field (**Anyone with the link**, **GitHub** with your default people and teams, **Team:** and the name of each of your teams, or **Any GitHub account**). For a review it also has **Notes**. A created link shows how many uses are left.
 
 ## Revoke access
 

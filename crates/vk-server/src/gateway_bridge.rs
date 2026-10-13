@@ -12,8 +12,9 @@
 //!   `{link, pid, open_by, scope}` and `pair.status {pid}` => `{status: pending | claimed |
 //!   done | rejected | gone, …}` (see `vk_gateway::bridge`); `share.revoke {id: pid}` cancels a
 //!   pairing. The TUI signs the host in to an account relay with the bridge-only
-//!   `account.status`, `account.login.start` / `.status` / `.cancel` and `account.logout`; a
-//!   pane may never reach the login methods ([`PANE_FORBIDDEN_CALLS`]).
+//!   `account.status`, `account.login.start` / `.status` / `.cancel` and `account.logout`, and
+//!   lists the account's teams with `account.teams` (spec 20 §2.5); a pane may never reach the
+//!   login methods or the team list ([`PANE_FORBIDDEN_CALLS`]).
 //! - `gateway.reply {id, result | error: {kind, message, details?}}` is the gateway's answer
 //!   (gateway clients only, like `handoff.job.update`).
 //! - `gateway.status {}` says whether a gateway is connected, plus the supervised gateway's
@@ -63,6 +64,8 @@ pub const PANE_FORBIDDEN_CALLS: &[&str] = &[
     "account.login.status",
     "account.login.cancel",
     "account.logout",
+    // The account's teams (spec 20 §2.5): the user's account, not a pane's business.
+    "account.teams",
 ];
 
 /// What `gateway.call` may run. The gateway checks this list again (`vk_gateway::bridge::ALLOWED`
@@ -84,6 +87,7 @@ pub const ALLOWED: &[&str] = &[
     "account.login.status",
     "account.login.cancel",
     "account.logout",
+    "account.teams",
     "handoff.link.create",
     "handoff.link.status",
     "handoff.link.list",
@@ -374,7 +378,7 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
 /// Schema registry entries (`api_schema` loads them next to its own tables).
 pub const SHAPES: &str = r##"
 # --- the server-to-gateway bridge (spec 16 §15.5): peer.*, share.*, devices.*, pair.* and account.* run in the host's gateway ---
-# full scope, never from a pane; method is one of peer.invite, peer.redeem, peer.list, peer.remove, share.create (kind handoff, peer, review or share), share.list, share.revoke, devices.list, devices.revoke, pair.create, pair.status, account.status, account.login.start, account.login.status, account.login.cancel, account.logout, handoff.link.create, handoff.link.status, handoff.link.list, handoff.link.revoke, handoff.link.redeem, handoff.link.cancel; answers with the gateway's result; remote_unavailable when no gateway is connected or it doesn't answer in time
+# full scope, never from a pane; method is one of peer.invite, peer.redeem, peer.list, peer.remove, share.create (kind handoff, peer, review or share), share.list, share.revoke, devices.list, devices.revoke, pair.create, pair.status, account.status, account.login.start, account.login.status, account.login.cancel, account.logout, account.teams, handoff.link.create, handoff.link.status, handoff.link.list, handoff.link.revoke, handoff.link.redeem, handoff.link.cancel; answers with the gateway's result; remote_unavailable when no gateway is connected or it doesn't answer in time
 gateway.call :: {method: string, params?: object, timeout_ms?: int = 30000} => any
 # gateway clients only: the answer to a gateway.request event (result or error, not both)
 gateway.reply :: {id: string, result?: any, error?: {kind: string, message: string, details?: any}} => {}
@@ -415,6 +419,7 @@ mod tests {
                 "account.login.status",
                 "account.login.cancel",
                 "account.logout",
+                "account.teams",
                 "handoff.link.create",
                 "handoff.link.status",
                 "handoff.link.list",
@@ -461,6 +466,7 @@ mod tests {
         assert!(!PANE_FORBIDDEN_CALLS.contains(&"account.status"));
         // Handing out access is the user's, whatever the kind.
         assert!(PANE_FORBIDDEN_CALLS.contains(&"share.create"));
+        assert!(PANE_FORBIDDEN_CALLS.contains(&"account.teams"));
     }
 
     #[tokio::test(flavor = "multi_thread")]

@@ -97,16 +97,17 @@ vibeke handoff open '<continue link>'
 
 ### Who can open the link
 
-By default the link is limited to the people on your sharing list, which you manage on your [account page](sharing.md#your-sharing-list). The host that opens the link downloads with its own account, and the account server checks the GitHub account.
+By default the link is limited to the people and teams on your sharing list, which you manage on your [account page](sharing.md#your-sharing-list). The host that opens the link downloads with its own account. The account server checks the GitHub account. For a [team](sharing.md#teams), it checks that the account is in the team at that moment.
 
 | Option | Who can open it |
 | --- | --- |
-| none | The people on your sharing list (or in `[sharing] github` when the config has a list) |
+| none | The people and teams on your sharing list (or the people in `[sharing] github` when the config has a list) |
 | `--github alice,bob` | Those GitHub accounts |
+| `--team Acme` | Everyone in that team (you can combine it with `--github`) |
 | `--any-github` | Any GitHub account |
 | `--link` | Any signed-in account that has the link |
 
-If your sharing list is empty and you pass no option, the command asks you to add people on your account page or pass `--github`.
+If your sharing list is empty and you pass no option, the command asks you to add people or tick a team on your account page. You can also pass `--github` or `--team`.
 
 A link works for 7 days by default. Use `--ttl` (for example `--ttl 24h`, at most 30 days) to change that. Add `--interrupt` to end the agent's current turn before packing. Each account can store 2 GiB in total and 256 MiB for each session.
 

@@ -445,6 +445,10 @@ pub fn create_invitation(
             j["access"] = json!(sh.access.as_deref().unwrap_or("link"));
             j["uses"] = json!(uses);
         }
+        // For display only ("everyone in Acme"); the claim is checked against the stored share.
+        if !sh.teams.is_empty() {
+            j["teams"] = json!(sh.teams);
+        }
         if let Some(r) = &sh.review {
             j["notes"] = json!(r.notes);
             j["preview"] = json!({"id": r.preview, "label": r.label});
@@ -596,7 +600,8 @@ impl AttestKeyCache {
 
 /// Check the claims of a verified attestation against this invitation (spec 20 §2.3): `aud` is
 /// this host's relay id, `nonce` binds the pid and the claiming device's static key, and the
-/// GitHub id is on the share's list (or the list is `["*"]`).
+/// GitHub id is on the share's list, one of the attestation's teams is one of the share's teams
+/// (spec 20 §2.5), or the list is `["*"]`.
 pub fn check_claims(
     claims: &AttestClaims,
     host_id: &str,
@@ -616,13 +621,20 @@ pub fn check_claims(
             "the GitHub sign-in was made for another link or device",
         ));
     }
-    if !(share.github_any || share.github.iter().any(|g| g.id == claims.gh_id)) {
+    // By id, by a team the attestation says the opener is in now, or any account.
+    let by_team = share
+        .teams
+        .iter()
+        .any(|t| claims.teams.iter().any(|c| c == &t.id));
+    if !(share.github_any || share.github.iter().any(|g| g.id == claims.gh_id) || by_team) {
         let mut e = refuse(
             "github_not_allowed",
             "this link is for other GitHub accounts",
         );
-        e.details =
-            json!({"allowed": share.github.iter().map(|g| g.login.clone()).collect::<Vec<_>>()});
+        e.details = json!({
+            "allowed": share.github.iter().map(|g| g.login.clone()).collect::<Vec<_>>(),
+            "teams": share.teams.iter().map(|t| sanitize_label(&t.name, 64)).collect::<Vec<_>>(),
+        });
         return Err(e);
     }
     Ok(GithubId {

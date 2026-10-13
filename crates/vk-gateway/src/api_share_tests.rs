@@ -384,3 +384,176 @@ async fn github_shares_default_to_the_account_list() {
         json!([{"id": 2, "login": "alice"}, {"id": 583231, "login": "octocat"}])
     );
 }
+
+const ACME: &str = "0b5c3f7e-1d2a-4c8b-9e6f-3a1b2c3d4e5f";
+const BETA: &str = "11111111-2222-4333-8444-555555555555";
+
+fn team(id: &str, name: &str) -> vk_account::Team {
+    vk_account::Team {
+        id: id.into(),
+        name: name.into(),
+        role: "member".into(),
+        members: 2,
+    }
+}
+
+/// Team names match without case, ids exactly (in any case); a team the account is not in is
+/// `unknown_team`, a name two teams share is ambiguous, and each team is named once.
+#[test]
+fn teams_by_name_or_id() {
+    let mine = [
+        team(ACME, "Acme"),
+        team(BETA, "Beta"),
+        team("22222222-2222-4333-8444-555555555555", "beta"),
+    ];
+    let names = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    let got = pick_teams(&names(&["ACME", ACME, &BETA.to_uppercase()]), &mine).unwrap();
+    assert_eq!(
+        got.iter()
+            .map(|t| (t.id.as_str(), t.name.as_str()))
+            .collect::<Vec<_>>(),
+        [(ACME, "Acme"), (BETA, "Beta")]
+    );
+    let e = pick_teams(&names(&["Gamma"]), &mine).unwrap_err();
+    assert_eq!(
+        (e.kind.as_str(), &e.details),
+        ("unknown_team", &json!({"team": "Gamma"}))
+    );
+    // An id of a team this account is not in.
+    let e = pick_teams(&names(&["33333333-2222-4333-8444-555555555555"]), &mine).unwrap_err();
+    assert_eq!(e.kind, "unknown_team");
+    assert_eq!(
+        pick_teams(&names(&["BETA"]), &mine).unwrap_err().kind,
+        "invalid_params"
+    );
+    for p in [
+        json!({"teams": []}),
+        json!({"teams": "Acme"}),
+        json!({"teams": [""]}),
+        json!({"teams": [1]}),
+    ] {
+        assert_eq!(teams_param(&p).unwrap_err().kind, "invalid_params", "{p}");
+    }
+    assert_eq!(teams_param(&json!({})).unwrap(), None);
+    assert_eq!(teams_param(&json!({"teams": null})).unwrap(), None);
+    let many: Vec<String> = (0..=MAX_TEAMS).map(|i| format!("t{i}")).collect();
+    assert!(teams_param(&json!({"teams": many})).is_err());
+}
+
+/// `share.create` with `teams` (spec 20 §2.5): stored by id with the name for display, in the
+/// result, the link and `share.list`; refused for link shares, with `*`, and for unknown teams.
+#[tokio::test(flavor = "multi_thread")]
+async fn github_shares_for_teams() {
+    use vk_account::fake::FakeTeam;
+    let fake = FakeServer::start().await;
+    let t = tempfile::tempdir().unwrap();
+    let gw = gateway(&t, &fake.url);
+    sign_in(&gw, &fake.url);
+    fake.with(|s| {
+        s.access = Some("a1".into());
+        s.teams = vec![
+            FakeTeam::new(ACME, "Acme", &[4242]),
+            FakeTeam::new(BETA, "Beta", &[4242]),
+        ];
+    });
+    let r = create(
+        &gw,
+        json!({"kind": "share", "pane": "p1", "access": "github", "teams": ["acme"]}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(r["teams"], json!([{"id": ACME, "name": "Acme"}]));
+    assert_eq!(r["github"], json!([]));
+    let pid = r["pid"].as_str().unwrap();
+    let sh = gw.state.pairing(pid).unwrap().unwrap().share.unwrap();
+    assert!(sh.github.is_empty());
+    assert_eq!(sh.teams.len(), 1);
+    assert_eq!(sh.teams[0].id, ACME);
+    let info = vk_e2e::PairingLink::parse(r["link"].as_str().unwrap())
+        .unwrap()
+        .share_info()
+        .unwrap();
+    assert_eq!(info.teams[0].name, "Acme");
+    let list = crate::peers::share_list(&gw.state, &gw.devices());
+    let inv = list["invitations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["id"] == pid)
+        .unwrap();
+    assert_eq!(inv["teams"], json!([{"id": ACME, "name": "Acme"}]));
+
+    // People and a team together, a review by team id.
+    let r = create(
+        &gw,
+        json!({"kind": "share", "pane": "p1", "access": "github", "github": ["alice"], "teams": [BETA]}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(r["github"], json!([{"id": 2, "login": "alice"}]));
+    assert_eq!(r["teams"], json!([{"id": BETA, "name": "Beta"}]));
+    let r = create(
+        &gw,
+        json!({"kind": "review", "preview": "pv1", "access": "github", "teams": ["Beta"]}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(r["teams"][0]["id"], BETA);
+
+    // Refusals, with nothing written.
+    let before = gw.state.pairings().len();
+    let e = create(
+        &gw,
+        json!({"kind": "share", "pane": "p1", "access": "github", "teams": ["Gamma"]}),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(e.kind, "unknown_team");
+    assert_eq!(e.details["team"], "Gamma");
+    for p in [
+        json!({"kind": "share", "pane": "p1", "teams": ["Acme"]}),
+        json!({"kind": "share", "pane": "p1", "access": "link", "teams": ["Acme"]}),
+        json!({"kind": "share", "pane": "p1", "access": "github", "github": ["*"], "teams": ["Acme"]}),
+        json!({"kind": "share", "pane": "p1", "access": "github", "teams": []}),
+    ] {
+        assert_eq!(kind(create(&gw, p.clone()).await), "invalid_params", "{p}");
+    }
+    assert_eq!(gw.state.pairings().len(), before);
+}
+
+/// Without `github` and `teams`, a GitHub share takes the account page's people and ticked
+/// teams; with neither it is refused (fail closed).
+#[tokio::test(flavor = "multi_thread")]
+async fn github_shares_default_to_the_account_people_and_teams() {
+    let fake = FakeServer::start().await;
+    let t = tempfile::tempdir().unwrap();
+    let gw = gateway(&t, &fake.url);
+    sign_in(&gw, &fake.url);
+    fake.with(|s| {
+        s.access = Some("a1".into());
+        s.teams = vec![vk_account::fake::FakeTeam::new(ACME, "Acme", &[4242])];
+        s.sharing_teams = vec![ACME.into()];
+    });
+    let p = json!({"kind": "share", "pane": "p1", "access": "github"});
+    // Teams only.
+    let r = create(&gw, p.clone()).await.unwrap();
+    assert_eq!(r["github"], json!([]));
+    assert_eq!(r["teams"], json!([{"id": ACME, "name": "Acme"}]));
+    // People and teams.
+    fake.with(|s| s.sharing = vec![(2, "alice".into())]);
+    let r = create(&gw, p.clone()).await.unwrap();
+    assert_eq!(r["github"], json!([{"id": 2, "login": "alice"}]));
+    assert_eq!(r["teams"][0]["id"], ACME);
+    // Neither: refused, naming the account page.
+    fake.with(|s| {
+        s.sharing = vec![];
+        s.sharing_teams = vec![];
+    });
+    let e = create(&gw, p).await.unwrap_err();
+    assert_eq!(e.kind, "invalid_params");
+    assert!(
+        e.message.contains("/account") && e.message.contains("team"),
+        "{}",
+        e.message
+    );
+}

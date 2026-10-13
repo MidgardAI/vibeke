@@ -514,6 +514,7 @@ pub async fn run_as<I: IntoIterator<Item = String>>(prog: &'static str, args: I)
                 access: None,
                 github: Vec::new(),
                 github_any: false,
+                teams: Vec::new(),
                 review: None,
             };
             let (_, link) = pair::create_with(
@@ -1433,6 +1434,7 @@ mod tests {
                 access: None,
                 github: Vec::new(),
                 github_any: false,
+                teams: Vec::new(),
                 review: None,
             }),
             created_at: now,
