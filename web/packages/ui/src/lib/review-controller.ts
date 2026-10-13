@@ -350,7 +350,7 @@ export class ReviewController {
         const s = this.sockets.get(m.id);
         if (!s?.open || !s.conn) return;
         const payload = typeof m.data === 'string' ? new TextEncoder().encode(m.data) : new Uint8Array(m.data);
-        s.conn.write(encodeFrame(typeof m.data === 'string' ? OP.text : OP.binary, payload, this.o.random(4))).catch(() => this.wsGone(m.id, 1006, ''));
+        s.conn.write(encodeFrame(typeof m.data === 'string' ? OP.text : OP.binary, payload, this.o.random(4))).catch(() => this.wsGoneIf(s, m.id, 1006, ''));
         break;
       }
       case 'ws.close': {
@@ -358,7 +358,8 @@ export class ReviewController {
         if (!s) return;
         if (s.open && s.conn) {
           s.conn.write(encodeFrame(OP.close, closePayload(m.code ?? 1000, m.reason ?? ''), this.o.random(4))).catch(() => {});
-          setTimeout(() => this.wsGone(m.id, m.code ?? 1000, m.reason ?? '', true), 2000);
+          // Bound to this socket: a newer page may reuse the id before the timer fires.
+          setTimeout(() => this.wsGoneIf(s, m.id, m.code ?? 1000, m.reason ?? '', true), 2000);
         } else this.wsGone(m.id, 1006, '');
         break;
       }
@@ -436,6 +437,12 @@ export class ReviewController {
     } catch {
       gone(1006, '');
     }
+  }
+
+  /** `wsGone` for socket `s` only: a later socket with the same id is left alone. */
+  private wsGoneIf(s: WsState, id: number, code: number, reason: string, clean = false): void {
+    if (this.sockets.get(id) === s) this.wsGone(id, code, reason, clean);
+    else this.drop(s);
   }
 
   /** Close a socket's stream and give back its slot, once. */

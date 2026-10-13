@@ -1329,3 +1329,45 @@ async fn a_reviewer_reaches_drafts_of_its_own_preview_only() {
         .await);
     assert_eq!(r["draft"]["id"], json!(id));
 }
+
+/// Once a reviewer sends notes, they are frozen: after the owner releases a held draft (queued
+/// while the agent is busy or absent) the reviewer cannot change what gets delivered.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reviewer_cannot_edit_notes_after_sending() {
+    use vk_proto::model::PreviewStatus;
+    let e = Env::new();
+    put_preview(&e, "pv-1", "v1", PreviewStatus::Up);
+    let user = ctx(None);
+    let d = review_note(&e, Some(alice()), "bigger please").await;
+    let id = d["draft"]["id"].as_str().unwrap().to_string();
+    ok(&e
+        .call(
+            &user,
+            "browser.annotations_send",
+            json!({"draft": id, "hold": true, "author": alice()}),
+        )
+        .await);
+    let r = e
+        .call(&user, "browser.annotations_release", json!({"draft": id}))
+        .await;
+    assert!(r.get("result").is_some(), "{r}");
+    let state = get(&e.server, &id).unwrap().state;
+    assert_ne!(state, "held", "released");
+    for (m, extra) in [
+        (
+            "browser.annotation_update",
+            json!({"n": 1, "note": "rm -rf"}),
+        ),
+        ("browser.annotation_update", json!({"page_note": "rm -rf"})),
+        ("browser.annotation_remove", json!({"n": 1})),
+    ] {
+        let mut p = json!({"draft": id, "author": alice()});
+        for (k, v) in extra.as_object().unwrap() {
+            p[k] = v.clone();
+        }
+        let r = e.call(&user, m, p).await;
+        assert!(r.get("error").is_some(), "{m}: {r}");
+    }
+    let d = get(&e.server, &id).unwrap();
+    assert_eq!(d.notes[0].note, "bigger please");
+}

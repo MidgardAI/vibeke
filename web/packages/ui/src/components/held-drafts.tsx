@@ -75,19 +75,20 @@ export function HeldDrafts({ hostId, previewId }: { hostId: string; previewId: s
         {t.held.title}
       </div>
       {drafts.map((d) => {
-        const notes = d.notes.filter((n) => n.kind !== 'page');
+        // Everything that would be sent, in full: the owner approves exactly this text.
+        const notes = d.notes;
         return (
           <div key={d.id} className="rounded-lg border border-border bg-bg p-2">
             <div className="text-sm font-medium">{t.held.from(d.author?.label ?? '?', notes.length + (d.page_note ? 1 : 0))}</div>
-            <ol className="mt-1 list-decimal space-y-0.5 pl-5 text-xs text-muted">
-              {notes.slice(0, 8).map((n) => (
-                <li key={n.n}>
+            <ol className="mt-1 max-h-64 list-decimal space-y-0.5 overflow-y-auto pl-5 text-xs text-muted">
+              {notes.map((n) => (
+                <li key={n.n} className="whitespace-pre-wrap break-words">
                   <span className="text-fg">{noteTitle(n)}</span>
                   {n.note ? `: ${n.note}` : ''}
                 </li>
               ))}
             </ol>
-            {d.page_note && <p className="mt-1 text-xs">{d.page_note}</p>}
+            {d.page_note && <p className="mt-1 whitespace-pre-wrap break-words text-xs">{d.page_note}</p>}
             <div className="mt-2 flex flex-wrap gap-2">
               <Button size="sm" variant="primary" icon={<Send />} busy={busy === d.id} disabled={!!busy} onClick={() => void act(d, 'release')}>
                 {t.held.release}

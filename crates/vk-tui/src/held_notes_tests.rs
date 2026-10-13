@@ -81,7 +81,8 @@ fn send_releases_the_draft() {
     assert!(s.contains("@alice left notes on v4"), "{s}");
     assert!(s.contains("1. [element] button.buy"), "{s}");
     assert!(s.contains("Make this bigger"), "{s}");
-    assert!(s.contains("Page note: Looks good[2J overall"), "{s}");
+    assert!(s.contains("Page note:"), "{s}");
+    assert!(s.contains("Looks good[2J overall"), "{s}");
     assert!(!s.contains('\u{1b}'));
     app.on_key(ch('s'));
     let (req, p) = only(&commands(&mut rxs[0]), "browser.annotations_release");

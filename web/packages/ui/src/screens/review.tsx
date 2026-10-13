@@ -16,6 +16,7 @@ import {
   previewAuthority,
   previewPath,
   reviewContentOrigin,
+  reviewKey,
   type AnnotationDraft,
   type AttestResult,
   type HostConnectionApi,
@@ -184,7 +185,7 @@ function Reviewer({ record }: { record: ReviewRecord }) {
   // sid the host reports over the authenticated channel, and the jar is keyed by the paired
   // invitation (host + pid), so an edited link cannot reach another review's cookies.
   const sid = info && info.sid.toLowerCase() === record.sid ? info.sid.toLowerCase() : null;
-  const jarKey = `${record.host_id}/${record.pid}`;
+  const jarKey = reviewKey(record.host_id, record.pid);
   const contentOrigin = useMemo(
     () => (typeof window === 'undefined' || !sid ? null : reviewContentOrigin(window.location.origin, sid, app.platform.review?.contentOriginPattern)),
     [sid, app],

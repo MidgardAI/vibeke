@@ -238,7 +238,7 @@ export class AppModel {
     this.reviews.delete(key);
     const r = this.platform.review;
     await r?.store.remove(rec.host_id, rec.pid).catch(() => {});
-    await r?.cookies.remove(rec.sid).catch(() => {});
+    await r?.cookies.remove(reviewKey(rec.host_id, rec.pid)).catch(() => {});
     if (rec.key) await this.platform.keystore.delete(rec.key).catch(() => {});
   }
 

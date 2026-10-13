@@ -1019,6 +1019,14 @@ fn attach_crop(server: &Arc<Server>, id: &str, n: u32, png: &[u8]) {
 fn load_editable(server: &Server, p: &Value, author: Option<&Author>) -> Result<Draft, RpcError> {
     let id = req(p, "draft")?;
     let d = get_for(server, id, author)?;
+    // A reviewer's notes freeze once sent: what the owner approved, or what was queued for the
+    // agent, is what gets delivered. Changes go in a new draft.
+    if author.is_some() && d.state != "open" {
+        return Err(err(
+            ErrorKind::Conflict,
+            "these notes were sent; new picks start a new draft",
+        ));
+    }
     match d.state.as_str() {
         "held" => Err(err(
             ErrorKind::Conflict,

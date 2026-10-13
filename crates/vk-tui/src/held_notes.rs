@@ -22,6 +22,7 @@ use crate::inbox::{Item, ItemKey};
 use crate::links::login_of;
 use crate::plugins::sanitize;
 use crate::screen::Grid;
+use vk_proto::render::Style;
 
 /// A draft waiting for the owner.
 #[derive(Debug, Clone, PartialEq)]
@@ -59,6 +60,9 @@ pub struct View {
     pub error: Option<String>,
     /// `d` was pressed: `y` discards.
     pub confirm: bool,
+    /// First body row shown (`j`/`k`, arrows, page keys): the owner reads every note in full
+    /// before sending.
+    pub scroll: usize,
 }
 
 #[derive(Default)]
@@ -263,12 +267,22 @@ pub fn notes_of(draft: &Value) -> Vec<NoteLine> {
                         n: n["n"].as_u64().unwrap_or(0),
                         kind: sanitize(n["kind"].as_str().unwrap_or(""), 12),
                         target,
-                        text: sanitize(n["note"].as_str().unwrap_or(""), 400),
+                        // In full: the owner approves exactly what the agent gets.
+                        text: keep_lines(n["note"].as_str().unwrap_or("")),
                     }
                 })
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// A note's text for showing in full: control characters removed line by line, so its line
+/// breaks survive.
+fn keep_lines(s: &str) -> String {
+    s.split('\n')
+        .map(|l| sanitize(l, 8192))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Open the overlay for held draft `draft` on machine `mi`.
@@ -297,6 +311,7 @@ pub fn open(app: &mut App, mi: usize, draft: &str) {
         busy: None,
         error: None,
         confirm: false,
+        scroll: 0,
     });
     app.mode = Mode::Popup(Popup::HeldNotes);
     // By preview, the server lists every draft of the target with its author and state; the
@@ -408,6 +423,10 @@ pub fn key(app: &mut App, ev: KeyEvent) {
         Key::Named(NamedKey::Enter) => send(app),
         Key::Char('s') if plain => send(app),
         Key::Char('d') if plain => v.confirm = true,
+        Key::Char('j') | Key::Named(NamedKey::Down) if plain => v.scroll += 1,
+        Key::Char('k') | Key::Named(NamedKey::Up) if plain => v.scroll = v.scroll.saturating_sub(1),
+        Key::Named(NamedKey::PageDown) | Key::Char(' ') if plain => v.scroll += 10,
+        Key::Named(NamedKey::PageUp) if plain => v.scroll = v.scroll.saturating_sub(10),
         _ => {}
     }
 }
@@ -432,7 +451,7 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
                     v.notes = notes_of(d);
                     v.page_note = d["page_note"]
                         .as_str()
-                        .map(|s| sanitize(s, 400))
+                        .map(keep_lines)
                         .filter(|s| !s.is_empty());
                     if d["author"].is_object() {
                         v.author = author_text(&d["author"]);
@@ -517,21 +536,39 @@ pub fn draw(app: &App, g: &mut Grid) {
     if v.loading {
         a.line("  loading…", t.dim());
     }
+    // Every note in full, wrapped; the body scrolls when it is taller than the view.
+    let width = (a.r.w as usize).saturating_sub(5).max(10);
+    let mut body: Vec<(String, Style)> = Vec::new();
     for n in &v.notes {
         let target = if n.target.is_empty() {
             String::new()
         } else {
             format!(" {}", n.target)
         };
-        a.line(&format!("{}. [{}]{target}", n.n, n.kind), t.bold(t.fg));
-        if !n.text.is_empty() {
-            a.line(&format!("   {}", n.text), t.text());
+        body.push((format!("{}. [{}]{target}", n.n, n.kind), t.bold(t.fg)));
+        for para in n.text.lines() {
+            for row in crate::assist::wrap(para, width) {
+                body.push((format!("   {row}"), t.text()));
+            }
         }
     }
     if let Some(p) = &v.page_note {
-        a.line("", t.text());
-        a.line(&format!("Page note: {p}"), t.text());
+        body.push((String::new(), t.text()));
+        body.push(("Page note:".into(), t.bold(t.fg)));
+        for para in p.lines() {
+            for row in crate::assist::wrap(para, width) {
+                body.push((format!("   {row}"), t.text()));
+            }
+        }
     }
+    // Room for the status line and its blank row.
+    let room = (a.left() as usize).saturating_sub(2).max(1);
+    let max = body.len().saturating_sub(room);
+    let start = v.scroll.min(max);
+    for (line, st) in body.iter().skip(start).take(room) {
+        a.line(line, *st);
+    }
+    let more = body.len() > room;
     a.line("", t.text());
     if v.confirm {
         a.line(
@@ -543,7 +580,14 @@ pub fn draw(app: &App, g: &mut Grid) {
     } else if let Some(e) = &v.error {
         a.line(&format!("✗ {e}"), t.s(t.red));
     }
-    a.footer("s/enter send to the agent · d discard · esc close", t.dim());
+    a.footer(
+        if more {
+            "s/enter send to the agent · d discard · j/k scroll · esc close"
+        } else {
+            "s/enter send to the agent · d discard · esc close"
+        },
+        t.dim(),
+    );
 }
 
 #[cfg(test)]
