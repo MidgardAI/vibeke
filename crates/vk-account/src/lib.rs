@@ -772,6 +772,8 @@ impl Account {
     }
 }
 
+pub mod blobs;
+
 #[cfg(any(test, feature = "fake-server"))]
 pub mod fake;
 

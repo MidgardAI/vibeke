@@ -198,6 +198,9 @@ pub fn required_scope(method: &str) -> Option<Scope> {
         "handoff.offer" | "handoff.status" | "handoff.write" | "handoff.commit"
         | "handoff.discard" | "handoff.send" | "handoff.jobs" | "handoff.cancel"
         | "handoff.peers" => Full,
+        // Continue links (spec 20 §4, handoff_link.rs): the owner's apps and the server bridge.
+        "handoff.link.create" | "handoff.link.status" | "handoff.link.list"
+        | "handoff.link.revoke" | "handoff.link.redeem" | "handoff.link.cancel" => Full,
         // Cloud sandboxes (spec 17): sign-in, boxes and moves belong to the owner's apps.
         "cloud.providers"
         | "cloud.auth.set"
@@ -288,6 +291,8 @@ pub fn host_wide(method: &str) -> bool {
 /// Full-scope methods without side effects (no op_id needed).
 const FULL_READ_ONLY: &[&str] = &[
     "handoff.status",
+    "handoff.link.status",
+    "handoff.link.list",
     "handoff.jobs",
     "handoff.peers",
     "cloud.providers",
@@ -1210,6 +1215,9 @@ impl Call<'_> {
     }
 
     async fn dispatch_inner(&self, method: &str, p: Value) -> ApiResult {
+        if let Some(r) = crate::handoff_link::dispatch(self.gw, self.device, method, &p).await {
+            return r;
+        }
         let op_id = s(&p, "op_id").unwrap_or("").to_string();
         match method {
             "ping" => Ok(json!({})),

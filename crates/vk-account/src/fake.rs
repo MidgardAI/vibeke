@@ -77,6 +77,8 @@ pub struct FakeServer {
     /// `http://127.0.0.1:<port>`
     pub url: String,
     pub state: Shared,
+    /// Blobs (spec 20 §4.4), see [`crate::blobs::fake`].
+    pub blobs: crate::blobs::fake::FakeBlobs,
 }
 
 impl FakeServer {
@@ -84,6 +86,7 @@ impl FakeServer {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr: SocketAddr = listener.local_addr().unwrap();
         let state = Shared::default();
+        let blobs = crate::blobs::fake::FakeBlobs::default();
         let app = Router::new()
             .route("/v1/device/code", post(code))
             .route("/v1/device/token", post(token))
@@ -91,11 +94,13 @@ impl FakeServer {
             .route("/v1/hosts/{id}/token", post(host_token))
             .route("/v1/me", get(me))
             .route("/v1/logout", post(logout))
-            .with_state(state.clone());
+            .with_state(state.clone())
+            .merge(crate::blobs::fake::router(state.clone(), blobs.clone()));
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         FakeServer {
             url: format!("http://{addr}"),
             state,
+            blobs,
         }
     }
 

@@ -3633,6 +3633,7 @@ name = "vk-account"
 version = "0.15.1"
 dependencies = [
  "axum",
+ "futures",
  "libc",
  "reqwest",
  "serde",
@@ -3863,6 +3864,8 @@ dependencies = [
 name = "vk-handoff"
 version = "0.15.1"
 dependencies = [
+ "base64 0.23.1",
+ "chacha20poly1305",
  "libc",
  "rand 0.10.3",
  "serde",
