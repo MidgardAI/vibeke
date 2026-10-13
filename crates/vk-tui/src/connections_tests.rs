@@ -205,3 +205,39 @@ fn bindings_open_connections_handoffs_and_the_share_form() {
     assert_eq!(showing(&app), Some(Tab::People));
     assert!(screen(&app).contains("Share with someone"));
 }
+
+#[test]
+fn forms_in_every_tab_keep_tab_and_lists_switch() {
+    let (mut app, _rxs) = fleet();
+    // Devices: the scope picker keeps tab; the list switches.
+    app.action("pair_phone", None);
+    app.on_key(named(NamedKey::Tab));
+    assert_eq!(showing(&app), Some(Tab::Devices));
+    app.on_key(named(NamedKey::Escape));
+    app.on_key(named(NamedKey::Tab));
+    assert_eq!(showing(&app), Some(Tab::People));
+    // Hosts: the new-invitation prompt keeps tab.
+    app.on_key(named(NamedKey::Tab));
+    assert_eq!(showing(&app), Some(Tab::Hosts));
+    app.on_key(ch('n'));
+    app.on_key(named(NamedKey::Tab));
+    assert_eq!(showing(&app), Some(Tab::Hosts));
+    app.on_key(named(NamedKey::Escape));
+    app.on_key(named(NamedKey::Tab));
+    assert_eq!(showing(&app), Some(Tab::Handoffs));
+}
+
+#[test]
+fn up_from_the_top_of_the_handoffs_list_reaches_the_strip() {
+    let (mut app, _rxs) = fleet();
+    app.action("handoffs", None);
+    assert_eq!(showing(&app), Some(Tab::Handoffs));
+    app.on_key(named(NamedKey::Up));
+    assert!(app.ux.connections.strip);
+    assert!(screen(&app).contains("‹ Handoffs ›"), "{}", screen(&app));
+    app.on_key(named(NamedKey::Left));
+    assert_eq!(showing(&app), Some(Tab::Hosts));
+    assert!(app.ux.connections.strip);
+    app.on_key(named(NamedKey::Down));
+    assert!(!app.ux.connections.strip);
+}

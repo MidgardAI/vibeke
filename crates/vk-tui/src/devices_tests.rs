@@ -825,3 +825,50 @@ fn a_server_without_gateway_status_behaves_as_before() {
     let pid = pairing(&mut app, &mut rxs);
     assert_eq!(pid, "pid42");
 }
+
+fn sel(app: &App) -> usize {
+    match app.ux.devices.as_ref().unwrap().stage {
+        Stage::PickScope { sel } => sel,
+        ref s => panic!("{s:?}"),
+    }
+}
+
+#[test]
+fn the_scope_picker_keeps_tab_and_the_arrows_choose() {
+    let (mut app, _rxs) = opened();
+    app.on_key(ch('n'));
+    assert!(in_form(&app));
+    assert!(screen(&app).contains("←/→ change"), "{}", screen(&app));
+    assert_eq!(sel(&app), 0);
+    // Tab moves down the choices; the tab stays Devices.
+    app.on_key(named(NamedKey::Tab));
+    assert_eq!(sel(&app), 1);
+    assert!(app.ux.devices.is_some());
+    app.on_key(KeyEvent::new(
+        Key::Named(NamedKey::Tab),
+        vk_proto::input::Mods::SHIFT,
+    ));
+    assert_eq!(sel(&app), 0);
+    // Right and left change the choice and wrap.
+    app.on_key(named(NamedKey::Right));
+    assert_eq!(sel(&app), 1);
+    app.on_key(named(NamedKey::Left));
+    app.on_key(named(NamedKey::Left));
+    assert_eq!(sel(&app), SCOPES.len() - 1);
+    // Up from the first choice reaches the tab strip.
+    app.on_key(named(NamedKey::Right));
+    assert_eq!(sel(&app), 0);
+    app.on_key(named(NamedKey::Up));
+    assert!(app.ux.connections.strip);
+}
+
+#[test]
+fn up_from_the_top_device_reaches_the_tab_strip() {
+    let (mut app, _rxs) = opened();
+    assert!(!in_form(&app));
+    app.on_key(named(NamedKey::Down));
+    app.on_key(named(NamedKey::Up));
+    assert!(!app.ux.connections.strip);
+    app.on_key(named(NamedKey::Up));
+    assert!(app.ux.connections.strip);
+}

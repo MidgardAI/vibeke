@@ -11,8 +11,9 @@
 //!
 //! Each tab keeps its own module, state, `Popup` variant and stage machine (and with them its
 //! replies, ticks and pastes); this module draws the title and the tab strip, routes the actions
-//! that open a tab, and switches tabs with tab / shift+tab, except while a text field in the tab
-//! takes the keys (the Hosts paste form, the People form's name). Switching leaves a tab as Esc
+//! that open a tab, and switches tabs with tab / shift+tab from a list. While a form, picker or
+//! prompt in the tab has the keys (each tab module's `in_form`), tab moves between its fields
+//! instead. Up from the top of a list or form focuses the tab strip ([`crate::formkeys::Strip`]). Switching leaves a tab as Esc
 //! would (a pending pairing link is cancelled) and opens the next one on the same machine; Esc
 //! at a tab's top level closes the view.
 
@@ -20,6 +21,7 @@ use vk_proto::input::{Key, KeyEvent, KeyKind, NamedKey};
 
 use crate::app::{App, Mode};
 use crate::drafts::Area;
+use crate::formkeys::{LIST_TABS_HINT, STRIP_HINT, Strip, StripKey, tab_step};
 use crate::screen::Grid;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -105,12 +107,14 @@ pub fn action(app: &mut App, action: &str) -> bool {
     true
 }
 
-/// A text field or a form in `tab` has the keys: tab keeps its meaning there (the next field).
-fn typing(app: &App, tab: Tab) -> bool {
+/// A form, picker or prompt in `tab` has the keys: tab keeps its meaning there (the next field).
+/// Each tab module says so in its own `in_form`; a list is not a form.
+fn in_form(app: &App, tab: Tab) -> bool {
     match tab {
-        Tab::Hosts => crate::sharing::typing(app),
+        Tab::Hosts => crate::sharing::in_form(app),
         Tab::People => crate::people::in_form(app),
-        Tab::Devices | Tab::Handoffs => false,
+        Tab::Devices => crate::devices::in_form(app),
+        Tab::Handoffs => false,
     }
 }
 
@@ -144,37 +148,34 @@ pub fn switch(app: &mut App, from: Tab, to: Tab) {
 /// where they move between its fields; anything else is the tab's.
 pub fn key(app: &mut App, ev: KeyEvent, tab: Tab) {
     if app.ux.connections.strip && ev.kind != KeyKind::Release {
-        let plain = !ev.mods.ctrl() && !ev.mods.alt();
-        let by = match ev.key {
-            Key::Named(NamedKey::Left) => Some(-1),
-            Key::Char('h') if plain => Some(-1),
-            Key::Named(NamedKey::Right) => Some(1),
-            Key::Char('l') if plain => Some(1),
-            Key::Named(NamedKey::Tab) if plain => Some(if ev.mods.shift() { -1 } else { 1 }),
-            _ => None,
-        };
-        match (by, &ev.key) {
-            (Some(by), _) => {
+        let mut strip = Strip { focused: true };
+        match strip.key(&ev) {
+            StripKey::Switch(by) => {
                 switch(app, tab, tab.step(by));
-                app.ux.connections.strip = true;
+                strip.focused = true;
             }
-            (None, Key::Named(NamedKey::Down | NamedKey::Enter | NamedKey::Escape)) => {
-                app.ux.connections.strip = false;
-            }
-            (None, Key::Char('j')) if plain => app.ux.connections.strip = false,
-            _ => {}
+            StripKey::Leave | StripKey::None => {}
         }
+        app.ux.connections.strip = strip.focused;
         app.dirty = true;
         return;
     }
-    if ev.kind != KeyKind::Release
-        && matches!(ev.key, Key::Named(NamedKey::Tab))
+    if let Some(by) = tab_step(&ev) {
+        if !in_form(app, tab) {
+            switch(app, tab, tab.step(by));
+            return;
+        }
+    }
+    // Up from the top of the Handoffs list: the tab strip.
+    if tab == Tab::Handoffs
+        && ev.kind != KeyKind::Release
         && !ev.mods.ctrl()
         && !ev.mods.alt()
-        && !typing(app, tab)
+        && matches!(ev.key, Key::Named(NamedKey::Up) | Key::Char('k'))
+        && app.ux.handoff.list_sel == 0
     {
-        let to = tab.step(if ev.mods.shift() { -1 } else { 1 });
-        switch(app, tab, to);
+        app.ux.connections.strip = true;
+        app.dirty = true;
         return;
     }
     match tab {
@@ -218,13 +219,13 @@ pub(crate) fn area<'a>(app: &App, g: &'a mut Grid, tab: Tab, mi: usize) -> Area<
             x += a.g.put_str(x, y, &name, st, end.saturating_sub(x));
         }
         let hint = if app.ux.connections.strip {
-            "   ←/→ switch tabs · ↓ back"
-        } else if typing(app, tab) {
-            "   (↑ from the top for the tabs)"
+            format!("   {STRIP_HINT}")
+        } else if in_form(app, tab) {
+            "   (↑ from the top for the tabs)".to_string()
         } else {
-            "   (tab switches)"
+            format!("   ({LIST_TABS_HINT} · ↑ from the top for the tabs)")
         };
-        a.g.put_str(x, y, hint, t.dim(), end.saturating_sub(x));
+        a.g.put_str(x, y, &hint, t.dim(), end.saturating_sub(x));
         a.y += 1;
     }
     a.line("", t.text());

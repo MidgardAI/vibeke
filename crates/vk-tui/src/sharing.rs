@@ -35,6 +35,7 @@ use vk_proto::input::{Key, KeyEvent, KeyKind, NamedKey};
 use vk_proto::render::{Color, Style};
 
 use crate::app::{App, Mode, Pending, Popup, RpcErr};
+use crate::formkeys::{nav, step, wrap};
 use crate::handoff::{epoch_ms, same_host};
 use crate::inbox::fmt_age;
 use crate::screen::Grid;
@@ -396,6 +397,8 @@ pub struct View {
     pub confirm: Option<Confirm>,
     /// `n`: choosing which invitation to create.
     pub choosing: bool,
+    /// The option of the `n` prompt in focus: 0 teammate handoff, 1 own host.
+    pub choice: usize,
     pub created: Option<Created>,
     pub paste: Option<PasteForm>,
     /// A change in flight.
@@ -420,6 +423,7 @@ impl View {
             notice: None,
             confirm: None,
             choosing: false,
+            choice: 0,
             created: None,
             paste: None,
             busy: None,
@@ -759,13 +763,14 @@ pub(crate) fn leave(app: &mut App) {
     app.ux.sharing.view = None;
 }
 
-/// A text field has the keys (tab moves within the paste form, not between tabs).
-pub(crate) fn typing(app: &App) -> bool {
+/// A form or prompt has the keys (tab moves within it, not between tabs): the paste form and
+/// the new-invitation choice.
+pub(crate) fn in_form(app: &App) -> bool {
     app.ux
         .sharing
         .view
         .as_ref()
-        .is_some_and(|v| v.paste.is_some())
+        .is_some_and(|v| v.paste.is_some() || v.choosing)
 }
 
 /// The next connected machine after the view's.
@@ -816,11 +821,36 @@ pub fn key(app: &mut App, ev: KeyEvent) {
         return;
     }
     if v.choosing {
-        v.choosing = false;
+        let kind = |at: usize| {
+            if at == 0 {
+                InviteKind::Handoff
+            } else {
+                InviteKind::Peer
+            }
+        };
         match ev.key {
-            Key::Char('t') if plain => create(app, InviteKind::Handoff),
-            Key::Char('h') if plain => create(app, InviteKind::Peer),
-            _ => {}
+            Key::Char('t') if plain => {
+                v.choosing = false;
+                create(app, InviteKind::Handoff);
+            }
+            Key::Char('h') if plain => {
+                v.choosing = false;
+                create(app, InviteKind::Peer);
+            }
+            Key::Named(NamedKey::Enter) => {
+                v.choosing = false;
+                let at = v.choice;
+                create(app, kind(at));
+            }
+            Key::Named(NamedKey::Up) | Key::Char('k') if v.choice == 0 => {
+                // Up from the first option: the tab strip.
+                app.ux.connections.strip = true;
+            }
+            // Left/right, up/down and tab choose; anything else drops the prompt.
+            _ => match step(nav(&ev, false)) {
+                Some(by) => v.choice = wrap(v.choice, by, 2),
+                None => v.choosing = false,
+            },
         }
         app.dirty = true;
         return;
@@ -830,9 +860,19 @@ pub fn key(app: &mut App, ev: KeyEvent) {
         _ if esc => return close(app),
         Key::Char('q') if plain => return close(app),
         Key::Char('j') | Key::Named(NamedKey::Down) => v.step(true),
-        Key::Char('k') | Key::Named(NamedKey::Up) => v.step(false),
+        Key::Char('k') | Key::Named(NamedKey::Up) => {
+            let at = (v.section, v.sel);
+            v.step(false);
+            // Up from the top row: the tab strip.
+            if at == (v.section, v.sel) {
+                app.ux.connections.strip = true;
+            }
+        }
         Key::Char('x') if plain => ask_remove(v),
-        Key::Char('n') if plain => v.choosing = true,
+        Key::Char('n') if plain => {
+            v.choosing = true;
+            v.choice = 0;
+        }
         Key::Char('p') if plain => v.paste = Some(PasteForm::default()),
         Key::Char('a') if plain => toggle_always_ask(app),
         Key::Char('g' | 'r') if plain => refresh(app),
@@ -878,7 +918,12 @@ fn paste_key(app: &mut App, ev: &KeyEvent) {
     match &ev.key {
         Key::Named(NamedKey::Tab) if ev.mods.shift() => f.focus = rows[(at + n - 1) % n],
         Key::Named(NamedKey::Tab) | Key::Named(NamedKey::Down) => f.focus = rows[(at + 1) % n],
+        // Up from the first field: the tab strip.
+        Key::Named(NamedKey::Up) if at == 0 => app.ux.connections.strip = true,
         Key::Named(NamedKey::Up) => f.focus = rows[(at + n - 1) % n],
+        Key::Named(NamedKey::Left | NamedKey::Right) if f.focus == PasteRow::ShareUser => {
+            f.share_user = !f.share_user
+        }
         Key::Named(NamedKey::Enter) => match f.focus {
             PasteRow::ShareUser => f.share_user = !f.share_user,
             _ => submit = true,
@@ -1325,10 +1370,20 @@ pub fn draw(app: &App, g: &mut Grid) -> Option<(u16, u16)> {
         };
         a.line(&q, t.bold(t.red));
     } else if v.choosing {
-        a.line(
-            "New invitation: [t] Invite a teammate to send to me   [h] Pair another of my hosts   [other] back",
-            t.bold(t.fg),
-        );
+        a.line("New invitation:", t.bold(t.fg));
+        for (i, (key, what)) in [
+            ("t", "Invite a teammate to send to me"),
+            ("h", "Pair another of my hosts"),
+        ]
+        .iter()
+        .enumerate()
+        {
+            let on = v.choice == i;
+            a.line(
+                &format!("{} [{key}] {what}", if on { "›" } else { " " }),
+                if on { t.sel(t.fg) } else { t.text() },
+            );
+        }
     } else if let Some(b) = &v.busy {
         a.line(&format!("⏳ {b}"), t.s(t.yellow));
     } else if let Some(n) = &v.notice {
@@ -1339,6 +1394,10 @@ pub fn draw(app: &App, g: &mut Grid) -> Option<(u16, u16)> {
     } else {
         ""
     };
+    if v.choosing {
+        a.footer(crate::formkeys::FORM_HINT, t.dim());
+        return None;
+    }
     a.footer(
         &format!(
             "j/k move · x remove/cancel/revoke · n new invitation · p paste · a always ask · g refresh{more} · esc"
@@ -1501,7 +1560,7 @@ fn draw_paste(
         a.line(&format!("✗ {e}"), t.s(t.red));
     }
     a.footer(
-        "type or paste · tab/↓↑ move · space toggles · enter accept · esc back",
+        "type or paste · ←/→ or space toggle · ↑/↓ or tab move · enter accept · esc back",
         t.dim(),
     );
     (f.focus == PasteRow::Input).then_some(cursor)

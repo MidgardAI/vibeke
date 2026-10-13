@@ -872,3 +872,33 @@ fn agent_views_show_in_the_sidebar_and_go_away() {
     assert!(crate::push::TYPES.contains(&"plugin.agent_view_changed"));
     assert!(crate::push::TYPES.contains(&"plugin.registry_changed"));
 }
+
+#[test]
+fn shift_tab_moves_the_link_choice_back() {
+    let (mut app, mut rx) = setup(&[], "p1");
+    connect(
+        &mut app,
+        &mut rx[0],
+        json!({"actions": []}),
+        handlers_reply(),
+    );
+    with_lines(
+        &mut app,
+        "p1",
+        &["https://github.com/acme/app/commit/3f9c2ab1"],
+    );
+    app.action("url_hints", None);
+    app.on_key(KeyEvent::ch('a'));
+    let sel = |app: &App| match &app.mode {
+        Mode::Popup(Popup::PluginLink(c)) => c.sel,
+        m => panic!("{m:?}"),
+    };
+    let start = sel(&app);
+    app.on_key(KeyEvent::named(NamedKey::Tab));
+    assert_eq!(sel(&app), start + 1);
+    app.on_key(KeyEvent::new(
+        Key::Named(NamedKey::Tab),
+        vk_proto::input::Mods::SHIFT,
+    ));
+    assert_eq!(sel(&app), start);
+}

@@ -1024,6 +1024,11 @@ pub fn link_key(app: &mut App, ev: KeyEvent, mut c: Box<LinkChoice>) {
     let n = c.handlers.len() + 1;
     let pick = match ev.key {
         Key::Named(NamedKey::Escape) => return,
+        // shift+tab goes back, as everywhere (formkeys).
+        Key::Named(NamedKey::Tab) if ev.mods.shift() => {
+            c.sel = (c.sel + n - 1) % n;
+            None
+        }
         Key::Named(NamedKey::Down | NamedKey::Tab) | Key::Char('j') => {
             c.sel = (c.sel + 1) % n;
             None

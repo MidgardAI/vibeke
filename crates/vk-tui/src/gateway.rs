@@ -208,8 +208,12 @@ impl State {
             return KeyOutcome::None;
         };
         // Only a fresh press with no modifier at all, once the front card was armed.
+        let shift_tab = matches!(ev.key, Key::Named(NamedKey::Tab))
+            && ev.mods.shift()
+            && !ev.mods.ctrl()
+            && !ev.mods.alt();
         if ev.kind != KeyKind::Press
-            || !ev.mods.is_empty()
+            || !(ev.mods.is_empty() || shift_tab)
             || now.saturating_duration_since(c.shown_at) < ARM_DELAY
         {
             return KeyOutcome::None;
@@ -223,6 +227,11 @@ impl State {
                 return KeyOutcome::Dismissed;
             }
             Key::Named(NamedKey::Left | NamedKey::Up) => {
+                c.sel = (c.sel + n - 1) % n.max(1);
+                None
+            }
+            // shift+tab goes back, as everywhere (formkeys).
+            Key::Named(NamedKey::Tab) if shift_tab => {
                 c.sel = (c.sel + n - 1) % n.max(1);
                 None
             }
@@ -1006,5 +1015,20 @@ mod tests {
         on_reply(&mut app, 0, Reply::List, Ok(json!({"clients": []})));
         on_reply(&mut app, 1, Reply::List, Ok(json!({"clients": []})));
         assert_eq!(devices_label(&app), None);
+    }
+
+    #[test]
+    fn shift_tab_moves_the_choice_back() {
+        let t0 = Instant::now();
+        let later = t0 + Duration::from_secs(1);
+        let mut s = State::default();
+        s.push(conf("p", t0, 30));
+        let tab = |mods| KeyEvent::new(Key::Named(NamedKey::Tab), mods);
+        assert_eq!(s.handle_key(&tab(Mods::empty()), later), KeyOutcome::None);
+        assert_eq!(s.queue.front().unwrap().sel, 1);
+        assert_eq!(s.handle_key(&tab(Mods::SHIFT), later), KeyOutcome::None);
+        assert_eq!(s.queue.front().unwrap().sel, 0);
+        assert_eq!(s.handle_key(&tab(Mods::SHIFT), later), KeyOutcome::None);
+        assert_eq!(s.queue.front().unwrap().sel, 1);
     }
 }

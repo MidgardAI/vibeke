@@ -641,3 +641,81 @@ fn tab_skips_the_git_name_choice_for_a_continue_link() {
         PasteRow::Input
     );
 }
+
+fn pasting(app: &App) -> &PasteForm {
+    app.ux
+        .sharing
+        .view
+        .as_ref()
+        .unwrap()
+        .paste
+        .as_ref()
+        .unwrap()
+}
+
+#[test]
+fn the_new_invitation_prompt_is_a_choice_that_keeps_tab() {
+    let (mut app, mut rxs) = opened();
+    app.on_key(ch('n'));
+    assert!(in_form(&app));
+    assert!(screen(&app).contains("› [t] Invite a teammate"));
+    // Tab and the arrows move the choice and never switch tabs.
+    app.on_key(named(NamedKey::Tab));
+    assert!(app.ux.sharing.view.is_some());
+    assert!(screen(&app).contains("› [h] Pair another of my hosts"));
+    app.on_key(named(NamedKey::Left));
+    assert!(screen(&app).contains("› [t] Invite a teammate"));
+    app.on_key(named(NamedKey::Right));
+    // Enter creates the focused one.
+    commands(&mut rxs[0]);
+    app.on_key(named(NamedKey::Enter));
+    assert!(!in_form(&app));
+    let (_, p) = gw(&commands(&mut rxs[0]), "peer.invite");
+    assert_eq!(p["method"], "peer.invite");
+}
+
+#[test]
+fn the_letters_and_esc_still_work_in_the_prompt() {
+    let (mut app, mut rxs) = opened();
+    commands(&mut rxs[0]);
+    app.on_key(ch('n'));
+    app.on_key(ch('t'));
+    let (_, p) = gw(&commands(&mut rxs[0]), "share.create");
+    assert_eq!(p["params"]["kind"], "handoff");
+    let (mut app, _rxs) = opened();
+    app.on_key(ch('n'));
+    app.on_key(ch('z'));
+    assert!(!in_form(&app));
+    app.on_key(ch('n'));
+    // Up from the first option reaches the tab strip.
+    app.on_key(named(NamedKey::Up));
+    assert!(app.ux.connections.strip);
+}
+
+#[test]
+fn left_and_right_flip_the_git_name_toggle() {
+    let (mut app, _rxs) = opened();
+    app.on_key(ch('p'));
+    app.on_key(named(NamedKey::Down));
+    assert_eq!(pasting(&app).focus, PasteRow::ShareUser);
+    let on = pasting(&app).share_user;
+    app.on_key(named(NamedKey::Right));
+    assert_eq!(pasting(&app).share_user, !on);
+    app.on_key(named(NamedKey::Left));
+    assert_eq!(pasting(&app).share_user, on);
+    // Up twice: back to the link, then the tab strip.
+    app.on_key(named(NamedKey::Up));
+    app.on_key(named(NamedKey::Up));
+    assert!(app.ux.connections.strip);
+}
+
+#[test]
+fn up_from_the_top_row_of_the_hosts_list_reaches_the_tab_strip() {
+    let (mut app, _rxs) = opened();
+    assert!(!in_form(&app));
+    app.on_key(named(NamedKey::Down));
+    app.on_key(named(NamedKey::Up));
+    assert!(!app.ux.connections.strip);
+    app.on_key(named(NamedKey::Up));
+    assert!(app.ux.connections.strip);
+}

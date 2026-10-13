@@ -343,12 +343,10 @@ pub fn ask_key(app: &mut App, ev: KeyEvent, popup: Popup) {
         }
         Some(_) => app.toast("paste cancelled"),
         None => {
-            let sel = match ev.key {
-                Key::Named(NamedKey::Left) | Key::Named(NamedKey::Up) => (sel + 2) % 3,
-                Key::Named(NamedKey::Right)
-                | Key::Named(NamedKey::Tab)
-                | Key::Named(NamedKey::Down) => (sel + 1) % 3,
-                _ => sel,
+            // shift+tab goes back (formkeys).
+            let sel = match crate::formkeys::step(crate::formkeys::nav(&ev, false)) {
+                Some(by) => crate::formkeys::wrap(sel, by, 3),
+                None => sel,
             };
             app.mode = crate::app::Mode::Popup(Popup::PasteAsk {
                 machine,
@@ -1106,6 +1104,31 @@ mod tests {
             },
         );
         assert!(drops(&mut rxs[0]).is_empty());
+    }
+
+    #[test]
+    fn shift_tab_moves_the_paste_choice_back() {
+        let (mut app, _rxs) = test_app(1);
+        let ask = |sel| Popup::PasteAsk {
+            machine: 0,
+            pane: "p1".into(),
+            original: "x".into(),
+            parsed: ParsedPaste {
+                mode: paste::PasteMode::PathsOnly,
+                tokens: Vec::new(),
+            },
+            items: Vec::new(),
+            sel,
+        };
+        let sel_of = |app: &App| match &app.mode {
+            Mode::Popup(Popup::PasteAsk { sel, .. }) => *sel,
+            m => panic!("{m:?}"),
+        };
+        let tab = |m| KeyEvent::new(Key::Named(NamedKey::Tab), m);
+        ask_key(&mut app, tab(vk_proto::input::Mods::empty()), ask(2));
+        assert_eq!(sel_of(&app), 0);
+        ask_key(&mut app, tab(vk_proto::input::Mods::SHIFT), ask(0));
+        assert_eq!(sel_of(&app), 2);
     }
 }
 

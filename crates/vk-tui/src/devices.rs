@@ -34,6 +34,7 @@ use vk_proto::input::{Key, KeyEvent, KeyKind, NamedKey};
 use vk_proto::render::Style;
 
 use crate::app::{App, Mode, Pending, Popup, RpcErr};
+use crate::formkeys::{nav, step, wrap};
 use crate::handoff::epoch_ms;
 use crate::inbox::fmt_age;
 use crate::screen::Grid;
@@ -456,6 +457,14 @@ fn close(app: &mut App) {
     app.mode = Mode::Normal;
 }
 
+/// The scope picker is open: tab / shift+tab and the arrows choose there, not switch tabs.
+pub(crate) fn in_form(app: &App) -> bool {
+    app.ux
+        .devices
+        .as_ref()
+        .is_some_and(|v| matches!(v.stage, Stage::PickScope { .. }))
+}
+
 /// Leaving the tab for another: a pending pairing link or sign-in is cancelled, as Esc would.
 pub(crate) fn leave(app: &mut App) {
     let Some(v) = app.ux.devices.take() else {
@@ -713,6 +722,8 @@ pub fn key(app: &mut App, ev: KeyEvent) {
             match ev.key {
                 _ if quit => close(app),
                 _ if down => v.sel = (v.sel + 1).min(n.saturating_sub(1)),
+                // Up from the top row: the tab strip.
+                _ if up && v.sel == 0 => app.ux.connections.strip = true,
                 _ if up => v.sel = v.sel.saturating_sub(1),
                 Key::Char('x') if plain => ask_revoke(v),
                 Key::Char('n') if plain => v.stage = Stage::PickScope { sel: 0 },
@@ -731,13 +742,14 @@ pub fn key(app: &mut App, ev: KeyEvent) {
                 v.creating = None;
                 v.stage = Stage::List;
             } else if v.busy.is_some() {
-            } else if down {
-                *sel = (*sel + 1).min(SCOPES.len() - 1);
-            } else if up {
-                *sel = sel.saturating_sub(1);
+            } else if up && *sel == 0 {
+                // Up from the first choice: the tab strip.
+                app.ux.connections.strip = true;
             } else if enter {
                 let scope = SCOPES[*sel].0;
                 confirm_scope(app, scope);
+            } else if let Some(by) = step(nav(&ev, false)) {
+                *sel = wrap(*sel, by, SCOPES.len());
             }
         }
         Stage::Pairing(p) => {
@@ -1217,7 +1229,7 @@ fn draw_pick(app: &App, a: &mut crate::drafts::Area<'_>, v: &View, sel: usize) {
     }
     a.line("", t.text());
     status_line(app, a, v);
-    a.footer("j/k move · enter create the link · esc back", t.dim());
+    a.footer(crate::formkeys::FORM_HINT, t.dim());
 }
 
 /// `s` broken into lines of the area's width.
